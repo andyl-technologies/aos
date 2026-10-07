@@ -38,6 +38,24 @@ class RendererTests(unittest.TestCase):
             "maximumBodyBytes": 8 * 1024 * 1024, "maximumCorpusBytes": 512 * 1024 * 1024,
         }
 
+    def test_selected_get_identity_and_grant_routes_use_installed_closed_validator(self):
+        routes = [{"method": "GET", "path": "/-/instance", "purpose": "instance-page"},
+                  {"method": "POST", "path": "/aos.hub.v1.IdentityService/WhoAmI", "purpose": "identity"},
+                  {"method": "POST", "path": "/aos.hub.v1.DirectUploadService/GrantPartsBatch", "purpose": "part-authorize"}]
+        with tempfile.TemporaryDirectory() as parent:
+            stage = render.render(Path(parent) / "selected", self.policy() | {"originRoutes": routes},
+                                  "8" * 32, "private-fixture-corpus", "fixture-ledger-owner",
+                                  node_tool=self.node_tool)
+            self.assertTrue((stage / "capture.mjs").is_file())
+            for label, bad in (("duplicate", routes + [routes[0]]),
+                               ("post-instance", [{**routes[0], "method": "POST"}]),
+                               ("get-identity", [{**routes[1], "method": "GET"}])):
+                target = Path(parent) / label
+                with self.assertRaises(ValueError):
+                    render.render(target, self.policy() | {"originRoutes": bad}, "8" * 32,
+                                  "private-fixture-corpus", "fixture-ledger-owner", node_tool=self.node_tool)
+                self.assertFalse(target.exists())
+
     def test_policy_refusal_precedes_stage_creation(self):
         with tempfile.TemporaryDirectory() as parent:
             for change in (

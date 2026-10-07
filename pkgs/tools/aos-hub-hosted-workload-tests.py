@@ -417,7 +417,7 @@ class HostedTests(unittest.TestCase):
             self.assertEqual(outcome["state"], "workload_complete")
             measured = json.loads((current.path / "measurements.json").read_text())
             window = json.loads((current.path / "workload-window.json").read_text())
-            self.assertEqual(window["version"], 2)
+            self.assertEqual(window["version"], 3)
             self.assertEqual(window["clockBridge"]["bootId"], cutoff["controllerBootId"])
             self.assertEqual(hosted.retained_window(reference, cutoff)["version"], 1)
             hosted.validate_clock_bridge(window["clockBridge"], cutoff,
@@ -505,6 +505,61 @@ raise SystemExit(2)
             self.assertEqual(receipt["providerSettlement"], "unknown")
         finally:
             evidence.close()
+
+    def test_assessment_native_inventory_optional_closed_slot_is_forwarded_without_promotion(self):
+        for mode in ("absent", "null", "selected", "selected-null-sql"):
+            with self.subTest(mode=mode):
+                body = """import json,os,sys
+fd=os.open(sys.argv[1], os.O_RDONLY | os.O_NOFOLLOW)
+with os.fdopen(fd) as source: selected=json.load(source)
+if 'nativeInventory' in selected and selected['nativeInventory'] is not None:
+    assert set(selected['nativeInventory']) == {'policy','sidecar','sqlReaderObservation'}
+    assert all(set(ref) == {'file','sha256','byteSize'} for name,ref in selected['nativeInventory'].items()
+               if name != 'sqlReaderObservation' or ref is not None)
+report={"version":1,"hostedAcceptance":"incomplete","runtime":selected["runtime"],
+        "applicationBodyAssessment":{"state":"incomplete","nativeBulkBytes":None,
+                                     "nativeCapturedObjectPayloadBytes":None},
+        "applicationProviderLedger":{"state":"incomplete"},"indexParity":None,"wireMetrics":None,
+        "loadedWindowReferences":[{"sha256":row["sha256"],"byteSize":row["byteSize"]}
+                                  for row in selected["workloadWindows"]]}
+print(json.dumps(report))
+raise SystemExit(2)
+"""
+                evidence, invocation, selected_path, _ = self.assessment_fixture(body, label="inventory-" + mode)
+                selected = json.loads(selected_path.read_text())
+                if mode == "null":
+                    selected["nativeInventory"] = None
+                if mode.startswith("selected"):
+                    observed = self.root / ("inventory-" + mode + ".json")
+                    observed.write_text('{"state":"fixture-only-unknown"}')
+                    observed.chmod(0o600)
+                    raw = observed.read_bytes()
+                    reference = {"file": str(observed), "sha256": hosted.hashlib.sha256(raw).hexdigest(),
+                                 "byteSize": str(len(raw))}
+                    selected["nativeInventory"] = {name: dict(reference)
+                                                  for name in ("policy", "sidecar", "sqlReaderObservation")}
+                    if mode == "selected-null-sql":
+                        selected["nativeInventory"]["sqlReaderObservation"] = None
+                selected_path.write_text(json.dumps(selected))
+                raw = selected_path.read_bytes()
+                specification = json.loads(invocation.read_text())
+                specification["selection"].update(sha256=hosted.hashlib.sha256(raw).hexdigest(), byteSize=str(len(raw)))
+                invocation.write_text(json.dumps(specification))
+                try:
+                    result = hosted.assess_workload(str(invocation), evidence)
+                    self.assertEqual(result["state"], "incomplete_observation")
+                    derived = json.loads((evidence.path / "assessment-invocation-selection.json").read_text())
+                    self.assertEqual("nativeInventory" in derived, mode != "absent")
+                    if mode != "absent":
+                        self.assertEqual(derived["nativeInventory"], selected["nativeInventory"])
+                    self.assertEqual(selected_path.read_bytes(), raw)
+                    receipt = json.loads((evidence.path / "assessment-receipt.json").read_text())
+                    self.assertEqual(receipt["exitCode"], 2)
+                    self.assertEqual(receipt["providerSettlement"], "unknown")
+                    report = json.loads((evidence.path / "assessment-stdout").read_text())
+                    self.assertIsNone(report["applicationBodyAssessment"]["nativeBulkBytes"])
+                finally:
+                    evidence.close()
 
     def test_assessment_optional_cli_wiring_keeps_workload_result_separate(self):
         body = """import json,sys
@@ -687,6 +742,135 @@ print(json.dumps(record),flush=True)
                 self.assertFalse((Path("/proc") / str(observed["child"])).exists())
                 self.assertNotIn("private-error-canary", str(result))
                 self.assertNotIn("private-cancel-canary", str(result))
+
+
+class OfferingTests(unittest.TestCase):
+    """Synthetic producer fixtures test actual owned-child clocks and refusal."""
+
+    def record(self):
+        hashes = {name: "1" * 64 for name in hosted.CLIENT_FIELDS if name.endswith("Sha256")}
+        return {**hashes, "version": 2, "purpose": "upload_part", "processId": os.getpid(),
+                "attemptOrdinal": 0, "startedAtMillis": 1, "completedAtMillis": None,
+                "monotonicElapsedNs": "0", "offeredFirstElapsedNs": None,
+                "offeredLastElapsedNs": None, "offered": None, "reply": None,
+                "status": None, "outcome": "pending"}
+
+    def test_owned_child_offering_span_proves_only_contained_pages(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "stderr"
+            fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+            record = self.record()
+            program = """import json, os, time
+record = json.loads(%r)
+origin = time.monotonic_ns()
+record['processId'] = os.getpid()
+record['monotonicElapsedNs'] = str(time.monotonic_ns() - origin)
+print(%r + json.dumps(record), flush=True)
+first = time.monotonic_ns() - origin
+time.sleep(0.3)
+last = time.monotonic_ns() - origin
+record.update(outcome='accepted', completedAtMillis=2, status=200,
+    offeredFirstElapsedNs=str(first), offeredLastElapsedNs=str(last),
+    monotonicElapsedNs=str(time.monotonic_ns() - origin),
+    offered={'bytes': 8, 'sha256': '2'*64, 'eof': True, 'failed': False, 'overflow': False})
+print(%r + json.dumps(record), flush=True)
+""" % (json.dumps(record), hosted.CLIENT_MARKER, hosted.CLIENT_MARKER)
+            started = time.monotonic_ns()
+            child = subprocess.Popen([sys.executable, "-B", "-c", program], stdout=fd)
+            observer = hosted.OfferingObserver("1" * 64, child.pid, started)
+            try:
+                deadline = time.monotonic() + 3
+                while observer.origin_upper is None and time.monotonic() < deadline:
+                    observer.read(fd)
+                    time.sleep(0.005)
+                self.assertEqual(observer.state, "observed")
+                self.assertIsNotNone(observer.origin_upper)
+                begin = time.monotonic_ns()
+                time.sleep(0.02)
+                page = {**sample(), "startedMonotonicNs": str(begin),
+                        "finishedMonotonicNs": str(time.monotonic_ns())}
+                child.wait(timeout=3)
+                observer.read(fd)
+                late = {**sample(), "startedMonotonicNs": str(time.monotonic_ns()),
+                        "finishedMonotonicNs": str(time.monotonic_ns())}
+                summary = observer.summary([page, late])
+                self.assertEqual(summary["provenPages"], [page])
+                self.assertIsNone(summary["providerReceivedBytes"])
+                self.assertIsNone(summary["workerVerificationOverlap"])
+            finally:
+                if child.poll() is None:
+                    child.kill()
+                child.wait(timeout=3)
+                os.close(fd)
+
+    def test_legacy_missing_clock_bad_schema_or_wrong_process_cannot_prove_overlap(self):
+        record = self.record()
+        for change in ({"version": 1}, {"attemptOrdinal": True}, {"monotonicElapsedNs": "01"},
+                       {"monotonicElapsedNs": 1}, {"privateUrl": "private-canary"}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                hosted.client_record(json.dumps({**record, **change}))
+        with self.assertRaises(ValueError):
+            hosted.client_record(json.dumps(record)[:-1] + ',"version":2}')
+        legacy = hosted.OfferingObserver(None, os.getpid(), time.monotonic_ns())
+        self.assertEqual(legacy.summary([sample()])["provenPages"], [])
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "log"
+            path.write_text(hosted.CLIENT_MARKER + json.dumps(record) + "\n")
+            path.chmod(0o600)
+            with path.open("rb") as stream:
+                observed = hosted.OfferingObserver("1" * 64, os.getpid() + 1, 0)
+                observed.read(stream.fileno())
+            self.assertEqual(observed.state, "unavailable")
+            self.assertEqual(observed.summary([sample()])["provenPages"], [])
+            self.assertNotIn("private-canary", str(observed.summary([])))
+
+    def test_missing_terminal_and_null_elapsed_do_not_become_zero(self):
+        record = self.record()
+        record["monotonicElapsedNs"] = None
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "log"
+            path.write_text(hosted.CLIENT_MARKER + json.dumps(record) + "\n")
+            path.chmod(0o600)
+            with path.open("rb") as stream:
+                observed = hosted.OfferingObserver("1" * 64, os.getpid(), 0)
+                observed.read(stream.fileno())
+            summary = observed.summary([sample()])
+            self.assertIsNone(summary["controllerOriginUpperNs"])
+            self.assertIsNone(summary["matchedAttemptOfferingSpans"])
+            self.assertEqual(summary["provenPages"], [])
+
+    def test_package_context_wrapper_is_not_the_underlying_elf(self):
+        with tempfile.TemporaryDirectory() as root:
+            wrapper = Path(root) / "aos"
+            wrapper.write_bytes(b"fixture wrapper")
+            executable = Path(root) / ".aos-unwrapped"
+            executable.write_bytes(b"\x7fELFfixture")
+            wrapper_hash = hosted.hashlib.sha256(wrapper.read_bytes()).hexdigest()
+            elf_hash = hosted.hashlib.sha256(executable.read_bytes()).hexdigest()
+            source_hash = hosted.hashlib.sha256(b"provider" + b"observer").hexdigest()
+            context = {"version": 1, "runtimeSource": "source", "runtime": {}, "runtimeProvenance": {},
+                       "sourceTree": "4" * 40, "nativeAuth": {}, "observerExecutable": {},
+                       "captureImplementationSha256": None,
+                       "producerSha256": {"sdk": None, "client": source_hash},
+                       "clientExecutable": {"file": str(wrapper), "sha256": wrapper_hash,
+                                            "byteSize": str(wrapper.stat().st_size)}}
+            body = json.dumps(context).encode()
+            selected = {"sourceSha256": source_hash, "executableSha256": elf_hash,
+                        "packageContext": {"file": "context", "sha256": hosted.hashlib.sha256(body).hexdigest()}}
+
+            def fixture_bytes(path, maximum):
+                return body if path == "context" else b"provider" if path.endswith("provider.rs") else b"observer"
+
+            with patch.object(hosted, "immutable_bytes", side_effect=fixture_bytes), \
+                 patch.object(hosted, "selected_tool", return_value={"file": str(wrapper), "sha256": wrapper_hash}), \
+                 patch.object(hosted, "publisher_executables", return_value=[{"file": str(executable), "sha256": elf_hash}]):
+                pinned = hosted.client_observer(selected, {})
+                self.assertEqual(pinned["executable"]["sha256"], elf_hash)
+                self.assertNotEqual(elf_hash, wrapper_hash)
+                with self.assertRaisesRegex(ValueError, "underlying ELF differs"):
+                    hosted.client_observer({**selected, "executableSha256": wrapper_hash}, {})
+                with self.assertRaisesRegex(ValueError, "compiled source commitment differs"):
+                    hosted.client_observer({**selected, "sourceSha256": "1" * 64}, {})
 
 
 if __name__ == "__main__":

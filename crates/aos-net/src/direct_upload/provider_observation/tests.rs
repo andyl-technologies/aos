@@ -66,6 +66,26 @@ async fn hashes_actual_offered_chunks_and_existing_reply_prefix_not_declared_siz
     drop(attempt);
 
     let record = terminal(&capture);
+    assert_eq!(record["version"], 2);
+    let first = record["offeredFirstElapsedNs"]
+        .as_str()
+        .unwrap()
+        .parse::<u64>()
+        .unwrap();
+    let last = record["offeredLastElapsedNs"]
+        .as_str()
+        .unwrap()
+        .parse::<u64>()
+        .unwrap();
+    let finished = record["monotonicElapsedNs"]
+        .as_str()
+        .unwrap()
+        .parse::<u64>()
+        .unwrap();
+    assert!(first <= last && last <= finished);
+    let initial: serde_json::Value = serde_json::from_str(&capture.lock().unwrap()[0]).unwrap();
+    assert!(initial["offeredFirstElapsedNs"].is_null());
+    assert!(initial["offeredLastElapsedNs"].is_null());
     assert_eq!(record["offered"]["bytes"], 3);
     assert_eq!(record["offered"]["sha256"], digest(b"abc"));
     assert_eq!(record["offered"]["eof"], true);
@@ -100,6 +120,29 @@ async fn source_error_and_partial_drop_keep_unknown_and_actual_prefix() {
     assert_eq!(record["reply"]["bytes"], 1);
     assert_eq!(record["reply"]["failed"], true);
     assert_eq!(record["outcome"], "unknown");
+    assert_eq!(record["offeredFirstElapsedNs"], record["offeredLastElapsedNs"]);
+}
+
+#[tokio::test]
+async fn unpolled_or_empty_stream_does_not_invent_an_offering_interval() {
+    for poll_empty in [false, true] {
+        let mut attempt = attempt();
+        let capture = Arc::clone(&attempt.captured);
+        attempt.dispatch();
+        let mut offered = attempt.offered(stream::iter([Ok(Bytes::new())]));
+        if poll_empty {
+            assert!(offered.next().await.unwrap().unwrap().is_empty());
+            assert!(offered.next().await.is_none());
+        }
+        drop(offered);
+        drop(attempt);
+
+        let record = terminal(&capture);
+        assert_eq!(record["offered"]["bytes"], 0);
+        assert!(record["offeredFirstElapsedNs"].is_null());
+        assert!(record["offeredLastElapsedNs"].is_null());
+        assert_eq!(record["outcome"], "unknown");
+    }
 }
 
 #[test]

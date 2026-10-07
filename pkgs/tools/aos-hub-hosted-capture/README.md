@@ -99,21 +99,29 @@ expiry/body/source scope; no new key, review, capability or admission is minted.
 
 ## Local checks
 
-Source-built AOS Node executes capture-tests.mjs (13 stream/proxy/budget cases).
-Source-built AOS Python executes render-tests.py (4 renderer/subclass cases).
+Source-built AOS Node executes capture-tests.mjs stream/proxy/budget cases.
+Source-built AOS Python executes render-tests.py renderer/subclass cases.
 Mocks exercise actual Request/Response streams and the ledger binary transport;
 they are not Cloudflare/provider/Native consumption tests. No renderer output
 from these fixture identities is an actual deployment or selected capture.
 
 ## Selected inventory is not the whole Native window
 
-The origin allowlist observes only policy-selected POST publication/Direct
-metadata paths. The following actual workload classes are intentionally absent:
+The origin allowlist observes policy-selected publication/Direct metadata paths,
+GET /-/instance and POST WhoAmI. GrantPartsBatch is selected only for the compact
+Native `authorize` hop with its logical signature frame; ordinary delegated grant
+replies bypass capture. Bodies containing query-bearing provider URLs remain
+unknown and are never retained as metadata. Dedicated Worker authority,
+final-guard and deployment routes retain only their route-specific signature
+frames. Credential headers remain excluded.
+
+The following classes and unresolved joins still require separate evidence:
 
 | Request class | Capture selection | Evidence still required |
 | --- | --- | --- |
-| GET /-/instance, page/assets and other ordinary GET routes | Bypass | Actual route/method/query classification, current handler/source identity, authenticated ingress commitment and exact request consumption and reply offering counters for those calls; page response markup is not authentication proof. |
-| POST /aos.hub.v1.IdentityService/WhoAmI | Bypass | Current authenticated identity result and its actual canonical request/reply body hash/count and correlation, independently verified against the selected application/source. Do not infer identity from rendered HTML or proxy status. |
+| GET /-/instance | Policy-selected private bounded image | Actual route/method/query classification, current handler/source identity, authenticated ingress commitment and exact request consumption and reply offering counters for those calls; page response markup is not authentication proof. |
+| POST /aos.hub.v1.IdentityService/WhoAmI | Policy-selected private bounded image | Current authenticated identity result and its actual canonical request/reply body hash/count and correlation, independently verified against the selected application/source. Do not infer identity from rendered HTML or proxy status. |
+| Page/assets and other ordinary GET routes | Bypass | Separate authorized route classification and exact observed body inventory; selected instance capture does not cover other GET traffic. |
 | /-/auth/session-token and other session/login bridge traffic | Bypass | Independent fixed authentication/identity verdict plus exact canonical body commitment/count and EOF/correlation where retained by a selected safe observer. Token, cookie and Authorization values must not be exported or added to this capture. |
 | Other RPCs, admin/bindings/custody/credential paths and bulk routes | Bypass | Separate authorized source-specific observation or unresolved coverage. Excluding a class does not prove its body count is zero. |
 | Selected path with query, invalid/absent IDs, partial/oversized or dropped image | Unknown or incomplete | Exact supported query absence and current verified request/transport correlation, matching byte/count/EOF, complete private exported inventory and source/runtime/window joins. |

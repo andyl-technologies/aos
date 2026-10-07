@@ -5,6 +5,11 @@ An operator selects two existing signed surfaces and authorized registries. The
 same production CLI and fleet measurement parsers own upload and validation.
 Publisher restart is a separate explicit invocation, never an effect retry.
 Missing application-hop captures remain unknown, even after successful upload.
+Optional clientObserver pins an independently measured immutable package context,
+its producer source pair and the actual underlying publisher ELF. Legacy inputs
+still run; their loaded pages remain observations without offering-overlap proof.
+Version 3 retained windows preserve each invocation separately across resume.
+Local offered-chunk spans do not prove provider receipt or Worker read overlap.
 """
 
 import argparse
@@ -154,7 +159,8 @@ def binding(path):
     selected = closed_json(raw)
     exact_fields(selected, {"version", "origin", "pagePath", "region", "timeoutSeconds",
                             "tools", "tokenFile", "pageCookieFile", "providerPolicyFile",
-                            "publishers", "captures", "workerSourceDigest"})
+                            "publishers", "captures", "workerSourceDigest"}
+                 | ({"clientObserver"} if "clientObserver" in selected else set()))
     origin = urlsplit(selected["origin"])
     if (selected["version"] != 1 or origin.scheme != "https" or not origin.netloc
             or origin.username or origin.password or origin.path or origin.query or origin.fragment
@@ -186,6 +192,8 @@ def binding(path):
             exact_fields(ref, {"file"})
             if not Path(ref["file"]).is_absolute():
                 raise ValueError("Capture path must be absolute")
+    if "clientObserver" in selected:
+        client_observer(selected["clientObserver"], selected["tools"]["aos"])
     private_bytes(selected["tokenFile"], 16 * 1024)
     private_bytes(selected["pageCookieFile"], 256 * 1024)
     private_bytes(selected["providerPolicyFile"], 256 * 1024)
@@ -386,6 +394,208 @@ def publisher_executables(path):
     return executables
 
 
+CLIENT_FIELDS = {"version", "purpose", "observerSourceSha256", "processId", "attemptOrdinal",
+                 "startedAtMillis", "completedAtMillis", "sessionSha256", "originalSha256",
+                 "clientOperationSha256", "placementSha256", "partSha256", "providerOriginSha256",
+                 "providerPathSha256", "offered", "reply", "status", "etagSha256", "outcome",
+                 "monotonicElapsedNs", "offeredFirstElapsedNs", "offeredLastElapsedNs"}
+CLIENT_MARKER = "direct_upload_part_application_observation "
+
+
+def immutable_bytes(path, maximum):
+    """Read a bounded canonical immutable store input without following its leaf."""
+    selected = Path(path)
+    if (str(selected) != path or selected.resolve(strict=True) != selected
+            or not re.match(r"^/nix/store/[0-9abcdfghijklmnpqrsvwxyz]{32}-[^/]+/", path)):
+        raise ValueError("Observer input is not a canonical immutable file")
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(descriptor, "rb") as source:
+        before = os.fstat(source.fileno())
+        if not stat.S_ISREG(before.st_mode) or before.st_mode & 0o222 or before.st_size > maximum:
+            raise ValueError("Observer input lacks immutable custody")
+        body = source.read(maximum + 1)
+        after = os.fstat(source.fileno())
+    fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns", "st_mode", "st_uid")
+    if len(body) != before.st_size or any(getattr(before, name) != getattr(after, name) for name in fields):
+        raise ValueError("Observer input changed")
+    return body
+
+
+def client_observer(selected, tool):
+    """Join independently selected package provenance, compiled source and ELF."""
+    exact_fields(selected, {"sourceSha256", "executableSha256", "packageContext"})
+    exact_fields(selected["packageContext"], {"file", "sha256"})
+    if any(not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value)
+           for value in (selected["sourceSha256"], selected["executableSha256"],
+                         selected["packageContext"]["sha256"])):
+        raise ValueError("Observer pin differs")
+    raw = immutable_bytes(selected["packageContext"]["file"], 1024 * 1024)
+    if hashlib.sha256(raw).hexdigest() != selected["packageContext"]["sha256"]:
+        raise ValueError("Observer package context changed")
+    context = closed_json(raw)
+    exact_fields(context, {"version", "runtimeSource", "runtime", "runtimeProvenance", "sourceTree",
+                          "nativeAuth", "observerExecutable", "captureImplementationSha256",
+                          "producerSha256", "clientExecutable"})
+    if type(context["version"]) is not int or context["version"] != 1:
+        raise ValueError("Observer package version differs")
+    exact_fields(context["producerSha256"], {"sdk", "client"})
+    client = context["clientExecutable"]
+    exact_fields(client, {"file", "sha256", "byteSize"})
+    wrapper = selected_tool(tool)
+    if (client["file"] != wrapper["file"] or client["sha256"] != wrapper["sha256"]
+            or client["byteSize"] != str(Path(wrapper["file"]).stat().st_size)):
+        raise ValueError("Observer package selected another CLI")
+    executable = publisher_executables(wrapper["file"])[-1]
+    with open(executable["file"], "rb") as source:
+        if source.read(4) != b"\x7fELF":
+            raise ValueError("Observer publisher lacks a selected underlying ELF")
+    if executable["sha256"] != selected["executableSha256"]:
+        raise ValueError("Observer underlying ELF differs")
+    source = hashlib.sha256()
+    for name in ("provider.rs", "provider_observation.rs"):
+        source.update(immutable_bytes(str(Path(context["runtimeSource"]) /
+                         "crates/aos-net/src/direct_upload" / name), 1024 * 1024))
+    if source.hexdigest() != selected["sourceSha256"] or context["producerSha256"]["client"] != source.hexdigest():
+        raise ValueError("Observer compiled source commitment differs")
+    return {**selected, "executable": executable, "runtimeSource": context["runtimeSource"]}
+
+
+def elapsed_integer(value):
+    if (not isinstance(value, str) or not re.fullmatch(r"0|[1-9][0-9]{0,19}", value)
+            or int(value) > 2**64 - 1):
+        raise ValueError("Observer elapsed time differs")
+    return int(value)
+
+
+def client_record(encoded):
+    """Validate a bounded closed v2 record without printing arbitrary log text."""
+    if len(encoded.encode()) > 4096:
+        raise ValueError("Observer record exceeds bound")
+    value, end = json.JSONDecoder().raw_decode(encoded)
+    if encoded[end:] and not encoded[end:].startswith(" span="):
+        raise ValueError("Observer record suffix differs")
+    value = closed_json(encoded[:end])
+    exact_fields(value, CLIENT_FIELDS)
+    if (type(value["version"]) is not int or value["version"] != 2
+            or value["purpose"] != "upload_part"
+            or type(value["processId"]) is not int or not 0 < value["processId"] <= 2**32 - 1
+            or type(value["attemptOrdinal"]) is not int or not 0 <= value["attemptOrdinal"] <= 2**64 - 1
+            or value["outcome"] not in {"pending", "accepted", "refused", "unknown"}):
+        raise ValueError("Observer record identity differs")
+    for name in ("observerSourceSha256", "sessionSha256", "originalSha256", "clientOperationSha256",
+                 "placementSha256", "partSha256", "providerOriginSha256", "providerPathSha256", "etagSha256"):
+        if value[name] is None and name in {"placementSha256", "partSha256", "etagSha256"}:
+            continue
+        if not isinstance(value[name], str) or not re.fullmatch(r"[0-9a-f]{64}", value[name]):
+            raise ValueError("Observer commitment differs")
+    for name in ("startedAtMillis", "completedAtMillis", "status"):
+        if value[name] is not None and (type(value[name]) is not int or not 0 <= value[name] <= 2**64 - 1):
+            raise ValueError("Observer integer differs")
+    if value["status"] is not None and value["status"] > 65535:
+        raise ValueError("Observer status differs")
+    for name in ("offered", "reply"):
+        prefix = value[name]
+        if prefix is None:
+            continue
+        exact_fields(prefix, {"bytes", "sha256", "eof", "failed", "overflow"})
+        if (type(prefix["bytes"]) is not int or not 0 <= prefix["bytes"] <= 2**64 - 1
+                or not isinstance(prefix["sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", prefix["sha256"])
+                or any(type(prefix[field]) is not bool for field in ("eof", "failed", "overflow"))):
+            raise ValueError("Observer prefix differs")
+        if name == "reply" and prefix["bytes"] > 8192:
+            raise ValueError("Observer reply exceeds its production bound")
+    for name in ("monotonicElapsedNs", "offeredFirstElapsedNs", "offeredLastElapsedNs"):
+        if value[name] is not None:
+            elapsed_integer(value[name])
+    return value
+
+
+class OfferingObserver:
+    """Read the owned child's bounded emitted records; missing facts stay unknown."""
+
+    def __init__(self, source, pid, started):
+        self.source, self.pid, self.started = source, pid, started
+        self.position, self.buffer, self.origin_upper = 0, b"", None
+        self.attempts, self.spans = {}, []
+        clock = time.get_clock_info("monotonic")
+        supported = sys.platform == "linux" and clock.implementation == "clock_gettime(CLOCK_MONOTONIC)"
+        self.state = "observed" if source is not None and supported else "unavailable"
+
+    def read(self, descriptor):
+        if self.state != "observed":
+            return
+        try:
+            info = os.fstat(descriptor)
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                    or info.st_mode & 0o077 or info.st_nlink != 1
+                    or not self.position <= info.st_size <= 4 * 1024 * 1024):
+                raise ValueError("Observer output custody differs")
+            # pread shares the actual held writer inode, without following a path
+            # or disturbing the child's write offset. No additional stream poll.
+            chunk = os.pread(descriptor, info.st_size - self.position, self.position)
+            received = time.monotonic_ns()
+            self.position += len(chunk)
+            self.buffer += chunk
+            lines = self.buffer.split(b"\n")
+            self.buffer = lines.pop()
+            if len(self.buffer) > 65536:
+                raise ValueError("Observer incomplete line exceeds bound")
+            for line in lines:
+                marker = CLIENT_MARKER.encode()
+                if marker not in line:
+                    continue
+                record = client_record(line.split(marker, 1)[1].decode())
+                if record["observerSourceSha256"] != self.source or record["processId"] != self.pid:
+                    raise ValueError("Observer process or source differs")
+                elapsed = record["monotonicElapsedNs"]
+                if elapsed is None:
+                    continue
+                upper = received - elapsed_integer(elapsed)
+                if upper < self.started:
+                    raise ValueError("Observer clocks cannot be joined")
+                self.origin_upper = upper if self.origin_upper is None else min(self.origin_upper, upper)
+                key = record["attemptOrdinal"]
+                old = self.attempts.get(key)
+                if old is None:
+                    if record["outcome"] != "pending" or len(self.attempts) >= 32768:
+                        raise ValueError("Observer pending record is missing")
+                    self.attempts[key] = record
+                    continue
+                stable = CLIENT_FIELDS - {"completedAtMillis", "monotonicElapsedNs", "offeredFirstElapsedNs",
+                                           "offeredLastElapsedNs", "offered", "reply", "status", "etagSha256", "outcome"}
+                if old["outcome"] != "pending" or record["outcome"] == "pending" or any(old[name] != record[name] for name in stable):
+                    raise ValueError("Observer attempt correlation differs")
+                self.attempts[key] = record
+                first, last = record["offeredFirstElapsedNs"], record["offeredLastElapsedNs"]
+                prefix = record["offered"]
+                if first is None or last is None or prefix is None or prefix["bytes"] == 0 or prefix["failed"] or prefix["overflow"]:
+                    continue
+                first, last = elapsed_integer(first), elapsed_integer(last)
+                if not elapsed_integer(old["monotonicElapsedNs"]) <= first <= last <= elapsed_integer(elapsed):
+                    raise ValueError("Observer offering order differs")
+                self.spans.append((first, last))
+        except (OSError, ValueError, UnicodeError, TypeError):
+            self.state = "unavailable"
+            self.spans.clear()
+
+    def summary(self, pages):
+        proven = []
+        if self.state == "observed" and self.origin_upper is not None:
+            for page in pages:
+                start, finish = page.get("startedMonotonicNs"), page.get("finishedMonotonicNs")
+                if start is None or finish is None:
+                    continue
+                if any(self.origin_upper + first <= int(start) <= int(finish) <= self.started + last
+                       for first, last in self.spans):
+                    proven.append(page)
+        state = self.state if self.origin_upper is not None else "unavailable"
+        return {"state": state, "sourceSha256": self.source,
+                "controllerOriginLowerNs": str(self.started),
+                "controllerOriginUpperNs": str(self.origin_upper) if self.origin_upper is not None else None,
+                "matchedAttemptOfferingSpans": len(self.spans) if state == "observed" else None, "provenPages": proven,
+                "providerReceivedBytes": None, "workerVerificationOverlap": None}
+
+
 class Publisher:
     """Own one child and its exact checkpoint; kill never means provider drain."""
 
@@ -397,7 +607,7 @@ class Publisher:
         try:
             self.executables = publisher_executables(selected["tools"]["aos"]["file"])
             for stream in ("stdout", "stderr"):
-                fd = os.open(f"{label}-{stream}", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                fd = os.open(f"{label}-{stream}", os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                              0o600, dir_fd=evidence.fd)
                 self.outputs.append(os.fdopen(fd, "wb"))
             environment = dict(os.environ)
@@ -410,6 +620,9 @@ class Publisher:
                                             start_new_session=True)
             self.pin = process_pin(self.process)
             self.execution_index = self.execution_stage(self.pin)
+            observer = selected.get("clientObserver")
+            self.offering = OfferingObserver(observer["sourceSha256"] if observer else None,
+                                            self.process.pid, self.started)
             evidence.save(label + "-process.json", {"version": 1, **self.pin,
                           "startedMonotonicNs": str(self.started), "allowedExecutables": self.executables})
         except Exception:
@@ -463,6 +676,7 @@ class Publisher:
                     self.process.kill()
                     killed = True
             self.process.wait(timeout=5)
+            self.offering.read(self.outputs[1].fileno())
         finally:
             for output in self.outputs:
                 output.close()
@@ -543,13 +757,15 @@ def page_probe(selected, evidence, sequence, deadline, lib, cutoff=None):
     except subprocess.TimeoutExpired:
         evidence.save(f"page-{sequence}.json", {"state": "unknown", "cause": "original_cutoff"})
         raise
+    finished = time.monotonic_ns()
     evidence.save(f"page-{sequence}.json", {"exitCode": result.returncode,
-                    "startedMonotonicNs": str(started), "finishedMonotonicNs": str(time.monotonic_ns()),
+                    "startedMonotonicNs": str(started), "finishedMonotonicNs": str(finished),
                     "stderrSha256": hashlib.sha256(result.stderr).hexdigest(), "stderrBytes": len(result.stderr),
                     "writeout": result.stdout.decode()})
     if result.returncode:
         raise ValueError("Authenticated page probe failed; private receipt retained")
-    return lib["parse_page_observations"](result.stdout.decode(), 1)[0]
+    return {**lib["parse_page_observations"](result.stdout.decode(), 1)[0],
+            "startedMonotonicNs": str(started), "finishedMonotonicNs": str(finished)}
 
 
 def latency(baseline, loaded):
@@ -648,7 +864,7 @@ def validate_clock_bridge(bridge, cutoff, started, finished):
 
 
 def retain_window(evidence, cutoff, started, finished, baseline, loaded, memory, counters, captures,
-                  clock_bridge=None):
+                  clock_bridge=None, offering=None):
     """Retain the first loaded interval and references needed by explicit resume."""
     logs = {label + "-" + stream: output_reference(evidence, label + "-" + stream, maximum)
             for label in ("a", "b") for stream, maximum in
@@ -662,6 +878,10 @@ def retain_window(evidence, cutoff, started, finished, baseline, loaded, memory,
     if clock_bridge is not None:
         validate_clock_bridge(clock_bridge, cutoff, started, finished)
         window.update(version=2, clockBridge=clock_bridge)
+    if offering is not None:
+        if clock_bridge is None:
+            raise ValueError("Offering window lacks a retained controller clock")
+        window.update(version=3, clientOffering=offering)
     body = json.dumps(window, sort_keys=True, separators=(",", ":"), allow_nan=False).encode() + b"\n"
     if len(body) > 16 * 1024 * 1024:
         raise ValueError("Retained loaded window exceeded its bound")
@@ -684,11 +904,35 @@ def retained_window(reference, cutoff):
         window = closed_json(private_bytes(previous.path / ref["file"], 16 * 1024 * 1024))
         fields = {"version", "cutoff", "startedMonotonicNs", "finishedMonotonicNs", "elapsedNs",
                   "baseline", "loaded", "clientMemory", "clientCounters", "logs", "captures"}
-        if type(window.get("version")) is not int or window["version"] not in (1, 2):
+        if type(window.get("version")) is not int or window["version"] not in (1, 2, 3):
             raise ValueError("Original loaded window version differs")
-        if window["version"] == 2:
+        if window["version"] >= 2:
             fields.add("clockBridge")
+        if window["version"] == 3:
+            fields.add("clientOffering")
         exact_fields(window, fields)
+        if window["version"] == 3:
+            exact_fields(window["clientOffering"], {"a", "b"})
+            for observation in window["clientOffering"].values():
+                exact_fields(observation, {"state", "sourceSha256", "controllerOriginLowerNs",
+                    "controllerOriginUpperNs", "matchedAttemptOfferingSpans", "provenPages",
+                    "providerReceivedBytes", "workerVerificationOverlap"})
+                if (observation["state"] not in {"observed", "unavailable"}
+                        or observation["providerReceivedBytes"] is not None
+                        or observation["workerVerificationOverlap"] is not None
+                        or (observation["matchedAttemptOfferingSpans"] is not None
+                            and (type(observation["matchedAttemptOfferingSpans"]) is not int
+                              or not 0 <= observation["matchedAttemptOfferingSpans"] <= 32768))
+                        or not isinstance(observation["provenPages"], list)
+                        or any(page not in window["loaded"] for page in observation["provenPages"])):
+                    raise ValueError("Retained offering summary differs")
+                elapsed_integer(observation["controllerOriginLowerNs"])
+                if observation["controllerOriginUpperNs"] is not None:
+                    if elapsed_integer(observation["controllerOriginUpperNs"]) < int(observation["controllerOriginLowerNs"]):
+                        raise ValueError("Retained observer clock order differs")
+                if observation["state"] == "unavailable" and (observation["provenPages"]
+                        or observation["matchedAttemptOfferingSpans"] is not None):
+                    raise ValueError("Unavailable offering has qualified pages")
         if window["cutoff"] != cutoff:
             raise ValueError("Original loaded window cutoff changed")
         times = [window[name] for name in ("startedMonotonicNs", "finishedMonotonicNs", "elapsedNs")]
@@ -698,7 +942,7 @@ def retained_window(reference, cutoff):
         start, finish, elapsed = map(int, times)
         if finish - start != elapsed or elapsed < 0 or finish > time.monotonic_ns():
             raise ValueError("Original loaded interval changed")
-        if window["version"] == 2:
+        if window["version"] >= 2:
             validate_clock_bridge(window["clockBridge"], cutoff, start, finish)
         exact_fields(window["logs"], {label + "-" + stream for label in ("a", "b") for stream in ("stdout", "stderr")})
         exact_fields(window["captures"], {"workerRuntime", "nativeBoundary"})
@@ -859,9 +1103,31 @@ def assess_workload(selection_file, evidence):
     try:
         selection_fd, original = assessment_input(specification["selection"], 1024 * 1024)
         selection = closed_json(original)
-        exact_fields(selection, {"version", "runtime", "runtimeProvenance", "bodyManifest", "observerExecutable",
-                                 "authSidecar", "capturePolicy", "captureExport", "sdkApplicationLog",
-                                 "clientApplicationLog", "indexSnapshots", "workloadWindows", "wireMetrics"})
+        fields = {"version", "runtime", "runtimeProvenance", "bodyManifest", "observerExecutable",
+                  "authSidecar", "capturePolicy", "captureExport", "sdkApplicationLog",
+                  "clientApplicationLog", "indexSnapshots", "workloadWindows", "wireMetrics"}
+        if "nativeInventory" in selection:
+            fields.add("nativeInventory")
+        exact_fields(selection, fields)
+        inventory = selection.get("nativeInventory")
+        if inventory is not None:
+            # Forward the existing adapter selection; its reader owns custody,
+            # authentication and coverage. Missing/null never means zero.
+            fields = {"policy", "sidecar"}
+            if isinstance(inventory, dict) and "sqlReaderObservation" in inventory:
+                fields.add("sqlReaderObservation")
+            exact_fields(inventory, fields)
+            for name, reference in inventory.items():
+                if name == "sqlReaderObservation" and reference is None:
+                    continue
+                exact_fields(reference, {"file", "sha256", "byteSize"})
+                if (not isinstance(reference["file"], str) or not Path(reference["file"]).is_absolute()
+                        or not isinstance(reference["sha256"], str)
+                        or not re.fullmatch(r"[0-9a-f]{64}", reference["sha256"])
+                        or not isinstance(reference["byteSize"], str)
+                        or not re.fullmatch(r"0|[1-9][0-9]{0,19}", reference["byteSize"])
+                        or int(reference["byteSize"]) > 2**64 - 1):
+                    raise ValueError("Native inventory selected reference differs")
         measurements = closed_json(private_bytes(evidence.path / "measurements.json", 16 * 1024 * 1024))
         windows = []
         for window in measurements["loadedWindowReferences"]:
@@ -946,7 +1212,8 @@ def run(selected, binding_hash, evidence, lib, resume=None):
     reports = corpus(selected)
     evidence.save("selection.json", {"version": 1, "bindingSha256": binding_hash,
                                       "region": selected["region"], "origin": selected["origin"],
-                                      "tools": selected["tools"], "corpus": reports})
+                                      "tools": selected["tools"], "corpus": reports,
+                                      "clientObserver": selected.get("clientObserver")})
     if resume is not None:
         exact_fields(resume, {"version", "phase", "bindingSha256", "corpus", "checkpoints",
                               "completed", "originalCutoffUnixNs", "originalCutoffMonotonicNs",
@@ -989,6 +1256,8 @@ def run(selected, binding_hash, evidence, lib, resume=None):
                 children[label] = Publisher(selected, publication, evidence, label)
         while any(child.process.poll() is None for child in children.values()):
             remaining_cutoff(cutoff)
+            for child in children.values():
+                child.offering.read(child.outputs[1].fileno())
             for label in children:
                 for stream, maximum in (("stdout", 64 * 1024 * 1024), ("stderr", 4 * 1024 * 1024)):
                     if (evidence.path / f"{label}-{stream}").stat().st_size > maximum:
@@ -1010,8 +1279,8 @@ def run(selected, binding_hash, evidence, lib, resume=None):
                     except FileNotFoundError:
                         memory.append({"label": label, "residentBytes": None, "state": "exit_race"})
             sample = page_probe(selected, evidence, f"loaded-{len(loaded)}", deadline, lib, cutoff)
-            # The CLI processes must still be alive at both ends of this span;
-            # a late page after publisher exit is not upload-overlap evidence.
+            # Preserve the existing observed publisher window. Being alive
+            # alone does not qualify overlap with actual offered chunks.
             if any(child.process.poll() is None for child in children.values()):
                 loaded.append(sample)
         if interrupted is None:
@@ -1035,8 +1304,9 @@ def run(selected, binding_hash, evidence, lib, resume=None):
     finished = int(finish_clock["monotonicBeforeNs"])
     bridge = {"bootId": cutoff["controllerBootId"], "loadedStart": start_clock,
               "loadedFinish": finish_clock}
+    offering = {label: child.offering.summary(loaded) for label, child in children.items()}
     current_window = retain_window(evidence, cutoff, started, finished, baseline, loaded, memory,
-                                   client_counters, texts, clock_bridge=bridge)
+                                   client_counters, texts, clock_bridge=bridge, offering=offering)
     if interrupted is not None:
         if not stops["a"]["killedOwnedProcess"] or stops["a"]["exitCode"] != -signal.SIGKILL:
             raise ValueError("Sparse rendezvous missed actual owned process interruption")
@@ -1068,7 +1338,20 @@ def run(selected, binding_hash, evidence, lib, resume=None):
     whole_baseline = first_window["baseline"] if first_window is not None else baseline
     whole_loaded = (first_window["loaded"] if first_window is not None else []) + loaded
     whole_started = int(first_window["startedMonotonicNs"]) if first_window is not None else started
-    measurements = {"latency": latency(whole_baseline, whole_loaded), "publications": completed,
+    offering_windows = ([first_window["clientOffering"]]
+                        if first_window is not None and "clientOffering" in first_window else []) + [offering]
+    proven = []
+    for window in offering_windows:
+        for observed in window.values():
+            for page in observed["provenPages"]:
+                if page not in proven:
+                    proven.append(page)
+    observed_latency = {**latency(whole_baseline, whole_loaded), "scope": "observed_publisher_window"}
+    measurements = {"latency": observed_latency,
+                    "offeringOverlap": {"clientWindows": offering_windows, "provenPageCount": len(proven),
+                        "latency": latency(whole_baseline, proven) if proven else None,
+                        "workerVerificationOverlap": None, "providerDispatchOverlap": None},
+                    "publications": completed,
                     "clientMemory": (first_window["clientMemory"] if first_window is not None else []) + memory,
                     "clientCounters": client_counters,
                     "workloadElapsedNs": str(finished - whole_started),
@@ -1094,7 +1377,11 @@ def run(selected, binding_hash, evidence, lib, resume=None):
         measurements["missing"].append("Native application boundary original-window exporter")
     evidence.save("measurements.json", measurements)
     return {"state": "workload_complete", "hostedAcceptance": "incomplete",
-            "latencyPassed": measurements["latency"]["passed"], "nativeBulkBytes": None}
+            "latencyPassed": measurements["latency"]["passed"],
+            "latencyScope": "observed_publisher_window",
+            "clientOfferingOverlapPages": len(proven) if any(
+                row["state"] == "observed" for window in offering_windows for row in window.values()) else None,
+            "workerVerificationOverlap": None, "nativeBulkBytes": None}
 
 
 def main():

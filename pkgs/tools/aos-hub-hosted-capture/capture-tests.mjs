@@ -414,4 +414,67 @@ await test("isolate memory pressure drops only diagnostic bytes, not delegate wo
   assert.equal(requests[2].record.observedBytes, String(BODY_LIMIT));
 });
 
+await test("selected instance GET and WhoAmI preserve actual empty/request/reply images", async () => {
+  for (const route of [{ method: "GET", path: "/-/instance", purpose: "instance-page" },
+    { method: "POST", path: "/aos.hub.v1.IdentityService/WhoAmI", purpose: "identity" }]) {
+    const sink = memorySink(), ctx = context(); let calls = 0;
+    const selected = createObservedHandler(async request => {
+      calls += 1; assert.equal(request.method, route.method);
+      assert.equal(await request.text(), route.method === "POST" ? "{}" : "");
+      return new Response(route.method === "POST" ? '{"identity":"fixture"}' : "<html>fixture</html>");
+    }, "origin_proxy", { ...policy, originRoutes: [route] }, sink);
+    const request = new Request(policy.originProxyOrigin + route.path,
+      { method: route.method, ...(route.method === "POST" ? { body: "{}" } : {}),
+        headers: { "x-aos-fleet-request-id": "9".repeat(32), authorization: "private-fixture-token" } });
+    await (await selected(request, {}, ctx)).text(); await ctx.flush();
+    assert.equal(calls, 1); assert.equal(sink.images.length, 2);
+    const incoming = sink.images.find(image => image.record.direction === "received_request");
+    assert.equal(incoming.record.eof, true);
+    assert.equal(incoming.bytes.length, route.method === "POST" ? 2 : 0);
+    assert.equal(JSON.stringify(sink.starts).includes("private-fixture-token"), false);
+    assert.equal(sink.images.every(image => !("selectedPath" in image.record)), true);
+  }
+});
+
+await test("dedicated authority/final/deployment frames stay route-specific in both directions", async () => {
+  for (const [suffix, frame] of [["authority", "x-aos-direct-authority-signature"],
+    ["final-guard", "x-aos-direct-final-guard-signature"], ["deployment", "x-aos-direct-deployment-signature"]]) {
+    const sink = memorySink(), ctx = context(); let calls = 0;
+    const selected = createObservedHandler(async request => {
+      calls += 1; assert.equal(await request.text(), "{}");
+      return new Response('{"state":"fixture"}', { headers: { [frame]: "b".repeat(64) } });
+    }, "storage_wrapper", policy, sink);
+    const request = new Request(policy.storageOrigin + "/_internal/storage/direct-upload-" + suffix,
+      { method: "POST", body: "{}", headers: { [frame]: "a".repeat(64),
+        "x-aos-storage-work-signature": "c".repeat(64), authorization: "private-canary" } });
+    await (await selected(request, {}, ctx)).text(); await ctx.flush();
+    assert.equal(calls, 1); assert.equal(sink.images.length, 2);
+    assert.deepEqual(sink.images.map(image => image.frames.map(value => value.name)), [[frame], [frame]]);
+    assert.equal(sink.images.every(image => image.record.frameState === "bounded"), true);
+    assert.equal(JSON.stringify(sink.starts).includes("private-canary"), false);
+  }
+});
+
+await test("GrantPartsBatch captures only compact signed authorize hop, never delegated URLs", async () => {
+  const route = { method: "POST", path: "/aos.hub.v1.DirectUploadService/GrantPartsBatch", purpose: "part-authorize" };
+  for (const kind of ["compact", "public", "provider-url"]) {
+    const sink = memorySink(), ctx = context(); let calls = 0;
+    const selected = createObservedHandler(async request => {
+      calls += 1; await request.text();
+      return new Response(kind === "provider-url" ? '{"url":"https://provider.fixture.test/key?signature=private"}'
+        : '{"authorized":true}', { headers: { "x-aos-direct-upload-logical-signature": "b".repeat(64) } });
+    }, "origin_proxy", { ...policy, originRoutes: [route] }, sink);
+    const headers = kind === "public" ? {} : { "x-aos-hybrid-upload-phase": "authorize",
+      "x-aos-direct-upload-logical-signature": "a".repeat(64) };
+    await (await selected(new Request(policy.originProxyOrigin + route.path,
+      { method: "POST", body: "{}", headers }), {}, ctx)).text(); await ctx.flush();
+    assert.equal(calls, 1);
+    if (kind === "public") { assert.equal(sink.images.length, 0); continue; }
+    const reply = sink.images.find(image => image.record.direction === "exposed_response");
+    assert.equal(reply.bytes.length > 0, kind === "compact");
+    assert.equal(reply.record.state, kind === "compact" ? "eof" : "unknown");
+    if (kind === "provider-url") assert.equal(reply.record.retainedBytes, "0");
+  }
+});
+
 process.stdout.write(`PASS ${tests.length} local bounded-capture fixtures\n`);

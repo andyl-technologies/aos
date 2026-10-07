@@ -14,8 +14,18 @@ const originMetadataPaths = new Set([
     "CommitRegistryPublication", "ListRegistryPublications", "GetRegistryPublication"]
     .map(method => `/aos.hub.v1.PublishService/${method}`),
   "/aos.hub.v1.RegistryService/GetRegistry",
+  "/aos.hub.v1.IdentityService/WhoAmI",
+  "/aos.hub.v1.DirectUploadService/GrantPartsBatch",
   ...["GetCapabilities", "BeginBatch", "StatusBatch", "ReportPartsBatch", "CompleteBatch", "Abort"]
     .map(method => `/aos.hub.v1.DirectUploadService/${method}`),
+]);
+
+const storageFrames = new Map([
+  ["/_internal/storage/v1/execute", "x-aos-storage-work-signature"],
+  ["/_internal/storage/v1/capabilities", "x-aos-storage-work-signature"],
+  ["/_internal/storage/direct-upload-authority", "x-aos-direct-authority-signature"],
+  ["/_internal/storage/direct-upload-final-guard", "x-aos-direct-final-guard-signature"],
+  ["/_internal/storage/direct-upload-deployment", "x-aos-direct-deployment-signature"],
 ]);
 
 export async function sha256(bytes) {
@@ -49,11 +59,11 @@ export function checkedCapturePolicy(value) {
   const routes = new Set();
   for (const route of value.originRoutes) {
     if (!route || Object.keys(route).sort().join(",") !== "method,path,purpose"
-        || route.method !== "POST"
-        || !originMetadataPaths.has(route.path)
+        || !(route.method === "POST" && originMetadataPaths.has(route.path)
+          || route.method === "GET" && route.path === "/-/instance")
         || !/^[a-z][a-z0-9-]{0,47}$/.test(route.purpose)
-        || routes.has(route.path)) throw new Error("capture metadata route refused");
-    routes.add(route.path);
+        || routes.has(`${route.method} ${route.path}`)) throw new Error("capture metadata route refused");
+    routes.add(`${route.method} ${route.path}`);
   }
   return Object.freeze({ ...value, originRoutes: value.originRoutes.map(route => Object.freeze({ ...route })) });
 }
@@ -62,22 +72,26 @@ function selection(request, role, policy) {
   const url = new URL(request.url);
   if (url.origin !== (role === "origin_proxy" ? policy.originProxyOrigin : policy.storageOrigin)) return null;
   if (role === "origin_proxy") {
+    // This same endpoint also returns delegated provider grants to clients.
+    // Select only the compact Native authorization hop, never the public grant.
+    if (url.pathname === "/aos.hub.v1.DirectUploadService/GrantPartsBatch"
+        && (request.headers.get("x-aos-hybrid-upload-phase") !== "authorize"
+          || !digestPattern.test(request.headers.get("x-aos-direct-upload-logical-signature") ?? ""))) return null;
     return policy.originRoutes.find(route => route.method === request.method && route.path === url.pathname) ?? null;
   }
-  if (request.method === "POST" && url.pathname === "/_internal/storage/v1/execute") {
-    return { purpose: "storage-work", method: "POST", path: url.pathname };
-  }
-  if (request.method === "POST" && url.pathname === "/_internal/storage/v1/capabilities") {
-    return { purpose: "storage-capabilities", method: "POST", path: url.pathname };
+  if (request.method === "POST" && storageFrames.has(url.pathname)) {
+    return { purpose: url.pathname === "/_internal/storage/v1/execute" ? "storage-work"
+      : url.pathname === "/_internal/storage/v1/capabilities" ? "storage-capabilities"
+        : url.pathname.slice("/_internal/storage/".length), method: "POST", path: url.pathname };
   }
   return null;
 }
 
-function privateFrames(headers, direction, role) {
+function privateFrames(headers, direction, role, path) {
   const names = role === "origin_proxy"
     ? [...(direction === "received_request" ? ["x-aos-hybrid-ingress"] : []),
       "x-aos-direct-upload-logical-signature", "x-aos-hybrid-upload-phase"]
-    : ["x-aos-storage-work-signature"];
+    : [storageFrames.get(path)];
   const result = [];
   for (const name of names) {
     const value = headers.get(name);
@@ -122,7 +136,7 @@ function background(context, work) {
 }
 
 function tap(body, headers, signal, direction, base, policy, sink, context, beginning) {
-  const frames = privateFrames(headers, direction, base.role);
+  const frames = privateFrames(headers, direction, base.role, base.selectedPath);
   const chunks = [];
   let retained = 0, observed = 0, overflow = false, finished = false;
   const started = Date.now();
@@ -136,7 +150,8 @@ function tap(body, headers, signal, direction, base, policy, sink, context, begi
     try { bytes = join(chunks, retained); imageAllowed = safeImage(bytes); }
     catch { state = "unknown"; }
     chunks.length = 0;
-    const observation = { ...base, direction,
+    const { selectedPath, ...publicBase } = base;
+    const observation = { ...publicBase, direction,
       provenance: direction === "received_request" ? "independent_wrapper_received_bytes" : "wrapper_exposed_reply_bytes",
       state: overflow ? "overflow" : state,
       observedBytes: String(observed), retainedBytes: String(imageAllowed ? retained : 0), eof,
@@ -221,7 +236,7 @@ export function createObservedHandler(delegate, role, configuration, sink, clock
         return delegate(request, env, context);
       }
       input = tap(request.body, request.headers, request.signal, "received_request",
-        base, policy, sink, context, beginning);
+        { ...base, selectedPath: route.path }, policy, sink, context, beginning);
     } catch { return delegate(request, env, context); }
 
     const selected = new Request(request, { body: input.body, signal: request.signal,
@@ -231,7 +246,7 @@ export function createObservedHandler(delegate, role, configuration, sink, clock
     catch (error) { input.abandon(); throw error; }
     input.abandon();
     const output = tap(response.body, response.headers, request.signal, "exposed_response",
-      { ...base, status: response.status }, policy, sink, context, beginning);
+      { ...base, selectedPath: route.path, status: response.status }, policy, sink, context, beginning);
     return new Response(output.body, { status: response.status, statusText: response.statusText,
       headers: response.headers });
   };

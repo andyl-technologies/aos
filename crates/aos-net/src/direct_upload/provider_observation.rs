@@ -1,21 +1,22 @@
 //! Opt-in application observations for actual provider UploadPart attempts.
 //!
+//! Version 2 records retain process-local first/last positive offered chunks.
 //! These records describe chunks offered to reqwest and reply chunks exposed to
 //! this caller. They do not measure TLS framing, billed wire bytes, remote body
 //! consumption or durable settlement. Executable and run custody are independent.
 //!
 //! ```text
-//! direct_upload_part_application_observation {"version":1,"purpose":"upload_part",...}
+//! direct_upload_part_application_observation {"version":2,"purpose":"upload_part",...}
 //! ```
 
 use std::{
     pin::Pin,
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
     },
     task::{Context, Poll},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use bytes::Bytes;
@@ -29,6 +30,7 @@ use aos_proto_types::direct_upload::DirectPart;
 
 const MAX_RECORD_BYTES: usize = 4096;
 static NEXT_ATTEMPT: AtomicU64 = AtomicU64::new(0);
+static CLOCK_ORIGIN: OnceLock<Instant> = OnceLock::new();
 
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -49,6 +51,10 @@ struct Record {
     attempt_ordinal: u64,
     started_at_millis: Option<u64>,
     completed_at_millis: Option<u64>,
+    /// Process-local elapsed time; controller calibration remains independent.
+    monotonic_elapsed_ns: Option<String>,
+    offered_first_elapsed_ns: Option<String>,
+    offered_last_elapsed_ns: Option<String>,
     session_sha256: String,
     original_sha256: String,
     client_operation_sha256: String,
@@ -80,6 +86,8 @@ struct Facts {
     eof: bool,
     failed: bool,
     overflow: bool,
+    first_elapsed_ns: Option<u64>,
+    last_elapsed_ns: Option<u64>,
 }
 
 impl Facts {
@@ -88,6 +96,18 @@ impl Facts {
         match self.bytes.checked_add(bytes.len() as u64) {
             Some(total) => self.bytes = total,
             None => self.overflow = true,
+        }
+    }
+
+    fn offered_chunk(&mut self, bytes: &[u8]) {
+        let first_positive_chunk = self.bytes == 0;
+        self.chunk(bytes);
+        if !bytes.is_empty() {
+            let elapsed = elapsed_ns();
+            if first_positive_chunk {
+                self.first_elapsed_ns = elapsed;
+            }
+            self.last_elapsed_ns = elapsed;
         }
     }
 
@@ -132,13 +152,16 @@ impl Attempt {
         source.update(include_bytes!("provider_observation.rs"));
         Self {
             record: Record {
-                version: 1,
+                version: 2,
                 purpose: "upload_part",
                 observer_source_sha256: hex::encode(source.finalize()),
                 process_id: std::process::id(),
                 attempt_ordinal: NEXT_ATTEMPT.fetch_add(1, Ordering::Relaxed),
                 started_at_millis: None,
                 completed_at_millis: None,
+                monotonic_elapsed_ns: None,
+                offered_first_elapsed_ns: None,
+                offered_last_elapsed_ns: None,
                 session_sha256: digest(context.session.session_id.as_bytes()),
                 original_sha256: digest(context.session.logical_fingerprint.as_bytes()),
                 client_operation_sha256: digest(context.intent.client_operation_id.as_bytes()),
@@ -204,7 +227,18 @@ impl Attempt {
     }
 
     fn emit(&mut self) {
-        self.record.offered = self.offered.lock().ok().map(|facts| facts.snapshot());
+        self.record.monotonic_elapsed_ns = elapsed_ns().map(|value| value.to_string());
+        let offered = self.offered.lock().ok();
+        self.record.offered = offered.as_ref().map(|facts| facts.snapshot());
+        self.record.offered_first_elapsed_ns = offered
+            .as_ref()
+            .and_then(|facts| facts.first_elapsed_ns)
+            .map(|value| value.to_string());
+        self.record.offered_last_elapsed_ns = offered
+            .as_ref()
+            .and_then(|facts| facts.last_elapsed_ns)
+            .map(|value| value.to_string());
+        drop(offered);
         self.record.reply = Some(self.reply.snapshot());
         if let Ok(json) = serde_json::to_string(&self.record) {
             if json.len() <= MAX_RECORD_BYTES {
@@ -241,7 +275,7 @@ impl<S: Stream<Item = Result<Bytes, std::io::Error>>> Stream for Offered<S> {
         let result = this.inner.as_mut().poll_next(context);
         if let Ok(mut facts) = this.facts.lock() {
             match &result {
-                Poll::Ready(Some(Ok(bytes))) => facts.chunk(bytes),
+                Poll::Ready(Some(Ok(bytes))) => facts.offered_chunk(bytes),
                 Poll::Ready(Some(Err(_))) => facts.failed = true,
                 Poll::Ready(None) => facts.eof = true,
                 Poll::Pending => {}
@@ -253,6 +287,15 @@ impl<S: Stream<Item = Result<Bytes, std::io::Error>>> Stream for Offered<S> {
 
 fn digest(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
+}
+
+// A bounded process-local clock avoids assigning remote UTC authority. The
+// hosted controller must retain its own process-start/first-record brackets.
+fn elapsed_ns() -> Option<u64> {
+    let origin = CLOCK_ORIGIN.get_or_init(Instant::now);
+    Instant::now()
+        .checked_duration_since(*origin)
+        .and_then(|elapsed| elapsed.as_nanos().try_into().ok())
 }
 
 fn now() -> Option<u64> {
