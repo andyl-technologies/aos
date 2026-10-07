@@ -149,15 +149,31 @@ skips. All 25 Recorded, historical, Fold and current-context cases, and all ten
 cold cases, pass within that same run. The twelve remaining failures include
 two Active fixtures, portable-copy admission, metadata callback accounting,
 physical retirement and ordinary publication/provenance cases. Strict profiles
-and task gates remain pending; the combined Core and runtime source has not
-yet been compiled.
-Private backfill on `4f4bd8083f` now passes all four exact cases, including
+and task gates remain pending. Subsequent fixture corrections on `5b6e9e04ba`
+pass the two exact Active cases, the fork's actual inherited entry and attribute
+origins, and the metadata callback ordering case. These focused passes do not
+replace the preceding full SDK result.
+The composed Core library builds on `15798d9358`; mechanical test-helper ports
+on `ac3d8ffb2c` allow the full run to execute all 698 tests. It passes 683 and
+fails fifteen with no skips. The failures include historical defaults, selected
+property errors, affected-root policy flags and genuine history/evaluator
+fixtures. They remain under review. Runtime composition remains incomplete.
+Private backfill on `4f4bd8083f` passes all four exact cases, including
 the formerly expired completeness case. All six publication batch cases also
-pass. The finite qualification then stops on the first missing-pack recovery
-case with `Corrupt(Pack)` after 2.61 seconds. The other six missing-pack cases
-and subsequent history, Raw, current-control, quality, application and formatter
-phases are unrun. D-111 preserves historical bytes while
-validating the independent current revision. Shared property/algebra gate
+pass. Its first finite qualification stops on missing-pack recovery with
+`Corrupt(Pack)` after 2.61 seconds; subsequent phases are unrun in that attempt.
+The reviewed fixture correction on `a6470b4450` separates the selected Node's
+pack from its signed Commit before injecting the missing placement, retaining
+all recovery and corruption assertions. The next finite run passes all seven
+recovery, eight historical-completion, four Raw durability and nine current
+control cases. It then stops in the default strict Clippy profile on three
+host-clock calls in opt-in test diagnostics. Remaining profiles, private docs,
+application compilation and both formatters are unrun. The test-only diagnostic
+allowance on `7a959cccb6` passes default and std-send Clippy/private docs.
+Native Clippy stops on four mechanical batch-test helper diagnostics; native
+docs, application compilation and both formatters remain unrun in that attempt.
+D-111 preserves historical bytes while validating the independent current
+revision. Shared property/algebra gate
 mappings require actual owning witnesses and retain native Fold context coverage.
 No task merge, checkbox,
 milestone exit or freeze advances.
@@ -173,8 +189,8 @@ closed signed Commit to the final metadata run, preserving actual pack/index
 durability before Commit catalog admission, all post-publication checks and
 ordinary separate Commit publication for fallback and final Chunk barriers.
 All four backfill cases and six publication batch cases pass on the amended
-producer; missing-pack recovery stops subsequent qualification as recorded
-above. No deadline or failure oracle changes.
+producer. Its first recovery failure and subsequent placement-isolated recovery
+qualification are recorded above. No deadline or failure oracle changes.
 The shared `chunk-codec` gate now additionally requires the exact native
 dictionary-preload consumer witness, alongside its existing reader coverage.
 
