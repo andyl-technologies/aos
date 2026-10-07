@@ -499,7 +499,10 @@ async fn upload_publication_object_class(
     // publication-object lookup keeps each remote-SQL response constant-sized;
     // near-limit objects naturally serialize through the byte budget.
     const SNAPSHOT_BUDGET_PERMITS: u32 = 32;
-    const CONCURRENT_MULTIPART_UPLOADS: usize = 2;
+    // Each multipart object sends one part at a time, so its Hub-side body is
+    // one part. Four lanes keep the accounted bytes within the snapshot budget
+    // while hiding most of the per-part request latency.
+    const CONCURRENT_MULTIPART_UPLOADS: usize = 4;
 
     let snapshot_budget = std::sync::Arc::new(tokio::sync::Semaphore::new(
         SNAPSHOT_BUDGET_PERMITS as usize,
@@ -559,10 +562,11 @@ async fn upload_publication_object_class(
 
             let byte_size = u64::try_from(object.byte_size)
                 .context("Hub publication response returned a negative object size")?;
-            // Multipart snapshots remain on disk. Reserve the part buffer and
-            // its transport copy so independent large objects can overlap.
+            // Multipart snapshots remain on disk. Reserve the one part body a
+            // multipart object has in flight at the Hub; its parts are
+            // sequential, and the client-side transport copy is local memory.
             let resident_bytes = if object.upload_url.is_empty() {
-                byte_size.min(2 * MAX_PUBLICATION_PART_BYTES)
+                byte_size.min(MAX_PUBLICATION_PART_BYTES)
             } else {
                 byte_size
             };

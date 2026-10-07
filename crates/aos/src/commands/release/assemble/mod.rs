@@ -28,7 +28,7 @@ use aos_release::digest::Sha256Digest;
 use aos_release::manifest::{FinalArtifactSet, ImageResult, PackageResult, ReleaseManifestV1};
 use aos_release::plan::{PlatformCell, ReleasePlan};
 use aos_release::platform::MatrixCell;
-use aos_release::registry::registry_policy;
+use aos_release::registry::{RegistryTier, registry_policy};
 use aos_release::sbom::SpdxDocument;
 use aos_release::signing::{SignerRole, TrustedEd25519Key};
 use serde::{Deserialize, Serialize};
@@ -237,6 +237,7 @@ pub(super) fn run(args: &ReleaseAssembleArgs, nix: &NixRunner, printer: &Printer
         plan_digest,
         Sha256Digest::of_bytes(&sbom_bytes),
         completed,
+        registry_policy(&plan.registry)?.tier(),
     )?;
 
     let authorization_bytes =
@@ -360,6 +361,7 @@ pub(super) fn run(args: &ReleaseAssembleArgs, nix: &NixRunner, printer: &Printer
         &report,
         &sbom_bytes,
         &advisory_bytes,
+        advisory.unresolved_advisories.len(),
         &license_bytes,
         &authorization_bytes,
         &args.completed_at,
@@ -503,11 +505,18 @@ fn license_inventory(
     })
 }
 
+/// Validates the operator's advisory disposition against the exact inputs.
+///
+/// Every tier requires a disposition bound to this plan and SBOM that names
+/// its advisory sources. Unresolved advisories block a production release;
+/// the testing tier accepts them and the build-integrity evidence states how
+/// many remain.
 fn validate_advisory(
     advisory: &AdvisoryDispositionV1,
     plan_digest: Sha256Digest,
     sbom_digest: Sha256Digest,
     completed: std::time::SystemTime,
+    tier: RegistryTier,
 ) -> Result<()> {
     aos_release::artifact::require_identifier(
         &advisory.authority_id,
@@ -527,9 +536,22 @@ fn validate_advisory(
                 || source.name.chars().any(char::is_control)
                 || source.snapshot.chars().any(char::is_control)
         })
-        || !advisory.unresolved_advisories.is_empty()
     {
-        bail!("advisory disposition is incomplete, unresolved, or bound to different inputs");
+        bail!("advisory disposition is incomplete or bound to different inputs");
+    }
+
+    if advisory
+        .unresolved_advisories
+        .iter()
+        .any(|entry| entry.trim().is_empty() || entry.chars().any(char::is_control))
+    {
+        bail!("advisory disposition lists a blank or malformed unresolved advisory");
+    }
+    if !advisory.unresolved_advisories.is_empty() && !tier.accepts_unresolved_advisories() {
+        bail!(
+            "advisory disposition leaves {} advisories unresolved, which the {tier} registry tier refuses",
+            advisory.unresolved_advisories.len()
+        );
     }
     if require_utc(&advisory.reviewed_at, "advisory review time")? > completed {
         bail!("advisory disposition was reviewed after assembly completion");
@@ -601,6 +623,63 @@ mod tests {
             }],
             sources: vec![],
             completed_at: "2026-10-04T00:00:00Z".to_owned(),
+        }
+    }
+
+    fn disposition(unresolved: &[&str]) -> AdvisoryDispositionV1 {
+        AdvisoryDispositionV1 {
+            schema_version: ADVISORY_DISPOSITION_V1.to_owned(),
+            plan_digest: Sha256Digest::of_bytes("plan"),
+            sbom_digest: Sha256Digest::of_bytes("sbom"),
+            reviewed_at: "2026-10-04T00:00:00Z".to_owned(),
+            authority_id: "release-security-review".to_owned(),
+            sources: vec![AdvisorySource {
+                name: "osv".to_owned(),
+                snapshot: "sha256:0".to_owned(),
+            }],
+            unresolved_advisories: unresolved.iter().map(|entry| (*entry).to_owned()).collect(),
+        }
+    }
+
+    fn check_disposition(advisory: &AdvisoryDispositionV1, tier: RegistryTier) -> Result<()> {
+        let completed = require_utc("2026-10-05T00:00:00Z", "completion")?;
+        validate_advisory(
+            advisory,
+            Sha256Digest::of_bytes("plan"),
+            Sha256Digest::of_bytes("sbom"),
+            completed,
+            tier,
+        )
+    }
+
+    #[test]
+    fn resolved_dispositions_pass_on_every_tier() -> Result<()> {
+        for tier in [RegistryTier::Testing, RegistryTier::Production] {
+            check_disposition(&disposition(&[]), tier)?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn testing_tier_accepts_unresolved_advisories() -> Result<()> {
+        let advisory = disposition(&["crates.io:example@1.0.0: GHSA-0000-0000-0000"]);
+
+        check_disposition(&advisory, RegistryTier::Testing)
+    }
+
+    #[test]
+    fn production_tier_refuses_unresolved_advisories() {
+        let advisory = disposition(&["crates.io:example@1.0.0: GHSA-0000-0000-0000"]);
+
+        let error = check_disposition(&advisory, RegistryTier::Production)
+            .expect_err("production assembly must fail closed");
+        assert!(error.to_string().contains("1 advisories unresolved"));
+    }
+
+    #[test]
+    fn blank_unresolved_entries_are_malformed_on_every_tier() {
+        for tier in [RegistryTier::Testing, RegistryTier::Production] {
+            assert!(check_disposition(&disposition(&["  "]), tier).is_err());
         }
     }
 

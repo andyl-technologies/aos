@@ -546,10 +546,10 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     workRoot = "/var/lib/aos-release/qualification/${hostPlatform.system}";
     timeoutSeconds = 21600;
   };
-  # The closure a maintainer machine installs: the CLI plus the executor for
-  # the platform it can qualify natively. `aos release` discovers its own
-  # closure and executors from this layout, so neither appears in the
-  # maintainer configuration.
+  # The closure a maintainer machine installs: the CLI, the file-backed
+  # release signer, and the executor for the platform it can qualify natively.
+  # `aos maintain release` discovers its own closure, signer, and executors
+  # from this layout, so none appears in the maintainer configuration.
   #
   # An x86_64 Linux maintainer host also installs the hosted aarch64-linux
   # executor: the contract qualifies aarch64 images and containers inside a
@@ -568,6 +568,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     inherit lib;
     inherit (pkgs) runCommand runtimeShell;
     aos = pkgs.aos;
+    releaseSigner = pkgs.aos-release-signer;
     executors = {${hostPlatform.system} = releaseQualificationExecutor;} // hostedExecutors;
   };
 

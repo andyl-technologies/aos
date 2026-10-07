@@ -13,6 +13,13 @@ use crate::{
     SchedulerCeiling,
 };
 
+#[cfg(test)]
+thread_local! {
+    // Models an intervening consumer between the empty preflight and admission.
+    pub(super) static PREFLIGHT_CONSUMER: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 struct PreemptionEnqueueGuard<'a>(&'a AtomicBool);
 
 impl Drop for PreemptionEnqueueGuard<'_> {
@@ -86,6 +93,21 @@ impl LiveVcpuTimeCallbackState {
         };
         let raw_ceiling =
             effective_ceiling.saturating_sub(offset) / crucible_shmem::TICKS_PER_INSTRUCTION;
+        if self.preemption_enqueue_active.load(Ordering::Acquire) {
+            // A synchronous QEMU admission query must leave the outer enqueue
+            // owner and its still-pending mailbox command untouched.
+            return Ok(raw_ceiling);
+        }
+        if !self.slot.get().has_pending_preemption_command() {
+            // The host publishes a command before its owning RUN grant. An
+            // empty acquire observation leaves later publication pending for
+            // the next query; it needs no enqueue ownership or atomic RMW.
+            return Ok(raw_ceiling);
+        }
+        #[cfg(test)]
+        if let Some(consume) = PREFLIGHT_CONSUMER.with_borrow_mut(Option::take) {
+            consume();
+        }
         if self
             .preemption_enqueue_active
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -97,6 +119,9 @@ impl LiveVcpuTimeCallbackState {
             return Ok(raw_ceiling);
         }
         let _guard = PreemptionEnqueueGuard(&self.preemption_enqueue_active);
+        // Only the admitted owner may decode and validate command fields. An
+        // intervening consumer may acknowledge the advisory sequence hint and
+        // let the host replace those fields before our CAS succeeds.
         let Some(published) = self
             .slot
             .get()

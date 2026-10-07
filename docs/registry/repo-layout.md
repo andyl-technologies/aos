@@ -120,8 +120,10 @@ trust in-band under continuity enforcement (signed fast-forward by an
 already-trusted key); see [`signing-and-trust.md`](signing-and-trust.md) §2.5–§2.6.
 `apr create` writes this file during the initial commit; pass
 `--trust-key registry:Ed25519:<base64>` and optionally `--trust-key-id <id>`
-(default `initial`) to seed the active-key list, or omit `--trust-key` to write an
-empty schema-1 roster. Operators maintain the roster after creation with
+(default `initial`) to seed the active-key list, and repeat
+`--roster-key <id>=registry:Ed25519:<base64>` to add further active keys after
+it in the same root commit; omit `--trust-key` to write an empty schema-1
+roster. Operators maintain the roster after creation with
 `apr keys generate`, `apr keys add`, `apr keys retire`, and `apr keys list`;
 roster-modifying commits are signed.
 

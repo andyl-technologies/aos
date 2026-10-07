@@ -44,15 +44,15 @@ impl LiveCallbackQuiescence {
     }
 
     /// Admits one callback unless teardown or a reversible hot-fork hold closed the gate.
-    pub(crate) fn enter(self: &std::sync::Arc<Self>) -> Option<LiveCallbackInFlight> {
+    pub(crate) fn enter(&self) -> Option<LiveCallbackInFlight<'_>> {
         self.enter_with_rejection(|_| {})
     }
 
     /// Reports the exact rejecting admission observation to an observational hook.
     pub(crate) fn enter_with_rejection(
-        self: &std::sync::Arc<Self>,
+        &self,
         rejected: impl FnOnce(LiveCallbackQuiescenceSnapshot),
-    ) -> Option<LiveCallbackInFlight> {
+    ) -> Option<LiveCallbackInFlight<'_>> {
         self.enter_with_hooks(|| {}, rejected)
     }
 
@@ -97,17 +97,17 @@ impl LiveCallbackQuiescence {
 
     #[cfg(test)]
     fn enter_with_hook(
-        self: &std::sync::Arc<Self>,
+        &self,
         after_initial_load: impl FnOnce(),
-    ) -> Option<LiveCallbackInFlight> {
+    ) -> Option<LiveCallbackInFlight<'_>> {
         self.enter_with_hooks(after_initial_load, |_| {})
     }
 
     fn enter_with_hooks(
-        self: &std::sync::Arc<Self>,
+        &self,
         after_initial_load: impl FnOnce(),
         rejected: impl FnOnce(LiveCallbackQuiescenceSnapshot),
-    ) -> Option<LiveCallbackInFlight> {
+    ) -> Option<LiveCallbackInFlight<'_>> {
         let mut observed = self.state.load(Ordering::SeqCst);
         after_initial_load();
         loop {
@@ -133,9 +133,7 @@ impl LiveCallbackQuiescence {
                 Ordering::SeqCst,
             ) {
                 Ok(_previous) => {
-                    return Some(LiveCallbackInFlight {
-                        quiescence: std::sync::Arc::clone(self),
-                    });
+                    return Some(LiveCallbackInFlight { quiescence: self });
                 }
                 Err(actual) => observed = actual,
             }
@@ -144,11 +142,14 @@ impl LiveCallbackQuiescence {
 }
 
 /// RAII proof that one callback is included in teardown's drain count.
-pub(crate) struct LiveCallbackInFlight {
-    quiescence: std::sync::Arc<LiveCallbackQuiescence>,
+///
+/// The callback's existing owner keeps the gate alive until this borrow ends.
+/// Admission therefore needs no reference-count operations on the hot path.
+pub(crate) struct LiveCallbackInFlight<'a> {
+    quiescence: &'a LiveCallbackQuiescence,
 }
 
-impl Drop for LiveCallbackInFlight {
+impl Drop for LiveCallbackInFlight<'_> {
     fn drop(&mut self) {
         let previous = self.quiescence.state.fetch_sub(1, Ordering::SeqCst);
         if previous & IN_FLIGHT_MASK == 0 {
@@ -191,10 +192,12 @@ mod tests {
         let callback_loaded = Arc::clone(&loaded);
         let callback_resume = Arc::clone(&resume);
         let callback = std::thread::spawn(move || {
-            callback_quiescence.enter_with_hook(|| {
-                callback_loaded.wait();
-                callback_resume.wait();
-            })
+            callback_quiescence
+                .enter_with_hook(|| {
+                    callback_loaded.wait();
+                    callback_resume.wait();
+                })
+                .is_none()
         });
 
         loaded.wait();
@@ -202,10 +205,10 @@ mod tests {
         quiescence.wait_until_drained();
         resume.wait();
 
-        let admission = callback
+        let rejected = callback
             .join()
             .unwrap_or_else(|_panic| panic!("callback admission thread should finish"));
-        assert!(admission.is_none());
+        assert!(rejected);
         assert!(quiescence.is_closed());
     }
 
@@ -218,10 +221,12 @@ mod tests {
         let callback_loaded = Arc::clone(&loaded);
         let callback_resume = Arc::clone(&resume);
         let callback = std::thread::spawn(move || {
-            callback_quiescence.enter_with_hook(|| {
-                callback_loaded.wait();
-                callback_resume.wait();
-            })
+            callback_quiescence
+                .enter_with_hook(|| {
+                    callback_loaded.wait();
+                    callback_resume.wait();
+                })
+                .is_none()
         });
 
         loaded.wait();
@@ -230,10 +235,10 @@ mod tests {
         assert_eq!(held.in_flight, 0);
         resume.wait();
 
-        let admission = callback
+        let rejected = callback
             .join()
             .unwrap_or_else(|_panic| panic!("callback admission thread should finish"));
-        assert!(admission.is_none());
+        assert!(rejected);
         assert_eq!(quiescence.release_hot_fork().in_flight, 0);
         assert!(quiescence.enter().is_some());
     }

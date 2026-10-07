@@ -610,6 +610,26 @@ impl RingHeader {
         Ok(Some(entry))
     }
 
+    /// Observes whether a white-box envelope is available without copying it.
+    ///
+    /// This advisory observation neither validates an entry nor admits a
+    /// consumer. The SPSC consumer must still peek or dequeue before using an
+    /// entry; a producer publication after an empty observation remains pending.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpscRingError`] when the entry slice has invalid capacity or
+    /// the shared indices describe more live entries than the queue can hold.
+    pub fn has_whitebox_marker(
+        &self,
+        entries: &[WhiteboxMarkerEntry],
+    ) -> Result<bool, SpscRingError> {
+        let capacity = validated_capacity(entries)?;
+        let head = self.read_idx.load(Ordering::Relaxed);
+        let tail = self.write_idx.load(Ordering::Acquire);
+        live_count(head, tail, capacity).map(|count| count != 0)
+    }
+
     /// Peeks at the next white-box envelope without releasing its slot.
     ///
     /// # Errors
@@ -846,6 +866,10 @@ mod snapshot;
 
 pub use coverage_entry::*;
 pub use snapshot::{SnapshotFrameEntry, SpscRingSnapshot};
+
+#[cfg(test)]
+#[path = "ring_coverage/whitebox_availability_tests.rs"]
+mod whitebox_availability_tests;
 
 #[cfg(test)]
 mod admission_barrier_tests {

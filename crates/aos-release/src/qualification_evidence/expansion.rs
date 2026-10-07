@@ -137,7 +137,12 @@ pub(super) fn expand(
             } else {
                 None
             };
-            let predecessor = if requirement.id == "image-update-recovery"
+            // A qualification snapshot is the first installed source and has
+            // no predecessor; selection already drops its update cases, and
+            // its recovery-image package cases record no update transition.
+            let predecessor = if plan.is_qualification_snapshot() {
+                None
+            } else if requirement.id == "image-update-recovery"
                 || claim.as_ref().is_some_and(|claim| {
                     claim.minimum_assurance >= AssuranceLevel::A2
                         && claim
@@ -147,7 +152,8 @@ pub(super) fn expand(
                 })
                 || package_rule.is_some_and(|rule| {
                     matches!(rule.execution, Some(PackageExecution::RecoveryImage { .. }))
-                }) {
+                })
+            {
                 Some(plan.qualification_predecessor.clone().ok_or_else(|| {
                     anyhow::anyhow!("qualification execution requires a frozen predecessor")
                 })?)
@@ -498,14 +504,15 @@ fn inherited_package_roles(
     let mut roles = BTreeMap::new();
 
     for package in &manifest.packages {
-        let role = rules
-            .get(package.name.as_str())
-            .copied()
-            .ok_or_else(|| anyhow::anyhow!("package case lacks its criticality classification"))?;
+        // Only published cells carry a role. Build and test inputs are in the
+        // inventory as not-applicable on every platform and have no rule.
         for cell in &package.platforms {
             let MatrixCell::Artifact { artifact } = &cell.decision else {
                 continue;
             };
+            let role = rules.get(package.name.as_str()).copied().ok_or_else(|| {
+                anyhow::anyhow!("package case lacks its criticality classification")
+            })?;
             propagate_package_role(&artifacts, &artifact.artifact_ids, role, &mut roles)?;
         }
     }

@@ -57,7 +57,8 @@ Implemented producer behavior:
 - `apr create` initializes a sha256 git repository, sets `HEAD` to
   `refs/heads/stable`, writes the committed root `registry.toml`, writes a
   schema-1 `keys.toml` trust roster (optionally seeded by `--trust-key` and
-  `--trust-key-id`), and refreshes static git indexes.
+  `--trust-key-id`, plus any additional active keys from repeatable
+  `--roster-key <id>=<trust-line>` options), and refreshes static git indexes.
 - `apr keys generate/list/add/retire` maintains the committed `keys.toml` trust
   roster. `generate <id>` mints an Ed25519 keypair in-process (the hermetic
   `sshkey` module, no `ssh-keygen`), writes the OpenSSH private key to
