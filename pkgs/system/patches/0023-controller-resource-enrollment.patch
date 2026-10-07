@@ -35,7 +35,7 @@ diff --git a/src/core/aos-resource-enrollment.c b/src/core/aos-resource-enrollme
 new file mode 100644
 --- /dev/null
 +++ b/src/core/aos-resource-enrollment.c
-@@ -0,0 +1,1165 @@
+@@ -0,0 +1,1166 @@
 +/* SPDX-License-Identifier: LGPL-2.1-or-later */
 +
 +#include <fcntl.h>
@@ -57,6 +57,7 @@ new file mode 100644
 +#include "set.h"
 +#include "sha256.h"
 +#include "string-util.h"
++#include "strv.h"
 +
 +#define AOS_RESOURCE_POLICY_BYTES 776U
 +#define AOS_RESOURCE_POLICY_BODY 744U
