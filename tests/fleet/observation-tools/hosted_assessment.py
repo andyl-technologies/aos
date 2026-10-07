@@ -713,7 +713,7 @@ def index_parity(selected):
             "readerAuthority": "independent_current_reader_process_and_source_review_required"}
 
 
-def inbound_inventory(selection, manifest, codec_report=None):
+def inbound_inventory(selection, manifest, codec_report=None, receiver_context=None):
     """Invoke the selected reader without changing the original body manifest."""
     if selection.get('nativeInventory') is None:
         return None
@@ -723,7 +723,7 @@ def inbound_inventory(selection, manifest, codec_report=None):
     exec(compile(raw, str(path), 'exec'), namespace)
     return namespace['assess'](
         selection['nativeInventory'], SOURCE, READERS,
-        PACKAGE_READER['installed_bytes'], manifest, codec_report)
+        PACKAGE_READER['installed_bytes'], manifest, codec_report, receiver_context)
 
 
 def assess(selection):
@@ -766,7 +766,8 @@ def assess(selection):
         records = execute_records(sidecar)
     else:
         body["missing"].append("selected_current_native_context_log_and_process")
-    if selection["captureExport"] and report:
+    receiver_context = None
+    if selection["captureExport"] and report and codec_error is None:
         if selection["capturePolicy"] is None:
             raise ValueError("Receiver export lacks selected capture policy")
         policy = capture_policy(selection["capturePolicy"])
@@ -784,6 +785,7 @@ def assess(selection):
                 raise ValueError("Capture export invents producer completeness")
         grouped = {}
         receipt_ids = set()
+        receiver_context = {"policy": policy, "receipts": []}
         for item in export["receipts"]:
             receipt, retained = exported_receipt(item, policy)
             identity = (receipt["captureId"], receipt["direction"])
@@ -793,7 +795,8 @@ def assess(selection):
             corpus += retained
             if corpus > MAX_CORPUS:
                 raise ValueError("Exported image corpus exceeds bound")
-            if receipt["role"] != "storage_wrapper":
+            if receipt["role"] == "origin_proxy":
+                receiver_context["receipts"].append(receipt)
                 continue
             call = receipt["transportCallId"]
             if call is None:
@@ -855,7 +858,7 @@ def assess(selection):
     if selection["wireMetrics"] is not None:
         read(selection["wireMetrics"])
     selected_inventory = inbound_inventory(
-        selection, manifest, report if codec_error is None else None)
+        selection, manifest, report if codec_error is None else None, receiver_context)
     if selected_inventory is not None:
         body['nativeInboundInventory'] = selected_inventory
         body['missing'].extend(body['nativeInboundInventory']['missing'])

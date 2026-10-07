@@ -4,6 +4,8 @@
 //! Counts describe Native consumption and offering, never network delivery or
 //! authentication. A dropped or unread stream remains incomplete. The window
 //! stops observation admission at its cutoff without cancelling handlers.
+//! Member `queryClass` records only query presence (`absent` or `present`),
+//! never query values. Readers cannot infer absence from an older missing field.
 //!
 //! The optional environment policy is closed JSON:
 //! ```text
@@ -270,6 +272,7 @@ impl Window {
             previous_chain_sha256: hex::encode(counters.chain),
             method: &member.method,
             path_sha256: &member.path_sha256,
+            query_class: &member.query_class,
             request_id: &member.request_id,
             transport_call_id: &member.transport_call_id,
             status: member.status,
@@ -317,6 +320,8 @@ struct MemberReceipt<'a> {
     previous_chain_sha256: String,
     method: &'a str,
     path_sha256: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    query_class: &'a Option<String>,
     request_id: &'a Option<String>,
     transport_call_id: &'a Option<String>,
     status: Option<u16>,
@@ -384,6 +389,7 @@ struct Member {
     ordinal: u64,
     method: String,
     path_sha256: String,
+    query_class: Option<String>,
     request_id: Option<String>,
     transport_call_id: Option<String>,
     status: Option<u16>,
@@ -420,6 +426,11 @@ async fn observe(State(window): State<Arc<Window>>, request: Request, next: Next
         ordinal,
         method: request.method().to_string(),
         path_sha256: hex::encode(Sha256::digest(request.uri().path().as_bytes())),
+        query_class: Some(if request.uri().query().is_some() {
+            "present".into()
+        } else {
+            "absent".into()
+        }),
         request_id: correlation(request.headers(), "x-aos-fleet-request-id"),
         transport_call_id: correlation(request.headers(), "x-aos-storage-call-id"),
         status: None,
@@ -587,6 +598,10 @@ pub(super) fn optional(app: Router) -> anyhow::Result<Router> {
 mod tests;
 
 #[cfg(test)]
+#[path = "body_inventory/sql_log_fixture.rs"]
+pub(crate) mod sql_log_fixture;
+
+#[cfg(test)]
 mod sql_checkpoint_tests {
     use super::*;
     use aos_hub_core::application_body_observation::{
@@ -710,6 +725,7 @@ mod sql_checkpoint_tests {
             ordinal,
             method: "POST".into(),
             path_sha256: hex::encode(Sha256::digest(b"/synthetic-append-fixture")),
+            query_class: None,
             request_id: Some("b".repeat(32)),
             transport_call_id: None,
             status: Some(200),
@@ -769,7 +785,7 @@ mod sql_checkpoint_tests {
         let projection_raw = projection.encoded().unwrap();
         assert!(projection_raw.len() > 12 * 1024);
         assert!(projection_raw.len() <= 64 * 1024);
-        let member = member(projection, evidence, &reply);
+        let member = member(projection.clone(), evidence.clone(), &reply);
         let window = Arc::clone(&member.window);
         drop(member);
 
@@ -796,6 +812,17 @@ mod sql_checkpoint_tests {
         assert_eq!(member["sqlProjection"]["sha256"], image(child.as_bytes()).sha256);
         assert_eq!(member["sqlProjection"]["byteSize"], child.len().to_string());
         eprintln!("actual_full_child_bytes={} checkpoints=64", child.len());
+        drop(raw);
+
+        // Install the logger after the original bridge assertions so the
+        // selected fixture process emits exactly one production log child.
+        sql_log_fixture::emit_fixture_child(
+            "append",
+            projection.clone(),
+            evidence.clone(),
+            b"synthetic original",
+            &reply,
+        );
     }
 
     #[tokio::test]

@@ -26,6 +26,7 @@ fn member(window: &Arc<Window>) -> Arc<Mutex<Member>> {
         ordinal: window.admit().unwrap(),
         method: "POST".into(),
         path_sha256: hex::encode(Sha256::digest(b"/synthetic")),
+        query_class: None,
         request_id: None,
         transport_call_id: None,
         status: Some(200),
@@ -282,4 +283,64 @@ async fn source_extension_joins_actual_frames_and_trailers_prevent_typed_coverag
         state.reply.observe(b"changed");
         assert!(matched_evidence(&state).is_none());
     }
+}
+
+#[tokio::test]
+async fn query_presence_observes_actual_uri_without_changing_forwarded_frames() {
+    let window = window();
+    let app = Router::new()
+        .route(
+            "/selected",
+            axum::routing::get(|request: Request| async move {
+                let body = axum::body::to_bytes(request.into_body(), 128)
+                    .await
+                    .unwrap();
+                (StatusCode::OK, body)
+            }),
+        )
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::clone(&window),
+            observe,
+        ));
+
+    for path in ["/selected", "/selected?", "/selected?key=synthetic"] {
+        let request = Request::builder()
+            .uri(path)
+            .body(Body::from("forwarded"))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body, "forwarded");
+    }
+    window.close();
+
+    let records = window.records.lock().unwrap();
+    let members: Vec<_> = records
+        .iter()
+        .filter(|row| row["event"] == "member")
+        .collect();
+    assert_eq!(members.len(), 3);
+    for (row, query) in members.into_iter().zip(["absent", "present", "present"]) {
+        assert_eq!(row["queryClass"], query);
+        assert_eq!(row["pathSha256"], hex::encode(Sha256::digest(b"/selected")));
+        assert_eq!(row["requestConsumed"]["exposedBytes"], "9");
+        assert_eq!(row["replyOffered"]["exposedBytes"], "9");
+        assert_eq!(row["requestConsumed"]["eof"], true);
+        assert_eq!(row["replyOffered"]["eof"], true);
+    }
+    assert_eq!(records.last().unwrap()["started"], "3");
+    assert_eq!(records.last().unwrap()["incomplete"], "0");
+}
+
+#[test]
+fn absent_legacy_query_field_remains_omitted_without_claiming_absence() {
+    let window = window();
+    let owner = member(&window);
+    drop(owner);
+    window.close();
+
+    let records = window.records.lock().unwrap();
+    let row = records.iter().find(|row| row["event"] == "member").unwrap();
+    assert!(row.get("queryClass").is_none());
 }

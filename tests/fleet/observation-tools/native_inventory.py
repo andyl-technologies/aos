@@ -176,6 +176,10 @@ def validate(messages, policy, selected_producer, parse_json):
             digest(row['sqlProjection']['sha256'])
             if decimal(row['sqlProjection']['byteSize']) > MAX_SQL_CHILD:
                 raise ValueError('SQL child image exceeds source bound')
+        if kind == 'member' and 'queryClass' in row:
+            names = names | {'queryClass'}
+            if row['queryClass'] not in ('absent', 'present'):
+                raise ValueError('Inventory query presence differs')
         closed(row, names)
         if (type(row['version']) is not int or row['version'] != 1
                 or row['policySha256'] != policy_sha
@@ -691,7 +695,45 @@ def selected_messages(sidecar, readers):
     return held_messages(), None
 
 
-def assess(selection, source, readers, read_source, manifest, codec_report=None):
+def project_members(result, selection, sidecar, policy, source, readers, read_source,
+                    manifest, codec_report, authentication, route_project):
+    """Keep source/SQL and finite route projections scoped to one actual chain."""
+    if route_project is not None:
+        request_ids = [member['requestId'] for member in result['members'] if member['requestId'] is not None]
+        if len(request_ids) != len(set(request_ids)):
+            raise ValueError('Native inventory request ownership is ambiguous')
+    children = result.pop('sqlChildren', [])
+    projections = []
+    for member in result['members']:
+        projection = source_asset(member, source, read_source)
+        if projection is None and route_project is not None:
+            projection = route_project(member)
+            if projection is not None:
+                result['missing'].extend(projection['missing'])
+        if projection is None:
+            projection = codec_projection(member, codec_report, manifest, authentication or {}, source, read_source)
+            if projection is not None:
+                result['missing'].extend(projection['missing'])
+        checkpoint = sql_child(member, children, source, read_source)
+        # Only the existing immutable original projection supplies SQL reader images.
+        reader_projection = (sql_reader_projection(checkpoint, projection,
+            selection.get('sqlReaderObservation'), readers, source, read_source, sidecar)
+            if projection is not None and 'codecProjection' in projection else None)
+        projections.append({'admissionOrdinal': member['admissionOrdinal'],
+                            'projection': projection, 'sqlCheckpoint': checkpoint,
+                            'sqlReaderProjection': reader_projection})
+        if reader_projection is not None:
+            result['missing'].extend(reader_projection['missing'])
+        if checkpoint is not None:
+            result['missing'].extend(checkpoint['missing'])
+        if projection is None:
+            result['missing'].append('unjoined_original_body_auth_sql_or_template_projection:'
+                                     + member['admissionOrdinal'])
+    result['projections'] = projections
+    return result
+
+
+def assess(selection, source, readers, read_source, manifest, codec_report=None, receiver_context=None):
     """Assess one selected inbound window while preserving all unresolved joins."""
     closed(selection, {'policy', 'sidecar'}
            | ({'sqlReaderObservation'} if 'sqlReaderObservation' in selection else set()))
@@ -704,6 +746,16 @@ def assess(selection, source, readers, read_source, manifest, codec_report=None)
     # actual selected manifest. Its authentication result is never inferred
     # from inventory or used as a blanket member classification.
     authentication = readers['assess'](sidecar, manifest)
+    route_project = None
+    if codec_report is not None and receiver_context is not None:
+        path = Path(__file__).resolve(strict=True).parent / 'native_routes.py'
+        raw = read_source(path, 1024 * 1024)
+        namespace = {'__file__': str(path), '__name__': 'selected_route_reader'}
+        exec(compile(raw, str(path), 'exec'), namespace)
+        provenance = readers['closed_json'](readers['read_ref'](sidecar['runtimeProvenance'], 65536))
+        context = namespace['prepare'](codec_report, manifest, authentication or {},
+            sidecar, policy, receiver_context, provenance, source, read_source)
+        route_project = lambda member: namespace['project'](member, context)
     if sidecar.get('nativeLog') is not None and sidecar['nativeLog'].get('format') == 'cloud_run':
         hosted = readers['hosted_messages'](sidecar)
         if hosted['messages'] is None:
@@ -716,6 +768,17 @@ def assess(selection, source, readers, read_source, manifest, codec_report=None)
             raise ValueError('Hosted revision policy differs from assessment policy')
         instances = {identifier: validate(rows, policy, producer(source, read_source),
                      readers['closed_json']) for identifier, rows in hosted['messages'].items()}
+        # A selected request must belong to exactly one observed instance member.
+        seen = set()
+        for instance in instances.values():
+            for member in instance['members']:
+                identifier = member['requestId']
+                if identifier is not None:
+                    if route_project is not None and identifier in seen:
+                        raise ValueError('Hosted inventory request ownership is ambiguous')
+                    seen.add(identifier)
+            project_members(instance, selection, sidecar, policy, source, readers, read_source,
+                            manifest, codec_report, authentication, route_project)
         return {'inventoryComplete': False, 'nativeBulkBytes': None,
                 'inboundObjectPayloadBytes': None, 'members': [], 'instances': instances,
                 'missing': hosted['missing'] + [
@@ -726,28 +789,9 @@ def assess(selection, source, readers, read_source, manifest, codec_report=None)
         return {'inventoryComplete': False, 'nativeBulkBytes': None,
                 'inboundObjectPayloadBytes': None, 'members': [], 'missing': [missing]}
     result = validate(messages, policy, producer(source, read_source), readers['closed_json'])
-    children = result.pop('sqlChildren', [])
-    projections = []
-    for member in result['members']:
-        projection = source_asset(member, source, read_source)
-        if projection is None:
-            projection = codec_projection(member, codec_report, manifest, authentication or {}, source, read_source)
-            if projection is not None:
-                result['missing'].extend(projection['missing'])
-        checkpoint = sql_child(member, children, source, read_source)
-        reader_projection = sql_reader_projection(checkpoint, projection,
-            selection.get('sqlReaderObservation'), readers, source, read_source, sidecar)
-        projections.append({'admissionOrdinal': member['admissionOrdinal'],
-                            'projection': projection, 'sqlCheckpoint': checkpoint,
-                            'sqlReaderProjection': reader_projection})
-        if reader_projection is not None:
-            result['missing'].extend(reader_projection['missing'])
-        if checkpoint is not None:
-            result['missing'].extend(checkpoint['missing'])
-        if projection is None:
-            result['missing'].append('unjoined_original_body_auth_sql_or_template_projection:'
-                                     + member['admissionOrdinal'])
-    result['projections'] = projections
+    project_members(result, selection, sidecar, policy, source, readers, read_source,
+                    manifest, codec_report, authentication, route_project)
+    projections = result['projections']
     # This number covers only fully projected inbound data frames. Existing
     # outbound receiver/control joins remain mandatory for the whole Native sum.
     result['inboundObjectPayloadBytes'] = ('0' if result['inventoryComplete']

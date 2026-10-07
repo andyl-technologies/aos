@@ -23,6 +23,9 @@ mod body_inventory;
 mod hybrid_body;
 mod hybrid_observation;
 
+#[cfg(test)]
+pub(crate) use body_inventory::sql_log_fixture::emit_fixture_child;
+
 /// Installs optional all-route application frame inventory on the final router.
 ///
 /// # Errors

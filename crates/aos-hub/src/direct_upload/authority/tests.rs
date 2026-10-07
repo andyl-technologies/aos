@@ -265,11 +265,45 @@ async fn sixty_four_real_admissions_share_one_signed_discovery_and_new_invocatio
             intents: intents[..64].to_vec(),
         },
     };
+    // Observe the actual full admission invocation, then encode the same typed
+    // request/reply with the production logical-control functions.
+    let logical_key = StorageWorkKey::new([13; 32]).unwrap();
+    let signed_request = sign_direct_logical_request(&logical_key, &first).unwrap();
     let started = std::time::Instant::now();
-    let reply = service
-        .dispatch(&claims, &first, current_time().unwrap() as i64)
-        .await
-        .unwrap();
+    let ((reply, evidence, reply_bytes), projection) =
+        aos_hub_core::application_body_observation::observe_with_sql_projection(async {
+            let reply = service
+                .dispatch(&claims, &first, current_time().unwrap() as i64)
+                .await
+                .unwrap();
+            let signed_reply = sign_direct_logical_reply(
+                &logical_key,
+                &DirectLogicalReplyEnvelope {
+                    context: first.context.clone(),
+                    reply: reply.clone(),
+                },
+            )
+            .unwrap();
+            let mut evidence = aos_hub_core::application_body_observation::produced_evidence(
+                &signed_reply.body,
+                "direct_logical_validated",
+                include_bytes!("../mod.rs"),
+                "actual_checked_logical_context_original_phase_and_current_sql",
+            )
+            .unwrap();
+            evidence.request = Some(aos_hub_core::application_body_observation::image(
+                &signed_request.body,
+            ));
+            (reply, evidence, signed_reply.body)
+        })
+        .await;
+    crate::server::emit_fixture_child(
+        "admission",
+        projection.unwrap(),
+        evidence,
+        &signed_request.body,
+        &reply_bytes,
+    );
     assert!(
         reply.errors.is_empty(),
         "unexpected admission errors: {:?}",
