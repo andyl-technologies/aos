@@ -758,6 +758,20 @@ and both mandatory formatters pass. Independent review binds the original
 reports to 4,909 actual Nix input files and the unchanged 5,963 tracked images.
 The foreign-dependency fixture forks its local source; cold reuse of its
 imported head and the raw-source full-admission fallback remain unqualified.
+The subsequent corrected private imported-source composition `9d5cd28c33ae`
+passes its exact owning retirement/cold-fork case and all nine source-carry
+and thirteen cold-fork regressions, with zero ignored tests. The owning case
+executes genuine imported publication, distinct native-acknowledged retirements
+through the exact seeded orphan, complete per-step lineage retention and a
+calibrated zero-TreeNode fork of the same local head with foreign used views.
+Strict default, Send and native Clippy/private docs, application compilation
+and both mandatory formatters pass. Independent review verifies every original
+terminal result and evidence seal, all 4,907 included files in each of five
+actual derivations, and all 5,961 unchanged tracked hashes, modes and mtimes.
+The earlier xattr and first-eligible-orphan failures remain preserved. This
+bounded composition qualifies that imported-used-view case; true foreign heads,
+multiple owners, the separate raw-source requalification path, physical deletion
+and complete ALG-32/current-trunk qualification remain open.
 
 The focused native graft-locality check now requires three actual publication
 cases and three structural cases, with exact discovery and non-ignored
@@ -3462,6 +3476,12 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   still requires the exact seeded orphan and final loss count. Corrected
   execution remains pending; both original failures and dependent unrun checks
   remain recorded. Neither result qualifies imported-head cold reuse.
+  The corrected composition `9d5cd28c33ae` subsequently passes the exact
+  imported-source owning case, all nine source-carry and thirteen cold-fork
+  regressions, strict three-profile Clippy/private docs, application compilation
+  and both formatters. Independent review binds all five actual derivations
+  and the unchanged full tracked source. The complete native collector and
+  current trunk remain unqualified; T-GC-1 stays open.
   The reviewed pure journal, marking, proof-context, checkpoint, retention and
   grace-window bodies now replace their trunk declarations. All 27 adopted
   paths, including 16 independent hexadecimal witnesses, match the qualified
