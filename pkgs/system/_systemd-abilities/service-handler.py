@@ -580,10 +580,11 @@ def image_unit_digest(target):
 class Handler(ConfigurationHandler):
     """Reconciles systemd state using the shared resource ownership namespace."""
 
-    def __init__(self, invocation, systemctl, unit_directory, state_directory):
+    def __init__(self, invocation, systemctl, unit_directory, state_directory, image_unit_directory=None):
         super().__init__(invocation, state_directory)
         self.systemctl = systemctl
         self.unit_directory = Path(unit_directory)
+        self.image_unit_directory = Path(image_unit_directory) if image_unit_directory is not None else None
 
     def save(self, value):
         value = dict(value)
@@ -610,22 +611,41 @@ class Handler(ConfigurationHandler):
                 raise ValueError("service definition has no authenticated image projection")
             target = os.readlink(path)
             actual = image_unit_digest(target)
+            completed_projection = (
+                receipt.get("kind") == "service"
+                and not receipt.get("pending")
+                and not receipt.get("removing")
+                and not receipt.get("dispatching")
+                and receipt.get("units", {}).get(name) == expected
+            )
             if actual != expected:
-                raise ValueError("image service definition conflicts with authenticated rendered content")
+                # An image upgrade can replace a completed service's volatile
+                # leaf while the package profile still requests its old bytes.
+                # Only the selected image's exact named projection grants
+                # custody of that different alias for owned conversion.
+                if not completed_projection or not self.selected_image_unit(name, target):
+                    raise ValueError("image service definition conflicts with authenticated rendered content")
             if name in owned_names:
-                completed_projection = (
-                    receipt.get("kind") == "service"
-                    and not receipt.get("pending")
-                    and not receipt.get("removing")
-                    and not receipt.get("dispatching")
-                    and receipt.get("units", {}).get(name) == actual
-                )
                 if not completed_projection:
                     raise ValueError("owned service definition was replaced by an external link")
                 # Coldboot loses the volatile regular /etc leaf. Re-adopt only
-                # an immutable projection matching both receipt and desired bytes.
+                # a matching definition or the selected image's proven alias.
             custody[name] = {"target": target, "digest": actual}
         return custody
+
+    def selected_image_unit(self, name, target):
+        """Matches the alias to the verified image's selected manager projection."""
+        if self.image_unit_directory is None:
+            return False
+        selected = self.image_unit_directory / name
+        return str(selected.resolve(strict=True)) == target
+
+    def unit_safe(self, name, desired, prior_units, custody):
+        """Accepts owned bytes or an exact alias authenticated for conversion."""
+        allowed = {None, desired, prior_units.get(name), (self.receipt or {}).get("previous_units", {}).get(name)}
+        if name in custody:
+            allowed.add(custody[name]["digest"])
+        return self.unit_digest(name, custody) in allowed
 
     def unit_digest(self, name, custody):
         """Checks an owned regular leaf or its exact pending image alias."""
@@ -780,7 +800,7 @@ class Handler(ConfigurationHandler):
                         if self.value["lifecycle"]["execution_model"] != "oneshot":
                             return {"status": "retry-safe"}
                 return {"status": "current", "outputs": result}
-            safe = all(self.unit_digest(name, custody) in {None, value, prior_units.get(name), (self.receipt or {}).get("previous_units", {}).get(name)} for name, value in desired.items())
+            safe = all(self.unit_safe(name, value, prior_units, custody) for name, value in desired.items())
             safe = safe and self.links_safe(dict(prior_links, **realization["links"]))
             if not self.receipt and all(not (self.unit_directory / name).exists() for name in desired):
                 return {"status": "absent"}
@@ -810,7 +830,7 @@ class Handler(ConfigurationHandler):
             self.manager("daemon-reload")
             return self.finish_remove()
         for name, value in desired.items():
-            if self.unit_digest(name, custody) not in {None, value, prior_units.get(name), (self.receipt or {}).get("previous_units", {}).get(name)}:
+            if not self.unit_safe(name, value, prior_units, custody):
                 raise ValueError("service definition conflicts with external configuration")
         if not self.links_safe(prior_links):
             raise ValueError("service installation link changed outside its owning effect")
@@ -958,6 +978,7 @@ def main():
     parser.add_argument("--mac-condition-executable")
     parser.add_argument("--unit-directory", default="/etc/systemd/system")
     parser.add_argument("--state-directory", default="/var/lib/aos/native-service-effects")
+    parser.add_argument("--image-unit-directory", default="/usr/lib/aos/toplevel/systemd-units")
     parser.add_argument("action", choices=["apply", "remove", "observe", "render", "check-mac"])
     parser.add_argument("--output-dir")
     parser.add_argument("--negated", action="store_true")
@@ -983,7 +1004,7 @@ def main():
     identity = document["effect"]["identity"]
     ability, operation = identity[-3:-1]
     def dispatch(state_directory):
-        handler = Handler(document, args.systemctl, args.unit_directory, state_directory)
+        handler = Handler(document, args.systemctl, args.unit_directory, state_directory, args.image_unit_directory)
         operations = {("serviceManagement", "realize"): handler.service, ("device", "present"): handler.device}
         return operations[(ability, operation)](args.action)
 
