@@ -1,7 +1,6 @@
 --- a/src/net/send_recv/msg.rs
 +++ b/src/net/send_recv/msg.rs
-@@ -444,6 +444,17 @@
-             length: 0,
+@@ -445,6 +445,17 @@
          }
      }
  
@@ -18,3 +17,4 @@
 +
      /// Returns a pointer to the message data.
      pub(crate) fn as_control_ptr(&mut self) -> *mut u8 {
+         // When the length is zero, we may be using a `&[]` address, which may
