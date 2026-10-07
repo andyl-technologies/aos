@@ -18,8 +18,10 @@ pub(crate) enum RamDiagnostic<'a> {
     #[cfg(feature = "native-conformance")]
     ConformanceInstallFailed(&'a RamError),
     /// An ordinary coherent test root matched the independent C full oracle.
+    #[cfg(any(test, feature = "native-conformance"))]
     OraclePassed { scope: u32 },
     /// The independent C full oracle disagreed with the coherent test root.
+    #[cfg(any(test, feature = "native-conformance"))]
     OracleFailed { scope: u32 },
 }
 
@@ -47,9 +49,11 @@ fn write_diagnostic(writer: &mut impl Write, diagnostic: RamDiagnostic<'_>) -> i
                 "crucible RAM conformance observer install failed: {error}"
             )
         }
+        #[cfg(any(test, feature = "native-conformance"))]
         RamDiagnostic::OraclePassed { scope } => {
             writeln!(writer, "CRUCIBLE-RAM-ORACLE-PASS scope={scope}")
         }
+        #[cfg(any(test, feature = "native-conformance"))]
         RamDiagnostic::OracleFailed { scope } => {
             writeln!(writer, "CRUCIBLE-RAM-ORACLE-FAIL scope={scope}")
         }
