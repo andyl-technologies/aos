@@ -1132,17 +1132,21 @@ def run_external_direct_fleet(client, native, worker, s3, database_machine, tool
             worker_controls["reviewerPublicKey"], copy_isolation=isolation_case,
             planned_run=tools["externalCopyCases"][isolation_case])
     issuer_lifecycle = run_direct_issuer_lifecycle(native, worker, tools, shared_controls, authority)
+    # Recovery must issue both cohorts before the later cutoff disables them.
+    issuer_cold_recovery = run_reviewed_direct_issuer_cold_recovery(
+        native, worker, tools, shared_controls, authority)
     issuer_cutoff = run_direct_issuer_cutoff(native, worker, tools, shared_controls, controls, authority)
     failures = run_direct_dependency_outages(client, native, worker, database_machine, tools, process)
     browser = run_direct_browser_session(client, native, worker, tools,
         failures["scenarios"]["executor"]["restart"])
-    # Cold startup has no supported reviewed clock-session resolution. Observe
-    # its real refusal last so the live issuer supports the other scenarios.
+    # Preserve an unreviewed cold refusal on this same recovered resource last,
+    # after the live successor supports every preceding runtime scenario.
     cold_refusal = run_direct_issuer_terminal_refusal(native, worker, tools, shared_controls, authority)
     lease_scale = run_direct_lease_scale_window(client, native, worker, database_machine,
         tools, database_host, artifacts)
     return {"publication": publication, "queueRestart": queue_restart, "nativePrebody": prebody,
-            "issuerLifecycle": issuer_lifecycle, "issuerCutoff": issuer_cutoff,
+            "issuerLifecycle": issuer_lifecycle, "issuerColdRecovery": issuer_cold_recovery,
+            "issuerCutoff": issuer_cutoff,
             "dependencyFailures": failures, "browserSession": browser,
             "terminalColdRefusal": cold_refusal, "managedR2Window": managed, "leaseScale": lease_scale,
             "providerTimeout": verification_timeout, "calledReadFaults": called_faults,

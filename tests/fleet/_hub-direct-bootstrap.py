@@ -99,7 +99,7 @@ def prepare_external_authority(controls, credential_report, worker, native, tool
     reviewed = await_direct_review("external-physical-authority", observation_hashes, {
         "authority", "issuerInstallation", "timingProfile", "clockUncertaintySeconds",
         "clockCommitLatencySeconds", "issuerSigningKeyId", "providerContract",
-        "privateStagePolicy", "checksumAlgorithm", "maximumGrantLifetimeSeconds",
+        "privateStagePolicy", "checksumAlgorithm", "maximumGrantLifetimeSeconds", "clockRecoveryPolicy",
     })
     selection = reviewed["selection"]
     authority = selection["authority"]
@@ -117,6 +117,10 @@ def prepare_external_authority(controls, credential_report, worker, native, tool
     ):
         raise ValueError("selected issuer differs from the independently selected physical authority")
 
+    recovery_policy = validate_direct_clock_recovery_policy(selection["clockRecoveryPolicy"],
+        selection["issuerSigningKeyId"], selection["clockUncertaintySeconds"],
+        selection["clockCommitLatencySeconds"], selection["timingProfile"])
+
     # Observe Native's time immediately before the bounded attestation. Browser
     # controls refresh their bearer before each new request after review waits.
     actual_time = int(private_guest_command(native, (
@@ -131,7 +135,7 @@ def prepare_external_authority(controls, credential_report, worker, native, tool
         selection["timingProfile"], selection["clockUncertaintySeconds"],
         selection["clockCommitLatencySeconds"], selection["issuerSigningKeyId"],
         renewal_key, tools["issuerCertificate"], tools["issuerAuthorityPrivateKey"],
-        tools["issuerCertificateHost"],
+        tools["issuerCertificateHost"], clock_recovery_policy=recovery_policy,
     )
     exported = export_external_authority(
         worker, native, tools["python"], tools["authorityBootstrap"], tools["authority"],
@@ -147,5 +151,6 @@ def prepare_external_authority(controls, credential_report, worker, native, tool
     return {
         "review": reviewed, "admission": admission, "issuer": issuer,
         "exported": exported, "consumerBindings": consumers, "issuerProcess": process,
+        "clockRecoveryPolicy": recovery_policy,
         "scope": "actual reviewed SQL/issuer setup; consumer installation, fresh lease and runtime acceptance pending",
     }

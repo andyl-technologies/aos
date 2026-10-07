@@ -467,6 +467,7 @@
   authorityFlow = writeFixture "hub-hybrid-fleet-authority-flow" (builtins.readFile ./_hub-direct-authority.py);
   qualificationFlow = writeFixture "hub-hybrid-fleet-qualification-flow" (builtins.readFile ./_hub-direct-qualification.py);
   qualificationDriver = writeFixture "hub-hybrid-fleet-qualification-driver" (builtins.readFile ../../pkgs/tools/aos-hub-direct-qualification.mjs);
+  issuerClockReviewer = writeFixture "hub-hybrid-fleet-issuer-clock-reviewer" (builtins.readFile ./_hub-direct-issuer-clock-reviewer.py);
   independentReview = writeFixture "hub-hybrid-fleet-independent-review" (builtins.readFile ./_hub-direct-review.py);
   sqlObserver = writeFixture "hub-hybrid-fleet-sql-observer" (builtins.readFile ./_hub-direct-sql-proxy.py);
   workerOptions = writeFixture "hub-hybrid-fleet-worker-options" (builtins.toJSON ({
@@ -664,6 +665,7 @@
         leaseScaleReplyCodec
         storageBodyCodec
         independentReview
+        issuerClockReviewer
         sqlObserver
       ];
   };
@@ -802,6 +804,7 @@ in {
       + builtins.readFile ./_hub-direct-sparse-publisher.py
       + builtins.readFile ./_hub-direct-recovery-evidence.py
       + builtins.readFile ./_hub-direct-issuer-lifecycle.py
+      + builtins.readFile ./_hub-direct-issuer-clock-review.py
       + builtins.readFile ./_hub-direct-issuer-cutoff.py
       + builtins.readFile ./_hub-direct-failure-windows.py
       + builtins.readFile ./_hub-direct-browser.py
@@ -1155,6 +1158,7 @@ in {
               "acceptanceInstaller": "${acceptanceInstaller}/value", "qualificationDriver": "${qualificationDriver}/value",
               "providerConformance": "${pkgs.aos-hub}/bin/aos-hub-provider-conformance",
               "authorityBootstrap": "${pkgs.aos-hub}/bin/aos-hub-authority-bootstrap",
+              "issuerClockReviewer": "${issuerClockReviewer}/value",
               "authority": "${pkgs.aos-hub}/bin/aos-hub-authority", "hub": "${pkgs.aos-hub}/bin/aos-hub",
               "reviewer": "${pkgs.aos-hub}/bin/aos-hub-direct-review", "postgres": POSTGRES,
               "chroot": "${pkgs.coreutils}/bin/chroot",
