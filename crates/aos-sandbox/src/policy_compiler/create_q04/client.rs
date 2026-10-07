@@ -119,6 +119,24 @@ pub(crate) struct OriginalQ04CompletedPreparationLoanV1<'cut, 'controller, 'sour
 }
 
 impl OriginalQ04CompletedPreparationLoanV1<'_, '_, '_, '_, '_> {
+    pub(crate) fn allocation_shape(
+        &self,
+    ) -> Result<crate::controller_resource_reservation::service_interval::JournalShape, SourceGenesisErrorV1> {
+        self.original.controller.q04_preparation_allocation_shape_v1()
+    }
+
+    pub(crate) fn original_data(
+        &self,
+    ) -> Result<crate::controller_resource_reservation::OriginalPreparationData, SourceGenesisErrorV1> {
+        self.original.data()
+    }
+
+    // The same original lenders are observed independently even if the
+    // separate complete ACK conjunction or an earlier demand failed.
+    pub(crate) fn observe_posts(&self, posts: &mut [Option<Result<(), SourceGenesisErrorV1>>; 3]) {
+        self.original.observe_posts(posts);
+    }
+
     pub(crate) fn recheck(&self) -> Result<(), SourceGenesisErrorV1> {
         self.original.recheck()?;
         super::super::public_create_source::consume_completed_gen1_ancestry_v1(
@@ -151,6 +169,7 @@ pub(crate) struct Q04ControllerPreparationV1 {
     floor: aos_sandbox_core::ObjectDigest,
     ancestry: aos_sandbox_core::ObjectDigest,
     candidate: super::super::CompiledPolicyCandidateV1,
+    input_origin: super::Q04PreparedInputOriginV1,
     publication_recipe: super::super::protected_journal::Q04IndependentPublicationRecipeV1,
 }
 
@@ -163,6 +182,10 @@ impl Q04ControllerPreparationV1 {
 
     pub(crate) fn candidate(&self) -> &super::super::CompiledPolicyCandidateV1 {
         &self.candidate
+    }
+
+    pub(crate) fn input_origin(&self) -> &super::Q04PreparedInputOriginV1 {
+        &self.input_origin
     }
 }
 
@@ -505,7 +528,8 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
 
     pub(crate) fn arm_resource_preparation(
         &mut self,
-        journal: &Journal,
+        journal: &mut Journal,
+        source: &mut ProtectedSourceDomainJournalOwnerV1,
         bank: &std::sync::Arc<std::sync::Mutex<crate::controller_resource_reservation::ControllerResourceBankOpeningV1>>,
         operation: aos_sandbox_core::OperationId,
     ) -> Result<(), CreateQ04ErrorV1> {
@@ -515,9 +539,12 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
         self.resource_bank = Some(std::sync::Arc::clone(bank));
         self.preparation_operation = Some(operation);
         self.resource_preparation = Some(crate::controller_resource_reservation::ProjectPreparationReservationAttemptV1::new());
-        self.component_admission = Some(crate::controller_resource_reservation::require_controller_interval(
-            bank, journal, self.profile,
-        ));
+        self.component_admission = Some(self.resource_preparation.as_mut()
+            .ok_or(crate::controller_resource_reservation::ResourceReservationErrorV1::Conflict)
+            .and_then(|preparation| preparation.prepare_original_intake_once(journal, source, bank, self.profile))
+            .and_then(|()| crate::controller_resource_reservation::require_controller_interval(
+                bank, journal, self.profile,
+            )));
         if matches!(self.component_admission, Some(Ok(()))) { Ok(()) }
         else { Err(CreateQ04ErrorV1::ChangedCut) }
     }
@@ -531,6 +558,22 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
     pub(crate) fn resource_preparation(&self) -> Result<&crate::ProjectPreparationReservationAttemptV1, CreateQ04ErrorV1> {
         self.require_resource_preparation()?;
         self.resource_preparation.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)
+    }
+
+    pub(crate) fn original_input_demand(
+        &self,
+        inclusive: aos_sandbox_core::ResourceVector,
+    ) -> Result<&super::Q04OriginalInputDemandV1, CreateQ04ErrorV1> {
+        let owner = self.resource_preparation()?;
+        owner.require_original_input_subdivision(self.profile, inclusive)
+            .map_err(|error| CreateQ04ErrorV1::ResourceReservation(Box::new(error)))?;
+        owner.original_input_demand(self.profile)
+            .map_err(|error| CreateQ04ErrorV1::ResourceReservation(Box::new(error)))
+    }
+
+    pub(crate) fn original_intake_association(&self) -> Result<([u8; 16], u64), CreateQ04ErrorV1> {
+        self.resource_preparation()?.original_intake_association(self.profile)
+            .map_err(|error| CreateQ04ErrorV1::ResourceReservation(Box::new(error)))
     }
 
     pub(crate) fn recheck_resource_bank(&self, journal: &Journal) -> Result<(), CreateQ04ErrorV1> {
@@ -668,6 +711,8 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
                 completed: &completed,
             };
             reservation.confirm_completed(&loan).map_err(|()| CreateQ04ErrorV1::ChangedCut)?;
+            reservation.admit_original_input_once(&loan, self.profile)
+                .map_err(|error| CreateQ04ErrorV1::ResourceReservation(Box::new(error)))?;
         }
 
         // Only Root can perform the selected root-UID Source signer request.
@@ -888,6 +933,8 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
         cache: &mut crate::cache_residency::OriginalQ04CacheOwnerCutV1<'_>,
         credentials: &crate::public_api_session::ControllerQ04CredentialCustodyV1,
     ) -> Result<Q04ControllerPreparationV1, CreateQ04ErrorV1> {
+        self.resource_preparation()?.original_input_demand(self.profile)
+            .map_err(|error| CreateQ04ErrorV1::ResourceReservation(Box::new(error)))?;
         let flight = self.flight.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?;
         let original = flight.q04_original_clock()?;
         let preview = self.preview()?;
@@ -966,6 +1013,11 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
         )?;
         let normalized = super::super::normalized_policy_input_digest_v1(&input)?;
         let candidate = super::super::PolicyCompilerV1::compile_retained(&input)?;
+        let inclusive = super::input_origin::candidate_capacity(&candidate)?;
+        self.original_input_demand(inclusive)?;
+        // Subdivision is checked under the actual once-admitted Project owner
+        // before the full input serializer creates its independently owned copy.
+        let input_origin = super::Q04PreparedInputOriginV1::retain(&input, &candidate)?;
         let proposed = super::super::binding_v2::encode_closed_proposal_fields(
             &current.q04_proposal_fields(&heads), project.head().packet_digest(),
             project.head().input_digest(), deployment_head, normalized,
@@ -981,7 +1033,7 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
         )?;
         Ok(Q04ControllerPreparationV1 {
             source: current, staged, proposed, metadata, controller_uid, source_uid,
-            floor, ancestry: heads.ancestry(), candidate, publication_recipe,
+            floor, ancestry: heads.ancestry(), candidate, input_origin, publication_recipe,
         })
     }
 

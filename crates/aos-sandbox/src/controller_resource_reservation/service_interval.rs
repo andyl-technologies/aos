@@ -92,6 +92,34 @@ pub(super) struct OriginalReceiver {
 }
 
 impl OriginalReceiver {
+    // This borrows the originally priced Source owner; it grants neither a
+    // fresh receiver nor payment. The selected caller must own its Result.
+    pub(super) fn require_same_source(
+        &self,
+        source: &mut crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1,
+    ) -> Result<(), ResourceReservationErrorV1> {
+        if self.source_object != std::ptr::from_ref(source) as usize
+            || self.source_sequence != source.journal().snapshot_sequence()
+            || self.source_names != source.fixed_physical_names_v1()?
+        {
+            return Err(ResourceReservationErrorV1::Conflict);
+        }
+        Ok(())
+    }
+
+    pub(super) fn require_q04_preparation_source(
+        &self,
+        original: &super::OriginalPreparationData,
+    ) -> Result<(), ResourceReservationErrorV1> {
+        if self.controller_names != original.controller_names
+            || self.source_names != original.source_names
+            || self.source_sequence != original.source_sequence
+        {
+            return Err(ResourceReservationErrorV1::Conflict);
+        }
+        Ok(())
+    }
+
     pub(super) fn capture(
         controller: &Journal,
         source: &mut crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1,
@@ -142,6 +170,7 @@ pub(crate) struct ObserverAdmission<'original> {
 pub(super) enum ObserverPurpose {
     FirstGlobal,
     NixIntake,
+    Q04Intake,
 }
 
 // Only the genuine entered prefix creates this private, shared closure state.
@@ -168,6 +197,21 @@ impl ObserverLifetime {
 }
 
 impl ObserverAdmission<'_> {
+    pub(crate) fn belongs_to_q04_intake(&self, profile: &ProductionControllerNormalRootProfileV1) -> bool {
+        self.purpose == ObserverPurpose::Q04Intake
+            && std::ptr::eq(self.profile, profile)
+            && self.original.policy.q04_original_intake.is_some()
+    }
+
+    pub(super) fn for_q04_intake<'original>(
+        profile: &'original ProductionControllerNormalRootProfileV1,
+        original: &'original bootstrap::OriginalEnrollment,
+        capacity: usize,
+        lifetime: &'original ObserverLifetime,
+    ) -> ObserverAdmission<'original> {
+        ObserverAdmission { profile, original, capacity, lifetime, purpose: ObserverPurpose::Q04Intake }
+    }
+
     pub(crate) fn belongs_to(&self, profile: &ProductionControllerNormalRootProfileV1) -> bool {
         self.purpose == ObserverPurpose::FirstGlobal
             && std::ptr::eq(self.profile, profile)

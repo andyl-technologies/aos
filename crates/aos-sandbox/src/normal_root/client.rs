@@ -636,13 +636,69 @@ pub struct ProductionControllerNormalRootProfileV1 {
         crate::controller_resource_reservation::service_interval::ObserverLifetime,
         service::FirstGlobalPropertyArchive,
     )>>,
+    q04_intake_observers: std::sync::Mutex<Option<(
+        crate::controller_resource_reservation::service_interval::ObserverLifetime,
+        service::FirstGlobalPropertyArchive,
+    )>>,
 }
 
 impl ProductionControllerNormalRootProfileV1 {
+    pub(crate) fn attach_q04_intake_observers(
+        &self,
+        admission: &crate::controller_resource_reservation::service_interval::ObserverAdmission<'_>,
+    ) -> Result<(), NormalRootStartupErrorV1> {
+        for original in [&self.first_global_observers, &self.nix_intake_observers] {
+            let slot = original.try_lock().map_err(|_| NormalRootStartupErrorV1::Service)?;
+            if slot.as_ref().is_some_and(|(lifetime, _)| lifetime.is_open()) {
+                return Err(NormalRootStartupErrorV1::Service);
+            }
+        }
+        let mut slot = self.q04_intake_observers.try_lock()
+            .map_err(|_| NormalRootStartupErrorV1::Service)?;
+        if slot.is_some() || !admission.belongs_to_q04_intake(self) {
+            return Err(NormalRootStartupErrorV1::Service);
+        }
+        let lifetime = admission.lifetime();
+        *slot = Some((lifetime.clone(),
+            service::FirstGlobalPropertyArchive::new(admission.capacity(), lifetime)));
+        slot.as_mut().ok_or(NormalRootStartupErrorV1::Service)?.1.prepare()
+    }
+
+    pub(crate) fn require_q04_intake_original(
+        &self,
+        lifetime: &crate::controller_resource_reservation::service_interval::ObserverLifetime,
+    ) -> Result<(), NormalRootStartupErrorV1> {
+        let slot = self.q04_intake_observers.try_lock()
+            .map_err(|_| NormalRootStartupErrorV1::Service)?;
+        let (actual, _) = slot.as_ref().ok_or(NormalRootStartupErrorV1::Service)?;
+        if !actual.is_open() || !actual.same_original(lifetime) {
+            return Err(NormalRootStartupErrorV1::Service);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn recheck_q04_intake_profile(&self) -> Result<(), NormalRootStartupErrorV1> {
+        {
+            let slot = self.q04_intake_observers.try_lock()
+                .map_err(|_| NormalRootStartupErrorV1::Service)?;
+            if !slot.as_ref().is_some_and(|(lifetime, _)| lifetime.is_open()) {
+                return Err(NormalRootStartupErrorV1::Service);
+            }
+        }
+        self.recheck()
+    }
+
     pub(crate) fn attach_nix_intake_observers(
         &self,
         admission: &crate::controller_resource_reservation::service_interval::ObserverAdmission<'_>,
     ) -> Result<(), NormalRootStartupErrorV1> {
+        {
+            let q04 = self.q04_intake_observers.try_lock()
+                .map_err(|_| NormalRootStartupErrorV1::Service)?;
+            if q04.as_ref().is_some_and(|(lifetime, _)| lifetime.is_open()) {
+                return Err(NormalRootStartupErrorV1::Service);
+            }
+        }
         {
             let prefix = self.first_global_observers.try_lock()
                 .map_err(|_| NormalRootStartupErrorV1::Service)?;
@@ -708,6 +764,12 @@ impl ProductionControllerNormalRootProfileV1 {
         &self,
         admission: &crate::controller_resource_reservation::service_interval::ObserverAdmission<'_>,
     ) -> Result<(), NormalRootStartupErrorV1> {
+        for original in [&self.q04_intake_observers, &self.nix_intake_observers] {
+            let slot = original.try_lock().map_err(|_| NormalRootStartupErrorV1::Service)?;
+            if slot.as_ref().is_some_and(|(lifetime, _)| lifetime.is_open()) {
+                return Err(NormalRootStartupErrorV1::Service);
+            }
+        }
         let mut slot = self.first_global_observers.try_lock()
             .map_err(|_| NormalRootStartupErrorV1::Service)?;
         if slot.is_some() || !admission.belongs_to(self) {
@@ -788,25 +850,34 @@ impl ProductionControllerNormalRootProfileV1 {
         pid: u32,
         properties: &'static [&'static str],
     ) -> Result<(Vec<OwnedValue>, Vec<OwnedValue>), NormalRootStartupErrorV1> {
+        let mut q04 = self.q04_intake_observers.try_lock()
+            .map_err(|_| NormalRootStartupErrorV1::Service)?;
         let mut intake = self.nix_intake_observers.try_lock()
             .map_err(|_| NormalRootStartupErrorV1::Service)?;
-        if let Some((_, original)) = intake.as_mut() {
-            // This separately admitted archive does not reopen or replace P.
-            // Once I closes, its refusal also cannot select the ordinary path.
-            return original.read(unit_name, pid, properties);
-        }
-        drop(intake);
-        let mut selected = self.first_global_observers.try_lock()
+        let mut prefix = self.first_global_observers.try_lock()
             .map_err(|_| NormalRootStartupErrorV1::Service)?;
-        match selected.as_mut() {
-            Some((_, original)) => original.read(unit_name, pid, properties),
-            None => {
-                // Ordinary observations do not hold selected custody across
-                // the unchanged legacy connection/property engine.
-                drop(selected);
-                service::read_properties(unit_name, pid, properties)
+        let active = [&*q04, &*intake, &*prefix].into_iter()
+            .filter(|slot| slot.as_ref().is_some_and(|(lifetime, _)| lifetime.is_open()))
+            .count();
+        if active > 1 {
+            return Err(NormalRootStartupErrorV1::Service);
+        }
+        for slot in [&mut *q04, &mut *intake, &mut *prefix] {
+            if let Some((lifetime, original)) = slot.as_mut() {
+                if lifetime.is_open() {
+                    return original.read(unit_name, pid, properties);
+                }
             }
         }
+        if q04.is_some() || intake.is_some() || prefix.is_some() {
+            // Attached closed owners and all their causes remain resident.
+            // They cannot shadow another entered purpose or fund Ordinary.
+            return Err(NormalRootStartupErrorV1::Service);
+        }
+        drop(q04);
+        drop(intake);
+        drop(prefix);
+        service::read_properties(unit_name, pid, properties)
     }
 
     pub(crate) fn require_resource_delivery(&self) -> Result<[u8; 16], NormalRootStartupErrorV1> {

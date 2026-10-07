@@ -327,7 +327,7 @@ pub fn continue_original_create_q04_policy_subgate_v1(
     let Some(bank) = bank.filter(|_| pending_reservation.is_none()) else {
         std::process::exit(1);
     };
-    if resident.root.arm_resource_preparation(journal, bank, operation).is_err() {
+    if resident.root.arm_resource_preparation(journal, source, bank, operation).is_err() {
         std::process::exit(1);
     }
     let source_original = source;
@@ -1079,7 +1079,8 @@ pub(crate) fn read_original_q04_rows_v1(
 // atomic native membership. Its only generic outcome is pending/refusal.
 pub(crate) fn require_original_pending(journal: &Journal) -> Result<bool, ReconcilerError> {
     let has_history = journal.records(RecordNamespace::ControllerPolicyHold)
-        .any(|(key, _)| key == CONTROLLER_IDENTITY_KEY || key.starts_with(CONTROLLER_PHASE_PREFIX));
+        .any(|(key, _)| key == CONTROLLER_IDENTITY_KEY || key.starts_with(CONTROLLER_PHASE_PREFIX)
+            || key == crate::policy_compiler::create_q04::CONTROLLER_INPUT_ORIGIN_KEY);
     let has_gate = journal.records(RecordNamespace::Effect)
         .any(|(_, bytes)| bytes.first() == Some(&6));
     if !has_history && !has_gate {

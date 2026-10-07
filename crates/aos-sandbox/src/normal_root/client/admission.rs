@@ -561,6 +561,7 @@ macro_rules! finish {
             resource_delivery: ($capture).resource_delivery,
             first_global_observers: std::sync::Mutex::new(None),
             nix_intake_observers: std::sync::Mutex::new(None),
+            q04_intake_observers: std::sync::Mutex::new(None),
         };
         retained.recheck()?;
         Ok(Some(retained))
@@ -723,6 +724,7 @@ impl AdmissionStorage {
                     resource_delivery: self.capture.resource_delivery,
                     first_global_observers: std::sync::Mutex::new(None),
                     nix_intake_observers: std::sync::Mutex::new(None),
+                    q04_intake_observers: std::sync::Mutex::new(None),
                     nix_delivery,
                 });
                 Ok(())
