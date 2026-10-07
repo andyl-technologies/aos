@@ -305,15 +305,18 @@ fn with_transfer<T>(
             .expect("actual original Service cap")
             .begin(HostOperationClass::Transfer)
             .expect("original finite transfer class");
+        let started = companion_measurements::now();
         let value = run(context, &mut || {
             operation
                 .wait_slice()
                 .map(|_| ())
                 .map_err(|_| RamStoreError::Canceled)
         });
-        operation
-            .complete()
-            .expect("transfer completion before original expiry");
+        let interval = companion_measurements::Interval::finish(started);
+        let completion = operation.complete();
+        companion_measurements::publish("managed_transfer_operation_interval", &interval);
+        companion_measurements::publish("managed_transfer_operation_complete", &completion.is_ok());
+        completion.expect("transfer completion before original expiry");
         Ok(value)
     })
     .expect("genuine full-vector transfer preparation owner and watcher cleanup")
@@ -348,7 +351,7 @@ fn transfer_and_refuse_incomplete(
     .expect("durable receiver transfer custody");
     let durability =
         DurabilityRequirement::new(1, false).expect("actual durable directory backend");
-    let mut attempt = |writable: bool| {
+    let mut attempt = |writable: bool, label| {
         let mut source = CampaignArchiveTransferEndpoint::new(
             sender,
             &mut source_journal,
@@ -363,17 +366,19 @@ fn transfer_and_refuse_incomplete(
             checkpoints,
             selections,
         );
-        transfer_campaign_archive_durably_with_boundary(
-            &mut source,
-            &mut destination,
-            plan,
-            "received",
-            Some("imported"),
-            durability,
-            boundary,
-        )
+        transfer_measurements::attempt(label, || {
+            transfer_campaign_archive_durably_with_boundary(
+                &mut source,
+                &mut destination,
+                plan,
+                "received",
+                Some("imported"),
+                durability,
+                boundary,
+            )
+        })
     };
-    assert!(attempt(false).is_err());
+    assert!(attempt(false, "managed_transfer_readonly_attempt").is_err());
     assert!(receiver.inspect_campaign_archive_ref("received").is_err());
 
     // Exercise actual file authentication, not a synthetic receiver success
@@ -387,7 +392,7 @@ fn transfer_and_refuse_incomplete(
     let source_file = object_path(source_path, object);
     let hidden = source_file.with_extension("temporarily-missing");
     std::fs::rename(&source_file, &hidden).expect("withhold actual source root");
-    assert!(attempt(true).is_err());
+    assert!(attempt(true, "managed_transfer_missing_source_attempt").is_err());
     assert!(receiver.inspect_campaign_archive_ref("received").is_err());
     std::fs::rename(&hidden, &source_file).expect("restore source custody for retry");
 
@@ -404,11 +409,25 @@ fn transfer_and_refuse_incomplete(
     let receiver_file = object_path(receiver_path, object);
     std::fs::write(&receiver_file, b"corrupt object frame")
         .expect("corrupt physical receiver root");
-    assert!(attempt(true).is_err());
+    assert!(attempt(true, "managed_transfer_corrupt_receiver_attempt").is_err());
     assert!(receiver.inspect_campaign_archive_ref("received").is_err());
     std::fs::remove_file(&receiver_file)
         .expect("discard untrusted physical frame under retained owner");
-    attempt(true).expect("complete authenticated root-last transfer and publication");
+    let receipt = attempt(true, "managed_transfer_complete_attempt")
+        .expect("complete authenticated root-last transfer and publication");
+    let report = receipt.transfer();
+    println!(
+        "managed_transfer_logical_copied_bytes={}",
+        report.copied_bytes
+    );
+    println!("managed_transfer_copied_objects={}", report.copied_objects);
+    println!(
+        "managed_transfer_existing_objects={}",
+        report.existing_objects
+    );
+    println!(
+        "managed_transfer_measurement_scope=durable_archive_call_with_authentication_and_publication;logical_bytes_not_physical_io;host_cache_uncontrolled"
+    );
     receiver
         .inspect_campaign_archive_ref("received")
         .expect("complete receiver archive");

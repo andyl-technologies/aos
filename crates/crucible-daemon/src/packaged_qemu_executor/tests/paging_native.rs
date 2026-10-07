@@ -21,6 +21,7 @@ const QUANTA: usize = 64;
 pub(super) mod accepted_promotion;
 mod blocked_control;
 mod byte_service;
+mod companion_measurements;
 pub(super) mod environment;
 mod equivalence;
 mod faults;
@@ -35,6 +36,7 @@ mod strict_child;
 mod strict_modes;
 mod throughput;
 mod transfer;
+mod transfer_measurements;
 use crate::paging_qualification::artifacts as evidence;
 pub(crate) use equivalence::{
     NativeAtomicFailureCase, NativeAtomicWorldCase, NativeEquivalenceCase,

@@ -245,18 +245,32 @@ pub(super) fn capture(
         .expect("original Service cap")
         .begin(HostOperationClass::CheckpointCapture)
         .expect("original finite capture operation");
-    let closure = lifecycle
-        .capture_portable_exact_checkpoint_with_boundary(&mut || {
-            operation.wait_slice().map(|_| ()).map_err(|error| {
-                SchedulerError::OperationalBoundary {
-                    class: crucible::SchedulerOperationalFailureClass::Terminal,
-                    message: error.to_string(),
-                }
+    // The interval covers this exact capture call, excluding publication,
+    // output rendering and the original guard's completion check.
+    let started = companion_measurements::now();
+    let result = lifecycle.capture_portable_exact_checkpoint_with_boundary(&mut || {
+        operation
+            .wait_slice()
+            .map(|_| ())
+            .map_err(|error| SchedulerError::OperationalBoundary {
+                class: crucible::SchedulerOperationalFailureClass::Terminal,
+                message: error.to_string(),
             })
-        })
-        .expect("actual frozen RAM capture under the original Service cap");
-    operation
-        .complete()
+    });
+    let interval = companion_measurements::Interval::finish(started);
+    let completion = if result.is_ok() {
+        Some(operation.complete())
+    } else {
+        None
+    };
+    companion_measurements::publish("managed_exact_capture_interval", &interval);
+    companion_measurements::publish(
+        "managed_exact_capture_complete",
+        &completion.as_ref().is_some_and(Result::is_ok),
+    );
+    let closure = result.expect("actual frozen RAM capture under the original Service cap");
+    completion
+        .expect("successful capture checked its original operation")
         .expect("completed capture without renewing the outer cap");
     closure
 }
