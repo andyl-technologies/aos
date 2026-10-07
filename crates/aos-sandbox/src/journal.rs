@@ -1195,30 +1195,78 @@ enum PreflightTransactionViewV1<'recipes> {
 
 // Named, closed DATA cases enter the same ordinary validation boundary.
 // This value carries no owner, callback, general hold waiver or commit right.
+// Nested loan lifetimes stay independent of this short borrow, especially the
+// invariant mutable Cache owner retained by the clearance loan.
 #[cfg(target_os = "linux")]
 #[derive(Clone, Copy)]
-enum Q04JournalTransitionV1<'recipe> {
+enum Q04JournalTransitionV1<
+    'borrow,
+    'recipe_cut,
+    'root_invocation,
+    'root_profile,
+    'root_cut,
+    'cache_loan,
+    'cache_owner,
+    'cache_invocation,
+    'cache_profile,
+    'cache_cut,
+    'root_input,
+    'root_startup,
+> {
     Controller(
-        &'recipe ControllerQ04TransitionV1<'recipe>,
-        Option<&'recipe crate::policy_compiler::create_q04::OriginalQ04RootCacheLoanV1<'recipe, 'recipe, 'recipe>>,
+        &'borrow ControllerQ04TransitionV1<'recipe_cut>,
+        Option<
+            &'borrow crate::policy_compiler::create_q04::OriginalQ04RootCacheLoanV1<
+                'root_invocation,
+                'root_profile,
+                'root_cut,
+            >,
+        >,
     ),
     Source(
-        &'recipe SourceQ04TransactionRecipesV1<'recipe>, usize,
-        Option<&'recipe crate::policy_compiler::create_q04::OriginalQ04RootCacheLoanV1<'recipe, 'recipe, 'recipe>>,
-        Option<&'recipe crate::cache_residency::OriginalQ04CacheClearanceLoanV1<'recipe, 'recipe, 'recipe, 'recipe, 'recipe>>,
+        &'borrow SourceQ04TransactionRecipesV1<'recipe_cut>,
+        usize,
+        Option<
+            &'borrow crate::policy_compiler::create_q04::OriginalQ04RootCacheLoanV1<
+                'root_invocation,
+                'root_profile,
+                'root_cut,
+            >,
+        >,
+        Option<
+            &'borrow crate::cache_residency::OriginalQ04CacheClearanceLoanV1<
+                'cache_loan,
+                'cache_owner,
+                'cache_invocation,
+                'cache_profile,
+                'cache_cut,
+            >,
+        >,
     ),
     Cache(
-        &'recipe CacheQ04TransactionRecipesV1<'recipe>, usize,
-        Option<&'recipe crate::policy_compiler::create_q04::OriginalQ04RootCacheLoanV1<'recipe, 'recipe, 'recipe>>,
+        &'borrow CacheQ04TransactionRecipesV1<'recipe_cut>,
+        usize,
+        Option<
+            &'borrow crate::policy_compiler::create_q04::OriginalQ04RootCacheLoanV1<
+                'root_invocation,
+                'root_profile,
+                'root_cut,
+            >,
+        >,
     ),
     Root(
-        &'recipe crate::policy_compiler::create_q04::Q04RootAuthorityHistoryV1,
+        &'borrow crate::policy_compiler::create_q04::Q04RootAuthorityHistoryV1,
         usize,
-        Option<&'recipe crate::policy_compiler::create_q04::RootOriginalInputLoanV1<'recipe, 'recipe>>,
+        Option<
+            &'borrow crate::policy_compiler::create_q04::RootOriginalInputLoanV1<
+                'root_input,
+                'root_startup,
+            >,
+        >,
     ),
     // Capacity permits only the nonissuing preflight engine. Actual commit
     // rejects this position even if its predicted bytes are canonical.
-    RootCapacity(&'recipe JournalTransaction),
+    RootCapacity(&'borrow JournalTransaction),
 }
 
 #[cfg(target_os = "linux")]
@@ -1468,7 +1516,9 @@ impl Journal {
 fn require_q04_journal_transition(
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
     transaction: &JournalTransaction,
-    transition: Option<Q04JournalTransitionV1<'_>>,
+    transition: Option<
+        Q04JournalTransitionV1<'_, '_, '_, '_, '_, '_, '_, '_, '_, '_, '_, '_>,
+    >,
 ) -> Result<(), JournalError> {
     match transition {
         Some(Q04JournalTransitionV1::Controller(recipe, _)) => {
@@ -1538,7 +1588,10 @@ impl PreflightTransactionViewV1<'_> {
     }
 
     #[cfg(target_os = "linux")]
-    fn q04_transition(&self, index: usize) -> Option<Q04JournalTransitionV1<'_>> {
+    fn q04_transition(
+        &self,
+        index: usize,
+    ) -> Option<Q04JournalTransitionV1<'_, '_, '_, '_, '_, '_, '_, '_, '_, '_, '_, '_>> {
         match self {
             Self::Ordinary(_) => None,
             Self::CacheQ04ReadOnlyBase { .. } => None,
@@ -4305,7 +4358,9 @@ impl Journal {
         cache_gate: CacheMutationGateV1<'_>,
         successor_issuance_transition: Option<controller_source_successor_issuance::Transition>,
         #[cfg(target_os = "linux")]
-        q04_transition: Option<Q04JournalTransitionV1<'_>>,
+        q04_transition: Option<
+            Q04JournalTransitionV1<'_, '_, '_, '_, '_, '_, '_, '_, '_, '_, '_, '_>,
+        >,
     ) -> Result<CommitResult, JournalError> {
         self.commit_with_first_source_successor_transition_v2(
             transaction, settling_reservation, allow_capacity_records,
@@ -4338,7 +4393,9 @@ impl Journal {
         cache_gate: CacheMutationGateV1<'_>,
         successor_issuance_transition: Option<controller_source_successor_issuance::Transition>,
         #[cfg(target_os = "linux")]
-        q04_transition: Option<Q04JournalTransitionV1<'_>>,
+        q04_transition: Option<
+            Q04JournalTransitionV1<'_, '_, '_, '_, '_, '_, '_, '_, '_, '_, '_, '_>,
+        >,
         first_successor: Option<FirstSourceSuccessorNativePhaseV2>,
     ) -> Result<CommitResult, JournalError> {
         self.commit_with_project_genesis_transition_v3(
@@ -4743,7 +4800,9 @@ impl Journal {
         mut cache_gate: CacheMutationGateV1<'_>,
         successor_issuance_transition: Option<controller_source_successor_issuance::Transition>,
         #[cfg(target_os = "linux")]
-        q04_transition: Option<Q04JournalTransitionV1<'_>>,
+        q04_transition: Option<
+            Q04JournalTransitionV1<'_, '_, '_, '_, '_, '_, '_, '_, '_, '_, '_, '_>,
+        >,
         first_successor: Option<FirstSourceSuccessorNativePhaseV2>,
         project_genesis: Option<ProjectNativeTransitionV3<'_, '_>>,
         #[cfg(target_os = "linux")]
