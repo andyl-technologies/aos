@@ -94,6 +94,7 @@ pub(crate) async fn with_immutable_response<T, F>(
     body_current: &dyn Fn() -> Result<()>,
     read_window: &dyn Fn() -> Result<super::super::read_ownership::ReadWindow>,
     before_dispatch: &dyn Fn(),
+    legacy_dispatch_observed: bool,
     handler: impl FnOnce(Response) -> F,
 ) -> Result<T>
 where
@@ -104,7 +105,9 @@ where
         // a configured resource window or adding response consumption.
         dispatch_fresh()?;
         before_dispatch();
-        provider_capacity::record_dispatch();
+        if legacy_dispatch_observed {
+            provider_capacity::record_dispatch();
+        }
         return handler(Fetch::Request(request).send().await?).await;
     };
     dispatch_fresh()?;

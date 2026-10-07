@@ -75,6 +75,20 @@ impl ReadWindow {
         })
     }
 
+    /// Preserves an independently selected original eligibility cutoff.
+    ///
+    /// This intersects the existing admission horizon with the signed read
+    /// resource window; it neither renews the lease nor extends original authority.
+    ///
+    /// # Errors
+    /// Refuses nonpositive or unsupported original expiry values.
+    pub(super) fn with_original_cutoff(mut self, expires_at: u64) -> Result<Self> {
+        let expires_at = i64::try_from(expires_at)?;
+        ensure!(expires_at > 0, "immutable read original cutoff invalid");
+        self.expires_at = self.expires_at.min(expires_at);
+        Ok(self)
+    }
+
     /// Computes the remaining conservative ownership bound without truncation.
     ///
     /// # Errors

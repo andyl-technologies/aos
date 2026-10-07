@@ -811,6 +811,7 @@ async fn dispatch(
             &body_current,
             &read_window,
             before_dispatch,
+            true,
             handler,
         )
         .await

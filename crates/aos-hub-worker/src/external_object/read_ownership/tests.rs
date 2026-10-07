@@ -201,3 +201,71 @@ async fn unsupported_profiles_clock_bounds_and_lifetimes_refuse_without_truncati
     assert!(window.remaining(i64::MAX).is_err());
     assert!(window.remaining(-1).is_err());
 }
+
+#[tokio::test]
+async fn metadata_qualified_window_borrows_the_existing_reserved_slot() {
+    let (config, bytes, floor) = signed_read(220).await;
+    let validated = validate(&config, &bytes, &floor, 101).unwrap();
+    let window = ReadWindow::from_lease(&validated, &config.timing_profile, 2)
+        .unwrap()
+        .with_original_cutoff(1000)
+        .unwrap();
+    assert_eq!(window.remaining(101).unwrap(), 117);
+    assert_eq!(window.expires_at, validated.payload.not_after.get());
+
+    provider_capacity::configure(3).unwrap();
+    let bulk = provider_capacity::acquire_class(2, Class::Bulk)
+        .await
+        .unwrap();
+    let metadata = policy::request::acquire(&policy(), Class::Metadata, &|| Ok(()))
+        .await
+        .unwrap();
+    policy::request::validate_held(&policy(), &metadata, &|| {
+        window.check(101, false, &|| {
+            validate(&config, &bytes, &floor, 101).map(|_| ())
+        })
+    })
+    .unwrap();
+
+    // The metadata reader keeps its caller's actual slot without a nested wait
+    // behind the two active bulk readers, even with >60 seconds remaining.
+    window
+        .check(102, false, &|| {
+            validate(&config, &bytes, &floor, 102).map(|_| ())
+        })
+        .unwrap();
+    assert_eq!(provider_capacity::observation().active, 3);
+    drop(metadata);
+    assert_eq!(provider_capacity::observation().active, 2);
+    drop(bulk);
+    assert_eq!(provider_capacity::observation().active, 0);
+}
+
+#[tokio::test]
+async fn metadata_window_never_extends_original_or_signed_read_cutoffs() {
+    let (config, bytes, floor) = signed_read(220).await;
+    let validated = validate(&config, &bytes, &floor, 101).unwrap();
+    let qualified = ReadWindow::from_lease(&validated, &config.timing_profile, 2).unwrap();
+    let shorter_original = qualified.with_original_cutoff(130).unwrap();
+    assert_eq!(shorter_original.remaining(101).unwrap(), 27);
+    assert!(shorter_original.check(128, false, &|| Ok(())).is_err());
+    assert!(qualified.with_original_cutoff(0).is_err());
+    assert!(qualified.with_original_cutoff(u64::MAX).is_err());
+    assert!(qualified
+        .with_original_cutoff(1000)
+        .unwrap()
+        .check(218, false, &|| Ok(()))
+        .is_err());
+
+    let mut denied = floor.clone();
+    denied.generation = validated.payload.cohort.admission_generation;
+    denied.admission_digest = Some(validated.payload.cohort.admission_digest.clone());
+    denied.publication_digest = Some(validated.payload.cohort.publication_digest.clone());
+    denied.denied = true;
+    assert!(shorter_original
+        .check(110, false, &|| {
+            validate(&config, &bytes, &denied, 110).map(|_| ())
+        })
+        .is_err());
+    assert!(shorter_original.check(110, true, &|| Ok(())).is_err());
+}

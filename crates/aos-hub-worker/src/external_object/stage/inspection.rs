@@ -214,7 +214,16 @@ pub(crate) async fn read_stage_metadata(
         LeaseEffect::Read,
         object.clock(),
     )?;
-    let cutoff = i64::try_from(admission.expires_at.get())?.min(validated.payload.not_after.get());
+    // Preserve the existing checked expiry shape even in the no-policy branch.
+    i64::try_from(admission.expires_at.get())?;
+    let read_window = || {
+        super::super::read_ownership::ReadWindow::from_lease(
+            &validated,
+            &object.timing_profile,
+            object.clock_uncertainty,
+        )?
+        .with_original_cutoff(admission.expires_at.get())
+    };
     let fresh = || {
         validate_domain_publication(
             domain,
@@ -239,15 +248,18 @@ pub(crate) async fn read_stage_metadata(
         );
         Ok(())
     };
-    super::super::request_capacity::raw::with_response(
+    // Keep original admission and current source checks throughout this bounded
+    // read. Its signed lease profile, rather than a compact request window,
+    // supplies the conservative body resource bound.
+    super::super::request_capacity::raw::with_immutable_response(
         env,
         request,
-        cutoff,
-        object.clock_uncertainty,
         None,
         crate::direct_upload::provider_capacity::Class::Metadata,
         Some(held),
         &fresh,
+        &fresh,
+        &read_window,
         &|| qualification_attempt::enter(attempt, Phase::SemanticDispatch),
         false,
         |response| async {
