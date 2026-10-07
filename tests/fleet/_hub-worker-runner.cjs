@@ -13,6 +13,7 @@ function acceptanceRegistryServer(
   ociAnchorCreation, ociAcceptanceStaging, publicDocumentCacheObservation,
   managedCleanupFixtureInstallation, managedGcObservation,
   copyNamespaceObservation, externalMirrorFunctionalInstallation,
+  queueFaultJobRead,
 ) {
   const parent = lstatSync(path.dirname(socketPath));
   if (!parent.isDirectory() || parent.uid !== process.getuid() || (parent.mode & 0o077)) {
@@ -26,7 +27,8 @@ function acceptanceRegistryServer(
   let externalMirrorStagingActive = false;
   const server = createServer({ allowHalfOpen: true }, socket => {
     sockets.add(socket);
-    socket.once('close', () => sockets.delete(socket));
+    const caller = new AbortController();
+    socket.once('close', () => { sockets.delete(socket); caller.abort(); });
     socket.on('error', () => socket.destroy());
     const chunks = [];
     let byteSize = 0;
@@ -61,6 +63,13 @@ function acceptanceRegistryServer(
         if (request.version === 1 && fields === 'kind,version'
             && request.kind === 'oci-sdk-namespace-readback') {
           socket.end(JSON.stringify(await ociNamespaceObservation()) + '\n');
+          return;
+        }
+        if (request.version === 1 && request.kind === 'queue-fault-job-read') {
+          if (!queueFaultJobRead) throw new Error('Selected queue job export is not configured');
+          const body = JSON.stringify(await queueFaultJobRead(request, caller.signal)) + '\n';
+          if (Buffer.byteLength(body) > 96 * 1024) throw new Error('Queue job export exceeds its bound');
+          socket.end(body);
           return;
         }
         if (request.version === 1 && fields === 'kind,version'
@@ -301,6 +310,117 @@ function ociLocalR2Selection(api, options) {
     namespaceId: bucket.id,
     namespaceUniqueKey: 'miniflare-R2BucketObject',
     persistenceRoot: path.join(options.resourcePersistencePath, 'r2'),
+  };
+}
+
+function createQueueFaultJobReader(runtime, options, api, configurationBytes, selection) {
+  if (!selection) return undefined;
+  const hex = value => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
+  const fields = value => Object.keys(value ?? {}).sort().join(',');
+  if (fields(selection) !== 'binding,cutoffUnixMs,prefix,runDigest,sourceDigest,version'
+      || selection.version !== 1 || selection.binding !== 'REGISTRY_BUCKET'
+      || !hex(selection.runDigest) || !hex(selection.sourceDigest)
+      || selection.prefix !== `.aos-queue-fault-capture/${selection.runDigest}/`
+      || !Number.isSafeInteger(selection.cutoffUnixMs) || selection.cutoffUnixMs <= Date.now()
+      || JSON.parse(options.bindings?.HUB_PROVIDER_CAPACITY_POLICY ?? '{}').source_digest
+        !== selection.sourceDigest) {
+    throw new Error('Queue job export selection differs from its configured runtime');
+  }
+  const selected = Object.freeze({ ...selection });
+  const mapping = ociLocalR2Selection(api, options);
+  const configurationSha256 = createHash('sha256').update(configurationBytes).digest('hex');
+  let busy = false;
+  return async (request, callerSignal) => {
+    if (fields(request) !== 'jobDigest,kind,runDigest,sourceDigest,version'
+        || request.version !== 1 || request.kind !== 'queue-fault-job-read'
+        || request.runDigest !== selected.runDigest || request.sourceDigest !== selected.sourceDigest
+        || !hex(request.jobDigest) || busy) {
+      throw new Error('Queue job read is outside its single selected original');
+    }
+    const current = () => {
+      if (callerSignal?.aborted || Date.now() >= selected.cutoffUnixMs) throw new Error('Queue job read original cutoff expired');
+    };
+    current();
+    busy = true;
+    let reader, unhandedBody, ended = false;
+    const readDeadline = Math.min(selected.cutoffUnixMs, Date.now() + 10000);
+    async function bounded(promise, lateBody = false) {
+      const remaining = readDeadline - Date.now();
+      if (remaining <= 0 || callerSignal?.aborted) {
+        ended = true;
+        if (lateBody) void promise.then(object => object?.body?.cancel().catch(() => {}), () => {});
+        throw new Error('Queue job read lifetime expired');
+      }
+      // The SDK get cannot itself be aborted. Dispose its eventual body if
+      // local caller/cutoff cancellation wins; its provider effect is unknown.
+      if (lateBody) void promise.then(object => {
+        if (ended) void object?.body?.cancel().catch(() => {});
+      }, () => {});
+      let timer, onAbort;
+      try {
+        return await Promise.race([promise, new Promise((_, reject) => {
+          onAbort = () => { ended = true; reject(new Error('Queue job read caller closed')); };
+          timer = setTimeout(() => {
+            ended = true; reject(new Error('Queue job read lifetime expired'));
+          }, remaining);
+          callerSignal?.addEventListener('abort', onAbort, { once: true });
+          if (callerSignal?.aborted) onAbort();
+        })]);
+      } finally {
+        clearTimeout(timer);
+        if (onAbort) callerSignal?.removeEventListener('abort', onAbort);
+      }
+    }
+    try {
+      const bucket = await bounded(runtime.getR2Bucket(mapping.bindingName, mapping.workerName));
+      current();
+      const key = selected.prefix + request.jobDigest + '.json';
+      const object = await bounded(bucket.get(key), true);
+      unhandedBody = object?.body;
+      current();
+      if (!object || object.key !== key || !Number.isSafeInteger(object.size)
+          || object.size <= 0 || object.size > 64 * 1024 || !object.body
+          || typeof object.etag !== 'string' || object.etag.length > 256
+          || typeof object.version !== 'string' || object.version.length > 256) {
+        throw new Error('Actual captured queue image is absent or unbounded');
+      }
+      reader = unhandedBody.getReader();
+      unhandedBody = undefined;
+      const chunks = [];
+      let size = 0;
+      while (true) {
+        const { value, done } = await bounded(reader.read());
+        current();
+        if (done) break;
+        if (!(value instanceof Uint8Array) || !value.byteLength
+            || size + value.byteLength > 64 * 1024) {
+          throw new Error('Actual queue capture body exceeded its bound');
+        }
+        size += value.byteLength;
+        chunks.push(Buffer.from(value));
+      }
+      if (size !== object.size) throw new Error('Actual queue capture body is incomplete');
+      const body = Buffer.concat(chunks, size);
+      return { version: 1, scope: 'selected_actual_sdk_argument_image',
+        sourceDigest: selected.sourceDigest, runDigest: selected.runDigest,
+        jobDigest: request.jobDigest, key, base64: body.toString('base64'),
+        sha256: createHash('sha256').update(body).digest('hex'), byteSize: String(size), eof: true,
+        object: { key, size: String(object.size), etag: object.etag, version: object.version },
+        mapping, configurationSha256, runnerPid: process.pid,
+        runnerStartTicks: ociProcessIdentity(process.pid).startTicks,
+        queueServerAcceptance: null };
+    } finally {
+      ended = true;
+      // Cancellation is requested for every acquired stream, including
+      // metadata rejection before getReader. It is not provider settlement.
+      if (reader) {
+        void reader.cancel().catch(() => {});
+        reader.releaseLock();
+      } else if (unhandedBody) {
+        void unhandedBody.cancel().catch(() => {});
+      }
+      busy = false;
+    }
   };
 }
 
@@ -813,7 +933,8 @@ async function main() {
     acceptanceSocketPath, ociSdkNamespaceObservation, ociSdkAnchorEnabled,
     ociSdkAcceptanceRegistryKey, publicDocumentCacheCase, publicDocumentCacheObserverPath,
     managedGcObserverSelection, managedGcObserverPath, managedCleanupInstallerPath,
-    copyIsolationSelection, copyIsolationModulePath, externalMirrorInstallerPath, ...options
+    copyIsolationSelection, copyIsolationModulePath, externalMirrorInstallerPath,
+    queueFaultCaptureSelection, ...options
   } = JSON.parse(configurationBytes);
   const queueOptions = QueuesOptionsSchema.parse(options);
   if (queueObservationPath && 'maxConcurrentInvocations' in QueueConsumerOptionsSchema.shape) {
@@ -839,6 +960,10 @@ async function main() {
     const { createCopyIsolation } = require(copyIsolationModulePath);
     copyIsolation = createCopyIsolation(miniflareApi, effectiveOptions, copyIsolationSelection);
   }
+  const queueFaultJobRead = createQueueFaultJobReader(
+    { getR2Bucket: (...args) => runtime.getR2Bucket(...args) },
+    options, miniflareApi, configurationBytes, queueFaultCaptureSelection,
+  );
   const runtime = new Miniflare(copyIsolation ? copyIsolation.options : effectiveOptions);
   const copyNamespaceObservation = copyIsolation
     ? () => copyIsolation.namespaceReadback(runtime, {
@@ -970,6 +1095,7 @@ async function main() {
           const { installExternalMirrorFunctional } = require(externalMirrorInstallerPath);
           return installExternalMirrorFunctional(runtime, options, request, copyNamespaceObservation);
         },
+        queueFaultJobRead,
       );
       await acceptanceServer.ready;
     }
@@ -1003,4 +1129,5 @@ if (require.main === module) {
 
 module.exports = { acceptanceRegistryServer, observeOciSdkNamespace, ociLocalR2Selection,
   ociHashFile, ociProcessIdentity, ociWorkerdIdentity, ociMiniflareImplementation,
-  ociNamespaceObjectId, createOciSdkAnchor, ociAnchorOriginal, storeOciSdkAcceptance, OCI_MINIFLARE_PIN };
+  ociNamespaceObjectId, createOciSdkAnchor, ociAnchorOriginal, storeOciSdkAcceptance,
+  createQueueFaultJobReader, OCI_MINIFLARE_PIN };

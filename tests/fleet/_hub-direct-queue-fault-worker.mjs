@@ -2,6 +2,7 @@
 // This fixture wrapper grants no admission and never constructs a queue job.
 
 export const QUEUE_FAULT_PREFIX = 'direct_queue_fault_observation ';
+export const QUEUE_CAPTURE_PREFIX = 'direct_queue_job_capture ';
 const DIGEST = /^[0-9a-f]{64}$/;
 const BINDINGS = new Set(['HUB_DIRECT_VERIFY_BULK', 'HUB_DIRECT_VERIFY_METADATA']);
 
@@ -49,24 +50,101 @@ function invocationId() {
  */
 export function wrapDirectQueueFaults(worker, selection, emit = console.log) {
   if (!closed(selection, ['version', 'sourceDigest', 'runDigest', 'admissionDigest',
-    'completeDigest', 'placementId', 'binding', 'fault'])
+    'completeDigest', 'placementId', 'binding', 'fault', 'capture'])
       || selection.version !== 1
       || ![selection.sourceDigest, selection.runDigest, selection.admissionDigest, selection.completeDigest]
         .every(value => typeof value === 'string' && DIGEST.test(value))
       || typeof selection.placementId !== 'string' || !/^[1-9][0-9]{0,19}$/.test(selection.placementId)
       || !BINDINGS.has(selection.binding)
+      || !closed(selection.capture, ['version', 'binding', 'prefix', 'cutoffUnixMs'])
+      || selection.capture.version !== 1 || selection.capture.binding !== 'REGISTRY_BUCKET'
+      || selection.capture.prefix !== `.aos-queue-fault-capture/${selection.runDigest}/`
+      || !Number.isSafeInteger(selection.capture.cutoffUnixMs)
+      || selection.capture.cutoffUnixMs <= Date.now()
       || !['none', 'enqueue_ack_lost', 'completion_ack_lost'].includes(selection.fault)
       || typeof worker?.fetch !== 'function' || typeof worker?.queue !== 'function') {
     throw new Error('Queue fault selection or installed export differs');
   }
-  const selected = Object.freeze({ ...selection });
+  const selected = Object.freeze({ ...selection, capture: Object.freeze({ ...selection.capture }) });
   let fired = false;
+  let captured;
+
+  function current() {
+    if (Date.now() >= selected.capture.cutoffUnixMs) throw new Error('Queue original cutoff expired');
+  }
+
+  async function capturedJob(env, job, digest, id) {
+    current();
+    const raw = JSON.stringify(job);
+    const bytes = new TextEncoder().encode(raw);
+    if (!bytes.byteLength || bytes.byteLength > 64 * 1024) {
+      throw new Error('Selected queue argument exceeds its private capture bound');
+    }
+    const rawSha256 = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))]
+      .map(byte => byte.toString(16).padStart(2, '0')).join('');
+    const key = selected.capture.prefix + digest + '.json';
+    if (!captured) {
+      const observation = { version: 1, sourceDigest: selected.sourceDigest,
+        runDigest: selected.runDigest, invocationDigest: id, jobDigest: digest,
+        rawSha256, rawBytes: String(bytes.byteLength), key, atMillis: Date.now(),
+        state: 'unknown', capturePutReturned: false, queueServerAcceptance: null };
+      // Store the in-flight promise before awaiting it. Concurrent or later
+      // known-ACK sends of this same job share one actual conditional capture.
+      captured = { raw, digest, promise: (async () => {
+        try {
+          const bucket = env[selected.capture.binding];
+          if (typeof bucket?.put !== 'function') throw new Error('Selected capture binding is missing');
+          current();
+          const written = await bucket.put(key, bytes, {
+            onlyIf: { etagDoesNotMatch: '*' }, sha256: rawSha256,
+          });
+          observation.capturePutReturned = true;
+          if (written === null) {
+            observation.state = 'refused';
+            throw new Error('Selected queue capture conditional create refused');
+          }
+          if (written.key !== key || written.size !== bytes.byteLength) {
+            throw new Error('Selected queue capture returned a different image');
+          }
+          observation.state = 'captured';
+        } finally {
+          observation.atMillis = Date.now();
+          emit(QUEUE_CAPTURE_PREFIX + JSON.stringify(observation));
+        }
+        return observation;
+      })() };
+    }
+    if (captured.raw !== raw || captured.digest !== digest) {
+      throw new Error('Selected queue job changed after its one capture');
+    }
+    await captured.promise;
+    // Instrumentation is not queue acceptance. Recheck the actual unchanged
+    // argument and original deadline after its awaited provider traffic.
+    if (await queueJobDigest(job) !== digest || JSON.stringify(job) !== raw) {
+      throw new Error('Selected queue argument changed during capture');
+    }
+    current();
+  }
 
   async function selectedJob(job) {
-    const digest = await queueJobDigest(job);
-    if (job.placementId !== selected.placementId
-        || await canonicalDigest(job.admission) !== selected.admissionDigest
-        || await canonicalDigest(job.complete) !== selected.completeDigest) return null;
+    if (!closed(job, ['version', 'admission', 'complete', 'placementId', 'closed'])
+        || job.version !== 1 || job.placementId !== selected.placementId) return null;
+    // Pin the real serialized argument before any digest await. Hashing two
+    // separately mutable subobjects cannot establish one selected original.
+    let raw, snapshot, admissionDigest, completeDigest;
+    try {
+      raw = JSON.stringify(job);
+      snapshot = JSON.parse(raw);
+      admissionDigest = await canonicalDigest(snapshot.admission);
+      completeDigest = await canonicalDigest(snapshot.complete);
+    } catch {
+      return null;
+    }
+    if (admissionDigest !== selected.admissionDigest || completeDigest !== selected.completeDigest) return null;
+    const digest = await queueJobDigest(snapshot);
+    if (JSON.stringify(job) !== raw) {
+      throw new Error('Selected queue argument changed during original matching');
+    }
     return digest;
   }
 
@@ -90,9 +168,17 @@ export function wrapDirectQueueFaults(worker, selection, emit = console.log) {
             if (method !== 'send') return typeof original === 'function' ? original.bind(queue) : original;
             return async (job, ...options) => {
               // Non-production messages retain their original SDK behavior.
-              let digest;
-              try { digest = await selectedJob(job); } catch { return original.call(queue, job, ...options); }
-              if (!digest || selected.fault !== 'enqueue_ack_lost' || fired) {
+              const optionsImage = JSON.stringify(options);
+              const digest = await selectedJob(job);
+              if (!digest) {
+                return original.call(queue, job, ...options);
+              }
+              await capturedJob(target, job, digest, id);
+              if (JSON.stringify(job) !== captured.raw || JSON.stringify(options) !== optionsImage) {
+                throw new Error('Selected queue argument or SDK options changed after capture');
+              }
+              current();
+              if (selected.fault !== 'enqueue_ack_lost' || fired) {
                 return original.call(queue, job, ...options);
               }
               fired = true;
@@ -140,8 +226,7 @@ export function wrapDirectQueueFaults(worker, selection, emit = console.log) {
         }
         let selectedMessages = 0;
         const messages = await Promise.all(batch.messages.map(async message => {
-          let digest;
-          try { digest = await selectedJob(message.body); } catch { return message; }
+          const digest = await selectedJob(message.body);
           if (!digest) return message;
           selectedMessages += 1;
           return new Proxy(message, {
@@ -164,9 +249,7 @@ export function wrapDirectQueueFaults(worker, selection, emit = console.log) {
             },
           });
         }));
-        const digests = await Promise.all(messages.map(async message => {
-          try { return await selectedJob(message.body); } catch { return null; }
-        }));
+        const digests = await Promise.all(messages.map(message => selectedJob(message.body)));
         const selectedDigests = new Set(digests.filter(Boolean));
         if (selectedDigests.size > 1) throw new Error('One original acquired different closed queue jobs');
         record('invocation_jobs', id, { jobDigest: selectedDigests.values().next().value ?? null,

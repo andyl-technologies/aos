@@ -18,6 +18,83 @@ function options() {
     resourcePersistencePath: '/selected/private-state' };
 }
 
+function queueCaptureFixture(change = {}) {
+  const runDigest = 'a'.repeat(64), sourceDigest = 'b'.repeat(64), jobDigest = 'c'.repeat(64);
+  const selection = { version: 1, binding: 'REGISTRY_BUCKET', runDigest, sourceDigest,
+    prefix: `.aos-queue-fault-capture/${runDigest}/`, cutoffUnixMs: Date.now() + 10_000 };
+  const configured = { ...options(), bindings: {
+    HUB_PROVIDER_CAPACITY_POLICY: JSON.stringify({ source_digest: sourceDigest }),
+  } };
+  const body = Buffer.from('{"actual":"private job"}');
+  const key = selection.prefix + jobDigest + '.json';
+  const calls = [];
+  const bucket = { async get(actual) {
+    assert.equal(this, bucket);
+    calls.push(['get', actual]);
+    return { key, size: body.length, etag: 'controlled-etag', version: 'controlled-version',
+      body: new ReadableStream({ start(controller) { controller.enqueue(body); controller.close(); } }),
+      ...change };
+  } };
+  const runtime = { async getR2Bucket(binding, worker) {
+    assert.equal(this, runtime);
+    calls.push(['select', binding, worker]);
+    return bucket;
+  } };
+  return { configured, selection, body, calls, runtime,
+    request: { version: 1, kind: 'queue-fault-job-read', runDigest, sourceDigest, jobDigest } };
+}
+
+test('selected queue image export reads only actual bucket stream and binds original metadata', async () => {
+  const peer = queueCaptureFixture();
+  const read = observer.createQueueFaultJobReader(peer.runtime, peer.configured, api,
+    Buffer.from('actual configuration'), peer.selection);
+  const receipt = await read(peer.request);
+  assert.equal(Buffer.from(receipt.base64, 'base64').toString(), peer.body.toString());
+  assert.equal(receipt.byteSize, String(peer.body.length));
+  assert.equal(receipt.eof, true);
+  assert.equal(receipt.queueServerAcceptance, null);
+  assert.deepEqual(peer.calls, [['select', 'REGISTRY_BUCKET', 'selected-worker'],
+    ['get', peer.selection.prefix + peer.request.jobDigest + '.json']]);
+  const calls = peer.calls.length;
+  for (const change of [{ extra: true }, { sourceDigest: 'd'.repeat(64) },
+    { runDigest: 'e'.repeat(64) }, { jobDigest: '../foreign' }]) {
+    await assert.rejects(read({ ...peer.request, ...change }));
+  }
+  assert.equal(peer.calls.length, calls);
+});
+
+test('queue raw export refuses partial, oversized, missing and cancelled body with bounded reads', async () => {
+  for (const change of [{ size: 999 }, { size: 65537 }, { body: null }, {
+    size: 1, body: new ReadableStream({ start(controller) { controller.error(new Error('private failure')); } }),
+  }]) {
+    const peer = queueCaptureFixture(change);
+    const read = observer.createQueueFaultJobReader(peer.runtime, peer.configured, api,
+      Buffer.from('configuration'), peer.selection);
+    await assert.rejects(read(peer.request));
+  }
+  let cancelled = false;
+  const peer = queueCaptureFixture({ size: 65536, body: new ReadableStream({
+    start(controller) { controller.enqueue(Buffer.alloc(65537)); },
+    cancel() { cancelled = true; },
+  }) });
+  const read = observer.createQueueFaultJobReader(peer.runtime, peer.configured, api,
+    Buffer.from('configuration'), peer.selection);
+  await assert.rejects(read(peer.request), /bound/);
+  assert.equal(cancelled, true);
+});
+
+test('queue capture is default disabled and malformed selection refuses before SDK reads', () => {
+  const peer = queueCaptureFixture();
+  assert.equal(observer.createQueueFaultJobReader(peer.runtime, peer.configured, api,
+    Buffer.from('configuration'), undefined), undefined);
+  for (const change of [{ binding: 'OTHER' }, { prefix: '.foreign/' }, { extra: true },
+    { cutoffUnixMs: Date.now() - 1 }, { sourceDigest: 'd'.repeat(64) }]) {
+    assert.throws(() => observer.createQueueFaultJobReader(peer.runtime, peer.configured, api,
+      Buffer.from('configuration'), { ...peer.selection, ...change }));
+  }
+  assert.equal(peer.calls.length, 0);
+});
+
 function socketRequest(filename, request) {
   return new Promise((resolve, reject) => {
     const socket = connect(filename);
@@ -167,4 +244,46 @@ test('owner-private socket keeps old variant and External verifier; new request 
     await server.close();
     rmSync(root, { recursive: true });
   }
+});
+
+test('queue read owns and cancels the returned stream before metadata validation', async () => {
+  let cancelled = 0;
+  const peer = queueCaptureFixture({ size: 65537, body: new ReadableStream({
+    cancel() { cancelled++; },
+  }) });
+  const read = observer.createQueueFaultJobReader(peer.runtime, peer.configured, api,
+    Buffer.from('configuration'), peer.selection);
+  await assert.rejects(read(peer.request), /unbounded/);
+  assert.equal(cancelled, 1);
+});
+
+test('stalled queue stream and a caller-closed pending get have bounded local ownership', async () => {
+  let cancelled = 0;
+  const stream = new ReadableStream({ cancel() { cancelled++; } });
+  const peer = queueCaptureFixture({ size: 1, body: stream });
+  peer.selection.cutoffUnixMs = Date.now() + 40;
+  const read = observer.createQueueFaultJobReader(peer.runtime, peer.configured, api,
+    Buffer.from('configuration'), peer.selection);
+  await assert.rejects(read(peer.request), /lifetime expired/);
+  assert.equal(cancelled, 1);
+  assert.equal(stream.locked, false);
+
+  const delayed = queueCaptureFixture();
+  const caller = new AbortController();
+  let resolveGet, selected;
+  const waiting = new Promise(resolve => { selected = resolve; });
+  delayed.runtime.getR2Bucket = async () => ({ get() {
+    selected();
+    return new Promise(resolve => { resolveGet = resolve; });
+  } });
+  const next = observer.createQueueFaultJobReader(delayed.runtime, delayed.configured, api,
+    Buffer.from('configuration'), delayed.selection);
+  const pending = next(delayed.request, caller.signal);
+  await waiting;
+  caller.abort();
+  await assert.rejects(pending, /caller closed/);
+  let lateCancelled = false;
+  resolveGet({ body: new ReadableStream({ cancel() { lateCancelled = true; } }) });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(lateCancelled, true);
 });
