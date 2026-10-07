@@ -364,12 +364,12 @@ async fn upload_registry_publication_with_commit(
 }
 
 /// Uploads one publication class with bounded request concurrency.
-async fn upload_publication_object_class(
+async fn upload_publication_object_class<'objects>(
     access: &PublicationAccess,
     publication_id: &str,
     root: &std::os::fd::OwnedFd,
     inputs: &[hub_types::RegistryPublicationObjectInput],
-    objects: &[&hub_types::RegistryPublicationObject],
+    objects: &[&'objects hub_types::RegistryPublicationObject],
     printer: &Printer,
     label: &str,
 ) -> Result<()> {
@@ -433,7 +433,9 @@ async fn upload_publication_object_class(
         .iter()
         .map(|input| (input.path.as_str(), input))
         .collect::<std::collections::BTreeMap<_, _>>();
-    let upload_one = |object: &hub_types::RegistryPublicationObject| {
+    // The named lifetime keeps each upload future tied to the objects slice
+    // rather than making the closure higher-ranked over its argument.
+    let upload_one = |object: &'objects hub_types::RegistryPublicationObject| {
         let declared = inputs.get(object.path.as_str()).copied();
         let snapshot_budget = std::sync::Arc::clone(&snapshot_budget);
         let multipart_budget = std::sync::Arc::clone(&multipart_budget);
@@ -510,7 +512,7 @@ async fn upload_publication_object_class(
                 .iter()
                 .enumerate()
                 .filter(|(index, _)| Some(*index) != leading)
-                .map(|(_, object)| upload_one(object)),
+                .map(|(_, object)| upload_one(*object)),
         )
         .buffer_unordered(request_concurrency)
         .try_collect::<Vec<()>>()
