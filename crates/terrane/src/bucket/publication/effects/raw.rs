@@ -244,6 +244,10 @@ pub(crate) async fn stage_ref_log<F: LocalFs + BucketBinding>(
 ///
 /// This operation leaves membership unselected until the separate canonical
 /// catalog transition wins its consecutive protected publication slot.
+/// Missing artifacts first receive a durably qualified protected Pending and
+/// same-descriptor creation acknowledgment. Equal present files preserve their
+/// existing journal state, including imported Unknown, without granting any
+/// collector or deletion authority.
 ///
 /// # Errors
 /// Rejects stale selected observations, unavailable retention, unsafe physical
@@ -253,22 +257,9 @@ pub(crate) async fn stage_container<F: LocalFs + BucketBinding>(
     observed: &SelectedObservation<'_>,
     artifacts: &ContainerArtifacts,
 ) -> Result<(), StoreFailure> {
-    let mut frame = backend(fs, observed).await?;
+    let (mut frame, control) = backend_with_control(fs, observed).await?;
     let root = observed.identity().root();
-    let policy = FencePolicy::Payload { owner: frame.owner };
-    let id = artifacts.id();
-    for (key, bytes) in [
-        (id.pack_key(), artifacts.pack()),
-        (id.index_key(), artifacts.index()),
-    ] {
-        let key = BucketKey::parse(&key).map_err(|_| malformed())?;
-        if key.mutability() != Mutability::Immutable {
-            return Err(malformed());
-        }
-        frame
-            .install(fs, root, key.as_str(), bytes, policy, Mutability::Immutable)
-            .await?;
-    }
+    super::creation::stage_pair(fs, &mut frame, root, &control, artifacts).await?;
     frame
         .execute(
             fs,

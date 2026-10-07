@@ -717,6 +717,24 @@ producer. Its exact private implementation and seven actual repair witnesses
 are under review; their creator assertions remain mandatory. These bounded
 results qualify no complete repair, rebuild, task merge or milestone exit.
 
+The actual retained container creator now replaces direct artifact staging:
+both members are preflighted, missing members consume native Pending, descriptor
+seal and Committed acknowledgments, and equal present members retain their old
+journals without acquiring creator authority. On these exact shared bytes,
+upload verification, six checked-publication ACK cases, application compilation
+and both formatters pass; all 4,560 actual hermetic input files match independent
+review. Real factory use removes inherited dead-code diagnostics, while strict
+default Clippy still fails with 24 library and 17 library-test errors. Later
+profiles/docs and the complete creator fault matrix remain unqualified.
+Two focused integration checks now require seven actual missing-placement
+witnesses and four held Guard-carry witnesses. Missing selectors fail discovery;
+registry presence establishes no runtime result. Signed Original/current checks,
+actual creator receipts, original absence/ancestor handoffs and real inner Raw
+sync faults are mandatory. The existing idempotence failure and complete
+milestone floor remain open.
+Registry completeness and both required formatters pass for the new check
+definitions; neither missing-selector inventory is recorded as passing.
+
 The test-only bucket observer records actual typed Node/Commit get and put
 attempts before catalog lookup, admission or deduplication. The same per-bucket
 observer follows clones and held adapters and can attach to the actual metadata

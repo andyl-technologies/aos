@@ -28,6 +28,9 @@ mod commands;
 #[path = "effects/raw.rs"]
 mod raw;
 
+#[path = "effects/creation.rs"]
+mod creation;
+
 #[cfg(all(test, feature = "tokio", unix))]
 pub(crate) use raw::{backend_sync_for_test, gate_active_cap_probe_for_test};
 pub(crate) use raw::{
