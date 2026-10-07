@@ -136,17 +136,24 @@ D-105's independent ordinary scalar revisions are now accepted without granting
 the exact 3/2/1 executable carrier profile. Unknown revisions and wrong
 vocabularies remain refused; the property gate requires the owning scalar check.
 The native Recorded implementation passes its production builds and all 132
-default tests. Its composed SDK run passes 367 of 477 tests and fails 110;
-historical and Recorded owning qualification remains incomplete. Review finds
-that per-view authoring inputs also changed the actual current Guard snapshot.
-A candidate separates constructor-selected current configuration from authoring
-inputs while retaining exact snapshot comparisons and checked reload rules.
-Its first focused run passes 15 of 21 cases; the six remaining failures lead
-to ordinary scalar, genuine producer-input and canonical ancestor-scope
-corrections. Qualification of that composed correction is running.
+default tests. Its preceding composed SDK run passes 367 of 477 tests and
+fails 110. The correction separates constructor-selected current configuration
+from authoring inputs while retaining exact snapshot comparisons and checked
+reload rules. Its first focused run passes 15 of 21 cases; the remaining
+failures lead to ordinary scalar, genuine producer-input and canonical
+ancestor-scope corrections. The subsequent 25-case run passes 24 cases and
+fails the Fold inspector's CBOR-null opcode assertion. Correcting that assertion
+to the decoder's actual byte on `44972fa5c5` passes the exact Fold case; this
+is separate execution evidence, not a new complete 25-case run. All ten cold
+cases pass on that source, covering the original eight and two independent
+current-registration cases. Full SDK, strict profiles and task gates remain
+pending.
 Private backfill on `4f4bd8083f` now passes all four exact cases, including
-the formerly expired completeness case. Subsequent publication and failure
-control qualification remains pending. D-111 preserves historical bytes while
+the formerly expired completeness case. All six publication batch cases also
+pass. The finite qualification then stops on the first missing-pack recovery
+case with `Corrupt(Pack)` after 2.61 seconds. The other six missing-pack cases
+and subsequent history, Raw, current-control, quality, application and formatter
+phases are unrun. D-111 preserves historical bytes while
 validating the independent current revision. Shared property/algebra gate
 mappings require actual owning witnesses and retain native Fold context coverage.
 No task merge, checkbox,
@@ -162,8 +169,9 @@ unobserved descriptor lifetimes. A reviewed candidate appends the already
 closed signed Commit to the final metadata run, preserving actual pack/index
 durability before Commit catalog admission, all post-publication checks and
 ordinary separate Commit publication for fallback and final Chunk barriers.
-All four backfill cases pass on the amended producer; subsequent qualification
-remains pending. No deadline or failure oracle changes.
+All four backfill cases and six publication batch cases pass on the amended
+producer; missing-pack recovery stops subsequent qualification as recorded
+above. No deadline or failure oracle changes.
 The shared `chunk-codec` gate now additionally requires the exact native
 dictionary-preload consumer witness, alongside its existing reader coverage.
 
