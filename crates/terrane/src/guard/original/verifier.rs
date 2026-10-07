@@ -627,7 +627,7 @@ impl<S, C> Guard<S, C> {
         if baseline.authority != verifier.authority {
             return Err(invalid());
         }
-        let retained = held.and_then(|_| verifier.retained.as_ref());
+        let retained = held.and(verifier.retained.as_ref());
         let checked = (verifier.commit)(baseline, view, held, retained).await?;
         let mut installed = self.original_commits.write().map_err(|_| unavailable())?;
         if installed

@@ -7,18 +7,10 @@
 
 use super::fixture::Fixture;
 use std::future::Future;
-use std::sync::Arc;
-use std::task::{Context, Poll, Wake, Waker};
-
-struct InlineWake;
-
-impl Wake for InlineWake {
-    fn wake(self: Arc<Self>) {}
-}
+use std::task::{Context, Poll, Waker};
 
 fn inline<T>(future: impl Future<Output = T>) -> T {
-    let waker = Waker::from(Arc::new(InlineWake));
-    let mut context = Context::from_waker(&waker);
+    let mut context = Context::from_waker(Waker::noop());
     let mut future = std::pin::pin!(future);
     match future.as_mut().poll(&mut context) {
         Poll::Ready(value) => value,
