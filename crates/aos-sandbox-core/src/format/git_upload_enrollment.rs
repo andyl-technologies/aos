@@ -1391,7 +1391,7 @@ impl<'a> GitCoverageRootSubmissionV1<'a> {
             return Err(GitCoverageDataErrorV1::Invalid);
         }
 
-        let mut cursor = 5 * 4;
+        let mut cursor: usize = 5 * 4;
         let mut parts: [&[u8]; 5] = [&[]; 5];
         for (index, part) in parts.iter_mut().enumerate() {
             let length = usize::try_from(u32_at(body, index * 4)?)
