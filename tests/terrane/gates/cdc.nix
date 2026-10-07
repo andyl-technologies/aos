@@ -39,6 +39,7 @@ in {
     run_tests -p terrane codec::tests
     run_tests -p terrane --no-default-features --features tokio,surface-sdk --lib guard::read::dictionary_tests::registered_dictionary_codecs_round_trip_through_guarded_content -- --exact
     run_tests -p terrane --no-default-features --features tokio,surface-sdk --lib guard::read::dictionary_tests::dictionary_dependency_validation_precedes_plaintext_exposure -- --exact
+    run_tests -p terrane --no-default-features --features tokio,surface-sdk --lib ref_advance::disclosure_tests::disclosure_dictionary_dependencies_preserve_registered_codecs_and_verified_lengths -- --exact
     printf 'PASS: chunk envelope, frame, dictionary, and receiver checks\n' > "$out/result"
   '';
 
