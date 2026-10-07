@@ -490,8 +490,7 @@ in {
       aos.abilities = {
         serviceManagement.operations.resourceGroup.effects.${package.name}.input.name = "aos-pkg-${package.name}";
         network.operations.ready.effects.envoy.input = {
-          scope = "address-configured";
-          families = ["ipv4" "ipv6"];
+          scope = "stack-prepared";
         };
         credential.operations.deliver.effects = builtins.listToAttrs (builtins.map (name: {
             name = "envoy-${name}";

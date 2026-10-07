@@ -128,7 +128,12 @@ in
   assert builtins.elem "xt_physdev" workerEffects.kernelModules.operations.ensure.effects.k3s.input.modules;
   assert builtins.elem "xt_physdev" combinedEffects.kernelModules.operations.ensure.effects.k3s.input.modules;
   assert workerEffects.kernelTunables.operations.ensure.effects.settings.input.values."net.ipv4.ip_forward" == "1";
-  assert workerEffects.network.operations.ready.effects.k3s.input.scope == "address-configured";
+  assert workerEffects.network.operations.ready.effects.k3s.input.scope == "stack-prepared";
+  assert workerEffects.network.operations.ready.effects.k3s.input.required;
+  assert builtins.elem workerEffects.network.operations.ready.effects.k3s.outputs.resource service.dependencies.after;
+  assert combinedEffects.network.operations.ready.effects.k3s.input.scope == "stack-prepared";
+  assert combinedEffects.kubernetes.operations.ensure.effects.cluster.input.kubeconfig == "/etc/rancher/k3s/k3s.yaml";
+  assert builtins.elem combinedEffects.serviceManagement.operations.realize.effects.k3s.outputs.resource combinedEffects.kubernetes.operations.ensure.effects.cluster.after;
   assert workerEffects.kubernetes.operations.ensure.effects == {};
   assert combinedEffects.k3sConfiguration.operations.ensure.effects.base.input.integrations.cilium.disable_flannel;
   assert combinedEffects.k3sConfiguration.operations.ensure.effects.base.input.integrations.longhorn.node_labels."node.longhorn.io/create-default-disk" == "storage";

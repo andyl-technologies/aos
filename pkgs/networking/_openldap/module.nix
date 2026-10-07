@@ -364,8 +364,7 @@ in {
           };
         };
         network.operations.ready.effects.openldap.input = {
-          scope = "address-configured";
-          families = ["ipv4" "ipv6"];
+          scope = "stack-prepared";
         };
         credential.operations.deliver.effects = builtins.listToAttrs (builtins.map (credential: {
             name = "openldap-${credential.name}";

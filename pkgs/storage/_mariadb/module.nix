@@ -477,8 +477,7 @@ in {
           };
         };
         network.operations.ready.effects.mariadb.input = {
-          scope = "address-configured";
-          families = ["ipv4" "ipv6"];
+          scope = "stack-prepared";
         };
         configuration.operations.file.effects.mariadb-server.input = {
           path = "/etc/aos/packages/mariadb/my.cnf";

@@ -186,6 +186,81 @@ class SystemdNetworkParserTests(unittest.TestCase):
         self.assertEqual(self.words(domains, flags=1 << 5), ["example.test"])
 
 
+class NetworkReadinessTests(unittest.TestCase):
+    def invocation(self, scope):
+        return {
+            "id": "readiness-fixture", "revision": "0" * 64,
+            "effect": {"identity": ["fixture", "network", "ready", "daemon"]},
+            "input": {"required": True, "scope": scope, "families": ["ipv4", "ipv6"]},
+            "action": "apply", "previous": None,
+        }
+
+    def arguments(self, action):
+        return SimpleNamespace(
+            action=action, systemctl="fixture-systemctl", wait_online="fixture-wait-online",
+        )
+
+    def test_prepared_stack_remains_ready_without_configured_addresses(self):
+        def manager_command(arguments):
+            if arguments[0] == "fixture-wait-online":
+                raise ValueError("no configured addresses")
+
+        for action in ("observe", "apply"):
+            with self.subTest(action=action), patch.object(handler, "command", side_effect=manager_command) as commands:
+                result = handler.converge(self.arguments(action), self.invocation("stack-prepared"))
+
+                expected = {"resource": "systemd-networkd.service"}
+                self.assertEqual(result, {"status": "current", "outputs": expected} if action == "observe" else expected)
+                commands.assert_called_once_with([
+                    "fixture-systemctl", "is-active", "--quiet", "systemd-networkd.service",
+                ])
+
+    def test_prepared_stack_still_requires_its_manager(self):
+        invocation = self.invocation("stack-prepared")
+        with patch.object(handler, "command", side_effect=ValueError("network manager unavailable")):
+            self.assertEqual(handler.converge(self.arguments("observe"), invocation), {"status": "retry-safe"})
+
+            with self.assertRaisesRegex(ValueError, "network manager unavailable"):
+                handler.converge(self.arguments("apply"), invocation)
+
+    def test_address_readiness_keeps_the_requested_family_checks(self):
+        invocation = self.invocation("address-configured")
+        with patch.object(handler, "command") as commands:
+            result = handler.converge(self.arguments("apply"), invocation)
+
+            self.assertEqual(result, {"resource": "systemd-networkd.service"})
+            self.assertEqual(commands.call_args_list[-1].args[0], [
+                "fixture-wait-online", "--any", "--timeout=30", "--ipv4", "--ipv6",
+            ])
+
+    def test_missing_required_addresses_remain_a_failed_apply(self):
+        def manager_command(arguments):
+            if arguments[0] == "fixture-wait-online":
+                raise ValueError("Timeout occurred while waiting for network connectivity.")
+
+        invocation = self.invocation("address-configured")
+        with patch.object(handler, "command", side_effect=manager_command):
+            self.assertEqual(handler.converge(self.arguments("observe"), invocation), {"status": "retry-safe"})
+
+            with self.assertRaisesRegex(ValueError, "waiting for network connectivity"):
+                handler.converge(self.arguments("apply"), invocation)
+
+    def test_optional_readiness_does_not_require_a_network_manager(self):
+        invocation = self.invocation("address-configured")
+        invocation["input"]["required"] = False
+        with patch.object(handler, "command") as commands:
+            self.assertEqual(handler.converge(self.arguments("apply"), invocation), {"resource": "sysinit.target"})
+            commands.assert_not_called()
+
+    def test_removing_readiness_does_not_wait_for_connectivity(self):
+        invocation = self.invocation("address-configured")
+        invocation["action"] = "remove"
+        with patch.object(handler, "command") as commands:
+            self.assertEqual(handler.converge(self.arguments("observe"), invocation), {"status": "absent"})
+            self.assertEqual(handler.converge(self.arguments("remove"), invocation), {})
+            commands.assert_not_called()
+
+
 class NativeNetworkTests(unittest.TestCase):
     def test_installed_vendor_link_has_the_desired_lexical_identity(self):
         path, target = vendor_resolver_link()

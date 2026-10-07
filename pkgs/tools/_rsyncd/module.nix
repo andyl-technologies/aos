@@ -301,8 +301,7 @@ in {
             })
             cfg.modules);
         network.operations.ready.effects.rsyncd.input = {
-          scope = "address-configured";
-          families = ["ipv4" "ipv6"];
+          scope = "stack-prepared";
         };
         configuration.operations.file.effects.rsyncd.input = {
           path = "/etc/aos/packages/rsync/rsyncd.conf";

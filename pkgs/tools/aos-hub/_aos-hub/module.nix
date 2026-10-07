@@ -374,8 +374,7 @@ in {
           group = resultOf "service-group" "name";
         };
         network.operations.ready.effects.hub.input = {
-          scope = "address-configured";
-          families = ["ipv4" "ipv6"];
+          scope = "stack-prepared";
         };
         credential.operations.deliver.effects = builtins.listToAttrs (builtins.map (name: {
             name = "hub-${name}";

@@ -152,8 +152,7 @@
       group = groupName owningGroup;
     };
   networkReadiness = effect "network" "ready" "network-readiness" {
-    scope = "address-configured";
-    families = ["ipv4" "ipv6"];
+    scope = "stack-prepared";
   };
   schedule = name: expression:
     effect "scheduledActivation" "ensure" name {

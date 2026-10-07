@@ -460,8 +460,7 @@ in {
       aos.abilities = {
         serviceManagement.operations.resourceGroup.effects.${package.name}.input.name = "aos-pkg-${package.name}";
         network.operations.ready.effects.etcd.input = {
-          scope = "address-configured";
-          families = ["ipv4" "ipv6"];
+          scope = "stack-prepared";
         };
         configuration.operations.file.effects.etcd.input = {
           path = "/etc/aos/packages/etcd/etcd.json";

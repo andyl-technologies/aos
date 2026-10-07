@@ -353,8 +353,7 @@ in {
       aos.abilities = {
         serviceManagement.operations.resourceGroup.effects.${package.name}.input.name = "aos-pkg-${package.name}";
         network.operations.ready.effects.kubelet.input = {
-          scope = "address-configured";
-          families = ["ipv4" "ipv6"];
+          scope = "stack-prepared";
         };
         kernelModules.operations.ensure.effects.kubelet.input = {
           modules = ["br_netfilter" "overlay"];

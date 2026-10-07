@@ -787,8 +787,7 @@ in {
           relativePath = "data";
         };
         network.operations.ready.effects.postgresql.input = {
-          scope = "address-configured";
-          families = ["ipv4" "ipv6"];
+          scope = "stack-prepared";
         };
         configuration.operations.file.effects = {
           postgresql-hba.input = {

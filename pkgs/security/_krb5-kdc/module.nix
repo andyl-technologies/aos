@@ -436,8 +436,7 @@ in {
         };
         credential.operations.deliver.effects.krb5-master.input = cfg.masterPassword;
         network.operations.ready.effects.krb5.input = {
-          scope = "address-configured";
-          families = ["ipv4" "ipv6"];
+          scope = "stack-prepared";
         };
       };
       aos.networkPolicy = {
