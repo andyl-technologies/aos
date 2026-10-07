@@ -546,7 +546,7 @@ macro_rules! process_id {
 macro_rules! finish {
     (legacy, $capture:expr, $storage:ident,
      $profile_file:ident, $profile:ident, $files:ident, $policy:ident,
-     $fragment:ident, $observed:ident, $process:ident, $cgroup:ident, $nix:ident) => {
+     $fragment:ident, $observed:ident, $process:ident, $cgroup:ident, $nix:ident) => {{
         let retained = ProductionControllerNormalRootProfileV1 {
             profile_file: $profile_file,
             profile: $profile,
@@ -565,17 +565,17 @@ macro_rules! finish {
         };
         retained.recheck()?;
         Ok(Some(retained))
-    };
+    }};
     (retained, $capture:expr, $storage:ident,
      $profile_file:ident, $profile:ident, $files:ident, $policy:ident,
-     $fragment:ident, $observed:ident, $process:ident, $cgroup:ident, $nix:ident) => {
+     $fragment:ident, $observed:ident, $process:ident, $cgroup:ident, $nix:ident) => {{
         $storage.assemble_profile()?;
         $storage.selected.as_ref()
             .ok_or_else(|| ControllerProfileAdmissionFailureV1::missing("completed-profile"))?
             .recheck()
             .map_err(|cause| ControllerProfileAdmissionFailureV1::startup("final-recheck", cause))?;
         Ok(true)
-    };
+    }};
 }
 
 macro_rules! selected_recipe {

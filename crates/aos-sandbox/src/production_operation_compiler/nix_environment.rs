@@ -473,7 +473,7 @@ macro_rules! selector_startup {
 }
 
 macro_rules! selector_finish {
-    (legacy, $storage:ident, $startup:ident, $pins:ident, $originals:ident, $recipes:ident) => {
+    (legacy, $storage:ident, $startup:ident, $pins:ident, $originals:ident, $recipes:ident) => {{
         let owner = Self {
             startup: $startup, pins: $pins,
             credentials: SelectorPublicCredentials::Legacy($originals), recipes: $recipes,
@@ -481,14 +481,14 @@ macro_rules! selector_finish {
         owner.recheck()?;
         owner.assignment_policy()?;
         Ok(owner)
-    };
-    (retained, $storage:ident, $startup:ident, $pins:ident, $originals:ident, $recipes:ident) => {
+    }};
+    (retained, $storage:ident, $startup:ident, $pins:ident, $originals:ident, $recipes:ident) => {{
         $storage.assemble_selector()?;
         let owner = $storage.completed.as_ref().ok_or(SelectorAdmissionFailure::Closed)?;
         owner.recheck().map_err(SelectorAdmissionFailure::Selector)?;
         owner.assignment_policy().map_err(SelectorAdmissionFailure::Selector)?;
         Ok(())
-    };
+    }};
 }
 
 macro_rules! selector_admission_recipe {

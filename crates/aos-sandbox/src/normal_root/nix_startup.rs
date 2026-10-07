@@ -554,7 +554,7 @@ macro_rules! nix_finish {
     (legacy, $storage:ident, $role:ident, $method:ident,
      $file:ident, $profile:ident, $pid1:ident, $executable:ident, $helper:ident,
      $runtime:ident, $evidence:ident, $root:ident, $policy:ident, $process:ident,
-     $identity:ident, $cgroup:ident, $fragment:ident, $observed:ident) => {
+     $identity:ident, $cgroup:ident, $fragment:ident, $observed:ident) => {{
         let retained = Self {
             role: $role, profile_file: $file, profile: $profile, pid1: $pid1,
             executable: $executable, helper: $helper, runtime: $runtime, evidence: $evidence,
@@ -565,16 +565,16 @@ macro_rules! nix_finish {
         };
         retained.recheck()?;
         Ok(retained)
-    };
+    }};
     (retained, $storage:ident, $role:ident, $method:ident,
      $file:ident, $profile:ident, $pid1:ident, $executable:ident, $helper:ident,
      $runtime:ident, $evidence:ident, $root:ident, $policy:ident, $process:ident,
-     $identity:ident, $cgroup:ident, $fragment:ident, $observed:ident) => {
+     $identity:ident, $cgroup:ident, $fragment:ident, $observed:ident) => {{
         $storage.assemble($role, $method)?;
         $storage.completed.as_ref().ok_or_else(NixAdmissionFailure::ended)?
             .recheck().map_err(NixAdmissionFailure::plain)?;
         Ok(())
-    };
+    }};
 }
 
 macro_rules! nix_admission_recipe {

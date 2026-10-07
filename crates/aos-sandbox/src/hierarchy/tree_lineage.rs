@@ -623,7 +623,7 @@ fn validate_source_successor_members(
                 return Err(invalid());
             }
             continue;
-        }
+        };
 
         let original_ack = original_ack.ok_or_else(invalid)?;
 

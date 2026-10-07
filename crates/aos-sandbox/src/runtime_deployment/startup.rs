@@ -1668,7 +1668,7 @@ mod tests {
     fn inert_profile() -> serde_json::Value {
         let root = "/nix/store/00000000000000000000000000000000-publisher";
         let profile = "/nix/store/11111111111111111111111111111111-aos-runtime-deployment-startup-profile-1";
-        let pin = |path: String| json!({"path": path, "sha256": [1_u8; 32].as_slice()});
+        let pin = |path: String| json!({"path": path, "sha256": ([1_u8; 32].as_slice())});
         let executable = pin(format!("{root}/bin/aos-sandbox-runtime-publisher"));
         let loader = pin(format!("{root}/lib/ld.so"));
         json!({
@@ -1684,7 +1684,7 @@ mod tests {
             "canonical_policy": pin("/nix/store/22222222222222222222222222222222-aos-selinux-kernel-policy-readback-1/policy.33".into()),
             "source_policy": pin(format!("{profile}/source-policy.33")),
             "effective_matrix": pin(format!("{profile}/effective-policy.tsv")),
-            "unit_sha256": [2_u8; 32].as_slice(),
+            "unit_sha256": ([2_u8; 32].as_slice()),
         })
     }
 
@@ -1698,7 +1698,7 @@ mod tests {
             ("unit", json!("aos-sandbox-policy-authorityd.service")),
             ("owner_context", json!(HELPER_CONTEXT)),
             ("helper_context", json!(OWNER_CONTEXT)),
-            ("unit_sha256", json!([0_u8; 32].as_slice())),
+            ("unit_sha256", json!(([0_u8; 32].as_slice()))),
             ("runtime_files", json!([])),
             ("closure_roots", json!([])),
             ("extra_runtime_authority", json!(true)),
@@ -1723,7 +1723,7 @@ mod tests {
         ).is_err());
 
         let mut profile = inert_profile();
-        profile["loader"]["sha256"] = json!([3_u8; 32].as_slice());
+        profile["loader"]["sha256"] = json!(([3_u8; 32].as_slice()));
         assert!(RuntimeDeploymentProfileV1::decode(
             &serde_json::to_vec(&profile).expect("inert JSON"),
         ).is_err());

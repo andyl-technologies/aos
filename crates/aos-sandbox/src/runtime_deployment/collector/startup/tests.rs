@@ -10,7 +10,7 @@ fn profile() -> Value {
     let specimen_package = "/nix/store/22222222222222222222222222222222-aos-sandbox-deployment-specimen-root-0.1.0";
     let helpers = "/nix/store/33333333333333333333333333333333-aos-installed-filter-collector-0.1.0";
     let systemd = "/nix/store/44444444444444444444444444444444-systemd-261.2";
-    let pin = |path: String| json!({"path": path, "sha256": [1_u8; 32].as_slice()});
+    let pin = |path: String| json!({"path": path, "sha256": ([1_u8; 32].as_slice())});
     let executable = pin(format!("{executable_root}/bin/aos-sandbox-installed-filter-collector"));
     let loader = pin(format!("{executable_root}/lib/ld.so"));
     let reader = pin(format!("{helpers}/libexec/aos-installed-filter-reader"));
@@ -30,9 +30,9 @@ fn profile() -> Value {
         "canonical_policy": pin("/nix/store/55555555555555555555555555555555-aos-selinux-kernel-policy-readback-1/policy.33".into()),
         "source_policy": pin(format!("{profile_root}/source-policy.33")),
         "effective_matrix": pin(format!("{profile_root}/effective-policy.tsv")),
-        "unit_sha256": [2_u8; 32].as_slice(), "reader": reader, "network": network, "nspawn": nspawn,
+        "unit_sha256": ([2_u8; 32].as_slice()), "reader": reader, "network": network, "nspawn": nspawn,
         "specimen_root": format!("{specimen_package}/root"),
-        "specimen_root_sha256": [3_u8; 32].as_slice(), "specimen_init": init,
+        "specimen_root_sha256": ([3_u8; 32].as_slice()), "specimen_init": init,
         "specimen_root_digest_pin": root_pin,
     })
 }
@@ -65,7 +65,7 @@ fn unrun_collector_root_and_complete_runtime_membership_cannot_be_substituted() 
     absent_member["runtime_files"].as_array_mut().unwrap().pop();
     assert!(CollectorProfileV1::decode(&serde_json::to_vec(&absent_member).unwrap()).is_err());
     let mut wrong_pin = original;
-    wrong_pin["specimen_root_digest_pin"]["sha256"] = json!([4_u8; 32].as_slice());
+    wrong_pin["specimen_root_digest_pin"]["sha256"] = json!(([4_u8; 32].as_slice()));
     assert!(CollectorProfileV1::decode(&serde_json::to_vec(&wrong_pin).unwrap()).is_err());
 }
 
