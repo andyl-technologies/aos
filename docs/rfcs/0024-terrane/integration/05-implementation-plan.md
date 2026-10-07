@@ -2018,8 +2018,14 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   for independently live output Nodes, orphan claims, recipe-key nonedges and
   live Chunk nonedges in full and witness traversal. Its parent composition draft
   preserves current selected observations and introduces no recipe or content
-  roots. Registration and a formatted draft do not qualify DRV-19; compilation,
-  native execution and integration remain pending.
+  roots. The preservation candidate `cddf9c906a77`, composed at `1b5dfbfee174`,
+  now passes its exact owning native Nix witness, strict all-target Clippy/private
+  rustdoc in default, Send and native profiles, and three existing Attribute/
+  witness traversal regressions. All three actual hermetic inputs match the same
+  4,877 frozen files. Its exact focused native Nextest case also passes with zero
+  skipped selected cases. Inspection never roots a Memo claim or recipe key;
+  matching records retain genuine Node proof positions without introducing Chunk
+  edges. This bounded prerequisite does not close DRV-19 or the derivation gate.
   The native persistence candidate `0090d143d50d` now passes all four exact
   owning cases with zero failures or ignored tests, followed by strict all-target
   Clippy and private rustdoc in default, Send and native configurations and both
