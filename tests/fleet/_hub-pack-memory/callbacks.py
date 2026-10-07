@@ -51,4 +51,3 @@ class FreshNativeCallbacks:
         if set(reference) != {"selection", "candidateBuffersHeaderFile"}:
             raise ValueError("Native metadata callback input schema differs")
         return await self.native.metadata({**reference, "selection": self.selection(reference["selection"])})
-
