@@ -360,6 +360,7 @@ where
             },
             meta_batch::CandidateRetention {
                 admitted,
+                publication_reference: &publication_reference,
                 original,
                 history,
                 started,
@@ -450,15 +451,7 @@ where
         used,
     } = match local_controls {
         Some(local) => {
-            refresh_consumed_controls(
-                concrete,
-                authority,
-                held,
-                observed,
-                consumed,
-                local.exclusion,
-            )
-            .await?
+            refresh_consumed_controls(authority, held, observed, consumed, local.exclusion).await?
         }
         None => hold_consumed_controls(concrete, authority, held, observed, consumed).await?,
     };
@@ -572,15 +565,14 @@ where
     let controls = guard
         .hold_original_registration(authority, observed.identity())
         .await?;
-    refresh_consumed_controls(guard, authority, held, observed, consumed, controls).await
+    refresh_consumed_controls(authority, held, observed, consumed, controls).await
 }
 
 /// Revalidates consumed controls using the same actual acquired exclusion.
 ///
 /// # Errors
 /// Preserves selected Guard/trust/pin checks without reacquiring the held lock.
-async fn refresh_consumed_controls<'guard, F, B, V, C, const WRITABLE: bool>(
-    guard: &'guard Guard<FileBucket<F, B, V>, C>,
+async fn refresh_consumed_controls<'guard, F, B, V, const WRITABLE: bool>(
     authority: &OriginalAuthority,
     held: &HeldBucket<'_, F, B, V, WRITABLE>,
     observed: &SelectedObservation<'_>,

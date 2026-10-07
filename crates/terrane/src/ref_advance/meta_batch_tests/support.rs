@@ -160,7 +160,7 @@ impl ContentValidator for Validator {
 pub(super) type Bucket<C> = FileBucket<ProbeFs, C, Validator>;
 
 /// Keeps genuine configured Original controls independent of offered metadata.
-pub(super) struct Fixture<C = TokioClock> {
+pub(super) struct Fixture<C: Clock + BucketBinding = TokioClock> {
     /// The production repository, initialized through its closed native factory.
     pub(super) repository: Repository<Bucket<C>, C, ProbeFs>,
     /// The real filesystem adapter and finite test instrumentation.

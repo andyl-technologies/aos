@@ -71,7 +71,7 @@ pub(super) struct ControlOwner<'guard, F: LocalFs, B, V, D> {
 pub(super) struct NativeSelection<'input, 'held, F: LocalFs, B, V, C, R> {
     /// The operation-local coordinator under the actual writable holder.
     pub(super) coordinator:
-        &'held crate::ref_advance::Coordinator<HeldBucket<'held, F, B, V, true>, C, R>,
+        &'input crate::ref_advance::Coordinator<HeldBucket<'held, F, B, V, true>, C, R>,
     /// The actual initial selected observation retained by that holder.
     pub(super) observed: &'input SelectedObservation<'held>,
     /// The same actual resolver recording this operation's consumed inputs.
@@ -82,6 +82,8 @@ pub(super) struct NativeSelection<'input, 'held, F: LocalFs, B, V, C, R> {
 pub(super) struct CandidateRetention<'input, 'view> {
     /// The actual admitted candidate, with its ordinary token and publication target.
     pub(super) admitted: &'input crate::guard::AdmittedCommit,
+    /// The genuine session publication target already checked by admission.
+    pub(super) publication_reference: &'input str,
     /// The original candidate context established by signed preparation.
     pub(super) original: &'input crate::guard::OriginalCommitContext,
     /// The independently selected history tracked by this same operation.
@@ -122,7 +124,7 @@ pub(super) async fn retain<'operation, 'held, 'guard, F, B, V, C, R, D>(
         ImmutableEffectContext<'operation, 'held>,
         EarlyControlInputs<'guard, F>,
     ),
-    StoreFailure,
+    crate::ref_advance::AdvanceError,
 >
 where
     F: LocalFs + BucketBinding,
@@ -142,6 +144,7 @@ where
     } = selection;
     let CandidateRetention {
         admitted,
+        publication_reference,
         original,
         history,
         started,
@@ -177,7 +180,7 @@ where
         coordinator
             .guard()
             .authorize_observed(
-                &admitted.publication_reference,
+                publication_reference,
                 &admitted.token,
                 admitted.publication_verb,
                 &[],
@@ -207,13 +210,14 @@ where
         return Err(StoreFailure::new(StoreErrorKind::Denied {
             verb: "guard-install",
             pattern: authority.root().display().to_string(),
-        }));
+        })
+        .into());
     }
     let pins = consumed.control_pins()?;
     let registration = crate::guard::consumed_registration(authority);
     for pin in &pins {
         if pin.owner != registration {
-            return Err(StoreFailure::new(StoreErrorKind::Unsupported));
+            return Err(StoreFailure::new(StoreErrorKind::Unsupported).into());
         }
         let bytes = exclusion.read_record(&pin.key).await?;
         pin.check_record(&bytes).map_err(|_| invalid())?;
