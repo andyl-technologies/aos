@@ -8,6 +8,9 @@
 #[path = "guard/selected.rs"]
 pub(crate) mod native_guard;
 
+#[path = "gc/source_carry.rs"]
+pub(crate) mod native_collection_sources;
+
 // Collector lease verification has its own producer. Decoded lease records
 // cannot construct the selected transition or its retained effect context.
 /// Verifies selected collector leases before constructing their private handoff.

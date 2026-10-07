@@ -9,6 +9,28 @@ status-level = "slow"
 final-status-level = "fail"
 slow-timeout = { period = "60s", terminate-after = 2 }
 
+# The ten native local-deletion cases include real grace waits and repeated
+# durable fault/recovery prefixes. Their owning Nix run measured 100-210 seconds
+# per case. Reserve all test slots and bound each runner process to five minutes;
+# collector, lease, token and publication deadlines remain the actual clocks.
+[[profile.default.overrides]]
+filter = '''
+package(terrane) & (
+  test(=gc::runner::tests::local_deletion::success::full_d_and_current_lease_unlink_exact_triple_and_finish_done) |
+  test(=gc::runner::tests::local_deletion::success::fresh_readmission_survives_old_container_deletion_and_reopen) |
+  test(=gc::runner::tests::local_deletion::recovery::fresh_higher_epoch_resumes_each_real_durable_prefix_without_old_marks) |
+  test(=gc::runner::tests::local_deletion::recovery::owned_absence_resynchronizes_before_phase_and_done_is_idempotent) |
+  test(=gc::runner::tests::local_deletion::faults::each_unlink_directory_and_progress_sync_fault_preserves_exact_recoverable_prefix) |
+  test(=gc::runner::tests::local_deletion::faults::each_handoff_refuses_current_expiry_control_change_and_replacement) |
+  test(=gc::runner::tests::local_deletion::faults::unit_success_or_swallowed_sync_failure_never_acknowledges_progress) |
+  test(=gc::runner::tests::local_deletion::recovery::cancelled_waiter_retains_exclusion_until_worker_then_fresh_collector_finishes) |
+  test(=gc::runner::tests::local_deletion::recovery::changed_current_fence_reconciles_retained_index_after_container_absence) |
+  test(=gc::runner::tests::local_deletion::recovery::restore_durably_cancels_exact_local_owner_before_clearing_exclusion)
+)
+'''
+threads-required = "num-test-threads"
+slow-timeout = { period = "60s", terminate-after = 5 }
+
 # The parallel native ownership matrices take about a minute to prepare before
 # their required 60-second deletion waits. Reserve the test slots and allow a
 # bounded third minute for the real handoffs and refusal assertions.

@@ -233,6 +233,7 @@ in {
   integration.native-index-lookup = import ./native-index-lookup.nix {inherit sourceGate;};
   integration.native-memo-persistence = import ./native-memo-persistence.nix {inherit sourceGate;};
   integration.native-memo-retention = import ./native-memo-retention.nix {inherit sourceGate;};
+  integration.native-source-preserving-retirement = import ./native-source-preserving-retirement.nix {inherit sourceGate;};
   integration.namespace-reference-models = import ./namespace-models.nix {inherit sourceGate;};
   integration.attribute-reference-models = import ./attribute-models.nix {inherit sourceGate;};
   integration.index-format = import ./index-format.nix {inherit sourceGate;};

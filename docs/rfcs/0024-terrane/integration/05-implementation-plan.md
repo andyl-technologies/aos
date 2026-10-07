@@ -968,6 +968,10 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   pass; they add no cold-fork behavior or authority. Read-only review confirms
   both preparation and final publication must qualify retained lineage without
   TreeNode I/O; optimizing preparation alone cannot satisfy ALG-32.
+  The native cold-fork prerequisite now additionally requires a thirteenth exact
+  witness: genuine older absent-key-7 publication, ordinary full requalification,
+  then a separate zero-Node fork. The original twelve-case qualification retains
+  its earlier scope; this new compatibility witness remains unimplemented.
   The modern commit format audit confirms an ALG-36 codec gap: generic recipe
   validation accepts graft and merge values that omit required operation-specific
   fields. Independently assembled complete Commit inputs demonstrate acceptance
@@ -3231,9 +3235,17 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   ignored or unrun cases, preserved at `bce511b1392d`. Each original case executes
   one positive test against the same 571-test inventory. Its actual hermetic input
   independently matches all 4,848 frozen files. Nextest qualification remains
-  pending: nine measured cases exceed its current 120-second default timeout.
-  No timer, assertion or timeout configuration has changed. Qualified destructive
+  pending: nine measured cases exceed the ordinary 120-second default timeout.
+  A shared Nextest override now reserves all test slots for exactly these ten
+  cases and bounds each process to 300 seconds, based on measured 100-210-second
+  owning runs. No production timer, assertion or qualification window changes.
+  The override itself establishes no Nextest pass. Qualified destructive
   source carry, broader collection scenarios and the complete gate remain open.
+  Shared private module registrations and a six-case native source-preserving
+  retirement prerequisite now reserve complete per-source ordinary visitation,
+  genuine loss-generation carry and atomic native acknowledgment before subsequent
+  cold reuse. Missing witnesses fail discovery explicitly. Registration grants
+  no collection or preservation authority and qualifies no task or gate.
   The reviewed pure journal, marking, proof-context, checkpoint, retention and
   grace-window bodies now replace their trunk declarations. All 27 adopted
   paths, including 16 independent hexadecimal witnesses, match the qualified

@@ -13,6 +13,7 @@
     "final_cold_dispatch_refuses_source_original_lost_after_preparation"
     "repository_raw_source_uses_ordinary_full_admission"
     "repository_selected_source_propagates_current_fork_denial_without_fallback"
+    "repository_older_lineage_requalifies_before_separate_zero_node_fork"
   ];
   selectors =
     map (name: "selected_bridge::native_guard::cold_fork::tests::${name}") tests
@@ -35,6 +36,6 @@ in
       python3 ../tests/terrane/check_native_gate.py execution \
         "$TMPDIR/cold-fork-source-test.log" "[\"$test_name\"]"
     done
-    printf 'PASS: native cold-fork source and publication prerequisites (12 exact cases); source-preserving collection remains separate\n' \
+    printf 'PASS: native cold-fork source and publication prerequisites (13 exact cases); source-preserving collection remains separate\n' \
       > "$out/result"
   ''

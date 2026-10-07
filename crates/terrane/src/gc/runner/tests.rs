@@ -12,6 +12,7 @@ use terrane_core::gc::{GcMark, Phase, RootReason};
 use terrane_core::identity::{IdentityKind, TERRANE_V1};
 
 mod notes;
+mod source_carry;
 
 fn windows() -> Windows {
     Windows::new(30, 60, 60, 90).unwrap()
