@@ -9466,12 +9466,12 @@ fn validate_transaction(
         if record.key.is_empty() || record.key.len() > limits.maximum_key_bytes {
             return Err(JournalError::LimitExceeded("record key bytes"));
         }
-        let encoded = encode_record(record)?;
-        if encoded.len() > limits.maximum_record_bytes {
+        let payload_bytes = EncodedRecordLayout::of(record)?.payload_bytes;
+        if payload_bytes > limits.maximum_record_bytes {
             return Err(JournalError::LimitExceeded("record payload bytes"));
         }
         transaction_bytes = transaction_bytes
-            .checked_add(encoded.len())
+            .checked_add(payload_bytes)
             .ok_or(JournalError::LimitExceeded("transaction bytes"))?;
         if transaction_bytes > limits.maximum_transaction_bytes {
             return Err(JournalError::LimitExceeded("transaction bytes"));
