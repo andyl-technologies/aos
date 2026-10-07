@@ -116,15 +116,14 @@ receives 412. An unconditional GET receives the actual changed bytes. No fake
 412 is injected. Response-offered bytes are provider writes, not measured client
 consumption. Retain actual downstream consumption separately.
 
-There is a concrete production scope distinction at this source revision:
-`external_object/stage/executor.rs` constructs `VerifyClosedStage` as an object
-GET without If-Match or versionId. The complete SHA/size verifier can refuse
-changed bytes afterward. `external_object/stage/inspection.rs` sets If-Match for
-bounded narinfo inspection. A replacement case against the current queue cannot
-be labelled conditional-read refusal unless a separately reviewed source fence
-is implemented. Preserve post-hash refusal and conditional refusal as separate
-observations. The test trigger deliberately violates a source serving assumption;
-it proves no provider immutability guarantee.
+`external_object/stage/executor.rs` constructs `VerifyClosedStage` through
+`closed_stage_read_request`, which signs the retained strong ETag in If-Match and
+includes the actual provider version when present. The complete SHA/size verifier
+also checks bytes returned by the provider. Retain the actual request condition,
+version and provider response before reporting conditional-read refusal; preserve
+post-hash refusal as a separate observation. This Map adapter does not qualify
+Garage or a hosted provider. The test trigger deliberately violates a source
+serving assumption; it proves no provider immutability guarantee.
 
 ## Whole-handler resource observations
 
