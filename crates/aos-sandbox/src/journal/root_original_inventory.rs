@@ -23,7 +23,9 @@ use aos_sandbox_source_provider_protocol::native_held_completion::NativeHeldCont
 use super::capacity_reservation::{
     QueryCapacityDataV6, QueryCapacityProfileV6, QueryCapacityRecordV6,
 };
-use super::capacity_reservation::family::{CanonicalCapacityFamily, canonical_reservations};
+use super::capacity_reservation::family::{
+    CanonicalCapacityFamily, canonical_reservations, canonical_reservations_after,
+};
 use super::native_held::OriginalRootCapacityRecordV5;
 use super::root_original_native::require_supported_funding_families as require_supported_families;
 use super::{
@@ -464,6 +466,18 @@ pub(super) fn require_sequence_headroom(state: &State, next_sequence: u64) -> Re
 /// Rejects any malformed or unknown floor, regardless of selection order.
 pub(super) fn has_query_floor(state: &State) -> Result<bool, JournalError> {
     Ok(canonical_reservations(state)?.iter()
+        .any(|family| matches!(family, CanonicalCapacityFamily::Query6(_))))
+}
+
+/// Traverses every prospective canonical floor before detecting any Query.
+///
+/// # Errors
+/// Rejects malformed/unknown projected rows or duplicate canonical identities.
+pub(super) fn has_query_floor_after(
+    state: &State,
+    transaction: &JournalTransaction,
+) -> Result<bool, JournalError> {
+    Ok(canonical_reservations_after(state, transaction)?.iter()
         .any(|family| matches!(family, CanonicalCapacityFamily::Query6(_))))
 }
 

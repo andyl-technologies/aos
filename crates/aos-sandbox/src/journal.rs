@@ -9215,35 +9215,38 @@ fn replay_original_retained<R: Read + Seek + Borrow<File>>(
                             &replay_transaction.records,
                             limits,
                         )?;
-                        if logical_replay {
+                        // Keep floor decoding at its original short-circuit
+                        // position; acquire a full prospective copy only for
+                        // the checks that actually consume it. Earlier errors
+                        // no longer acquire or retain that unnecessary clone.
+                        if logical_replay
+                            && (query_edge.is_some()
+                                || first_successor_replay
+                                || root_original_inventory::has_query_floor(&state)?
+                                || root_original_inventory::has_query_floor_after(&state, &replay_transaction)?)
+                        {
                             reached_prospective = Some(root_original_inventory::materialize(&state, &replay_transaction));
                             let prospective = reached_prospective.as_ref()
                                 .ok_or(JournalError::ProtectedBoundary)?;
-                            if query_edge.is_some()
-                                || first_successor_replay
-                                || root_original_inventory::has_query_floor(&state)?
-                                || root_original_inventory::has_query_floor(&prospective)?
-                            {
-                                // Exact owner/settlement validation already ran above.
-                                // Empty-change accounting charges that exact post-state;
-                                // no new settlement interpretation or authority follows.
-                                validate_reserved_capacity(
-                                    &prospective,
-                                    materialized_bytes,
-                                    &[],
-                                    None,
-                                    offset,
-                                    committed_transactions.checked_add(1)
-                                        .ok_or(JournalError::LimitExceeded("committed transaction count"))?,
-                                    limits,
-                                    None,
-                                )?;
-                                root_original_inventory::require_sequence_headroom(
-                                    &prospective, expected_sequence,
-                                )?;
-                                if first_successor_replay {
-                                    source_tree_successor::require_sequence_headroom(&prospective, expected_sequence)?;
-                                }
+                            // Exact owner/settlement validation already ran above.
+                            // Empty-change accounting charges that exact post-state;
+                            // no new settlement interpretation or authority follows.
+                            validate_reserved_capacity(
+                                &prospective,
+                                materialized_bytes,
+                                &[],
+                                None,
+                                offset,
+                                committed_transactions.checked_add(1)
+                                    .ok_or(JournalError::LimitExceeded("committed transaction count"))?,
+                                limits,
+                                None,
+                            )?;
+                            root_original_inventory::require_sequence_headroom(
+                                &prospective, expected_sequence,
+                            )?;
+                            if first_successor_replay {
+                                source_tree_successor::require_sequence_headroom(&prospective, expected_sequence)?;
                             }
                             reached_prospective = None;
                         }
