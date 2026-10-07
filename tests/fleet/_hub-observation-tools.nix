@@ -114,7 +114,8 @@ in
             ${pkgs.python3}/bin/python3 -B -E \
               ${helperSource}/tests/fleet/observation-tools/install.py \
               ${prepared} ${helperSource} ${codec} "$out" \
-              ${pkgs.python3}/bin/python3 ${pkgs.bash}/bin/bash
+              ${pkgs.python3}/bin/python3 ${pkgs.bash}/bin/bash \
+              ${pkgs.ca-certificates}/etc/ssl/certs/ca-certificates.crt
           '';
         }
       ];

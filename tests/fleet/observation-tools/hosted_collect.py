@@ -100,6 +100,11 @@ def destination(operation, request, scope):
 
 def remaining(deadline):
     value = min(deadline['monotonic'] - time.monotonic(), deadline['unix'] - time.time())
+    if 'bootTimeNanos' in deadline:
+        if Path('/proc/sys/kernel/random/boot_id').read_text().strip() != deadline['bootId']:
+            raise ValueError('Collector belongs to another host boot')
+        value = min(value, (int(deadline['bootTimeNanos'])
+                    - time.clock_gettime_ns(time.CLOCK_BOOTTIME)) / 1000000000)
     if value <= 0:
         raise ValueError('Collector original observation cutoff elapsed')
     return value
@@ -295,14 +300,26 @@ class Supervisor:
                    for key in ('sourceSha256', 'querySourceSha256')):
                 raise ValueError('Managed reader measured source binding differs')
         self.deadline = dict(deadline)
-        closed(self.deadline, {'monotonic', 'unix'})
+        deadline_fields = {'monotonic', 'unix'}
+        if 'bootTimeNanos' in self.deadline:
+            deadline_fields |= {'bootTimeNanos', 'bootId'}
+        closed(self.deadline, deadline_fields)
         if any(type(value) not in (int, float) or not math.isfinite(value) or value <= 0
-               for value in self.deadline.values()):
+               for value in (self.deadline['monotonic'], self.deadline['unix'])):
             raise ValueError('Collector deadline differs')
+        if 'bootTimeNanos' in self.deadline:
+            count = self.deadline['bootTimeNanos']
+            if (not isinstance(count, str) or re.fullmatch('0|[1-9][0-9]{0,19}', count) is None
+                    or int(count) > 2**64 - 1 or not isinstance(self.deadline['bootId'], str)):
+                raise ValueError('Collector boot deadline differs')
         remaining(self.deadline)
         # Child work ends before the original total cutoff. Owned cancellation
         # uses this reserve rather than adding time after an expired window.
-        self.work_deadline = {name: value - 2 for name, value in self.deadline.items()}
+        self.work_deadline = {**self.deadline,
+            'monotonic': self.deadline['monotonic'] - 2,
+            'unix': self.deadline['unix'] - 2}
+        if 'bootTimeNanos' in self.deadline:
+            self.work_deadline['bootTimeNanos'] = str(int(self.deadline['bootTimeNanos']) - 2000000000)
         remaining(self.work_deadline)
         self.parent = pin_process(os.getpid())
         self._observations = {}
@@ -468,8 +485,10 @@ class Supervisor:
                         os.killpg(child.pid, signal.SIGKILL)
                     except ProcessLookupError:
                         pass
-                    wait = min(1, self.deadline['monotonic'] - time.monotonic(),
-                               self.deadline['unix'] - time.time())
+                    try:
+                        wait = min(1, remaining(self.deadline))
+                    except ValueError:
+                        wait = 0
                     if wait > 0:
                         try:
                             child.wait(timeout=wait)

@@ -13,7 +13,7 @@ def reference(path):
     return {'file': str(path), 'sha256': digest, 'byteSize': str(path.stat().st_size)}
 
 
-def install(prepared, tool_source, codec, output, python, bash):
+def install(prepared, tool_source, codec, output, python, bash, trust):
     prepared, codec, output = Path(prepared), Path(codec), Path(output)
     spec = json.loads((prepared / 'selected-build-inputs.json').read_bytes())
     library = output / 'libexec/aos-observation-tools'
@@ -24,7 +24,8 @@ def install(prepared, tool_source, codec, output, python, bash):
                  'producer_inputs.py', 'render_private_wrapper.py', 'native_inventory.py',
                  'native_inventory_tests.py', 'native_routes.py', 'native_routes_tests.py',
                  'hosted_custody.py', 'hosted_custody_tests.py',
-                 'hosted_collect.py', 'hosted_collect_tests.py'):
+                 'hosted_collect.py', 'hosted_collect_tests.py',
+                 'hosted_qualification.py', 'hosted_qualification_tests.py'):
         shutil.copyfile(source / name, library / name)
     shutil.copytree(source / 'fixtures', library / 'fixtures')
     provenance = spec['runtimeProvenance']
@@ -35,13 +36,17 @@ def install(prepared, tool_source, codec, output, python, bash):
                'sourceTree': spec['sourceTree'], 'nativeAuth': reference(library / 'native_auth.py'),
                'observerExecutable': reference(codec / 'bin/aos-storage-body-codec'),
                'captureImplementationSha256': None, 'producerSha256': spec['producerSha256'],
-               'clientExecutable': spec['clientExecutable']}
+               'clientExecutable': spec['clientExecutable'],
+               'hostedCollectorTools': {'python': reference(Path(python).resolve(strict=True)),
+                   'collector': reference(library / 'hosted_collect.py'),
+                   'trust': reference(Path(trust).resolve(strict=True))}}
     (library / 'package-context.json').write_text(json.dumps(context, indent=2) + '\n')
     binary = output / 'bin'
     binary.mkdir()
     commands = {'aos-native-body-observer': f'{codec}/bin/aos-storage-body-codec native-bodies',
                 'aos-native-body-auth': f'{python} -B -E {library}/native_auth.py',
                 'aos-hosted-byte-assessment': f'{python} -B -E {library}/hosted_assessment.py',
+                'aos-hosted-byte-qualification': f'{python} -B -E {library}/hosted_qualification.py',
                 'aos-observation-private-wrapper': f'{python} -B -E {library}/render_private_wrapper.py'}
     for name, command in commands.items():
         path = binary / name
@@ -61,6 +66,6 @@ def install(prepared, tool_source, codec, output, python, bash):
 
 
 if __name__ == '__main__':
-    if len(sys.argv) != 7:
-        raise SystemExit('Expected prepared source, Python source, codec, output, Python and Bash')
+    if len(sys.argv) != 8:
+        raise SystemExit('Expected prepared source, Python source, codec, output, Python, Bash and trust')
     install(*sys.argv[1:])

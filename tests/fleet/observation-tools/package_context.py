@@ -75,10 +75,16 @@ def context(script):
     raw = installed_bytes(directory / 'package-context.json', 1024 * 1024)
     selected = json.loads(raw)
     expected = {'version', 'runtimeSource', 'runtime', 'runtimeProvenance', 'sourceTree', 'nativeAuth',
-                'observerExecutable', 'captureImplementationSha256', 'producerSha256', 'clientExecutable'}
+                'observerExecutable', 'captureImplementationSha256', 'producerSha256', 'clientExecutable',
+                'hostedCollectorTools'}
     if set(selected) != expected or selected['version'] != 1:
         raise ValueError('Installed helper context differs')
-    for reference in (selected['nativeAuth'], selected['observerExecutable']):
+    tools = selected['hostedCollectorTools']
+    if not isinstance(tools, dict) or set(tools) != {'python', 'collector', 'trust'}:
+        raise ValueError('Installed hosted collector tools differ')
+    if tools['collector']['file'] != str(directory / 'hosted_collect.py'):
+        raise ValueError('Installed collector selects a different source')
+    for reference in (selected['nativeAuth'], selected['observerExecutable'], *tools.values()):
         if set(reference) != {'file', 'sha256', 'byteSize'}:
             raise ValueError('Installed code reference differs')
         body = installed_bytes(reference['file'])

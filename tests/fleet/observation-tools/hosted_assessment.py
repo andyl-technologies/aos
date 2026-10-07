@@ -296,8 +296,48 @@ def direct_control_receiver_pair(call, captures, offered, terminal, codec):
     return result
 
 
+def hosted_execute_records(sidecar):
+    """Parse observed instance messages without inventing a remote process.
+
+    The code-bound collector authenticates the selected provider exchanges.
+    Its independent image, active-instance and export-completeness gaps remain
+    in the ingress assessment; these records supply partial sender joins only.
+    """
+    observed = READERS["hosted_messages"](sidecar)
+    result = {"attempts": [], "finalContexts": [], "directOffered": [], "directTerminal": []}
+    if observed["messages"] is None:
+        return result
+
+    selected = parsed(sidecar["nativeLog"]["selection"])
+    epoch = {name: selected[name] for name in ("firstUnixMicros", "lastUnixMicros")}
+    parser = runpy.run_path(str(SOURCE / "tests/fleet/_hub-storage-work-execute-observation.py"))
+    function = parser["storage_work_execute_receipts"]
+
+    for instance, messages in observed["messages"].items():
+        def message_reader(*_args):
+            return iter(messages)
+
+        function.__globals__.update(observed_native_messages=message_reader,
+                                   _closed_review_json=READERS["closed_json"])
+        records = function(None, None)
+        records.update(direct_control_records(None, None, None, message_reader))
+        bracket_records(records, epoch)
+        for kind in result:
+            result[kind].extend({**row, "hostedInstanceId": instance} for row in records[kind])
+
+    if sum(len(rows) for rows in result.values()) > MAX_RECORDS:
+        raise ValueError("Hosted sender record inventory exceeds its bound")
+    for kind, rows in result.items():
+        unique(rows, lambda row: row["value"]["attempt"]["transportCallId"]
+               if kind == "finalContexts" else row["value"]["transportCallId"])
+    return result
+
+
 def execute_records(sidecar):
     """Reuse the real Native process/log parser on the same held, pinned inode."""
+    if sidecar["nativeLog"] is not None and sidecar["nativeLog"].get("format") == "cloud_run":
+        return hosted_execute_records(sidecar)
+
     # ingress_events checks the process epoch/source and the plain-log custody.
     _, log_missing = READERS["ingress_events"](sidecar)
     log = sidecar["nativeLog"]
