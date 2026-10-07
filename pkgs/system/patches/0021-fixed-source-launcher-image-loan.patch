@@ -128,7 +128,12 @@ diff --git a/src/core/service.c b/src/core/service.c
  #include "bus-util.h"
 +#include "capability-util.h"
  #include "cgroup.h"
-@@ -1965,1 +1965,121 @@
+@@ -45,3 +46,4 @@
+ #include "namespace.h"
+ #include "open-file.h"
++#include "ordered-set.h"
+ #include "parse-util.h"
+@@ -1965,1 +1967,120 @@
 -static int service_spawn_internal(
 +/* Private multicall copies are not a general Mount executable surface.
 + * Only this genuine PID1 control-command crossing selects their purpose. */
@@ -154,7 +159,6 @@ diff --git a/src/core/service.c b/src/core/service.c
 +        static const char chmod[] = "/run/aos/mount-executable-carrier/chmod";
 +        static const char credentials[] = "/run/credentials/aos-sandbox-mountd.service/";
 +        const ExecContext *context = &s->exec_context;
-+        ExecCommand *command;
 +        bool original_prestart = false;
 +        size_t i;
 +

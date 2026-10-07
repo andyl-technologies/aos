@@ -183,10 +183,14 @@ diff --git a/src/core/main.c b/src/core/main.c
 @@ -12,1 +12,2 @@
  #include "sd-daemon.h"
 +#include "aos-host-readiness.h"
-@@ -3467,1 +3468,2 @@ int main(int argc, char *argv[]) {
+@@ -3669,10 +3670,33 @@ int main(int argc, char *argv[]) {
+         const char *error_message = NULL;
+         uint64_t saved_ambient_set = 0;
+         int r, retval = EXIT_FAILURE;
+         Manager *m = NULL;
          FDSet *fds = NULL;
 +        AosHostReport aos_report = AOS_HOST_REPORT_INIT;
-@@ -3469,1 +3471,23 @@ int main(int argc, char *argv[]) {
+ 
          assert_se(argc > 0 && !isempty(argv[0]));
 +
 +        /* Selected fixed Guest-init exec only; ordinary manager entry, argv,
@@ -210,6 +214,9 @@ diff --git a/src/core/main.c b/src/core/main.c
 +                argc = 1;
 +                argv[1] = NULL;
 +        }
+ 
+         /* Take timestamps early on */
+         dual_timestamp_from_monotonic(&kernel_timestamp, 0);
 diff --git a/src/nspawn/nspawn-root-fd.h b/src/nspawn/nspawn-root-fd.h
 --- a/src/nspawn/nspawn-root-fd.h
 +++ b/src/nspawn/nspawn-root-fd.h
