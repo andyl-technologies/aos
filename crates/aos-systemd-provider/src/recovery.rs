@@ -3,6 +3,24 @@
 //! Recovery payloads stay private until boot selection publishes their exact
 //! bytes before the normal UKI. The evidence uses the same snake_case fields
 //! written by initrd profile seeding; it belongs to this provider, not APM.
+//!
+//! The generation's provider evidence contains this optional `recovery` object:
+//!
+//! ```json
+//! {
+//!   "copy": "B",
+//!   "uki_path": "EFI/AOS/recovery-b.efi",
+//!   "entry_path": "loader/entries/recovery-b.conf",
+//!   "source_path": "candidates/2/recovery-b.efi",
+//!   "sha256": "sha256:<64 lowercase hexadecimal digits>",
+//!   "byte_size": 63362024,
+//!   "release": "1.2.3",
+//!   "recovery_abi": 1
+//! }
+//! ```
+//!
+//! A seeded, already installed generation instead records its original artifact
+//! name in `source_path`. Only staged sources are read from the image profile.
 
 use std::fs::{self, OpenOptions};
 use std::io::Read as _;
