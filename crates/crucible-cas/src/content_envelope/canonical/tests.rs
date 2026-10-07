@@ -10,6 +10,13 @@ use crate::owned_decode::{DecodeAdmissionError, DecodeBudget, DecodeResourceAuth
 struct Authority(FixtureResourceBudget);
 
 impl DecodeResourceAuthority for Authority {
+    fn verify_live(&self) -> Result<(), DecodeAdmissionError> {
+        self.0
+            .usage()
+            .map(|_| ())
+            .map_err(DecodeAdmissionError::new)
+    }
+
     fn reserve(&self, bytes: u64) -> Result<Arc<dyn Send + Sync>, DecodeAdmissionError> {
         self.0.reserve(0, bytes).map_err(DecodeAdmissionError::new)
     }

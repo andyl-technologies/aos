@@ -98,6 +98,28 @@ impl HostServiceAllocator {
         self.capacity.resident_bytes
     }
 
+    /// Verifies retained accounting without creating a new service reservation.
+    ///
+    /// The shared capacity remains owned through every allocator and lease.
+    /// This check reads the existing counters without changing their ceilings.
+    ///
+    /// # Errors
+    /// Refuses poisoned accounting or counters outside the authored ceilings.
+    pub fn verify_live(&self) -> Result<(), HostServiceError> {
+        let used = self
+            .capacity
+            .used
+            .lock()
+            .map_err(|_| HostServiceError::Unavailable)?;
+        if used.tasks > self.capacity.tasks
+            || used.descriptors > self.capacity.descriptors
+            || used.resident_bytes > self.capacity.resident_bytes
+        {
+            return Err(HostServiceError::CapacityExhausted);
+        }
+        Ok(())
+    }
+
     /// Reserves a complete service peak before any worker or descriptor creation.
     ///
     /// The caller retains a lease in every detached borrower until join or close
@@ -245,5 +267,51 @@ mod tests {
         drop(tasks);
         drop(descriptors);
         assert!(allocator.reserve_resources(2, 4, 0).is_ok());
+    }
+
+    #[test]
+    fn live_verification_preserves_full_original_capacity_and_checks_each_ceiling() {
+        let allocator = HostServiceAllocator::new(1, 4, 4096).unwrap();
+        let lease = allocator.reserve_resources(1, 4, 4096).unwrap();
+        allocator.verify_live().unwrap();
+        let before = allocator.capacity.used.lock().unwrap();
+        assert_eq!(
+            (before.tasks, before.descriptors, before.resident_bytes),
+            (1, 4, 4096)
+        );
+        drop(before);
+        assert_eq!(
+            allocator.reserve_resources(0, 0, 1).unwrap_err(),
+            HostServiceError::CapacityExhausted
+        );
+
+        for invalid in [(2, 4, 4096), (1, 5, 4096), (1, 4, 4097)] {
+            {
+                let mut used = allocator.capacity.used.lock().unwrap();
+                (used.tasks, used.descriptors, used.resident_bytes) = invalid;
+            }
+            assert_eq!(
+                allocator.verify_live(),
+                Err(HostServiceError::CapacityExhausted)
+            );
+        }
+        {
+            let mut used = allocator.capacity.used.lock().unwrap();
+            (used.tasks, used.descriptors, used.resident_bytes) = (1, 4, 4096);
+        }
+        allocator.verify_live().unwrap();
+        drop(lease);
+        let _replacement = allocator.reserve_resources(1, 4, 4096).unwrap();
+    }
+
+    #[test]
+    fn live_verification_preserves_original_poisoned_accounting_cause() {
+        let allocator = HostServiceAllocator::new(1, 4, 4096).unwrap();
+        let poisoned = std::panic::catch_unwind(|| {
+            let _guard = allocator.capacity.used.lock().unwrap();
+            panic!("component forces original accounting poisoning");
+        });
+        assert!(poisoned.is_err());
+        assert_eq!(allocator.verify_live(), Err(HostServiceError::Unavailable));
     }
 }

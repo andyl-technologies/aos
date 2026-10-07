@@ -21,6 +21,15 @@ impl Drop for Credit {
 }
 
 impl DecodeResourceAuthority for Authority {
+    fn verify_live(&self) -> Result<(), DecodeAdmissionError> {
+        if self.used.load(Ordering::SeqCst) > self.maximum {
+            return Err(DecodeAdmissionError::new(std::io::Error::other(
+                "original component accounting is invalid",
+            )));
+        }
+        Ok(())
+    }
+
     fn reserve(&self, bytes: u64) -> Result<Arc<dyn Send + Sync>, DecodeAdmissionError> {
         self.used
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |used| {
@@ -128,10 +137,14 @@ pub(crate) fn fixture_budget() -> Result<DecodeBudget, DecodeAdmissionError> {
     Ok(tracked_fixture_budget()?.0)
 }
 
-pub(crate) fn tracked_fixture_budget() -> Result<(DecodeBudget, Arc<AtomicU64>), DecodeAdmissionError> {
+pub(crate) fn tracked_fixture_budget()
+-> Result<(DecodeBudget, Arc<AtomicU64>), DecodeAdmissionError> {
     let owner = Arc::new(Authority {
         used: Arc::new(AtomicU64::new(0)),
         maximum: 1024 * 1024,
     });
-    Ok((DecodeBudget::new(owner.clone(), owner.maximum)?, owner.used.clone()))
+    Ok((
+        DecodeBudget::new(owner.clone(), owner.maximum)?,
+        owner.used.clone(),
+    ))
 }

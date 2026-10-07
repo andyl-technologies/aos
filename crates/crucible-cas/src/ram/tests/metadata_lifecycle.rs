@@ -14,12 +14,22 @@ use crate::owned_decode::DecodeBudget;
 
 use super::*;
 
+mod record_prepay;
+
 const METADATA_BYTES: u64 = 4 * 1024 * 1024;
+
+#[derive(Debug, thiserror::Error)]
+#[error("original component authority was revoked")]
+struct RevokedOriginalAuthority;
 
 struct ObservedQuota {
     resources: FixtureResourceBudget,
     limit: u64,
     peak: AtomicU64,
+    reservations: AtomicU64,
+    verifications: AtomicU64,
+    revoke_after_verifications: AtomicU64,
+    revoked: std::sync::atomic::AtomicBool,
     refusal: Mutex<Option<(u64, u64)>>,
 }
 
@@ -33,6 +43,10 @@ impl ObservedQuota {
             resources: FixtureResourceBudget::new(128, limit),
             limit,
             peak: AtomicU64::new(0),
+            reservations: AtomicU64::new(0),
+            verifications: AtomicU64::new(0),
+            revoke_after_verifications: AtomicU64::new(0),
+            revoked: std::sync::atomic::AtomicBool::new(false),
             refusal: Mutex::new(None),
         })
     }
@@ -48,6 +62,20 @@ impl StorePhysicalQuotaGuard for ObservedQuota {
     }
 
     fn verify(&self) -> Result<(), StoreError> {
+        self.verifications.fetch_add(1, Ordering::SeqCst);
+        if self.revoke_after_verifications.fetch_update(
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+            |remaining| remaining.checked_sub(1),
+        ) == Ok(1)
+        {
+            self.revoked.store(true, Ordering::SeqCst);
+        }
+        if self.revoked.load(Ordering::SeqCst) {
+            return Err(StoreError::Supervision {
+                source: Box::new(RevokedOriginalAuthority),
+            });
+        }
         Ok(())
     }
 
@@ -56,6 +84,8 @@ impl StorePhysicalQuotaGuard for ObservedQuota {
         descriptors: u64,
         bytes: u64,
     ) -> Result<Arc<dyn Send + Sync>, StoreError> {
+        self.verify()?;
+        self.reservations.fetch_add(1, Ordering::SeqCst);
         let result = self.resources.reserve(descriptors, bytes);
         let used = self.used();
         self.peak.fetch_max(used, Ordering::SeqCst);
@@ -198,7 +228,10 @@ fn completed_child_codec_accounts_reuse_only_the_same_original_bank() {
         drop(child);
         assert!(retained.len() < 1000);
     };
-    assert!(retained.len() > 100);
+    assert!(
+        retained.len() >= 449,
+        "original retained-owner capacity regressed"
+    );
     assert!(contains_original_quota(&error), "{error:?}");
     assert!(quota.used() > parent_used + 3 * 1024 * 1024);
     let (used, requested) = quota.refusal.lock().unwrap().unwrap();
@@ -224,6 +257,8 @@ fn capture_and_verification_release_completed_object_codec_credits() {
     let budget = DecodeBudget::for_store(quota.clone()).unwrap();
     let scope = budget.enter();
     let mut pages = 0;
+    let reservation_start = quota.reservations.load(Ordering::SeqCst);
+    let verification_start = quota.verifications.load(Ordering::SeqCst);
     let result = store.capture(
         topology(256 * 4096),
         Scope::Exact,
@@ -238,18 +273,38 @@ fn capture_and_verification_release_completed_object_codec_credits() {
     );
     let root = result.unwrap();
     assert_eq!(pages, 256);
+    let capture_reservations = quota.reservations.load(Ordering::SeqCst) - reservation_start;
+    let capture_verifications = quota.verifications.load(Ordering::SeqCst) - verification_start;
+    let reservation_start = quota.reservations.load(Ordering::SeqCst);
+    let verification_start = quota.verifications.load(Ordering::SeqCst);
     let verified = store.verify(&root, &mut || Ok(())).unwrap();
     assert_eq!(verified.pages, 256);
     assert_eq!(verified.logical_bytes, 256 * 4096);
     assert!(quota.refusal.lock().unwrap().is_none());
-    assert!(quota.peak.load(Ordering::SeqCst) < 2 * 1024 * 1024);
+    // The unchanged original implementation's observed peak is the ceiling;
+    // additional sharing and batch-control credits cannot consume more bank.
+    assert!(quota.peak.load(Ordering::SeqCst) <= 819_663);
+    let reference = crucible_ram::oracle::recompute(
+        &topology(256 * 4096),
+        Scope::Exact,
+        256,
+        |_, index, bytes| {
+            bytes.fill(0);
+            bytes[..8].copy_from_slice(&index.to_be_bytes());
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(root.record().digest(), reference);
     assert!(quota.used() < baseline + 64 * 1024);
 
     // crucible-lint: allow direct-diagnostic -- this component reports real bounded-bank capture/verification counters, without a scale qualification claim.
     eprintln!(
-        "capture_pages={pages} verification_pages={} peak={} original_limit={METADATA_BYTES}",
+        "capture_pages={pages} verification_pages={} peak={} original_limit={METADATA_BYTES} capture_reservations={capture_reservations} capture_verifications={capture_verifications} read_reservations={} read_verifications={}",
         verified.pages,
-        quota.peak.load(Ordering::SeqCst)
+        quota.peak.load(Ordering::SeqCst),
+        quota.reservations.load(Ordering::SeqCst) - reservation_start,
+        quota.verifications.load(Ordering::SeqCst) - verification_start,
     );
     drop(root);
     drop(scope);
@@ -372,7 +427,8 @@ fn encoded_publication_source_keeps_its_loan_through_the_last_open_reader() {
     let child = parent.child().unwrap();
     let scope = child.enter();
     child.charge_array::<u8>(4096).unwrap();
-    let source = crate::ram::codec_ownership::encoded_source(vec![9; 4096], &child).unwrap();
+    let source =
+        crate::ram::codec_ownership::encoded_source(vec![9; 4096], &child, &child).unwrap();
     let clone = source.clone();
     let mut reader = clone.open().unwrap();
     drop(scope);

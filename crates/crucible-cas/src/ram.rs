@@ -31,6 +31,7 @@ use crate::content_store::{
 mod backing;
 mod codec;
 mod codec_ownership;
+mod record_account;
 pub use backing::maximum_encoded_ram_graph_bytes;
 mod inventory;
 mod metadata;
@@ -263,13 +264,43 @@ struct Work<'a> {
     visits: u64,
     io_bytes: u64,
     boundary: &'a mut dyn FnMut() -> Result<(), RamStoreError>,
-    pending: Option<Vec<PendingPublication>>,
+    pending: Option<PendingBatch>,
 }
 
 struct PendingPublication {
     id: ContentId,
     source: BlobHandle,
-    envelope: codec_ownership::OwnedEnvelope,
+    envelope: codec_ownership::PendingEnvelope,
+}
+
+// Element storage closes before its original scratch receipt. A flush drops
+// this entire old batch before admitting a replacement array.
+struct PendingBatch {
+    objects: Vec<PendingPublication>,
+    _credit: crate::owned_decode::DecodeScratch,
+}
+
+impl std::ops::Deref for PendingBatch {
+    type Target = Vec<PendingPublication>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.objects
+    }
+}
+
+impl std::ops::DerefMut for PendingBatch {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.objects
+    }
+}
+
+impl<'a> IntoIterator for &'a PendingBatch {
+    type Item = &'a PendingPublication;
+    type IntoIter = std::slice::Iter<'a, PendingPublication>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.objects.iter()
+    }
 }
 
 impl<'a> Work<'a> {
@@ -288,6 +319,12 @@ impl<'a> Work<'a> {
 
     fn visit(&mut self, bytes: u64) -> Result<(), RamStoreError> {
         (self.boundary)()?;
+        self.visit_accounting(bytes)
+    }
+
+    // The prepaid small-record reader relocates its existing second poll.
+    // All other visitors retain their original poll-before-accounting order.
+    fn visit_accounting(&mut self, bytes: u64) -> Result<(), RamStoreError> {
         self.visits = self
             .visits
             .checked_add(1)

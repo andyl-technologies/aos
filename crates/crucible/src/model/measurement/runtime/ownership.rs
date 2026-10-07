@@ -116,6 +116,15 @@ mod tests {
     }
 
     impl DecodeResourceAuthority for Authority {
+        fn verify_live(&self) -> Result<(), DecodeAdmissionError> {
+            if self.used.load(Ordering::SeqCst) > self.maximum {
+                return Err(DecodeAdmissionError::new(std::io::Error::other(
+                    "original component accounting is invalid",
+                )));
+            }
+            Ok(())
+        }
+
         fn reserve(&self, bytes: u64) -> Result<Arc<dyn Send + Sync>, DecodeAdmissionError> {
             self.used
                 .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |used| {

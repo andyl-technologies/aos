@@ -1370,6 +1370,12 @@ fn borrowed_selector_checks_match_authoring_projection() {
     ];
     struct NoProjectionCredit(std::sync::atomic::AtomicBool);
     impl crate::owned_decode::DecodeResourceAuthority for NoProjectionCredit {
+        fn verify_live(&self) -> Result<(), crate::owned_decode::DecodeAdmissionError> {
+            // This component models refusal by allocation count, not revocation.
+            // The original authority stays live while its fixture value is retained.
+            Ok(())
+        }
+
         fn reserve(
             &self,
             _bytes: u64,

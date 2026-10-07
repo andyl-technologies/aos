@@ -47,6 +47,15 @@ impl Drop for Credit {
 }
 
 impl DecodeResourceAuthority for FiniteAuthority {
+    fn verify_live(&self) -> Result<(), DecodeAdmissionError> {
+        if self.0.leaf_visited.load(Ordering::Acquire)
+            || self.0.used.load(Ordering::Acquire) > FIXTURE_METADATA_BYTES
+        {
+            return Err(DecodeAdmissionError::new(RefusedLeafAllocation));
+        }
+        Ok(())
+    }
+
     fn reserve(&self, bytes: u64) -> Result<Arc<dyn Send + Sync>, DecodeAdmissionError> {
         let admitted = !self.0.leaf_visited.load(Ordering::Acquire)
             && self

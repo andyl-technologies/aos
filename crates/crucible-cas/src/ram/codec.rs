@@ -12,17 +12,20 @@
 //! body fields authenticate against the separately computed logical digests.
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use crucible_ram::{Limits, NodeDigest, PageDigest, RootRecord};
 
 use crate::content_envelope::{ContentChild, ContentEnvelope};
 use crate::content_store::{ContentId, ObjectKind, StoreError};
 
-use super::codec_ownership::{OwnedEnvelope, admission, encoded_source};
+use super::codec_ownership::{OwnedEnvelope, PublicationInput, admission, encoded_source};
+use super::record_account::{RecordAccount, RecordAllocationPlan, child_node_bytes, shared_extent};
+use crate::owned_decode::DecodeBudget;
 
 use super::{
-    MAX_RAM_OBJECT_BYTES, PendingPublication, RamRetention, RamStore, RamStoreError, Work,
-    empty_node, logical,
+    MAX_RAM_OBJECT_BYTES, PendingBatch, PendingPublication, RamRetention, RamStore, RamStoreError,
+    Work, empty_node, logical,
 };
 
 pub(super) const PAGE_SCHEMA: &str = "crucible.ram.page";
@@ -64,21 +67,50 @@ impl RamStore {
         work: &mut Work<'_>,
     ) -> Result<ContentId, RamStoreError> {
         let account = self.object_account()?;
-        let _scope = account.enter();
-        let bytes = envelope.canonical_bytes();
-        account.check().map_err(admission)?;
-        let id = envelope.content_id(kind);
-        work.visit(bytes.len() as u64)?;
+        self.put_envelope_with_account(
+            PublicationInput::Borrowed(envelope),
+            kind,
+            retention,
+            work,
+            &RecordAccount {
+                codec: account.clone(),
+                original: account,
+            },
+        )
+    }
 
-        // The operation's GC fence must precede publication. Registering this
-        // exact expected ID also protects crash recovery before a put completes.
+    fn put_envelope_with_account(
+        &self,
+        input: PublicationInput<'_>,
+        kind: ObjectKind,
+        retention: &dyn RamRetention,
+        work: &mut Work<'_>,
+        accounts: &RecordAccount,
+    ) -> Result<ContentId, RamStoreError> {
+        let envelope = input.envelope();
+        let account = &accounts.codec;
+        let original = &accounts.original;
+        let (id, bytes) = {
+            let _scope = account.enter();
+            let bytes = envelope.canonical_bytes();
+            account.check().map_err(admission)?;
+            (envelope.content_id(kind), bytes)
+        };
+        // Operation, retention and all backend callbacks use original authority.
+        // Only concrete codec allocations enter the prepaid partition.
+        let _original_scope = original.enter();
+        work.visit(bytes.len() as u64)?;
         retention.retain_object(id)?;
-        let source = encoded_source(bytes, &account)?;
+        let source = {
+            let _scope = account.enter();
+            encoded_source(bytes, account, original)?
+        };
         if let Some(pending) = &work.pending {
             if let Some(existing) = pending.iter().find(|existing| existing.id == id) {
-                if existing.envelope != *envelope {
+                if *existing.envelope != *envelope {
                     return Err(StoreError::Corrupt { id }.into());
                 }
+                (work.boundary)()?;
                 return Ok(id);
             }
             let buffered_bytes = pending.iter().try_fold(0_u64, |total, object| {
@@ -94,25 +126,18 @@ impl RamStore {
                 self.flush_capture_batch(work)?;
             }
             if let Some(pending) = &mut work.pending {
-                // A pending canonical envelope is a distinct owned copy. Its
-                // conservative closed-schema loan precedes that copy and stays
-                // with it until batch publication and authentication finish.
-                let clone_bytes = ContentEnvelope::decoding_memory_bound(
-                    source.logical_length() as usize,
-                    envelope.children().len(),
-                )?;
-                crate::owned_decode::charge_bytes(clone_bytes).map_err(admission)?;
+                let envelope = input.into_pending(account, source.logical_length() as usize)?;
+                (work.boundary)()?;
                 pending.push(PendingPublication {
                     id,
                     source,
-                    envelope: OwnedEnvelope::new(envelope.clone(), &account),
+                    envelope,
                 });
                 return Ok(id);
             }
         }
         let receipt = self.backend.put_if_absent(id, &source)?;
         self.validate_receipt(&receipt, id, source.logical_length())?;
-
         let persisted = self.read_envelope(id, work)?;
         if persisted != *envelope {
             return Err(StoreError::Corrupt { id }.into());
@@ -142,12 +167,37 @@ impl RamStore {
             }
             for (object, receipt) in pending.iter().zip(&receipts) {
                 self.validate_receipt(receipt, object.id, object.source.logical_length())?;
-                if self.read_envelope(object.id, work)? != object.envelope {
+                if self.read_envelope(object.id, work)? != *object.envelope {
                     return Err(StoreError::Corrupt { id: object.id }.into());
                 }
             }
         }
-        work.pending = Some(Vec::with_capacity(MAX_CAPTURE_BATCH_OBJECTS));
+        drop(pending);
+        self.begin_capture_batch(work)?;
+        Ok(())
+    }
+
+    pub(super) fn begin_capture_batch(&self, work: &mut Work<'_>) -> Result<(), RamStoreError> {
+        if work.pending.is_some() {
+            return Err(RamStoreError::Invalid("capture batch already present"));
+        }
+        let account = self.object_account()?;
+        let extent = (std::mem::size_of::<PendingPublication>() as u64)
+            .checked_mul(MAX_CAPTURE_BATCH_OBJECTS as u64)
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<PendingBatch>() as u64))
+            .ok_or(RamStoreError::Limit("capture batch allocation"))?;
+        let credit = account.reserve_scratch_bytes(extent).map_err(admission)?;
+        let mut objects = Vec::new();
+        objects
+            .try_reserve_exact(MAX_CAPTURE_BATCH_OBJECTS)
+            .map_err(|source| StoreError::StreamIo {
+                operation: "allocate RAM capture batch",
+                source: std::io::Error::other(source),
+            })?;
+        work.pending = Some(PendingBatch {
+            objects,
+            _credit: credit,
+        });
         Ok(())
     }
 
@@ -184,6 +234,24 @@ impl RamStore {
         id: ContentId,
         work: &mut Work<'_>,
     ) -> Result<OwnedEnvelope, RamStoreError> {
+        self.read_envelope_with_partition(id, work, true)
+    }
+
+    #[cfg(test)]
+    pub(super) fn read_envelope_without_prepayment(
+        &self,
+        id: ContentId,
+        work: &mut Work<'_>,
+    ) -> Result<OwnedEnvelope, RamStoreError> {
+        self.read_envelope_with_partition(id, work, false)
+    }
+
+    fn read_envelope_with_partition(
+        &self,
+        id: ContentId,
+        work: &mut Work<'_>,
+        prepaid: bool,
+    ) -> Result<OwnedEnvelope, RamStoreError> {
         let account = self.object_account()?;
         let _scope = account.enter();
         if id.schema_version() != SCHEMA_VERSION {
@@ -198,17 +266,60 @@ impl RamStore {
         if source.logical_length() > maximum_bytes {
             return Err(RamStoreError::Limit("single canonical object"));
         }
+        if prepaid && matches!(id.kind(), ObjectKind::RamTree | ObjectKind::RamExtent) {
+            let previous_counts = (work.visits, work.io_bytes);
+            if let Err(error) = work.visit_accounting(source.logical_length()) {
+                let refused_counts = (work.visits, work.io_bytes);
+                (work.visits, work.io_bytes) = previous_counts;
+                // Preserve the original second-poll cancellation precedence and
+                // partial scalar state. No codec allocation follows refusal.
+                (work.boundary)()?;
+                (work.visits, work.io_bytes) = refused_counts;
+                return Err(error);
+            }
+            let length = usize::try_from(source.logical_length())
+                .map_err(|_| RamStoreError::Limit("single canonical object"))?;
+            let record = RecordAccount::new(
+                &account,
+                RecordAllocationPlan::read(length, maximum_children)?,
+            )?;
+            // This whole temporary loan stays outside ReservoirOwner. The Vec
+            // is declared afterward and therefore closes before its own credit
+            // on every return, including decoder and terminal-boundary failures.
+            let _raw_credit = record
+                .original
+                .reserve_scratch_array::<u8>(length)
+                .map_err(admission)?;
+            let mut bytes = Vec::new();
+            bytes.try_reserve_exact(length).map_err(|source| {
+                admission(crate::owned_decode::DecodeAdmissionError::new(source))
+            })?;
+            bytes.resize(length, 0);
+            // Restore the real account for source.open/read/EOF and deferred
+            // authentication. A backend may allocate an independent cache copy.
+            {
+                let _io_scope = record.original.enter();
+                read_exact_object(&source, &mut bytes)?;
+            }
+            let envelope = {
+                let _codec_scope = record.codec.enter();
+                decode_envelope(id, &bytes, maximum_children, &record.codec)?
+            };
+            // Local partition charges validate monotone accounting, not host
+            // liveness. Recheck the SAME original operation after decoding and
+            // before accepting an owning result; EOF may have expired it.
+            {
+                let _terminal_scope = record.original.enter();
+                if let Err(error) = (work.boundary)() {
+                    (work.visits, work.io_bytes) = previous_counts;
+                    return Err(error);
+                }
+            }
+            return Ok(envelope);
+        }
         work.visit(source.logical_length())?;
         let bytes = source.read_all(maximum_bytes)?;
-        if !id.authenticates(&bytes) {
-            return Err(StoreError::Corrupt { id }.into());
-        }
-        let envelope =
-            ContentEnvelope::from_canonical_bytes_with_child_limit(&bytes, maximum_children)?;
-        if envelope.schema_version() != SCHEMA_VERSION {
-            return Err(RamStoreError::Invalid("RAM envelope schema"));
-        }
-        Ok(OwnedEnvelope::new(envelope, &account))
+        decode_envelope(id, &bytes, maximum_children, &account)
     }
 
     pub(super) fn put_page(
@@ -218,12 +329,45 @@ impl RamStore {
         work: &mut Work<'_>,
     ) -> Result<(ContentId, PageDigest), RamStoreError> {
         let digest = PageDigest::hash(bytes).map_err(logical)?;
-        let mut body = Vec::with_capacity(36 + bytes.len());
+        let original = self.object_account()?;
+        let body_length = 36 + bytes.len();
+        let original = original.child().map_err(admission)?;
+        let record = RecordAccount::phase(
+            &original,
+            RecordAllocationPlan::input(body_length, PAGE_SCHEMA, &[])?,
+        )?;
+        let canonical_length = 30 + PAGE_SCHEMA.len() + body_length;
+        let scope = record.codec.enter();
+        record
+            .codec
+            .charge_array::<u8>(body_length)
+            .map_err(admission)?;
+        record
+            .codec
+            .charge_array::<u8>(PAGE_SCHEMA.len())
+            .map_err(admission)?;
+        let mut body = Vec::with_capacity(body_length);
         body.extend_from_slice(digest.as_bytes());
         body.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
         body.extend_from_slice(bytes);
         let envelope = ContentEnvelope::new(PAGE_SCHEMA, SCHEMA_VERSION, BTreeSet::new(), body)?;
-        let id = self.put_envelope(&envelope, ObjectKind::RamExtent, retention, work)?;
+        record
+            .codec
+            .charge_bytes(shared_extent::<OwnedEnvelope>()?)
+            .map_err(admission)?;
+        let envelope = Arc::new(OwnedEnvelope::new(envelope, &record.codec));
+        drop(scope);
+        let canonical = RecordAccount::phase(
+            &original,
+            RecordAllocationPlan::canonical(canonical_length)?,
+        )?;
+        let id = self.put_envelope_with_account(
+            PublicationInput::OwnedSmall(envelope),
+            ObjectKind::RamExtent,
+            retention,
+            work,
+            &canonical,
+        )?;
         Ok((id, digest))
     }
 
@@ -236,7 +380,7 @@ impl RamStore {
         if id.kind() != ObjectKind::RamExtent {
             return Err(RamStoreError::Invalid("page object kind"));
         }
-        let envelope = self.read_envelope(id, work)?;
+        let envelope = self.read_envelope_with_partition(id, work, false)?;
         if envelope.schema_name() != PAGE_SCHEMA || !envelope.children().is_empty() {
             return Err(RamStoreError::Invalid("page envelope"));
         }
@@ -261,6 +405,38 @@ impl RamStore {
         retention: &dyn RamRetention,
         work: &mut Work<'_>,
     ) -> Result<TreeRef, RamStoreError> {
+        let original = self.object_account()?;
+        let (roles, body_length, child_length): (&[&str], usize, usize) = match node {
+            TreeNode::Padding => (&[], 45, 0),
+            TreeNode::Leaf { page, .. } => (&["page"], 77, 4 + "page".len() + page.encoded_len()),
+            TreeNode::Branch { left, right } => (
+                &["left", "right"],
+                133,
+                8 + "left".len() + "right".len() + left.id.encoded_len() + right.id.encoded_len(),
+            ),
+        };
+        let original = original.child().map_err(admission)?;
+        let record = RecordAccount::phase(
+            &original,
+            RecordAllocationPlan::input(133, TREE_SCHEMA, roles)?,
+        )?;
+        let canonical_length = 30 + TREE_SCHEMA.len() + body_length + child_length;
+        let scope = record.codec.enter();
+        record.codec.charge_array::<u8>(133).map_err(admission)?;
+        record
+            .codec
+            .charge_array::<u8>(TREE_SCHEMA.len())
+            .map_err(admission)?;
+        for role in roles {
+            record
+                .codec
+                .charge_bytes(child_node_bytes())
+                .map_err(admission)?;
+            record
+                .codec
+                .charge_array::<u8>(role.len())
+                .map_err(admission)?;
+        }
         let mut children = BTreeSet::new();
         let (kind, digest) = match node {
             TreeNode::Padding => (0, empty_node(height)?),
@@ -293,7 +469,23 @@ impl RamStore {
             }
         }
         let envelope = ContentEnvelope::new(TREE_SCHEMA, SCHEMA_VERSION, children, body)?;
-        let id = self.put_envelope(&envelope, ObjectKind::RamTree, retention, work)?;
+        record
+            .codec
+            .charge_bytes(shared_extent::<OwnedEnvelope>()?)
+            .map_err(admission)?;
+        let envelope = Arc::new(OwnedEnvelope::new(envelope, &record.codec));
+        drop(scope);
+        let canonical = RecordAccount::phase(
+            &original,
+            RecordAllocationPlan::canonical(canonical_length)?,
+        )?;
+        let id = self.put_envelope_with_account(
+            PublicationInput::OwnedSmall(Arc::clone(&envelope)),
+            ObjectKind::RamTree,
+            retention,
+            work,
+            &canonical,
+        )?;
         let reference = TreeRef {
             id,
             digest,
@@ -352,6 +544,51 @@ impl RamStore {
         let envelope = self.read_envelope(id, work)?;
         decode_root_envelope(&envelope)
     }
+}
+
+fn decode_envelope(
+    id: ContentId,
+    bytes: &[u8],
+    maximum_children: usize,
+    account: &DecodeBudget,
+) -> Result<OwnedEnvelope, RamStoreError> {
+    if !id.authenticates(bytes) {
+        return Err(StoreError::Corrupt { id }.into());
+    }
+    let envelope = ContentEnvelope::from_canonical_bytes_with_child_limit(bytes, maximum_children)?;
+    if envelope.schema_version() != SCHEMA_VERSION {
+        return Err(RamStoreError::Invalid("RAM envelope schema"));
+    }
+    Ok(OwnedEnvelope::new(envelope, account))
+}
+
+fn read_exact_object(
+    source: &crate::content_store::BlobHandle,
+    bytes: &mut [u8],
+) -> Result<(), RamStoreError> {
+    use crate::content_store::read_retry;
+    let mut reader = source.open()?;
+    let mut observed = 0;
+    while observed < bytes.len() {
+        let read = read_retry(&mut reader, &mut bytes[observed..])
+            .map_err(|error| source.map_read_error("read-blob-source", error))?;
+        if read == 0 {
+            break;
+        }
+        observed += read;
+    }
+    let mut extra = [0; 1];
+    let has_extra = read_retry(&mut reader, &mut extra)
+        .map_err(|error| source.map_read_error("verify-blob-source-length", error))?
+        != 0;
+    if observed != bytes.len() || has_extra {
+        return Err(StoreError::InvalidSourceLength {
+            declared: source.logical_length(),
+            observed: (observed as u64).saturating_add(u64::from(has_extra)),
+        }
+        .into());
+    }
+    Ok(())
 }
 
 pub(super) fn decode_root_envelope(

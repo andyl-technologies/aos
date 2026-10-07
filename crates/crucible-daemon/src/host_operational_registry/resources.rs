@@ -98,6 +98,19 @@ impl RegistryResources {
 }
 
 impl DecodeResourceAuthority for RegistryMetadataAuthority {
+    fn verify_live(&self) -> Result<(), DecodeAdmissionError> {
+        // Both banks and terminal actor custody belong to these SAME retained
+        // RegistryResources. No replacement or detached allocator is consulted.
+        self.resources
+            .services
+            .verify_live()
+            .map_err(DecodeAdmissionError::new)?;
+        self.resources
+            .metadata
+            .verify_live()
+            .map_err(DecodeAdmissionError::new)
+    }
+
     fn reserve(&self, bytes: u64) -> Result<Arc<dyn Send + Sync>, DecodeAdmissionError> {
         Ok(Arc::new(self.resources.reserve_metadata(bytes)?))
     }
@@ -425,6 +438,7 @@ mod tests {
                 .is_ok()
         );
         let budget = registry.metadata_budget().unwrap();
+        budget.verify_live().unwrap();
         let scope = budget.enter();
         let response = HostOperationalResponse::admit(|| {
             Ok(HostOperationalResponse::Targets {
@@ -455,6 +469,14 @@ mod tests {
         drop(registry);
         assert!(!retired.load(Ordering::Acquire));
         assert!(!final_reader.value().is_empty());
+        {
+            let _scope = final_reader.enter_original_scope().unwrap();
+            crucible::owned_decode::current_budget()
+                .unwrap()
+                .verify_live()
+                .unwrap();
+        }
+        assert!(!retired.load(Ordering::Acquire));
 
         drop(final_reader);
         assert!(retired.load(Ordering::Acquire));
@@ -473,6 +495,8 @@ mod tests {
         first.charge_bytes(6000).unwrap();
         let second = registry.metadata_budget().unwrap();
         assert!(second.charge_bytes(2000).is_err());
+        first.verify_live().unwrap();
+        assert!(second.verify_live().is_err());
 
         drop(second);
         drop(first);

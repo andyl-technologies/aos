@@ -68,8 +68,62 @@ impl PartialEq<ContentEnvelope> for OwnedEnvelope {
     }
 }
 
+/// Distinguishes original borrowed inputs from explicitly owned small records.
+pub(super) enum PublicationInput<'a> {
+    Borrowed(&'a ContentEnvelope),
+    OwnedSmall(Arc<OwnedEnvelope>),
+}
+
+impl PublicationInput<'_> {
+    pub(super) fn envelope(&self) -> &ContentEnvelope {
+        match self {
+            Self::Borrowed(envelope) => envelope,
+            Self::OwnedSmall(envelope) => envelope,
+        }
+    }
+
+    pub(super) fn into_pending(
+        self,
+        account: &DecodeBudget,
+        length: usize,
+    ) -> Result<PendingEnvelope, RamStoreError> {
+        match self {
+            Self::Borrowed(envelope) => {
+                account
+                    .charge_bytes(ContentEnvelope::decoding_memory_bound(
+                        length,
+                        envelope.children().len(),
+                    )?)
+                    .map_err(admission)?;
+                Ok(PendingEnvelope::OriginalCopy(OwnedEnvelope::new(
+                    envelope.clone(),
+                    account,
+                )))
+            }
+            Self::OwnedSmall(envelope) => Ok(PendingEnvelope::OwnedSmall(envelope)),
+        }
+    }
+}
+
+pub(super) enum PendingEnvelope {
+    OriginalCopy(OwnedEnvelope),
+    OwnedSmall(Arc<OwnedEnvelope>),
+}
+
+impl Deref for PendingEnvelope {
+    type Target = ContentEnvelope;
+
+    fn deref(&self) -> &ContentEnvelope {
+        match self {
+            Self::OriginalCopy(envelope) => envelope,
+            Self::OwnedSmall(envelope) => envelope,
+        }
+    }
+}
+
 struct OwnedBytes {
     bytes: Vec<u8>,
+    original: DecodeBudget,
     _custody: DecodeCustody,
 }
 
@@ -85,7 +139,7 @@ impl AsRef<[u8]> for SharedBytes {
 
 struct EncodedReader {
     reader: Cursor<SharedBytes>,
-    _credit: Option<DecodeScratch>,
+    _credit: DecodeScratch,
 }
 
 impl Read for EncodedReader {
@@ -100,16 +154,17 @@ impl BlobSource for EncodedSource {
     }
 
     fn open(&self) -> Result<Box<dyn Read + Send>, StoreError> {
-        let _scope = self.0._custody.enter();
-        let account = crate::owned_decode::current_child_budget().map_err(|source| {
-            StoreError::Supervision {
+        // Deferred opens must not route backend or reader credits into the
+        // prepaid codec partition, even after its creating thread scope closes.
+        let account = self
+            .0
+            .original
+            .child()
+            .map_err(|source| StoreError::Supervision {
                 source: Box::new(source),
-            }
-        })?;
+            })?;
         let credit = account
-            .as_ref()
-            .map(|budget| budget.reserve_scratch_bytes(std::mem::size_of::<EncodedReader>() as u64))
-            .transpose()
+            .reserve_scratch_bytes(std::mem::size_of::<EncodedReader>() as u64)
             .map_err(|source| StoreError::Supervision {
                 source: Box::new(source),
             })?;
@@ -120,19 +175,24 @@ impl BlobSource for EncodedSource {
     }
 }
 
+pub(super) fn encoded_source_bytes() -> u64 {
+    (std::mem::size_of::<OwnedBytes>()
+        + std::mem::size_of::<EncodedSource>()
+        + 4 * std::mem::size_of::<usize>()) as u64
+}
+
 pub(super) fn encoded_source(
     bytes: Vec<u8>,
     account: &DecodeBudget,
+    original: &DecodeBudget,
 ) -> Result<BlobHandle, RamStoreError> {
     // The vector moves into the shared body; cloning handles never copies it.
-    crate::owned_decode::charge_bytes(
-        (std::mem::size_of::<OwnedBytes>()
-            + std::mem::size_of::<EncodedSource>()
-            + 4 * std::mem::size_of::<usize>()) as u64,
-    )
-    .map_err(admission)?;
+    account
+        .charge_bytes(encoded_source_bytes())
+        .map_err(admission)?;
     let body = Arc::new(OwnedBytes {
         bytes,
+        original: original.clone(),
         _custody: account.custody(),
     });
     Ok(BlobHandle::new(Arc::new(EncodedSource(body))))

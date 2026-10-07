@@ -784,6 +784,10 @@ mod tests {
     struct FixtureAuthority(HostServiceAllocator);
 
     impl DecodeResourceAuthority for FixtureAuthority {
+        fn verify_live(&self) -> Result<(), DecodeAdmissionError> {
+            self.0.verify_live().map_err(DecodeAdmissionError::new)
+        }
+
         fn reserve(&self, bytes: u64) -> Result<Arc<dyn Send + Sync>, DecodeAdmissionError> {
             self.0
                 .reserve_resources(0, 0, bytes)

@@ -1,12 +1,14 @@
 //! Empty and populated scratch loans under a finite original authority.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use super::*;
 
 struct Authority {
     used: Arc<AtomicU64>,
     calls: AtomicU64,
+    verifications: AtomicU64,
+    revoked: AtomicBool,
     maximum: u64,
 }
 
@@ -22,8 +24,22 @@ impl Drop for Credit {
 }
 
 impl DecodeResourceAuthority for Authority {
+    fn verify_live(&self) -> Result<(), DecodeAdmissionError> {
+        self.verifications.fetch_add(1, Ordering::SeqCst);
+        if self.revoked.load(Ordering::SeqCst) {
+            return Err(DecodeAdmissionError::new(RevokedFixtureAuthority));
+        }
+        if self.used.load(Ordering::SeqCst) > self.maximum {
+            return Err(DecodeAdmissionError::new(std::io::Error::other(
+                "original component accounting is invalid",
+            )));
+        }
+        Ok(())
+    }
+
     fn reserve(&self, bytes: u64) -> Result<Arc<dyn Send + Sync>, DecodeAdmissionError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        self.verify_live()?;
         if bytes == 0 {
             return Err(refusal("fixture allocator rejects empty contracts"));
         }
@@ -43,6 +59,8 @@ fn authority() -> Arc<Authority> {
     Arc::new(Authority {
         used: Arc::new(AtomicU64::new(0)),
         calls: AtomicU64::new(0),
+        verifications: AtomicU64::new(0),
+        revoked: AtomicBool::new(false),
         maximum: 4096,
     })
 }
@@ -121,5 +139,64 @@ fn empty_scratch_refuses_a_poisoned_original_account() -> Result<(), DecodeAdmis
         .unwrap_or_else(|| panic!("poisoned empty scratch must refuse"));
     assert_eq!(error.to_string(), "decoded metadata account is poisoned");
     assert_eq!(authority.calls.load(Ordering::SeqCst), calls);
+    Ok(())
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("original finite fixture authority was revoked")]
+struct RevokedFixtureAuthority;
+
+#[test]
+fn live_verification_keeps_original_usage_and_failure_precedence()
+-> Result<(), DecodeAdmissionError> {
+    let authority = authority();
+    let budget = DecodeBudget::new(authority.clone(), authority.maximum)?;
+    let child = budget.child()?;
+    let baseline = authority.used.load(Ordering::SeqCst);
+    let reservations = authority.calls.load(Ordering::SeqCst);
+    let verifications = authority.verifications.load(Ordering::SeqCst);
+
+    child.verify_live()?;
+    budget.verify_live()?;
+    assert_eq!(authority.used.load(Ordering::SeqCst), baseline);
+    assert_eq!(authority.calls.load(Ordering::SeqCst), reservations);
+    assert_eq!(
+        authority.verifications.load(Ordering::SeqCst),
+        verifications + 2
+    );
+
+    authority.revoked.store(true, Ordering::SeqCst);
+    let error = child
+        .verify_live()
+        .err()
+        .ok_or_else(|| refusal("revocation was ignored"))?;
+    assert!(
+        error
+            .source()
+            .and_then(|source| source.downcast_ref::<RevokedFixtureAuthority>())
+            .is_some()
+    );
+    child.check()?;
+    budget.check()?;
+    assert_eq!(authority.used.load(Ordering::SeqCst), baseline);
+    assert_eq!(authority.calls.load(Ordering::SeqCst), reservations);
+    drop(error);
+
+    // A refused record child remains isolated; an earlier sticky refusal still
+    // wins before any later live-authority check or original resource callback.
+    authority.revoked.store(false, Ordering::SeqCst);
+    let sticky = child
+        .charge_bytes(authority.maximum)
+        .err()
+        .ok_or_else(|| refusal("expected finite refusal"))?;
+    authority.revoked.store(true, Ordering::SeqCst);
+    let before = authority.verifications.load(Ordering::SeqCst);
+    assert_eq!(child.verify_live().err(), Some(sticky));
+    assert_eq!(authority.verifications.load(Ordering::SeqCst), before);
+    budget.check()?;
+
+    drop(child);
+    drop(budget);
+    assert_eq!(authority.used.load(Ordering::SeqCst), 0);
     Ok(())
 }

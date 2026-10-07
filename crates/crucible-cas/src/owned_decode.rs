@@ -15,6 +15,14 @@ mod tests;
 
 /// Provides actual original-owner memory credits for one artifact decoder.
 pub trait DecodeResourceAuthority: Send + Sync {
+    /// Verifies the retained original authority without acquiring new credit.
+    ///
+    /// # Errors
+    /// Refuses original cancellation, expiry, closed ownership, or unavailable
+    /// accounting. It acquires no new resource credit, renews no deadline, and
+    /// changes no usage; existing guard checks and typed errors stay intact.
+    fn verify_live(&self) -> Result<(), DecodeAdmissionError>;
+
     /// Reserves owned memory before allocation, retaining original custody.
     ///
     /// # Errors
@@ -90,6 +98,11 @@ thread_local! {
 }
 
 impl DecodeBudget {
+    /// Returns the exact control extent charged by the account constructor.
+    pub(crate) const fn allocation_bytes() -> u64 {
+        (std::mem::size_of::<Account>() + 2 * std::mem::size_of::<usize>()) as u64
+    }
+
     /// Admits the account's retained metadata before creating it.
     ///
     /// # Errors
@@ -98,8 +111,7 @@ impl DecodeBudget {
         authority: Arc<dyn DecodeResourceAuthority>,
         maximum: u64,
     ) -> Result<Self, DecodeAdmissionError> {
-        let initial_bytes =
-            (std::mem::size_of::<Account>() + 2 * std::mem::size_of::<usize>()) as u64;
+        let initial_bytes = Self::allocation_bytes();
         if initial_bytes > maximum {
             return Err(refusal("decoded metadata allowance is too small"));
         }
@@ -216,6 +228,16 @@ impl DecodeBudget {
         {
             state.failure = Some(error);
         }
+    }
+
+    /// Verifies the same original resource owner after checking sticky failure.
+    ///
+    /// # Errors
+    /// Returns earlier decoder failure first, then the original live authority
+    /// refusal. This check changes neither credits nor account failure state.
+    pub fn verify_live(&self) -> Result<(), DecodeAdmissionError> {
+        self.check()?;
+        self.0.authority.verify_live()
     }
 
     /// Refuses a result after any nested infallible codec recorded exhaustion.
@@ -512,6 +534,10 @@ struct StoreAuthority {
 }
 
 impl DecodeResourceAuthority for StoreAuthority {
+    fn verify_live(&self) -> Result<(), DecodeAdmissionError> {
+        self.guard.verify().map_err(DecodeAdmissionError::new)
+    }
+
     fn reserve(&self, bytes: u64) -> Result<Arc<dyn Send + Sync>, DecodeAdmissionError> {
         self.guard
             .reserve_resources(0, bytes)

@@ -356,6 +356,15 @@ mod publication_tests {
         struct ComponentDecodeAuthority;
 
         impl crucible_session::engine::owned_decode::DecodeResourceAuthority for ComponentDecodeAuthority {
+            fn verify_live(
+                &self,
+            ) -> Result<(), crucible_session::engine::owned_decode::DecodeAdmissionError>
+            {
+                // This immutable component authority models a permanently live codec;
+                // DecodeBudget supplies the explicit finite monotone fixture maximum.
+                Ok(())
+            }
+
             fn reserve(
                 &self,
                 _bytes: u64,

@@ -254,6 +254,12 @@ impl Drop for Credit {
 }
 
 impl DecodeResourceAuthority for Authority {
+    fn verify_live(&self) -> Result<(), DecodeAdmissionError> {
+        // Rejected allocation sizes model capacity refusal, not revocation.
+        // This retained atomic fixture authority has no mutable closed state.
+        Ok(())
+    }
+
     fn reserve(&self, bytes: u64) -> Result<Arc<dyn Send + Sync>, DecodeAdmissionError> {
         if bytes == self.rejected_bytes {
             self.rejected.fetch_add(1, Ordering::SeqCst);

@@ -82,7 +82,7 @@ impl RamStore {
     ) -> Result<LeasedRamRoot, RamStoreError> {
         self.admit_ram_publication(&topology, scope)?;
         let mut work = Work::new(self.limits, boundary);
-        work.pending = Some(Vec::with_capacity(64));
+        self.begin_capture_batch(&mut work)?;
         let mut regions = Vec::new();
         let mut roots = Vec::new();
 

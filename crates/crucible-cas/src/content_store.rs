@@ -481,6 +481,11 @@ impl BlobHandle {
         self.source.open()
     }
 
+    /// Preserves this handle's original deferred-authentication error mapping.
+    pub(crate) fn map_read_error(&self, operation: &'static str, error: io::Error) -> StoreError {
+        map_stream_error(operation, self.integrity_id, error)
+    }
+
     /// Copies the complete stream to a destination without full-size buffering.
     ///
     /// The destination may contain unauthenticated bytes before this method
@@ -1595,7 +1600,7 @@ fn discard_io_exact(reader: &mut dyn Read, mut remaining: u64) -> io::Result<()>
     Ok(())
 }
 
-fn read_retry(reader: &mut dyn Read, buffer: &mut [u8]) -> io::Result<usize> {
+pub(crate) fn read_retry(reader: &mut dyn Read, buffer: &mut [u8]) -> io::Result<usize> {
     loop {
         match reader.read(buffer) {
             Err(source) if source.kind() == io::ErrorKind::Interrupted => continue,

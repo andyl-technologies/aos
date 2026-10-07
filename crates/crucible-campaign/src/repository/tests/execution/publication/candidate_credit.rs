@@ -27,6 +27,15 @@ impl Drop for MetadataLoan {
 }
 
 impl DecodeResourceAuthority for MetadataAuthority {
+    fn verify_live(&self) -> Result<(), DecodeAdmissionError> {
+        if self.0.used.load(Ordering::SeqCst) > METADATA_LIMIT {
+            return Err(DecodeAdmissionError::new(std::io::Error::other(
+                "original component accounting is invalid",
+            )));
+        }
+        Ok(())
+    }
+
     fn reserve(&self, bytes: u64) -> Result<Arc<dyn Send + Sync>, DecodeAdmissionError> {
         let previous = self
             .0
