@@ -3,10 +3,16 @@
 import copy
 import hashlib
 import importlib.util
+import io
 import json
 from pathlib import Path
+import os
+import re
 import tempfile
+import textwrap
+import types
 import unittest
+from contextlib import redirect_stdout
 from unittest.mock import patch
 
 
@@ -20,6 +26,7 @@ def load(name, path):
 capture = load("capture", "_hub-storage-capture.py")
 review = load("review", "_hub-direct-review.py")
 observations = load("observations", "_hub-direct-observations.py")
+sql_projection = load("sql_projection", "_hub-native-sql-projection.py")
 capture._closed_review_json = review._closed_review_json
 retained = {}
 
@@ -69,6 +76,80 @@ def journal(value, event="external_copy_authenticated", **changes):
 class StorageCaptureTests(unittest.TestCase):
     def setUp(self):
         retained.clear()
+
+    def test_selected_journal_retains_actual_sql_marker_without_broadening_window(self):
+        """Execute generated guest code against a controlled journal/process image."""
+        source_child = {"version": 1, "event": "sql_projection", "status": 200,
+            "projection": {"version": 1, "checkpoints": [
+                {"kind": "admission_checked_transaction", "sessionId": "session_1"}]}}
+        sql_line = journal(source_child, event="native_application_sql_projection",
+            MESSAGE="[INFO] message=native_application_sql_projection " + json.dumps(source_child))
+        storage_line = journal(receipt())
+        unrelated = journal({"irrelevant": True}, event="ordinary_application_event")
+        argv_seen, process_reads = [], []
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image = root / "123"
+            image.mkdir()
+            (image / "stat").write_text("123 (controlled) " + " ".join(["S", *(["0"] * 18), "12345"]))
+            (image / "exe").write_bytes(b"controlled native executable")
+            evidence = root / "evidence"
+            evidence.mkdir(mode=0o700)
+            selected = {"pid": 123, "startTicks": "12345", "root": str(evidence),
+                "executablePath": PROCESS["executablePath"], "journalCursor": "controlled-cursor",
+                "executableSha256": hashlib.sha256((image / "exe").read_bytes()).hexdigest()}
+            original_path = Path
+            original_readlink = os.readlink
+
+            def guest_path(value):
+                if str(value) == "/proc":
+                    process_reads.append(value)
+                    return image.parent
+                return original_path(value)
+
+            def guest_readlink(value):
+                return selected["executablePath"] if original_path(value) == image / "exe" else original_readlink(value)
+
+            def selected_journal(arguments, **options):
+                argv_seen.append(arguments)
+                self.assertEqual(options["timeout"], 45)
+                self.assertFalse(options["check"])
+                self.assertIn("--unit=aos-hub.service", arguments)
+                self.assertIn("--after-cursor=controlled-cursor", arguments)
+                pattern = next(argument.removeprefix("--grep=") for argument in arguments if argument.startswith("--grep="))
+                # The generated argument's literal brackets and alternation use
+                # the same subset of ERE syntax here; source escapes are not
+                # interpreted a second time by this controlled journal.
+                for line in (sql_line, storage_line, unrelated):
+                    if re.search(pattern, json.loads(line)["MESSAGE"]):
+                        options["stdout"].write((line + "\n").encode())
+                return types.SimpleNamespace(returncode=0)
+
+            def guest(machine, python, body, document, timeout):
+                self.assertEqual(timeout, 60)
+                output = io.StringIO()
+                with patch("pathlib.Path", guest_path), patch("os.readlink", guest_readlink), \
+                        patch("subprocess.run", selected_journal), redirect_stdout(output):
+                    exec(textwrap.dedent(body), {"selected": document, "json": json})
+                return output.getvalue()
+
+            def retain_window(machine, python, observed, name):
+                self.assertEqual(observed["path"], str(evidence / "runtime.jsonl"))
+                self.assertEqual(name, "publication-native-authenticated-storage.jsonl")
+                return evidence / "runtime.jsonl", {"controlled": True}
+
+            with patch.object(capture, "direct_guest_python", guest, create=True), \
+                    patch.object(capture, "retain_direct_log_window", retain_window, create=True):
+                retained_path, _ = capture.finish_native_copy_capture(None, {"python": "controlled"}, selected)
+            raw = retained_path.read_text()
+            self.assertEqual(raw, sql_line + "\n" + storage_line + "\n")
+            self.assertNotIn("ordinary_application_event", raw)
+            self.assertEqual(len(argv_seen), 1)
+            self.assertEqual(len(process_reads), 2)
+            children = capture.observed_native_messages(raw, selected)
+            checkpoints = sql_projection.native_sql_checkpoints(children)
+            self.assertEqual(checkpoints[0]["checkpoints"], source_child["projection"]["checkpoints"])
+            self.assertEqual(checkpoints[0]["rawChildSha256"], hashlib.sha256(json.dumps(source_child).encode()).hexdigest())
 
     def test_only_compact_controls_are_retained_and_summaries_contain_no_values(self):
         raw = header(ORIGINAL, ingress="e30.signature")
