@@ -60,13 +60,20 @@ assert observationTools == null || observationTools.passthru.selectedWorkerArtif
             "$out/share/aos-hub/direct-qualification.mjs"
           cp ${./aos-hub-hosted-workload.py} "$out/share/aos-hub/hosted-workload.py"
           mkdir -p "$out/share/aos-hub/hosted-capture"
+          # Individual Nix source paths have store-prefixed names; the tools load
+          # these assets and parsers by their original filenames.
           cp ${./aos-hub-hosted-capture/capture.mjs} \
-            ${./aos-hub-hosted-capture/sink.mjs} \
-            ${./aos-hub-hosted-capture/baseline-proxy.mjs} \
-            ${./aos-hub-hosted-capture/origin-capture.mjs} \
-            ${./aos-hub-hosted-capture/storage-shim.mjs} \
-            ${./aos-hub-hosted-capture/render.py} \
-            "$out/share/aos-hub/hosted-capture/"
+            "$out/share/aos-hub/hosted-capture/capture.mjs"
+          cp ${./aos-hub-hosted-capture/sink.mjs} \
+            "$out/share/aos-hub/hosted-capture/sink.mjs"
+          cp ${./aos-hub-hosted-capture/baseline-proxy.mjs} \
+            "$out/share/aos-hub/hosted-capture/baseline-proxy.mjs"
+          cp ${./aos-hub-hosted-capture/origin-capture.mjs} \
+            "$out/share/aos-hub/hosted-capture/origin-capture.mjs"
+          cp ${./aos-hub-hosted-capture/storage-shim.mjs} \
+            "$out/share/aos-hub/hosted-capture/storage-shim.mjs"
+          cp ${./aos-hub-hosted-capture/render.py} \
+            "$out/share/aos-hub/hosted-capture/render.py"
           # Measure the selected source-built dependency; the renderer also checks
           # its canonical immutable executable and exact hash before validation.
           ${python3}/bin/python3 -B -E - "$out/share/aos-hub/hosted-capture/node-tool.json" <<'PYTHON'
@@ -86,11 +93,15 @@ assert observationTools == null || observationTools.passthru.selectedWorkerArtif
           PYTHON
           mkdir -p "$out/share/aos-hub/hosted-measurements"
           cp ${../../tests/fleet/_hub-direct-publisher.py} \
-            ${../../tests/fleet/_hub-direct-sparse-publisher.py} \
-            ${../../tests/fleet/_hub-perf.py} \
-            ${../../tests/fleet/_hub-direct-runtime-observations.py} \
-            ${../../tests/fleet/_hub-direct-observations.py} \
-            "$out/share/aos-hub/hosted-measurements/"
+            "$out/share/aos-hub/hosted-measurements/_hub-direct-publisher.py"
+          cp ${../../tests/fleet/_hub-direct-sparse-publisher.py} \
+            "$out/share/aos-hub/hosted-measurements/_hub-direct-sparse-publisher.py"
+          cp ${../../tests/fleet/_hub-perf.py} \
+            "$out/share/aos-hub/hosted-measurements/_hub-perf.py"
+          cp ${../../tests/fleet/_hub-direct-runtime-observations.py} \
+            "$out/share/aos-hub/hosted-measurements/_hub-direct-runtime-observations.py"
+          cp ${../../tests/fleet/_hub-direct-observations.py} \
+            "$out/share/aos-hub/hosted-measurements/_hub-direct-observations.py"
           # The static-asset bundle Cloudflare serves from its CDN edge (the
           # `[assets]` directory the generated wrangler.toml points at). Copied
           # writable so `wrangler deploy`'s asset manifest pass can stat it.
