@@ -817,26 +817,27 @@ unchanged tracked images. The original wrong-profile discovery failure is retain
 its correction changes the harness only. Incomplete-path lint diagnostics are
 not suppressed, and no full native quality, task, cold-factory or T1 exit claim
 follows from this prerequisite.
-The next trunk prerequisite retains actual staging controls from metadata creation
+The trunk prerequisite retains actual staging controls from metadata creation
 through final publication and completes Legacy history only after every signed
 requirement, Original and historical context verifies. Contextual Raw durability
 retains the actual closed Original scopes used by its submitted effect. Frozen
-`80c01962c0` passes five exact Legacy completion cases and the first three native
-metadata-batch cases: distinct members, canonical advisory Memo duplicates and
-existing/empty runs, and direct-container/actual-repair fallback. The next creator
-and catalog fault case fails because its expected native acknowledgment source
-is absent; ten later owning selectors and seven dependent phases are unrun.
-The positive duplicate fixture uses ordinary Memo data; Commit reoffers remain
-an explicit admission-denial case. Core no-std and both mandatory formatters pass
-on the same source. Strict profile quality stops in default on incomplete-path
-imports and unused interfaces; later profiles and private docs are unrun, with
-no diagnostic suppressed. Independent review verifies both preserved source-bound
-runs, all 5,644 unchanged source images and each derivation's 4,590 actual inputs.
-A separate frozen `a6e0d7afeb` qualification passes application compilation
-(107 test executables, 29 packages and 70 integration targets; no execution),
-registry completeness and both formatters. Its current-milestone aggregate fails
-explicitly at pending `algebra-fork`, ALG-32. The subsequent two-file owning-test
-correction is qualified only by the exact results above. No formal task merge,
+`1237c4f421` passes all nineteen exact cases: five Legacy completions, six native
+metadata-batch groups, seven retained-control regressions and the non-Send lease
+case. Discovery has zero ignored cases; default, Send and native test compilation
+also passes. The corrected Unsupported mapping retains the actual native error;
+Denied retains STORE-30's mandatory absence of diagnostic detail. The deadline
+fixture checks the actual retained clock and worker refusal. Malformed Memo data
+reaches the partial-upload schema refusal; Commit reoffers remain denied.
+Core no-std passes. Strict profile quality stops in default on unused imports and
+incomplete interfaces, with 24 library and 16 test diagnostics; later profiles
+and private docs remain unrun, with no suppression. Independent review verifies
+all 95 preserved artifacts, three derivations' 4,590 actual inputs and all 5,644
+unchanged source images. A separate qualification of the same frozen source
+passes application compilation (107 test executables, 29 packages and 70
+integration targets; no execution), registry completeness and both formatters.
+Its current-milestone aggregate fails explicitly at pending `algebra-fork`,
+ALG-32. Independent review verifies its 75 preserved artifacts and actual source
+binding. The earlier failed runs remain preserved. No formal task merge,
 checkbox, exit gate or freeze advances.
 
 The focused separate-source requalification check is registered with twelve
@@ -2334,6 +2335,19 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   Independent review verifies all 74 preserved artifacts, both derivations'
   4,912 actual source inputs and 5,966 unchanged tracked byte/executable/symlink
   images. Coalescing has not established an expiry fix or completed DRV-28.
+  The private placement/Raw prerequisite on frozen `6f349fb064` passes four
+  exact Raw durability groups and nine existing regressions, each independently
+  discovered among 640 native tests with zero ignored cases. Genuine faults,
+  cancellation and incarnation replacement retain the real acknowledgment
+  assertions. Reopen checks permit only the independently verified normal
+  capability-probe successor. Independent review verifies all 108 preserved
+  artifacts, three derivations' 4,916 actual inputs and all 5,970 committed
+  images. Strict quality then stops in default at the backfill facade's missing
+  concrete store Sync bound; later checks are unrun. The reviewed one-line bound
+  resolves compilation, exposing three ordinary editor Clippy findings. Their
+  equivalent idiom corrections are reviewed separately. The seven placement
+  witnesses and complete backfill/history qualification remain outstanding;
+  these Raw results do not complete DRV-28 or T1.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
   codec, value-plus-object opaque keys and D-104's contextual primary/gap/route
