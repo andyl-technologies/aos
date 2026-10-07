@@ -2054,6 +2054,16 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   four backfill witnesses before their isolated implementations begin. Missing
   witnesses fail discovery. These declarations establish no implementation or
   gate pass; native recovery, backfill and expanded maintenance remain open.
+  The parent-first backfill prerequisite extracts the existing authenticated
+  producer-history/current-readable-occurrence checks without changing their
+  authority or refusal behavior. A test-only Chunk attempt counter follows the
+  real bucket, clone and held adapters. All five exact observation calibration
+  cases, application test-target compilation and both mandatory formatters pass;
+  all three actual build inputs match the same 4,557 frozen files. Strict
+  default Clippy fails with 37 library and 22 library-test errors in unchanged
+  prerequisite files; later profiles and private rustdoc remain unqualified.
+  The finite backfill implementation, composed quality checks and complete
+  index-maintenance gate remain pending. No task or milestone status advances.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
   codec, value-plus-object opaque keys and D-104's contextual primary/gap/route

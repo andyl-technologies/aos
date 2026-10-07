@@ -3,6 +3,8 @@
     "real_node_reads_share_clone_and_held_decoder_observation"
     "missing_node_attempt_precedes_body_decode_and_is_fixture_local"
     "deduplicated_node_puts_remain_observable_attempts"
+    "real_chunk_reads_share_clone_and_held_observation"
+    "missing_chunk_attempts_share_held_observation_and_remain_fixture_local"
   ];
   selectors = map (name: "bucket::content_observation::tests::${name}") tests;
 in
@@ -22,6 +24,6 @@ in
       python3 ../tests/terrane/check_native_gate.py execution \
         "$TMPDIR/content-observation-test.log" "[\"$test_name\"]"
     done
-    printf 'PASS: native typed content observation calibration (3 exact cases)\n' \
+    printf 'PASS: native typed content observation calibration (5 exact cases)\n' \
       > "$out/result"
   ''

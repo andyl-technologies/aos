@@ -5,8 +5,8 @@ use crate::bucket::held::SingleHeld;
 use crate::bucket::{FileBucket, tests::config};
 use crate::repository::MetadataValidator;
 use crate::store::{
-    ContentStore, ContentUpload, InvalidReason, LocalFs, MetaUpload, StoreErrorKind, TokioClock,
-    TokioLocalFs,
+    ChunkPosition, ChunkUpload, ContentStore, ContentUpload, InvalidReason, LocalFs, MetaUpload,
+    StoreErrorKind, TokioClock, TokioLocalFs,
 };
 use terrane_core::identity::TERRANE_V1;
 
@@ -124,5 +124,75 @@ async fn deduplicated_node_puts_remain_observable_attempts() -> Result<(), TestE
     assert!(counts.snapshot().node_decodes >= 2);
 
     tokio::fs::remove_dir_all(bucket.root()).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn real_chunk_reads_share_clone_and_held_observation() -> Result<(), TestError> {
+    let bucket = fixture().await?;
+    let counts = bucket.observe_metadata_for_tests()?;
+    let clone = bucket.clone();
+    let plaintext = b"native chunk observation calibration";
+    let identity = TERRANE_V1.calculate(IdentityKind::Chunk, plaintext)?;
+    let mut encoded = vec![0];
+    encoded.extend_from_slice(plaintext);
+    let admitted = bucket
+        .put(ContentUpload::Chunk(ChunkUpload {
+            encoded: &encoded,
+            identity: &identity,
+            declared_plaintext_len: plaintext.len(),
+            position: ChunkPosition::Final,
+            profile: &bucket.inner.config.chunk_profile,
+        }))
+        .await?;
+    assert_eq!(admitted, identity);
+
+    counts.reset();
+    assert_eq!(clone.get(&identity, None).await?, encoded);
+    let exclusion = SingleHeld::acquire(&bucket).await?;
+    assert_eq!(exclusion.destination().get(&identity, None).await?, encoded);
+    assert_eq!(
+        counts.snapshot(),
+        ContentCounts {
+            chunk_gets: 2,
+            ..ContentCounts::default()
+        }
+    );
+
+    drop(exclusion);
+    tokio::fs::remove_dir_all(bucket.root()).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn missing_chunk_attempts_share_held_observation_and_remain_fixture_local()
+-> Result<(), TestError> {
+    let bucket = fixture().await?;
+    let independent = fixture().await?;
+    let counts = bucket.observe_metadata_for_tests()?;
+    let other = independent.observe_metadata_for_tests()?;
+    let missing = TERRANE_V1.calculate(IdentityKind::Chunk, b"unadmitted calibration chunk")?;
+
+    let clone_result = bucket.clone().get(&missing, None).await;
+    assert!(
+        matches!(clone_result, Err(ref failure) if matches!(failure.kind(), StoreErrorKind::Absent(identity) if identity == &missing))
+    );
+    let exclusion = SingleHeld::acquire(&bucket).await?;
+    let held_result = exclusion.destination().get(&missing, None).await;
+    assert!(
+        matches!(held_result, Err(ref failure) if matches!(failure.kind(), StoreErrorKind::Absent(identity) if identity == &missing))
+    );
+    assert_eq!(
+        counts.snapshot(),
+        ContentCounts {
+            chunk_gets: 2,
+            ..ContentCounts::default()
+        }
+    );
+    assert_eq!(other.snapshot(), ContentCounts::default());
+
+    drop(exclusion);
+    tokio::fs::remove_dir_all(bucket.root()).await?;
+    tokio::fs::remove_dir_all(independent.root()).await?;
     Ok(())
 }

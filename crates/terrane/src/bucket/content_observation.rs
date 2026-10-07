@@ -11,6 +11,7 @@ use terrane_core::identity::IdentityKind;
 /// Counts actual typed content attempts and metadata-validator Node decodes.
 #[derive(Default)]
 pub(crate) struct ContentObservation {
+    chunk_gets: AtomicUsize,
     node_gets: AtomicUsize,
     node_puts: AtomicUsize,
     commit_gets: AtomicUsize,
@@ -21,6 +22,8 @@ pub(crate) struct ContentObservation {
 /// Captures the counters at a quiescent native fixture boundary.
 #[derive(Debug, Default, Eq, PartialEq)]
 pub(crate) struct ContentCounts {
+    /// Chunk get attempts before catalog access, including rejected or missing reads.
+    pub(crate) chunk_gets: usize,
     /// Node get attempts, including missing identities and rejected reads.
     pub(crate) node_gets: usize,
     /// Node put attempts, including validation failures and deduplication.
@@ -37,6 +40,7 @@ impl ContentObservation {
     /// Reads each counter without claiming an atomic cross-counter snapshot.
     pub(crate) fn snapshot(&self) -> ContentCounts {
         ContentCounts {
+            chunk_gets: self.chunk_gets.load(Ordering::SeqCst),
             node_gets: self.node_gets.load(Ordering::SeqCst),
             node_puts: self.node_puts.load(Ordering::SeqCst),
             commit_gets: self.commit_gets.load(Ordering::SeqCst),
@@ -48,6 +52,7 @@ impl ContentObservation {
     /// Clears counters between measured operations while the fixture is idle.
     pub(crate) fn reset(&self) {
         for counter in [
+            &self.chunk_gets,
             &self.node_gets,
             &self.node_puts,
             &self.commit_gets,
@@ -60,6 +65,10 @@ impl ContentObservation {
 
     /// Records a typed read before catalog access or body verification.
     pub(super) fn get(&self, kind: IdentityKind) {
+        if kind == IdentityKind::Chunk {
+            self.chunk_gets.fetch_add(1, Ordering::SeqCst);
+            return;
+        }
         self.operation(kind, &self.node_gets, &self.commit_gets);
     }
 
