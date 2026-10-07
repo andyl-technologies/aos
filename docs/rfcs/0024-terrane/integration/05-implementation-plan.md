@@ -740,6 +740,16 @@ passes and zero ignored tests before the gate writes its result. Required
 selectors and feature profiles stay fixed. Registry completeness and both
 mandatory formatters pass; this runner change establishes no collector runtime
 result on the incomplete trunk.
+The subsequent coherent private repair source `35879ccb5cff` passes all seven
+exact missing-placement cases and their 19 finite fixtures. Fresh placement,
+actual corruption/quarantine/unavailability refusals, original absence/ancestor
+handoffs and all eight Raw acknowledgment/fault modes execute successfully.
+Strict default, Send and native Clippy with private docs, application test-target
+compilation and both formatters pass. Independent review binds all three actual
+derivations to their 4,897 included files and verifies the unchanged 5,951
+tracked images. The correction preserves genuine creator effects and requires
+the exact corrupted Pack or Index identity. Native rebuild, incremental
+maintenance, complete trunk qualification and formal task merges remain open.
 
 The test-only bucket observer records actual typed Node/Commit get and put
 attempts before catalog lookup, admission or deduplication. The same per-bucket
@@ -3398,6 +3408,14 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   durability, cancellation and recovery assertions. It is separate from the
   historical pre-correction ten-case result. Full collector and current-trunk
   qualification remain pending. T-GC-1 stays open.
+  On the same corrected composition, the actual registered
+  `gc-roots-complete` gate passes all five exact cases with zero ignored tests;
+  `gc-grace-window` succeeds using the same previously qualified four-case
+  derivation. Independent review verifies their actual source bindings and
+  unchanged complete tracked snapshot. Its subsequent aggregate exits 1 at
+  the explicit pending `algebra-fork` dependency (ALG-32); pending physical
+  deletion and index-maintenance dependencies are also reported. This bounded
+  root/grace qualification does not complete the collector or T1.
   The reviewed pure journal, marking, proof-context, checkpoint, retention and
   grace-window bodies now replace their trunk declarations. All 27 adopted
   paths, including 16 independent hexadecimal witnesses, match the qualified
