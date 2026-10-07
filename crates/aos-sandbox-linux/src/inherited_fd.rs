@@ -8,7 +8,7 @@
 //! Only fresh duplicates become [`OwnedFd`] values.
 
 use std::collections::BTreeSet;
-use std::os::fd::{AsFd as _, BorrowedFd, FromRawFd as _, OwnedFd, RawFd};
+use std::os::fd::{AsFd, BorrowedFd, FromRawFd as _, OwnedFd, RawFd};
 use std::sync::{Mutex, MutexGuard};
 use std::sync::atomic::{AtomicBool, Ordering};
 

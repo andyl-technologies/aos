@@ -683,7 +683,7 @@ impl FixedProcessDrivingLoanV1<'_> {
     /// effect authority. It is absent outside healthy armed Running custody,
     /// before the first kernel observation and after observed leader exit.
     #[must_use]
-    pub fn original_child(&self) -> Option<(&crate::PidFd, crate::PidFdInfo)> {
+    pub fn original_child(&self) -> Option<(&crate::pidfd::PidFd, crate::pidfd::PidFdInfo)> {
         if self.owner.phase != Phase::Running
             || self.owner.cause.is_some()
             || self.owner.debt.is_some()

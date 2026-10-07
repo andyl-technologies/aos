@@ -310,7 +310,7 @@ impl PidFd {
         };
         for attempt in 0..LIVENESS_POLL_INTERRUPT_LIMIT {
             let mut descriptors = [rustix::event::PollFd::new(
-                fd,
+                &fd,
                 rustix::event::PollFlags::IN | rustix::event::PollFlags::RDNORM,
             )];
             match rustix::event::poll(&mut descriptors, Some(&timeout)) {
