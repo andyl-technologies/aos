@@ -186,3 +186,6 @@ fn pager_control_quiescence_preserves_parent_sequence_without_socket_shutdown() 
     // inherited shared file description of another retained process endpoint.
     drop(paused);
 }
+
+#[path = "idle_timeout_tests.rs"]
+mod idle_timeout_tests;

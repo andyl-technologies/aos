@@ -190,6 +190,7 @@ impl PagerControlWorker {
                             operation_generation,
                         } => controller.cancel(operation_generation),
                     };
+                    let mut idle_timeout_installed = false;
                     loop {
                         if worker_stop.load(Ordering::Acquire) {
                             return Ok(state);
@@ -197,9 +198,9 @@ impl PagerControlWorker {
                         // Admission polling occurs only between records. Once the first
                         // byte is consumed, drain or fail the entire record under its
                         // original total deadline; never forget a partial request.
-                        state
-                            .stream
-                            .set_read_timeout(Some(Duration::from_millis(25)))?;
+                        install_idle_timeout(&mut idle_timeout_installed, |timeout| {
+                            state.stream.set_read_timeout(Some(timeout))
+                        })?;
                         let mut first = [0; 1];
                         match state.stream.read(&mut first) {
                             Ok(0) => {
@@ -237,6 +238,9 @@ impl PagerControlWorker {
                             &mut dispatch,
                         )?;
                         record.operation.complete()?;
+                        // Record reads install their shrinking original deadline.
+                        // Restore admission polling once before the next idle period.
+                        idle_timeout_installed = false;
                     }
                 })();
                 let exited = controller.worker_exit();
@@ -294,6 +298,19 @@ impl Drop for PagerControlWorker {
         // socket file description inherited by a potential parent process.
         self.stop.store(true, Ordering::Release);
     }
+}
+
+// Only complete records can change the idle timeout. Interrupted/empty polls
+// reuse the installed socket option without another kernel configuration call.
+fn install_idle_timeout(
+    installed: &mut bool,
+    install: impl FnOnce(Duration) -> io::Result<()>,
+) -> io::Result<()> {
+    if !*installed {
+        install(Duration::from_millis(25))?;
+        *installed = true;
+    }
+    Ok(())
 }
 
 struct RecordStream<'a> {
