@@ -64,6 +64,7 @@ The atomic integration patch creates these QEMU source files:
 | `tests/unit/test-crucible-mutex-waiter-counters.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-tcg-page-collection.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-tcg-crossing-membership.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-tsc-source-index.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/tcg/x86_64/system/self-modifying-code.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-snapshot-fast-path.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-settle-prepark.py` | GPL-2.0-or-later | Explicit SPDX identifier |

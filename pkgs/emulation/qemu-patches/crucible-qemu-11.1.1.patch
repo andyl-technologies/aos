@@ -81516,10 +81516,10 @@ index 0000000000000000000000000000000000000000..72b2a1320db867cae97f384a2e47c167
 +}
 diff --git a/plugins/crucible-fault-clock.c b/plugins/crucible-fault-clock.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..4eb0540ef5f26a902381bd985e7e0e4410800034
+index 0000000000000000000000000000000000000000..8c78247aa6a1c0d10fe52311c552eadbc15761d9
 --- /dev/null
 +++ b/plugins/crucible-fault-clock.c
-@@ -0,0 +1,4640 @@
+@@ -0,0 +1,4662 @@
 +/*
 + * Crucible deterministic guest-clock fault transforms
 + *
@@ -81930,15 +81930,37 @@ index 0000000000000000000000000000000000000000..4eb0540ef5f26a902381bd985e7e0e44
 +static CrucibleClockSource *crucible_clock_source_by_kind(
 +    uint16_t kind, uint32_t instance)
 +{
++    static __thread guint tsc_index = G_MAXUINT;
++
 +    if (!crucible_clock_sources) {
 +        return NULL;
 +    }
++
++    /*
++     * Cache only a search position. Registration can grow the array and
++     * manifest finalization sorts it, so resolve and validate the current
++     * row on every hit. Activation and clock values remain live reads.
++     */
++    if (kind == QEMU_CRUCIBLE_CLOCK_X86_TSC &&
++        tsc_index < crucible_clock_sources->len) {
++        CrucibleClockSource *source = &g_array_index(
++            crucible_clock_sources, CrucibleClockSource, tsc_index);
++
++        if (source->capability.source_kind == kind &&
++            source->instance == instance) {
++            return source;
++        }
++    }
++
 +    for (guint i = 0; i < crucible_clock_sources->len; i++) {
 +        CrucibleClockSource *source = &g_array_index(
 +            crucible_clock_sources, CrucibleClockSource, i);
 +
 +        if (source->capability.source_kind == kind &&
 +            source->instance == instance) {
++            if (kind == QEMU_CRUCIBLE_CLOCK_X86_TSC) {
++                tsc_index = i;
++            }
 +            return source;
 +        }
 +    }
@@ -157330,10 +157352,10 @@ index 0000000000000000000000000000000000000000..8d80e3052d7c9a6b187e2f7095f7ab8e
 +    main()
 diff --git a/tests/unit/test-crucible-cold-fault-predicates.py b/tests/unit/test-crucible-cold-fault-predicates.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..a52e32aabb49f817afba9fdeddbdc3f437f45aff
+index 0000000000000000000000000000000000000000..962b0dba612e5ea5407517d6188d2189f443076d
 --- /dev/null
 +++ b/tests/unit/test-crucible-cold-fault-predicates.py
-@@ -0,0 +1,685 @@
+@@ -0,0 +1,686 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise cold memory and clock predicates with unchanged production bodies.
 +
@@ -157935,6 +157957,7 @@ index 0000000000000000000000000000000000000000..a52e32aabb49f817afba9fdeddbdc3f4
 +    modes = source_range(icount_header, "typedef enum {",
 +                         "/* Ordinary -icount")
 +    types = "\n\n".join([
++        definition(memory_header, "enum QemuCrucibleClockSourceKind {") + ";",
 +        source_range(memory_header, "enum QemuCrucibleMemoryAccessClass {",
 +                     "enum QemuCrucibleFwCfgDmaDirection {"),
 +        source_range(node, "typedef struct CrucibleMemoryIndexEntry {",
@@ -184986,6 +185009,415 @@ index 0000000000000000000000000000000000000000..7ad8b95b8a26a98d6dd2f9948f353df6
 +               *shlex.split(os.environ.get("LDFLAGS", ""))]
 +    (arguments.output_dir / "compile-command.json").write_text(
 +        json.dumps(command, indent=2) + "\n")
++    subprocess.run(command, check=True)
++    subprocess.run([str(binary)], check=True)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/tests/unit/test-crucible-tsc-source-index.py b/tests/unit/test-crucible-tsc-source-index.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..0c4ec1c624a07fec159db0fa1473144d78f558d8
+--- /dev/null
++++ b/tests/unit/test-crucible-tsc-source-index.py
+@@ -0,0 +1,403 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Exercise the production TSC search hint with real GLib arrays and threads.
++
++Lookup, manifest sorting/finalization, activation, projection and restore guards
++are extracted unchanged. Registration and backing-storage relocation are bounded,
++quiescent providers; decoded transforms, virtual time and error reporting are
++explicit providers. This does not prove concurrent registry mutation, translated
++execution, a migration stream, the complete retained fork, or performance.
++"""
++
++import argparse
++import json
++import os
++from pathlib import Path
++import runpy
++import shlex
++import subprocess
++
++
++ROOT = Path(__file__).resolve().parents[2]
++definition = runpy.run_path(str(Path(__file__).with_name(
++    "test-crucible-net-output-stop.py")))["definition"]
++
++
++PRELUDE = r"""
++#include <glib.h>
++#include <pthread.h>
++#include <stdbool.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++#include <sys/wait.h>
++#include <unistd.h>
++
++/* CLOCK_SOURCE_KIND_DEFINITION */
++#define CRUCIBLE_CLOCK_HEALTHY 1
++#define ICOUNT_PRECISE 1
++#define QEMU_CLOCK_VIRTUAL 0
++
++typedef struct CrucibleClockSource {
++    struct { uint16_t source_kind, architecture; const char *id; } capability;
++    uint32_t instance;
++    GArray *rules;
++    void *source_rule;
++    int64_t additive_picos;
++    uint64_t drift_numerator, drift_denominator;
++    bool frozen, synchronizing;
++    unsigned source_state;
++    uint64_t provider_value;
++} CrucibleClockSource;
++
++static GArray *crucible_clock_sources;
++static bool crucible_clock_manifest_finalized, crucible_clock_bindings_sealed;
++static bool crucible_clock_terminal;
++static unsigned crucible_clock_vmstate_load_depth;
++static __thread unsigned row_reads;
++static bool sim_mode = true;
++static unsigned icount_mode = ICOUNT_PRECISE;
++static unsigned mode_reads, projections, failures;
++
++bool qemu_crucible_fault_clock_source_active(uint16_t kind, uint32_t instance);
++bool qemu_crucible_fault_clock_project_ps(uint16_t kind, uint32_t instance,
++    uint64_t raw, uint64_t *value, bool *read_error);
++
++static void *checked_row(GArray *array, size_t width, guint index)
++{
++    g_assert_cmpuint(index, <, array->len);
++    row_reads++;
++    return array->data + width * index;
++}
++
++#undef g_array_index
++#define g_array_index(array, type, index) \
++    (*(type *)checked_row((array), sizeof(type), (index)))
++
++static bool current_accel_is_sim(void)
++{
++    mode_reads++;
++    return sim_mode;
++}
++
++#define icount_enabled() icount_mode
++
++static uint64_t qemu_clock_get_ps(unsigned kind)
++{
++    g_assert_cmpuint(kind, ==, QEMU_CLOCK_VIRTUAL);
++    return 1000;
++}
++
++static bool crucible_clock_source_value(CrucibleClockSource *source,
++    uint64_t raw, uint64_t now, uint64_t opportunity, bool observing,
++    uint64_t *value, bool *read_error)
++{
++    g_assert_cmpuint(raw, ==, 7);
++    g_assert_cmpuint(now, ==, 1000);
++    g_assert_cmpuint(opportunity, ==, 0);
++    g_assert_false(observing);
++    projections++;
++    *value = source->provider_value;
++    *read_error = source->source_state == 4;
++    return true;
++}
++
++static void crucible_clock_report_read_failure(CrucibleClockSource *source,
++    uint16_t kind, uint32_t instance, uint64_t raw, const char *reason)
++{
++    (void)source;
++    (void)kind;
++    (void)instance;
++    (void)raw;
++    g_assert_nonnull(reason);
++    failures++;
++}
++"""
++
++
++CHECKS = r"""
++static CrucibleClockSource make_source(uint16_t kind, uint32_t instance,
++                                        const char *id, uint64_t value)
++{
++    return (CrucibleClockSource) {
++        .capability = { .source_kind = kind, .architecture = 1, .id = id },
++        .instance = instance, .drift_numerator = 1, .drift_denominator = 1,
++        .source_state = CRUCIBLE_CLOCK_HEALTHY, .provider_value = value,
++    };
++}
++
++/* Registration is quiescent and rejects duplicate kind/instance pairs. */
++static void append_source(CrucibleClockSource source)
++{
++    g_assert_null(crucible_clock_source_by_kind(
++        source.capability.source_kind, source.instance));
++    g_array_append_val(crucible_clock_sources, source);
++}
++
++static CrucibleClockSource *query(uint16_t kind, uint32_t instance,
++                                  uint64_t expected)
++{
++    CrucibleClockSource *source = crucible_clock_source_by_kind(kind, instance);
++
++    g_assert_nonnull(source);
++    g_assert_cmpuint(source->capability.source_kind, ==, kind);
++    g_assert_cmpuint(source->instance, ==, instance);
++    g_assert_cmpuint(source->provider_value, ==, expected);
++    return source;
++}
++
++static void check_unsealed_and_key(void)
++{
++    g_assert_null(crucible_clock_source_by_kind(1, 0));
++    crucible_clock_sources = g_array_new(false, true, sizeof(CrucibleClockSource));
++    g_assert_null(crucible_clock_source_by_kind(1, 0));
++    for (unsigned i = 0; i < 4; i++) {
++        append_source(make_source(9, i, "device", 10 + i));
++    }
++    append_source(make_source(1, 0, "z-tsc-0", 50));
++    row_reads = 0;
++    query(1, 0, 50);
++    g_assert_cmpuint(row_reads, ==, 5);
++    row_reads = 0;
++    query(1, 0, 50);
++    g_assert_cmpuint(row_reads, ==, HINT_ENABLED ? 1 : 5);
++    fprintf(stderr, "unsealed-second-lookup: row-reads=%u\n", row_reads);
++    g_assert_false(crucible_clock_manifest_finalized);
++    g_assert_false(crucible_clock_bindings_sealed);
++    g_assert_false(qemu_crucible_fault_clock_source_active(1, 0));
++
++    /* Missing keys must still scan; an absent lookup cannot poison a later hit. */
++    g_assert_null(crucible_clock_source_by_kind(1, 77));
++    append_source(make_source(1, 1, "a-tsc-1", 60));
++    query(1, 1, 60);
++    query(1, 0, 50);
++    query(9, 0, 10);
++    g_assert_null(crucible_clock_source_by_kind(1, 77));
++    append_source(make_source(1, 77, "b-tsc-77", 77));
++    query(1, 77, 77);
++    puts("unsealed applicability, exact keys and absent lookup: passed");
++}
++
++static void check_storage_and_sort(void)
++{
++    query(1, 0, 50);
++    GArray *old = crucible_clock_sources;
++    GArray *relocated = g_array_sized_new(false, true,
++        sizeof(CrucibleClockSource), old->len + 100);
++    g_array_append_vals(relocated, old->data, old->len);
++    crucible_clock_sources = relocated;
++    /* Keep old storage alive so pointer-reuse controls fail deterministically. */
++    ((CrucibleClockSource *)old->data)[4].provider_value = 999;
++    query(1, 0, 50);
++    g_array_unref(old);
++
++    /* A cached slot can now name a different kind after the real manifest sort. */
++    ((CrucibleClockSource *)relocated->data)[0].capability.id = "y-device-0";
++    ((CrucibleClockSource *)relocated->data)[1].capability.id = "x-device-1";
++    ((CrucibleClockSource *)relocated->data)[2].capability.id = "w-device-2";
++    ((CrucibleClockSource *)relocated->data)[3].capability.id = "v-device-3";
++    g_assert_true(crucible_clock_manifest_finalize());
++    query(1, 1, 60);
++    query(1, 0, 50);
++    query(1, 77, 77);
++    g_assert_true(crucible_clock_manifest_finalized);
++    g_assert_false(crucible_clock_bindings_sealed);
++    puts("live backing storage and production manifest sorting: passed");
++}
++
++static void check_live_predicates(void)
++{
++    CrucibleClockSource *source = query(1, 0, 50);
++
++    crucible_clock_bindings_sealed = true;
++    g_assert_false(qemu_crucible_fault_clock_source_active(1, 0));
++    source->additive_picos = 1;
++    g_assert_true(qemu_crucible_fault_clock_source_active(1, 0));
++    source->provider_value = 81;
++    uint64_t value;
++    bool read_error;
++    g_assert_true(qemu_crucible_fault_clock_project_ps(1, 0, 7,
++                                                     &value, &read_error));
++    g_assert_cmpuint(value, ==, 81);
++    g_assert_false(read_error);
++    g_assert_cmpuint(projections, ==, 1);
++
++    for (unsigned depth = 1; depth <= 2; depth++) {
++        crucible_clock_vmstate_load_depth = depth;
++        unsigned before = mode_reads;
++        g_assert_false(qemu_crucible_fault_clock_source_active(1, 0));
++        g_assert_cmpuint(mode_reads, ==, before);
++    }
++    crucible_clock_vmstate_load_depth = 0;
++    source->provider_value = 91;
++    source->source_state = 4;
++    g_assert_true(qemu_crucible_fault_clock_project_ps(1, 0, 7,
++                                                     &value, &read_error));
++    g_assert_cmpuint(value, ==, 91);
++    g_assert_true(read_error);
++
++    source->source_state = CRUCIBLE_CLOCK_HEALTHY;
++    source->additive_picos = 0;
++    g_assert_false(qemu_crucible_fault_clock_source_active(1, 0));
++    crucible_clock_terminal = true;
++    g_assert_true(qemu_crucible_fault_clock_source_active(1, 0));
++    g_assert_false(qemu_crucible_fault_clock_project_ps(1, 0, 7,
++                                                      &value, &read_error));
++    g_assert_cmpuint(failures, ==, 1);
++    crucible_clock_terminal = false;
++    puts("live activation, restore-depth guards, values and terminal failure: passed");
++}
++
++static void *cold_thread(void *opaque)
++{
++    (void)opaque;
++    row_reads = 0;
++    query(1, 0, 91);
++    g_assert_cmpuint(row_reads, ==, 7);
++    row_reads = 0;
++    query(1, 0, 91);
++    g_assert_cmpuint(row_reads, ==, HINT_ENABLED ? 1 : 7);
++    return NULL;
++}
++
++static void check_fork_and_thread(void)
++{
++    query(1, 0, 91);
++    pid_t child = fork();
++    g_assert_cmpint(child, >=, 0);
++    if (child == 0) {
++        row_reads = 0;
++        query(1, 0, 91);
++        g_assert_cmpuint(row_reads, ==, HINT_ENABLED ? 1 : 7);
++        CrucibleClockSource *source = query(1, 0, 91);
++        source->provider_value = 101;
++        query(1, 0, 101);
++        pthread_t worker;
++        /* New threads start with a cold TLS hint even in a forked process. */
++        source->provider_value = 91;
++        g_assert_cmpint(pthread_create(&worker, NULL, cold_thread, NULL), ==, 0);
++        g_assert_cmpint(pthread_join(worker, NULL), ==, 0);
++        _exit(0);
++    }
++    int status;
++    g_assert_cmpint(waitpid(child, &status, 0), ==, child);
++    g_assert_true(WIFEXITED(status));
++    g_assert_cmpint(WEXITSTATUS(status), ==, 0);
++    query(1, 0, 91);
++    puts("native fork private rows, inherited hint and cold replacement thread: passed");
++}
++
++static void check_empty_shrink(void)
++{
++    query(1, 0, 91);
++    /* Shrink is an adversarial provider, not a production registry operation. */
++    g_array_set_size(crucible_clock_sources, 0);
++    g_assert_null(crucible_clock_source_by_kind(1, 0));
++    CrucibleClockSource source = make_source(1, 0, "replacement", 123);
++    g_array_append_val(crucible_clock_sources, source);
++    query(1, 0, 123);
++    puts("empty and adversarial shrink bounds: passed");
++}
++
++int main(void)
++{
++    check_unsealed_and_key();
++    check_storage_and_sort();
++    check_live_predicates();
++    check_fork_and_thread();
++    check_empty_shrink();
++    g_array_unref(crucible_clock_sources);
++    return 0;
++}
++"""
++
++
++def fixture(root: Path, negative: str | None) -> str:
++    """Compose native definitions with bounded quiescent registry providers."""
++    clock = (root / "plugins/crucible-fault-clock.c").read_text()
++    signatures = [
++        "static CrucibleClockSource *crucible_clock_source_by_kind(",
++        "static gint crucible_clock_source_compare(",
++        "static bool crucible_clock_manifest_finalize(",
++        "static bool crucible_clock_mode(",
++        "static bool crucible_clock_source_has_effective_transform(",
++        "bool qemu_crucible_fault_clock_source_active(",
++        "bool qemu_crucible_fault_clock_project_ps(",
++    ]
++    bodies = "\n\n".join(definition(clock, item) for item in signatures)
++    optimized = "static __thread guint tsc_index" in bodies
++    replacements = {
++        "preseal-gate": ("if (kind == QEMU_CRUCIBLE_CLOCK_X86_TSC &&\n",
++                         "if (crucible_clock_bindings_sealed &&\n"
++                         "        kind == QEMU_CRUCIBLE_CLOCK_X86_TSC &&\n"),
++        "omit-bounds": ("tsc_index < crucible_clock_sources->len",
++                        "tsc_index != G_MAXUINT"),
++        "omit-instance": ("            source->instance == instance)",
++                          "            true)"),
++        "omit-kind": ("source->capability.source_kind == kind &&\n"
++                      "            source->instance == instance",
++                      "source->instance == instance"),
++        "stale-slot": ("if (source->capability.source_kind == kind &&\n"
++                       "            source->instance == instance)", "if (true)"),
++        "shared-hint": ("static __thread guint tsc_index", "static guint tsc_index"),
++        "activation-before-load": ("crucible_clock_vmstate_load_depth == 0 &&",
++                                   "true &&"),
++    }
++    if negative == "stale-pointer":
++        bodies = bodies.replace("static __thread guint tsc_index = G_MAXUINT;",
++            "static __thread guint tsc_index = G_MAXUINT;\n"
++            "    static __thread CrucibleClockSource *old_source;")
++        bodies = bodies.replace("CrucibleClockSource, tsc_index);",
++                                "CrucibleClockSource, tsc_index);\n"
++                                "        source = old_source;")
++        bodies = bodies.replace("tsc_index = i;", "tsc_index = i;\n"
++                                "                old_source = source;")
++    elif negative == "negative-cache":
++        bodies = bodies.replace("static __thread guint tsc_index = G_MAXUINT;",
++            "static __thread guint tsc_index = G_MAXUINT;\n"
++            "    static __thread bool absent;\n"
++            "    static __thread uint32_t absent_instance;\n"
++            "    if (absent && kind == 1 && instance == absent_instance) {\n"
++            "        return NULL;\n    }")
++        lookup_end = "    return NULL;\n}"
++        bodies = bodies.replace(lookup_end,
++            "    if (crucible_clock_sources && kind == 1) {\n"
++            "        absent = true;\n        absent_instance = instance;\n    }\n"
++            + lookup_end, 1)
++    elif negative:
++        old, new = replacements[negative]
++        if old not in bodies:
++            raise ValueError(f"Negative control anchor missing: {negative}")
++        bodies = bodies.replace(old, new, 1)
++    header = (root / "include/qemu/crucible-fault.h").read_text()
++    kinds = definition(header, "enum QemuCrucibleClockSourceKind {") + ";"
++    return (PRELUDE.replace("/* CLOCK_SOURCE_KIND_DEFINITION */", kinds)
++            + f"\n#define HINT_ENABLED {int(optimized)}\n" + bodies + CHECKS)
++
++
++def main() -> None:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--source-root", type=Path, default=ROOT)
++    parser.add_argument("--output-dir", type=Path, required=True)
++    parser.add_argument("--negative", choices=[
++        "preseal-gate", "omit-bounds", "omit-instance", "omit-kind",
++        "stale-slot", "shared-hint", "activation-before-load",
++        "stale-pointer", "negative-cache",
++    ])
++    arguments = parser.parse_args()
++    arguments.output_dir.mkdir(parents=True, exist_ok=True)
++    source = arguments.output_dir / "tsc-source-index.c"
++    binary = arguments.output_dir / "tsc-source-index"
++    source.write_text(fixture(arguments.source_root, arguments.negative))
++    command = shlex.split(os.environ.get("CC", "cc"))
++    command += shlex.split(os.environ.get("CFLAGS", ""))
++    command += ["-std=gnu11", "-Wall", "-Wextra", "-Werror", "-pthread",
++                str(source), "-o", str(binary)]
++    command += shlex.split(os.environ.get("LDFLAGS", ""))
++    (arguments.output_dir / "compile-command.json").write_text(
++        json.dumps({"argv": command}, indent=2) + "\n")
 +    subprocess.run(command, check=True)
 +    subprocess.run([str(binary)], check=True)
 +

@@ -38,8 +38,10 @@ def reconstruct_baseline(args):
         args.source_root / "include/qemu", baseline_root / "include/qemu",
         dirs_exist_ok=True,
     )
+    # The retained delta is baseline-to-candidate. Refuse implicit direction
+    # recovery so reconstruction uses only the explicit reverse operation.
     reconstruction = subprocess.run(
-        ["patch", "--batch", "--reverse", "--fuzz=0", "-p1", "-i",
+        ["patch", "--batch", "--force", "--reverse", "--fuzz=0", "-p1", "-i",
          str(args.baseline_patch.resolve())],
         cwd=baseline_root, capture_output=True, text=True,
     )
@@ -72,6 +74,7 @@ def run_fixture(command, directory, negative=False):
             "test-crucible-mutex-waiter-counters.py": "mutex-waiter-counters",
             "test-crucible-tcg-page-collection.py": "page-collection",
             "test-crucible-tcg-crossing-membership.py": "crossing-membership",
+            "test-crucible-tsc-source-index.py": "tsc-source-index",
         }[Path(command[1]).name]
         if not (directory / executable_name).is_file():
             raise AssertionError("negative control did not compile its native executable")
@@ -90,6 +93,9 @@ def run_fixture(command, directory, negative=False):
             if "SIGABRT" not in completed.stderr:
                 raise AssertionError("negative native fixture child did not abort")
             native_stderr = (directory / "stderr.txt").read_text()
+        elif executable_name == "tsc-source-index":
+            if "SIGABRT" not in completed.stderr:
+                raise AssertionError("negative native TSC child did not abort")
         if not re.search(
             r"assertion failed|Assertion .* failed|should (?:not )?be",
             native_stderr,
@@ -279,10 +285,69 @@ def check_crossing_membership(args, baseline_root):
     }
 
 
+def check_tsc_source_index(args, baseline_root):
+    """Compare live TSC observations while rejecting stale search hints."""
+    fixture = args.source_root / "tests/unit/test-crucible-tsc-source-index.py"
+    reference_dir = args.output_dir / "reference"
+    reference = run_fixture(
+        [sys.executable, str(fixture), "--source-root", str(baseline_root),
+         "--output-dir", str(reference_dir)], reference_dir,
+    )
+    positive = run_fixture(
+        [sys.executable, str(fixture), "--source-root", str(args.source_root),
+         "--output-dir", str(args.output_dir)], args.output_dir,
+    )
+    observations = [
+        "unsealed applicability, exact keys and absent lookup: passed",
+        "live backing storage and production manifest sorting: passed",
+        "live activation, restore-depth guards, values and terminal failure: passed",
+        "native fork private rows, inherited hint and cold replacement thread: passed",
+        "empty and adversarial shrink bounds: passed",
+    ]
+    expected_stdout = "\n".join(observations) + "\n"
+    if reference.stdout != expected_stdout or positive.stdout != expected_stdout:
+        raise AssertionError("native TSC lifecycle observations differ from baseline")
+    if reference.stderr.splitlines() != ["unsealed-second-lookup: row-reads=5"]:
+        raise AssertionError("baseline unsealed TSC search count differs")
+    if positive.stderr.splitlines() != ["unsealed-second-lookup: row-reads=1"]:
+        raise AssertionError("validated TSC search hint count differs")
+
+    manifest = json.loads(args.baseline_manifest.read_text())
+    clock_reference = manifest["clockReference"]
+    checked_reference(
+        baseline_root / "plugins/crucible-fault-clock.c",
+        clock_reference["sha256"],
+    )
+    negatives = [
+        "preseal-gate", "omit-bounds", "omit-instance", "omit-kind",
+        "stale-slot", "shared-hint", "activation-before-load",
+        "stale-pointer", "negative-cache",
+    ]
+    for mutation in negatives:
+        directory = args.output_dir / f"negative-{mutation}"
+        run_fixture(
+            [sys.executable, str(fixture), "--source-root", str(args.source_root),
+             "--output-dir", str(directory), "--negative", mutation],
+            directory, negative=True,
+        )
+    return {
+        "lifecycle_observations_equal": True,
+        "lifecycle_observations": observations,
+        "unsealed_second_lookup_baseline_row_reads": 5,
+        "unsealed_second_lookup_validated_hint_row_reads": 1,
+        "identical_clock_reference": clock_reference,
+        "compiled_causal_negatives": negatives,
+        "native_process_fork_and_replacement_thread": True,
+        "concurrent_registry_mutation": False,
+        "full_retained_runtime_or_migration_stream": False,
+        "scope": "extracted-production-tsc-lookup-with-quiescent-registry-providers",
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--case", choices=["mutex-waiter-counters", "tcg-page-collection",
-                                          "tcg-crossing-membership"],
+                                          "tcg-crossing-membership", "tsc-source-index"],
                         required=True)
     parser.add_argument("--source-root", type=Path, required=True)
     parser.add_argument("--baseline-manifest", type=Path, required=True)
@@ -297,6 +362,7 @@ def main():
         "mutex-waiter-counters": check_mutex,
         "tcg-page-collection": check_pages,
         "tcg-crossing-membership": check_crossing_membership,
+        "tsc-source-index": check_tsc_source_index,
     }[args.case]
     result = check(args, baseline_root)
     result.update({

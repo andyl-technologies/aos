@@ -228,6 +228,10 @@ in rec {
       inherit pkgs;
       case = "tcg-crossing-membership";
     };
+    qemuTscSourceIndex = import ./phase1-qemu-native-costs.nix {
+      inherit pkgs;
+      case = "tsc-source-index";
+    };
     qemuSettlePrepark = import ./phase1-qemu-settle-prepark.nix {inherit pkgs;};
     qemuColdFaultPredicates = import ./phase1-qemu-cold-fault-predicates.nix {inherit pkgs;};
     qemuLazyMemoryIdentity = import ./phase1-qemu-lazy-memory-identity.nix {inherit pkgs;};
