@@ -70,6 +70,10 @@ fn private_paging_metadata_bytes(topology: &Topology) -> Result<u64, RamError> {
         // the pinned producer refuses batches beyond 65,536 entries.
         .and_then(|bytes| bytes.checked_add(56 * 65536 + 2 * 4096))
         .and_then(|bytes| bytes.checked_add((16 * pages.min(65536)).div_ceil(4096) * 4096 + 4096))
+        .and_then(|bytes| {
+            bytes
+                .checked_add(2 * crucible_protocol::ram_control::RAM_PERFORMANCE_BANK_RESERVE_BYTES)
+        })
         .and_then(|bytes| bytes.checked_add(2 * (16 * topology.regions().len() as u64 + 256)))
         .ok_or(RamError::Overflow)
 }
@@ -321,11 +325,15 @@ mod tests {
         // Parent and staged child each retain two 16-byte lock spans plus
         // their separately admitted 256-byte inventory ownership envelope.
         let lock_inventories = 2 * (2 * 16 + 256);
+        // Parent and independently staged child each reserve an optional fixed bank.
+        let diagnostic_banks =
+            2 * crucible_protocol::ram_control::RAM_PERFORMANCE_BANK_RESERVE_BYTES;
         assert_eq!(
             paging_metadata
                 - native_mutation_scratch
                 - unique_coordinate_receipt
-                - lock_inventories,
+                - lock_inventories
+                - diagnostic_banks,
             8160
         );
         let actual = actual_inventory_ram_requirements(&topology, 16384, 32768, 1)

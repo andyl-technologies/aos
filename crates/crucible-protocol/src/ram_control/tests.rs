@@ -25,6 +25,7 @@ fn frame(sequence: u64, request: RamControlRequest) -> RamControlFrame {
 
 fn state() -> RamControlReply {
     RamControlReply {
+        performance: None,
         placement_receipt: None,
         operation_failure: None,
         fault_actor: None,
@@ -70,7 +71,7 @@ fn policy() -> RamControlPolicy {
 #[test]
 fn ram_control_golden_hello_and_all_closed_messages_roundtrip() {
     let hello = frame(1, RamControlRequest::Hello);
-    let mut golden = vec![0, 0, 0, 5, 0];
+    let mut golden = vec![0, 0, 0, 6, 0];
     golden.extend_from_slice(&[4; 32]);
     golden.extend_from_slice(&1_u64.to_be_bytes());
     golden.extend_from_slice(&[1; 32]);
@@ -388,6 +389,7 @@ fn control_cutover_accepts_current_golden_and_refuses_predecessor_handshake() {
 fn ram_control_unavailable_counters_cannot_masquerade_as_zero_measurements() {
     let request = frame(1, RamControlRequest::Status);
     let unavailable = RamControlReply {
+        performance: None,
         measurements_available: false,
         private_resident_bytes: 0,
         shared_resident_bytes_observed: 0,
@@ -594,6 +596,7 @@ fn operational_activity_is_independent_of_rss_and_rejects_incomplete_or_unknown_
             request_digest: ram_control_request_digest(&request)
                 .unwrap_or_else(|_| panic!("valid activity request must encode")),
             state: RamControlReply {
+                performance: None,
                 activity: Some(activity),
                 measurements_available: false,
                 private_resident_bytes: 0,
@@ -614,7 +617,8 @@ fn operational_activity_is_independent_of_rss_and_rejects_incomplete_or_unknown_
         response
     );
 
-    let tail = encoded.len() - 67;
+    // Activity is followed by absent performance, probe and actor tags.
+    let tail = encoded.len() - 68;
     assert_eq!(encoded[tail], 1);
     for (index, value) in [1_u64, 2, 3, 4, 5, 6, 7, u64::MAX].into_iter().enumerate() {
         let start = tail + 1 + index * 8;
@@ -642,6 +646,7 @@ fn native_probe_has_one_bounded_encoding_and_refuses_user_only_or_empty_features
             request_digest: ram_control_request_digest(&request)
                 .unwrap_or_else(|error| panic!("encode probe request: {error}")),
             state: RamControlReply {
+                performance: None,
                 kernel_probe: Some(probe),
                 ..state()
             },
@@ -779,6 +784,7 @@ fn original_operation_failure_preserves_the_cut_and_rejects_invalid_scalar_cause
         RamControlFailureCause::Other,
     ] {
         let message = actor_response(RamControlReply {
+            performance: None,
             operation_failure: Some(RamControlOperationFailure { cause, ..failure }),
             ..state()
         });
@@ -797,9 +803,75 @@ fn original_operation_failure_preserves_the_cut_and_rejects_invalid_scalar_cause
         RamControlFailureCause::Native { status: 0 },
     ] {
         let message = actor_response(RamControlReply {
+            performance: None,
             operation_failure: Some(RamControlOperationFailure { cause, ..failure }),
             ..state()
         });
         assert!(encode_ram_control(&message).is_err());
+    }
+}
+
+#[test]
+fn performance_actions_and_exact_partial_work_roundtrip() {
+    for action in [
+        RamControlPerformanceAction::Start,
+        RamControlPerformanceAction::Observe,
+        RamControlPerformanceAction::Stop,
+    ] {
+        let request = frame(1, RamControlRequest::Performance { action });
+        let encoded = encode_ram_control(&request).unwrap();
+        assert_eq!(decode_ram_control(&encoded).unwrap(), request);
+        let mut predecessor = encoded.clone();
+        predecessor[..4].copy_from_slice(&5u32.to_be_bytes());
+        assert!(matches!(
+            decode_ram_control(&predecessor),
+            Err(RamControlError::UnsupportedVersion(5))
+        ));
+        let mut invalid_action = encoded;
+        *invalid_action.last_mut().unwrap() = 3;
+        assert!(decode_ram_control(&invalid_action).is_err());
+    }
+    let mut report = RamControlPerformance {
+        generation: 1,
+        active: false,
+        complete: true,
+        pending_operations: 0,
+        io: [RamControlIoMeasurement::default(); RAM_PERFORMANCE_IO_CLASSES],
+    };
+    report.io[RamControlIoClass::PageRead as usize] = RamControlIoMeasurement {
+        operations: 2,
+        completed: 1,
+        failed: 1,
+        syscalls: 4,
+        transferred_bytes: 17 + 7,
+        elapsed_ns: 900,
+        maximum_elapsed_ns: 700,
+    };
+    let mut reply = state();
+    reply.performance = Some(report);
+    let response = RamControlFrame {
+        message: RamControlMessage::Reply {
+            request_digest: [9; 32],
+            state: reply,
+        },
+        ..frame(2, RamControlRequest::Status)
+    };
+    assert_eq!(
+        decode_ram_control(&encode_ram_control(&response).unwrap()).unwrap(),
+        response
+    );
+    for invalid in 0..4 {
+        let mut report = report;
+        match invalid {
+            0 => report.generation = 0,
+            1 => report.io[0].operations += 1,
+            2 => report.io[0].maximum_elapsed_ns = 901,
+            _ => report.io[RamControlIoClass::Sync as usize].transferred_bytes = 1,
+        }
+        let mut response = response.clone();
+        if let RamControlMessage::Reply { state, .. } = &mut response.message {
+            state.performance = Some(report);
+        }
+        assert!(encode_ram_control(&response).is_err());
     }
 }

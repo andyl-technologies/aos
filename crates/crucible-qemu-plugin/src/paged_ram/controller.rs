@@ -354,6 +354,14 @@ impl LivePagerController {
             }
         });
         RamControlReply {
+            performance: state.owner.as_ref().and_then(|owner| {
+                owner
+                    .performance(
+                        crucible_protocol::ram_control::RamControlPerformanceAction::Observe,
+                    )
+                    .ok()
+                    .flatten()
+            }),
             operation_failure: state
                 .owner
                 .as_ref()
@@ -395,6 +403,7 @@ impl LivePagerController {
 
     fn unavailable(&self) -> RamControlReply {
         RamControlReply {
+            performance: None,
             placement_receipt: None,
             operation_failure: None,
             fault_actor: None,
@@ -543,6 +552,60 @@ impl PagerControl for LivePagerController {
             return self.unavailable();
         };
         self.reply(&mut state, RamControlDisposition::Accepted)
+    }
+
+    fn performance(
+        &self,
+        action: crucible_protocol::ram_control::RamControlPerformanceAction,
+    ) -> RamControlReply {
+        use crucible_protocol::ram_control::RamControlPerformanceAction;
+        let owner = {
+            let Ok(mut state) = self.state.try_lock() else {
+                return self.unavailable();
+            };
+            if state.fork_preparing || state.policy_applying {
+                return self.reply(&mut state, RamControlDisposition::Unavailable);
+            }
+            // Reading or closing an existing diagnostic interval remains possible
+            // after failure. It neither revives paging nor admits new storage.
+            if action == RamControlPerformanceAction::Start {
+                if state.outer.is_some_and(|cap| outer_remaining(cap).is_err()) {
+                    state.outer_expired = true;
+                }
+                if state.failed
+                    || state.outer_expired
+                    || self.canceled.load(Ordering::Acquire)
+                    || (state.child_bootstrap && (self.child_runtime_ready)() != 1)
+                {
+                    return self.reply(&mut state, RamControlDisposition::Unavailable);
+                }
+            }
+            let Some(owner) = state.owner.as_ref().cloned() else {
+                return self.reply(&mut state, RamControlDisposition::Unavailable);
+            };
+            owner
+        };
+        let result = owner.performance(action);
+        let Ok(mut state) = self.state.try_lock() else {
+            return self.unavailable();
+        };
+        if !state
+            .owner
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, &owner))
+        {
+            return self.unavailable();
+        }
+        let mut reply = self.reply(
+            &mut state,
+            if result.is_ok() {
+                RamControlDisposition::Accepted
+            } else {
+                RamControlDisposition::AdmissionRefused
+            },
+        );
+        reply.performance = result.ok().flatten();
+        reply
     }
 
     fn inventory_region(&self, generation: u64, ordinal: u32) -> RamControlReply {

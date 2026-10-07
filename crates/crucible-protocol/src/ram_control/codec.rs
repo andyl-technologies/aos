@@ -4,6 +4,7 @@ use super::*;
 
 mod fault_actor;
 mod operation_failure;
+mod performance;
 
 struct Decoder<'a> {
     bytes: &'a [u8],
@@ -313,6 +314,7 @@ pub fn encode_ram_control(frame: &RamControlFrame) -> Result<Vec<u8>, RamControl
         RamControlMessage::Request(RamControlRequest::GrantInventory { .. }) => 5,
         RamControlMessage::Request(RamControlRequest::SyncOuterCap { .. }) => 6,
         RamControlMessage::Request(RamControlRequest::TestFaultActor { .. }) => 7,
+        RamControlMessage::Request(RamControlRequest::Performance { .. }) => 8,
         RamControlMessage::Reply { .. } => 128,
     };
     let mut out = Vec::with_capacity(1024);
@@ -327,6 +329,9 @@ pub fn encode_ram_control(frame: &RamControlFrame) -> Result<Vec<u8>, RamControl
     out.extend_from_slice(&frame.target.arena_generation.to_be_bytes());
     out.push(u8::from(frame.target.retained_template));
     match frame.message {
+        RamControlMessage::Request(RamControlRequest::Performance { action }) => {
+            out.push(action as u8)
+        }
         RamControlMessage::Request(RamControlRequest::TestFaultActor {
             entitlement,
             worker_generation,
@@ -458,6 +463,7 @@ pub fn encode_ram_control(frame: &RamControlFrame) -> Result<Vec<u8>, RamControl
                     out.extend_from_slice(&count.to_be_bytes());
                 }
             }
+            performance::encode(&mut out, state.performance)?;
             out.push(u8::from(state.kernel_probe.is_some()));
             if let Some(probe) = state.kernel_probe {
                 if probe.features == 0 {
@@ -567,6 +573,14 @@ pub fn decode_ram_control(bytes: &[u8]) -> Result<RamControlFrame, RamControlErr
                 _ => return Err(RamControlError::InvalidFrame),
             },
         }),
+        8 => RamControlMessage::Request(RamControlRequest::Performance {
+            action: match input.byte()? {
+                0 => RamControlPerformanceAction::Start,
+                1 => RamControlPerformanceAction::Observe,
+                2 => RamControlPerformanceAction::Stop,
+                _ => return Err(RamControlError::InvalidFrame),
+            },
+        }),
         128 => {
             let request_digest = input.take()?;
             let disposition = match input.byte()? {
@@ -582,6 +596,7 @@ pub fn decode_ram_control(bytes: &[u8]) -> Result<RamControlFrame, RamControlErr
             let limitation_reasons = input.u32()?;
             let measurements_available = input.boolean()?;
             let mut state = RamControlReply {
+                performance: None,
                 placement_receipt: None,
                 operation_failure: None,
                 fault_actor: None,
@@ -633,6 +648,7 @@ pub fn decode_ram_control(bytes: &[u8]) -> Result<RamControlFrame, RamControlErr
                 }),
                 _ => return Err(RamControlError::InvalidFrame),
             };
+            state.performance = performance::decode(&mut input)?;
             state.kernel_probe = match input.byte()? {
                 0 => None,
                 1 => Some(RamControlKernelProbe {

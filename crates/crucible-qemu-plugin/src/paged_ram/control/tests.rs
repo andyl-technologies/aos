@@ -107,6 +107,7 @@ impl PagerControl for Controller {
 
     fn status(&self) -> RamControlReply {
         RamControlReply {
+            performance: None,
             placement_receipt: None,
             operation_failure: None,
             fault_actor: None,

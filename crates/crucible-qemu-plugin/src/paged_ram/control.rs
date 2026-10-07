@@ -49,6 +49,15 @@ pub(crate) trait PagerControl: SourceOperationFactory + 'static {
 
     fn status(&self) -> RamControlReply;
 
+    fn performance(
+        &self,
+        _: crucible_protocol::ram_control::RamControlPerformanceAction,
+    ) -> RamControlReply {
+        let mut reply = self.status();
+        reply.disposition = crucible_protocol::ram_control::RamControlDisposition::Unsupported;
+        reply
+    }
+
     fn test_fault_actor(
         &self,
         entitlement: [u8; 32],
@@ -144,6 +153,7 @@ impl PagerControlWorker {
                 let result = (|| {
                     let mut dispatch = |request| match request {
                         RamControlRequest::Hello | RamControlRequest::Status => controller.status(),
+                        RamControlRequest::Performance { action } => controller.performance(action),
                         RamControlRequest::TestFaultActor {
                             entitlement,
                             worker_generation,

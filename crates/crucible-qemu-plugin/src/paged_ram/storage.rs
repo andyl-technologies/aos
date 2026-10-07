@@ -15,6 +15,8 @@ use crucible_ram::{MetadataBudget, MetadataReservation, PageDigest};
 use std::sync::{Arc, Weak};
 
 use super::PAGE_BYTES;
+use super::performance::{IoWork, MeasuredIo, PerformanceBank};
+use crucible_protocol::ram_control::{RamControlIoClass, RamControlPerformance};
 
 /// Retains one immutable disk slot until every logical reader releases it.
 #[derive(Clone, Debug)]
@@ -47,6 +49,7 @@ pub(crate) struct PreservedPages {
     next_slot: usize,
     metadata: Option<MetadataReservation>,
     quota_bytes: u64,
+    performance: Option<Arc<PerformanceBank>>,
 }
 
 impl PreservedPages {
@@ -107,6 +110,7 @@ impl PreservedPages {
             next_slot: 0,
             metadata: None,
             quota_bytes,
+            performance: None,
         })
     }
 
@@ -121,6 +125,44 @@ impl PreservedPages {
         bytes: &[u8; PAGE_BYTES],
         valid_length: u32,
         page_version: u64,
+    ) -> io::Result<PageRecord> {
+        let bank = self.performance.clone();
+        self.preserve_measured(
+            bytes,
+            valid_length,
+            page_version,
+            bank.as_deref(),
+            RamControlIoClass::PreservationWrite,
+        )
+    }
+
+    /// Copies a parent version into independent backing, charged to the parent interval.
+    ///
+    /// # Errors
+    /// Refuses unavailable leases or propagates actual write, sync or verification errors.
+    pub(crate) fn preserve_for_fork(
+        &mut self,
+        bytes: &[u8; PAGE_BYTES],
+        valid_length: u32,
+        page_version: u64,
+        bank: Option<&PerformanceBank>,
+    ) -> io::Result<PageRecord> {
+        self.preserve_measured(
+            bytes,
+            valid_length,
+            page_version,
+            bank,
+            RamControlIoClass::ForkWrite,
+        )
+    }
+
+    fn preserve_measured(
+        &mut self,
+        bytes: &[u8; PAGE_BYTES],
+        valid_length: u32,
+        page_version: u64,
+        bank: Option<&PerformanceBank>,
+        class: RamControlIoClass,
     ) -> io::Result<PageRecord> {
         let valid = checked_valid_length(valid_length)?;
         if page_version == 0 || self.metadata.is_none() {
@@ -152,14 +194,29 @@ impl PreservedPages {
         // This weak slot never permits reuse while a page, fork stage, or
         // in-flight reader owns any clone of the immutable preservation lease.
         self.slots[slot] = Arc::downgrade(&record.0);
-        self.file()?
-            .write_all_at(&bytes[..valid], record.0.offset)?;
-        self.file()?.sync_data()?;
+        self.write_data(&bytes[..valid], record.0.offset, bank, class)?;
+        let file = self.file()?;
+        let measurement = MeasuredIo::begin(bank, RamControlIoClass::Sync);
+        let result = file.sync_data();
+        measurement.finish(
+            IoWork {
+                bytes: 0,
+                syscalls: 1,
+                ..IoWork::default()
+            },
+            &result,
+        );
+        result?;
 
         // Verification happens before the resident copy can be discarded.
         // Tail padding is supplied locally on population, never read as content.
         let mut verified = [0_u8; PAGE_BYTES];
-        self.read(&record, &mut verified)?;
+        self.read_measured(
+            &record,
+            &mut verified,
+            bank,
+            RamControlIoClass::VerificationRead,
+        )?;
         Ok(record)
     }
 
@@ -169,6 +226,35 @@ impl PreservedPages {
     /// Returns invalid references, truncation, I/O failure, or a digest mismatch.
     /// A failed read never permits zero substitution or guest fault resolution.
     pub(crate) fn read(&self, record: &PageRecord, bytes: &mut [u8; PAGE_BYTES]) -> io::Result<()> {
+        self.read_measured(
+            record,
+            bytes,
+            self.performance.as_deref(),
+            RamControlIoClass::PageRead,
+        )
+    }
+
+    /// Reads parent backing as actual fork-copy I/O, including canonical tails.
+    pub(crate) fn read_for_fork(
+        &self,
+        record: &PageRecord,
+        bytes: &mut [u8; PAGE_BYTES],
+    ) -> io::Result<()> {
+        self.read_measured(
+            record,
+            bytes,
+            self.performance.as_deref(),
+            RamControlIoClass::ForkRead,
+        )
+    }
+
+    fn read_measured(
+        &self,
+        record: &PageRecord,
+        bytes: &mut [u8; PAGE_BYTES],
+        bank: Option<&PerformanceBank>,
+        class: RamControlIoClass,
+    ) -> io::Result<()> {
         let valid = checked_valid_length(record.0.valid_length)?;
         let end = record
             .0
@@ -194,8 +280,19 @@ impl PreservedPages {
             ));
         }
         bytes.fill(0);
-        self.file()?
-            .read_exact_at(&mut bytes[..valid], record.0.offset)?;
+        let file = self.file()?;
+        if bank.is_some() {
+            let measurement = MeasuredIo::begin(bank, class);
+            let (work, result) = super::performance::read_exact_at(
+                &mut bytes[..valid],
+                record.0.offset,
+                |bytes, offset| file.read_at(bytes, offset),
+            );
+            measurement.finish(work, &result);
+            result?;
+        } else {
+            file.read_exact_at(&mut bytes[..valid], record.0.offset)?;
+        }
         self.release_cache(record.0.offset)?;
         let digest = *PageDigest::hash(&bytes[..valid])
             .map_err(io::Error::other)?
@@ -207,6 +304,53 @@ impl PreservedPages {
             ));
         }
         Ok(())
+    }
+
+    fn write_data(
+        &self,
+        bytes: &[u8],
+        offset: u64,
+        bank: Option<&PerformanceBank>,
+        class: RamControlIoClass,
+    ) -> io::Result<()> {
+        let file = self.file()?;
+        if bank.is_some() {
+            let measurement = MeasuredIo::begin(bank, class);
+            let (work, result) =
+                super::performance::write_all_at(bytes, offset, |bytes, offset| {
+                    file.write_at(bytes, offset)
+                });
+            measurement.finish(work, &result);
+            result
+        } else {
+            file.write_all_at(bytes, offset)
+        }
+    }
+
+    /// Starts one diagnostic interval using the same retained metadata authority.
+    ///
+    /// # Errors
+    /// Refuses an existing interval, absent admitted storage or insufficient metadata.
+    pub(crate) fn start_performance(&mut self, budget: &MetadataBudget) -> io::Result<()> {
+        if self.metadata.is_none() || self.performance.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "performance interval unavailable",
+            ));
+        }
+        self.performance = Some(Arc::new(PerformanceBank::new(budget)?));
+        Ok(())
+    }
+
+    pub(crate) fn performance(&self, stop: bool) -> io::Result<Option<RamControlPerformance>> {
+        self.performance
+            .as_ref()
+            .map(|bank| bank.snapshot(stop))
+            .transpose()
+    }
+
+    pub(super) fn performance_bank(&self) -> Option<Arc<PerformanceBank>> {
+        self.performance.clone()
     }
 
     /// Charges all slot and lease capacity before any preservation can run.
@@ -334,6 +478,7 @@ mod tests {
             next_slot: 0,
             metadata: None,
             quota_bytes,
+            performance: None,
         }
     }
 
@@ -471,5 +616,67 @@ mod tests {
         }
         assert_eq!(storage.slots.len(), 3);
         assert!(storage.file().unwrap().metadata().unwrap().len() <= 3 * PAGE_BYTES as u64);
+    }
+
+    #[test]
+    fn full_io_completion_does_not_claim_digest_verification_success() {
+        let budget = MetadataBudget::new(128 * 1024);
+        let file = temporary_file();
+        let adversary = file.try_clone().unwrap();
+        let mut storage = unreserved_record_store(file, PAGE_BYTES as u64);
+        storage.admit_metadata(&budget).unwrap();
+        let record = storage.preserve(&[0x77; PAGE_BYTES], 17, 1).unwrap();
+        storage.start_performance(&budget).unwrap();
+        adversary.write_all_at(&[0x66], 0).unwrap();
+
+        let mut scratch = [0; PAGE_BYTES];
+        assert_eq!(
+            storage.read(&record, &mut scratch).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        let observed = storage.performance(true).unwrap().unwrap();
+        let read = observed.io[RamControlIoClass::PageRead as usize];
+        assert_eq!(read.transferred_bytes, 17);
+        assert_eq!(read.completed, 1);
+        assert_eq!(read.failed, 0);
+        assert!(observed.complete);
+    }
+
+    #[test]
+    fn measured_tails_include_verification_and_fork_copy_without_padding() {
+        let budget = MetadataBudget::new(128 * 1024);
+        let file = temporary_file();
+        let adversary = file.try_clone().unwrap();
+        let mut parent = unreserved_record_store(file, PAGE_BYTES as u64);
+        parent.admit_metadata(&budget).unwrap();
+        assert!(parent.performance(false).unwrap().is_none());
+        parent.start_performance(&budget).unwrap();
+        assert!(parent.start_performance(&budget).is_err());
+        let record = parent.preserve(&[0x77; PAGE_BYTES], 17, 1).unwrap();
+        let mut scratch = [0; PAGE_BYTES];
+        parent.read_for_fork(&record, &mut scratch).unwrap();
+        let mut child = unreserved_record_store(temporary_file(), PAGE_BYTES as u64);
+        child.admit_metadata(&budget).unwrap();
+        child
+            .preserve_for_fork(&scratch, 17, 1, parent.performance_bank().as_deref())
+            .unwrap();
+        adversary.set_len(16).unwrap();
+        assert_eq!(
+            parent.read(&record, &mut scratch).unwrap_err().kind(),
+            io::ErrorKind::UnexpectedEof
+        );
+        let observed = parent.performance(true).unwrap().unwrap();
+        let bytes = |class: RamControlIoClass| observed.io[class as usize].transferred_bytes;
+        assert_eq!(bytes(RamControlIoClass::PreservationWrite), 17);
+        assert_eq!(bytes(RamControlIoClass::VerificationRead), 34);
+        assert_eq!(bytes(RamControlIoClass::ForkRead), 17);
+        assert_eq!(bytes(RamControlIoClass::ForkWrite), 17);
+        assert_eq!(bytes(RamControlIoClass::PageRead), 16);
+        assert_eq!(bytes(RamControlIoClass::Sync), 0);
+        assert_eq!(observed.io[RamControlIoClass::Sync as usize].completed, 2);
+        assert_eq!(observed.io[RamControlIoClass::PageRead as usize].failed, 1);
+        assert!(observed.complete);
+        assert_eq!(observed.pending_operations, 0);
+        assert!(child.performance(false).unwrap().is_none());
     }
 }

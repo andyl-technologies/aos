@@ -155,6 +155,7 @@ pub(crate) struct PausedPagingOwner {
     failed: AtomicBool,
     first_operational_failure: OnceLock<RetainedOperationalFailure>,
     spill: Mutex<Option<Arc<Mutex<super::PreservedPages>>>>,
+    performance_installed: AtomicBool,
     logical_bytes: AtomicU64,
     permanent_resident_bytes: AtomicU64,
     topology_generation: AtomicU64,
@@ -187,6 +188,40 @@ pub(crate) struct PagingAuthoritySnapshot {
 }
 
 impl PausedPagingOwner {
+    /// Samples actual spill diagnostics without native or guest execution locks.
+    pub(crate) fn performance(
+        &self,
+        action: crucible_protocol::ram_control::RamControlPerformanceAction,
+    ) -> Result<Option<crucible_protocol::ram_control::RamControlPerformance>, RamError> {
+        use crucible_protocol::ram_control::RamControlPerformanceAction;
+        if action != RamControlPerformanceAction::Start
+            && !self.performance_installed.load(Ordering::Acquire)
+        {
+            return Ok(None);
+        }
+
+        let budget = if action == RamControlPerformanceAction::Start {
+            Some(crate::ram_fingerprint::fork_metadata_budget()?)
+        } else {
+            None
+        };
+        let spill = self
+            .spill
+            .try_lock()
+            .map_err(|_| "performance spill ownership busy")?
+            .as_ref()
+            .cloned()
+            .ok_or("performance spill not installed")?;
+        let mut spill = spill.try_lock().map_err(|_| "performance spill I/O busy")?;
+        if let Some(budget) = budget {
+            spill.start_performance(&budget)?;
+            // Publish only the installed bank. Stop retains this marker so its
+            // completed interval stays observable; a fresh child starts false.
+            self.performance_installed.store(true, Ordering::Release);
+        }
+        Ok(spill.performance(action == RamControlPerformanceAction::Stop)?)
+    }
+
     /// Observes actual actor membership and retained failure without guest locks.
     pub(crate) fn fault_actor_report(
         &self,
@@ -254,6 +289,7 @@ impl PausedPagingOwner {
             failed: AtomicBool::new(false),
             first_operational_failure: OnceLock::new(),
             spill: Mutex::new(None),
+            performance_installed: AtomicBool::new(false),
             logical_bytes: AtomicU64::new(0),
             permanent_resident_bytes: AtomicU64::new(0),
             topology_generation: AtomicU64::new(0),

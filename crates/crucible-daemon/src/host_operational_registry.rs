@@ -1009,6 +1009,29 @@ impl HostOperationalRegistry {
 }
 
 impl RamControlRegistrar for HostOperationalRegistry {
+    fn performance(
+        &self,
+        target: HostRamTarget,
+        action: crucible_protocol::ram_control::RamControlPerformanceAction,
+    ) -> Result<Option<crucible_protocol::ram_control::RamControlPerformance>, RamControlError>
+    {
+        use crucible_linux_resource::host_supervision::HostOperationClass;
+        use crucible_protocol::ram_control::RamControlPerformanceAction;
+        let class = if action == RamControlPerformanceAction::Start {
+            HostOperationClass::Setup
+        } else {
+            HostOperationClass::Cleanup
+        };
+        self.with_native_fault_client(target, class, |client, guard| {
+            let reply = client.performance_under(action, guard)?;
+            if reply.disposition != crucible_protocol::ram_control::RamControlDisposition::Accepted
+            {
+                return Err(RamControlError::AuthorityMismatch);
+            }
+            Ok(reply.performance)
+        })
+    }
+
     fn fault_actor_status(
         &self,
         target: HostRamTarget,

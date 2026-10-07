@@ -464,4 +464,4 @@ aos.crucible.campaign-gate-matrix-inventory	2	tests::crucible::campaign_gate_mat
 crucible.qemu.hot-fork.source-graph	1	crucible-qemu::qmp::hot_fork	process-protocol-message	gate:hot-fork-isolation,gate:abi-conformance
 crucible.qemu.hot-fork.child-ram	1	crucible-qemu::qmp::hot_fork_ram	process-protocol-message	gate:hot-fork-isolation,gate:abi-conformance
 crucible.qemu.paused-cpu	1	crucible-qemu::qmp::paused_cpu	process-protocol-message	gate:abi-conformance
-crucible.ram-control.frame	5	crucible-protocol::ram_control	process-protocol-message	gate:abi-conformance
+crucible.ram-control.frame	6	crucible-protocol::ram_control	process-protocol-message	gate:abi-conformance

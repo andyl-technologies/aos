@@ -42,6 +42,7 @@ fn measured_interval(end: Duration, start: Duration) -> Result<f64, Box<dyn Erro
 
 struct Trial {
     workload: String,
+    measure_io: bool,
     trial_index: u32,
     cpu: usize,
     qemu: PathBuf,
@@ -70,6 +71,12 @@ impl Trial {
         let args: Vec<String> = serde_json::from_str(&encoded)?;
         let mut trial = Self {
             workload: workload.clone(),
+            measure_io: match std::env::var("CRUCIBLE_NATIVE_PERFORMANCE_IO") {
+                Err(std::env::VarError::NotPresent) => false,
+                Ok(value) if value == "0" => false,
+                Ok(value) if value == "1" => true,
+                _ => return Err("performance I/O sampling must be explicitly 0 or 1".into()),
+            },
             trial_index,
             cpu: 0,
             qemu: PathBuf::new(),
@@ -343,6 +350,11 @@ fn measure(
         ),
     )?;
     let startup_seconds = measured_interval(measurement_time()?, launch_start)?;
+    use crucible_protocol::ram_control::RamControlPerformanceAction;
+    if trial.measure_io {
+        node.ram_performance(RamControlPerformanceAction::Start)?
+            .ok_or("actual paging diagnostics unavailable")?;
+    }
     let boot_start = measurement_time()?;
     let stopped = SimulationBackend::step_to(
         &mut node,
@@ -351,6 +363,17 @@ fn measure(
         },
     )?;
     let end = measurement_time()?;
+    let paging_io = if trial.measure_io {
+        let report = node
+            .ram_performance(RamControlPerformanceAction::Stop)?
+            .ok_or("actual paging diagnostics unavailable after measurement")?;
+        if !report.complete || report.pending_operations != 0 {
+            return Err("paging measurement interval is incomplete".into());
+        }
+        Some(paging_io_report(report))
+    } else {
+        None
+    };
     let calibration = node.logical_time_calibration()?;
     if stopped.reached.ticks != calibration.logical_icount {
         return Err("native stop differs from the original authorized coordinate".into());
@@ -462,9 +485,11 @@ fn measure(
     Ok(json!({
         "schema": "crucible.managed-tcg-performance.v1", "mode": "sim",
         "managed_owner": true, "accepted_assignment": true,
+        "paging_application_io": paging_io,
+        "paging_application_io_enabled": trial.measure_io,
         "workload": trial.workload, "seconds": measured_interval(end, launch_start)?,
         "boot_seconds": measured_interval(end, boot_start)?, "startup_seconds": startup_seconds,
-        "measurement_scope": "native spawn through authenticated stopped boundary; serial bytes reconciled at that boundary",
+        "measurement_scope": "native spawn through authenticated stopped boundary; optional diagnostic setup included; serial bytes reconciled at that boundary",
         "serial_receipt_roi_seconds": null,
         "raw_icount": calibration.raw_icount, "logical_tick": calibration.logical_icount,
         "request": request, "manifest": trial.manifest, "timer_witness": timer_witness,
@@ -499,11 +524,31 @@ fn evidence_bound() -> u64 {
     // At most one console Vec, its two-byte hex renderer and its JSON-owned
     // copy coexist. The bounded QMP line, parser, register owner, sample copy,
     // and final renderer each have a distinct 32 KiB bank. Fixed JSON objects
-    // have fewer than 128 keys; sixteen typed B-tree slots per insertion cover
+    // retain the original 128-key envelope plus two copies of six seven-field
+    // I/O rows and eight interval fields (228 keys, rounded to 256). Sixteen
+    // typed B-tree slots per insertion cover
     // node splits and geometric growth alongside owned key buffers.
     let console_banks = CONSOLE_LIMIT * (1 + 2 + 2);
     let monitor_banks = 32 * 1024 * 5;
-    let object_banks = 128 * (16 * std::mem::size_of::<(String, Value)>() + 512);
-    let input_and_keys = 2 * 16 * 1024 + 128 * 128;
+    let object_banks = 256 * (16 * std::mem::size_of::<(String, Value)>() + 512);
+    let input_and_keys = 2 * 16 * 1024 + 256 * 128;
     (console_banks + monitor_banks + object_banks + input_and_keys) as u64
+}
+
+fn paging_io_report(report: crucible_protocol::ram_control::RamControlPerformance) -> Value {
+    let io = report.io.map(|io| {
+        json!({
+            "operations": io.operations, "completed": io.completed, "failed": io.failed,
+            "syscalls": io.syscalls, "transferred_bytes": io.transferred_bytes,
+            "elapsed_ns": io.elapsed_ns, "maximum_elapsed_ns": io.maximum_elapsed_ns,
+        })
+    });
+    json!({
+        "schema": "crucible.paging-application-io.v1",
+        "generation": report.generation, "active": report.active,
+        "complete": report.complete, "pending_operations": report.pending_operations,
+        "page_read": io[0], "preservation_write": io[1], "verification_read": io[2],
+        "fork_read": io[3], "fork_write": io[4], "sync": io[5],
+        "scope": "actual spill syscall returns and loop durations; excludes physical disk attribution, measurement-bank synchronization, hashing, cache-release advice and queue delay",
+    })
 }

@@ -12,6 +12,7 @@ mod engine;
 mod fork;
 mod kernel;
 mod lifecycle;
+mod performance;
 mod source;
 mod storage;
 mod supervision;

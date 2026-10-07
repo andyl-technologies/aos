@@ -147,6 +147,7 @@ fn ram_authentication_progresses_after_descriptor_setup_and_mapped_prime()
 
 fn ready_reply() -> RamControlReply {
     RamControlReply {
+        performance: None,
         disposition: RamControlDisposition::Accepted,
         requested_policy_revision: 1,
         applied_policy_revision: 1,

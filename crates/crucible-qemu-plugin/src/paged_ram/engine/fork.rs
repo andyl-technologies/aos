@@ -234,16 +234,24 @@ impl PreparedChildArenas {
             }
             if let Some(record) = state.preserved.as_ref() {
                 let operation = self.operations.begin(SourceOperationClass::Writeback)?;
-                self.parent_service
+                let parent_spill = self
+                    .parent_service
                     .spill
                     .try_lock()
-                    .map_err(|_| "parent spill unavailable")?
-                    .read(record, &mut scratch)?;
+                    .map_err(|_| "parent spill unavailable")?;
+                let performance = parent_spill.performance_bank();
+                parent_spill.read_for_fork(record, &mut scratch)?;
+                drop(parent_spill);
                 state.preserved = Some(
                     self.spill
                         .try_lock()
                         .map_err(|_| "child spill unavailable")?
-                        .preserve(&scratch, record.valid_length(), state.version)?,
+                        .preserve_for_fork(
+                            &scratch,
+                            record.valid_length(),
+                            state.version,
+                            performance.as_deref(),
+                        )?,
                 );
                 operation.complete()?;
             } else if self.source.is_none() {

@@ -96,6 +96,7 @@ struct Fixture {
 
 fn placement_reply(status: &HostRamStatus) -> RamControlReply {
     RamControlReply {
+        performance: None,
         disposition: crucible_protocol::ram_control::RamControlDisposition::Accepted,
         requested_policy_revision: status.policy_revision,
         applied_policy_revision: status.applied_policy_revision,
@@ -249,6 +250,7 @@ fn saturated_control_query_retains_authority_and_authenticated_session() {
     let owner = fixture.registry.node(fixture.target).unwrap();
     let initial = output::copy_status(&owner.state.lock().unwrap()).unwrap();
     let reply = RamControlReply {
+        performance: None,
         placement_receipt: None,
         disposition: RamControlDisposition::Accepted,
         requested_policy_revision: initial.policy_revision,

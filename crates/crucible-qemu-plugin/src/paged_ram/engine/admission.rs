@@ -40,6 +40,11 @@ impl PausedPagingOwner {
             .and_then(|bytes| bytes.checked_add(mutation_receipt))
             .and_then(|bytes| bytes.checked_add(native_mutation_scratch))
             .and_then(|bytes| bytes.checked_add(2 * (16 * u64::from(regions) + 256)))
+            .and_then(|bytes| {
+                bytes.checked_add(
+                    2 * crucible_protocol::ram_control::RAM_PERFORMANCE_BANK_RESERVE_BYTES,
+                )
+            })
             .ok_or(RamError::Invariant(
                 "live and staged paging metadata bound overflow",
             ))
@@ -251,6 +256,39 @@ mod tests {
                 "admission cannot perform operational work",
             ))
         }
+    }
+
+    #[test]
+    fn absent_measurement_observation_does_not_acquire_spill_ownership() {
+        use crucible_protocol::ram_control::RamControlPerformanceAction;
+
+        let resources = PluginRamResources {
+            resident_peak_bytes: 8192,
+            backing_peak_bytes: 16384,
+            metadata_bytes: 4096,
+            staging_bytes: 4096,
+            paging_io_slots: 1,
+            cpu_slots: 1,
+            task_slots: 1,
+            file_descriptors: 3,
+        };
+        let owner = PausedPagingOwner::new(resources, Arc::new(NoOperationalCalls)).unwrap();
+        let spill_ownership = owner.spill.lock().unwrap();
+
+        assert_eq!(
+            owner
+                .performance(RamControlPerformanceAction::Observe)
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            owner
+                .performance(RamControlPerformanceAction::Stop)
+                .unwrap(),
+            None
+        );
+        assert!(!owner.performance_installed.load(Ordering::Acquire));
+        drop(spill_ownership);
     }
 
     #[test]

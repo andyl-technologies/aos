@@ -68,6 +68,19 @@ pub trait RamControlRetirementAuthority: Send + Sync {
 /// independently supplied by the executor; an open socket proves transport
 /// authority, never eviction safety or a lower execution peak.
 pub trait RamControlRegistrar: Send + Sync {
+    /// Controls one fixed diagnostic bank on the exact registered owner.
+    ///
+    /// # Errors
+    /// Refuses unsupported diagnostics, stale ownership or original supervision.
+    fn performance(
+        &self,
+        _target: HostRamTarget,
+        _action: crucible_protocol::ram_control::RamControlPerformanceAction,
+    ) -> Result<Option<crucible_protocol::ram_control::RamControlPerformance>, RamControlError>
+    {
+        Err(RamControlError::AuthorityMismatch)
+    }
+
     /// Observes native actor and physical-operation failures in one bounded RPC.
     ///
     /// # Errors
@@ -398,6 +411,35 @@ impl RamControlClient {
         self.exchange(RamControlRequest::Status)
     }
 
+    /// Starts, observes or stops one resource-admitted I/O diagnostic interval.
+    ///
+    /// # Errors
+    /// Returns authentication, original supervision or transport failures.
+    pub fn performance(
+        &mut self,
+        action: crucible_protocol::ram_control::RamControlPerformanceAction,
+    ) -> Result<RamControlReply, RamControlError> {
+        self.exchange(RamControlRequest::Performance { action })
+    }
+
+    /// Controls diagnostics under the caller's existing lock-and-I/O guard.
+    ///
+    /// # Errors
+    /// Refuses expired original ownership, invalid framing or transport failure.
+    /// This exchange neither completes nor renews the encompassing guard.
+    pub fn performance_under(
+        &mut self,
+        action: crucible_protocol::ram_control::RamControlPerformanceAction,
+        guard: &HostOperationGuard,
+    ) -> Result<RamControlReply, RamControlError> {
+        let deadline = self.exchange_deadline(Some(guard))?;
+        self.exchange_under(
+            RamControlRequest::Performance { action },
+            Some(guard),
+            deadline,
+        )
+    }
+
     /// Observes the actual actor under the caller's original lock-and-I/O guard.
     ///
     /// # Errors
@@ -474,6 +516,10 @@ impl RamControlClient {
             RamControlRequest::Cancel { .. }
                 | RamControlRequest::SyncOuterCap { .. }
                 | RamControlRequest::Status
+                | RamControlRequest::Performance {
+                    action: crucible_protocol::ram_control::RamControlPerformanceAction::Observe
+                        | crucible_protocol::ram_control::RamControlPerformanceAction::Stop
+                }
         ) {
             HostOperationClass::Cleanup
         } else {

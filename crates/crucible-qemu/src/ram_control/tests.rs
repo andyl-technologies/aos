@@ -23,6 +23,7 @@ fn target() -> HostRamTarget {
 
 fn state() -> RamControlReply {
     RamControlReply {
+        performance: None,
         placement_receipt: None,
         operation_failure: None,
         fault_actor: None,
@@ -298,4 +299,49 @@ fn independent_setup_keeps_control_admission_when_work_records_are_full() {
         .join()
         .unwrap_or_else(|_| panic!("independent pager panicked"));
     drop(work);
+}
+
+#[test]
+fn performance_exchange_borrows_original_guard_and_authenticates_report() {
+    let (host, mut worker) = UnixStream::pair().unwrap();
+    let pager = thread::spawn(move || {
+        let hello = read_ram_control(&mut worker).unwrap().unwrap();
+        write_ram_control(&mut worker, &response(hello)).unwrap();
+        let request = read_ram_control(&mut worker).unwrap().unwrap();
+        assert!(matches!(
+            request.message,
+            RamControlMessage::Request(RamControlRequest::Performance {
+                action: RamControlPerformanceAction::Start
+            })
+        ));
+        let mut reply = response(request);
+        if let RamControlMessage::Reply { state, .. } = &mut reply.message {
+            state.performance = Some(RamControlPerformance {
+                generation: 1,
+                active: true,
+                complete: true,
+                pending_operations: 0,
+                io: [RamControlIoMeasurement::default(); RAM_PERFORMANCE_IO_CLASSES],
+            });
+        }
+        write_ram_control(&mut worker, &reply).unwrap();
+    });
+    let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None).unwrap();
+    let mut client =
+        RamControlClient::connect_supervised(host, [4; 32], target(), supervisor.clone()).unwrap();
+    let guard = supervisor.begin_control(HostOperationClass::Setup).unwrap();
+    let before = supervisor.operation_statuses().unwrap();
+    let reply = client
+        .performance_under(RamControlPerformanceAction::Start, &guard)
+        .unwrap();
+    assert!(reply.performance.unwrap().active);
+    let after = supervisor.operation_statuses().unwrap();
+    assert_eq!(after.len(), 1);
+    assert_eq!(after[0].operation_id, before[0].operation_id);
+    assert_eq!(
+        after[0].started_policy_revision,
+        before[0].started_policy_revision
+    );
+    guard.complete().unwrap();
+    pager.join().unwrap();
 }

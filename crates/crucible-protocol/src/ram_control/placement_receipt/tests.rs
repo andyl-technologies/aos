@@ -33,6 +33,7 @@ fn disk_receipt() -> RamControlPlacementReceipt {
 
 fn frame(receipt: RamControlPlacementReceipt) -> RamControlFrame {
     let state = RamControlReply {
+        performance: None,
         placement_receipt: Some(receipt),
         operation_failure: None,
         fault_actor: None,

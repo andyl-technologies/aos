@@ -8,7 +8,7 @@
 //!
 //! ```text
 //! u32 body_length (big endian, at most 4096)
-//! u32 schema_version = 5
+//! u32 schema_version = 6
 //! u8 message_tag
 //! bytes[32] session
 //! u64 request_sequence (nonzero, strictly increasing)
@@ -34,8 +34,14 @@ pub use admission::{
 mod placement_receipt;
 pub use placement_receipt::RamControlPlacementReceipt;
 
+mod performance;
+pub use performance::{
+    RAM_PERFORMANCE_BANK_RESERVE_BYTES, RAM_PERFORMANCE_IO_CLASSES, RamControlIoClass,
+    RamControlIoMeasurement, RamControlPerformance, RamControlPerformanceAction,
+};
+
 /// Current independent pager control schema.
-pub const RAM_CONTROL_VERSION: u32 = 5;
+pub const RAM_CONTROL_VERSION: u32 = 6;
 /// Maximum framed message body, checked before reading or allocating a body.
 pub const RAM_CONTROL_MAX_BYTES: usize = 4096;
 /// Fixed operation-class roster in canonical supervision order.
@@ -160,6 +166,8 @@ pub const RAM_LIMIT_KNOWN_MASK: u32 = 63;
 /// Bounded measurement snapshot from the independent worker.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RamControlReply {
+    /// Optional bounded diagnostic interval; absence is not a zero measurement.
+    pub performance: Option<RamControlPerformance>,
     /// Original failed physical operation, distinct from fault-actor membership.
     pub operation_failure: Option<RamControlOperationFailure>,
     /// Actual isolated fault-actor lifetime and terminal cause, when admitted.
@@ -343,6 +351,11 @@ pub struct RamControlActivity {
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RamControlRequest {
+    /// Controls one charged diagnostic interval without changing placement.
+    Performance {
+        /// Explicit start, observation or stop; none renews an operational cap.
+        action: RamControlPerformanceAction,
+    },
     /// Exercises only an explicitly entitled isolated native fault actor.
     TestFaultActor {
         /// Separate nonzero startup entitlement; never inherited into a child.
@@ -453,6 +466,11 @@ pub struct RamControlFrame {
 }
 
 /// Closed public message vocabulary.
+// crucible-lint: allow rust-allow -- fixed inline reports retain bounded stack storage and decoding introduces no per-reply heap ownership.
+#[allow(
+    clippy::large_enum_variant,
+    reason = "The bounded diagnostic report remains inline to avoid unadmitted per-reply allocation."
+)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RamControlMessage {
     /// Host request.
@@ -465,6 +483,8 @@ pub enum RamControlMessage {
         state: RamControlReply,
     },
 }
+
+const _: () = assert!(std::mem::size_of::<RamControlFrame>() <= RAM_CONTROL_MAX_BYTES);
 
 /// Portable protocol, authentication, or stream failure.
 #[derive(Debug, thiserror::Error)]
