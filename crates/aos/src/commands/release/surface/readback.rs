@@ -25,6 +25,8 @@ const MAX_DEPLOYMENT_ID_BYTES: usize = 1024;
 const RANGE_PROBE_BYTES: usize = 64 * 1024;
 /// Whole-request deadline for small objects and probes.
 const BASE_REQUEST_SECS: u64 = 120;
+/// Full reads of one object before an interrupted transfer fails read-back.
+const READ_BACK_ATTEMPTS: u32 = 3;
 /// Slowest per-stream rate a full read-back may sustain before it fails.
 const MIN_READ_BACK_BYTES_PER_SEC: u64 = 256 * 1024;
 const PUBLIC_READ_BACK_CONCURRENCY: usize = 16;
@@ -185,7 +187,18 @@ async fn read_http_object(
     object: &SurfaceObject,
     ranges: bool,
 ) -> Result<()> {
-    let (prefix, suffix) = read_full(client, url, object.byte_size, &object.sha256).await?;
+    let mut attempt = 0;
+    let (prefix, suffix) = loop {
+        attempt += 1;
+        match read_full(client, url, object.byte_size, &object.sha256).await {
+            Ok(ends) => break ends,
+            // A streamed response without a content length can end early or
+            // stall; that is a transport failure, so read the object again.
+            // A complete body with the wrong digest is never retried.
+            Err(error) if attempt < READ_BACK_ATTEMPTS && is_interrupted_read(&error) => {}
+            Err(error) => return Err(error),
+        }
+    };
     if ranges && object.byte_size > 0 {
         verify_range(client, url, 0, &prefix, object.byte_size).await?;
         let suffix_start = object
@@ -233,11 +246,46 @@ async fn read_full(
         }
         digest.update(&chunk);
     }
+    if size < expected_size {
+        return Err(anyhow::Error::new(ShortRead {
+            received: size,
+            expected: expected_size,
+        }));
+    }
     let found = format!("{:x}", digest.finalize());
     if size != expected_size || found != expected_sha256 {
         bail!("public read-back digest or size differs");
     }
     Ok((prefix, suffix))
+}
+
+/// A full read-back whose body ended before its declared size.
+#[derive(Debug)]
+struct ShortRead {
+    received: u64,
+    expected: u64,
+}
+
+impl std::fmt::Display for ShortRead {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "public read-back ended after {} of {} bytes",
+            self.received, self.expected
+        )
+    }
+}
+
+impl std::error::Error for ShortRead {}
+
+/// Reports whether a full read-back failed in transport rather than content.
+fn is_interrupted_read(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause.downcast_ref::<ShortRead>().is_some()
+            || cause.downcast_ref::<reqwest::Error>().is_some_and(|error| {
+                error.is_timeout() || error.is_body() || error.is_connect() || error.is_request()
+            })
+    })
 }
 
 async fn verify_range(
