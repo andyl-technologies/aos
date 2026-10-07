@@ -512,11 +512,34 @@ fn candidate_identity(
         state_version: meta("state-version")?,
         native_executor_ref: meta("native-executor-ref")?,
         registry: registry.into(),
-        kernel_path: None,
+        kernel_path: resolve_kernel_path(root)?,
         module_library: library,
         evaluation_descriptor: meta("evaluation-descriptor")?,
         created_at: created_at.into(),
     })
+}
+
+// Seeding records the literal link target, not its canonicalized filesystem
+// destination. Preserve that same immutable identity in a staged generation.
+fn resolve_kernel_path(toplevel: &Path) -> Result<Option<String>> {
+    let path = toplevel.join("kernel");
+    let metadata = match std::fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).context("inspecting immutable kernel identity"),
+    };
+    let kernel = if metadata.file_type().is_symlink() {
+        std::fs::read_link(&path).context("reading immutable kernel link")?
+    } else {
+        ensure!(
+            metadata.is_file(),
+            "immutable kernel entry is neither a symlink nor a regular file"
+        );
+        path
+    };
+    Ok(Some(kernel.into_os_string().into_string().map_err(
+        |_| anyhow::anyhow!("immutable kernel identity is not UTF-8"),
+    )?))
 }
 
 async fn import_toplevel(
@@ -814,6 +837,86 @@ mod tests {
     }
 
     #[test]
+    fn candidate_metadata_preserves_literal_kernel_identity() {
+        let toplevel = tempfile::tempdir().unwrap();
+        let meta = toplevel.path().join("meta");
+        std::fs::create_dir(&meta).unwrap();
+        let template = image(2);
+        for (name, value) in [
+            ("package-name", template.package_name.clone()),
+            ("version", template.version.clone()),
+            (
+                "boot-artifact-contract",
+                template.boot_artifact_contract.clone(),
+            ),
+            ("state-version", template.state_version.clone()),
+            ("native-executor-ref", template.native_executor_ref.clone()),
+            (
+                "evaluation-descriptor",
+                template.evaluation_descriptor.clone(),
+            ),
+            (
+                "module-library.json",
+                serde_json::to_string(&template.module_library).unwrap(),
+            ),
+        ] {
+            std::fs::write(meta.join(name), value).unwrap();
+        }
+        let kernel = "/nix/store/00000000000000000000000000000000-kernel/bzImage";
+        std::os::unix::fs::symlink(kernel, toplevel.path().join("kernel")).unwrap();
+        let package: crate::types::PackageMeta = serde_json::from_value(serde_json::json!({
+            "name": template.package_name,
+            "version": template.version,
+            "description": "image fixture",
+            "license": "test",
+            "maintainer": "test",
+            "platform": "x86_64-linux",
+            "store_path": toplevel.path(),
+            "nar_hash": format!("sha256:{}", "0".repeat(64)),
+            "nar_size": 1,
+            "references": [],
+            "source_drv": "fixture",
+            "source_nar_hash": "fixture",
+            "closure_size": 1
+        }))
+        .unwrap();
+
+        let candidate = candidate_identity(&package, "release", 2, &template.created_at).unwrap();
+
+        assert_eq!(candidate.kernel_path.as_deref(), Some(kernel));
+        assert_eq!(candidate.module_library, template.module_library);
+        assert_eq!(
+            serde_json::to_value(&candidate).unwrap()["kernel_path"],
+            kernel
+        );
+    }
+
+    #[test]
+    fn kernel_identity_handles_regular_missing_and_nonregular_entries() {
+        let toplevel = tempfile::tempdir().unwrap();
+        assert_eq!(resolve_kernel_path(toplevel.path()).unwrap(), None);
+        let kernel = toplevel.path().join("kernel");
+        std::fs::write(&kernel, b"kernel bytes").unwrap();
+        assert_eq!(
+            resolve_kernel_path(toplevel.path()).unwrap(),
+            Some(kernel.to_str().unwrap().into())
+        );
+        std::fs::remove_file(&kernel).unwrap();
+        std::fs::create_dir(&kernel).unwrap();
+        assert!(resolve_kernel_path(toplevel.path()).is_err());
+        std::fs::remove_dir(&kernel).unwrap();
+        // A dangling link still owns its literal immutable target.
+        std::os::unix::fs::symlink("relative/missing-kernel", &kernel).unwrap();
+        assert_eq!(
+            resolve_kernel_path(toplevel.path()).unwrap(),
+            Some("relative/missing-kernel".into())
+        );
+        let non_directory = toplevel.path().join("not-a-toplevel");
+        std::fs::write(&non_directory, b"file").unwrap();
+        assert!(resolve_kernel_path(&non_directory).is_err());
+    }
+
+    #[test]
     fn preparation_busy_guard_rejects_pending_and_active_transitions() {
         let mut images = state();
         ensure_staging_available(&images).unwrap();
@@ -851,7 +954,9 @@ mod tests {
     fn authenticated_receipt_indexes_candidate_without_selecting_it() {
         let profile = tempfile::tempdir().unwrap();
         let mut initial = state();
-        let candidate = image(2);
+        let mut candidate = image(2);
+        candidate.kernel_path =
+            Some("/nix/store/00000000000000000000000000000000-kernel/bzImage".into());
         admit_receipt(
             profile.path(),
             &mut initial,
@@ -866,6 +971,14 @@ mod tests {
         assert!(retained.active_rollout.is_none());
         assert_eq!(retained.generations.len(), 2);
         assert_eq!(retained.generations[1].toplevel, candidate.toplevel);
+        assert_eq!(retained.generations[1].kernel_path, candidate.kernel_path);
+        let published: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(profile.path().join(IMAGE_STATE_FILE)).unwrap())
+                .unwrap();
+        assert_eq!(
+            published["generations"][1]["kernel_path"],
+            serde_json::to_value(&candidate.kernel_path).unwrap()
+        );
         assert_eq!(
             std::fs::read_link(profile.path().join("image-gen-2/toplevel")).unwrap(),
             Path::new(&candidate.toplevel)
