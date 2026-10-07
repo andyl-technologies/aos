@@ -1,0 +1,1704 @@
+diff --git a/src/core/aos-component-parent.c b/src/core/aos-component-parent.c
+new file mode 100644
+index 0000000..7aa0d0f
+--- /dev/null
++++ b/src/core/aos-component-parent.c
+@@ -0,0 +1,877 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++
++#include <fcntl.h>
++#include <sys/resource.h>
++#include <sys/stat.h>
++#include <sys/vfs.h>
++#include <unistd.h>
++
++#include "aos-component-parent.h"
++#include "aos-resource-enrollment.h"
++#include "alloc-util.h"
++#include "cgroup-setup.h"
++#include "cgroup-util.h"
++#include "fd-util.h"
++#include "initrd-util.h"
++#include "load-fragment.h"
++#include "set.h"
++#include "special.h"
++#include "string-util.h"
++#include "strv.h"
++#include "mountpoint-util.h"
++
++#define AOS_RESOURCE_VECTOR_BYTES (22U * 8U)
++#define AOS_RESOURCE_COMPONENTS_OFFSET (40U + 3U * AOS_RESOURCE_VECTOR_BYTES)
++#define AOS_RESOURCE_HOST_POLICY_BYTES 1128U
++#define AOS_RESOURCE_ROOT_POLICY_BYTES 1832U
++#define AOS_RESOURCE_ROOT_OFFSET 1624U
++
++static uint64_t policy_u64(const uint8_t *bytes) {
++        uint64_t value = 0;
++
++        for (unsigned i = 0; i < 8; i++)
++                value = (value << 8) | bytes[i];
++        return value;
++}
++
++/* The separate image manifest provisions M and a fixed F subset inside the
++ * already committed Components baseline. Zero is zero accounting provision,
++ * never evidence that an effect is absent. Other services retain the residual
++ * U and their existing operation gates. Only CPU/memory/PIDs are hard controls;
++ * NOFILE observations and financial bounds do not resist privileged raises. */
++static const char *const parent_members[] = {
++        "aoscomponents.slice",
++        "aos-sandbox-source-signerd.service",
++        "aos-sandbox-source-signer-view.service",
++        "aos-sandbox-cache-signerd.service",
++        "aos-sandbox-cache-signer-views.service",
++        "aos-sandbox-cache-journal-view.service",
++        "aos-sandbox-policy-cache-recovery.service",
++        "systemd-journald.service",
++        "aos-journald-runtime-prep.service",
++        "auditd.service",
++        "audit-rules.service",
++};
++
++static const char *const parent_control_names[] = { "memory.max", "pids.max", "cpu.max" };
++static const char *const parent_cgroup_paths[] = { "/init.scope", "/aoscomponents.slice" };
++static const char *const parent_native_paths[] = {
++        "/sys/fs/cgroup/init.scope", "/sys/fs/cgroup/aoscomponents.slice",
++};
++
++static int parent_refuse(int error) {
++        AosResourceParent *parent = aos_resource_parent_original();
++
++        if (parent->first_error == 0)
++                parent->first_error = error;
++        aos_resource_parent_fail(parent->first_error);
++        return parent->first_error;
++}
++
++int aos_resource_parent_error(void) {
++        AosResourceParent *parent = aos_resource_parent_original();
++        const uint8_t *policy;
++        size_t bytes;
++        int r;
++
++        if (!parent->selected)
++                return 0;
++        if (parent->first_error < 0)
++                return parent->first_error;
++        r = aos_resource_parent_policy(parent->manager, &policy, &bytes);
++        return r < 0 ? parent_refuse(r) : 0;
++}
++
++static unsigned parent_u16(const uint8_t *bytes) {
++        return ((unsigned) bytes[0] << 8) | bytes[1];
++}
++
++static const uint8_t *parent_row(unsigned member) {
++        return aos_resource_parent_original()->manifest + AOS_PARENT_HEADER_BYTES + member * AOS_PARENT_ROW_BYTES;
++}
++
++static int parent_member_index(const char *name) {
++        for (unsigned i = 0; i < aos_resource_parent_original()->members; i++)
++                if (streq_ptr(name, (const char*) parent_row(i)))
++                        return (int) i;
++        return -1;
++}
++
++static bool parent_string(const uint8_t *bytes, size_t capacity) {
++        const uint8_t *end = memchr(bytes, 0, capacity);
++
++        if (!end || end == bytes)
++                return false;
++        for (size_t i = (size_t) (end - bytes); i < capacity; i++)
++                if (bytes[i] != 0)
++                        return false;
++        return true;
++}
++
++static bool parent_leaf_basename(const char *name) {
++        if (isempty(name) || strchr(name, '/') || STR_IN_SET(name, ".", "..") || !endswith(name, ".conf"))
++                return false;
++        for (const unsigned char *byte = (const unsigned char*) name; *byte; byte++)
++                if (*byte > 127)
++                        return false;
++        return true;
++}
++
++static bool parent_known_name(const char *name) {
++        FOREACH_ELEMENT(member, parent_members)
++                if (streq(name, *member))
++                        return true;
++        return false;
++}
++
++static const uint8_t *parent_vector(unsigned enclosure) {
++        return aos_resource_parent_original()->manifest + 40 + enclosure * AOS_RESOURCE_VECTOR_BYTES;
++}
++
++static const char *parent_file_path(unsigned member, unsigned file) {
++        const uint8_t *row = parent_row(member);
++
++        return (const char*) (file == 0 ? row + 64 : row + 354 + (file - 1) * 288);
++}
++
++static const uint8_t *parent_file_digest(unsigned member, unsigned file) {
++        const uint8_t *row = parent_row(member);
++
++        return file == 0 ? row + 320 : row + 610 + (file - 1) * 288;
++}
++
++const char *aos_resource_parent_member_path(const char *name, unsigned file) {
++        int member = parent_member_index(name);
++
++        if (!aos_resource_parent_original()->selected || aos_resource_parent_original()->first_error < 0 || member < 0 ||
++            file > parent_u16(parent_row(member) + 352))
++                return NULL;
++        return parent_file_path(member, file);
++}
++
++static int parent_validate_manifest(void) {
++        AosResourceParent *parent = aos_resource_parent_original();
++        uint8_t digest[SHA256_DIGEST_SIZE];
++        unsigned count;
++        bool slice = false, journal = false, runtime_prep = false;
++
++        if (parent->manifest_bytes < 486 || memcmp(parent->manifest, "AOSRPE01", 8) != 0)
++                return -EBADMSG;
++        count = parent_u16(parent->manifest + 452);
++        if (count == 0 || count > AOS_PARENT_MEMBERS ||
++            parent->manifest_bytes != 486U + count * AOS_PARENT_ROW_BYTES)
++                return -EBADMSG;
++        sha256_direct(parent->manifest, parent->manifest_bytes - sizeof(digest), digest);
++        if (memcmp(digest, parent->manifest + parent->manifest_bytes - sizeof(digest), sizeof(digest)) != 0)
++                return -EBADMSG;
++        sha256_direct(parent->policy, parent->policy_bytes, digest);
++        if (memcmp(digest, parent->manifest + 8, sizeof(digest)) != 0)
++                return -EOWNERDEAD;
++
++        for (unsigned dimension = 0; dimension < 22; dimension++) {
++                uint64_t baseline = policy_u64(parent->policy + AOS_RESOURCE_COMPONENTS_OFFSET + dimension * 8);
++                uint64_t m = policy_u64(parent_vector(0) + dimension * 8);
++                uint64_t f = policy_u64(parent_vector(1) + dimension * 8);
++
++                if (parent->policy_bytes >= AOS_RESOURCE_HOST_POLICY_BYTES)
++                        for (unsigned offset = 744; offset <= 920; offset += AOS_RESOURCE_VECTOR_BYTES) {
++                                uint64_t host = policy_u64(parent->policy + offset + dimension * 8);
++
++                                if (host > baseline)
++                                        return -ERANGE;
++                                baseline -= host;
++                        }
++                if (parent->policy_bytes == AOS_RESOURCE_ROOT_POLICY_BYTES) {
++                        uint64_t root = policy_u64(parent->policy + AOS_RESOURCE_ROOT_OFFSET + dimension * 8);
++
++                        if (root > baseline)
++                                return -ERANGE;
++                        baseline -= root;
++                }
++                if (m > baseline || f > baseline - m)
++                        return -ERANGE;
++                for (unsigned enclosure = 0; enclosure < 2; enclosure++) {
++                        uint64_t value = policy_u64(parent_vector(enclosure) + dimension * 8);
++                        uint8_t expected = dimension < 3 ? 1 : value > 0 ? 2 : 0;
++
++                        if (((dimension < 4 || dimension == 21) && value == 0) ||
++                            parent->manifest[408 + enclosure * 22 + dimension] != expected)
++                                return -EBADMSG;
++                }
++        }
++        for (unsigned enclosure = 0; enclosure < 2; enclosure++) {
++                const uint8_t *vector = parent_vector(enclosure);
++                uint64_t cpu = policy_u64(vector), memory = policy_u64(vector + 8);
++                uint64_t tasks = policy_u64(vector + 16), files = policy_u64(vector + 24);
++                uint64_t nofile = policy_u64(parent->manifest + 392 + enclosure * 8);
++
++                if (cpu < 1000 || cpu % 1000 != 0 || cpu > UINT64_MAX / 10 ||
++                    memory == 0 || memory % 4096 != 0 || memory > INT64_MAX ||
++                    tasks == 0 || tasks > INT64_MAX || nofile == 0 || nofile > UINT32_MAX ||
++                    nofile >= (uint64_t) RLIM_INFINITY || nofile > files / tasks)
++                        return -ERANGE;
++        }
++
++        for (unsigned i = 0; i < count; i++) {
++                const uint8_t *row = parent_row(i);
++                const char *name = (const char*) row;
++                unsigned dropins = parent_u16(row + 352);
++
++                if (!parent_string(row, 64) || !parent_known_name(name) ||
++                    !parent_string(row + 64, 256) || !streq(name, (const char*) row + 64) ||
++                    dropins > 4 || (i > 0 && strcmp((const char*) parent_row(i - 1), name) >= 0))
++                        return -EBADMSG;
++                slice |= streq(name, "aoscomponents.slice");
++                journal |= streq(name, "systemd-journald.service");
++                runtime_prep |= streq(name, "aos-journald-runtime-prep.service");
++                for (unsigned file = 1; file <= 4; file++) {
++                        const uint8_t *slot = row + 354 + (file - 1) * 288;
++                        const char *path = (const char*) slot, *basename;
++                        size_t prefix = strlen(name);
++
++                        if (file > dropins) {
++                                for (unsigned j = 0; j < 288; j++)
++                                        if (slot[j] != 0)
++                                                return -EBADMSG;
++                                continue;
++                        }
++                        if (!parent_string(slot, 256) || strncmp(path, name, prefix) != 0 ||
++                            strncmp(path + prefix, ".d/", 3) != 0)
++                                return -EBADMSG;
++                        basename = path + prefix + 3;
++                        if (!parent_leaf_basename(basename) ||
++                            (file > 1 && strcmp(parent_file_path(i, file - 1), path) >= 0))
++                                return -EBADMSG;
++                }
++        }
++        if (!slice || !journal || !runtime_prep)
++                return -EBADMSG;
++        parent->members = count;
++        return 0;
++}
++
++void aos_resource_parent_setup_result(Manager *manager, int attach_result, int migrate_result) {
++        AosResourceParent *parent = aos_resource_parent_original();
++
++        if (parent->first_error < 0 || parent->setup_seen)
++                return;
++        if (in_initrd() || !aos_network_image_guard_active())
++                return;
++        parent->setup_seen = true;
++        parent->setup_manager = manager;
++        parent->attach_result = attach_result;
++        parent->migrate_result = migrate_result;
++}
++
++static void parent_expected(unsigned enclosure, unsigned control, char expected[128]) {
++        const uint8_t *vector = parent_vector(enclosure);
++
++        if (control < 2)
++                snprintf(expected, 128, "%" PRIu64 "\n", policy_u64(vector + (control + 1) * 8));
++        else
++                snprintf(expected, 128, "%" PRIu64 " 100000\n", policy_u64(vector));
++}
++
++static int parent_name_check(unsigned enclosure, AosParentCheck *check, unsigned side) {
++        AosParentLimits *limits = &aos_resource_parent_original()->limits[enclosure];
++        int result = 0;
++
++        check->directory_results[side] =
++                fstatat(AT_FDCWD, parent_native_paths[enclosure], &check->directory[side], AT_SYMLINK_NOFOLLOW) < 0 ? -errno : 0;
++        if (check->directory_results[side] < 0)
++                result = check->directory_results[side];
++        else if (check->directory[side].st_dev != limits->directory_stat.st_dev ||
++                 check->directory[side].st_ino != limits->directory_stat.st_ino)
++                result = -EOWNERDEAD;
++        for (unsigned i = 0; i < 3; i++) {
++                check->control_results[side][i] =
++                        fstatat(limits->directory_fd, parent_control_names[i], &check->controls[side][i], AT_SYMLINK_NOFOLLOW) < 0 ? -errno : 0;
++                if (result == 0 && check->control_results[side][i] < 0)
++                        result = check->control_results[side][i];
++                else if (result == 0 &&
++                         (check->controls[side][i].st_dev != limits->control_stats[i].st_dev ||
++                          check->controls[side][i].st_ino != limits->control_stats[i].st_ino))
++                        result = -EOWNERDEAD;
++        }
++        return result;
++}
++
++static int parent_limits_observe(unsigned enclosure, bool install) {
++        AosParentLimits *limits = &aos_resource_parent_original()->limits[enclosure];
++        AosParentCheck *check = install ? &limits->first : &limits->later;
++        char expected[128];
++        int result, r;
++
++        result = aos_resource_parent_error();
++        if (result < 0)
++                return result;
++        result = parent_name_check(enclosure, check, 0);
++        if (result == 0)
++                for (unsigned i = 0; i < 3; i++) {
++                        parent_expected(enclosure, i, expected);
++                        if (install) {
++                                r = aos_resource_control_install(limits->control_fds[i], expected,
++                                                             &limits->write_lengths[i], &limits->write_results[i]);
++                                if (r < 0) {
++                                        result = r;
++                                        break;
++                                }
++                        }
++                        r = aos_resource_control_readback(limits->control_fds[i], expected, check->readback[i],
++                                                      sizeof(check->readback[i]), &check->read_lengths[i],
++                                                      &check->read_results[i]);
++                        if (r < 0) {
++                                result = r;
++                                break;
++                        }
++                }
++        /* Always retain the after-name observations, even after an earlier
++         * failure. No later caller installs again to heal an uncertain post. */
++        r = parent_name_check(enclosure, check, 1);
++        return result < 0 ? result : r;
++}
++
++static int parent_open_limits(unsigned enclosure) {
++        AosParentLimits *limits = &aos_resource_parent_original()->limits[enclosure];
++
++        limits->directory_fd = cg_path_open(parent_cgroup_paths[enclosure]);
++        if (limits->directory_fd < 0)
++                return limits->directory_fd;
++        limits->directory_stat_result = fstat(limits->directory_fd, &limits->directory_stat) < 0 ? -errno : 0;
++        limits->filesystem_result = fstatfs(limits->directory_fd, &limits->filesystem) < 0 ? -errno : 0;
++        if (limits->directory_stat_result < 0)
++                return limits->directory_stat_result;
++        if (limits->filesystem_result < 0)
++                return limits->filesystem_result;
++        if (limits->filesystem.f_type != 0x63677270 || !S_ISDIR(limits->directory_stat.st_mode) ||
++            limits->directory_stat.st_uid != 0 || limits->directory_stat.st_gid != 0)
++                return -EPERM;
++        for (unsigned i = 0; i < 3; i++) {
++                limits->control_fds[i] = openat(limits->directory_fd, parent_control_names[i], O_RDWR | O_CLOEXEC | O_NOFOLLOW);
++                if (limits->control_fds[i] < 0)
++                        return -errno;
++                limits->control_stat_results[i] = fstat(limits->control_fds[i], &limits->control_stats[i]) < 0 ? -errno : 0;
++                if (limits->control_stat_results[i] < 0)
++                        return limits->control_stat_results[i];
++                if (!S_ISREG(limits->control_stats[i].st_mode) ||
++                    limits->control_stats[i].st_uid != 0 || limits->control_stats[i].st_gid != 0 ||
++                    limits->control_stats[i].st_dev != limits->directory_stat.st_dev)
++                        return -EPERM;
++        }
++        return parent_limits_observe(enclosure, true);
++}
++
++static int parent_pin_members(void) {
++        AosResourceParent *parent = aos_resource_parent_original();
++
++        for (unsigned member = 0; member < parent->members; member++)
++                for (unsigned file = 0; file <= parent_u16(parent_row(member) + 352); file++) {
++                        AosParentFile *original = &parent->files[member][file];
++
++                        original->fd = aos_resource_open_parent_member((const char*) parent_row(member), file,
++                                                                      &original->physical_path);
++                        if (original->fd < 0)
++                                return original->fd;
++                        original->stat_result = fstat(original->fd, &original->stat) < 0 ? -errno : 0;
++                        if (original->stat_result < 0)
++                                return original->stat_result;
++                        if (original->stat.st_size <= 0 || original->stat.st_size > AOS_PARENT_FILE_BYTES)
++                                return -EFBIG;
++                        original->read_length = pread(original->fd, parent->file_bytes, sizeof(parent->file_bytes), 0);
++                        original->read_result = original->read_length < 0 ? -errno :
++                                original->read_length == original->stat.st_size ? 0 : -EIO;
++                        if (original->read_result < 0)
++                                return original->read_result;
++                        sha256_direct(parent->file_bytes, original->read_length, original->digest);
++                        if (memcmp(original->digest, parent_file_digest(member, file), sizeof(original->digest)) != 0)
++                                return -EOWNERDEAD;
++                }
++        return 0;
++}
++
++static int parent_compare_effective(AosParentFile *original, const char *path) {
++        AosResourceParent *parent = aos_resource_parent_original();
++        _cleanup_close_ int fd = -EBADF;
++
++        if (parent->first_error < 0)
++                return parent->first_error;
++        if (isempty(path))
++                return -EOWNERDEAD;
++        /* Mutable lookup files supply comparison DATA only. Nonblocking open
++         * prevents a substituted FIFO from parking PID1 before type checking. */
++        fd = open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK | O_NOCTTY);
++        original->effective_open_result = fd < 0 ? -errno : fd;
++        if (original->effective_open_result < 0)
++                return original->effective_open_result;
++        original->effective_stat_result = fstat(fd, &original->effective_stat) < 0 ? -errno : 0;
++        if (original->effective_stat_result < 0)
++                return original->effective_stat_result;
++        if (!S_ISREG(original->effective_stat.st_mode) || original->effective_stat.st_size != original->stat.st_size ||
++            original->effective_stat.st_size <= 0 || original->effective_stat.st_size > AOS_PARENT_FILE_BYTES)
++                return -EOWNERDEAD;
++        original->effective_read_length = pread(fd, parent->file_bytes, sizeof(parent->file_bytes), 0);
++        original->effective_read_result = original->effective_read_length < 0 ? -errno :
++                original->effective_read_length == original->stat.st_size ? 0 : -EIO;
++        if (original->effective_read_result < 0)
++                return original->effective_read_result;
++        sha256_direct(parent->file_bytes, original->effective_read_length, original->effective_digest);
++        return memcmp(original->effective_digest, original->digest, sizeof(original->digest)) == 0 ? 0 : -EOWNERDEAD;
++}
++
++static int parent_check_all(void) {
++        AosResourceParent *parent = aos_resource_parent_original();
++        const uint8_t *policy;
++        size_t policy_bytes;
++        int r;
++
++        if (!parent->selected)
++                return 0;
++        if (parent->first_error < 0)
++                return parent->first_error;
++        r = aos_resource_parent_policy(parent->manager, &policy, &policy_bytes);
++        if (r < 0)
++                return parent_refuse(r);
++        if (!parent->installed || policy != parent->policy || policy_bytes != parent->policy_bytes)
++                return parent_refuse(-EOWNERDEAD);
++        parent->pid1_later_path = mfree(parent->pid1_later_path);
++        parent->pid1_later_result = cg_pid_get_path(0, &parent->pid1_later_path);
++        if (parent->pid1_later_result < 0)
++                return parent_refuse(parent->pid1_later_result);
++        if (!streq_ptr(parent->pid1_later_path, parent_cgroup_paths[0]))
++                return parent_refuse(-EOWNERDEAD);
++        parent->nofile_later_result = getrlimit(RLIMIT_NOFILE, &parent->nofile_later) < 0 ? -errno : 0;
++        if (parent->nofile_later_result < 0)
++                return parent_refuse(parent->nofile_later_result);
++        if (parent->nofile_later.rlim_cur > parent->nofile_after.rlim_cur ||
++            parent->nofile_later.rlim_max > parent->nofile_after.rlim_max)
++                return parent_refuse(-ERANGE);
++        for (unsigned enclosure = 0; enclosure < 2; enclosure++) {
++                r = parent_limits_observe(enclosure, false);
++                if (r < 0)
++                        return parent_refuse(r);
++        }
++        return 0;
++}
++
++int aos_resource_parent_begin(Manager *manager, bool restoring) {
++        AosResourceParent *parent = aos_resource_parent_original();
++        struct rlimit nofile;
++        int r;
++
++        r = aos_resource_parent_error();
++        if (r < 0)
++                return r;
++        if (in_initrd() || !aos_network_image_guard_active())
++                return 0;
++        if (parent->attempted)
++                return parent->selected ? parent_refuse(-EALREADY) : 0;
++        parent->attempted = true;
++        for (unsigned enclosure = 0; enclosure < 2; enclosure++) {
++                parent->config_fds[enclosure] = -EBADF;
++                parent->limits[enclosure].directory_fd = -EBADF;
++                for (unsigned i = 0; i < 3; i++)
++                        parent->limits[enclosure].control_fds[i] = -EBADF;
++        }
++        for (unsigned member = 0; member < AOS_PARENT_MEMBERS; member++)
++                for (unsigned file = 0; file < 5; file++)
++                        parent->files[member][file].fd = -EBADF;
++
++        for (unsigned file = 0; file < 2; file++) {
++                parent->config_fds[file] = aos_resource_open_parent_config(file == 0, &parent->absent[file]);
++                if (parent->config_fds[file] < 0 && !parent->absent[file]) {
++                        parent->selected = true;
++                        return parent_refuse(parent->config_fds[file]);
++                }
++        }
++        if (parent->absent[0] && parent->absent[1])
++                return 0;
++        parent->selected = true;
++        parent->manager = manager;
++        r = aos_resource_parent_policy(manager, &parent->policy, &parent->policy_bytes);
++        if (r < 0)
++                return parent_refuse(r);
++        if (parent->absent[0] || parent->absent[1] || !parent->setup_seen ||
++            parent->setup_manager != manager || !isempty(manager->cgroup_root) ||
++            (restoring && !MANAGER_IS_SWITCHING_ROOT(manager)))
++                return parent_refuse(-EOWNERDEAD);
++        if (parent->attach_result < 0)
++                return parent_refuse(parent->attach_result);
++        if (parent->migrate_result < 0)
++                return parent_refuse(parent->migrate_result);
++        for (unsigned file = 0; file < 2; file++) {
++                parent->config_stat_results[file] = fstat(parent->config_fds[file], &parent->config_stats[file]) < 0 ? -errno : 0;
++                if (parent->config_stat_results[file] < 0)
++                        return parent_refuse(parent->config_stat_results[file]);
++        }
++        parent->config_read_lengths[0] = pread(parent->config_fds[0], parent->selector, sizeof(parent->selector), 0);
++        parent->config_read_results[0] = parent->config_read_lengths[0] < 0 ? -errno : 0;
++        if (parent->config_read_results[0] < 0)
++                return parent_refuse(parent->config_read_results[0]);
++        if (parent->config_read_lengths[0] != 8 || parent->config_stats[0].st_size != 8 ||
++            memcmp(parent->selector, "AOSRPE01", 8) != 0)
++                return parent_refuse(-EBADMSG);
++        parent->config_read_lengths[1] = pread(parent->config_fds[1], parent->manifest, sizeof(parent->manifest), 0);
++        parent->config_read_results[1] = parent->config_read_lengths[1] < 0 ? -errno : 0;
++        if (parent->config_read_results[1] < 0)
++                return parent_refuse(parent->config_read_results[1]);
++        if (parent->config_read_lengths[1] != parent->config_stats[1].st_size ||
++            parent->config_read_lengths[1] > AOS_PARENT_MAX_BYTES)
++                return parent_refuse(-EFBIG);
++        parent->manifest_bytes = parent->config_read_lengths[1];
++        r = parent_validate_manifest();
++        if (r < 0)
++                return parent_refuse(r);
++        if (!FLAGS_SET(manager->cgroup_supported, AOS_PARENT_CONTROLLERS))
++                return parent_refuse(-EOPNOTSUPP);
++        /* Restrict supported too: cg_enable otherwise disables unrelated
++         * controllers. Its success alone does not prove each enable succeeded. */
++        parent->enable_result = cg_enable(manager->cgroup_supported & AOS_PARENT_CONTROLLERS,
++                                         AOS_PARENT_CONTROLLERS, manager->cgroup_root, &parent->enabled);
++        if (parent->enable_result < 0)
++                return parent_refuse(parent->enable_result);
++        if (!FLAGS_SET(parent->enabled, AOS_PARENT_CONTROLLERS))
++                return parent_refuse(-EOPNOTSUPP);
++        parent->create_result = cg_create(parent_cgroup_paths[1]);
++        if (parent->create_result < 0)
++                return parent_refuse(parent->create_result);
++        for (unsigned enclosure = 0; enclosure < 2; enclosure++) {
++                r = parent_open_limits(enclosure);
++                if (r < 0)
++                        return parent_refuse(r);
++        }
++
++        parent->pid1_first_result = cg_pid_get_path(0, &parent->pid1_first_path);
++        if (parent->pid1_first_result < 0)
++                return parent_refuse(parent->pid1_first_result);
++        if (!streq_ptr(parent->pid1_first_path, parent_cgroup_paths[0]))
++                return parent_refuse(-EOWNERDEAD);
++        parent->nofile_before_result = getrlimit(RLIMIT_NOFILE, &parent->nofile_before) < 0 ? -errno : 0;
++        if (parent->nofile_before_result < 0)
++                return parent_refuse(parent->nofile_before_result);
++        nofile = (struct rlimit) {
++                .rlim_cur = policy_u64(parent->manifest + 392),
++                .rlim_max = policy_u64(parent->manifest + 392),
++        };
++        parent->nofile_set_result = setrlimit(RLIMIT_NOFILE, &nofile) < 0 ? -errno : 0;
++        if (parent->nofile_set_result < 0)
++                return parent_refuse(parent->nofile_set_result);
++        parent->nofile_after_result = getrlimit(RLIMIT_NOFILE, &parent->nofile_after) < 0 ? -errno : 0;
++        if (parent->nofile_after_result < 0)
++                return parent_refuse(parent->nofile_after_result);
++        if (parent->nofile_after.rlim_cur != nofile.rlim_cur || parent->nofile_after.rlim_max != nofile.rlim_max)
++                return parent_refuse(-ERANGE);
++        r = parent_pin_members();
++        if (r < 0)
++                return parent_refuse(r);
++        parent->installed = true;
++        return parent_check_all();
++}
++
++bool aos_resource_parent_member_name(const char *name) {
++        return aos_resource_parent_original()->selected && parent_member_index(name) >= 0;
++}
++
++bool aos_resource_parent_protected_unit(const Unit *unit) {
++        const char *alias;
++
++        if (!aos_resource_parent_original()->selected)
++                return false;
++        if (unit_has_name(unit, SPECIAL_INIT_SCOPE) || aos_resource_parent_member_name(unit->id))
++                return true;
++        SET_FOREACH(alias, unit->aliases)
++                if (aos_resource_parent_member_name(alias))
++                        return true;
++        return false;
++}
++
++int aos_resource_parent_context(Unit *unit, bool project) {
++        CGroupContext *context = unit_get_cgroup_context(unit);
++        unsigned enclosure;
++        const uint8_t *vector;
++        int r;
++
++        if (!aos_resource_parent_original()->selected ||
++            (!unit_has_name(unit, SPECIAL_ROOT_SLICE) && !streq_ptr(unit->id, SPECIAL_INIT_SCOPE) &&
++             !streq_ptr(unit->id, "aoscomponents.slice")))
++                return 0;
++        r = aos_resource_parent_error();
++        if (r < 0)
++                return r;
++        if (unit_has_name(unit, SPECIAL_ROOT_SLICE))
++                return context && (context->disable_controllers & AOS_PARENT_CONTROLLERS) ?
++                        parent_refuse(-EPERM) : 0;
++        if (streq_ptr(unit->id, SPECIAL_INIT_SCOPE))
++                enclosure = 0;
++        else if (streq_ptr(unit->id, "aoscomponents.slice"))
++                enclosure = 1;
++        else
++                return 0;
++        if (!context || !aos_resource_parent_original()->installed)
++                return parent_refuse(-EOWNERDEAD);
++        vector = parent_vector(enclosure);
++        if (project && enclosure == 0) {
++                /* init.scope is synthesized AFTER generators. Preserve the
++                 * already installed M rather than applying default infinity. */
++                context->cpu_quota_per_sec_usec = policy_u64(vector) * 10;
++                context->cpu_quota_period_usec = 100000;
++                context->memory_max = policy_u64(vector + 8);
++                context->startup_memory_max = context->memory_max;
++                context->startup_memory_max_set = true;
++                context->tasks_max = (CGroupTasksMax) { .value = policy_u64(vector + 16), .scale = 0 };
++        }
++        if (context->delegate || (context->disable_controllers & AOS_PARENT_CONTROLLERS) ||
++            context->cpu_quota_per_sec_usec != policy_u64(vector) * 10 ||
++            context->cpu_quota_period_usec != 100000 ||
++            context->memory_max != policy_u64(vector + 8) ||
++            (context->startup_memory_max_set && context->startup_memory_max != context->memory_max) ||
++            context->tasks_max.scale != 0 || context->tasks_max.value != policy_u64(vector + 16))
++                return parent_refuse(-EPERM);
++        return 0;
++}
++
++int aos_resource_parent_controls(Unit *unit) {
++        if (!aos_resource_parent_original()->selected ||
++            (!streq_ptr(unit->id, SPECIAL_INIT_SCOPE) && !streq_ptr(unit->id, "aoscomponents.slice")))
++                return 0;
++        return parent_check_all();
++}
++
++int aos_resource_parent_enabled(Unit *unit, int result, CGroupMask enabled) {
++        AosResourceParent *parent = aos_resource_parent_original();
++        unsigned index;
++        int r;
++
++        if (!parent->selected)
++                return 0;
++        if (unit_has_name(unit, SPECIAL_ROOT_SLICE))
++                index = 0;
++        else if (streq_ptr(unit->id, "aoscomponents.slice"))
++                index = 1;
++        else
++                return 0;
++        r = aos_resource_parent_error();
++        if (r < 0)
++                return r;
++        parent->later_enable_results[index] = result;
++        parent->later_enabled[index] = enabled;
++        if (result < 0)
++                return parent_refuse(result);
++        return FLAGS_SET(enabled, AOS_PARENT_CONTROLLERS) ? 0 : parent_refuse(-EOPNOTSUPP);
++}
++
++int aos_resource_parent_prepare_exec(Service *service, ExecCommand *command, ExecFlags flags) {
++        const struct rlimit *nofile = service->exec_context.rlimit[RLIMIT_NOFILE];
++        uint64_t ceiling = policy_u64(aos_resource_parent_original()->manifest + 400);
++        AosParentExecCheck *check;
++        int r;
++
++        if (!aos_resource_parent_protected_unit(UNIT(service)))
++                return 0;
++        r = aos_resource_parent_error();
++        if (r < 0)
++                return r;
++        if (!aos_resource_parent_member_name(UNIT(service)->id))
++                return parent_refuse(-EPERM);
++        check = &aos_resource_parent_original()->exec_checks[parent_member_index(UNIT(service)->id)];
++        check->nofile_present = nofile != NULL;
++        check->nofile = nofile ? *nofile : (struct rlimit) {};
++        check->flags = flags;
++        check->command_flags = command->flags;
++        check->permissions_start_only = service->permissions_start_only;
++        if (check->permissions_start_only || FLAGS_SET(check->command_flags, EXEC_COMMAND_FULLY_PRIVILEGED) ||
++            !FLAGS_SET(check->flags, EXEC_APPLY_SANDBOXING) || !check->nofile_present || check->nofile.rlim_cur == 0 ||
++            check->nofile.rlim_cur > ceiling || check->nofile.rlim_max > ceiling ||
++            !streq_ptr(unit_slice_name(UNIT(service)), "aoscomponents.slice"))
++                return parent_refuse(-EPERM);
++        r = aos_resource_parent_verify_fragment(UNIT(service));
++        return r < 0 ? parent_refuse(r) : parent_check_all();
++}
++
++int aos_resource_parent_arm_exec(Service *service) {
++        AosParentExecCheck *check;
++        int r;
++
++        if (!aos_resource_parent_protected_unit(UNIT(service)))
++                return 0;
++        r = aos_resource_parent_error();
++        if (r < 0)
++                return r;
++        if (!aos_resource_parent_member_name(UNIT(service)->id))
++                return parent_refuse(-EPERM);
++        check = &aos_resource_parent_original()->exec_checks[parent_member_index(UNIT(service)->id)];
++        if (check->prepare_pending)
++                return parent_refuse(-EALREADY);
++        check->prepare_unit = UNIT(service);
++        check->prepare_pending = true;
++        return 0;
++}
++
++int aos_resource_parent_enforce_exec(Service *service, int prepare_result) {
++        _cleanup_close_ int fd = -EBADF;
++        CGroupRuntime *runtime;
++        AosParentExecCheck *check;
++        int r;
++
++        if (!aos_resource_parent_protected_unit(UNIT(service)))
++                return prepare_result;
++        if (!aos_resource_parent_member_name(UNIT(service)->id))
++                return parent_refuse(-EPERM);
++        check = &aos_resource_parent_original()->exec_checks[parent_member_index(UNIT(service)->id)];
++        if (!check->prepare_pending || check->prepare_unit != UNIT(service)) {
++                r = aos_resource_parent_error();
++                return r < 0 ? r : parent_refuse(-EOWNERDEAD);
++        }
++        /* Settle the genuinely entered call even when a nested context/control
++         * supplier failed. Later refusals cannot replace its native outcome. */
++        check->prepare_result = prepare_result;
++        check->prepare_pending = false;
++        r = aos_resource_parent_error();
++        if (r < 0)
++                return r;
++        if (prepare_result < 0)
++                return parent_refuse(prepare_result);
++        runtime = unit_get_cgroup_runtime(UNIT(service));
++        if (!runtime || !streq_ptr(runtime->cgroup_path, strjoina("/aoscomponents.slice/", UNIT(service)->id)) ||
++            runtime->cgroup_id == 0)
++                return parent_refuse(-EPERM);
++        fd = openat(aos_resource_parent_original()->limits[1].directory_fd, UNIT(service)->id,
++                    O_PATH | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
++        check->directory_result = fd;
++        if (fd < 0)
++                return parent_refuse(check->directory_result = -errno);
++        check->stat_result = fstat(fd, &check->directory) < 0 ? -errno : 0;
++        if (check->stat_result < 0)
++                return parent_refuse(check->stat_result);
++        if (check->directory.st_dev != aos_resource_parent_original()->limits[1].directory_stat.st_dev)
++                return parent_refuse(-EOWNERDEAD);
++        check->identity_result = fd_to_handle_u64(fd, &check->cgroup_id);
++        if (check->identity_result < 0)
++                return parent_refuse(check->identity_result);
++        if (check->cgroup_id != runtime->cgroup_id)
++                return parent_refuse(-EOWNERDEAD);
++        r = parent_check_all();
++        return r < 0 ? r : 0;
++}
++
++int aos_resource_parent_reload(Manager *manager) {
++        int r;
++
++        if (!aos_resource_parent_original()->selected)
++                return 0;
++        r = aos_resource_parent_error();
++        if (r < 0)
++                return r;
++        if (aos_resource_parent_original()->manager != manager)
++                return parent_refuse(-EOWNERDEAD);
++        r = parent_check_all();
++        /* Reload clears units and discards generator errors. Until a genuine
++         * original restoration path exists, reject BEFORE that destructive cut. */
++        return r < 0 ? r : -EPERM;
++}
++
++int aos_resource_parent_reexecute(void) {
++        int r = aos_resource_parent_error();
++
++        if (r < 0)
++                return r;
++        /* do_reexecute resets NOFILE before exec. Do not lose these originals
++         * and later pretend a restored capsule can reconstruct their custody. */
++        return aos_resource_parent_original()->selected ? -EPERM : 0;
++}
++
++int aos_resource_parent_fragment(Unit *unit, const char *effective_path, char **ret_path, int *ret_fd) {
++        int member = parent_member_index(unit->id);
++        AosParentFile *original;
++        int r;
++
++        if (!aos_resource_parent_original()->selected || member < 0)
++                return 0;
++        r = aos_resource_parent_error();
++        if (r < 0)
++                return r;
++        if (unit->transient || !set_isempty(unit->aliases) || !isempty(unit->source_path))
++                return parent_refuse(-EPERM);
++        original = &aos_resource_parent_original()->files[member][0];
++        r = parent_compare_effective(original, effective_path);
++        if (r < 0)
++                return parent_refuse(r);
++        *ret_path = strdup(original->physical_path);
++        if (!*ret_path)
++                return parent_refuse(-ENOMEM);
++        *ret_fd = fcntl(original->fd, F_DUPFD_CLOEXEC, 3);
++        if (*ret_fd < 0)
++                return parent_refuse(-errno);
++        if (lseek(*ret_fd, 0, SEEK_SET) < 0)
++                return parent_refuse(-errno);
++        return 1;
++}
++
++int aos_resource_parent_dropins(Unit *unit, char **paths, int lookup_result) {
++        int member = parent_member_index(unit->id);
++        unsigned count;
++        int r;
++
++        if (!aos_resource_parent_protected_unit(unit))
++                return 0;
++        r = aos_resource_parent_error();
++        if (r < 0)
++                return r;
++        if (lookup_result < 0)
++                return parent_refuse(lookup_result);
++        count = member < 0 ? 0 : parent_u16(parent_row(member) + 352);
++        if (strv_length(paths) != count)
++                return parent_refuse(-EPERM);
++        for (unsigned file = 1; file <= count; file++) {
++                AosParentFile *original = &aos_resource_parent_original()->files[member][file];
++
++                /* The actual effective list includes all lookup roots,
++                 * aliases and type/hierarchy drop-ins. No extra/mask wins. */
++                if (!endswith(paths[file - 1], strjoina("/", parent_file_path(member, file))))
++                        return parent_refuse(-EOWNERDEAD);
++                r = parent_compare_effective(original, paths[file - 1]);
++                if (r < 0)
++                        return parent_refuse(r);
++        }
++        return 0;
++}
++
++int aos_resource_parent_dropin_fd(Unit *unit, unsigned file) {
++        int member = parent_member_index(unit->id);
++        int fd, r;
++
++        r = aos_resource_parent_error();
++        if (r < 0)
++                return r;
++        if (member < 0 || file == 0 || file > parent_u16(parent_row(member) + 352))
++                return parent_refuse(-EPERM);
++        fd = fcntl(aos_resource_parent_original()->files[member][file].fd, F_DUPFD_CLOEXEC, 3);
++        if (fd < 0)
++                return parent_refuse(-errno);
++        if (lseek(fd, 0, SEEK_SET) < 0) {
++                int error = -errno;
++
++                safe_close(fd);
++                return parent_refuse(error);
++        }
++        return fd;
++}
++
++int aos_resource_parent_verify_fragment(const Unit *unit) {
++        int member = parent_member_index(unit->id);
++        const AosParentFile *original;
++        int r;
++
++        r = aos_resource_parent_error();
++        if (r < 0)
++                return r;
++        if (member < 0 || unit->transient || unit->load_state != UNIT_LOADED ||
++            !set_isempty(unit->aliases) || !isempty(unit->source_path))
++                return -EPERM;
++        original = &aos_resource_parent_original()->files[member][0];
++        if (!unit->aos_image_fragment_pinned ||
++            unit->aos_image_fragment_device != original->stat.st_dev ||
++            unit->aos_image_fragment_inode != original->stat.st_ino ||
++            !streq_ptr(unit->fragment_path, strjoina("/nix/store/", original->physical_path + strlen("/nix.lower/store/"))))
++                return -EOWNERDEAD;
++        return aos_resource_parent_dropins((Unit*) unit, unit->dropin_paths, 0);
++}
+diff --git a/src/core/aos-component-parent.h b/src/core/aos-component-parent.h
+new file mode 100644
+index 0000000..e1011fa
+--- /dev/null
++++ b/src/core/aos-component-parent.h
+@@ -0,0 +1,142 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++#pragma once
++
++#include <sys/stat.h>
++#include <sys/vfs.h>
++
++#include "cgroup.h"
++#include "manager.h"
++#include "service.h"
++#include "sha256.h"
++
++#define AOS_PARENT_MEMBERS 16U
++#define AOS_PARENT_ROW_BYTES 1506U
++#define AOS_PARENT_HEADER_BYTES 454U
++#define AOS_PARENT_MAX_BYTES (486U + AOS_PARENT_MEMBERS * AOS_PARENT_ROW_BYTES)
++#define AOS_PARENT_FILE_BYTES 65536U
++#define AOS_PARENT_CONTROLLERS (CGROUP_MASK_CPU | CGROUP_MASK_MEMORY | CGROUP_MASK_PIDS)
++
++/* These are original kernel controls, not another resource ledger or loan.
++ * Fixed storage and held OFDs are real parent costs. Earlier boot allocations
++ * and charges do not migrate retrospectively into these enclosures. */
++typedef struct AosParentCheck {
++        struct stat directory[2];
++        struct stat controls[2][3];
++        int directory_results[2];
++        int control_results[2][3];
++        uint8_t readback[3][128];
++        ssize_t read_lengths[3];
++        int read_results[3];
++} AosParentCheck;
++
++typedef struct AosParentLimits {
++        int directory_fd;
++        int control_fds[3];
++        struct stat directory_stat;
++        struct statfs filesystem;
++        struct stat control_stats[3];
++        int directory_stat_result;
++        int filesystem_result;
++        int control_stat_results[3];
++        ssize_t write_lengths[3];
++        int write_results[3];
++        AosParentCheck first;
++        AosParentCheck later;
++} AosParentLimits;
++
++typedef struct AosParentFile {
++        int fd;
++        char *physical_path;
++        struct stat stat;
++        int stat_result;
++        ssize_t read_length;
++        int read_result;
++        uint8_t digest[SHA256_DIGEST_SIZE];
++        struct stat effective_stat;
++        int effective_open_result;
++        int effective_stat_result;
++        ssize_t effective_read_length;
++        int effective_read_result;
++        uint8_t effective_digest[SHA256_DIGEST_SIZE];
++} AosParentFile;
++
++typedef struct AosParentExecCheck {
++        struct rlimit nofile;
++        bool nofile_present;
++        ExecFlags flags;
++        ExecCommandFlags command_flags;
++        bool permissions_start_only;
++        /* Synchronous borrow: only the armed native prepare return may settle. */
++        Unit *prepare_unit;
++        bool prepare_pending;
++        int prepare_result;
++        int directory_result;
++        struct stat directory;
++        int stat_result;
++        uint64_t cgroup_id;
++        int identity_result;
++} AosParentExecCheck;
++
++typedef struct AosResourceParent {
++        Manager *setup_manager;
++        Manager *manager;
++        const uint8_t *policy;
++        size_t policy_bytes;
++        bool setup_seen;
++        int attach_result;
++        int migrate_result;
++        bool attempted;
++        bool selected;
++        bool installed;
++        int first_error;
++        int config_fds[2];
++        bool absent[2];
++        struct stat config_stats[2];
++        int config_stat_results[2];
++        ssize_t config_read_lengths[2];
++        int config_read_results[2];
++        uint8_t selector[9];
++        uint8_t manifest[AOS_PARENT_MAX_BYTES + 1];
++        size_t manifest_bytes;
++        unsigned members;
++        int enable_result;
++        CGroupMask enabled;
++        int create_result;
++        int later_enable_results[2];
++        CGroupMask later_enabled[2];
++        AosParentLimits limits[2];
++        AosParentFile files[AOS_PARENT_MEMBERS][5];
++        AosParentExecCheck exec_checks[AOS_PARENT_MEMBERS];
++        uint8_t file_bytes[AOS_PARENT_FILE_BYTES + 1];
++        struct rlimit nofile_before;
++        struct rlimit nofile_after;
++        struct rlimit nofile_later;
++        int nofile_before_result;
++        int nofile_set_result;
++        int nofile_after_result;
++        int nofile_later_result;
++        char *pid1_first_path;
++        char *pid1_later_path;
++        int pid1_first_result;
++        int pid1_later_result;
++} AosResourceParent;
++
++/* Internal native lifecycle seams, never public resource authority. */
++void aos_resource_parent_setup_result(Manager *manager, int attach_result, int migrate_result);
++int aos_resource_parent_begin(Manager *manager, bool restoring);
++int aos_resource_parent_error(void);
++bool aos_resource_parent_member_name(const char *name);
++bool aos_resource_parent_protected_unit(const Unit *unit);
++const char *aos_resource_parent_member_path(const char *name, unsigned file);
++int aos_resource_parent_context(Unit *unit, bool project);
++int aos_resource_parent_controls(Unit *unit);
++int aos_resource_parent_enabled(Unit *unit, int result, CGroupMask enabled);
++int aos_resource_parent_prepare_exec(Service *service, ExecCommand *command, ExecFlags flags);
++int aos_resource_parent_arm_exec(Service *service);
++int aos_resource_parent_enforce_exec(Service *service, int prepare_result);
++int aos_resource_parent_reload(Manager *manager);
++int aos_resource_parent_reexecute(void);
++int aos_resource_parent_fragment(Unit *unit, const char *effective_path, char **ret_path, int *ret_fd);
++int aos_resource_parent_dropins(Unit *unit, char **paths, int lookup_result);
++int aos_resource_parent_dropin_fd(Unit *unit, unsigned file);
++int aos_resource_parent_verify_fragment(const Unit *unit);
+diff --git a/src/core/aos-resource-enrollment.c b/src/core/aos-resource-enrollment.c
+index f7ffa36..55c8aea 100644
+--- a/src/core/aos-resource-enrollment.c
++++ b/src/core/aos-resource-enrollment.c
+@@ -8,6 +8,7 @@
+ #include <unistd.h>
+ 
+ #include "aos-resource-enrollment.h"
++#include "aos-component-parent.h"
+ #include "alloc-util.h"
+ #include "cgroup-util.h"
+ #include "cgroup.h"
+@@ -126,6 +127,7 @@ typedef struct AosResourceRootObservation {
+ 
+ typedef struct AosResourceEnrollment {
+         Manager *manager;
++        AosResourceParent parent;
+         int policy_fd;
+         int first_error;
+         bool attempted;
+@@ -390,7 +392,7 @@ static int controller_cpu_refuse(int error) {
+ 
+ /* These kernels share only native control I/O and exact material comparison.
+  * Their callers select policy and retain every descriptor and observation. */
+-static int resource_control_readback(
++int aos_resource_control_readback(
+                 int fd,
+                 const char *expected,
+                 uint8_t *readback,
+@@ -407,7 +409,7 @@ static int resource_control_readback(
+         return *read_result;
+ }
+ 
+-static int resource_control_install(
++int aos_resource_control_install(
+                 int fd,
+                 const char *expected,
+                 ssize_t *write_length,
+@@ -559,12 +561,12 @@ int aos_resource_enforce_controller_cpu(Service *service, int prepare_result) {
+         snprintf(expected, sizeof(expected), "%" PRIu64 " 100000\n",
+                  policy_u64(enrollment.policy + AOS_RESOURCE_CONTROLLER_PREFIX_OFFSET));
+         if (first) {
+-                r = resource_control_install(original->control_fd, expected,
++                r = aos_resource_control_install(original->control_fd, expected,
+                                              &original->write_length, &original->write_result);
+                 if (r < 0)
+                         return controller_cpu_refuse(r);
+         }
+-        r = resource_control_readback(original->control_fd, expected, check->readback,
++        r = aos_resource_control_readback(original->control_fd, expected, check->readback,
+                                       sizeof(check->readback), &check->read_length, &check->read_result);
+         if (r < 0)
+                 return controller_cpu_refuse(r);
+@@ -891,11 +893,11 @@ int aos_resource_enforce_root_limits(Service *service) {
+                     enrollment.root_control_stats[i].st_dev != enrollment.root_cgroup_stat.st_dev ||
+                     enrollment.root_control_stats[i].st_uid != 0 || enrollment.root_control_stats[i].st_gid != 0)
+                         return refuse(enrollment.root_limit_error = -EPERM);
+-                r = resource_control_install(enrollment.root_control_fds[i], expected[i],
++                r = aos_resource_control_install(enrollment.root_control_fds[i], expected[i],
+                                              &enrollment.root_write_lengths[i], &enrollment.root_write_results[i]);
+                 if (r < 0)
+                         return refuse(enrollment.root_limit_error = r);
+-                r = resource_control_readback(enrollment.root_control_fds[i], expected[i], enrollment.root_readback[i],
++                r = aos_resource_control_readback(enrollment.root_control_fds[i], expected[i], enrollment.root_readback[i],
+                                               sizeof(enrollment.root_readback[i]), &enrollment.root_read_lengths[i],
+                                               &enrollment.root_read_results[i]);
+                 if (r < 0)
+@@ -1163,3 +1165,25 @@ void aos_resource_job_release(bool charged) {
+         /* Only the freed local Job slot is reusable. Neither fixed envelope
+          * nor a durable project claim is refunded by object destruction. */
+ }
++
++/* Internal borrows of this SAME original owner; no serialized receipt, loan,
++ * or second policy opening can initialize parent custody. */
++AosResourceParent *aos_resource_parent_original(void) {
++        return &enrollment.parent;
++}
++
++int aos_resource_parent_policy(Manager *manager, const uint8_t **ret_policy, size_t *ret_bytes) {
++        if (enrollment.first_error < 0)
++                return enrollment.first_error;
++        if (!enrollment.admitted || enrollment.manager != manager || enrollment.policy_fd < 0)
++                return -EOWNERDEAD;
++        *ret_policy = enrollment.policy;
++        *ret_bytes = enrollment.policy_bytes;
++        return 0;
++}
++
++int aos_resource_parent_fail(int error) {
++        if (enrollment.parent.selected && enrollment.parent.first_error == 0)
++                enrollment.parent.first_error = error;
++        return refuse(error);
++}
+diff --git a/src/core/aos-resource-enrollment.h b/src/core/aos-resource-enrollment.h
+index d64120b..a31eac6 100644
+--- a/src/core/aos-resource-enrollment.h
++++ b/src/core/aos-resource-enrollment.h
+@@ -2,6 +2,7 @@
+ #pragma once
+ 
+ #include "manager.h"
++#include "aos-component-parent.h"
+ #include "unit.h"
+ #include "service.h"
+ #include "process-util.h"
+@@ -26,3 +27,10 @@ void aos_resource_root_before_cleanup(Unit *unit);
+ sd_id128_t aos_resource_unit_producer(Service *service);
+ int aos_resource_job_acquire(Unit *unit);
+ void aos_resource_job_release(bool charged);
++
++AosResourceParent *aos_resource_parent_original(void);
++int aos_resource_parent_policy(Manager *manager, const uint8_t **ret_policy, size_t *ret_bytes);
++int aos_resource_parent_fail(int error);
++int aos_resource_control_install(int fd, const char *expected, ssize_t *write_length, int *write_result);
++int aos_resource_control_readback(int fd, const char *expected, uint8_t *readback, size_t capacity,
++                                  ssize_t *read_length, int *read_result);
+diff --git a/src/core/cgroup.c b/src/core/cgroup.c
+index a427cba..8cdb2f4 100644
+--- a/src/core/cgroup.c
++++ b/src/core/cgroup.c
+@@ -2123,6 +2123,13 @@ static int unit_update_cgroup(
+         if (!UNIT_HAS_CGROUP_CONTEXT(u))
+                 return 0;
+ 
++        r = aos_resource_parent_context(u, false);
++        if (r < 0)
++                return r;
++        r = aos_resource_parent_controls(u);
++        if (r < 0)
++                return r;
++
+         r = unit_get_cgroup_path_with_fallback(u, &cgroup);
+         if (r < 0)
+                 return log_unit_error_errno(u, r, "Failed to get cgroup path: %m");
+@@ -2171,6 +2178,10 @@ static int unit_update_cgroup(
+                 if (r < 0)
+                         log_unit_warning_errno(u, r, "Failed to enable/disable controllers on cgroup %s, ignoring: %m", empty_to_root(crt->cgroup_path));
+ 
++                r = aos_resource_parent_enabled(u, r, result_mask);
++                if (r < 0)
++                        return r;
++
+                 /* Remember what's actually enabled now */
+                 crt->cgroup_enabled_mask = result_mask;
+         }
+@@ -2180,6 +2191,9 @@ static int unit_update_cgroup(
+ 
+         /* Set attributes */
+         cgroup_context_apply(u, target_mask, state);
++        r = aos_resource_parent_controls(u);
++        if (r < 0)
++                return r;
+         cgroup_xattr_apply(u);
+ 
+         /* For most units we expect that pressure monitoring is set up before the unit is started and we
+@@ -3363,13 +3377,19 @@ int manager_setup_cgroup(Manager *m) {
+         const char *scope_path = strjoina(m->cgroup_root, "/" SPECIAL_INIT_SCOPE);
+         r = cg_create_and_attach(scope_path, /* pid= */ 0);
+         if (r >= 0) {
++                int attach_result = r;
++
+                 /* Also, move all other userspace processes remaining in the root cgroup into that scope. */
+                 r = cg_migrate(m->cgroup_root, scope_path, 0);
++                aos_resource_parent_setup_result(m, attach_result, r);
+                 if (r < 0)
+                         log_warning_errno(r, "Couldn't move remaining userspace processes, ignoring: %m");
+ 
+-        } else if (!MANAGER_IS_TEST_RUN(m))
+-                return log_error_errno(r, "Failed to create %s control group: %m", scope_path);
++        } else {
++                aos_resource_parent_setup_result(m, r, -EOWNERDEAD);
++                if (!MANAGER_IS_TEST_RUN(m))
++                        return log_error_errno(r, "Failed to create %s control group: %m", scope_path);
++        }
+ 
+         /* 6. Figure out which controllers are supported */
+         r = cg_mask_supported_subtree(m->cgroup_root, &m->cgroup_supported);
+diff --git a/src/core/dbus-unit.c b/src/core/dbus-unit.c
+index 91304f1..e810535 100644
+--- a/src/core/dbus-unit.c
++++ b/src/core/dbus-unit.c
+@@ -2597,6 +2597,10 @@ int bus_unit_set_properties(
+         assert(u);
+         assert(message);
+ 
++        if (aos_resource_parent_protected_unit(u))
++                return sd_bus_error_setf(reterr_error, SD_BUS_ERROR_ACCESS_DENIED,
++                                         "Original parent members do not accept property overrides");
++
+         if (aos_resource_root_protected_unit(u))
+                 return sd_bus_error_setf(reterr_error, SD_BUS_ERROR_ACCESS_DENIED,
+                                          "Original Root does not accept property overrides");
+diff --git a/src/core/load-dropin.c b/src/core/load-dropin.c
+index ec312ce..f3cd97b 100644
+--- a/src/core/load-dropin.c
++++ b/src/core/load-dropin.c
+@@ -39,6 +39,9 @@ static int process_deps(Unit *u, UnitDependency dependency, const char *dir_suff
+         if (r < 0)
+                 return r;
+ 
++        if (aos_resource_parent_protected_unit(u) && !strv_isempty(paths))
++                return aos_resource_parent_fail(-EPERM);
++
+         if (aos_resource_root_protected_unit(u) && !strv_isempty(paths))
+                 return log_unit_error_errno(u, SYNTHETIC_ERRNO(EPERM),
+                                             "Refusing original Root dependency drop-ins: %m");
+@@ -129,7 +132,7 @@ static int process_deps(Unit *u, UnitDependency dependency, const char *dir_suff
+         return 0;
+ }
+ 
+-int unit_load_dropin(Unit *u) {
++static int unit_load_dropin_original(Unit *u) {
+         _cleanup_strv_free_ char **l = NULL;
+         int r;
+ 
+@@ -150,6 +153,9 @@ int unit_load_dropin(Unit *u) {
+ 
+         /* Load .conf dropins */
+         r = unit_find_dropin_paths(u, /* use_unit_path_cache= */ true, &l);
++        int parent_result = aos_resource_parent_dropins(u, l, r);
++        if (parent_result < 0)
++                return parent_result;
+         if (r <= 0)
+                 return 0;
+ 
+@@ -182,13 +188,48 @@ int unit_load_dropin(Unit *u) {
+         STRV_FOREACH(f, u->dropin_paths) {
+                 struct stat st;
+ 
+-                r = config_parse(u->id, *f, NULL,
+-                                 UNIT_VTABLE(u)->sections,
+-                                 config_item_perf_lookup, load_fragment_gperf_lookup,
+-                                 0, u, &st);
++                if (aos_resource_parent_protected_unit(u)) {
++                        _cleanup_fclose_ FILE *original = NULL;
++                        _cleanup_close_ int fd = aos_resource_parent_dropin_fd(u, (unsigned) (f - u->dropin_paths) + 1);
++
++                        if (fd < 0)
++                                return fd;
++                        original = fdopen(fd, "r");
++                        if (!original)
++                                return aos_resource_parent_fail(-errno);
++                        fd = -EBADF;
++                        r = config_parse(u->id, *f, original,
++                                         UNIT_VTABLE(u)->sections,
++                                         config_item_perf_lookup, load_fragment_gperf_lookup,
++                                         0, u, &st);
++                        if (r < 0)
++                                return aos_resource_parent_fail(r);
++                } else
++                        r = config_parse(u->id, *f, NULL,
++                                         UNIT_VTABLE(u)->sections,
++                                         config_item_perf_lookup, load_fragment_gperf_lookup,
++                                         0, u, &st);
+                 if (r > 0)
+                         u->dropin_mtime = MAX(u->dropin_mtime, timespec_load(&st.st_mtim));
+         }
+ 
+         return 0;
+ }
++
++int unit_load_dropin(Unit *u) {
++        bool parent_selected;
++        int r;
++
++        assert(u);
++
++        /* Capture the opt-in role before the original loader can change names.
++         * One return frontier parks every genuinely entered negative outcome. */
++        parent_selected = aos_resource_parent_protected_unit(u);
++        if (parent_selected) {
++                r = aos_resource_parent_error();
++                if (r < 0)
++                        return r;
++        }
++        r = unit_load_dropin_original(u);
++        return parent_selected && r < 0 ? aos_resource_parent_fail(r) : r;
++}
+diff --git a/src/core/load-fragment.c b/src/core/load-fragment.c
+index 005f4f2..7e517d3 100644
+--- a/src/core/load-fragment.c
++++ b/src/core/load-fragment.c
+@@ -18,6 +18,7 @@
+ 
+ #include "all-units.h"
+ #include "alloc-util.h"
++#include "aos-resource-enrollment.h"
+ #include "bpf-program.h"
+ #include "bpf-restrict-fs.h"
+ #include "bus-error.h"
+@@ -6207,10 +6208,16 @@ static int aos_network_open_image_path(const char *path, int flags) {
+         return fd < 0 ? -errno : fd;
+ }
+ 
+-static int aos_network_image_link(
++typedef enum AosImageLinkMode {
++        AOS_IMAGE_LINK_EXACT,
++        AOS_IMAGE_LINK_PARENT_MEMBER,
++} AosImageLinkMode;
++
++static int aos_network_image_link_internal(
+                 const char *link_path,
+                 const char *expected_suffix,
+                 dev_t image_device,
++                AosImageLinkMode mode,
+                 char **ret_path) {
+         static const char store_prefix[] = "/nix/store/";
+         _cleanup_free_ char *target = NULL;
+@@ -6236,13 +6243,22 @@ static int aos_network_image_link(
+                 return -EPERM;
+ 
+         suffix = strchr(relative, '/');
+-        if (expected_suffix ? !streq_ptr(suffix, expected_suffix) : suffix != NULL)
++        if (mode == AOS_IMAGE_LINK_EXACT &&
++            (expected_suffix ? !streq_ptr(suffix, expected_suffix) : suffix != NULL))
+                 return -EPERM;
+ 
+         *ret_path = strjoin("/nix.lower/store/", relative);
+         return *ret_path ? 0 : -ENOMEM;
+ }
+ 
++static int aos_network_image_link(
++                const char *link_path,
++                const char *expected_suffix,
++                dev_t image_device,
++                char **ret_path) {
++        return aos_network_image_link_internal(link_path, expected_suffix, image_device, AOS_IMAGE_LINK_EXACT, ret_path);
++}
++
+ static int aos_network_image_fragment(
+                 const char *unit_name,
+                 char **ret_path,
+@@ -6340,7 +6356,7 @@ static int aos_verify_loaded_image_fragment(const Unit *u) {
+                          strjoina("/nix/store/", expected + strlen("/nix.lower/store/"))) ? 0 : -EPERM;
+ }
+ 
+-int aos_resource_open_image_policy(void) {
++static int aos_resource_open_image_resource(const char *name, bool *absent) {
+         _cleanup_free_ char *top = NULL, *basedir = NULL, *link = NULL, *path = NULL;
+         _cleanup_close_ int fd = -EBADF;
+         struct stat root_st, st;
+@@ -6364,15 +6380,29 @@ int aos_resource_open_image_policy(void) {
+         r = aos_network_image_link(link, NULL, root_st.st_dev, &basedir);
+         if (r < 0)
+                 return r;
+-        path = path_join(basedir, "aos/resource-bootstrap-v1");
++        path = path_join(basedir, "aos", name);
+         if (!path)
+                 return -ENOMEM;
+ 
+-        /* Reuse the same no-symlink/no-mount-crossing physical image walk.
+-         * The mutable /etc projection cannot enroll a resource bank. */
++        if (absent) {
++                _cleanup_free_ char *parent_path = path_join(basedir, "aos");
++                _cleanup_close_ int parent_fd = -EBADF;
++
++                if (!parent_path)
++                        return -ENOMEM;
++                parent_fd = aos_network_open_image_path(parent_path, O_PATH | O_DIRECTORY);
++                if (parent_fd < 0)
++                        return parent_fd;
++        }
++
++        /* Only absence of the final immutable leaf is legacy absence. A
++         * broken image-link chain never substitutes for an absent selector. */
+         fd = aos_network_open_image_path(path, O_RDONLY | O_NOFOLLOW | O_NOCTTY);
+-        if (fd < 0)
++        if (fd < 0) {
++                if (absent && fd == -ENOENT)
++                        *absent = true;
+                 return fd;
++        }
+         if (fstat(fd, &st) < 0)
+                 return -errno;
+         if (!S_ISREG(st.st_mode) || st.st_dev != root_st.st_dev ||
+@@ -6381,6 +6411,73 @@ int aos_resource_open_image_policy(void) {
+         return TAKE_FD(fd);
+ }
+ 
++int aos_resource_open_image_policy(void) {
++        return aos_resource_open_image_resource("resource-bootstrap-v1", NULL);
++}
++
++int aos_resource_open_parent_config(bool selector, bool *absent) {
++        int r = aos_resource_parent_error();
++
++        if (r < 0)
++                return r;
++        return aos_resource_open_image_resource(selector ? "resource-parent-enclosure-required-v1" :
++                                                          "resource-parent-enclosure-v1", absent);
++}
++
++int aos_resource_open_parent_member(const char *name, unsigned file, char **ret_path) {
++        _cleanup_free_ char *top = NULL, *units = NULL, *link = NULL;
++        _cleanup_close_ int fd = -EBADF;
++        const char *relative = aos_resource_parent_member_path(name, file), *suffix;
++        struct stat root_st, st;
++        struct statfs fs;
++        struct statvfs vfs;
++        int r;
++
++        /* This entry admits only the bounded original manifest roster. It
++         * reuses the physical image walk, never arbitrary resource authority. */
++        r = aos_resource_parent_error();
++        if (r < 0)
++                return r;
++        if (!relative)
++                return -EPERM;
++        if (stat("/", &root_st) < 0 || statfs("/", &fs) < 0 || statvfs("/", &vfs) < 0)
++                return -errno;
++        if (fs.f_type != EROFS_SUPER_MAGIC_V1 || !FLAGS_SET(vfs.f_flag, ST_RDONLY | ST_NODEV))
++                return -EPERM;
++        r = aos_network_image_link("/aos-toplevel", NULL, root_st.st_dev, &top);
++        if (r < 0)
++                return r;
++        link = path_join(top, "systemd-units");
++        if (!link)
++                return -ENOMEM;
++        r = aos_network_image_link(link, NULL, root_st.st_dev, &units);
++        if (r < 0)
++                return r;
++        link = mfree(link);
++        link = path_join(units, relative);
++        if (!link)
++                return -ENOMEM;
++        r = aos_network_image_link_internal(link, NULL, root_st.st_dev, AOS_IMAGE_LINK_PARENT_MEMBER, ret_path);
++        if (r < 0)
++                return r;
++        /* One physical link result, then the exact canonical materializer
++         * targets. No fallback opens and no mutable lookup supplies authority. */
++        suffix = strchr(*ret_path + strlen("/nix.lower/store/"), '/');
++        if (!streq_ptr(suffix, strjoina("/", relative)) &&
++            !streq_ptr(suffix, strjoina("/lib/systemd/system/", relative)) &&
++            !streq_ptr(suffix, strjoina("/etc/systemd/system/", relative)))
++                return -EPERM;
++        fd = aos_network_open_image_path(*ret_path, O_RDONLY | O_NOFOLLOW | O_NOCTTY);
++        if (fd < 0)
++                return fd;
++        if (fstat(fd, &st) < 0 || fstatfs(fd, &fs) < 0)
++                return -errno;
++        if (!S_ISREG(st.st_mode) || st.st_dev != root_st.st_dev || st.st_uid != 0 || st.st_gid != 0 ||
++            (st.st_mode & 0222) != 0 || fs.f_type != EROFS_SUPER_MAGIC_V1)
++                return -EPERM;
++        return TAKE_FD(fd);
++}
++
+ int aos_network_verify_loaded_fragment(const Unit *u) {
+         if (!aos_network_protected_unit(u))
+                 return 0;
+@@ -6546,7 +6643,7 @@ int aos_own_launcher_verify_loaded_fragment(const Unit *u) {
+                          strjoina("/nix/store/", expected + strlen("/nix.lower/store/"))) ? 0 : -EPERM;
+ }
+ 
+-int unit_load_fragment(Unit *u) {
++static int unit_load_fragment_original(Unit *u) {
+         _cleanup_free_ char *image_fragment = NULL;
+         _cleanup_close_ int image_fd = -EBADF;
+         int r;
+@@ -6562,6 +6659,8 @@ int unit_load_fragment(Unit *u) {
+                                             "Refusing mutable online Nix unit selection: %m");
+ 
+         if (u->transient) {
++                if (aos_resource_parent_member_name(u->id))
++                        return aos_resource_parent_fail(-EPERM);
+                 if ((aos_network_image_guard_active() && aos_network_protected_unit(u)) ||
+                     aos_fuse_worker_protected_unit(u))
+                         return -EPERM;
+@@ -6641,6 +6740,25 @@ int unit_load_fragment(Unit *u) {
+                 names = set_free(names);
+         }
+ 
++        {
++                const char *alias;
++                bool parent_name = aos_resource_parent_member_name(u->id);
++
++                SET_FOREACH(alias, names)
++                        if (aos_resource_parent_member_name(alias) && !parent_name)
++                                return aos_resource_parent_fail(-EPERM);
++                if (parent_name) {
++                        SET_FOREACH(alias, names)
++                                if (!streq_ptr(alias, u->id))
++                                        return aos_resource_parent_fail(-EPERM);
++                        r = aos_resource_parent_fragment(u, fragment, &image_fragment, &image_fd);
++                        if (r < 0)
++                                return r;
++                        fragment = image_fragment;
++                        names = set_free(names);
++                }
++        }
++
+         if (fragment) {
+                 /* Open the file, check if this is a mask, otherwise read. */
+                 _cleanup_fclose_ FILE *f = NULL;
+@@ -6712,7 +6830,7 @@ int unit_load_fragment(Unit *u) {
+                         if (r == -ENOEXEC)
+                                 log_unit_notice_errno(u, r, "Unit configuration has fatal error, unit will not be started.");
+                         if (r < 0)
+-                                return r;
++                                return aos_resource_parent_member_name(u->id) ? aos_resource_parent_fail(r) : r;
+                         r = aos_own_launcher_pin_parsed_fragment(u, &st);
+                         if (r < 0)
+                                 return log_unit_error_errno(u, r, "Refusing unsealed own-launcher fragment: %m");
+@@ -6747,6 +6865,24 @@ int unit_load_fragment(Unit *u) {
+         return merge_by_names(u, names, id);
+ }
+ 
++int unit_load_fragment(Unit *u) {
++        bool parent_selected;
++        int r;
++
++        assert(u);
++
++        /* Capture the opt-in role before the original loader can change names.
++         * One return frontier parks every genuinely entered negative outcome. */
++        parent_selected = aos_resource_parent_protected_unit(u);
++        if (parent_selected) {
++                r = aos_resource_parent_error();
++                if (r < 0)
++                        return r;
++        }
++        r = unit_load_fragment_original(u);
++        return parent_selected && r < 0 ? aos_resource_parent_fail(r) : r;
++}
++
+ void unit_dump_config_items(FILE *f) {
+         static const struct {
+                 const ConfigParserCallback callback;
+diff --git a/src/core/load-fragment.h b/src/core/load-fragment.h
+index c48c057..fa5d9e3 100644
+--- a/src/core/load-fragment.h
++++ b/src/core/load-fragment.h
+@@ -191,3 +191,6 @@ CONFIG_PARSER_PROTOTYPE(config_parse_cpuset_partition);
+ /* gperf prototypes */
+ const struct ConfigPerfItem* load_fragment_gperf_lookup(const char *key, GPERF_LEN_TYPE length);
+ extern const char load_fragment_gperf_nulstr[];
++
++int aos_resource_open_parent_config(bool selector, bool *absent);
++int aos_resource_open_parent_member(const char *name, unsigned file, char **ret_path);
+diff --git a/src/core/main.c b/src/core/main.c
+index 87042a3..5a19904 100644
+--- a/src/core/main.c
++++ b/src/core/main.c
+@@ -24,6 +24,7 @@
+ #include "sd-messages.h"
+ 
+ #include "alloc-util.h"
++#include "aos-component-parent.h"
+ #include "ansi-color.h"
+ #include "apparmor-setup.h"
+ #include "architecture.h"
+@@ -2277,6 +2278,12 @@ static int do_reexecute(
+         /* The fdset is donated to us, take ownership so it is freed on all exit paths. */
+         _cleanup_fdset_free_ FDSet *fds = TAKE_PTR(_fds);
+ 
++        r = aos_resource_parent_reexecute();
++        if (r < 0) {
++                *ret_error_message = "Original parent enclosure does not permit reexecution";
++                return r;
++        }
++
+         /* Close and disarm the watchdog, so that the new instance can reinitialize it, but the machine
+          * doesn't get rebooted while we do that. */
+         watchdog_close(/* disarm= */ true);
+diff --git a/src/core/manager.c b/src/core/manager.c
+index 2516430..10307d0 100644
+--- a/src/core/manager.c
++++ b/src/core/manager.c
+@@ -2131,6 +2131,9 @@ int manager_startup(Manager *m, FILE *serialization, FDSet *fds, Hashmap *named_
+         assert(m);
+ 
+         r = aos_resource_enrollment_begin(m, serialization != NULL);
++        if (r < 0)
++                return r;
++        r = aos_resource_parent_begin(m, serialization != NULL);
+         if (r < 0)
+                 return r;
+ 
+@@ -3761,6 +3764,10 @@ int manager_reload(Manager *m) {
+ 
+         assert(m);
+ 
++        r = aos_resource_parent_reload(m);
++        if (r < 0)
++                return log_error_errno(r, "Original parent enclosure does not permit reload: %m");
++
+         r = manager_open_serialization(m, &f);
+         if (r < 0)
+                 return log_error_errno(r, "Failed to create serialization file: %m");
+diff --git a/src/core/meson.build b/src/core/meson.build
+index 28b627f..7d3ea02 100644
+--- a/src/core/meson.build
++++ b/src/core/meson.build
+@@ -24,6 +24,7 @@ systemd_executor_sources = files(
+ 
+ libcore_sources = files(
+         'aos-resource-enrollment.c',
++        'aos-component-parent.c',
+         'aos-fuse-worker.c',
+         'audit-fd.c',
+         'automount.c',
+diff --git a/src/core/scope.c b/src/core/scope.c
+index 6d2e883..143396c 100644
+--- a/src/core/scope.c
++++ b/src/core/scope.c
+@@ -4,6 +4,7 @@
+ 
+ #include "sd-bus.h"
+ 
++#include "aos-component-parent.h"
+ #include "cgroup-setup.h"
+ #include "dbus-scope.h"
+ #include "dbus-unit.h"
+@@ -203,6 +204,10 @@ static int scope_load(Unit *u) {
+         if (r < 0)
+                 return r;
+ 
++        r = aos_resource_parent_context(u, true);
++        if (r < 0)
++                return r;
++
+         return scope_verify(s);
+ }
+ 
+diff --git a/src/core/service.c b/src/core/service.c
+index f8e2011..d62bf45 100644
+--- a/src/core/service.c
++++ b/src/core/service.c
+@@ -2110,6 +2110,10 @@ static int service_spawn_internal(
+         assert(c);
+         assert(ret_pid);
+ 
++        r = aos_resource_parent_prepare_exec(s, c, exec_params.flags);
++        if (r < 0)
++                return log_unit_error_errno(UNIT(s), r, "Refusing original parent member command: %m");
++
+         r = aos_resource_require_unit(UNIT(s));
+         if (r < 0)
+                 return log_unit_error_errno(UNIT(s), r, "Refusing unprepaid component command: %m");
+@@ -2162,7 +2166,11 @@ static int service_spawn_internal(
+ 
+         log_unit_debug(UNIT(s), "Will spawn child (%s): %s", caller, c->path);
+ 
++        r = aos_resource_parent_arm_exec(s);
++        if (r < 0)
++                return r;
+         r = unit_prepare_exec(UNIT(s)); /* This realizes the cgroup, among other things */
++        r = aos_resource_parent_enforce_exec(s, r);
+         r = aos_resource_enforce_controller_cpu(s, r);
+         if (r < 0)
+                 return r;
+diff --git a/src/core/slice.c b/src/core/slice.c
+index dfd5b6c..d0df27c 100644
+--- a/src/core/slice.c
++++ b/src/core/slice.c
+@@ -3,6 +3,7 @@
+ #include <stdio.h>
+ 
+ #include "alloc-util.h"
++#include "aos-component-parent.h"
+ #include "dbus-slice.h"
+ #include "dbus-unit.h"
+ #include "log.h"
+@@ -191,6 +192,10 @@ static int slice_load(Unit *u) {
+                         u->description = strjoin("Slice ", tmp);
+         }
+ 
++        r = aos_resource_parent_context(u, false);
++        if (r < 0)
++                return r;
++
+         return slice_verify(s);
+ }
+ 
