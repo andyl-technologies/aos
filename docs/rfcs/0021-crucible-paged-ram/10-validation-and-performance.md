@@ -435,6 +435,14 @@ alone does not satisfy this acceptance condition.
   operations, smaller stack frames, and deterministic guest time are supporting
   evidence; none independently establishes host performance parity.
 
+Service construction, authority admission, and checked source staging MUST be
+measured separately from guest execution. New fixed reservations, allocation
+controls, reference-count operations, callback polls, and accounting locks MUST
+remain visible in both cost and resource reports. Describing a cost as startup
+work or outside the guest execution loop MUST NOT exempt it from comparison.
+Reports MUST identify profiles that a new reservation causes to refuse; unchanged
+configured ceilings alone do not establish unchanged admission behavior.
+
 Each comparison MUST declare its sampling plan, evaluator, workload, resource
 limits, timing interval, and cache conditions before execution. Baseline and
 candidate runs MUST use matched host/storage profiles and correctness witnesses.
