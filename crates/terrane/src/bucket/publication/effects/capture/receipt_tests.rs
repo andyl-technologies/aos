@@ -4,12 +4,18 @@
 //! sync grants no selected publication, actor, collector or creator authority.
 
 use super::*;
-use crate::bucket::{FileBucket, held::SingleHeld};
+use crate::bucket::{FileBucket, FileBucketConfig, FileBucketPublicationConfig, held::SingleHeld};
 use crate::store::{
     ContentValidator, EffectFault, MetaUpload, NativeEffectFailure, TokioClock, TokioLocalFs,
 };
-use std::{fmt::Debug, sync::Arc};
+use std::{
+    fmt::Debug,
+    os::unix::fs::{DirBuilderExt, MetadataExt},
+    sync::Arc,
+};
+use terrane_core::chunking::ChunkProfile;
 use terrane_core::identity::IdentityKind;
+use terrane_core::refs::Locality;
 
 struct Validator;
 
@@ -48,15 +54,22 @@ async fn fixture() -> Bucket {
     let entropy = required(TokioLocalFs.random_bytes(16).await);
     let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
     let root = std::env::temp_dir().join(format!("terrane-receipt-coalescing-{suffix}"));
-    required(
-        FileBucket::open(
-            crate::bucket::tests::config(root),
-            TokioLocalFs,
-            TokioClock,
-            Validator,
-        )
-        .await,
-    )
+    let owner_probe = root.with_file_name(format!(".terrane-receipt-owner-{suffix}"));
+    required(std::fs::DirBuilder::new().mode(0o700).create(&owner_probe));
+    let operator_uid = required(std::fs::symlink_metadata(&owner_probe)).uid();
+    required(std::fs::remove_dir(&owner_probe));
+
+    let config = FileBucketConfig {
+        root,
+        publication_control: Some(FileBucketPublicationConfig {
+            operator_uid,
+            control: None,
+        }),
+        chunk_profile_name: "cdc-1m".into(),
+        chunk_profile: ChunkProfile::cdc_1m([0; 32]),
+        locality: Locality::default(),
+    };
+    required(FileBucket::open(config, TokioLocalFs, TokioClock, Validator).await)
 }
 
 fn rejected(error: NativeEffectFailure, message: &str) {
