@@ -233,8 +233,10 @@ def native_sql_query(checkpoints, deployment, role):
         + ' AND c.chunk_index=' + str(index) + ')' for key, index in chunks) or 'FALSE'
     privileges = ','.join("json_build_object('table','" + table
         + "','select',has_table_privilege(current_user,'" + table
-        + "','SELECT'),'mutate',has_table_privilege(current_user,'" + table
-        + "','INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'))" for table in native_sql_tables(checkpoints))
+        + "','SELECT'),'mutate',(has_table_privilege(current_user,'" + table
+        + "','INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')"
+        + " OR has_any_column_privilege(current_user,'" + table
+        + "','INSERT,UPDATE,REFERENCES')))" for table in native_sql_tables(checkpoints))
     query = (
         "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY; "
         "SET LOCAL statement_timeout='15s'; SET LOCAL lock_timeout='5s'; "
