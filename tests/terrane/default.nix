@@ -233,6 +233,7 @@ in {
   integration.native-source-requalification = import ./native-source-requalification.nix {inherit sourceGate;};
   integration.native-missing-placement = import ./native-missing-placement.nix {inherit sourceGate;};
   integration.native-content-observation = import ./native-content-observation.nix {inherit sourceGate;};
+  integration.native-index-loading = import ./native-index-loading.nix {inherit sourceGate;};
   integration.native-index-lookup = import ./native-index-lookup.nix {inherit sourceGate;};
   integration.native-index-rebuild = import ./native-index-rebuild.nix {inherit sourceGate;};
   integration.native-index-backfill = import ./native-index-backfill.nix {inherit sourceGate;};
