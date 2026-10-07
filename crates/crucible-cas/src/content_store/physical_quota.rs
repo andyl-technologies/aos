@@ -15,12 +15,14 @@ use std::io::{self, Read};
 use std::path::Path;
 use std::sync::Arc;
 
-use super::admin::PhysicalRepairAuthority;
+use super::admin::{PhysicalRepairAuthority, PreparedResources};
+use crate::owned_decode::{DecodeBudget, DecodeScratch};
 
 use super::{
     BackendCapabilities, BlobHandle, BlobInventoryFence, BlobInventoryRecord, BlobInventorySummary,
-    BlobSource, BlobStoreAdmin, ByteRange, ContentId, ImmutableBlobBackend, OwnedBlobBytes,
-    PlannedDeleteDisposition, PutBatchReceipt, PutReceipt, StoreError,
+    BlobSource, BlobStoreAdmin, ByteRange, ContentId, DeleteBatchReceipt, ImmutableBlobBackend,
+    InventorySummaryReceipt, OwnedBlobBytes, PlannedDeleteDisposition, PutBatchReceipt, PutReceipt,
+    StoreError,
 };
 
 const MAX_PHYSICAL_QUOTA_POLICY_ID_BYTES: usize = 512;
@@ -449,13 +451,56 @@ impl Read for PhysicalQuotaReader {
 }
 
 impl BlobStoreAdmin for PhysicalQuotaStore {
+    fn acquire_inventory_fence_with_boundary(
+        &self,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<Box<dyn BlobInventoryFence + '_>, StoreError> {
+        let account = super::batch::account()?;
+        boundary()?;
+        self.guard.verify()?;
+        let credit = account
+            .reserve_scratch_array::<PhysicalQuotaInventoryFence<'_>>(1)
+            .map_err(super::batch::admission)?;
+        // The checked SQL child opens exactly one retained flock descriptor.
+        // Opaque children still refuse their checked acquisition; no ordinary
+        // acquisition is substituted after that refusal.
+        let resources = self.guard.reserve_resources(
+            self.directory_costs.map_or(1, |_| 6),
+            std::mem::size_of::<PhysicalQuotaInventoryFence<'_>>() as u64
+                + self
+                    .directory_costs
+                    .map_or(0, |costs| costs.operation_bytes),
+        )?;
+        let mut original = || {
+            account.verify_live().map_err(super::batch::admission)?;
+            boundary()?;
+            self.guard.verify()?;
+            account.verify_live().map_err(super::batch::admission)
+        };
+        let mut child = self
+            .child_admin
+            .acquire_inventory_fence_with_boundary(&mut original)?;
+        if let Err(error) = original() {
+            return Err(child.retain_checked_failure(error));
+        }
+        Ok(Box::new(PhysicalQuotaInventoryFence {
+            store: self,
+            child,
+            checked_account: Some(account),
+            _resources: resources,
+            _checked_credit: Some(credit),
+        }))
+    }
+
     fn acquire_inventory_fence(&self) -> Result<Box<dyn BlobInventoryFence + '_>, StoreError> {
         self.guard.verify()?;
         let resources = self.operation_resources()?;
         Ok(Box::new(PhysicalQuotaInventoryFence {
             store: self,
             child: self.child_admin.acquire_inventory_fence()?,
+            checked_account: None,
             _resources: resources,
+            _checked_credit: None,
         }))
     }
 }
@@ -463,10 +508,105 @@ impl BlobStoreAdmin for PhysicalQuotaStore {
 struct PhysicalQuotaInventoryFence<'a> {
     store: &'a PhysicalQuotaStore,
     child: Box<dyn BlobInventoryFence + 'a>,
+    checked_account: Option<DecodeBudget>,
     _resources: Arc<dyn Send + Sync>,
+    _checked_credit: Option<DecodeScratch>,
 }
 
 impl BlobInventoryFence for PhysicalQuotaInventoryFence<'_> {
+    fn retain_checked_failure(&mut self, error: StoreError) -> StoreError {
+        self.child.retain_checked_failure(error)
+    }
+
+    fn delete_candidates_with_boundary(
+        &mut self,
+        ids: &[ContentId],
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<DeleteBatchReceipt, StoreError> {
+        let result = (|| {
+            let account = self
+                .checked_account
+                .as_ref()
+                .ok_or(StoreError::Unsupported {
+                    capability: "ordinary-fence-has-no-checked-origin",
+                })?;
+            let _scope = account.enter();
+            account.verify_live().map_err(super::batch::admission)?;
+            boundary()?;
+            self.store.guard.verify()?;
+            let prepared = PreparedResources::new(account, self._resources.clone(), 0)?;
+            let mut original = || {
+                account.verify_live().map_err(super::batch::admission)?;
+                boundary()?;
+                self.store.guard.verify()?;
+                account.verify_live().map_err(super::batch::admission)
+            };
+            let receipt = self
+                .child
+                .delete_candidates_with_boundary(ids, &mut original)?;
+            let mut receipt = receipt.check(|_| original())?;
+            receipt.retain_resources(prepared);
+            Ok(receipt)
+        })();
+        result.map_err(|error| self.child.retain_checked_failure(error))
+    }
+
+    fn visit_inventory_with_boundary(
+        &mut self,
+        visitor: &mut dyn FnMut(BlobInventoryRecord) -> Result<(), StoreError>,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<InventorySummaryReceipt, StoreError> {
+        let result = (|| {
+            let account = self
+                .checked_account
+                .as_ref()
+                .ok_or(StoreError::Unsupported {
+                    capability: "ordinary-fence-has-no-checked-origin",
+                })?;
+            let _scope = account.enter();
+            account.verify_live().map_err(super::batch::admission)?;
+            boundary()?;
+            self.store.guard.verify()?;
+            let prepared = PreparedResources::new(
+                account,
+                self._resources.clone(),
+                self.store.name.len() as u64,
+            )?;
+            let mut name = String::new();
+            name.try_reserve_exact(self.store.name.len())
+                .map_err(super::batch::allocation)?;
+            name.push_str(&self.store.name);
+            let mut original = || {
+                account.verify_live().map_err(super::batch::admission)?;
+                boundary()?;
+                self.store.guard.verify()?;
+                account.verify_live().map_err(super::batch::admission)
+            };
+            let receipt = self
+                .child
+                .visit_inventory_with_boundary(visitor, &mut original)?;
+            let mut receipt = receipt.check(|summary| {
+                if summary.backend() != self.store.child.name() {
+                    return Err(StoreError::InvalidComposition {
+                        reason: "physical quota child inventory summary is inconsistent",
+                    });
+                }
+                original()?;
+                *summary = BlobInventorySummary::new(
+                    name,
+                    summary.storage_identity(),
+                    summary.generation(),
+                    summary.objects(),
+                    summary.logical_bytes(),
+                );
+                Ok(())
+            })?;
+            receipt.retain_resources(prepared);
+            Ok(receipt)
+        })();
+        result.map_err(|error| self.child.retain_checked_failure(error))
+    }
+
     fn visit_inventory(
         &mut self,
         visitor: &mut dyn FnMut(BlobInventoryRecord) -> Result<(), StoreError>,

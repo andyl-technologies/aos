@@ -27,7 +27,9 @@ use super::admin::{
 };
 use super::*;
 
+mod admin_batch;
 mod batch;
+pub(super) use batch::busy::Accepted;
 mod catalog;
 pub use batch::busy::{SqliteCommitOutcome, SqliteScopeError};
 pub use batch::diagnostic::SqliteDiagnosticError;
@@ -88,6 +90,12 @@ fn configure_sqlite_temporary_storage(connection: &Connection) -> Result<(), Sto
     }
     Ok(())
 }
+
+/// Paired object and administrative views of one quota-bound SQLite facade.
+///
+/// The two trait references share the same final `Arc`, retained original
+/// resources and physical storage identity.
+pub type SqliteBlobAuthorities = (Arc<dyn ImmutableBlobBackend>, Arc<dyn BlobStoreAdmin>);
 
 /// SQLite-backed durable immutable object leaf.
 ///
@@ -167,6 +175,32 @@ impl SqliteBlobBackend {
         maximum_sqlite_heap_bytes: u64,
         supervisor: Arc<dyn SqliteCatalogSupervisor>,
     ) -> Result<Arc<dyn ImmutableBlobBackend>, StoreError> {
+        let (backend, _) = Self::open_with_physical_quota_and_admin(
+            name,
+            root,
+            guard,
+            maximum_sqlite_heap_bytes,
+            supervisor,
+        )?;
+        Ok(backend)
+    }
+
+    /// Opens one quota-bound catalog with paired object and administration views.
+    ///
+    /// Both views share the same final physical-quota facade, connection and
+    /// original resident lease. Dropping either view does not release ownership
+    /// while the other remains live.
+    ///
+    /// # Errors
+    /// Refuses the same quota, heap, supervision and initialization failures as
+    /// [`Self::open_with_physical_quota`].
+    pub fn open_with_physical_quota_and_admin(
+        name: impl Into<String>,
+        root: impl Into<PathBuf>,
+        guard: Arc<dyn StorePhysicalQuotaGuard>,
+        maximum_sqlite_heap_bytes: u64,
+        supervisor: Arc<dyn SqliteCatalogSupervisor>,
+    ) -> Result<SqliteBlobAuthorities, StoreError> {
         guard.verify()?;
         let name = name.into();
         if name.len() > catalog::MAX_BACKEND_NAME_BYTES
@@ -192,7 +226,8 @@ impl SqliteBlobBackend {
         let store =
             super::physical_quota::PhysicalQuotaStore::new(name, backend.clone(), backend, guard)?;
         operation.complete()?;
-        Ok(Arc::new(store))
+        let store = Arc::new(store);
+        Ok((store.clone(), store))
     }
 
     fn open_inner(
@@ -754,6 +789,13 @@ impl ImmutableBlobBackend for SqliteBlobBackend {
 }
 
 impl BlobStoreAdmin for SqliteBlobBackend {
+    fn acquire_inventory_fence_with_boundary(
+        &self,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<Box<dyn BlobInventoryFence + '_>, StoreError> {
+        admin_batch::acquire(self, boundary)
+    }
+
     fn acquire_inventory_fence(&self) -> Result<Box<dyn BlobInventoryFence + '_>, StoreError> {
         batch::busy::healthy(&self.quarantined)?;
         let operation = self
@@ -780,7 +822,7 @@ impl BlobStoreAdmin for SqliteBlobBackend {
 struct SqliteInventoryFence<'a> {
     backend: &'a SqliteBlobBackend,
     operation: Option<Box<dyn SqliteCatalogOperation>>,
-    _staging: Option<MutexGuard<'static, ()>>,
+    _staging: Option<catalog::WriteStagingGuard>,
     connection: MutexGuard<'a, Connection>,
     _lock: File,
     instance: [u8; 32],

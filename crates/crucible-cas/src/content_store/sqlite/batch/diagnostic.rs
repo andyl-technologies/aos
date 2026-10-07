@@ -18,11 +18,15 @@ const ROLLBACK_DIAGNOSTIC_BYTES: usize = 42;
 
 // These fixed statements also bound a copied expression/column name or SQL
 // input in rusqlite's typed errors. No caller-provided SQL reaches this route.
-pub(super) const PRESENCE_SQL: &str = "SELECT EXISTS(SELECT 1 FROM objects WHERE id = ?1)";
+pub(in crate::content_store::sqlite) const PRESENCE_SQL: &str =
+    "SELECT EXISTS(SELECT 1 FROM objects WHERE id = ?1)";
 pub(super) const INSERT_SQL: &str = "INSERT INTO objects (id, body) VALUES (?1, ?2)";
 pub(super) const SOURCE_SQL: &str = "SELECT substr(body, ?2, ?3) FROM objects WHERE id = ?1";
 pub(super) const METADATA_SQL: &str =
     "SELECT instance, generation, checksum FROM metadata WHERE singleton = 1";
+pub(in crate::content_store::sqlite) const INVENTORY_SQL: &str =
+    "SELECT id, length(body) FROM objects ORDER BY id";
+pub(in crate::content_store::sqlite) const DELETE_SQL: &str = "DELETE FROM objects WHERE id = ?1";
 pub(super) const UPDATE_SQL: &str =
     "UPDATE metadata SET generation = ?1, checksum = ?2 WHERE singleton = 1";
 
@@ -117,6 +121,8 @@ fn peak_bytes(native_heap: u64, root: Option<&Path>) -> Result<u64, StoreError> 
         SOURCE_SQL,
         METADATA_SQL,
         UPDATE_SQL,
+        INVENTORY_SQL,
+        DELETE_SQL,
     ]
     .into_iter()
     .map(str::len)
@@ -181,11 +187,15 @@ pub(in super::super) fn retain_failure<T>(
 ) -> Result<T, StoreError> {
     match work() {
         Ok(value) => Ok(value),
-        Err(error) => Err(StoreError::SqliteDiagnostic {
-            source: SqliteDiagnosticError {
-                error: Box::new(error),
-                _credit: credit,
-            },
-        }),
+        Err(error) => Err(retain_error(credit, error)),
+    }
+}
+
+pub(in super::super) fn retain_error(credit: DecodeScratch, error: StoreError) -> StoreError {
+    StoreError::SqliteDiagnostic {
+        source: SqliteDiagnosticError {
+            error: Box::new(error),
+            _credit: credit,
+        },
     }
 }

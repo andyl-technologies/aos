@@ -100,14 +100,34 @@ impl std::error::Error for SqliteScopeError {
 // The SQL scope restores its connection before returning this token. Its
 // observed outcome and prepaid error carrier remain live through final receipt
 // construction and the original operation's completion checks.
-pub(super) struct Accepted<T> {
+pub(in crate::content_store) struct Accepted<T> {
     value: T,
     outcome: SqliteCommitOutcome,
     credit: crate::owned_decode::DecodeScratch,
 }
 
 impl<T> Accepted<T> {
-    pub(super) fn finish<U>(
+    pub(in crate::content_store) fn value(&self) -> &T {
+        &self.value
+    }
+
+    pub(in crate::content_store) fn check(
+        mut self,
+        check: impl FnOnce(&mut T) -> Result<(), StoreError>,
+    ) -> Result<Self, StoreError> {
+        if let Err(error) = check(&mut self.value) {
+            let Self {
+                value,
+                outcome,
+                credit,
+            } = self;
+            drop(value);
+            return Err(scope_error(Some(error), None, None, outcome, credit));
+        }
+        Ok(self)
+    }
+
+    pub(in crate::content_store::sqlite) fn finish<U>(
         self,
         finish: impl FnOnce(T) -> Result<U, StoreError>,
     ) -> Result<U, StoreError> {
@@ -143,21 +163,21 @@ fn scope_error(
     }
 }
 
-pub(super) struct Progress {
+pub(in crate::content_store::sqlite) struct Progress {
     owns_transaction: bool,
     outcome: SqliteCommitOutcome,
 }
 
 impl Progress {
-    pub(super) fn began(&mut self) {
+    pub(in crate::content_store::sqlite) fn began(&mut self) {
         self.owns_transaction = true;
     }
 
-    pub(super) fn committed(&mut self) {
+    pub(in crate::content_store::sqlite) fn committed(&mut self) {
         self.outcome = SqliteCommitOutcome::Committed;
     }
 
-    pub(super) fn commit_failed(&mut self, connection: &Connection) {
+    pub(in crate::content_store::sqlite) fn commit_failed(&mut self, connection: &Connection) {
         if connection.is_autocommit() {
             self.outcome = SqliteCommitOutcome::Uncertain;
         }
@@ -221,7 +241,7 @@ pub(in super::super) fn retry<T>(
     }
 }
 
-pub(super) fn with_zero<T>(
+pub(in crate::content_store::sqlite) fn with_zero<T>(
     connection: &mut Connection,
     quarantined: &AtomicBool,
     boundary: &mut dyn FnMut() -> Result<(), StoreError>,

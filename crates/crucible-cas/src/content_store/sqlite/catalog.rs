@@ -4,6 +4,7 @@
 //! read chunks have separate process-wide gates; waits repeatedly check the same
 //! original operation rather than restarting its deadline.
 
+use std::cell::Cell;
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 
 use crate::content_store::{ContentId, PlacementReceipt, PutReceipt, StoreError};
@@ -12,6 +13,38 @@ pub(super) const MAX_BACKEND_NAME_BYTES: usize = 512;
 
 static WRITE_STAGING: Mutex<()> = Mutex::new(());
 static READ_STAGING: Mutex<()> = Mutex::new(());
+
+thread_local! {
+    static WRITE_HELD: Cell<bool> = const { Cell::new(false) };
+}
+
+// The original mutex remains the sole staging fence. This thread-local flag
+// rejects only its impossible same-thread reacquisition, before waiting.
+pub(super) struct WriteStagingGuard {
+    guard: Option<MutexGuard<'static, ()>>,
+}
+
+impl Drop for WriteStagingGuard {
+    fn drop(&mut self) {
+        drop(self.guard.take());
+        WRITE_HELD.set(false);
+    }
+}
+
+pub(super) fn write_available() -> Result<(), StoreError> {
+    if WRITE_HELD.get() {
+        Err(StoreError::Unsupported {
+            capability: "paired-sql-inventory-fences",
+        })
+    } else {
+        Ok(())
+    }
+}
+
+fn own_write(guard: MutexGuard<'static, ()>) -> WriteStagingGuard {
+    WRITE_HELD.set(true);
+    WriteStagingGuard { guard: Some(guard) }
+}
 
 /// Selects the original operational budget for a private catalog operation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,14 +109,33 @@ pub const fn minimum_sqlite_catalog_staging_bytes() -> u64 {
 
 pub(super) fn write_gate(
     operation: &dyn SqliteCatalogOperation,
-) -> Result<MutexGuard<'static, ()>, StoreError> {
-    acquire(&WRITE_STAGING, operation)
+) -> Result<WriteStagingGuard, StoreError> {
+    write_gate_with_boundary(&mut || operation.check())
 }
 
 pub(super) fn write_gate_with_boundary(
     boundary: &mut dyn FnMut() -> Result<(), StoreError>,
-) -> Result<MutexGuard<'static, ()>, StoreError> {
-    acquire_with_boundary(&WRITE_STAGING, boundary)
+) -> Result<WriteStagingGuard, StoreError> {
+    loop {
+        write_available()?;
+        boundary()?;
+        write_available()?;
+        match WRITE_STAGING.try_lock() {
+            Ok(guard) => {
+                // Publish ownership before invoking the terminal callback;
+                // callback reentry must not wait on this thread's own mutex.
+                let guard = own_write(guard);
+                boundary()?;
+                return Ok(guard);
+            }
+            Err(TryLockError::WouldBlock) => std::thread::yield_now(),
+            Err(TryLockError::Poisoned(_)) => {
+                return Err(StoreError::Poisoned {
+                    operation: "lock-private-sqlite-staging",
+                });
+            }
+        }
+    }
 }
 
 pub(super) fn read_gate_with_boundary(

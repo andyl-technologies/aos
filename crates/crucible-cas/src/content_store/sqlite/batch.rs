@@ -9,7 +9,7 @@ use crate::content_store::batch::{
 
 pub(super) mod busy;
 pub(super) mod diagnostic;
-mod metadata;
+pub(super) mod metadata;
 mod reader;
 
 impl SqliteBlobBackend {
@@ -184,7 +184,7 @@ impl SqliteBlobBackend {
         })
     }
 
-    fn connection_with_boundary(
+    pub(super) fn connection_with_boundary(
         &self,
         boundary: &mut dyn FnMut() -> Result<(), StoreError>,
     ) -> Result<MutexGuard<'_, Connection>, StoreError> {
@@ -207,7 +207,7 @@ impl SqliteBlobBackend {
         }
     }
 
-    fn inventory_lock_with_boundary(
+    pub(super) fn inventory_lock_with_boundary(
         &self,
         boundary: &mut dyn FnMut() -> Result<(), StoreError>,
     ) -> Result<File, StoreError> {
@@ -256,4 +256,4 @@ fn check_original(
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

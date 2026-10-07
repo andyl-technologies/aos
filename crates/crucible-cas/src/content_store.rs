@@ -47,9 +47,9 @@ pub mod conformance;
 
 pub use admin::{
     BlobInventoryFence, BlobInventoryRecord, BlobInventorySummary, BlobStoreAdmin,
-    InventoryGeneration, PhysicalStorageIdentity, PlannedDeleteDisposition, RefInventoryFence,
-    RefInventoryGeneration, RefInventoryRecord, RefInventorySummary, RefPublicationGuard,
-    RefStoreAdmin,
+    DeleteBatchReceipt, InventoryGeneration, InventorySummaryReceipt, PhysicalStorageIdentity,
+    PlannedDeleteDisposition, RefInventoryFence, RefInventoryGeneration, RefInventoryRecord,
+    RefInventorySummary, RefPublicationGuard, RefStoreAdmin,
 };
 pub use batch::{OwnedBlobBytes, PutBatchReceipt};
 pub use compressed_directory::CompressedDirectoryBlobBackend;
@@ -101,8 +101,8 @@ pub use s3_ref::{
     StoreS3VersionedObjectMetadata,
 };
 pub use sqlite::{
-    SqliteBlobBackend, SqliteCatalogOperation, SqliteCatalogOperationKind, SqliteCatalogSupervisor,
-    SqliteCommitOutcome, SqliteDiagnosticError, SqliteScopeError,
+    SqliteBlobAuthorities, SqliteBlobBackend, SqliteCatalogOperation, SqliteCatalogOperationKind,
+    SqliteCatalogSupervisor, SqliteCommitOutcome, SqliteDiagnosticError, SqliteScopeError,
     minimum_sqlite_catalog_resident_bytes, minimum_sqlite_catalog_staging_bytes,
 };
 pub use write_back::{

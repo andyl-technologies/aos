@@ -385,7 +385,7 @@ pub(super) fn assert_expired(error: StoreError) {
     );
 }
 
-pub(super) fn isolated_heap_test(name: &str) -> bool {
+pub(in crate::content_store::sqlite) fn isolated_heap_test(name: &str) -> bool {
     if std::env::var_os("CRUCIBLE_SQLITE_CHECKED_BATCH_CHILD").is_some() {
         return false;
     }
@@ -500,17 +500,30 @@ fn caller_boundary_interrupts_each_contended_gate_without_renewal() {
     let account = DecodeBudget::for_store(guard.clone()).expect("finite component bank");
     let _scope = account.enter();
     let op = Operation(guard.clone());
-    let staging = catalog::write_gate(&op).expect("occupy original staging gate");
     let mut calls = 0;
-    let error = backend
-        .put_many_if_absent_with_boundary(&[], &mut || {
-            calls += 1;
-            if calls == 32 { Err(expired()) } else { Ok(()) }
-        })
-        .expect_err("same callback refuses staging wait");
-    assert_expired(error);
-    assert_eq!(calls, 32);
-    drop(staging);
+    std::thread::scope(|scope| {
+        let (ready, acquired) = std::sync::mpsc::sync_channel(0);
+        let (release, released) = std::sync::mpsc::sync_channel(0);
+        let owner = scope.spawn(move || {
+            let staging = catalog::write_gate(&op).expect("actual other-thread staging owner");
+            ready.send(()).expect("announce held gate");
+            released
+                .recv()
+                .expect("retain gate through original cancellation");
+            drop(staging);
+        });
+        acquired.recv().expect("wait for actual gate owner");
+        let error = backend
+            .put_many_if_absent_with_boundary(&[], &mut || {
+                calls += 1;
+                if calls == 32 { Err(expired()) } else { Ok(()) }
+            })
+            .expect_err("same callback refuses other-thread staging wait");
+        assert_expired(error);
+        assert_eq!(calls, 32);
+        release.send(()).expect("release original owner");
+        owner.join().expect("staging owner closes");
+    });
 
     let inventory = backend
         .acquire_inventory_lock()

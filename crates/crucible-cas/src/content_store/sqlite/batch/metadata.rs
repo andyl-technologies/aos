@@ -4,15 +4,38 @@ use rusqlite::types::ValueRef;
 
 use super::*;
 
-pub(super) fn advance_with_boundary(
+pub(in crate::content_store::sqlite) fn advance_with_boundary(
     connection: &Connection,
     boundary: &mut dyn FnMut() -> Result<(), StoreError>,
     quarantined: &std::sync::atomic::AtomicBool,
 ) -> Result<(), StoreError> {
+    let (instance, generation) = load_with_boundary(connection, true, boundary, quarantined)?;
+    let next = generation.checked_add(1).ok_or(StoreError::Quota)?;
+    let next_sql = i64::try_from(next).map_err(|_| StoreError::Quota)?;
+    let checksum = metadata_checksum(instance, next);
+    boundary()?;
+    busy::retry(connection, true, quarantined, boundary, |_| {
+        connection
+            .execute(
+                diagnostic::UPDATE_SQL,
+                params![next_sql, checksum.as_slice()],
+            )
+            .map_err(|source| database_error("advance-sqlite-blob-generation", source))
+    })?;
+    boundary()?;
+    Ok(())
+}
+
+pub(in crate::content_store::sqlite) fn load_with_boundary(
+    connection: &Connection,
+    transactional: bool,
+    boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    quarantined: &std::sync::atomic::AtomicBool,
+) -> Result<([u8; 32], u64), StoreError> {
     boundary()?;
     // SQLite may materialize each column in its separately bounded allocator.
     // Borrowing the value avoids an unbounded Rust Vec before length checks.
-    let row = busy::retry(connection, true, quarantined, boundary, |_| {
+    let row = busy::retry(connection, transactional, quarantined, boundary, |_| {
         connection
             .query_row(diagnostic::METADATA_SQL, [], |row| {
                 Ok((
@@ -31,20 +54,7 @@ pub(super) fn advance_with_boundary(
     if generation == 0 || checksum != metadata_checksum(instance, generation) {
         return Err(invalid_metadata());
     }
-    let next = generation.checked_add(1).ok_or(StoreError::Quota)?;
-    let next_sql = i64::try_from(next).map_err(|_| StoreError::Quota)?;
-    let checksum = metadata_checksum(instance, next);
-    boundary()?;
-    busy::retry(connection, true, quarantined, boundary, |_| {
-        connection
-            .execute(
-                diagnostic::UPDATE_SQL,
-                params![next_sql, checksum.as_slice()],
-            )
-            .map_err(|source| database_error("advance-sqlite-blob-generation", source))
-    })?;
-    boundary()?;
-    Ok(())
+    Ok((instance, generation))
 }
 
 fn fixed_blob(
