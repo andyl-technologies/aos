@@ -1,8 +1,8 @@
 //! Runs the production unprivileged AOS sandbox node controller.
 //!
-//! The implementation lives in [`aos_sandbox_services::controller`] so startup,
-//! readiness, capability reporting, and unavailable-authority gates remain
-//! directly testable without a child process.
+//! [`aos_sandbox_services::controller`] selects the fixed listener and HTTP
+//! assembly. Protected startup, readiness, capability reporting, and authority
+//! gates remain in the session-security runtime and its domain owners.
 
 use std::process::ExitCode;
 
