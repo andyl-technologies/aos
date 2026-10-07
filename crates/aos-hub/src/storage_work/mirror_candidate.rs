@@ -11,14 +11,31 @@ use aos_hub_core::storage_work::StorageWorkKey;
 
 use super::RemoteStorageWorkClient;
 
+pub(crate) mod buffer_capture;
+
 pub(super) struct ControlledMirrorAuthority {
     pub(super) profile_digest: String,
     pub(super) issuer: MirrorGuardIssuer,
     pub(super) uncertainty: u64,
     pub(super) key: StorageWorkKey,
+    pub(super) buffer_capture: Option<buffer_capture::Capture>,
 }
 
 impl RemoteStorageWorkClient {
+    /// Attaches a bounded observation to an existing controlled candidate client.
+    ///
+    /// # Errors
+    /// Returns an error when no actual controlled authority was selected.
+    pub(crate) fn with_candidate_buffer_capture(
+        mut self,
+        capture: buffer_capture::Capture,
+    ) -> Result<Self> {
+        self.controlled_mirror.as_mut()
+            .ok_or_else(|| anyhow::anyhow!("candidate authority absent"))?
+            .buffer_capture = Some(capture);
+        Ok(self)
+    }
+
     pub(crate) fn with_controlled_ca(mut self, certificate: &[u8]) -> Result<Self> {
         ensure!(
             self.controlled_mirror.is_some(),
@@ -66,6 +83,7 @@ impl RemoteStorageWorkClient {
             issuer,
             uncertainty: profile.clock_uncertainty_seconds.get(),
             key,
+            buffer_capture: None,
         });
         Ok(self)
     }

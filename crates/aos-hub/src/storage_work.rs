@@ -854,6 +854,8 @@ impl RemoteStorageWorkClient {
         };
 
         let request_bytes = body.len();
+        #[cfg(test)]
+        let candidate_request_hash = hex::encode(sha2::Sha256::digest(&body));
         let started = Instant::now();
         let mut exchange = telemetry::ExchangeTelemetry::new(plan);
 
@@ -981,6 +983,10 @@ impl RemoteStorageWorkClient {
             observed_attempt.finish("http_rejected");
             bail!("storage Worker returned HTTP {status}");
         }
+        #[cfg(test)]
+        let candidate_buffer_header = self.controlled_mirror.as_ref()
+            .and_then(|candidate| candidate.buffer_capture.as_ref())
+            .map(|_| mirror_candidate::buffer_capture::response_header(response.headers()));
         let body = read_observed_response_chunks(
             response,
             plan.operation.maximum_result_bytes(),
@@ -1011,6 +1017,14 @@ impl RemoteStorageWorkClient {
                 exchange.finish("expired_result");
                 observed_attempt.finish("expired_result");
             })?;
+        #[cfg(test)]
+        if let (Some(capture), Some(header)) = (
+            self.controlled_mirror.as_ref().and_then(|candidate| candidate.buffer_capture.as_ref()),
+            candidate_buffer_header,
+        ) {
+            capture.observe(plan, observed_attempt.call_id(), header,
+                &candidate_request_hash, request_bytes, &body);
+        }
         exchange.finish("success");
         tracing::info!(
             plan_id = %plan.plan_id,
