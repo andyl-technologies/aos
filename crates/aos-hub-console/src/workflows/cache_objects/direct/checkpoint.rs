@@ -358,14 +358,16 @@ impl Checkpoint {
         key: &str,
         expected: &ResumeHead,
     ) -> Result<(), String> {
-        use aos_proto_types::direct_upload::{encode_direct_control, MAX_DIRECT_CONTROL_BYTES};
         use crate::cache_upload_lifecycle_model::retirement_ready;
+        use aos_proto_types::direct_upload::{encode_direct_control, MAX_DIRECT_CONTROL_BYTES};
 
         let archive_key = format!("{}:{}:retired", expected.scope, expected.run_nonce);
         let bytes = encode_direct_control(expected).map_err(|_| FAILURE.to_string())?;
         let json = String::from_utf8(bytes).map_err(|_| FAILURE.to_string())?;
         if key != format!("{}:active", expected.scope)
-            || key.len().checked_add(archive_key.len())
+            || key
+                .len()
+                .checked_add(archive_key.len())
                 .and_then(|size| size.checked_add(json.len()))
                 .is_none_or(|size| size > MAX_DIRECT_CONTROL_BYTES)
         {
@@ -373,16 +375,26 @@ impl Checkpoint {
         }
 
         let transaction = self.write_transaction()?;
-        let mut guard = WriteGuard { transaction, acknowledged: false };
+        let mut guard = WriteGuard {
+            transaction,
+            acknowledged: false,
+        };
         let mut wait = EventWait::new(
-            guard.transaction.unchecked_ref(), "complete", &["error", "abort"],
+            guard.transaction.unchecked_ref(),
+            "complete",
+            &["error", "abort"],
         )?;
-        let store = guard.transaction.object_store(STORE).map_err(|_| FAILURE.to_string())?;
+        let store = guard
+            .transaction
+            .object_store(STORE)
+            .map_err(|_| FAILURE.to_string())?;
         // Both reads and writes stay inside this same strict transaction. The
         // second callback queues history preservation and pointer retirement.
         let reads = Rc::new(RefCell::new(RetirementReads::default()));
         for (is_active, read_key) in [(true, key), (false, archive_key.as_str())] {
-            let request = store.get(&JsValue::from_str(read_key)).map_err(|_| FAILURE.to_string())?;
+            let request = store
+                .get(&JsValue::from_str(read_key))
+                .map_err(|_| FAILURE.to_string())?;
             let copy = request.clone();
             let reads = reads.clone();
             let expected = expected.clone();
@@ -392,32 +404,48 @@ impl Checkpoint {
             let json = json.clone();
             let transaction = guard.transaction.clone();
             let sender = wait.sender.clone();
-            wait.add_on(request.unchecked_into(), "success", Closure::wrap(Box::new(move |_: Event| {
-                let result = (|| {
-                    let value = decode::<ResumeHead>(copy.clone())?;
-                    let mut reads = reads.borrow_mut();
-                    if is_active { reads.active = Some(value); } else { reads.archived = Some(value); }
-                    let (Some(active), Some(archived)) = (&reads.active, &reads.archived) else {
-                        return Ok(());
-                    };
-                    if retirement_ready(&expected, active.as_ref(), archived.as_ref())? {
-                        store.put_with_key(&JsValue::from_str(&json), &JsValue::from_str(&archive_key))
-                            .map_err(|_| FAILURE.to_string())?;
-                        store.delete(&JsValue::from_str(&key)).map_err(|_| FAILURE.to_string())?;
+            wait.add_on(
+                request.unchecked_into(),
+                "success",
+                Closure::wrap(Box::new(move |_: Event| {
+                    let result = (|| {
+                        let value = decode::<ResumeHead>(copy.clone())?;
+                        let mut reads = reads.borrow_mut();
+                        if is_active {
+                            reads.active = Some(value);
+                        } else {
+                            reads.archived = Some(value);
+                        }
+                        let (Some(active), Some(archived)) = (&reads.active, &reads.archived)
+                        else {
+                            return Ok(());
+                        };
+                        if retirement_ready(&expected, active.as_ref(), archived.as_ref())? {
+                            store
+                                .put_with_key(
+                                    &JsValue::from_str(&json),
+                                    &JsValue::from_str(&archive_key),
+                                )
+                                .map_err(|_| FAILURE.to_string())?;
+                            store
+                                .delete(&JsValue::from_str(&key))
+                                .map_err(|_| FAILURE.to_string())?;
+                        }
+                        Ok::<_, String>(())
+                    })();
+                    if let Err(error) = result {
+                        let _ = transaction.abort();
+                        if let Some(sender) = sender.borrow_mut().take() {
+                            let _ = sender.send(Err(error));
+                        }
                     }
-                    Ok::<_, String>(())
-                })();
-                if let Err(error) = result {
-                    let _ = transaction.abort();
-                    if let Some(sender) = sender.borrow_mut().take() { let _ = sender.send(Err(error)); }
-                }
-            }) as Box<dyn FnMut(Event)>))?;
+                }) as Box<dyn FnMut(Event)>),
+            )?;
         }
         wait.wait().await?;
         guard.acknowledged = true;
         Ok(())
     }
-
 }
 
 #[derive(Default)]

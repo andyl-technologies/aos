@@ -274,8 +274,10 @@ impl CheckpointRecord for ResumeHead {
             if let Some(next) = &self.session {
                 next.validate_for(&original.session, &old.intent, &original.placements)
                     .map_err(|_| "The original upload session changed".to_string())?;
-                if matches!(original.state, DirectSessionState::Committed | DirectSessionState::Aborted)
-                    || original.resource_version.get() > next.resource_version.get()
+                if matches!(
+                    original.state,
+                    DirectSessionState::Committed | DirectSessionState::Aborted
+                ) || original.resource_version.get() > next.resource_version.get()
                 {
                     self.session = Some(original);
                 }

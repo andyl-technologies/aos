@@ -11,8 +11,8 @@ use leptos::ev::{Event, MouseEvent, SubmitEvent};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
-use crate::components::{HashValue, HelpTooltip, InlineError, StatusBadge};
 use crate::cache_upload_lifecycle_model::run_owned;
+use crate::components::{HashValue, HelpTooltip, InlineError, StatusBadge};
 use crate::transport::ApiClient;
 
 pub(crate) mod direct;
@@ -68,7 +68,9 @@ async fn pause_owned(
     path: &str,
 ) -> Result<(), String> {
     if transfer.borrow().stop_unknown {
-        return Err("Local stop is unconfirmed. Reload this page before checking the saved original".into());
+        return Err(
+            "Local stop is unconfirmed. Reload this page before checking the saved original".into(),
+        );
     }
     let owned = transfer.borrow_mut().running.take();
     if let Some(owned) = owned {
@@ -102,13 +104,20 @@ fn ObjectUpload(client: ApiClient, cache_id: String) -> impl IntoView {
     let upload_transfer = transfer.clone();
 
     let on_file = move |event: Event| {
-        if busy.get_untracked() || action_busy.get_untracked() { return; }
+        if busy.get_untracked() || action_busy.get_untracked() {
+            return;
+        }
         if upload_transfer.borrow().stop_unknown {
-            error.set(Some("Local stop is unconfirmed. Reload this page before checking the saved original".into()));
+            error.set(Some(
+                "Local stop is unconfirmed. Reload this page before checking the saved original"
+                    .into(),
+            ));
             return;
         }
         let input = event_target::<leptos::web_sys::HtmlInputElement>(&event);
-        let Some(file) = input.files().and_then(|files| files.get(0)) else { return; };
+        let Some(file) = input.files().and_then(|files| files.get(0)) else {
+            return;
+        };
         let object_path = path.get_untracked().trim().to_string();
         if object_path.is_empty() {
             error.set(Some("Cache-relative object path is required".to_string()));
@@ -121,7 +130,10 @@ fn ObjectUpload(client: ApiClient, cache_id: String) -> impl IntoView {
         let (cancellation, registration) = AbortHandle::new_pair();
         let (stopped, acknowledged) = oneshot::channel();
         transfer.borrow_mut().running = Some(OwnedTransfer {
-            cache_id: cache_id.clone(), path: object_path.clone(), cancellation, stopped: acknowledged,
+            cache_id: cache_id.clone(),
+            path: object_path.clone(),
+            cancellation,
+            stopped: acknowledged,
         });
 
         status.set(None);
@@ -131,12 +143,23 @@ fn ObjectUpload(client: ApiClient, cache_id: String) -> impl IntoView {
         can_start_new.set(false);
         busy.set(true);
         spawn_local(async move {
-            let result = run_owned(upload_cache_file(client, cache_id, object_path, file), registration, stopped).await;
+            let result = run_owned(
+                upload_cache_file(client, cache_id, object_path, file),
+                registration,
+                stopped,
+            )
+            .await;
             transfer.borrow_mut().running.take();
             match result {
-                Ok(Ok(detail)) => { status_positive.set(true); status.set(Some(detail)); },
+                Ok(Ok(detail)) => {
+                    status_positive.set(true);
+                    status.set(Some(detail));
+                }
                 Ok(Err(detail)) => error.set(Some(detail)),
-                Err(_) => status.set(Some("This window's transfer paused. Check the saved original before continuing".into())),
+                Err(_) => status.set(Some(
+                    "This window's transfer paused. Check the saved original before continuing"
+                        .into(),
+                )),
             }
             busy.set(false);
         });
@@ -149,7 +172,9 @@ fn ObjectUpload(client: ApiClient, cache_id: String) -> impl IntoView {
         move |_: MouseEvent| {
             if action_busy.get_untracked()
                 || (matches!(action, UploadAction::Inspect) && busy.get_untracked())
-            { return; }
+            {
+                return;
+            }
 
             let object_path = path.get_untracked().trim().to_string();
             if object_path.is_empty() {
