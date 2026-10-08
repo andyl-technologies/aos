@@ -37,6 +37,13 @@
   extraPatches ? [],
   qualification ? null,
 }: let
+  mkQualifiedDerivation = attrs:
+    mkDerivation (attrs
+      // (
+        if qualification == null
+        then {}
+        else {inherit qualification;}
+      ));
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
   isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
   isLinuxArmCross = stdenv.isCross && stdenv.hostPlatform.isLinux && stdenv.hostPlatform.isAarch64;
@@ -285,10 +292,10 @@
     else "";
   extraCfgStr = builtins.concatStringsSep " " extraConfigureFlags;
 in
-  mkDerivation {
+  mkQualifiedDerivation {
     pname = "openjdk-${toString major}";
     inherit platformSupport;
-    inherit version qualification;
+    inherit version;
 
     src = fetchurl {
       urls = [

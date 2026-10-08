@@ -18,6 +18,13 @@
   description,
   qualification ? null,
 }: let
+  mkQualifiedDerivation = attrs:
+    mkDerivation (attrs
+      // (
+        if qualification == null
+        then {}
+        else {inherit qualification;}
+      ));
   targetOs = stdenv.hostPlatform.go.os;
   targetArch = stdenv.hostPlatform.go.arch;
   toolDirectory = "${targetOs}_${targetArch}";
@@ -31,8 +38,8 @@
     then throw "Go 1.4 Darwin bootstrap requires a native C compiler"
     else nativeCc;
 in
-  mkDerivation {
-    inherit pname version src qualification platformSupport;
+  mkQualifiedDerivation {
+    inherit pname version src platformSupport;
     inherit update;
 
     buildDeps = [nativeGo];

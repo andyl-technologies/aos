@@ -9,6 +9,19 @@
   translator = buildPackages.spirv-llvm-translator;
 in
   mkDerivation {
+    # Device libraries contain IR; their generators execute only on the build platform.
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [];
+      target = [];
+      role = "public-package";
+    };
+
     pname = "libclc";
     inherit (llvm) version src;
 
