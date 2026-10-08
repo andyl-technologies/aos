@@ -482,8 +482,6 @@ in
       ${pkgs.coreutils}/bin/cat /tmp/registry-show.json
       ${pkgs.jq}/bin/jq -e '.data.registry.slug == "operations/maintenance"' \
         /tmp/registry-show.json >/dev/null
-      registry_version=$(${pkgs.jq}/bin/jq -er .data.registry.resource_version \
-        /tmp/registry-show.json)
       registry_id=$(${pkgs.jq}/bin/jq -er .data.registry.stable_id \
         /tmp/registry-show.json)
 
@@ -1982,6 +1980,10 @@ in
         --hub "$hub_url" --token "$token" \
         | ${pkgs.jq}/bin/jq -e '.data | type == "object"' >/dev/null
 
+      hub_cli registry show operations/maintenance \
+        >/tmp/registry-before-update.json
+      registry_version=$(${pkgs.jq}/bin/jq -er .data.registry.resource_version \
+        /tmp/registry-before-update.json)
       reviewed registry-update registry update operations/maintenance \
         --if-version "$registry_version" \
         --visibility internal >/tmp/registry-update.json
