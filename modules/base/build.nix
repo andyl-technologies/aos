@@ -570,26 +570,8 @@ in {
         path = config.system.build.systemPath;
       };
 
-      environment.etc."bashrc" = {
-        text = ''
-          if [ -z "$__ETC_PROFILE_DONE" ]; then
-            . /etc/profile
-          fi
-
-          if [ -n "$PS1" ]; then
-            if [ "$TERM" != "dumb" ]; then
-              PROMPT_COLOR="1;31m"
-              ((UID)) && PROMPT_COLOR="1;32m"
-              PS1="\n\[\033[$PROMPT_COLOR\][\[\e]0;\u@\h: \w\a\]\u@\h:\w]\\$\[\033[0m\] "
-              if [ "$TERM" = "xterm" ]; then
-                PS1="\[\033]2;\h:\u:\w\007\]$PS1"
-              fi
-            fi
-
-            alias ls='ls -NFh --group-directories-first --color=auto'
-          fi
-        '';
-      };
+      environment.etc."bashrc".text = import ../../pkgs/system/_aos-host-policy/bashrc-text.nix {inherit lib;};
+      environment.etc."inputrc".text = import ../../pkgs/system/_aos-host-policy/inputrc-text.nix;
 
       # The exactly selected manager package contributes `system.build.initrd`.
     }

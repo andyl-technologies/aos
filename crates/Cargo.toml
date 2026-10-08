@@ -37,6 +37,7 @@ members = [
     "aos-profile",
     "aos-systemd",
     "aos-configuration-lower",
+    "aos-configuration-provider",
     "aos-filesystem-provider",
     "aos-kubernetes-provider",
     "aos-kernel-tunable-provider",

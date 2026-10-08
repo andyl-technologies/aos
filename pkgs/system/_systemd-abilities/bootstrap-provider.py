@@ -17,7 +17,7 @@ import subprocess
 import sys
 import tempfile
 
-from aos_configuration import durable_unlink, durable_write, locked_dispatch, read_invocation
+from aos_service_resources import durable_unlink, durable_write, locked_dispatch, read_invocation
 
 
 def digest(value):

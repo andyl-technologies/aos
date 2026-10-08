@@ -2,13 +2,14 @@
 {
   lib,
   path,
+  pager ? "less",
 }: ''
   if [ -n "$__ETC_PROFILE_SOURCED" ]; then return; fi
   __ETC_PROFILE_SOURCED=1
   export __ETC_PROFILE_DONE=1
 
   export PATH=${lib.escapeShellArg path}
-  export PAGER=less
+  export PAGER=${lib.escapeShellArg pager}
 
   # Package-owned fragments run after the baseline PATH is established.
   for aos_profile_fragment in /etc/profile.d/*.sh; do

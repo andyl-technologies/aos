@@ -1,11 +1,10 @@
 ##! Portable native configuration files with durable ownership receipts.
 {
-  mkDerivation,
-  python3,
-  bash,
+  mkAosCargoPackage,
+  aosWorkspaceVendor,
   service-management,
 }:
-mkDerivation {
+mkAosCargoPackage {
   pname = "aos-configuration-provider";
   version = "1";
   platformSupport = {
@@ -16,23 +15,19 @@ mkDerivation {
   };
   module = ./_aos-configuration-provider;
   moduleDeps = [service-management];
-  runtimeDeps = [python3 bash];
-  phases = [
-    {
-      name = "install";
-      script = ''
-        mkdir -p "$out/bin" "$out/libexec"
-        cp ${./_aos-configuration-provider/aos_configuration.py} "$out/libexec/aos_configuration.py"
-        cp ${./_aos-configuration-provider/handler.py} "$out/libexec/handler.py"
-        cat > "$out/bin/aos-configuration-provider" << EOF
-        #!${bash}/bin/bash
-        # The initrd store can be writable; imports must never change its NAR.
-        exec "${python3}/bin/python3" -B "$out/libexec/handler.py" "\$@"
-        EOF
-        chmod +x "$out/bin/aos-configuration-provider"
-      '';
-    }
-  ];
+  cargoDeps = aosWorkspaceVendor;
+  cargoRoot = "crates";
+  cargoFlags = "-p aos-configuration-provider";
+  cargoTestFlags = "-p aos-configuration-provider";
+  preBuild = ''
+    mkdir -p "$out/bin"
+    cc -std=c11 -O2 -Wall -Wextra -Werror \
+      ${./_aos-configuration-provider/account-lookup.c} \
+      -o "$out/bin/aos-account-lookup"
+    export AOS_ACCOUNT_LOOKUP="$out/bin/aos-account-lookup"
+  '';
+  doCheck = true;
+  runtimeDeps = [];
   meta.mainProgram = "aos-configuration-provider";
   meta.description = "Durable portable configuration file reconciliation";
   meta.license = "Apache-2.0";

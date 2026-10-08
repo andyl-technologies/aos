@@ -745,10 +745,11 @@ in
         script = ''
           mkdir -p "$handlers/libexec" "$handlers/bin"
           cp ${./_systemd-abilities/service-handler.py} "$handlers/libexec/aos-service-handler.py"
+          cp ${./_systemd-abilities/aos_service_resources.py} "$handlers/libexec/aos_service_resources.py"
           cp ${./_systemd-abilities/aos_service_storage.py} "$handlers/libexec/aos_service_storage.py"
           cat > "$handlers/bin/aos-service-handler" << EOF
           #!${bash}/bin/bash
-          export PYTHONPATH="${aos-configuration-provider}/libexec"
+          export PYTHONPATH="$handlers/libexec"
           exec "${python3}/bin/python3" -B "$handlers/libexec/aos-service-handler.py" \\
             --systemctl "$out/bin/systemctl" \\
             --true-executable "${coreutils}/bin/true" \\
@@ -761,7 +762,7 @@ in
           cp ${./_systemd-abilities/bootstrap-provider.py} "$handlers/libexec/aos-systemd-bootstrap.py"
           cat > "$handlers/bin/aos-systemd-bootstrap" << EOF
           #!${bash}/bin/bash
-          export PYTHONPATH="${aos-configuration-provider}/libexec"
+          export PYTHONPATH="$handlers/libexec"
           exec "${python3}/bin/python3" -B "$handlers/libexec/aos-systemd-bootstrap.py" \\
             --nix-store "${nix}/bin/nix-store" \\
             --nix-hash "${nix}/bin/nix-hash" \\

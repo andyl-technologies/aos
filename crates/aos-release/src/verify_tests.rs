@@ -232,6 +232,7 @@ pub(crate) fn release_fixture() -> anyhow::Result<ReleaseFixture> {
             platform_versions: BTreeMap::new(),
             name: "example".to_owned(),
             publication: Some(crate::inventory::PackagePublicationMetadata {
+                output_packages: Default::default(),
                 version: "1.0.0".to_owned(),
                 description: "Example package".to_owned(),
                 homepage: None,

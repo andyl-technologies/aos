@@ -1,6 +1,7 @@
 """Exercises native service reconciliation without changing host resources."""
 
 import importlib.util
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -15,8 +16,7 @@ from unittest.mock import patch
 
 
 handler_path = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else Path(__file__).parents[2] / "pkgs/system/_systemd-abilities/service-handler.py"
-configuration_path = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else Path(__file__).parents[2] / "pkgs/system/_aos-configuration-provider/aos_configuration.py"
-configuration_entrypoint = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else configuration_path.parent / "handler.py"
+configuration_path = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else handler_path.parent / "aos_service_resources.py"
 configuration_wrapper = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else None
 systemd_analyze = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else None
 host_activation_input = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else None
@@ -24,9 +24,9 @@ package_convergence_input = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else None
 projected_service_input = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else None
 projected_service_units = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else None
 storage_path = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else handler_path.parent / "aos_service_storage.py"
-configuration_spec = importlib.util.spec_from_file_location("aos_configuration", configuration_path)
+configuration_spec = importlib.util.spec_from_file_location("aos_service_resources", configuration_path)
 configuration_module = importlib.util.module_from_spec(configuration_spec)
-sys.modules["aos_configuration"] = configuration_module
+sys.modules["aos_service_resources"] = configuration_module
 configuration_spec.loader.exec_module(configuration_module)
 
 storage_spec = importlib.util.spec_from_file_location("aos_service_storage", storage_path)
@@ -57,6 +57,39 @@ def service():
 
 def invocation(ability, operation, value, revision="first", previous=None):
     return {"id": "example-effect", "effect": {"identity": ["test", ability, operation, "main"]}, "input": value, "revision": revision, "previous": previous}
+
+
+class ConfigurationProcess:
+    """Exercises the installed provider using test-only receipt fixtures."""
+
+    def __init__(self, document, state_directory):
+        self.invocation = document
+        self.state_directory = Path(state_directory)
+        self.receipt_path = self.state_directory / (handler_module.digest(document["id"].encode()) + ".json")
+
+    def save(self, receipt):
+        self.state_directory.mkdir(parents=True, exist_ok=True)
+        receipt = dict(receipt, id=self.invocation["id"], revision=self.invocation["revision"])
+        receipt["owned_paths"] = sorted({receipt["path"], *([receipt["previous_path"]] if receipt.get("previous_path") else [])})
+        self.receipt_path.write_text(json.dumps(receipt))
+
+    def file(self, action):
+        if configuration_wrapper is None:
+            raise unittest.SkipTest("requires the source-built configuration provider")
+        document = dict(self.invocation)
+        if action != "observe":
+            document["action"] = action
+        result = subprocess.run(
+            [str(configuration_wrapper), "--state-directory", str(self.state_directory), action],
+            input=json.dumps(document), capture_output=True, text=True, env={},
+        )
+        if result.returncode:
+            raise ValueError(result.stderr)
+        return json.loads(result.stdout)
+
+
+def configuration_handler(document, systemctl, unit_directory, state_directory):
+    return ConfigurationProcess(document, state_directory)
 
 
 def hardening_policy(profile="privileged"):
@@ -933,20 +966,23 @@ class NativeHandlerTests(unittest.TestCase):
 
     def test_structured_toml_roundtrips_nested_keys_and_arrays(self):
         value = {"server": {"name": "a b", "enabled": True, "ports": [443, 8443]}, "plugins.io.example": {"path": "/run/example", "registries": [{"host": "registry.example", "tls": True}]}}
-        encoded = handler_module.serialize_toml(value)
-        self.assertEqual(tomllib.loads(encoded), value)
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "example.toml"
+            document = invocation("configuration", "file", {"path": str(path), "format": "toml", "value": value, "mode": "0600"})
+            ConfigurationProcess(document, Path(root) / "state").file("apply")
+            self.assertEqual(tomllib.loads(path.read_text()), value)
 
     def test_configuration_update_observe_remove_and_external_edit_rejection(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root) / "etc/example.conf"
             state = Path(root) / "state"
             value = {"path": str(path), "content": "first", "mode": "0600"}
-            initial = handler_module.Handler(invocation("configuration", "file", value), "unused", root, state)
+            initial = configuration_handler(invocation("configuration", "file", value), "unused", root, state)
             first = initial.file("apply")
             self.assertEqual(path.read_text(), "first")
             self.assertEqual(initial.file("observe")["status"], "current")
             value = dict(value, content="second")
-            updated = handler_module.Handler(invocation("configuration", "file", value, "second", {}), "unused", root, state)
+            updated = configuration_handler(invocation("configuration", "file", value, "second", {}), "unused", root, state)
             self.assertEqual(updated.file("observe")["status"], "retry-safe")
             second = updated.file("apply")
             self.assertNotEqual(first["resource"], second["resource"])
@@ -1616,7 +1652,7 @@ class NativeHandlerTests(unittest.TestCase):
             path = Path(root) / "file"
             path.write_text("prior")
             value = {"path": str(path), "content": "next", "mode": "0644"}
-            instance = handler_module.Handler(invocation("configuration", "file", value), "unused", root, Path(root) / "state")
+            instance = configuration_handler(invocation("configuration", "file", value), "unused", root, Path(root) / "state")
             instance.save({"kind": "configuration", "path": str(path), "digest": handler_module.digest(b"next"), "previous_digest": handler_module.digest(b"prior"), "pending": True})
             self.assertEqual(instance.file("observe")["status"], "retry-safe")
 
@@ -1933,10 +1969,10 @@ class NativeHandlerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root) / "file"
             value = {"path": str(path), "content": "shared", "mode": "0644"}
-            first = handler_module.Handler(invocation("configuration", "file", value), "unused", root, Path(root) / "state")
+            first = configuration_handler(invocation("configuration", "file", value), "unused", root, Path(root) / "state")
             first.file("apply")
             other = dict(invocation("configuration", "file", value), id="other-scope")
-            second = handler_module.Handler(other, "unused", root, Path(root) / "state")
+            second = configuration_handler(other, "unused", root, Path(root) / "state")
             with self.assertRaisesRegex(ValueError, "another installation effect"):
                 second.file("apply")
 
@@ -1950,7 +1986,7 @@ class NativeHandlerTests(unittest.TestCase):
             path = units / "example.service"
             value = {"path": str(path), "content": path.read_text(), "mode": "0644"}
             other = dict(invocation("configuration", "file", value), id="configuration-owner")
-            configuration = handler_module.ConfigurationHandler(other, state)
+            configuration = ConfigurationProcess(other, state)
 
             with self.assertRaisesRegex(ValueError, "another installation effect"):
                 configuration.file("apply")
@@ -1961,7 +1997,7 @@ class NativeHandlerTests(unittest.TestCase):
             state = Path(root) / "state"
             rendered = handler_module.realize_service(service())["units"]["example.service"]
             value = {"path": str(units / "example.service"), "content": rendered, "mode": "0644"}
-            configuration = handler_module.ConfigurationHandler(invocation("configuration", "file", value), state)
+            configuration = ConfigurationProcess(invocation("configuration", "file", value), state)
             configuration.file("apply")
             other = dict(invocation("serviceManagement", "realize", service()), id="service-owner")
             instance = handler_module.Handler(other, "unused", units, state)
@@ -1972,60 +2008,49 @@ class NativeHandlerTests(unittest.TestCase):
     def test_standalone_configuration_process_needs_no_service_manager(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root) / "configuration"
-            state = Path(root) / "state"
             document = invocation("configuration", "file", {"path": str(path), "content": "portable", "mode": "0600"})
-            # Reproduce the installed source layout from the exact retained files.
-            library = Path(root) / "libexec"
-            library.mkdir()
-            (library / "aos_configuration.py").write_bytes(configuration_path.read_bytes())
-            executable = library / "handler.py"
-            executable.write_bytes(configuration_entrypoint.read_bytes())
-
-            def run(action):
-                result = subprocess.run(
-                    [sys.executable, "-B", str(executable), "--state-directory", str(state), action],
-                    input=json.dumps(document), capture_output=True, text=True,
-                    env={}, check=True,
-                )
-                return json.loads(result.stdout)
-
-            self.assertEqual(run("apply")["path"], str(path))
+            provider = ConfigurationProcess(document, Path(root) / "state")
+            self.assertEqual(provider.file("apply")["path"], str(path))
             self.assertEqual(path.read_text(), "portable")
-            self.assertEqual(run("observe")["status"], "current")
+            self.assertEqual(provider.file("observe")["status"], "current")
             path.write_text("external edit")
-            self.assertEqual(run("observe")["status"], "indeterminate")
+            self.assertEqual(provider.file("observe")["status"], "indeterminate")
             path.write_text("portable")
-            self.assertEqual(run("remove"), {})
+            self.assertEqual(provider.file("remove"), {})
             self.assertFalse(path.exists())
 
-    @unittest.skipIf(configuration_wrapper is None, "requires the source-built provider wrapper")
-    def test_installed_wrapper_keeps_writable_provider_payload_unchanged(self):
+    @unittest.skipIf(configuration_wrapper is None, "requires the source-built provider")
+    def test_installed_provider_keeps_writable_payload_unchanged(self):
         with tempfile.TemporaryDirectory() as root:
             payload = Path(root) / "provider"
-            library = payload / "libexec"
-            library.mkdir(parents=True)
-            installed_root = configuration_wrapper.parent.parent
-            for name in ("handler.py", "aos_configuration.py"):
-                (library / name).write_bytes((installed_root / "libexec" / name).read_bytes())
-            wrapper = payload / "provider"
-            # Relocate only the payload path to reproduce the writable initrd
-            # store. Keep the installed wrapper's Python command and flags.
-            wrapper.write_text(configuration_wrapper.read_text().replace(str(installed_root), str(payload)))
-            wrapper.chmod(0o700)
-            before = {path.name: path.read_bytes() for path in library.iterdir()}
-            document = invocation("configuration", "file", {
-                "path": str(Path(root) / "configuration"), "content": "portable", "mode": "0600",
-            })
+            payload.write_bytes(configuration_wrapper.read_bytes())
+            payload.chmod(0o700)
+            before = payload.read_bytes()
+            document = invocation("configuration", "file", {"path": str(Path(root) / "configuration"), "content": "portable", "mode": "0600"})
+            subprocess.run([str(payload), "--state-directory", str(Path(root) / "state"), "apply"], input=json.dumps(document), capture_output=True, text=True, env={}, check=True)
+            self.assertEqual(payload.read_bytes(), before)
 
-            subprocess.run(
-                [str(wrapper), "--state-directory", str(Path(root) / "state"), "apply"],
-                input=json.dumps(document), capture_output=True, text=True, env={}, check=True,
-            )
-
-            after = {path.name: path.read_bytes() for path in library.iterdir() if path.is_file()}
-            self.assertEqual(after, before)
-            self.assertEqual(sorted(path.name for path in library.iterdir()), sorted(before))
-            self.assertFalse((library / "__pycache__").exists())
+    @unittest.skipIf(configuration_wrapper is None, "requires the source-built provider")
+    def test_configuration_provider_shares_python_service_lock(self):
+        with tempfile.TemporaryDirectory() as root:
+            state = Path(root) / "state"
+            state.mkdir()
+            document = invocation("configuration", "file", {"path": str(Path(root) / "configuration"), "content": "portable", "mode": "0600"})
+            with open(state / ".lock", "a") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                process = subprocess.Popen([str(configuration_wrapper), "--state-directory", str(state), "apply"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                try:
+                    with self.assertRaises(subprocess.TimeoutExpired):
+                        process.communicate(json.dumps(document), timeout=0.1)
+                    self.assertFalse((Path(root) / "configuration").exists())
+                    fcntl.flock(lock, fcntl.LOCK_UN)
+                    output, error = process.communicate(timeout=5)
+                    self.assertEqual(process.returncode, 0, error)
+                    self.assertEqual(json.loads(output)["path"], str(Path(root) / "configuration"))
+                finally:
+                    if process.poll() is None:
+                        process.kill()
+                        process.communicate()
 
     def test_configuration_views_are_not_interpreted_as_environment_files(self):
         value = service()
@@ -2041,7 +2066,7 @@ class NativeHandlerTests(unittest.TestCase):
             old_path.write_text("old")
             new_path.write_text("new")
             value = {"path": str(new_path), "content": "new", "mode": "0600"}
-            instance = handler_module.Handler(invocation("configuration", "file", value), "unused", root, Path(root) / "state")
+            instance = configuration_handler(invocation("configuration", "file", value), "unused", root, Path(root) / "state")
             instance.save({
                 "kind": "configuration", "path": str(new_path), "pending": True,
                 "digest": handler_module.digest(b"new"),
@@ -2078,7 +2103,7 @@ class NativeHandlerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root) / "file"
             value = {"path": str(path), "content": "data", "mode": "0600"}
-            instance = handler_module.Handler(invocation("configuration", "file", value), "unused", root, Path(root) / "state")
+            instance = configuration_handler(invocation("configuration", "file", value), "unused", root, Path(root) / "state")
             instance.file("apply")
             path.chmod(0o644)
 
@@ -2093,7 +2118,7 @@ class NativeHandlerTests(unittest.TestCase):
             old_path.write_text("old")
             new_path.write_text("new")
             value = {"path": str(new_path), "content": "new", "mode": "0600"}
-            instance = handler_module.Handler(invocation("configuration", "file", value), "unused", root, Path(root) / "state")
+            instance = configuration_handler(invocation("configuration", "file", value), "unused", root, Path(root) / "state")
             instance.save({
                 "kind": "configuration", "path": str(new_path), "pending": True,
                 "digest": handler_module.digest(b"new"),
@@ -2112,15 +2137,15 @@ class NativeHandlerTests(unittest.TestCase):
             path = Path(root) / "example.conf"
             value = {"path": str(path), "content": "owned", "mode": "0600"}
             state = Path(root) / "state"
-            instance = handler_module.Handler(invocation("configuration", "file", value), "unused", root, state)
+            instance = configuration_handler(invocation("configuration", "file", value), "unused", root, state)
             instance.file("apply")
             removal = invocation("configuration", "file", value)
             removal["action"] = "remove"
-            recovered = handler_module.Handler(removal, "unused", root, state)
+            recovered = configuration_handler(removal, "unused", root, state)
 
             self.assertEqual(recovered.file("observe")["status"], "retry-safe")
             recovered.file("remove")
-            settled = handler_module.Handler(removal, "unused", root, state)
+            settled = configuration_handler(removal, "unused", root, state)
             self.assertEqual(settled.file("observe")["status"], "absent")
 
     def test_remove_observation_never_repeats_an_uncertain_stop(self):

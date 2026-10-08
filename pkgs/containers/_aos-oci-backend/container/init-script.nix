@@ -270,7 +270,7 @@ in ''
     if [ "$store_writable" -eq 1 ]; then
       deployment_input=${lib.escapeShellArg deploymentPath}
       init_selection=$(mktemp "$state_dir/.aos-container-init-selection.XXXXXXXXXX")
-      ${pkgs.aos.packageRuntime}/bin/aos-package-runtime container-startup \
+      ${pkgs.aos-package-runtime}/bin/aos-package-runtime container-startup \
         --image-input "$deployment_input" \
         --state-directory ${lib.escapeShellArg (rootPath "/var/lib/apm/container-runtime")} > "$init_selection" \
         || fail "could not resume the native container deployment"

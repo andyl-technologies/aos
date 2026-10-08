@@ -110,6 +110,7 @@ mod tests {
         let package = PackagePlan {
             name: "example".into(),
             publication: Some(PackagePublicationMetadata {
+                output_packages: Default::default(),
                 version: "1.0.0".into(),
                 description: "Native package fixture".into(),
                 homepage: None,

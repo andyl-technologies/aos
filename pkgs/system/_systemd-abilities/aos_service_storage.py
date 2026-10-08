@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 import stat
 
-from aos_configuration import absolute
+from aos_service_resources import absolute
 
 
 # DynamicUser retains these directories behind manager-created private aliases.

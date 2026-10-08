@@ -219,8 +219,42 @@
     installBins = false;
     doCheck = false;
   };
-in
-  mkAosCargoPackage {
+  outputSelections = (import ./_outputs.nix).aos;
+  cliProbe = command:
+    lib.qualification.commandProbe {
+      primary = {
+        artifacts = [];
+        expected = "The command returns success and documents Usage.";
+        files = {};
+        input = "The packaged ${command} command-line interface.";
+        operation = "Request its offline help text.";
+        steps = [
+          {
+            argv = ["@python@" "-c" "import subprocess\nresult = subprocess.run(['@out@/bin/${command}', '--help'], capture_output=True, text=True)\nassert result.returncode == 0 and 'Usage' in (result.stdout + result.stderr)\nprint('${command} operation passed')\n"];
+            exit_code = 0;
+            stderr.exact = "";
+            stdout.exact = "${command} operation passed\n";
+          }
+        ];
+      };
+      badInput = {
+        artifacts = [];
+        expected = "The command rejects an unsupported option.";
+        files = {};
+        input = "An unsupported command-line option.";
+        operation = "Reject invalid input before performing an operation.";
+        steps = [
+          {
+            argv = ["@python@" "-c" "import subprocess, sys\nresult = subprocess.run(['@out@/bin/${command}', '--aos-invalid-option'], capture_output=True, text=True)\nassert result.returncode != 0\nsys.stderr.write('${command} rejected invalid input\\n')\nraise SystemExit(7)\n"];
+            exit_code = 7;
+            observes_rejection = true;
+            stderr.exact = "${command} rejected invalid input\n";
+            stdout.exact = "";
+          }
+        ];
+      };
+    };
+  aosPackage = mkAosCargoPackage {
     platformSupport = {
       build = [
         {
@@ -309,6 +343,28 @@ in
     aosWorkspaceIntegrationInputs = withTests;
 
     outputs = ["out" "apm" "apr" "packageRuntime" "testSupport"];
+
+    outputPackages =
+      builtins.mapAttrs (name: output: {
+        inherit output;
+        packageProbe = cliProbe name;
+        meta.description = "${name} — AOS ${
+          if name == "apm"
+          then "package manager"
+          else if name == "apr"
+          then "package registry publisher"
+          else "private package runtime"
+        }";
+        runtimeDeps =
+          [coreutils openssl sqlite libssh2 zlib]
+          ++ (
+            if output == "apr"
+            then aprRuntimeTools
+            else apmRuntimeTools
+          )
+          ++ lib.optionals (output != "apr" && !isDarwinCross) linuxRuntimeDeps;
+      })
+      outputSelections;
 
     module = ./_abilities;
     moduleDeps = [service-management aos-filesystem-provider aos-nix-store-provider];
@@ -633,6 +689,24 @@ in
           install_cli aos "$out" ${lib.escapeShellArg (runtimeBinPath aosRuntimeTools)} 0
           install_cli apm "$apm" ${lib.escapeShellArg (runtimeBinPath apmRuntimeTools)} 1
           install_cli apr "$apr" ${lib.escapeShellArg (runtimeBinPath aprRuntimeTools)} 0
+
+          # Generate scripts from each installed parser while the build tools
+          # are available. Loading apm completion never retains or invokes aos.
+          for completion_command in aos apm apr; do
+            case "$completion_command" in
+              aos) completion_output="$out" ;;
+              apm) completion_output="$apm" ;;
+              apr) completion_output="$apr" ;;
+            esac
+            mkdir -p "$completion_output/share/bash-completion/completions"
+            ${
+        if isCross
+        then "${buildPackages.aos}/bin/aos"
+        else ''"$out/bin/.aos-unwrapped"''
+      } completions bash --command "$completion_command" \
+              > "$completion_output/share/bash-completion/completions/$completion_command"
+          done
+
           # Give the shared binary the private entry-point name so
           # current_exe() resolves to the exact signed handler path. The public
           # and split-output private links preserve their own argv[0], which
@@ -866,4 +940,6 @@ in
       homepage = "https://github.com/andyl/andyl-os";
       license = "MIT";
     };
-  }
+  };
+in
+  aosPackage

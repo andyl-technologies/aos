@@ -11,10 +11,10 @@ import unittest
 
 SOURCE = Path(__file__).parent
 provider = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else SOURCE / "bootstrap-provider.py"
-configuration = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else SOURCE.parent / "_aos-configuration-provider" / "aos_configuration.py"
-config_spec = importlib.util.spec_from_file_location("aos_configuration", configuration)
+configuration = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else SOURCE / "aos_service_resources.py"
+config_spec = importlib.util.spec_from_file_location("aos_service_resources", configuration)
 config_module = importlib.util.module_from_spec(config_spec)
-sys.modules["aos_configuration"] = config_module
+sys.modules["aos_service_resources"] = config_module
 config_spec.loader.exec_module(config_module)
 spec = importlib.util.spec_from_file_location("bootstrap", provider)
 bootstrap = importlib.util.module_from_spec(spec)

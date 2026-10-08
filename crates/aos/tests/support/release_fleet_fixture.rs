@@ -639,6 +639,7 @@ fn release_plan(
             platform_versions: Default::default(),
             name: "fleet-package".into(),
             publication: Some(PackagePublicationMetadata {
+                output_packages: Default::default(),
                 version: "1.0.0".into(),
                 description: "Four-platform release fleet fixture".into(),
                 homepage: None,
@@ -1531,9 +1532,12 @@ mod tests {
 
         let retained = first_release_request(&path)?;
         assert_eq!(retained, request);
-        assert!(fleet_contract()?.requirements.iter().any(|requirement| {
-            requirement.native_operation_spec.is_some()
-        }));
+        assert!(
+            fleet_contract()?
+                .requirements
+                .iter()
+                .any(|requirement| { requirement.native_operation_spec.is_some() })
+        );
 
         request.public_evidence_policy_digest = digest("different-policy");
         fs::write(&path, canonical::to_vec(&request)?)?;

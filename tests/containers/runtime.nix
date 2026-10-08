@@ -396,9 +396,13 @@ in
             fail "production metadata retains the retired module ABI"
           fi
 
-          for command in aos apm apr; do
-            test -L "production-facade/usr/bin/$command" \
-              || fail "production facade omits $command"
+          test -L production-facade/usr/bin/apm \
+            || fail "production facade omits apm"
+          test ! -e production-facade/usr/bin/aos
+          test ! -e production-facade/usr/bin/apr
+          for shell_file in etc/bashrc etc/profile etc/inputrc root/.bashrc root/.bash_profile; do
+            test -f "production-metadata/$shell_file" \
+              || fail "production metadata omits $shell_file"
           done
           test ! -e production-facade/usr/bin/.aos-unwrapped
           test ! -e production-facade/usr/bin/.apm-unwrapped

@@ -10,14 +10,14 @@ use aos_core::output::Printer;
 use super::git::{commit_registry_paths, current_git_head, git, refresh_registry_object_store};
 use super::native_artifacts::publish_native_artifacts;
 use super::provenance::resolve_package_provenance_signer;
-use super::publication_inventory::evaluate_package;
+use super::publication_inventory::{evaluate_package, publication_group};
 use super::publish::{
     RegistryPublishLock, ensure_writable_registry_clone, publish_canonical_named_output,
     publish_to_registry_directory,
 };
 use super::signing::resolve_producer_signing_key;
 use super::store_paths::{
-    StoreQueries, first_letter, resolve_publish_platform, validate_store_path_release_policy,
+    StoreQueries, resolve_publish_platform, validate_store_path_release_policy,
 };
 use crate::config::ApmConfig;
 use crate::registry::store;
@@ -70,12 +70,12 @@ pub(super) async fn publish_evaluated_package(
     let info = store.introspect(store_path)?;
     validate_store_path_release_policy(&store, &info)?;
     let platform = resolve_publish_platform(&info.path, platform_override)?;
-    let (_inventory, package) = evaluate_package(&info.path, &platform)?;
+    let (inventory, package) = evaluate_package(&info.path, &platform)?;
+    let packages = publication_group(&inventory, &package)?;
     let publication = package
         .publication
         .as_ref()
         .context("selected evaluated package lacks publication metadata")?;
-    let maintainer = publication.maintainers.join(", ");
 
     let signing_key =
         resolve_producer_signing_key(config, registry_dir, registry_name, key, key_id)?;
@@ -86,65 +86,77 @@ pub(super) async fn publish_evaluated_package(
     require_clean_publication_tree(registry_dir)?;
     let internal_printer = Printer::new(0, true, false);
     let publication_result = async {
-        publish_to_registry_directory(
-            config,
-            registry_dir,
-            registry_name,
-            &info.path,
-            Some(&package.name),
-            Some(&publication.version),
-            Some(&platform),
-            Some(&publication.description),
-            publication.homepage.as_deref(),
-            Some(&publication.license_expression),
-            Some(&maintainer),
-            false,
-            previous,
-            Some(&package.derivation),
-            &[],
-            &[],
-            &[],
-            &[],
-            &[],
-            bless,
-            no_ca,
-            true,
-            None,
-            None,
-            None,
-            Some(&mut provenance_signer),
-            &store,
-            &internal_printer,
-        )
-        .await?;
-
-        for output in package.outputs.iter().filter(|output| output.name != "out") {
-            publish_canonical_named_output(
+        for package in &packages {
+            let publication = package
+                .publication
+                .as_ref()
+                .context("subpackage lacks evaluated publication metadata")?;
+            let maintainer = publication.maintainers.join(", ");
+            let primary = package
+                .outputs
+                .iter()
+                .find(|output| output.name == "out")
+                .context("subpackage lacks a primary payload")?;
+            publish_to_registry_directory(
+                config,
                 registry_dir,
                 registry_name,
-                &output.store_path,
-                &package.name,
-                &publication.version,
-                &platform,
-                &output.name,
+                &primary.store_path,
+                Some(&package.name),
+                Some(&publication.version),
+                Some(&platform),
+                Some(&publication.description),
+                publication.homepage.as_deref(),
+                Some(&publication.license_expression),
+                Some(&maintainer),
+                false,
+                previous,
+                Some(&package.derivation),
+                &[],
+                &[],
+                &[],
+                &[],
+                &[],
+                bless,
+                no_ca,
+                true,
+                None,
+                None,
+                None,
+                Some(&mut provenance_signer),
                 &store,
                 &internal_printer,
-            )?;
-        }
-
-        publish_native_artifacts(registry_dir, &package, &platform, &store, &internal_printer)?;
-        for output in &package.outputs {
-            super::output_evidence::publish_output_evidence(
-                registry_dir,
-                registry_name,
-                &package.name,
-                &publication.version,
-                &platform,
-                &output.name,
-                &mut provenance_signer,
-                &store,
             )
             .await?;
+
+            for output in package.outputs.iter().filter(|output| output.name != "out") {
+                publish_canonical_named_output(
+                    registry_dir,
+                    registry_name,
+                    &output.store_path,
+                    &package.name,
+                    &publication.version,
+                    &platform,
+                    &output.name,
+                    &store,
+                    &internal_printer,
+                )?;
+            }
+
+            publish_native_artifacts(registry_dir, &package, &platform, &store, &internal_printer)?;
+            for output in &package.outputs {
+                super::output_evidence::publish_output_evidence(
+                    registry_dir,
+                    registry_name,
+                    &package.name,
+                    &publication.version,
+                    &platform,
+                    &output.name,
+                    &mut provenance_signer,
+                    &store,
+                )
+                .await?;
+            }
         }
 
         Ok::<(), anyhow::Error>(())
@@ -155,13 +167,8 @@ pub(super) async fn publish_evaluated_package(
         return Err(error.context("publishing the evaluated package transaction"));
     }
 
-    let letter = first_letter(&package.name);
-    let package_file = registry_dir
-        .join("packages")
-        .join(letter)
-        .join(format!("{}.toml", package.name));
     let staged_paths = [
-        package_file,
+        registry_dir.join("packages"),
         registry_dir.join(store::STORE_DIR),
         registry_dir.join("provenance"),
         registry_dir.join("transparency"),
@@ -191,6 +198,7 @@ pub(super) async fn publish_evaluated_package(
         "platform": platform,
         "store_path": info.path,
         "outputs": package.outputs,
+        "subpackages": publication.output_packages,
         "deployment": package.deployment,
         "module_documentation": package.module_documentation,
         "committed": true,

@@ -281,8 +281,8 @@ async fn run(cli: &Cli, printer: &Printer) -> Result<()> {
     validate_container_runtime(&cli.command)?;
     // Shell completions can be generated without a Nix installation or
     // project root, so handle them before constructing the NixRunner.
-    if let Commands::Completions { shell } = &cli.command {
-        commands::completions::run(*shell);
+    if let Commands::Completions { shell, command } = &cli.command {
+        commands::completions::run(*shell, *command);
         return Ok(());
     }
 

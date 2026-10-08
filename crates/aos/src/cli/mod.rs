@@ -317,6 +317,9 @@ pub enum Commands {
     Completions {
         /// Shell to generate completions for
         shell: clap_complete::Shell,
+        /// Command whose parser supplies completions
+        #[arg(long, value_enum, default_value_t)]
+        command: crate::commands::completions::CompletionCommand,
     },
     /// Start the HTTP binary cache server
     Serve {
