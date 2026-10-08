@@ -104,6 +104,10 @@ domain owning the state. Generic journal replay returns data and durability
 outcomes, not domain authority. Moving codec primitives into core must not
 move role-specific validation or canonical signing domains there.
 
+Linux owns the unchanged bounded optional credential reader and its retained
+native read DATA; role-specific decoding, key separation, and startup admission
+remain with their original owners.
+
 Agent wire values needed by protocol consumers remain in a portable module
 of `aos-sandbox-agent`; Linux executable/bootstrap/effect code moves to Guest
 or application ownership. Protocol crates must not depend on a concrete agent

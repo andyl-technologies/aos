@@ -9,11 +9,11 @@ use std::array::TryFromSliceError;
 use std::path::Path;
 
 use aos_sandbox::policy_compiler::{PinnedSourceHoldReadbackSignerV1, SourceHoldReadbackErrorV1};
-use aos_sandbox::tpm_nv_custody::credential::{FixedRoleCredentialReadV1, FixedRoleCredentialReadViewV1};
+use aos_sandbox_linux::credential::{FixedRoleCredentialReadV1, FixedRoleCredentialReadViewV1};
 use ed25519_dalek::SigningKey;
 use zeroize::Zeroizing;
 
-use crate::fixed_role_credential::read_optional_fixed_role_credential_v1;
+use aos_sandbox_linux::credential::read_optional_fixed_role_credential_v1;
 
 const SEED_NAME: &str = "source-hold-signing-seed";
 const PIN_NAME: &str = "source-hold-public-key";

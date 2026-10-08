@@ -64,7 +64,6 @@ pub mod nix_floor_provisioning;
 #[cfg(feature = "online-nix")]
 pub mod nix_service;
 mod error;
-mod fixed_role_credential;
 mod tpm_nv_custody;
 pub use tpm_nv_custody::{RuntimeDeploymentCanaryRunErrorV2, run_runtime_deployment_canary_once_v2};
 mod handoff;

@@ -81,7 +81,7 @@ use crate::controller_service::ownership::ControllerOwnershipConfigurationV1;
 use crate::ownership_clock::sample_ownership_clock;
 use crate::controller_service::plan_signer::ControllerBrokerPlanSignerV1;
 use crate::controller_service::publication::{ControllerHostPublication, ControllerHostPublicationError};
-use crate::fixed_role_credential::{
+use aos_sandbox_linux::credential::{
     CredentialOwnerPolicyV1, read_optional_bounded_role_credential_v1,
 };
 use aos_sandbox::cache_residency::{

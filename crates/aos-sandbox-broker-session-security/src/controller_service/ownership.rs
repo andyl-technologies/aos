@@ -18,7 +18,7 @@ use aos_sandbox_core::{
 use aos_sandbox_ownership_protocol::protocol::session_client::OwnershipSessionTransportError;
 use zeroize::Zeroizing;
 
-use crate::fixed_role_credential::{
+use aos_sandbox_linux::credential::{
     CredentialOwnerPolicyV1, read_optional_bounded_role_credential_v1,
 };
 use crate::ownership_authority_client::LocalOwnershipAuthorityClientV1;

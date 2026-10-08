@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use rustix::fs::{CWD, Mode, OFlags, StatVfsMountFlags, fstatvfs, openat};
 use sha2::{Digest as _, Sha256};
 
-use crate::tpm_nv_custody::credential::{
+use aos_sandbox_linux::credential::{
     CredentialOwnerPolicyV1, read_optional_bounded_role_credential_v1,
 };
 

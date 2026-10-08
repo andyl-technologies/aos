@@ -24,7 +24,7 @@ use ed25519_dalek::{Signature, VerifyingKey};
 use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
-use crate::fixed_role_credential::{
+use aos_sandbox_linux::credential::{
     CredentialOwnerPolicyV1, FixedRoleCredentialErrorV1,
     read_optional_bounded_role_credential_v1,
 };

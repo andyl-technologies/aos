@@ -22,7 +22,7 @@ use rustix::fs::{CWD, Mode, OFlags, openat};
 use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
-use crate::fixed_role_credential::read_optional_fixed_role_credential_v1;
+use aos_sandbox_linux::credential::read_optional_fixed_role_credential_v1;
 
 const CREDENTIAL_NAME: &str = "broker-plan-signing-key";
 const POLICY_CREDENTIAL_NAME: &str = "broker-plan-policy.cbor";

@@ -14,7 +14,7 @@ use aos_sandbox::{
 };
 use zeroize::Zeroizing;
 
-use crate::fixed_role_credential::FixedRoleCredentialErrorV1;
+use aos_sandbox_linux::credential::FixedRoleCredentialErrorV1;
 use crate::recovery::{FloorErrorV1, MeasuredHelperImageV1};
 
 mod provisioning;

@@ -28,7 +28,7 @@ use zeroize::Zeroizing;
 
 use crate::journal::RecordNamespace;
 use crate::public_api_session::RuntimeDeploymentCredentialCustodyV2;
-use crate::tpm_nv_custody::credential::{
+use aos_sandbox_linux::credential::{
     CredentialOwnerPolicyV1, read_optional_bounded_role_credential_v1,
 };
 use crate::tpm_nv_custody::{NvCustodyEndpointV1, NvCustodyErrorV1, canonical_nv_name_v1};

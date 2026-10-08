@@ -8,7 +8,7 @@ use std::path::Path;
 
 use aos_sandbox::guest_root_publication::GuestRootTemplatePinsV1;
 
-use crate::fixed_role_credential::read_optional_fixed_role_credential_v1;
+use aos_sandbox_linux::credential::read_optional_fixed_role_credential_v1;
 
 const PACKAGE_BINDING: &str = "guest-root-package-binding-v1";
 const ROOT_TREE_DIGEST: &str = "guest-root-tree-digest-v1";

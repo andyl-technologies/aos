@@ -2,17 +2,14 @@
 //!
 //! Only the deployment namespace-27 head is supported here. These projections
 //! neither open a TPM nor admit a provisioned floor, authenticate currentness,
-//! construct startup custody or enable an effect. The bounded credential
-//! reader is shared downward by existing role-specific admission adapters.
+//! construct startup custody or enable an effect. Bounded credential file
+//! reading belongs to Linux mechanics; role-specific admission keeps its owners.
 
 use std::collections::BTreeMap;
 
 use sha2::{Digest as _, Sha256};
 
 use crate::journal::RecordNamespace;
-
-#[doc(hidden)]
-pub mod credential;
 
 #[doc(hidden)]
 pub mod entropy;

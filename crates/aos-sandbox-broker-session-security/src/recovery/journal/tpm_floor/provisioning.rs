@@ -20,7 +20,7 @@ use zeroize::Zeroizing;
 
 use super::format::{FloorEndpointV1, PROFILE_BYTES};
 use super::{FloorErrorV1, FloorProfileV1};
-use crate::fixed_role_credential::{
+use aos_sandbox_linux::credential::{
     CredentialOwnerPolicyV1, read_optional_bounded_role_credential_v1,
 };
 

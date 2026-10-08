@@ -13,7 +13,7 @@ use aos_sandbox::policy_compiler::PinnedControllerHoldSignerV1;
 use ed25519_dalek::SigningKey;
 use zeroize::Zeroizing;
 
-use crate::fixed_role_credential::read_optional_fixed_role_credential_v1;
+use aos_sandbox_linux::credential::read_optional_fixed_role_credential_v1;
 
 const SEED_NAME: &str = "controller-hold-signing-key";
 const PIN_NAME: &str = "controller-hold-public-key";

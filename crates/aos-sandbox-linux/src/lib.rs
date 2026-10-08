@@ -16,6 +16,7 @@
 //! - [`fixed_spawn`] executes one absolute program with an exact inherited descriptor table;
 //! - [`path`] resolves descendants beneath a pre-opened directory;
 //! - [`cgroup`] checks exact and hinted descendant membership against retained cgroup-v2 anchors;
+//! - [`credential`] retains bounded optional file-read DATA without role authority;
 //! - [`process`] executes fixed absolute programs with bounded output and time;
 //! - [`mount`] constructs, attributes, idmaps, and attaches detached mounts;
 //! - [`inventory`] lists mounts and reads stable mount metadata;
@@ -30,6 +31,7 @@
 
 pub mod boot;
 pub mod cgroup;
+pub mod credential;
 pub mod fixed_spawn;
 pub mod fuse_mount;
 pub mod fuse_worker_image;

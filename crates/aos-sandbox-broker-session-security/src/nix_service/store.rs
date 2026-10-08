@@ -41,7 +41,7 @@ use aos_sandbox_protocol::nix_build::store_projection::{
     NixStoreMemberKindV2, NixStoreMemberV2, NixStoreProjectionErrorV2, project_store_members_v2,
     project_store_output_members_v2,
 };
-use crate::fixed_role_credential::{
+use aos_sandbox_linux::credential::{
     CredentialOwnerPolicyV1, FixedRoleCredentialErrorV1, read_optional_bounded_role_credential_v1,
 };
 use crate::handshake::{DormantAuthenticatedBrokerSessionV1, OnlinePostflightV1};
