@@ -18,7 +18,7 @@ use aos_sandbox_guest::guest_root_marker::read_guest_root_marker_v1;
 use aos_sandbox_agent::guest_root_publication::{
     CONCRETE_GUEST_FEATURE_MASK_V1, GuestRootPublicationProofV1,
 };
-use aos_sandbox_guest::guest_root_tree::compare_guest_root_template_v1;
+use aos_sandbox_guest_root_tree::guest_root_tree::compare_guest_root_template_v1;
 use aos_sandbox_protocol::{
     MAXIMUM_RESPONSE_BYTES, ValidatedStorageWorkspace, decode_storage_resource_inventory_response,
 };

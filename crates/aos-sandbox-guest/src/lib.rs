@@ -5,13 +5,13 @@
 //! [`GuestProcessEffectsV1`] owns the root-protected operation ledger and
 //! process handles. The guest executable links this crate with the portable
 //! agent transport, keeping the agent-to-sandbox dependency graph acyclic.
-//! Root construction, physical root measurement, sealed bootstrap, and the
+//! Root construction, sealed bootstrap, and the
 //! OpenSSH gate implementation also live here; `aos-sandbox-agent` owns their
 //! portable records and verification contracts without Linux dependencies.
 //!
-//! The Controller's passive specimen collector temporarily imports tree
-//! measurement here. That observational edge supplies no mount or exec permit;
-//! extracting the shared integration domain remains a separate change.
+//! `aos-sandbox-guest-root-tree` independently owns nonauthorizing physical
+//! template and complete-tree measurement. Guest root effects consume that
+//! owner; passive Controller collectors do not link these execution effects.
 
 pub mod dormant_guest_agent;
 pub mod dormant_package;
@@ -19,7 +19,6 @@ pub mod dormant_root_builder;
 pub mod guest_root_label;
 pub mod guest_root_marker;
 pub mod guest_root_populate;
-pub mod guest_root_tree;
 pub mod openssh_gate_linux;
 pub mod protected_entry;
 mod runtime_argument_observation;

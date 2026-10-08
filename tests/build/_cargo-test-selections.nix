@@ -236,6 +236,7 @@ in
   assert lib.all launcherEnvironmentRetained nativeLauncherEnvironments;
   assert lib.any (lib.hasInfix "-p aos-sandbox-network") nativeAos.passthru.testTargets.cargoBuildCommands;
   assert lib.any (lib.hasInfix "-p aos-sandbox-cache-signer") nativeAos.passthru.testTargets.cargoBuildCommands;
+  assert lib.any (lib.hasInfix "-p aos-sandbox-guest-root-tree") nativeAos.passthru.testTargets.cargoBuildCommands;
   assert lib.any (lib.hasInfix "-p aos-sandbox-source-signer") nativeAos.passthru.testTargets.cargoBuildCommands;
   assert lib.any (lib.hasInfix "-p aos-sandbox-network") networkPackage.cargoArtifacts.cargoBuildCommands;
   assert lib.hasInfix "-p aos-sandbox-network" networkPackage.cargoTestFlags;

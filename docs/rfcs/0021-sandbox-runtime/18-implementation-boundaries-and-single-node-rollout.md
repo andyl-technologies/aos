@@ -96,6 +96,7 @@ consumers; a helper or individual protocol phase does not warrant a crate.
 | `aos-sandbox-protocol` and role-specific protocol crates | Canonical local messages, signatures, decoded evidence, pure semantic validation | Keys, FD custody, runtime implementations, listeners |
 | `aos-sandbox-journal` (**new**) | Generic framed transactions, locking, durability, replay, bounded capacity mechanics, compaction | Domain namespaces/transitions, signers, Controller plans, arbitrary authority issuance |
 | `aos-sandbox-linux` | Audited UAPI, owned descriptors, fixed process/namespace/syscall mechanics | Product policy, wire authority, application assembly |
+| `aos-sandbox-guest-root-tree` | Existing nonauthorizing Guest template comparison, offline digest and complete descriptor-relative tree capture with retained native causes | Guest execution/population/label/publication effects, protected root admission, writer exclusion, resource and readiness authority |
 | `aos-systemd` | Typed manager transport and unit/cgroup observations | Sandbox policy and daemon orchestration |
 
 Domain namespaces, typed record validation, protected writer admission,

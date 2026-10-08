@@ -6,15 +6,14 @@
 //! fixed network child still require the genuine floor-issued Prepared permit,
 //! which is unavailable until the separately reviewed Host055 physical join.
 //!
-//! The Controller-to-Guest dependency is a transitional observational edge:
-//! this collector reads physical root measurements, never Guest effect permits.
-//! A later integration-domain extraction can relocate the shared observation
-//! without putting Linux behavior back into the portable Agent wire crate.
+//! The shared Guest root-tree owner supplies only physical measurement DATA.
+//! This collector retains its original startup, names, descriptors and pin;
+//! it never imports Guest execution effects or obtains a Prepared permit.
 
 use std::os::unix::fs::MetadataExt as _;
 use std::path::Path;
 
-use aos_sandbox_guest::guest_root_tree::compare_guest_root_template_v1;
+use aos_sandbox_guest_root_tree::guest_root_tree::compare_guest_root_template_v1;
 use aos_sandbox_linux::inventory::MountId;
 use aos_sandbox_linux::path::{BeneathRoot, ResolveOptions, ResolvedPath};
 use rustix::fs::{Mode, OFlags, StatVfsMountFlags, fstat, fstatvfs, open};

@@ -848,7 +848,7 @@ dependencies = [
  "aos-sandbox-agent",
  "aos-sandbox-broker-session-protocol",
  "aos-sandbox-core",
- "aos-sandbox-guest",
+ "aos-sandbox-guest-root-tree",
  "aos-sandbox-journal",
  "aos-sandbox-linux",
  "aos-sandbox-ownership",
@@ -1046,6 +1046,7 @@ version = "0.1.0"
 dependencies = [
  "aos-sandbox-agent",
  "aos-sandbox-core",
+ "aos-sandbox-guest-root-tree",
  "aos-sandbox-linux",
  "ed25519-dalek",
  "nix",
@@ -1057,6 +1058,17 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "zeroize",
+]
+
+[[package]]
+name = "aos-sandbox-guest-root-tree"
+version = "0.1.0"
+dependencies = [
+ "aos-sandbox-linux",
+ "rustix 1.1.4",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -1388,6 +1400,7 @@ dependencies = [
  "aos-sandbox-broker",
  "aos-sandbox-core",
  "aos-sandbox-guest",
+ "aos-sandbox-guest-root-tree",
  "aos-sandbox-journal",
  "aos-sandbox-linux",
  "aos-sandbox-mount",

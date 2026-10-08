@@ -47,6 +47,7 @@ aos-filesystem-view-core.workspace = true
 aos-proto.workspace = true
 aos-sandbox-agent.workspace = true
 aos-sandbox-guest.workspace = true
+aos-sandbox-guest-root-tree.workspace = true
 aos-sandbox.workspace = true
 aos-sandbox-broker.workspace = true
 aos-sandbox-core.workspace = true

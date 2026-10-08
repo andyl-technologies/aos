@@ -12,7 +12,7 @@ use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _, symlink};
 use std::path::Path;
 
-use crate::guest_root_tree::compare_guest_root_template_v1;
+use aos_sandbox_guest_root_tree::guest_root_tree::compare_guest_root_template_v1;
 
 const O_NOFOLLOW: i32 = 0o400_000;
 const O_CLOEXEC: i32 = 0o2_000_000;
