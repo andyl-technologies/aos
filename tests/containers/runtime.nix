@@ -335,6 +335,8 @@ in
           gzip -dc ${productionFacade}/blob \
             | tar --same-permissions --no-same-owner -xf - -C production-facade
 
+          test "$(stat -c %a production-metadata/run)" = 755 \
+            || fail "production /run is not traversable by service accounts"
           test "$(stat -c %a production-metadata/root)" = 700 \
             || fail "production HOME is not private"
           test "$(stat -c %a production-metadata/tmp)" = 1777 \
