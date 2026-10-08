@@ -242,13 +242,13 @@ mod tests {
     use std::io::Cursor;
 
     use super::*;
-    use crate::framing::read_frame;
+    use crate::framing::read_frame_retained;
 
     fn decode_frames(frames: &[Vec<u8>]) -> Vec<Frame> {
         frames
             .iter()
             .map(|bytes| {
-                read_frame(&mut Cursor::new(bytes), 0, 1024)
+                read_frame_retained(&mut Cursor::new(bytes), 0, 1024, None)
                     .unwrap()
                     .unwrap()
                     .0
