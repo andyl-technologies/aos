@@ -16,7 +16,7 @@ use aos_release::inventory::DerivationPackage;
 use super::metadata::record_native_artifacts;
 use super::sha256_hex;
 use super::store_paths::{
-    first_letter, introspect_store_path, validate_store_path_release_policy, write_store_files,
+    StoreQueries, first_letter, validate_store_path_release_policy, write_store_files,
 };
 use crate::deployment::model::Envelope;
 use crate::types::NativeArtifactMeta;
@@ -30,6 +30,7 @@ pub(super) fn publish_native_artifacts(
     directory: &Path,
     package: &DerivationPackage,
     platform: &str,
+    store: &StoreQueries,
     printer: &Printer,
 ) -> Result<()> {
     let version = &package
@@ -86,6 +87,7 @@ pub(super) fn publish_native_artifacts(
             .qualification
             .as_ref()
             .map(|artifact| artifact.store_path.as_str()),
+        store,
         printer,
     )?;
     for output in &package.outputs {
@@ -108,6 +110,7 @@ pub(super) fn publish_native_artifacts(
                     .qualification
                     .as_ref()
                     .map(|artifact| artifact.store_path.as_str()),
+                store,
                 printer,
             )?;
         }
@@ -148,10 +151,11 @@ pub(crate) fn publish_native_documents(
     deployment_path: &str,
     documentation_path: Option<&str>,
     qualification_path: Option<&str>,
+    store: &StoreQueries,
     printer: &Printer,
 ) -> Result<()> {
     let (deployment_meta, deployment_bytes) =
-        inspect_native_artifact(deployment_path, "deployment.json")?;
+        inspect_native_artifact(store, deployment_path, "deployment.json")?;
     let envelope = Envelope::decode(&deployment_bytes)?;
     ensure!(
         envelope.package.name == name
@@ -198,7 +202,7 @@ pub(crate) fn publish_native_documents(
     roots.push(deployment_path.to_owned());
 
     let documentation = if let Some(artifact) = documentation_path {
-        let (metadata, bytes) = inspect_native_artifact(artifact, "options.json")?;
+        let (metadata, bytes) = inspect_native_artifact(store, artifact, "options.json")?;
         let reference = RuntimeDocument::from_json(&bytes)?;
         reference.verify_package_identity(name, version, platform)?;
         verify_documented_resolution(&envelope, &reference)?;
@@ -212,7 +216,7 @@ pub(crate) fn publish_native_documents(
         None
     };
     let qualification = if let Some(artifact) = qualification_path {
-        let (metadata, bytes) = inspect_native_artifact(artifact, "qualification.json")?;
+        let (metadata, bytes) = inspect_native_artifact(store, artifact, "qualification.json")?;
         let document = aos_release::qualification_document::QualificationDocument::decode(
             &bytes, name, version,
         )?;
@@ -240,10 +244,12 @@ pub(crate) fn publish_native_documents(
     };
     roots.sort();
     roots.dedup();
+    let root_paths = roots.iter().map(String::as_str).collect::<Vec<_>>();
+    store.load_closures(&root_paths)?;
     for root in roots {
-        let info = introspect_store_path(&root)?;
-        validate_store_path_release_policy(&info)?;
-        write_store_files(directory, &root, false, false, printer)?;
+        let info = store.introspect(&root)?;
+        validate_store_path_release_policy(store, &info)?;
+        write_store_files(store, directory, &root, false, false, printer)?;
     }
 
     let path = directory
@@ -359,11 +365,12 @@ fn verify_documented_resolution(envelope: &Envelope, document: &RuntimeDocument)
 }
 
 pub(super) fn inspect_native_artifact(
+    store: &StoreQueries,
     store_path: &str,
     filename: &str,
 ) -> Result<(NativeArtifactMeta, Vec<u8>)> {
-    let info = introspect_store_path(store_path)?;
-    validate_store_path_release_policy(&info)?;
+    let info = store.introspect(store_path)?;
+    validate_store_path_release_policy(store, &info)?;
     let path = Path::new(store_path).join(filename);
     let metadata =
         fs::symlink_metadata(&path).with_context(|| format!("inspecting {}", path.display()))?;
@@ -606,7 +613,9 @@ mod publication_tests {
             let documentation_path = publication["documentation"].as_str().map(Path::new);
             let qualification_path = publication["qualification"].as_str().map(Path::new);
             let envelope = Envelope::decode(&fs::read(envelope_path).unwrap()).unwrap();
-            let runtime = introspect_store_path(&envelope.package.path).unwrap();
+            let runtime = StoreQueries::new()
+                .introspect(&envelope.package.path)
+                .unwrap();
             let encoded = build_package_toml(
                 "",
                 &envelope.package.name,
@@ -640,6 +649,7 @@ mod publication_tests {
                 envelope_path.parent().unwrap().to_str().unwrap(),
                 documentation_path.map(|path| path.parent().unwrap().to_str().unwrap()),
                 qualification_path.map(|path| path.parent().unwrap().to_str().unwrap()),
+                &StoreQueries::new(),
                 &Printer::new(0, true, false),
             )
             .unwrap();

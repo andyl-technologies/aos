@@ -17,8 +17,7 @@ use super::publish::{
 };
 use super::signing::resolve_producer_signing_key;
 use super::store_paths::{
-    first_letter, introspect_store_path, resolve_publish_platform,
-    validate_store_path_release_policy,
+    StoreQueries, first_letter, resolve_publish_platform, validate_store_path_release_policy,
 };
 use crate::config::ApmConfig;
 use crate::registry::store;
@@ -67,8 +66,9 @@ pub(super) async fn publish_evaluated_package(
 
     validate_registry_name(registry_name)?;
     ensure_writable_registry_clone(registry_name, registry_dir)?;
-    let info = introspect_store_path(store_path)?;
-    validate_store_path_release_policy(&info)?;
+    let store = StoreQueries::new();
+    let info = store.introspect(store_path)?;
+    validate_store_path_release_policy(&store, &info)?;
     let platform = resolve_publish_platform(&info.path, platform_override)?;
     let (_inventory, package) = evaluate_package(&info.path, &platform)?;
     let publication = package
@@ -113,6 +113,7 @@ pub(super) async fn publish_evaluated_package(
             None,
             None,
             Some(&mut provenance_signer),
+            &store,
             &internal_printer,
         )
         .await?;
@@ -126,11 +127,12 @@ pub(super) async fn publish_evaluated_package(
                 &publication.version,
                 &platform,
                 &output.name,
+                &store,
                 &internal_printer,
             )?;
         }
 
-        publish_native_artifacts(registry_dir, &package, &platform, &internal_printer)?;
+        publish_native_artifacts(registry_dir, &package, &platform, &store, &internal_printer)?;
         for output in &package.outputs {
             super::output_evidence::publish_output_evidence(
                 registry_dir,
@@ -140,6 +142,7 @@ pub(super) async fn publish_evaluated_package(
                 &platform,
                 &output.name,
                 &mut provenance_signer,
+                &store,
             )
             .await?;
         }
