@@ -50,6 +50,9 @@ use aos_sandbox_protocol::host_execution_no_apply::HostNoApplySettlementPhaseV2;
 use aos_sandbox_protocol::host_output::HostOutputReservationLocatorV1;
 use buffa::Message as _;
 
+#[cfg(all(test, target_os = "linux"))]
+mod method35_custody_tests;
+
 /// Reports a fail-closed Host execution admission or readback failure.
 #[derive(Debug, thiserror::Error)]
 pub enum HostExecutionHandoffErrorV1 {
