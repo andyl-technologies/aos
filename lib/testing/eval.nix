@@ -47,6 +47,7 @@ in {
     ../../tests/effects/build-invariants.nix
     ../../tests/effects/stages.nix
     ../../tests/effects/boot-consumers.nix
+    ../../tests/effects/init-system.nix
     ../../tests/effects/systemd-resources.nix
     ../../tests/effects/configuration-policy.nix
   ];

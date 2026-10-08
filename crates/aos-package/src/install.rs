@@ -667,19 +667,34 @@ async fn run_inner(
 
     // Atomic switch to the new generation.
     native.commit(&profile, &new_gen)?;
+    let committed =
+        crate::profile::deployment::committed_generation(&profile.path, new_gen.number)?;
+    let startup_pending = &committed.deferred;
+
     printer.step(7, 7, "Done!");
     let verb = if reinstall {
         "Reinstalled"
     } else {
         "Installed"
     };
-    printer.success(&format!(
-        "{verb} {} package(s) in generation {}.",
-        packages.len(),
-        new_gen.number,
-    ));
+    let completion = if startup_pending.is_empty() {
+        format!(
+            "{verb} {} package(s) in generation {}.",
+            packages.len(),
+            new_gen.number
+        )
+    } else {
+        format!(
+            "{verb} files for {} package(s) in generation {}; startup activation pending for {} effect(s).",
+            packages.len(),
+            new_gen.number,
+            startup_pending.len(),
+        )
+    };
+    printer.success(&completion);
+
     if json_mode {
-        printer.json(&install_result_json(
+        let mut result = install_result_json(
             if reinstall {
                 "reinstalled"
             } else {
@@ -695,7 +710,9 @@ async fn run_inner(
             downloaded_count,
             imported_count,
             Some(new_gen.number),
-        ));
+        );
+        result["startup_pending"] = serde_json::json!(startup_pending);
+        printer.json(&result);
     }
 
     Ok(())

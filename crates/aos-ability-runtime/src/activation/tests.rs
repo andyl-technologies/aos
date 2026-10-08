@@ -793,3 +793,331 @@ fn declarative_retirement_is_repeatable_but_unknown_identities_are_rejected() {
             .is_err()
     );
 }
+
+fn phased_graph() -> (CheckedModuleGraph, String, String, String, String) {
+    let fixture = graph(Some("ready"), "instance");
+    let template = fixture.document()["nodes"]
+        .as_object()
+        .unwrap()
+        .values()
+        .next()
+        .unwrap();
+    let identity = |name: &str| vec!["test".to_owned(), "phase".to_owned(), name.to_owned()];
+    let key = |name: &str| identity_key(&identity(name)).unwrap();
+    let reference = |name: &str| json!({"_type":"aos-effect-output", "identity":identity(name), "output":"value", "schema":{"kind":"string"}});
+    let mut nodes = serde_json::Map::new();
+    let order = ["early-startup", "installation", "consumer", "composition"];
+    for name in order {
+        let mut node = template.clone();
+        node["identity"] = json!(identity(name));
+        node["phase"] = json!(if name == "early-startup" {
+            "startup"
+        } else {
+            "installation"
+        });
+        node["dependencies"] = json!([]);
+        if name == "installation" {
+            node["lifetime"] = json!("transaction");
+        }
+        if name == "consumer" {
+            node["input"]["value"] = reference("early-startup");
+            node["dependencies"] = json!([key("early-startup")]);
+        }
+        if name == "composition" {
+            node["handler"] = json!({"kind":"composition", "children":[key("early-startup"), key("installation")], "exports":{"value":reference("installation")}});
+            node["lifetime"] = json!("transaction");
+            node["dependencies"] = json!([key("early-startup"), key("installation")]);
+        }
+        let mut semantic = node.clone();
+        for field in ["revision", "dependencies", "inputs"] {
+            semantic.as_object_mut().unwrap().remove(field);
+        }
+        node["revision"] = Sha256Digest::of_bytes(serde_json::to_vec(&semantic).unwrap())
+            .hex()
+            .into();
+        nodes.insert(key(name), node);
+    }
+    let checked = CheckedModuleGraph::decode(
+        &serde_json::to_vec(
+            &json!({"schema":"aos.activation.graph", "nodes":nodes, "order":order.map(key)}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    (
+        checked,
+        key("early-startup"),
+        key("installation"),
+        key("consumer"),
+        key("composition"),
+    )
+}
+
+#[test]
+fn installation_receipts_defer_dependencies_and_compositions_across_restarts() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("journal");
+    let (desired, startup, installation, consumer, composition) = phased_graph();
+    let cancellation = CancellationToken::default();
+    let mut host = Host::default();
+    let mut activation = Activation::open(&path, JournalLimits::default()).unwrap();
+    let first = activation
+        .activate_once_with_policy(
+            "first",
+            &desired,
+            &BTreeSet::new(),
+            ExecutionPolicy::Installation,
+            &mut host,
+            &cancellation,
+        )
+        .unwrap();
+    assert_eq!(
+        first.outputs.keys().cloned().collect::<Vec<_>>(),
+        vec![installation.clone()]
+    );
+    assert_eq!(
+        first.deferred,
+        BTreeSet::from([startup.clone(), consumer.clone(), composition.clone()])
+    );
+    assert_eq!(host.mutations, vec![Action::Apply]);
+    assert!(host.resources.contains_key(&installation));
+    drop(activation);
+
+    let inspection = inspect(&path, JournalLimits::default()).unwrap();
+    assert!(inspection.transaction.is_none());
+    let receipt = inspection.completed.unwrap();
+    assert_eq!(receipt.policy, ExecutionPolicy::Installation);
+    assert_eq!(receipt.deferred, first.deferred);
+
+    let mut activation = Activation::open(&path, JournalLimits::default()).unwrap();
+    let replayed = activation
+        .activate_once_with_policy(
+            "first",
+            &desired,
+            &BTreeSet::new(),
+            ExecutionPolicy::Installation,
+            &mut host,
+            &cancellation,
+        )
+        .unwrap();
+    assert_eq!(replayed.outputs, first.outputs);
+    assert_eq!(host.mutations.len(), 1);
+    let second = activation
+        .activate_once_with_policy(
+            "second",
+            &desired,
+            &BTreeSet::new(),
+            ExecutionPolicy::Installation,
+            &mut host,
+            &cancellation,
+        )
+        .unwrap();
+    assert_eq!(second.deferred, first.deferred);
+    assert_eq!(
+        host.mutations.len(),
+        2,
+        "each installation transaction executes its one-shot"
+    );
+    drop(activation);
+
+    let mut activation = Activation::open(&path, JournalLimits::default()).unwrap();
+    let complete = activation
+        .activate_once_with_policy(
+            "startup",
+            &desired,
+            &BTreeSet::new(),
+            ExecutionPolicy::Complete,
+            &mut host,
+            &cancellation,
+        )
+        .unwrap();
+    assert!(complete.deferred.is_empty());
+    assert_eq!(complete.outputs.len(), 4);
+    assert_eq!(complete.outputs[&consumer], json!({"value":"ready"}));
+    assert_eq!(
+        host.mutations
+            .iter()
+            .filter(|action| **action == Action::Apply)
+            .count(),
+        4
+    );
+    assert!(!host.resources.contains_key(&installation));
+    drop(activation);
+    assert_eq!(
+        inspect(&path, JournalLimits::default())
+            .unwrap()
+            .records
+            .iter()
+            .filter(|record| record.event == "reused-installation")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn installation_recovery_skips_earlier_deferred_nodes_and_preserves_startup_removal() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("journal");
+    let (desired, startup, _, consumer, _) = phased_graph();
+    let cancellation = CancellationToken::default();
+    let mut host = Host {
+        halt_boundary: Some(Boundary::OutcomeDurable),
+        ..Host::default()
+    };
+    let mut activation = Activation::open(&path, JournalLimits::default()).unwrap();
+    assert!(
+        activation
+            .activate_once_with_policy(
+                "interrupted",
+                &desired,
+                &BTreeSet::new(),
+                ExecutionPolicy::Installation,
+                &mut host,
+                &cancellation
+            )
+            .is_err()
+    );
+    drop(activation);
+
+    host.halt_boundary = None;
+    let mut activation = Activation::open(&path, JournalLimits::default()).unwrap();
+    let outcome = activation
+        .activate_once_with_policy(
+            "interrupted",
+            &desired,
+            &BTreeSet::new(),
+            ExecutionPolicy::Installation,
+            &mut host,
+            &cancellation,
+        )
+        .unwrap();
+    assert_eq!(outcome.outputs.len(), 1);
+    assert_eq!(host.mutations.len(), 1);
+    activation
+        .activate_once(
+            "startup",
+            &desired,
+            &BTreeSet::new(),
+            &mut host,
+            &cancellation,
+        )
+        .unwrap();
+    assert!(host.resources.contains_key(&startup));
+
+    let empty = graph(None, "instance");
+    activation
+        .activate_once_with_policy(
+            "offline-removal",
+            &empty,
+            &BTreeSet::new(),
+            ExecutionPolicy::Installation,
+            &mut host,
+            &cancellation,
+        )
+        .unwrap();
+    assert!(host.resources.contains_key(&startup));
+    assert!(host.resources.contains_key(&consumer));
+    activation
+        .activate_once(
+            "online-removal",
+            &empty,
+            &BTreeSet::new(),
+            &mut host,
+            &cancellation,
+        )
+        .unwrap();
+    assert!(!host.resources.contains_key(&startup));
+}
+
+#[test]
+fn deferred_completion_replay_rejects_incomplete_and_fabricated_receipts() {
+    use super::journal::{Event, State};
+
+    let (desired, startup, installation, consumer, composition) = phased_graph();
+    let mut state = State::default();
+    state
+        .apply(&Event::BeginInstallation {
+            transaction: "installation".into(),
+            document: desired.document().clone(),
+            retire: vec![],
+        })
+        .unwrap();
+    let deferred = BTreeSet::from([startup, consumer, composition]);
+    assert!(
+        state
+            .check(&Event::DeferredCommit {
+                deferred: deferred.clone()
+            })
+            .is_err()
+    );
+    let invocation = state.application(&installation).unwrap();
+    state
+        .apply(&Event::Started {
+            invocation: Box::new(invocation),
+        })
+        .unwrap();
+    state
+        .apply(&Event::Finished {
+            outputs: json!({"value":"ready"}),
+        })
+        .unwrap();
+    assert!(
+        state
+            .check(&Event::DeferredCommit {
+                deferred: BTreeSet::new()
+            })
+            .is_err()
+    );
+    let mut fabricated = deferred.clone();
+    fabricated.insert(installation.clone());
+    assert!(
+        state
+            .check(&Event::DeferredCommit {
+                deferred: fabricated
+            })
+            .is_err()
+    );
+
+    assert!(state.check(&Event::Commit).is_err());
+    state.apply(&Event::DeferredCommit { deferred }).unwrap();
+    assert!(state.active.is_none());
+    assert!(state.retained.contains_key(&installation));
+}
+
+#[test]
+fn installation_one_shot_without_startup_nodes_is_reused_after_reopening() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("journal");
+    let desired = graph(Some("configured"), "transaction");
+    let cancellation = CancellationToken::default();
+    let mut host = Host::default();
+    let mut activation = Activation::open(&path, JournalLimits::default()).unwrap();
+    let installation = activation
+        .activate_once_with_policy(
+            "installation",
+            &desired,
+            &BTreeSet::new(),
+            ExecutionPolicy::Installation,
+            &mut host,
+            &cancellation,
+        )
+        .unwrap();
+    assert!(installation.deferred.is_empty());
+    assert_eq!(host.mutations, vec![Action::Apply]);
+    assert_eq!(host.resources.len(), 1);
+    drop(activation);
+
+    let mut activation = Activation::open(&path, JournalLimits::default()).unwrap();
+    let complete = activation
+        .activate_once(
+            "startup",
+            &desired,
+            &BTreeSet::new(),
+            &mut host,
+            &cancellation,
+        )
+        .unwrap();
+    assert_eq!(complete, installation.outputs);
+    assert_eq!(host.mutations, vec![Action::Apply, Action::Remove]);
+    assert!(host.resources.is_empty());
+}

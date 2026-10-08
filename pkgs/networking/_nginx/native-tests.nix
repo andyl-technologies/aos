@@ -11,8 +11,13 @@
   fragments = plain.aos.abilities.configuration.operations.file.effects.nginx.input.fragments;
 in {
   validation = assert assertionsHold cleartext && assertionsHold tls; true;
-  disabledEffects = assert disabled.config.aos.abilities.serviceManagement.operations.realize.effects == {};
-  assert disabled.config.aos.abilities.configuration.operations.file.effects == {}; true;
+  disabledService = assert disabled.config.aos.abilities.serviceManagement.operations.realize.effects == {};
+  assert disabled.config.aos.abilities.serviceManagement.operations.resourceGroup.effects == {};
+  assert disabled.config.aos.abilities.configuration.operations.file.effects ? nginx;
+  assert builtins.attrNames disabled.config.aos.abilities.filesystem.operations.directory.effects == ["nginx-logs" "nginx-runtime" "nginx-state"]; true;
+  retainedStorage = assert plain.aos.abilities.filesystem.operations.directory.effects.nginx-state.lifetime == "persistent";
+  assert plain.aos.abilities.filesystem.operations.directory.effects.nginx-logs.lifetime == "persistent";
+  assert plain.aos.abilities.filesystem.operations.directory.effects.nginx-runtime.lifetime == "instance"; true;
   tlsSelection = assert plain.aos.abilities.credential.operations.deliver.effects == {};
   assert builtins.attrNames encrypted.aos.abilities.credential.operations.deliver.effects == ["nginx-tls-certificate" "nginx-tls-private-key"];
   assert encrypted.aos.services.nginx.credentials != null; true;

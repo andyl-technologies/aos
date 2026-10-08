@@ -20,7 +20,7 @@ impl Activation {
         // saved later repair remains suspended until its predecessors are live.
         for id in &graph.graph().order {
             if !self.state.transaction_results.contains_key(id) {
-                break;
+                continue;
             }
             let effect = &graph.graph().nodes[id];
             if effect.lifetime == Lifetime::Transaction

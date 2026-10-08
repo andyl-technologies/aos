@@ -17,15 +17,17 @@
 //! - **User** — the default. State lives under per-user paths
 //!   (`/var/lib/profiles/per-user/$USER/`, XDG config/data/cache dirs) and no
 //!   special privileges are required.
-//! - **System** — selected by `--system` on `install`, `upgrade`,
-//!   `rollback`, and `registry`. Operates on the system sysroot under
-//!   `/var/lib/profiles/system/` with numbered generations and
-//!   kernel/boot-loader handling (see [`sysroot`]).
+//! - **System** — selected by `--system`. State uses the system configuration
+//!   and profile under `/var/lib/profiles/system/`. On an AOS machine or VM,
+//!   system installation, upgrade, and rollback use the sysroot and boot
+//!   machinery (see [`sysroot`]). In an AOS container, these commands mutate
+//!   native package generations with startup phases deferred until the
+//!   container service runtime is available.
 //!
 //! # Module map
 //!
-//! - [`install`] / [`remove`] / [`upgrade`] / [`rollback`] — user-scope
-//!   profile mutations (resolve, download, verify, import, generation switch).
+//! - [`install`] / [`remove`] / [`upgrade`] / [`rollback`] — package profile
+//!   mutations (resolve, download, verify, import, generation switch).
 //! - [`sysroot`] — system-scope generations and kernel upgrade modes.
 //! - [`update`] / [`query`] / [`deps`] / [`hold`] / [`clean`] / [`verify`] /
 //!   [`source`] — registry sync and read-only or maintenance commands.
@@ -48,6 +50,7 @@ pub mod clean;
 pub mod config;
 pub mod config_eval;
 pub mod config_trust;
+mod container_environment;
 pub(crate) mod credential;
 pub mod deployment;
 pub mod deps;
@@ -68,6 +71,7 @@ pub mod images;
 pub mod install;
 pub mod native_artifact;
 pub mod native_deployment;
+mod container_runtime;
 mod native_registry;
 pub(crate) mod package_attestation;
 pub use package_attestation::PackageQuoteArtifacts;
@@ -206,8 +210,8 @@ fn canonical_json_digest(value: &serde_json::Value) -> Result<String> {
 /// Environment-variable documentation appended to `apm`/`apr` long help.
 pub const ENVIRONMENT_HELP: &str = "Environment:
   AOS_RUNTIME            Runtime kind. AOS containers set this to `container`;
-                         system scope and host boot/systemd/TPM/activation
-                         operations are unavailable in that runtime.
+                         host boot and TPM operations are unavailable.
+                         Package handlers validate their required facilities.
   AOS_CONTAINER_READ_ONLY
                          Set to `1` by container init when package state cannot
                          be mutated. Read-only package queries remain available.
@@ -261,6 +265,9 @@ pub enum PackageCommand {
     /// Hidden: apply an image-authenticated native deployment.
     #[command(name = "apply-deployment", hide = true)]
     ApplyDeployment(native_deployment::NativeDeploymentArgs),
+    /// Hidden: prepare or activate the retained container root profile.
+    #[command(name = "container-startup", hide = true)]
+    ContainerStartup(container_runtime::ContainerStartupArgs),
     /// Hidden: verify durable completion of a native deployment.
     #[command(name = "verify-deployment", hide = true)]
     VerifyDeployment(native_deployment::NativeDeploymentArgs),
@@ -917,7 +924,8 @@ impl PackageCommand {
     pub fn is_runtime_internal(&self) -> bool {
         matches!(
             self,
-            PackageCommand::ApplyDeployment(..)
+            PackageCommand::ContainerStartup(..)
+                | PackageCommand::ApplyDeployment(..)
                 | PackageCommand::VerifyDeployment(..)
                 | PackageCommand::DeploymentCurrent { .. }
                 | PackageCommand::DeploymentRetainedEffects { .. }
@@ -935,7 +943,8 @@ impl PackageCommand {
 
         match self {
             PackageCommand::Image { .. } => environment::RuntimeRequirement::LiveAos,
-            PackageCommand::ApplyDeployment(..)
+            PackageCommand::ContainerStartup(..)
+            | PackageCommand::ApplyDeployment(..)
             | PackageCommand::VerifyDeployment(..)
             | PackageCommand::DeploymentCurrent { .. }
             | PackageCommand::DeploymentRetainedEffects { .. }
@@ -2797,7 +2806,7 @@ async fn apply_runtime_worktree(
 /// # Errors
 ///
 /// Returns an error before configuration loading when the process runtime
-/// prohibits system or host operations, or when read-only container state
+/// prohibits host boot or TPM operations, or when read-only container state
 /// prohibits a mutation. It also returns an error when configuration loading
 /// fails or when the dispatched subcommand fails (resolution, download,
 /// verification, activation, registry operations, ...). User cancellation at
@@ -2809,9 +2818,17 @@ pub async fn run(
     yes: bool,
     printer: &Printer,
 ) -> Result<()> {
+    runtime_boundary::validate_environment(command)?;
+    if !command.is_runtime_internal() {
+        container_environment::prepare()?;
+    }
     runtime_boundary::validate(command)?;
     command.runtime_requirement().validate()?;
 
+    if let PackageCommand::ContainerStartup(arguments) = command {
+        let cancellation = cancellation::AbilityCancellationGuard::install()?;
+        return container_runtime::run(arguments, cancellation.token());
+    }
     if let PackageCommand::ApplyDeployment(arguments) = command {
         let cancellation = cancellation::AbilityCancellationGuard::install()?;
         return native_deployment::apply(&arguments.command()?, cancellation.token());
@@ -3011,7 +3028,7 @@ pub async fn run(
                     );
                 }
                 desired::reconcile_from_file(&config, path, dry_run, yes, printer).await
-            } else if *install_system || image_fmt.is_some() {
+            } else if (*install_system && !runtime_boundary::is_container()) || image_fmt.is_some() {
                 let transition_mode = parse_system_transition_mode(*reboot);
                 sysroot::install_system(
                     &config,
@@ -3086,7 +3103,7 @@ pub async fn run(
             ..
         } => {
             let ignore = sysroot_lock::IgnoreSysrootLock::parse(ignore_sysroot_lock.as_deref());
-            if *upgrade_system {
+            if *upgrade_system && !runtime_boundary::is_container() {
                 let transition_mode = parse_system_transition_mode(*reboot);
                 sysroot::upgrade_system(&config, dry_run, transition_mode, *drain, printer).await
             } else {
@@ -3232,7 +3249,7 @@ pub async fn run(
                     printer,
                 )
                 .await
-            } else if *rollback_system {
+            } else if *rollback_system && !runtime_boundary::is_container() {
                 sysroot::rollback_system(&config, *generation, *rollback_list, dry_run, printer)
                     .await
             } else if *rollback_list {
@@ -3245,7 +3262,8 @@ pub async fn run(
             run_apm_registry(&config, command, printer).await
         }
 
-        PackageCommand::ApplyDeployment(..)
+        PackageCommand::ContainerStartup(..)
+        | PackageCommand::ApplyDeployment(..)
         | PackageCommand::VerifyDeployment(..)
         | PackageCommand::DeploymentCurrent { .. }
         | PackageCommand::DeploymentRetainedEffects { .. }
@@ -3905,6 +3923,8 @@ pub async fn run_apr(
     dry_run: bool,
     printer: &Printer,
 ) -> Result<()> {
+    runtime_boundary::validate_registry_environment(command, system)?;
+    container_environment::prepare()?;
     runtime_boundary::validate_registry(command, system)?;
     if system {
         environment::RuntimeRequirement::AosRoot.validate()?;

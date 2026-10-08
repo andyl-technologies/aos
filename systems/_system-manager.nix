@@ -18,11 +18,11 @@
   ];
 
   environment.systemPackages =
-    [pkgs.systemd]
+    [pkgs.systemd pkgs.aos-init-provider]
     ++ lib.optional config.aos.boot.secureBoot.measuredBoot.enable pkgs.aos-systemd-var-policy;
 
   aos.boot.initrd.packageRoots =
-    [pkgs.systemd]
+    [pkgs.systemd pkgs.aos-init-provider]
     ++ lib.optional (
       config.aos.boot.secureBoot.measuredBoot.enable
       && config.aos.boot.storage.backend != "zfs-zvol"

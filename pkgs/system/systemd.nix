@@ -2,6 +2,7 @@
 {
   lib,
   service-management,
+  init-system,
   aos-configuration-provider,
   aos-host-policy,
   mkDerivation,
@@ -199,7 +200,7 @@ in
 
     inherit version;
     module = ./_systemd-abilities;
-    moduleDeps = [service-management aos-configuration-provider aos-host-policy linux-pam];
+    moduleDeps = [service-management init-system aos-configuration-provider aos-host-policy linux-pam];
 
     # Keep UKI construction and kernel installation in `tools`, including
     # kernel-install's Python hook. PID 1 and boot-time generators do not need

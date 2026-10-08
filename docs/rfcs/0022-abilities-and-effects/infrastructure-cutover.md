@@ -291,9 +291,12 @@ the first root-slot write.
 
 `aos-package::deployment::transaction::Transactions` coordinates a generation
 journal with the effect journal. It prepares the exact document before dispatch
-and commits only after all checked results are available. The effect runtime
-retains the most recent caller transaction receipt, closing the crash window
-between effect completion and generation commit without repeating one-shot work.
+and commits after the selected execution policy finishes. `Installation`
+receipts retain checked installation results and explicitly pending startup
+work; `Complete` receipts require all checked results. The effect runtime retains
+the most recent caller transaction receipt with its policy and deferred work,
+closing the crash window between effect execution and generation commit without
+repeating one-shot work.
 Recovery resumes pending work before accepting a new generation.
 `transaction::inspect` uses the same generation decoder and replay state machine
 under a shared lock. Its snapshot cannot create or repair journals and retains

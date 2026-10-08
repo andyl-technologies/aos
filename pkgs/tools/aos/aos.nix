@@ -99,7 +99,7 @@
   apmPortableRuntimeTools = [bash nix openssl sbsigntools mtools tpm2-tools zstd which];
   apmRuntimeTools =
     apmPortableRuntimeTools
-    ++ lib.optionals (!isDarwinCross) [systemd util-linux];
+    ++ lib.optionals (!isDarwinCross) [util-linux];
   referenceRemovalArguments = dependencies:
     builtins.concatStringsSep " \\\n            " (map (dependency: "-t ${dependency}") dependencies);
   runtimeBinPath = tools:
@@ -121,7 +121,6 @@
     export AOS_LANDLOCK_WRAPPER="${aos-landlock}/bin/aos-landlock"
     export AOS_UNSHARE="${util-linux}/bin/unshare"
     export AOS_PRLIMIT="${util-linux}/bin/prlimit"
-    export AOS_SYSTEMD_PCREXTEND="${systemd}/lib/systemd/systemd-pcrextend"
   '';
   # Cargo's workspace owns membership; new native handlers must enter this
   # compile gate without maintaining a second list of application crates.
@@ -592,7 +591,6 @@ in
                   ;;
                 apm|aos-package-runtime|aos-image-rollout-boot|aos-package-attestation-provider)
                   cat << 'APM_ENVIRONMENT'
-      ${lib.optionalString (!isDarwinCross) ''export AOS_CREDENTIAL_ENCRYPT_PROVIDER="${systemd.handlers}/bin/aos-systemd-credential-encrypt"''}
       export AOS_NIX_INSTANTIATE="${nix}/bin/nix-instantiate"
       export AOS_PACKAGE_MODULE_LIBRARY="${lib.packageModuleLibrary}"
       export AOS_MCOPY="${mtools}/bin/mcopy"

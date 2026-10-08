@@ -34,6 +34,7 @@ mod document;
 pub use document::read_immutable_document_in;
 pub(crate) use document::{read_descriptor_in, read_regular_store_document_in};
 mod bootstrap;
+pub(crate) mod container;
 mod evaluate;
 
 pub use crate::native_registry::solver::{LockedEdge, ResolutionLock};

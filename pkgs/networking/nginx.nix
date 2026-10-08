@@ -9,6 +9,7 @@
   zlib,
   stdenv,
   service-management,
+  aos-filesystem-provider,
 }: let
   version = "1.31.5";
   linkerOptions =
@@ -225,7 +226,7 @@ in
     ];
 
     module = ./_nginx;
-    moduleDeps = [service-management];
+    moduleDeps = [service-management aos-filesystem-provider];
 
     meta = {
       description = "nginx — high-performance HTTP and reverse proxy server";
@@ -245,7 +246,13 @@ in
         lib.evalPackageModules {
           scope = ["test" "nginx"];
           packages = [self];
-          operatorModules = [{aos.services.nginx = settings;}];
+          operatorModules = [
+            {
+              aos.services.nginx = settings;
+              # These checks inspect the merged contract without invoking it.
+              aos.abilities.serviceManagement.operations.realize.handler.program = self;
+            }
+          ];
         };
       disabled = evaluate {};
       cleartext = evaluate {

@@ -15,12 +15,12 @@
 //! reconciled { sequence, attempt, outputs }
 //! ```
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use aos_ability_plan::module_graph::GRAPH_LIMITS;
-use aos_ability_runtime::activation::{Activation, ActivationResults};
+use aos_ability_runtime::activation::{Activation, ActivationResults, ExecutionPolicy};
 use aos_ability_runtime::adapter::CancellationToken;
 use aos_ability_runtime::journal::{
     FileJournal, JournalError, JournalLimits, JournalPayload, JournalReader,
@@ -85,20 +85,24 @@ enum Event {
         sequence: u64,
         document: Value,
         packages: ResolvedPackages,
+        policy: ExecutionPolicy,
     },
     Committed {
         sequence: u64,
         outputs: ActivationResults,
+        deferred: BTreeSet<String>,
     },
     ReconciliationPrepared {
         sequence: u64,
         attempt: u64,
         content: String,
+        policy: ExecutionPolicy,
     },
     Reconciled {
         sequence: u64,
         attempt: u64,
         outputs: ActivationResults,
+        deferred: BTreeSet<String>,
     },
     Pruning {
         sequence: u64,
@@ -138,19 +142,25 @@ pub struct Generation {
     pub content: String,
     /// Contains named runtime outputs for its configured effects.
     pub outputs: ActivationResults,
+    /// Names startup effects that have not produced an installation result.
+    pub deferred: BTreeSet<String>,
     /// Retains the exact document for inspection or a subsequent rollback transaction.
     pub deployment: Deployment,
+    /// Distinguishes an installation receipt from complete runtime convergence.
+    pub policy: ExecutionPolicy,
 }
 
 struct Pending {
     sequence: u64,
     deployment: Deployment,
+    policy: ExecutionPolicy,
 }
 
 struct Reconciliation {
     sequence: u64,
     attempt: u64,
     content: String,
+    policy: ExecutionPolicy,
 }
 
 impl Reconciliation {
@@ -211,6 +221,12 @@ impl<S: DeploymentStore> Transactions<S> {
         for record in opened.recovery.records() {
             result.state.replay(record.body())?;
         }
+        let completed = result.activation.completed_receipt();
+        let active = result
+            .activation
+            .active_transaction()
+            .map(|(identity, graph, policy)| (identity, graph.document(), policy));
+        verify_journal_pair(&result.state, active, completed.as_ref())?;
         Ok(result)
     }
 
@@ -252,6 +268,21 @@ impl<S: DeploymentStore> Transactions<S> {
     #[must_use]
     pub fn pending_sequence(&self) -> Option<u64> {
         self.state.pending_sequence()
+    }
+
+    /// Returns the recorded policy that interruption recovery must preserve.
+    #[must_use]
+    pub fn pending_policy(&self) -> Option<ExecutionPolicy> {
+        self.state
+            .pending
+            .as_ref()
+            .map(|pending| pending.policy)
+            .or_else(|| {
+                self.state
+                    .reconciliation
+                    .as_ref()
+                    .map(|pending| pending.policy)
+            })
     }
 
     /// Lists retained effect results, including persistent state absent from the current graph.
@@ -374,16 +405,18 @@ impl<S: DeploymentStore> Transactions<S> {
             .ok_or_else(|| anyhow::anyhow!("prepared generation is absent"))?;
         let identity = package_identity(pending.sequence, &pending.deployment.id()?);
         self.journal.ensure_capacity(1)?;
-        let outputs = self.activation.activate_once(
+        let outcome = self.activation.activate_once_with_policy(
             &identity,
             pending.deployment.graph(),
             pending.deployment.retire(),
+            pending.policy,
             &mut self.adapter,
             cancellation,
         )?;
         let event = Event::Committed {
             sequence: pending.sequence,
-            outputs,
+            outputs: outcome.outputs,
+            deferred: outcome.deferred,
         };
         self.journal.append(&event)?;
         self.state.replay(&event)?;
@@ -404,6 +437,21 @@ impl<S: DeploymentStore> Transactions<S> {
     /// admission fails, an effect is uncertain, cancellation occurs, or a
     /// reconciliation record cannot be committed durably.
     pub fn reconcile_current(&mut self, cancellation: &CancellationToken) -> Result<Generation> {
+        self.reconcile_current_with_policy(ExecutionPolicy::Complete, cancellation)
+    }
+
+    /// Reconciles the current generation within the selected execution phase.
+    ///
+    /// Installation records real results and explicitly pending startup work.
+    /// It never turns pending startup effects into a completed activation.
+    ///
+    /// # Errors
+    /// Returns an error for journal recovery, admission, dispatch or publication failure.
+    pub fn reconcile_current_with_policy(
+        &mut self,
+        policy: ExecutionPolicy,
+        cancellation: &CancellationToken,
+    ) -> Result<Generation> {
         let recovering = self.state.reconciliation.is_some();
         self.resume(cancellation)?;
         if recovering {
@@ -420,6 +468,7 @@ impl<S: DeploymentStore> Transactions<S> {
             sequence: current.sequence,
             attempt: self.state.next_reconciliation_attempt()?,
             content: current.content.clone(),
+            policy,
         };
         self.journal.ensure_capacity(2)?;
         self.journal.append(&event)?;
@@ -443,17 +492,19 @@ impl<S: DeploymentStore> Transactions<S> {
             .artifacts_mut()
             .retain_generation(&retained_identity, &current.deployment)?;
         self.journal.ensure_capacity(1)?;
-        let outputs = self.activation.activate_once(
+        let outcome = self.activation.activate_once_with_policy(
             &identity,
             current.deployment.graph(),
             current.deployment.retire(),
+            reconciliation.policy,
             &mut self.adapter,
             cancellation,
         )?;
         let event = Event::Reconciled {
             sequence: reconciliation.sequence,
             attempt: reconciliation.attempt,
-            outputs,
+            outputs: outcome.outputs,
+            deferred: outcome.deferred,
         };
         self.journal.append(&event)?;
         self.state.replay(&event)?;
@@ -472,6 +523,22 @@ impl<S: DeploymentStore> Transactions<S> {
     pub fn apply(
         &mut self,
         deployment: &Deployment,
+        cancellation: &CancellationToken,
+    ) -> Result<Generation> {
+        self.apply_with_policy(deployment, ExecutionPolicy::Complete, cancellation)
+    }
+
+    /// Publishes installed desired state and an explicit startup receipt.
+    ///
+    /// The recorded policy also governs interruption recovery. A later installation
+    /// can supersede unstarted effects without trying to start the previous runtime.
+    ///
+    /// # Errors
+    /// Returns an error for incompatible scope, admission, recovery or execution failure.
+    pub fn apply_with_policy(
+        &mut self,
+        deployment: &Deployment,
+        policy: ExecutionPolicy,
         cancellation: &CancellationToken,
     ) -> Result<Generation> {
         self.finish_pruning()?;
@@ -513,6 +580,7 @@ impl<S: DeploymentStore> Transactions<S> {
             sequence,
             document: serde_json::from_slice(&deployment.canonical_bytes()?)?,
             packages: deployment.resolved(),
+            policy,
         };
         self.journal.append(&event)?;
         self.state.replay(&event)?;
@@ -654,6 +722,7 @@ impl GenerationState {
                 sequence,
                 document,
                 packages,
+                policy,
             } => {
                 ensure!(self.pruning.is_none(), "generation pruning is pending");
                 ensure!(
@@ -675,9 +744,14 @@ impl GenerationState {
                 self.pending = Some(Pending {
                     sequence: *sequence,
                     deployment,
+                    policy: *policy,
                 });
             }
-            Event::Committed { sequence, outputs } => {
+            Event::Committed {
+                sequence,
+                outputs,
+                deferred,
+            } => {
                 let pending = self
                     .pending
                     .as_ref()
@@ -686,12 +760,14 @@ impl GenerationState {
                     pending.sequence == *sequence,
                     "package generation commit mismatch"
                 );
-                check_outputs(&pending.deployment, outputs)?;
+                check_receipt(&pending.deployment, outputs, deferred, pending.policy)?;
                 let generation = Generation {
                     sequence: *sequence,
                     content: pending.deployment.id()?,
                     outputs: outputs.clone(),
+                    deferred: deferred.clone(),
                     deployment: pending.deployment.clone(),
+                    policy: pending.policy,
                 };
                 self.completed_activation = Some(package_identity(*sequence, &generation.content));
                 self.generations.insert(*sequence, generation);
@@ -701,6 +777,7 @@ impl GenerationState {
                 sequence,
                 attempt,
                 content,
+                policy,
             } => {
                 ensure!(
                     *attempt == self.next_reconciliation_attempt()?,
@@ -717,6 +794,7 @@ impl GenerationState {
                     sequence: *sequence,
                     attempt: *attempt,
                     content: content.clone(),
+                    policy: *policy,
                 });
                 self.reconciliation_attempt = *attempt;
             }
@@ -724,6 +802,7 @@ impl GenerationState {
                 sequence,
                 attempt,
                 outputs,
+                deferred,
             } => {
                 let pending = self
                     .reconciliation
@@ -740,12 +819,15 @@ impl GenerationState {
                     current.sequence == pending.sequence && current.content == pending.content,
                     "reconciliation differs from the committed generation"
                 );
-                check_outputs(&current.deployment, outputs)?;
+                check_receipt(&current.deployment, outputs, deferred, pending.policy)?;
                 let identity = pending.identity();
-                self.generations
+                let generation = self
+                    .generations
                     .get_mut(sequence)
-                    .ok_or_else(|| anyhow::anyhow!("reconciled generation is absent"))?
-                    .outputs = outputs.clone();
+                    .ok_or_else(|| anyhow::anyhow!("reconciled generation is absent"))?;
+                generation.outputs = outputs.clone();
+                generation.deferred = deferred.clone();
+                generation.policy = pending.policy;
                 self.completed_activation = Some(identity);
                 self.reconciliation = None;
             }
@@ -780,12 +862,28 @@ impl GenerationState {
     }
 }
 
-fn check_outputs(deployment: &Deployment, outputs: &ActivationResults) -> Result<()> {
+fn check_receipt(
+    deployment: &Deployment,
+    outputs: &ActivationResults,
+    deferred: &BTreeSet<String>,
+    policy: ExecutionPolicy,
+) -> Result<()> {
     ensure!(
-        outputs.len() == deployment.graph().graph().nodes.len(),
+        *deferred == policy.deferred_effects(deployment.graph()),
+        "generation deferred effects differ from the execution policy"
+    );
+    ensure!(
+        outputs.len() + deferred.len() == deployment.graph().graph().nodes.len(),
         "generation result set differs from its graph"
     );
     for (id, effect) in &deployment.graph().graph().nodes {
+        if deferred.contains(id) {
+            ensure!(
+                !outputs.contains_key(id),
+                "deferred effect has fabricated results"
+            );
+            continue;
+        }
         effect.check_results(
             outputs
                 .get(id)
@@ -872,29 +970,87 @@ pub fn inspect(directory: &Path, limits: JournalLimits) -> Result<Snapshot> {
     }
     let activation =
         aos_ability_runtime::activation::inspect(directory.join("effects.journal"), limits)?;
-    let pending_identity = state.pending_identity()?;
-    let current_identity = &state.completed_activation;
-    if let Some(active) = &activation.transaction {
-        ensure!(
-            Some(active) == pending_identity.as_ref(),
-            "activation journal does not match the pending package generation"
-        );
-    }
-    if let Some(completed) = &activation.completed {
-        ensure!(
-            Some(&completed.transaction) == current_identity.as_ref()
-                || Some(&completed.transaction) == pending_identity.as_ref(),
-            "activation receipt does not match package generation history"
-        );
-    } else {
-        ensure!(
-            current_identity.is_none(),
-            "committed generation has no activation receipt"
-        );
-    }
+    let active = activation
+        .transaction
+        .as_deref()
+        .zip(activation.desired.as_ref())
+        .zip(activation.policy)
+        .map(|((identity, graph), policy)| (identity, graph, policy));
+    verify_journal_pair(&state, active, activation.completed.as_ref())?;
     Ok(Snapshot {
         journal,
         state,
         activation,
     })
+}
+
+/// Checks publication authority against exact durable effect receipts.
+fn verify_journal_pair(
+    state: &GenerationState,
+    active: Option<(&str, &Value, ExecutionPolicy)>,
+    completed: Option<&aos_ability_runtime::activation::CompletedTransaction>,
+) -> Result<()> {
+    let pending_identity = state.pending_identity()?;
+    let current_identity = &state.completed_activation;
+    if let Some((identity, graph, policy)) = active {
+        ensure!(
+            Some(identity) == pending_identity.as_deref(),
+            "activation journal does not match the pending package generation"
+        );
+        let desired = state
+            .pending_deployment()
+            .context("active effect journal has no pending deployment")?;
+        let expected_policy = state
+            .pending
+            .as_ref()
+            .map(|pending| pending.policy)
+            .or_else(|| state.reconciliation.as_ref().map(|pending| pending.policy))
+            .context("active effect journal has no pending policy")?;
+        ensure!(
+            graph == desired.graph().document() && policy == expected_policy,
+            "active effect journal differs from pending package content or policy"
+        );
+    }
+    let Some(completed) = completed else {
+        ensure!(
+            current_identity.is_none(),
+            "committed generation has no activation receipt"
+        );
+        return Ok(());
+    };
+    ensure!(
+        Some(&completed.transaction) == current_identity.as_ref()
+            || Some(&completed.transaction) == pending_identity.as_ref(),
+        "activation receipt does not match package generation history"
+    );
+    let (policy, desired, outputs) = if Some(&completed.transaction) == current_identity.as_ref() {
+        let current = state
+            .current()
+            .context("activation receipt has no generation")?;
+        (current.policy, &current.deployment, Some(&current.outputs))
+    } else if let Some(pending) = &state.pending {
+        (pending.policy, &pending.deployment, None)
+    } else {
+        let pending = state
+            .reconciliation
+            .as_ref()
+            .context("activation receipt has no pending work")?;
+        let current = state
+            .current()
+            .context("pending reconciliation has no generation")?;
+        (pending.policy, &current.deployment, None)
+    };
+    check_receipt(desired, &completed.outputs, &completed.deferred, policy)?;
+    ensure!(
+        completed.policy == policy
+            && completed.content == policy.content_identity(desired.graph(), desired.retire())?,
+        "activation receipt differs from package content or policy"
+    );
+    if let Some(outputs) = outputs {
+        ensure!(
+            outputs == &completed.outputs,
+            "package results differ from the durable activation receipt"
+        );
+    }
+    Ok(())
 }

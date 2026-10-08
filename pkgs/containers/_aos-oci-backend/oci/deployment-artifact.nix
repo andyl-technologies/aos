@@ -22,6 +22,7 @@
   contracts ? [],
   pname ? "aos-oci-deployment-artifact",
   artifactClass ? "container",
+  withProfileRecords ? false,
   executionStage ? null,
 }: let
   aggregate = contracts != [];
@@ -63,6 +64,7 @@
     else
       import ../deployment-bundle.nix {
         inherit lib pkgs packages packageArtifacts scope configuration runtimeConfiguration osRelease;
+        inherit withProfileRecords;
         evaluationInput = preparedInput;
         inherit (evaluatedTransaction) graph system inputs retire;
       };
@@ -108,6 +110,9 @@
         for name in transaction.json packages.json admission.json admission-sha256 module-library registration evaluation.json; do
           cp -P ${bundle}/"$name" "$out/$name"
         done
+        ${lib.optionalString withProfileRecords ''
+          cp -P ${bundle}/installed.json "$out/installed.json"
+        ''}
       ''}
       ${builtins.readFile ./deployment-validation.sh}
       validate_deployment_artifact "$out/deployment.json" \

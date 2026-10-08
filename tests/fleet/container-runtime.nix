@@ -243,6 +243,33 @@ in {
     )
 
     mounts = " --volume /var/lib/aos-container-fixtures/registry:/fixtures/registry:ro"
+
+    # Dockerfile RUN bypasses the image entrypoint. APM must initialize its
+    # embedded state itself before the first package mutation in that image.
+    runtime.succeed(
+        "${nerdctl} run --rm --net host --entrypoint ${bash}"
+        + mounts
+        + " aos:latest -c "
+        + shlex.quote(textwrap.dedent(r"""
+            set -eu
+            /usr/bin/apm registry add --no-verify file:///fixtures/registry \
+              --name container-runtime-reg > /tmp/registry-add.log 2>&1
+            /usr/bin/apm --json install container-runtime-tool \
+              --registry container-runtime-reg --yes \
+              > /tmp/install.json 2> /tmp/install.log
+            test "$(${profileBin})" = 'container-runtime-tool 1.0.0'
+            cat /tmp/install.json
+        """))
+        + " > /tmp/aos-container-entrypoint-bypass.json"
+        + " 2> /tmp/aos-container-entrypoint-bypass.log",
+        timeout=180,
+    )
+    bypass_install = json.loads(
+        runtime.succeed("${pkgs.coreutils}/bin/cat /tmp/aos-container-entrypoint-bypass.json")
+    )
+    assert bypass_install["status"] == "installed", bypass_install
+    assert bypass_install["startup_pending"] == [], bypass_install
+
     runtime.succeed(
         "${nerdctl} run --detach --name aos-runtime-state --net host"
         + mounts
@@ -327,7 +354,7 @@ in {
         "if ${nerdctl} run --rm --read-only --net none aos:latest "
         "/usr/bin/apm install container-runtime-tool --yes "
         ">/tmp/aos-container-read-only.out 2>&1; then exit 1; fi; "
-        "grep -F 'this AOS container is read-only; user-scope package mutations are unavailable' "
+        "grep -F 'this AOS container is read-only; package mutations are unavailable' "
         "/tmp/aos-container-read-only.out",
         timeout=120,
     )
@@ -341,7 +368,7 @@ in {
         "if ${nerdctl} exec aos-runtime-read-only /usr/bin/apm install "
         "container-runtime-tool --yes "
         ">/tmp/aos-container-read-only-exec.out 2>&1; then exit 1; fi; "
-        "grep -F 'this AOS container is read-only; user-scope package mutations are unavailable' "
+        "grep -F 'this AOS container is read-only; package mutations are unavailable' "
         "/tmp/aos-container-read-only-exec.out"
     )
     runtime.succeed("${nerdctl} rm --force aos-runtime-read-only")

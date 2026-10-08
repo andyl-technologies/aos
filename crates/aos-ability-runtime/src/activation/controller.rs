@@ -11,7 +11,8 @@ use crate::journal::{FileJournal, JournalLimits};
 
 use super::journal::{Event, State};
 use super::{
-    Action, ActivationAdapter, ActivationResults, Boundary, BoundaryEvent, Invocation, Observation,
+    Action, ActivationAdapter, ActivationOutcome, ActivationResults, Boundary, BoundaryEvent,
+    ExecutionPolicy, Invocation, Observation,
 };
 
 #[path = "restoration.rs"]
@@ -72,7 +73,15 @@ impl Activation {
         adapter: &mut impl ActivationAdapter,
         cancellation: &CancellationToken,
     ) -> Result<ActivationResults> {
-        self.activate_keyed(None, desired, retire, adapter, cancellation)
+        self.activate_keyed(
+            None,
+            desired,
+            retire,
+            ExecutionPolicy::Complete,
+            adapter,
+            cancellation,
+        )
+        .map(|outcome| outcome.outputs)
     }
 
     /// Resumes a caller-identified transaction across process restarts.
@@ -93,7 +102,43 @@ impl Activation {
         adapter: &mut impl ActivationAdapter,
         cancellation: &CancellationToken,
     ) -> Result<ActivationResults> {
-        self.activate_keyed(Some(transaction), desired, retire, adapter, cancellation)
+        self.activate_once_with_policy(
+            transaction,
+            desired,
+            retire,
+            ExecutionPolicy::Complete,
+            adapter,
+            cancellation,
+        )
+        .map(|outcome| outcome.outputs)
+    }
+
+    /// Executes a caller-identified transaction under the available lifecycle policy.
+    ///
+    /// Installation completion closes the transaction durably while recording
+    /// only actual outcomes and the exact dependency closure awaiting startup.
+    /// Subsequent installation transactions may replace unstarted desired work.
+    ///
+    /// # Errors
+    /// Returns an error for identity reuse, admission, recovery, handler, or
+    /// journal failures. Recovery requires the original execution policy.
+    pub fn activate_once_with_policy(
+        &mut self,
+        transaction: &str,
+        desired: &CheckedModuleGraph,
+        retire: &BTreeSet<String>,
+        policy: ExecutionPolicy,
+        adapter: &mut impl ActivationAdapter,
+        cancellation: &CancellationToken,
+    ) -> Result<ActivationOutcome> {
+        self.activate_keyed(
+            Some(transaction),
+            desired,
+            retire,
+            policy,
+            adapter,
+            cancellation,
+        )
     }
 
     fn activate_keyed(
@@ -101,11 +146,12 @@ impl Activation {
         transaction: Option<&str>,
         desired: &CheckedModuleGraph,
         retire: &BTreeSet<String>,
+        policy: ExecutionPolicy,
         adapter: &mut impl ActivationAdapter,
         cancellation: &CancellationToken,
-    ) -> Result<ActivationResults> {
+    ) -> Result<ActivationOutcome> {
         let retirement: Vec<_> = retire.iter().cloned().collect();
-        let fingerprint = super::journal::fingerprint(desired, &retirement)?;
+        let fingerprint = super::journal::policy_fingerprint(desired, &retirement, policy)?;
         if let Some((id, content, outputs)) = &self.state.completed {
             if transaction == Some(id.as_str()) {
                 ensure!(
@@ -113,19 +159,27 @@ impl Activation {
                     "transaction identity reused with different content"
                 );
                 self.preflight(desired, adapter)?;
-                return Ok(outputs.clone());
+                return Ok(ActivationOutcome {
+                    outputs: outputs.clone(),
+                    deferred: self.state.completed_deferred.clone(),
+                });
             }
         }
         self.preflight(desired, adapter)?;
         if let Some(active) = self.state.active.clone() {
             self.preflight(&active, adapter)?;
-            let same_transaction = active.canonical_bytes()? == desired.canonical_bytes()?
+            let same_transaction = self.state.policy == policy
+                && active.canonical_bytes()? == desired.canonical_bytes()?
                 && self.state.retire.iter().cloned().collect::<BTreeSet<_>>() == *retire;
             let same_identity =
                 transaction.is_none() || transaction == self.state.transaction.as_deref();
             ensure!(
                 !same_identity || same_transaction || transaction.is_none(),
                 "active transaction identity reused with different content"
+            );
+            ensure!(
+                self.state.policy == policy,
+                "unfinished activation requires its original execution policy"
             );
             let results = self.run(&active, adapter, cancellation)?;
             if same_transaction && same_identity {
@@ -144,12 +198,27 @@ impl Activation {
             );
         }
         let document = serde_json::from_slice(&desired.canonical_bytes()?)?;
-        self.record(Event::Begin {
+        let begin = Event::Begin {
             transaction: transaction
                 .map(str::to_owned)
                 .unwrap_or_else(|| format!("local-{}", self.state.sequence + 1)),
             document,
             retire: retire.iter().cloned().collect(),
+        };
+        self.record(match (policy, begin) {
+            (
+                ExecutionPolicy::Installation,
+                Event::Begin {
+                    transaction,
+                    document,
+                    retire,
+                },
+            ) => Event::BeginInstallation {
+                transaction,
+                document,
+                retire,
+            },
+            (_, begin) => begin,
         })?;
         self.run(desired, adapter, cancellation)
     }
@@ -174,6 +243,33 @@ impl Activation {
     #[must_use]
     pub fn retired(&self) -> &BTreeSet<String> {
         &self.state.retired
+    }
+
+    /// Returns the latest durable receipt without observing external resources.
+    #[must_use]
+    pub fn completed_receipt(&self) -> Option<super::CompletedTransaction> {
+        self.state
+            .completed
+            .as_ref()
+            .map(
+                |(transaction, content, outputs)| super::CompletedTransaction {
+                    transaction: transaction.clone(),
+                    content: content.clone(),
+                    deferred: self.state.completed_deferred.clone(),
+                    policy: self.state.completed_policy,
+                    outputs: outputs.clone(),
+                },
+            )
+    }
+
+    /// Borrows the active transaction identity, checked graph, and execution policy.
+    #[must_use]
+    pub fn active_transaction(&self) -> Option<(&str, &CheckedModuleGraph, ExecutionPolicy)> {
+        self.state
+            .transaction
+            .as_deref()
+            .zip(self.state.active.as_ref())
+            .map(|(transaction, graph)| (transaction, graph, self.state.policy))
     }
 
     /// Lists currently retained resources, including persistent orphaned state.
@@ -330,7 +426,7 @@ impl Activation {
         graph: &CheckedModuleGraph,
         adapter: &mut impl ActivationAdapter,
         cancellation: &CancellationToken,
-    ) -> Result<ActivationResults> {
+    ) -> Result<ActivationOutcome> {
         self.drain_releases(adapter)?;
         self.restore_completed_prefix(graph, adapter, cancellation)?;
         if let Some(pending) = self.state.pending.clone() {
@@ -347,8 +443,9 @@ impl Activation {
                 match graph.graph().nodes.get(*id) {
                     Some(_) => false,
                     None => {
-                        retained.invocation.effect.lifetime != Lifetime::Persistent
-                            || self.state.retire.contains(id)
+                        self.state.removal_allowed(&retained.invocation.effect)
+                            && (retained.invocation.effect.lifetime != Lifetime::Persistent
+                                || self.state.retire.contains(id))
                     }
                 }
             })
@@ -361,7 +458,7 @@ impl Activation {
         let mut results = self.retained();
         results.extend(self.state.transaction_results.clone());
         for id in &graph.graph().order {
-            if self.state.transaction_results.contains_key(id) {
+            if self.state.deferred.contains(id) || self.state.transaction_results.contains_key(id) {
                 continue;
             }
             ensure!(
@@ -370,6 +467,11 @@ impl Activation {
             );
             let effect = &graph.graph().nodes[id];
             let invocation = self.state.application(id)?;
+            if self.state.can_reuse_installation(id)? {
+                self.record(Event::ReusedInstallation { id: id.clone() })?;
+                results.insert(id.clone(), self.state.transaction_results[id].clone());
+                continue;
+            }
 
             self.journal.ensure_capacity(3)?;
             let sequence = self.record(Event::Started {
@@ -388,9 +490,10 @@ impl Activation {
                 }
                 Handler::Process { .. } => {
                     let previous = self.state.retained.get(id);
-                    if previous
-                        .is_some_and(|state| state.invocation.revision == invocation.revision)
-                    {
+                    if previous.is_some_and(|state| {
+                        effect.lifetime != Lifetime::Transaction
+                            && state.invocation.revision == invocation.revision
+                    }) {
                         match self.observe(&invocation, sequence, adapter, cancellation)? {
                             Observation::Current(outputs) => outputs,
                             Observation::RetrySafe | Observation::Absent => {
@@ -431,16 +534,29 @@ impl Activation {
             .iter()
             .rev()
             .filter(|id| {
-                self.state.retained[*id].invocation.effect.lifetime == Lifetime::Transaction
+                self.state.policy == ExecutionPolicy::Complete
+                    && self
+                        .state
+                        .removal_allowed(&self.state.retained[*id].invocation.effect)
+                    && self.state.retained[*id].invocation.effect.lifetime == Lifetime::Transaction
             })
             .cloned()
             .collect();
         for id in temporary {
             self.remove(&id, adapter, cancellation)?;
         }
-        results.retain(|id, _| graph.graph().nodes.contains_key(id));
-        self.record(Event::Commit)?;
-        Ok(results)
+        // Historical retained outcomes cannot stand in for deferred desired work.
+        let outputs = self.state.transaction_results.clone();
+        let deferred = self.state.deferred.clone();
+        let event = if self.state.policy == ExecutionPolicy::Installation {
+            Event::DeferredCommit {
+                deferred: deferred.clone(),
+            }
+        } else {
+            Event::Commit
+        };
+        self.record(event)?;
+        Ok(ActivationOutcome { outputs, deferred })
     }
 
     fn remove(

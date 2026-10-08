@@ -12,16 +12,16 @@ use anyhow::{Result, bail};
 
 use crate::{
     ApmRegistryCommand, AttestCommand, BranchCommand, CacheCommand, ChangeCommand, ChannelCommand,
-    CredentialCommand, DocumentationCacheCommand, DocumentationCommand, KeysCommand,
-    OptionsCommand, OriginCommand, PackageCommand, RegistryCommand, RegistryStageCommand,
-    RuntimeConfigCommand, StoreCommand, TrustCommand,
+    CredentialCommand, DocumentationCacheCommand, DocumentationCommand, KeysCommand, OriginCommand,
+    PackageCommand, RegistryCommand, RegistryStageCommand, RuntimeConfigCommand, StoreCommand,
+    TrustCommand,
 };
 
 const RUNTIME_ENV: &str = "AOS_RUNTIME";
 const READ_ONLY_ENV: &str = "AOS_CONTAINER_READ_ONLY";
 
-const CONTAINER_HOST_OPERATION_ERROR: &str = "AOS containers support only user-scope package management; --system and host boot, service-management, TPM, and activation operations are unavailable. Run this operation on an AOS machine or VM.";
-const READ_ONLY_MUTATION_ERROR: &str = "this AOS container is read-only; user-scope package mutations are unavailable. Restart it without the runtime's read-only-root option and mount writable APM and Nix state to modify packages.";
+const CONTAINER_HOST_OPERATION_ERROR: &str = "this operation requires host boot or TPM facilities unavailable in an AOS container. Run it on an AOS machine or VM.";
+const READ_ONLY_MUTATION_ERROR: &str = "this AOS container is read-only; package mutations are unavailable. Restart it without the runtime's read-only-root option and mount writable APM and Nix state to modify packages.";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct RuntimeBoundary {
@@ -54,10 +54,7 @@ impl RuntimeBoundary {
         Ok(())
     }
 
-    fn validate_registry(self, command: &RegistryCommand, system: bool) -> Result<()> {
-        if self.container && system {
-            bail!(CONTAINER_HOST_OPERATION_ERROR);
-        }
+    fn validate_registry(self, command: &RegistryCommand, _system: bool) -> Result<()> {
         if self.read_only && !registry_is_read_only(command) {
             bail!(READ_ONLY_MUTATION_ERROR);
         }
@@ -65,28 +62,51 @@ impl RuntimeBoundary {
     }
 }
 
-/// Returns whether the official container restricts packages to user scope.
+/// Returns whether the process runs in the official container environment.
 pub(crate) fn is_container() -> bool {
     RuntimeBoundary::from_env().container
 }
 
-/// Checks the process runtime markers against one parsed package command.
-///
-/// This is intentionally the first operation in [`crate::run`].
+/// Rejects explicit runtime incompatibilities before image setup can mutate state.
 ///
 /// # Errors
 ///
-/// Returns an error when container mode admits only user scope but the command
-/// requires system or host facilities, or when read-only mode prohibits the
-/// requested mutation.
+/// Returns an error for host-only commands or explicitly read-only mutations.
+pub(crate) fn validate_environment(command: &PackageCommand) -> Result<()> {
+    RuntimeBoundary::from_env().validate(command)
+}
+
+/// Rejects explicitly read-only registry mutations before image setup.
+///
+/// # Errors
+///
+/// Returns an error when the read-only environment prohibits the mutation.
+pub(crate) fn validate_registry_environment(command: &RegistryCommand, system: bool) -> Result<()> {
+    RuntimeBoundary::from_env().validate_registry(command, system)
+}
+
+/// Checks the process runtime markers against one parsed package command.
+///
+/// Explicit environment admission and image setup precede this synchronization.
+///
+/// # Errors
+///
+/// Returns an error when the command requires host boot or TPM facilities, or
+/// when read-only mode prohibits the requested mutation.
 pub(crate) fn validate(command: &PackageCommand) -> Result<()> {
     let mut boundary = RuntimeBoundary::from_env();
     if boundary.container && requires_host_runtime(command) {
         bail!(CONTAINER_HOST_OPERATION_ERROR);
     }
 
-    if let Some(state) = aos_core::container_runtime::synchronize()? {
-        boundary.read_only |= state.is_read_only();
+    // The initializer invokes private deployment helpers while holding its
+    // lock and before publishing readiness. Waiting here would deadlock it.
+    if !command.is_runtime_internal() {
+        if boundary.container && !crate::container_environment::package_state_writable() {
+            boundary.read_only = true;
+        } else if let Some(state) = aos_core::container_runtime::synchronize()? {
+            boundary.read_only |= state.is_read_only();
+        }
     }
     boundary.validate(command)
 }
@@ -95,15 +115,13 @@ pub(crate) fn validate(command: &PackageCommand) -> Result<()> {
 ///
 /// # Errors
 ///
-/// Returns an error when container mode selects system registry state or when
-/// read-only container mode prohibits the requested authoring mutation.
+/// Returns an error when read-only container mode prohibits the requested
+/// authoring mutation.
 pub(crate) fn validate_registry(command: &RegistryCommand, system: bool) -> Result<()> {
     let mut boundary = RuntimeBoundary::from_env();
-    if boundary.container && system {
-        bail!(CONTAINER_HOST_OPERATION_ERROR);
-    }
-
-    if let Some(state) = aos_core::container_runtime::synchronize()? {
+    if boundary.container && !crate::container_environment::package_state_writable() {
+        boundary.read_only = true;
+    } else if let Some(state) = aos_core::container_runtime::synchronize()? {
         boundary.read_only |= state.is_read_only();
     }
     boundary.validate_registry(command, system)
@@ -111,75 +129,39 @@ pub(crate) fn validate_registry(command: &RegistryCommand, system: bool) -> Resu
 
 /// Returns whether a command requires AOS host facilities unavailable in OCI.
 ///
-/// The match is exhaustive so a future command must receive an explicit
-/// runtime classification before the crate compiles.
+/// Ordinary package and configuration commands are admitted here. Their
+/// ability graphs validate the handlers required by the selected environment.
 fn requires_host_runtime(command: &PackageCommand) -> bool {
     match command {
         PackageCommand::Image { .. } => true,
         PackageCommand::Install {
             from,
-            system,
             image,
             kexec,
             reboot,
             live,
             drain,
             ..
-        } => *system || from.is_some() || image.is_some() || *kexec || *reboot || *live || *drain,
-        PackageCommand::Update { system, .. }
-        | PackageCommand::Search { system, .. }
-        | PackageCommand::Show { system, .. }
-        | PackageCommand::List { system, .. }
-        | PackageCommand::Depends { system, .. }
-        | PackageCommand::Rdepends { system, .. }
-        | PackageCommand::Policy { system, .. }
-        | PackageCommand::Files { system, .. }
-        | PackageCommand::Held { system, .. }
-        | PackageCommand::Orphans { system, .. }
-        | PackageCommand::Clean { system, .. } => *system,
+        } => from.is_some() || image.is_some() || *kexec || *reboot || *live || *drain,
         PackageCommand::Upgrade {
-            system,
             kexec,
             reboot,
             live,
             drain,
             ..
-        } => *system || *kexec || *reboot || *live || *drain,
+        } => *kexec || *reboot || *live || *drain,
         PackageCommand::Rollback {
-            system,
             image,
             kexec,
             reboot,
             live,
             drain,
             ..
-        } => *system || *image || *kexec || *reboot || *live || *drain,
-        PackageCommand::Registry { system, .. } => *system,
-        PackageCommand::Docs { command } => documentation_requires_host_runtime(command),
-        PackageCommand::Options { command } => options_require_host_runtime(command),
-        PackageCommand::Schema { system, .. } => *system,
-        PackageCommand::Attest { command } => match command {
-            AttestCommand::Quote { .. } => true,
-            AttestCommand::Verify { system, .. } | AttestCommand::Catalog { system, .. } => *system,
-            AttestCommand::Enroll { .. } => false,
-        },
-        PackageCommand::Remove { system, .. } => *system,
-        PackageCommand::Autoremove
-        | PackageCommand::Reinstall { .. }
-        | PackageCommand::FullUpgrade
-        | PackageCommand::Hold { .. }
-        | PackageCommand::Unhold { .. }
-        | PackageCommand::Gc
-        | PackageCommand::Verify { .. }
-        | PackageCommand::Source { .. }
-        | PackageCommand::Credential(_) => false,
-        PackageCommand::ApplyDeployment(..)
-        | PackageCommand::VerifyDeployment(..)
-        | PackageCommand::DeploymentCurrent { .. }
-        | PackageCommand::DeploymentRetainedEffects { .. }
-        | PackageCommand::DeploymentResult { .. }
-        | PackageCommand::Switch { .. }
-        | PackageCommand::Config { .. } => true,
+        } => *image || *kexec || *reboot || *live || *drain,
+        PackageCommand::Attest {
+            command: AttestCommand::Quote { .. },
+        } => true,
+        _ => false,
     }
 }
 
@@ -218,6 +200,7 @@ fn is_read_only(command: &PackageCommand) -> bool {
         PackageCommand::Install { .. }
         | PackageCommand::Image { .. }
         | PackageCommand::ApplyDeployment(..)
+        | PackageCommand::ContainerStartup(..)
         | PackageCommand::Remove { .. }
         | PackageCommand::Autoremove
         | PackageCommand::Reinstall { .. }
@@ -229,30 +212,6 @@ fn is_read_only(command: &PackageCommand) -> bool {
         | PackageCommand::Clean { .. }
         | PackageCommand::Gc
         | PackageCommand::Switch { .. } => false,
-    }
-}
-
-fn documentation_requires_host_runtime(command: &DocumentationCommand) -> bool {
-    match command {
-        DocumentationCommand::Search { system, .. }
-        | DocumentationCommand::Show { system, .. }
-        | DocumentationCommand::Man { system, .. }
-        | DocumentationCommand::Lsp { system, .. }
-        | DocumentationCommand::Serve { system, .. } => *system,
-        DocumentationCommand::Cache { command } => match command {
-            DocumentationCacheCommand::Status { system }
-            | DocumentationCacheCommand::Gc { system } => *system,
-        },
-        DocumentationCommand::Schema { .. } => false,
-    }
-}
-
-fn options_require_host_runtime(command: &OptionsCommand) -> bool {
-    match command {
-        OptionsCommand::Search { system, .. }
-        | OptionsCommand::Show { system, .. }
-        | OptionsCommand::Complete { system, .. } => *system,
-        OptionsCommand::Compare { .. } => false,
     }
 }
 
@@ -447,7 +406,7 @@ mod tests {
             read_only: false,
         };
         container.validate(&user).unwrap();
-        assert!(container.validate(&system).is_err());
+        container.validate(&system).unwrap();
     }
 
     #[test]
@@ -564,18 +523,17 @@ mod tests {
         for arguments in [
             &["list", "--system"][..],
             &["docs", "search", "hello", "--system"][..],
+            &["deployment-current", "--profile", "/tmp/profile"][..],
+            &["config", "status"][..],
+        ] {
+            boundary
+                .validate(&command(arguments))
+                .expect("portable and graph-validated operations remain admitted");
+        }
+
+        for arguments in [
             &["install", "hello", "--image", "raw"][..],
             &["attest", "quote", "--nonce", "00", "--output-dir", "/tmp/q"][..],
-            &["deployment-current", "--profile", "/tmp/profile"][..],
-            &[
-                "deployment-result",
-                "--profile",
-                "/tmp/profile",
-                "--generation",
-                "1",
-                "--effect",
-                "effect",
-            ][..],
         ] {
             let error = boundary
                 .validate(&command(arguments))
@@ -655,17 +613,16 @@ mod tests {
             .expect_err("registry mutation is rejected");
         assert_eq!(error.to_string(), READ_ONLY_MUTATION_ERROR);
 
-        let error = RuntimeBoundary {
+        RuntimeBoundary {
             container: true,
             read_only: false,
         }
         .validate_registry(&registry_command(&["list"]), true)
-        .expect_err("system registry state is rejected");
-        assert_eq!(error.to_string(), CONTAINER_HOST_OPERATION_ERROR);
+        .expect("system registry state is supported");
     }
 
     #[test]
-    fn system_error_takes_precedence_over_the_read_only_error() {
+    fn read_only_system_mutations_are_rejected() {
         let boundary = RuntimeBoundary {
             container: true,
             read_only: true,
@@ -673,6 +630,6 @@ mod tests {
         let error = boundary
             .validate(&command(&["upgrade", "--system"]))
             .expect_err("system mutation is rejected");
-        assert_eq!(error.to_string(), CONTAINER_HOST_OPERATION_ERROR);
+        assert_eq!(error.to_string(), READ_ONLY_MUTATION_ERROR);
     }
 }

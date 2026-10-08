@@ -16,10 +16,22 @@
 }: let
   rootPath = path: "${rootPrefix}${path}";
   initPath = lib.makeBinPath [pkgs.nix pkgs.coreutils pkgs.findutils pkgs.grep pkgs.util-linux];
-  defaultCommandScript = lib.concatMapStringsSep " " lib.escapeShellArg defaultCommand;
+  fallbackCommand =
+    if defaultCommand == []
+    then ["/bin/bash"]
+    else defaultCommand;
+  defaultCommandScript = lib.concatMapStringsSep " " lib.escapeShellArg fallbackCommand;
 in ''
   #!${pkgs.bash}/bin/bash
   set -euo pipefail
+
+  prepare_only=0
+  if [ "''${1-}" = --setup-only ]; then
+    [ "$#" -eq 1 ] || { printf 'aos-container-init: --setup-only takes no arguments\n' >&2; exit 1; }
+    prepare_only=1
+    shift
+  fi
+  selected_init=()
 
   fail() {
     printf 'aos-container-init: %s\n' "$1" >&2
@@ -157,6 +169,7 @@ in ''
   # commands still run directly from the embedded store and receive the marker
   # used by APM to reject mutation actionably.
   if [ "$state_writable" -ne 1 ]; then
+    [ "$prepare_only" -eq 0 ] || fail "cannot prepare a read-only container state directory"
     PATH="$runtime_path"
     export PATH
     if [ "$#" -eq 0 ]; then
@@ -219,16 +232,18 @@ in ''
   fi
 
   ${lib.optionalString (deploymentPath != null) ''
-    # Resume the package transaction before publishing the container readiness marker.
-    deployment_input=${lib.escapeShellArg deploymentPath}
-    admission_digest=$(< "$deployment_input/admission-sha256")
-    ${pkgs.aos.apm}/bin/apm apply-deployment \
-      --input "$deployment_input" \
-      --state-directory ${lib.escapeShellArg (rootPath "/var/lib/apm/container-runtime")} \
-      --nix-store ${pkgs.nix}/bin/nix-store \
-      --admission "$deployment_input/admission.json" \
-      --admission-sha256 "$admission_digest" \
-      || fail "could not resume the native container deployment"
+    # Reconstructing the local database is safe with immutable store bytes, but
+    # native replay mutates package state. Read-only workloads use baked commands.
+    if [ "$store_writable" -eq 1 ]; then
+      deployment_input=${lib.escapeShellArg deploymentPath}
+      init_selection=$(mktemp "$state_dir/.aos-container-init-selection.XXXXXXXXXX")
+      ${pkgs.aos.packageRuntime}/bin/aos-package-runtime container-startup \
+        --image-input "$deployment_input" \
+        --state-directory ${lib.escapeShellArg (rootPath "/var/lib/apm/container-runtime")} > "$init_selection" \
+        || fail "could not resume the native container deployment"
+      mapfile -d "" -t selected_init < "$init_selection"
+      rm -f -- "$init_selection"
+    fi
   ''}
 
   pid1_stat=$(< /proc/1/stat) \
@@ -254,10 +269,18 @@ in ''
     || fail "could not release the container initialization lock"
   exec 9>&-
 
+  if [ "$prepare_only" -eq 1 ]; then
+    exit 0
+  fi
+
   PATH="$runtime_path"
   export PATH
   if [ "$#" -eq 0 ]; then
-    set -- ${defaultCommandScript}
+    if [ "''${#selected_init[@]}" -gt 0 ]; then
+      set -- "''${selected_init[@]}"
+    else
+      set -- ${defaultCommandScript}
+    fi
   fi
   exec "$@"
 ''

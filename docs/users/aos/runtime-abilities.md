@@ -705,9 +705,11 @@ incomplete ownership records stop restoration before account changes.
 
 Reconfiguration prepares a new desired document. Handlers receive previous
 state when inputs or implementations change. Interrupted mutations are observed
-before retry. Effect completion and generation commit are separately durable;
-a retained transaction receipt prevents replaying completed one-shot work after
-a crash between them.
+before retry. Effect execution and generation commit are separately durable.
+An `Installation` receipt records checked results and pending startup work; a
+`Complete` receipt requires every selected effect to finish. The retained receipt
+prevents replaying completed one-shot work after a crash between these commits.
+For installation before startup, see the [container guide](containers.md).
 
 When an interrupted transaction resumes, the controller observes its completed
 non-transaction process effects in graph order before continuing the pending
@@ -854,7 +856,8 @@ aos docs runtime transaction.json --format html --output execution.html
 `docs` is an alias for `doc`. A package's `options.json` shows operation inputs,
 results, option descriptions, and the packages that declare contracts, select
 handlers, and configure effects. A transaction shows the selected graph's
-ordered effects, owners, dependencies, handlers, lifetimes, and revisions.
+ordered effects, owners, dependencies, handlers, execution phases, lifetimes,
+and revisions.
 These are configured relationships, not observations of running processes.
 Conditional uses absent from the evaluated configuration cannot be inferred.
 

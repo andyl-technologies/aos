@@ -9,6 +9,7 @@ use std::collections::BTreeSet;
 use std::fs;
 
 use anyhow::{Context, Result, ensure};
+use aos_ability_runtime::activation::ExecutionPolicy;
 use aos_ability_runtime::adapter::CancellationToken;
 use aos_ability_runtime::journal::JournalLimits;
 use serde::{Deserialize, Serialize};
@@ -31,7 +32,12 @@ pub fn committed_result(
     generation: u32,
     effect: &str,
 ) -> Result<serde_json::Value> {
-    committed_generation(profile, generation)?
+    let committed = committed_generation(profile, generation)?;
+    ensure!(
+        !committed.deferred.contains(effect),
+        "selected effect is pending startup activation"
+    );
+    committed
         .outputs
         .get(effect)
         .cloned()
@@ -225,7 +231,20 @@ impl<'a, S: DeploymentStore> ProfileDeployment<'a, S> {
     /// Returns an error for absent committed state, failed admission, observation
     /// or dispatch, inconsistent publication records, or failed link publication.
     pub fn reconcile_current(&mut self, cancellation: &CancellationToken) -> Result<()> {
-        self.transactions.reconcile_current(cancellation)?;
+        self.reconcile_current_with_policy(ExecutionPolicy::Complete, cancellation)
+    }
+
+    /// Reconciles installed state without treating deferred startup as executed.
+    ///
+    /// # Errors
+    /// Returns an error for admission, execution, journal or publication failure.
+    pub fn reconcile_current_with_policy(
+        &mut self,
+        policy: ExecutionPolicy,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        self.transactions
+            .reconcile_current_with_policy(policy, cancellation)?;
         self.publish_current()
     }
 
@@ -242,6 +261,10 @@ impl<'a, S: DeploymentStore> ProfileDeployment<'a, S> {
 
     pub(crate) fn pending_reconciliation(&self) -> bool {
         self.transactions.pending_reconciliation()
+    }
+
+    pub(crate) fn pending_policy(&self) -> Option<ExecutionPolicy> {
+        self.transactions.pending_policy()
     }
 
     pub(crate) fn set_observer(
@@ -343,6 +366,26 @@ impl<'a, S: DeploymentStore> ProfileDeployment<'a, S> {
         generation: &Generation,
         cancellation: &CancellationToken,
     ) -> Result<()> {
+        self.apply_with_policy(
+            deployment,
+            generation,
+            ExecutionPolicy::Complete,
+            cancellation,
+        )
+    }
+
+    /// Publishes package files with an explicit receipt for deferred startup work.
+    ///
+    /// # Errors
+    /// Returns an error for mismatched roots, interrupted recovery, failed effects,
+    /// or durable generation publication failure.
+    pub fn apply_with_policy(
+        &mut self,
+        deployment: &Deployment,
+        generation: &Generation,
+        policy: ExecutionPolicy,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
         self.recover(cancellation)?;
         ensure!(
             generation.path == self.profile.path.join(format!("gen-{}", generation.number)),
@@ -380,7 +423,8 @@ impl<'a, S: DeploymentStore> ProfileDeployment<'a, S> {
         fs::File::open(&path)?.sync_all()?;
         fs::File::open(path.parent().context("publication directory is absent")?)?.sync_all()?;
 
-        self.transactions.apply(deployment, cancellation)?;
+        self.transactions
+            .apply_with_policy(deployment, policy, cancellation)?;
         self.publish_current()
     }
 
@@ -1060,5 +1104,192 @@ mod tests {
                 assert!(!profile.path.join("deployment/registry-admissions").exists());
             }
         }
+    }
+
+    struct LifecycleStore;
+
+    impl HandlerArtifacts for LifecycleStore {
+        fn retain(&mut self, _: &Effect) -> Result<()> {
+            Ok(())
+        }
+
+        fn release(&mut self, _: &Effect) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    impl DeploymentStore for LifecycleStore {
+        fn retain_generation(&mut self, _: &str, _: &Deployment) -> Result<()> {
+            Ok(())
+        }
+
+        fn release_generation(&mut self, _: &str, _: &Deployment) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    fn startup_deployment(value: &str) -> (Deployment, String, String) {
+        let root = "/nix/store/00000000000000000000000000000000-handler";
+        let artifact = json!({"name":"handler", "version":"1", "path":root,
+            "outputs":{"out":root}, "mainProgram":"run"});
+        let resolved: ResolvedPackages = serde_json::from_value(json!({
+            "system":"x86_64-linux", "artifacts":[artifact], "modules":[]
+        }))
+        .unwrap();
+        let identity = vec![
+            "profile".to_owned(),
+            "test".to_owned(),
+            "startup".to_owned(),
+        ];
+        let id = aos_ability_plan::module_graph::identity_key(&identity).unwrap();
+        let mut effect = json!({
+            "identity":identity, "owner":"@environment", "phase":"startup",
+            "input":{"value":value},
+            "input_type":{"kind":"submodule","open":false,"fields":{"value":{"kind":"string"}}},
+            "after":[], "results":{"value":{"kind":"string"}},
+            "lifetime":"instance", "timeout_ms":1000,
+            "handler":{"kind":"process", "artifact":root,"executable":format!("{root}/bin/run")}
+        });
+        effect["revision"] =
+            json!(aos_contract::Sha256Digest::of_bytes(serde_json::to_vec(&effect).unwrap()).hex());
+        effect["dependencies"] = json!([]);
+        effect["inputs"] = json!({});
+        let desired = Deployment::decode(&serde_json::to_vec(&json!({
+            "schema":"aos.package.transaction", "scope":["profile","test"],
+            "system":resolved.system, "artifacts":resolved.artifacts, "packages":[],
+            "retire":[], "inputs":[],
+            "graph":{"schema":"aos.activation.graph", "nodes":{id.clone():effect}, "order":[id.clone()]}
+        })).unwrap(), &resolved).unwrap();
+        (desired, id, root.into())
+    }
+
+    struct StartupOutcomes;
+
+    impl aos_ability_runtime::activation::ActivationAdapter for StartupOutcomes {
+        fn retain(&mut self, _: &Effect) -> Result<()> {
+            Ok(())
+        }
+
+        fn release(&mut self, _: &Effect) -> Result<()> {
+            Ok(())
+        }
+
+        fn observe(
+            &mut self,
+            _: &aos_ability_runtime::activation::Invocation,
+            _: &CancellationToken,
+        ) -> Result<aos_ability_runtime::activation::Observation> {
+            Ok(aos_ability_runtime::activation::Observation::RetrySafe)
+        }
+
+        fn invoke(
+            &mut self,
+            invocation: &aos_ability_runtime::activation::Invocation,
+            _: &CancellationToken,
+        ) -> Result<serde_json::Value> {
+            Ok(invocation.input.clone())
+        }
+    }
+
+    #[test]
+    fn consecutive_installations_publish_files_while_startup_results_remain_pending() {
+        let directory = tempfile::tempdir().unwrap();
+        let profile =
+            Profile::open_at(directory.path().join("profile"), ProfileScope::User).unwrap();
+        let cancellation = CancellationToken::default();
+        let (first, service, root) = startup_deployment("first");
+        let (second, _, _) = startup_deployment("second");
+        let mut staged = Vec::new();
+
+        for (sequence, desired, value) in [(1, &first, "first"), (2, &second, "second")] {
+            let generation = profile.new_generation().unwrap();
+            fs::create_dir(generation.path.join("usr")).unwrap();
+            std::os::unix::fs::symlink(
+                &root,
+                generation.path.join("usr/00000000000000000000000000000000"),
+            )
+            .unwrap();
+            fs::write(generation.path.join("configuration"), value).unwrap();
+            let mut consumer =
+                ProfileDeployment::open(&profile, LifecycleStore, JournalLimits::default())
+                    .unwrap();
+            consumer
+                .apply_with_policy(
+                    desired,
+                    &generation,
+                    ExecutionPolicy::Installation,
+                    &cancellation,
+                )
+                .unwrap();
+            assert_eq!(consumer.current().unwrap().sequence, sequence);
+            assert_eq!(
+                consumer.current().unwrap().deferred,
+                BTreeSet::from([service.clone()])
+            );
+            assert!(consumer.current().unwrap().outputs.is_empty());
+            drop(consumer);
+
+            assert_eq!(
+                fs::read_to_string(profile.path.join("current/configuration")).unwrap(),
+                value
+            );
+            assert_eq!(
+                profile.current_generation().unwrap().unwrap().number,
+                generation.number
+            );
+            let error = committed_result(&profile.path, generation.number, &service).unwrap_err();
+            assert!(
+                error.to_string().contains("pending startup activation"),
+                "{error:#}"
+            );
+            staged.push(generation);
+        }
+
+        let mut consumer =
+            ProfileDeployment::open(&profile, LifecycleStore, JournalLimits::default()).unwrap();
+        consumer.prune(&staged[0]).unwrap();
+        let interrupted = CancellationToken::default();
+        interrupted.cancel();
+        assert!(
+            consumer
+                .reconcile_current_with_policy(ExecutionPolicy::Complete, &interrupted)
+                .is_err()
+        );
+        drop(consumer);
+
+        // Complete the durable effect receipt through the adapter boundary,
+        // then recover publication without requiring an immutable process fixture.
+        let mut activation = aos_ability_runtime::activation::Activation::open(
+            profile.path.join("deployment/effects.journal"),
+            JournalLimits::default(),
+        )
+        .unwrap();
+        activation
+            .activate_once_with_policy(
+                &format!("reconcile-2-1-{}", second.id().unwrap()),
+                second.graph(),
+                second.retire(),
+                ExecutionPolicy::Complete,
+                &mut StartupOutcomes,
+                &cancellation,
+            )
+            .unwrap();
+        drop(activation);
+        let mut consumer =
+            ProfileDeployment::open(&profile, LifecycleStore, JournalLimits::default()).unwrap();
+        consumer.recover(&cancellation).unwrap();
+        assert_eq!(consumer.current().unwrap().sequence, 2);
+        assert!(consumer.current().unwrap().deferred.is_empty());
+        drop(consumer);
+
+        assert_eq!(
+            committed_result(&profile.path, staged[1].number, &service).unwrap(),
+            json!({"value":"second"})
+        );
+        assert_eq!(
+            fs::read_to_string(profile.path.join("current/configuration")).unwrap(),
+            "second"
+        );
+        assert!(!has_pending_deployment(&profile.path).unwrap());
     }
 }

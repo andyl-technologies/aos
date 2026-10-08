@@ -18,4 +18,13 @@
 
   config.aos.boot.imageEvidenceExecutable = "${package.handlers}/bin/aos-systemd-image-evidence";
   config.aos.boot.imageRolloutPlatformExecutable = "${package.handlers}/bin/aos-systemd-boot-platform";
+  config.aos.abilities.initSystem.operations.install.effects.default.input = {
+    executable = "${package}/lib/systemd/systemd";
+    arguments = [];
+  };
+  config.aos.abilities.configuration.operations.file.effects.systemd-credential-encrypt-provider.input = {
+    path = "/etc/aos/providers/credential-encrypt";
+    content = "${package.handlers}/bin/aos-systemd-credential-encrypt\n";
+    mode = "0444";
+  };
 }

@@ -33,7 +33,10 @@
 in {
   aos.abilities = {
     serviceManagement.operations.resourceGroup = {
-      handler.program = program;
+      handler = {
+        inherit program;
+        phase = "startup";
+      };
       input = {config, ...}: {
         options.bootstrap = lib.mkOption {
           type = lib.types.bool;
@@ -55,9 +58,15 @@ in {
         priority = defaulted (lib.types.nullOr lib.types.int) null "Optional kernel swap priority.";
       };
       result.options = result;
-      handler.program = program;
+      handler = {
+        inherit program;
+        phase = "startup";
+      };
     };
-    mount.operations.ensure.handler.program = program;
+    mount.operations.ensure.handler = {
+      inherit program;
+      phase = "startup";
+    };
     scheduledActivation.operations.ensure = {
       input.options = {
         name = option text "Human-readable scheduled activation description.";
@@ -68,16 +77,40 @@ in {
         randomized_delay_millis = defaulted nonnegative 0 "Maximum additional randomized delay.";
       };
       result.options = result;
-      handler.program = program;
+      handler = {
+        inherit program;
+        phase = "startup";
+      };
     };
-    credential.operations.deliver.handler.program = program;
+    credential.operations.deliver.handler = {
+      inherit program;
+      phase = "startup";
+    };
     identity.operations = {
-      group.handler.program = program;
-      principal.handler.program = program;
-      membership.handler.program = program;
+      group.handler = {
+        inherit program;
+        phase = "startup";
+      };
+      principal.handler = {
+        inherit program;
+        phase = "startup";
+      };
+      membership.handler = {
+        inherit program;
+        phase = "startup";
+      };
     };
-    listener.operations.claim.handler.program = program;
-    managerWatchdog.operations.ensure.handler.program = program;
-    packagedUnit.operations.ensure.handler.program = program;
+    listener.operations.claim.handler = {
+      inherit program;
+      phase = "startup";
+    };
+    managerWatchdog.operations.ensure.handler = {
+      inherit program;
+      phase = "startup";
+    };
+    packagedUnit.operations.ensure.handler = {
+      inherit program;
+      phase = "startup";
+    };
   };
 }
