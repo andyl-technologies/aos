@@ -16,6 +16,8 @@ in
           == ".git"
           || base == ".direnv"
           || base == ".worktrees"
+          || base == "__pycache__"
+          || lib.hasPrefix ".tmp" base
           || base == "result"
           || lib.hasPrefix "result-" base
           || base == "target"
