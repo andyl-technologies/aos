@@ -1,9 +1,13 @@
-//! Public dormant facade for the sealed protected hello-flight typestate.
+//! Authenticated broker-session custody, transport, and domain integration.
 //!
-//! This module exposes only fixed-custody adoption of an already-connected
-//! ordinary sequenced-packet socket. The actual handshake states remain sealed
-//! in [`crate::handshake`], and this facade registers no listener, route,
-//! service registration, background task, or broker effect.
+//! Explicitly adopted sequenced-packet sockets progress through sealed hello
+//! states in `crate::handshake`. This module retains exact request/response
+//! custody and joins concrete domain effects to protected terminal commits and
+//! recovery. Its private `host_catalog_publication` child owns catalog
+//! publication integration, descriptor custody, and readback/retry recipes;
+//! shared session mechanics remain with their original owners.
+//!
+//! This module performs no listener or route registration.
 
 mod consumer_cgroup_terminal;
 mod fuse_worker_preparation;

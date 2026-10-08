@@ -248,8 +248,16 @@ application-facing ports. Services selects Runtime for Controller alone;
 other roles keep their original lower owners. This cut does not isolate
 Session Security's concrete domain dependency closure.
 
-Its private `resident_custody` child owns the unchanged partial parent/worker
-slots, genuine worker loans, first native causes, and negative terminal fences.
+Session Security's private `dormant_handshake::host_catalog_publication` owns
+the complete catalog descriptor/recovery reservoir and its execution, physical
+readback, proven-absent retry, and error-terminal recipes. Original fields,
+drop order, native failures, currentness checks, and public paths remain intact.
+Shared session mechanics stay with their original owners. This private grouping
+does not remove domain dependencies or establish runtime qualification.
+
+Controller Runtime's private `resident_custody` child owns the unchanged partial
+parent/worker slots, genuine worker loans, first native causes, and negative
+terminal fences.
 
 Within the Controller integration, private `activation` owns the complete
 ordinary and retained startup recipes, journal assembly, readiness notification
