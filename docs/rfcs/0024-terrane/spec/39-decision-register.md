@@ -2308,6 +2308,36 @@ is added rather than editing history.
     associations remain required. This clarification completes no task or gate.
   - **Affects:** ALG-38, PROP-30, PROV-16 and D-110.
 
+- **[D-112] Publish owning common-Memo decoder witnesses.**
+  - **Status:** Decided (2026-10-08)
+  - **Decision:** Add independently reproduced positive and negative witnesses
+    for the existing common Memo record to the golden reference. Three positive
+    field models compare complete canonical bytes, both retained fields and the
+    immutable record identity. Negative wires cover field presence, ordering,
+    types and digest widths, noncanonical encodings, hostile lengths, oversize
+    input, trailing bytes and every strict prefix of the three positive wires.
+    The owning Memo decoder must consume the published inputs directly. Retain
+    the existing foundation descriptor witness and additionally decode its
+    complete Memo payload through that same public codec.
+  - **Rationale:** The foundation vector already publishes a complete 71-byte
+    Memo payload and its immutable descriptor. Descriptor validation does not
+    independently establish the common record's decoded field contract or
+    rejection of malformed records. TEST-1/2 require the owning format consumer
+    before conformance; private codec tests and unpublished properties cannot
+    substitute for that published coverage.
+  - **Alternatives considered:** Treat a descriptor decoder as the Memo decoder
+    (rejected: it does not parse the payload); change the record schema (rejected:
+    the existing CDDL and codec agree); hash the retained recipe lookup field as
+    a new recipe (rejected: no recipe preimage is supplied by these field models).
+  - **Compatibility:** No existing identity, encoding, media type, schema,
+    requirement ID, gate name or golden byte changes. The detached recipe lookup
+    field remains distinct from the immutable record identity. Negative wires
+    receive no immutable identity; format decoding grants no replay, trust or
+    publication authority. Tiny hostile inputs demonstrate refusal, without
+    claiming allocator instrumentation. This addition completes no task or gate.
+  - **Affects:** TEST-1 to TEST-3, OBJ-2/6 and DRV-21. DRV-22's independent
+    replay and complete runtime qualification remain required.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

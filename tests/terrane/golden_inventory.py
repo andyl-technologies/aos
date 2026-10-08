@@ -51,6 +51,7 @@ SECTIONS = {
         ((0, 176, 176), ("index",)),
     "Recorded property trust context field witnesses":
         ((0, 113, 113), ("recorded-context",)),
+    "Common immutable memo record witnesses": ((252, 0, 252), ("memo",)),
 }
 
 # These two sections contain only fixture metadata and reproduction instructions.

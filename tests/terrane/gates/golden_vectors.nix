@@ -14,6 +14,7 @@
     index = "index-models.nix";
     legacy = "legacy-vectors.nix";
     lineage = "lineage-models.nix";
+    memo = "memo-vectors.nix";
     namespace = "namespace-models.nix";
     pack = "pack-vectors.nix";
     prefix = "prefix-models.nix";

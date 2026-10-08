@@ -1805,6 +1805,17 @@ shared-target refusal occurred before compilation and remains separately
 recorded. These Cargo results do not qualify the owning Nix gates, published
 common-Memo decoder witnesses, WASM execution or the complete trunk floor.
 
+The shared `core-fuzz` harness now requires the exact reviewed 53-case compiled
+inventory and every corresponding successful execution, rejecting omissions,
+duplicates, ignored cases and filtering rather than accepting a nonempty count.
+Its source-bound Nix qualification remains pending. D-112 adds three positive
+common-Memo field models and 249 independently produced rejecting wires,
+including every strict prefix of the positive records. Existing foundation
+payload and descriptor bytes remain unchanged. The twentieth mandatory golden
+consumer must compare independent bytes and identities, decode exact Memo fields
+and reject every negative through the owning codec. Its implementation and
+execution remain pending; the new dependency fails explicitly until supplied.
+
 The sealed current floor contains 89 aggregate gates, including all 69 T0/T1
 plan-required names and twenty implemented supporting checks. Read-only evaluation
 finds `gc-two-phase-delete` explicitly pending. Output validity establishes no

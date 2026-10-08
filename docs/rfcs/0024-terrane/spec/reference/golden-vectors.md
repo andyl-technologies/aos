@@ -27005,3 +27005,2432 @@ kind = context-negative
 wire = 880358200101010101010101010101010101010101010101010101010101010101010101667075626c69634c826670726573657463616e79f61a000400005901888185835820010101010101010101010101010101010101010101010101010101010101010158200404040404040404040404040404040404040404040404040404040404040404486469722f6974656d6b686173682e736861323536667075626c69634e67726166742f6469722f6974656d8958200b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b58200c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c6b686173682e73686132353666736861323536613158225820767676767676767676767676767676767676767676767676767676767676767658200d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d8358200e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e58200f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f4b736f757263652f6974656d8270707269766174653a70726f6475636572516d6f756e742f736f757263652f6974656d0084582003030303030303030303030303030303030303030303030303030303030303030198216361636c68626173656c696e65656368756e6b68636c61737369667974636f6d70616374696f6e5f7468726573686f6c646b636f6d7072657373696f6e65646564757068646567726164656466646f6d61696e6a6475726162696c6974796a656e6372797074696f6e6f6761705f6d657267655f62797465736668617368657364686f6d6565696e646578656d657267656a6f6e2d72656c656173656b706173737468726f7567686870726566657463686571756f74616a7265617373656d626c796a726564756e64616e63796d7265666c6f675f72657461696e697265706c69636174656672657461696e6e7370616e5f6d61785f62797465736573746f72656c7374726963742d6174747273657472757374647761726d7477686f6c655f7061636b5f7468726573686f6c646477697065677772697465727380
 result = structural rejection
 ```
+
+## Common immutable memo record witnesses
+
+These TEST-1/2 witnesses reproduce the existing CDDL common Memo record, {1:
+digest32, 2: digest32}, directly through its owning format decoder. Positive
+record identities use the registered OBJ-2 domain. Detached recipe lookup
+fields carry no descriptor. These are format witnesses; they establish neither
+DRV-22 replay nor trust or publication authority. Reproduce this section with
+tests/terrane/memo_vectors.py --emit --blake3-bin <reference_blake3>, using
+the source-built raw primitive helper.
+
+### common-memo-zero
+
+```text
+recipe = 0000000000000000000000000000000000000000000000000000000000000000
+result = 0000000000000000000000000000000000000000000000000000000000000000
+identity = 9a3892be218311c1293c77561162245a748381f7409fcb2ea6b7aef597f0ccb9
+length = 71
+```
+
+```hex
+a20158200000000000000000000000000000000000000000000000000000000000000000
+0258200000000000000000000000000000000000000000000000000000000000000000
+```
+
+### common-memo-ff
+
+```text
+recipe = ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+result = ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+identity = 20ca242f16e238e6437a9428bae2c6c191eb0b6495bdbf6179ee112cbf08a3f6
+length = 71
+```
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+025820ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+```
+
+### common-memo-increasing
+
+```text
+recipe = 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+result = 202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f
+identity = 7c74913e73c9843cc3664ae929cf23f9b64ca9a3cd1c8d788975e6e522657762
+length = 71
+```
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+025820202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f
+```
+
+### common-memo-reject-missing-recipe
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a1025820202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f
+```
+
+### common-memo-reject-missing-root
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a1015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+```
+
+### common-memo-reject-empty-map
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a0
+```
+
+### common-memo-reject-unknown-field
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+035820202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f
+```
+
+### common-memo-reject-extra-field
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a3015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+025820202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f03
+00
+```
+
+### common-memo-reject-duplicate-recipe
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+```
+
+### common-memo-reject-duplicate-root
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2025820202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f
+025820202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f
+```
+
+### common-memo-reject-reordered
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2025820202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f
+015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+```
+
+### common-memo-reject-array-container
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+82015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+025820202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f
+```
+
+### common-memo-reject-null-container
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+f6
+```
+
+### common-memo-reject-text-key
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a261785820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e
+1f025820202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f
+```
+
+### common-memo-reject-field-1-digest-31
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a201581f000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e02
+5820202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f
+```
+
+### common-memo-reject-field-1-digest-33
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015821000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+00025820202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f
+```
+
+### common-memo-reject-field-1-wrong-uint
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20100025820202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d
+3e3f
+```
+
+### common-memo-reject-field-1-wrong-null
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a201f6025820202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d
+3e3f
+```
+
+### common-memo-reject-field-1-wrong-array
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20180025820202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d
+3e3f
+```
+
+### common-memo-reject-field-1-wrong-text
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2017820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+025820202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f
+```
+
+### common-memo-reject-field-1-nonminimal-length
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a201590020000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e
+1f025820202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f
+```
+
+### common-memo-reject-field-1-indefinite-bytes
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015f5820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e
+1fff025820202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e
+3f
+```
+
+### common-memo-reject-field-1-hostile-u64
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015bffffffffffffffff025820202122232425262728292a2b2c2d2e2f303132333435
+363738393a3b3c3d3e3f
+```
+
+### common-memo-reject-field-2-digest-31
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+02581f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e
+```
+
+### common-memo-reject-field-2-digest-33
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+025821202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f00
+```
+
+### common-memo-reject-field-2-wrong-uint
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+0200
+```
+
+### common-memo-reject-field-2-wrong-null
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+02f6
+```
+
+### common-memo-reject-field-2-wrong-array
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+0280
+```
+
+### common-memo-reject-field-2-wrong-text
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+027820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+```
+
+### common-memo-reject-field-2-nonminimal-length
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+02590020000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+```
+
+### common-memo-reject-field-2-indefinite-bytes
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+025f5820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+ff
+```
+
+### common-memo-reject-field-2-hostile-u64
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+025bffffffffffffffff
+```
+
+### common-memo-reject-nonminimal-map
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+b802015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e
+1f025820202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f
+```
+
+### common-memo-reject-nonminimal-key-1
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a218015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e
+1f025820202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f
+```
+
+### common-memo-reject-nonminimal-key-2
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+18025820202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f
+```
+
+### common-memo-reject-indefinite-map
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+bf015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+025820202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3fff
+```
+
+### common-memo-reject-hostile-map
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+bbffffffffffffffff
+```
+
+### common-memo-reject-trailing-null
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+025820202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3ff6
+```
+
+### common-memo-reject-oversize
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+000000000000000000000000000000000000000000000000000000000000000000000000
+000000000000000000000000000000000000000000000000000000000000000000000000
+```
+
+### common-memo-reject-zero-truncated-0
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+
+```
+
+### common-memo-reject-zero-truncated-1
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2
+```
+
+### common-memo-reject-zero-truncated-2
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a201
+```
+
+### common-memo-reject-zero-truncated-3
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158
+```
+
+### common-memo-reject-zero-truncated-4
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820
+```
+
+### common-memo-reject-zero-truncated-5
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a201582000
+```
+
+### common-memo-reject-zero-truncated-6
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158200000
+```
+
+### common-memo-reject-zero-truncated-7
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000000
+```
+
+### common-memo-reject-zero-truncated-8
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a201582000000000
+```
+
+### common-memo-reject-zero-truncated-9
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158200000000000
+```
+
+### common-memo-reject-zero-truncated-10
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000000000000
+```
+
+### common-memo-reject-zero-truncated-11
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a201582000000000000000
+```
+
+### common-memo-reject-zero-truncated-12
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158200000000000000000
+```
+
+### common-memo-reject-zero-truncated-13
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000000000000000000
+```
+
+### common-memo-reject-zero-truncated-14
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a201582000000000000000000000
+```
+
+### common-memo-reject-zero-truncated-15
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158200000000000000000000000
+```
+
+### common-memo-reject-zero-truncated-16
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000000000000000000000000
+```
+
+### common-memo-reject-zero-truncated-17
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a201582000000000000000000000000000
+```
+
+### common-memo-reject-zero-truncated-18
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158200000000000000000000000000000
+```
+
+### common-memo-reject-zero-truncated-19
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000000000000000000000000000000
+```
+
+### common-memo-reject-zero-truncated-20
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a201582000000000000000000000000000000000
+```
+
+### common-memo-reject-zero-truncated-21
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158200000000000000000000000000000000000
+```
+
+### common-memo-reject-zero-truncated-22
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000000000000000000000000000000000000
+```
+
+### common-memo-reject-zero-truncated-23
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a201582000000000000000000000000000000000000000
+```
+
+### common-memo-reject-zero-truncated-24
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158200000000000000000000000000000000000000000
+```
+
+### common-memo-reject-zero-truncated-25
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000000000000000000000000000000000000000000
+```
+
+### common-memo-reject-zero-truncated-26
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a201582000000000000000000000000000000000000000000000
+```
+
+### common-memo-reject-zero-truncated-27
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158200000000000000000000000000000000000000000000000
+```
+
+### common-memo-reject-zero-truncated-28
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000000000000000000000000000000000000000000000000
+```
+
+### common-memo-reject-zero-truncated-29
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a201582000000000000000000000000000000000000000000000000000
+```
+
+### common-memo-reject-zero-truncated-30
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158200000000000000000000000000000000000000000000000000000
+```
+
+### common-memo-reject-zero-truncated-31
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000000000000000000000000000000000000000000000000000000
+```
+
+### common-memo-reject-zero-truncated-32
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a201582000000000000000000000000000000000000000000000000000000000
+```
+
+### common-memo-reject-zero-truncated-33
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158200000000000000000000000000000000000000000000000000000000000
+```
+
+### common-memo-reject-zero-truncated-34
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000000000000000000000000000000000000000000000000000000000000
+```
+
+### common-memo-reject-zero-truncated-35
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a201582000000000000000000000000000000000000000000000000000000000000000
+```
+
+### common-memo-reject-zero-truncated-36
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158200000000000000000000000000000000000000000000000000000000000000000
+```
+
+### common-memo-reject-zero-truncated-37
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158200000000000000000000000000000000000000000000000000000000000000000
+02
+```
+
+### common-memo-reject-zero-truncated-38
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158200000000000000000000000000000000000000000000000000000000000000000
+0258
+```
+
+### common-memo-reject-zero-truncated-39
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158200000000000000000000000000000000000000000000000000000000000000000
+025820
+```
+
+### common-memo-reject-zero-truncated-40
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158200000000000000000000000000000000000000000000000000000000000000000
+02582000
+```
+
+### common-memo-reject-zero-truncated-41
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158200000000000000000000000000000000000000000000000000000000000000000
+0258200000
+```
+
+### common-memo-reject-zero-truncated-42
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158200000000000000000000000000000000000000000000000000000000000000000
+025820000000
+```
+
+### common-memo-reject-zero-truncated-43
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158200000000000000000000000000000000000000000000000000000000000000000
+02582000000000
+```
+
+### common-memo-reject-zero-truncated-44
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158200000000000000000000000000000000000000000000000000000000000000000
+0258200000000000
+```
+
+### common-memo-reject-zero-truncated-45
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158200000000000000000000000000000000000000000000000000000000000000000
+025820000000000000
+```
+
+### common-memo-reject-zero-truncated-46
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158200000000000000000000000000000000000000000000000000000000000000000
+02582000000000000000
+```
+
+### common-memo-reject-zero-truncated-47
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158200000000000000000000000000000000000000000000000000000000000000000
+0258200000000000000000
+```
+
+### common-memo-reject-zero-truncated-48
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158200000000000000000000000000000000000000000000000000000000000000000
+025820000000000000000000
+```
+
+### common-memo-reject-zero-truncated-49
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158200000000000000000000000000000000000000000000000000000000000000000
+02582000000000000000000000
+```
+
+### common-memo-reject-zero-truncated-50
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158200000000000000000000000000000000000000000000000000000000000000000
+0258200000000000000000000000
+```
+
+### common-memo-reject-zero-truncated-51
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158200000000000000000000000000000000000000000000000000000000000000000
+025820000000000000000000000000
+```
+
+### common-memo-reject-zero-truncated-52
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158200000000000000000000000000000000000000000000000000000000000000000
+02582000000000000000000000000000
+```
+
+### common-memo-reject-zero-truncated-53
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158200000000000000000000000000000000000000000000000000000000000000000
+0258200000000000000000000000000000
+```
+
+### common-memo-reject-zero-truncated-54
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158200000000000000000000000000000000000000000000000000000000000000000
+025820000000000000000000000000000000
+```
+
+### common-memo-reject-zero-truncated-55
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158200000000000000000000000000000000000000000000000000000000000000000
+02582000000000000000000000000000000000
+```
+
+### common-memo-reject-zero-truncated-56
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158200000000000000000000000000000000000000000000000000000000000000000
+0258200000000000000000000000000000000000
+```
+
+### common-memo-reject-zero-truncated-57
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158200000000000000000000000000000000000000000000000000000000000000000
+025820000000000000000000000000000000000000
+```
+
+### common-memo-reject-zero-truncated-58
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158200000000000000000000000000000000000000000000000000000000000000000
+02582000000000000000000000000000000000000000
+```
+
+### common-memo-reject-zero-truncated-59
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158200000000000000000000000000000000000000000000000000000000000000000
+0258200000000000000000000000000000000000000000
+```
+
+### common-memo-reject-zero-truncated-60
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158200000000000000000000000000000000000000000000000000000000000000000
+025820000000000000000000000000000000000000000000
+```
+
+### common-memo-reject-zero-truncated-61
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158200000000000000000000000000000000000000000000000000000000000000000
+02582000000000000000000000000000000000000000000000
+```
+
+### common-memo-reject-zero-truncated-62
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158200000000000000000000000000000000000000000000000000000000000000000
+0258200000000000000000000000000000000000000000000000
+```
+
+### common-memo-reject-zero-truncated-63
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158200000000000000000000000000000000000000000000000000000000000000000
+025820000000000000000000000000000000000000000000000000
+```
+
+### common-memo-reject-zero-truncated-64
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158200000000000000000000000000000000000000000000000000000000000000000
+02582000000000000000000000000000000000000000000000000000
+```
+
+### common-memo-reject-zero-truncated-65
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158200000000000000000000000000000000000000000000000000000000000000000
+0258200000000000000000000000000000000000000000000000000000
+```
+
+### common-memo-reject-zero-truncated-66
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158200000000000000000000000000000000000000000000000000000000000000000
+025820000000000000000000000000000000000000000000000000000000
+```
+
+### common-memo-reject-zero-truncated-67
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158200000000000000000000000000000000000000000000000000000000000000000
+02582000000000000000000000000000000000000000000000000000000000
+```
+
+### common-memo-reject-zero-truncated-68
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158200000000000000000000000000000000000000000000000000000000000000000
+0258200000000000000000000000000000000000000000000000000000000000
+```
+
+### common-memo-reject-zero-truncated-69
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158200000000000000000000000000000000000000000000000000000000000000000
+025820000000000000000000000000000000000000000000000000000000000000
+```
+
+### common-memo-reject-zero-truncated-70
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158200000000000000000000000000000000000000000000000000000000000000000
+02582000000000000000000000000000000000000000000000000000000000000000
+```
+
+### common-memo-reject-ff-truncated-0
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+
+```
+
+### common-memo-reject-ff-truncated-1
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2
+```
+
+### common-memo-reject-ff-truncated-2
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a201
+```
+
+### common-memo-reject-ff-truncated-3
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158
+```
+
+### common-memo-reject-ff-truncated-4
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820
+```
+
+### common-memo-reject-ff-truncated-5
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ff
+```
+
+### common-memo-reject-ff-truncated-6
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffff
+```
+
+### common-memo-reject-ff-truncated-7
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffff
+```
+
+### common-memo-reject-ff-truncated-8
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffff
+```
+
+### common-memo-reject-ff-truncated-9
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffff
+```
+
+### common-memo-reject-ff-truncated-10
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffff
+```
+
+### common-memo-reject-ff-truncated-11
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-12
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-13
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-14
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-15
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-16
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-17
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-18
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-19
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-20
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-21
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-22
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-23
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-24
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-25
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-26
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-27
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-28
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-29
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffffffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-30
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffffffffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-31
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffffffffffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-32
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-33
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-34
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-35
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-36
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-37
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+02
+```
+
+### common-memo-reject-ff-truncated-38
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+0258
+```
+
+### common-memo-reject-ff-truncated-39
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+025820
+```
+
+### common-memo-reject-ff-truncated-40
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+025820ff
+```
+
+### common-memo-reject-ff-truncated-41
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+025820ffff
+```
+
+### common-memo-reject-ff-truncated-42
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+025820ffffff
+```
+
+### common-memo-reject-ff-truncated-43
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+025820ffffffff
+```
+
+### common-memo-reject-ff-truncated-44
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+025820ffffffffff
+```
+
+### common-memo-reject-ff-truncated-45
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+025820ffffffffffff
+```
+
+### common-memo-reject-ff-truncated-46
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+025820ffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-47
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+025820ffffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-48
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+025820ffffffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-49
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+025820ffffffffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-50
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+025820ffffffffffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-51
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+025820ffffffffffffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-52
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+025820ffffffffffffffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-53
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+025820ffffffffffffffffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-54
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+025820ffffffffffffffffffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-55
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+025820ffffffffffffffffffffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-56
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+025820ffffffffffffffffffffffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-57
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+025820ffffffffffffffffffffffffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-58
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+025820ffffffffffffffffffffffffffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-59
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+025820ffffffffffffffffffffffffffffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-60
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+025820ffffffffffffffffffffffffffffffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-61
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+025820ffffffffffffffffffffffffffffffffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-62
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+025820ffffffffffffffffffffffffffffffffffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-63
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+025820ffffffffffffffffffffffffffffffffffffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-64
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+025820ffffffffffffffffffffffffffffffffffffffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-65
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+025820ffffffffffffffffffffffffffffffffffffffffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-66
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+025820ffffffffffffffffffffffffffffffffffffffffffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-67
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+025820ffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-68
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+025820ffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-69
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+025820ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+```
+
+### common-memo-reject-ff-truncated-70
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+025820ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+```
+
+### common-memo-reject-increasing-truncated-0
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+
+```
+
+### common-memo-reject-increasing-truncated-1
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2
+```
+
+### common-memo-reject-increasing-truncated-2
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a201
+```
+
+### common-memo-reject-increasing-truncated-3
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158
+```
+
+### common-memo-reject-increasing-truncated-4
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820
+```
+
+### common-memo-reject-increasing-truncated-5
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a201582000
+```
+
+### common-memo-reject-increasing-truncated-6
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158200001
+```
+
+### common-memo-reject-increasing-truncated-7
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102
+```
+
+### common-memo-reject-increasing-truncated-8
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a201582000010203
+```
+
+### common-memo-reject-increasing-truncated-9
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158200001020304
+```
+
+### common-memo-reject-increasing-truncated-10
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405
+```
+
+### common-memo-reject-increasing-truncated-11
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a201582000010203040506
+```
+
+### common-memo-reject-increasing-truncated-12
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a20158200001020304050607
+```
+
+### common-memo-reject-increasing-truncated-13
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708
+```
+
+### common-memo-reject-increasing-truncated-14
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a201582000010203040506070809
+```
+
+### common-memo-reject-increasing-truncated-15
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a
+```
+
+### common-memo-reject-increasing-truncated-16
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b
+```
+
+### common-memo-reject-increasing-truncated-17
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c
+```
+
+### common-memo-reject-increasing-truncated-18
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d
+```
+
+### common-memo-reject-increasing-truncated-19
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e
+```
+
+### common-memo-reject-increasing-truncated-20
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f
+```
+
+### common-memo-reject-increasing-truncated-21
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f10
+```
+
+### common-memo-reject-increasing-truncated-22
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f1011
+```
+
+### common-memo-reject-increasing-truncated-23
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112
+```
+
+### common-memo-reject-increasing-truncated-24
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f10111213
+```
+
+### common-memo-reject-increasing-truncated-25
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f1011121314
+```
+
+### common-memo-reject-increasing-truncated-26
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415
+```
+
+### common-memo-reject-increasing-truncated-27
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f10111213141516
+```
+
+### common-memo-reject-increasing-truncated-28
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f1011121314151617
+```
+
+### common-memo-reject-increasing-truncated-29
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718
+```
+
+### common-memo-reject-increasing-truncated-30
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f10111213141516171819
+```
+
+### common-memo-reject-increasing-truncated-31
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a
+```
+
+### common-memo-reject-increasing-truncated-32
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b
+```
+
+### common-memo-reject-increasing-truncated-33
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c
+```
+
+### common-memo-reject-increasing-truncated-34
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d
+```
+
+### common-memo-reject-increasing-truncated-35
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e
+```
+
+### common-memo-reject-increasing-truncated-36
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+```
+
+### common-memo-reject-increasing-truncated-37
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+02
+```
+
+### common-memo-reject-increasing-truncated-38
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+0258
+```
+
+### common-memo-reject-increasing-truncated-39
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+025820
+```
+
+### common-memo-reject-increasing-truncated-40
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+02582020
+```
+
+### common-memo-reject-increasing-truncated-41
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+0258202021
+```
+
+### common-memo-reject-increasing-truncated-42
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+025820202122
+```
+
+### common-memo-reject-increasing-truncated-43
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+02582020212223
+```
+
+### common-memo-reject-increasing-truncated-44
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+0258202021222324
+```
+
+### common-memo-reject-increasing-truncated-45
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+025820202122232425
+```
+
+### common-memo-reject-increasing-truncated-46
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+02582020212223242526
+```
+
+### common-memo-reject-increasing-truncated-47
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+0258202021222324252627
+```
+
+### common-memo-reject-increasing-truncated-48
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+025820202122232425262728
+```
+
+### common-memo-reject-increasing-truncated-49
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+02582020212223242526272829
+```
+
+### common-memo-reject-increasing-truncated-50
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+025820202122232425262728292a
+```
+
+### common-memo-reject-increasing-truncated-51
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+025820202122232425262728292a2b
+```
+
+### common-memo-reject-increasing-truncated-52
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+025820202122232425262728292a2b2c
+```
+
+### common-memo-reject-increasing-truncated-53
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+025820202122232425262728292a2b2c2d
+```
+
+### common-memo-reject-increasing-truncated-54
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+025820202122232425262728292a2b2c2d2e
+```
+
+### common-memo-reject-increasing-truncated-55
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+025820202122232425262728292a2b2c2d2e2f
+```
+
+### common-memo-reject-increasing-truncated-56
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+025820202122232425262728292a2b2c2d2e2f30
+```
+
+### common-memo-reject-increasing-truncated-57
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+025820202122232425262728292a2b2c2d2e2f3031
+```
+
+### common-memo-reject-increasing-truncated-58
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+025820202122232425262728292a2b2c2d2e2f303132
+```
+
+### common-memo-reject-increasing-truncated-59
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+025820202122232425262728292a2b2c2d2e2f30313233
+```
+
+### common-memo-reject-increasing-truncated-60
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+025820202122232425262728292a2b2c2d2e2f3031323334
+```
+
+### common-memo-reject-increasing-truncated-61
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+025820202122232425262728292a2b2c2d2e2f303132333435
+```
+
+### common-memo-reject-increasing-truncated-62
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+025820202122232425262728292a2b2c2d2e2f30313233343536
+```
+
+### common-memo-reject-increasing-truncated-63
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+025820202122232425262728292a2b2c2d2e2f3031323334353637
+```
+
+### common-memo-reject-increasing-truncated-64
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+025820202122232425262728292a2b2c2d2e2f303132333435363738
+```
+
+### common-memo-reject-increasing-truncated-65
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+025820202122232425262728292a2b2c2d2e2f30313233343536373839
+```
+
+### common-memo-reject-increasing-truncated-66
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+025820202122232425262728292a2b2c2d2e2f303132333435363738393a
+```
+
+### common-memo-reject-increasing-truncated-67
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+025820202122232425262728292a2b2c2d2e2f303132333435363738393a3b
+```
+
+### common-memo-reject-increasing-truncated-68
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+025820202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c
+```
+
+### common-memo-reject-increasing-truncated-69
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+025820202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d
+```
+
+### common-memo-reject-increasing-truncated-70
+
+Owning Memo decoder rejects this independent wire input. No immutable identity
+is assigned.
+
+```hex
+a2015820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+025820202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e
+```
