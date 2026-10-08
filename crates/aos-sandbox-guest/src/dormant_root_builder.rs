@@ -1,7 +1,7 @@
-//! Offline sandbox-root builder seams for dormant and concrete guest agents.
+//! Offline sandbox-root construction for the concrete Guest agent.
 //!
-//! Each builder materializes exact package-pinned executables and a protected
-//! agent credential into a caller-provided staging root. Neither installs
+//! The builder materializes exact package-pinned executables and a protected
+//! agent credential into a caller-provided staging root. It neither installs
 //! OpenSSH route trust material or activates the guest transport.
 
 use std::fs::{self, OpenOptions};
@@ -201,7 +201,7 @@ fn content_digest(bytes: &[u8]) -> ObjectDigest {
     ObjectDigest::from_bytes(digest.finalize().into())
 }
 
-/// Reports offline dormant-root construction failure.
+/// Reports offline Guest root construction failure.
 #[derive(Debug, thiserror::Error)]
 pub enum DormantGuestRootBuildErrorV1 {
     /// A path or commitment violates the fixed build contract.
