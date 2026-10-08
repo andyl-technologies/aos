@@ -1182,7 +1182,7 @@ fn take<const N: usize>(value: &[u8], offset: &mut usize) -> [u8; N] {
     bytes
 }
 
-fn digest_bytes(value: &[u8]) -> [u8; 32] {
+pub(in crate::journal) fn digest_bytes(value: &[u8]) -> [u8; 32] {
     Sha256::digest(value).into()
 }
 
