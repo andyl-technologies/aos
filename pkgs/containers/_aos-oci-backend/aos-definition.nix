@@ -54,7 +54,7 @@ in {
         {
           path = "/etc/profile";
           mode = "0644";
-          text = import ../../system/_aos-host-policy/profile-text.nix {
+          text = import (pkgs.aos-host-policy.module + "/profile-text.nix") {
             inherit lib;
             path = "/var/lib/profiles/per-user/root/current/bin:/var/lib/profiles/per-user/root/current/sbin:/usr/bin:/usr/sbin:/bin";
             pager = "cat";
@@ -63,7 +63,7 @@ in {
         {
           path = "/etc/bashrc";
           mode = "0644";
-          text = import ../../system/_aos-host-policy/bashrc-text.nix {
+          text = import (pkgs.aos-host-policy.module + "/bashrc-text.nix") {
             inherit lib;
             completionFiles = ["${pkgs.apm}/share/bash-completion/completions/apm"];
           };
@@ -71,7 +71,7 @@ in {
         {
           path = "/etc/inputrc";
           mode = "0644";
-          text = import ../../system/_aos-host-policy/inputrc-text.nix;
+          text = import (pkgs.aos-host-policy.module + "/inputrc-text.nix");
         }
         {
           path = "/root/.bashrc";
