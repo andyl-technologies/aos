@@ -426,7 +426,6 @@ fn controller_composition_has_an_exact_closed_declaration_surface() {
             "receive_authenticated_consumer_cgroup_response",
             "receive_authenticated_host_request",
             "receive_authenticated_mount_scope_identity_response",
-            "receive_authenticated_publish_request",
             "receive_authenticated_request",
             "receive_authenticated_response",
             "receive_authenticated_scope_response",
