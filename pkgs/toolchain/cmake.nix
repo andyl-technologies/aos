@@ -2,6 +2,7 @@
 {
   mkDerivation,
   fetchurl,
+  bash,
   gnumake,
   openssl,
   zlib,
@@ -10,6 +11,10 @@
   buildPackages,
 }: let
   version = "4.4.3";
+  buildBash =
+    if stdenv.isCross
+    then buildPackages.bash
+    else bash;
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
   zlibLibrary =
     if isDarwinCross
@@ -59,9 +64,10 @@ in
         buildPackages.cmake
         buildPackages.ninja
       ]
-      else [gnumake];
+      else [gnumake buildBash];
     runtimeDeps =
       [
+        bash
         openssl
         zlib
       ]
@@ -78,6 +84,20 @@ in
           script = ''
             tar xf $src
             cd cmake-${version}${darwinCurlTrustPatch}
+
+            # The mini bootstrap generator runs on the build platform;
+            # installed CMake generates rules for its own host's shell.
+            test "$(head -n 1 bootstrap)" = '#!/bin/sh'
+            sed -i '1s|^#!/bin/sh$|#!${buildBash}/bin/bash|' bootstrap
+
+            unix_makefile_generator=Source/cmLocalUnixMakefileGenerator3.cxx
+            test "$(grep -Fc '"SHELL = /bin/sh\n"' "$unix_makefile_generator")" -eq 1
+            sed -i '/"SHELL = \/bin\/sh\\n"/c\
+            #if defined(CMAKE_BOOTSTRAP)\
+                                  "SHELL = ${buildBash}/bin/bash\\n"\
+            #else\
+                                  "SHELL = ${bash}/bin/bash\\n"\
+            #endif' "$unix_makefile_generator"
           '';
         }
       ]
@@ -131,7 +151,10 @@ in
           {
             name = "configure";
             script = ''
-              ./bootstrap \
+              # Bootstrap invokes GNU make before the generated shell policy
+              # exists. Keep that execution on the declared build-side Bash.
+              MAKEFLAGS="''${MAKEFLAGS:+$MAKEFLAGS }SHELL=${buildBash}/bin/bash" \
+                ${buildBash}/bin/bash ./bootstrap \
                 --prefix=$out \
                 --parallel=$NIX_BUILD_CORES \
                 --system-zlib \
@@ -149,13 +172,13 @@ in
           {
             name = "build";
             script = ''
-              make -j$NIX_BUILD_CORES
+              make SHELL=${buildBash}/bin/bash -j$NIX_BUILD_CORES
             '';
           }
           {
             name = "install";
             script = ''
-              make install
+              make SHELL=${buildBash}/bin/bash install
             '';
           }
         ]
