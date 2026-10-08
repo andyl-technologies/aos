@@ -1756,6 +1756,25 @@ per-case timings are not claimed. All 6,070 tracked inputs and the selected
 executable remain unchanged through the original invocations. The owning
 collector gate, complete deletion matrix and missing-Trash correction on its
 combined source remain separate obligations.
+The executed fixture's windows are C=30, G=60, D=60 and H=90 seconds;
+its retained wait and independent elapsed assertion enforce the full D=60.
+An earlier private packet's phrase "full D90" is a narrative error, corrected
+separately while retaining the original packet and logs.
+
+A separate `native-local-gc-conformance` auxiliary requires all eleven ordinary
+retirement and three post-Done witnesses, plus the six first-ownership,
+eleven deletion/recovery, ten preownership restore and one retirement-fault
+cases. Its prerequisites retain all five root, fourteen mark, four grace,
+nineteen singleton-lease, nine source-carry and one imported-source cases.
+That is 94 required executions covering 88 unique selectors; existing overlaps
+are retained. The missing-Trash correction on `b82427b68c` must be composed
+before qualification. This auxiliary is registered but unqualified.
+GC-15, GC-16 and GC-29 also require D-82 copied-retirement and permanent-owner
+recovery. The current source implements their codecs and portable-copy
+registration, but no genuine copied or permanent-owner collector path.
+Local-v1 success or Unsupported-only refusal cannot qualify those requirements.
+The full `gc-two-phase-delete` gate therefore remains explicitly pending;
+this local auxiliary cannot close T-GC-1 or permit the T1 exit.
 
 Reviewed private `f1f178a8cb` adds opt-in, test-only aggregate timings for Raw
 installation, recapture and synchronization. Independent comparison preserves
@@ -1846,6 +1865,13 @@ commit decoding copies embedded provenance token bytes before the token's block
 and grant bounds. Those nested limits must be checked against borrowed data
 before ownership. The corrective task and exact 58-case source-bound gate remain
 pending; malformed-input refusal alone does not establish allocation ordering.
+Reviewed private `148be2c4ed` implements both borrowed-before-copy corrections
+and exactly five additional public properties. Existing property bodies remain
+byte-identical prefixes, and both mandatory format checks pass. The shared
+mapping now describes 79 codec groups and all 58 declared cases, preserving the
+previous groups and separately identifying unimplemented formats. Compilation,
+actual inventory, execution and source-bound Nix qualification remain pending;
+source declarations and rejecting token inputs alone do not observe allocation.
 
 The sealed current floor contains 89 aggregate gates, including all 69 T0/T1
 plan-required names and twenty implemented supporting checks. Read-only evaluation

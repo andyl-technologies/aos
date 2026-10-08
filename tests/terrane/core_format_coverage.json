@@ -11,7 +11,7 @@
     "cbor": "Model roundtrip and identical canonical bytes; every truncated prefix; every nested widened nonminimal header, including boolean/null simple values; indefinite string/container rejection; duplicate/reordered keys for every adjacent pair in each nested map; u64::MAX nested length/count claims; sampled bit flips and 32 deterministic byte-range replacements. Accepted mutations must reencode exactly because they may represent another valid model.",
     "binary": "Model roundtrip, every truncated prefix and canonical reencoding after bit/range mutations; explicit count/extent/reserved/tag failures.",
     "prefix": "Header and chunk envelope APIs deliberately accept prefix/body fragments. Accepted truncations/mutations retain the exact validated header and opaque suffix/body rather than incorrectly requiring all mutations to fail.",
-    "limits": "Tiny hostile claimed-length headers exercise typed decoder rejection without constructing the claimed allocation. Allocator calls are not instrumented. Maximum resource values are tested where listed, not asserted universally.",
+    "limits": "Tiny hostile claimed-length headers exercise typed decoder rejection without constructing the claimed allocation. Allocator calls are not instrumented. Maximum resource values are tested where listed, not asserted universally. New graft and embedded-token cases independently frame actual present bodies at65535/65536/65537 Entry bytes and16/17 token blocks with256/257 grants. Borrowed-before-retained-copy source order is separate evidence, not inferred from token refusal or allocation instrumentation.",
     "history": "Actual Tree::insert from empty for three seeded permutations at counts0/1/64/320 must equal sorted model, root identity and root bytes; generated internal and nonroot nodes use real codecs."
   },
   "codec_inventory": [
@@ -196,10 +196,12 @@
         "content::selectors_recipes_and_unverified_token_envelopes_have_unique_canonical_bytes",
         "policy::graft_merge_and_empty_overlay_recipe_models_roundtrip_without_trust_verification",
         "policy::recipe_domain_evidence_roundtrips_all_operations_without_authenticating_labels",
-        "policy::merge_recipe_untrusted_receipt_and_timestamp_fields_reencode_canonically"
+        "policy::merge_recipe_untrusted_receipt_and_timestamp_fields_reencode_canonically",
+        "policy::graft_embedded_entry_limits_precede_owned_recipe_fields"
       ],
       "models": [
-        "overlay roots0,1,3,16; graft replacefalse/true; merge policy prefixes and all 6 choices; domain rows0,1,4; decoded receipt counts0,1,7 and optional timestamps"
+        "overlay roots0,1,3,16; graft replacefalse/true; merge policy prefixes and all 6 choices; domain rows0,1,4; decoded receipt counts0,1,7 and optional timestamps",
+        "8 independently framed small graft Entries and canonical Tree Entry bodies at complete encoded sizes65535/65536/65537; exact valid Recipe bytes and identities"
       ],
       "closed_alternatives": [
         "Overlay",
@@ -216,7 +218,8 @@
         "opaque configuration/null"
       ],
       "limits_and_malformed_cases": [
-        "noncanonical maps; hostile operand/domain/receipt counts; bad known schema through mutations"
+        "noncanonical maps; hostile operand/domain/receipt counts; bad known schema through mutations",
+        "existing standalone Entry cap65536 enforced by borrowed bstr read before ownership; oversized present Entry yields outer typed CBOR Limit; malformed/mismatched target Entries reject before retention. Source ordering reviewed; no allocator instrumentation"
       ],
       "shared_evidence": "cbor"
     },
@@ -405,11 +408,13 @@
       "tests": [
         "records::commit_ref_reflog_and_annotation_models_preserve_optional_fields",
         "records::nested_receipt_origins_context_surfaces_and_ref_policy_presence_roundtrip",
-        "content::disclosure_target_bindings_normalize_only_typed_signatures_and_retain_metadata"
+        "content::disclosure_target_bindings_normalize_only_typed_signatures_and_retain_metadata",
+        "records::embedded_provenance_tokens_reject_block_and_grant_limits"
       ],
       "models": [
         "24 base commits parents0..3; all 13 registered surfaces; source/target opaque path4096; normalized typed signatures and changed metadata",
-        "24 signature preimages equal the actual unsigned Commit encoding; real unsigned Commit decoder used for canonical mutations"
+        "24 signature preimages equal the actual unsigned Commit encoding; real unsigned Commit decoder used for canonical mutations",
+        "independent unsigned ordinary Commit envelopes embedding full primitive token models at1/16 blocks and1/256 grants; valid canonical bytes and identities retained"
       ],
       "closed_alternatives": [
         "all3 principal kinds",
@@ -426,7 +431,8 @@
         "signature"
       ],
       "limits_and_malformed_cases": [
-        "empty packs reject; malformed nested receipts; source/path byte-length claims; signatures are opaque/unverified"
+        "empty packs reject; malformed nested receipts; source/path byte-length claims; signatures are opaque/unverified",
+        "full canonical17-block/257-grant bodies reject as typed CBOR Limit; borrowed token validation precedes retained copy in provenance source; malformed refusal alone does not observe allocations"
       ],
       "shared_evidence": "cbor"
     },
@@ -1263,14 +1269,17 @@
         "gc::publication::evidence::LineageUsedInputs::{encode,decode}"
       ],
       "tests": [
-        "publication::retained_evidence_models_preserve_ordered_claims_seed_and_null_fields"
+        "publication::retained_evidence_models_preserve_ordered_claims_seed_and_null_fields",
+        "publication::consumed_view_interpretations_preserve_modes_and_registered_context_fields"
       ],
       "models": [
-        "12 seeded evidence models with opaque unverified signature/key references; IDs and cross-record hashes computed through public APIs"
+        "12 seeded evidence models with opaque unverified signature/key references; IDs and cross-record hashes computed through public APIs",
+        "independent complete ordinary key0..6 envelopes; optional key7 present and absent for six explicit view modes/property-revision combinations; complete original-root and policy-layer association"
       ],
       "closed_alternatives": [],
       "optional_fields": [
-        "issuer/disclosure/control/view rows nonempty"
+        "issuer/disclosure/control/view rows nonempty",
+        "view_interpretations absent/present, explicit Legacy/Recorded with exact registered revision1/2/3 vocabularies"
       ],
       "limits_and_malformed_cases": [
         "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
@@ -1699,6 +1708,66 @@
         "338-byte cap; unknown attribute/profile; owner digest lengths0/1/31/33/64; hostile map claims; indefinite containers; oversized input"
       ],
       "shared_evidence": "cbor"
+    },
+    {
+      "codec": "GapBinding",
+      "public_api": [
+        "indexing::carrier::GapBinding::{new,node,encode_binding,decode_binding}"
+      ],
+      "tests": [
+        "closed_index::gap_binding_models_preserve_exact_local_wrapper_and_limits"
+      ],
+      "models": [
+        "zero/all255 and12 seeded Node digests; independent exact map2 value lowercase64-hex/inherit=false wrapper"
+      ],
+      "closed_alternatives": [
+        "exact local noninherited binding"
+      ],
+      "optional_fields": [],
+      "limits_and_malformed_cases": [
+        "bare/inherited/extra/missing wrappers; hex lengths63/65 and uppercase/nonhex; shared nested hostile headers, every truncation and noncanonical variants; heap-free decode source, no physical role or occurrence claim"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "ConsumedViewInterpretation",
+      "public_api": [
+        "gc::publication::evidence::ConsumedViewInterpretation::{encode,decode}"
+      ],
+      "tests": [
+        "publication::consumed_view_interpretations_preserve_modes_and_registered_context_fields"
+      ],
+      "models": [
+        "six seeded view/root field models with independent tuple+all nine registry fields; exact registered property revisions1/2/3 vocabularies and inert later names; unsupported non-property uints preserved as ordinary data"
+      ],
+      "closed_alternatives": [
+        "explicit Legacy0 and Recorded1"
+      ],
+      "optional_fields": [],
+      "limits_and_malformed_cases": [
+        "unknown mode2; view/root widths0/31/33; unknown property revisions0/4/u64MAX; missing vocabulary; later-name255 accepts/256 rejects; shared nested hostile headers and every truncation/noncanonical variant; no authority or replay claim"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "LocalGcReconciliation",
+      "public_api": [
+        "gc::publication::LocalGcReconciliation::{encode,decode}"
+      ],
+      "tests": [
+        "publication::local_gc_reconciliation_models_preserve_registered_fences_and_full_fields"
+      ],
+      "models": [
+        "12 seeded complete independent map5 models; all authorization/fence digest/exclusion pack/cycle/epoch/index fields; cycle0/u64MAX; independently varying current fence cycle and original exclusion cycle"
+      ],
+      "closed_alternatives": [
+        "local-v1 version1 exact schema"
+      ],
+      "optional_fields": [],
+      "limits_and_malformed_cases": [
+        "each mandatory field omitted independently; unknown field and version; fixed digest widths0/31/33 and pack0/15/17; malformed/leading-zero/overflow fence keys; shared nested hostile headers and every truncation/noncanonical variant; no native deletion permission"
+      ],
+      "shared_evidence": "cbor"
     }
   ],
   "test_catalog": [
@@ -1966,6 +2035,31 @@
       "id": "common_memo::common_memo_refuses_independent_schema_and_hostile_length_models",
       "source": "crates/terrane-core/tests/format_properties/common_memo.rs",
       "seed": "deterministic independent boundary models; no RNG"
+    },
+    {
+      "id": "closed_index::gap_binding_models_preserve_exact_local_wrapper_and_limits",
+      "source": "crates/terrane-core/tests/format_properties/closed_index.rs",
+      "seed": "0xf207_3556_b8d4_a999"
+    },
+    {
+      "id": "publication::consumed_view_interpretations_preserve_modes_and_registered_context_fields",
+      "source": "crates/terrane-core/tests/format_properties/publication.rs",
+      "seed": "0x7480_b1c2_3eca_2174"
+    },
+    {
+      "id": "publication::local_gc_reconciliation_models_preserve_registered_fences_and_full_fields",
+      "source": "crates/terrane-core/tests/format_properties/publication.rs",
+      "seed": "0x0bb5_2c97_3702_f598"
+    },
+    {
+      "id": "policy::graft_embedded_entry_limits_precede_owned_recipe_fields",
+      "source": "crates/terrane-core/tests/format_properties/policy.rs",
+      "seed": "0x2ade_7cc1_60d2_1559"
+    },
+    {
+      "id": "records::embedded_provenance_tokens_reject_block_and_grant_limits",
+      "source": "crates/terrane-core/tests/format_properties/records.rs",
+      "seed": "0x6492_d180_eb7c_a921"
     }
   ],
   "private_unit_evidence": [
@@ -2070,24 +2164,6 @@
       "status": "bounded corpus limitation",
       "detail": "Inventory lists actual numeric/string/count boundaries; it is generative coverage, not exhaustive enumeration or allocator instrumentation.",
       "milestone_owner": "T1 / T-TEST-1 coverage review; no exhaustive or allocator-instrumentation qualification"
-    },
-    {
-      "format": "Index gap property binding",
-      "status": "implemented public codec; not exercised by the 53-case format_properties target",
-      "detail": "indexing::carrier::GapBinding::{decode_binding,encode_binding} is a heap-free exact map2/lowercase64-hex/inherit=false decoder. Existing indexing::carrier_tests::gap_bindings_require_primary_root_placement_and_exact_wrapper supplies one independent encoding model and selected malformed forms, but the current format_properties target has no direct GapBinding roundtrip/canonical-header/truncation property case. Registry-name admission is not codec evidence.",
-      "milestone_owner": "T1 / T-TEST-1; add public format properties or retain this explicit coverage gap before claiming every implemented codec"
-    },
-    {
-      "format": "ConsumedViewInterpretation",
-      "status": "implemented public codec; optional present form not exercised by the 53-case format_properties target",
-      "detail": "gc::publication::evidence::ConsumedViewInterpretation::{encode,decode} has existing independent owning unit fixtures in evidence/cbor/tests/view_interpretation.rs, including explicit modes/old fences and malformed headers. Public format_properties/publication.rs only builds LineageUsedInputs with view_interpretations=None; this does not qualify the present nested context or direct public codec.",
-      "milestone_owner": "T1 / T-TEST-1; add direct public properties and optional present LineageUsedInputs models or retain an explicit corpus gap"
-    },
-    {
-      "format": "LocalGcReconciliation",
-      "status": "implemented public codec; not exercised by the 53-case format_properties target",
-      "detail": "gc::publication::LocalGcReconciliation::{encode,decode} exists in gc/publication/reconciliation.rs. Decoding validates exact schema, fixed fields, complete borrowed input and registered fence key before its sole owned String copy. It has no direct reference in the 53 public property cases.",
-      "milestone_owner": "T1 / T-TEST-1; add direct independent public properties or retain an explicit corpus gap"
     }
   ],
   "by_design_embedded_formats": [

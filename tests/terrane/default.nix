@@ -282,6 +282,24 @@ in {
   integration.native-retained-request-checks = import ./native-retained-request-checks.nix {inherit sourceGate;};
   integration.native-local-first-ownership = import ./native-local-first-ownership.nix {inherit sourceGate;};
   integration.native-local-deletion = import ./native-local-deletion.nix {inherit sourceGate;};
+  integration.native-local-gc-conformance = let
+    prerequisites = [
+      (import ./native-local-first-ownership.nix {inherit sourceGate;})
+      (import ./native-local-deletion.nix {inherit sourceGate;})
+      (import ./native-preownership-restore.nix {inherit sourceGate;})
+      (import ./native-retirement-faults.nix {inherit sourceGate;})
+      taskGates.gc-roots-complete
+      taskGates.gc-mark-reachability
+      taskGates.gc-grace-window
+      taskGates.gc-singleton-lease
+      nativeForkPrerequisites.sourcePreservation
+      nativeForkPrerequisites.importedPreservation
+    ];
+  in
+    import ./native-local-gc-conformance.nix {
+      inherit prerequisites;
+      sourceGate = sourceGateWithInputs {extraBuildDeps = prerequisites;};
+    };
   integration.native-collector-clock = import ./native-collector-clock.nix {inherit sourceGate;};
   integration.native-cold-fork-source = nativeForkPrerequisites.coldSource;
   integration.native-cold-fork-legacy = import ./native-cold-fork-legacy.nix {inherit sourceGate;};
