@@ -39,6 +39,7 @@ pub mod registry;
 pub mod resources;
 pub mod runtime_backend;
 pub mod selector;
+pub mod source_tree_model;
 pub mod state;
 pub mod version;
 

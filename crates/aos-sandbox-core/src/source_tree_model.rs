@@ -1,6 +1,6 @@
 //! Shared identities, limits, and records for the sandbox ancestry tree.
 
-use aos_sandbox_core::{DesiredGeneration, IncarnationId, ProjectId, SandboxId};
+use crate::{DesiredGeneration, IncarnationId, ProjectId, SandboxId};
 
 /// Hard implementation ceiling for one validated project tree.
 pub const MAXIMUM_TREE_SANDBOXES: usize = 65_536;

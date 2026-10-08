@@ -30,7 +30,7 @@ use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 
 use crate::controller_service::journal::production_journal_limits;
-use crate::hierarchy::model::TreeLimitsV1;
+use aos_sandbox_core::source_tree_model::TreeLimitsV1;
 #[cfg(target_os = "linux")]
 use crate::hierarchy::source_seed::verify_controller_source_tree_seed_from_fixed_issuer_v1;
 #[cfg(any(target_os = "linux", test))]

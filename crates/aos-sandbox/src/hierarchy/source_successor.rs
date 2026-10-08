@@ -23,7 +23,7 @@ use aos_sandbox_core::{ObjectDigest, ProjectId, SandboxId};
 use ed25519_dalek::{Signature, VerifyingKey};
 
 use super::genesis_profile::{SourceGenesisErrorV1, hash, take};
-use super::model::TreeLimitsV1;
+use aos_sandbox_core::source_tree_model::TreeLimitsV1;
 
 /// Bounds the fixed privileged administrative intent.
 pub const SOURCE_SUCCESSOR_INTENT_BYTES_V2: usize = 80;

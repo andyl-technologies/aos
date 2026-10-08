@@ -26,7 +26,7 @@ use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 
-use super::model::TreeLimitsV1;
+use aos_sandbox_core::source_tree_model::TreeLimitsV1;
 #[cfg(target_os = "linux")]
 use crate::public_api_session::PinnedSystemdCredential;
 use crate::role_credential::{decode_role_credential, encode_role_credential};

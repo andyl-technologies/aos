@@ -18,7 +18,7 @@ use super::history::{
     HierarchyHistoryError, HierarchyHistoryRecordV1, HierarchyHistorySubjectV1, HierarchyHistoryV1,
     HierarchyTransitionKindV1, RetainedHierarchyHeadV1,
 };
-use super::model::SandboxTreeRecordV1;
+use aos_sandbox_core::source_tree_model::SandboxTreeRecordV1;
 use super::realizer::{AttachmentDetachV1, RealizationStageV1, ViewRealizationPlanV1};
 use super::recovery::{
     CommittedHierarchySnapshotV1, DetachStageV1, DurableDetachProgressV1,

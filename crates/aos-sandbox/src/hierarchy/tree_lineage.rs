@@ -30,7 +30,7 @@ use crate::lifecycle::protected_journal_join::{
 
 use super::codec::{decode_tree_v1, tree_commitment_v1};
 use super::graph::SandboxTreeV1;
-use super::model::TreeLimitsV1;
+use aos_sandbox_core::source_tree_model::TreeLimitsV1;
 use super::protected_journal::{
     HierarchyJournalCommitOutcomeV1, HierarchyJournalReplayPhaseV1,
     HierarchyProtectedJournalErrorV1, HierarchyProtectedJournalKeyV1,

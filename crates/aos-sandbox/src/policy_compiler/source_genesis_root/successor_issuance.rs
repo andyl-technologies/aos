@@ -17,7 +17,7 @@ use crate::hierarchy::controller_genesis::{
     HeldControllerSourceGenesisV1, hold_existing_completed_source_genesis_v2,
 };
 use crate::hierarchy::genesis_profile::{SourceGenesisErrorV1, take};
-use crate::hierarchy::model::SandboxTreeRecordV1;
+use aos_sandbox_core::source_tree_model::SandboxTreeRecordV1;
 use crate::hierarchy::protected_journal::{
     RetainedTreeInventoryDataV1, retained_tree_inventory_data_v1,
 };

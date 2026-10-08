@@ -1336,7 +1336,7 @@ mod tests {
     use super::*;
     use crate::JournalLimits;
     use crate::hierarchy::graph::SandboxTreeV1;
-    use crate::hierarchy::model::TreeLimitsV1;
+    use aos_sandbox_core::source_tree_model::TreeLimitsV1;
     use crate::hierarchy::protected_journal::{
         HierarchyProtectedJournalKeyV1, HierarchyProtectedRecordKindV1,
         HierarchyProtectedReplayValidatorV1, HierarchyReducerRecordV1,

@@ -16,7 +16,7 @@ use super::history::{
     HierarchyHistoryRecordV1, HierarchyHistorySubjectV1, HierarchyHistoryV1,
     HierarchyTransitionKindV1, MAXIMUM_HIERARCHY_HISTORY_RECORDS,
 };
-use super::model::{MAXIMUM_TREE_SANDBOXES, SandboxTreeRecordV1, TreeLimitsV1};
+use aos_sandbox_core::source_tree_model::{MAXIMUM_TREE_SANDBOXES, SandboxTreeRecordV1, TreeLimitsV1};
 
 const TREE_MAGIC: &[u8; 8] = b"AOSHTR01";
 const HISTORY_MAGIC: &[u8; 8] = b"AOSHHI01";

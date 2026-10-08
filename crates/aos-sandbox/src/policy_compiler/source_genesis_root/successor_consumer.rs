@@ -20,7 +20,7 @@ use aos_sandbox_linux::seqpacket::RetainedSeqpacketReceiveErrorV1;
 use crate::hierarchy::codec::tree_commitment_v1;
 use crate::hierarchy::controller_genesis::{hold_existing_completed_source_genesis_v2, require_controller};
 use crate::hierarchy::genesis_profile::{SourceGenesisErrorV1, digest_at, take};
-use crate::hierarchy::model::SandboxTreeRecordV1;
+use aos_sandbox_core::source_tree_model::SandboxTreeRecordV1;
 use crate::hierarchy::protected_journal::RetainedTreeInventoryDataV1;
 use crate::hierarchy::protected_journal::retained_tree_inventory_data_v1;
 use crate::hierarchy::source_successor::SourceSuccessorApprovalDataV2;

@@ -22,7 +22,7 @@ use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 
-use crate::hierarchy::model::TreeLimitsV1;
+use aos_sandbox_core::source_tree_model::TreeLimitsV1;
 use crate::journal::RecordNamespace;
 use crate::public_api_session::PinnedSystemdCredential;
 use crate::role_credential::{

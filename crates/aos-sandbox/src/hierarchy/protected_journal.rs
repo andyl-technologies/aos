@@ -765,7 +765,7 @@ impl CurrentNixSourceInventoryAttemptV1<'_> {
         project: ProjectId,
         sandbox: SandboxId,
     ) -> Result<
-        (super::model::SandboxTreeRecordV1, ObjectDigest, ObjectDigest),
+        (aos_sandbox_core::source_tree_model::SandboxTreeRecordV1, ObjectDigest, ObjectDigest),
         HierarchyProtectedJournalErrorV1,
     > {
         self.recheck()?;

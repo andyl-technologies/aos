@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use aos_sandbox_core::{DesiredGeneration, IncarnationId, ProjectId, Revision, SandboxId};
 
-use super::model::{MAXIMUM_TREE_SANDBOXES, SandboxTreeRecordV1, TreeLimitsV1};
+use aos_sandbox_core::source_tree_model::{MAXIMUM_TREE_SANDBOXES, SandboxTreeRecordV1, TreeLimitsV1};
 
 /// Maximum durable deleted identities retained by one project tree.
 pub const MAXIMUM_TREE_TOMBSTONES: usize = 262_144;

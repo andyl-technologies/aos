@@ -136,7 +136,7 @@ mod tests {
     use aos_sandbox_core::{DesiredGeneration, Revision, SandboxId};
 
     use super::*;
-    use crate::hierarchy::model::{SandboxTreeRecordV1, TreeLimitsV1};
+    use aos_sandbox_core::source_tree_model::{SandboxTreeRecordV1, TreeLimitsV1};
 
     fn tree(project: ProjectId, generation: u64, tombstones: Vec<SandboxId>) -> SandboxTreeV1 {
         SandboxTreeV1::from_records_and_tombstones(

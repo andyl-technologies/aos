@@ -18,7 +18,6 @@ pub mod genesis_profile;
 pub mod graph;
 pub mod history;
 pub mod inspection;
-pub mod model;
 pub mod placement;
 mod protected_evidence;
 pub mod protected_journal;

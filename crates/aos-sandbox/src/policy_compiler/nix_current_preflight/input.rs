@@ -13,7 +13,7 @@ use aos_sandbox_core::{
 };
 
 use crate::cli_model::DormantSandboxRequestKindV1;
-use crate::hierarchy::model::SandboxTreeRecordV1;
+use aos_sandbox_core::source_tree_model::SandboxTreeRecordV1;
 use crate::hierarchy::protected_journal::{
     CurrentNixSourceInventoryAttemptV1, CurrentNixSourceInventoryDataV1, HierarchyProtectedJournalErrorV1,
     capture_current_nix_inventory_v1,

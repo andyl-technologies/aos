@@ -35,7 +35,7 @@ use crate::policy_compiler::{
 
 use super::codec::tree_commitment_v1;
 use super::genesis_profile::SourceGenesisErrorV1;
-use super::model::SandboxTreeRecordV1;
+use aos_sandbox_core::source_tree_model::SandboxTreeRecordV1;
 use super::protected_journal::RetainedTreeInventoryDataV1;
 use super::source_genesis::SourceTreeGenesisReceiptV1;
 use super::tree_lineage::{

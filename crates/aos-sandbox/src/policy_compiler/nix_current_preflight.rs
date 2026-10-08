@@ -552,7 +552,7 @@ impl<'source> CurrentNixPreflightAttemptV1<'source> {
                 ProtectedCurrentRecordCandidateV1<HierarchyProtectedJournalSchemaV1>,
             >()))
             .and_then(|bytes| bytes.checked_add(std::mem::size_of::<crate::hierarchy::graph::SandboxTreeV1>()))
-            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<crate::hierarchy::model::SandboxTreeRecordV1>()))
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<aos_sandbox_core::source_tree_model::SandboxTreeRecordV1>()))
             .and_then(|bytes| bytes.checked_add(std::mem::size_of::<(SandboxId, usize, [usize; 6])>()))
             .ok_or_else(refused)?;
         let decoded_cells = controller.retained_bytes.checked_add(source.retained_bytes)
