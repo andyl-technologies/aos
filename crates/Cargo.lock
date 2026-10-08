@@ -174,7 +174,7 @@ dependencies = [
  "aos-registry-surface",
  "aos-release",
  "aos-remote",
- "aos-sandbox",
+ "aos-sandbox-client",
  "aos-sandbox-core",
  "aos-sandbox-protocol",
  "aos-server",
@@ -893,7 +893,6 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "ssh-key",
- "tempfile",
  "thiserror 2.0.18",
  "zeroize",
 ]
@@ -968,6 +967,31 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "zeroize",
+]
+
+[[package]]
+name = "aos-sandbox-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-proto",
+ "aos-sandbox-core",
+ "aos-sandbox-protocol",
+ "base64 0.22.1",
+ "buffa",
+ "connectrpc",
+ "hex",
+ "http 1.4.1",
+ "hyper-util",
+ "rand 0.9.4",
+ "rustix 1.1.4",
+ "rustls-pemfile",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-rustls",
+ "tower",
  "zeroize",
 ]
 

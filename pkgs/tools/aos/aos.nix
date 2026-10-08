@@ -193,6 +193,7 @@
     "aos-sandbox-broker"
     "aos-sandbox-broker-session-protocol"
     "aos-sandbox-broker-session-security"
+    "aos-sandbox-client"
     "aos-sandbox-core"
     "aos-sandbox-guest"
     "aos-sandbox-guardian"

@@ -43,7 +43,7 @@ aos-maintain = { workspace = true }
 aos-release = { workspace = true }
 aos-image-finalizer = { workspace = true }
 aos-profile = { workspace = true }
-aos-sandbox = { workspace = true }
+aos-sandbox-client = { workspace = true }
 aos-sandbox-core = { workspace = true }
 aos-sandbox-protocol = { workspace = true }
 aos-proto = { workspace = true }

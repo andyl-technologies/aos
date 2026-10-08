@@ -36,6 +36,7 @@ members = [
     "aos-filesystem-fuse/tests/fixtures/kernel-worker",
     "aos-filesystem-fuse/tests/fixtures/link-consumer",
     "aos-sandbox-agent",
+    "aos-sandbox-client",
     "aos-sandbox-guest",
     "aos-sandbox-core",
     "aos-sandbox-journal",
@@ -274,6 +275,7 @@ aos-filesystem-view = { path = "aos-filesystem-view" }
 aos-filesystem-view-core = { path = "aos-filesystem-view-core" }
 aos-filesystem-fuse = { path = "aos-filesystem-fuse" }
 aos-sandbox-agent = { path = "aos-sandbox-agent" }
+aos-sandbox-client = { path = "aos-sandbox-client" }
 aos-sandbox-guest = { path = "aos-sandbox-guest" }
 aos-sandbox-core = { path = "aos-sandbox-core" }
 aos-sandbox-journal = { path = "aos-sandbox-journal" }
