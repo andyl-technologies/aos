@@ -250,6 +250,19 @@ strict cold refusal and the eight native cold witnesses; the recovered raw
 positive separately completes its source before measuring the zero-Node fork.
 The composed candidate and complete T1 floor remain unqualified.
 
+The coherent native SDK production build passes on `dc15286e5d`. Its first
+six-case regression attempt stops during test compilation, before executing any
+case. A separate reviewed test-only correction on `f7db752ff2` preserves the
+publication-corruption oracle and immutable-address deduplication semantics.
+Fresh compilation then executes all six merge regressions: four pass and two
+fail, with 721 cases outside the selection. All three ordinary contracts and
+the native occurrence case pass. Both remaining native cases fail during the
+Recorded revision-2 same-profile fork setup, before their behavior assertions.
+An unchanged-source phase diagnostic reaches signed cold preparation and the
+Commit batch's Raw acknowledgment, then refuses during later held publication;
+the exact predicate remains unproven. These focused results do not replace the
+failing full native suite or qualify the complete algebra gate or T1.
+
 An isolated instrumented run of the fourth private backfill case on
 `faf2f0adfa` still fails with `Expired`. It reaches both catalog ACKs and
 durable reflog staging, then observes 30.803 seconds against the unchanged
