@@ -715,6 +715,7 @@ name = "aos-proto"
 version = "0.1.0"
 dependencies = [
  "buffa",
+ "buffa-codegen",
  "connectrpc",
  "connectrpc-build",
  "futures",
