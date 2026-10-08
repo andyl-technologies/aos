@@ -4,6 +4,8 @@
 //! state checks one reached frame at a time; the domain owner decodes each
 //! record immediately afterward, before reading another frame. Structural
 //! COMMIT validation neither admits a transition nor publishes durable state.
+//! Bounded record validation shares raw extent accounting and duplicate-key
+//! custody while leaving the owner's typed checks between those two stages.
 //! Journal files, locks, retained read/error custody, and semantic joins remain
 //! with the domain owner.
 //!
@@ -13,12 +15,131 @@
 //! COMMIT = record-count:u32le | ordered-payload-digest:32
 //! ```
 
+use std::collections::BTreeSet;
+
 use sha2::{Digest, Sha256};
 
 use crate::framing::{
     COMMIT_PAYLOAD_BYTES, Frame, FrameError, FrameKind, encode_frame, transaction_hasher,
 };
+use crate::geometry::{EncodedRecordLayout, NativeGeometryBounds};
 use crate::record::encode_record_fields;
+
+/// Describes bounded raw-record refusals without interpreting namespace DATA.
+#[derive(Debug, thiserror::Error)]
+pub enum NativeRecordValidationError {
+    /// Rejects a zero transaction identity or an empty transaction.
+    #[error("invalid native transaction")]
+    InvalidTransaction,
+    /// Rejects a repeated raw namespace and key in one transaction.
+    #[error("duplicate native record key")]
+    DuplicateRecordKey,
+    /// Preserves the existing configured count, record, or aggregate bound.
+    #[error("native transaction limit exceeded: {0}")]
+    LimitExceeded(&'static str),
+    /// Preserves native record representation arithmetic errors.
+    #[error(transparent)]
+    Frame(#[from] FrameError),
+}
+
+/// Owns bounded extent accounting and a duplicate index over original key borrows.
+///
+/// Callers observe each extent, perform their typed record checks, then register
+/// its raw namespace/key pair. These stages grant no namespace admission,
+/// currentness, or persistence proof. The index remains local to the original
+/// validator scope; it owns index nodes but never copies a record's key bytes.
+pub struct NativeRecordValidation<'keys> {
+    keys: BTreeSet<(u8, &'keys [u8])>,
+    transaction_bytes: usize,
+    bounds: NativeGeometryBounds,
+}
+
+impl<'keys> NativeRecordValidation<'keys> {
+    /// Starts the original identity and configured record-count checks.
+    ///
+    /// Configuration is supplied DATA, not validated here. This does not add a
+    /// representational count check or certify an actual transaction or writer.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a zero identity or zero count before an excessive configured count.
+    pub fn begin(
+        transaction_id: [u8; 16],
+        record_count: usize,
+        bounds: NativeGeometryBounds,
+    ) -> Result<Self, NativeRecordValidationError> {
+        if transaction_id == [0; 16] || record_count == 0 {
+            return Err(NativeRecordValidationError::InvalidTransaction);
+        }
+        if record_count > bounds.maximum_records_per_transaction {
+            return Err(NativeRecordValidationError::LimitExceeded(
+                "records per transaction",
+            ));
+        }
+
+        Ok(Self {
+            keys: BTreeSet::new(),
+            transaction_bytes: 0,
+            bounds,
+        })
+    }
+
+    /// Checks one raw extent and accumulates its bounded native payload width.
+    ///
+    /// Typed record validation remains with the caller after this observation
+    /// and before key registration. A failed configured aggregate check retains
+    /// the reached byte count, just as the original local fold did.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an empty or excessive key, then unrepresentable native lengths,
+    /// excessive payload width, aggregate overflow, or excessive aggregate width.
+    pub fn observe_extent(
+        &mut self,
+        key: &[u8],
+        value_bytes: Option<usize>,
+    ) -> Result<(), NativeRecordValidationError> {
+        if key.is_empty() || key.len() > self.bounds.maximum_key_bytes {
+            return Err(NativeRecordValidationError::LimitExceeded(
+                "record key bytes",
+            ));
+        }
+        let payload_bytes = EncodedRecordLayout::new(key.len(), value_bytes)?.payload_bytes;
+        if payload_bytes > self.bounds.maximum_record_bytes {
+            return Err(NativeRecordValidationError::LimitExceeded(
+                "record payload bytes",
+            ));
+        }
+        self.transaction_bytes = self.transaction_bytes.checked_add(payload_bytes).ok_or(
+            NativeRecordValidationError::LimitExceeded("transaction bytes"),
+        )?;
+        if self.transaction_bytes > self.bounds.maximum_transaction_bytes {
+            return Err(NativeRecordValidationError::LimitExceeded(
+                "transaction bytes",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Retains one original key borrow after the caller's typed checks.
+    ///
+    /// Raw namespace bytes have no semantic interpretation. Insertion neither
+    /// rechecks an extent nor establishes that any prior owner check succeeded.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a repeated namespace/key pair by byte equality.
+    pub fn register_key(
+        &mut self,
+        namespace_byte: u8,
+        key: &'keys [u8],
+    ) -> Result<(), NativeRecordValidationError> {
+        if !self.keys.insert((namespace_byte, key)) {
+            return Err(NativeRecordValidationError::DuplicateRecordKey);
+        }
+        Ok(())
+    }
+}
 
 /// Borrows one ordered record's raw DATA without namespace or semantic admission.
 pub struct NativeRecordRef<'a> {
@@ -234,6 +355,9 @@ impl NativePendingTransaction {
         (self.begin_sequence, self.begin_offset)
     }
 }
+
+#[cfg(test)]
+mod validation_tests;
 
 #[cfg(test)]
 mod tests {

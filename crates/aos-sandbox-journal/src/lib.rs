@@ -10,6 +10,8 @@
 //! domain owners retain closed namespace decoding and semantic validation.
 //! [`transaction`] owns ordered native transaction construction and incremental
 //! ID/count/digest state without decoding records or publishing committed state.
+//! Its bounded record owner shares extent accounting and a borrowed duplicate
+//! index; domain schema checks remain between those two mechanical stages.
 //! [`recovery`] finalizes the already replayed tail on the same borrowed file;
 //! actual semantic replay and selected native-result custody remain upper.
 //! [`replay`] retains incremental coordinates, counts, and the original ID set;

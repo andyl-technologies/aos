@@ -18,14 +18,14 @@
 //!              repeated(record-length:u32be | native-record-payload)
 //! ```
 
-use std::collections::BTreeSet;
-
 use aos_sandbox_core::OperationId;
 use aos_sandbox_journal::geometry::{
     EncodedRecordLayout, PREPARED_HEADER_BYTES as HEADER_BYTES, RecordShape,
 };
 use aos_sandbox_journal::record::{self, RecordHeader};
-use aos_sandbox_journal::transaction::{self, NativeRecordRef};
+use aos_sandbox_journal::transaction::{
+    self, NativeRecordRef, NativeRecordValidation, NativeRecordValidationError,
+};
 
 use super::{IdempotencyKey, JournalError, JournalLimits, RecordNamespace};
 
@@ -130,32 +130,14 @@ pub(super) fn validate_transaction(
     transaction: &JournalTransaction,
     limits: JournalLimits,
 ) -> Result<(), JournalError> {
-    if transaction.id == [0; 16] || transaction.records.is_empty() {
-        return Err(JournalError::InvalidTransaction);
-    }
-    if transaction.records.len() > limits.maximum_records_per_transaction {
-        return Err(JournalError::LimitExceeded("records per transaction"));
-    }
-    let mut keys = BTreeSet::new();
-    let mut transaction_bytes = 0_usize;
+    let mut validation =
+        NativeRecordValidation::begin(transaction.id, transaction.records.len(), limits.into())
+            .map_err(native_record_validation_error)?;
     for record in &transaction.records {
-        if record.key.is_empty() || record.key.len() > limits.maximum_key_bytes {
-            return Err(JournalError::LimitExceeded("record key bytes"));
-        }
-        let payload_bytes = EncodedRecordLayout::new(
-            record.key.len(),
-            record.value.as_ref().map(|value| value.len()),
-        )?
-        .payload_bytes;
-        if payload_bytes > limits.maximum_record_bytes {
-            return Err(JournalError::LimitExceeded("record payload bytes"));
-        }
-        transaction_bytes = transaction_bytes
-            .checked_add(payload_bytes)
-            .ok_or(JournalError::LimitExceeded("transaction bytes"))?;
-        if transaction_bytes > limits.maximum_transaction_bytes {
-            return Err(JournalError::LimitExceeded("transaction bytes"));
-        }
+        validation
+            .observe_extent(&record.key, record.value.as_ref().map(|value| value.len()))
+            .map_err(native_record_validation_error)?;
+
         if record.namespace == RecordNamespace::Idempotency {
             let value = record.value.as_ref().ok_or(JournalError::MalformedRecord(
                 "idempotency records cannot be deleted",
@@ -169,11 +151,21 @@ pub(super) fn validate_transaction(
                 ));
             }
         }
-        if !keys.insert((record.namespace, record.key.clone())) {
-            return Err(JournalError::DuplicateRecordKey);
-        }
+
+        validation
+            .register_key(record.namespace as u8, &record.key)
+            .map_err(native_record_validation_error)?;
     }
     Ok(())
+}
+
+fn native_record_validation_error(error: NativeRecordValidationError) -> JournalError {
+    match error {
+        NativeRecordValidationError::InvalidTransaction => JournalError::InvalidTransaction,
+        NativeRecordValidationError::DuplicateRecordKey => JournalError::DuplicateRecordKey,
+        NativeRecordValidationError::LimitExceeded(bound) => JournalError::LimitExceeded(bound),
+        NativeRecordValidationError::Frame(error) => JournalError::from(error),
+    }
 }
 
 pub(crate) fn encoded_transaction_record_bytes(
@@ -396,6 +388,72 @@ fn read_array<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N], Jo
 mod tests {
     use super::*;
     use crate::journal::{JournalRecord, RecordNamespace};
+
+    #[test]
+    fn idempotency_semantics_precede_duplicate_key_after_native_extent_checks() {
+        let key = b"request".to_vec();
+        let valid = vec![3; IDEMPOTENCY_VALUE_BYTES];
+        let mut zero_operation = valid.clone();
+        zero_operation[32..].fill(0);
+
+        for (value, expected) in [
+            (None, "idempotency records cannot be deleted"),
+            (
+                Some(vec![3; IDEMPOTENCY_VALUE_BYTES - 1]),
+                "invalid idempotency decision",
+            ),
+            (Some(zero_operation), "invalid idempotency decision"),
+        ] {
+            let second = match value {
+                Some(value) => JournalRecord::put(RecordNamespace::Idempotency, key.clone(), value),
+                None => JournalRecord::delete(RecordNamespace::Idempotency, key.clone()),
+            };
+            let transaction = JournalTransaction::new(
+                [1; 16],
+                vec![
+                    JournalRecord::put(RecordNamespace::Idempotency, key.clone(), valid.clone()),
+                    second,
+                ],
+            )
+            .unwrap();
+
+            assert!(matches!(
+                validate_transaction(&transaction, JournalLimits::default()),
+                Err(JournalError::MalformedRecord(message)) if message == expected,
+            ));
+        }
+
+        let duplicate = JournalTransaction::new(
+            [1; 16],
+            vec![JournalRecord::put(RecordNamespace::Idempotency, key.clone(), valid.clone()); 2],
+        )
+        .unwrap();
+        assert!(matches!(
+            validate_transaction(&duplicate, JournalLimits::default()),
+            Err(JournalError::DuplicateRecordKey),
+        ));
+
+        let excessive = JournalTransaction::new(
+            [1; 16],
+            vec![
+                JournalRecord::put(RecordNamespace::Idempotency, key.clone(), valid),
+                JournalRecord::put(
+                    RecordNamespace::Idempotency,
+                    key,
+                    vec![3; IDEMPOTENCY_VALUE_BYTES + 1],
+                ),
+            ],
+        )
+        .unwrap();
+        let limits = JournalLimits {
+            maximum_record_bytes: 7 + b"request".len() + IDEMPOTENCY_VALUE_BYTES,
+            ..JournalLimits::default()
+        };
+        assert!(matches!(
+            validate_transaction(&excessive, limits),
+            Err(JournalError::LimitExceeded("record payload bytes")),
+        ));
+    }
 
     fn transaction() -> JournalTransaction {
         JournalTransaction::new(

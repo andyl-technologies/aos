@@ -130,6 +130,12 @@ responsibilities there; protected admission, semantic publication, and actual
 file/loan custody stay with their existing owners. Private source organization
 does not establish a further crate boundary or complete protected ownership.
 
+Its bounded native extent accounting and duplicate-key index share the lower
+journal's `NativeRecordValidation` owner with native suffix measurement. Keys
+borrow the actual records; domain Idempotency checks remain between the extent
+and key-registration stages. The shared fold adds no admission, configuration
+gate, or persistence proof and does not change protected owner boundaries.
+
 The domain journal's private `protected_storage` group co-locates protected
 names, descriptor/lock loans, rooted opening and recovery, and complete retained
 opening/failure reservoirs. Their original fields, drop order, native causes,

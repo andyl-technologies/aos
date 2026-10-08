@@ -11,12 +11,13 @@
 //! append width = BEGIN + ordered RECORD frames + COMMIT
 //! ```
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use crate::framing::FrameError;
 use crate::geometry::{
     EncodedRecordLayout, NativeGeometryBounds, RecordShape, encoded_transaction_append_bytes,
 };
+use crate::transaction::{NativeRecordValidation, NativeRecordValidationError};
 
 /// Borrows one exact mutation's before and after images.
 #[derive(Clone, Copy, Debug)]
@@ -105,6 +106,17 @@ pub enum NativeSuffixError {
     Frame(#[from] FrameError),
 }
 
+impl From<NativeRecordValidationError> for NativeSuffixError {
+    fn from(error: NativeRecordValidationError) -> Self {
+        match error {
+            NativeRecordValidationError::InvalidTransaction => Self::InvalidTransaction,
+            NativeRecordValidationError::DuplicateRecordKey => Self::DuplicateRecordKey,
+            NativeRecordValidationError::LimitExceeded(bound) => Self::LimitExceeded(bound),
+            NativeRecordValidationError::Frame(error) => Self::Frame(error),
+        }
+    }
+}
+
 /// Owns one incremental measurement while borrowing the original row graph.
 ///
 /// Successful appends publish geometry and a prefix only after all their raw
@@ -181,7 +193,16 @@ impl<'rows> NativeSuffixMeasurement<'rows> {
             self.states.insert(change.key, change.after);
         }
 
-        validate_record_extents(transaction_id, records, bounds)?;
+        // The duplicate index drops before width observations, at the original
+        // validator boundary. Namespace semantics remain with the caller.
+        {
+            let mut validation =
+                NativeRecordValidation::begin(transaction_id, records.len(), bounds)?;
+            for record in records {
+                validation.observe_extent(record.key, record.value_bytes)?;
+                validation.register_key(record.namespace_byte, record.key)?;
+            }
+        }
 
         for record in records {
             self.maximum_key_bytes = self.maximum_key_bytes.max(record.key.len());
@@ -234,42 +255,6 @@ impl<'rows> NativeSuffixMeasurement<'rows> {
             maximum_record_payload_bytes: self.maximum_record_payload_bytes,
         }
     }
-}
-
-// The temporary duplicate index drops before width observations, as it did in
-// the upper transaction validator. No semantic namespace checks move here.
-fn validate_record_extents(
-    transaction_id: [u8; 16],
-    records: &[NativeRecordExtentRef<'_>],
-    bounds: NativeGeometryBounds,
-) -> Result<(), NativeSuffixError> {
-    if transaction_id == [0; 16] || records.is_empty() {
-        return Err(NativeSuffixError::InvalidTransaction);
-    }
-    if records.len() > bounds.maximum_records_per_transaction {
-        return Err(NativeSuffixError::LimitExceeded("records per transaction"));
-    }
-    let mut keys = BTreeSet::new();
-    let mut transaction_bytes = 0_usize;
-    for record in records {
-        if record.key.is_empty() || record.key.len() > bounds.maximum_key_bytes {
-            return Err(NativeSuffixError::LimitExceeded("record key bytes"));
-        }
-        let payload_bytes = record_layout(record)?.payload_bytes;
-        if payload_bytes > bounds.maximum_record_bytes {
-            return Err(NativeSuffixError::LimitExceeded("record payload bytes"));
-        }
-        transaction_bytes = transaction_bytes
-            .checked_add(payload_bytes)
-            .ok_or(NativeSuffixError::LimitExceeded("transaction bytes"))?;
-        if transaction_bytes > bounds.maximum_transaction_bytes {
-            return Err(NativeSuffixError::LimitExceeded("transaction bytes"));
-        }
-        if !keys.insert((record.namespace_byte, record.key)) {
-            return Err(NativeSuffixError::DuplicateRecordKey);
-        }
-    }
-    Ok(())
 }
 
 fn record_layout(record: &NativeRecordExtentRef<'_>) -> Result<EncodedRecordLayout, FrameError> {
