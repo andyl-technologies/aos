@@ -14,8 +14,8 @@
 use std::path::Path;
 
 use aos_sandbox_core::ObjectDigest;
-use sha2::{Digest as _, Sha256};
 
+use super::digest_parts;
 use super::fixed_owner::{
     PublisherFixedInstallerV1, PublisherFixedProtectedOpenReportV1,
     PublisherFixedProtectedOwnerErrorV1, PublisherFixedProtectedOwnerV1, config_equal,
@@ -239,7 +239,7 @@ fn decode_record(
         return Err(PublisherFixedControllerAuthorityErrorV1::Authority);
     }
     let retained = ObjectDigest::from_bytes(exact(&bytes[end..])?);
-    let derived = digest(RECORD_DOMAIN, &bytes[..end]);
+    let derived = digest_parts(RECORD_DOMAIN, &[&bytes[..end]]);
     let (config, _) = decode_config(&bytes[PREFIX..end])?;
     if retained != expected_digest
         || retained != derived
@@ -259,19 +259,11 @@ fn decode_current(
     let generation = u64::from_be_bytes(exact(&bytes[10..18])?);
     let record_digest = ObjectDigest::from_bytes(exact(&bytes[18..50])?);
     let retained = ObjectDigest::from_bytes(exact(&bytes[50..82])?);
-    let derived = digest(CURRENT_DOMAIN, &bytes[..50]);
+    let derived = digest_parts(CURRENT_DOMAIN, &[&bytes[..50]]);
     if generation == 0 || record_digest.as_bytes() == &[0; 32] || retained != derived {
         return Err(PublisherFixedControllerAuthorityErrorV1::Authority);
     }
     Ok((generation, record_digest, retained))
-}
-
-fn digest(domain: &[u8], bytes: &[u8]) -> ObjectDigest {
-    let mut hasher = Sha256::new();
-    hasher.update(domain);
-    hasher.update((bytes.len() as u64).to_be_bytes());
-    hasher.update(bytes);
-    ObjectDigest::from_bytes(hasher.finalize().into())
 }
 
 fn exact<const N: usize>(

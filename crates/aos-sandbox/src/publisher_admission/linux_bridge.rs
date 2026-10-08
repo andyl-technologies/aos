@@ -16,9 +16,9 @@ use aos_sandbox_linux::immutable_file::{
     NoReplacePublicationError, ObservedRetainedPrivateArtifact, PublicationName,
     RetainedPrivateArtifact, RetainedPrivatePhase, SealedPrivateFile,
 };
-use sha2::{Digest as _, Sha256};
 
 use super::decision::CompletionResult;
+use super::digest_parts;
 use super::dormant_effects::PublisherDormantEffectCapabilityV1;
 use super::durable_catalog::{
     AuthenticatedDurableCatalogObservationV1, PublisherDurableCatalogCommitOutcomeV1,
@@ -1067,14 +1067,4 @@ fn sha256_verity(value: FsVerityDigest) -> Result<[u8; 32], PublisherLinuxBridge
         FsVerityDigest::Sha256(value) => Ok(value),
         FsVerityDigest::Sha512(_) => Err(PublisherLinuxBridgeErrorV1::Materialization),
     }
-}
-
-fn digest_parts(domain: &[u8], parts: &[&[u8]]) -> ObjectDigest {
-    let mut hasher = Sha256::new();
-    hasher.update(domain);
-    for part in parts {
-        hasher.update((part.len() as u64).to_be_bytes());
-        hasher.update(part);
-    }
-    ObjectDigest::from_bytes(hasher.finalize().into())
 }

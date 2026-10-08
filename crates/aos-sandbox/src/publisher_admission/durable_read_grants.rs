@@ -17,8 +17,8 @@ use aos_sandbox_core::{
     CacheDomainId, ObjectDigest, PrincipalId, ProjectId, ResourceId,
     model::{CacheDomain, CacheDomainKind},
 };
-use sha2::{Digest as _, Sha256};
 
+use super::digest_parts;
 use super::read_authority::{ReadAuthorityGrantV1, ReadAuthorityRegistryV1, ReadGrantStateV1};
 use crate::journal::{
     Journal, JournalError, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace,
@@ -187,7 +187,7 @@ impl PublisherDurableReadGrantOwnerV1 {
             _ => return Err(PublisherDurableReadGrantErrorV1::Invalid),
         };
         let bytes = encode_current_head(&grant, predecessor)?;
-        let record_digest = digest(&bytes[..RECORD_PREFIX_BYTES]);
+        let record_digest = digest_parts(RECORD_DOMAIN, &[&bytes[..RECORD_PREFIX_BYTES]]);
         let mut transaction_id = [0_u8; 16];
         transaction_id.copy_from_slice(&record_digest.as_bytes()[..16]);
         if transaction_id == [0; 16] {
@@ -345,7 +345,7 @@ fn encode_current_head(
     if bytes.len() != RECORD_PREFIX_BYTES {
         return Err(PublisherDurableReadGrantErrorV1::Invalid);
     }
-    bytes.extend_from_slice(digest(&bytes).as_bytes());
+    bytes.extend_from_slice(digest_parts(RECORD_DOMAIN, &[&bytes]).as_bytes());
     if decode_current_head(&bytes)? != *grant {
         return Err(PublisherDurableReadGrantErrorV1::Invalid);
     }
@@ -381,7 +381,8 @@ fn decode_current_head(
         || &bytes[..8] != MAGIC
         || bytes[8..10] != VERSION.to_be_bytes()
         || bytes[90] != 2
-        || digest(&bytes[..RECORD_PREFIX_BYTES]).as_bytes() != &bytes[RECORD_PREFIX_BYTES..]
+        || digest_parts(RECORD_DOMAIN, &[&bytes[..RECORD_PREFIX_BYTES]]).as_bytes()
+            != &bytes[RECORD_PREFIX_BYTES..]
     {
         return Err(PublisherDurableReadGrantErrorV1::Invalid);
     }
@@ -427,17 +428,6 @@ fn decode_current_head(
         return Err(PublisherDurableReadGrantErrorV1::Invalid);
     }
     Ok(grant)
-}
-
-fn digest(bytes: &[u8]) -> ObjectDigest {
-    ObjectDigest::from_bytes(
-        Sha256::new()
-            .chain_update(RECORD_DOMAIN)
-            .chain_update((bytes.len() as u64).to_be_bytes())
-            .chain_update(bytes)
-            .finalize()
-            .into(),
-    )
 }
 
 fn exact<const N: usize>(bytes: &[u8]) -> Result<[u8; N], PublisherDurableReadGrantErrorV1> {

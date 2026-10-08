@@ -15,9 +15,9 @@
 use std::path::Path;
 
 use aos_sandbox_core::{ObjectDigest, OperationId, PublisherInstanceId};
-use sha2::{Digest as _, Sha256};
 
 use super::RecoveryExecutorFenceV1;
+use super::digest_parts;
 use super::fixed_owner::{
     PublisherFixedInstallerV1, PublisherFixedProtectedOwnerErrorV1, PublisherFixedProtectedOwnerV1,
 };
@@ -265,7 +265,7 @@ fn decode_snapshot(
         return Err(PublisherFixedExecutorRegistryErrorV1::Registry);
     }
     let retained = ObjectDigest::from_bytes(exact(&bytes[end..])?);
-    if retained != expected_digest || retained != digest(SNAPSHOT_DOMAIN, &bytes[..end]) {
+    if retained != expected_digest || retained != digest_parts(SNAPSHOT_DOMAIN, &[&bytes[..end]]) {
         return Err(PublisherFixedExecutorRegistryErrorV1::Registry);
     }
     let mut rows = Vec::with_capacity(count);
@@ -308,19 +308,11 @@ fn decode_current(
     let retained = ObjectDigest::from_bytes(exact(&bytes[50..82])?);
     if generation == 0
         || snapshot_digest.as_bytes() == &[0; 32]
-        || retained != digest(CURRENT_DOMAIN, &bytes[..50])
+        || retained != digest_parts(CURRENT_DOMAIN, &[&bytes[..50]])
     {
         return Err(PublisherFixedExecutorRegistryErrorV1::Registry);
     }
     Ok((generation, snapshot_digest, retained))
-}
-
-fn digest(domain: &[u8], bytes: &[u8]) -> ObjectDigest {
-    let mut hasher = Sha256::new();
-    hasher.update(domain);
-    hasher.update((bytes.len() as u64).to_be_bytes());
-    hasher.update(bytes);
-    ObjectDigest::from_bytes(hasher.finalize().into())
 }
 
 fn exact<const N: usize>(bytes: &[u8]) -> Result<[u8; N], PublisherFixedExecutorRegistryErrorV1> {

@@ -14,9 +14,9 @@
 use std::path::Path;
 
 use aos_sandbox_core::{ObjectDigest, OperationId};
-use sha2::{Digest as _, Sha256};
 
 use super::decision::CommittedCatalogObservation;
+use super::digest_parts;
 use super::read_authority::{
     CommittedReadEntryV1, decode_committed_read_entry_v1, encode_committed_read_entry_v1,
 };
@@ -341,7 +341,7 @@ fn encode_observation(
             .to_be_bytes(),
     );
     bytes.extend_from_slice(&entry);
-    let digest = digest(&bytes);
+    let digest = digest_parts(DOMAIN, &[&bytes]);
     bytes.extend_from_slice(digest.as_bytes());
     Ok(bytes)
 }
@@ -378,7 +378,7 @@ fn decode_observation(
         return Err(PublisherDurableCatalogErrorV1::Invalid);
     }
     let record_digest = ObjectDigest::from_bytes(exact(&bytes[end..])?);
-    if record_digest != digest(&bytes[..end]) {
+    if record_digest != digest_parts(DOMAIN, &[&bytes[..end]]) {
         return Err(PublisherDurableCatalogErrorV1::Invalid);
     }
     Ok(AuthenticatedDurableCatalogObservationV1 {
@@ -392,14 +392,6 @@ fn decode_observation(
         physical_effect_digest,
         record_digest,
     })
-}
-
-fn digest(bytes: &[u8]) -> ObjectDigest {
-    let mut hasher = Sha256::new();
-    hasher.update(DOMAIN);
-    hasher.update((bytes.len() as u64).to_be_bytes());
-    hasher.update(bytes);
-    ObjectDigest::from_bytes(hasher.finalize().into())
 }
 
 fn exact<const N: usize>(bytes: &[u8]) -> Result<[u8; N], PublisherDurableCatalogErrorV1> {

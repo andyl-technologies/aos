@@ -25,7 +25,6 @@ use aos_sandbox_core::{
     CacheDomainId, ObjectDigest, OperationId, ProjectId, PublisherInstanceId, ResourceId,
 };
 use aos_sandbox_linux::immutable_file::FsVerityPublicationRoot;
-use sha2::{Digest as _, Sha256};
 
 use super::RecoveryExecutorFenceV1;
 use super::controller_authority::PublisherFixedControllerGrantV1;
@@ -36,7 +35,7 @@ use super::service::{
     FIXED_PUBLISHER_OBJECT_ROOT, PublisherDomainServiceConfigV1, PublisherDomainServiceErrorV1,
     PublisherDomainServiceV1,
 };
-use super::{AdmissionLimits, CapacityPolicyV1, PublicationAuthorityEpoch};
+use super::{AdmissionLimits, CapacityPolicyV1, PublicationAuthorityEpoch, digest_parts};
 use crate::journal::{
     Journal, JournalError, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace,
     RecoveryReport,
@@ -507,16 +506,6 @@ fn encode_recovery_fence(
     bytes
 }
 
-fn digest_parts(domain: &[u8], parts: &[&[u8]]) -> ObjectDigest {
-    let mut hasher = Sha256::new();
-    hasher.update(domain);
-    for part in parts {
-        hasher.update((part.len() as u64).to_be_bytes());
-        hasher.update(part);
-    }
-    ObjectDigest::from_bytes(hasher.finalize().into())
-}
-
 pub(super) fn decode_config(
     bytes: &[u8],
 ) -> Result<(PublisherDomainServiceConfigV1, ObjectDigest), PublisherFixedProtectedOwnerErrorV1> {
@@ -567,7 +556,7 @@ pub(super) fn decode_config(
     let root_inode = cursor.u64()?;
     let retained_digest = ObjectDigest::from_bytes(cursor.array()?);
     cursor.finish()?;
-    let derived_digest = config_digest(&bytes[..bytes.len() - 32]);
+    let derived_digest = digest_parts(CONFIG_DOMAIN, &[&bytes[..bytes.len() - 32]]);
     if retained_digest != derived_digest
         || clock_provenance == [0; 16]
         || root_device == 0
@@ -655,7 +644,7 @@ pub(super) fn encode_config(
     bytes.extend_from_slice(&config.clock_provenance);
     bytes.extend_from_slice(&config.root_device.to_be_bytes());
     bytes.extend_from_slice(&config.root_inode.to_be_bytes());
-    let digest = config_digest(&bytes);
+    let digest = digest_parts(CONFIG_DOMAIN, &[&bytes]);
     bytes.extend_from_slice(digest.as_bytes());
     if bytes.len() != 251 {
         return Err(PublisherFixedProtectedOwnerErrorV1::Configuration);
@@ -677,14 +666,6 @@ pub(super) fn config_equal(
         && left.root_device == right.root_device
         && left.root_inode == right.root_inode
         && left.authority_config_digest == right.authority_config_digest
-}
-
-fn config_digest(bytes: &[u8]) -> ObjectDigest {
-    let mut hasher = Sha256::new();
-    hasher.update(CONFIG_DOMAIN);
-    hasher.update((bytes.len() as u64).to_be_bytes());
-    hasher.update(bytes);
-    ObjectDigest::from_bytes(hasher.finalize().into())
 }
 
 const fn authority_journal_limits() -> JournalLimits {

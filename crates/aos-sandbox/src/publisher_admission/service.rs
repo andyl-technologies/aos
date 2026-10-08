@@ -19,8 +19,8 @@ use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::immutable_file::{
     FsVerityBacking, FsVerityDigest, FsVerityPublicationRoot, ObservedSealedPublicationFile,
 };
-use sha2::{Digest as _, Sha256};
 
+use super::digest_parts;
 use super::dormant_effects::PublisherDormantEffectCapabilityV1;
 use super::durable_catalog::PublisherDurableCatalogOwnerV1;
 use super::durable_read_grants::{
@@ -1940,16 +1940,6 @@ fn protocol_disposition(
             CompletionDispositionV1::AuthorityUnavailable
         }
     }
-}
-
-fn digest_parts(domain: &[u8], parts: &[&[u8]]) -> ObjectDigest {
-    let mut hasher = Sha256::new();
-    hasher.update(domain);
-    for part in parts {
-        hasher.update((part.len() as u64).to_be_bytes());
-        hasher.update(part);
-    }
-    ObjectDigest::from_bytes(hasher.finalize().into())
 }
 
 fn backing_descriptor_identity_v1(
