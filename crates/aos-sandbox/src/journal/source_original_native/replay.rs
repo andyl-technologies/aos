@@ -164,7 +164,7 @@ impl SourceOriginalReplayCacheV5 {
         Ok(())
     }
 
-    pub(super) fn validate_challenges(
+    pub(in crate::journal) fn validate_challenges(
         &self,
         view: &SourceOriginalChallengeHistoryViewV5<'_>,
     ) -> Result<(), JournalError> {
@@ -184,7 +184,7 @@ impl SourceOriginalReplayCacheV5 {
             .map(|(comparison, _)| comparison)
     }
 
-    pub(super) fn preview_transaction(
+    pub(in crate::journal) fn preview_transaction(
         &self,
         state: &State,
         transaction: &JournalTransaction,

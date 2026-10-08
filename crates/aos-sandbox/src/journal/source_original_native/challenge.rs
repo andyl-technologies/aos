@@ -259,7 +259,7 @@ fn require_fixed(journal: &Journal) -> Result<(), JournalError> {
     Ok(())
 }
 
-pub(super) fn is_challenge_key(key: &[u8]) -> bool {
+pub(in crate::journal) fn is_challenge_key(key: &[u8]) -> bool {
     key.starts_with(b"AOSZHK01")
 }
 
