@@ -227,6 +227,20 @@ Session Security's concrete domain dependency closure.
 Its private `resident_custody` child owns the unchanged partial parent/worker
 slots, genuine worker loans, first native causes, and negative terminal fences.
 
+Within the Controller integration, private `activation` owns the complete
+ordinary and retained startup recipes, journal assembly, readiness notification
+and serving handoff. Its `configuration` child owns fixed process inputs and
+closed activation parsing. The public run entry is a direct reexport of that
+recipe, not a second startup engine. Resident custody remains in its original
+owner; moving the recipes does not add recovery for callee-local failures.
+
+Private `commands` owns the bounded command vocabulary, admitted request
+payloads, response projection and complete journal-owner dispatch. Private
+`public_rpc` owns client-facing registration, authorization and routing. The
+root retains reconciliation and concrete effect execution. These internal
+boundaries clarify responsibilities without creating public authority factories
+or isolating the remaining concrete domain dependency closure.
+
 The private Runtime `inventory_transport` module owns the five sealed
 initialization, successor, send, receive, and commit transport stages. It borrows
 the original session; Controller retains preparation, competing-operation gates,
