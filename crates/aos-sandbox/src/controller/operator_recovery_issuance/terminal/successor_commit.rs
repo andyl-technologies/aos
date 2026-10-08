@@ -678,10 +678,22 @@ mod tests {
     fn successor_commits_all_six_rows_and_replays_after_reopen() {
         let (directory, mut journal, prepared) = seeded();
         let predecessor_sequence = journal.snapshot_sequence();
+
+        // Preparation has not committed: healthy, exact predecessor readback
+        // and absent terminal rows prove the definite negative outcome.
+        assert!(journal.ensure_protected_authority().is_ok());
+        assert!(prepared.predecessor_matches(&journal));
+        assert!(!prepared.successor_matches(&journal));
+        assert_eq!(prepared.predecessor_sequence, predecessor_sequence);
+        for index in [0, 5] {
+            let row = &prepared.transaction.records()[index];
+            assert!(journal.get(row.namespace(), row.key()).is_none());
+        }
         assert_eq!(
             prepared.classify_ambiguous(&journal),
-            Ok(RepairSuccessorCommitOutcomeV1::Ambiguous)
+            Ok(RepairSuccessorCommitOutcomeV1::NotCommitted)
         );
+
         assert_eq!(
             prepared.commit(&mut journal),
             Ok(RepairSuccessorCommitOutcomeV1::Committed)
