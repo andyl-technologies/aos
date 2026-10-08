@@ -164,6 +164,9 @@ pub enum CreateQ04ErrorV1 {
     /// The original bounded stream or fixed credential operation failed.
     #[error(transparent)]
     Io(#[from] std::io::Error),
+    /// Strict native stream adoption or original-identity checking failed.
+    #[error(transparent)]
+    Kernel(#[from] aos_sandbox_linux::Error),
     /// A bounded continuation buffer could not reserve its actual storage.
     #[error(transparent)]
     Allocation(#[from] std::collections::TryReserveError),

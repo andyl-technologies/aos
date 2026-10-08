@@ -77,6 +77,8 @@ const ROOT_CAS_END_MAGIC: &[u8; 8] = b"AOSGUEND";
 #[derive(Debug, thiserror::Error)]
 enum RootFlightFailureV1 {
     #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error(transparent)]
     Transport(#[from] TransportFault),
     #[error(transparent)]
     Carrier(#[from] ConsumerReadFlightErrorV1),

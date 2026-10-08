@@ -202,7 +202,7 @@ impl<'writers, 'profile, 'credentials> OriginalSourceProjectSuccessorInvocationV
         let controller = self.controller.as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?;
         let source = self.source.as_deref_mut().ok_or(SourceGenesisErrorV1::AdmissionClosed)?;
         source.require_fixed_named_writer_v1().map_err(SourceGenesisErrorV1::from)?;
-        let source_uid = source.journal.protected_owner_uid().map_err(SourceGenesisErrorV1::from)?;
+        let source_uid = source.journal().protected_owner_uid().map_err(SourceGenesisErrorV1::from)?;
         {
             let inventory = retained_tree_inventory_data_v1(source).map_err(SourceGenesisErrorV1::from)?;
             let observed = crate::hierarchy::source_genesis::observe_project_genesis_v3(&inventory, source_uid, project)?;
