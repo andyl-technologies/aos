@@ -198,10 +198,14 @@ ports resolve its initial seventeen compiler errors and two subsequent lifetime
 diagnostics. The composed Core suite passes all 704 tests with no skips; it
 retains the independently selected side-attribute resolver and four genuine
 history-union/current-fence cases from Native. All 6,024 captured source files
-remain unchanged through this qualification. Twelve dead-code warnings and four
-test-only merge conflicts remain. Native runtime, strict checks, later fixture
-corrections and the complete trunk gate set are still unqualified; no task or
-milestone advances.
+remain unchanged through that Core qualification. Subsequent reviewed fixture
+ports resolve the four test-only conflicts. Native test compilation initially
+reports eight interface errors; bounded compatibility corrections then compile
+and discover 704 library cases and five public SDK integration cases. All
+nineteen literal native gate selectors, including the three relocated ordinary
+merge contracts alongside the three native contracts, exist in that inventory.
+Discovery executes no tests. Strict warnings, later fixes, native runtime and
+the complete trunk gate set remain unqualified; no task or milestone advances.
 
 An isolated instrumented run of the fourth private backfill case on
 `faf2f0adfa` still fails with `Expired`. It reaches both catalog ACKs and
