@@ -1,10 +1,9 @@
 //! Deadline-bounded readiness for the closed RootMount descriptor carrier.
 
-use aos_sandbox_linux::seqpacket::SeqpacketError;
+use aos_sandbox_linux::seqpacket::bounded::{self, BoundedRecordError};
 use aos_sandbox_linux::seqpacket::descriptor_subject::{
     DescriptorSubjectSocket, ReceivedDescriptorRecord,
 };
-use rustix::event::{PollFd, PollFlags, poll};
 
 use super::{HostScopeError, Result};
 
@@ -16,14 +15,7 @@ pub(super) enum ReplyProfile {
 }
 
 pub(super) fn boottime() -> Result<u64> {
-    let now = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
-    let seconds = u64::try_from(now.tv_sec).map_err(|_| HostScopeError::Deadline)?;
-    let nanos = u64::try_from(now.tv_nsec).map_err(|_| HostScopeError::Deadline)?;
-
-    seconds
-        .checked_mul(1_000_000_000)
-        .and_then(|value| value.checked_add(nanos))
-        .ok_or(HostScopeError::Deadline)
+    bounded::boottime().map_err(map_exchange_error)
 }
 
 pub(super) fn exchange_deadline(request: u64) -> Result<u64> {
@@ -52,16 +44,7 @@ pub(super) fn send(
     bytes: &[u8],
     deadline: u64,
 ) -> Result<()> {
-    loop {
-        check_deadline(deadline)?;
-
-        match socket.send(bytes) {
-            Ok(()) => return check_deadline(deadline),
-            Err(SeqpacketError::WouldBlock) => wait(socket, PollFlags::OUT, deadline)?,
-            Err(SeqpacketError::Interrupted) => {}
-            Err(error) => return Err(error.into()),
-        }
-    }
+    bounded::send_descriptor_record(socket, bytes, deadline).map_err(map_exchange_error)
 }
 
 pub(super) fn receive(
@@ -70,46 +53,25 @@ pub(super) fn receive(
     profile: ReplyProfile,
     deadline: u64,
 ) -> Result<ReceivedDescriptorRecord> {
-    loop {
-        check_deadline(deadline)?;
-        let received = match profile {
-            ReplyProfile::Hello => socket.receive(maximum_bytes, 0),
-            ReplyProfile::Scope => socket.receive_mount_scope_reply(maximum_bytes),
-        };
+    let received = match profile {
+        ReplyProfile::Hello => bounded::receive_zero_descriptors(socket, maximum_bytes, deadline),
+        ReplyProfile::Scope => bounded::receive_mount_scope_reply(socket, maximum_bytes, deadline),
+    };
 
-        match received {
-            Ok(record) => {
-                check_deadline(deadline)?;
-                return Ok(record);
-            }
-            Err(SeqpacketError::WouldBlock) => wait(socket, PollFlags::IN, deadline)?,
-            Err(SeqpacketError::Interrupted) => {}
-            Err(error) => return Err(error.into()),
-        }
-    }
+    received.map_err(map_exchange_error)
 }
 
-fn wait(socket: &DescriptorSubjectSocket, events: PollFlags, deadline: u64) -> Result<()> {
-    let remaining = deadline
-        .checked_sub(boottime()?)
-        .filter(|remaining| *remaining > 0)
-        .ok_or(HostScopeError::Deadline)?;
-    let timeout = rustix::event::Timespec {
-        tv_sec: i64::try_from(remaining / 1_000_000_000).map_err(|_| HostScopeError::Deadline)?,
-        tv_nsec: i64::try_from(remaining % 1_000_000_000).map_err(|_| HostScopeError::Deadline)?,
-    };
-    let mut fds = [PollFd::from_borrowed_fd(socket.as_fd()?, events)];
-
-    match poll(&mut fds, Some(&timeout)) {
-        Ok(0) => Err(HostScopeError::Deadline),
-        Ok(_) | Err(rustix::io::Errno::INTR) => Ok(()),
-        Err(error) => Err(error.into()),
+fn map_exchange_error(error: BoundedRecordError) -> HostScopeError {
+    match error {
+        BoundedRecordError::Transport(error) => HostScopeError::Transport(error),
+        BoundedRecordError::Io(error) => HostScopeError::Io(error),
+        BoundedRecordError::Clock => HostScopeError::Deadline,
     }
 }
 
 #[cfg(test)]
 mod tests {
-    //! Deadline rejection must precede packet consumption and descriptor adoption.
+    //! Mount owns its signed deadline cap and domain-specific error categories.
 
     #![allow(
         clippy::unwrap_used,
@@ -135,30 +97,20 @@ mod tests {
     }
 
     #[test]
-    fn expired_receive_does_not_consume_a_queued_record() {
-        let (receiver, sender) = rustix::net::socketpair(
-            rustix::net::AddressFamily::UNIX,
-            rustix::net::SocketType::SEQPACKET,
-            rustix::net::SocketFlags::CLOEXEC,
-            None,
-        )
-        .unwrap();
-        let mut receiver = DescriptorSubjectSocket::from_owned(receiver).unwrap();
-        let mut sender = DescriptorSubjectSocket::from_owned(sender).unwrap();
-        sender.send(b"hello").unwrap();
+    fn exchange_errors_keep_the_existing_domain_categories() {
+        use aos_sandbox_linux::seqpacket::SeqpacketError;
 
         assert!(matches!(
-            receive(&mut receiver, 64, ReplyProfile::Hello, 0),
-            Err(HostScopeError::Deadline)
+            map_exchange_error(BoundedRecordError::Clock),
+            HostScopeError::Deadline
         ));
-        let record = receive(
-            &mut receiver,
-            64,
-            ReplyProfile::Hello,
-            exchange_deadline(u64::MAX).unwrap(),
-        )
-        .unwrap();
-
-        assert_eq!(record.payload(), b"hello");
+        assert!(matches!(
+            map_exchange_error(BoundedRecordError::Io(rustix::io::Errno::IO)),
+            HostScopeError::Io(rustix::io::Errno::IO)
+        ));
+        assert!(matches!(
+            map_exchange_error(BoundedRecordError::Transport(SeqpacketError::Closed)),
+            HostScopeError::Transport(SeqpacketError::Closed)
+        ));
     }
 }
