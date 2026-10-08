@@ -34,11 +34,11 @@ use std::collections::BTreeMap;
 
 use aos_sandbox::{Journal, JournalRecord, RecordNamespace};
 use aos_sandbox_core::ObjectDigest;
+use aos_sandbox_core::bounded_codec::BoundedReader;
 use hmac::{Hmac, Mac as _};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use crate::record_cursor::Decoder;
 use crate::root_policy::{PortableRootAttributesV1, WorkspaceRootPolicyV1};
 use crate::{CatalogBindingV1, StorageStateError};
 
@@ -839,7 +839,7 @@ pub(crate) fn decode_attempt(
         return Err(StorageStateError::CorruptRecord);
     }
     let (body, supplied_tag) = bytes.split_at(bytes.len() - MAC_BYTES);
-    let mut decoder = Decoder::new(body);
+    let mut decoder = BoundedReader::new(body, |_| StorageStateError::CorruptRecord);
     if decoder.array::<8>()? != *MAGIC {
         return Err(StorageStateError::CorruptRecord);
     }
@@ -874,19 +874,19 @@ pub(crate) fn decode_attempt(
         host_mount_namespace_inode: decoder.u64()?,
         clock_provenance: decoder.array()?,
         effect_deadline_boottime_nanoseconds: decoder.u64()?,
-        dataset_name: decoder.string()?,
+        dataset_name: read_string(&mut decoder)?,
         dataset_guid: decoder.u64()?,
         identity_range_start: decoder.u32()?,
         identity_range_size: decoder.u32()?,
         root_policy: if decoder.u8()? == 1 {
-            WorkspaceRootPolicyV1::from_canonical_bytes(decoder.take(ROOT_POLICY_CANONICAL_BYTES)?)
+            WorkspaceRootPolicyV1::from_canonical_bytes(decoder.bytes(ROOT_POLICY_CANONICAL_BYTES)?)
                 .map_err(|_| StorageStateError::CorruptRecord)?
         } else {
             return Err(StorageStateError::CorruptRecord);
         },
-        authority_receipt: decoder.bytes()?,
-        expected_pin: decoder.optional_proof()?,
-        satisfied_pin: decoder.optional_proof()?,
+        authority_receipt: read_authority_receipt(&mut decoder)?,
+        expected_pin: read_optional_proof(&mut decoder)?,
+        satisfied_pin: read_optional_proof(&mut decoder)?,
     };
     if !decoder.is_empty() {
         return Err(StorageStateError::CorruptRecord);
@@ -989,61 +989,68 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
             == 0
 }
 
-impl<'a> Decoder<'a> {
-    fn string(&mut self) -> Result<String, StorageStateError> {
-        let length = usize::from(self.u16()?);
-        if length == 0 || length > MAXIMUM_STRING_BYTES {
-            return Err(StorageStateError::CorruptRecord);
-        }
-        String::from_utf8(self.take(length)?.to_vec()).map_err(|_| StorageStateError::CorruptRecord)
+fn read_string(
+    reader: &mut BoundedReader<'_, StorageStateError>,
+) -> Result<String, StorageStateError> {
+    let length = usize::from(reader.u16()?);
+    if length == 0 || length > MAXIMUM_STRING_BYTES {
+        return Err(StorageStateError::CorruptRecord);
     }
+    String::from_utf8(reader.bytes(length)?.to_vec()).map_err(|_| StorageStateError::CorruptRecord)
+}
 
-    fn bytes(&mut self) -> Result<Vec<u8>, StorageStateError> {
-        let length = usize::from(self.u16()?);
-        if length == 0 || length > MAXIMUM_AUTHORITY_RECEIPT_BYTES {
-            return Err(StorageStateError::CorruptRecord);
-        }
-        Ok(self.take(length)?.to_vec())
+fn read_authority_receipt(
+    reader: &mut BoundedReader<'_, StorageStateError>,
+) -> Result<Vec<u8>, StorageStateError> {
+    let length = usize::from(reader.u16()?);
+    if length == 0 || length > MAXIMUM_AUTHORITY_RECEIPT_BYTES {
+        return Err(StorageStateError::CorruptRecord);
     }
+    Ok(reader.bytes(length)?.to_vec())
+}
 
-    fn optional_proof(&mut self) -> Result<Option<WorkspaceRootPinProofV1>, StorageStateError> {
-        match self.u8()? {
-            0 => Ok(None),
-            1 => {
-                let kernel_boot_id = self.array()?;
-                let mount_namespace_device = self.u64()?;
-                let mount_namespace_inode = self.u64()?;
-                let mount_id = self.u64()?;
-                let mount_root = self.string()?;
-                let mount_point = self.string()?;
-                let filesystem_type = self.string()?;
-                let superblock_source = self.string()?;
-                let dataset_guid = self.u64()?;
-                let root_device = self.u64()?;
-                let root_inode = self.u64()?;
-                let root_attributes =
-                    PortableRootAttributesV1::new(self.u32()?, self.u32()?, u32::from(self.u16()?))
-                        .map_err(|_| StorageStateError::CorruptRecord)?;
-                let proof = WorkspaceRootPinProofV1::new(
-                    kernel_boot_id,
-                    mount_namespace_device,
-                    mount_namespace_inode,
-                    mount_id,
-                    mount_root,
-                    mount_point,
-                    filesystem_type,
-                    superblock_source,
-                    dataset_guid,
-                    root_device,
-                    root_inode,
-                    root_attributes,
-                );
-                proof
-                    .map(Some)
-                    .map_err(|_| StorageStateError::CorruptRecord)
-            }
-            _ => Err(StorageStateError::CorruptRecord),
+fn read_optional_proof(
+    reader: &mut BoundedReader<'_, StorageStateError>,
+) -> Result<Option<WorkspaceRootPinProofV1>, StorageStateError> {
+    match reader.u8()? {
+        0 => Ok(None),
+        1 => {
+            let kernel_boot_id = reader.array()?;
+            let mount_namespace_device = reader.u64()?;
+            let mount_namespace_inode = reader.u64()?;
+            let mount_id = reader.u64()?;
+            let mount_root = read_string(reader)?;
+            let mount_point = read_string(reader)?;
+            let filesystem_type = read_string(reader)?;
+            let superblock_source = read_string(reader)?;
+            let dataset_guid = reader.u64()?;
+            let root_device = reader.u64()?;
+            let root_inode = reader.u64()?;
+            let root_attributes = PortableRootAttributesV1::new(
+                reader.u32()?,
+                reader.u32()?,
+                u32::from(reader.u16()?),
+            )
+            .map_err(|_| StorageStateError::CorruptRecord)?;
+            let proof = WorkspaceRootPinProofV1::new(
+                kernel_boot_id,
+                mount_namespace_device,
+                mount_namespace_inode,
+                mount_id,
+                mount_root,
+                mount_point,
+                filesystem_type,
+                superblock_source,
+                dataset_guid,
+                root_device,
+                root_inode,
+                root_attributes,
+            );
+            proof
+                .map(Some)
+                .map_err(|_| StorageStateError::CorruptRecord)
         }
+        _ => Err(StorageStateError::CorruptRecord),
     }
 }
 

@@ -20,6 +20,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use aos_sandbox::{Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace};
+use aos_sandbox_core::bounded_codec::BoundedReader;
 use aos_sandbox_core::{
     AssignmentEpoch, BrokerAssignment, DesiredGeneration, IncarnationId, MediaType, NodeId,
     ObjectDescriptor, ObjectDigest, SandboxId,
@@ -34,7 +35,6 @@ use crate::catalog_transition::{
     VerifiedPhysicalCatalogSnapshotV1,
 };
 use crate::guest_root_attempt::GuestRootPublicationAttemptV1;
-use crate::record_cursor::Decoder as Cursor;
 use crate::resolver::protected_catalog::{
     StorageResolverPolicyBindingV1, StorageResolverPolicyCatalogBindingV1,
 };
@@ -5348,8 +5348,10 @@ fn decode_publication_intent(
         .verify_slice(&bytes[payload_length..])
         .map_err(|_| StorageStateError::CorruptRecord)?;
 
-    let mut decoder = Cursor::new(&bytes[..payload_length]);
-    if decoder.take(8)? != PUBLICATION_INTENT_MAGIC {
+    let mut decoder = BoundedReader::new(&bytes[..payload_length], |_| {
+        StorageStateError::CorruptRecord
+    });
+    if decoder.bytes(8)? != PUBLICATION_INTENT_MAGIC {
         return Err(StorageStateError::CorruptRecord);
     }
     let version = decoder.u16()?;
@@ -5364,7 +5366,7 @@ fn decode_publication_intent(
     .map_err(|_| StorageStateError::CorruptRecord)?;
     let assignment_digest = ObjectDigest::from_bytes(decoder.array::<32>()?);
     let media_length = usize::from(decoder.u16()?);
-    let media_type = std::str::from_utf8(decoder.take(media_length)?)
+    let media_type = std::str::from_utf8(decoder.bytes(media_length)?)
         .map_err(|_| StorageStateError::CorruptRecord)?;
     let root_image = ObjectDescriptor::new(
         MediaType::new(media_type.to_owned()).map_err(|_| StorageStateError::CorruptRecord)?,
@@ -5385,10 +5387,10 @@ fn decode_publication_intent(
     .map_err(|_| StorageStateError::CorruptRecord)?;
     let node = NodeId::from_bytes(decoder.array()?);
     let root_policy =
-        crate::root_policy::WorkspaceRootPolicyV1::from_canonical_bytes(decoder.take(64)?)
+        crate::root_policy::WorkspaceRootPolicyV1::from_canonical_bytes(decoder.bytes(64)?)
             .map_err(|_| StorageStateError::CorruptRecord)?;
-    let manifest_bytes = decoder.u32_bytes(48 * 1024)?.to_vec();
-    let sandbox_spec_bytes = decoder.u32_bytes(16 * 1024)?.to_vec();
+    let manifest_bytes = read_u32_bytes(&mut decoder, 48 * 1024)?.to_vec();
+    let sandbox_spec_bytes = read_u32_bytes(&mut decoder, 16 * 1024)?.to_vec();
     let portable_metadata = DurablePortableWorkspaceMetadataV1::new(
         request_id,
         request_digest,
@@ -5930,8 +5932,8 @@ fn decode_record(bytes: &[u8], key: &StorageStateKey) -> Result<DurableRecord, S
     mac.update(body);
     mac.verify_slice(tag)
         .map_err(|_| StorageStateError::CorruptRecord)?;
-    let mut cursor = Cursor::new(body);
-    if cursor.take(8)? != MAGIC {
+    let mut cursor = BoundedReader::new(body, |_| StorageStateError::CorruptRecord);
+    if cursor.bytes(8)? != MAGIC {
         return Err(StorageStateError::CorruptRecord);
     }
     let version = cursor.u16()?;
@@ -5956,8 +5958,8 @@ fn decode_record(bytes: &[u8], key: &StorageStateKey) -> Result<DurableRecord, S
         .map_err(|_| StorageStateError::CorruptRecord)?;
     let stored_postcondition_digest = ObjectDigest::from_bytes(cursor.array()?);
     let catalog_len = cursor.u32()? as usize;
-    let catalog_bytes = cursor.take(catalog_len)?.to_vec();
-    if cursor.take(16)? != key.key_id {
+    let catalog_bytes = cursor.bytes(catalog_len)?.to_vec();
+    if cursor.bytes(16)? != key.key_id {
         return Err(StorageStateError::CorruptRecord);
     }
     let result = if phase == DurableStoragePhase::Committed {
@@ -6007,7 +6009,7 @@ fn decode_record(bytes: &[u8], key: &StorageStateKey) -> Result<DurableRecord, S
 }
 
 fn decode_result_identity(
-    cursor: &mut Cursor<'_>,
+    cursor: &mut BoundedReader<'_, StorageStateError>,
 ) -> Result<DecodedResultIdentity, StorageStateError> {
     let flags = cursor.u8()?;
     if flags & !(RESULT_HAS_STORAGE_HANDLE | RESULT_HAS_VERSION_HANDLE | RESULT_HAS_OBJECT_GUID)
@@ -6048,14 +6050,15 @@ fn optional_nonzero_array<const N: usize>(
     }
 }
 
-impl<'a> Cursor<'a> {
-    fn u32_bytes(&mut self, maximum: usize) -> Result<&'a [u8], StorageStateError> {
-        let length = usize::try_from(self.u32()?).map_err(|_| StorageStateError::CorruptRecord)?;
-        if length > maximum {
-            return Err(StorageStateError::CorruptRecord);
-        }
-        self.take(length)
+fn read_u32_bytes<'a>(
+    reader: &mut BoundedReader<'a, StorageStateError>,
+    maximum: usize,
+) -> Result<&'a [u8], StorageStateError> {
+    let length = usize::try_from(reader.u32()?).map_err(|_| StorageStateError::CorruptRecord)?;
+    if length > maximum {
+        return Err(StorageStateError::CorruptRecord);
     }
+    reader.bytes(length)
 }
 
 #[cfg(test)]
@@ -9420,7 +9423,9 @@ mod tests {
             bytes.extend_from_slice(&object_guid.to_be_bytes());
 
             assert!(matches!(
-                decode_result_identity(&mut Cursor::new(&bytes)),
+                decode_result_identity(&mut BoundedReader::new(&bytes, |_| {
+                    StorageStateError::CorruptRecord
+                })),
                 Err(StorageStateError::CorruptRecord)
             ));
         }

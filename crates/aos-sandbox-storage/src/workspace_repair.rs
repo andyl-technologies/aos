@@ -31,11 +31,11 @@ use std::collections::BTreeMap;
 
 use aos_sandbox::{Journal, JournalRecord, RecordNamespace};
 use aos_sandbox_broker::{BrokerEffectIntentV1, BrokerEffectStatusV1};
+use aos_sandbox_core::bounded_codec::BoundedReader;
 use aos_sandbox_core::{BrokerGrantTarget, BrokerVerb, ObjectDigest};
 use hmac::{Hmac, Mac as _};
 use sha2::Digest as _;
 
-use crate::record_cursor::Decoder;
 use crate::root_policy::WorkspaceRootPolicyV1;
 use crate::workspace_pin::{
     WorkspaceDatasetObservationV1, WorkspacePinAttemptPhaseV1, WorkspacePinHostScopeV1,
@@ -873,7 +873,7 @@ pub(crate) fn decode_intent(
         return Err(StorageStateError::CorruptRecord);
     }
     let (body, supplied_tag) = bytes.split_at(bytes.len() - MAC_BYTES);
-    let mut decoder = Decoder::new(body);
+    let mut decoder = BoundedReader::new(body, |_| StorageStateError::CorruptRecord);
     if decoder.array::<8>()? != *MAGIC {
         return Err(StorageStateError::CorruptRecord);
     }
@@ -896,7 +896,7 @@ pub(crate) fn decode_intent(
     if effect_record_length == 0 || effect_record_length > MAXIMUM_ADMITTED_EFFECT_RECORD_BYTES {
         return Err(StorageStateError::CorruptRecord);
     }
-    let admitted_effect_record = decoder.take(effect_record_length)?.to_vec();
+    let admitted_effect_record = decoder.bytes(effect_record_length)?.to_vec();
     let operation_fence_digest = ObjectDigest::from_bytes(decoder.array()?);
     let creation_operation_id = decoder.array()?;
     let creation_result_catalog = CatalogBindingV1::from_publisher(
