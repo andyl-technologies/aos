@@ -6002,7 +6002,11 @@ impl ProtectedBrokerSessionJournalV1 {
                 let result = schema.authority.open_online_nix_fence(assignment.sandbox().as_bytes(), bytes);
                 let fence = retain_online_authority_result(&mut schema.first_failure, result)?;
                 if record == history.head().map_err(|_| BrokerSessionSecurityError::Currentness)?
-                    && (fence.assignment() != assignment || fence.plan_digest() != effect.plan_digest())
+                    && (fence.assignment().sandbox() != assignment.sandbox()
+                        || fence.assignment().incarnation() != assignment.incarnation()
+                        || fence.assignment().epoch() != assignment.epoch()
+                        || fence.assignment().digest() != assignment.digest()
+                        || fence.plan_digest() != effect.plan_digest())
                 {
                     return Err(BrokerSessionSecurityError::Currentness);
                 }
@@ -6121,12 +6125,13 @@ impl ProtectedBrokerSessionJournalV1 {
                         RecordNamespace::BrokerSessionTraffic,
                         aos_sandbox_broker::BrokerAuthority::online_nix_fence_key(
                             admission.fence.assignment().sandbox().as_bytes(),
-                        ),
+                        )
+                        .to_vec(),
                         prepared.fence.as_ref().ok_or(BrokerSessionSecurityError::Currentness)?.clone(),
                     ));
                     records.push(JournalRecord::put(
                         RecordNamespace::BrokerSessionTraffic,
-                        effect_key,
+                        effect_key.to_vec(),
                         prepared.effect.as_ref().ok_or(BrokerSessionSecurityError::Currentness)?.clone(),
                     ));
                 }
@@ -6143,7 +6148,11 @@ impl ProtectedBrokerSessionJournalV1 {
                             return Err(BrokerSessionSecurityError::Currentness);
                         }
                     };
-                    records.push(JournalRecord::put(RecordNamespace::BrokerSessionTraffic, effect_key, value));
+                    records.push(JournalRecord::put(
+                        RecordNamespace::BrokerSessionTraffic,
+                        effect_key.to_vec(),
+                        value,
+                    ));
                 }
             }
             let transaction = JournalTransaction::new(transaction_id(stored)?, records)

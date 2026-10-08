@@ -1360,7 +1360,7 @@ pub(crate) fn online_existing_output_client_hello()
     -> Result<BrokerClientHello, aos_sandbox_broker_session_protocol::BrokerSessionNegotiationError>
 {
     let mut hello = online_resolve_client_hello()?;
-    hello.required_methods.extend([
+    hello.required_methods.extend_from_slice(&[
         aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_NIX_REALIZE_AUTHORIZED_DERIVATION_V2.into(),
         aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_NIX_QUERY_AUTHORIZED_PATH_INFO_V2.into(),
     ]);
@@ -1373,7 +1373,7 @@ pub(crate) fn online_existing_output_server_hello()
     -> Result<BrokerServerHello, aos_sandbox_broker_session_protocol::BrokerSessionNegotiationError>
 {
     let mut hello = online_resolve_server_hello()?;
-    hello.methods.extend([
+    hello.methods.extend_from_slice(&[
         aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_NIX_REALIZE_AUTHORIZED_DERIVATION_V2.into(),
         aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_NIX_QUERY_AUTHORIZED_PATH_INFO_V2.into(),
     ]);

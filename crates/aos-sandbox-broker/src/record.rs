@@ -465,14 +465,12 @@ impl BrokerEffectIntentV1 {
 
     /// Returns the signed request-body ceiling.
     #[must_use]
-    #[cfg(test)]
     pub const fn maximum_request_bytes(&self) -> u32 {
         self.maximum_request_bytes
     }
 
     /// Returns the signed descriptor-count ceiling.
     #[must_use]
-    #[cfg(test)]
     pub const fn maximum_descriptors(&self) -> u16 {
         self.maximum_descriptors
     }
