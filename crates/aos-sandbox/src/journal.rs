@@ -50,6 +50,7 @@ pub(crate) mod source_tree_successor;
 mod prepared_transaction;
 mod root_local_recovery;
 mod root_original_inventory;
+pub(crate) use root_original_inventory::materialize as materialize_root_inventory_transaction;
 mod root_original_native;
 #[cfg(target_os = "linux")]
 mod runtime_deployment_history;

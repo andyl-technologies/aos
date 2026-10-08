@@ -352,7 +352,7 @@ impl super::store::RootSourceGenesisAuthorityV1 {
             }
             _ => return Err(JournalError::ProtectedBoundary),
         };
-        let after = crate::journal::root_original_inventory::materialize(state, transaction);
+        let after = crate::journal::materialize_root_inventory_transaction(state, transaction);
         let prospective = project_rows_v3(&after, selected)?;
         if before.archives.iter().any(|(project, archive)| prospective.archives.get(project) != Some(archive)) {
             return Err(JournalError::ProtectedBoundary);

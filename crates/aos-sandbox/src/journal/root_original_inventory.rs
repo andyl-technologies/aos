@@ -169,7 +169,7 @@ fn apply_owners(state: &State, owners: &JournalTransaction) -> Result<State, Jou
 }
 
 /// Projects DATA rows for a separately validated coupled owner transaction.
-pub(super) fn materialize(state: &State, transaction: &JournalTransaction) -> State {
+pub(crate) fn materialize(state: &State, transaction: &JournalTransaction) -> State {
     let mut after = state.clone();
     for record in transaction.records() {
         let key = (record.namespace(), record.key().to_vec());

@@ -114,7 +114,7 @@ pub use store::{
     RootProjectGenesisMutationResultsV3,
     fixed_root_source_genesis_recovery_available_v1,
 };
-pub(in crate::policy_compiler) use store::Q04RootGen1CutLoanV1;
+pub(crate) use store::Q04RootGen1CutLoanV1;
 
 // Both original-flight owners use the same bounded readiness wait. The
 // purpose-specific owner checks remain in their respective live loans.

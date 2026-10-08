@@ -391,7 +391,7 @@ fn replay_fixed_root_read_only_cache_journals_inner(
 // of Q04 settlement; the fixed Root caller also checks its actual phase.
 #[cfg(target_os = "linux")]
 pub(crate) fn replay_fixed_root_q04_terminal_cache_journals_v1(
-    original: &crate::policy_compiler::source_genesis_root::Q04RootGen1CutLoanV1<'_>,
+    original: &crate::policy_compiler::Q04RootGen1CutLoanV1<'_>,
     request: &Q04RootCacheTerminalRequestV1<'_>,
 ) -> Q04RootCacheTerminalOutcomeV1 {
     if let Err(first) = original.recheck() {

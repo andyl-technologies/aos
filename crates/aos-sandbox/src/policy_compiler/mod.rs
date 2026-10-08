@@ -176,6 +176,8 @@ pub(crate) use source_genesis_root::{
 };
 mod source_hold_pin;
 #[cfg(target_os = "linux")]
+pub(crate) use source_genesis_root::Q04RootGen1CutLoanV1;
+#[cfg(target_os = "linux")]
 pub(crate) use public_create_source::{
     consume_completed_gen1_ancestry_v1,
     consume_completed_project_genesis_ancestry_v3,

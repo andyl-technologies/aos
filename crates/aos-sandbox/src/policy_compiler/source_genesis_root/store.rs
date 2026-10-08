@@ -280,10 +280,11 @@ impl RootFirstSourceSuccessorOpeningV2 {
     }
 }
 
-// This is a short loan from the same actual Root writer. The added Controller
-// fields are projections of a packet already checked by the sole old decoder,
-// not a new parser, sequence-based authority or detachable current-floor token.
-pub(in crate::policy_compiler) struct Q04RootGen1CutLoanV1<'root> {
+/// Borrows the same actual Root writer for a closed Q04 currentness check.
+///
+/// Controller fields project an already checked packet. The loan is not a
+/// sequence-based authority or a detachable current-floor token.
+pub(crate) struct Q04RootGen1CutLoanV1<'root> {
     owner: &'root RootSourceGenesisAuthorityV1,
     current: super::CurrentRootSourceGenesisFloorV1<'root>,
     controller_sequence: u64,
@@ -291,7 +292,12 @@ pub(in crate::policy_compiler) struct Q04RootGen1CutLoanV1<'root> {
 }
 
 impl Q04RootGen1CutLoanV1<'_> {
-    pub(in crate::policy_compiler) fn recheck(&self) -> Result<(), SourceGenesisErrorV1> {
+    /// Rechecks the original borrowed Root floor without granting new authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original currentness failure when the retained floor is stale.
+    pub(crate) fn recheck(&self) -> Result<(), SourceGenesisErrorV1> {
         self.current.recheck()
     }
 

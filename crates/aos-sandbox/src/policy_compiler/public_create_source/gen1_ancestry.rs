@@ -84,7 +84,7 @@ pub(crate) fn consume_completed_gen1_ancestry_v1(
     .consume()
 }
 
-pub(in crate::policy_compiler) fn consume_completed_project_genesis_ancestry_v3(
+pub(crate) fn consume_completed_project_genesis_ancestry_v3(
     controller: &HeldControllerSourceGenesisV1<'_>,
     source: &crate::hierarchy::source_genesis::HeldSourceProjectGenesisObservationV3<'_>,
     inventory: &RetainedTreeInventoryDataV1<'_>,
