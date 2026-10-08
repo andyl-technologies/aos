@@ -35,7 +35,7 @@
   handlers = {
     aos.abilities = {
       serviceManagement.operations.realize.handler.program = artifactLib.value ((artifact "systemd" pkgs.systemd.handlers) // {mainProgram = "aos-service-handler";});
-      configuration.operations.file.handler.program = artifactLib.value ((artifact "systemd" pkgs.systemd.handlers) // {mainProgram = "aos-service-handler";});
+      configuration.operations.file.handler.program = artifactLib.value (artifact "aos-configuration-provider" pkgs.aos-configuration-provider);
       identity.operations = builtins.listToAttrs (map (name: {
         inherit name;
         value.handler.program = artifactLib.value ((artifact "systemd" pkgs.systemd.handlers) // {mainProgram = "aos-systemd-native-resources";});
@@ -49,6 +49,7 @@
       scope = ["profile" "nix-daemon-test"];
       packageModules = [
         (record "service-management" ../system/_service-management pkgs.service-management {})
+        (record "aos-configuration-provider" ../system/_aos-configuration-provider pkgs.aos-configuration-provider {})
         (record "filesystem" ../filesystem/_aos-filesystem-provider pkgs.aos-filesystem-provider {})
         (record "aos-nix-store-provider" ./_aos-nix-store-provider pkgs.aos-nix-store-provider {})
         (record "nix-daemon" ./_nix-daemon-config self (builtins.mapAttrs artifact {

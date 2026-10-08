@@ -48,6 +48,18 @@ pub use vm::*;
 
 use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 
+/// Selects the installed command whose parser supplies completion metadata.
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+pub enum CompletionCommand {
+    /// Generate completions for the system and development CLI.
+    #[default]
+    Aos,
+    /// Generate completions for the package consumer CLI.
+    Apm,
+    /// Generate completions for the package registry author CLI.
+    Apr,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
 pub enum ProgressChoice {
     /// Select terminal or stable-line rendering automatically.
@@ -319,7 +331,7 @@ pub enum Commands {
         shell: clap_complete::Shell,
         /// Command whose parser supplies completions
         #[arg(long, value_enum, default_value_t)]
-        command: crate::commands::completions::CompletionCommand,
+        command: CompletionCommand,
     },
     /// Start the HTTP binary cache server
     Serve {

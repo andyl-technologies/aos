@@ -8,19 +8,7 @@
 use clap::CommandFactory;
 use clap_complete::generate;
 
-use crate::cli::{ApmCli, AprCli, Cli};
-
-/// Selects the installed command whose parser supplies completion metadata.
-#[derive(Clone, Copy, Debug, Default, clap::ValueEnum)]
-pub enum CompletionCommand {
-    /// Generate completions for the system and development CLI.
-    #[default]
-    Aos,
-    /// Generate completions for the package consumer CLI.
-    Apm,
-    /// Generate completions for the package registry author CLI.
-    Apr,
-}
+use crate::cli::{ApmCli, AprCli, Cli, CompletionCommand};
 
 /// Generates a shell completion script for an installed command's parser.
 ///
