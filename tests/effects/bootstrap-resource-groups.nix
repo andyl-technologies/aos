@@ -3,38 +3,10 @@
   lib,
   pkgs,
 }: let
-  root = ../..;
-  sourceRoots = {
-    nginx = /pkgs/networking/_nginx;
-    krb5 = /pkgs/security/_krb5-kdc;
-    service-management = /pkgs/system/_service-management;
-    systemd = /pkgs/system/_systemd-abilities;
-    aos-host-policy = /pkgs/system/_aos-host-policy;
-    aos-configuration-provider = /pkgs/system/_aos-configuration-provider;
-    aos-configuration-lower = /pkgs/boot/_aos-configuration-lower;
-    aos-metadata-provider = /pkgs/tools/_aos-metadata-provider;
-    glibc-locales = /pkgs/data/_glibc-locales;
-    linux-pam = /pkgs/security/_linux-pam;
-    kmod = /pkgs/system/_kmod-abilities;
-    aos-kernel-tunable-provider = /pkgs/tools/_aos-kernel-tunable-provider;
-    kernel-interface = /pkgs/kernel/_kernel-interface;
-    aos-runtime-checks = /pkgs/system/_aos-runtime-checks;
-    aos-filesystem-provider = /pkgs/filesystem/_aos-filesystem-provider;
-    nftables = /pkgs/networking/_nftables;
-    aos-network-ruleset-provider = /pkgs/networking/_aos-network-ruleset-provider;
-  };
-  evaluate = packageName: settings: extraModules: let
-    packages = [pkgs.${packageName} pkgs.systemd pkgs.aos-network-ruleset-provider];
-    records = lib.packageModules.closure packages;
-  in
+  evaluate = packageName: settings: extraModules:
     lib.evalPackageModules {
       scope = ["test" "bootstrap-resource-groups" packageName];
-      inherit packages;
-      packageImportRoots = builtins.listToAttrs (map (record: {
-          name = builtins.unsafeDiscardStringContext record.configRoot;
-          value = toString (root + sourceRoots.${record.name});
-        })
-        records);
+      packages = [pkgs.${packageName} pkgs.systemd pkgs.aos-network-ruleset-provider pkgs.aos-init-provider];
       operatorModules = [settings] ++ extraModules;
     };
   nginxSettings.aos.services.nginx = {

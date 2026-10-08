@@ -7,6 +7,7 @@
   packages = [
     policy
     pkgs.systemd
+    pkgs.aos-init-provider
     pkgs.chrony
     pkgs.openssh
     pkgs.audit

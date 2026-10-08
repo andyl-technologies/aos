@@ -3,7 +3,7 @@
   lib,
   pkgs,
 }: let
-  packages = [pkgs.aos-zfs-provider pkgs.systemd];
+  packages = [pkgs.aos-zfs-provider pkgs.systemd pkgs.aos-init-provider];
   evaluate = enabled: overrides:
     lib.evalPackageModules {
       inherit packages;

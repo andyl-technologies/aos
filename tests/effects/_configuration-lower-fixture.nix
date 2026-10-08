@@ -9,7 +9,7 @@
   };
   evaluated = lib.evalPackageModules {
     scope = ["profile" "configuration-lower-test"];
-    packages = [pkgs.aos-configuration-lower pkgs.systemd];
+    packages = [pkgs.aos-configuration-lower pkgs.systemd pkgs.aos-init-provider];
     operatorModules = [
       ../../pkgs/system/_aos-host-policy/configuration-lower.nix
       ({config, ...}: {
