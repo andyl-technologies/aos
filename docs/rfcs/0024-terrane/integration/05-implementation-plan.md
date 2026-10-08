@@ -1769,6 +1769,18 @@ nineteen singleton-lease, nine source-carry and one imported-source cases.
 That is 94 required executions covering 88 unique selectors; existing overlaps
 are retained. The missing-Trash correction on `b82427b68c` must be composed
 before qualification. This auxiliary is registered but unqualified.
+The current private composition `77d2317e61` preserves the reviewed collector
+and missing-Trash correction, with all four shared gate files matching trunk.
+Both mandatory formats pass. Its original owning auxiliary request fails in
+the required `gc-mark-reachability` dependency: the first seven mark cases
+execute and pass, then the checkpoint/reopen case receives `Denied` for commit
+to `refs/heads/_/main` at its signed index-publication setup. The failing case
+takes 2.24 seconds; this is not evidence of deadline expiry. Printed compiled
+inventory contains 768 cases. The fourteen direct auxiliary cases never execute,
+and the other interrupted prerequisites and unfinished SDK image supply no
+completed conformance outputs. All 6,074 captured source inputs remain unchanged;
+the original failure and actual per-case reports are retained without retry.
+The denied setup requires diagnosis before replacement qualification.
 GC-15, GC-16 and GC-29 also require D-82 copied-retirement and permanent-owner
 recovery. The current source implements their codecs and portable-copy
 registration, but no genuine copied or permanent-owner collector path.
