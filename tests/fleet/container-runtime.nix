@@ -171,6 +171,8 @@ in {
           --key-id initial --channel stable --init-channel
 
         cp -a "$REG_DIR" /var/lib/aos-container-fixtures/registry
+        # Signed channel resolution requires the publisher's trust anchor.
+        printf '%s\n' "$trust" > /var/lib/aos-container-fixtures/trust-key
         PYTHONUNBUFFERED=1 ${pkgs.coreutils}/bin/nohup \
           ${pkgs.python3}/bin/python3 -m http.server 18120 \
           --bind 127.0.0.1 \
@@ -226,6 +228,7 @@ in {
     )
 
     mounts = " --volume /var/lib/aos-container-fixtures/registry:/fixtures/registry:ro"
+    mounts += " --volume /var/lib/aos-container-fixtures/trust-key:/fixtures/trust-key:ro"
 
     # Dockerfile RUN bypasses the image entrypoint. APM must initialize its
     # embedded state itself before the first package mutation in that image.
@@ -235,7 +238,20 @@ in {
         + " aos:latest -c "
         + shlex.quote(textwrap.dedent(r"""
             set -eu
-            /usr/bin/apm registry add --no-verify file:///fixtures/registry \
+            report_failure() {
+              status=$?
+              if [ "$status" -ne 0 ]; then
+                for log in /tmp/registry-add.log /tmp/install.log /tmp/install.json; do
+                  if [ -f "$log" ]; then
+                    printf '\n%s\n' "$log" >&2
+                    cat "$log" >&2
+                  fi
+                done
+              fi
+            }
+            trap report_failure EXIT
+
+            /usr/bin/apm registry add --trust-key "$(cat /fixtures/trust-key)" file:///fixtures/registry \
               --name container-runtime-reg > /tmp/registry-add.log 2>&1
             /usr/bin/apm --json install container-runtime-tool \
               --registry container-runtime-reg --yes \
@@ -246,7 +262,8 @@ in {
             cat /tmp/install.json
         """))
         + " > /tmp/aos-container-entrypoint-bypass.json"
-        + " 2> /tmp/aos-container-entrypoint-bypass.log",
+        + " 2> /tmp/aos-container-entrypoint-bypass.log"
+        + " || { status=$?; cat /tmp/aos-container-entrypoint-bypass.log >&2; exit \"$status\"; }",
         timeout=180,
     )
     bypass_install = json.loads(
@@ -372,7 +389,8 @@ in {
     # removal. The container never sees the VM's Nix database or store path.
     runtime.succeed(
         "${nerdctl} exec aos-runtime-state /usr/bin/apm registry add "
-        "--no-verify file:///fixtures/registry --name container-runtime-reg"
+        "--trust-key \"$(cat /var/lib/aos-container-fixtures/trust-key)\" "
+        "file:///fixtures/registry --name container-runtime-reg"
     )
     apr_list = json.loads(
         runtime.succeed(
