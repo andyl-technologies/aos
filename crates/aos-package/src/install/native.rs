@@ -982,9 +982,9 @@ impl Prepared {
 
     pub(crate) fn commit(mut self, profile: &Profile, generation: &Generation) -> Result<()> {
         let cancellation = crate::cancellation::AbilityCancellationGuard::install()?;
-        self.admission.realize_inputs(
+        self.admission.realize_deployment(
             &self.config,
-            self.deployment.inputs(),
+            &self.deployment,
             &mut self._temporary_roots,
             cancellation.token(),
         )?;

@@ -2,7 +2,7 @@
 //!
 //! Private profile receipts preserve the authenticated release's canonical
 //! `store/` records. Availability never installs or roots an output: only a
-//! checked deployment input triggers transport, exact verification, and import.
+//! checked generation root triggers transport, exact verification, and import.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -172,15 +172,19 @@ impl RegistryAdmission {
         Ok(false)
     }
 
-    /// Realizes only graph-used available outputs under their original release.
-    pub(crate) fn realize_inputs(
+    /// Realizes the selected payloads and graph inputs that generation retention pins.
+    ///
+    /// # Errors
+    /// Returns an error if a selected root lacks original authority, transport
+    /// fails, or its realized content disagrees with that authority.
+    pub(crate) fn realize_deployment(
         &mut self,
         config: &crate::config::ApmConfig,
-        inputs: &[String],
+        deployment: &crate::deployment::model::Deployment,
         temporary_roots: &mut TemporaryRoots,
         cancellation: &aos_ability_runtime::adapter::CancellationToken,
     ) -> Result<()> {
-        for root in inputs {
+        for root in crate::deployment::retention::generation_roots(deployment) {
             if self.evidence.contains_key(root) || self.image.receipt_for(root)?.is_some() {
                 self.admit_input(root)?;
                 continue;
@@ -189,7 +193,7 @@ impl RegistryAdmission {
                 .available
                 .values()
                 .find(|catalog| catalog.roots.contains(root))
-                .context("checked deployment input lacks original available-output authority")?
+                .context("checked generation root lacks original available-output authority")?
                 .clone();
             let graph = catalog.graph()?;
             let evidence = std::thread::scope(|scope| {
