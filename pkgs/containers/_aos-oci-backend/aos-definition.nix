@@ -16,6 +16,7 @@
   # CLI source build. Retain only the commands needed by a fresh container.
   cliRoots = [pkgs.apm pkgs.aos-package-runtime];
   packageRoots = lib.uniqueBy builtins.toString (coreRoots ++ shellRoots ++ systemPackageSlice ++ cliRoots);
+  runtimePath = "/var/lib/profiles/per-user/root/current/bin:/var/lib/profiles/per-user/root/current/sbin:/usr/bin:/usr/sbin:/bin";
 in {
   config = {
     name = "aos";
@@ -56,7 +57,7 @@ in {
           mode = "0644";
           text = import (pkgs.aos-host-policy.module + "/profile-text.nix") {
             inherit lib;
-            path = "/var/lib/profiles/per-user/root/current/bin:/var/lib/profiles/per-user/root/current/sbin:/usr/bin:/usr/sbin:/bin";
+            path = runtimePath;
             pager = "cat";
           };
         }
@@ -174,7 +175,7 @@ in {
         LANG = "C.UTF-8";
         SSL_CERT_FILE = "/etc/ssl/certs/ca-certificates.crt";
         NIX_SSL_CERT_FILE = "/etc/ssl/certs/ca-certificates.crt";
-        PATH = "/var/lib/profiles/per-user/root/current/bin:/var/lib/profiles/per-user/root/current/sbin:/usr/bin:/usr/sbin:/bin";
+        PATH = runtimePath;
       };
       user = "0:0";
       workingDirectory = "/work";
