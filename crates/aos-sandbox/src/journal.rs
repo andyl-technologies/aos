@@ -15,6 +15,11 @@
 //! committed transaction, or unsupported version fails closed. Compaction
 //! writes and syncs a replacement file, atomically renames it, then syncs the
 //! parent directory. A separate advisory lock remains held across replacement.
+//!
+//! The private `transaction_codec` child owns transaction DATA, canonical
+//! native/preparation adapters, and bounded typed-record validation. Protected
+//! admission, replay publication, and original file/loan custody stay here and
+//! with the journal's domain owners.
 
 use std::borrow::Borrow;
 use std::collections::{BTreeMap, BTreeSet};
@@ -40,9 +45,9 @@ use aos_sandbox_journal::framing::{
     COMMIT_PAYLOAD_BYTES, EncodedFrameLayout, Frame, FrameError, FrameKind, HEADER_BYTES,
     ReadOnlyFrameScratchV1, read_frame_retained,
 };
-use aos_sandbox_journal::geometry::{EncodedRecordLayout, NativeGeometryBounds, RecordShape};
+use aos_sandbox_journal::geometry::{EncodedRecordLayout, NativeGeometryBounds};
 use aos_sandbox_journal::materialized::{self, RecordMutationRef};
-use aos_sandbox_journal::record::{self, RecordError, RecordHeader};
+use aos_sandbox_journal::record::RecordError;
 use aos_sandbox_journal::recovery::{
     RecoveryTailError, RecoveryTailMode, TailResultSlots, finish_replayed_tail,
 };
@@ -65,7 +70,12 @@ mod git_evidence_namespace;
 pub(crate) mod mount_manager_startup;
 pub(crate) mod controller_source_successor_issuance;
 pub(crate) mod source_tree_successor;
-mod prepared_transaction;
+mod transaction_codec;
+pub use transaction_codec::{JournalRecord, JournalTransaction, encoded_transaction_append_bytes};
+pub(super) use transaction_codec::encoded_transaction_record_bytes;
+use transaction_codec::{
+    decode_record, encode_record, encode_record_fields, encode_transaction, validate_transaction,
+};
 mod root_local_recovery;
 mod root_original_inventory;
 pub(crate) use root_original_inventory::materialize as materialize_root_inventory_transaction;
@@ -213,7 +223,6 @@ pub use mount_source_consumption::{
 };
 
 const AUTHORITY_PREFLIGHT_DOMAIN: &[u8] = b"aos.sandbox.journal.authority-preflight.v1\0";
-const IDEMPOTENCY_VALUE_BYTES: usize = 48;
 const MAXIMUM_PROTECTED_COMPONENT_BYTES: usize = 255;
 const MAXIMUM_PROTECTED_JOURNAL_BASENAME_BYTES: usize = 200;
 
@@ -501,101 +510,6 @@ pub use aos_sandbox_core::RecordNamespace;
 impl From<aos_sandbox_core::journal_namespace::UnknownRecordNamespace> for JournalError {
     fn from(_: aos_sandbox_core::journal_namespace::UnknownRecordNamespace) -> Self {
         Self::MalformedRecord("unknown record namespace")
-    }
-}
-
-/// Describes one value replacement or deletion inside a journal transaction.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct JournalRecord {
-    namespace: RecordNamespace,
-    key: Vec<u8>,
-    value: Option<Vec<u8>>,
-}
-
-impl JournalRecord {
-    /// Constructs a value replacement.
-    #[must_use]
-    pub fn put(namespace: RecordNamespace, key: Vec<u8>, value: Vec<u8>) -> Self {
-        Self {
-            namespace,
-            key,
-            value: Some(value),
-        }
-    }
-
-    /// Constructs an idempotent deletion.
-    #[must_use]
-    pub fn delete(namespace: RecordNamespace, key: Vec<u8>) -> Self {
-        Self {
-            namespace,
-            key,
-            value: None,
-        }
-    }
-
-    /// Constructs an idempotency decision record.
-    #[must_use]
-    pub fn idempotency(
-        key: &IdempotencyKey,
-        request_digest: [u8; 32],
-        operation_id: OperationId,
-    ) -> Self {
-        let mut value = Vec::with_capacity(IDEMPOTENCY_VALUE_BYTES);
-        value.extend_from_slice(&request_digest);
-        value.extend_from_slice(operation_id.as_bytes());
-        Self::put(RecordNamespace::Idempotency, key.as_bytes().to_vec(), value)
-    }
-
-    /// Returns the record keyspace.
-    #[must_use]
-    pub const fn namespace(&self) -> RecordNamespace {
-        self.namespace
-    }
-
-    /// Returns the opaque record key.
-    #[must_use]
-    pub fn key(&self) -> &[u8] {
-        &self.key
-    }
-
-    /// Returns the replacement value, or `None` for a deletion.
-    #[must_use]
-    pub fn value(&self) -> Option<&[u8]> {
-        self.value.as_deref()
-    }
-}
-
-/// Carries one atomic group of desired-state and operation mutations.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct JournalTransaction {
-    id: [u8; 16],
-    records: Vec<JournalRecord>,
-}
-
-impl JournalTransaction {
-    /// Constructs a transaction with a nonzero stable identity.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`JournalError::InvalidTransaction`] when `id` is all zeroes or
-    /// the transaction has no records.
-    pub fn new(id: [u8; 16], records: Vec<JournalRecord>) -> Result<Self, JournalError> {
-        if id == [0; 16] || records.is_empty() {
-            return Err(JournalError::InvalidTransaction);
-        }
-        Ok(Self { id, records })
-    }
-
-    /// Returns the stable transaction identity.
-    #[must_use]
-    pub const fn id(&self) -> &[u8; 16] {
-        &self.id
-    }
-
-    /// Returns the ordered records committed by this transaction.
-    #[must_use]
-    pub fn records(&self) -> &[JournalRecord] {
-        &self.records
     }
 }
 
@@ -8976,97 +8890,6 @@ fn replay_original_retained<R: Read + Seek + Borrow<File>>(
     })
 }
 
-fn validate_transaction(
-    transaction: &JournalTransaction,
-    limits: JournalLimits,
-) -> Result<(), JournalError> {
-    if transaction.id == [0; 16] || transaction.records.is_empty() {
-        return Err(JournalError::InvalidTransaction);
-    }
-    if transaction.records.len() > limits.maximum_records_per_transaction {
-        return Err(JournalError::LimitExceeded("records per transaction"));
-    }
-    let mut keys = BTreeSet::new();
-    let mut transaction_bytes = 0_usize;
-    for record in &transaction.records {
-        if record.key.is_empty() || record.key.len() > limits.maximum_key_bytes {
-            return Err(JournalError::LimitExceeded("record key bytes"));
-        }
-        let payload_bytes = EncodedRecordLayout::new(
-            record.key.len(),
-            record.value.as_ref().map(|value| value.len()),
-        )?
-        .payload_bytes;
-        if payload_bytes > limits.maximum_record_bytes {
-            return Err(JournalError::LimitExceeded("record payload bytes"));
-        }
-        transaction_bytes = transaction_bytes
-            .checked_add(payload_bytes)
-            .ok_or(JournalError::LimitExceeded("transaction bytes"))?;
-        if transaction_bytes > limits.maximum_transaction_bytes {
-            return Err(JournalError::LimitExceeded("transaction bytes"));
-        }
-        if record.namespace == RecordNamespace::Idempotency {
-            let value = record.value.as_ref().ok_or(JournalError::MalformedRecord(
-                "idempotency records cannot be deleted",
-            ))?;
-            if IdempotencyKey::new(record.key.clone()).is_err()
-                || value.len() != IDEMPOTENCY_VALUE_BYTES
-                || value[32..] == [0; 16]
-            {
-                return Err(JournalError::MalformedRecord(
-                    "invalid idempotency decision",
-                ));
-            }
-        }
-        if !keys.insert((record.namespace, record.key.clone())) {
-            return Err(JournalError::DuplicateRecordKey);
-        }
-    }
-    Ok(())
-}
-
-pub(super) fn encoded_transaction_record_bytes(
-    transaction: &JournalTransaction,
-) -> Result<u64, JournalError> {
-    transaction
-        .records()
-        .iter()
-        .try_fold(0_u64, |total, record| {
-            let layout = EncodedRecordLayout::new(
-                record.key.len(),
-                record.value.as_ref().map(|value| value.len()),
-            )?;
-            total
-                .checked_add(layout.payload_bytes as u64)
-                .ok_or(JournalError::JournalTooLarge)
-        })
-}
-
-/// Measures canonical append framing without granting admission or capacity.
-///
-/// The measurement includes the begin and commit frames, every record frame,
-/// and their checksums. It does not inspect a journal, reserve space, or validate
-/// an owner's proposed transition.
-///
-/// The shared encoder layouts are checked without allocating buffers or hashing.
-///
-/// # Errors
-///
-/// Returns an error when a record length, record count, sequence, or aggregate
-/// append length cannot be represented by the journal format.
-pub fn encoded_transaction_append_bytes(
-    transaction: &JournalTransaction,
-) -> Result<u64, JournalError> {
-    aos_sandbox_journal::geometry::encoded_transaction_append_bytes(
-        transaction.records().iter().map(|record| RecordShape {
-            key_bytes: record.key().len(),
-            value_bytes: record.value().map(<[u8]>::len),
-        }),
-    )
-    .map_err(JournalError::from)
-}
-
 // Closed lower clear-recipe DATA, not an append certificate. The actual
 // owner later verifies full native membership at these original coordinates.
 // SHA256(domain || owner:u8 || (BEu32 length || Cut680) ||
@@ -9277,22 +9100,6 @@ fn validate_idempotency_changes(
     Ok(())
 }
 
-fn encode_transaction(
-    transaction: &JournalTransaction,
-    first_sequence: u64,
-) -> Result<Vec<Vec<u8>>, JournalError> {
-    transaction::encode_transaction(
-        transaction.id,
-        first_sequence,
-        transaction.records.iter().map(|record| NativeRecordRef {
-            namespace_byte: record.namespace as u8,
-            key: &record.key,
-            value: record.value.as_deref(),
-        }),
-    )
-    .map_err(JournalError::from)
-}
-
 /// Carries only one fixed selected sizing extent, never record bytes or a key.
 struct OnlineNixExtentV1 {
     slot: usize,
@@ -9308,20 +9115,6 @@ impl OnlineNixExtentV1 {
     const fn delete(slot: usize, key_bytes: usize) -> Self {
         Self { slot, key_bytes, value_bytes: None }
     }
-}
-
-fn encode_record(record: &JournalRecord) -> Result<Vec<u8>, JournalError> {
-    encode_record_fields(record.namespace, &record.key, record.value.as_deref())
-}
-
-// The private borrowed field view uses the same measured layout and encoder;
-// retained Q04 before rows need not clone a temporary JournalRecord graph.
-fn encode_record_fields(
-    namespace: RecordNamespace,
-    key: &[u8],
-    value: Option<&[u8]>,
-) -> Result<Vec<u8>, JournalError> {
-    record::encode_record_fields(namespace as u8, key, value).map_err(JournalError::from)
 }
 
 #[cfg(target_os = "linux")]
@@ -9350,19 +9143,6 @@ pub(crate) fn q04_controller_before_rows_digest_v1(
         digest.update(encode_record_fields(namespace, key, Some(value))?);
     }
     Ok(ObjectDigest::from_bytes(digest.finalize().into()))
-}
-
-fn decode_record(payload: &[u8], limits: JournalLimits) -> Result<JournalRecord, JournalError> {
-    let header = RecordHeader::read(payload)?;
-    let namespace = RecordNamespace::from_byte(header.namespace_byte())?;
-    let fields = header.decode_fields(limits.maximum_key_bytes, limits.maximum_record_bytes)?;
-    let key = fields.key.to_vec();
-    let value = fields.value.map(<[u8]>::to_vec);
-    Ok(JournalRecord {
-        namespace,
-        key,
-        value,
-    })
 }
 
 fn apply_record(

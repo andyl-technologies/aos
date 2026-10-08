@@ -1,21 +1,267 @@
-//! Bounded transaction preparation using the journal's existing record codec.
+//! Domain journal transaction DATA, bounded validation, and canonical codecs.
 //!
-//! The wrapper preserves transaction identity and ordered native record bytes;
-//! it is not a committed journal, proof of protected persistence, or authority.
-//! Native frame, payload, and namespace semantics remain owned by `journal`.
-//! Wrapper integers are big endian; native record payload fields retain the
-//! existing journal's little-endian layout rather than a duplicate format.
+//! The module keeps the journal's typed record and transaction model with its
+//! native encoding, preparation wrapper, and representation/configuration
+//! checks. Closed namespace decoding and the Idempotency record schema remain
+//! domain-owned here; they are not generic lower-journal admission. Protected
+//! namespaces, before-image/currentness checks, semantic publication, and file
+//! custody remain with the journal and its actual role owners.
+//!
+//! Preparation is ordinary transaction DATA, never a committed journal,
+//! protected persistence proof, or authority. Wrapper integers are big endian;
+//! native record fields retain their existing little-endian layout.
 //!
 //! ```text
-//! AOSJPT01 | version:u16be=1 | reserved:u16be=0 | transaction-ID:16 |
-//! record-count:u32be | repeated(record-length:u32be | native-record-payload)
+//! native: namespace:u8 | key-length:u16le | value-length:u32le | key | value
+//! preparation: AOSJPT01 | version:u16be=1 | reserved:u16be=0 |
+//!              transaction-ID:16 | record-count:u32be |
+//!              repeated(record-length:u32be | native-record-payload)
 //! ```
 
-use super::{
-    JournalError, JournalLimits, JournalTransaction, decode_record, encode_record,
-    validate_transaction,
+use std::collections::BTreeSet;
+
+use aos_sandbox_core::OperationId;
+use aos_sandbox_journal::geometry::{
+    EncodedRecordLayout, PREPARED_HEADER_BYTES as HEADER_BYTES, RecordShape,
 };
-use aos_sandbox_journal::geometry::PREPARED_HEADER_BYTES as HEADER_BYTES;
+use aos_sandbox_journal::record::{self, RecordHeader};
+use aos_sandbox_journal::transaction::{self, NativeRecordRef};
+
+use super::{IdempotencyKey, JournalError, JournalLimits, RecordNamespace};
+
+const IDEMPOTENCY_VALUE_BYTES: usize = 48;
+
+/// Describes one value replacement or deletion inside a journal transaction.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct JournalRecord {
+    pub(super) namespace: RecordNamespace,
+    pub(super) key: Vec<u8>,
+    pub(super) value: Option<Vec<u8>>,
+}
+
+impl JournalRecord {
+    /// Constructs a value replacement.
+    #[must_use]
+    pub fn put(namespace: RecordNamespace, key: Vec<u8>, value: Vec<u8>) -> Self {
+        Self {
+            namespace,
+            key,
+            value: Some(value),
+        }
+    }
+
+    /// Constructs an idempotent deletion.
+    #[must_use]
+    pub fn delete(namespace: RecordNamespace, key: Vec<u8>) -> Self {
+        Self {
+            namespace,
+            key,
+            value: None,
+        }
+    }
+
+    /// Constructs an idempotency decision record.
+    #[must_use]
+    pub fn idempotency(
+        key: &IdempotencyKey,
+        request_digest: [u8; 32],
+        operation_id: OperationId,
+    ) -> Self {
+        let mut value = Vec::with_capacity(IDEMPOTENCY_VALUE_BYTES);
+        value.extend_from_slice(&request_digest);
+        value.extend_from_slice(operation_id.as_bytes());
+        Self::put(RecordNamespace::Idempotency, key.as_bytes().to_vec(), value)
+    }
+
+    /// Returns the record keyspace.
+    #[must_use]
+    pub const fn namespace(&self) -> RecordNamespace {
+        self.namespace
+    }
+
+    /// Returns the opaque record key.
+    #[must_use]
+    pub fn key(&self) -> &[u8] {
+        &self.key
+    }
+
+    /// Returns the replacement value, or `None` for a deletion.
+    #[must_use]
+    pub fn value(&self) -> Option<&[u8]> {
+        self.value.as_deref()
+    }
+}
+
+/// Carries one atomic group of desired-state and operation mutations.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct JournalTransaction {
+    pub(super) id: [u8; 16],
+    pub(super) records: Vec<JournalRecord>,
+}
+
+impl JournalTransaction {
+    /// Constructs a transaction with a nonzero stable identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`JournalError::InvalidTransaction`] when `id` is all zeroes or
+    /// the transaction has no records.
+    pub fn new(id: [u8; 16], records: Vec<JournalRecord>) -> Result<Self, JournalError> {
+        if id == [0; 16] || records.is_empty() {
+            return Err(JournalError::InvalidTransaction);
+        }
+        Ok(Self { id, records })
+    }
+
+    /// Returns the stable transaction identity.
+    #[must_use]
+    pub const fn id(&self) -> &[u8; 16] {
+        &self.id
+    }
+
+    /// Returns the ordered records committed by this transaction.
+    #[must_use]
+    pub fn records(&self) -> &[JournalRecord] {
+        &self.records
+    }
+}
+
+pub(super) fn validate_transaction(
+    transaction: &JournalTransaction,
+    limits: JournalLimits,
+) -> Result<(), JournalError> {
+    if transaction.id == [0; 16] || transaction.records.is_empty() {
+        return Err(JournalError::InvalidTransaction);
+    }
+    if transaction.records.len() > limits.maximum_records_per_transaction {
+        return Err(JournalError::LimitExceeded("records per transaction"));
+    }
+    let mut keys = BTreeSet::new();
+    let mut transaction_bytes = 0_usize;
+    for record in &transaction.records {
+        if record.key.is_empty() || record.key.len() > limits.maximum_key_bytes {
+            return Err(JournalError::LimitExceeded("record key bytes"));
+        }
+        let payload_bytes = EncodedRecordLayout::new(
+            record.key.len(),
+            record.value.as_ref().map(|value| value.len()),
+        )?
+        .payload_bytes;
+        if payload_bytes > limits.maximum_record_bytes {
+            return Err(JournalError::LimitExceeded("record payload bytes"));
+        }
+        transaction_bytes = transaction_bytes
+            .checked_add(payload_bytes)
+            .ok_or(JournalError::LimitExceeded("transaction bytes"))?;
+        if transaction_bytes > limits.maximum_transaction_bytes {
+            return Err(JournalError::LimitExceeded("transaction bytes"));
+        }
+        if record.namespace == RecordNamespace::Idempotency {
+            let value = record.value.as_ref().ok_or(JournalError::MalformedRecord(
+                "idempotency records cannot be deleted",
+            ))?;
+            if IdempotencyKey::new(record.key.clone()).is_err()
+                || value.len() != IDEMPOTENCY_VALUE_BYTES
+                || value[32..] == [0; 16]
+            {
+                return Err(JournalError::MalformedRecord(
+                    "invalid idempotency decision",
+                ));
+            }
+        }
+        if !keys.insert((record.namespace, record.key.clone())) {
+            return Err(JournalError::DuplicateRecordKey);
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn encoded_transaction_record_bytes(
+    transaction: &JournalTransaction,
+) -> Result<u64, JournalError> {
+    transaction
+        .records()
+        .iter()
+        .try_fold(0_u64, |total, record| {
+            let layout = EncodedRecordLayout::new(
+                record.key.len(),
+                record.value.as_ref().map(|value| value.len()),
+            )?;
+            total
+                .checked_add(layout.payload_bytes as u64)
+                .ok_or(JournalError::JournalTooLarge)
+        })
+}
+
+/// Measures canonical append framing without granting admission or capacity.
+///
+/// The measurement includes the begin and commit frames, every record frame,
+/// and their checksums. It does not inspect a journal, reserve space, or validate
+/// an owner's proposed transition.
+///
+/// The shared encoder layouts are checked without allocating buffers or hashing.
+///
+/// # Errors
+///
+/// Returns an error when a record length, record count, sequence, or aggregate
+/// append length cannot be represented by the journal format.
+pub fn encoded_transaction_append_bytes(
+    transaction: &JournalTransaction,
+) -> Result<u64, JournalError> {
+    aos_sandbox_journal::geometry::encoded_transaction_append_bytes(
+        transaction.records().iter().map(|record| RecordShape {
+            key_bytes: record.key().len(),
+            value_bytes: record.value().map(<[u8]>::len),
+        }),
+    )
+    .map_err(JournalError::from)
+}
+
+pub(super) fn encode_record(record: &JournalRecord) -> Result<Vec<u8>, JournalError> {
+    encode_record_fields(record.namespace, &record.key, record.value.as_deref())
+}
+
+// The private borrowed field view uses the same measured layout and encoder;
+// retained Q04 before rows need not clone a temporary JournalRecord graph.
+pub(super) fn encode_record_fields(
+    namespace: RecordNamespace,
+    key: &[u8],
+    value: Option<&[u8]>,
+) -> Result<Vec<u8>, JournalError> {
+    record::encode_record_fields(namespace as u8, key, value).map_err(JournalError::from)
+}
+
+pub(super) fn decode_record(
+    payload: &[u8],
+    limits: JournalLimits,
+) -> Result<JournalRecord, JournalError> {
+    let header = RecordHeader::read(payload)?;
+    let namespace = RecordNamespace::from_byte(header.namespace_byte())?;
+    let fields = header.decode_fields(limits.maximum_key_bytes, limits.maximum_record_bytes)?;
+    let key = fields.key.to_vec();
+    let value = fields.value.map(<[u8]>::to_vec);
+    Ok(JournalRecord {
+        namespace,
+        key,
+        value,
+    })
+}
+
+pub(super) fn encode_transaction(
+    transaction: &JournalTransaction,
+    first_sequence: u64,
+) -> Result<Vec<Vec<u8>>, JournalError> {
+    transaction::encode_transaction(
+        transaction.id,
+        first_sequence,
+        transaction.records.iter().map(|record| NativeRecordRef {
+            namespace_byte: record.namespace as u8,
+            key: &record.key,
+            value: record.value.as_deref(),
+        }),
+    )
+    .map_err(JournalError::from)
+}
 
 const MAGIC: &[u8; 8] = b"AOSJPT01";
 

@@ -123,6 +123,13 @@ check remain upper. Removing duplicate key/value and width-only floor buffers
 does not move admission, opening, descriptor custody, or authority below the
 domain boundary, and is not qualification or a complete protected owner cut.
 
+The domain journal's private `transaction_codec` module owns its transaction
+DATA, canonical native/preparation adapters, and bounded record validation.
+Closed namespace decoding and typed Idempotency schema checks remain domain
+responsibilities there; protected admission, semantic publication, and actual
+file/loan custody stay with their existing owners. Private source organization
+does not establish a further crate boundary or complete protected ownership.
+
 Linux owns the unchanged bounded optional credential reader and its retained
 native read DATA; role-specific decoding, key separation, and startup admission
 remain with their original owners.
