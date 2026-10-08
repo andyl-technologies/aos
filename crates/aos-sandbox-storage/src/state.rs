@@ -4284,7 +4284,7 @@ impl StorageTransactionStore {
         JournalTransaction::new(
             transaction_id(prepared.operation_id, DurableStoragePhase::Committed),
             completion_records,
-        ).map_err(JournalError::from)
+        ).map_err(aos_sandbox::JournalError::from)
         .map_err(Into::into)
     }
 
@@ -4648,7 +4648,7 @@ impl StorageTransactionStore {
                 self.key.key_id,
                 &self.key.secret,
             )?],
-        ).map_err(JournalError::from)
+        ).map_err(aos_sandbox::JournalError::from)
         .map_err(Into::into)
     }
 
@@ -4835,7 +4835,7 @@ fn atomic_snapshot_transaction(
             atomic_snapshot_record_key(operation),
             encode_atomic_snapshot_record(record, key)?,
         )],
-    ).map_err(JournalError::from)
+    ).map_err(aos_sandbox::JournalError::from)
     .map_err(Into::into)
 }
 
