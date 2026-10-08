@@ -1577,6 +1577,15 @@ Nix source files and 877 directories, and all 3,060 image-bound crate hashes.
 All six derivations bind that same immutable source. Only the image and three
 passing prerequisite outputs are valid; no task, milestone or freeze advances.
 
+Mandatory application unit and integration target compilation now passes on
+that frozen `1ff700431a` composition. Cargo compiles the targets in 25 minutes
+29 seconds; the original hermetic check then completes AOS fixup and registers
+its output as valid.
+It binds the same independently reviewed immutable source as the owning fork
+request; all 6,061 tracked inputs remain clean and byte-identical afterward.
+This replaces the missing current compile result without executing those tests
+or qualifying subsequent source changes, strict workspace quality or T1.
+
 Deployable as: a local tool that initializes a store under a `file://`
 root, commits a directory, forks and merges branches, and checks a commit
 out to a directory through the `sdk` surface.
