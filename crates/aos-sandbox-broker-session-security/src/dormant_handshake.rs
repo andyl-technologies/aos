@@ -5900,49 +5900,42 @@ impl DormantAuthenticatedBrokerSessionV1 {
             deadline,
             maximum_response_bytes,
         )?;
-        if initialize {
-            return Ok(match self.0.initialize_authenticated_request(&request)? {
-                ProtectedBrokerSessionInitializationResultV1::Initialized => {
+        Ok(
+            match self.reserve_exact_authenticated_request(request, initialize)? {
+                DormantBrokerRequestPreparationV1::Prepared(request) => {
                     DormantBrokerDescriptorRequestPreparationV1::Prepared(
                         DormantPreparedBrokerDescriptorRequestV1 {
-                            request,
+                            request: request.0,
                             descriptors,
                         },
                     )
                 }
-                ProtectedBrokerSessionInitializationResultV1::RecoveryRequired {
+                DormantBrokerRequestPreparationV1::InitializationRecoveryRequired {
                     error,
                     recovery,
+                    request,
                 } => DormantBrokerDescriptorRequestPreparationV1::InitializationRecoveryRequired {
                     error,
                     recovery,
                     request: DormantUnconfirmedBrokerDescriptorRequestV1 {
-                        request,
+                        request: request.0,
                         descriptors,
                     },
                 },
-            });
-        }
-        Ok(match self.0.append_authenticated_request(&request)? {
-            ProtectedBrokerRequestCommitResultV1::Committed => {
-                DormantBrokerDescriptorRequestPreparationV1::Prepared(
-                    DormantPreparedBrokerDescriptorRequestV1 {
-                        request,
-                        descriptors,
-                    },
-                )
-            }
-            ProtectedBrokerRequestCommitResultV1::RecoveryRequired { error, recovery } => {
-                DormantBrokerDescriptorRequestPreparationV1::SuccessorRecoveryRequired {
+                DormantBrokerRequestPreparationV1::SuccessorRecoveryRequired {
+                    error,
+                    recovery,
+                    request,
+                } => DormantBrokerDescriptorRequestPreparationV1::SuccessorRecoveryRequired {
                     error,
                     recovery,
                     request: DormantUnconfirmedBrokerDescriptorRequestV1 {
-                        request,
+                        request: request.0,
                         descriptors,
                     },
-                }
-            }
-        })
+                },
+            },
+        )
     }
 
     /// Atomically sends one committed signed request and its exact descriptors.
