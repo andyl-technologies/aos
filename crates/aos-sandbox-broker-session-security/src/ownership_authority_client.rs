@@ -11,10 +11,6 @@
 use std::path::Path;
 use std::time::Duration;
 
-use aos_sandbox::ownership_resume::{
-    OwnershipAuthoritySessionClient, OwnershipSessionTransportError,
-    UntrustedOwnershipResponsePartsV1,
-};
 use aos_sandbox_core::{ProtocolVersion, model::KeyReference};
 use aos_sandbox_linux::seqpacket::{SeqpacketError, SeqpacketSocket};
 use aos_sandbox_ownership_protocol::authenticated::{
@@ -27,6 +23,10 @@ use aos_sandbox_ownership_protocol::carrier::{
 use aos_sandbox_ownership_protocol::protocol::{
     MAXIMUM_OWNERSHIP_RESPONSE_BYTES, NegotiatedOwnershipSessionV1, OwnershipClientHelloV1,
     OwnershipMethodV1, OwnershipRequestEnvelopeV1,
+};
+use aos_sandbox_ownership_protocol::protocol::session_client::{
+    OwnershipAuthoritySessionClient, OwnershipSessionTransportError,
+    UntrustedOwnershipResponsePartsV1,
 };
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use zeroize::Zeroizing;

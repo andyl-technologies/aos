@@ -60,6 +60,7 @@ use aos_sandbox_core::{ResourceKind, Selector};
 use aos_sandbox_linux::Error as LinuxError;
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::seqpacket::SeqpacketError;
+use aos_sandbox_ownership_protocol::protocol::session_client::OwnershipSessionTransportError;
 use connectrpc::{
     ConnectError, Encodable, ErrorCode, RequestContext, Response, ServiceRequest, ServiceResult,
 };
@@ -2791,7 +2792,7 @@ fn resume_operator_ownership(
     }
     let mut client = match ownership.connect() {
         Ok(client) => client,
-        Err(aos_sandbox::OwnershipSessionTransportError::Unavailable) => {
+        Err(OwnershipSessionTransportError::Unavailable) => {
             eprintln!("aos-sandboxd: explicit ownership retry could not reach the authority");
             return Ok(());
         }

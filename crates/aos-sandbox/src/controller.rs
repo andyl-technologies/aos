@@ -11,6 +11,7 @@
 
 use aos_proto::aos::sandbox::v1::OperatorRecoveryAction;
 use aos_sandbox_core::{ObjectDigest, OperationId, RawPairedClockSample};
+use aos_sandbox_ownership_protocol::protocol::session_client::OwnershipAuthoritySessionClient;
 use buffa::Message as _;
 #[cfg(target_os = "linux")]
 use sha2::{Digest as _, Sha256};
@@ -48,8 +49,8 @@ use crate::publisher_authority::{
 };
 use crate::publisher_policy::{PublisherPolicyError, PublisherPolicyLimits, PublisherPolicyStore};
 use crate::{
-    AcceptOutcome, OperationPlan, OwnershipAuthoritySessionClient, OwnershipAuthorityVerifier,
-    OwnershipClockObservationError, OwnershipGateStatusV1, OwnershipResumeError,
+    AcceptOutcome, OperationPlan, OwnershipAuthorityVerifier, OwnershipClockObservationError,
+    OwnershipGateStatusV1, OwnershipResumeError,
     OwnershipResumeOutcomeV1, ReconcileOutcome, Reconciler, ReconcilerError,
     SingleNodeEffectExecutor, ValidatedUnfinishedOperationV1,
 };

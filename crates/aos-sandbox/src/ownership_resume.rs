@@ -7,6 +7,9 @@
 //! validates their transcript, method, transaction, and outcome.
 
 use aos_sandbox_core::{OperationId, ProtocolVersion, RawPairedClockSample};
+use aos_sandbox_ownership_protocol::protocol::session_client::{
+    OwnershipAuthoritySessionClient, OwnershipSessionTransportError,
+};
 use aos_sandbox_ownership_protocol::protocol::{
     MAXIMUM_OWNERSHIP_REQUEST_BYTES, MAXIMUM_OWNERSHIP_RESPONSE_BYTES,
     MINIMUM_OWNERSHIP_RESPONSE_BYTES, NegotiatedOwnershipSessionV1, OwnershipErrorRecoveryV1,
@@ -26,79 +29,6 @@ const REQUIRED_METHODS: [OwnershipMethodV1; 3] = [
     OwnershipMethodV1::CompleteOrResume,
     OwnershipMethodV1::Query,
 ];
-
-/// Carries independently decoded, untrusted ownership-response fields.
-///
-/// A carrier constructs this value without normalizing echoed metadata. The
-/// controller submits every field to
-/// [`NegotiatedOwnershipSessionV1::validate_response_parts`] before observing
-/// the outcome.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct UntrustedOwnershipResponsePartsV1 {
-    binding: [u8; 32],
-    method: OwnershipMethodV1,
-    transaction: OwnershipTransactionReferenceV1,
-    outcome: OwnershipResponseOutcomeV1,
-}
-
-impl UntrustedOwnershipResponsePartsV1 {
-    /// Retains independently decoded fields for controller-side validation.
-    #[must_use]
-    pub const fn new(
-        binding: [u8; 32],
-        method: OwnershipMethodV1,
-        transaction: OwnershipTransactionReferenceV1,
-        outcome: OwnershipResponseOutcomeV1,
-    ) -> Self {
-        Self {
-            binding,
-            method,
-            transaction,
-            outcome,
-        }
-    }
-}
-
-/// Exchanges ownership messages over one already-authenticated carrier.
-///
-/// Implementations own transport authentication, byte framing, deadlines, and
-/// allocation ceilings. Before allocating or decoding a response, an adapter
-/// must reject its carrier frame length above
-/// [`NegotiatedOwnershipSessionV1::maximum_response_bytes`]. The negotiated
-/// semantic session must describe those exact carrier limits. Response fields
-/// are returned without semantic trust; the controller validates them
-/// independently. An observed post-allocation wire size is deliberately not a
-/// substitute for enforcement at the carrier framing boundary.
-pub trait OwnershipAuthoritySessionClient {
-    /// Returns the immutable negotiated semantic contract for this connection.
-    fn session(&self) -> &NegotiatedOwnershipSessionV1;
-
-    /// Sends one validated request and returns independently decoded fields.
-    ///
-    /// The implementation must authenticate the peer and enforce the session's
-    /// complete response ceiling at its framing layer before allocating the
-    /// decoded outcome or any artifact buffers.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`OwnershipSessionTransportError`] when no authenticated,
-    /// bounded response can be delivered.
-    fn exchange(
-        &mut self,
-        request: &OwnershipRequestEnvelopeV1,
-    ) -> Result<UntrustedOwnershipResponsePartsV1, OwnershipSessionTransportError>;
-}
-
-/// Classifies carrier failure by its safe controller recovery action.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-pub enum OwnershipSessionTransportError {
-    /// Delivery or response status is indeterminate, so exact query is required.
-    #[error("ownership authority transport is unavailable")]
-    Unavailable,
-    /// Authentication, framing, canonical decoding, or integrity failed.
-    #[error("ownership authority transport integrity failed")]
-    IntegrityFailure,
-}
 
 /// Reports failure to obtain a local paired-clock observation.
 ///
@@ -329,13 +259,7 @@ fn exchange_status<A: OwnershipAuthoritySessionClient>(
             return Err(OwnershipResumeError::IntegrityFailure);
         }
     };
-    let response = session.validate_response_parts(
-        request,
-        parts.binding,
-        parts.method,
-        parts.transaction,
-        parts.outcome,
-    )?;
+    let response = parts.validate(session, request)?;
     match response.outcome().clone() {
         OwnershipResponseOutcomeV1::Status(status) => Ok(ExchangeStatus::Status(status)),
         OwnershipResponseOutcomeV1::Error(code) => map_protocol_error(code),
@@ -375,6 +299,7 @@ mod tests {
         descriptor_for_bytes, sign_statement,
     };
     use aos_sandbox_ownership_protocol::protocol::OwnershipClientHelloV1;
+    use aos_sandbox_ownership_protocol::protocol::session_client::UntrustedOwnershipResponsePartsV1;
     use aos_sandbox_ownership_protocol::{
         OwnershipTransactionReceiptV1, UnverifiedOwnershipLeaseResponse,
     };

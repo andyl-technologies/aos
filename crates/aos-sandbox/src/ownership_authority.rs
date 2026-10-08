@@ -914,6 +914,7 @@ mod tests {
         OwnershipMethodV1, OwnershipProtocolValidationError, OwnershipRequestBodyV1,
         OwnershipResponseOutcomeV1, OwnershipTransactionReferenceV1, OwnershipTransactionStatusV1,
     };
+    use aos_sandbox_ownership_protocol::protocol::session_client::OwnershipAuthoritySessionClient;
     use ed25519_dalek::SigningKey;
 
     use super::*;
@@ -2594,7 +2595,7 @@ mod tests {
         let query = session
             .request(OwnershipRequestBodyV1::Query(reference))
             .unwrap();
-        crate::OwnershipAuthoritySessionClient::exchange(&mut client, &query).unwrap();
+        OwnershipAuthoritySessionClient::exchange(&mut client, &query).unwrap();
         assert_eq!(authority_calls.get(), 1);
         assert_eq!(clock_calls.get(), 1);
     }

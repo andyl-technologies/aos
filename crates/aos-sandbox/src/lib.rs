@@ -353,8 +353,7 @@ pub use ownership_authority::{
     UnverifiedOwnershipLeaseResponse,
 };
 pub use ownership_resume::{
-    OwnershipAuthoritySessionClient, OwnershipClockObservationError, OwnershipResumeError,
-    OwnershipResumeOutcomeV1, OwnershipSessionTransportError, UntrustedOwnershipResponsePartsV1,
+    OwnershipClockObservationError, OwnershipResumeError, OwnershipResumeOutcomeV1,
 };
 pub use ownership_service::{
     DurableOwnershipProtocolService, InProcessOwnershipSessionClient, OwnershipProtocolServiceError,

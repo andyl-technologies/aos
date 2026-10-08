@@ -8,6 +8,10 @@
 //! same-TCB composition aid and does not claim to create a security boundary.
 
 use aos_sandbox_core::{ProtocolVersion, RawPairedClockSample, model::KeyReference};
+use aos_sandbox_ownership_protocol::protocol::session_client::{
+    OwnershipAuthoritySessionClient, OwnershipSessionTransportError,
+    UntrustedOwnershipResponsePartsV1,
+};
 use aos_sandbox_ownership_protocol::protocol::{
     MAXIMUM_OWNERSHIP_REQUEST_BYTES, MAXIMUM_OWNERSHIP_RESPONSE_BYTES,
     MINIMUM_OWNERSHIP_RESPONSE_BYTES, NegotiatedOwnershipSessionV1, OwnershipMethodV1,
@@ -19,9 +23,7 @@ use aos_sandbox_ownership_protocol::protocol::{
 use crate::{
     DurableOwnershipAuthority, DurableOwnershipAuthorityError, DurableOwnershipBeginOutcome,
     DurableOwnershipQueryOutcome, OwnershipAuthority, OwnershipAuthorityError,
-    OwnershipAuthoritySessionClient, OwnershipClaimAction, OwnershipLeaseAcquisitionError,
-    OwnershipSessionTransportError, ProtectedOwnershipClockError,
-    UntrustedOwnershipResponsePartsV1,
+    OwnershipClaimAction, OwnershipLeaseAcquisitionError, ProtectedOwnershipClockError,
 };
 
 const SERVICE_METHODS: [OwnershipMethodV1; 3] = [

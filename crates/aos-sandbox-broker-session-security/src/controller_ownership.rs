@@ -17,6 +17,7 @@ use aos_sandbox_core::{
     RawClockProvenance, RawPairedClockSample, SignaturePurpose, descriptor_for_bytes,
 };
 use aos_sandbox_linux::boot::KernelBootId;
+use aos_sandbox_ownership_protocol::protocol::session_client::OwnershipSessionTransportError;
 use zeroize::Zeroizing;
 
 use crate::fixed_role_credential::{
@@ -125,7 +126,7 @@ impl ControllerOwnershipConfigurationV1 {
 
     pub(crate) fn connect(
         &self,
-    ) -> Result<LocalOwnershipAuthorityClientV1, aos_sandbox::OwnershipSessionTransportError> {
+    ) -> Result<LocalOwnershipAuthorityClientV1, OwnershipSessionTransportError> {
         LocalOwnershipAuthorityClientV1::connect(
             Path::new(SOCKET_PATH),
             self.verifier.authority().clone(),

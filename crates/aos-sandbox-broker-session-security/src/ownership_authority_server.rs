@@ -20,6 +20,7 @@ use aos_sandbox_ownership_protocol::carrier::{
     encode_server_hello_v1,
 };
 use aos_sandbox_ownership_protocol::protocol::NegotiatedOwnershipSessionV1;
+use aos_sandbox_ownership_protocol::protocol::session_client::OwnershipSessionTransportError;
 use zeroize::Zeroizing;
 
 use crate::entropy::{KernelEntropy, nonzero_random};
@@ -37,11 +38,11 @@ pub enum LocalOwnershipAuthorityServerErrorV1 {
     IntegrityFailure,
 }
 
-impl From<aos_sandbox::OwnershipSessionTransportError> for LocalOwnershipAuthorityServerErrorV1 {
-    fn from(error: aos_sandbox::OwnershipSessionTransportError) -> Self {
+impl From<OwnershipSessionTransportError> for LocalOwnershipAuthorityServerErrorV1 {
+    fn from(error: OwnershipSessionTransportError) -> Self {
         match error {
-            aos_sandbox::OwnershipSessionTransportError::Unavailable => Self::Unavailable,
-            aos_sandbox::OwnershipSessionTransportError::IntegrityFailure => Self::IntegrityFailure,
+            OwnershipSessionTransportError::Unavailable => Self::Unavailable,
+            OwnershipSessionTransportError::IntegrityFailure => Self::IntegrityFailure,
         }
     }
 }
@@ -205,7 +206,7 @@ impl LocalOwnershipAuthorityServerV1 {
 mod tests {
     use std::thread;
 
-    use aos_sandbox::ownership_resume::{
+    use aos_sandbox_ownership_protocol::protocol::session_client::{
         OwnershipAuthoritySessionClient, UntrustedOwnershipResponsePartsV1,
     };
     use aos_sandbox::ownership_service::OwnershipProtocolServiceError;
@@ -296,7 +297,7 @@ mod tests {
     fn serve_query(
         client_secret: [u8; 32],
     ) -> (
-        Result<UntrustedOwnershipResponsePartsV1, aos_sandbox::OwnershipSessionTransportError>,
+        Result<UntrustedOwnershipResponsePartsV1, OwnershipSessionTransportError>,
         Result<(), LocalOwnershipAuthorityServerErrorV1>,
         usize,
         [u8; 32],
