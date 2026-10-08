@@ -42,11 +42,11 @@ pub mod remote;
 mod store_authority;
 
 pub use assignment::{
-    AssignmentIntentV1, AssignmentObservationApplyOutcomeV1, AssignmentObservationPhaseV1,
-    AssignmentObservationReasonV1, AssignmentObservationReducerV1, AtomicSnapshotPublicationV1,
-    AuthenticatedSnapshotChunkV1, AuthenticatedSnapshotDependencyRangeV1,
-    DurableSnapshotDependencySetV1, DurableSnapshotTransferCheckpointV1, InvalidAssignmentModel,
-    InvalidSnapshotTransfer, MAX_SNAPSHOT_TRANSFER_CHUNK_BYTES, MAX_SNAPSHOT_TRANSFER_CHUNKS,
+    AssignmentIntentV1, AssignmentObservationPhaseV1, AssignmentObservationReasonV1,
+    AtomicSnapshotPublicationV1, AuthenticatedSnapshotChunkV1,
+    AuthenticatedSnapshotDependencyRangeV1, DurableSnapshotDependencySetV1,
+    DurableSnapshotTransferCheckpointV1, InvalidAssignmentModel, InvalidSnapshotTransfer,
+    MAX_SNAPSHOT_TRANSFER_CHUNK_BYTES, MAX_SNAPSHOT_TRANSFER_CHUNKS,
     MAX_SNAPSHOT_TRANSFER_DEPENDENCIES, MAX_SNAPSHOT_TRANSFER_MANIFEST_WIRE_BYTES,
     NodeAssignmentObservationV1, SelectedCapabilityBindingV1, SnapshotDependencyRangeV1,
     SnapshotRestoreAdmissionDecisionV1, SnapshotRestoreAdmissionV1, SnapshotRestoreBlockReasonV1,
@@ -60,6 +60,7 @@ pub use assignment::{
 
 #[cfg(feature = "multi-node")]
 pub use assignment::{
+    AssignmentObservationApplyOutcomeV1, AssignmentObservationReducerV1,
     SnapshotDependencyReducerV1, SnapshotTransferApplyOutcomeV1, SnapshotTransferReducerV1,
 };
 
