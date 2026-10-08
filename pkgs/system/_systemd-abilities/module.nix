@@ -11,6 +11,7 @@ in {
     ./dbus-registrations.nix
     ./core.nix
     ./container-startup.nix
+    ./container-bootstrap.nix
     ./resource-handlers.nix
     ./packaged-unit.nix
     ./network-handlers.nix

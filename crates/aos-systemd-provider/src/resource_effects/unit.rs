@@ -103,6 +103,10 @@ struct ResourceGroup {
     description: String,
     #[serde(default)]
     bootstrap: bool,
+    // The checked graph resolves this provider-owned ordering input before
+    // invocation. It does not alter the rendered group's manager definition.
+    #[serde(default, rename = "bootstrapResource")]
+    _bootstrap_resource: Option<String>,
 }
 
 fn resource_group_description() -> String {
