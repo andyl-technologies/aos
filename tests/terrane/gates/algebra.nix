@@ -88,6 +88,9 @@ in {
     ${runNativeTest "guard::merge::recorded_tests::recorded_merge_occurrences_preserve_per_view_fences_and_refuse_domain_ambiguity"}
     ${runTest "provenance::trust::context::tests::recorded_execution::recorded_canonical_graft_domains_refuse_shared_root_ambiguity_in_both_orders"}
     ${runNativeTest "guard::merge::recorded_tests::recorded_merge_contexts_bind_original_interpretations_through_fold_replay"}
+    ${runNativeTest "guard::merge::recorded_tests::ordinary_contracts::recorded_merge_input_configuration_requires_all_original_view_root_pairs"}
+    ${runNativeTest "guard::merge::recorded_tests::ordinary_contracts::recorded_merge_occurrences_preserve_per_view_fences_and_refuse_domain_ambiguity"}
+    ${runNativeTest "guard::merge::recorded_tests::ordinary_contracts::recorded_merge_contexts_bind_original_interpretations_through_fold_replay"}
     printf 'PASS: merge, fold bindings, verified recipes and retained input interpretations\n' > "$out/result"
   '';
 
