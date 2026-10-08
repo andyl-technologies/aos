@@ -4,7 +4,7 @@
     ability = "filesystem";
     inherit name;
   }) ["directory" "allocate" "persistentAllocate" "entry"];
-  aos.nativeHandlerInterception.native-handler-interception-systemd.operations = [
+  aos.nativeHandlerInterception.native-handler-interception-aos-configuration-provider.operations = [
     {
       ability = "configuration";
       name = "file";
