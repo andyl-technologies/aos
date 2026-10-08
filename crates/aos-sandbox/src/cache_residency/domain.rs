@@ -6,7 +6,7 @@
 //! additionally commit to current read authority so positive, negative, and
 //! coalesced observations cannot become a cross-principal presence oracle.
 
-use aos_sandbox_core::model::{CacheDomain, CacheDomainKind};
+use aos_sandbox_core::model::CacheDomain;
 use aos_sandbox_core::{ObjectDescriptor, ObjectDigest, OperationId, PrincipalId};
 use sha2::{Digest as _, Sha256};
 
