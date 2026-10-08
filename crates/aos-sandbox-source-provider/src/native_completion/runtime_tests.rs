@@ -304,8 +304,8 @@ fn retain_requested(journal: &mut Journal, row: &NativeAcquireCompletionRecordV2
         .validate_preflight_for_effect(&preflight, std::slice::from_ref(&transaction))
         .unwrap();
     owner.commit(&transaction).unwrap();
-    // This is a journal-cut fixture, not a bypass of from_owner_readback's
-    // production session/graph/capacity/clock qualification.
+    // This historical journal-cut fixture supplies test DATA only. It cannot
+    // issue a runtime token or qualify the selected V5 original owner.
 }
 
 fn read_requested(

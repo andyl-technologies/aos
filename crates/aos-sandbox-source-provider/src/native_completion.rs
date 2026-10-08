@@ -17,6 +17,7 @@ use crate::{FixedProviderOwnerV1, ProviderLedgerError, ProviderLedgerV1, SourceR
 #[path = "native_completion/runtime.rs"]
 mod runtime;
 
+#[cfg(test)]
 pub(crate) use runtime::RetainedNativeChallengeRequestV1;
 
 #[cfg(test)]
@@ -52,10 +53,10 @@ pub(crate) struct NativeAcquireHotCustodyV3 {
     pub(crate) source_root: Option<crate::ProviderPhysicalSourceRootV1>,
 }
 
-/// Qualifies the private runtime seam without changing published capabilities.
+/// Retains historical bridge comparison DATA for the existing denial checks.
 ///
-/// Production has no constructor. Installed bridge qualification and its
-/// reviewed activation are deliberately separate from compiling this path.
+/// Production has no constructor and the uninstalled V2 producer is retired.
+/// The test-only marker cannot install a bridge or enable the selected V5 path.
 pub(crate) struct QualifiedNativeBridgeV2 {
     _private: (),
 }

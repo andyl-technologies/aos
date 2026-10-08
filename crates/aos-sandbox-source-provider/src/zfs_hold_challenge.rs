@@ -359,15 +359,16 @@ impl ProtectedZfsHoldChallengesV1 {
         Ok(())
     }
 
-    /// Appends or recovers only the nonce already retained in protected Requested.
+    /// Exercises exact historical Requested nonce recovery in protected tests.
     ///
-    /// The opaque caller token comes from exact owner readback and graph joins.
-    /// Neither a raw nonce nor signed bytes alone can authorize this recovery.
+    /// The fixture token is test-only DATA, not an available runtime readback
+    /// issuer. The selected V5 original owner uses its own protected authority.
     ///
     /// # Errors
     ///
     /// Rejects any changed subject, legacy no-clock row, expiry, attempted
     /// renewal, missing challenge after acceptance, or insufficient capacity.
+    #[cfg(test)]
     pub(crate) fn ensure_for_retained_request(
         &mut self,
         requested: &crate::native_completion::RetainedNativeChallengeRequestV1<'_>,
