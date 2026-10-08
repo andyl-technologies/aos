@@ -160,6 +160,14 @@ in {
     printf 'PASS: bucket-key-registry native layout and pure protected-key conformance\n' > "$out/result"
   '';
   bucket-file-layout = gate "bucket-file-layout" [
+    "files::ordinary_read_tests::ordinary_consumer_matches_native_and_scalar_outcomes"
+    "files::ordinary_read_tests::ordinary_consumer_rejects_ordered_parents_before_leaf_hook"
+    "files::ordinary_read_tests::ordinary_consumer_rejects_short_parent_batch_before_leaf_hook"
+    "files::ordinary_read_tests::ordinary_consumer_propagates_supported_errors_without_scalar_retry"
+    "files::ordinary_read_tests::ordinary_consumer_scalar_fallback_preserves_all_fault_boundaries"
+    "files::ordinary_read_tests::ordinary_consumer_keeps_parent_recheck_and_whole_body_verification"
+    "files::ordinary_read_tests::ordinary_consumer_keeps_range_and_hash_rejections"
+    "files::ordinary_read_tests::ordinary_consumer_forwards_only_actual_transparent_bindings"
     "selection_tests::nested_ref_names_coexist_without_changing_refname_grammar"
     "version_tests::v2_migrated_numbered_log_coexists_with_a_numeric_descendant_ref"
     "version_tests::v2_registered_ref_classes_preserve_public_names_and_reopen"
