@@ -324,8 +324,20 @@ divergence/nonmutation case. The complete three-case recovery selection then
 passes that case and fails the other two; their auxiliary-loss setup and
 independent producer/current/final-ACK coverage remain unqualified. All six
 exact native/structural locality cases pass separately on the same unchanged
-6,047-input source. The owning locality Nix build remains in progress; no full
-recovery, maintenance gate, task or milestone claim follows.
+6,047-input source. The owning locality Nix gate also passes all six exact
+cases; independent comparison matches all 4,993 actual Nix source files to
+`9e20164d3a`. These locality results do not qualify full recovery or the complete
+maintenance gate.
+
+The owning `derivation-memo` Nix gate passes all 28 unique exact cases on
+`8f0a7887a0`, including native memo reopen and live-output collection. Independent
+comparison matches all 4,993 actual Nix source files. The shared test namespace
+on `ec3cdcec6e` passes compilation of all application unit and integration test
+targets; this compilation check does not run those tests. Two additional native
+maintenance contracts and recovery fixture corrections remain under qualification.
+A separate test-only bucket namespace is reserved for verified metadata pack
+paths, preserving the payload-only production placement interface. No task
+checkbox, milestone exit or freeze advances.
 
 An isolated instrumented run of the fourth private backfill case on
 `faf2f0adfa` still fails with `Expired`. It reaches both catalog ACKs and

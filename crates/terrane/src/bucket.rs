@@ -17,6 +17,8 @@ mod files;
 pub(crate) mod held;
 #[cfg(all(test, feature = "tokio", unix))]
 mod held_tests;
+#[cfg(all(test, feature = "tokio", unix))]
+mod metadata_test_support;
 mod missing_placement;
 pub(crate) mod publication;
 mod quarantine;
