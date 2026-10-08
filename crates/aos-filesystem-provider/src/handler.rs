@@ -29,11 +29,6 @@ struct StorageOwnership {
     gid: Option<Gid>,
 }
 
-struct StorageIdentity {
-    device: u64,
-    inode: u64,
-}
-
 struct RegularFileObservation {
     digest: Sha256Digest,
 }
