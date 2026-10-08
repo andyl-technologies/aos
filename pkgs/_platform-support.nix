@@ -447,6 +447,10 @@ let
     "test-static-cache-server"
     "uv"
     "uutils-coreutils"
+    "uutils-diffutils"
+    "uutils-findutils"
+    "uutils-grep"
+    "uutils-sed"
     "workerd"
     "workerd-source"
   ];
