@@ -307,7 +307,7 @@ pub fn prepare_snapshot_derived_storage_v3(
     ).map_err(|_| ReconcilerError::InvalidPlan("Snapshot original lease quartet is invalid"))?;
     let lease = verifier.verify_response(&claim, response, &timing.clock())
         .map_err(|_| ReconcilerError::InvalidPlan("Snapshot original lease is not current"))?;
-    let assignment = manifest.broker_assignment()
+    let assignment = binding.manifest().broker_assignment()
         .map_err(|_| ReconcilerError::InvalidPlan("Snapshot assignment is invalid"))?;
     let mut parents = publication.templates().iter().filter(|template| {
         template.audience() == BrokerAudience::Storage && template.plan().assignment() == assignment
