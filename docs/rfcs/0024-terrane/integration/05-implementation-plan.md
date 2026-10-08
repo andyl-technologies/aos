@@ -2207,9 +2207,20 @@ source contents and modes unchanged across the run. The conditional indexing
 deadline witness and downstream gates do not run. Reviewed fixture-only
 `f2dd429256` selects absent generation two and explicitly replaces the existing
 index directory before testing an unsafe parent; assertions, counters,
-production behavior and deadlines remain unchanged. Its new qualification is
-pending. These local commits remain unpushed pending qualification, and no
-deadline improvement, owning-gate result or task acceptance is claimed.
+production behavior and deadlines remain unchanged. Its strict native
+all-target Clippy and fresh 812-case inventory pass. The original corrected
+serial regression run passes all ninety selected cases in 160.647 seconds,
+with one successful slow case and 722 unselected cases. Independent review
+binds every successful literal to the actual executable and unchanged 6,098
+source contents and modes. The exactly-once unchanged ordinary 1,024-entry
+indexing witness then fails: its writer expires at 39.200033752 seconds against
+the original thirty-second maximum; the complete test fails in 65.116 seconds.
+The other five required populations remain unrun. A separately assigned
+owning-gate continuation checks read semantics without retrying or qualifying
+that failed deadline witness. A reviewed seven-file private feature-boundary
+correction addresses the existing portability diagnostics; its qualification
+is not yet run. These local commits remain unpushed pending qualification,
+and no deadline improvement, owning-gate result or task acceptance is claimed.
 
 The sealed current floor contains 89 aggregate gates, including all 69 T0/T1
 plan-required names and twenty implemented supporting checks. Read-only evaluation
