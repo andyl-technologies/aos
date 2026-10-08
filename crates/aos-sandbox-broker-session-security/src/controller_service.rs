@@ -139,7 +139,7 @@ use aos_sandbox::{
 use resident_custody::{
     AbortControllerCustodyUnwindV1, ControllerMonitorOutcomeV1, ControllerParentCustodyV1,
     ControllerParentStepV1, ControllerResidentCauseV1, ControllerWorkerCustodyV1,
-    ControllerWorkerLoanV1, report_controller_worker_failure,
+    ControllerWorkerLoanV1, ControllerWorkerOriginalsV1, report_controller_worker_failure,
 };
 
 mod argument_exchange;
