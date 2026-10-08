@@ -6,7 +6,43 @@
 //! parent keeps the concrete effect executor and authenticated session slots;
 //! this module adds no admission, detached loan or readiness producer.
 
-use super::*;
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex, mpsc};
+use std::time::{Duration, Instant};
+
+use aos_sandbox::hierarchy::controller_genesis_input::ProvisionedControllerSourceGenesisInputV1;
+use aos_sandbox::host_catalog_publication::{
+    HostCatalogPublicationDraftV1, HostCatalogPublicationError,
+};
+use aos_sandbox::mount_preparation::MountCatalogPreparationError;
+use aos_sandbox::{
+    EffectFailure, HostCatalogReconciliationError, HostCatalogReconciliationV1, MountAttemptError,
+    ResourceInventoryError,
+};
+use aos_sandbox_broker_session_security::controller_composition::{
+    HistoricalAtomicStorageHistoryDataV1, sample_ownership_clock,
+};
+use aos_sandbox_core::{NodeId, ObjectDigest};
+use aos_sandbox_linux::Error as LinuxError;
+use aos_sandbox_linux::seqpacket::SeqpacketError;
+
+use super::attach_credentials::ControllerAttachCredentialsV1;
+use super::commands::{ControllerCommand, handle_controller_command};
+#[cfg(target_os = "linux")]
+use super::git_coverage;
+use super::ownership::ControllerOwnershipConfigurationV1;
+use super::plan_signer::ControllerBrokerPlanSignerV1;
+use super::public_rpc::CapabilityState;
+use super::publication::{ControllerHostPublication, ControllerHostPublicationError};
+use super::resident_custody::{
+    AbortControllerCustodyUnwindV1, ControllerResidentCauseV1, ControllerWorkerCustodyV1,
+    ControllerWorkerLoanV1, report_controller_worker_failure,
+};
+use super::{
+    ControllerBrokerSessions, ControllerRuntimeError, ORIGINAL_ATTACH_POLL_INTERVAL,
+    ProductionController, RECONCILIATION_INTERVAL, SharedControllerBrokerSessions, cache_usage,
+    guest_root, original_attach, publisher_ingress,
+};
 
 #[cfg(test)]
 mod tests;
