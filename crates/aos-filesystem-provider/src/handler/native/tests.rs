@@ -41,6 +41,238 @@ fn call(
     .unwrap()
 }
 
+fn assert_rejected(handler: &NativeFilesystem, invocation: &NativeInvocation) {
+    let bytes = serde_json::to_vec(invocation).unwrap();
+    if let Ok(observed) = handler.handle("observe", &bytes) {
+        let observed: serde_json::Value = serde_json::from_slice(&observed).unwrap();
+        assert_eq!(observed["status"], "indeterminate");
+    }
+    assert!(handler.handle("apply", &bytes).is_err());
+
+    let mut removal = invocation.clone();
+    removal.action = Action::Remove;
+    assert!(
+        handler
+            .handle("remove", &serde_json::to_vec(&removal).unwrap())
+            .is_err()
+    );
+}
+
+#[test]
+fn copied_file_claim_survives_rematerialization_and_reconciles_content() {
+    let (temporary, handler) = fixture();
+    let source = temporary.path().join("source");
+    let path = temporary.path().join("destination");
+    fs::write(&source, b"first").unwrap();
+    let mut invocation = invocation(&path);
+    invocation.effect.identity[2] = "entry".into();
+    invocation.input["kind"] = "copied-file".into();
+    invocation.input["sourcePath"] = json!(source);
+    fs::write(&path, b"unclaimed contents").unwrap();
+    assert_rejected(&handler, &invocation);
+    assert_eq!(fs::read(&path).unwrap(), b"unclaimed contents");
+    fs::remove_file(&path).unwrap();
+
+    call(&handler, "apply", &invocation);
+    let initial = fs::metadata(&path).unwrap();
+    fs::rename(&path, temporary.path().join("original")).unwrap();
+    fs::copy(&source, &path).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+
+    assert_ne!(initial.ino(), fs::metadata(&path).unwrap().ino());
+    assert_eq!(call(&handler, "observe", &invocation)["status"], "current");
+    call(&handler, "apply", &invocation);
+    fs::write(&path, b"drift").unwrap();
+    assert_eq!(
+        call(&handler, "observe", &invocation)["status"],
+        "retry-safe"
+    );
+    call(&handler, "apply", &invocation);
+    assert_eq!(fs::read(&path).unwrap(), b"first");
+
+    fs::write(&source, b"second").unwrap();
+    invocation.revision = "revision-two".into();
+    invocation.input["mode"] = "0640".into();
+    assert_eq!(
+        call(&handler, "observe", &invocation)["status"],
+        "retry-safe"
+    );
+    call(&handler, "apply", &invocation);
+    assert_eq!(call(&handler, "observe", &invocation)["status"], "current");
+    assert_eq!(fs::read(&path).unwrap(), b"second");
+    assert_eq!(
+        fs::metadata(&path).unwrap().permissions().mode() & 0o7777,
+        0o640
+    );
+
+    invocation.action = Action::Remove;
+    call(&handler, "remove", &invocation);
+    assert_eq!(call(&handler, "observe", &invocation)["status"], "absent");
+    assert_eq!(fs::read(&source).unwrap(), b"second");
+    assert_eq!(
+        fs::read(temporary.path().join("original")).unwrap(),
+        b"first"
+    );
+}
+
+#[test]
+fn tree_claim_survives_rematerialization_and_reconciles_target() {
+    let (temporary, handler) = fixture();
+    let immutable = temporary.path().join("immutable");
+    let source = immutable.join("first");
+    let replacement = immutable.join("second");
+    fs::create_dir_all(&source).unwrap();
+    fs::create_dir(&replacement).unwrap();
+    fs::write(source.join("config"), b"first configuration").unwrap();
+    fs::write(replacement.join("config"), b"second configuration").unwrap();
+    let path = temporary.path().join("configuration");
+    let mut invocation = invocation(&path);
+    invocation.effect.identity[2] = "symlinkTree".into();
+    invocation.input["mode"] = "0777".into();
+    invocation.input["sourcePath"] = json!(source);
+    std::os::unix::fs::symlink(&source, &path).unwrap();
+    assert_rejected(&handler, &invocation);
+    assert_eq!(fs::read_link(&path).unwrap(), source);
+    fs::remove_file(&path).unwrap();
+
+    call(&handler, "apply", &invocation);
+    let initial = fs::symlink_metadata(&path).unwrap();
+    fs::rename(&path, temporary.path().join("original")).unwrap();
+    std::os::unix::fs::symlink(&source, &path).unwrap();
+
+    assert_ne!(initial.ino(), fs::symlink_metadata(&path).unwrap().ino());
+    assert_eq!(call(&handler, "observe", &invocation)["status"], "current");
+    call(&handler, "apply", &invocation);
+    fs::remove_file(&path).unwrap();
+    std::os::unix::fs::symlink(&replacement, &path).unwrap();
+    assert_eq!(
+        call(&handler, "observe", &invocation)["status"],
+        "retry-safe"
+    );
+    call(&handler, "apply", &invocation);
+    assert_eq!(fs::read_link(&path).unwrap(), source);
+
+    invocation.input["sourcePath"] = json!(replacement);
+    invocation.revision = "revision-two".into();
+    assert_eq!(
+        call(&handler, "observe", &invocation)["status"],
+        "retry-safe"
+    );
+    call(&handler, "apply", &invocation);
+    assert_eq!(call(&handler, "observe", &invocation)["status"], "current");
+    assert_eq!(fs::read_link(&path).unwrap(), replacement);
+
+    invocation.action = Action::Remove;
+    call(&handler, "remove", &invocation);
+    assert_eq!(call(&handler, "observe", &invocation)["status"], "absent");
+    assert_eq!(
+        fs::read(source.join("config")).unwrap(),
+        b"first configuration"
+    );
+    assert_eq!(
+        fs::read(replacement.join("config")).unwrap(),
+        b"second configuration"
+    );
+    assert_eq!(
+        fs::read_link(temporary.path().join("original")).unwrap(),
+        source
+    );
+}
+
+#[test]
+fn file_and_tree_claims_refuse_unclaimed_paths_and_wrong_entry_types() {
+    for kind in ["empty-file", "copied-file", "symlink-tree"] {
+        for replacement in ["directory", "file", "symlink"] {
+            if (kind == "symlink-tree" && replacement == "symlink")
+                || (kind != "symlink-tree" && replacement == "file")
+            {
+                continue;
+            }
+            let (temporary, handler) = fixture();
+            let source = temporary.path().join("immutable");
+            if kind == "symlink-tree" {
+                fs::create_dir(&source).unwrap();
+            } else {
+                fs::write(&source, b"source contents").unwrap();
+            }
+            let path = temporary.path().join("entry");
+            let mut invocation = invocation(&path);
+            invocation.effect.identity[2] = if kind == "symlink-tree" {
+                "symlinkTree"
+            } else {
+                "entry"
+            }
+            .into();
+            invocation.input["kind"] = kind.into();
+            if kind != "empty-file" {
+                invocation.input["sourcePath"] = json!(source);
+            }
+            if kind == "symlink-tree" {
+                invocation.input["mode"] = "0777".into();
+            }
+            call(&handler, "apply", &invocation);
+            fs::rename(&path, temporary.path().join("original")).unwrap();
+            match replacement {
+                "directory" => fs::create_dir(&path).unwrap(),
+                "file" => fs::write(&path, b"foreign contents").unwrap(),
+                "symlink" => std::os::unix::fs::symlink(&source, &path).unwrap(),
+                _ => unreachable!(),
+            }
+
+            assert_rejected(&handler, &invocation);
+            assert!(fs::symlink_metadata(&path).is_ok());
+
+            fs::remove_file(handler.claim_path(&invocation.id)).unwrap();
+            assert_rejected(&handler, &invocation);
+            assert!(fs::symlink_metadata(&path).is_ok());
+        }
+    }
+}
+
+#[test]
+fn a_claim_at_another_path_does_not_authorize_an_existing_destination() {
+    for kind in ["directory", "empty-file", "copied-file", "symlink-tree"] {
+        let (temporary, handler) = fixture();
+        let source = temporary.path().join("immutable");
+        if kind == "symlink-tree" {
+            fs::create_dir(&source).unwrap();
+        } else {
+            fs::write(&source, b"source contents").unwrap();
+        }
+        let original = temporary.path().join("owned");
+        let foreign = temporary.path().join("foreign");
+        let mut invocation = invocation(&original);
+        invocation.effect.identity[2] = if kind == "symlink-tree" {
+            "symlinkTree"
+        } else {
+            "entry"
+        }
+        .into();
+        invocation.input["kind"] = kind.into();
+        if matches!(kind, "copied-file" | "symlink-tree") {
+            invocation.input["sourcePath"] = json!(source);
+        }
+        if kind == "symlink-tree" {
+            invocation.input["mode"] = "0777".into();
+        }
+        call(&handler, "apply", &invocation);
+        match kind {
+            "directory" => fs::create_dir(&foreign).unwrap(),
+            "symlink-tree" => std::os::unix::fs::symlink(&source, &foreign).unwrap(),
+            _ => fs::write(&foreign, b"foreign contents").unwrap(),
+        }
+        invocation.input["path"] = json!(foreign);
+        invocation.revision = "revision-two".into();
+
+        assert_rejected(&handler, &invocation);
+        assert!(fs::symlink_metadata(&foreign).is_ok());
+        assert!(fs::symlink_metadata(&original).is_ok());
+        if matches!(kind, "empty-file" | "copied-file") {
+            assert_eq!(fs::read(&foreign).unwrap(), b"foreign contents");
+        }
+    }
+}
+
 #[test]
 fn native_directory_reconfigures_without_deleting_contents_and_removes_exact_claim() {
     let (temporary, handler) = fixture();
@@ -119,20 +351,18 @@ fn native_directory_refuses_unclaimed_paths_and_accepts_rematerialization() {
 }
 
 #[test]
-fn directory_claim_replays_with_cloned_device_and_inode_metadata() {
+fn directory_claim_replays_after_rematerialization_and_reconfiguration() {
     let (temporary, handler) = fixture();
     let path = temporary.path().join("data");
     let mut invocation = invocation(&path);
     call(&handler, "apply", &invocation);
-    let claim_path = handler.claim_path(&invocation.id);
-    let mut claim: Claim = read_private_record(&claim_path, "test claim")
-        .unwrap()
-        .unwrap();
-    claim.device += 1;
-    claim.inode += 1;
-    write_private_record(&handler.state_root, &claim_path, &claim).unwrap();
+    let initial = fs::metadata(&path).unwrap();
+    fs::rename(&path, temporary.path().join("original")).unwrap();
+    fs::create_dir(&path).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
     fs::write(path.join("payload"), b"materialized contents").unwrap();
 
+    assert_ne!(initial.ino(), fs::metadata(&path).unwrap().ino());
     assert_eq!(call(&handler, "observe", &invocation)["status"], "current");
     invocation.input["mode"] = "0750".into();
     invocation.revision = "revision-two".into();
@@ -143,14 +373,15 @@ fn directory_claim_replays_with_cloned_device_and_inode_metadata() {
         fs::read(path.join("payload")).unwrap(),
         b"materialized contents"
     );
-    let updated: Claim = read_private_record(&claim_path, "test claim")
+    assert_eq!(
+        fs::metadata(&path).unwrap().permissions().mode() & 0o7777,
+        0o750
+    );
+    let claim: Claim = read_private_record(&handler.claim_path(&invocation.id), "test claim")
         .unwrap()
         .unwrap();
-    let metadata = fs::metadata(&path).unwrap();
-    assert_eq!(
-        (updated.device, updated.inode),
-        (metadata.dev(), metadata.ino())
-    );
+    assert_eq!(claim.revision, "revision-two");
+    assert_eq!(claim.mode, 0o750);
 }
 
 #[test]
@@ -299,7 +530,7 @@ fn native_mutable_file_preserves_contents_and_inode_across_reconfiguration() {
 }
 
 #[test]
-fn native_mutable_file_refuses_unclaimed_files_and_replacement_inodes() {
+fn native_mutable_file_refuses_unclaimed_files_and_preserves_rematerialized_contents() {
     let (temporary, handler) = fixture();
     let path = temporary.path().join("application.log");
     let mut invocation = invocation(&path);
@@ -307,38 +538,32 @@ fn native_mutable_file_refuses_unclaimed_files_and_replacement_inodes() {
     invocation.input["kind"] = "empty-file".into();
     fs::write(&path, b"operator-owned contents").unwrap();
 
-    assert_eq!(
-        call(&handler, "observe", &invocation)["status"],
-        "indeterminate"
-    );
-    assert!(
-        handler
-            .handle("apply", &serde_json::to_vec(&invocation).unwrap())
-            .is_err()
-    );
+    assert_rejected(&handler, &invocation);
     assert_eq!(fs::read(&path).unwrap(), b"operator-owned contents");
 
     fs::remove_file(&path).unwrap();
     call(&handler, "apply", &invocation);
+    let initial = fs::metadata(&path).unwrap();
     fs::rename(&path, temporary.path().join("original")).unwrap();
-    fs::write(&path, b"replacement contents").unwrap();
+    fs::write(&path, b"materialized log contents").unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
 
+    assert_ne!(initial.ino(), fs::metadata(&path).unwrap().ino());
+    assert_eq!(call(&handler, "observe", &invocation)["status"], "current");
+    invocation.input["mode"] = "0640".into();
+    invocation.revision = "revision-two".into();
+    call(&handler, "apply", &invocation);
+
+    assert_eq!(call(&handler, "observe", &invocation)["status"], "current");
+    assert_eq!(fs::read(&path).unwrap(), b"materialized log contents");
     assert_eq!(
-        call(&handler, "observe", &invocation)["status"],
-        "indeterminate"
-    );
-    assert!(
-        handler
-            .handle("apply", &serde_json::to_vec(&invocation).unwrap())
-            .is_err()
+        fs::metadata(&path).unwrap().permissions().mode() & 0o7777,
+        0o640
     );
     invocation.action = Action::Remove;
-    assert!(
-        handler
-            .handle("remove", &serde_json::to_vec(&invocation).unwrap())
-            .is_err()
-    );
-    assert_eq!(fs::read(&path).unwrap(), b"replacement contents");
+    call(&handler, "remove", &invocation);
+    assert_eq!(call(&handler, "observe", &invocation)["status"], "absent");
+    assert!(temporary.path().join("original").is_file());
 }
 
 #[test]

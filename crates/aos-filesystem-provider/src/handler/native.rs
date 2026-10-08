@@ -1,10 +1,9 @@
-//! Native filesystem effects and durable identity claims.
+//! Native filesystem effects and durable path claims.
 //!
-//! Directory claims own a desired directory at an exact path, with its mode and
-//! requested ownership, so filesystem rematerialization preserves that resource.
-//! Files and symlink trees retain physical identity checks. Existing unclaimed
-//! paths are never adopted. Removing a directory releases its claimed namespace,
-//! including its contents, under the activation runtime's lifetime policy.
+//! Claims own typed entries at exact paths across filesystem rematerialization.
+//! Device and inode checks guard immediate mutations, rather than durable custody.
+//! Existing unclaimed paths are never adopted. Removing a directory releases
+//! its claimed namespace, including contents, under the runtime's lifetime policy.
 //! Persistent retention is controlled by the activation runtime.
 
 use super::*;
@@ -17,8 +16,6 @@ struct Claim {
     id: String,
     revision: String,
     path: PathBuf,
-    device: u64,
-    inode: u64,
     kind: String,
     mode: u32,
     uid: Option<u32>,
@@ -50,8 +47,9 @@ fn default_max_bytes() -> u64 {
 
 /// Implements native filesystem operations against private durable claims.
 ///
-/// Directory custody follows the claimed path and metadata across filesystem
-/// rematerialization. Other entry kinds retain their claimed device and inode.
+/// Custody follows the claimed path and entry kind across filesystem
+/// rematerialization. Observation checks desired metadata, copied contents,
+/// and immutable link targets; mutable file contents remain application-owned.
 pub struct NativeFilesystem {
     state_root: PathBuf,
     roots: Vec<PathBuf>,
@@ -215,6 +213,10 @@ impl NativeFilesystem {
                 }
                 if let Some(claim) = &claim {
                     if claim.path != input.path {
+                        ensure!(
+                            matches!(fs::symlink_metadata(&input.path), Err(error) if error.kind() == io::ErrorKind::NotFound),
+                            "replacement filesystem path has no ownership claim"
+                        );
                         self.validate_path(&claim.path, claim.kind == "symlink-tree")?;
                         self.remove(&claim.path, Some(claim))?;
                         fs::remove_file(&claim_path)?;
@@ -309,75 +311,74 @@ impl NativeFilesystem {
                 if authorized_parent {
                     let metadata = fs::symlink_metadata(&other.path)
                         .context("inspecting explicitly authorized parent directory")?;
-                    self.ensure_identity(&metadata, &other)?;
+                    self.ensure_entry_kind(&metadata, &other)?;
                 } else {
                     validate_storage_claim(&input.path, [other.path])?;
                 }
             }
         }
-        if let Some(claim) = claim {
+        let expected_identity = if let Some(claim) = claim {
             ensure!(
                 claim.id == invocation.id,
                 "filesystem claim belongs to another effect"
             );
-            if let Ok(metadata) = fs::symlink_metadata(&input.path) {
-                self.ensure_identity(&metadata, claim)?;
+            match fs::symlink_metadata(&input.path) {
+                Ok(metadata) => {
+                    ensure!(
+                        claim.path == input.path,
+                        "existing filesystem path has no ownership claim"
+                    );
+                    self.ensure_entry_kind(&metadata, claim)?;
+                    Some((metadata.dev(), metadata.ino()))
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+                Err(error) => return Err(error.into()),
             }
-        }
-        let (identity, digest) = match input.kind.as_str() {
+        } else {
+            None
+        };
+
+        let digest = match input.kind.as_str() {
             "directory" => {
                 ensure!(
                     input.source_path.is_none(),
                     "directory input has a file source"
                 );
-                let identity = if input.path.exists() {
-                    let claim = claim.context("existing directory has no ownership claim")?;
-                    let observed = fs::symlink_metadata(&input.path)?;
-                    self.ensure_identity(&observed, claim)?;
+                if let Some(expected) = expected_identity {
                     let descriptor = open_directory_nofollow(&input.path)?;
                     let metadata = fstat(&descriptor)?;
                     ensure!(
-                        (metadata.st_dev, metadata.st_ino) == (observed.dev(), observed.ino()),
+                        (metadata.st_dev, metadata.st_ino) == expected,
                         "directory changed before mutation"
                     );
                     apply_metadata(&descriptor, mode, ownership)?;
-                    raw_storage_identity(&descriptor)?
                 } else {
-                    create_directory_nofollow(&input.path, mode, ownership, false)?
-                };
-                (identity, None)
+                    create_directory_nofollow(&input.path, mode, ownership, false)?;
+                }
+                None
             }
             "empty-file" => {
                 ensure!(
                     input.source_path.is_none(),
                     "mutable file input has a source"
                 );
-                let identity = allocate_file_nofollow(
-                    &input.path,
-                    mode,
-                    ownership,
-                    claim
-                        .filter(|_| input.path.exists())
-                        .map(|claim| (claim.device, claim.inode)),
-                )?;
-                (identity, None)
+                allocate_file_nofollow(&input.path, mode, ownership, expected_identity)?;
+                None
             }
             "copied-file" => {
                 let source = input
                     .source_path
                     .as_ref()
                     .context("copied entry has no source")?;
-                let (identity, digest) = copy_file_atomic_with_identity(
+                let digest = copy_file_atomic_guarded(
                     source,
                     &input.path,
                     input.max_bytes,
                     mode,
                     ownership,
-                    claim
-                        .filter(|_| input.path.exists())
-                        .map(|claim| (claim.device, claim.inode)),
+                    expected_identity,
                 )?;
-                (identity, Some(digest))
+                Some(digest)
             }
             "symlink-tree" => {
                 ensure!(
@@ -404,20 +405,10 @@ impl NativeFilesystem {
                         && fs::metadata(&canonical)?.is_dir(),
                     "tree source is not an immutable directory"
                 );
-                let identity = symlink_tree_atomic(
-                    &canonical,
-                    &input.path,
-                    ownership,
-                    claim
-                        .filter(|_| fs::symlink_metadata(&input.path).is_ok())
-                        .map(|claim| (claim.device, claim.inode)),
-                )?;
-                (
-                    identity,
-                    Some(Sha256Digest::of_bytes(
-                        canonical.as_os_str().as_encoded_bytes(),
-                    )),
-                )
+                symlink_tree_atomic(&canonical, &input.path, ownership, expected_identity)?;
+                Some(Sha256Digest::of_bytes(
+                    canonical.as_os_str().as_encoded_bytes(),
+                ))
             }
             _ => bail!("invalid filesystem entry kind"),
         };
@@ -426,8 +417,6 @@ impl NativeFilesystem {
             id: invocation.id.clone(),
             revision: invocation.revision.clone(),
             path: input.path.clone(),
-            device: identity.device,
-            inode: identity.inode,
             kind: input.kind.clone(),
             mode,
             uid: ownership.uid.map(Uid::as_raw),
@@ -436,21 +425,17 @@ impl NativeFilesystem {
         })
     }
 
-    fn ensure_identity(&self, metadata: &fs::Metadata, claim: &Claim) -> Result<()> {
-        if claim.kind == "directory" {
-            ensure!(
-                metadata.is_dir() && !metadata.file_type().is_symlink(),
-                "directory differs from its durable path claim"
-            );
-            return Ok(());
-        }
+    fn ensure_entry_kind(&self, metadata: &fs::Metadata, claim: &Claim) -> Result<()> {
         ensure!(
-            (metadata.dev(), metadata.ino()) == (claim.device, claim.inode)
-                && ((matches!(claim.kind.as_str(), "copied-file" | "empty-file")
-                    && metadata.is_file()
-                    && !metadata.file_type().is_symlink())
-                    || (claim.kind == "symlink-tree" && metadata.file_type().is_symlink())),
-            "filesystem entry differs from its durable identity claim"
+            match claim.kind.as_str() {
+                "directory" => metadata.is_dir() && !metadata.file_type().is_symlink(),
+                "copied-file" | "empty-file" => {
+                    metadata.is_file() && !metadata.file_type().is_symlink()
+                }
+                "symlink-tree" => metadata.file_type().is_symlink(),
+                _ => false,
+            },
+            "filesystem entry differs from its durable path claim"
         );
         Ok(())
     }
@@ -471,7 +456,7 @@ impl NativeFilesystem {
                     ));
                     if let Ok(metadata) = fs::symlink_metadata(&quarantine) {
                         return Ok(
-                            json!({"status": if self.ensure_identity(&metadata, claim).is_ok() { "retry-safe" } else { "indeterminate" }}),
+                            json!({"status": if self.ensure_entry_kind(&metadata, claim).is_ok() { "retry-safe" } else { "indeterminate" }}),
                         );
                     }
                 }
@@ -486,7 +471,7 @@ impl NativeFilesystem {
         };
         if claim.id != invocation.id
             || claim.path != input.path
-            || self.ensure_identity(&metadata, claim).is_err()
+            || self.ensure_entry_kind(&metadata, claim).is_err()
         {
             return Ok(json!({"status":"indeterminate"}));
         }
@@ -547,9 +532,9 @@ impl NativeFilesystem {
             ".aos-native-release-{}",
             Sha256Digest::of_bytes(claim.id.as_bytes()).hex()
         ));
-        match fs::symlink_metadata(path) {
+        let expected_identity = match fs::symlink_metadata(path) {
             Ok(metadata) => {
-                self.ensure_identity(&metadata, claim)?;
+                self.ensure_entry_kind(&metadata, claim)?;
                 rustix::fs::renameat_with(
                     rustix::fs::CWD,
                     path,
@@ -558,13 +543,20 @@ impl NativeFilesystem {
                     rustix::fs::RenameFlags::NOREPLACE,
                 )?;
                 sync_parent(path)?;
+                Some((metadata.dev(), metadata.ino()))
             }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
             Err(error) => return Err(error.into()),
-        }
+        };
         match fs::symlink_metadata(&quarantine) {
             Ok(metadata) => {
-                self.ensure_identity(&metadata, claim)?;
+                self.ensure_entry_kind(&metadata, claim)?;
+                if let Some(expected) = expected_identity {
+                    ensure!(
+                        (metadata.dev(), metadata.ino()) == expected,
+                        "filesystem entry changed before release"
+                    );
+                }
                 if claim.kind == "directory" {
                     fs::remove_dir_all(&quarantine)?;
                 } else {

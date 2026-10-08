@@ -279,6 +279,13 @@ later generations; durable removal outcomes supply that history.
 Artifact release is separately journaled. Old implementations remain available
 until their update or teardown has durably completed.
 
+Filesystem claims retain the effect's exact path and entry kind, rather than
+device and inode numbers that change across image layers and container instances.
+Observation checks requested metadata, copied content, and symlink targets;
+mutable file contents belong to the application. Fresh physical identities guard
+individual mutations. An existing unclaimed destination is rejected before
+releasing an old path, and removal never follows a tree link into its source.
+
 Image staging must preserve physical store custody as well as GC roots. The
 package layer supplies authenticated retained system-profile inputs and orphan
 handlers under the generation read lock. The selected OS storage backend

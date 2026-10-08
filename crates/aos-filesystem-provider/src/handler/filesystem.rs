@@ -168,7 +168,7 @@ pub(super) fn create_directory_nofollow(
     mode: u32,
     ownership: StorageOwnership,
     allow_existing_final: bool,
-) -> Result<StorageIdentity> {
+) -> Result<()> {
     let mut directory = openat(
         rustix::fs::CWD,
         "/",
@@ -215,21 +215,17 @@ pub(super) fn create_directory_nofollow(
             .context("setting storage directory ownership")?;
     }
     fchmod(&directory, Mode::from_raw_mode(mode)).context("setting storage directory mode")?;
-    let identity = fstat(&directory).context("inspecting realized storage directory")?;
-    Ok(StorageIdentity {
-        device: identity.st_dev,
-        inode: identity.st_ino,
-    })
+    Ok(())
 }
 
-pub(super) fn copy_file_atomic_with_identity(
+pub(super) fn copy_file_atomic_guarded(
     source_path: &Path,
     path: &Path,
     maximum_size_bytes: u64,
     mode: u32,
     ownership: StorageOwnership,
-    own_claim: Option<(u64, u64)>,
-) -> Result<(StorageIdentity, Sha256Digest)> {
+    expected_identity: Option<(u64, u64)>,
+) -> Result<Sha256Digest> {
     ensure!(
         maximum_size_bytes > 0 && maximum_size_bytes <= MAX_SAFE_INTEGER,
         "filesystem entry byte bound is outside the portable integer range"
@@ -241,7 +237,7 @@ pub(super) fn copy_file_atomic_with_identity(
         .file_name()
         .context("filesystem entry has no final component")?;
     let parent = open_directory_nofollow(parent_path)?;
-    if let Some(claim) = own_claim {
+    if let Some(claim) = expected_identity {
         let current = openat(
             &parent,
             name,
@@ -254,7 +250,7 @@ pub(super) fn copy_file_atomic_with_identity(
             rustix::fs::FileType::from_raw_mode(metadata.st_mode)
                 == rustix::fs::FileType::RegularFile
                 && (metadata.st_dev, metadata.st_ino) == claim,
-            "filesystem file differs from its durable identity claim"
+            "filesystem file changed before mutation"
         );
     }
 
@@ -267,7 +263,7 @@ pub(super) fn copy_file_atomic_with_identity(
         Mode::from_raw_mode(0o600),
     )
     .context("creating filesystem entry temporary file")?;
-    let result = (|| -> Result<(StorageIdentity, Sha256Digest)> {
+    let result = (|| -> Result<Sha256Digest> {
         let mut file = File::from(descriptor);
         let mut digest = Sha256::new();
         stream_file(
@@ -286,7 +282,7 @@ pub(super) fn copy_file_atomic_with_identity(
             &temporary,
             &parent,
             name,
-            if own_claim.is_some() {
+            if expected_identity.is_some() {
                 rustix::fs::RenameFlags::empty()
             } else {
                 rustix::fs::RenameFlags::NOREPLACE
@@ -300,10 +296,12 @@ pub(super) fn copy_file_atomic_with_identity(
             OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
             Mode::empty(),
         )?;
-        Ok((
-            raw_storage_identity(&published)?,
-            Sha256Digest::from_bytes(digest.finalize().into()),
-        ))
+        ensure!(
+            rustix::fs::FileType::from_raw_mode(fstat(&published)?.st_mode)
+                == rustix::fs::FileType::RegularFile,
+            "published filesystem entry is not a regular file"
+        );
+        Ok(Sha256Digest::from_bytes(digest.finalize().into()))
     })();
     if result.is_err() {
         let _ = rustix::fs::unlinkat(&parent, &temporary, rustix::fs::AtFlags::empty());
@@ -317,7 +315,7 @@ pub(super) fn allocate_file_nofollow(
     mode: u32,
     ownership: StorageOwnership,
     existing: Option<(u64, u64)>,
-) -> Result<StorageIdentity> {
+) -> Result<()> {
     let parent = open_directory_nofollow(path.parent().context("file has no parent")?)?;
     let name = path.file_name().context("file has no basename")?;
     let flags = OFlags::RDWR | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK;
@@ -345,9 +343,8 @@ pub(super) fn allocate_file_nofollow(
     }
 
     apply_metadata(&descriptor, mode, ownership)?;
-    let identity = raw_storage_identity(&descriptor)?;
     File::from(descriptor).sync_all()?;
-    Ok(identity)
+    Ok(())
 }
 
 pub(super) fn open_directory_nofollow(path: &Path) -> Result<OwnedFd> {
@@ -382,14 +379,6 @@ pub(super) fn apply_metadata(
             .context("setting filesystem entry ownership")?;
     }
     fchmod(descriptor, Mode::from_raw_mode(mode)).context("setting filesystem entry mode")
-}
-
-pub(super) fn raw_storage_identity(descriptor: &impl std::os::fd::AsFd) -> Result<StorageIdentity> {
-    let identity = fstat(descriptor).context("inspecting realized filesystem entry")?;
-    Ok(StorageIdentity {
-        device: identity.st_dev,
-        inode: identity.st_ino,
-    })
 }
 
 pub(super) fn resolve_identity(path: &Path, name: &str, field: usize, label: &str) -> Result<u32> {
@@ -502,24 +491,24 @@ pub(super) fn symlink_tree_atomic(
     source: &Path,
     path: &Path,
     ownership: StorageOwnership,
-    own_claim: Option<(u64, u64)>,
-) -> Result<StorageIdentity> {
+    expected_identity: Option<(u64, u64)>,
+) -> Result<()> {
     let parent = open_directory_nofollow(path.parent().context("tree entry has no parent")?)?;
     let name = path
         .file_name()
         .context("tree entry has no final component")?;
-    if let Some(identity) = own_claim {
+    if let Some(identity) = expected_identity {
         let metadata = rustix::fs::statat(&parent, name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW)?;
         ensure!(
             rustix::fs::FileType::from_raw_mode(metadata.st_mode) == rustix::fs::FileType::Symlink
                 && (metadata.st_dev, metadata.st_ino) == identity,
-            "tree link differs from its durable identity claim"
+            "tree link changed before mutation"
         );
     }
     let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let temporary = format!(".aos-tree-{}.{}.tmp", std::process::id(), sequence);
     rustix::fs::symlinkat(source, &parent, &temporary)?;
-    let result = (|| -> Result<StorageIdentity> {
+    let result = (|| -> Result<()> {
         rustix::fs::chownat(
             &parent,
             &temporary,
@@ -532,7 +521,7 @@ pub(super) fn symlink_tree_atomic(
             &temporary,
             &parent,
             name,
-            if own_claim.is_some() {
+            if expected_identity.is_some() {
                 rustix::fs::RenameFlags::empty()
             } else {
                 rustix::fs::RenameFlags::NOREPLACE
@@ -544,10 +533,7 @@ pub(super) fn symlink_tree_atomic(
             rustix::fs::FileType::from_raw_mode(metadata.st_mode) == rustix::fs::FileType::Symlink,
             "published tree entry is not a symlink"
         );
-        Ok(StorageIdentity {
-            device: metadata.st_dev,
-            inode: metadata.st_ino,
-        })
+        Ok(())
     })();
     if result.is_err() {
         let _ = rustix::fs::unlinkat(&parent, &temporary, rustix::fs::AtFlags::empty());
