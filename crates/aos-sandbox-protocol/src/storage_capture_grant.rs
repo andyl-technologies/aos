@@ -859,7 +859,7 @@ mod tests {
     }
 
     #[test]
-    fn caller_supplied_settlement_cannot_open_storage_capture_dispatch() {
+    fn caller_supplied_settlement_is_data_not_storage_candidate_authority() {
         let (peer, policy) = peer();
         let request = ReserveStorageExecutionCaptureRequestV1 {
             header: Some(header(17, 100)).into(),
@@ -876,9 +876,10 @@ mod tests {
             *SETTLEMENT_MAGIC
         );
 
-        // Candidate readback and the separate output-reserve and query
-        // carriers remain closed to production. A caller's well-formed source
-        // grants neither capture authority nor an output-reserve effect.
+        // Candidate readback remains excluded from the production profile.
+        // Output reserve/query are existing authenticated methods requiring
+        // separately verified authority. A well-formed source grants no
+        // authority or effect; these assertions inspect taxonomy, not effects.
         let candidate = BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE;
         let output_reserve = BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT;
         let output_query = BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT;
@@ -901,8 +902,8 @@ mod tests {
             Audience::AUDIENCE_NODE_CONTROLLER,
         );
         assert!(!advertised.contains(&candidate));
-        assert!(!advertised.contains(&output_reserve));
-        assert!(!advertised.contains(&output_query));
+        assert!(advertised.contains(&output_reserve));
+        assert!(advertised.contains(&output_query));
     }
 
     #[test]

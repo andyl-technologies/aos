@@ -2351,12 +2351,28 @@ mod tests {
             )
             .is_err()
         );
+
+        // An authenticated DATA adapter does not make the provisional FUSE
+        // method available in either production Mount/Controller profile.
         assert!(
             crate::authenticated_session::all_methods::authenticated_broker_method_adapter_v1(
                 fuse_method
             )
-            .is_none()
+            .is_some()
         );
+        for protocol in [
+            aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1::Mount,
+            aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1::MountFuse,
+        ] {
+            assert!(
+                !aos_sandbox_broker_session_protocol::authenticated_broker_methods_for_role_v1(
+                    protocol,
+                    Audience::AUDIENCE_NODE_CONTROLLER,
+                )
+                .contains(&fuse_method)
+            );
+        }
+
         let legacy_request = BrokerRequestEnvelope {
             method: fuse_method.into(),
             body: vec![1],
