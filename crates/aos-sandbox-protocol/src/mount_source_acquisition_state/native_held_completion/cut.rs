@@ -17,12 +17,14 @@
 
 use std::collections::BTreeMap;
 
+use aos_sandbox_core::bounded_codec::BoundedReader;
+
 use aos_sandbox_source_provider_protocol::native_held_completion::witness::{
     NativeHeldByteWitnessV1, NativeHeldRecordFamilyV1 as Family, native_held_record_byte_digest_v1,
 };
 use serde::{Serialize, de::DeserializeOwned};
 
-use super::codec::Reader;
+use super::codec::native_root_read_error;
 use crate::mount_source_acquisition_state::{
     AcquisitionPredecessorWitnessV2, AcquisitionRecoveryV2, MountSourceAcquisitionStateV2,
     ProviderAttemptStateV2, ProviderIntentV2, ProviderMethodV2, ProviderQueryOwnerV2,
@@ -342,7 +344,7 @@ impl RootNativeCutV1 {
         if bytes.len() > MAXIMUM_ROOT_NATIVE_CUT_BYTES_V1 {
             return Err(state_error("native cut complete byte limit"));
         }
-        let mut reader = Reader::new(bytes);
+        let mut reader = BoundedReader::new(bytes, native_root_read_error);
         if reader.bytes(8)? != b"AOSMNC01" || reader.bytes(2)? != [0, 1] {
             return Err(state_error("native cut magic/version"));
         }
@@ -371,8 +373,8 @@ impl RootNativeCutV1 {
         };
         let original_attempt_revision = u64::from_be_bytes(reader.array()?);
         let original_attempt_digest = reader.array()?;
-        let head_length = reader.u32()?;
-        let acquisition_length = reader.u32()?;
+        let head_length = reader.u32()? as usize;
+        let acquisition_length = reader.u32()? as usize;
         if head_length > MAXIMUM_ROOT_NATIVE_CUT_HEAD_BYTES_V1
             || acquisition_length > MAXIMUM_ROOT_NATIVE_CUT_ACQUISITION_BYTES_V1
         {

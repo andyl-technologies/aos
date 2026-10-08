@@ -9,6 +9,7 @@
 //! ```
 
 use aos_sandbox_core::ObjectDigest;
+use aos_sandbox_core::bounded_codec::BoundedReader;
 use aos_sandbox_source_provider_protocol::native_held_completion::{
     MAXIMUM_NATIVE_HELD_SUFFIX_BYTES_V1, NativeHeldControlKindV1 as Kind, NativeHeldScopeV1,
     assertion::{
@@ -19,10 +20,12 @@ use aos_sandbox_source_provider_protocol::native_held_completion::{
 
 use super::{
     MAXIMUM_ROOT_NATIVE_VERIFIER_BYTES_V1, RootNativeHeldSidecarV1, RootNativeTerminalVerifierV1,
-    codec::Reader,
+    codec::native_root_read_error,
     cut::{MAXIMUM_ROOT_NATIVE_CUT_BYTES_V1, RootNativeCutKindV1, RootNativeCutV1},
 };
-use crate::mount_source_acquisition_state::{RecordRefV2, Result, format::state_error};
+use crate::mount_source_acquisition_state::{
+    MountSourceAcquisitionStateError, RecordRefV2, Result, format::state_error,
+};
 
 const PREFIX: &[u8] = b"aos.mount.native-held-completion.v2\0";
 
@@ -186,7 +189,7 @@ impl RootNativeNoInterestTerminalV1 {
         if bytes.len() != ROOT_NATIVE_NO_INTEREST_TERMINAL_BYTES_V1 {
             return Err(state_error("native no-interest terminal fixed width"));
         }
-        let mut reader = Reader::new(bytes);
+        let mut reader = BoundedReader::new(bytes, native_root_read_error);
         if reader.bytes(8)? != b"AOSMNT01" || reader.bytes(8)? != [0, 1, 1, 0, 0, 0, 0, 0] {
             return Err(state_error("native no-interest terminal header"));
         }
@@ -384,7 +387,7 @@ impl RootNativeHeldSidecarV2 {
         if !is_sidecar_key_v2(key) || bytes.len() > MAXIMUM_ROOT_NATIVE_HELD_SIDECAR_BYTES_V2 {
             return Err(state_error("native Root v2 key or complete byte bound"));
         }
-        let mut reader = Reader::new(bytes);
+        let mut reader = BoundedReader::new(bytes, native_root_read_error);
         if reader.bytes(8)? != b"AOSMHC02" || reader.bytes(8)? != [0, 2, 0, 0, 0, 0, 0, 0] {
             return Err(state_error("native Root v2 magic/version/reserved"));
         }
@@ -399,13 +402,13 @@ impl RootNativeHeldSidecarV2 {
         };
         let response_transaction = reader.array()?;
         let lengths = [
-            reader.u32()?,
-            reader.u32()?,
-            reader.u32()?,
-            reader.u32()?,
-            reader.u32()?,
-            reader.u32()?,
-            reader.u32()?,
+            reader.u32()? as usize,
+            reader.u32()? as usize,
+            reader.u32()? as usize,
+            reader.u32()? as usize,
+            reader.u32()? as usize,
+            reader.u32()? as usize,
+            reader.u32()? as usize,
         ];
         let caps = [
             722,
@@ -526,7 +529,9 @@ impl RootNativeHeldSidecarV2 {
     }
 }
 
-fn read_reference(reader: &mut Reader<'_>) -> Result<RecordRefV2> {
+fn read_reference(
+    reader: &mut BoundedReader<'_, MountSourceAcquisitionStateError>,
+) -> Result<RecordRefV2> {
     Ok(RecordRefV2 {
         id: reader.array()?,
         revision: u64::from_be_bytes(reader.array()?),

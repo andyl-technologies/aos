@@ -12,13 +12,14 @@
 //! it cannot establish that the projection was eligible at an actual readback.
 
 use aos_sandbox_core::ObjectDigest;
+use aos_sandbox_core::bounded_codec::BoundedReader;
 use aos_sandbox_source_provider_protocol::native_held_completion::frame::{
     NativeHeldSignerV1, SignedNativeHeldControlV1,
 };
 use aos_sandbox_source_provider_protocol::{SourceProviderKeyUsageV1, SourceProviderSigningKeyV1};
 use sha2::{Digest as _, Sha256};
 
-use super::codec::Reader;
+use super::codec::{native_root_read_error, read_header};
 use crate::mount_source_acquisition_state::{
     Result, SignerRoleV2, SignerSnapshotV2, format::state_error,
 };
@@ -78,14 +79,14 @@ impl RootNativeTerminalVerifierV1 {
         if bytes.len() > MAXIMUM_ROOT_NATIVE_VERIFIER_BYTES_V1 {
             return Err(state_error("native Root verifier limit"));
         }
-        let mut reader = Reader::new(bytes);
-        reader.header(b"AOSNVE01")?;
+        let mut reader = BoundedReader::new(bytes, native_root_read_error);
+        read_header(&mut reader, b"AOSNVE01")?;
         let trust_generation = u64::from_be_bytes(reader.array()?);
         let trust_digest = ObjectDigest::from_bytes(reader.array()?);
         let revocation_generation = u64::from_be_bytes(reader.array()?);
         let revocation_digest = ObjectDigest::from_bytes(reader.array()?);
         let verified_at_seconds = i64::from_be_bytes(reader.array()?);
-        let length = reader.u32()?;
+        let length = reader.u32()? as usize;
         if length > 2_048 {
             return Err(state_error("native Root verifier signer limit"));
         }

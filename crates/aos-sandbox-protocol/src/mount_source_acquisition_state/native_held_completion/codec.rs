@@ -6,6 +6,7 @@
 //! ```
 
 use aos_sandbox_core::ObjectDigest;
+use aos_sandbox_core::bounded_codec::{BoundedReader, ReadError};
 use aos_sandbox_source_provider_protocol::native_held_completion::{
     NativeHeldOwnerV1, NativeHeldScopeV1,
     assertion::{
@@ -15,7 +16,9 @@ use aos_sandbox_source_provider_protocol::native_held_completion::{
 };
 
 use super::{MAXIMUM_ROOT_NATIVE_HELD_SIDECAR_BYTES_V1, RootNativeTerminalVerifierV1};
-use crate::mount_source_acquisition_state::{Result, format::state_error};
+use crate::mount_source_acquisition_state::{
+    MountSourceAcquisitionStateError, Result, format::state_error,
+};
 
 const PREFIX: &[u8] = b"aos.mount.native-held-completion.v1\0";
 
@@ -174,8 +177,8 @@ impl RootNativeHeldSidecarV1 {
         if bytes.len() > MAXIMUM_ROOT_NATIVE_HELD_SIDECAR_BYTES_V1 || !is_sidecar_key(key) {
             return Err(state_error("native Root sidecar key or byte limit"));
         }
-        let mut reader = Reader::new(bytes);
-        reader.header(b"AOSMHC01")?;
+        let mut reader = BoundedReader::new(bytes, native_root_read_error);
+        read_header(&mut reader, b"AOSMHC01")?;
         let fields: [[u8; 32]; 7] = [
             reader.array()?,
             reader.array()?,
@@ -195,7 +198,12 @@ impl RootNativeHeldSidecarV1 {
             original_native_request: ObjectDigest::from_bytes(fields[6]),
         };
         let response_transaction = reader.array()?;
-        let lengths = [reader.u32()?, reader.u32()?, reader.u32()?, reader.u32()?];
+        let lengths = [
+            reader.u32()? as usize,
+            reader.u32()? as usize,
+            reader.u32()? as usize,
+            reader.u32()? as usize,
+        ];
         let r = reader.bytes(lengths[0])?;
         let disposition = if r.is_empty() {
             None
@@ -292,50 +300,104 @@ impl RootNativeHeldSidecarV1 {
     }
 }
 
-pub(super) struct Reader<'a> {
-    bytes: &'a [u8],
-    offset: usize,
+pub(super) fn native_root_read_error(error: ReadError) -> MountSourceAcquisitionStateError {
+    state_error(match error {
+        ReadError::LengthOverflow => "native Root length overflow",
+        ReadError::Truncated => "native Root truncated bytes",
+        ReadError::NonzeroReserved => "native Root magic/version/reserved",
+        ReadError::TrailingBytes => "native Root trailing bytes",
+    })
 }
 
-impl<'a> Reader<'a> {
-    pub(super) const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, offset: 0 }
+// A rejected magic must precede reading or validating the version/reserved field.
+pub(super) fn read_header(
+    reader: &mut BoundedReader<'_, MountSourceAcquisitionStateError>,
+    magic: &[u8; 8],
+) -> Result<()> {
+    if reader.bytes(8)? != magic || reader.bytes(8)? != [0, 1, 0, 0, 0, 0, 0, 0] {
+        return Err(state_error("native Root magic/version/reserved"));
     }
+    Ok(())
+}
 
-    pub(super) fn bytes(&mut self, length: usize) -> Result<&'a [u8]> {
-        let end = self
-            .offset
-            .checked_add(length)
-            .ok_or_else(|| state_error("native Root length overflow"))?;
-        let value = self
-            .bytes
-            .get(self.offset..end)
-            .ok_or_else(|| state_error("native Root truncated bytes"))?;
-        self.offset = end;
-        Ok(value)
-    }
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    pub(super) fn array<const N: usize>(&mut self) -> Result<[u8; N]> {
-        self.bytes(N)?
-            .try_into()
-            .map_err(|_| state_error("native Root fixed width"))
-    }
+    #[test]
+    fn native_root_reader_preserves_borrows_failed_ranges_and_exact_errors() {
+        let bytes = [1, 2, 3];
+        let mut reader = BoundedReader::new(&bytes, native_root_read_error);
+        let first = reader.bytes(1).unwrap();
+        assert_eq!(first.as_ptr(), bytes.as_ptr());
+        assert_eq!(
+            reader.bytes(usize::MAX),
+            Err(state_error("native Root length overflow"))
+        );
+        assert_eq!(
+            reader.bytes(3),
+            Err(state_error("native Root truncated bytes"))
+        );
+        assert_eq!(reader.remaining_bytes(), &bytes[1..]);
+        assert_eq!(reader.array::<2>(), Ok([2, 3]));
+        assert_eq!(reader.finish(), Ok(()));
 
-    pub(super) fn u32(&mut self) -> Result<usize> {
-        Ok(u32::from_be_bytes(self.array()?) as usize)
-    }
+        let reader = BoundedReader::new(&bytes, native_root_read_error);
+        assert_eq!(
+            reader.finish(),
+            Err(state_error("native Root trailing bytes"))
+        );
 
-    pub(super) fn header(&mut self, magic: &[u8; 8]) -> Result<()> {
-        if self.bytes(8)? != magic || self.bytes(8)? != [0, 1, 0, 0, 0, 0, 0, 0] {
-            return Err(state_error("native Root magic/version/reserved"));
+        // An exact-width slice always converts to its array; short slices fail before conversion.
+        for length in 0..bytes.len() {
+            let mut reader = BoundedReader::new(&bytes[..length], native_root_read_error);
+            assert_eq!(
+                reader.array::<3>(),
+                Err(state_error("native Root truncated bytes"))
+            );
+            assert_eq!(reader.remaining(), length);
         }
-        Ok(())
     }
 
-    pub(super) fn finish(self) -> Result<()> {
-        if self.offset != self.bytes.len() {
-            return Err(state_error("native Root trailing bytes"));
+    #[test]
+    fn native_root_header_preserves_short_circuit_and_reserved_byte_precedence() {
+        let header = *b"AOSMHC01\0\x01\0\0\0\0\0\0";
+        for length in 0..header.len() {
+            let mut reader = BoundedReader::new(&header[..length], native_root_read_error);
+            assert_eq!(
+                read_header(&mut reader, b"AOSMHC01"),
+                Err(state_error("native Root truncated bytes"))
+            );
         }
-        Ok(())
+
+        let mut wrong_magic = BoundedReader::new(b"AOSMHC02", native_root_read_error);
+        assert_eq!(
+            read_header(&mut wrong_magic, b"AOSMHC01"),
+            Err(state_error("native Root magic/version/reserved"))
+        );
+
+        for index in 8..header.len() {
+            let mut invalid = header;
+            invalid[index] ^= 1;
+            let mut reader = BoundedReader::new(&invalid, native_root_read_error);
+            assert_eq!(
+                read_header(&mut reader, b"AOSMHC01"),
+                Err(state_error("native Root magic/version/reserved"))
+            );
+        }
+
+        let mut reader = BoundedReader::new(&header, native_root_read_error);
+        assert_eq!(read_header(&mut reader, b"AOSMHC01"), Ok(()));
+        assert_eq!(reader.finish(), Ok(()));
+    }
+
+    #[test]
+    fn native_root_lengths_preserve_big_endian_as_cast_values() {
+        for length in [0, 1, u32::MAX] {
+            let bytes = length.to_be_bytes();
+            let mut reader = BoundedReader::new(&bytes, native_root_read_error);
+            assert_eq!(reader.u32().unwrap() as usize, length as usize);
+            assert_eq!(reader.finish(), Ok(()));
+        }
     }
 }
