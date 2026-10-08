@@ -2192,9 +2192,24 @@ warnings found during qualification are corrected without lint exceptions.
 Both mandatory formats pass. Strict native all-target Clippy still rejects
 the trunk's existing unused code and test lints; no clean trunk result is
 claimed. Fourteen exact recipe and consumer witnesses are registered in the
-owning runtime and bucket-layout gates, and their implementation is pending
-in the isolated composition. These local commits remain unpushed pending
-qualification, and no deadline improvement or task acceptance is claimed.
+owning runtime and bucket-layout gates. Their private implementation on
+`03945b9b67` passes native SDK compilation and strict native library and
+all-target Clippy. Its four owning portable compile configurations pass;
+the separately requested strict no-default Clippy run fails nineteen existing
+unused-import and dead-code diagnostics, without ordinary-read diagnostics.
+The fresh native inventory contains 812 cases and binds all ninety selected
+regressions exactly once, nonignored, to the actual current executable and
+suite directory. The original serial run completes in 175.721 seconds with
+88 passes and two failures: initialization already creates the generation-one
+manifest and its index directory, contrary to two new fixture assumptions.
+All 76 prior regressions and twelve other new witnesses pass, with all 6,098
+source contents and modes unchanged across the run. The conditional indexing
+deadline witness and downstream gates do not run. Reviewed fixture-only
+`f2dd429256` selects absent generation two and explicitly replaces the existing
+index directory before testing an unsafe parent; assertions, counters,
+production behavior and deadlines remain unchanged. Its new qualification is
+pending. These local commits remain unpushed pending qualification, and no
+deadline improvement, owning-gate result or task acceptance is claimed.
 
 The sealed current floor contains 89 aggregate gates, including all 69 T0/T1
 plan-required names and twenty implemented supporting checks. Read-only evaluation
