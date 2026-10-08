@@ -714,6 +714,27 @@ mod tests {
         bind_lifecycle_atomic_join_v1(vec![operation_member, batch_member]).unwrap()
     }
 
+    // Rebuild proposal DATA without reusing the immutable bound member set.
+    fn unbound_fixture_member(
+        record: &LifecycleAuxiliaryRecordV1,
+        verification: &LifecycleReplayVerificationV1,
+    ) -> LifecycleAuxiliaryRecordV1 {
+        LifecycleAuxiliaryRecordV1::proposal(
+            record.project(),
+            record.operation(),
+            record.operation_revision(),
+            record.operation_record(),
+            record.lineage(),
+            record.revision(),
+            record.predecessor(),
+            record.payload().clone(),
+            record.atomic_join(),
+            record.replay_floor(),
+            verification,
+        )
+        .unwrap()
+    }
+
     fn operation_digest(operation: &LifecycleOperationV1) -> LifecycleRecordDigestV1 {
         let encoded = super::super::format::encode_retained_operation_record(operation).unwrap();
         super::super::format::record_digest(&encoded).unwrap()
@@ -962,7 +983,9 @@ mod tests {
             request, ResourceId::from_bytes([50; 16]), ResourceId::from_bytes([53; 16]),
             ResourceId::from_bytes([54; 16]), &verification,
         ).is_err());
-        let orphan = bind_lifecycle_atomic_join_v1(vec![records[0].clone()]).unwrap();
+        let orphan = bind_lifecycle_atomic_join_v1(vec![
+            unbound_fixture_member(&records[0], &verification),
+        ]).unwrap();
         assert!(LifecycleAuxiliaryHistoryV1::under_verification(&verification).apply_atomic_join(&orphan).is_err());
         assert_eq!(history.operations().operation(operation.operation_id()), Some(&operation));
     }
@@ -988,6 +1011,7 @@ mod tests {
         let committed = LifecycleDeleteBatchRecordV1::from_bytes(&payload).unwrap();
         let mut records = planned_join(&verification);
         let before = records.pop().unwrap();
+        records[0] = unbound_fixture_member(&records[0], &verification);
         let member = LifecycleAuxiliaryRecordV1::proposal(
             before.project(), before.operation(), before.operation_revision(), before.operation_record(),
             before.lineage(), before.revision(), before.predecessor(),
