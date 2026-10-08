@@ -379,9 +379,7 @@ pub use protected_journal::{
     PreparedPolicyPublicationV1, normalized_policy_input_digest_v1,
 };
 pub use protected_owner::{
-    PolicyCompilerProtectedCheckpointRecoveryV1, PolicyCompilerProtectedColdOutcomeV1,
-    PolicyCompilerProtectedObservationRecoveryV1, PolicyCompilerProtectedOpenReportV1,
-    PolicyCompilerProtectedOwnerV1,
+    PolicyCompilerProtectedOpenReportV1, PolicyCompilerProtectedOwnerV1,
 };
 #[cfg(target_os = "linux")]
 pub use public_create_source::with_current_create_cache_signer_barrier_v5;

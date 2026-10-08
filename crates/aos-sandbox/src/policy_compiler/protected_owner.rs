@@ -1,10 +1,9 @@
 //! Fixed-root ownership for dormant compiled-policy publication.
 //!
 //! A dedicated root-owned authority journal carries exact prerequisite and
-//! compiler-output bindings. The owner never accepts a caller-provided
-//! verifier: it authenticates replay, planning, commit, recovery, and
-//! postcommit handoff against those protected records while holding their
-//! currentness lock.
+//! compiler-output bindings. The fixed owner never accepts a caller-provided
+//! verifier: it authenticates replay against those protected records while
+//! retaining their authority journal.
 
 use std::{
     collections::BTreeMap,
@@ -25,16 +24,10 @@ use super::protected_journal::{
 };
 
 use super::{
-    PolicyCheckpointCommitOutcomeV1, PolicyCheckpointOutcomeUnknownV1, PolicyCheckpointRecoveryV1,
-    PolicyCompilerEffectHandoffV1, PolicyCompilerJournalErrorV1, PolicyCompilerJournalProjectionV1,
-    PolicyCompilerJournalSnapshotV1, PolicyCompilerProtectedJournalV1,
-    PolicyCompilerReplayValidatorV1, PolicyEffectObservationCommitOutcomeV1,
-    PolicyEffectObservationOutcomeUnknownV1, PolicyEffectObservationRecoveryV1,
-    PolicyPublicationColdRecoveryV1, PolicyPublicationCommitOutcomeV1,
-    PolicyPublicationOutcomeUnknownV1, PolicyPublicationPrerequisitesV1,
-    PolicyPublicationRecoveryV1,
+    PolicyCompilerJournalErrorV1, PolicyCompilerJournalProjectionV1,
+    PolicyCompilerProtectedJournalV1, PolicyCompilerReplayValidatorV1,
+    PolicyPublicationPrerequisitesV1,
 };
-use aos_sandbox_policy::{PolicyCompilerInputV1, PolicyCompilerV1};
 
 pub(super) const PROTECTED_POLICY_ROOT: &str = "/var/lib/aos/sandbox/policy-compiler";
 pub(super) const POLICY_STATE_JOURNAL: &str = "state.journal";
@@ -63,53 +56,12 @@ pub struct PolicyCompilerProtectedOpenReportV1 {
     pub authority: RecoveryReport,
 }
 
-/// Owns the complete dormant policy compiler and publication boundary.
+/// Owns fixed protected policy journals for authenticated replay.
 pub struct PolicyCompilerProtectedOwnerV1 {
     state_journal: Option<Journal>,
     validator: PolicyCompilerReplayValidatorV1,
-    verifier: Arc<ProtectedPolicyPublicationVerifierV1>,
-}
-
-/// Classifies cold policy resolution without leaking instance-bound authority.
-#[must_use = "cold policy resolution must be handled"]
-pub enum PolicyCompilerProtectedColdOutcomeV1<R> {
-    /// The transaction carries no current effect or publication authority.
-    StateOnly,
-    /// A pending installation requires a trusted external observation.
-    ObservationRequired,
-    /// The exact observation successor reached the protected journal.
-    ObservationCommitted(PolicyEffectObservationCommitOutcomeV1),
-    /// A terminal publication was revalidated inside the supplied callback.
-    Terminal(R),
-}
-
-/// Classifies checkpoint recovery after any safe retry is handled in-claim.
-#[must_use = "checkpoint recovery must be handled"]
-pub enum PolicyCompilerProtectedCheckpointRecoveryV1 {
-    /// The exact checkpoint was already durable.
-    Applied,
-    /// Exact predecessors permitted one retry, whose result is retained here.
-    Retried(PolicyCheckpointCommitOutcomeV1),
-    /// Durable state differs from both the predecessor and successor.
-    Diverged(PolicyCheckpointOutcomeUnknownV1),
-    /// Full protected replay could not classify the retained transaction.
-    Indeterminate {
-        /// Retains the exact checkpoint transaction for another owner recovery.
-        pending: PolicyCheckpointOutcomeUnknownV1,
-        /// Reports the fail-closed typed replay failure.
-        cause: PolicyCompilerJournalErrorV1,
-    },
-}
-
-/// Classifies protected observation recovery after any exact retry is committed.
-#[must_use = "observation recovery must be handled"]
-pub enum PolicyCompilerProtectedObservationRecoveryV1 {
-    /// The exact observed successor was already durable.
-    Applied,
-    /// Exact predecessors permitted one retry, whose result is retained here.
-    Retried(PolicyEffectObservationCommitOutcomeV1),
-    /// Durable state differs from both the predecessor and observed successor.
-    Diverged(PolicyEffectObservationOutcomeUnknownV1),
+    // Keeps the authority writer and verifier alive for the owner's full lifetime.
+    _verifier: Arc<ProtectedPolicyPublicationVerifierV1>,
 }
 
 impl PolicyCompilerProtectedOwnerV1 {
@@ -142,7 +94,7 @@ impl PolicyCompilerProtectedOwnerV1 {
             Self {
                 state_journal: Some(state_journal),
                 validator,
-                verifier,
+                _verifier: verifier,
             },
             PolicyCompilerProtectedOpenReportV1 {
                 state: state_report,
@@ -163,205 +115,6 @@ impl PolicyCompilerProtectedOwnerV1 {
         self.claim()?.replay()
     }
 
-    /// Captures exact compiled-policy currentness.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when protected replay fails.
-    pub fn snapshot(
-        &mut self,
-    ) -> Result<PolicyCompilerJournalSnapshotV1, PolicyCompilerJournalErrorV1> {
-        self.claim()?.snapshot()
-    }
-
-    /// Compiles, authenticates, plans, commits, and reads back one publication.
-    ///
-    /// The protected authority journal must already contain the exact target,
-    /// normalized-input, candidate, and prerequisite binding. This method
-    /// performs no live installation or advertisement.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for compilation failure, missing protected authority,
-    /// stale prerequisites, invalid generation/CAS, or rejected durability.
-    pub fn compile_plan_commit_and_handoff<R>(
-        &mut self,
-        transaction_id: [u8; 16],
-        generation: u64,
-        input: PolicyCompilerInputV1,
-        prerequisites: PolicyPublicationPrerequisitesV1,
-        handoff: impl for<'guard> FnOnce(PolicyCompilerEffectHandoffV1<'guard>) -> R,
-    ) -> Result<(PolicyPublicationCommitOutcomeV1, Option<R>), PolicyCompilerJournalErrorV1> {
-        let candidate = PolicyCompilerV1::compile(input.clone())
-            .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
-        let verified = VerifiedPolicyPublicationV1::authenticate(
-            &input,
-            candidate,
-            prerequisites,
-            self.verifier.as_ref(),
-        )?;
-        let verifier = Arc::clone(&self.verifier);
-        let mut journal = self.claim()?;
-        let prepared = journal.plan_publication(transaction_id, generation, verified)?;
-        let mut outcome = journal.commit(prepared, verifier.as_ref())?;
-        let handoff_result = match &mut outcome {
-            PolicyPublicationCommitOutcomeV1::Applied(applied) => {
-                let capability = applied
-                    .take_postcommit()
-                    .ok_or(PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
-                Some(capability.consume_with(&journal, verifier.as_ref(), handoff)?)
-            }
-            PolicyPublicationCommitOutcomeV1::OutcomeUnknown { .. } => None,
-        };
-        Ok((outcome, handoff_result))
-    }
-
-    /// Reopens protected state and classifies one ambiguous publication.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when protected reopen, currentness, or typed replay
-    /// fails closed.
-    pub fn recover_publication<R>(
-        &mut self,
-        pending: PolicyPublicationOutcomeUnknownV1,
-        handoff: impl for<'guard> FnOnce(PolicyCompilerEffectHandoffV1<'guard>) -> R,
-    ) -> Result<(PolicyPublicationRecoveryV1, Option<R>), PolicyCompilerJournalErrorV1> {
-        self.reopen_state()?;
-        let verifier = Arc::clone(&self.verifier);
-        let journal = self.claim()?;
-        let mut recovery = journal.recover(pending, verifier.as_ref())?;
-        let handoff_result = match &mut recovery {
-            PolicyPublicationRecoveryV1::Applied(applied) => {
-                let capability = applied
-                    .take_postcommit()
-                    .ok_or(PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
-                Some(capability.consume_with(&journal, verifier.as_ref(), handoff)?)
-            }
-            PolicyPublicationRecoveryV1::Retry(_) | PolicyPublicationRecoveryV1::Diverged(_) => {
-                None
-            }
-        };
-        Ok((recovery, handoff_result))
-    }
-
-    /// Resolves one cold publication with observation-only pending effects.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for malformed grouping or unauthenticated replay.
-    pub fn resolve_current_transaction<R>(
-        &mut self,
-        transaction_id: [u8; 16],
-        observation: Option<([u8; 16], ObjectDigest)>,
-        handoff: impl for<'guard> FnOnce(PolicyCompilerEffectHandoffV1<'guard>) -> R,
-    ) -> Result<PolicyCompilerProtectedColdOutcomeV1<R>, PolicyCompilerJournalErrorV1> {
-        let verifier = Arc::clone(&self.verifier);
-        let mut journal = self.claim()?;
-        match journal.recover_current_transaction(transaction_id)? {
-            PolicyPublicationColdRecoveryV1::StateOnly => {
-                Ok(PolicyCompilerProtectedColdOutcomeV1::StateOnly)
-            }
-            PolicyPublicationColdRecoveryV1::ObservePending(cold) => {
-                let Some((settlement_transaction_id, observation)) = observation else {
-                    return Ok(PolicyCompilerProtectedColdOutcomeV1::ObservationRequired);
-                };
-                let prepared = journal.plan_cold_observation(
-                    settlement_transaction_id,
-                    cold,
-                    observation,
-                    verifier.as_ref(),
-                )?;
-                let outcome = journal.commit_observation(prepared, verifier.as_ref())?;
-                Ok(PolicyCompilerProtectedColdOutcomeV1::ObservationCommitted(
-                    outcome,
-                ))
-            }
-            PolicyPublicationColdRecoveryV1::Terminal(cold) => {
-                let result = cold.consume_with(&journal, verifier.as_ref(), handoff)?;
-                Ok(PolicyCompilerProtectedColdOutcomeV1::Terminal(result))
-            }
-        }
-    }
-
-    /// Reopens protected state, resolves an ambiguous observation, and retries safely.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when protected reopen, observation currentness, or
-    /// typed effect replay fails closed.
-    pub fn recover_observation(
-        &mut self,
-        pending: PolicyEffectObservationOutcomeUnknownV1,
-    ) -> Result<PolicyCompilerProtectedObservationRecoveryV1, PolicyCompilerJournalErrorV1> {
-        self.reopen_state()?;
-        let verifier = Arc::clone(&self.verifier);
-        let mut journal = self.claim()?;
-        Ok(
-            match journal.recover_observation(pending, verifier.as_ref())? {
-                PolicyEffectObservationRecoveryV1::Applied => {
-                    PolicyCompilerProtectedObservationRecoveryV1::Applied
-                }
-                PolicyEffectObservationRecoveryV1::Retry(prepared) => {
-                    PolicyCompilerProtectedObservationRecoveryV1::Retried(
-                        journal.commit_observation(prepared, verifier.as_ref())?,
-                    )
-                }
-                PolicyEffectObservationRecoveryV1::Diverged(pending) => {
-                    PolicyCompilerProtectedObservationRecoveryV1::Diverged(pending)
-                }
-            },
-        )
-    }
-
-    /// Plans and commits one state-only checkpoint join.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for a sentinel checkpoint, stale state, or durability
-    /// failure.
-    pub fn checkpoint(
-        &mut self,
-        transaction_id: [u8; 16],
-        checkpoint: ObjectDigest,
-    ) -> Result<PolicyCheckpointCommitOutcomeV1, PolicyCompilerJournalErrorV1> {
-        let mut journal = self.claim()?;
-        let prepared = journal.plan_checkpoint(transaction_id, checkpoint)?;
-        journal.commit_checkpoint(prepared)
-    }
-
-    /// Reopens protected state, classifies an ambiguous checkpoint, and retries safely.
-    ///
-    /// A retry is committed before this fresh adapter claim ends, so its
-    /// instance-bound prepared state never escapes the owner.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when protected reopen or typed checkpoint replay fails.
-    pub fn recover_checkpoint(
-        &mut self,
-        pending: PolicyCheckpointOutcomeUnknownV1,
-    ) -> Result<PolicyCompilerProtectedCheckpointRecoveryV1, PolicyCompilerJournalErrorV1> {
-        self.reopen_state()?;
-        let mut journal = self.claim()?;
-        Ok(match journal.recover_checkpoint(pending)? {
-            PolicyCheckpointRecoveryV1::Applied => {
-                PolicyCompilerProtectedCheckpointRecoveryV1::Applied
-            }
-            PolicyCheckpointRecoveryV1::Retry(prepared) => {
-                PolicyCompilerProtectedCheckpointRecoveryV1::Retried(
-                    journal.commit_checkpoint(prepared)?,
-                )
-            }
-            PolicyCheckpointRecoveryV1::Diverged(pending) => {
-                PolicyCompilerProtectedCheckpointRecoveryV1::Diverged(pending)
-            }
-            PolicyCheckpointRecoveryV1::Indeterminate { pending, cause } => {
-                PolicyCompilerProtectedCheckpointRecoveryV1::Indeterminate { pending, cause }
-            }
-        })
-    }
-
     fn claim(
         &mut self,
     ) -> Result<PolicyCompilerProtectedJournalV1<'_>, PolicyCompilerJournalErrorV1> {
@@ -372,18 +125,6 @@ impl PolicyCompilerProtectedOwnerV1 {
                 ProtectedDomainJournalErrorV1::StaleAuthority,
             ))?;
         PolicyCompilerProtectedJournalV1::claim(journal, self.validator.clone())
-    }
-
-    fn reopen_state(&mut self) -> Result<(), PolicyCompilerJournalErrorV1> {
-        drop(self.state_journal.take());
-        let (journal, _) = Journal::open_protected_at(
-            Path::new(PROTECTED_POLICY_ROOT),
-            POLICY_STATE_JOURNAL,
-            policy_state_journal_limits(),
-        )?;
-        self.state_journal = Some(journal);
-        self.claim()?.replay()?;
-        Ok(())
     }
 }
 
