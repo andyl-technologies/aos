@@ -1095,7 +1095,7 @@ impl Journal {
                     previous_clock: None,
                 });
             }
-            let mut cursor = ReadAtCursorV1::new(&self.file, witness.file.size);
+            let mut cursor = ReadAtCursorV1::new(self.storage.file(), witness.file.size);
             let replayed = replay_original_observed(
                 &mut cursor, self.limits, None,
                 Some(DeploymentHistoryObserverV1::GitCoverage(&mut observer)),
@@ -1258,7 +1258,7 @@ fn require_bookend(
     journal.ensure_healthy()?;
     journal.require_protected_names_current()?;
     journal.validate_protected_writer_name_witness(witness)?;
-    if FileIdentity::of(&journal.file)? != witness.file {
+    if FileIdentity::of(journal.storage.file())? != witness.file {
         return Err(JournalError::StaleAuthoritySnapshot);
     }
     Ok(())

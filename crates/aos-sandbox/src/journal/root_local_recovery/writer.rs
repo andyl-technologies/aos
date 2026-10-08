@@ -168,7 +168,7 @@ impl<'journal> LocalRecoveryWriter<'journal> {
         self.preflight(&prepared.transaction, prepared.edge)?;
         self.append(&prepared.transaction, prepared.edge)?;
         self.readback(prepared.floor)
-            .inspect_err(|_| self.authority.journal.poisoned = true)
+            .inspect_err(|_| self.authority.journal.storage.poison())
     }
 
     /// Rejoins this named scope's local floors under the current physical owner.
@@ -249,7 +249,7 @@ impl<'journal> LocalRecoveryWriter<'journal> {
             Ok(())
         })();
         if let Err(error) = final_readback {
-            self.authority.journal.poisoned = true;
+            self.authority.journal.storage.poison();
             return Err(error);
         }
         Ok(result)

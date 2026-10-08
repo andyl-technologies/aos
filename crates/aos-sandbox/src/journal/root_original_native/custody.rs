@@ -87,7 +87,7 @@ impl Drop for CommitBoundaryV5<'_, '_, '_> {
         if !self.succeeded {
             self.failed.set(true);
             if self.append_entered {
-                self.writer.authority.journal.poisoned = true;
+                self.writer.authority.journal.storage.poison();
             }
         }
     }

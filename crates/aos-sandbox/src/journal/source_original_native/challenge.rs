@@ -68,7 +68,7 @@ impl SourceOriginalChallengeHistoryViewV5<'_> {
     /// Refuses changed held custody or an incomplete requested prefix.
     pub fn current_prefix(&self) -> Result<((u64, u64), u64, aos_sandbox_core::ObjectDigest), JournalError> {
         self.validate_current()?;
-        let identity = super::super::FileIdentity::of(&self.journal.file)?;
+        let identity = super::super::FileIdentity::of(self.journal.storage.file())?;
         let sequence = self.sequence.checked_sub(1).ok_or(JournalError::SequenceExhausted)?;
         Ok(((identity.device, identity.inode), sequence, challenge_prefix_digest(
             (identity.device, identity.inode), sequence, &self.journal.source_challenge_history,
@@ -220,13 +220,13 @@ impl Journal {
         &mut self,
     ) -> Result<SourceOriginalChallengeHistoryViewV5<'_>, JournalError> {
         require_fixed(self)?;
-        let replay = super::super::replay(&mut self.file, self.limits)?;
+        let replay = super::super::replay(self.storage.file_mut(), self.limits)?;
         if replay.state != self.state
             || replay.next_sequence != self.next_sequence
             || replay.transaction_ids != self.transaction_ids
-            || replay.durable_end != self.file.metadata()?.len()
+            || replay.durable_end != self.storage.file().metadata()?.len()
         {
-            self.poisoned = true;
+            self.storage.poison();
             return Err(JournalError::StaleAuthoritySnapshot);
         }
 

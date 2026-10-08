@@ -80,7 +80,7 @@ impl Drop for CommitBoundaryV6<'_, '_, '_> {
         if !self.succeeded {
             self.candidate.failed = true;
             if self.append_entered {
-                self.writer.authority.journal.poisoned = true;
+                self.writer.authority.journal.storage.poison();
             }
         }
     }
@@ -135,7 +135,7 @@ impl<'journal> MountOriginalInventoryJournalAuthorityV6<'journal> {
             journal.materialized_bytes,
             &[],
             None,
-            journal.file.metadata()?.len(),
+            journal.storage.file().metadata()?.len(),
             journal.committed_transactions,
             journal.limits,
             None,

@@ -1421,7 +1421,7 @@ impl Journal {
         )?;
         let prefix_append_bytes = super::encoded_transaction_append_bytes(prepared)?;
         let suffix_append_bytes = super::encoded_transaction_append_bytes(&suffix)?;
-        let journal_bytes = self.file.metadata()?.len()
+        let journal_bytes = self.storage.file().metadata()?.len()
             .checked_add(prefix_append_bytes)
             .and_then(|bytes| bytes.checked_add(suffix_append_bytes))
             .ok_or(JournalError::JournalTooLarge)?;

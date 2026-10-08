@@ -327,7 +327,7 @@ pub(in crate::journal) fn derive_original_source_geometry_v5(
         .map(|((_, key), value)| (key.clone(), value.clone()))
         .collect::<BTreeMap<_, _>>();
     let mut usage = NativeHeldCapacityUsageV3 {
-        journal_bytes: journal.file.metadata()?.len(),
+        journal_bytes: journal.storage.file().metadata()?.len(),
         transactions: journal.committed_transactions as u64,
         materialized_bytes: journal.materialized_bytes as u64,
         materialized_records: journal.state.len() as u64,

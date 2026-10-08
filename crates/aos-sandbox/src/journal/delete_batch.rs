@@ -368,7 +368,7 @@ impl Journal {
                 transaction: batch.transaction(),
                 proof: None,
             };
-            let mut reader = ReadAtCursorV1::new(&self.file, witness.file.size);
+            let mut reader = ReadAtCursorV1::new(self.storage.file(), witness.file.size);
             let replayed = replay_original_observed(
                 &mut reader,
                 self.limits,

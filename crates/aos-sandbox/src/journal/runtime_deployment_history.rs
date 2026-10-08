@@ -7,10 +7,15 @@
 //! is reread with independent offsets and checked against its complete original
 //! snapshot. Success establishes neither fresh NV nor live specimen custody.
 
+#[cfg(test)]
 use std::borrow::Borrow;
-use std::io::{self, Read, Seek, SeekFrom};
-use std::os::unix::fs::FileExt as _;
+#[cfg(test)]
+use std::fs::File;
+#[cfg(test)]
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
+
+pub(super) use aos_sandbox_journal::storage::CapturedFileCursor as ReadAtCursorV1;
 
 use aos_sandbox_protocol::runtime_deployment::DeploymentGenesisV1;
 use aos_sandbox_protocol::runtime_deployment::canary::CanaryPurposeV2;
@@ -24,7 +29,7 @@ use crate::runtime_deployment::{
 };
 
 use super::{
-    BTreeMap, File, FileIdentity, Journal, JournalError, JournalTransaction,
+    BTreeMap, FileIdentity, Journal, JournalError, JournalTransaction,
     RecordNamespace, ReplayState, replay_observed,
 };
 use super::runtime_deployment_sidecar_history::RetainedDeploymentNativeHistoryV1;
@@ -68,7 +73,7 @@ impl Journal {
         if owner.canary_purpose().is_none() {
             return Err(JournalError::ProtectedBoundary);
         }
-        let before = FileIdentity::of(&self.file)?;
+        let before = FileIdentity::of(self.storage.file())?;
         let history = match member {
             CanaryCommitMemberV2::Main => self.capture_runtime_deployment_main_history_v1(owner)?,
             CanaryCommitMemberV2::Sidecar => self.capture_runtime_deployment_sidecar_history_v1(owner)?,
@@ -86,7 +91,7 @@ impl Journal {
         // The capture above uses the sole ReadAt/native framing engine and
         // checks the complete replayed physical end against this SAME File.
         // No reopened File, second parser or caller-reconstructed cut is used.
-        if FileIdentity::of(&self.file)? != before {
+        if FileIdentity::of(self.storage.file())? != before {
             return Err(JournalError::StaleAuthoritySnapshot);
         }
         owner.recheck().map_err(|_| JournalError::ProtectedBoundary)
@@ -145,7 +150,7 @@ impl Journal {
         }
 
         let witness = self.protected_writer_name_witness()?;
-        let physical = FileIdentity::of(&self.file)?;
+        let physical = FileIdentity::of(self.storage.file())?;
         if physical.size > limits.maximum_journal_bytes {
             return Err(JournalError::JournalTooLarge);
         }
@@ -163,7 +168,7 @@ impl Journal {
                 history.retained = Some(RetainedDeploymentNativeHistoryV1::new(physical.size)?);
             }
 
-            let mut reader = ReadAtCursorV1::new(&self.file, physical.size);
+            let mut reader = ReadAtCursorV1::new(self.storage.file(), physical.size);
             let replayed = replay_observed(&mut reader, limits, Some(&mut history))?;
             history.finish(&replayed)?;
             self.require_deployment_replayed_snapshot(&replayed, physical.size)?;
@@ -186,7 +191,7 @@ impl Journal {
             Path::new(MAIN_DIRECTORY_V1), MAIN_NAME, 0, limits,
         )?;
         self.validate_protected_writer_name_witness(&witness)?;
-        if FileIdentity::of(&self.file)? != physical {
+        if FileIdentity::of(self.storage.file())? != physical {
             return Err(JournalError::StaleAuthoritySnapshot);
         }
         owner.recheck().map_err(|_| JournalError::ProtectedBoundary)?;
@@ -418,58 +423,6 @@ impl<'data> HistoryAuditV1<'data> {
             return Err(JournalError::StaleAuthoritySnapshot);
         }
         Ok(())
-    }
-}
-
-/// Uses only `read_at` on the original file, with a private captured-length cursor.
-pub(super) struct ReadAtCursorV1<'file> {
-    file: &'file File,
-    cursor: u64,
-    length: u64,
-}
-
-impl<'file> ReadAtCursorV1<'file> {
-    pub(super) fn new(file: &'file File, length: u64) -> Self {
-        Self {
-            file,
-            cursor: 0,
-            length,
-        }
-    }
-}
-
-impl Read for ReadAtCursorV1<'_> {
-    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
-        let remaining = self.length.saturating_sub(self.cursor);
-        let bounded = usize::try_from(remaining).unwrap_or(usize::MAX).min(bytes.len());
-        let read = self.file.read_at(&mut bytes[..bounded], self.cursor)?;
-        let advance = u64::try_from(read)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "audit read length overflow"))?;
-        self.cursor = self.cursor.checked_add(advance)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "audit cursor overflow"))?;
-        Ok(read)
-    }
-}
-
-impl Borrow<File> for ReadAtCursorV1<'_> {
-    fn borrow(&self) -> &File {
-        self.file
-    }
-}
-
-impl Seek for ReadAtCursorV1<'_> {
-    fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
-        let next = match position {
-            SeekFrom::Start(offset) => i128::from(offset),
-            SeekFrom::End(offset) => i128::from(self.length) + i128::from(offset),
-            SeekFrom::Current(offset) => i128::from(self.cursor) + i128::from(offset),
-        };
-        if next < 0 || next > i128::from(self.length) {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "audit seek outside captured cut"));
-        }
-        self.cursor = u64::try_from(next)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "audit cursor overflow"))?;
-        Ok(self.cursor)
     }
 }
 

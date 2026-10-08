@@ -35,10 +35,10 @@ use rustix::fs::{
 use sha2::{Digest, Sha256};
 
 #[cfg(test)]
-use aos_sandbox_journal::framing::CHECKSUM_OFFSET;
+use aos_sandbox_journal::framing::{CHECKSUM_OFFSET, append_and_sync};
 use aos_sandbox_journal::framing::{
     COMMIT_PAYLOAD_BYTES, EncodedFrameLayout, Frame, FrameError, FrameKind, HEADER_BYTES,
-    ReadOnlyFrameScratchV1, append_and_sync, read_frame_retained,
+    ReadOnlyFrameScratchV1, read_frame_retained,
 };
 use aos_sandbox_journal::geometry::{EncodedRecordLayout, NativeGeometryBounds, RecordShape};
 use aos_sandbox_journal::materialized::{self, RecordMutationRef};
@@ -46,6 +46,7 @@ use aos_sandbox_journal::record::{self, RecordError, RecordHeader};
 use aos_sandbox_journal::recovery::{
     RecoveryTailError, RecoveryTailMode, TailResultSlots, finish_replayed_tail,
 };
+use aos_sandbox_journal::storage::NativeJournalStorage;
 use aos_sandbox_journal::transaction::{self, NativePendingTransaction, NativeRecordRef};
 
 pub mod canonical_map;
@@ -790,8 +791,7 @@ struct PendingTransaction {
 /// Owns one exclusively locked, append-only journal and its replayed indexes.
 pub struct Journal {
     path: PathBuf,
-    file: File,
-    _lock: File,
+    storage: NativeJournalStorage,
     limits: JournalLimits,
     next_sequence: u64,
     committed_transactions: usize,
@@ -801,7 +801,6 @@ pub struct Journal {
     state: BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
     materialized_bytes: usize,
     idempotency: BTreeMap<Vec<u8>, IdempotencyDecision>,
-    poisoned: bool,
     protected: Option<ProtectedJournalLocation>,
     cache_policy_gate: Option<(PathBuf, u32)>,
     mount_git_coverage_denied: bool,
@@ -823,8 +822,7 @@ macro_rules! journal_from_original_replay {
      $replay:ident, $authority:expr) => {
         Journal {
             path: $path,
-            file: $file,
-            _lock: $lock,
+            storage: aos_sandbox_journal::storage::NativeJournalStorage::from_owned_files($file, $lock),
             limits: $limits,
             next_sequence: $replay.next_sequence,
             committed_transactions: $replay.committed_transactions,
@@ -833,7 +831,6 @@ macro_rules! journal_from_original_replay {
             state: $replay.state,
             materialized_bytes: $replay.materialized_bytes,
             idempotency: $replay.idempotency,
-            poisoned: false,
             protected: $protected,
             cache_policy_gate: None,
             mount_git_coverage_denied: false,
@@ -1041,7 +1038,7 @@ impl ReadOnlyProtectedJournal {
     /// Re-resolves the directory and both physical names independently.
     pub(crate) fn check_named_currentness(&self) -> Result<(), JournalError> {
         self.witness.check_named_currentness()?;
-        if FileIdentity::of(&self.journal.file)? != self.witness.file_identity {
+        if FileIdentity::of(self.journal.storage.file())? != self.witness.file_identity {
             return Err(JournalError::ProtectedBoundary);
         }
         Ok(())
@@ -1060,7 +1057,7 @@ impl ReadOnlyProtectedJournal {
     /// Checks the retained name using the test fixture's exact UID.
     pub(crate) fn check_named_currentness_at_uid_for_test(&self) -> Result<(), JournalError> {
         self.witness.check_named_currentness_at_uid_for_test()?;
-        if FileIdentity::of(&self.journal.file)? != self.witness.file_identity {
+        if FileIdentity::of(self.journal.storage.file())? != self.witness.file_identity {
             return Err(JournalError::ProtectedBoundary);
         }
         Ok(())
@@ -2760,8 +2757,8 @@ impl Journal {
             STORAGE_OPERATOR_STATE_DIRECTORY,
             STORAGE_OPERATOR_JOURNAL_NAME,
         )?;
-        let journal_identity = FileIdentity::of(&self.file)?;
-        let lock_identity = FileIdentity::of(&self._lock)?;
+        let journal_identity = FileIdentity::of(self.storage.file())?;
+        let lock_identity = FileIdentity::of(self.storage.lock_file())?;
         reject_operator_provisioning_history(journal_identity.size)?;
         reject_operator_provisioning_history(lock_identity.size)?;
         let has_history = !self.transaction_ids.is_empty()
@@ -2778,8 +2775,8 @@ impl Journal {
             STORAGE_OPERATOR_STATE_DIRECTORY,
             STORAGE_OPERATOR_JOURNAL_NAME,
         )?;
-        if FileIdentity::of(&self.file)? != journal_identity
-            || FileIdentity::of(&self._lock)? != lock_identity
+        if FileIdentity::of(self.storage.file())? != journal_identity
+            || FileIdentity::of(self.storage.lock_file())? != lock_identity
         {
             return Err(JournalError::StaleAuthoritySnapshot);
         }
@@ -2911,8 +2908,8 @@ impl Journal {
             .ok_or(JournalError::ProtectedBoundary)?;
         Ok(ProtectedWriterNameWitness {
             directory: FileIdentity::of(&location.directory)?,
-            file: FileIdentity::of(&self.file)?,
-            lock: FileIdentity::of(&self._lock)?,
+            file: FileIdentity::of(self.storage.file())?,
+            lock: FileIdentity::of(self.storage.lock_file())?,
         })
     }
 
@@ -2927,8 +2924,8 @@ impl Journal {
             .ok_or(JournalError::ProtectedBoundary)?;
         Ok(ProtectedJournalNamesV1::from_identities(
             FileIdentity::of(&location.directory)?,
-            FileIdentity::of(&self.file)?,
-            FileIdentity::of(&self._lock)?,
+            FileIdentity::of(self.storage.file())?,
+            FileIdentity::of(self.storage.lock_file())?,
         ))
     }
 
@@ -2942,8 +2939,8 @@ impl Journal {
             .ok_or(JournalError::ProtectedBoundary)?;
         self.require_protected_names_current()?;
         if FileIdentity::of(&location.directory)? != witness.directory
-            || FileIdentity::of(&self.file)? != witness.file
-            || FileIdentity::of(&self._lock)? != witness.lock
+            || FileIdentity::of(self.storage.file())? != witness.file
+            || FileIdentity::of(self.storage.lock_file())? != witness.lock
         {
             return Err(JournalError::StaleAuthoritySnapshot);
         }
@@ -3000,8 +2997,8 @@ impl Journal {
             &retained.directory,
             &retained.name,
             retained.expected_uid,
-            &self._lock,
-            &self.file,
+            self.storage.lock_file(),
+            self.storage.file(),
         )
     }
 
@@ -3200,7 +3197,7 @@ impl Journal {
     ///
     /// Returns [`JournalError::Poisoned`] after an ambiguous durable mutation.
     pub fn ensure_healthy(&self) -> Result<(), JournalError> {
-        if self.poisoned {
+        if self.storage.is_poisoned() {
             Err(JournalError::Poisoned)
         } else {
             Ok(())
@@ -3244,7 +3241,8 @@ impl Journal {
             None => (0, 0, 0),
         };
         let journal_bytes = self
-            .file
+            .storage
+            .file()
             .metadata()?
             .len()
             .checked_add(append_bytes)
@@ -3478,7 +3476,7 @@ impl Journal {
         &self,
     ) -> Result<ProtectedJournalLockCustodyV1, JournalError> {
         self.validate_held_protected_names()?;
-        let lock = self._lock.try_clone()?;
+        let lock = self.storage.lock_file().try_clone()?;
         self.validate_held_protected_names()?;
         let custody = ProtectedJournalLockCustodyV1 { lock };
         custody.identity()?;
@@ -3609,7 +3607,7 @@ impl Journal {
         Ok(crate::controller_resource_reservation::service_interval::JournalShape {
             retained_bytes,
             cells,
-            native_bytes: self.file.metadata()?.len(),
+            native_bytes: self.storage.file().metadata()?.len(),
             maximum_transaction_bytes: self.limits.maximum_transaction_bytes,
             maximum_record_bytes: self.limits.maximum_record_bytes,
         })
@@ -3826,7 +3824,7 @@ impl Journal {
             return Err(JournalError::ProtectedBoundary);
         }
         let mut entries = self.state.len();
-        let original_length = self.file.metadata()?.len();
+        let original_length = self.storage.file().metadata()?.len();
         let mut length = original_length;
         let mut next = self.next_sequence;
         let mut committed = self.committed_transactions;
@@ -3911,7 +3909,7 @@ impl Journal {
         }
 
         self.require_protected_names_current()?;
-        if self.file.metadata()?.len() != original_length {
+        if self.storage.file().metadata()?.len() != original_length {
             return Err(JournalError::ProtectedBoundary);
         }
         Ok(widths)
@@ -4933,7 +4931,7 @@ impl Journal {
             source_original_native::replay::require_advisory_bounds(
                 &comparison,
                 self.limits,
-                self.file.metadata()?.len().checked_add(
+                self.storage.file().metadata()?.len().checked_add(
                     encoded_transaction_append_bytes(transaction)?,
                 ).ok_or(JournalError::JournalTooLarge)?,
                 self.committed_transactions.checked_add(1)
@@ -4941,18 +4939,9 @@ impl Journal {
                 following_sequence,
             )?;
         }
-        let additional_bytes = frames
-            .iter()
-            .try_fold(0_u64, |total, frame| total.checked_add(frame.len() as u64));
-        let expected_length = self
-            .file
-            .metadata()?
-            .len()
-            .checked_add(additional_bytes.ok_or(JournalError::JournalTooLarge)?)
-            .ok_or(JournalError::JournalTooLarge)?;
-        if expected_length > self.limits.maximum_journal_bytes {
-            return Err(JournalError::JournalTooLarge);
-        }
+        let expected_length = self.storage.expected_append_length(
+            &frames, self.limits.maximum_journal_bytes,
+        )?;
         validate_reserved_capacity(
             &self.state,
             materialized_bytes,
@@ -5077,19 +5066,7 @@ impl Journal {
             )?;
         }
 
-        let durable_bytes = match append_and_sync(&mut self.file, &frames) {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                self.poisoned = true;
-                return Err(error.into());
-            }
-        };
-        if durable_bytes != expected_length {
-            self.poisoned = true;
-            return Err(JournalError::Io(io::Error::other(
-                "journal length changed outside the exclusive writer",
-            )));
-        }
+        let durable_bytes = self.storage.append_exact(&frames, expected_length)?;
 
         for record in &transaction.records {
             apply_record(&mut self.state, &mut self.idempotency, record)?;
@@ -5109,7 +5086,7 @@ impl Journal {
         if let Err(error) =
             cache_gate.own_successor(self, transaction, following_sequence, durable_bytes)
         {
-            self.poisoned = true;
+            self.storage.poison();
             return Err(error);
         }
 
@@ -5428,7 +5405,7 @@ impl Journal {
         let mut materialized_bytes = self.materialized_bytes;
         let mut next_sequence = self.next_sequence;
         let mut committed_transactions = self.committed_transactions;
-        let mut expected_length = self.file.metadata()?.len();
+        let mut expected_length = self.storage.file().metadata()?.len();
 
         for index in 0..transactions.len() {
             let transaction = transactions.transaction(index);
@@ -5679,7 +5656,7 @@ impl Journal {
         root_original_inventory::validate_rejoined_capacity(
             &self.state,
             self.materialized_bytes,
-            self.file.metadata()?.len(),
+            self.storage.file().metadata()?.len(),
             self.committed_transactions,
             self.limits,
             self.next_sequence,
@@ -5704,27 +5681,27 @@ impl Journal {
         source_domain_policy_hold::require_no_compaction(&self.state)?;
         let _cache_policy_guard = cache_policy_hold::mutation_guard(self)?;
         if let Err(error) = self.compact_inner() {
-            self.poisoned = true;
+            self.storage.poison();
             return Err(error);
         }
-        root_local_recovery::pending(&self.state).inspect_err(|_| self.poisoned = true)?;
+        root_local_recovery::pending(&self.state).inspect_err(|_| self.storage.poison())?;
         root_original_native::pending(&self.state, self.limits)
-            .inspect_err(|_| self.poisoned = true)?;
+            .inspect_err(|_| self.storage.poison())?;
         root_original_inventory::validate_rejoined_capacity(
             &self.state,
             self.materialized_bytes,
-            self.file.metadata()?.len(),
+            self.storage.file().metadata()?.len(),
             self.committed_transactions,
             self.limits,
             self.next_sequence,
-        ).inspect_err(|_| self.poisoned = true)?;
+        ).inspect_err(|_| self.storage.poison())?;
         Ok(())
     }
 
     fn compact_inner(&mut self) -> Result<(), JournalError> {
         if let Some(location) = &self.protected {
             let (file, replay) = compact_protected(location, &self.state, self.limits)?;
-            self.file = file;
+            self.storage.replace_file(file);
             self.next_sequence = replay.next_sequence;
             self.committed_transactions = replay.committed_transactions;
             self.transaction_ids = replay.transaction_ids;
@@ -5761,7 +5738,7 @@ impl Journal {
         sync_parent(&self.path)?;
 
         let (file, replay) = reopen_replacement(&self.path, self.limits)?;
-        self.file = file;
+        self.storage.replace_file(file);
         self.next_sequence = replay.next_sequence;
         self.committed_transactions = replay.committed_transactions;
         self.transaction_ids = replay.transaction_ids;
@@ -7686,7 +7663,7 @@ impl Journal {
         if captured.first.is_none() && readback.is_none_or(Result::is_ok) {
             if let Some(Ok(witness)) = captured.protection.as_ref() {
                 let mut reader = runtime_deployment_history::ReadAtCursorV1::new(
-                    &self.file, witness.file.size,
+                    self.storage.file(), witness.file.size,
                 );
                 // The original native Result is parked before projecting its
                 // full-map comparison, including partial-replay failure.
@@ -8313,7 +8290,7 @@ impl Journal {
                 bank_history: crate::controller_resource_reservation::ResourceNativeHistoryV1::new(&self.state),
             };
             let mut reader = runtime_deployment_history::ReadAtCursorV1::new(
-                &self.file, witness.file.size,
+                self.storage.file(), witness.file.size,
             );
             let replayed = replay_original_observed(
                 &mut reader, self.limits, None,
@@ -8473,7 +8450,7 @@ impl Journal {
             Ok(())
         })();
         if let Err(error) = readback {
-            self.poisoned = true;
+            self.storage.poison();
             return Err(error);
         }
         Ok(())
@@ -8633,7 +8610,7 @@ impl Journal {
     ) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
         self.validate_held_protected_names()?;
         if self.next_sequence != result.commit_sequence.checked_add(1).ok_or(JournalError::SequenceExhausted)?
-            || self.file.metadata()?.len() != result.durable_bytes
+            || self.storage.file().metadata()?.len() != result.durable_bytes
         {
             return Err(JournalError::StaleAuthoritySnapshot.into());
         }
@@ -10687,7 +10664,7 @@ mod tests {
             journal.state.clone(),
             journal.next_sequence,
             journal.committed_transactions,
-            journal.file.metadata().unwrap().len(),
+            journal.storage.file().metadata().unwrap().len(),
         );
         let request = source_provider_capacity_request();
         let binding = GlobalCapacityReservationRecoveryBindingV1 {
@@ -10767,7 +10744,7 @@ mod tests {
                 journal.state.clone(),
                 journal.next_sequence,
                 journal.committed_transactions,
-                journal.file.metadata().unwrap().len(),
+                journal.storage.file().metadata().unwrap().len(),
             )
         );
         journal.ensure_healthy().unwrap();
@@ -11022,7 +10999,7 @@ mod tests {
         journal.limits.maximum_materialized_bytes =
             journal.materialized_bytes + usize::try_from(request.terminal_bytes).unwrap() + 1;
         let before_sequence = journal.snapshot_sequence();
-        let before_length = journal.file.metadata().unwrap().len();
+        let before_length = journal.storage.file().metadata().unwrap().len();
         let competing = transaction(
             12,
             vec![JournalRecord::put(
@@ -11054,7 +11031,7 @@ mod tests {
         drop(authority);
 
         assert_eq!(journal.snapshot_sequence(), before_sequence);
-        assert_eq!(journal.file.metadata().unwrap().len(), before_length);
+        assert_eq!(journal.storage.file().metadata().unwrap().len(), before_length);
         assert!(journal.ensure_healthy().is_ok());
     }
 
@@ -11950,7 +11927,7 @@ mod tests {
         fs::remove_dir(&directory.0).unwrap();
         fs::rename(&retained, &directory.0).unwrap();
 
-        journal.poisoned = true;
+        journal.storage.poison();
         assert!(matches!(
             journal.validate_held_protected_at_uid_for_test(&directory.0, "state.journal", uid),
             Err(JournalError::Poisoned)
@@ -12732,7 +12709,9 @@ mod tests {
         let path = directory.journal();
         let (mut journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
         journal.ensure_healthy().unwrap();
-        journal.file = OpenOptions::new().read(true).open(&path).unwrap();
+        journal.storage.replace_file(
+            OpenOptions::new().read(true).open(&path).unwrap(),
+        );
         let entry = transaction(
             1,
             vec![JournalRecord::put(
@@ -12780,10 +12759,12 @@ mod tests {
             PublisherCapabilityRegistry::load(&mut journal, PublisherAuthorityLimits::default(),)
                 .is_ok()
         );
-        journal.file = OpenOptions::new()
-            .read(true)
-            .open(directory.0.join("protected.journal"))
-            .unwrap();
+        journal.storage.replace_file(
+            OpenOptions::new()
+                .read(true)
+                .open(directory.0.join("protected.journal"))
+                .unwrap(),
+        );
         let entry = transaction(
             1,
             vec![JournalRecord::put(
@@ -12869,17 +12850,19 @@ mod tests {
         // An append/sync error is always durability-ambiguous to the service.
         // Keep the materialized capability and challenge maps in memory while
         // forcing the protected handle into its permanently poisoned state.
-        fixture.registered.local.journal.file = OpenOptions::new()
-            .read(true)
-            .open(
-                fixture
-                    .registered
-                    .local
-                    .directory
-                    .path()
-                    .join("issuance.journal"),
-            )
-            .unwrap();
+        fixture.registered.local.journal.storage.replace_file(
+            OpenOptions::new()
+                .read(true)
+                .open(
+                    fixture
+                        .registered
+                        .local
+                        .directory
+                        .path()
+                        .join("issuance.journal"),
+                )
+                .unwrap(),
+        );
         let failed = transaction(
             0xee,
             vec![JournalRecord::put(
@@ -12952,10 +12935,12 @@ mod tests {
         );
         // Preserve the healthy protected journal and policy state while making
         // the first issuance append fail before any bytes can be written.
-        fixture.journal.file = OpenOptions::new()
-            .read(true)
-            .open(fixture.directory.path().join("issuance.journal"))
-            .unwrap();
+        fixture.journal.storage.replace_file(
+            OpenOptions::new()
+                .read(true)
+                .open(fixture.directory.path().join("issuance.journal"))
+                .unwrap(),
+        );
         assert!(matches!(
             provision_samples(&mut fixture, &mut sessions, vec![Ok(sample(150, 1000))]),
             Err(LocalProvisioningError::Authority(
@@ -13037,10 +13022,12 @@ mod tests {
         .unwrap();
         // Keep protected policy real, but fail the append before any write.
         // The caller cannot assume that every possible I/O failure is pre-write.
-        fixture.journal.file = OpenOptions::new()
-            .read(true)
-            .open(fixture.directory.path().join("issuance.journal"))
-            .unwrap();
+        fixture.journal.storage.replace_file(
+            OpenOptions::new()
+                .read(true)
+                .open(fixture.directory.path().join("issuance.journal"))
+                .unwrap(),
+        );
         assert!(matches!(
             crate::publisher_control::register(
                 &mut fixture.journal,
@@ -13092,10 +13079,12 @@ mod tests {
             .install_from_trusted_controller([1; 16], capability.clone())
             .unwrap();
 
-        journal.file = OpenOptions::new()
-            .read(true)
-            .open(directory.0.join("protected.journal"))
-            .unwrap();
+        journal.storage.replace_file(
+            OpenOptions::new()
+                .read(true)
+                .open(directory.0.join("protected.journal"))
+                .unwrap(),
+        );
         {
             let mut registry = PublisherCapabilityRegistry::load(
                 &mut journal,
@@ -13146,10 +13135,12 @@ mod tests {
             .advance_controller_from_trusted_controller([1; 16], None, first)
             .unwrap();
 
-        journal.file = OpenOptions::new()
-            .read(true)
-            .open(directory.0.join("protected.journal"))
-            .unwrap();
+        journal.storage.replace_file(
+            OpenOptions::new()
+                .read(true)
+                .open(directory.0.join("protected.journal"))
+                .unwrap(),
+        );
         {
             let mut policies =
                 PublisherPolicyStore::load(&mut journal, PublisherPolicyLimits::default()).unwrap();

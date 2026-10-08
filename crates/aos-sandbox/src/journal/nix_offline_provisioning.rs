@@ -557,7 +557,7 @@ impl<'startup> NixOfflineNativeJobV5<'startup> {
         image.duplicate_nix_offline_original_into(&mut launch.executable)?;
         let journal = self.journal.as_ref().ok_or(Error::Rejected)?;
         for (index, original) in [
-            self.installation_lock.as_ref().ok_or(Error::Rejected)?, &journal._lock,
+            self.installation_lock.as_ref().ok_or(Error::Rejected)?, journal.storage.lock_file(),
         ].into_iter().enumerate() {
             launch.child_locks[index] = Some(rustix::io::fcntl_dupfd_cloexec(original, 3)?);
             launch.hello_locks[index] = Some(rustix::io::fcntl_dupfd_cloexec(original, 3)?);
@@ -1173,7 +1173,7 @@ impl<'startup> NixOfflineNativeJobV5<'startup> {
         contact.hello[160..192].copy_from_slice(&self.origin.compiled_contract()?);
         let journal = self.journal.as_ref().ok_or(Error::Rejected)?;
         for (index, file) in [
-            self.installation_lock.as_ref().ok_or(Error::Rejected)?, &journal._lock,
+            self.installation_lock.as_ref().ok_or(Error::Rejected)?, journal.storage.lock_file(),
         ].into_iter().enumerate() {
             let identity = inspect_nix_offline_job_identity_v5(file)?;
             if identity.2 != 0 || identity.3 != 0 || identity.6 != 0 {
@@ -1459,20 +1459,20 @@ impl<'startup> NixOfflineNativeJobV5<'startup> {
 
     fn require_native_readback(&mut self) -> Result<(), Error> {
         let journal = self.journal.as_ref().ok_or(Error::Rejected)?;
-        let before = FileIdentity::of(&journal.file)?;
+        let before = FileIdentity::of(journal.storage.file())?;
         if before.size > LIMITS.maximum_journal_bytes {
             return Err(Error::Rejected);
         }
         self.readback_bytes.resize(before.size as usize, 0);
-        read_exact_positioned_retaining_cause(&journal.file, &mut self.readback_bytes)?;
+        read_exact_positioned_retaining_cause(journal.storage.file(), &mut self.readback_bytes)?;
         let mut observer = NativeHistoryV5::new();
-        let mut cursor = ReadAtCursorV1::new(&journal.file, before.size);
+        let mut cursor = ReadAtCursorV1::new(journal.storage.file(), before.size);
         let replay = replay_original_observed(
             &mut cursor, LIMITS, None,
             Some(DeploymentHistoryObserverV1::NixOffline(&mut observer)),
         )?;
         observer.finish(&replay)?;
-        if FileIdentity::of(&journal.file)? != before
+        if FileIdentity::of(journal.storage.file())? != before
             || replay.durable_end != before.size || replay.state != journal.state
             || replay.next_sequence != journal.next_sequence
             || replay.committed_transactions != journal.committed_transactions
@@ -1808,7 +1808,7 @@ impl<'startup> NixOfflineNativeJobV5<'startup> {
             self.named.push(self.named_pending.take().ok_or(Error::Rejected)?);
             let named = self.named.last().ok_or(Error::Rejected)?;
             let journal = self.journal.as_ref().ok_or(Error::Rejected)?;
-            let original = if lock { &journal._lock } else { &journal.file };
+            let original = if lock { journal.storage.lock_file() } else { journal.storage.file() };
             if FileIdentity::of(named)? != FileIdentity::of(original)?
                 || Some(MountId::from_fd(named.as_fd())?) != self.directory_mount
                 || !nix_offline_job_has_original_label_v5(named)?

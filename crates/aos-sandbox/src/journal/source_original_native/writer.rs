@@ -234,13 +234,13 @@ impl Journal {
         require_fixed_location(self)?;
         challenges.validate_current()?;
         let mut replay = super::super::replay_with_source_original(
-            &mut self.file, self.limits, Some(challenges),
+            self.storage.file_mut(), self.limits, Some(challenges),
         )?;
         if replay.source_original_replay.needs_closure()
             || replay.state != self.state
             || replay.next_sequence != self.next_sequence
             || replay.transaction_ids != self.transaction_ids
-            || replay.durable_end != self.file.metadata()?.len()
+            || replay.durable_end != self.storage.file().metadata()?.len()
         {
             return Err(JournalError::StaleAuthoritySnapshot);
         }
@@ -528,7 +528,7 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
             super::replay::require_advisory_bounds(
                 &comparison,
                 journal.limits,
-                journal.file.metadata()?.len(),
+                journal.storage.file().metadata()?.len(),
                 journal.committed_transactions,
                 journal.next_sequence,
             )?;
@@ -1252,7 +1252,7 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
     ) -> Result<SourceOriginalAppendSubjectV5, JournalError> {
         self.require_current()?;
         super::super::validate_transaction(transaction, self.configured_limits())?;
-        let identity = super::super::FileIdentity::of(&self.authority.journal.file)?;
+        let identity = super::super::FileIdentity::of(self.authority.journal.storage.file())?;
         let mutation_frames = u64::try_from(transaction.records().len())
             .map_err(|_| JournalError::SequenceExhausted)?;
         let commit_sequence = self.authority.journal.next_sequence
@@ -1278,7 +1278,7 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
     ///
     /// This only revokes availability; it cannot mint or restore authority.
     pub fn poison_after_owner_failure(&mut self) {
-        self.authority.journal.poisoned = true;
+        self.authority.journal.storage.poison();
     }
 
     /// Borrows real physical origins/cuts after complete currentness checks.
@@ -1465,7 +1465,7 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
         if result.is_err() {
             prepared.failed = true;
             if prepared.attempted {
-                self.authority.journal.poisoned = true;
+                self.authority.journal.storage.poison();
             }
         }
         result

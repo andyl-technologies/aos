@@ -193,7 +193,7 @@ impl Journal {
             Path::new(MAIN_DIRECTORY_V1), SIDECAR_NAME, 0, self.limits,
         )?;
         let witness = self.protected_writer_name_witness()?;
-        let physical = FileIdentity::of(&self.file)?;
+        let physical = FileIdentity::of(self.storage.file())?;
         if physical.size > MAIN_LIMITS.maximum_journal_bytes
             || physical.size > self.limits.maximum_journal_bytes
         {
@@ -202,7 +202,7 @@ impl Journal {
 
         let result = (|| {
             let mut history = SidecarHistoryAuditV1::new(physical.size)?;
-            let mut reader = ReadAtCursorV1::new(&self.file, physical.size);
+            let mut reader = ReadAtCursorV1::new(self.storage.file(), physical.size);
             let replayed = replay_sidecar_observed(&mut reader, self.limits, &mut history)?;
             let retained = history.finish(&replayed)?;
             self.require_deployment_pair_replayed_snapshot_v1(
@@ -216,7 +216,7 @@ impl Journal {
             Path::new(MAIN_DIRECTORY_V1), SIDECAR_NAME, 0, self.limits,
         )?;
         self.validate_protected_writer_name_witness(&witness)?;
-        if FileIdentity::of(&self.file)? != physical {
+        if FileIdentity::of(self.storage.file())? != physical {
             return Err(JournalError::StaleAuthoritySnapshot);
         }
         owner.recheck().map_err(|_| JournalError::ProtectedBoundary)?;
