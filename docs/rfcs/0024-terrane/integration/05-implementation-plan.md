@@ -1586,6 +1586,17 @@ request; all 6,061 tracked inputs remain clean and byte-identical afterward.
 This replaces the missing current compile result without executing those tests
 or qualifying subsequent source changes, strict workspace quality or T1.
 
+The separate `a7b4d28a0f` correction isolates the finite required-index Nodes
+through actual native puts before source publication, calibrates their real
+pack separately from the signed Commit and namespace root, and retains the
+owning index error, exact Node and underlying I/O source without changing its
+store outcome. The original exact regression passes in 5.949 seconds with
+unchanged assertions and deadlines; its SDK library build and strict library
+and all-targets Clippy also pass. Independent review matches all 6,061 tracked
+inputs to the sealed commit and verifies both source checkouts remain unchanged
+through the original executions. The complete owning Nix request and current T1
+floor remain required on the combined candidate; no task or freeze advances.
+
 Deployable as: a local tool that initializes a store under a `file://`
 root, commits a directory, forks and merges branches, and checks a commit
 out to a directory through the `sdk` surface.
