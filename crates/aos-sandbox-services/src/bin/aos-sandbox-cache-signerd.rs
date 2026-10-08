@@ -8,7 +8,7 @@ use std::error::Error;
 use std::io;
 use std::process::ExitCode;
 
-use aos_sandbox_broker_session_security::cache_signer_exchange::run_cache_signer_service_v2;
+use aos_sandbox_cache_signer::cache_signer_exchange::run_cache_signer_service_v2;
 
 fn main() -> ExitCode {
     match run() {

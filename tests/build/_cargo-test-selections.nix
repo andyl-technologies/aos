@@ -110,6 +110,11 @@ let
     independentRoles = commands:
       lib.all (command: lib.length (selectedRoles command) == 1) commands
       && lib.all (role: lib.length (lib.filter (command: builtins.elem role (selectedRoles command)) commands) == 1) roles;
+    cacheSignerTestsRetained = commands: let
+      selected = lib.filter (command: builtins.elem "cache-signer" (selectedRoles command)) commands;
+    in
+      lib.length selected == 1
+      && lib.all (lib.hasInfix "-p aos-sandbox-cache-signer") selected;
     artifactCommands = package.cargoArtifacts.cargoBuildCommands;
     artifactBuilds = lib.filter (lib.hasPrefix "build ") artifactCommands;
     artifactTests = lib.filter (lib.hasPrefix "test --no-run ") artifactCommands;
@@ -122,8 +127,10 @@ let
     && independentRoles package.cargoBuildCommands
     && artifactBuilds == package.cargoBuildCommands
     && independentRoles roleArtifactTests
+    && cacheSignerTestsRetained roleArtifactTests
     && lib.length coreArtifactTests == 1
     && independentRoles package.cargoTestFlagSets
+    && cacheSignerTestsRetained package.cargoTestFlagSets
     && lib.any (lib.hasInfix "-p aos-sandbox-services -p aos-sandbox -p aos-sandbox-broker-session-security") package.cargoTestFlagSets
     && package.doCheck
     && package.cargoNextest;
@@ -225,6 +232,7 @@ in
   assert lib.hasInfix ''$CC -O2 -Wall -Wextra -Werror "$src" -o no-setid-exec'' (builtins.head launcher.phases).script;
   assert lib.all launcherEnvironmentRetained nativeLauncherEnvironments;
   assert lib.any (lib.hasInfix "-p aos-sandbox-network") nativeAos.passthru.testTargets.cargoBuildCommands;
+  assert lib.any (lib.hasInfix "-p aos-sandbox-cache-signer") nativeAos.passthru.testTargets.cargoBuildCommands;
   assert lib.any (lib.hasInfix "-p aos-sandbox-network") networkPackage.cargoArtifacts.cargoBuildCommands;
   assert lib.hasInfix "-p aos-sandbox-network" networkPackage.cargoTestFlags;
   assert lib.all (environment: !(environment ? AOS_NO_SETID_TEST_LAUNCHER)) darwinEnvironments; true

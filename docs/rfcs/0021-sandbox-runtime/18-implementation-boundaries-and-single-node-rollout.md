@@ -158,6 +158,7 @@ executable implementation merely to use shared message types.
 | Crate | Ownership | Excluded |
 | --- | --- | --- |
 | `aos-sandbox-broker-session-security` | Protected credentials, peer/process authentication, session sequencing, replay/currentness, sealed transport custody | HTTP/API registration, concrete domain dispatch, Controller reconciliation, unrelated binaries |
+| `aos-sandbox-cache-signer` | Existing independent Cache-only credential owner and fixed Root/Controller readback exchange | Controller runtime, Q04 authority, publication; native Cache-view replay remains in `aos-sandbox` pending the Cache-domain extraction |
 | `aos-sandbox-broker` | Common protected broker admission/configuration, plan/lease verification and authenticated record mechanics | Controller implementation, generic domain authority issuance, domain-specific semantic commits |
 | `aos-sandbox-ownership` (**new**) | Protected local lease issuer, durable epoch/floor and inventory ownership currently misplaced under `multi_node` | Fleet membership, placement, remote transport, consensus |
 | `aos-sandbox-policy` (**new**) | Policy compilation, independent Root binding/held-cut decisions, role-specific semantic commit and recovery | Generic journal implementation, daemon listener loops |

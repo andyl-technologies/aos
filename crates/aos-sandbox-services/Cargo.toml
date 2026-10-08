@@ -25,12 +25,13 @@ entitlement = [
 policy = [
     "dep:aos-sandbox",
     "dep:aos-sandbox-broker-session-security",
+    "dep:aos-sandbox-cache-signer",
     "dep:aos-sandbox-core",
     "dep:ed25519-dalek",
     "dep:rustix",
     "dep:sha2",
 ]
-cache-signer = ["dep:aos-sandbox-broker-session-security"]
+cache-signer = ["dep:aos-sandbox-cache-signer"]
 source-signer = ["dep:aos-sandbox-broker-session-security"]
 publisher = ["dep:aos-sandbox-linux"]
 host = [
@@ -98,6 +99,7 @@ kernel-tests = [
 aos-proto = { workspace = true, optional = true }
 aos-sandbox = { workspace = true, optional = true }
 aos-sandbox-broker-session-security = { workspace = true, optional = true }
+aos-sandbox-cache-signer = { workspace = true, optional = true }
 aos-sandbox-core = { workspace = true, optional = true }
 aos-sandbox-host = { workspace = true, optional = true }
 aos-sandbox-linux = { workspace = true, optional = true }

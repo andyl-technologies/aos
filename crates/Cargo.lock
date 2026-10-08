@@ -973,6 +973,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-sandbox-cache-signer"
+version = "0.1.0"
+dependencies = [
+ "aos-sandbox",
+ "aos-sandbox-core",
+ "aos-sandbox-linux",
+ "ed25519-dalek",
+ "rustix 1.1.4",
+ "tempfile",
+ "thiserror 2.0.18",
+ "zeroize",
+]
+
+[[package]]
 name = "aos-sandbox-client"
 version = "0.1.0"
 dependencies = [
@@ -1261,6 +1275,7 @@ dependencies = [
  "aos-proto",
  "aos-sandbox",
  "aos-sandbox-broker-session-security",
+ "aos-sandbox-cache-signer",
  "aos-sandbox-core",
  "aos-sandbox-host",
  "aos-sandbox-linux",

@@ -58,6 +58,9 @@
     + lib.optionalString (role == "controller") ",aos-sandbox/git-helper-mechanics"
     + lib.optionalString (onlineSelected && role == "controller") ",aos-sandbox-services/online-nix";
   controllerRoleFlags = roleFlags "controller";
+  roleTestPackages = role:
+    "-p aos-sandbox-services"
+    + lib.optionalString (role == "cache-signer") " -p aos-sandbox-cache-signer";
 
   # Separate Cargo invocations prevent role features from unifying merely
   # because these independently confined executables share an output package.
@@ -65,7 +68,7 @@
     "build --release --frozen --offline -j$NIX_BUILD_CORES ${roleFlags role} -p aos-sandbox-services "
     + lib.concatStringsSep " " (map (bin: "--bin ${bin}") roleBins.${role}))
   serviceRoles;
-  roleTestCommands = map (role: "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${roleFlags role} -p aos-sandbox-services") serviceRoles;
+  roleTestCommands = map (role: "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${roleFlags role} ${roleTestPackages role}") serviceRoles;
   coreTestCommand = "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${controllerRoleFlags} -p aos-sandbox -p aos-sandbox-broker-session-security";
   onlineInputs = lib.optionals onlineSelected [nixOnlineStoreReader aos-nix-runtime-tpm-helpers];
   workspaceCargo = import ./aos/_workspace-cargo.nix {inherit lib fetchCargoVendor;};
@@ -116,7 +119,7 @@ in
         [
           "${controllerRoleFlags} -p aos-sandbox-services -p aos-sandbox -p aos-sandbox-broker-session-security"
         ]
-        ++ map (role: "${roleFlags role} -p aos-sandbox-services")
+        ++ map (role: "${roleFlags role} ${roleTestPackages role}")
         (lib.filter (role: role != "controller") serviceRoles);
       cargoNextest = true;
       doCheck = true;

@@ -19,8 +19,6 @@
 //! listeners, and service registration live in `aos-sandbox-services`; its
 //! assembly port receives opaque handlers and negative-only terminal loans.
 //! Brokers and Controller retain separate identities, state, and confinement.
-//! [`cache_signer_exchange`] owns a separate Cache-only, nonauthorizing signer
-//! transport whose seed never enters the Controller or root process.
 //! [`source_signer_exchange`] owns the corresponding Source-only readback
 //! transport over the signer's private read-only journal view.
 //!
@@ -50,8 +48,6 @@
 
 #![cfg(target_os = "linux")]
 
-mod cache_signer_credential;
-pub mod cache_signer_exchange;
 pub mod controller_service;
 mod dormant_handshake;
 mod endpoint;
