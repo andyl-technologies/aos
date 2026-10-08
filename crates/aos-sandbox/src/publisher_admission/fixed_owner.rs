@@ -29,9 +29,6 @@ use sha2::{Digest as _, Sha256};
 
 use super::RecoveryExecutorFenceV1;
 use super::controller_authority::PublisherFixedControllerGrantV1;
-use super::dormant_effects::{
-    PublisherDormantEffectCapabilityV1, PublisherDormantEffectCompositionV1,
-};
 use super::durable_catalog::PublisherDurableCatalogOwnerV1;
 use super::durable_read_grants::PublisherDurableReadGrantOwnerV1;
 use super::executor_registry::PublisherFixedExecutorGrantV1;
@@ -242,36 +239,6 @@ impl PublisherFixedProtectedOwnerV1 {
             config,
         )
         .map_err(Into::into)
-    }
-
-    /// Claims the domain together with explicitly injected dormant effects.
-    ///
-    /// This crate-private composition preserves a callable physical path for
-    /// non-production integration without adding an activation path to the
-    /// public fixed owner.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PublisherFixedProtectedOwnerErrorV1`] under the same closed
-    /// configuration, root-currentness, catalog, and replay conditions as
-    /// [`Self::claim_domain`].
-    #[allow(
-        dead_code,
-        reason = "publisher effects remain an explicit dormant source-only integration seam"
-    )]
-    pub(crate) fn claim_domain_with_injected_effects<'owner, 'activation>(
-        &'owner mut self,
-        composition: &'activation mut PublisherDormantEffectCompositionV1,
-    ) -> Result<
-        (
-            PublisherDomainServiceV1<'owner>,
-            PublisherDormantEffectCapabilityV1<'activation>,
-        ),
-        PublisherFixedProtectedOwnerErrorV1,
-    > {
-        let service = self.claim_domain()?;
-        let effects = composition.activate();
-        Ok((service, effects))
     }
 
     /// Obtains one protected, operation-bound executor fence for cold recovery.

@@ -1457,8 +1457,7 @@ impl<'journal> PublisherDomainServiceV1<'journal> {
 
     /// Dispatches a canonical source-descriptor request into sealed preparation.
     ///
-    /// `effects` must come from the explicit non-production dormant composition;
-    /// the fixed production owner cannot mint it.
+    /// `effects` has no constructor, keeping physical preparation unavailable.
     ///
     /// # Errors
     ///
@@ -1616,8 +1615,7 @@ impl<'journal> PublisherDomainServiceV1<'journal> {
 
     /// Issues a permit, performs exact no-replace publication, and settles it.
     ///
-    /// `effects` must come from the explicit non-production dormant composition;
-    /// the fixed production owner cannot mint it.
+    /// `effects` has no constructor, keeping physical completion unavailable.
     ///
     /// The capacity reservation and permit commit precede the first naming
     /// effect. Protected poison custody remains live across rename, ambiguity

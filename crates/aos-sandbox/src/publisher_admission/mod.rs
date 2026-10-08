@@ -20,11 +20,7 @@ mod controller_adapter;
 mod controller_authority;
 mod decision;
 #[cfg(target_os = "linux")]
-#[allow(
-    dead_code,
-    reason = "publisher effects remain an explicit dormant source-only integration seam"
-)]
-pub(crate) mod dormant_effects;
+mod dormant_effects;
 #[cfg(target_os = "linux")]
 mod durable_catalog;
 #[cfg(target_os = "linux")]
