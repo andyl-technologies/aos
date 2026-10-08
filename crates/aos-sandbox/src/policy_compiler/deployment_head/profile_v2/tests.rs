@@ -16,14 +16,14 @@ use ed25519_dalek::{Signer as _, SigningKey};
 
 use super::*;
 use crate::journal::JournalLimits;
-use crate::policy_compiler::{
+use aos_sandbox_policy::{
     AdvisoryActionV1, AdvisoryDegradationV1, AdvisoryKindV1, AuthenticatedCacheDomainV1,
     AuthenticatedSandboxProjectRelationV1, CacheDomainBindingV1, CacheDomainInputV1,
     CacheDomainVerifierV1, EndpointCatalogVerifierV1, EndpointUseV1, LogicalSourceV1,
     NamespaceBackendFeatureV1, NamespaceCatalogVerifierV1, NamespaceRuleV1, NamespaceSourceClassV1,
     PolicyCompilerInputV1, PolicyCompilerLimitsV1, PolicyCompilerV1, PolicyLayerV1,
-    ProjectPolicyInputV1, RequestPolicyInputV1, RevocationInputV1,
-    SandboxProjectRelationVerifierV1, ViewExecutionV1,
+    ProjectPolicyInputV1, RequestPolicyInputV1, RevocationInputV1, SandboxProjectRelationVerifierV1,
+    ViewExecutionV1,
 };
 
 fn input_views(bytes: &[Vec<u8>; 4]) -> PolicyDeploymentInputsV1<'_> {

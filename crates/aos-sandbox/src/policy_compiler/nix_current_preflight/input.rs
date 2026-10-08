@@ -29,10 +29,12 @@ use crate::sandbox_spec_state::{DurableSandboxSpecV1, SandboxSpecStateError};
 use crate::{Journal, JournalError};
 
 use super::super::{
-    AuthenticatedSandboxProjectRelationV1, PolicyCompilerInputV1,
     PolicyDeploymentHeadErrorV1, PolicyDeploymentHeadV1, PolicyDeploymentSourcesV1,
-    PolicyModelError,
-    SandboxProjectRelationVerifierV1, VerifiedSignedProjectPolicySourceV2,
+    VerifiedSignedProjectPolicySourceV2,
+};
+use aos_sandbox_policy::{
+    AuthenticatedSandboxProjectRelationV1, PolicyCompilerInputV1, PolicyModelError,
+    SandboxProjectRelationVerifierV1,
 };
 
 /// Reports a failed current-Start input comparison without conferring authority.

@@ -29,18 +29,18 @@ use crate::reconciler::EffectPlan;
 use crate::{Journal, RecordNamespace};
 
 use super::deployment_head::{SIGNER_PINS_KEY, decode_policy_signer_pins_v1};
-use super::model::canonical_bytes;
+use aos_sandbox_policy::canonical_bytes;
 use super::protected_owner::{
     POLICY_AUTHORITY_JOURNAL, PROTECTED_POLICY_ROOT, policy_authority_journal_limits,
 };
 use super::{
     CompiledPublisherPolicyRevisionV2, CurrentCreatePolicySourceErrorV1,
-    CurrentCreateProjectPolicySourceV1, PolicyCompilerInputV1, PolicyDeploymentHeadErrorV1,
-    PolicyDeploymentInputProfileV2, PolicyDeploymentInputsV1, ProjectPolicyInputV1,
-    RequestPolicyInputV1, RetainedPublisherCompilerOriginV3,
+    CurrentCreateProjectPolicySourceV1, PolicyDeploymentHeadErrorV1, PolicyDeploymentInputProfileV2,
+    PolicyDeploymentInputsV1, RetainedPublisherCompilerOriginV3,
     current_parentless_create_project_source_for_operation_v1,
     verify_current_policy_deployment_profile_v2,
 };
+use aos_sandbox_policy::{PolicyCompilerInputV1, ProjectPolicyInputV1, RequestPolicyInputV1};
 
 const MAGIC: &[u8; 8] = b"AOSPPH03";
 const SIGNING_DOMAIN: &[u8] = b"aos.sandbox.policy-project-head.v3\0";

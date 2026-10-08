@@ -96,17 +96,6 @@ pub struct AuthenticatedSandboxProjectRelationV1 {
     descriptor: ObjectDescriptor,
 }
 impl AuthenticatedSandboxProjectRelationV1 {
-    /// Brands only the pair selected by the private current-Create producer.
-    pub(super) fn from_current_create_source(
-        source: &super::public_create_source::CurrentCreateProjectPolicySourceV1,
-    ) -> Result<Self, PolicyModelError> {
-        Self::authenticate(
-            source.sandbox(),
-            source.project(),
-            &CurrentCreateRelationVerifierV1 { source },
-        )
-    }
-
     /// Authenticates one exact non-sentinel sandbox and project pair.
     ///
     /// # Errors
@@ -149,31 +138,6 @@ impl AuthenticatedSandboxProjectRelationV1 {
     #[must_use]
     pub const fn descriptor(&self) -> &ObjectDescriptor {
         &self.descriptor
-    }
-}
-
-// Only the current-Create producer selects this verifier, after reading the
-// actual protected Controller journal. The input remains nonauthoritative.
-struct CurrentCreateRelationVerifierV1<'source> {
-    source: &'source super::public_create_source::CurrentCreateProjectPolicySourceV1,
-}
-
-impl SandboxProjectRelationVerifierV1 for CurrentCreateRelationVerifierV1<'_> {
-    fn verify(
-        &self,
-        sandbox: SandboxId,
-        project: ProjectId,
-        descriptor: &ObjectDescriptor,
-        canonical_bytes: &[u8],
-    ) -> bool {
-        let Ok(media) = media_type(PortableMediaType::Content) else {
-            return false;
-        };
-
-        sandbox == self.source.sandbox()
-            && project == self.source.project()
-            && !canonical_bytes.is_empty()
-            && descriptor_for_bytes(media, canonical_bytes) == *descriptor
     }
 }
 
@@ -1337,7 +1301,7 @@ pub struct CompiledPolicyCandidateV1 {
 /// These digests describe a compiled candidate; they do not authenticate its
 /// inputs, the plans' semantics, publication currentness, or runtime authority.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct CompiledPolicyCandidatePreimageV1 {
+struct CompiledPolicyCandidatePreimageV1 {
     authority: AuthorityPlanCommitmentV1,
     namespace: NamespacePlanCommitmentV1,
     hard: HardResourcePlanCommitmentV1,
@@ -1347,7 +1311,7 @@ pub(super) struct CompiledPolicyCandidatePreimageV1 {
 
 impl CompiledPolicyCandidatePreimageV1 {
     /// Reconstitutes purpose-specific commitment values without authority.
-    pub(super) fn from_digests(digests: [ObjectDigest; 5]) -> Self {
+    fn from_digests(digests: [ObjectDigest; 5]) -> Self {
         Self {
             authority: AuthorityPlanCommitmentV1::new(digests[0]),
             namespace: NamespacePlanCommitmentV1::new(digests[1]),
@@ -1358,7 +1322,7 @@ impl CompiledPolicyCandidatePreimageV1 {
     }
 
     /// Returns the five digests in the Candidate V3 wire order.
-    pub(super) fn digests(self) -> [ObjectDigest; 5] {
+    fn digests(self) -> [ObjectDigest; 5] {
         [
             self.authority.digest(),
             self.namespace.digest(),
@@ -1374,7 +1338,7 @@ impl CompiledPolicyCandidatePreimageV1 {
     ///
     /// Returns [`PolicyModelError`] if canonical serialization exceeds its
     /// bound or fails. Matching this digest establishes byte consistency only.
-    pub(super) fn commitment(
+    fn commitment(
         self,
         outputs: [&ObjectDescriptor; 4],
     ) -> Result<CompiledPolicyCommitmentV1, PolicyModelError> {
@@ -1393,6 +1357,27 @@ impl CompiledPolicyCandidatePreimageV1 {
             ),
         )?))
     }
+}
+
+/// Computes the existing candidate digest from consistency DATA only.
+///
+/// The five plan digests are authority, namespace, hard resources, advisory
+/// and explanation. The four descriptors are policy, optimization, namespace
+/// graph and advisory program. The unchanged nine-member tuple puts the four
+/// descriptors before explanation. Matching this digest authenticates neither
+/// the supplied DATA nor protected publication or runtime authority.
+///
+/// # Errors
+///
+/// Returns [`PolicyModelError`] if canonical serialization exceeds its bound
+/// or fails.
+pub fn compiled_policy_candidate_digest_v1(
+    plans: [ObjectDigest; 5],
+    outputs: [&ObjectDescriptor; 4],
+) -> Result<ObjectDigest, PolicyModelError> {
+    Ok(CompiledPolicyCandidatePreimageV1::from_digests(plans)
+        .commitment(outputs)?
+        .digest())
 }
 
 impl CompiledPolicyCandidateV1 {
@@ -1429,7 +1414,17 @@ impl CompiledPolicyCandidateV1 {
         })
     }
 
-    pub(super) fn commitment_preimage(&self) -> CompiledPolicyCandidatePreimageV1 {
+    /// Returns the five plan digests in Candidate V3 wire order.
+    ///
+    /// The order is authority, namespace, hard resources, advisory and
+    /// explanation. These are consistency DATA, not authenticated provenance,
+    /// publication currentness or runtime authority.
+    #[must_use]
+    pub fn commitment_plan_digests(&self) -> [ObjectDigest; 5] {
+        self.commitment_preimage().digests()
+    }
+
+    fn commitment_preimage(&self) -> CompiledPolicyCandidatePreimageV1 {
         CompiledPolicyCandidatePreimageV1 {
             authority: self.authority.commitment(),
             namespace: self.namespace.commitment(),
@@ -1620,7 +1615,16 @@ fn preflight_layer(
     Ok(())
 }
 
-pub(crate) fn canonical_bytes<T: Serialize>(
+/// Encodes bounded, domain-separated canonical consistency DATA.
+///
+/// The encoding grants no input provenance, publication currentness or effect
+/// authority, even when a caller serializes proof-shaped claims.
+///
+/// # Errors
+///
+/// Returns [`PolicyModelError`] if encoding fails or exceeds the existing
+/// canonical-object bound.
+pub fn canonical_bytes<T: Serialize>(
     domain: &'static [u8],
     value: &T,
 ) -> Result<Vec<u8>, PolicyModelError> {
@@ -1739,7 +1743,16 @@ impl Write for BoundedCanonicalWriter {
         Ok(())
     }
 }
-pub(crate) fn digest<T: Serialize>(
+/// Hashes bounded canonical DATA with the supplied existing domain separator.
+///
+/// A matching hash establishes byte consistency only, not authenticated input,
+/// protected publication currentness or runtime authority.
+///
+/// # Errors
+///
+/// Returns [`PolicyModelError`] if encoding fails or exceeds the existing
+/// canonical-object bound.
+pub fn digest<T: Serialize>(
     domain: &'static [u8],
     value: &T,
 ) -> Result<ObjectDigest, PolicyModelError> {

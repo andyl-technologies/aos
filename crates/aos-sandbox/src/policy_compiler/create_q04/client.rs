@@ -168,7 +168,7 @@ pub(crate) struct Q04ControllerPreparationV1 {
     source_uid: u32,
     floor: aos_sandbox_core::ObjectDigest,
     ancestry: aos_sandbox_core::ObjectDigest,
-    candidate: super::super::CompiledPolicyCandidateV1,
+    candidate: aos_sandbox_policy::CompiledPolicyCandidateV1,
     input_origin: super::Q04PreparedInputOriginV1,
     publication_recipe: super::super::protected_journal::Q04IndependentPublicationRecipeV1,
 }
@@ -180,7 +180,7 @@ impl Q04ControllerPreparationV1 {
 
     pub(crate) fn metadata(&self) -> &[u8; PREHOLD_METADATA_BYTES] { &self.metadata }
 
-    pub(crate) fn candidate(&self) -> &super::super::CompiledPolicyCandidateV1 {
+    pub(crate) fn candidate(&self) -> &aos_sandbox_policy::CompiledPolicyCandidateV1 {
         &self.candidate
     }
 
@@ -1012,7 +1012,7 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
             &current, &project, &deployment, &input, &prerequisites, now,
         )?;
         let normalized = super::super::normalized_policy_input_digest_v1(&input)?;
-        let candidate = super::super::PolicyCompilerV1::compile_retained(&input)?;
+        let candidate = aos_sandbox_policy::PolicyCompilerV1::compile_retained(&input)?;
         let inclusive = super::input_origin::candidate_capacity(&candidate)?;
         self.original_input_demand(inclusive)?;
         // Subdivision is checked under the actual once-admitted Project owner

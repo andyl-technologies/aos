@@ -417,7 +417,7 @@ impl AuthenticatedNamespaceCatalogV1 {
 /// # Errors
 ///
 /// Rejects unordered, sentinel, oversized, or unencodable declarations.
-pub(super) fn canonical_namespace_catalog_v1(
+pub fn canonical_namespace_catalog_v1(
     destinations: &[NamespaceDestinationV1],
 ) -> Result<(ObjectDescriptor, Vec<u8>), NamespaceCatalogError> {
     if destinations.len() > 4_096
@@ -960,7 +960,7 @@ fn canonical_dag(
 /// # Errors
 /// Rejects duplicate definitions/destinations, invalid references, cyclic or
 /// noncanonical definition ordering, and sentinel attachment destinations.
-pub(crate) fn validate_portable_namespace_rule_order(
+pub fn validate_portable_namespace_rule_order(
     rules: &[NamespaceRuleV1],
 ) -> Result<(), PolicyModelError> {
     validate_namespace_rule_sequence(rules.to_vec())?;

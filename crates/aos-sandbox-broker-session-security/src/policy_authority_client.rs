@@ -70,15 +70,15 @@ use aos_sandbox::journal::{
 use aos_sandbox::policy_compiler::{
     CLOSED_POLICY_BINDING_BYTES_V2, ClosedPolicyBindingDecisionV2, ClosedPolicyRootCasBaseV2,
     ClosedPolicyRootCasObservationV2, ClosedSourceTerminalClaimV1,
-    CurrentCreateProjectPolicySourceV1, PolicyCompilerInputV1, PolicyDeploymentHeadV1,
-    PolicyDeploymentInputsV1, PolicyDeploymentSourcesV1, SignedProjectPolicySourceV1,
-    SourceHoldReadbackChallengeV1, StagedClosedPolicyRootBaseV2,
-    StagedClosedPolicySignerChallengeV2, VerifiedSignedProjectPolicySourceV2,
-    closed_policy_binding_digest_v2, decode_policy_deployment_sources_v1,
-    sign_fixed_controller_hold_readback_v1, staged_closed_policy_signer_challenge_v2,
-    verify_policy_deployment_head_v1, verify_signed_project_policy_source_v1,
-    verify_signed_project_policy_source_v2,
+    CurrentCreateProjectPolicySourceV1, PolicyDeploymentHeadV1, PolicyDeploymentInputsV1,
+    PolicyDeploymentSourcesV1, SignedProjectPolicySourceV1, SourceHoldReadbackChallengeV1,
+    StagedClosedPolicyRootBaseV2, StagedClosedPolicySignerChallengeV2,
+    VerifiedSignedProjectPolicySourceV2, closed_policy_binding_digest_v2,
+    decode_policy_deployment_sources_v1, sign_fixed_controller_hold_readback_v1,
+    staged_closed_policy_signer_challenge_v2, verify_policy_deployment_head_v1,
+    verify_signed_project_policy_source_v1, verify_signed_project_policy_source_v2,
 };
+use aos_sandbox_policy::PolicyCompilerInputV1;
 use aos_sandbox_core::{ObjectDigest, ProjectId};
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use sha2::{Digest as _, Sha256};

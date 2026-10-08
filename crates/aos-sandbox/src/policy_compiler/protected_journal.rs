@@ -36,8 +36,8 @@ use crate::lifecycle::protected_journal_adapter::{
     encode_reducer_payload_with_validator,
 };
 
-use super::model::CompiledPolicyCandidatePreimageV1;
-use super::{
+use aos_sandbox_policy::compiled_policy_candidate_digest_v1;
+use aos_sandbox_policy::{
     CandidateAuthorityV1, CompiledPolicyCandidateV1, PolicyCompilerInputV1, PolicyModelError,
 };
 
@@ -638,7 +638,7 @@ pub(super) fn q04_independent_publication_data_v1(
     let project = input.project().project();
     let sandbox = input.sandbox();
     let normalized_input = normalized_policy_input_digest_v1(input)?;
-    let diagnostics = super::model::canonical_bytes(DIAGNOSTICS_DOMAIN, candidate.explanation())?;
+    let diagnostics = aos_sandbox_policy::canonical_bytes(DIAGNOSTICS_DOMAIN, candidate.explanation())?;
     if candidate.authority_status() != CandidateAuthorityV1::NonAuthoritativeAncestry {
         return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
     }
@@ -704,7 +704,7 @@ impl VerifiedPolicyPublicationV1 {
         let normalized_input = normalized_policy_input_digest_v1(input)?;
         let candidate_digest = candidate.commitment().digest();
         let diagnostics =
-            super::model::canonical_bytes(DIAGNOSTICS_DOMAIN, candidate.explanation())?;
+            aos_sandbox_policy::canonical_bytes(DIAGNOSTICS_DOMAIN, candidate.explanation())?;
         if project.as_bytes() == &[0; 16]
             || sandbox.as_bytes() == &[0; 16]
             || candidate.authority_status() != CandidateAuthorityV1::NonAuthoritativeAncestry
@@ -1027,7 +1027,7 @@ impl<'journal> PolicyCompilerProtectedJournalV1<'journal> {
         let sandbox = input.sandbox();
         let normalized_input = normalized_policy_input_digest_v1(input)?;
         let canonical_diagnostics =
-            super::model::canonical_bytes(DIAGNOSTICS_DOMAIN, candidate.explanation())?;
+            aos_sandbox_policy::canonical_bytes(DIAGNOSTICS_DOMAIN, candidate.explanation())?;
         if candidate.authority_status() != CandidateAuthorityV1::NonAuthoritativeAncestry
             || !self.validator.contains(prerequisites)
         {
@@ -2191,7 +2191,7 @@ pub(super) struct DecodedCandidateHeaderV1 {
     pub(super) prerequisites: ObjectDigest,
     pub(super) prerequisite_tuple: PolicyPublicationPrerequisitesV1,
     pub(super) outputs: [(ObjectDigest, u64); 4],
-    preimage: Option<CompiledPolicyCandidatePreimageV1>,
+    preimage: Option<[ObjectDigest; 5]>,
     output_offset: usize,
 }
 
@@ -2353,7 +2353,7 @@ fn policy_body<'body>(
 }
 
 fn output_descriptors(
-    portable: &super::model::PortablePolicyOutputV1,
+    portable: &aos_sandbox_policy::PortablePolicyOutputV1,
 ) -> [(u8, PortableMediaType, &ObjectDescriptor); 4] {
     [
         (1, PortableMediaType::Policy, portable.policy_descriptor()),
@@ -2417,7 +2417,7 @@ fn encode_candidate_payload(
         bytes.extend_from_slice(descriptor.digest().as_bytes());
         bytes.extend_from_slice(&descriptor.encoded_size().to_be_bytes());
     }
-    for commitment in verified.candidate.commitment_preimage().digests() {
+    for commitment in verified.candidate.commitment_plan_digests() {
         bytes.extend_from_slice(commitment.as_bytes());
     }
     for field in fields {
@@ -2659,13 +2659,13 @@ fn decode_candidate_header(
         return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
     }
     let preimage = if output_offset == CANDIDATE_V3_FIXED_BYTES {
-        Some(CompiledPolicyCandidatePreimageV1::from_digests([
+        Some([
             digest_at(CANDIDATE_V2_FIXED_BYTES)?,
             digest_at(CANDIDATE_V2_FIXED_BYTES + 32)?,
             digest_at(CANDIDATE_V2_FIXED_BYTES + 64)?,
             digest_at(CANDIDATE_V2_FIXED_BYTES + 96)?,
             digest_at(CANDIDATE_V2_FIXED_BYTES + 128)?,
-        ]))
+        ])
     } else {
         None
     };
@@ -2849,7 +2849,7 @@ pub(super) fn validated_candidate_body(
                 header.outputs[3].1,
             ),
         ];
-        if preimage.commitment(descriptors.each_ref())?.digest() != header.candidate {
+        if compiled_policy_candidate_digest_v1(preimage, descriptors.each_ref())? != header.candidate {
             return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
         }
     }
@@ -2876,7 +2876,7 @@ pub(super) fn compare_recompiled_candidate_derivation_v1(
     prerequisites: &PolicyPublicationPrerequisitesV1,
 ) -> Result<(), PolicyCompilerJournalErrorV1> {
     let (header, outputs) = validated_candidate_body(bytes)?;
-    let diagnostics = super::model::canonical_bytes(DIAGNOSTICS_DOMAIN, candidate.explanation())?;
+    let diagnostics = aos_sandbox_policy::canonical_bytes(DIAGNOSTICS_DOMAIN, candidate.explanation())?;
     if header.project != input.project().project()
         || header.sandbox != input.sandbox()
         || header.generation != generation
@@ -2884,7 +2884,7 @@ pub(super) fn compare_recompiled_candidate_derivation_v1(
         || header.prerequisites != prerequisites.digest()
         || header.normalized_input != normalized_policy_input_digest_v1(input)?
         || header.candidate != candidate.commitment().digest()
-        || header.preimage != Some(candidate.commitment_preimage())
+        || header.preimage != Some(candidate.commitment_plan_digests())
         || header.diagnostics != digest_bytes(DIAGNOSTICS_DOMAIN, &diagnostics)
     {
         return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);

@@ -27,6 +27,7 @@ aos-sandbox-guest.workspace = true
 aos-sandbox-broker-session-protocol.workspace = true
 aos-sandbox-core.workspace = true
 aos-sandbox-journal.workspace = true
+aos-sandbox-policy.workspace = true
 aos-sandbox-ownership-protocol.workspace = true
 aos-sandbox-protocol.workspace = true
 aos-sandbox-source-provider-ledger.workspace = true

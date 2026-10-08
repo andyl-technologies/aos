@@ -1,19 +1,16 @@
-//! Compiles ordered policy inputs into inert, portable candidate plans.
+//! Owns protected Policy publication and its original-owner continuations.
 //!
-//! The partition performs no live publication or effects. Its dormant journal
-//! seam verifies exact ancestry/currentness prerequisites, retains every
-//! canonical output and diagnostic, and releases only revalidated postcommit
-//! authority for an external controller.
+//! The pure compiler is owned by `aos-sandbox-policy`. This partition retains
+//! the protected ancestry/currentness joins, canonical publication replay and
+//! actual Root, Source, Cache and Controller custody. Extracting compiler DATA
+//! does not make those effect-owning continuations independent.
 
-mod advisory;
 mod all_owner_readback_session;
-mod authority;
 mod binding_v2;
 mod cache_journal_readback;
 mod cache_readback_pin;
 mod cache_readback_session;
 mod cache_root_settlement;
-mod compiler;
 mod controller_adapter;
 mod controller_effect_ack_readback;
 mod controller_effect_ack_readback_v8;
@@ -58,7 +55,6 @@ pub use git_coverage_enrollment::{
     GitCoverageRootFlightErrorV1, GitCoverageAccountAttemptV1,
     GitCoverageNativeCutDataV1, RootGitCoverageEnrollmentOwnerV1,
 };
-mod model;
 #[cfg(target_os = "linux")]
 mod nix_current_preflight;
 #[cfg(target_os = "linux")]
@@ -71,7 +67,6 @@ pub use nix_current_preflight::{
     CurrentNixSourceIoCellV1,
     VerifiedCurrentNixControllerReceiptV1, VerifiedCurrentNixSourceObservationV1,
 };
-mod namespace;
 mod owner_pin_transaction;
 mod project_admission_root;
 
@@ -106,7 +101,6 @@ pub mod consumer_read_flight;
 mod publisher_origin;
 mod resolved_policy;
 mod resource_read;
-mod resources;
 mod root_challenge_record;
 mod root_project_admission_proof;
 mod root_startup_journal;
@@ -243,18 +237,10 @@ mod source_signer_readback;
 #[cfg(target_os = "linux")]
 mod v8_successor_clear;
 
-pub use advisory::{
-    AdvisoryActionV1, AdvisoryDecisionV1, AdvisoryDegradationV1, AdvisoryKindV1, AdvisoryPlanV1,
-    AdvisoryStatusV1, PortableAdvisoryProgramV1,
-};
 pub use all_owner_readback_session::{
     ClosedAllOwnerExpectedHoldsV1, ClosedAllOwnerReadbackErrorV1, ClosedAllOwnerReadbackPacketsV1,
     ClosedAllOwnerRootChallengeV1, ClosedAllOwnerRootObservationV1,
     with_fixed_closed_all_owner_readback_session_v1,
-};
-pub use authority::{
-    AuthenticatedEndpointCatalogV1, AuthorityPlanV1, EffectiveGrantV1, EndpointCatalogEntryV1,
-    EndpointCatalogError, EndpointCatalogVerifierV1, EndpointUseV1,
 };
 pub use binding_v2::{
     CLOSED_POLICY_BINDING_BYTES_V2, CLOSED_SOURCE_TERMINAL_RECORD_BYTES_V1,
@@ -305,7 +291,6 @@ pub use cache_readback_session::{
     stage_fixed_cache_signer_challenge_v2, verify_fixed_staged_cache_signer_packet_v2,
     with_fixed_closed_cache_readback_session_v1,
 };
-pub use compiler::{PolicyCompilationError, PolicyCompilerV1};
 pub use controller_adapter::{
     PolicyCompilerControllerCommitV1, policy_compiler_controller_commit_v1,
 };
@@ -351,30 +336,6 @@ pub use deployment_head::{
     admit_fixed_signed_project_policy_source_v1, decode_policy_deployment_sources_v1,
     verify_current_policy_deployment_profile_v2, verify_policy_deployment_head_v1,
     verify_signed_project_policy_source_v1, with_fixed_current_policy_head_lease_v1,
-};
-pub use model::{
-    AdvisoryPlanCommitmentV1, AncestorPolicyCommitmentV1, AncestorPolicyInputV1,
-    AuthenticatedCacheDomainV1, AuthenticatedSandboxProjectRelationV1, AuthorityPlanCommitmentV1,
-    BackendCapabilitiesV1, CacheDomainBindingV1, CacheDomainInputV1, CacheDomainVerifierV1,
-    CandidateAuthorityV1, CompiledPolicyCandidateV1, CompiledPolicyCommitmentV1,
-    ExplanationCommitmentV1, ExplanationDecisionV1, ExplanationEntryV1, ExplanationReasonV1,
-    ExplanationStageV1, HardResourcePlanCommitmentV1, InputSourceV1,
-    MAXIMUM_ADVISORY_RULES_PER_LAYER, MAXIMUM_CANONICAL_OBJECT_BYTES,
-    MAXIMUM_EXPLANATION_ENTRIES_PER_STAGE, MAXIMUM_GRANTS_PER_LAYER,
-    MAXIMUM_NAMESPACE_RULES_PER_LAYER, MAXIMUM_POLICY_ANCESTORS, MAXIMUM_POLICY_LAYER_BYTES,
-    MAXIMUM_POLICY_LAYER_WORK_UNITS, NamespaceBackendFeatureV1, NamespacePlanCommitmentV1,
-    NodePolicyCommitmentV1, NodePolicyInputV1, PlanExplanationV1, PolicyCompilerInputV1,
-    PolicyCompilerLimitsV1, PolicyLayerV1, PolicyModelError, PortablePolicyOutputV1,
-    ProjectPolicyCommitmentV1, ProjectPolicyInputV1, RedactedSubjectV1, RequestPolicyCommitmentV1,
-    RequestPolicyInputV1, RevocationInputV1, SandboxProjectRelationVerifierV1,
-    SitePolicyCommitmentV1, SitePolicyInputV1, StageExplanationV1,
-};
-pub use namespace::{
-    AuthenticatedExecutableSourceV1, AuthenticatedNamespaceCatalogV1, ExecutableSourceVerifierV1,
-    LogicalSourceV1, NamespaceCatalogError, NamespaceCatalogVerifierV1, NamespaceCompositionV1,
-    NamespaceDestinationV1, NamespaceExecutionClassV1, NamespaceGraphSchemaV1, NamespaceModelError,
-    NamespacePlanV1, NamespacePresentationFeatureV1, NamespaceRuleV1, NamespaceSourceClassV1,
-    PortableNamespaceGraphV1, ViewExecutionV1,
 };
 pub use project_admission_root::{
     RootProjectAdmissionIntentV1, RootProjectAdmissionOutcomeKindV1, RootProjectAdmissionOutcomeV1,
@@ -451,12 +412,6 @@ pub use publisher_origin::{
     compile_publisher_policy_revision_v2,
 };
 pub use resolved_policy::{HeldResolvedRuntimePolicyV1, PolicyCompilerStateReadbackOwnerV1};
-pub use resources::{
-    BackendEnforcementSetV1, HardEnforcementV1, HardLimitProvenanceV1, HardLimitRequestV1,
-    HardLimitValueV1, HardResourceKeyV1, HardResourceModelError, HardResourcePlanV1,
-    HardResourceProfileV1, HardResourceScopeV1, PORTABLE_LIMIT_DIMENSIONS, ResolvedHardLimitV1,
-    ResolvedHardLimitValueV1, UnlimitedProvenanceV1,
-};
 pub use root_project_admission_proof::{
     ROOT_PROJECT_ADMISSION_ABORT_QUERY_MAGIC, ROOT_PROJECT_ADMISSION_COMMIT_QUERY_MAGIC,
     ROOT_PROJECT_ADMISSION_CURRENT_QUERY_MAGIC, ROOT_PROJECT_ADMISSION_INTENT_QUERY_MAGIC,

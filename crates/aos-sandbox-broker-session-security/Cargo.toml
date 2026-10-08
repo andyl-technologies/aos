@@ -19,6 +19,7 @@ aos-sandbox-broker = { workspace = true, optional = true }
 aos-sandbox-broker-session-protocol.workspace = true
 aos-sandbox-core.workspace = true
 aos-sandbox-journal.workspace = true
+aos-sandbox-policy.workspace = true
 aos-sandbox-host.workspace = true
 aos-sandbox-linux.workspace = true
 aos-sandbox-mount.workspace = true

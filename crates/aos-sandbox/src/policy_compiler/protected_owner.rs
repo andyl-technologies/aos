@@ -26,14 +26,15 @@ use super::protected_journal::{
 
 use super::{
     PolicyCheckpointCommitOutcomeV1, PolicyCheckpointOutcomeUnknownV1, PolicyCheckpointRecoveryV1,
-    PolicyCompilerEffectHandoffV1, PolicyCompilerInputV1, PolicyCompilerJournalErrorV1,
-    PolicyCompilerJournalProjectionV1, PolicyCompilerJournalSnapshotV1,
-    PolicyCompilerProtectedJournalV1, PolicyCompilerReplayValidatorV1, PolicyCompilerV1,
-    PolicyEffectObservationCommitOutcomeV1, PolicyEffectObservationOutcomeUnknownV1,
-    PolicyEffectObservationRecoveryV1, PolicyPublicationColdRecoveryV1,
-    PolicyPublicationCommitOutcomeV1, PolicyPublicationOutcomeUnknownV1,
-    PolicyPublicationPrerequisitesV1, PolicyPublicationRecoveryV1,
+    PolicyCompilerEffectHandoffV1, PolicyCompilerJournalErrorV1, PolicyCompilerJournalProjectionV1,
+    PolicyCompilerJournalSnapshotV1, PolicyCompilerProtectedJournalV1,
+    PolicyCompilerReplayValidatorV1, PolicyEffectObservationCommitOutcomeV1,
+    PolicyEffectObservationOutcomeUnknownV1, PolicyEffectObservationRecoveryV1,
+    PolicyPublicationColdRecoveryV1, PolicyPublicationCommitOutcomeV1,
+    PolicyPublicationOutcomeUnknownV1, PolicyPublicationPrerequisitesV1,
+    PolicyPublicationRecoveryV1,
 };
+use aos_sandbox_policy::{PolicyCompilerInputV1, PolicyCompilerV1};
 
 pub(super) const PROTECTED_POLICY_ROOT: &str = "/var/lib/aos/sandbox/policy-compiler";
 pub(super) const POLICY_STATE_JOURNAL: &str = "state.journal";

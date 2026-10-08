@@ -126,7 +126,7 @@ fn signed_bounded_resource_sources_decode_without_fabricated_limits() {
         sources
             .backend()
             .enforcement()
-            .contains(aos_sandbox::policy_compiler::HardEnforcementV1::ZfsQuota)
+            .contains(aos_sandbox_policy::HardEnforcementV1::ZfsQuota)
     );
 }
 

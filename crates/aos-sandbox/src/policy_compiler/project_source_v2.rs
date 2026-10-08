@@ -44,9 +44,12 @@ use super::protected_owner::{
     POLICY_AUTHORITY_JOURNAL, PROTECTED_POLICY_ROOT, policy_authority_journal_limits,
 };
 use super::{
+    PolicyDeploymentHeadErrorV1, PolicyDeploymentInputsV1, decode_policy_deployment_sources_v1,
+    verify_policy_deployment_head_v1,
+};
+use aos_sandbox_policy::{
     AuthenticatedCacheDomainV1, CacheDomainBindingV1, CacheDomainInputV1, CacheDomainVerifierV1,
-    PolicyDeploymentHeadErrorV1, PolicyDeploymentInputsV1, PolicyLayerV1, RevocationInputV1,
-    decode_policy_deployment_sources_v1, verify_policy_deployment_head_v1,
+    PolicyLayerV1, RevocationInputV1,
 };
 
 const MAGIC: &[u8; 8] = b"AOSPPH02";

@@ -55,17 +55,17 @@ pub(in crate::policy_compiler) fn publication(domain: CacheDomainKind) -> Fixtur
     let outputs = [
         policy.clone(),
         encode_optimization(&OptimizationProfile::new(Vec::new()).unwrap()),
-        super::super::model::canonical_bytes(
+        aos_sandbox_policy::canonical_bytes(
             b"aos.sandbox.portable-namespace-graph.v1",
             &(
-                super::super::namespace::NamespaceGraphSchemaV1::V1,
-                Vec::<super::super::namespace::NamespaceRuleV1>::new(),
+                aos_sandbox_policy::NamespaceGraphSchemaV1::V1,
+                Vec::<aos_sandbox_policy::NamespaceRuleV1>::new(),
             ),
         )
         .unwrap(),
-        super::super::model::canonical_bytes(
+        aos_sandbox_policy::canonical_bytes(
             b"aos.sandbox.portable-advisory-program.v1",
-            &Vec::<super::super::advisory::AdvisoryDecisionV1>::new(),
+            &Vec::<aos_sandbox_policy::AdvisoryDecisionV1>::new(),
         )
         .unwrap(),
     ];

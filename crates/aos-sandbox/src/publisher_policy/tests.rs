@@ -14,7 +14,7 @@ use aos_sandbox_core::{CacheDomainId, CanonicalCborError, Grant, GrantId, Operat
 
 use super::*;
 use crate::JournalLimits;
-use crate::policy_compiler::{
+use aos_sandbox_policy::{
     AuthenticatedCacheDomainV1, CacheDomainBindingV1, CacheDomainVerifierV1, PolicyModelError,
 };
 

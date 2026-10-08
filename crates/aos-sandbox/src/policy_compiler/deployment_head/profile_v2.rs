@@ -14,8 +14,12 @@
 //! enforcement or live catalog currentness. No publication or read is enabled.
 
 use super::*;
-use crate::policy_compiler::authority::canonical_endpoint_catalog_v1;
-use crate::policy_compiler::namespace::canonical_namespace_catalog_v1;
+use aos_sandbox_policy::{
+    BackendCapabilitiesV1, EndpointCatalogEntryV1, NamespaceDestinationV1, NodePolicyInputV1,
+    SitePolicyInputV1,
+};
+use aos_sandbox_policy::canonical_endpoint_catalog_v1;
+use aos_sandbox_policy::canonical_namespace_catalog_v1;
 use aos_sandbox_core::ObjectDescriptor;
 
 const INPUT_DOMAINS: [&[u8]; 4] = [

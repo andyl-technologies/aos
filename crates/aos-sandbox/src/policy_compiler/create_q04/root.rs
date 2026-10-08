@@ -32,15 +32,16 @@ use super::super::source_genesis_root::{
     require_open_receive_queue, wait_original_root_v1,
 };
 use super::super::{
-    AuthenticatedCacheDomainV1, AuthenticatedSandboxProjectRelationV1,
-    CacheDomainBindingV1, CacheDomainVerifierV1, CompiledPolicyCandidateV1,
-    PolicyCompilerInputV1, PolicyCompilerV1,
     PolicyDeploymentHeadV1, PolicyDeploymentInputsV1, PolicyPublicationPrerequisitesV1,
-    SandboxProjectRelationVerifierV1, VerifiedControllerHoldReadbackV1,
-    VerifiedControllerProjectAdmissionV1, VerifiedSignedProjectPolicySourceV2,
-    PinnedSourceHoldReadbackSignerV1, SourceHierarchyFloorRecordV1,
-    SourceTreeGenesisChallengeV1, SourceTreeGenesisIntentContextV1,
+    VerifiedControllerHoldReadbackV1, VerifiedControllerProjectAdmissionV1,
+    VerifiedSignedProjectPolicySourceV2, PinnedSourceHoldReadbackSignerV1,
+    SourceHierarchyFloorRecordV1, SourceTreeGenesisChallengeV1, SourceTreeGenesisIntentContextV1,
     SOURCE_TREE_GENESIS_READBACK_BYTES_V1, normalized_policy_input_digest_v1,
+};
+use aos_sandbox_policy::{
+    AuthenticatedCacheDomainV1, AuthenticatedSandboxProjectRelationV1, CacheDomainBindingV1,
+    CacheDomainVerifierV1, CompiledPolicyCandidateV1, PolicyCompilerInputV1, PolicyCompilerV1,
+    SandboxProjectRelationVerifierV1,
 };
 use super::{CreateQ04ErrorV1, Q04CutIdentityV1};
 

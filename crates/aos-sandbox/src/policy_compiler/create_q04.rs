@@ -220,7 +220,7 @@ pub enum CreateQ04ErrorV1 {
     Projection(#[from] crate::controller_service::public_projection::PublicProjectionError),
     /// The sole deterministic compiler rejected the retained original input.
     #[error(transparent)]
-    Compilation(#[from] super::PolicyCompilationError),
+    Compilation(#[from] aos_sandbox_policy::PolicyCompilationError),
     /// The existing full original-input archive failed its sole codec.
     #[error(transparent)]
     InputOrigin(#[from] crate::publisher_policy::PublisherPolicyError),

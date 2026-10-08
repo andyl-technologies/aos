@@ -22,11 +22,9 @@ use crate::publisher_policy::{
     PreparedPublisherPolicyRevisionV1, PublisherPolicyError, PublisherPolicyStore,
 };
 
-use super::model::{CompiledPolicyCandidatePreimageV1, canonical_bytes};
-use super::{
-    CompiledPolicyCandidateV1, PolicyCompilerInputV1, PolicyCompilerV1,
-    normalized_policy_input_digest_v1,
-};
+use aos_sandbox_policy::{canonical_bytes, compiled_policy_candidate_digest_v1};
+use super::normalized_policy_input_digest_v1;
+use aos_sandbox_policy::{CompiledPolicyCandidateV1, PolicyCompilerInputV1, PolicyCompilerV1};
 
 const MAGIC: &[u8; 8] = b"AOSPCO03";
 const INPUT_DOMAIN: &[u8] = b"aos.sandbox.publisher-original-compiler-input.v3";
@@ -264,8 +262,7 @@ impl RetainedPublisherCompilerOriginV3 {
             return Err(PublisherPolicyError::CorruptState);
         }
         let descriptors = self.output_descriptors()?;
-        let candidate = CompiledPolicyCandidatePreimageV1::from_digests(self.plans)
-            .commitment(descriptors.each_ref())
+        let candidate = compiled_policy_candidate_digest_v1(self.plans, descriptors.each_ref())
             .map_err(|_| PublisherPolicyError::CorruptState)?;
         let policy = PreparedPublisherPolicyRevisionV1::from_canonical_bytes(
             self.project,
@@ -281,7 +278,7 @@ impl RetainedPublisherCompilerOriginV3 {
         let project = descriptor_for_bytes(input_media.clone(), &self.fields[1]);
         let request = descriptor_for_bytes(input_media, &self.fields[2]);
         let inputs = policy.policy().input_commitments();
-        if candidate.digest() != self.candidate
+        if candidate != self.candidate
             || inputs.len() != 10
             || inputs.get(2) != Some(&project)
             || inputs.get(3) != Some(&request)
@@ -399,7 +396,7 @@ fn retain_derivation(
         original_target: input.sandbox(),
         normalized_input,
         candidate: candidate.commitment().digest(),
-        plans: candidate.commitment_preimage().digests(),
+        plans: candidate.commitment_plan_digests(),
         fields: [
             full_input,
             input.project().canonical_bytes().to_vec(),

@@ -130,7 +130,7 @@ impl AuthenticatedEndpointCatalogV1 {
 /// # Errors
 ///
 /// Rejects unordered, sentinel, oversized, or unencodable declarations.
-pub(super) fn canonical_endpoint_catalog_v1(
+pub fn canonical_endpoint_catalog_v1(
     entries: &[EndpointCatalogEntryV1],
 ) -> Result<(ObjectDescriptor, Vec<u8>), EndpointCatalogError> {
     if entries.len() > 4_096

@@ -16,22 +16,15 @@ use aos_sandbox_core::{
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use super::{DIAGNOSTICS_DOMAIN, PolicyCompilerJournalErrorV1};
-use crate::policy_compiler::{
-    advisory::{
-        AdvisoryActionV1, AdvisoryDegradationV1, AdvisoryKindV1, AdvisoryStatusV1,
-        canonicalize_advisory_actions,
-    },
-    model::{
-        ExplanationDecisionV1, ExplanationReasonV1, ExplanationStageV1, InputSourceV1,
-        MAXIMUM_ADVISORY_RULES_PER_LAYER, MAXIMUM_CANONICAL_OBJECT_BYTES,
-        MAXIMUM_EXPLANATION_ENTRIES_PER_STAGE, MAXIMUM_NAMESPACE_RULES_PER_LAYER,
-        MAXIMUM_POLICY_ANCESTORS, canonical_bytes, digest,
-    },
-    namespace::{
-        LogicalSourceV1, NamespaceCompositionV1, NamespaceExecutionClassV1, NamespaceGraphSchemaV1,
-        NamespacePresentationFeatureV1, NamespaceRuleV1, NamespaceSourceClassV1, ViewExecutionV1,
-        validate_portable_namespace_rule_order,
-    },
+use aos_sandbox_policy::{
+    AdvisoryActionV1, AdvisoryDegradationV1, AdvisoryKindV1, AdvisoryStatusV1,
+    canonicalize_advisory_actions, ExplanationDecisionV1, ExplanationReasonV1, ExplanationStageV1,
+    InputSourceV1, MAXIMUM_ADVISORY_RULES_PER_LAYER, MAXIMUM_CANONICAL_OBJECT_BYTES,
+    MAXIMUM_EXPLANATION_ENTRIES_PER_STAGE, MAXIMUM_NAMESPACE_RULES_PER_LAYER,
+    MAXIMUM_POLICY_ANCESTORS, canonical_bytes, digest, LogicalSourceV1, NamespaceCompositionV1,
+    NamespaceExecutionClassV1, NamespaceGraphSchemaV1, NamespacePresentationFeatureV1,
+    NamespaceRuleV1, NamespaceSourceClassV1, ViewExecutionV1,
+    validate_portable_namespace_rule_order,
 };
 
 const NAMESPACE_DOMAIN: &[u8] = b"aos.sandbox.portable-namespace-graph.v1";

@@ -10,7 +10,7 @@ use aos_sandbox_core::{
 };
 
 use super::*;
-use crate::policy_compiler::{
+use aos_sandbox_policy::{
     AdvisoryActionV1, AdvisoryDegradationV1, AdvisoryKindV1, AuthenticatedCacheDomainV1,
     AuthenticatedEndpointCatalogV1, AuthenticatedExecutableSourceV1,
     AuthenticatedNamespaceCatalogV1, AuthenticatedSandboxProjectRelationV1, BackendCapabilitiesV1,
@@ -220,7 +220,7 @@ pub(super) fn fixture_from_input(input: PolicyCompilerInputV1) -> VerifiedPolicy
     let normalized_input = normalized_policy_input_digest_v1(&input).expect("normalized input");
     let candidate = PolicyCompilerV1::compile(input).expect("real pure compilation");
     let diagnostics =
-        super::super::model::canonical_bytes(DIAGNOSTICS_DOMAIN, candidate.explanation())
+        aos_sandbox_policy::canonical_bytes(DIAGNOSTICS_DOMAIN, candidate.explanation())
             .expect("real compiler diagnostics");
     let prerequisites = PolicyPublicationPrerequisitesV1::new(
         ObjectDigest::from_bytes([4; 32]),
@@ -381,7 +381,7 @@ fn candidate_v3_roundtrip_retains_exact_existing_compiler_preimage_and_outputs()
     assert!(header.matches_current(&decode_current_payload(&current).expect("Current")));
     assert_eq!(
         header.preimage,
-        Some(verified.candidate.commitment_preimage())
+        Some(verified.candidate.commitment_plan_digests())
     );
 
     let portable = verified.candidate.portable();
@@ -394,7 +394,7 @@ fn candidate_v3_roundtrip_retains_exact_existing_compiler_preimage_and_outputs()
             portable.advisory_program_bytes()
         ]
     );
-    let original_hash = super::super::model::digest(
+    let original_hash = aos_sandbox_policy::digest(
         b"aos.sandbox.compiled-policy-candidate.v2",
         &(
             verified.candidate.authority().commitment(),

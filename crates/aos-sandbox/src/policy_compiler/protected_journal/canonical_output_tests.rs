@@ -8,6 +8,10 @@ use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use super::super::candidate_tests::compile_fixture;
 use super::super::*;
 use super::*;
+use aos_sandbox_policy::{
+    ExplanationStageV1, MAXIMUM_EXPLANATION_ENTRIES_PER_STAGE, NamespaceExecutionClassV1,
+    NamespaceGraphSchemaV1,
+};
 use crate::journal::JournalLimits;
 
 fn payload(bytes: &[u8], domain: &[u8]) -> String {

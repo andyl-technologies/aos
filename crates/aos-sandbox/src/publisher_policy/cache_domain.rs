@@ -7,7 +7,7 @@
 use aos_sandbox_core::format::descriptor_for_bytes;
 use aos_sandbox_core::{MediaType, ObjectDescriptor, PortableMediaType, ProjectId};
 
-use crate::policy_compiler::{CacheDomainBindingV1, CacheDomainVerifierV1};
+use aos_sandbox_policy::{CacheDomainBindingV1, CacheDomainVerifierV1};
 
 use super::PublisherPolicyStore;
 

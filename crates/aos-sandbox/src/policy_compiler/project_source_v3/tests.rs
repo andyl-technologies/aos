@@ -30,15 +30,17 @@ use crate::policy_compiler::deployment_head::{
     signed_test_deployment_input_fixture_v1, verify_test_held_deployment_profile_v2,
 };
 use crate::policy_compiler::{
+    PolicyDeploymentCatalogDeclarationsV2, compile_publisher_policy_revision_v2,
+    decode_policy_deployment_sources_v1, verify_policy_deployment_head_v1,
+};
+use aos_sandbox_policy::{
     AdvisoryActionV1, AdvisoryDegradationV1, AdvisoryKindV1, AuthenticatedCacheDomainV1,
     AuthenticatedEndpointCatalogV1, AuthenticatedNamespaceCatalogV1,
     AuthenticatedSandboxProjectRelationV1, CacheDomainBindingV1, CacheDomainInputV1,
     CacheDomainVerifierV1, EndpointCatalogVerifierV1, HardLimitRequestV1, HardLimitValueV1,
     HardResourceProfileV1, LogicalSourceV1, NamespaceCatalogVerifierV1, NamespaceRuleV1,
-    NamespaceSourceClassV1, PolicyCompilerLimitsV1, PolicyDeploymentCatalogDeclarationsV2,
-    PolicyLayerV1, RevocationInputV1, SandboxProjectRelationVerifierV1,
-    compile_publisher_policy_revision_v2, decode_policy_deployment_sources_v1,
-    verify_policy_deployment_head_v1,
+    NamespaceSourceClassV1, PolicyCompilerLimitsV1, PolicyLayerV1, RevocationInputV1,
+    SandboxProjectRelationVerifierV1,
 };
 use crate::publisher_policy::{
     PreparedPublisherPolicyRevisionV1, PublisherPolicyError, PublisherRevocationHeadV1,
@@ -936,7 +938,7 @@ fn project_v3_full_outputs_generation_and_role_rotation_do_not_rebind_original()
         }
         offset += length;
     }
-    let candidate = crate::policy_compiler::PolicyCompilerV1::compile(input.clone())
+    let candidate = aos_sandbox_policy::PolicyCompilerV1::compile(input.clone())
         .expect("fresh actual candidate");
     origin
         .compare_compiled_derivation(&input, &candidate)

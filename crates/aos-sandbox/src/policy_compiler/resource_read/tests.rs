@@ -18,7 +18,7 @@ use crate::Journal;
 use crate::policy_compiler::protected_journal::resolved_policy_fixture as fixture;
 use crate::policy_compiler::protected_owner::{POLICY_STATE_JOURNAL, policy_state_journal_limits};
 use crate::policy_compiler::resolved_policy::tests::{commit_fixture, open};
-use crate::policy_compiler::{CandidateAuthorityV1, PolicyCompilerLimitsV1};
+use aos_sandbox_policy::{CandidateAuthorityV1, PolicyCompilerLimitsV1};
 
 fn descriptor(kind: PortableMediaType, byte: u8) -> ObjectDescriptor {
     ObjectDescriptor::new(
@@ -108,8 +108,8 @@ fn resource_read_retained_compile_preserves_complete_input_candidate_and_preimag
     assert_eq!(input, before);
     assert_eq!(borrowed, consuming);
     assert_eq!(
-        borrowed.commitment_preimage(),
-        consuming.commitment_preimage()
+        borrowed.commitment_plan_digests(),
+        consuming.commitment_plan_digests()
     );
     assert_eq!(
         borrowed.authority_status(),

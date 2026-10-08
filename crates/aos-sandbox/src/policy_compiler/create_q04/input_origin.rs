@@ -24,7 +24,7 @@ pub(crate) fn cache_replay_cell_bytes() -> Result<usize, ResourceReservationErro
 }
 
 pub(crate) fn candidate_capacity(
-    candidate: &super::super::CompiledPolicyCandidateV1,
+    candidate: &aos_sandbox_policy::CompiledPolicyCandidateV1,
 ) -> Result<ResourceVector, CreateQ04ErrorV1> {
     use aos_sandbox_core::{ResourceDimension, ResourceLimit};
 
@@ -45,8 +45,8 @@ pub(crate) struct Q04PreparedInputOriginV1 {
 
 impl Q04PreparedInputOriginV1 {
     pub(super) fn retain(
-        input: &super::super::PolicyCompilerInputV1,
-        candidate: &super::super::CompiledPolicyCandidateV1,
+        input: &aos_sandbox_policy::PolicyCompilerInputV1,
+        candidate: &aos_sandbox_policy::CompiledPolicyCandidateV1,
     ) -> Result<Self, CreateQ04ErrorV1> {
         let original = super::super::publisher_origin::retain_q04_original_derivation(input, candidate)?;
         Ok(Self { bytes: original.to_record_bytes()? })
@@ -117,7 +117,7 @@ pub(crate) fn original_input_demand(
     source: &JournalShape,
 ) -> Result<Q04OriginalInputDemandV1, ResourceReservationErrorV1> {
     let failed = || ResourceReservationErrorV1::Conflict;
-    let layer = super::super::MAXIMUM_POLICY_LAYER_BYTES;
+    let layer = aos_sandbox_policy::MAXIMUM_POLICY_LAYER_BYTES;
     // The parentless path has four layers, two branded catalogs and backend
     // input. Four portable outputs, original/candidate verification copies,
     // and the AOSPCO03 serializer's independent record remain simultaneously
@@ -129,14 +129,14 @@ pub(crate) fn original_input_demand(
         .and_then(|bytes| bytes.checked_mul(2))
         .and_then(|bytes| bytes.checked_add(origin_bytes * 2)).ok_or_else(failed)?;
     let cell_bytes = std::mem::size_of::<(Vec<u8>, Vec<u8>, [usize; 4])>()
-        .checked_add(std::mem::size_of::<super::super::PolicyLayerV1>())
-        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<super::super::CompiledPolicyCandidateV1>()))
-        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<super::super::PolicyCompilerInputV1>()))
+        .checked_add(std::mem::size_of::<aos_sandbox_policy::PolicyLayerV1>())
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<aos_sandbox_policy::CompiledPolicyCandidateV1>()))
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<aos_sandbox_policy::PolicyCompilerInputV1>()))
         .ok_or_else(failed)?;
     let compiler_cells = compiler_bytes;
     let compiler_memory = compiler_bytes.checked_add(compiler_cells.checked_mul(cell_bytes).ok_or_else(failed)?)
-        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<super::super::PolicyCompilerInputV1>()))
-        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<super::super::CompiledPolicyCandidateV1>()))
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<aos_sandbox_policy::PolicyCompilerInputV1>()))
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<aos_sandbox_policy::CompiledPolicyCandidateV1>()))
         .ok_or_else(failed)?;
 
     // The actual fresh Controller and unchanged Source shapes are not replaced

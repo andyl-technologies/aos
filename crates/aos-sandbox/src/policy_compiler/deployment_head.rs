@@ -56,12 +56,12 @@ use crate::publisher_policy::{
     PublisherPolicyError, PublisherPolicyLimits, PublisherPolicyStore, project_revocation_digest,
 };
 
-use super::model::canonical_bytes;
+use aos_sandbox_policy::canonical_bytes;
 use super::project_source_v2::{HEAD_KEY_V2, INPUT_KEY_V2};
 use super::protected_owner::{
     POLICY_AUTHORITY_JOURNAL, PROTECTED_POLICY_ROOT, policy_authority_journal_limits,
 };
-use super::{
+use aos_sandbox_policy::{
     AuthenticatedEndpointCatalogV1, AuthenticatedNamespaceCatalogV1, BackendCapabilitiesV1,
     BackendEnforcementSetV1, EndpointCatalogEntryV1, EndpointCatalogVerifierV1, HardEnforcementV1,
     HardLimitRequestV1, HardLimitValueV1, HardResourceKeyV1, HardResourceProfileV1,
@@ -1218,8 +1218,8 @@ pub(super) fn decode_layer(
         resources,
         Vec::new(),
         Vec::new(),
-        super::CacheDomainInputV1::Inherit,
-        super::RevocationInputV1::Inherit,
+        aos_sandbox_policy::CacheDomainInputV1::Inherit,
+        aos_sandbox_policy::RevocationInputV1::Inherit,
     )
     .map_err(|_| PolicyDeploymentHeadErrorV1::InvalidHead)
 }
@@ -1344,12 +1344,11 @@ mod tests {
         replay_project_ancestry_head_v1,
     };
     use crate::policy_compiler::project_source_v2::admit_signed_project_policy_source_with_journals_v2;
-    use crate::policy_compiler::{
+    use aos_sandbox_policy::{
         AuthenticatedEndpointCatalogV1, AuthenticatedNamespaceCatalogV1,
         AuthenticatedSandboxProjectRelationV1, EndpointCatalogVerifierV1,
-        NamespaceCatalogVerifierV1, PolicyCompilerInputV1, PolicyCompilerLimitsV1,
-        PolicyCompilerV1, ProjectPolicyInputV1, RequestPolicyInputV1,
-        SandboxProjectRelationVerifierV1,
+        NamespaceCatalogVerifierV1, PolicyCompilerInputV1, PolicyCompilerLimitsV1, PolicyCompilerV1,
+        ProjectPolicyInputV1, RequestPolicyInputV1, SandboxProjectRelationVerifierV1,
     };
     use crate::publisher_policy::{PreparedPublisherPolicyRevisionV1, PublisherRevocationHeadV1};
 
@@ -1977,11 +1976,11 @@ mod tests {
         );
         assert!(matches!(
             admitted.layer().cache_domain(),
-            crate::policy_compiler::CacheDomainInputV1::Exact(_)
+            aos_sandbox_policy::CacheDomainInputV1::Exact(_)
         ));
         assert!(matches!(
             admitted.layer().revocation(),
-            crate::policy_compiler::RevocationInputV1::Exact(_)
+            aos_sandbox_policy::RevocationInputV1::Exact(_)
         ));
         let deployment_head = verify_policy_deployment_head_v1(
             &deployment_packet,

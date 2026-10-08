@@ -52,18 +52,63 @@ use crate::reconciler::{
 use crate::{Journal, JournalError};
 
 use super::{
-    AdmittedSignedProjectPolicySourceV2, CacheDomainInputV1, HardLimitValueV1,
-    PolicyCompilerInputV1, PolicyDeploymentSourcesV1, PolicyPublicationPrerequisitesV1,
-    RevocationInputV1, RootV8ReleasedProofV1, SignedProjectPolicySourceV1,
+    AdmittedSignedProjectPolicySourceV2, PolicyDeploymentSourcesV1,
+    PolicyPublicationPrerequisitesV1, RootV8ReleasedProofV1, SignedProjectPolicySourceV1,
     VerifiedSignedProjectPolicySourceV2, normalized_policy_input_digest_v1,
 };
+use aos_sandbox_policy::{
+    CacheDomainInputV1, HardLimitValueV1, PolicyCompilerInputV1, RevocationInputV1,
+};
 #[cfg(target_os = "linux")]
-use super::{
+use super::{PolicyDeploymentHeadErrorV1, PolicyDeploymentHeadV1};
+#[cfg(target_os = "linux")]
+use aos_sandbox_policy::{
     AuthenticatedSandboxProjectRelationV1, HardLimitRequestV1, HardResourceKeyV1,
     HardResourceModelError, HardResourceProfileV1, PORTABLE_LIMIT_DIMENSIONS,
-    PolicyCompilerLimitsV1, PolicyDeploymentHeadErrorV1, PolicyDeploymentHeadV1,
-    PolicyLayerV1, PolicyModelError, ProjectPolicyInputV1, RequestPolicyInputV1,
+    PolicyCompilerLimitsV1, PolicyLayerV1, PolicyModelError, ProjectPolicyInputV1,
+    RequestPolicyInputV1,
 };
+
+/// Brands only the pair selected by the private current-Create producer.
+fn relation_from_current_create_source(
+    source: &CurrentCreateProjectPolicySourceV1,
+) -> Result<
+    aos_sandbox_policy::AuthenticatedSandboxProjectRelationV1,
+    aos_sandbox_policy::PolicyModelError,
+> {
+    aos_sandbox_policy::AuthenticatedSandboxProjectRelationV1::authenticate(
+        source.sandbox(),
+        source.project(),
+        &CurrentCreateRelationVerifierV1 { source },
+    )
+}
+
+// Only the current-Create producer selects this verifier, after reading the
+// actual protected Controller journal. The input remains nonauthoritative.
+struct CurrentCreateRelationVerifierV1<'source> {
+    source: &'source CurrentCreateProjectPolicySourceV1,
+}
+
+impl aos_sandbox_policy::SandboxProjectRelationVerifierV1 for CurrentCreateRelationVerifierV1<'_> {
+    fn verify(
+        &self,
+        sandbox: SandboxId,
+        project: ProjectId,
+        descriptor: &aos_sandbox_core::ObjectDescriptor,
+        canonical_bytes: &[u8],
+    ) -> bool {
+        let Ok(media) = aos_sandbox_core::MediaType::new(
+            aos_sandbox_core::PortableMediaType::Content.as_str(),
+        ) else {
+            return false;
+        };
+
+        sandbox == self.source.sandbox()
+            && project == self.source.project()
+            && !canonical_bytes.is_empty()
+            && aos_sandbox_core::format::descriptor_for_bytes(media, canonical_bytes) == *descriptor
+    }
+}
 
 const SOURCE_DOMAIN: &[u8] = b"aos.sandbox.public-create-project-source.v2\0";
 const DRAFT_DOMAIN: &[u8] = b"aos.sandbox.public-create-policy-draft.v1\0";
@@ -896,7 +941,7 @@ pub fn current_parentless_create_compiler_input_v1(
         signed_project,
         current_create_input_time()?,
     )?;
-    let relation = AuthenticatedSandboxProjectRelationV1::from_current_create_source(&source)?;
+    let relation = relation_from_current_create_source(&source)?;
     let input = parentless_create_input_from_authenticated_layers_v1(
         relation, project_layer, deployment,
     )?;
@@ -1861,17 +1906,18 @@ mod tests {
 
     use super::*;
     use crate::policy_compiler::{
-        AuthenticatedCacheDomainV1, AuthenticatedEndpointCatalogV1,
-        AuthenticatedNamespaceCatalogV1, AuthenticatedSandboxProjectRelationV1,
-        CacheDomainBindingV1, CacheDomainVerifierV1, ClosedPolicyRootCasBaseV2,
-        EndpointCatalogVerifierV1, HardLimitRequestV1, HardResourceKeyV1, HardResourceProfileV1,
-        NamespaceCatalogVerifierV1, PORTABLE_LIMIT_DIMENSIONS, PolicyCompilationError,
-        PolicyCompilerLimitsV1, PolicyCompilerV1, PolicyDeploymentInputsV1, PolicyLayerV1,
-        ProjectPolicyInputV1, RequestPolicyInputV1, SandboxProjectRelationVerifierV1,
-        decode_policy_deployment_sources_v1,
+        ClosedPolicyRootCasBaseV2, PolicyDeploymentInputsV1, decode_policy_deployment_sources_v1,
         propose_closed_current_create_explicit_policy_binding_v2,
         propose_closed_current_create_policy_binding_v2, verify_policy_deployment_head_v1,
         verify_signed_project_policy_source_v1, verify_signed_project_policy_source_v2,
+    };
+    use aos_sandbox_policy::{
+        AuthenticatedCacheDomainV1, AuthenticatedEndpointCatalogV1, AuthenticatedNamespaceCatalogV1,
+        AuthenticatedSandboxProjectRelationV1, CacheDomainBindingV1, CacheDomainVerifierV1,
+        EndpointCatalogVerifierV1, HardLimitRequestV1, HardResourceKeyV1, HardResourceProfileV1,
+        NamespaceCatalogVerifierV1, PORTABLE_LIMIT_DIMENSIONS, PolicyCompilationError,
+        PolicyCompilerLimitsV1, PolicyCompilerV1, PolicyLayerV1, ProjectPolicyInputV1,
+        RequestPolicyInputV1, SandboxProjectRelationVerifierV1,
     };
 
     struct FixtureVerifier;

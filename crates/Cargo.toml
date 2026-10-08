@@ -40,6 +40,7 @@ members = [
     "aos-sandbox-guest",
     "aos-sandbox-core",
     "aos-sandbox-journal",
+    "aos-sandbox-policy",
     "aos-sandbox-ownership-protocol",
     "aos-sandbox-source-provider-ledger",
     "aos-sandbox-source-provider",
@@ -279,6 +280,7 @@ aos-sandbox-client = { path = "aos-sandbox-client" }
 aos-sandbox-guest = { path = "aos-sandbox-guest" }
 aos-sandbox-core = { path = "aos-sandbox-core" }
 aos-sandbox-journal = { path = "aos-sandbox-journal" }
+aos-sandbox-policy = { path = "aos-sandbox-policy" }
 aos-sandbox-guardian = { path = "aos-sandbox-guardian" }
 aos-sandbox-ownership-protocol = { path = "aos-sandbox-ownership-protocol" }
 aos-sandbox-source-provider = { path = "aos-sandbox-source-provider" }

@@ -49,7 +49,7 @@ impl PolicyCompilerV1 {
     ///
     /// Returns the unchanged compilation errors for work, model, authority,
     /// namespace, resource, backend, advisory or lowering failures.
-    pub(crate) fn compile_retained(
+    pub fn compile_retained(
         input: &PolicyCompilerInputV1,
     ) -> Result<CompiledPolicyCandidateV1, PolicyCompilationError> {
         enforce_work_cap(input)?;

@@ -255,7 +255,15 @@ impl AdvisoryPlanV1 {
     }
 }
 
-pub(crate) fn canonicalize_advisory_actions(
+/// Orders advisory declaration DATA without authenticating it.
+///
+/// This ordering operation does not admit a policy or establish live effects.
+///
+/// # Errors
+///
+/// Returns [`PolicyModelError`] for ambiguous identities, noncanonical ties or
+/// bounded canonical hashing failures.
+pub fn canonicalize_advisory_actions(
     actions: Vec<AdvisoryActionV1>,
 ) -> Result<Vec<AdvisoryActionV1>, PolicyModelError> {
     let mut identities = BTreeSet::new();
