@@ -11,7 +11,14 @@ let
       inherit lib;
       specialArgs = {
         inherit package;
-        dependencies.coreutils = package;
+        dependencies = {
+          coreutils = package;
+          ca-certificates = package;
+        };
+        provenance = {
+          ownerOfOption = _: "@base";
+          ownerOfListAttr = _: _: _: "@base";
+        };
       };
       modules =
         [
@@ -23,10 +30,17 @@ let
           ../../pkgs/system/_aos-host-policy/kernel.nix
           ../../pkgs/system/_aos-host-policy/hardening.nix
           ../../pkgs/system/_systemd-abilities/crash-dump-policy.nix
+          ../../pkgs/boot/_aos-configuration-lower/module.nix
+          ../../pkgs/system/_aos-host-policy/configuration-lower.nix
+          ../../pkgs/system/_aos-host-policy/pki.nix
           ../../pkgs/system/_aos-host-policy/networking.nix
           ../../pkgs/networking/_nftables/module.nix
           ../../pkgs/security/_audit/module.nix
           ({lib, ...}: {
+            options.environment.sessionVariables = lib.mkOption {
+              type = lib.types.attrsOf lib.types.str;
+              default = {};
+            };
             options.aos.kernel.commandLineParts = lib.mkOption {
               type = lib.types.attrsOf (lib.types.listOf lib.types.str);
               default = {};
@@ -67,6 +81,44 @@ let
     aos.initSystem.container = true;
     aos.security.hardening.coreDump.enable = true;
   };
+  explicitLower = evaluate {
+    aos.initSystem.container = true;
+    aos.configurationLower.enable = true;
+  };
+  explicitLowerFile = evaluate {
+    aos.initSystem.container = true;
+    aos.configurationLower.files."requested.conf" = {
+      kind = "text";
+      text = "requested";
+    };
+  };
+  containerLowerBackend = evaluate {
+    aos.initSystem.container = true;
+    aos.configurationLower.enable = true;
+    aos.abilities.configurationLower.operations.mount.handler.program = package;
+  };
+  explicitTree = evaluate {
+    aos.initSystem.container = true;
+    aos.filesystems.etcTrees = [
+      {
+        target = "requested-tree";
+        source = package.outPath;
+      }
+    ];
+  };
+  explicitPki = evaluate {
+    aos.initSystem.container = true;
+    aos.security.pki.enable = true;
+  };
+  customPki = evaluate {
+    aos.initSystem.container = true;
+    aos.security.pki.certificates = ["custom certificate"];
+    aos.security.pki.certificateFiles = [package.outPath];
+  };
+  lowerPreflightRejected = evaluated:
+    evaluated.config.aos.configurationLower.enable
+    && evaluated.config.aos.abilities.configurationLower.operations.install.effects.image.children.overlay.execution.program == null
+    && !(builtins.tryEval (builtins.deepSeq evaluated.config.aos.activation.graph true)).success;
   links = evaluated: evaluated.config.aos.abilities.network.operations.configure.effects.host.input.links;
   defaultLink = builtins.head (links defaults);
   explicitLink = builtins.head (links explicit);
@@ -129,6 +181,33 @@ in {
     containerCollector.config.aos.kernel.sysctl."kernel.core_pattern"
     == "|${package}/lib/systemd/systemd-coredump %P %u %g %s %t %c %h %e"
     && containerCollector.config.aos.abilities.kernelTunables.operations.ensure.effects.settings.enable;
+  hostConfigurationLowerUnchanged =
+    defaults.config.aos.configurationLower.enable
+    && defaults.config.aos.security.pki.enable
+    && defaults.config.aos.configurationLower.files ? "security/limits.d/aos-hardening.conf"
+    && defaults.config.aos.configurationLower.files ? "ssl/certs/ca-certificates.crt"
+    && defaults.config.aos.abilities.configurationLower.operations.mount.handler.program != null;
+  containerLiteralFilesRemainLive =
+    !container.config.aos.configurationLower.enable
+    && container.config.aos.configurationLower.files == {}
+    && container.config.aos.abilities.configuration.operations.file.effects.hardening-limits.enable
+    && container.config.aos.abilities.configuration.operations.file.effects.coredump-policy.enable;
+  containerRetainsCanonicalCAIdentity =
+    !container.config.aos.security.pki.enable
+    && container.config.aos.security.pki.caBundle == "/etc/ssl/certs/ca-certificates.crt";
+  explicitContainerLowerRejectedBeforeDispatch = lowerPreflightRejected explicitLower;
+  explicitContainerLowerFileRejectedBeforeDispatch = lowerPreflightRejected explicitLowerFile;
+  containerCanSelectLowerBackend = builtins.deepSeq containerLowerBackend.config.aos.activation.graph true;
+  explicitContainerTreeRejectedBeforeDispatch =
+    lowerPreflightRejected explicitTree
+    && builtins.length explicitTree.config.aos.configurationLower.etcTrees == 1;
+  explicitContainerPkiRejectedBeforeDispatch =
+    lowerPreflightRejected explicitPki
+    && explicitPki.config.aos.security.pki.enable;
+  customContainerPkiRejectedBeforeDispatch =
+    lowerPreflightRejected customPki
+    && customPki.config.aos.security.pki.enable
+    && builtins.length customPki.config.aos.configurationLower.files."ssl/certs/ca-certificates.crt".parts == 3;
   defaultGraphChecked = builtins.deepSeq graph true;
   containerGraphsChecked = builtins.deepSeq container.config.aos.activation.graph (builtins.deepSeq explicitContainer.config.aos.activation.graph true);
 }
