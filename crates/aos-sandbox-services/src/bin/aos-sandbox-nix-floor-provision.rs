@@ -123,6 +123,8 @@ fn hardware_main(selected: Command) -> ! {
     }
     let original = &mut startup;
     let borrowed = catch_unwind(AssertUnwindSafe(move || {
+        // Move this loan into the single invocation, as in the preparation path.
+        let original = original;
         match selected {
             Command::Initialize => original.borrow_initialize(),
             Command::Recover => original.borrow_recovery(),
