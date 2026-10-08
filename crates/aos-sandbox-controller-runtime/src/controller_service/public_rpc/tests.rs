@@ -345,3 +345,42 @@ fn retryable_inventory_loss_closes_observation_status() {
     assert!(capabilities.capabilities.is_empty());
     assert_eq!(capabilities.capability_generation, 3);
 }
+
+#[test]
+fn worker_failure_projection_preserves_each_error_code_and_message() {
+    let cases = [
+        (
+            ControllerCommandFailure::DeadlineExceeded,
+            ErrorCode::DeadlineExceeded,
+            "expired",
+        ),
+        (
+            ControllerCommandFailure::InvalidRequest,
+            ErrorCode::InvalidArgument,
+            "invalid",
+        ),
+        (
+            ControllerCommandFailure::Rejected,
+            ErrorCode::PermissionDenied,
+            "rejected",
+        ),
+        (
+            ControllerCommandFailure::ControllerUnavailable,
+            ErrorCode::Unavailable,
+            "unavailable",
+        ),
+    ];
+
+    for (failure, code, message) in cases {
+        let error = public_controller_command_error(
+            failure,
+            "expired",
+            "invalid",
+            "rejected",
+            "unavailable",
+        );
+
+        assert_eq!(error.code, code);
+        assert_eq!(error.message.as_deref(), Some(message));
+    }
+}

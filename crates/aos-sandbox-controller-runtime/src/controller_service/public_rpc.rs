@@ -488,25 +488,15 @@ impl CapabilityService {
             await_public_controller_reply(response, "controller public policy planning timed out")
                 .await?;
 
-        match result {
-            Ok(plan) => Ok(plan),
-            Err(ControllerCommandFailure::DeadlineExceeded) => Err(ConnectError::new(
-                ErrorCode::DeadlineExceeded,
+        result.map_err(|failure| {
+            public_controller_command_error(
+                failure,
                 "controller public policy planning expired",
-            )),
-            Err(ControllerCommandFailure::InvalidRequest) => Err(ConnectError::new(
-                ErrorCode::InvalidArgument,
                 "public policy-planning request is invalid",
-            )),
-            Err(ControllerCommandFailure::Rejected) => Err(ConnectError::new(
-                ErrorCode::PermissionDenied,
                 "public policy-planning request was rejected",
-            )),
-            Err(ControllerCommandFailure::ControllerUnavailable) => Err(ConnectError::new(
-                ErrorCode::Unavailable,
                 "controller public policy planner is unavailable",
-            )),
-        }
+            )
+        })
     }
 
     async fn admit_public_operator_recovery(
@@ -536,25 +526,15 @@ impl CapabilityService {
         )
         .await?;
 
-        match result {
-            Ok(operation) => Ok(operation),
-            Err(ControllerCommandFailure::DeadlineExceeded) => Err(ConnectError::new(
-                ErrorCode::DeadlineExceeded,
+        result.map_err(|failure| {
+            public_controller_command_error(
+                failure,
                 "controller operator-recovery admission expired",
-            )),
-            Err(ControllerCommandFailure::InvalidRequest) => Err(ConnectError::new(
-                ErrorCode::InvalidArgument,
                 "operator-recovery request is invalid",
-            )),
-            Err(ControllerCommandFailure::Rejected) => Err(ConnectError::new(
-                ErrorCode::PermissionDenied,
                 "operator-recovery request was rejected",
-            )),
-            Err(ControllerCommandFailure::ControllerUnavailable) => Err(ConnectError::new(
-                ErrorCode::Unavailable,
                 "controller operator-recovery state is unavailable",
-            )),
-        }
+            )
+        })
     }
 
     async fn admit_public_mutation(
@@ -584,25 +564,15 @@ impl CapabilityService {
         )
         .await?;
 
-        match result {
-            Ok(admitted) => Ok(admitted),
-            Err(ControllerCommandFailure::DeadlineExceeded) => Err(ConnectError::new(
-                ErrorCode::DeadlineExceeded,
+        result.map_err(|failure| {
+            public_controller_command_error(
+                failure,
                 "controller public mutation admission expired",
-            )),
-            Err(ControllerCommandFailure::InvalidRequest) => Err(ConnectError::new(
-                ErrorCode::InvalidArgument,
                 "public mutation request is invalid",
-            )),
-            Err(ControllerCommandFailure::Rejected) => Err(ConnectError::new(
-                ErrorCode::PermissionDenied,
                 "public mutation was rejected",
-            )),
-            Err(ControllerCommandFailure::ControllerUnavailable) => Err(ConnectError::new(
-                ErrorCode::Unavailable,
                 "controller public mutation state is unavailable",
-            )),
-        }
+            )
+        })
     }
 
     async fn admit_public_attach(
@@ -630,25 +600,15 @@ impl CapabilityService {
             await_public_controller_reply(response, "controller attachment admission timed out")
                 .await?;
 
-        match result {
-            Ok(admitted) => Ok(admitted),
-            Err(ControllerCommandFailure::DeadlineExceeded) => Err(ConnectError::new(
-                ErrorCode::DeadlineExceeded,
+        result.map_err(|failure| {
+            public_controller_command_error(
+                failure,
                 "controller attachment admission expired",
-            )),
-            Err(ControllerCommandFailure::InvalidRequest) => Err(ConnectError::new(
-                ErrorCode::InvalidArgument,
                 "public attachment request is invalid",
-            )),
-            Err(ControllerCommandFailure::Rejected) => Err(ConnectError::new(
-                ErrorCode::PermissionDenied,
                 "public attachment was rejected",
-            )),
-            Err(ControllerCommandFailure::ControllerUnavailable) => Err(ConnectError::new(
-                ErrorCode::Unavailable,
                 "authenticated Host attachment route is unavailable",
-            )),
-        }
+            )
+        })
     }
 
     fn node_capabilities(
@@ -779,6 +739,24 @@ async fn await_public_controller_reply<T>(
                 "controller worker ended before replying",
             )
         })
+}
+
+// Projects only a worker's negative reply; transport and timeout errors stay
+// at their original call sites.
+fn public_controller_command_error(
+    failure: ControllerCommandFailure,
+    expired: &'static str,
+    invalid_request: &'static str,
+    rejected: &'static str,
+    unavailable: &'static str,
+) -> ConnectError {
+    let (code, message) = match failure {
+        ControllerCommandFailure::DeadlineExceeded => (ErrorCode::DeadlineExceeded, expired),
+        ControllerCommandFailure::InvalidRequest => (ErrorCode::InvalidArgument, invalid_request),
+        ControllerCommandFailure::Rejected => (ErrorCode::PermissionDenied, rejected),
+        ControllerCommandFailure::ControllerUnavailable => (ErrorCode::Unavailable, unavailable),
+    };
+    ConnectError::new(code, message)
 }
 
 fn controller_command_send_error<T>(error: mpsc::TrySendError<T>) -> ConnectError {
