@@ -34,6 +34,9 @@
     if stdenv.isCross
     then buildPackages.coreutils
     else coreutils;
+  nixCxxLibraryInputs = import ./_nix-cxx-library-inputs.nix {
+    inherit nix nlohmann-json boost libarchive openssl libsodium brotli curl libseccomp sqlite gcc-libs;
+  };
 in
   assert validDomain;
   assert nix.version == "2.24.12";
@@ -42,22 +45,7 @@ in
       version = "1";
       src = ./aos-nix-online-store-reader;
       buildDeps = [buildPkgConfig buildCoreutils];
-      # Headers and pkg-config metadata describe the target libraries, not
-      # native build tools. Nix does not propagate its public/private pc deps.
-      runtimeDeps = [
-        nix
-        nix.dev
-        nlohmann-json
-        boost.dev
-        libarchive
-        openssl
-        libsodium
-        brotli
-        curl
-        libseccomp
-        sqlite
-        gcc-libs
-      ];
+      runtimeDeps = nixCxxLibraryInputs;
       propagatedDeps = [];
 
       phases = [
