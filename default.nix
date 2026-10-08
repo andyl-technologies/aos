@@ -1854,9 +1854,6 @@ in rec {
         sandbox-policy-negative = import ./tests/vm/sandbox-policy-negative.nix {
           inherit testing pkgs lib;
         };
-        sandbox-cache-journal-idmap = import ./tests/vm/sandbox-cache-journal-idmap.nix {
-          inherit testing pkgs;
-        };
         sandbox-q04-held-writer-idmap = import ./tests/vm/sandbox-q04-held-writer-idmap.nix {
           inherit testing pkgs;
         };

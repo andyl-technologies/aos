@@ -97,6 +97,58 @@ testing.mkVMTest {
     test "$(${pkgs.util-linux}/bin/setpriv --reuid 813 --regid 813 --clear-groups \
       ${pkgs.coreutils}/bin/cat "$object_view/owner-state")" = physical
 
+    # Check cap-empty Root and Cache signer isolation while exercising live
+    # Cache names before the Controller retains its original files and locks.
+    ${pkgs.util-linux}/bin/setpriv \
+      --bounding-set=-all --inh-caps=-all --ambient-caps=-all \
+      ${pkgs.coreutils}/bin/cat "$root_view/state.journal" > /tmp/cache-view-read
+    test "$(cat /tmp/cache-view-read)" = cache
+    if ${pkgs.util-linux}/bin/setpriv \
+      --bounding-set=-all --inh-caps=-all --ambient-caps=-all \
+      ${pkgs.coreutils}/bin/cat "$cache/state.journal" >/dev/null 2>&1; then
+      exit 1
+    fi
+    if printf 'denied\n' > "$root_view/state.journal"; then
+      exit 1
+    fi
+
+    printf 'replacement\n' > "$cache/state.journal.compact.tmp"
+    chown 811:811 "$cache/state.journal.compact.tmp"
+    chmod 0600 "$cache/state.journal.compact.tmp"
+    mv "$cache/state.journal.compact.tmp" "$cache/state.journal"
+    test "$(cat "$root_view/state.journal")" = replacement
+    test "$(stat -c '%u:%g' "$root_view/state.journal")" = 0:0
+    ${pkgs.util-linux}/bin/setpriv --reuid 813 --regid 813 --clear-groups \
+      ${pkgs.coreutils}/bin/cat "$cache_view/state.journal" > /tmp/signer-journal-read
+    test "$(cat /tmp/signer-journal-read)" = replacement
+    ln -s state.journal "$cache/redirect"
+    if cat "$root_view/redirect" >/dev/null 2>&1; then
+      exit 1
+    fi
+    rm "$cache/redirect"
+
+    if ${pkgs.util-linux}/bin/setpriv --reuid 811 --regid 811 --clear-groups \
+      ${pkgs.coreutils}/bin/mv "$cache" "$cache.replaced" >/dev/null 2>&1; then
+      exit 1
+    fi
+    if ${pkgs.util-linux}/bin/setpriv \
+      --bounding-set=-all --inh-caps=-all --ambient-caps=-all \
+      ${pkgs.coreutils}/bin/cat "$object_view/owner-state" >/dev/null 2>&1; then
+      exit 1
+    fi
+    if ${pkgs.util-linux}/bin/setpriv \
+      --bounding-set=-all --inh-caps=-all --ambient-caps=-all \
+      ${pkgs.coreutils}/bin/cat "$cache_view/state.journal" >/dev/null 2>&1; then
+      exit 1
+    fi
+
+    mkdir -m 0700 /var/lib/aos/sandbox/cache-residency
+    chown 811:811 /var/lib/aos/sandbox/cache-residency
+    if ${pkgs.util-linux}/bin/setpriv --reuid 813 --regid 813 --clear-groups \
+      ${pkgs.coreutils}/bin/ls /var/lib/aos/sandbox/cache-residency >/dev/null 2>&1; then
+      exit 1
+    fi
+
     # One Controller identity keeps the Source, protected Cache, and physical
     # Cache lock FDs live while the independent signer identities inspect them.
     ${pkgs.util-linux}/bin/setpriv --reuid 811 --regid 811 --clear-groups \
@@ -220,6 +272,7 @@ testing.mkVMTest {
     mount_view "$cache" "$root_view" 0
     mount_view "$cache" "$cache_view" 813
     mount_view "$objects" "$object_view" 813
+    test "$(cat "$root_view/state.journal")" = replacement
     for name in source-domains-v1.journal source-domains-v1.journal.lock; do
       assert_named_pair "$source/$name" "$source_view/$name" 814
     done
