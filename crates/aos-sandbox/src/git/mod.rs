@@ -102,8 +102,6 @@ pub use physical_effect::{
     GitSanitizedForkRecoveryTokenV1, GitSanitizedForkRecoveryV1,
     GitSanitizedForkSettlementOutcomeV1, GitSanitizedForkSettlementRecoveryV1,
     GitSanitizedForkSettlementRetryV1, GitSanitizedForkSettlementUnknownV1,
-    GitSmartProtocolV2BackendV1, ProtectedGitSmartEffectAdapterV1, ProtectedGitSmartEffectErrorV1,
-    ProtectedGitSmartInvocationV1,
 };
 pub use protected_evidence::{GitProtectedEvidenceErrorV1, GitProtectedEvidenceOwnerV1};
 #[cfg(target_os = "linux")]

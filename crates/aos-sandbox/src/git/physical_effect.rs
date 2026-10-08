@@ -1,9 +1,8 @@
-//! Injectable dormant Git protocol-v2 and sanitized-pack physical effects.
+//! Dormant sanitized-pack physical effects and protected readback.
 //!
-//! Neither adapter is registered by the runtime. Physical implementations own
-//! endpoint routing, descriptors, process confinement, and immutable naming;
-//! callers can supply only validated logical records and cannot select a host
-//! repository path or executable.
+//! Physical implementations own endpoint routing, descriptors, process
+//! confinement, and immutable naming; callers can supply only validated logical
+//! records and cannot select a host repository path or executable.
 //!
 //! ```text
 //! AOSGSF01 || v1 || phase || project || repository || operation || intention
@@ -21,9 +20,8 @@ use crate::environment::{FixedLiveAuthorityClockV1, fixed_live_authority_clock_v
 use crate::journal::{Journal, JournalError, JournalLimits, RecordNamespace, RecoveryReport};
 
 use super::{
-    DormantGitSmartEffectV1, GitCheapForkStatusV1, GitCheapForkV1, GitPackLeaseStatusV1,
-    GitSmartAuthorityFenceV1, GitSmartDispatchStateV1, GitSmartEffectHandoffV1,
-    GitSmartEffectOutcomeV1, GitSmartTransportErrorV1, ImmutablePackGenerationV1,
+    GitCheapForkStatusV1, GitCheapForkV1, GitPackLeaseStatusV1, GitSmartTransportErrorV1,
+    ImmutablePackGenerationV1,
 };
 
 /// Advertises the truthful production status of sanitized-pack physical effects.
@@ -298,138 +296,6 @@ fn readback_array<const N: usize>(
     bytes
         .try_into()
         .map_err(|_| GitSanitizedForkReadbackErrorV1::InvalidEvidence)
-}
-
-/// Presents one exact standard Git exchange to an injected protocol-v2 backend.
-pub struct ProtectedGitSmartInvocationV1<'handoff> {
-    state: &'handoff GitSmartDispatchStateV1,
-    fence: GitSmartAuthorityFenceV1,
-    transaction: ObjectDigest,
-}
-
-impl ProtectedGitSmartInvocationV1<'_> {
-    /// Borrows the exact request and protocol-v2 exchange plan.
-    #[must_use]
-    pub const fn state(&self) -> &GitSmartDispatchStateV1 {
-        self.state
-    }
-
-    /// Returns the boot-scoped authenticated-session fence.
-    #[must_use]
-    pub const fn authority_fence(&self) -> GitSmartAuthorityFenceV1 {
-        self.fence
-    }
-
-    /// Returns the committed pre-effect transaction.
-    #[must_use]
-    pub const fn transaction_commitment(&self) -> ObjectDigest {
-        self.transaction
-    }
-}
-
-/// Defines a constructible standard Git protocol-v2 physical backend.
-pub trait GitSmartProtocolV2BackendV1 {
-    /// Backend diagnostic retained only with outcome-unknown state.
-    type Error;
-
-    /// Starts one upload-pack or receive-pack exchange selected by the plan.
-    ///
-    /// # Errors
-    ///
-    /// Returns a backend diagnostic only while the exchange remains
-    /// outcome-unknown and requires protected observation.
-    fn apply(&mut self, invocation: ProtectedGitSmartInvocationV1<'_>) -> Result<(), Self::Error>;
-}
-
-/// Identifies why a Git smart effect remains outcome-unknown.
-#[derive(Debug)]
-pub enum ProtectedGitSmartEffectErrorV1<E> {
-    /// Live boot-clock sampling failed.
-    Clock,
-    /// The session expired, the boot changed, or monotonic time regressed.
-    AuthorityFence,
-    /// The backend returned without a protected terminal observation.
-    Backend(E),
-}
-
-/// Adapts an injected protocol-v2 backend to the protected smart-effect seam.
-pub struct ProtectedGitSmartEffectAdapterV1<B> {
-    backend: B,
-    clock: FixedLiveAuthorityClockV1,
-}
-
-impl<B> ProtectedGitSmartEffectAdapterV1<B> {
-    /// Constructs a dormant adapter without registering a route or capability.
-    #[must_use]
-    pub fn new(backend: B) -> Self {
-        Self {
-            backend,
-            clock: fixed_live_authority_clock_v1(),
-        }
-    }
-
-    /// Returns the injected components without applying an effect.
-    #[must_use]
-    pub fn into_backend(self) -> B {
-        self.backend
-    }
-}
-
-impl<B> DormantGitSmartEffectV1 for ProtectedGitSmartEffectAdapterV1<B>
-where
-    B: GitSmartProtocolV2BackendV1,
-{
-    type Error = ProtectedGitSmartEffectErrorV1<B::Error>;
-
-    fn apply(
-        &mut self,
-        handoff: GitSmartEffectHandoffV1<'_>,
-    ) -> Result<GitSmartEffectOutcomeV1<Self::Error>, GitSmartTransportErrorV1> {
-        let before = match self.clock.sample() {
-            Ok(sample) => sample,
-            Err(_) => {
-                return GitSmartEffectOutcomeV1::outcome_unknown(
-                    handoff,
-                    ProtectedGitSmartEffectErrorV1::Clock,
-                );
-            }
-        };
-        if !handoff.authority_fence().admits(before) {
-            return GitSmartEffectOutcomeV1::outcome_unknown(
-                handoff,
-                ProtectedGitSmartEffectErrorV1::AuthorityFence,
-            );
-        }
-
-        let invocation = ProtectedGitSmartInvocationV1 {
-            state: handoff.state(),
-            fence: handoff.authority_fence(),
-            transaction: handoff.transaction_commitment(),
-        };
-        let backend = self.backend.apply(invocation);
-        let after = self.clock.sample();
-        match (backend, after) {
-            (Ok(()), Ok(sample))
-                if sample.boot() == before.boot()
-                    && sample.boottime_nanoseconds() >= before.boottime_nanoseconds()
-                    && handoff.authority_fence().admits(sample) =>
-            {
-                GitSmartEffectOutcomeV1::observation_required(handoff)
-            }
-            (Err(error), _) => GitSmartEffectOutcomeV1::outcome_unknown(
-                handoff,
-                ProtectedGitSmartEffectErrorV1::Backend(error),
-            ),
-            (Ok(()), Err(_)) => GitSmartEffectOutcomeV1::outcome_unknown(
-                handoff,
-                ProtectedGitSmartEffectErrorV1::Clock,
-            ),
-            (Ok(()), Ok(_)) => GitSmartEffectOutcomeV1::outcome_unknown(
-                handoff,
-                ProtectedGitSmartEffectErrorV1::AuthorityFence,
-            ),
-        }
-    }
 }
 
 /// Binds the only physical endpoint and confinement policy admitted by one effect.

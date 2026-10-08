@@ -17,7 +17,6 @@ mod lifecycle;
 mod model;
 mod nix_build_owner;
 mod nix_client;
-mod nix_effect_adapter;
 mod protected_evidence;
 pub mod protected_journal;
 pub(crate) mod protected_owner;
@@ -84,10 +83,6 @@ pub use nix_client::{
     DENIED_NIX_AUTHORITIES_V1, DeniedNixAuthorityV1, NixClientBoundaryV1,
     NixNarrowingProxyOperationV1, NixNarrowingProxyPolicyV1, NixStoreTrustDomainV1,
     UNTRUSTED_NIX_DAEMON_SETTINGS_V1, UntrustedNixClientConfigurationV1,
-};
-pub use nix_effect_adapter::{
-    ProtectedNixBuildBackendV1, ProtectedNixBuildEffectAdapterV1, ProtectedNixBuildEffectErrorV1,
-    ProtectedNixBuildInvocationV1,
 };
 pub use protected_evidence::{
     EnvironmentProtectedEvidenceErrorV1, EnvironmentProtectedEvidenceOwnerV1,
