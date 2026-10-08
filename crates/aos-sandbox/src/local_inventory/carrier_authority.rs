@@ -13,9 +13,12 @@ use aos_sandbox_core::{
 };
 use sha2::{Digest as _, Sha256};
 
-use super::assignment::{AssignmentIntentV1, VerifiedAssignmentAuthorityV1};
+use super::assignment::AssignmentIntentV1;
+#[cfg(feature = "multi-node")]
+use super::assignment::VerifiedAssignmentAuthorityV1;
 use super::capability::NodeBootLineageV1;
 use super::evidence::{AuthenticatedEvidenceContextV1, InvalidEvidenceContext};
+#[cfg(feature = "multi-node")]
 use super::journal::ProtectedJournalRecordV1;
 use super::protocol::{
     AuthenticatedNodeSessionV1, CanonicalNodeFrameV1, InvalidMultiNodeProtocol,
@@ -34,6 +37,7 @@ pub use dormant_transport::{
     DormantOutboundExchangeV1, DormantOutboundResponseV1, DormantTransportHandshakeV1,
 };
 
+#[cfg(feature = "multi-node")]
 const ASSIGNMENT_CARRIER_DOMAIN: &[u8] = b"aos.sandbox.multi-node.assignment-carrier.v1\0";
 const MAXIMUM_ASSIGNMENT_SIGNATURE_BYTES: usize = 64 * 1024;
 
@@ -67,6 +71,7 @@ pub(super) struct AuthenticatedAssignmentCarrierContractV1 {
 ///
 /// Only a verifier child can construct this singular grant. Keeping canonical
 /// signature bytes here prevents another sibling from substituting a digest.
+#[cfg(feature = "multi-node")]
 pub(super) struct VerifiedAssignmentSignatureGrantV1 {
     assignment_digest: ObjectDigest,
     lease_generation: u64,
@@ -77,6 +82,7 @@ pub(super) struct VerifiedAssignmentSignatureGrantV1 {
     verified_at_unix_seconds: u64,
 }
 
+#[cfg(feature = "multi-node")]
 impl VerifiedAssignmentSignatureGrantV1 {
     /// Seals exact signature bytes after a child cryptographic verifier succeeds.
     fn from_verified_signature(
@@ -121,6 +127,7 @@ impl AuthenticatedAssignmentCarrierContractV1 {
     ///
     /// Returns [`InvalidMultiNodeProtocol::SessionMismatch`] when carrier,
     /// assignment, lease, signature, currentness, or replay facts differ.
+    #[cfg(feature = "multi-node")]
     pub(super) fn from_verified_assignment(
         session: &AuthenticatedNodeSessionV1,
         intent: &AssignmentIntentV1,
@@ -298,6 +305,7 @@ impl AuthenticatedAssignmentCarrierContractV1 {
     }
 }
 
+#[cfg(feature = "multi-node")]
 #[allow(clippy::too_many_arguments)]
 fn assignment_carrier_digest(
     node: NodeId,
@@ -675,6 +683,7 @@ fn issue_evidence_once(
 /// This constructor is intentionally private. A future carrier integration is
 /// a child module of this authority and calls it only after authenticating the
 /// exact byte slice, peer, audience, disclosure domain, and replay fence.
+#[cfg(feature = "multi-node")]
 fn issue_response_once(
     session: AuthenticatedNodeSessionV1,
     frame: &CanonicalNodeFrameV1<'_>,
@@ -712,6 +721,7 @@ fn issue_response_once(
     })
 }
 
+#[cfg(feature = "multi-node")]
 fn issue_generated_response_once(
     session: AuthenticatedNodeSessionV1,
     kind: super::protocol::CanonicalNodeFrameKindV1,
@@ -815,6 +825,7 @@ mod protected_integration {
         .map_err(|_| InvalidMultiNodeProtocol::SessionMismatch)
     }
 
+    #[cfg(feature = "multi-node")]
     pub(in crate::local_inventory) fn issue_session_from_protected_channel(
         protected_expected: &ProtectedJournalRecordV1,
         frame: &CanonicalNodeFrameV1<'_>,
@@ -859,6 +870,7 @@ mod protected_integration {
         issue_node_session_once(authority)
     }
 
+    #[cfg(feature = "multi-node")]
     #[allow(clippy::too_many_arguments)]
     pub(in crate::local_inventory) fn verify_assignment_contract_from_protected_channel(
         session: &AuthenticatedNodeSessionV1,
@@ -934,6 +946,7 @@ mod protected_integration {
         )
     }
 
+    #[cfg(feature = "multi-node")]
     pub(in crate::local_inventory) fn issue_response_from_protected_channel(
         session: AuthenticatedNodeSessionV1,
         protected_expected: &ProtectedJournalRecordV1,
@@ -957,9 +970,11 @@ mod protected_integration {
     }
 }
 
+pub(super) use protected_integration::issue_context_from_protected_bootstrap;
+#[cfg(feature = "multi-node")]
 pub(super) use protected_integration::{
-    issue_context_from_protected_bootstrap, issue_response_from_protected_channel,
-    issue_session_from_protected_channel, verify_assignment_contract_from_protected_channel,
+    issue_response_from_protected_channel, issue_session_from_protected_channel,
+    verify_assignment_contract_from_protected_channel,
 };
 
 fn protected_carrier_binding_digest(binding: [u8; 32]) -> ObjectDigest {
@@ -1026,6 +1041,7 @@ fn verify_protected_carrier_signature(
     Ok(())
 }
 
+#[cfg(feature = "multi-node")]
 fn assignment_signature_payload(
     session: &AuthenticatedNodeSessionV1,
     intent: &AssignmentIntentV1,
