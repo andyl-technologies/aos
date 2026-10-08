@@ -348,9 +348,12 @@ with 18 native-only import errors without `std`; its native phase is not reached
 The shared indexed-read module and re-export now require `std` under CRATE-7
 and CRATE-29. The trunk `runtime-agnostic` gate passes all seven exact tests and
 its compile configurations on `43c3a299e2`; all 4,614 actual source files match.
-The required all-application test-target compilation on that commit is still
-running; its captured source also matches all 4,614 files. Both format checks
-pass, and the private CLI rebase preserves every other byte of its prior tree.
+The required all-application test-target compilation on that commit stopped
+after its execution handle disappeared: no build process remains and its Nix
+output is unregistered. Its captured source matches all 4,614 files, but it has
+no completion result. Replacement qualification remains required. Both format
+checks pass, and the private CLI rebase preserves every other byte of its prior
+tree.
 These scoped results do not qualify the combined feature matrix or CLI task.
 
 The corrected metadata-loss recovery fixture on `95126ca0ee` passes the
