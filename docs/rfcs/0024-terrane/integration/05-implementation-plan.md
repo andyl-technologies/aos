@@ -1852,6 +1852,26 @@ oracles remain unqualified, and the other five required populations remain
 unrun. Nested timing groups are not additive, and these separate executions
 establish no speedup attribution or successful DRV-29 qualification.
 
+The next reviewed Raw-only refinement may omit the outer pre-sync refresh
+duplicated by the complete inner refresh after preparing the current retained
+descriptor. Preparation performs only a bounded same-descriptor body read;
+no durability or publication effect occurs before the retained inner check.
+That check must still validate every consumed present and absent input, source
+and control body, current target body and physical binding, directory, name,
+pair, exclusion and current deadline immediately before the actual sync.
+Inner post-sync checks, caller post-body checks, outer post-refresh, directory
+durability, exhaustive final descriptor and projection checks, Raw associations
+and private acknowledgment remain required. Ordinary callers keep their existing
+schedule. The original clock, start and maximum remain fixed, but removing an
+earlier duplicate sample changes refusal precedence and may miss a transient
+source or clock fault restored before the retained checks. This is not a claim
+of identical sampling or observations. Qualification requires a real handoff
+after preparation and before the inner refresh, actual syscall-entry evidence,
+post-body current refusal and cancellation/exclusion witnesses. The existing
+post-sync completion event alone cannot prove that no syscall was attempted.
+Implementation, those witnesses and the unchanged six-population conformance
+gate remain pending.
+
 Reviewed private `85558972ae` adds six public format properties for the existing
 common Memo, closed index bindings and recipes, opaque index keys, and generic
 empty Nodes in explicit index roles. SDK compilation, strict library and
