@@ -44,6 +44,14 @@ impl RuntimeBoundary {
         }
     }
 
+    fn configuration_scope(self) -> crate::types::ProfileScope {
+        if self.container {
+            crate::types::ProfileScope::User
+        } else {
+            crate::types::ProfileScope::System
+        }
+    }
+
     fn validate(self, command: &PackageCommand) -> Result<()> {
         if self.container && requires_host_runtime(command) {
             bail!(CONTAINER_HOST_OPERATION_ERROR);
@@ -65,6 +73,14 @@ impl RuntimeBoundary {
 /// Returns whether the process runs in the official container environment.
 pub(crate) fn is_container() -> bool {
     RuntimeBoundary::from_env().container
+}
+
+/// Selects the native profile whose operator configuration owns this runtime.
+///
+/// Container configuration extends the ordinary user package profile seeded by
+/// the image. Machine configuration continues to own the system profile.
+pub(crate) fn configuration_scope() -> crate::types::ProfileScope {
+    RuntimeBoundary::from_env().configuration_scope()
 }
 
 /// Rejects explicit runtime incompatibilities before image setup can mutate state.
@@ -464,6 +480,26 @@ mod tests {
         assert!(TestCli::try_parse_from(["apm", "image", "prepare"]).is_err());
         assert!(
             TestCli::try_parse_from(["apm", "image", "prepare", "server", "--reboot"]).is_err()
+        );
+    }
+
+    #[test]
+    fn operator_configuration_uses_the_profile_seeded_by_its_runtime() {
+        use crate::types::ProfileScope;
+
+        let container = RuntimeBoundary::from_values(Some(OsStr::new("container")), None);
+        let read_only =
+            RuntimeBoundary::from_values(Some(OsStr::new("container")), Some(OsStr::new("1")));
+
+        assert_eq!(container.configuration_scope(), ProfileScope::User);
+        assert_eq!(read_only.configuration_scope(), ProfileScope::User);
+        assert_eq!(
+            RuntimeBoundary::default().configuration_scope(),
+            ProfileScope::System
+        );
+        assert_eq!(
+            RuntimeBoundary::from_values(Some(OsStr::new("Container")), None).configuration_scope(),
+            ProfileScope::System
         );
     }
 

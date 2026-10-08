@@ -18,24 +18,10 @@
     inherit pkgs;
     aosPkg = pkgs.aos;
   };
-  fixtureTool = pkgs.mkDerivation {
-    pname = "container-runtime-tool";
-    version = "1.0.0";
-    src = null;
-    buildDeps = [pkgs.bash pkgs.coreutils];
-    phases = [
-      {
-        name = "install";
-        script = ''
-          mkdir -p "$out/bin"
-          printf '%s\n' \
-            '#!${pkgs.bash}/bin/bash' \
-            'printf "container-runtime-tool 1.0.0\\n"' \
-            > "$out/bin/container-runtime-tool"
-          chmod 0555 "$out/bin/container-runtime-tool"
-        '';
-      }
-    ];
+  fixtureTool = import ./_container-runtime-tool.nix {inherit pkgs;};
+  publication = import ./_container-publication-project.nix {
+    inherit lib pkgs;
+    packages.container-runtime-tool = fixtureTool;
   };
 
   containerdPath = lib.concatStringsSep ":" [
@@ -121,6 +107,7 @@ in {
       ++ [
         dockerArchive
         fixtureTool
+        publication.project
         pkgs.aos.apr
         pkgs.curl
         pkgs.nerdctl
@@ -165,15 +152,10 @@ in {
         "$APR" create container-runtime-reg --trust-key "$trust" \
           --trust-key-id initial --key-id initial
         REG_DIR="$REG_STORAGE/container-runtime-reg"
+        cd ${publication.project}
         "$APR" publish ${fixtureTool} \
-          --name container-runtime-tool \
-          --version 1.0.0 \
-          --description 'Container runtime install fixture' \
-          --license MIT \
-          --maintainer container-test@example.invalid \
           --registry container-runtime-reg \
-          --key-id initial \
-          --no-commit
+          --key-id initial
 
         mkdir -p /var/lib/aos-container-fixtures
         NIX_CONFIG='experimental-features = nix-command' \
@@ -258,6 +240,8 @@ in {
               --registry container-runtime-reg --yes \
               > /tmp/install.json 2> /tmp/install.log
             test "$(${profileBin})" = 'container-runtime-tool 1.0.0'
+            test -s /var/lib/profiles/per-user/root/current/native-deployment.json
+            test -L /var/lib/profiles/per-user/root/current/evaluation.json
             cat /tmp/install.json
         """))
         + " > /tmp/aos-container-entrypoint-bypass.json"
@@ -269,6 +253,8 @@ in {
     )
     assert bypass_install["status"] == "installed", bypass_install
     assert bypass_install["startup_pending"] == [], bypass_install
+    assert bypass_install["generation"] > 0, bypass_install
+    assert bypass_install["downloads"]["imported"] > 0, bypass_install
 
     runtime.succeed(
         "${nerdctl} run --detach --name aos-runtime-state --net host"
@@ -423,6 +409,13 @@ in {
     )
     assert "container-runtime-tool 1.0.0" in runtime.succeed(
         "${nerdctl} exec aos-runtime-state ${profileBin}"
+    )
+    runtime.succeed(
+        "${nerdctl} exec aos-runtime-state ${bash} -c "
+        + shlex.quote(
+            "test -s /var/lib/profiles/per-user/root/current/native-deployment.json; "
+            "test -L /var/lib/profiles/per-user/root/current/evaluation.json"
+        )
     )
 
     runtime.succeed("${nerdctl} stop --time 10 aos-runtime-state", timeout=60)

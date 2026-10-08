@@ -6,6 +6,8 @@
 //! path, the install is blocked with a warning. This prevents library
 //! version skew between the sysroot and explicitly installed packages.
 
+mod native_target;
+
 use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::path::Path;
@@ -302,19 +304,24 @@ pub fn build_registry_lookup(
 /// Get the current sysroot's reference list from the system generation state.
 ///
 /// Returns `(references, sysroot package name, sysroot version)`, or `None`
-/// if this host has no AOS toplevel or no registry entry matches the active
-/// sysroot.
+/// if this host has no AOS toplevel, uses an authenticated native container
+/// package graph, or no registry entry matches the active sysroot. Native
+/// container mutations enforce their resolved module and dependency constraints
+/// through the ordinary package graph rather than host boot-image pins.
 ///
 /// # Errors
 ///
-/// Returns an error when a present AOS image identity is unreadable or invalid,
-/// or when any present configured registry cannot be loaded or carries
+/// Returns an error when a present AOS image identity or native container
+/// authority is unreadable or invalid, or when any configured registry carries
 /// unsupported metadata.
 pub fn get_sysroot_references(config: &ApmConfig) -> Result<Option<(Vec<String>, String, String)>> {
     match std::fs::symlink_metadata(Path::new("/usr/lib/aos/toplevel")) {
         Ok(_) => {}
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error).context("inspecting the running AOS toplevel"),
+    }
+    if native_target::detect()? == native_target::LockAuthority::NativeContainer {
+        return Ok(None);
     }
     let current = sysroot::running_image_generation()
         .context("validating the running AOS image for sysroot-lock enforcement")?;

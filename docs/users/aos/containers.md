@@ -67,5 +67,9 @@ the container's writable state; recreating it requires retaining package/store
 state explicitly or using a derived image that already contains it. Read-only
 containers can use installed packages but cannot mutate package state.
 
+Service readiness identifies the current PID-1 lifetime and exact selected init
+command. Selecting a different executable or arguments leaves startup effects
+pending until the selected init is running.
+
 The [runtime ability guide](runtime-abilities.md) describes native declarations,
 typed output dependencies, handler composition, and missing-handler errors.
