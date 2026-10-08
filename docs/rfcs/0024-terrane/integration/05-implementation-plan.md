@@ -1394,9 +1394,27 @@ seconds when baseline publication returns STORE-30's `Denied`. The unchanged
 run establishes neither expiry nor the duration of individual phases.
 All 3,251 captured inputs remain unchanged; baseline output, measured
 maintenance and independent oracles are not reached. The full-upfront cohort
-does not establish a throughput fix or DRV-29 qualification. Native regressions
-and strict quality remain pending; bounded batches must retain every original
-output, physical/current check, acknowledgment and deadline.
+does not establish a throughput fix or DRV-29 qualification.
+The separate same-source diagnostic locates the refusal in the final native
+Raw publication acknowledgment after all 232 shards and the generation manifest
+are installed. It records no explicit expiry result and does not reach baseline
+output or the measured maintenance oracle. The bounded eight-install candidate
+`834dce9018` retains per-primitive checks, native acknowledgments and actual target
+recapture between batches. Its unchanged 1,024-entry ordinary case still returns
+`Denied` in that final acknowledgment, after 55.015 seconds for the whole case;
+neither that duration nor earlier phase entry establishes a throughput fix.
+All 3,251 captured inputs remain unchanged through each original invocation.
+Its selected native regression run passes 79 of 80 cases, with zero ignored
+selected cases; the existing Original/current/producer/final-ACK recovery witness
+times out at the unchanged 120-second deadline. The native creation case now
+observes the real final Raw acknowledgment explicitly and passes without ignoring
+callbacks or weakening its order assertions. Strict library Clippy reports the
+existing admission argument grouping; strict all-target Clippy additionally
+reports duplicate test-fixture inclusion and the independent source-oracle
+conditional. No owning task gate, full native suite or complete T1 floor is
+qualified. The final `2fed289ff4` changes only a wrapper description after the
+recorded executions. Further diagnostics and implementation must retain every
+original output, physical/current check, acknowledgment and deadline.
 
 Deployable as: a local tool that initializes a store under a `file://`
 root, commits a directory, forks and merges branches, and checks a commit
