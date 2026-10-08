@@ -190,11 +190,7 @@ fn mask_expression(code: &mut String, expression: &str, expected_count: usize) {
         .filter(|(_, character)| !character.is_whitespace())
         .flat_map(|(offset, character)| std::iter::repeat_n(offset, character.len_utf8()))
         .collect::<Vec<_>>();
-    let compact = compact_code(code);
-    let occurrences = compact
-        .match_indices(expression)
-        .map(|(offset, _)| offset)
-        .collect::<Vec<_>>();
+    let occurrences = expression_offsets(code, expression);
     if occurrences.len() != expected_count {
         return;
     }
@@ -203,6 +199,28 @@ fn mask_expression(code: &mut String, expression: &str, expected_count: usize) {
         let end = offsets[offset + expression.len() - 1] + 1;
         code.replace_range(start..end, &" ".repeat(end - start));
     }
+}
+
+// A reviewed helper cannot be a suffix of another identifier or qualified path.
+fn expression_offsets(code: &str, expression: &str) -> Vec<usize> {
+    let offsets = code
+        .char_indices()
+        .filter(|(_, character)| !character.is_whitespace())
+        .flat_map(|(offset, character)| std::iter::repeat_n(offset, character.len_utf8()))
+        .collect::<Vec<_>>();
+    let compact = compact_code(code);
+    compact
+        .match_indices(expression)
+        .filter(|(offset, _)| {
+            let preceding = &code[..offsets[*offset]];
+            let separate_token = preceding.chars().next_back().is_none_or(|before| {
+                before.is_whitespace()
+                    || (before.is_ascii() && !before.is_ascii_alphanumeric() && before != '_')
+            });
+            separate_token && !preceding.trim_end().ends_with(':')
+        })
+        .map(|(offset, _)| offset)
+        .collect()
 }
 
 #[test]

@@ -868,7 +868,7 @@ fn performance_actions_and_exact_partial_work_roundtrip() {
             2 => report.io[0].maximum_elapsed_ns = 901,
             _ => report.io[RamControlIoClass::Sync as usize].transferred_bytes = 1,
         }
-        let mut response = response.clone();
+        let mut response = response;
         if let RamControlMessage::Reply { state, .. } = &mut response.message {
             state.performance = Some(report);
         }

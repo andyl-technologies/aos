@@ -5,6 +5,9 @@
 
 use super::{compact_code, mask_expression};
 
+#[path = "operational_sqlite.rs"]
+mod operational_sqlite;
+
 struct Companion {
     path: &'static str,
     required: &'static [&'static str],
@@ -151,6 +154,7 @@ const CONTRACTS: &[Contract] = &[
 pub(super) fn mask(package: &str, target: &str, code: &str) -> String {
     let Some(contract) = CONTRACTS
         .iter()
+        .chain(operational_sqlite::CONTRACTS)
         .find(|contract| contract.package == package && contract.target == target)
     else {
         return code.to_owned();
@@ -173,21 +177,27 @@ fn read_companions(contract: &Contract) -> std::io::Result<Vec<String>> {
 
 fn mask_with_companions(contract: &Contract, code: &str, companions: &[String]) -> String {
     let compact = compact_code(code);
-    let local_matches = contract.required.iter().all(|part| compact.contains(part))
-        && contract
-            .expressions
-            .iter()
-            .all(|(expression, count)| compact.match_indices(expression).count() == *count);
+    let local_matches = contract
+        .required
+        .iter()
+        .all(|part| compact.contains(&pattern(part)))
+        && contract.expressions.iter().all(|(expression, count)| {
+            super::expression_offsets(code, &pattern(expression)).len() == *count
+        });
     let companion_matches = companions.len() == contract.companions.len()
         && contract
             .companions
             .iter()
             .zip(companions)
             .all(|(binding, source)| {
-                let compact = compact_code(&super::super::scrub_comments_and_strings(source));
-                binding.required.iter().all(|part| compact.contains(part))
+                let code = super::super::scrub_comments_and_strings(source);
+                let compact = compact_code(&code);
+                binding
+                    .required
+                    .iter()
+                    .all(|part| compact.contains(&pattern(part)))
                     && binding.counts.iter().all(|(expression, count)| {
-                        compact.match_indices(expression).count() == *count
+                        super::expression_offsets(&code, &pattern(expression)).len() == *count
                     })
             });
     if !local_matches || !companion_matches {
@@ -196,9 +206,15 @@ fn mask_with_companions(contract: &Contract, code: &str, companions: &[String]) 
 
     let mut masked = code.to_owned();
     for (expression, count) in contract.expressions {
-        mask_expression(&mut masked, expression, *count);
+        mask_expression(&mut masked, &pattern(expression), *count);
     }
     masked
+}
+
+// Contracts use readable Rust snippets; comments and string payloads cannot
+// supply executable obligations, just as they cannot supply lint findings.
+fn pattern(source: &str) -> String {
+    compact_code(&super::super::scrub_comments_and_strings(source))
 }
 
 #[cfg(test)]
