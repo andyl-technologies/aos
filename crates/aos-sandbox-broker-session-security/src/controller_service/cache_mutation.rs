@@ -10,8 +10,9 @@ use aos_sandbox::filesystem_view_state::{
     current_filesystem_view_revision_v1,
 };
 use aos_sandbox::production_operation_compiler::{
-    OperationCompilationError, RecheckedCacheConsumerV1, recheck_cache_consumer_projection_v1,
+    RecheckedCacheConsumerV1, recheck_cache_consumer_projection_v1,
 };
+use aos_sandbox::controller::OperationCompilationError;
 use sha2::{Digest as _, Sha256};
 
 use super::{EffectFailure, Journal, OperationId, ProductionEffectExecutor};

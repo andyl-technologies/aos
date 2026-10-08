@@ -109,7 +109,8 @@ use aos_sandbox::host_catalog_publication::{
 use aos_sandbox::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
 use aos_sandbox::lifecycle::{
     LifecycleCancelIdempotencyDigestV1, LifecycleCurrentAuxiliaryPublicationV1,
-    LifecycleOperationAdmissionV1, LifecycleOperationV1, LifecycleProgressCommitOutcomeV1,
+    LifecycleIntentV1, LifecycleOperationAdmissionV1, LifecycleOperationV1,
+    LifecycleProgressCommitOutcomeV1,
     LifecycleProgressOutcomeUnknownV1, LifecycleProgressRecoveryV1,
     LifecycleProtectedCancellationAdmissionV1, LifecycleProtectedCancellationResolutionV1,
     LifecycleProtectedJournalErrorV1,

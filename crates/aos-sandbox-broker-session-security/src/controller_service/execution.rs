@@ -19,7 +19,7 @@ use aos_proto::aos::sandbox::local::v1::{
     RequestHeader,
 };
 use aos_proto::aos::sandbox::v1::{Command, ExecutionIoMode, ExecutionPhase, Timestamp};
-use aos_sandbox::cli_model::ExecutionTerminalOutcomeV1;
+use aos_sandbox_protocol::public_api::execution_result::ExecutionTerminalOutcomeV1;
 use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1;
 use aos_sandbox::controller_execution_spec_attempt::{
     ControllerExecutionSpecAttemptV1, load_controller_execution_spec_attempt_v1,

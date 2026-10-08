@@ -12,7 +12,8 @@ use aos_sandbox::lifecycle::{
 };
 use aos_sandbox::{EffectFailure, Journal, PreparedAuthorityEffectV1, ReconcilerError,
     SignedBrokerPlan, SnapshotDerivedStoragePreparationV3};
-use aos_sandbox_core::{NodeId, ObjectDigest, OperationId, RawPairedClockSample, SignatureBytes};
+use aos_sandbox_core::model::SignatureBytes;
+use aos_sandbox_core::{NodeId, ObjectDigest, OperationId, RawPairedClockSample};
 
 use crate::controller_service::ownership::ControllerOwnershipConfigurationV1;
 use crate::ownership_clock::sample_ownership_clock;

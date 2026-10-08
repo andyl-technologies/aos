@@ -746,6 +746,14 @@ pub enum EffectFailure {
     Permanent(String),
 }
 
+impl std::fmt::Display for EffectFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.diagnostic())
+    }
+}
+
+impl std::error::Error for EffectFailure {}
+
 /// Reports method-specific Repair orchestration without a generic Apply receipt.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OperatorStorageRepairReconcileV1 {
@@ -5034,6 +5042,23 @@ mod tests {
     use crate::publication::{
         AuthorityPublicationDraftV1, AuthorityPublicationError, AuthorityPublicationStore,
     };
+
+    #[test]
+    fn effect_failure_error_borrows_original_classification_and_diagnostic() {
+        for failure in [
+            EffectFailure::Retryable("original retryable diagnostic".to_owned()),
+            EffectFailure::Permanent("original permanent diagnostic".to_owned()),
+        ] {
+            let error: &(dyn std::error::Error + 'static) = &failure;
+
+            assert_eq!(error.to_string(), failure.diagnostic());
+            assert!(std::ptr::eq(
+                error.downcast_ref::<EffectFailure>().unwrap(),
+                &failure,
+            ));
+            assert!(error.source().is_none());
+        }
+    }
 
     struct TestDirectory(PathBuf);
 

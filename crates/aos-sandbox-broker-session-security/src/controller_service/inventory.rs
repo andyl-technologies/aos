@@ -1036,7 +1036,7 @@ impl DormantLifecycleInventorySessionV1 {
         match self
             .session
             .send_authenticated_request(prepared)
-            .map_err(|cause| self.query_protected_failure(cause))?
+            .map_err(|cause| self.query_readiness_failure(cause))?
         {
             DormantBrokerRequestSendProgressV1::Pending(prepared) => {
                 Ok(DormantLifecycleInventoryQueryProgressV1::RecoveryRequired(
@@ -1060,7 +1060,7 @@ impl DormantLifecycleInventorySessionV1 {
         match self
             .session
             .receive_authenticated_response(outstanding)
-            .map_err(|cause| self.query_protected_failure(cause))?
+            .map_err(|cause| self.query_readiness_failure(cause))?
         {
             DormantBrokerResponseProgressV1::Pending(outstanding) => {
                 Ok(DormantLifecycleInventoryQueryProgressV1::RecoveryRequired(

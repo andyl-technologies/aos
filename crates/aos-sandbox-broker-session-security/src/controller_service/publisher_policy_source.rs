@@ -378,7 +378,7 @@ impl PublisherPolicyBootstrapAttemptV1 {
                 .map_err(BootstrapCauseV1::Store)?;
             store.current_git_upload_bootstrap(append, source, capacity, &self.credentials, now)
                 .map_err(BootstrapCauseV1::Current)?;
-            Ok::<_, BootstrapCauseV1>(source.policy().policy().project())
+            Ok::<_, BootstrapCauseV1>(source.policy().project())
         })();
         match returned {
             Ok(project) => Ok(project),
@@ -473,7 +473,7 @@ impl PublisherPolicyBootstrapAttemptV1 {
                 .map_err(BootstrapCauseV1::Store)?;
             attempt.compare_enrolled_current_v1(&store, append, source, capacity, &self.credentials, now)
                 .map_err(BootstrapCauseV1::Current)?;
-            Ok::<_, BootstrapCauseV1>(source.policy().policy().project())
+            Ok::<_, BootstrapCauseV1>(source.policy().project())
         })();
         let project = match returned {
             Ok(project) => Some(project),

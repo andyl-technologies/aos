@@ -62,7 +62,7 @@ impl PreparedSnapshotPlanV3 {
 
     pub(crate) fn complete(
         &mut self,
-        signature: &aos_sandbox_core::SignatureBytes,
+        signature: &aos_sandbox_core::model::SignatureBytes,
         now_seconds: i64,
     ) -> Result<SignedBrokerPlan, ControllerBrokerPlanSignerError> {
         let preparation = self.preparation.take()
