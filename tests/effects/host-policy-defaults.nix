@@ -24,6 +24,8 @@ let
         [
           ../../lib/effects/module.nix
           ../../pkgs/system/_service-management/module.nix
+          ../../pkgs/system/_service-management/identity.nix
+          ../../pkgs/system/_aos-host-policy/users.nix
           ../../pkgs/system/_init-system/module.nix
           ../../pkgs/system/_kmod-abilities/module.nix
           ../../pkgs/tools/_aos-kernel-tunable-provider/module.nix
@@ -37,6 +39,16 @@ let
           ../../pkgs/networking/_nftables/module.nix
           ../../pkgs/security/_audit/module.nix
           ({lib, ...}: {
+            options.aos.homes = {
+              enable = lib.mkOption {
+                type = lib.types.bool;
+                default = false;
+              };
+              directory = lib.mkOption {
+                type = lib.types.str;
+                default = "/home";
+              };
+            };
             options.environment.sessionVariables = lib.mkOption {
               type = lib.types.attrsOf lib.types.str;
               default = {};
@@ -46,6 +58,11 @@ let
               default = {};
             };
             aos.abilities = {
+              identity.operations = {
+                group.handler.program = package;
+                principal.handler.program = package;
+                membership.handler.program = package;
+              };
               network.operations.configure.handler.program = package;
               networkPolicy.operations.ruleset.handler.program = package;
               serviceManagement.operations.realize.handler.program = package;
@@ -76,6 +93,29 @@ let
       interfaces.eth0.address = "192.0.2.6/24";
     };
     aos.networkPolicy.enable = true;
+  };
+  explicitContainerIdentity = evaluate {
+    aos.initSystem.container = true;
+    aos.users.users = {
+      nobody = {
+        uid = 65534;
+        group = "nobody";
+      };
+      operator = {
+        uid = 1000;
+        group = "operators";
+        extraGroups = ["tty"];
+      };
+    };
+    aos.users.groups = {
+      nobody.gid = 65534;
+      operators = {
+        gid = 1000;
+        members = ["operator"];
+      };
+      tty.gid = 5;
+      root.members = ["operator"];
+    };
   };
   containerCollector = evaluate {
     aos.initSystem.container = true;
@@ -124,6 +164,30 @@ let
   explicitLink = builtins.head (links explicit);
   graph = defaults.config.aos.activation.graph;
 in {
+  hostIdentityDefaultsUnchanged =
+    builtins.attrNames defaults.config.aos.users.users
+    == ["nobody" "root"]
+    && builtins.attrNames defaults.config.aos.users.groups == ["adm" "audio" "cdrom" "clock" "dialout" "disk" "input" "kmem" "kvm" "lp" "nobody" "render" "root" "sgx" "tape" "tty" "users" "utmp" "video" "wheel"]
+    && defaults.config.aos.users.users.nobody.uid == 65534
+    && defaults.config.aos.abilities.identity.operations.group.effects.host-group-nobody.input.allocation == "existing";
+  containerIdentityDefaultsMatchGolden =
+    builtins.attrNames container.config.aos.users.users
+    == ["root"]
+    && builtins.attrNames container.config.aos.users.groups == ["root"]
+    && builtins.attrNames container.config.aos.abilities.identity.operations.group.effects == ["host-group-root"]
+    && builtins.attrNames container.config.aos.abilities.identity.operations.principal.effects == ["host-user-root"]
+    && container.config.aos.abilities.identity.operations.principal.effects.host-user-root.input.allocation == "existing"
+    && container.config.aos.abilities.identity.operations.membership.effects == {};
+  explicitContainerIdentitiesRemainManaged =
+    explicitContainerIdentity.config.aos.abilities.identity.operations.group.effects.host-group-nobody.input.allocation
+    == "managed"
+    && explicitContainerIdentity.config.aos.abilities.identity.operations.principal.effects.host-user-nobody.input.allocation == "managed"
+    && explicitContainerIdentity.config.aos.abilities.identity.operations.principal.effects.host-user-nobody.input.requested_id == 65534
+    && explicitContainerIdentity.config.aos.abilities.identity.operations.principal.effects.host-user-operator.input.allocation == "managed"
+    && explicitContainerIdentity.config.aos.abilities.identity.operations.group.effects.host-group-tty.input.requested_id == 5
+    && explicitContainerIdentity.config.aos.abilities.identity.operations.membership.effects.host-members-operators.input.members == [explicitContainerIdentity.config.aos.abilities.identity.operations.principal.effects.host-user-operator.outputs.name]
+    && explicitContainerIdentity.config.aos.abilities.identity.operations.membership.effects.host-members-root.input.members == [explicitContainerIdentity.config.aos.abilities.identity.operations.principal.effects.host-user-operator.outputs.name]
+    && builtins.deepSeq explicitContainerIdentity.config.aos.activation.graph true;
   standaloneFirewallContractIsInert = !primitive.config.aos.networkPolicy.enable && !(primitive.config.aos.abilities.networkPolicy.operations.ruleset.effects ? host);
   defaultEthernetNames =
     defaultLink.selector

@@ -19,6 +19,8 @@
 }: let
   cfg = config.aos.users;
   homes = config.aos.homes;
+  containerTarget = config.aos.initSystem.container or false;
+  existingIdentity = name: name == "root" || (name == "nobody" && !containerTarget);
 
   # Interactive accounts start at UID 1000; system accounts below that keep
   # the placeholder home unless a module sets one explicitly.
@@ -40,7 +42,7 @@
       inherit name;
       requested_id = group.gid;
       allocation =
-        if builtins.elem name ["root" "nobody"]
+        if existingIdentity name
         then "existing"
         else "managed";
     };
@@ -51,7 +53,7 @@
       inherit name;
       requested_id = user.uid;
       allocation =
-        if builtins.elem name ["root" "nobody"]
+        if existingIdentity name
         then "existing"
         else "managed";
       primary_group = groupOutput user.group;
@@ -226,107 +228,115 @@ in {
       # initial users lived in the option's `default`, which was
       # silently dropped the moment any other module contributed a def
       # at the same attrsOf path — see audit finding 1.1.
-      aos.users.users = {
-        root = {
-          uid = 0;
-          group = "root";
-          home = "/root";
-          shell = "/bin/bash";
-          description = "System Administrator";
-          extraGroups = [];
+      # Containers retain root from the golden image; host device and fallback
+      # accounts belong to the host baseline unless explicitly requested.
+      aos.users.users =
+        {
+          root = {
+            uid = 0;
+            group = "root";
+            home = "/root";
+            shell = "/bin/bash";
+            description = "System Administrator";
+            extraGroups = [];
+          };
+        }
+        // lib.optionalAttrs (!containerTarget) {
+          nobody = {
+            uid = 65534;
+            group = "nobody";
+            home = "/";
+            shell = "/sbin/nologin";
+            description = "Nobody";
+            extraGroups = [];
+          };
         };
-        nobody = {
-          uid = 65534;
-          group = "nobody";
-          home = "/";
-          shell = "/sbin/nologin";
-          description = "Nobody";
-          extraGroups = [];
-        };
-      };
 
-      aos.users.groups = {
-        root = {
-          gid = 0;
-          members = ["root"];
+      aos.users.groups =
+        {
+          root = {
+            gid = 0;
+            members = lib.optional (!containerTarget) "root";
+          };
+        }
+        // lib.optionalAttrs (!containerTarget) {
+          adm = {
+            gid = 4;
+            members = [];
+          };
+          tty = {
+            gid = 5;
+            members = [];
+          };
+          disk = {
+            gid = 6;
+            members = [];
+          };
+          lp = {
+            gid = 7;
+            members = [];
+          };
+          kmem = {
+            gid = 9;
+            members = [];
+          };
+          wheel = {
+            gid = 10;
+            members = [];
+          };
+          dialout = {
+            gid = 20;
+            members = [];
+          };
+          utmp = {
+            gid = 22;
+            members = [];
+          };
+          cdrom = {
+            gid = 24;
+            members = [];
+          };
+          clock = {
+            gid = 25;
+            members = [];
+          };
+          tape = {
+            gid = 26;
+            members = [];
+          };
+          audio = {
+            gid = 29;
+            members = [];
+          };
+          kvm = {
+            gid = 36;
+            members = [];
+          };
+          video = {
+            gid = 44;
+            members = [];
+          };
+          users = {
+            gid = 100;
+            members = [];
+          };
+          input = {
+            gid = 104;
+            members = [];
+          };
+          sgx = {
+            gid = 106;
+            members = [];
+          };
+          render = {
+            gid = 107;
+            members = [];
+          };
+          nobody = {
+            gid = 65534;
+            members = [];
+          };
         };
-        adm = {
-          gid = 4;
-          members = [];
-        };
-        tty = {
-          gid = 5;
-          members = [];
-        };
-        disk = {
-          gid = 6;
-          members = [];
-        };
-        lp = {
-          gid = 7;
-          members = [];
-        };
-        kmem = {
-          gid = 9;
-          members = [];
-        };
-        wheel = {
-          gid = 10;
-          members = [];
-        };
-        dialout = {
-          gid = 20;
-          members = [];
-        };
-        utmp = {
-          gid = 22;
-          members = [];
-        };
-        cdrom = {
-          gid = 24;
-          members = [];
-        };
-        clock = {
-          gid = 25;
-          members = [];
-        };
-        tape = {
-          gid = 26;
-          members = [];
-        };
-        audio = {
-          gid = 29;
-          members = [];
-        };
-        kvm = {
-          gid = 36;
-          members = [];
-        };
-        video = {
-          gid = 44;
-          members = [];
-        };
-        users = {
-          gid = 100;
-          members = [];
-        };
-        input = {
-          gid = 104;
-          members = [];
-        };
-        sgx = {
-          gid = 106;
-          members = [];
-        };
-        render = {
-          gid = 107;
-          members = [];
-        };
-        nobody = {
-          gid = 65534;
-          members = [];
-        };
-      };
     }
     (lib.optionalAttrs (package != null) {
       # Provider receipts update only the owned account and membership delta.

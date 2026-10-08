@@ -211,10 +211,12 @@ fn reconcile_members(
             .map(|pair| &pair.0)
             .collect::<BTreeSet<_>>()
         {
-            let row = rows
-                .iter_mut()
-                .find(|row| &row[0] == group)
-                .context("membership group is missing")?;
+            let Some(row) = rows.iter_mut().find(|row| &row[0] == group) else {
+                // Pre-existing groups need not participate in the optional
+                // shadow database. Do not create or adopt a foreign row.
+                ensure!(file == "gshadow", "membership group is missing");
+                continue;
+            };
             let mut names = members(row);
             for (_, principal) in previous.iter().filter(|pair| &pair.0 == group) {
                 names.remove(principal);
@@ -236,7 +238,13 @@ fn memberships_current(root: &Path, additions: &BTreeSet<(String, String)>) -> R
             continue;
         }
         for (group, principal) in additions {
-            if !lookup(&rows, group).is_ok_and(|row| members(row).contains(principal)) {
+            let Some(row) = rows.iter().find(|row| &row[0] == group) else {
+                if file == "gshadow" {
+                    continue;
+                }
+                return Ok(false);
+            };
+            if !members(row).contains(principal) {
                 return Ok(false);
             }
         }
@@ -986,6 +994,70 @@ mod tests {
             BTreeSet::from(["external".into()])
         );
     }
+
+    #[test]
+    fn membership_delta_preserves_groups_without_shadow_rows() {
+        let root = fixture();
+        let shadow = "unrelated:!::foreign\n";
+        fs::write(root.path().join("gshadow"), shadow).unwrap();
+        let additions = BTreeSet::from([("staff".into(), "owned".into())]);
+
+        assert!(!memberships_current(root.path(), &additions).unwrap());
+        reconcile_members(root.path(), &additions, &BTreeSet::new()).unwrap();
+
+        assert!(memberships_current(root.path(), &additions).unwrap());
+        assert_eq!(
+            fs::read_to_string(root.path().join("gshadow")).unwrap(),
+            shadow
+        );
+        assert_eq!(
+            members(&database(root.path(), "group").unwrap()[0]),
+            BTreeSet::from(["external".into(), "owned".into()])
+        );
+
+        reconcile_members(root.path(), &BTreeSet::new(), &additions).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(root.path().join("gshadow")).unwrap(),
+            shadow
+        );
+        assert_eq!(
+            members(&database(root.path(), "group").unwrap()[0]),
+            BTreeSet::from(["external".into()])
+        );
+    }
+
+    #[test]
+    fn optional_shadow_rows_do_not_allow_missing_groups() {
+        let root = fixture();
+        let additions = BTreeSet::from([("missing".into(), "owned".into())]);
+        let original = fs::read(root.path().join("group")).unwrap();
+
+        assert!(!memberships_current(root.path(), &additions).unwrap());
+        assert!(reconcile_members(root.path(), &additions, &BTreeSet::new()).is_err());
+        assert_eq!(fs::read(root.path().join("group")).unwrap(), original);
+    }
+
+    #[test]
+    fn managed_group_receipts_still_require_their_shadow_rows() {
+        let root = fixture();
+        let mut receipt = desired(
+            root.path(),
+            &json!({"name":"owned","requested_id":51}),
+            "group",
+            None,
+            None,
+        )
+        .unwrap();
+        install_rows(root.path(), &receipt).unwrap();
+        receipt.complete = true;
+        assert!(managed_group_current(root.path(), "owned", &receipt).unwrap());
+
+        fs::write(root.path().join("gshadow"), "staff:!::external\n").unwrap();
+
+        assert!(!managed_group_current(root.path(), "owned", &receipt).unwrap());
+    }
+
     fn replacement_receipt(root: &Path, members: &[&str]) -> Receipt {
         let input = json!({"group":"staff","members":members,"mode":"replace"});
         let mut receipt = desired(root, &input, "membership", None, None).unwrap();
