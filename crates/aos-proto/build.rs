@@ -1,22 +1,80 @@
+//! Generates the complete API DATA and explicitly selected coordinator RPCs.
+
+#[path = "build_support/coordinator_descriptor.rs"]
+mod coordinator_descriptor;
+
+// Descriptor names are relative to the same include root used by protoc.
+const PROTO_FILES: [&str; 8] = [
+    "aos/cache/v1/cache.proto",
+    "aos/build/v1/build.proto",
+    "aos/gc/v1/gc.proto",
+    "aos/auth/v1/auth.proto",
+    "aos/hub/v1/hub.proto",
+    "aos/sandbox/v1/sandbox.proto",
+    "aos/sandbox/local/v1/brokers.proto",
+    coordinator_descriptor::COORDINATOR_FILE,
+];
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     verify_sandbox_compatibility()?;
     verify_sandbox_local_compatibility()?;
     verify_sandbox_coordinator_compatibility()?;
 
+    let out_dir = std::path::PathBuf::from(std::env::var_os("OUT_DIR").ok_or_else(|| {
+        std::io::Error::other("OUT_DIR is missing for protobuf code generation")
+    })?);
+    let original_path = out_dir.join("aos-original-descriptor.bin");
+    compile_descriptor(&original_path)?;
+    let original = std::fs::read(&original_path)?;
+    let selected = coordinator_descriptor::select_descriptor(
+        &original,
+        std::env::var_os("CARGO_FEATURE_MULTI_NODE").is_some(),
+    )?;
+    let selected_path = out_dir.join("aos-selected-descriptor.bin");
+    std::fs::write(&selected_path, selected)?;
+
     connectrpc_build::Config::new()
-        .files(&[
-            "src/proto/aos/cache/v1/cache.proto",
-            "src/proto/aos/build/v1/build.proto",
-            "src/proto/aos/gc/v1/gc.proto",
-            "src/proto/aos/auth/v1/auth.proto",
-            "src/proto/aos/hub/v1/hub.proto",
-            "src/proto/aos/sandbox/v1/sandbox.proto",
-            "src/proto/aos/sandbox/local/v1/brokers.proto",
-            "src/proto/aos/sandbox/coordinator/v1/coordinator.proto",
-        ])
-        .includes(&["src/proto/"])
+        .descriptor_set(&selected_path)
+        .files(&PROTO_FILES)
         .include_file("_connectrpc.rs")
+        // Track source inputs below, not the descriptor produced by this build.
+        .emit_rerun_directives(false)
         .compile()?;
+
+    for file in PROTO_FILES {
+        println!("cargo:rerun-if-changed=src/proto/{file}");
+    }
+    println!("cargo:rerun-if-changed=build_support/coordinator_descriptor.rs");
+    println!("cargo:rerun-if-env-changed=PROTOC");
+    println!(
+        "cargo:rerun-if-env-changed={}",
+        buffa_codegen::ELEMENT_MEMORY_LIMIT_ENV
+    );
+    Ok(())
+}
+
+/// Compiles all authoritative schemas once, retaining imports and source info.
+fn compile_descriptor(output_path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    let protoc = std::env::var("PROTOC").unwrap_or_else(|_| "protoc".to_owned());
+    let mut command = std::process::Command::new(&protoc);
+    command
+        .arg("--include_imports")
+        .arg("--include_source_info")
+        .arg(format!("--descriptor_set_out={}", output_path.display()))
+        .arg("--proto_path=src/proto/");
+    for file in PROTO_FILES {
+        command.arg(format!("src/proto/{file}"));
+    }
+
+    let output = command.output()?;
+    if !output.status.success() {
+        // Never consume a stale descriptor after a failed compiler invocation.
+        return Err(std::io::Error::other(format!(
+            "protoc ({protoc}) failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ))
+        .into());
+    }
     Ok(())
 }
 
