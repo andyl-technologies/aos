@@ -411,7 +411,7 @@ impl<W: MountWorker> MountBroker<W> {
                 owner.transaction = Some(JournalTransaction::new(birth.transaction, vec![
                     JournalRecord::put(RecordNamespace::DesiredState, BIRTH_KEY.to_vec(), birth_bytes.to_vec()),
                     JournalRecord::put(RecordNamespace::DesiredState, FENCE_KEY.to_vec(), fence.encode()?.to_vec()),
-                ])?);
+                ]).map_err(JournalError::from)?);
                 let transaction = owner.transaction.as_ref()
                     .ok_or(CoverageCauseV1::Refused("original transaction is absent"))?;
                 self.journal.preflight_transactions(std::slice::from_ref(transaction))?;
