@@ -336,6 +336,17 @@ Host, Storage, Mount, and Network retain their existing implementation crates
 verified observations, and their protected state; they do not host the public
 Controller or import its implementation.
 
+`aos-sandbox-guest-root-realization` owns the complete physical fresh-root
+population, fixed SELinux projection/readback, and durable marker publication
+recipes. Host's detached-root verifier, Storage's publisher and inventory, and
+Guest's actual PID 1 manager projection consume this owner directly. Host and
+Storage do not depend on Guest execution merely to realize or inspect a root.
+The separate `aos-sandbox-guest-root-tree` remains a nonauthorizing measurement
+owner. Protected template selection, authenticated admission, root/writer
+custody, replay, deadline predicates, worker quiescence, and ambiguous-outcome
+recovery remain with their original Host, Storage and Guest callers. This cut
+adds no producer or authority and does not qualify the connected lifecycle.
+
 The four Source-provider crates retain distinct responsibilities:
 `protocol` owns decoded messages, `ledger` owns pure records/reducers,
 `security` owns protected key/process/descriptor custody, and the provider

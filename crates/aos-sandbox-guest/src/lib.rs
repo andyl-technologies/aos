@@ -12,6 +12,10 @@
 //! `aos-sandbox-guest-root-tree` independently owns nonauthorizing physical
 //! template and complete-tree measurement. Guest root effects consume that
 //! owner; passive Controller collectors do not link these execution effects.
+//! `aos-sandbox-guest-root-realization` owns population, SELinux projection and
+//! marker publication/readback. Host and Storage consume that physical owner
+//! without linking Guest execution; this crate retains its actual PID 1 and
+//! process-effect owners.
 
 pub mod dormant_guest_agent;
 pub mod dormant_package;
