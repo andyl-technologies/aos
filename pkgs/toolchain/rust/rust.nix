@@ -18,6 +18,8 @@
   stdenv,
   buildPackages,
 }: let
+  # Compiler launchers are noninteractive and use the completed build shell.
+  compilerBash = stdenv.bash;
   current = import ./_current.nix;
   inherit (current) version changeId configFileName;
   src = fetchurl {
@@ -201,7 +203,7 @@ in
         ninja
         pkg-config
         python3
-        bash
+        compilerBash
         which
         rust-1_97
         llvm
@@ -230,7 +232,7 @@ in
 
             # Fake git — must return exit 1 to avoid canonicalize("") panic
             mkdir -p .fake-bin
-            printf '#!${bash}/bin/bash\nexit 1\n' > .fake-bin/git
+            printf '#!${compilerBash}/bin/bash\nexit 1\n' > .fake-bin/git
             chmod +x .fake-bin/git
             export PATH="$PWD/.fake-bin:$PATH"
             cat > bootstrap.toml << TOML
@@ -366,7 +368,7 @@ in
                         if head -c4 "$f" | grep -q "ELF"; then
                           mv "$f" "$f.unwrapped"
                           cat > "$f" <<WRAP
-            #!${bash}/bin/bash
+            #!${compilerBash}/bin/bash
             export LD_LIBRARY_PATH="$LIB_PATH''${LD_LIBRARY_PATH:+:}''${LD_LIBRARY_PATH:-}"
             exec "$f.unwrapped" "\$@"
             WRAP

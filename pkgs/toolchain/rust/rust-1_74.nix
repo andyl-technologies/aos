@@ -20,6 +20,8 @@
   buildPackages,
   llvm-17,
 }: let
+  # Compiler launchers are noninteractive and use the completed build shell.
+  compilerBash = stdenv.bash;
   version = "1.74.0";
   mrustcVersion = "0.11.2";
 
@@ -177,14 +179,14 @@ in
         ninja
         python3
         pkg-config
-        bash
+        compilerBash
         which
         curl
         zlib
         openssl
       ];
       runtimeDeps = [
-        bash
+        compilerBash
         curl
         zlib
         openssl
@@ -212,7 +214,7 @@ in
             # The Makefile uses $(shell git ...) to embed version metadata
             # into version.o — without .git these would fail.
             mkdir -p .fake-bin
-            printf '%s\n' '#!${bash}/bin/bash' \
+            printf '%s\n' '#!${compilerBash}/bin/bash' \
               'case "$1" in' \
               'show)         echo "v${mrustcVersion}" ;;' \
               'symbolic-ref) echo "v${mrustcVersion}" ;;' \
@@ -224,7 +226,7 @@ in
             export PATH="$PWD/.fake-bin:$PATH"
 
             # The Makefile requires SHELL = bash; point it to our bash
-            sed -i "s|^SHELL = bash|SHELL = ${bash}/bin/bash|" Makefile
+            sed -i "s|^SHELL = bash|SHELL = ${compilerBash}/bin/bash|" Makefile
 
             # Extract and patch rustc source
             tar xf ${rustcSrc}
@@ -347,7 +349,7 @@ in
                         if head -c4 "$f" | grep -q "ELF"; then
                           mv "$f" "$f.unwrapped"
                           cat > "$f" <<WRAP
-            #!${bash}/bin/bash
+            #!${compilerBash}/bin/bash
             export LD_LIBRARY_PATH="$LIB_PATH''${LD_LIBRARY_PATH:+:}''${LD_LIBRARY_PATH:-}"
             exec "$f.unwrapped" "\$@"
             WRAP
@@ -356,7 +358,7 @@ in
                           # The bootstrap wrappers must run from their own
                           # closure without relying on /bin/sh or dirname.
                           sed -i \
-                            -e "1s|^#!.*|#!${bash}/bin/bash|" \
+                            -e "1s|^#!.*|#!${compilerBash}/bin/bash|" \
                             -e 's|^d=$(dirname $0)$|d='"$out"'/bin|' \
                             -e "s|LD_LIBRARY_PATH=\"[^\"]*\"|LD_LIBRARY_PATH=\"$LIB_PATH\"|" \
                             "$f"
