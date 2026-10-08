@@ -154,7 +154,11 @@ impl SourceSuccessorApprovalDataV2 {
         &self.bytes[..self.bytes.len() - 64]
     }
 
-    pub(crate) fn has_resource_authorization(&self) -> bool {
+    /// Reports whether the canonical packet uses the resource-authorization format.
+    ///
+    /// This classifies saved DATA only; it does not authenticate authorization
+    /// or establish currentness.
+    pub fn has_resource_authorization(&self) -> bool {
         self.bytes.len() == SOURCE_SUCCESSOR_APPROVAL_BYTES_V3
     }
 

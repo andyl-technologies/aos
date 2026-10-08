@@ -23,6 +23,21 @@ const ORIGINAL_BOOT_ID_BYTES: usize = BOOT_ID_FILE_MAXIMUM_BYTES + 1;
 pub struct KernelBootId([u8; 16]);
 
 impl KernelBootId {
+    /// Decodes a non-nil boot identifier from retained untrusted bytes.
+    ///
+    /// This DATA conversion does not observe the current kernel or establish
+    /// that the identifier belongs to the running kernel.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `bytes` is the nil identifier.
+    pub fn from_bytes(bytes: [u8; 16]) -> Result<Self> {
+        if bytes == [0; 16] {
+            return Err(malformed("UUID is incomplete or nil"));
+        }
+        Ok(Self(bytes))
+    }
+
     /// Reads the current kernel boot identity from its fixed procfs ABI.
     ///
     /// # Errors
@@ -283,6 +298,12 @@ mod tests {
                 0xee, 0xff,
             ]
         );
+        assert_eq!(KernelBootId::from_bytes(parsed.into_bytes()).unwrap(), parsed);
+    }
+
+    #[test]
+    fn retained_nil_boot_identifier_fails_closed() {
+        assert!(KernelBootId::from_bytes([0; 16]).is_err());
     }
 
     #[test]

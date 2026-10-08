@@ -216,23 +216,23 @@ macro_rules! read_systemd_catalog_recipe {
         })?;
         let mut bytes = catalog_install_read_bytes!($disposition, $pending, byte_count);
         catalog_install_step!(
-            $disposition, $pending, read_result, file.read_exact(&mut bytes),
+            $disposition, $pending, read_result, file.read_exact(&mut bytes[..]),
             ProductionSourceProviderCatalogInstallErrorV1::Credential("publication bytes")
         );
         let mut trailing = catalog_install_tail!($disposition, $pending);
         let tail_count = catalog_install_step!(
-            $disposition, $pending, tail_result, file.read(&mut trailing),
+            $disposition, $pending, tail_result, file.read(&mut trailing[..]),
             ProductionSourceProviderCatalogInstallErrorV1::Credential("publication tail")
         );
         // Keep the old short-circuit: a nonempty tail never performs fstat.
         if catalog_install_tail_count!($disposition, tail_count) != 0
-            || !same_stable_metadata(
-                &before,
-                &catalog_install_step!(
+            || !{
+                let after = catalog_install_step!(
                     $disposition, $pending, after, fstat(file.as_fd()),
                     ProductionSourceProviderCatalogInstallErrorV1::Credential("publication recheck")
-                ),
-            )
+                );
+                same_stable_metadata(&before, &after)
+            }
         {
             return Err(ProductionSourceProviderCatalogInstallErrorV1::Credential("publication changed"));
         }

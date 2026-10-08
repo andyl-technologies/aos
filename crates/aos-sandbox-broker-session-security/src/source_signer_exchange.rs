@@ -1683,7 +1683,7 @@ impl CurrentNixSourceExchangeAttemptV1 {
         self.blocking = Some(stream.set_nonblocking(false));
         self.peer = Some(socket_peercred(&*stream));
         if !matches!(self.blocking, Some(Ok(())))
-            || !matches!(self.peer, Some(Ok(peer)) if peer.uid == signer_uid && peer.gid == socket_gid)
+            || !matches!(self.peer, Some(Ok(peer)) if peer.uid.as_raw() == signer_uid && peer.gid.as_raw() == socket_gid)
         { return Err(()); }
         self.send_io.run_once(stream, context, CurrentNixSourceIoBodyV1::Send(&self.request))?;
         self.shutdown_io.run_once(stream, context, CurrentNixSourceIoBodyV1::ShutdownWrite)?;

@@ -13,6 +13,7 @@ pub(crate) mod fuse_intent_continuation;
 pub(crate) mod output_registration_continuation;
 pub(super) mod host_worker_comparison;
 
+use aos_proto::aos::sandbox::local::v1::BrokerMethod;
 use aos_sandbox::controller_execution_argument_attempt::ControllerExecutionArgumentAttemptV1;
 use aos_sandbox_broker_session_protocol::{
     BROKER_SESSION_ENDPOINT_PUBLICATION_BYTES, BrokerSessionProtocolV1, CLIENT_HELLO_MAXIMUM_BYTES,
@@ -29,6 +30,7 @@ use aos_sandbox_linux::seqpacket::{
     ConnectionPeerIdentity, KernelAuthorizedRecordSubject, SeqpacketError, SeqpacketSocket,
 };
 use aos_sandbox_protocol::PeerCredentials;
+use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1;
 
 use crate::recovery::{
     ArchivedStorageInventoryHeadV1, AuthenticatedOriginalHostNoApplyJoinV1, FixedEndpointCustodyV1,
@@ -2438,6 +2440,42 @@ fn fixed_worker_cgroup_root()
 }
 
 impl DormantAuthenticatedBrokerSessionV1 {
+    pub(super) fn output_registration_transport<'session>(
+        &'session mut self,
+        request: &AuthenticatedBrokerMethodRequestV1,
+        state: &'session mut output_registration_continuation::OutputPreparationCustodyV1,
+    ) -> output_registration_continuation::HeldOutputPreparationV1<'session> {
+        output_registration_continuation::HeldOutputPreparationV1::begin(self, request, state)
+    }
+
+    pub(super) fn recheck_original_nix_generation_session(
+        &mut self,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.owner
+            .require_original_storage_output_server(&self.transcript, self.socket.peer())
+    }
+
+    pub(super) fn has_selected_capture_candidate_profile(&self) -> bool {
+        self.transcript.negotiated_methods().contains(
+            &BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE,
+        )
+    }
+
+    pub(super) fn recheck_original_capture_candidate_client(
+        &mut self,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.owner
+            .require_original_capture_candidate_client(&self.transcript, self.socket.peer())
+    }
+
+    pub(super) fn compare_original_capture_candidate_outcome(
+        &mut self,
+        currentness: &crate::ProtectedBrokerOutcomeCurrentnessOwnerV1,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.owner
+            .compare_original_capture_candidate_outcome(currentness, self.socket.peer())
+    }
+
     pub(crate) fn revalidate_output_witnesses(&mut self) -> bool {
         if !self.owner.is_output_client_endpoint() {
             return true;

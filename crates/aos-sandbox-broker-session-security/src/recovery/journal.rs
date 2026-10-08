@@ -917,17 +917,17 @@ macro_rules! broker_main_open_step {
     };
     (Retained, construct $place:ident, $endpoint:ident, $directory:ident, $name:ident,
         $limits:ident, $owner:ident, $journal:ident) => {};
-    (Legacy, finish $place:ident, $floor:ident) => {
+    (Legacy, finish $place:ident, $floor:ident) => {{
         $place.validate_schema_only()?;
         $place.floor = $floor;
         $place.attach_floor()?;
         $place.validate_all()?;
         Ok($place)
-    };
-    (Retained, finish $place:ident, $floor:ident) => {
+    }};
+    (Retained, finish $place:ident, $floor:ident) => {{
         $place.owner.validate_schema_only()?;
         $place.attach()
-    };
+    }};
 }
 
 macro_rules! broker_main_open_recipe {

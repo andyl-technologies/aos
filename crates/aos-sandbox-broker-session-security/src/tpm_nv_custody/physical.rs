@@ -10,6 +10,7 @@
 //! No injected transport, generic policy callback or naked I/O factory exists.
 
 use std::num::NonZeroU32;
+use std::os::fd::OwnedFd;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -261,7 +262,7 @@ struct BrokerPhysicalAttemptV1 {
     // Socketpair's child half is resident before the new cutoff bookend.
     // Its later pure move into Command stdin still enters the existing raw
     // consuming spawn prefix; this does not claim custody inside that provider.
-    child_channel: Option<SeqpacketSocket>,
+    child_channel: Option<OwnedFd>,
 }
 
 enum BrokerPhysicalFailureV1 {

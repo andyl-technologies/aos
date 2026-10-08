@@ -170,11 +170,11 @@ macro_rules! read_catalog_recipe {
             .map_err(|_| ProductionSourceProviderIngressErrorV1::Catalog("catalog file length"))?;
         let mut bytes = catalog_read_bytes!($disposition, $pending, byte_count);
         catalog_read_step!(
-            $disposition, $pending, read_result, file.read_exact(&mut bytes), "publication bytes"
+            $disposition, $pending, read_result, file.read_exact(&mut bytes[..]), "publication bytes"
         );
         let mut trailing = catalog_read_tail!($disposition, $pending);
         let tail_count = catalog_read_step!(
-            $disposition, $pending, tail_result, file.read(&mut trailing), "publication tail"
+            $disposition, $pending, tail_result, file.read(&mut trailing[..]), "publication tail"
         );
         if *catalog_tail_count!($disposition, tail_count) != 0 {
             return Err(ProductionSourceProviderIngressErrorV1::Catalog("publication has trailing bytes"));

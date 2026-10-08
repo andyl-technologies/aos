@@ -321,7 +321,7 @@ impl RecordScopeDataV1 {
         }
     }
 
-    const fn transaction_scope(self) -> [u8; 32] {
+    fn transaction_scope(self) -> [u8; 32] {
         match self {
             Self::Broker(_) => [0; 32],
             Self::Host(scope) => scope,

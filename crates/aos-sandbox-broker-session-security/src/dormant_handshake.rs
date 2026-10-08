@@ -4176,8 +4176,17 @@ impl DormantAuthenticatedBrokerSessionV1 {
             && request.authorization_artifacts().is_some();
         let (request, context) = self.begin_execution(request, method_matches)?;
         let version = ProtocolVersion::new(context.protocol_major(), context.protocol_minor());
+        let boot = match aos_sandbox_linux::boot::KernelBootId::from_bytes(context.boot_id()) {
+            Ok(boot) => boot,
+            Err(error) => {
+                let error = aos_sandbox_storage::StorageRuntimeError::from(
+                    aos_sandbox_storage::ZfsWorkerError::Linux(error),
+                );
+                return Err(Self::unknown_domain(request, error.into()));
+            }
+        };
         let response = match storage.observe_original_capture_candidate_v1(
-            output, &request.0, version, context.boot_id(),
+            output, &request.0, version, boot,
         ) {
             Ok(response) => response,
             Err(error) => return Err(Self::unknown_domain(request, error)),
@@ -6920,9 +6929,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
         request: &AuthenticatedBrokerMethodRequestV1,
         state: &'session mut crate::handshake::output_registration_continuation::OutputPreparationCustodyV1,
     ) -> crate::handshake::output_registration_continuation::HeldOutputPreparationV1<'session> {
-        crate::handshake::output_registration_continuation::HeldOutputPreparationV1::begin(
-            &mut self.0, request, state,
-        )
+        self.0.output_registration_transport(request, state)
     }
 
     pub(crate) fn receive_original_output_request(
@@ -6952,9 +6959,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
         // This existing fixed Storage/NodeController check has no Output
         // operation semantics. It validates the original named journal,
         // transcript and actual peer through the sole currentness engine.
-        self.0.owner.require_original_storage_output_server(
-            &self.0.transcript, self.0.socket.peer(),
-        )
+        self.0.recheck_original_nix_generation_session()
     }
 
     /// Parks the selected coordinates under the same original nonrenewable cutoff.
@@ -6985,9 +6990,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
 
     /// Reports only the method list of the actual completed transcript.
     pub(crate) fn has_selected_capture_candidate_profile(&self) -> bool {
-        self.0.transcript.negotiated_methods().contains(
-            &BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE,
-        )
+        self.0.has_selected_capture_candidate_profile()
     }
 
     /// Parks method-41 coordinates once from the same actual fixed Session.
@@ -6998,9 +7001,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
     ) {
         if flight.coordinates.is_some() { return; }
         flight.coordinates = Some((|| {
-            self.0.owner.require_original_capture_candidate_client(
-                &self.0.transcript, self.0.socket.peer(),
-            )?;
+            self.0.recheck_original_capture_candidate_client()?;
             self.0.require_negotiated_client_method(
                 BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE,
             )?;
@@ -7019,16 +7020,14 @@ impl DormantAuthenticatedBrokerSessionV1 {
     pub(crate) fn recheck_original_capture_candidate_client(
         &mut self,
     ) -> Result<(), BrokerSessionSecurityError> {
-        self.0.owner.require_original_capture_candidate_client(
-            &self.0.transcript, self.0.socket.peer(),
-        )
+        self.0.recheck_original_capture_candidate_client()
     }
 
     pub(crate) fn compare_original_capture_candidate_outcome(
         &mut self,
         currentness: &crate::ProtectedBrokerOutcomeCurrentnessOwnerV1,
     ) -> Result<(), BrokerSessionSecurityError> {
-        self.0.owner.compare_original_capture_candidate_outcome(currentness, self.0.socket.peer())
+        self.0.compare_original_capture_candidate_outcome(currentness)
     }
 
     pub(crate) fn park_output_client_request(
