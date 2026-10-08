@@ -1803,6 +1803,17 @@ typed `Unsupported` after 2.112 seconds, before its checkpoint assertions.
 The exact indexed-role case and owning checks do not execute. All original
 invocations are terminal and the complete source and selected executable
 remain unchanged; the failure is preserved for diagnosis without retry.
+Reviewed private `9fa5a657fc` corrects only three test files: an indexed reopen
+captures each actual signed head and parent with its independently selected
+view context and attribute revision from the still-live owning Guard. A fresh
+Guard installs those ordinary `ViewSelection` inputs before native initialization;
+its native factory still revalidates actual protected Guard and Original state.
+The checkpoint path includes its newly published signed head, while Legacy
+fixtures retain their original path. The handoff conveys configuration, not
+completed history or publication authority. Every existing oracle, root, clock,
+window and trap remains unchanged. Independent review verifies the complete
+three-file diff, 6,074 tracked hashes, modes and symlink targets; both formats
+pass. Owning collector and auxiliary qualification remain pending.
 GC-15, GC-16 and GC-29 also require D-82 copied-retirement and permanent-owner
 recovery. The current source implements their codecs and portable-copy
 registration, but no genuine copied or permanent-owner collector path.
@@ -1955,6 +1966,41 @@ match `6cc17e62af`; 6,077 tracked contents and modes are independently sealed,
 and both formats pass. Its diagnostic child field holds no authority and
 does not alter the Fetcher's existing field moves. Compilation and runtime
 qualification remain pending; no read reuse or optimization is qualified.
+
+That sealed `a89a88aa90` subsequently passes fresh SDK compilation, strict
+library and all-target Clippy, and compiled discovery of 794 native library
+cases. The same 58 exact regressions each execute once and pass in 2.373 seconds.
+The single unchanged ordinary 1,024-entry witness fails after 72.632 seconds,
+with explicit expiry at 41.783607463 seconds against the original 30-second
+writer maximum. Baseline publication, maintenance and independent oracles
+remain unreached; the other five required populations remain unrun.
+Independent review verifies all six original terminal invocations, all twelve
+source snapshots, 6,077 unchanged tracked contents and modes, and the actual
+selected executable captured before and after runtime. Previous passing-name
+selectors are unchanged; this result does not qualify DRV-29 or the owning gate.
+
+The same execution's dominant history load takes 10.587344641 seconds with
+568 planned GETs, 577 identity checks and 578 decodes. Its aggregate measured
+namespace and auxiliary read-await intervals total 10.560442253 seconds;
+measured local hashing, decoding, context/traversal and owner binding total
+0.002768151 seconds. Independent review pairs all three emitted aggregates
+with their immediately following completed-load boundaries and actual work
+counters. Read-await includes Store work, byte clones and scheduling, while
+the local groups omit unmeasured costs. These are neither physical disk wait
+nor complete CPU measurements, and separate executions prove no causal speedup.
+
+Source review finds the otherwise transparent native backfill fixture omits
+its existing `LocalFs::read_protected_record` delegation. Reviewed private
+`201f568606` adds exactly seven lines forwarding that existing method to
+`TokioLocalFs`; no trait, production consumer or payload API changes. Removing
+only the method restores the fixture byte-for-byte, including the publication
+ACK fault, typed-content counters, setup and assertions. All other crate bytes
+match the profiler candidate. Both mandatory formats pass and all 6,077 tracked
+contents and modes are independently sealed. The supported native read still
+propagates errors without scalar retry and retains the existing selected
+resolver's final physical fence. Its dispatch and observation timing can differ;
+no identical sampling or performance improvement is claimed. Fresh compiler,
+protected-read, ACK/counter and deadline qualification remain pending.
 
 Reviewed private `85558972ae` adds six public format properties for the existing
 common Memo, closed index bindings and recipes, opaque index keys, and generic
