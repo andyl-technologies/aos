@@ -1287,7 +1287,7 @@ impl<'profile> OriginalRootGenesisFlightV1<'profile> {
             self.q04_terminal_clock()?;
             let stream = self.stream.try_borrow().map_err(|_| CreateQ04ErrorV1::ChangedCut)?;
             *observation = Some(rustix::net::recv(
-                stream.as_fd(), byte, rustix::net::RecvFlags::PEEK | rustix::net::RecvFlags::DONTWAIT,
+                stream.as_fd(), &mut *byte, rustix::net::RecvFlags::PEEK | rustix::net::RecvFlags::DONTWAIT,
             ).map(|(_, received)| received));
             drop(stream);
             // The raw result and peek byte are owned by the invocation before
