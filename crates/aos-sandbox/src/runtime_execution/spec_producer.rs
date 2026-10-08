@@ -30,7 +30,7 @@ use super::{
     DormantRuntimeExecutionOwnerErrorV1, ExecutionJournalRecoveryTokenV1,
 };
 use crate::Journal;
-use crate::cli_model::DormantSandboxRequestKindV1;
+use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1;
 use crate::controller_execution_argument_receipt::{
     AuthenticatedControllerHostArgumentObservationV1, ControllerExecutionArgumentReceiptErrorV1,
     revalidate_current_controller_host_argument_observation_v1,

@@ -417,7 +417,7 @@ fn validate_accepted_create_identity(
         .plan
         .public_mutation_context()?
         .ok_or_else(invalid_settlement)?;
-    let crate::cli_model::DormantSandboxRequestKindV1::Exec(request) =
+    let aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::Exec(request) =
         context.validated_request()?
     else {
         return Err(invalid_settlement());

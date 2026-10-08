@@ -11,8 +11,8 @@ use aos_proto::aos::sandbox::v1::{
     FilesystemViewServiceClient, GetOperationRequest, Operation, OperationServiceClient,
     OperatorServiceClient, SandboxServiceClient, SnapshotServiceClient,
 };
-use aos_sandbox::cli_model::{
-    DormantSandboxOutputV1, DormantSandboxRequestKindV1, DormantSandboxRequestV1,
+use aos_sandbox_protocol::public_api::request::{
+    DormantPublicApiRequestV1, DormantSandboxOutputV1, DormantSandboxRequestKindV1,
 };
 use aos_sandbox_protocol::public_api::proto_json::CheckedExecutionControlResultV1;
 use aos_sandbox_protocol::public_api::client_state::{
@@ -196,7 +196,7 @@ impl AuthorizedEndpoint {
 /// expiry, or rendering failure.
 pub(super) async fn dispatch_mutation(
     args: &SandboxArgs,
-    request: &DormantSandboxRequestV1,
+    request: &DormantPublicApiRequestV1,
     output: DormantSandboxOutputV1,
     expected_capability_id: Option<CapabilityId>,
 ) -> Result<bool> {
@@ -803,7 +803,7 @@ where
 
 async fn finish_operation<T>(
     endpoint: &AuthorizedEndpoint,
-    request: &DormantSandboxRequestV1,
+    request: &DormantPublicApiRequestV1,
     output: DormantSandboxOutputV1,
     operation: Operation,
     completed_resource: Option<&T>,
@@ -1010,10 +1010,10 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        CheckedOperationPhaseV1, DormantSandboxRequestKindV1, PublicOperationMethodV1,
-        poll_before_wait_deadline, removes_resource, require_completed_capability_operation,
-        require_revoked_capability,
+        CheckedOperationPhaseV1, PublicOperationMethodV1, poll_before_wait_deadline,
+        removes_resource, require_completed_capability_operation, require_revoked_capability,
     };
+    use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1;
 
     #[test]
     fn removal_waits_report_terminal_operations() {

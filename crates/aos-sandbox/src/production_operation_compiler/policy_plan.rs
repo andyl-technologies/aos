@@ -13,7 +13,7 @@ use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
 
 use crate::Journal;
-use crate::cli_model::DormantSandboxRequestKindV1 as Request;
+use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1 as Request;
 use crate::controller_service::public_projection::{
     PublicProjectionKindV1, PublicProjectionResourceV1, PublicProjectionStoreV1,
 };

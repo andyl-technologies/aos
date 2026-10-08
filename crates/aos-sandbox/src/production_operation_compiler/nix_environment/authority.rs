@@ -88,7 +88,7 @@ impl CheckedStartAuthorityV2 {
         let request = crate::public_mutation_compiler::ResolvedPublicMutationRequestV1::decode(
             &self.original_request,
         ).map_err(|_| NixStartAdmissionErrorV2::Invalid)?;
-        if !matches!(request.request(), crate::cli_model::DormantSandboxRequestKindV1::Start(_))
+        if !matches!(request.request(), aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::Start(_))
             || claims.holder != self.holder
             || claims.project != self.project
             || claims.id.as_bytes() != &self.coordinates.capability

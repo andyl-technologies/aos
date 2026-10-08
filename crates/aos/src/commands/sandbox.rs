@@ -8,7 +8,7 @@ use anyhow::{Context as _, Result};
 use aos_proto::aos::sandbox::v1::{
     CapabilityServiceClient, DiscoveryServiceClient, OperationServiceClient,
 };
-use aos_sandbox::cli_model::{
+use aos_sandbox_protocol::public_api::request::{
     DormantCompletionShellV1, DormantPublicApiAuthorizationV1, DormantPublicApiClientV1,
     DormantPublicApiWireTransportV1, DormantSandboxCommandExecutorV1, DormantSandboxOutputV1,
     DormantSandboxRequestKindV1, DormantSandboxRoutingErrorV1, DormantValidatedRequestSinkV1,

@@ -86,6 +86,9 @@ impl TryFrom<OperatorRecoveryRequest> for OperatorRecoveryRequestV1 {
     type Error = InvalidObservationClientAdapter;
 
     fn try_from(value: OperatorRecoveryRequest) -> Result<Self, Self::Error> {
+        aos_sandbox_protocol::public_api::request::validate_operator_recovery_request_v1(&value)
+            .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
+
         let resource_id: [u8; 16] = value
             .resource_id
             .as_slice()
@@ -96,17 +99,7 @@ impl TryFrom<OperatorRecoveryRequest> for OperatorRecoveryRequestV1 {
             .as_option()
             .ok_or(InvalidObservationClientAdapter::InvalidOperatorRecovery)?
             .clone();
-        aos_sandbox_protocol::public_api::portable::CheckedObjectDescriptorV1::try_from(evidence.clone())
-            .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
-        if resource_id == [0; 16]
-            || value.expected_resource_version.is_empty()
-            || value.expected_resource_version.len() > super::grammar::MAXIMUM_CLI_OPAQUE_BYTES
-            || !(1..=4).contains(&value.action.to_i32())
-            || value.idempotency_key.is_empty()
-            || value.idempotency_key.len() > super::grammar::MAXIMUM_IDEMPOTENCY_KEY_BYTES
-        {
-            return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
-        }
+
         Ok(Self {
             resource_id,
             expected_resource_version: value.expected_resource_version,

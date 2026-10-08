@@ -14,9 +14,8 @@ use aos_sandbox::production_operation_compiler::{
 };
 use sha2::{Digest as _, Sha256};
 
-use super::{
-    DormantSandboxRequestKindV1, EffectFailure, Journal, OperationId, ProductionEffectExecutor,
-};
+use super::{EffectFailure, Journal, OperationId, ProductionEffectExecutor};
+use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1;
 use crate::cache_public_pin::{
     PublicCachePinExecutionErrorV1, ResidentPublicCacheUnpinV1,
     execute_resident_public_cache_pin_v1, execute_resident_public_cache_unpin_v1,

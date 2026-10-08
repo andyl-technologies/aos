@@ -19,7 +19,7 @@ use aos_sandbox_ownership_protocol::protocol::session_client::OwnershipAuthority
 #[cfg(target_os = "linux")]
 use sha2::{Digest as _, Sha256};
 
-use crate::cli_model::DormantPublicApiClientV1;
+use aos_sandbox_protocol::public_api::request::DormantPublicApiClientV1;
 #[cfg(test)]
 use crate::RecordNamespace;
 

@@ -6,9 +6,10 @@
 //! request permits pure planning only; it carries no mutation context and
 //! grants no operation-admission or effect authority.
 
-use crate::cli_model::{
-    AuditAuthorizationV1, DormantClientStatePlanV1, DormantSandboxOutputV1,
-    DormantSandboxRequestKindV1, DormantSandboxRequestV1, PublicApiAuditMethodV1,
+use crate::cli_model::{AuditAuthorizationV1, PublicApiAuditMethodV1};
+use aos_sandbox_protocol::public_api::request::{
+    DormantClientStatePlanV1, DormantPublicApiRequestV1, DormantSandboxOutputV1,
+    DormantSandboxRequestKindV1,
 };
 use aos_proto::aos::sandbox::v1 as wire;
 use aos_sandbox_core::{Operation, ProjectId, ResourceId, ResourceKind, Selector};
@@ -221,7 +222,7 @@ fn validate_request(
 ) -> Result<(), PublicPolicyPlanResolutionErrorV1> {
     let client_state = DormantClientStatePlanV1::new(1, 1, None)
         .map_err(|_| PublicPolicyPlanResolutionErrorV1::Malformed)?;
-    DormantSandboxRequestV1::from_parsed_command(
+    DormantPublicApiRequestV1::from_parsed_command(
         request,
         DormantSandboxOutputV1::Json,
         client_state,

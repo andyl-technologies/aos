@@ -894,7 +894,7 @@ impl ControllerNixStartRecipeSelectorV2 {
     ) -> Result<NixStartAdmissionCarrierV2, NixStartAdmissionErrorV2> {
         self.recheck()?;
         let authority = authorized.checked_start_authority().map_err(|_| NixStartAdmissionErrorV2::Invalid)?;
-        let crate::cli_model::DormantSandboxRequestKindV1::Start(request) = authorized.request().request() else {
+        let aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::Start(request) = authorized.request().request() else {
             return Err(NixStartAdmissionErrorV2::Invalid);
         };
         let sandbox = SandboxId::from_bytes(array::<16>(&request.sandbox_id)?);
@@ -1343,7 +1343,7 @@ fn require_recipe_assignment(
     let manifest = binding.manifest().manifest();
     let request = crate::public_mutation_compiler::ResolvedPublicMutationRequestV1::decode(authority.original_request())
         .map_err(|_| NixStartAdmissionErrorV2::Invalid)?;
-    let crate::cli_model::DormantSandboxRequestKindV1::Start(request) = request.request() else {
+    let aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::Start(request) = request.request() else {
         return Err(NixStartAdmissionErrorV2::Invalid);
     };
     let generation = crate::environment::decode_environment_generation_v1(&recipe.generation_manifest)

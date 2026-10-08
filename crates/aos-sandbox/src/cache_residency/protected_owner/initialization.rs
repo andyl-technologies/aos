@@ -1372,7 +1372,7 @@ impl CacheResidentInitializationV1 {
         operation: OperationId,
         transaction_id: [u8; 16],
         source_journal: &Journal,
-        request: &crate::cli_model::DormantSandboxRequestKindV1,
+        request: &aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1,
     ) -> Result<bool, CacheResidentUnavailableV1> {
         if consumer.acquisition_fence().is_none() {
             self.first_failure.get_or_insert(InitializationCauseV1::Mutation);
@@ -1400,7 +1400,7 @@ impl CacheResidentInitializationV1 {
         operation: OperationId,
         transaction_id: [u8; 16],
         source_journal: &Journal,
-        request: &crate::cli_model::DormantSandboxRequestKindV1,
+        request: &aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1,
     ) -> Result<(), CacheResidentUnavailableV1> {
         let inventories = self.existing_pin_inventories(owner)?;
         let retained = inventories.iter().flat_map(|inventory| &inventory.reconstructed)
@@ -1515,7 +1515,7 @@ impl CacheResidentInitializationV1 {
         operation: OperationId,
         transaction_id: [u8; 16],
         source_journal: &crate::Journal,
-        request: &crate::cli_model::DormantSandboxRequestKindV1,
+        request: &aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1,
     ) -> Result<(), CacheResidentUnavailableV1> {
         self.with_pin_mutation(owner, physical, operation, |session, state, progress, physical| {
             CacheResidencyProtectedOwnerV1::pin_existing_under_cut(
@@ -1541,7 +1541,7 @@ impl CacheResidentInitializationV1 {
         operation: OperationId,
         transaction_id: [u8; 16],
         source_journal: &crate::Journal,
-        request: &crate::cli_model::DormantSandboxRequestKindV1,
+        request: &aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1,
     ) -> Result<(), CacheResidentUnavailableV1> {
         self.with_pin_mutation(owner, physical, operation, |session, state, progress, physical| {
             CacheResidencyProtectedOwnerV1::unpin_existing_under_cut(

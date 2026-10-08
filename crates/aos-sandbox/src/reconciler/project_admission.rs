@@ -1042,7 +1042,7 @@ fn validate_original_projection(
     let context = plan
         .public_mutation_context()?
         .ok_or_else(invalid_metadata)?;
-    let crate::cli_model::DormantSandboxRequestKindV1::Create(request) =
+    let aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::Create(request) =
         context.validated_request()?
     else {
         return Err(invalid_metadata());

@@ -29,9 +29,9 @@ use sha2::{Digest as _, Sha256};
 use super::attachment_target::ControllerAttachmentTargetInputsV1;
 use super::view_mutations::portable_descriptor;
 use super::{
-    DormantSandboxRequestKindV1, EffectFailure, ProductionEffectExecutor, PublicMutationEffectV1,
-    sample_ownership_clock,
+    EffectFailure, ProductionEffectExecutor, PublicMutationEffectV1, sample_ownership_clock,
 };
+use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1;
 
 const DESIRED_REQUEST_DOMAIN: &[u8] = b"aos.sandbox.public-attachment-desired.v1\0";
 

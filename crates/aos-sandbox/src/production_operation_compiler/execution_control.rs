@@ -10,7 +10,7 @@ use aos_proto::aos::sandbox::v1::{
 use aos_sandbox_core::runtime_backend::EffectOperationV1;
 
 use crate::OperationCompilationError;
-use crate::cli_model::MAXIMUM_ENDPOINT_PROOF_BYTES;
+use aos_sandbox_protocol::public_api::limits::MAXIMUM_ENDPOINT_PROOF_BYTES;
 
 /// Separates a data-route attach from a guest-agent execution effect.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

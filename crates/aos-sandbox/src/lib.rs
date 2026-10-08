@@ -7,7 +7,8 @@
 //! before activating process-local holder channels. [`publisher_ingress`] owns
 //! inert execution/challenge audit records; Linux publisher control and sessions
 //! bind their registration to the original live process without granting effects.
-//! [`cli_model`] owns client request assembly and Controller authorization binding.
+//! [`cli_model`] owns CLI grammar and the Controller's adopted request envelope;
+//! protocol owns untrusted public request DATA and client proposals.
 //! [`controller_query`] retains protected observation and operator projection;
 //! checked public models, reducers, and holder-key signature profiles live in
 //! `aos_sandbox_protocol::public_api`. [`environment`],

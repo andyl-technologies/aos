@@ -518,7 +518,7 @@ pub(super) fn validate_recovery_terminal(
         || result.resource_id.as_slice() != request.resource_id()
         || result.action.to_i32() != request.action()
         || result.resource_version.is_empty()
-        || result.resource_version.len() > crate::cli_model::MAXIMUM_CLI_OPAQUE_BYTES
+        || result.resource_version.len() > aos_sandbox_protocol::public_api::limits::MAXIMUM_CLI_OPAQUE_BYTES
         || result.resource_version == request.expected_resource_version()
     {
         return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);

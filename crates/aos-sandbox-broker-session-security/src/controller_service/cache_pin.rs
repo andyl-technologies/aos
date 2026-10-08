@@ -11,10 +11,8 @@ use aos_sandbox::production_operation_compiler::RecheckedCacheConsumerV1;
 use aos_sandbox_core::DecodeLimits;
 use sha2::{Digest as _, Sha256};
 
-use super::{
-    DormantSandboxRequestKindV1, EffectFailure, EffectReceipt, Journal, OperationId,
-    ProductionEffectExecutor,
-};
+use super::{EffectFailure, EffectReceipt, Journal, OperationId, ProductionEffectExecutor};
+use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1;
 use crate::{
     CacheCompiledSourceLimitsV1, CacheSourceMembershipLimitsV1, ProjectSealedViewObjectSourceV1,
     PublicCachePinExecutionV1, PublicCachePinRecoveryV1,

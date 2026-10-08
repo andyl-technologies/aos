@@ -1,6 +1,10 @@
 //! Lossless bounded execution, endpoint, and follow-up control grammar.
 
 use std::fmt;
+use aos_sandbox_protocol::public_api::limits::{
+    MAXIMUM_ENDPOINT_PROOF_BYTES, MAXIMUM_EXEC_ENVIRONMENT, MAXIMUM_EXEC_ENVIRONMENT_BYTES,
+    MAXIMUM_EXEC_ENVIRONMENT_NAME_BYTES, MAXIMUM_EXEC_ENVIRONMENT_VALUE_BYTES,
+};
 
 use aos_sandbox_protocol::public_api::execution_result::ExecutionSignalV1;
 use aos_sandbox_protocol::public_api::grammar_error::InvalidCliGrammar;
@@ -11,20 +15,8 @@ use super::grammar::{
 };
 use aos_sandbox_protocol::public_api::portable::CheckedFeatureSetV1;
 
-/// Maximum environment rows supplied to one execution.
-pub const MAXIMUM_EXEC_ENVIRONMENT: usize = aos_sandbox_core::MAX_EXECUTION_ENVIRONMENT_ENTRIES;
-/// Maximum bytes in one environment name.
-pub const MAXIMUM_EXEC_ENVIRONMENT_NAME_BYTES: usize =
-    aos_sandbox_core::MAX_EXECUTION_ENVIRONMENT_NAME_BYTES;
-/// Maximum bytes in one environment value.
-pub const MAXIMUM_EXEC_ENVIRONMENT_VALUE_BYTES: usize =
-    aos_sandbox_core::MAX_EXECUTION_ENVIRONMENT_VALUE_BYTES;
-/// Maximum aggregate environment bytes.
-pub const MAXIMUM_EXEC_ENVIRONMENT_BYTES: usize = aos_sandbox_core::MAX_EXECUTION_ENVIRONMENT_BYTES;
 /// Maximum detached output capture bytes.
 pub const MAXIMUM_EXEC_CAPTURE_BYTES: u64 = 64 * 1024 * 1024;
-/// Maximum public-key or proof bytes used for endpoint admission.
-pub const MAXIMUM_ENDPOINT_PROOF_BYTES: usize = 64 * 1024;
 /// States execution fields that require public proto integration before use.
 pub const EXECUTION_REQUEST_INTEGRATION_REQUIRED: &str = "execution request and terminal-result contracts are source-complete; transport activation and qualification remain deliberately deferred";
 
@@ -170,7 +162,7 @@ impl ExecutionShellScriptV1 {
     /// oversized script bytes.
     pub fn new(script: Vec<u8>) -> Result<Self, InvalidCliGrammar> {
         if script.is_empty()
-            || script.len() > super::grammar::MAXIMUM_EXEC_ARGUMENT_BYTES
+            || script.len() > aos_sandbox_protocol::public_api::limits::MAXIMUM_EXEC_ARGUMENT_BYTES
             || script.contains(&0)
         {
             Err(InvalidCliGrammar::InvalidArguments)

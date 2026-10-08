@@ -8,8 +8,8 @@ use aos_proto::aos::sandbox::v1::{
     ListSnapshotsResponse, ListViewsResponse, PageInfo, SandboxServiceClient,
     SnapshotServiceClient,
 };
-use aos_sandbox::cli_model::{
-    DormantSandboxOutputV1, DormantSandboxRequestKindV1, DormantSandboxRequestV1,
+use aos_sandbox_protocol::public_api::request::{
+    DormantPublicApiRequestV1, DormantSandboxOutputV1, DormantSandboxRequestKindV1,
     DormantSandboxTreePageConsumerV1,
 };
 use aos_sandbox_protocol::public_api::proto_json::{
@@ -182,7 +182,7 @@ macro_rules! fetch_paginated_list {
 /// validation, or rendering failure.
 pub(in crate::commands::sandbox) async fn dispatch_read(
     args: &SandboxArgs,
-    request: &DormantSandboxRequestV1,
+    request: &DormantPublicApiRequestV1,
     output: DormantSandboxOutputV1,
     expected_capability_id: Option<CapabilityId>,
 ) -> Result<bool> {
@@ -420,7 +420,7 @@ pub(in crate::commands::sandbox) async fn dispatch_read(
 async fn fetch_tree(
     client: SandboxServiceClient<SharedHttp2Connection>,
     initial_request: &ListDescendantsRequest,
-    command: &DormantSandboxRequestV1,
+    command: &DormantPublicApiRequestV1,
     output: DormantSandboxOutputV1,
 ) -> Result<()> {
     let mut consumer =

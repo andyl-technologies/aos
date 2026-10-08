@@ -20,7 +20,7 @@ use aos_sandbox_core::{
 };
 use sha2::{Digest as _, Sha256};
 
-use crate::cli_model::DormantSandboxRequestKindV1 as Request;
+use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1 as Request;
 use aos_sandbox_protocol::public_api::PublicOperationMethodV1;
 use crate::controller_service::public_projection::{
     PublicProjectionKindV1, PublicProjectionPlanV1, PublicProjectionResourceV1,
@@ -2061,7 +2061,7 @@ fn cache_consumer_mutation_intent(
 pub fn recheck_cache_consumer_projection_v1(
     journal: &Journal,
     project: ProjectId,
-    request: &crate::cli_model::DormantSandboxRequestKindV1,
+    request: &aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1,
 ) -> Result<RecheckedCacheConsumerV1, OperationCompilationError> {
     let (object, view_id, attachment_id, mutation, mutation_kind) = match request {
         Request::CachePin(value) => (

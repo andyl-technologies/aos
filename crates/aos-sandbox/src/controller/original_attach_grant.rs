@@ -23,7 +23,7 @@ use super::{
     ActivatedOperationCompiler, ControllerProtectedClockV1, ControllerServiceError, NodeController,
     OperationCompilationError, SingleNodeEffectExecutor,
 };
-use crate::cli_model::DormantSandboxRequestKindV1;
+use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1;
 use crate::cli_model::authorization_adapter::{
     CurrentCapabilityDecisionV1, evaluate_current_protected_capability,
 };

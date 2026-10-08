@@ -9,6 +9,8 @@
 //! [`proto_json`] and [`continuation`] retain checked output and bounded resume
 //! data. [`attach_holder_proof`] and [`create_holder_proof`] validate holder-key
 //! claims without granting admission, adoption, or effect authority.
+//! [`request`] owns the sole structurally checked public request DATA and
+//! untrusted client proposals under the shared [`limits`].
 
 pub mod attach_holder_proof;
 pub mod audit_event;
@@ -28,6 +30,8 @@ pub mod watch_resource;
 pub mod client_state;
 pub mod execution_result;
 pub mod grammar_error;
+pub mod limits;
+pub mod request;
 
 mod client_state_sealed {
     pub trait Sealed {}

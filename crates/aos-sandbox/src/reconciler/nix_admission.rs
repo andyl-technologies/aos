@@ -57,7 +57,7 @@ fn accepted_nix_start_readback_v2(
     )?;
     if operation.effect_count != 1 || operation.ownership_gated || operation.runtime_intent_digest.is_some()
         || effect.plan != expected_effect
-        || !matches!(request.request(), crate::cli_model::DormantSandboxRequestKindV1::Start(_))
+        || !matches!(request.request(), aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::Start(_))
         || carrier.operation() != operation_id
         || admission.method() != PublicOperationMethodV1::StartSandbox
         || admission.project() != context.project()

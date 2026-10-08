@@ -3887,7 +3887,7 @@ fn retained_create_sandbox_admission_revision_v1(
     .map_err(|_| ReconcilerError::CorruptLedger("live Create request is invalid"))?;
     if !matches!(
         request.request(),
-        crate::cli_model::DormantSandboxRequestKindV1::Create(_)
+        aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::Create(_)
     ) || request.operation_method()
         != aos_sandbox_protocol::public_api::PublicOperationMethodV1::CreateSandbox
         || admission.project() != context.project()
@@ -4136,7 +4136,7 @@ fn pending_operator_repair_from_exact_rows_v1(
         .ok_or(ReconcilerError::CorruptLedger(
             "Repair effect has no admission context",
         ))?;
-    let crate::cli_model::DormantSandboxRequestKindV1::OperatorRecover(request) =
+    let aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::OperatorRecover(request) =
         context.validated_request()?
     else {
         return Err(ReconcilerError::CorruptLedger(
@@ -4314,7 +4314,7 @@ pub(crate) fn accepted_create_execution_effect_from_journal_v1(
         ))?;
     if !matches!(
         context.validated_request()?,
-        crate::cli_model::DormantSandboxRequestKindV1::Exec(_)
+        aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::Exec(_)
     ) {
         return Err(ReconcilerError::CorruptLedger(
             "accepted Create request has another method",
@@ -4462,7 +4462,7 @@ fn is_operator_storage_repair_effect_v1(plan: &EffectPlan) -> Result<bool, Recon
         return Ok(false);
     }
     let Some(context) = plan.public_mutation_context()? else { return Ok(false); };
-    let crate::cli_model::DormantSandboxRequestKindV1::OperatorRecover(request) = context.validated_request()? else {
+    let aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::OperatorRecover(request) = context.validated_request()? else {
         return Err(ReconcilerError::InvalidPlan("Recover effect has another public request"));
     };
     let request = crate::cli_model::OperatorRecoveryRequestV1::try_from(request)
@@ -4619,7 +4619,7 @@ pub(crate) fn validate_delete_batch_admission_records_v1(
         }
         if effect.plan.public_mutation_method() == Some(PublicOperationMethodV1::DeleteSandbox) {
             let context = effect.plan.public_mutation_context()?.ok_or_else(invalid)?;
-            let crate::cli_model::DormantSandboxRequestKindV1::Delete(request) = context.validated_request()?
+            let aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::Delete(request) = context.validated_request()?
             else {
                 return Err(invalid());
             };

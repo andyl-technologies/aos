@@ -12,7 +12,7 @@ use aos_sandbox_core::{
     ProjectId, SandboxId, descriptor_for_bytes, MediaType,
 };
 
-use crate::cli_model::DormantSandboxRequestKindV1;
+use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1;
 use aos_sandbox_core::source_tree_model::SandboxTreeRecordV1;
 use crate::hierarchy::protected_journal::{
     CurrentNixSourceInventoryAttemptV1, CurrentNixSourceInventoryDataV1, HierarchyProtectedJournalErrorV1,

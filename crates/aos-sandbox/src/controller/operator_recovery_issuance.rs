@@ -43,9 +43,9 @@ use super::{
     validate_recovery_current,
 };
 use crate::cli_model::{
-    DormantSandboxRequestKindV1, InvalidObservationClientAdapter, OperatorRecoveryRequestV1,
-    PublicMutationRequestV1,
+    InvalidObservationClientAdapter, OperatorRecoveryRequestV1, PublicMutationRequestV1,
 };
+use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1;
 use aos_sandbox_protocol::public_api::CheckedSandboxResourceV1;
 use crate::controller_service::public_projection::{
     PublicProjectionKindV1, PublicProjectionResourceV1, PublicProjectionStoreV1,

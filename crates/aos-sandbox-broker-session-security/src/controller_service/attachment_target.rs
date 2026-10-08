@@ -30,7 +30,8 @@ use aos_sandbox_linux::pidfd::PidFd;
 use aos_systemd::SystemdClient;
 use rustix::fs::{Mode, OFlags, open};
 
-use super::{DormantSandboxRequestKindV1, EffectFailure};
+use super::EffectFailure;
+use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1;
 use crate::controller_ownership::{
     CLOCK_PROVENANCE, ControllerOwnershipConfigurationV1, ControllerOwnershipCredentialErrorV1,
     sample_ownership_clock,

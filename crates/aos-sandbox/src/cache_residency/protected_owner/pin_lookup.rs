@@ -124,7 +124,7 @@ impl ResidentCachePinMutationV1 {
         operation: OperationId,
         released_pin: Option<&CachePinV1>,
         source_journal: &crate::Journal,
-        request: &crate::cli_model::DormantSandboxRequestKindV1,
+        request: &aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1,
         physical: &mut crate::cache_residency::DormantCacheOwnerV1,
     ) -> Result<(), CacheResidencyProtectedJournalErrorV1> {
         let returned = session.while_current_records(&[], |_, _, _, validator, refresh| {
@@ -313,7 +313,7 @@ impl CacheResidencyProtectedOwnerV1 {
         operation: OperationId,
         transaction_id: [u8; 16],
         source_journal: &crate::Journal,
-        request: &crate::cli_model::DormantSandboxRequestKindV1,
+        request: &aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1,
         physical: &mut crate::cache_residency::DormantCacheOwnerV1,
     ) -> Result<(), CacheResidencyProtectedJournalErrorV1> {
         progress.capture_partition(session, state, acquisition.partition())?;
@@ -376,7 +376,7 @@ impl CacheResidencyProtectedOwnerV1 {
         operation: OperationId,
         transaction_id: [u8; 16],
         source_journal: &crate::Journal,
-        request: &crate::cli_model::DormantSandboxRequestKindV1,
+        request: &aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1,
         physical: &mut crate::cache_residency::DormantCacheOwnerV1,
     ) -> Result<(), CacheResidencyProtectedJournalErrorV1> {
         if consumer.acquisition_fence().is_some() || consumer.object() != &pin.object
@@ -431,7 +431,7 @@ impl CacheResidencyProtectedOwnerV1 {
         acquisition: &ValidatedPublicLogicalPinAcquisitionV1<'_, '_, '_, '_>,
         operation: OperationId,
         source_journal: &crate::Journal,
-        request: &crate::cli_model::DormantSandboxRequestKindV1,
+        request: &aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1,
         handoff: impl for<'current> FnOnce(ValidatedCacheResidencyPostcommitV1<'current>) -> R,
     ) -> Result<PublicLogicalPinAcquisitionCommitV1<R>, CacheResidencyProtectedJournalErrorV1> {
         let inventory = self.reconstructed_partition(acquisition.partition())?;
@@ -515,7 +515,7 @@ impl CacheResidencyProtectedOwnerV1 {
         pin: &CachePinV1,
         operation: OperationId,
         source_journal: &crate::Journal,
-        request: &crate::cli_model::DormantSandboxRequestKindV1,
+        request: &aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1,
         handoff: impl for<'current> FnOnce(ValidatedCacheResidencyPostcommitV1<'current>) -> R,
     ) -> Result<(CacheResidencyCommitOutcomeV1, Option<R>), CacheResidencyProtectedJournalErrorV1>
     {
@@ -708,7 +708,7 @@ pub(super) fn logical_pin_matches_consumer(
 // The project selector comes from the exact expected consumer, not the caller.
 fn recheck_current_cache_consumer(
     source_journal: &crate::Journal,
-    request: &crate::cli_model::DormantSandboxRequestKindV1,
+    request: &aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1,
     expected: &RecheckedCacheConsumerV1,
 ) -> Result<(), ProtectedDomainJournalErrorV1> {
     let current = recheck_cache_consumer_projection_v1(source_journal, expected.project(), request)

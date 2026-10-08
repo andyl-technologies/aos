@@ -1,6 +1,11 @@
 //! Complete bounded command grammar for `aos sandbox`.
 
 use std::fmt;
+use aos_sandbox_protocol::public_api::limits::{
+    MAXIMUM_CLI_EVENTS, MAXIMUM_CLI_OPAQUE_BYTES, MAXIMUM_CLI_PAGES, MAXIMUM_CLI_WAIT_NANOSECONDS,
+    MAXIMUM_EXEC_ARGUMENT_BYTES, MAXIMUM_EXEC_ARGUMENT_VECTOR_BYTES, MAXIMUM_EXEC_ARGUMENTS,
+    MAXIMUM_IDEMPOTENCY_KEY_BYTES,
+};
 
 use aos_sandbox_protocol::public_api::grammar_error::InvalidCliGrammar;
 
@@ -14,30 +19,12 @@ use aos_sandbox_protocol::public_api::portable::CheckedFeatureSetV1;
 
 /// Maximum UTF-8 bytes in a project, resource, or relative selector.
 pub const MAXIMUM_CLI_SELECTOR_BYTES: usize = 4 * 1024;
-/// Maximum decoded bytes in an opaque resource version or cursor.
-pub const MAXIMUM_CLI_OPAQUE_BYTES: usize = 4 * 1024;
-/// Maximum bytes in an idempotency key.
-pub const MAXIMUM_IDEMPOTENCY_KEY_BYTES: usize = 256;
-/// Maximum arguments accepted by one execution.
-pub const MAXIMUM_EXEC_ARGUMENTS: usize = aos_sandbox_core::MAX_EXECUTION_ARGUMENTS;
-/// Maximum bytes in one execution argument.
-pub const MAXIMUM_EXEC_ARGUMENT_BYTES: usize =
-    aos_sandbox_core::MAX_EXECUTION_ARGUMENT_STRING_BYTES;
-/// Maximum aggregate bytes in an execution argument vector.
-pub const MAXIMUM_EXEC_ARGUMENT_VECTOR_BYTES: usize =
-    aos_sandbox_core::MAX_EXECUTION_ARGUMENT_BYTES;
 /// Maximum bounded tree depth.
 pub const MAXIMUM_TREE_DEPTH: u16 = 1_024;
 /// Maximum resources requested in one page.
 pub const MAXIMUM_CLI_PAGE_SIZE: u16 = 1_024;
-/// Maximum pages consumed by one CLI invocation.
-pub const MAXIMUM_CLI_PAGES: u16 = 4_096;
 /// Maximum normalized filters accepted by a list or event command.
 pub const MAXIMUM_CLI_FILTERS: usize = 64;
-/// Maximum events retained by one command invocation.
-pub const MAXIMUM_CLI_EVENTS: u32 = 65_536;
-/// Maximum client-side wait duration in nanoseconds.
-pub const MAXIMUM_CLI_WAIT_NANOSECONDS: u64 = 7 * 24 * 60 * 60 * 1_000_000_000;
 
 /// Stores a bounded non-control UTF-8 CLI selector.
 #[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]

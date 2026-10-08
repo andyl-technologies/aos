@@ -698,7 +698,7 @@ impl OriginalQ04ControllerLedgerV1 {
 
         let context = effect.plan.public_mutation_context()?
             .ok_or(ReconcilerError::CorruptLedger("Q04 original Create context is absent"))?;
-        let crate::cli_model::DormantSandboxRequestKindV1::Create(create) = context.validated_request()?
+        let aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::Create(create) = context.validated_request()?
         else {
             return Err(ReconcilerError::CorruptLedger("Q04 original method changed").into());
         };
@@ -1047,7 +1047,7 @@ pub(crate) fn read_original_q04_rows_v1(
     let context = effect.plan.public_mutation_context()?
         .ok_or(ReconcilerError::CorruptLedger("Q04 Claim Create context is absent"))?;
     let request = context.validated_request()?;
-    let crate::cli_model::DormantSandboxRequestKindV1::Create(create) = request else {
+    let aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::Create(create) = request else {
         return Err(ReconcilerError::CorruptLedger("Q04 Claim method changed").into());
     };
     let desired = PublicProjectionRecordV1::from_retained_record_bytes(

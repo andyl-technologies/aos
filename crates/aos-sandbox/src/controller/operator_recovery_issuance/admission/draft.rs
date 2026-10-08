@@ -280,7 +280,7 @@ fn decode_repair_public_request(
 > {
     let envelope = PublicMutationRequestV1::decode(canonical)
         .map_err(|_| OperationCompilationError::Malformed)?;
-    let crate::cli_model::DormantSandboxRequestKindV1::OperatorRecover(decoded) = envelope
+    let aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::OperatorRecover(decoded) = envelope
         .decode_validated_kind()
         .map_err(|_| OperationCompilationError::Malformed)?
     else {

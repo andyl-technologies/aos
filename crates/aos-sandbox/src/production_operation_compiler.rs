@@ -278,7 +278,7 @@ impl ActivatedOperationCompiler for ProductionOperationCompilerV1 {
         let authorized =
             authorize_public_mutation(journal, peer, capability_id, canonical_request)?;
         let request = authorized.request();
-        use crate::cli_model::DormantSandboxRequestKindV1 as Request;
+        use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1 as Request;
 
         match request.request() {
             Request::CapabilityAttenuate(attenuate) => compile_capability_attenuation(
@@ -748,7 +748,7 @@ pub(crate) fn replay_committed_capability_renewal_v1(
     canonical_request: &[u8],
     request_digest: [u8; 32],
 ) -> Result<OperationPlan, OperationCompilationError> {
-    use crate::cli_model::DormantSandboxRequestKindV1;
+    use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1;
 
     let request = ResolvedPublicMutationRequestV1::decode(canonical_request)
         .map_err(|_| OperationCompilationError::Rejected)?;

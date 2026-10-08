@@ -11,7 +11,7 @@ use aos_sandbox::cache_residency::{
     DormantCacheOwnerV1, PhysicalPartitionId, PublicLogicalPinAcquisitionCommitV1,
     PublicLogicalPinAcquisitionErrorV1, ValidatedPublicLogicalPinAcquisitionV1,
 };
-use aos_sandbox::cli_model::DormantSandboxRequestKindV1;
+use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1;
 use aos_sandbox::filesystem_view_state::DurableFilesystemViewRevisionV1;
 use aos_sandbox::production_operation_compiler::RecheckedCacheConsumerV1;
 use aos_sandbox_core::{NodeId, OperationId};

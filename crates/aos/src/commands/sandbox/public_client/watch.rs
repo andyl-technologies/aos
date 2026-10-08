@@ -2,8 +2,8 @@
 
 use anyhow::{Context as _, Result};
 use aos_proto::aos::sandbox::v1::{EventKind, OperationServiceClient};
-use aos_sandbox::cli_model::{
-    DormantSandboxOutputV1, DormantSandboxRequestKindV1, DormantSandboxRequestV1,
+use aos_sandbox_protocol::public_api::request::{
+    DormantPublicApiRequestV1, DormantSandboxOutputV1, DormantSandboxRequestKindV1,
 };
 use aos_sandbox_protocol::public_api::continuation::DormantWatchContinuationV1;
 use aos_sandbox_protocol::public_api::client_state::{WatchApplyOutcomeV1, WatchResumePointV1};
@@ -31,7 +31,7 @@ use super::{AuthorizedEndpoint, authenticated_query_binding};
 /// invalid event, or output failure.
 pub(in crate::commands::sandbox) async fn dispatch_watch(
     args: &SandboxArgs,
-    request: &DormantSandboxRequestV1,
+    request: &DormantPublicApiRequestV1,
     output: DormantSandboxOutputV1,
     expected_capability_id: Option<CapabilityId>,
 ) -> Result<bool> {

@@ -13,9 +13,10 @@
 use aos_proto::aos::sandbox::v1 as wire;
 use buffa::Message as _;
 
-use super::{
-    DormantClientStatePlanV1, DormantPublicApiAuthorizationV1, DormantSandboxOutputV1,
-    DormantSandboxRequestKindV1, DormantSandboxRequestV1, PublicApiAuditMethodV1,
+use super::PublicApiAuditMethodV1;
+use aos_sandbox_protocol::public_api::request::{
+    DormantClientStatePlanV1, DormantSandboxOutputV1, DormantSandboxRequestKindV1,
+    PublicSandboxRequestDataV1,
 };
 
 const MAGIC: &[u8; 8] = b"AOSPMR01";
@@ -169,15 +170,12 @@ impl PublicMutationRequestV1 {
             M::OperatorRecover => decode!(wire::OperatorRecoveryRequest, OperatorRecover),
             _ => return Err(PublicMutationRequestError::UnsupportedMethod),
         };
-        let authorization = DormantPublicApiAuthorizationV1::new(vec![1])
-            .map_err(|_| PublicMutationRequestError::InvalidProtobuf)?;
         let client_state = DormantClientStatePlanV1::new(1, 1, None)
             .map_err(|_| PublicMutationRequestError::InvalidProtobuf)?;
-        DormantSandboxRequestV1::from_parsed_command_with_authorization(
+        PublicSandboxRequestDataV1::new(
             kind.clone(),
             DormantSandboxOutputV1::Json,
             client_state,
-            authorization,
         )
         .map_err(|_| PublicMutationRequestError::InvalidProtobuf)?;
 

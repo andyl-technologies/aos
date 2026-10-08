@@ -22,7 +22,7 @@ use aos_sandbox_core::{ExecutionId, ObjectDigest, OperationId, RawPairedClockSam
 use rand::{TryRngCore as _, rngs::OsRng};
 use sha2::{Digest as _, Sha256};
 
-use crate::cli_model::DormantSandboxRequestKindV1;
+use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1;
 use crate::controller_service::public_projection::{
     PublicProjectionError, PublicProjectionKindV1, PublicProjectionResourceV1,
     PublicProjectionStoreV1,

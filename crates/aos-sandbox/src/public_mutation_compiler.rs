@@ -12,9 +12,9 @@ use aos_sandbox_core::{
 };
 
 use crate::cli_model::{
-    DormantSandboxRequestKindV1, PublicApiAuditMethodV1, PublicMutationRequestError,
-    PublicMutationRequestV1,
+    PublicApiAuditMethodV1, PublicMutationRequestError, PublicMutationRequestV1,
 };
+use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1;
 use aos_sandbox_protocol::public_api::PublicOperationMethodV1;
 use crate::public_api_session::PublicApiPeer;
 use crate::{IdempotencyKey, Journal, JournalError};

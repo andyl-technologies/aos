@@ -9,7 +9,7 @@
 use aos_proto::aos::sandbox::v1::MutationContext;
 use aos_sandbox_core::{OperationId, PrincipalId, ProjectId, Revision};
 
-use crate::cli_model::DormantSandboxRequestKindV1;
+use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1;
 
 use super::{
     LifecycleIdempotencyDigestV1, LifecycleModelError, LifecycleOperationV1, LifecyclePhaseV1,

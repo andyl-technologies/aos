@@ -146,7 +146,7 @@ impl PublicMutationEffectV1 {
     /// invalid.
     pub fn validated_request(
         &self,
-    ) -> Result<crate::cli_model::DormantSandboxRequestKindV1, ReconcilerError> {
+    ) -> Result<aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1, ReconcilerError> {
         crate::cli_model::PublicMutationRequestV1::decode(&self.canonical_request)
             .and_then(|request| request.decode_validated_kind())
             .map_err(|_| ReconcilerError::InvalidPlan("invalid controller effect request"))
@@ -246,7 +246,7 @@ impl PublicMutationEffectV1 {
     ) -> Result<Self, ReconcilerError> {
         if self.fuse_admission.is_some()
             || self.encode_plain()? != carrier.ordinary_effect()
-            || !matches!(self.validated_request()?, crate::cli_model::DormantSandboxRequestKindV1::Start(_))
+            || !matches!(self.validated_request()?, aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::Start(_))
         {
             return Err(ReconcilerError::InvalidPlan("Nix Start context mismatch"));
         }
@@ -567,7 +567,7 @@ impl EffectPlan {
             if envelope.method() != crate::cli_model::PublicApiAuditMethodV1::OperatorRecover
                 || !matches!(
                     kind,
-                    crate::cli_model::DormantSandboxRequestKindV1::OperatorRecover(_)
+                    aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::OperatorRecover(_)
                 )
             {
                 return Err(ReconcilerError::InvalidPlan(

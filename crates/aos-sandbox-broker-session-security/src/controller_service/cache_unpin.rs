@@ -7,10 +7,8 @@
 use aos_sandbox::cache_residency::{CacheOwnerErrorV1, CacheOwnerPinSettlementErrorV1, CachePinV1};
 use aos_sandbox::production_operation_compiler::RecheckedCacheConsumerV1;
 
-use super::{
-    DormantSandboxRequestKindV1, EffectFailure, EffectReceipt, Journal, OperationId,
-    ProductionEffectExecutor,
-};
+use super::{EffectFailure, EffectReceipt, Journal, OperationId, ProductionEffectExecutor};
+use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1;
 use crate::{
     PublicCacheUnpinProgressV1, PublicCacheUnpinRecoveryV1, execute_public_cache_unpin_consumer_v1,
     public_cache_unpin_transaction_id_v1,

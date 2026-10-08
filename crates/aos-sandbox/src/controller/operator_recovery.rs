@@ -316,7 +316,7 @@ pub(crate) trait DormantOperatorRecoveryPublicAuthorizerV1 {
     /// when authentication, authorization, or current policy rejects the request.
     fn authorize(
         &mut self,
-        authorization: crate::cli_model::DormantPublicApiAuthorizationV1,
+        authorization: aos_sandbox_protocol::public_api::request::DormantPublicApiAuthorizationV1,
         request: &aos_proto::aos::sandbox::v1::OperatorRecoveryRequest,
     ) -> Result<DormantOperatorRecoveryPublicAuthorizationV1, DormantOperatorRecoveryServiceErrorV1>;
 }
@@ -449,7 +449,7 @@ where
     /// authorization, exact binding, or protected durable admission fails.
     pub(crate) fn begin(
         &mut self,
-        authorization: crate::cli_model::DormantPublicApiAuthorizationV1,
+        authorization: aos_sandbox_protocol::public_api::request::DormantPublicApiAuthorizationV1,
         request: aos_proto::aos::sandbox::v1::OperatorRecoveryRequest,
     ) -> Result<DormantOperatorRecoveryAdmissionV1, DormantOperatorRecoveryServiceErrorV1> {
         let synchronized = self.synchronize_current(authorization, request)?;
@@ -468,7 +468,7 @@ where
     /// authorization, observation binding, or durable synchronization fails.
     pub(crate) fn synchronize_current(
         &mut self,
-        authorization: crate::cli_model::DormantPublicApiAuthorizationV1,
+        authorization: aos_sandbox_protocol::public_api::request::DormantPublicApiAuthorizationV1,
         request: aos_proto::aos::sandbox::v1::OperatorRecoveryRequest,
     ) -> Result<DormantOperatorRecoverySynchronizedV1, DormantOperatorRecoveryServiceErrorV1> {
         let checked = OperatorRecoveryRequestV1::try_from(request.clone())

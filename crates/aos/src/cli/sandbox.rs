@@ -5,9 +5,9 @@ use std::str::FromStr;
 
 use anyhow::{Result, bail};
 use aos_proto::aos::sandbox::v1 as wire;
-use aos_sandbox::cli_model::{
+use aos_sandbox_protocol::public_api::request::{
     DormantClientStatePlanV1, DormantCompletionShellV1, DormantPublicApiAuthorizationV1,
-    DormantSandboxRequestKindV1, DormantSandboxRequestV1,
+    DormantPublicApiRequestV1, DormantSandboxRequestKindV1,
 };
 use aos_sandbox_protocol::public_api::proto_json::DormantSandboxTreeContinuationV1;
 use clap::{Args, Subcommand, ValueEnum};
@@ -1629,15 +1629,15 @@ fn environment(value: &str) -> Result<(String, Vec<u8>), String> {
 /// resource-specific list scope are incomplete.
 pub fn routed_request(
     args: &SandboxArgs,
-    output: aos_sandbox::cli_model::DormantSandboxOutputV1,
-) -> Result<DormantSandboxRequestV1> {
+    output: aos_sandbox_protocol::public_api::request::DormantSandboxOutputV1,
+) -> Result<DormantPublicApiRequestV1> {
     let (maximum_pages, maximum_events) = args.command.client_bounds();
     let client_state = DormantClientStatePlanV1::new(
         maximum_pages,
         maximum_events,
         args.command.wait_timeout_ns(),
     )?;
-    Ok(DormantSandboxRequestV1::from_parsed_command(
+    Ok(DormantPublicApiRequestV1::from_parsed_command(
         args.command.request()?,
         output,
         client_state,
@@ -1651,9 +1651,9 @@ pub fn routed_request(
 /// Returns an error when cross-field semantics or local client bounds are invalid.
 pub fn routed_request_with_authorization(
     args: &SandboxArgs,
-    output: aos_sandbox::cli_model::DormantSandboxOutputV1,
+    output: aos_sandbox_protocol::public_api::request::DormantSandboxOutputV1,
     authorization: DormantPublicApiAuthorizationV1,
-) -> Result<DormantSandboxRequestV1> {
+) -> Result<DormantPublicApiRequestV1> {
     let (maximum_pages, maximum_events) = args.command.client_bounds();
     let client_state = DormantClientStatePlanV1::new(
         maximum_pages,
@@ -1661,7 +1661,7 @@ pub fn routed_request_with_authorization(
         args.command.wait_timeout_ns(),
     )?;
     Ok(
-        DormantSandboxRequestV1::from_parsed_command_with_authorization(
+        DormantPublicApiRequestV1::from_parsed_command_with_authorization(
             args.command.request()?,
             output,
             client_state,

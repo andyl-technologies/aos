@@ -63,7 +63,7 @@ impl Fixture {
         reconciler.accept(&admission).unwrap();
         let mut journal = reconciler.journal;
         let context = plan.public_mutation_context().unwrap().unwrap();
-        let crate::cli_model::DormantSandboxRequestKindV1::Create(request) =
+        let aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::Create(request) =
             context.validated_request().unwrap()
         else {
             panic!("Create fixture");

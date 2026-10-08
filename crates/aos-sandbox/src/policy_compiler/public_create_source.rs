@@ -662,7 +662,7 @@ pub fn current_parentless_create_project_source_for_operation_v1(
     let context = effect_plan
         .public_mutation_context()?
         .ok_or(CurrentCreatePolicySourceErrorV1::NotCurrent)?;
-    let crate::cli_model::DormantSandboxRequestKindV1::Create(request) =
+    let aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::Create(request) =
         context.validated_request()?
     else {
         return Err(CurrentCreatePolicySourceErrorV1::NotCurrent);

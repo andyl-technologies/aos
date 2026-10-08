@@ -10,9 +10,9 @@ use aos_proto::aos::sandbox::v1::OperatorRecoveryAction;
 use aos_sandbox_core::{CapabilityId, OperationId, ProjectId, ResourceId, ResourceKind, Selector};
 
 use crate::cli_model::{
-    DormantSandboxRequestKindV1, OperatorRecoveryRequestV1, PublicApiAuditMethodV1,
-    PublicMutationRequestV1,
+    OperatorRecoveryRequestV1, PublicApiAuditMethodV1, PublicMutationRequestV1,
 };
+use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1;
 use aos_sandbox_protocol::public_api::{
     CheckedOperationPhaseV1,
     CheckedOperationResourceV1,

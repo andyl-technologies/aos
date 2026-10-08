@@ -25,10 +25,10 @@ use crate::cli_model::authorization_adapter::{
 };
 use crate::cli_model::{
     AuditAuthorizationV1, AuthorizedOperatorRecoveryV1, AuthorizedResolvedMutationV1,
-    DormantClientStatePlanV1, DormantSandboxOutputV1, DormantSandboxRequestV1,
-    OperatorRecoveryRequestV1, PublicMutationAuthorizationV1, RequestProvenanceV1,
-    ResolvedPublicMutationV1,
+    DormantSandboxRequestV1, OperatorRecoveryRequestV1, PublicMutationAuthorizationV1,
+    RequestProvenanceV1, ResolvedPublicMutationV1,
 };
+use aos_sandbox_protocol::public_api::request::{DormantClientStatePlanV1, DormantSandboxOutputV1};
 use crate::public_api_session::PublicApiPeer;
 use crate::public_mutation_compiler::ResolvedPublicMutationRequestV1;
 use crate::publisher_authority::PublisherAuthorityLimits;

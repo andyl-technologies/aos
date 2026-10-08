@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 use super::{AdmissionAuthorityV1, ControllerFuseAdmissionErrorV1, exact_id};
-use crate::cli_model::DormantSandboxRequestKindV1 as Request;
+use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1 as Request;
 use crate::controller_service::public_projection::{
     PublicProjectionKindV1, PublicProjectionPlanV1, PublicProjectionResourceV1,
     PublicProjectionStoreV1, decode_checked_public_projection_v1,

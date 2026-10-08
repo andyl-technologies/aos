@@ -2,9 +2,9 @@
 //!
 //! This module owns grammar validation, stable output/exit policy, and a
 //! crate-private binding from authenticated transport evidence through current
-//! protected authorization. The dormant routing module accepts parser output
-//! and constructs typed in-process requests, but registers no controller route,
-//! dispatches no effect, and invokes no service.
+//! protected authorization. The routing envelope retains only Controller-adopted
+//! requests with sealed authority. Protocol owns untrusted bounded public request
+//! DATA and client proposals; neither boundary registers a route or dispatches effects.
 
 #[cfg(target_os = "linux")]
 pub(crate) mod authorization_adapter;

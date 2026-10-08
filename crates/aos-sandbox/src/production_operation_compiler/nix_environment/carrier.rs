@@ -178,7 +178,7 @@ impl NixStartAdmissionCarrierV2 {
         let request = crate::public_mutation_compiler::ResolvedPublicMutationRequestV1::decode(
             &self.authority.original_request,
         ).map_err(|_| NixStartAdmissionErrorV2::Invalid)?;
-        let crate::cli_model::DormantSandboxRequestKindV1::Start(request) = request.request() else {
+        let aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::Start(request) = request.request() else {
             return Err(NixStartAdmissionErrorV2::Invalid);
         };
         let mutation = request.mutation.as_option().ok_or(NixStartAdmissionErrorV2::Invalid)?;

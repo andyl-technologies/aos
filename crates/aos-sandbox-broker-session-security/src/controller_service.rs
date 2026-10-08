@@ -88,9 +88,9 @@ use aos_sandbox::cache_residency::{
     DormantCacheOwnerV1,
 };
 use aos_sandbox::cli_model::{
-    AuditAuthorizationV1, DormantSandboxRequestKindV1, PublicApiAuditMethodV1,
-    PublicMutationRequestV1,
+    AuditAuthorizationV1, PublicApiAuditMethodV1, PublicMutationRequestV1,
 };
+use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1;
 use aos_sandbox::controller::DormantControllerCompositionV1;
 use aos_sandbox::controller_service::journal::{
     production_journal_limits, validate_controller_journal,
