@@ -19,7 +19,7 @@ use aos_sandbox_protocol::semantics::decode_storage_guest_root_response_v1;
 use buffa::Message as _;
 
 use crate::DormantAuthenticatedBrokerSessionV1;
-use crate::controller_service::retained_exchange::{RetainedBrokerExchangeV1, RetainedExchangeErrorsV1};
+use crate::retained_exchange::{RetainedBrokerExchangeV1, RetainedExchangeErrorsV1};
 
 const METHOD: BrokerMethod = BrokerMethod::BROKER_METHOD_STORAGE_POPULATE_GUEST_ROOT;
 const MAXIMUM_RESPONSE_BYTES: u32 = 4096;

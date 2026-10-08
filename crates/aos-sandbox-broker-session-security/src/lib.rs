@@ -101,6 +101,7 @@ mod production_startup;
 )]
 mod protected_files;
 mod recovery;
+mod retained_exchange;
 #[allow(
     dead_code,
     reason = "sealed handshake boot access stays unreachable until P0-10"

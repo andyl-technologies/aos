@@ -151,7 +151,6 @@ mod ownership;
 mod plan_signer;
 mod project_admission;
 mod publication;
-mod retained_exchange;
 
 mod attachment_desired;
 mod attachment_physical;

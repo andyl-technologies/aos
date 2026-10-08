@@ -20,7 +20,7 @@ use aos_sandbox_protocol::semantics::{
 };
 
 use crate::DormantAuthenticatedBrokerSessionV1;
-use crate::controller_service::retained_exchange::{RetainedBrokerExchangeV1, RetainedExchangeErrorsV1};
+use crate::retained_exchange::{RetainedBrokerExchangeV1, RetainedExchangeErrorsV1};
 
 const RETAINED_RECOVERY: &str = "authority effect retains protected recovery custody";
 const SESSION_UNUSABLE: &str = "authority effect authenticated session is unusable";

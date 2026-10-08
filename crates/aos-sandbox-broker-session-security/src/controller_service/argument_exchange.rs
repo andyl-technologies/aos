@@ -18,7 +18,7 @@ use aos_sandbox_protocol::authenticated_session::all_methods::{
 };
 use buffa::Message as _;
 
-use crate::controller_service::retained_exchange::{RetainedBrokerExchangeV1, RetainedExchangeErrorsV1};
+use crate::retained_exchange::{RetainedBrokerExchangeV1, RetainedExchangeErrorsV1};
 use crate::controller_service::execution_argument_observe::{
     SignedExecutionArgumentObserveV1, SignedExecutionArgumentQueryV1,
 };

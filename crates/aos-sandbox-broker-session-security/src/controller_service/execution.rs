@@ -69,7 +69,7 @@ use sha2::{Digest as _, Sha256};
 use ssh_key::{PublicKey, public::Ed25519PublicKey};
 
 use crate::controller_service::plan_signer::ControllerBrokerPlanSignerV1;
-use crate::controller_service::retained_exchange::{RetainedBrokerExchangeV1, RetainedExchangeErrorsV1};
+use crate::retained_exchange::{RetainedBrokerExchangeV1, RetainedExchangeErrorsV1};
 use crate::DormantBrokerRequestCoordinatesV1;
 
 use super::REQUEST_SCOPE;

@@ -14,7 +14,7 @@ use aos_sandbox_core::public_attach_grant::PUBLIC_ATTACH_GRANT_BYTES;
 use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1;
 use buffa::Message as _;
 
-use crate::controller_service::retained_exchange::{RetainedBrokerExchangeV1, RetainedExchangeErrorsV1};
+use crate::retained_exchange::{RetainedBrokerExchangeV1, RetainedExchangeErrorsV1};
 use crate::{DormantAuthenticatedBrokerSessionV1, DormantBrokerRequestCoordinatesV1};
 
 const RETAINED_RECOVERY: &str = "attach gate request retains protected Host session recovery";

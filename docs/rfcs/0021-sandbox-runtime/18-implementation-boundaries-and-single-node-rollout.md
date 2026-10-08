@@ -143,6 +143,10 @@ Private signing recipes remain private to this concrete owner rather than
 becoming generic signing callbacks. Unconsumed speculative issuance recipes
 are removed instead of gaining new public ports merely to permit relocation.
 
+The unchanged private retained broker-exchange owner now sits below Controller
+with its whole caller contexts and sealed transport targets; application error
+projection remains residue, not a new public abstraction or runtime crate cut.
+
 The current Controller integration is privately co-located under session
 security's `controller_service` module. Its inventory owner retains the actual
 capture-candidate fence, authenticated session, pending exchange, authority

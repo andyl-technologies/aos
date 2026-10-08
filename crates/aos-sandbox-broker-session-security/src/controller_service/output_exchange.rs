@@ -26,7 +26,7 @@ use aos_sandbox_protocol::host_output::{
 };
 use buffa::Message as _;
 
-use crate::controller_service::retained_exchange::{RetainedBrokerExchangeV1, RetainedExchangeErrorsV1};
+use crate::retained_exchange::{RetainedBrokerExchangeV1, RetainedExchangeErrorsV1};
 use crate::controller_service::execution_output_reserve::{
     SignedExecutionOutputQueryV1, SignedExecutionOutputReserveV1,
 };
