@@ -14,8 +14,10 @@ pub use affinity_observation::AffinityPlacementV1;
 use aos_sandbox_core::ObjectDigest;
 
 use super::evidence::AuthenticatedEvidenceContextV1;
+#[cfg(feature = "multi-node")]
 use super::journal::{InvalidMultiNodeJournal, ProtectedJournalRecordV1};
 
+#[cfg(feature = "multi-node")]
 mod sealed {
     pub trait Sealed {}
 }
@@ -25,6 +27,7 @@ mod sealed {
 /// The constructor and issuance method are private so its integration must be
 /// a child of this authority module. The session is intentionally
 /// neither `Clone` nor `Copy`.
+#[cfg(feature = "multi-node")]
 struct EvidenceVerifierSessionV1 {
     verifier_domain_digest: ObjectDigest,
     replay_fence: ObjectDigest,
@@ -32,15 +35,18 @@ struct EvidenceVerifierSessionV1 {
     context: AuthenticatedEvidenceContextV1,
 }
 
+#[cfg(feature = "multi-node")]
 impl sealed::Sealed for EvidenceVerifierSessionV1 {}
 
 /// Marks the private, non-implementable evidence-verifier authority.
+#[cfg(feature = "multi-node")]
 trait EvidenceAuthorityV1: sealed::Sealed {
     fn verifier_domain_digest(&self) -> ObjectDigest;
     fn replay_fence(&self) -> ObjectDigest;
     fn context(&self) -> AuthenticatedEvidenceContextV1;
 }
 
+#[cfg(feature = "multi-node")]
 impl EvidenceAuthorityV1 for EvidenceVerifierSessionV1 {
     fn verifier_domain_digest(&self) -> ObjectDigest {
         self.verifier_domain_digest
@@ -53,6 +59,7 @@ impl EvidenceAuthorityV1 for EvidenceVerifierSessionV1 {
     }
 }
 
+#[cfg(feature = "multi-node")]
 impl EvidenceVerifierSessionV1 {
     fn from_verified_channel(
         verifier_domain_digest: ObjectDigest,
@@ -122,11 +129,13 @@ impl<T> VerifierEvidenceGrantV1<T> {
 ///
 /// Construction consumes the protected row, so the same receipt cannot be
 /// reused through this integration object to recreate an issuance sequence.
+#[cfg(feature = "multi-node")]
 pub(super) struct ProtectedEvidenceIntegrationV1 {
     protected_record: ProtectedJournalRecordV1,
     session: EvidenceVerifierSessionV1,
 }
 
+#[cfg(feature = "multi-node")]
 impl ProtectedEvidenceIntegrationV1 {
     /// Opens the dormant verifier bridge from one authenticated protected row.
     pub(super) fn from_protected_record(
