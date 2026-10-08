@@ -1918,7 +1918,7 @@ impl ProtectedBrokerSessionOwnerV1 {
     ) -> Result<(), crate::handshake::OnlinePostflightClockErrorV1> {
         use crate::handshake::OnlinePostflightClockErrorV1;
 
-        let sample = crate::controller_service::ownership::sample_ownership_clock()?;
+        let sample = crate::ownership_clock::sample_ownership_clock()?;
         let schema = self.journal.online_schema.as_ref()
             .ok_or(OnlinePostflightClockErrorV1::Unavailable)?;
         let prepared = schema.prepared.as_ref().or_else(|| {
@@ -4761,7 +4761,7 @@ impl ProtectedBrokerSessionJournalV1 {
             return Ok(());
         };
         let admission = prepared.admission.as_ref().ok_or(BrokerSessionSecurityError::Currentness)?;
-        let sample = match crate::controller_service::ownership::sample_ownership_clock() {
+        let sample = match crate::ownership_clock::sample_ownership_clock() {
             Ok(sample) => sample,
             Err(cause) => {
                 schema.clock_failure = Some(cause);

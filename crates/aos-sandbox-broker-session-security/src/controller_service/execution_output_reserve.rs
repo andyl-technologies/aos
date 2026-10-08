@@ -121,7 +121,7 @@ pub(crate) fn sign_current_host_output_query_v1(
         return Err(retryable("Host output query assignment is stale"));
     }
 
-    let clock = crate::controller_service::ownership::sample_ownership_clock()
+    let clock = crate::ownership_clock::sample_ownership_clock()
         .map_err(|_| retryable("protected Controller clock is unavailable"))?;
     if clock.host_boot_id() != source.preissue().host_boot_id()
         || clock.boottime_nanoseconds() >= coordinates.deadline_boottime_nanoseconds()
@@ -293,7 +293,7 @@ where
         ));
     }
 
-    let fresh_clock = crate::controller_service::ownership::sample_ownership_clock()
+    let fresh_clock = crate::ownership_clock::sample_ownership_clock()
         .map_err(|_| retryable("protected Controller clock is unavailable"))?;
     if fresh_clock.host_boot_id() != preissue.host_boot_id()
         || fresh_clock.boottime_nanoseconds() >= preissue.deadline_boottime_nanoseconds()

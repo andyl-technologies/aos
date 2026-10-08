@@ -450,7 +450,7 @@ impl ControllerExecutionIntentV1 {
             // Guest signs the terminal status, not a wall-clock event time. Persist
             // the Controller's first verified publication time with the result.
             let observed_at = Timestamp {
-                seconds: crate::controller_service::ownership::sample_ownership_clock()
+                seconds: crate::ownership_clock::sample_ownership_clock()
                     .map_err(retryable)?
                     .wall_seconds(),
                 nanoseconds: 0,
@@ -906,7 +906,7 @@ impl ControllerExecutionIntentV1 {
                 "current Host template differs from execution assignment".to_owned(),
             ));
         }
-        let now = crate::controller_service::ownership::sample_ownership_clock()
+        let now = crate::ownership_clock::sample_ownership_clock()
             .map_err(retryable)?
             .wall_seconds();
         let expires = now

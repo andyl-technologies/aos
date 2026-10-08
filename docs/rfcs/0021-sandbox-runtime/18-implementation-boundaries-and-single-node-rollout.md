@@ -153,10 +153,12 @@ The existing selected service entry and named inventory exports remain the
 application-facing ports; this source grouping does not establish the target
 `aos-sandbox-controller-runtime` crate boundary or reduce the dependency graph.
 
-The remaining backedges include lower session clock sampling through the
-Controller ownership module and the policy barrier's fixed Controller hold
-credential recipe. Inventory/history attestation also remains privately
-co-located with protected session recovery. In the current live inventory
+The fixed raw ownership-clock sampler now belongs to a private session-security
+mechanics module. Controller credential and lease factories remain private to
+the Controller integration; lower clock consumers no longer import that owner.
+The policy barrier's fixed Controller hold credential recipe remains a backedge.
+Inventory/history attestation also remains privately co-located with protected
+session recovery. In the current live inventory
 recipe, terminal revalidation drops its journal-and-peer loan before deriving
 the canonical challenge packet and signing. That freshness gap remains an
 implementation obligation, not a new public signing port authorized by this

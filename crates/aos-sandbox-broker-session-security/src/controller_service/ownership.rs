@@ -10,13 +10,11 @@ use std::path::Path;
 use std::time::Duration;
 
 use aos_sandbox::ownership_authority::OwnershipAuthorityVerifier;
-use aos_sandbox::ownership_resume::OwnershipClockObservationError;
 use aos_sandbox_core::format::decode_trust_policy;
 use aos_sandbox_core::{
     DecodeLimits, KeyUsage, MediaType, OwnershipLeaseTrustAnchor, PortableMediaType,
-    RawClockProvenance, RawPairedClockSample, SignaturePurpose, descriptor_for_bytes,
+    SignaturePurpose, descriptor_for_bytes,
 };
-use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_ownership_protocol::protocol::session_client::OwnershipSessionTransportError;
 use zeroize::Zeroizing;
 
@@ -31,7 +29,6 @@ const POLICY_CREDENTIAL: &str = "ownership-lease-policy.cbor";
 const PUBLIC_KEY_CREDENTIAL: &str = "ownership-lease-public-key";
 const MAXIMUM_POLICY_BYTES: usize = 64 * 1024;
 const SESSION_TIMEOUT: Duration = Duration::from_secs(10);
-pub(crate) const CLOCK_PROVENANCE: [u8; 16] = *b"AOSOWNCTRLCLKV1!";
 
 /// Reports an absent, unsafe, or inconsistent protected ownership configuration.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -152,38 +149,6 @@ fn read_credential(
         CredentialOwnerPolicyV1::RootOrCurrent,
     )
     .map_err(|_| ControllerOwnershipCredentialErrorV1)
-}
-
-/// Samples paired host clocks without accepting clock facts from a caller.
-pub(crate) fn sample_ownership_clock()
--> Result<RawPairedClockSample, OwnershipClockObservationError> {
-    let boot_before = KernelBootId::current()
-        .map_err(|_| OwnershipClockObservationError)?
-        .into_bytes();
-    let boottime = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
-    let realtime = rustix::time::clock_gettime(rustix::time::ClockId::Realtime);
-    let boot_after = KernelBootId::current()
-        .map_err(|_| OwnershipClockObservationError)?
-        .into_bytes();
-    if boot_before != boot_after {
-        return Err(OwnershipClockObservationError);
-    }
-    let seconds = u64::try_from(boottime.tv_sec).map_err(|_| OwnershipClockObservationError)?;
-    let nanoseconds =
-        u64::try_from(boottime.tv_nsec).map_err(|_| OwnershipClockObservationError)?;
-    let boottime_nanoseconds = seconds
-        .checked_mul(1_000_000_000)
-        .and_then(|value| value.checked_add(nanoseconds))
-        .ok_or(OwnershipClockObservationError)?;
-    let provenance = RawClockProvenance::new_untrusted(CLOCK_PROVENANCE)
-        .map_err(|_| OwnershipClockObservationError)?;
-    RawPairedClockSample::new_untrusted(
-        provenance,
-        boot_before,
-        realtime.tv_sec,
-        boottime_nanoseconds,
-    )
-    .map_err(|_| OwnershipClockObservationError)
 }
 
 #[cfg(test)]

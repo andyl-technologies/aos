@@ -24,7 +24,7 @@ use aos_sandbox_protocol::{
 };
 
 use crate::controller_service::attach_credentials::ControllerAttachCredentialsV1;
-use crate::controller_service::ownership::sample_ownership_clock;
+use crate::ownership_clock::sample_ownership_clock;
 use crate::controller_service::plan_signer::ControllerBrokerPlanSignerV1;
 use crate::controller_service::publication::ControllerHostPublication;
 

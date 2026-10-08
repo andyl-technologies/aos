@@ -17,7 +17,7 @@ use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerOutcomeDirectionV1,
 };
 
-use crate::controller_service::ownership::sample_ownership_clock;
+use crate::ownership_clock::sample_ownership_clock;
 use crate::controller_service::plan_signer::ControllerBrokerPlanSignerV1;
 use crate::entropy::{KernelEntropy, nonzero_random};
 

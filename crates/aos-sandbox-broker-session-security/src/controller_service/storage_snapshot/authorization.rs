@@ -14,7 +14,8 @@ use aos_sandbox::{EffectFailure, Journal, PreparedAuthorityEffectV1, ReconcilerE
     SignedBrokerPlan, SnapshotDerivedStoragePreparationV3};
 use aos_sandbox_core::{NodeId, ObjectDigest, OperationId, RawPairedClockSample, SignatureBytes};
 
-use crate::controller_service::ownership::{ControllerOwnershipConfigurationV1, sample_ownership_clock};
+use crate::controller_service::ownership::ControllerOwnershipConfigurationV1;
+use crate::ownership_clock::sample_ownership_clock;
 use crate::controller_service::plan_signer::{ControllerBrokerPlanSignerError,
     ControllerBrokerPlanSignerV1, PreparedSnapshotPlanV3};
 use crate::{BrokerSessionSecurityError, DormantAtomicStorageInventoryPredecessorV1};

@@ -77,7 +77,8 @@ use crate::controller_service::guest_root_credentials::load_guest_root_template_
 use crate::controller_service::hold_credential::{
     validate_process_controller_hold_credentials_v1, with_process_controller_hold_signer_v1,
 };
-use crate::controller_service::ownership::{ControllerOwnershipConfigurationV1, sample_ownership_clock};
+use crate::controller_service::ownership::ControllerOwnershipConfigurationV1;
+use crate::ownership_clock::sample_ownership_clock;
 use crate::controller_service::plan_signer::ControllerBrokerPlanSignerV1;
 use crate::controller_service::publication::{ControllerHostPublication, ControllerHostPublicationError};
 use crate::fixed_role_credential::{
@@ -145,7 +146,7 @@ pub(crate) mod hold_credential;
 pub(crate) mod inventory;
 mod no_apply_exchange;
 mod output_exchange;
-pub(crate) mod ownership;
+mod ownership;
 mod plan_signer;
 mod project_admission;
 mod publication;
