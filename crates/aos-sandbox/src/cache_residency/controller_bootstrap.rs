@@ -39,8 +39,10 @@ use super::protected_owner::{
 use super::{
     CacheAuthorityPurposeV1, CacheGlobalRecoveryStateV1, CacheHistoryFloorV1,
     CacheRecoveryInventoryV1, CacheRecoveryLimitsV1, CacheResidencyProtectedJournalErrorV1,
-    CacheResidencyReplayPartitionEvidenceV1, CacheTypedCheckpointV1, NodeCacheQuotaV1,
-    PhysicalPartitionId, ProjectCacheQuotaV1, encode_typed_checkpoint,
+    CacheResidencyReplayPartitionEvidenceV1, CacheTypedCheckpointV1, encode_typed_checkpoint,
+};
+use aos_sandbox_protocol::cache_state::{
+    NodeCacheQuotaV1, PhysicalPartitionId, ProjectCacheQuotaV1,
 };
 
 const CONTROLLER_CACHE_ROOT: &str = "/var/lib/aos/sandboxd/cache-residency-authority";

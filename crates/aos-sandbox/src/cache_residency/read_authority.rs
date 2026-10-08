@@ -11,12 +11,16 @@ use aos_sandbox_core::{
 };
 use sha2::{Digest as _, Sha256};
 
+use aos_sandbox_protocol::cache_state::{
+    BackingObjectIdentityV1, CatalogEntryV1, CatalogPresenceV1, ImmutableSealV1,
+    PhysicalPartitionId, hash_descriptor_fields_u16_v1, object_descriptor_commitment,
+    validate_object_descriptor,
+};
+
 use super::admission::CacheAdmissionStateV1;
-use super::catalog::{BackingObjectIdentityV1, CatalogEntryV1, CatalogPresenceV1, ImmutableSealV1};
 use super::domain::{
     AuthorizedLookupKey, CacheAuthorityError, CacheAuthorityOwner, CacheAuthorityPurposeV1,
-    CacheAuthorityScopeV1, LookupAuthorityScopeV1, PhysicalPartitionId, VerifiedCacheCapabilityV1,
-    object_descriptor_commitment, validate_object_descriptor,
+    CacheAuthorityScopeV1, LookupAuthorityScopeV1, VerifiedCacheCapabilityV1,
 };
 use super::pin::{CachePinId, CachePinKindV1};
 
@@ -599,7 +603,7 @@ fn handoff_digest(plan: &DescriptorHandoffPlanV1) -> ObjectDigest {
     hasher.update(plan.authority_digest.as_bytes());
     hasher.update(plan.catalog_digest.as_bytes());
     hasher.update(plan.pin.as_bytes());
-    super::catalog::hash_descriptor_fields_u16_v1(&mut hasher, &plan.descriptor);
+    hash_descriptor_fields_u16_v1(&mut hasher, &plan.descriptor);
     hasher.update(plan.backing.as_bytes());
     hasher.update(plan.physical_evidence.as_bytes());
     hasher.update(plan.valid_until.to_be_bytes());

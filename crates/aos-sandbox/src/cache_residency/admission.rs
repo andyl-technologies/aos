@@ -8,17 +8,16 @@
 
 use std::collections::BTreeMap;
 
-use super::accounting::{
-    AccountingError, CacheAccountingV1, CacheReservationId, CacheReservationV1, ReservationStateV1,
+use aos_sandbox_protocol::cache_state::{
+    AccountingError, BackingObjectIdentityV1, CacheAccountingV1, CacheReservationId,
+    CacheReservationV1, CatalogEntryV1, CatalogError, CatalogPresenceV1, ImmutableSealV1,
+    PhysicalPartitionId, ReservationStateV1, canonical_name_digest, object_descriptor_commitment,
+    validate_object_descriptor,
 };
-use super::catalog::{
-    BackingObjectIdentityV1, CatalogEntryV1, CatalogError, CatalogPresenceV1, ImmutableSealV1,
-    canonical_name_digest,
-};
+
 use super::domain::{
     CacheAuthorityError, CacheAuthorityOwner, CacheAuthorityPurposeV1, CacheAuthorityScopeV1,
-    PhysicalPartitionId, VerifiedCacheCapabilityV1, object_descriptor_commitment,
-    validate_object_descriptor,
+    VerifiedCacheCapabilityV1,
 };
 use super::pin::{CachePinLedgerV1, CachePinV1, PinError};
 use aos_sandbox_core::{

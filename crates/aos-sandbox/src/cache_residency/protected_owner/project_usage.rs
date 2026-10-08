@@ -5,14 +5,14 @@
 
 use aos_sandbox_core::{ObjectDigest, ProjectId};
 
+use aos_sandbox_protocol::cache_state::{CacheUsageV1, PhysicalPartitionId, ProjectCacheQuotaV1};
+
 use super::{
-    CACHE_AUTHORITY_JOURNAL, CACHE_STATE_JOURNAL, PROTECTED_CACHE_ROOT,
-    CacheRecoveryInventoryV1, CacheResidencyProtectedJournalErrorV1,
-    CacheResidencyProtectedJournalV1, CacheResidencyProtectedOwnerV1,
-    PhysicalPartitionId, ProtectedDomainJournalErrorV1,
+    CACHE_AUTHORITY_JOURNAL, CACHE_STATE_JOURNAL, CacheRecoveryInventoryV1,
+    CacheResidencyProtectedJournalErrorV1, CacheResidencyProtectedJournalV1,
+    CacheResidencyProtectedOwnerV1, PROTECTED_CACHE_ROOT, ProtectedDomainJournalErrorV1,
     cache_authority_journal_limits, cache_state_journal_limits, require_cache_named_writer,
 };
-use crate::cache_residency::{CacheUsageV1, ProjectCacheQuotaV1};
 
 /// Retains the exact head and project quantities of one verified partition.
 #[derive(Debug)]

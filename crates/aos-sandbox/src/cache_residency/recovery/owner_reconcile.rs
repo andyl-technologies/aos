@@ -1,5 +1,7 @@
 //! Read-only comparison of protected logical pins with the physical owner.
 
+use aos_sandbox_protocol::cache_state::PhysicalPartitionId;
+
 use crate::cache_residency::{
     CacheOwnerErrorV1, CacheOwnerPinIdV1, CacheOwnerPinPresenceV1, CacheOwnerPinSnapshotV1,
     CachePinCompactionPhysicalProofV1, CachePinId, CachePinKindV1, CachePinV1,
@@ -117,7 +119,7 @@ impl CacheRecoveryInventoryV1 {
 
 fn observe_logical_pin(
     owner: &CacheOwnerPinSnapshotV1<'_>,
-    partition: crate::cache_residency::PhysicalPartitionId,
+    partition: PhysicalPartitionId,
     pin: &CachePinV1,
     expected: CacheOwnerPinPresenceV1,
     discrepancies: &mut Vec<CacheLogicalOwnerPinDiscrepancyV1>,

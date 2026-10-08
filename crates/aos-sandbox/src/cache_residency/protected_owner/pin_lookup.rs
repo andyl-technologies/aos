@@ -2,15 +2,16 @@
 
 use aos_sandbox_core::{AttachmentId, ObjectDescriptor, OperationId, ProjectId, ViewId};
 
+use aos_sandbox_protocol::cache_state::{CatalogPresenceV1, PhysicalPartitionId};
+
 use super::{
     CacheAuthorityPurposeV1, CachePinV1, CacheRecoveryInventoryV1, CacheRecoveryLimitsV1,
     CacheResidencyAuthorityRequestV1, CacheResidencyCommitOutcomeV1,
-    CacheResidencyProtectedJournalErrorV1, CacheResidencyProtectedOwnerV1, PhysicalPartitionId,
+    CacheResidencyProtectedJournalErrorV1, CacheResidencyProtectedOwnerV1,
     ProtectedDomainJournalErrorV1, ValidatedCacheResidencyPostcommitV1,
 };
 use crate::cache_residency::{
-    CachePinId, CachePinKindV1, CachePinLedgerV1, CatalogPresenceV1,
-    ValidatedPublicLogicalPinAcquisitionV1,
+    CachePinId, CachePinKindV1, CachePinLedgerV1, ValidatedPublicLogicalPinAcquisitionV1,
     protected_journal::LOGICAL_PIN_ACQUIRE_LIFETIME_SECONDS,
 };
 use crate::production_operation_compiler::{

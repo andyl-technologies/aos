@@ -93,7 +93,7 @@ consumers; a helper or individual protocol phase does not warrant a crate.
 | --- | --- | --- |
 | `aos-sandbox-core` | Portable IDs/models, policy math, capability descriptions, nonauthorizing backend/control contracts, shared bounded codec primitives | Filesystem ownership, Linux effects, service startup, coordinator-only models |
 | `aos-proto` | Shared public and node-local generated schemas | Coordinator-only generated services and transport |
-| `aos-sandbox-protocol` and role-specific protocol crates | Canonical local messages, signatures, decoded evidence, pure semantic validation | Keys, FD custody, runtime implementations, listeners |
+| `aos-sandbox-protocol` and role-specific protocol crates | Canonical local messages, signatures, decoded evidence, pure semantic validation; `cache_state` owns complete inert Cache accounting, catalog, and partition DATA | Keys, FD custody, runtime implementations, listeners |
 | `aos-sandbox-journal` (**new**) | Generic framed transactions, locking, durability, replay, bounded capacity mechanics, compaction | Domain namespaces/transitions, signers, Controller plans, arbitrary authority issuance |
 | `aos-sandbox-linux` | Audited UAPI, owned descriptors, fixed process/namespace/syscall mechanics | Product policy, wire authority, application assembly |
 | `aos-sandbox-guest-root-tree` | Existing nonauthorizing Guest template comparison, offline digest and complete descriptor-relative tree capture with retained native causes | Guest execution/population/label/publication effects, protected root admission, writer exclusion, resource and readiness authority |
@@ -104,6 +104,12 @@ transition rules, historical membership, and semantic commit belong to the
 domain owning the state. Generic journal replay returns data and durability
 outcomes, not domain authority. Moving codec primitives into core must not
 move role-specific validation or canonical signing domains there.
+
+The Cache DATA enclosure moves the existing accounting owner and catalog
+transitions once, without native descriptors, protected capabilities, or live
+loans. Protected Cache admission, full and incremental recovery proofs, and
+physical/currentness owners remain in domain integration. This is not a complete
+Cache extraction or isolation of the Cache signer's native dependency closure.
 
 The concrete native journal pilot now owns the original files and append poison,
 configuration DATA, coordinates, identity and namespace-provenance sets, and

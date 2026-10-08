@@ -25,9 +25,12 @@
 //! record/replay DATA; protected custody, currentness, and role admission stay upper.
 //! [`public_api`] owns checked public-message projections, feature registries,
 //! and bounded client-state reducers without adopting requests or authorizing effects.
+//! [`cache_state`] owns pure Cache quota/reservation, catalog, and physical
+//! partition DATA without native custody, protected currentness, or admission.
 
 pub mod authenticated_session;
 pub mod authorization_artifact;
+pub mod cache_state;
 pub mod canonical_map;
 pub mod domain_ledger;
 pub mod fencing;

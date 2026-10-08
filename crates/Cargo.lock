@@ -1306,6 +1306,7 @@ dependencies = [
  "aos-sandbox-broker-session-security",
  "aos-sandbox-core",
  "aos-sandbox-linux",
+ "aos-sandbox-protocol",
  "aos-sandbox-source-provider",
  "aos-sandbox-source-provider-ledger",
  "aos-sandbox-source-provider-protocol",

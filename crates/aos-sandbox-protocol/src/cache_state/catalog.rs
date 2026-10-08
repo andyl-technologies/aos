@@ -8,7 +8,7 @@
 use aos_sandbox_core::{ObjectDescriptor, ObjectDigest, OperationId};
 
 use super::accounting::CacheReservationId;
-use super::domain::{PhysicalPartitionId, validate_object_descriptor};
+use super::partition::{PhysicalPartitionId, validate_object_descriptor};
 
 /// Identifies an immutable publisher-verified seal.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -249,10 +249,11 @@ pub enum CatalogError {
 
 // Domains and authority validation stay with callers; only these existing
 // u16-prefixed descriptor fields share one byte sequence.
-pub(super) fn hash_descriptor_fields_u16_v1(
-    hasher: &mut sha2::Sha256,
-    descriptor: &ObjectDescriptor,
-) {
+/// Appends the existing u16-prefixed descriptor fields to a caller's DATA hash.
+///
+/// Domain separation and authority validation remain with the caller. This
+/// byte fold is distinct from the u64-prefixed descriptor commitment.
+pub fn hash_descriptor_fields_u16_v1(hasher: &mut sha2::Sha256, descriptor: &ObjectDescriptor) {
     use sha2::Digest as _;
     let media = descriptor.media_type().as_str().as_bytes();
     hasher.update((media.len() as u16).to_be_bytes());
@@ -261,7 +262,7 @@ pub(super) fn hash_descriptor_fields_u16_v1(
     hasher.update(descriptor.encoded_size().to_be_bytes());
 }
 
-pub(crate) fn catalog_digest(entry: &CatalogEntryV1) -> ObjectDigest {
+fn catalog_digest(entry: &CatalogEntryV1) -> ObjectDigest {
     let mut hasher = sha2::Sha256::new();
     use sha2::Digest as _;
     hasher.update(b"aos.sandbox.cache.catalog-entry.v1\0");

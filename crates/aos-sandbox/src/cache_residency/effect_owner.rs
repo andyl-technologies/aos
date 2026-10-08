@@ -32,9 +32,11 @@ use super::owner_readback::{
     CacheOwnerReadbackFieldsV1, VerifiedClosedCacheOwnerReadbackV2, cache_owner_limits_digest_v1,
 };
 use super::{
-    AuthorizedLookupKey, CacheAuthorityOwner, CachePinId, CacheReservationV1,
-    CurrentReadAuthorityV1, ImmutableAdmissionPlanV1, PhysicalPartitionId, SealProfileV1,
-    ValidatedCacheResidencyPostcommitV1, VerifiedCacheCapabilityV1,
+    AuthorizedLookupKey, CacheAuthorityOwner, CachePinId, CurrentReadAuthorityV1,
+    ImmutableAdmissionPlanV1, ValidatedCacheResidencyPostcommitV1, VerifiedCacheCapabilityV1,
+};
+use aos_sandbox_protocol::cache_state::{
+    CacheReservationV1, NodeCacheQuotaV1, PhysicalPartitionId, SealProfileV1, canonical_name_digest,
 };
 
 pub(crate) const FIXED_CACHE_ROOT: &str = "/var/lib/aos/sandbox/cache-residency-objects";
@@ -84,7 +86,7 @@ impl CacheOwnerLimitsV1 {
     /// cross-node, invalid, or unrepresentable partition quotas.
     pub fn from_node_quotas(
         maximum_memory_bytes: u64,
-        quotas: impl IntoIterator<Item = super::NodeCacheQuotaV1>,
+        quotas: impl IntoIterator<Item = NodeCacheQuotaV1>,
     ) -> Result<Self, CacheOwnerErrorV1> {
         let mut partitions = BTreeSet::new();
         let mut node = None;
@@ -150,7 +152,7 @@ impl CacheOwnerLimitsV1 {
     }
 
     /// Matches the entire physical envelope to protected node quotas.
-    pub(crate) fn matches_node_quotas(self, quotas: &[super::NodeCacheQuotaV1]) -> bool {
+    pub(crate) fn matches_node_quotas(self, quotas: &[NodeCacheQuotaV1]) -> bool {
         Self::from_node_quotas(self.maximum_memory_bytes, quotas.iter().copied())
             .is_ok_and(|derived| derived == self)
     }
@@ -1769,7 +1771,7 @@ impl DormantCacheOwnerV1 {
                 device,
                 inode,
                 verity,
-                canonical_name: super::canonical_name_digest(
+                canonical_name: canonical_name_digest(
                     admission.plan.partition,
                     &admission.plan.descriptor,
                 ),
@@ -2343,7 +2345,7 @@ impl DormantCacheOwnerV1 {
                 || entry.last_used != victim.last_use_generation
                 || entry.canonical_name != victim.canonical_name
                 || entry.root_custody != victim.root_custody
-                || super::canonical_name_digest(victim.partition, &victim.key.descriptor)
+                || canonical_name_digest(victim.partition, &victim.key.descriptor)
                     != victim.canonical_name
             {
                 return Err(CacheOwnerErrorV1::Stale);

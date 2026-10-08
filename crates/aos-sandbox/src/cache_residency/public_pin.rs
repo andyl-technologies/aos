@@ -5,7 +5,8 @@ use aos_sandbox_core::{
     AttachmentId, IncarnationId, NodeId, ObjectDescriptor, ProjectId, SandboxId, ViewId,
 };
 
-use super::{CacheAuthorityScopeV1, CachePinId, CachePinV1, PhysicalPartitionId, PinError};
+use super::{CacheAuthorityScopeV1, CachePinId, CachePinV1, PinError};
+use aos_sandbox_protocol::cache_state::PhysicalPartitionId;
 use crate::production_operation_compiler::RecheckedCacheConsumerV1;
 
 /// Reports a mismatch before protected Cache pin authority may be requested.

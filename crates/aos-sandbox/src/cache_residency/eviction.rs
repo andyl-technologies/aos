@@ -11,13 +11,16 @@ use std::collections::BTreeSet;
 use aos_sandbox_core::{ObjectDescriptor, ObjectDigest, OperationId};
 use sha2::{Digest as _, Sha256};
 
-use super::accounting::CacheReservationId;
+use aos_sandbox_protocol::cache_state::{
+    BackingObjectIdentityV1, CacheReservationId, CatalogEntryV1, CatalogError, CatalogPresenceV1,
+    PhysicalPartitionId, hash_descriptor_fields_u16_v1, object_descriptor_commitment,
+    validate_object_descriptor,
+};
+
 use super::admission::{AdmissionError, CacheAdmissionStateV1};
-use super::catalog::{BackingObjectIdentityV1, CatalogEntryV1, CatalogPresenceV1};
 use super::domain::{
     CacheAuthorityError, CacheAuthorityOwner, CacheAuthorityPurposeV1, CacheAuthorityScopeV1,
-    PhysicalPartitionId, VerifiedCacheCapabilityV1, object_descriptor_commitment,
-    validate_object_descriptor,
+    VerifiedCacheCapabilityV1,
 };
 
 /// Captures one bounded advisory eviction candidate.
@@ -1173,7 +1176,7 @@ pub enum EvictionError {
     Admission(#[from] AdmissionError),
     /// Catalog transition validation failed.
     #[error(transparent)]
-    Catalog(#[from] super::catalog::CatalogError),
+    Catalog(#[from] CatalogError),
     /// Protected eviction capability verification failed.
     #[error(transparent)]
     Authority(#[from] CacheAuthorityError),
@@ -1200,7 +1203,7 @@ fn eviction_plan_digest(plan: &FrozenEvictionPlanV1) -> ObjectDigest {
     hasher.update(plan.target_reclaim_bytes.to_be_bytes());
     hasher.update((plan.candidates.len() as u32).to_be_bytes());
     for candidate in &plan.candidates {
-        super::catalog::hash_descriptor_fields_u16_v1(&mut hasher, &candidate.descriptor);
+        hash_descriptor_fields_u16_v1(&mut hasher, &candidate.descriptor);
         hasher.update(candidate.catalog_digest.as_bytes());
         hasher.update(candidate.backing.as_bytes());
         hasher.update(candidate.root_custody.as_bytes());

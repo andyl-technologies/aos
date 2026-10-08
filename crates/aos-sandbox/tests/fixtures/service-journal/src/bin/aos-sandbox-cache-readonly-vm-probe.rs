@@ -7,10 +7,12 @@ use std::error::Error;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use aos_sandbox::cache_residency::{
-    BackingIsolationV1, CacheIsolationPolicyV1, CacheNodeIdV1,
-    CacheReplayControllerBootstrapOwnerV1, NodeCacheQuotaV1, PhysicalPartitionId,
-    ProjectCacheQuotaV1, ProtectedBackingIdentityV1, ResidencyEnforcementV1,
-    encode_cache_replay_controller_bundle_v1, encode_cache_replay_genesis_manifest_v1,
+    CacheReplayControllerBootstrapOwnerV1, encode_cache_replay_controller_bundle_v1,
+    encode_cache_replay_genesis_manifest_v1,
+};
+use aos_sandbox_protocol::cache_state::{
+    BackingIsolationV1, CacheIsolationPolicyV1, CacheNodeIdV1, NodeCacheQuotaV1,
+    PhysicalPartitionId, ProjectCacheQuotaV1, ProtectedBackingIdentityV1, ResidencyEnforcementV1,
 };
 use aos_sandbox::policy_compiler::{
     read_fixed_policy_cache_hold_v1, read_fixed_policy_cache_journals_v1,

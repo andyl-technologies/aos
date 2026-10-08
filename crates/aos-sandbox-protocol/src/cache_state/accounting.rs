@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use aos_sandbox_core::{ObjectDescriptor, ObjectDigest, OperationId, ProjectId};
 
-use super::domain::{PhysicalPartitionId, validate_object_descriptor};
+use super::partition::{PhysicalPartitionId, validate_object_descriptor};
 
 /// Bounds all protected accounting replay material.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -191,7 +191,15 @@ pub struct CacheReservationV1 {
 }
 
 impl CacheReservationV1 {
-    pub(crate) fn validate_record(&self) -> Result<(), AccountingError> {
+    /// Validates the reservation's canonical DATA invariants and commitment.
+    ///
+    /// This check does not establish protected currentness or effect authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AccountingError::InvalidRecord`] for malformed record fields,
+    /// state-dependent byte totals, or a mismatched digest.
+    pub fn validate_record(&self) -> Result<(), AccountingError> {
         validate_reservation(self)
     }
 
@@ -453,8 +461,8 @@ impl CacheAccountingV1 {
     /// # Errors
     ///
     /// Returns [`AccountingError`] when the supplied counts overflow project or
-    /// node limits.
-    pub(crate) fn with_pin_usage(
+    /// node limits. This pure projection does not prove physical pin custody.
+    pub fn with_pin_usage(
         &self,
         per_project: &BTreeMap<[u8; 16], CacheUsageV1>,
         node_pin_usage: CacheUsageV1,
@@ -568,7 +576,15 @@ impl CacheAccountingV1 {
 
 // Live recomputation and incremental recovery share quota semantics, not state.
 // Keep physical overflow and node refusal before sorted project validation.
-pub(in crate::cache_residency) fn validate_quota_totals_v1(
+/// Validates node and project quota totals without changing either projection.
+///
+/// This check does not grant reservation, journal, or physical effect authority.
+///
+/// # Errors
+///
+/// Returns [`AccountingError::Overflow`] for charged-byte overflow, then checks
+/// node limits before sorted project quota absence, overflow, or excess.
+pub fn validate_quota_totals_v1(
     node_quota: NodeCacheQuotaV1,
     project_quotas: &BTreeMap<[u8; 16], ProjectCacheQuotaV1>,
     node_usage: CacheUsageV1,

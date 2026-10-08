@@ -41,10 +41,13 @@ use super::{
     CacheResidencyProtectedJournalV1, CacheResidencyProtectedRecordKindV1,
     CacheResidencyRecoveryV1, CacheResidencyReplayValidatorV1, CacheResidencyTransactionKindV1,
     CacheScrubRecordV1, CacheTypedCheckpointV1, EvictionProgressV1, EvictionRetryAuthorityV1,
-    FrozenEvictionPlanV1, PhysicalPartitionId, ReclamationEvidenceV1, ReleasedCachePinV1,
-    UnlinkObservationV1, ValidatedCacheResidencyPostcommitV1, VerifiedCacheCapabilityV1,
+    FrozenEvictionPlanV1, ReclamationEvidenceV1, ReleasedCachePinV1, UnlinkObservationV1,
+    ValidatedCacheResidencyPostcommitV1, VerifiedCacheCapabilityV1,
     cache_residency_protected_key_v1, cache_residency_reducer_envelope_v1, decode_floor,
     decode_typed_checkpoint, encode_floor,
+};
+use aos_sandbox_protocol::cache_state::{
+    CatalogPresenceV1, NodeCacheQuotaV1, PhysicalPartitionId, ReservationStateV1,
 };
 #[cfg(target_os = "linux")]
 use super::{
@@ -372,7 +375,7 @@ fn project_physical_cache_head_digest(
 }
 
 fn complete_node_quota_digest_v2(
-    mut quotas: Vec<super::NodeCacheQuotaV1>,
+    mut quotas: Vec<NodeCacheQuotaV1>,
 ) -> Result<ObjectDigest, CacheResidencyProtectedJournalErrorV1> {
     quotas.sort_by_key(|quota| *quota.partition.digest().as_bytes());
     if quotas.len() > MAXIMUM_CACHE_MANIFESTS {
@@ -1230,7 +1233,7 @@ impl CacheResidencyProtectedOwnerV1 {
     /// cannot be validated at both ends of the observation.
     pub fn reconstructed_node_quotas(
         &mut self,
-    ) -> Result<Vec<super::NodeCacheQuotaV1>, CacheResidencyProtectedJournalErrorV1> {
+    ) -> Result<Vec<NodeCacheQuotaV1>, CacheResidencyProtectedJournalErrorV1> {
         Ok(self
             .reconstructed_partitions()?
             .into_iter()
@@ -1450,7 +1453,7 @@ impl CacheResidencyProtectedOwnerV1 {
                 for payload in inventory.reconstructed {
                     if matches!(
                         payload.reservation.state,
-                        super::ReservationStateV1::Reserved | super::ReservationStateV1::Uncertain
+                        ReservationStateV1::Reserved | ReservationStateV1::Uncertain
                     ) {
                         entries.push(
                             crate::lifecycle::LifecycleBootDomainEntryV1::from_protected_cache(
@@ -1467,7 +1470,7 @@ impl CacheResidencyProtectedOwnerV1 {
 
                     if let Some(catalog) = payload
                         .catalog
-                        .filter(|catalog| catalog.presence != super::CatalogPresenceV1::Evicted)
+                        .filter(|catalog| catalog.presence != CatalogPresenceV1::Evicted)
                     {
                         let mut environment = [0_u8; 16];
                         environment.copy_from_slice(&catalog.descriptor.digest().as_bytes()[..16]);
@@ -3490,10 +3493,10 @@ pub(in crate::cache_residency) mod tests {
     use aos_sandbox_core::model::CacheDomain;
 
     use super::*;
-    use crate::cache_residency::{
+    use crate::cache_residency::encode_cache_replay_genesis_manifest_v1;
+    use aos_sandbox_protocol::cache_state::{
         BackingIsolationV1, CacheIsolationPolicyV1, CacheNodeIdV1, NodeCacheQuotaV1,
         ProjectCacheQuotaV1, ProtectedBackingIdentityV1, ResidencyEnforcementV1,
-        encode_cache_replay_genesis_manifest_v1,
     };
 
     struct ExpiredReplayTime;

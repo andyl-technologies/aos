@@ -9,11 +9,14 @@
 use aos_sandbox_core::{ObjectDescriptor, ObjectDigest, OperationId};
 use sha2::{Digest as _, Sha256};
 
+use aos_sandbox_protocol::cache_state::{
+    BackingObjectIdentityV1, CatalogPresenceV1, ImmutableSealV1, object_descriptor_commitment,
+};
+
 use super::admission::{AdmissionError, CacheAdmissionStateV1};
-use super::catalog::{BackingObjectIdentityV1, CatalogPresenceV1, ImmutableSealV1};
 use super::domain::{
     CacheAuthorityError, CacheAuthorityOwner, CacheAuthorityPurposeV1, CacheAuthorityScopeV1,
-    VerifiedCacheCapabilityV1, object_descriptor_commitment,
+    VerifiedCacheCapabilityV1,
 };
 
 /// Captures one stable protected-root-relative backing observation.
@@ -273,7 +276,7 @@ pub enum ScrubError {
     Admission(#[from] AdmissionError),
     /// Catalog validation failed.
     #[error(transparent)]
-    Catalog(#[from] super::catalog::CatalogError),
+    Catalog(#[from] aos_sandbox_protocol::cache_state::CatalogError),
     /// Protected scrub or quarantine lifecycle authority failed.
     #[error(transparent)]
     Authority(#[from] CacheAuthorityError),

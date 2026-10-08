@@ -1,7 +1,9 @@
 //! Dormant node-local immutable cache residency semantics.
 //!
-//! This partition implements the pure SBX-CACHE-01 model without selecting a
-//! backend or activating a service. It separates disclosure/isolation identity,
+//! Cache accounting, catalog, and partition DATA are owned by
+//! `aos_sandbox_protocol::cache_state`. This partition retains the protected
+//! SBX-CACHE-01 semantics without selecting a backend or activating a service.
+//! It separates disclosure/isolation identity,
 //! reservation, residency, source retention, logical leases, kernel references,
 //! backing registrations, publication admission, eviction, scrub, and read
 //! handoff authority. Canonical formats retain exact recovery evidence but no
@@ -18,9 +20,7 @@
 //! secure erasure. Physical bytes are credited only after independent backing
 //! reclamation evidence.
 
-pub mod accounting;
 pub mod admission;
-pub mod catalog;
 mod controller_adapter;
 mod controller_bootstrap;
 pub mod domain;
@@ -50,18 +50,10 @@ pub(crate) mod signer_mount;
 #[cfg(target_os = "linux")]
 mod signer_readback;
 
-pub use accounting::{
-    AccountingError, AccountingLimitsV1, CacheAccountingV1, CacheReservationId, CacheReservationV1,
-    CacheUsageV1, NodeCacheQuotaV1, ProjectCacheQuotaV1, ReservationStateV1,
-};
 pub use admission::{
     AbortedAdmissionV1, AdmissionError, AdmissionLimitsV1, AdmissionProgressV1, AdmissionStageV1,
     CacheAdmissionStateV1, ImmutableAdmissionPlanV1, PreparedArtifactV1, PublicationCommitV1,
     SourceAuthorizationV1, WatermarkRequirementV1, initial_pin_set_digest,
-};
-pub use catalog::{
-    BackingObjectIdentityV1, CatalogEntryV1, CatalogError, CatalogPresenceV1, ImmutableSealV1,
-    LookupMemoValueV1, SealProfileV1, canonical_name_digest,
 };
 pub use controller_adapter::{
     CacheResidencyAuthorityRequestV1, CacheResidencyControllerCommitV1,
@@ -72,10 +64,8 @@ pub use controller_bootstrap::{
     encode_cache_replay_controller_bundle_v1, encode_cache_replay_genesis_manifest_v1,
 };
 pub use domain::{
-    AuthorizedLookupKey, BackingIsolationV1, CacheAuthorityError, CacheAuthorityOwner,
-    CacheAuthorityPurposeV1, CacheAuthorityScopeV1, CacheDomainError, CacheIsolationPolicyV1,
-    CacheNodeIdV1, LookupAuthorityScopeV1, PhysicalPartitionId, ProtectedBackingIdentityV1,
-    ResidencyEnforcementV1, VerifiedCacheCapabilityV1,
+    AuthorizedLookupKey, CacheAuthorityError, CacheAuthorityOwner, CacheAuthorityPurposeV1,
+    CacheAuthorityScopeV1, LookupAuthorityScopeV1, VerifiedCacheCapabilityV1,
 };
 #[cfg(target_os = "linux")]
 pub use effect_owner::{

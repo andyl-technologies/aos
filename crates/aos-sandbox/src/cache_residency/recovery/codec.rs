@@ -1,5 +1,9 @@
 //! Canonical codecs for typed recovery evidence components.
 
+use aos_sandbox_protocol::cache_state::{
+    BackingObjectIdentityV1, CacheReservationId, validate_object_descriptor,
+};
+
 use super::*;
 
 /// Encodes exact scrub observations and the resulting catalog generation.
@@ -190,7 +194,7 @@ pub fn decode_admission_plan(
 ) -> Result<ImmutableAdmissionPlanV1, RecoveryError> {
     let mut reader = CanonicalReader::new(b"AOSPLN01", bytes, maximum_bytes)?;
     let operation = OperationId::from_bytes(reader.identity()?);
-    let reservation = super::super::accounting::CacheReservationId::from_bytes(reader.identity()?)
+    let reservation = CacheReservationId::from_bytes(reader.identity()?)
         .map_err(|_| RecoveryError::MalformedPayload)?;
     let project = ProjectId::from_bytes(reader.identity()?);
     reader.expect_digest(partition.digest())?;
@@ -281,7 +285,7 @@ pub fn decode_reservation(
 ) -> Result<CacheReservationV1, RecoveryError> {
     let mut reader = CanonicalReader::new(b"AOSRSV01", bytes, maximum_bytes)?;
     let reservation = CacheReservationV1 {
-        id: super::super::accounting::CacheReservationId::from_bytes(reader.identity()?)
+        id: CacheReservationId::from_bytes(reader.identity()?)
             .map_err(|_| RecoveryError::MalformedPayload)?,
         operation: OperationId::from_bytes(reader.identity()?),
         project: ProjectId::from_bytes(reader.identity()?),
@@ -352,14 +356,14 @@ pub fn decode_catalog(
         partition,
         descriptor: read_descriptor(&mut reader)?,
         seal: read_seal(&mut reader)?,
-        backing: super::super::catalog::BackingObjectIdentityV1::from_bytes(reader.array()?)
+        backing: BackingObjectIdentityV1::from_bytes(reader.array()?)
             .map_err(|_| RecoveryError::MalformedPayload)?,
         allocated_bytes: reader.u64()?,
         root_custody: reader.digest()?,
         root_generation: reader.u64()?,
         canonical_name: reader.digest()?,
         publication: OperationId::from_bytes(reader.identity()?),
-        reservation: super::super::accounting::CacheReservationId::from_bytes(reader.identity()?)
+        reservation: CacheReservationId::from_bytes(reader.identity()?)
             .map_err(|_| RecoveryError::MalformedPayload)?,
         presence: catalog_presence(reader.u8()?)?,
         generation: reader.u64()?,
@@ -578,7 +582,7 @@ pub fn decode_eviction_plan(
     let authority_digest = reader.digest()?;
     let target_reservation = reader
         .optional_identity()?
-        .map(super::super::accounting::CacheReservationId::from_bytes)
+        .map(CacheReservationId::from_bytes)
         .transpose()
         .map_err(|_| RecoveryError::MalformedPayload)?;
     let target_reclaim_bytes = reader.u64()?;
@@ -820,7 +824,7 @@ pub fn decode_global_recovery_state(
     let mut watermarks = Vec::with_capacity(watermark_count);
     for _ in 0..watermark_count {
         watermarks.push(WatermarkRequirementV1 {
-            reservation: super::super::accounting::CacheReservationId::from_bytes(
+            reservation: CacheReservationId::from_bytes(
                 reader.identity()?,
             )
             .map_err(|_| RecoveryError::MalformedPayload)?,
@@ -1201,7 +1205,7 @@ pub(super) fn validate_handoff_state(
     if handoff.operation.as_bytes() == &[0; 16]
         || handoff.authority.as_bytes() == &[0; 32]
         || handoff.catalog.as_bytes() == &[0; 32]
-        || super::super::domain::validate_object_descriptor(&handoff.descriptor).is_err()
+        || validate_object_descriptor(&handoff.descriptor).is_err()
         || handoff.preparation_evidence.as_bytes() == &[0; 32]
         || handoff.valid_until == 0
         || handoff.receipt_evidence.is_some() && handoff.cancellation.is_some()

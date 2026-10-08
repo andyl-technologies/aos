@@ -33,10 +33,14 @@ pub(in crate::cache_residency) use crate::lifecycle::protected_journal_adapter::
 
 use super::{
     CacheAtomicObjectPayloadV1, CacheAuthorityOwner, CacheAuthorityPurposeV1,
-    CacheAuthorityScopeV1, CacheDurableRecordV1, CacheHistoryFloorV1, CacheNodeIdV1,
-    CacheRecordKindV1, CacheRecoveryInventoryV1, CacheRecoveryLimitsV1, CacheTypedCheckpointV1,
-    PhysicalPartitionId, ProtectedBackingIdentityV1, RecoveryError, decode_atomic_object_record,
-    decode_typed_checkpoint, encode_atomic_object_record, encode_typed_checkpoint,
+    CacheAuthorityScopeV1, CacheDurableRecordV1, CacheHistoryFloorV1, CacheRecordKindV1,
+    CacheRecoveryInventoryV1, CacheRecoveryLimitsV1, CacheTypedCheckpointV1, RecoveryError,
+    decode_atomic_object_record, decode_typed_checkpoint, encode_atomic_object_record,
+    encode_typed_checkpoint,
+};
+use aos_sandbox_protocol::cache_state::{
+    CacheNodeIdV1, CacheReservationV1, PhysicalPartitionId, ProtectedBackingIdentityV1,
+    ReservationStateV1,
 };
 #[cfg(target_os = "linux")]
 use super::{CachePinV1, ImmutableAdmissionPlanV1};
@@ -1764,10 +1768,10 @@ impl ValidatedCacheResidencyPostcommitV1<'_> {
     pub(crate) fn authorizes_reserved_admission(
         &self,
         plan: &super::ImmutableAdmissionPlanV1,
-        reservation: &super::CacheReservationV1,
+        reservation: &CacheReservationV1,
         limits: CacheRecoveryLimitsV1,
     ) -> bool {
-        if reservation.state != super::ReservationStateV1::Reserved
+        if reservation.state != ReservationStateV1::Reserved
             || reservation.plan_digest != plan.digest
             || reservation.id != plan.reservation
             || reservation.descriptor != plan.descriptor
@@ -1965,7 +1969,7 @@ impl ValidatedCacheResidencyPostcommitV1<'_> {
     pub fn into_cache_owner_admission(
         self,
         plan: ImmutableAdmissionPlanV1,
-        reservation: super::CacheReservationV1,
+        reservation: CacheReservationV1,
         limits: CacheRecoveryLimitsV1,
     ) -> Result<super::CacheOwnerAdmissionV1, CacheResidencyProtectedJournalErrorV1> {
         if !self.authorizes_reserved_admission(&plan, &reservation, limits) {

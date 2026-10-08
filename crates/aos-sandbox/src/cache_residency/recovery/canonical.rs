@@ -1,5 +1,9 @@
 //! Canonical bounded primitive encoding shared by durable cache formats.
 
+use aos_sandbox_protocol::cache_state::{
+    BackingObjectIdentityV1, ImmutableSealV1, SealProfileV1, validate_object_descriptor,
+};
+
 use super::*;
 
 pub(super) fn canonical_payload_digest(
@@ -286,14 +290,14 @@ pub(super) fn read_descriptor(
         .map_err(|_| RecoveryError::MalformedPayload)?;
     let media = MediaType::new(media).map_err(|_| RecoveryError::MalformedPayload)?;
     let descriptor = ObjectDescriptor::new(media, reader.digest()?, reader.u64()?);
-    super::super::domain::validate_object_descriptor(&descriptor)
+    validate_object_descriptor(&descriptor)
         .map_err(|_| RecoveryError::PayloadMismatch)?;
     Ok(descriptor)
 }
 
 pub(super) fn write_seal(
     writer: &mut CanonicalWriter,
-    seal: super::super::catalog::ImmutableSealV1,
+    seal: ImmutableSealV1,
 ) -> Result<(), RecoveryError> {
     writer.u8(seal.profile as u8)?;
     writer.digest(seal.measurement)
@@ -301,13 +305,13 @@ pub(super) fn write_seal(
 
 pub(super) fn read_seal(
     reader: &mut CanonicalReader<'_>,
-) -> Result<super::super::catalog::ImmutableSealV1, RecoveryError> {
+) -> Result<ImmutableSealV1, RecoveryError> {
     let profile = match reader.u8()? {
-        1 => super::super::catalog::SealProfileV1::FsVeritySha256,
-        2 => super::super::catalog::SealProfileV1::ReadOnlyZfsSnapshot,
+        1 => SealProfileV1::FsVeritySha256,
+        2 => SealProfileV1::ReadOnlyZfsSnapshot,
         _ => return Err(RecoveryError::MalformedPayload),
     };
-    super::super::catalog::ImmutableSealV1 {
+    ImmutableSealV1 {
         profile,
         measurement: reader.digest()?,
     }
@@ -336,7 +340,7 @@ pub(super) fn read_eviction_candidate(
     Ok(EvictionCandidateV1 {
         descriptor: read_descriptor(reader)?,
         catalog_digest: reader.digest()?,
-        backing: super::super::catalog::BackingObjectIdentityV1::from_bytes(reader.array()?)
+        backing: BackingObjectIdentityV1::from_bytes(reader.array()?)
             .map_err(|_| RecoveryError::MalformedPayload)?,
         root_custody: reader.digest()?,
         canonical_name: reader.digest()?,

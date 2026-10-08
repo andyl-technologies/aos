@@ -12,11 +12,14 @@ use aos_sandbox_core::{
     AttachmentId, IncarnationId, ObjectDescriptor, ObjectDigest, ProjectId, SandboxId, ViewId,
 };
 
-use super::accounting::{AccountingError, CacheUsageV1};
+use aos_sandbox_protocol::cache_state::{
+    AccountingError, CacheUsageV1, PhysicalPartitionId, object_descriptor_commitment,
+    validate_object_descriptor,
+};
+
 use super::domain::{
     CacheAuthorityError, CacheAuthorityOwner, CacheAuthorityPurposeV1, CacheAuthorityScopeV1,
-    PhysicalPartitionId, VerifiedCacheCapabilityV1, object_descriptor_commitment,
-    validate_object_descriptor,
+    VerifiedCacheCapabilityV1,
 };
 
 pub(crate) const PIN_FLOOR_BYTES: usize = 136;

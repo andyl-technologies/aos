@@ -1,5 +1,7 @@
 //! Domain-separated admission and initial-pin commitments.
 
+use aos_sandbox_protocol::cache_state::hash_descriptor_fields_u16_v1;
+
 use sha2::{Digest as _, Sha256};
 
 use super::*;
@@ -11,10 +13,10 @@ pub(super) fn admission_digest(plan: &ImmutableAdmissionPlanV1) -> ObjectDigest 
     hasher.update(plan.reservation.as_bytes());
     hasher.update(plan.project.as_bytes());
     hasher.update(plan.partition.digest().as_bytes());
-    super::super::catalog::hash_descriptor_fields_u16_v1(&mut hasher, &plan.descriptor);
+    hash_descriptor_fields_u16_v1(&mut hasher, &plan.descriptor);
     hasher.update(plan.source.release_digest.as_bytes());
     hasher.update(plan.source.source_revision.as_bytes());
-    super::super::catalog::hash_descriptor_fields_u16_v1(&mut hasher, &plan.source.descriptor);
+    hash_descriptor_fields_u16_v1(&mut hasher, &plan.source.descriptor);
     hasher.update(plan.source.source_seal.as_bytes());
     hasher.update(plan.source.authority_generation.to_be_bytes());
     hasher.update(plan.source.valid_until.to_be_bytes());
@@ -123,7 +125,7 @@ pub fn initial_pin_set_digest(pins: &[CachePinV1]) -> Result<ObjectDigest, Admis
         previous = Some(pin.id);
         hasher.update(pin.id.as_bytes());
         hasher.update(pin.partition.digest().as_bytes());
-        super::super::catalog::hash_descriptor_fields_u16_v1(&mut hasher, &pin.object);
+        hash_descriptor_fields_u16_v1(&mut hasher, &pin.object);
         hasher.update(pin.project.as_bytes());
         hasher.update(pin.view.as_bytes());
         hasher.update(pin.attachment.map_or([0; 16], |id| id.into_bytes()));

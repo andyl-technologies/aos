@@ -20,8 +20,9 @@ use aos_sandbox_core::ObjectDigest;
 use super::{
     CacheAuthorityOwner, CacheAuthorityPurposeV1, CacheHistoryFloorV1, CacheRecoveryInventoryV1,
     CacheResidencyProtectedJournalErrorV1, CacheResidencyReplayPartitionEvidenceV1,
-    PhysicalPartitionId, ProtectedCacheResidencyReplayAuthorityV1,
+    ProtectedCacheResidencyReplayAuthorityV1,
 };
+use aos_sandbox_protocol::cache_state::PhysicalPartitionId;
 
 const LOGICAL_PIN_ACQUIRE_KEY_PREFIX: &[u8] = b"aos.cache.logical-pin-acquire.v1/";
 pub(crate) const LOGICAL_PIN_ACQUIRE_LIFETIME_SECONDS: u64 = 120;

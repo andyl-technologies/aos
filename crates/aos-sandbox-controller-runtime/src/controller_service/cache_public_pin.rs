@@ -11,10 +11,11 @@ use aos_sandbox::cache_residency::{
     CacheOwnerPinPresenceV1, CacheOwnerPinReconciliationStateV1, CacheOwnerPinReconciliationV1,
     CacheOwnerPinSettlementErrorV1, CacheOwnerPinSettlementV1, CachePinV1,
     CacheResidencyCommitOutcomeV1, CacheResidencyProtectedJournalErrorV1,
-    CacheResidencyProtectedOwnerV1, CacheResidencyProtectedPinRecoveryV1, CatalogPresenceV1,
-    DormantCacheOwnerV1, PhysicalPartitionId, PublicLogicalPinAcquisitionCommitV1,
-    PublicLogicalPinAcquisitionErrorV1, ValidatedPublicLogicalPinAcquisitionV1,
+    CacheResidencyProtectedOwnerV1, CacheResidencyProtectedPinRecoveryV1, DormantCacheOwnerV1,
+    PublicLogicalPinAcquisitionCommitV1, PublicLogicalPinAcquisitionErrorV1,
+    ValidatedPublicLogicalPinAcquisitionV1,
 };
+use aos_sandbox_protocol::cache_state::{CatalogPresenceV1, PhysicalPartitionId};
 use aos_sandbox::filesystem_view_state::DurableFilesystemViewRevisionV1;
 use aos_sandbox::production_operation_compiler::RecheckedCacheConsumerV1;
 use aos_sandbox_core::{NodeId, OperationId};

@@ -182,7 +182,7 @@ impl RecoveredAccountingProjection {
     }
 
     pub(super) fn validate(&self) -> Result<(), RecoveryError> {
-        super::super::accounting::validate_quota_totals_v1(
+        aos_sandbox_protocol::cache_state::validate_quota_totals_v1(
             self.node_quota,
             &self.project_quotas,
             self.node_usage,
@@ -581,8 +581,8 @@ pub(super) fn validate_watermark_gate(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache_residency::accounting::{AccountingError, validate_quota_totals_v1};
-    use crate::cache_residency::domain::{CacheNodeIdV1, ProtectedBackingIdentityV1};
+    use aos_sandbox_protocol::cache_state::{AccountingError, validate_quota_totals_v1};
+    use aos_sandbox_protocol::cache_state::{CacheNodeIdV1, ProtectedBackingIdentityV1};
     use aos_sandbox_core::{
         CacheDomainId,
         model::{CacheDomain, CacheDomainKind},

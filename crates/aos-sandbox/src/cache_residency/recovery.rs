@@ -19,20 +19,19 @@ use aos_sandbox_core::{
     SandboxId, ViewId,
 };
 
-use super::accounting::{
-    AccountingLimitsV1, CacheAccountingV1, CacheReservationV1, CacheUsageV1, NodeCacheQuotaV1,
-    ProjectCacheQuotaV1, ReservationStateV1,
+use aos_sandbox_protocol::cache_state::{
+    AccountingLimitsV1, BackingObjectIdentityV1, CacheAccountingV1, CacheReservationV1,
+    CacheUsageV1, CatalogEntryV1, CatalogPresenceV1, LookupMemoValueV1, NodeCacheQuotaV1,
+    PhysicalPartitionId, ProjectCacheQuotaV1, ReservationStateV1, object_descriptor_commitment,
 };
+
 use super::admission::{
     AdmissionProgressV1, AdmissionStageV1, ImmutableAdmissionPlanV1, WatermarkRequirementV1,
     initial_pin_set_digest,
 };
-use super::catalog::{
-    BackingObjectIdentityV1, CatalogEntryV1, CatalogPresenceV1, LookupMemoValueV1,
-};
 use super::domain::{
     CacheAuthorityError, CacheAuthorityOwner, CacheAuthorityPurposeV1, CacheAuthorityScopeV1,
-    PhysicalPartitionId, VerifiedCacheCapabilityV1, object_descriptor_commitment,
+    VerifiedCacheCapabilityV1,
 };
 use super::eviction::{
     EvictionCandidateStateV1, EvictionCandidateV1, EvictionProgressV1, FrozenEvictionPlanV1,

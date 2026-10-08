@@ -4,6 +4,8 @@
 //! samples time without advancing the clock journal: its normal update path
 //! drops and reopens that writer, which would break the claimed cut.
 
+use aos_sandbox_protocol::cache_state::NodeCacheQuotaV1;
+
 use std::path::Path;
 #[cfg(any(test, target_os = "linux"))]
 use std::sync::Arc;
@@ -52,7 +54,7 @@ pub struct CacheResidencyWriterReadbackV2 {
     selected: super::CurrentProjectPhysicalCacheHeadV1,
     /// Commits every validated node quota in canonical partition order.
     quota_digest: ObjectDigest,
-    node_quotas: Vec<crate::cache_residency::NodeCacheQuotaV1>,
+    node_quotas: Vec<NodeCacheQuotaV1>,
 }
 
 // Complete current replay selection before any Q04 logical hold. The actual
@@ -61,7 +63,7 @@ pub struct CacheResidencyWriterReadbackV2 {
 pub(crate) struct Q04CachePrepareReadbackV1 {
     selected: super::CurrentProjectPhysicalCacheHeadV1,
     quota_digest: ObjectDigest,
-    node_quotas: Vec<crate::cache_residency::NodeCacheQuotaV1>,
+    node_quotas: Vec<NodeCacheQuotaV1>,
 }
 
 #[cfg(target_os = "linux")]
@@ -107,7 +109,7 @@ fn current_inventory_selection(
 ) -> Result<(
     super::CurrentProjectPhysicalCacheHeadV1,
     ObjectDigest,
-    Vec<crate::cache_residency::NodeCacheQuotaV1>,
+    Vec<NodeCacheQuotaV1>,
 ), CacheResidencyProtectedJournalErrorV1> {
     let node_quotas: Vec<_> = inventories
         .iter()
@@ -193,7 +195,7 @@ impl CacheResidencyWriterReadbackV2 {
         hold: CachePolicyHoldV1,
         selected: super::CurrentProjectPhysicalCacheHeadV1,
         quota_digest: ObjectDigest,
-        node_quotas: Vec<crate::cache_residency::NodeCacheQuotaV1>,
+        node_quotas: Vec<NodeCacheQuotaV1>,
     ) -> Result<Self, CacheResidencyProtectedJournalErrorV1> {
         if selected.partition().digest() != hold.partition()
             || selected.head() != hold.cache_head()
@@ -257,7 +259,7 @@ impl CacheResidencyWriterReadbackV2 {
 
     /// Returns every typed node quota used to derive the complete envelope.
     #[must_use]
-    fn node_quotas(&self) -> &[crate::cache_residency::NodeCacheQuotaV1] {
+    fn node_quotas(&self) -> &[NodeCacheQuotaV1] {
         &self.node_quotas
     }
 }

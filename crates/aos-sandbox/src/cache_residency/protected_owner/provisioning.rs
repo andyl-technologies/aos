@@ -23,10 +23,11 @@ use super::{
     CacheResidencyProtectedJournalErrorV1, CacheResidencyProtectedOpenReportV1,
     CacheResidencyProtectedOwnerV1, CacheResidencyProtectedRecordKindV1,
     CacheResidencyReplayPartitionEvidenceV1, MAXIMUM_AUTHORITY_RECORD_BYTES, PROTECTED_CACHE_ROOT,
-    PhysicalPartitionId, ProtectedCacheClockV1, ProtectedDomainJournalErrorV1,
-    cache_authority_journal_limits, cache_owner_scope, cache_state_journal_limits,
-    decode_typed_checkpoint, encode_cache_replay_manifest, open_cache_journal,
+    ProtectedCacheClockV1, ProtectedDomainJournalErrorV1, cache_authority_journal_limits,
+    cache_owner_scope, cache_state_journal_limits, decode_typed_checkpoint,
+    encode_cache_replay_manifest, open_cache_journal,
 };
+use aos_sandbox_protocol::cache_state::PhysicalPartitionId;
 
 impl CacheReplayControllerBootstrapOwnerV1 {
     /// Reconciles all controller-custodied partitions with an open cache owner.

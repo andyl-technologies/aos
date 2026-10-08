@@ -4,6 +4,8 @@
 //! obtains no writer lock, cannot advance the clock, and cannot use this
 //! observation to publish policy or hand off an effect.
 
+use aos_sandbox_protocol::cache_state::NodeCacheQuotaV1;
+
 use std::fs;
 use std::io::Read as _;
 use std::path::Path;
@@ -451,7 +453,7 @@ fn replay_cache_journals_at(
     check_name: impl Fn(&ReadOnlyJournalNameWitness) -> Result<(), JournalError>,
     check_hold: impl Fn(&ReadOnlyProtectedJournal) -> Result<(), JournalError>,
     check_quotas: impl FnOnce(
-        &[crate::cache_residency::NodeCacheQuotaV1],
+        &[NodeCacheQuotaV1],
     ) -> Result<(), CacheResidencyProtectedJournalErrorV1>,
 ) -> Result<
     (
@@ -474,7 +476,7 @@ fn replay_cache_journals_at_for(
         -> Result<(ReadOnlyProtectedJournal, RecoveryReport), JournalError>,
     check_name: impl Fn(&ReadOnlyJournalNameWitness) -> Result<(), JournalError>,
     check_hold: impl Fn(&ReadOnlyProtectedJournal) -> Result<(), JournalError>,
-    check_quotas: impl FnOnce(&[crate::cache_residency::NodeCacheQuotaV1])
+    check_quotas: impl FnOnce(&[NodeCacheQuotaV1])
         -> Result<(), CacheResidencyProtectedJournalErrorV1>,
 ) -> Result<
     (CacheResidencyRootReadOnlyReplayV1, Option<(CachePolicyHoldV1, RecoveryReport)>),

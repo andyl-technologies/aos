@@ -17,9 +17,9 @@ const FLOOR_MAGIC: &[u8; 8] = b"AOSCXF01";
 const IDEMPOTENCY_MAGIC: &[u8; 8] = b"AOSCXI01";
 const VERSION: u16 = 1;
 use super::domain::{
-    CacheAuthorityOwner, CacheAuthorityPurposeV1, CacheAuthorityScopeV1, PhysicalPartitionId,
-    VerifiedCacheCapabilityV1,
+    CacheAuthorityOwner, CacheAuthorityPurposeV1, CacheAuthorityScopeV1, VerifiedCacheCapabilityV1,
 };
+use aos_sandbox_protocol::cache_state::PhysicalPartitionId;
 
 pub(crate) const RECORD_BYTES: usize = 504;
 pub(crate) const CHECKPOINT_BYTES: usize = 328;

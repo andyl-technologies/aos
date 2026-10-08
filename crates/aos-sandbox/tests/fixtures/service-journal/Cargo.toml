@@ -10,6 +10,7 @@ aos-sandbox = { workspace = true, features = ["cache-physical-join-vm-fixture", 
 aos-sandbox-core.workspace = true
 aos-sandbox-broker-session-security.workspace = true
 aos-sandbox-linux.workspace = true
+aos-sandbox-protocol.workspace = true
 aos-sandbox-source-provider.workspace = true
 aos-sandbox-source-provider-ledger.workspace = true
 aos-sandbox-source-provider-protocol.workspace = true
