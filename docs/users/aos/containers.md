@@ -53,6 +53,10 @@ ready. Packages can leave their optional managed services disabled when no
 manager is selected; use their generated options documentation to configure
 service enablement.
 
+Local accounts and groups are installation effects: they are available before
+the selected manager starts early services. Their normal ownership receipts
+remain authoritative during startup, reconfiguration, and removal.
+
 The container launcher must provide the environment required by the selected
 init and service features. Installation during a Docker build does not establish
 that those runtime features are available. Explicit workload arguments override

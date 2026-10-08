@@ -86,18 +86,19 @@ in {
       inherit program;
       phase = "startup";
     };
+    # Local account databases must be ready before early manager services start.
     identity.operations = {
       group.handler = {
         inherit program;
-        phase = "startup";
+        phase = "installation";
       };
       principal.handler = {
         inherit program;
-        phase = "startup";
+        phase = "installation";
       };
       membership.handler = {
         inherit program;
-        phase = "startup";
+        phase = "installation";
       };
     };
     listener.operations.claim.handler = {
