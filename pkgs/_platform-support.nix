@@ -446,6 +446,7 @@ let
     "test-http-server"
     "test-static-cache-server"
     "uv"
+    "uutils-coreutils"
     "workerd"
     "workerd-source"
   ];
