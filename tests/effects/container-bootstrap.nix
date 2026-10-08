@@ -37,16 +37,28 @@
   dbusService = key evaluated.config.aos.abilities.serviceManagement.operations.realize.effects.dbus;
   configured = evaluate 8192;
 in {
-  brokerAccountsAreInstalledBeforeStartup = graph.nodes.${dbusGroup}.phase == "installation"
+  brokerAccountsAreInstalledBeforeStartup =
+    graph.nodes.${dbusGroup}.phase
+    == "installation"
     && graph.nodes.${dbusPrincipal}.phase == "installation"
     && graph.nodes.${dbusService}.phase == "startup";
-  brokerAccountDependenciesAreRetained = builtins.elem dbusGroup graph.nodes.${dbusPrincipal}.dependencies
+  brokerAccountDependenciesAreRetained =
+    builtins.elem dbusGroup graph.nodes.${dbusPrincipal}.dependencies
     && builtins.elem dbusPrincipal graph.nodes.${dbusService}.dependencies;
-  membershipsAreInstalledAfterTheirAccounts = graph.nodes.${membership}.phase == "installation"
+  membershipsAreInstalledAfterTheirAccounts =
+    graph.nodes.${membership}.phase
+    == "installation"
     && builtins.elem dbusGroup graph.nodes.${membership}.dependencies
     && builtins.elem dbusPrincipal graph.nodes.${membership}.dependencies;
-  nativeIdentityReceiptsRemainOwned = graph.nodes.${dbusGroup}.handler.executable == "${pkgs.systemd.handlers}/bin/aos-systemd-native-resources"
+  nativeIdentityReceiptsRemainOwned =
+    graph.nodes.${dbusGroup}.handler.executable
+    == "${pkgs.systemd.handlers}/bin/aos-systemd-native-resources"
     && graph.nodes.${dbusPrincipal}.handler.executable == "${pkgs.systemd.handlers}/bin/aos-systemd-native-resources";
+  containerStartupRetainsRuntimeAndNixPolicy = let
+    unit = evaluated.config.aos.abilities.configuration.operations.file.effects.systemd-container-startup.input.content;
+  in
+    lib.hasInfix "\nEnvironment=AOS_RUNTIME=container\n" unit
+    && lib.hasInfix "\nPassEnvironment=NIX_CONFIG\n" unit;
   brokerSelectedWithProvider = builtins.hasAttr "dbus" prepared.input.services;
   installationOwnsPreparation = graph.nodes.${preparedKey}.phase == "installation";
   liveHandlersDependOnPreparation = builtins.length live >= 3 && builtins.all (node: builtins.elem preparedKey node.dependencies) live;

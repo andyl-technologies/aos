@@ -24,6 +24,9 @@
 
     [Service]
     Type=oneshot
+    Environment=AOS_RUNTIME=container
+    # Preserve the caller's Nix policy when activation launches Nix children.
+    PassEnvironment=NIX_CONFIG
     ExecStart=${builtins.concatStringsSep " " (builtins.map quote ([executable] ++ arguments))}
     RemainAfterExit=yes
     TimeoutStartSec=300
