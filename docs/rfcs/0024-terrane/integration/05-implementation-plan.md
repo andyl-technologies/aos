@@ -1374,8 +1374,9 @@ and feature matrix have not been rerun. The unchanged DRV-29 fixture on
 catalog publication at the existing 30-second writer deadline. Its attempted
 generation installs 232 new index shards; incremental measurement and the
 independent maintenance oracle are not reached. An isolated production
-optimization is in progress; every native physical/current check and the
-existing deadlines remain qualification requirements.
+optimization is in progress; all normative native physical/current checks
+and the existing deadlines remain qualification requirements. The later scoped
+Raw review below explicitly revises the stronger intermediate sampling promise.
 The owning `algebra-fork` registration now requires twelve exact native witnesses
 and the separate cold-source, full requalification, source-preservation and
 imported-source-preservation checks. Registry completeness and both formatters
@@ -1638,8 +1639,37 @@ cleanliness. The reviewed two-file `bb1cd0ab7c` correction removes only that
 wrapper and updates its two test callers to the tracked installer; publication
 bodies and assertions remain unchanged. Private composition `d3409008a9` passes
 fresh SDK library compilation and strict library/all-targets Clippy, each
-compiling its actual assigned source. The unchanged instrumented deadline witness
-remains pending. No task checkbox, milestone exit or freeze advances.
+compiling its actual assigned source. The unchanged instrumented witness fails
+in 77.395 seconds with `Advance(Expired)` at original elapsed 51.986007554 seconds
+against 30 seconds. Complete history takes 24.201056039 seconds; relationship
+checking takes 23.354087791 seconds. Its 609 genuine held GETs spend
+5.707843655 seconds observing selection, 11.782676067 seconds checking catalogs,
+0.649273102 seconds verifying bodies and 5.734147077 seconds revalidating.
+These are inclusive child spans, not additional time above the history total.
+The root's 568-GET load takes 22.441375823 seconds, while reconstruction and
+preparation take only 3.104657 and 11.873441 milliseconds. All 6,064 captured
+inputs and the actual executable remain unchanged; baseline output, maintenance
+and independent oracles are unreached. This identifies serial read work without
+establishing an optimization benefit or qualifying the deadline witness.
+
+The reviewed next candidates retain ordinary per-read validation while bounding
+concurrent GETs of already validated frontier references, and separately defer
+only unrelated, producer-proven Raw output leaf checks during intermediate sync.
+The latter revises the earlier extra implementation promise of every intermediate
+physical sample: BKT-13/14, REF-12/15, STORE-30, D-57 and the publication authority
+require actual durability, exclusion, current inputs and honest final completion,
+not every unrelated output's leaf sampling around every other sync. Actual target
+whole-body/descriptor/name/ancestry checks, all consumed present/absent inputs,
+source/current predicates, root/control/directory/pair fences, exhaustive final
+same-descriptor output checks and real Raw acknowledgment remain required.
+Unknown or conflicting roles retain complete checking. Error timing and harmless
+read/sync attempts before refusal may change; persistent final faults still refuse.
+No specification or freeze changes, task acceptance or performance claim follows.
+
+The sealed current floor contains 89 aggregate gates, including all 69 T0/T1
+plan-required names and twenty implemented supporting checks. Read-only evaluation
+finds `gc-two-phase-delete` explicitly pending. Output validity establishes no
+full-floor execution result. No task checkbox, milestone exit or freeze advances.
 
 Deployable as: a local tool that initializes a store under a `file://`
 root, commits a directory, forks and merges branches, and checks a commit
