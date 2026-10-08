@@ -1190,7 +1190,9 @@ fn hold_successor_with_recipe_v3<'controller>(
     evidence: Option<&mut Option<crate::hierarchy::SourceProjectContinuationEvidenceV3>>,
 ) -> Result<HeldControllerFirstSourceSuccessorV2<'controller>, SourceGenesisErrorV1> {
     let mut mixed = None;
-    let validation = (|| {
+    // The returned owner retains this exact writer argument; it never borrows
+    // a captured mutable writer out of the continuation's closure state.
+    let validation = (|journal: &'controller mut Journal| {
     let uid = journal.protected_owner_uid()?;
     require_controller(journal, uid)?;
     let saved = match recipe {
@@ -1291,7 +1293,7 @@ fn hold_successor_with_recipe_v3<'controller>(
     }
     inventory.recheck()?;
     Ok(held)
-    })();
+    })(journal);
     // The returned validation and all Source evidence remain independent. An
     // Err ends only the short Journal loan; no decoded maps or cause disappear.
     if let (Some(observed), Some(destination)) = (mixed, evidence) {

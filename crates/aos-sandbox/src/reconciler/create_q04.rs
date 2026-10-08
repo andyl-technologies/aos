@@ -331,20 +331,23 @@ pub fn continue_original_create_q04_policy_subgate_v1(
         std::process::exit(1);
     }
     let source_original = source;
-    let mut source = crate::lifecycle::protected_journal_join::OriginalQ04SourceOwnerCutV1::park(&mut *source_original);
-    let mut cache = match initialization.begin_original_q04(cache_owner, physical) {
-        Ok(cache) => cache,
-        // The actual initializer, including its original result, is still
-        // borrowed from the parent. The prearmed negative owner exits before
-        // that borrow or any initialized original can be dropped.
-        Err(_) => std::process::exit(1),
-    };
     let InstalledOriginalCreateQ04V1 {
         root, credentials, ledger, preparation, identity, resource_transfer, resource_posts, terminal, commits, acknowledgements,
         signatures, first, postcheck, complete,
     } = &mut resident;
 
     let continued = (|| -> Result<(), ()> {
+        // Keep acquisition and terminal parent reborrows in one continuation.
+        // These same short loans end only after their original clearance.
+        let mut source = crate::lifecycle::protected_journal_join::OriginalQ04SourceOwnerCutV1::park(&mut *source_original);
+        let mut cache = match initialization.begin_original_q04(cache_owner, physical) {
+            Ok(cache) => cache,
+            // The actual initializer, including its original result, is still
+            // borrowed from the parent. The prearmed negative owner exits before
+            // that borrow or any initialized original can be dropped.
+            Err(_) => std::process::exit(1),
+        };
+
         retain_q04_data(first, profile.recheck().map_err(Into::into))?;
         if credentials.capture().is_err() { return Err(()); }
         let context = retain_q04_data(first, plan.public_mutation_context().map_err(Into::into))?
