@@ -176,6 +176,7 @@ dependencies = [
  "aos-remote",
  "aos-sandbox",
  "aos-sandbox-core",
+ "aos-sandbox-protocol",
  "aos-server",
  "async-trait",
  "axum",
@@ -848,6 +849,7 @@ dependencies = [
  "aos-sandbox-broker-session-protocol",
  "aos-sandbox-core",
  "aos-sandbox-guest",
+ "aos-sandbox-journal",
  "aos-sandbox-linux",
  "aos-sandbox-ownership-protocol",
  "aos-sandbox-protocol",
@@ -937,6 +939,7 @@ dependencies = [
  "aos-sandbox-broker-session-protocol",
  "aos-sandbox-core",
  "aos-sandbox-host",
+ "aos-sandbox-journal",
  "aos-sandbox-linux",
  "aos-sandbox-mount",
  "aos-sandbox-network",
@@ -1042,6 +1045,14 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "zeroize",
+]
+
+[[package]]
+name = "aos-sandbox-journal"
+version = "0.1.0"
+dependencies = [
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -1297,6 +1308,7 @@ dependencies = [
  "aos-sandbox-broker",
  "aos-sandbox-core",
  "aos-sandbox-guest",
+ "aos-sandbox-journal",
  "aos-sandbox-linux",
  "aos-sandbox-mount",
  "aos-sandbox-protocol",

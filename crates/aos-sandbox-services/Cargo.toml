@@ -86,6 +86,7 @@ online-nix = ["aos-sandbox-broker-session-security?/online-nix"]
 kernel-tests = [
     "aos-sandbox-broker-session-security?/kernel-tests",
     "dep:aos-sandbox-core",
+    "dep:aos-sandbox-protocol",
     "dep:buffa",
     "dep:rcgen",
     "dep:reqwest",

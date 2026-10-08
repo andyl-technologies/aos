@@ -50,6 +50,7 @@ aos-sandbox-guest.workspace = true
 aos-sandbox.workspace = true
 aos-sandbox-broker.workspace = true
 aos-sandbox-core.workspace = true
+aos-sandbox-journal.workspace = true
 aos-sandbox-linux.workspace = true
 aos-sandbox-mount.workspace = true
 aos-sandbox-protocol.workspace = true

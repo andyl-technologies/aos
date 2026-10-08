@@ -196,6 +196,7 @@
     "aos-sandbox-core"
     "aos-sandbox-guest"
     "aos-sandbox-guardian"
+    "aos-sandbox-journal"
     "aos-sandbox-mount"
     "aos-sandbox-network"
     "aos-sandbox-ownership-protocol"
