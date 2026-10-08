@@ -1,8 +1,11 @@
 //! Native filesystem effects and durable identity claims.
 //!
-//! Claims record the inode established by an effect. Existing unclaimed paths
-//! are never adopted, and interrupted creation without an inode receipt requires
-//! intervention. Persistent retention is controlled by the activation runtime.
+//! Directory claims own a desired directory at an exact path, with its mode and
+//! requested ownership, so filesystem rematerialization preserves that resource.
+//! Files and symlink trees retain physical identity checks. Existing unclaimed
+//! paths are never adopted. Removing a directory releases its claimed namespace,
+//! including its contents, under the activation runtime's lifetime policy.
+//! Persistent retention is controlled by the activation runtime.
 
 use super::*;
 use aos_ability_runtime::activation::{Action, Invocation as NativeInvocation};
@@ -46,6 +49,9 @@ fn default_max_bytes() -> u64 {
 }
 
 /// Implements native filesystem operations against private durable claims.
+///
+/// Directory custody follows the claimed path and metadata across filesystem
+/// rematerialization. Other entry kinds retain their claimed device and inode.
 pub struct NativeFilesystem {
     state_root: PathBuf,
     roots: Vec<PathBuf>,
@@ -326,10 +332,12 @@ impl NativeFilesystem {
                 );
                 let identity = if input.path.exists() {
                     let claim = claim.context("existing directory has no ownership claim")?;
+                    let observed = fs::symlink_metadata(&input.path)?;
+                    self.ensure_identity(&observed, claim)?;
                     let descriptor = open_directory_nofollow(&input.path)?;
                     let metadata = fstat(&descriptor)?;
                     ensure!(
-                        (metadata.st_dev, metadata.st_ino) == (claim.device, claim.inode),
+                        (metadata.st_dev, metadata.st_ino) == (observed.dev(), observed.ino()),
                         "directory changed before mutation"
                     );
                     apply_metadata(&descriptor, mode, ownership)?;
@@ -429,14 +437,18 @@ impl NativeFilesystem {
     }
 
     fn ensure_identity(&self, metadata: &fs::Metadata, claim: &Claim) -> Result<()> {
+        if claim.kind == "directory" {
+            ensure!(
+                metadata.is_dir() && !metadata.file_type().is_symlink(),
+                "directory differs from its durable path claim"
+            );
+            return Ok(());
+        }
         ensure!(
             (metadata.dev(), metadata.ino()) == (claim.device, claim.inode)
-                && ((claim.kind == "directory"
-                    && metadata.is_dir()
+                && ((matches!(claim.kind.as_str(), "copied-file" | "empty-file")
+                    && metadata.is_file()
                     && !metadata.file_type().is_symlink())
-                    || (matches!(claim.kind.as_str(), "copied-file" | "empty-file")
-                        && metadata.is_file()
-                        && !metadata.file_type().is_symlink())
                     || (claim.kind == "symlink-tree" && metadata.file_type().is_symlink())),
             "filesystem entry differs from its durable identity claim"
         );

@@ -69,15 +69,23 @@ fn native_directory_reconfigures_without_deleting_contents_and_removes_exact_cla
         fs::metadata(&path).unwrap().permissions().mode() & 0o7777,
         0o750
     );
+    let outside = temporary.path().join("outside");
+    fs::create_dir(&outside).unwrap();
+    fs::write(outside.join("payload"), b"foreign contents").unwrap();
+    std::os::unix::fs::symlink(&outside, path.join("outside-link")).unwrap();
 
     invocation.action = Action::Remove;
     call(&handler, "remove", &invocation);
     assert_eq!(call(&handler, "observe", &invocation)["status"], "absent");
     assert!(!path.exists());
+    assert_eq!(
+        fs::read(outside.join("payload")).unwrap(),
+        b"foreign contents"
+    );
 }
 
 #[test]
-fn native_directory_refuses_unclaimed_paths_and_replacement_inodes() {
+fn native_directory_refuses_unclaimed_paths_and_accepts_rematerialization() {
     let (temporary, handler) = fixture();
     let path = temporary.path().join("data");
     let mut invocation = invocation(&path);
@@ -94,16 +102,112 @@ fn native_directory_refuses_unclaimed_paths_and_replacement_inodes() {
     );
     fs::remove_dir(&path).unwrap();
     call(&handler, "apply", &invocation);
+    let original = fs::metadata(&path).unwrap();
     fs::rename(&path, temporary.path().join("original")).unwrap();
     fs::create_dir(&path).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+    let materialized = fs::metadata(&path).unwrap();
+
+    assert_ne!(original.ino(), materialized.ino());
+    assert_eq!(call(&handler, "observe", &invocation)["status"], "current");
+    call(&handler, "apply", &invocation);
 
     invocation.action = Action::Remove;
-    assert!(
-        handler
-            .handle("remove", &serde_json::to_vec(&invocation).unwrap())
-            .is_err()
+    call(&handler, "remove", &invocation);
+    assert!(!path.exists());
+    assert!(temporary.path().join("original").is_dir());
+}
+
+#[test]
+fn directory_claim_replays_with_cloned_device_and_inode_metadata() {
+    let (temporary, handler) = fixture();
+    let path = temporary.path().join("data");
+    let mut invocation = invocation(&path);
+    call(&handler, "apply", &invocation);
+    let claim_path = handler.claim_path(&invocation.id);
+    let mut claim: Claim = read_private_record(&claim_path, "test claim")
+        .unwrap()
+        .unwrap();
+    claim.device += 1;
+    claim.inode += 1;
+    write_private_record(&handler.state_root, &claim_path, &claim).unwrap();
+    fs::write(path.join("payload"), b"materialized contents").unwrap();
+
+    assert_eq!(call(&handler, "observe", &invocation)["status"], "current");
+    invocation.input["mode"] = "0750".into();
+    invocation.revision = "revision-two".into();
+    call(&handler, "apply", &invocation);
+
+    assert_eq!(call(&handler, "observe", &invocation)["status"], "current");
+    assert_eq!(
+        fs::read(path.join("payload")).unwrap(),
+        b"materialized contents"
     );
-    assert!(path.exists());
+    let updated: Claim = read_private_record(&claim_path, "test claim")
+        .unwrap()
+        .unwrap();
+    let metadata = fs::metadata(&path).unwrap();
+    assert_eq!(
+        (updated.device, updated.inode),
+        (metadata.dev(), metadata.ino())
+    );
+}
+
+#[test]
+fn claimed_directory_metadata_drift_is_reconciled_at_the_same_path() {
+    let (temporary, handler) = fixture();
+    let path = temporary.path().join("data");
+    let invocation = invocation(&path);
+    call(&handler, "apply", &invocation);
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert_eq!(
+        call(&handler, "observe", &invocation)["status"],
+        "retry-safe"
+    );
+    call(&handler, "apply", &invocation);
+
+    assert_eq!(
+        fs::metadata(&path).unwrap().permissions().mode() & 0o7777,
+        0o700
+    );
+    assert_eq!(call(&handler, "observe", &invocation)["status"], "current");
+}
+
+#[test]
+fn directory_claim_rejects_a_file_or_symlink_at_the_claimed_path() {
+    for symlink in [false, true] {
+        let (temporary, handler) = fixture();
+        let path = temporary.path().join("data");
+        let mut invocation = invocation(&path);
+        call(&handler, "apply", &invocation);
+        fs::rename(&path, temporary.path().join("original")).unwrap();
+        let target = temporary.path().join("foreign");
+        fs::write(&target, b"foreign contents").unwrap();
+        if symlink {
+            std::os::unix::fs::symlink(&target, &path).unwrap();
+        } else {
+            fs::write(&path, b"replacement contents").unwrap();
+        }
+
+        if let Ok(observed) = handler.handle("observe", &serde_json::to_vec(&invocation).unwrap()) {
+            let observed: serde_json::Value = serde_json::from_slice(&observed).unwrap();
+            assert_eq!(observed["status"], "indeterminate");
+        }
+        assert!(
+            handler
+                .handle("apply", &serde_json::to_vec(&invocation).unwrap())
+                .is_err()
+        );
+        invocation.action = Action::Remove;
+        assert!(
+            handler
+                .handle("remove", &serde_json::to_vec(&invocation).unwrap())
+                .is_err()
+        );
+        assert_eq!(fs::read(&target).unwrap(), b"foreign contents");
+        assert!(fs::symlink_metadata(&path).is_ok());
+    }
 }
 
 #[test]
@@ -321,7 +425,7 @@ fn parent_ordering_alone_does_not_authorize_nested_allocation() {
 }
 
 #[test]
-fn nested_allocation_rejects_replaced_parent_inode() {
+fn nested_allocation_accepts_rematerialized_claimed_parent() {
     let (temporary, handler) = fixture();
     let path = temporary.path().join("data");
     let parent = invocation(&path);
@@ -333,12 +437,9 @@ fn nested_allocation_rejects_replaced_parent_inode() {
     fs::rename(&path, temporary.path().join("original")).unwrap();
     fs::create_dir(&path).unwrap();
 
-    assert!(
-        handler
-            .handle("apply", &serde_json::to_vec(&child).unwrap())
-            .is_err()
-    );
-    assert!(!path.join("child").exists());
+    call(&handler, "apply", &child);
+    assert!(path.join("child").is_dir());
+    assert!(!temporary.path().join("original/child").exists());
 }
 
 #[test]
