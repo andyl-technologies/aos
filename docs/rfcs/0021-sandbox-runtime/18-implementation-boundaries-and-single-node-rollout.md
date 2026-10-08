@@ -49,6 +49,14 @@ The first implementation phase does **not** implement or enable:
 - cluster consensus, failover, federation, or cluster networking; or
 - multi-node services, configuration, credentials, or background workers.
 
+The private `local_inventory::draining::verified_observation` owner is selected
+only by `multi-node`. It retains the existing trusted drain evidence factories,
+protected joins, commitments and currentness validation. Raw drain reports,
+model layouts, phase checks and retained-history validation remain available by
+default; decoded history does not become fresh drain authority. This source
+boundary does not isolate the remaining protected ownership/Journal dependency
+group or qualify distributed execution.
+
 Their contracts remain documented for a later implementation phase. A local
 request selecting another node fails explicitly rather than entering a dormant
 remote path. Local scheduling means capacity admission and choosing among
