@@ -37,8 +37,10 @@ fn portable_production_graphs_have_no_linux_or_effect_owner() -> Result<(), Box<
         .filter_map(|node| node["id"].as_str().map(|id| (id, node)))
         .collect();
 
-    let roots: [(&str, &[&str]); 5] = [
+    let roots: [(&str, &[&str]); 6] = [
         ("aos-sandbox-core", &["aos-sandbox-core"]),
+        // Generic Journal DATA/framing mechanics remain an independently closed foundation.
+        ("aos-sandbox-journal", &["aos-sandbox-journal"]),
         (
             "aos-sandbox-agent",
             &["aos-sandbox-agent", "aos-sandbox-core"],
@@ -61,6 +63,7 @@ fn portable_production_graphs_have_no_linux_or_effect_owner() -> Result<(), Box<
                 "aos-sandbox-protocol",
                 "aos-sandbox-agent",
                 "aos-sandbox-core",
+                "aos-sandbox-journal",
                 "aos-proto",
                 "aos-sandbox-broker-session-protocol",
                 "aos-sandbox-source-provider-protocol",
