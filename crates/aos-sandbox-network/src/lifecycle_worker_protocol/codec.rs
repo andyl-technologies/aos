@@ -1,6 +1,7 @@
 //! Canonical primitives for the lifecycle-worker wire format.
 
 use aos_sandbox_core::BrokerVerb;
+use aos_sandbox_core::bounded_codec::{BoundedReader, ReadError};
 
 use crate::namespace_catalog::{
     NetworkNamespaceCatalogError, NetworkNamespaceLifecycleActionV1,
@@ -221,13 +222,14 @@ pub(super) fn invalid<T>(message: &'static str) -> Result<T, NetworkWorkerProtoc
 }
 
 pub(super) struct Decoder<'a> {
-    bytes: &'a [u8],
-    offset: usize,
+    reader: BoundedReader<'a, ReadError>,
 }
 
 impl<'a> Decoder<'a> {
     pub(super) const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, offset: 0 }
+        Self {
+            reader: BoundedReader::new(bytes, core::convert::identity),
+        }
     }
 
     pub(super) fn take<const N: usize>(&mut self) -> Result<[u8; N], NetworkWorkerProtocolError> {
@@ -253,25 +255,49 @@ impl<'a> Decoder<'a> {
     }
 
     pub(super) fn bytes(&mut self, length: usize) -> Result<&'a [u8], NetworkWorkerProtocolError> {
-        let end = self
-            .offset
-            .checked_add(length)
-            .ok_or(NetworkWorkerProtocolError::TooLarge)?;
-        let value =
-            self.bytes
-                .get(self.offset..end)
-                .ok_or(NetworkWorkerProtocolError::InvalidWire(
-                    "truncated lifecycle payload",
-                ))?;
-        self.offset = end;
-        Ok(value)
+        // Only range reads are shared; lifecycle framing and tail checks stay local.
+        self.reader.bytes(length).map_err(|error| {
+            if error == ReadError::LengthOverflow {
+                NetworkWorkerProtocolError::TooLarge
+            } else {
+                NetworkWorkerProtocolError::InvalidWire("truncated lifecycle payload")
+            }
+        })
     }
 
     pub(super) fn finish(self) -> Result<(), NetworkWorkerProtocolError> {
-        if self.offset == self.bytes.len() {
+        if self.reader.is_empty() {
             Ok(())
         } else {
             invalid("trailing lifecycle payload")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decoder_preserves_range_errors_cursor_and_tail_classification() {
+        let mut decoder = Decoder::new(&[1, 2]);
+        let truncated = NetworkWorkerProtocolError::InvalidWire("truncated lifecycle payload");
+
+        assert_eq!(decoder.take::<3>(), Err(truncated));
+        assert_eq!(decoder.bytes(3), Err(truncated));
+        assert_eq!(decoder.byte(), Ok(1));
+        assert_eq!(
+            decoder.bytes(usize::MAX),
+            Err(NetworkWorkerProtocolError::TooLarge)
+        );
+        assert_eq!(decoder.byte(), Ok(2));
+        assert_eq!(decoder.finish(), Ok(()));
+
+        assert_eq!(
+            Decoder::new(&[1]).finish(),
+            Err(NetworkWorkerProtocolError::InvalidWire(
+                "trailing lifecycle payload"
+            ))
+        );
     }
 }

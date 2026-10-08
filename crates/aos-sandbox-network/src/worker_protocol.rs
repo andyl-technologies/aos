@@ -24,6 +24,7 @@ use aos_proto::aos::sandbox::local::v1::{ApplyNetworkRequest, Audience};
 use aos_sandbox_broker::{
     BrokerAuthorizationFenceV1, BrokerEffectIntentV1, BrokerEffectStatusV1, BrokerLocalRecordDomain,
 };
+use aos_sandbox_core::bounded_codec::{BoundedReader, ReadError};
 use aos_sandbox_core::{
     AssignmentEpoch, BrokerAssignment, BrokerGrantTarget, BrokerVerb, DesiredGeneration,
     IncarnationId, ObjectDigest, SandboxId,
@@ -864,13 +865,14 @@ fn invalid<T>(message: &'static str) -> Result<T, NetworkWorkerProtocolError> {
 }
 
 struct Decoder<'a> {
-    bytes: &'a [u8],
-    offset: usize,
+    reader: BoundedReader<'a, ReadError>,
 }
 
 impl<'a> Decoder<'a> {
     const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, offset: 0 }
+        Self {
+            reader: BoundedReader::new(bytes, core::convert::identity),
+        }
     }
 
     fn take<const N: usize>(&mut self) -> Result<[u8; N], NetworkWorkerProtocolError> {
@@ -880,16 +882,14 @@ impl<'a> Decoder<'a> {
     }
 
     fn bytes(&mut self, length: usize) -> Result<&'a [u8], NetworkWorkerProtocolError> {
-        let end = self
-            .offset
-            .checked_add(length)
-            .ok_or(NetworkWorkerProtocolError::TooLarge)?;
-        let value = self
-            .bytes
-            .get(self.offset..end)
-            .ok_or(NetworkWorkerProtocolError::InvalidWire("truncated field"))?;
-        self.offset = end;
-        Ok(value)
+        // Only range reads are shared; reserved and tail checks remain format-owned.
+        self.reader.bytes(length).map_err(|error| {
+            if error == ReadError::LengthOverflow {
+                NetworkWorkerProtocolError::TooLarge
+            } else {
+                NetworkWorkerProtocolError::InvalidWire("truncated field")
+            }
+        })
     }
 
     fn byte(&mut self) -> Result<u8, NetworkWorkerProtocolError> {
@@ -913,7 +913,7 @@ impl<'a> Decoder<'a> {
     }
 
     const fn finished(&self) -> bool {
-        self.offset == self.bytes.len()
+        self.reader.is_empty()
     }
 }
 
@@ -922,6 +922,23 @@ mod tests {
     #![allow(clippy::expect_used)]
 
     use super::*;
+
+    #[test]
+    fn decoder_preserves_range_errors_and_cursor_after_failed_reads() {
+        let mut decoder = Decoder::new(&[1, 2]);
+        let truncated = NetworkWorkerProtocolError::InvalidWire("truncated field");
+
+        assert_eq!(decoder.take::<3>(), Err(truncated));
+        assert_eq!(decoder.bytes(3), Err(truncated));
+        assert_eq!(decoder.byte(), Ok(1));
+        assert_eq!(
+            decoder.bytes(usize::MAX),
+            Err(NetworkWorkerProtocolError::TooLarge)
+        );
+        assert!(!decoder.finished());
+        assert_eq!(decoder.byte(), Ok(2));
+        assert!(decoder.finished());
+    }
 
     #[test]
     fn lengths_fail_before_payload_allocation() {
