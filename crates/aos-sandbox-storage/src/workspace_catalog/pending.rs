@@ -970,7 +970,12 @@ impl ValidatedPendingStorageWorkspaceCatalogV1 {
         state_directory: &Path,
         uid: u32,
     ) -> Result<Self, StorageWorkspaceCatalogError> {
-        let Self { pending, plan } = self;
+        let Self {
+            pending,
+            plan,
+            #[cfg(target_os = "linux")]
+            git_coverage_census,
+        } = self;
         let PendingStorageWorkspaceCatalogV1 {
             journal,
             identity_pool,
@@ -983,8 +988,15 @@ impl ValidatedPendingStorageWorkspaceCatalogV1 {
             workspace_journal_limits(),
             uid,
         )?;
-        PendingStorageWorkspaceCatalogV1::recover(journal, recovery, identity_pool)?
-            .validate_plan(plan)
+        let validated =
+            PendingStorageWorkspaceCatalogV1::recover(journal, recovery, identity_pool)?
+                .validate_plan(plan)?;
+        // Keep any original census handles and causes across the fixture reopen.
+        Ok(Self {
+            #[cfg(target_os = "linux")]
+            git_coverage_census,
+            ..validated
+        })
     }
 
     /// Returns the structurally validated workspace-catalog snapshot binding.

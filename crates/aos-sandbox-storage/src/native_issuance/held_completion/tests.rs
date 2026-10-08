@@ -59,7 +59,7 @@ struct Fixture {
 
 impl Fixture {
     fn new(sequence: u8) -> Self {
-        let original = super::super::super::tests::fixture(sequence, sequence + 1).row;
+        let original = super::super::tests::fixture(sequence, sequence + 1).row;
         Self::from_original(original)
     }
 
@@ -218,7 +218,7 @@ impl Fixture {
             StorageNativeAcquireRequestV2, decode_acquire_request, encode_acquire_request,
             sign_request,
         };
-        let mut original = super::super::super::tests::fixture(1, 2).row;
+        let mut original = super::super::tests::fixture(1, 2).row;
         let request = original.request.request();
         let claims = request.claims();
         let catalog = claims.catalog();
@@ -666,7 +666,7 @@ fn original_v3_data_and_both_pinned_signatures_are_preserved_without_admission()
     assert_eq!(
         aos_sandbox_source_provider_protocol::decode_acquire_request(root.subject())
             .unwrap()
-            .version(),
+            .acquisition_version(),
         3
     );
     assert_eq!(decoded.original.request, fixture.original.request);
@@ -802,7 +802,7 @@ fn canonical_decoder_rejects_tails_versions_bounds_and_nested_mutations() {
     );
     assert_eq!(
         MAXIMUM_STORAGE_HELD_ISSUANCE_VALUE_BYTES_V2,
-        super::super::super::MAXIMUM_VALUE_BYTES + 106_648
+        super::super::MAXIMUM_VALUE_BYTES + 106_648
     );
 }
 
@@ -1147,7 +1147,7 @@ fn capacity_covers_eight_writes_all_other_rows_and_actual_append_framing() {
     let profile = remaining_capacity_profile(&state(&initial)).unwrap();
     assert_eq!(1 + profile.remaining_transactions, 8);
     assert_eq!(
-        super::super::super::journal_limits().maximum_transactions,
+        super::super::journal_limits().maximum_transactions,
         1024 * 2
     );
     let settled = fixture.settled();
