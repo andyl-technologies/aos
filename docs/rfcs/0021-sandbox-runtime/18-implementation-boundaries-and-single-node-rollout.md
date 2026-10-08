@@ -237,7 +237,11 @@ owner; moving the recipes does not add recovery for callee-local failures.
 Private `commands` owns the bounded command vocabulary, admitted request
 payloads, response projection and complete journal-owner dispatch. Private
 `public_rpc` owns client-facing registration, authorization and routing. The
-root retains reconciliation and concrete effect execution. These internal
+private `worker` owns the complete reconciliation loop, retained history
+recovery, broker inventories, catalog publication and retry classification.
+Both startup routes borrow that same loop. The root retains concrete effect
+execution and the shared authenticated broker-session slots used across these
+owners. These internal
 boundaries clarify responsibilities without creating public authority factories
 or isolating the remaining concrete domain dependency closure.
 
