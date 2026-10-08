@@ -1,8 +1,9 @@
-//! Dormant authenticated-session callsite for Network Apply.
+//! Authenticated-session composition for Network preparation and lifecycle effects.
 //!
-//! This adapter enters the real creation or existing-resource durable
-//! admission coordinator after rechecking the live kernel boot. It registers
-//! no route, listener, worker, or advertised method.
+//! The production callsite joins durable admission, separated effect and
+//! observation workers, and retained namespace custody after rechecking the
+//! live kernel boot. Session activation and method advertisement remain with
+//! the separately packaged service.
 
 use aos_proto::aos::sandbox::local::v1::{NetworkResult, NetworkState};
 use aos_sandbox_core::{ObjectDigest, ProtocolVersion, RawClockProvenance, RawPairedClockSample};
@@ -15,9 +16,9 @@ use sha2::{Digest as _, Sha256};
 
 use crate::authorization::decode_assignment;
 use crate::{
-    ActivatedNetworkDescriptors, AuthenticatedNetworkPreparationV1,
+    ActivatedNetworkDescriptors,
     CommittedNetworkLifecycleResultV1, DurableNetworkLifecyclePhase, NetworkAdmissionError,
-    NetworkAdmissionOutcome, NetworkBrokerError, NetworkKernelPlanV1,
+    NetworkAdmissionOutcome, NetworkBrokerError,
     NetworkLifecycleAdmissionCoordinator, NetworkLifecycleAdmissionOutcome,
     NetworkLifecycleWorkerRuntimeError, NetworkNamespaceCatalogV1,
     NetworkNamespaceLifecycleActionV1, NetworkNamespaceLifecycleObservationV1,
@@ -150,93 +151,6 @@ pub trait DormantNetworkBrokerCallsiteV1: sealed::Sealed {
         protocol_version: ProtocolVersion,
         protected_boot_id: [u8; 16],
     ) -> Result<DormantNetworkBrokerObservationV1, DormantNetworkBrokerCallErrorV1>;
-}
-
-/// Retains the exact protected preparation, kernel plan, catalog, and clock.
-pub struct DormantNetworkBrokerCompositionV1<'a> {
-    coordinator: &'a mut NetworkLifecycleAdmissionCoordinator,
-    preparation: &'a AuthenticatedNetworkPreparationV1,
-    kernel_plan: &'a NetworkKernelPlanV1,
-    namespaces: &'a NetworkNamespaceCatalogV1,
-    last_boottime_nanoseconds: Option<u64>,
-}
-
-impl<'a> DormantNetworkBrokerCompositionV1<'a> {
-    /// Constructs a dormant callsite with a fixed kernel clock owner.
-    #[must_use]
-    pub const fn new(
-        coordinator: &'a mut NetworkLifecycleAdmissionCoordinator,
-        preparation: &'a AuthenticatedNetworkPreparationV1,
-        kernel_plan: &'a NetworkKernelPlanV1,
-        namespaces: &'a NetworkNamespaceCatalogV1,
-    ) -> Self {
-        Self {
-            coordinator,
-            preparation,
-            kernel_plan,
-            namespaces,
-            last_boottime_nanoseconds: None,
-        }
-    }
-}
-
-impl sealed::Sealed for DormantNetworkBrokerCompositionV1<'_> {}
-
-impl DormantNetworkBrokerCallsiteV1 for DormantNetworkBrokerCompositionV1<'_> {
-    fn namespace_catalog(&self) -> &NetworkNamespaceCatalogV1 {
-        self.namespaces
-    }
-
-    fn consume_authenticated_apply(
-        &mut self,
-        request_body: &[u8],
-        request_id: [u8; 16],
-        request_body_digest: ObjectDigest,
-        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
-        peer: PeerCredentials,
-        policy: PeerPolicy,
-        protocol_version: ProtocolVersion,
-        protected_boot_id: [u8; 16],
-    ) -> Result<DormantNetworkBrokerObservationV1, DormantNetworkBrokerCallErrorV1> {
-        let (semantics, current_clock) = validate_authenticated_request(
-            request_body,
-            request_id,
-            request_body_digest,
-            peer,
-            policy,
-            protocol_version,
-            protected_boot_id,
-            &mut self.last_boottime_nanoseconds,
-        )?;
-        admit_authenticated_request(
-            self.coordinator,
-            self.preparation,
-            self.kernel_plan,
-            self.namespaces,
-            request_body,
-            request_id,
-            request_body_digest,
-            artifacts,
-            peer,
-            policy,
-            protocol_version,
-            &semantics,
-            &current_clock,
-        )
-    }
-}
-
-/// Resolves each authenticated request against protected preparation history.
-///
-/// Unlike [`DormantNetworkBrokerCompositionV1`], this composition does not pin
-/// one assignment at construction. It derives the assignment and optional
-/// handle from the authenticated body, then requires the protected preparation
-/// catalog to reproduce one exact authenticated resolution and kernel plan.
-pub struct DormantResolvedNetworkBrokerCompositionV1<'a> {
-    coordinator: &'a mut NetworkLifecycleAdmissionCoordinator,
-    preparations: &'a NetworkPreparationCatalogV1,
-    namespaces: &'a NetworkNamespaceCatalogV1,
-    last_boottime_nanoseconds: Option<u64>,
 }
 
 /// Executes authenticated Network preparation through separated systemd workers.
@@ -671,78 +585,6 @@ impl DormantNetworkBrokerCallsiteV1 for ProductionNetworkBrokerCompositionV1<'_>
     }
 }
 
-impl<'a> DormantResolvedNetworkBrokerCompositionV1<'a> {
-    /// Constructs the multi-assignment Network broker-session callsite.
-    #[must_use]
-    pub const fn new(
-        coordinator: &'a mut NetworkLifecycleAdmissionCoordinator,
-        preparations: &'a NetworkPreparationCatalogV1,
-        namespaces: &'a NetworkNamespaceCatalogV1,
-    ) -> Self {
-        Self {
-            coordinator,
-            preparations,
-            namespaces,
-            last_boottime_nanoseconds: None,
-        }
-    }
-}
-
-impl sealed::Sealed for DormantResolvedNetworkBrokerCompositionV1<'_> {}
-
-impl DormantNetworkBrokerCallsiteV1 for DormantResolvedNetworkBrokerCompositionV1<'_> {
-    fn namespace_catalog(&self) -> &NetworkNamespaceCatalogV1 {
-        self.namespaces
-    }
-
-    fn consume_authenticated_apply(
-        &mut self,
-        request_body: &[u8],
-        request_id: [u8; 16],
-        request_body_digest: ObjectDigest,
-        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
-        peer: PeerCredentials,
-        policy: PeerPolicy,
-        protocol_version: ProtocolVersion,
-        protected_boot_id: [u8; 16],
-    ) -> Result<DormantNetworkBrokerObservationV1, DormantNetworkBrokerCallErrorV1> {
-        let (semantics, current_clock) = validate_authenticated_request(
-            request_body,
-            request_id,
-            request_body_digest,
-            peer,
-            policy,
-            protocol_version,
-            protected_boot_id,
-            &mut self.last_boottime_nanoseconds,
-        )?;
-        let assignment = decode_assignment(request_body)
-            .map_err(|_| DormantNetworkBrokerCallErrorV1::StaleKernel)?;
-        let requested_handle = semantics.operation().network_handle().copied();
-        let (preparation, kernel_plan) = self.coordinator.resolve_session_request_preparation(
-            self.preparations,
-            assignment,
-            requested_handle,
-        )?;
-
-        admit_authenticated_request(
-            self.coordinator,
-            &preparation,
-            &kernel_plan,
-            self.namespaces,
-            request_body,
-            request_id,
-            request_body_digest,
-            artifacts,
-            peer,
-            policy,
-            protocol_version,
-            &semantics,
-            &current_clock,
-        )
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 fn validate_authenticated_request(
     request_body: &[u8],
@@ -785,60 +627,6 @@ fn validate_authenticated_request(
     }
 
     Ok((semantics, current_clock))
-}
-
-#[allow(clippy::too_many_arguments)]
-fn admit_authenticated_request(
-    coordinator: &mut NetworkLifecycleAdmissionCoordinator,
-    preparation: &AuthenticatedNetworkPreparationV1,
-    kernel_plan: &NetworkKernelPlanV1,
-    namespaces: &NetworkNamespaceCatalogV1,
-    request_body: &[u8],
-    request_id: [u8; 16],
-    request_body_digest: ObjectDigest,
-    artifacts: &ValidatedUntrustedAuthorizationArtifacts,
-    peer: PeerCredentials,
-    policy: PeerPolicy,
-    protocol_version: ProtocolVersion,
-    semantics: &CanonicalNetworkSemanticsV1,
-    current_clock: &RawPairedClockSample,
-) -> Result<DormantNetworkBrokerObservationV1, DormantNetworkBrokerCallErrorV1> {
-    let admission = match semantics.operation() {
-        NetworkOperation::Prepare { .. } => {
-            DormantNetworkBrokerAdmissionV1::Preparation(coordinator.admit_apply_intent(
-                request_body,
-                artifacts,
-                preparation,
-                protocol_version,
-                peer,
-                policy,
-                current_clock,
-            )?)
-        }
-        NetworkOperation::ArmLease { .. }
-        | NetworkOperation::RenewLease { .. }
-        | NetworkOperation::Disarm { .. }
-        | NetworkOperation::Destroy { .. } => {
-            DormantNetworkBrokerAdmissionV1::Lifecycle(coordinator.admit_lifecycle_intent(
-                request_body,
-                artifacts,
-                preparation,
-                kernel_plan,
-                namespaces,
-                protocol_version,
-                peer,
-                policy,
-                current_clock,
-            )?)
-        }
-    };
-    let commitment = network_observation_commitment(request_id, request_body_digest, admission);
-    Ok(DormantNetworkBrokerObservationV1 {
-        request_id,
-        admission,
-        commitment,
-        response_body: None,
-    })
 }
 
 fn protected_paired_clock_sample() -> Result<RawPairedClockSample, DormantNetworkBrokerCallErrorV1>
