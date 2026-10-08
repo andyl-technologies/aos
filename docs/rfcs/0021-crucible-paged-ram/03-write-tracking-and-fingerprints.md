@@ -8,64 +8,18 @@ and transfer consume the same authenticated content, with independent operationa
 progress. None of these mechanisms requires guest kernel changes, a guest agent,
 or guest cooperation.
 
-The source baseline below is informative. Requirements carrying `TRACK` or `FP`
+The source baseline in the implementation companion is informative. Requirements
+carrying `TRACK` or `FP`
 identifiers specify the desired implementation. They do not assert that the
 current implementation already provides the specified coverage.
 
-## 03.1 Informative source baseline
+## 03.1 QEMU-SIM integration reference
 
-The current
-[QEMU patch](../../../pkgs/emulation/qemu-patches/crucible-qemu-11.1.1.patch)
-adds `DIRTY_MEMORY_CRUCIBLE_CHECKPOINT`, a fourth QEMU dirty-memory client,
-and `GLOBAL_DIRTY_CRUCIBLE_CHECKPOINT`. In patched `system/memory.c`,
-`memory_region_get_dirty_log_mask()` adds this client to globally tracked
-migratable RAM and IOMMU regions. Patched `system/physmem.c` updates its bitmap
-through dirty flags, dirty ranges, imported little-endian bitmaps, RAM remapping,
-and discard operations. A checkpoint generation also detects relevant writes
-and topology changes during candidate validation.
-
-Patched `system/crucible-checkpoint.c` captures direct or delta RAM records at
-an exact paused simulator boundary. Candidate capture retains exclusive
-migration/raw-state authority until commit, abort, or invalidation. Commit
-validates RAM generation, topology, and device state before clearing its own
-bitmap. Clearing calls `physical_memory_dirty_bits_cleared()` to rearm translated
-writes. A detected violation restores an all-dirty checkpoint bitmap before
-refusing commit. This ordering is useful groundwork for the new tracker.
-
-The current fingerprint path is different. Patched `plugins/api.c`
-`qemu_crucible_guest_ram_sha256()` hashes complete ordinary writable RAM using
-`crucible.qemu.guest-ram.v1`. It includes RAMBlock names and lengths, excludes
-ROM and RAM-device blocks, and follows RAMBlock traversal order. Aggregate
-fingerprint capture copies this material into a sealed memfd while holding the
-authorized exact boundary. The
-[plugin sampler](../../../crates/crucible-qemu-plugin/src/fingerprint_sampler.rs)
-and [digest worker](../../../crates/crucible-qemu-plugin/src/runtime/live_callbacks/fingerprint_worker.rs)
-then hash the detached material and publish the matching request generation.
-Offloading SHA-256 does not eliminate the full RAM copy or its residency cost.
-
-Checkpoint topology instead includes migratable RAM-backed device memory,
-sorts names, and records `qemu_ram_pagesize()`. Its existing topology digest is
-therefore not the new logical RAM digest. Execution, exact, and lifecycle scopes
-remain explicit; they must not be collapsed into one assumed universal scope.
-
-There is also a distinct whole-RAM hash in patched
-`plugins/crucible-fault-instruction.c`, which calls
-`qemu_crucible_guest_ram_sha256()` while constructing instruction-fault state.
-Updating only the aggregate plugin sampler would leave this scan intact.
-
-Lifecycle observation has a third RAM hash surface. Patched `plugins/api.c`
-`qemu_crucible_ram_hash()` performs an FNV-style traversal of every RAMBlock
-with a host pointer, including its ID, length, and complete bytes. Patched
-`plugins/crucible-fault-lifecycle.c` combines that value with device state in
-`crucible_lifecycle_snapshot()` for lifecycle preconditions. This coverage is
-broader than the execution SHA-256 path. Its replacement uses the explicitly
-declared lifecycle scope and participates in the coordinated cutover below;
-it cannot retain the old scan merely because the plugin sample uses a new root.
-
-Exact restore in patched `system/crucible-checkpoint-restore.c` reads directly
-into `qemu_ram_get_host_addr()` before establishing checkpoint authority.
-Consequently, intercepting ordinary dirty-marking calls alone cannot maintain
-a correct cached tree. Restore needs an explicit content-state transition.
+The informative [implementation inventory](../../plans/crucible-paged-ram/current-state.md)
+records current QEMU observers, dirty clients, restore writers, and source entry
+points. Those mechanisms do not prove complete writer coverage or incremental
+Merkle support. This chapter defines the required content and observation
+contracts; chapter 14 allocates them to implementation profiles.
 
 ## 03.2 Content identities and operational state
 
@@ -118,29 +72,37 @@ concurrent eviction.
 
 ## 03.3 Completeness of writer coverage
 
+TRACK-1 through TRACK-20 and FP-1 through FP-13 apply at each admitted
+implementation's actual content and observation boundaries. The following
+writer matrix is the QEMU-SIM allocation. The gem5 and KVM writer and removal
+matrices in chapter 14 extend the same obligations; neither CPU stores nor a
+hardware dirty log alone constitutes complete coverage.
+
 QEMU's ordinary migration tracking is an input to the design, not a proof of
 complete tracking. Its memory API explicitly requires dirty marking for writes
 outside guest code and ROM-device flushing for internal direct writes. See
 [the upstream memory API](https://www.qemu.org/docs/master/devel/memory.html).
-The baseline matrix identifies review entry points in the patch; implementation
-must inspect the corresponding patched source and participating devices.
+The matrix allocates QEMU-SIM writer obligations. The companion
+[entry-point inventory](../../plans/crucible-paged-ram/current-state.md) identifies
+implementation audit sites; qualification must inspect the actual release source
+and participating devices.
 
-| Writer or transition | Current source entry point | Required coverage evidence |
-| --- | --- | --- |
-| Translated CPU stores | Patched `accel/tcg/cputlb.c` and `system/physmem.c` in the [QEMU patch](../../../pkgs/emulation/qemu-patches/crucible-qemu-11.1.1.patch) | Scalar, vector, atomic, unaligned, and cross-page writes; already-dirty fast paths; rearming after epoch rotation |
-| DMA through address spaces | Patched `system/physmem.c`, `flatview_write_continue_step()` | Every successful written subrange, including fault-transformed values and partial completion |
-| Cached DMA and mapped buffers | Patched cached-access declarations and helpers in `include/system/memory.h`, plus address-space map/unmap users | Direct pointer writes, cached stores, bounce buffers, and delayed unmap reporting |
-| Device-owned RAM and ROM backing | Migratable RAM inventory, device callbacks, and ROM-device dirty/flush APIs | CPU-inaccessible and read-only-to-guest bytes that the device can mutate; explicit scope ownership |
-| Debugger and management writes | QEMU debugger/physical-memory write entry points and admitted QMP mutation commands | Dirty accounting while paused, including writes to already-dirty pages |
-| Boundary memory mutations | Patched `plugins/crucible-fault-memory.c`, `memory_region_fault_commit_ram()` | Atomic prepared mutations, branch-private authoritative versions, all affected dirty consumers; suppressed writes do not manufacture content changes |
-| Persistent fault-model mutations | Patched `plugins/crucible-fault-node.c` retention, rowhammer, and staged fetch paths | Cold victims and delayed physical writes; tracking and translated-code invalidation for every committed subrange |
-| Modeled memory service | Patched `plugins/crucible-fault-node.c`, `qemu.memory.service.v3`, and x86 CPU memory-service tickets | Deferred stores and frozen loads preserve grant/ready coordinates, access sequence, ordering, and replay state through host faults |
-| Hardware-error reporting | Admitted QEMU hardware-error delivery and guest-RAM record writers | Reporting writes such as GHES records enter tracking; reporting alone is not proof of a data mutation or guest handling |
-| Instruction fault state observation | Patched `plugins/crucible-fault-instruction.c` | Observes the correct pre- or post-action root without modifying tracker state inconsistently |
-| Reset, boot loading, and device post-load | System reset/load paths and participating device reset/post-load callbacks | Establishes tracked initial content and invalidates overwritten bytes before root reuse |
-| Exact checkpoint restore | Patched `system/crucible-checkpoint-restore.c`, `crucible_restore_parse_layer()` | Direct restored writes explicitly install or invalidate page identities |
-| Resize, removal, remap, and discard | Patched `qemu_ram_resize()`, `qemu_ram_free()`, `qemu_ram_remap()`, `ram_block_discard_range()` | Distinguishes topology changes, content changes, and content-preserving paging |
-| Hot fork and child repair | [hot-fork lifecycle](06-hot-fork-and-lifecycle.md) and patched fork coordinator | Child-private metadata, inherited immutable identities, and explicit repair writes |
+| Writer or transition | Required coverage evidence |
+| --- | --- |
+| Translated CPU stores | Scalar, vector, atomic, unaligned, and cross-page writes; already-dirty fast paths; rearming after epoch rotation |
+| DMA through address spaces | Every successful written subrange, including fault-transformed values and partial completion |
+| Cached DMA and mapped buffers | Direct pointer writes, cached stores, bounce buffers, and delayed unmap reporting |
+| Device-owned RAM and ROM backing | CPU-inaccessible and read-only-to-guest bytes that the device can mutate; explicit scope ownership |
+| Debugger and management writes | Dirty accounting while paused, including writes to already-dirty pages |
+| Boundary memory mutations | Atomic prepared mutations, branch-private authoritative versions, all affected dirty consumers; suppressed writes do not manufacture content changes |
+| Persistent fault-model mutations | Cold victims and delayed physical writes; tracking and translated-code invalidation for every committed subrange |
+| Modeled memory service | Deferred stores and frozen loads preserve grant/ready coordinates, access sequence, ordering, and replay state through host faults |
+| Hardware-error reporting | Reporting writes such as GHES records enter tracking; reporting alone is not proof of a data mutation or guest handling |
+| Instruction fault state observation | Observes the correct pre- or post-action root without modifying tracker state inconsistently |
+| Reset, boot loading, and device post-load | Establishes tracked initial content and invalidates overwritten bytes before root reuse |
+| Exact checkpoint restore | Direct restored writes explicitly install or invalidate page identities |
+| Resize, removal, remap, and discard | Distinguishes topology changes, content changes, and content-preserving paging |
+| Hot fork and child repair | Child-private metadata, inherited immutable identities, and explicit repair writes |
 
 - **[TRACK-4]** Every mutation path MUST invalidate all intersecting logical
   pages before its new bytes can be admitted into a published state. This
@@ -192,7 +154,9 @@ observed values or future continuation without changing physical RAM bytes.
 Their fault/plugin state belongs to the enclosing complete continuation, not
 to a fabricated RAM write. RAM-root equality alone does not establish their
 semantic equivalence. Authored fault-service delays remain modeled time;
-host population delays remain operational wall time under INV-2.
+host population delays obey the admitted timing profile in chapter 14. INV-2
+retains its full deterministic guarantee for QEMU-SIM and qualified deterministic
+gem5 execution.
 
 The source baseline's `MemoryService` capability is narrower than arbitrary
 per-access latency or a physical controller model. Shared-dispatch non-fw_cfg
@@ -242,10 +206,13 @@ VM; [chapter 08](08-state-transfer.md) defines that separate authority.
 
 ## 03.5 Exact capture and publication
 
-A request identifies its authorized aggregate instruction count and request
-generation. The existing control-boundary machinery quiesces every vCPU and
-participating device worker. The new tracker retains those admissions. BQL or
-paused runstate alone does not prove a coherent snapshot.
+A request identifies its admitted execution coordinate, boundary phase, capture
+owner, and request generation. The owner excludes or safely versions every
+participating writer. The QEMU-SIM coordinate includes the authorized aggregate
+instruction count, with existing vCPU/device barriers retained; BQL or paused
+runstate alone does not prove coherence. A gem5 event boundary and a KVM
+acknowledged quantized stop require their own profile proofs. They MUST NOT be
+substituted for a requested QEMU instruction boundary.
 
 Capture freezes the selected inventory and all relevant page versions. It
 harvests mutations, resolves changed page content, and builds an immutable root.
@@ -256,9 +223,9 @@ write protection, or continued quiescence before hashing can leave the boundary.
 No detached worker may read a mutable live page and call that an exact snapshot.
 
 - **[FP-1]** A fingerprint capture MUST bind one admitted scope, canonical RAM
-  topology, exact execution coordinate, and request generation to one coherent
-  immutable RAM view. All CPU, device, fault, debugger, and management writers
-  capable of changing that view MUST be excluded or versioned safely.
+  topology, admitted execution coordinate/phase, and request generation to one
+  coherent immutable RAM view. All CPU, device, fault, debugger, and management
+  writers capable of changing that view MUST be excluded or versioned safely.
 - **[FP-2]** The root builder MUST use the canonical page and tree encodings in
   chapter 02. It MUST read current bytes for invalid leaves, or authenticated
   immutable bytes proven to represent the same frozen version.
@@ -275,8 +242,9 @@ No detached worker may read a mutable live page and call that an exact snapshot.
   become comparable fingerprint evidence.
 
 The intended ordering is: admit request; quiesce and freeze content; capture
-register/RR and device evidence at the prescribed boundary; finalize the RAM
-root; validate capture authority; publish complete sample; acknowledge matching
+profile-specific CPU and device evidence (including QEMU register/RR evidence)
+at the prescribed boundary; finalize the RAM root; validate capture authority;
+publish complete sample; acknowledge matching
 generation; release the boundary according to the control protocol. If the
 control callback returns before hashing completes, guest execution remains
 behind the appropriate boundary gate until the protocol permits continuation.
@@ -427,7 +395,8 @@ with a RAM root would corrupt state meaning.
   sample consumers, fault preconditions, and replay evidence MUST reject
   mismatched definitions for their respective contracts.
 - **[FP-11]** The cutover MUST preserve component coverage, exact coordinates,
-  register/RR evidence, and device observation ordering. Paging policy MUST NOT
+  complete profile-specific CPU evidence, and device observation ordering.
+  QEMU-SIM retains its existing register/RR evidence. Paging policy MUST NOT
   select a different fingerprint algorithm or weaker scope.
 
 Exact storage format changes are specified in chapter 07. ABI and license

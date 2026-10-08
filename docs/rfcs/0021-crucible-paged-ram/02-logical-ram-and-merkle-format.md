@@ -11,8 +11,8 @@ A machine exposes an admitted inventory of uniquely owned RAM regions. A
 region ID is a stable machine-profile identifier, not a host address, process
 ID, RAMBlock pointer, allocation order, filesystem path, or random token.
 Examples are `machine.ram` and `device.virtio-net.0.ram`. The mapping from
-QEMU objects to region IDs is part of the admitted machine profile and must
-be reproducible across launches, restores, and hosts. An alias references an
+implementation objects to region IDs is part of the admitted machine profile
+and must be reproducible across launches, restores, and hosts. An alias references an
 owner; it does not create a second independent region copy.
 
 - **[RAM-1]** Each region ID MUST be a well-formed UTF-8 byte string of
@@ -68,6 +68,22 @@ aliases, and device decoding remain committed in canonical machine/device
 state outside RAM. The mapping contract MUST prevent exchanging one backing
 owner for another without changing the relevant complete machine identity.
 Host virtual addresses and operational topology generations are excluded.
+
+A declared backing region is not necessarily a coherent architectural memory
+view. In a detailed gem5 model, dirty cache data may be newer than the backing
+bytes committed here. Cache data, coherence ownership, pending transactions,
+and other future-affecting modeled state MUST have exactly one owner in the
+complete capture: either separately canonical state components or correctly
+classified RAM-backed regions. Host allocation does not make such state
+operational. Aliases MUST describe real shared byte ownership; they MUST NOT be
+invented to merge a cache line with different backing bytes. Chapter 14 defines
+the coherent observation and capture obligations.
+
+The enclosing capture/restore identity MUST authenticate the implementation,
+resolved semantic configuration, capture schema, and operating mode. Those
+fields do not alter this chapter's page/tree/root preimages. Equal RAM roots
+across implementations authenticate equal declared RAM contents and topology;
+they MUST NOT authorize cross-implementation continuation.
 
 ## 2.2 Encoding primitives
 

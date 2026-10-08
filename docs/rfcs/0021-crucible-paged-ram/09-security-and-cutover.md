@@ -42,7 +42,11 @@ prove that those bytes belong to the requested campaign boundary.
   scoped `RamRootDigest` through the complete checkpoint or transfer contract
   before authorizing execution. It MUST verify page contents and tree
   relationships against that expected root. A page's `PageDigest`, or a store's
-  canonical object `ContentId`, alone MUST NOT authorize resume.
+  canonical object `ContentId`, alone MUST NOT authorize resume. Capture binding
+  MUST verify the implementation/build, resolved semantic configuration, schema,
+  fidelity, and operating mode. Equal RAM roots MUST NOT authorize a different
+  implementation's continuation or upgrade nondeterministic provenance to
+  deterministic replay.
 - **[SEC-2]** Untrusted region inventories, tree records, page references, and
   backing descriptors MUST be validated before allocation or access. Validation
   MUST bound counts, sizes, depths, offsets, aggregate work, decompressed output
@@ -107,6 +111,11 @@ The repository requires Apache host code and QEMU/plugin code to remain separate
 processes. Their integration uses versioned control and shared-memory protocols.
 The normative obligations are [BOUND-4 through BOUND-9](../0010-crucible/37-licensing-process-boundary.md)
 and [the licensing policy](../../legal/licensing.md). This RFC preserves them.
+
+The QEMU-specific allocation below remains mandatory for QEMU-SIM. A gem5 or
+KVM profile requires review of its actual process, license, and public protocol
+boundaries; generalizing logical RAM does not approve a new integration surface
+or move QEMU-private code into an Apache-only crate.
 
 - **[SEC-6]** Code linked into, compiled into, or loaded by QEMU MUST remain in
   QEMU's applicable GPL-compatible scope. QEMU RAMBlock access, native mappings,
@@ -234,33 +243,15 @@ solely to preserve the previous experimental formats.
   convert them. Cleanup is a separate operator action under normal retention
   rules.
 
-The implementation review must enumerate every affected version, including
-unchanged schemas whose contents incorporate changed identities. The following
-table is a current-source inventory, not a promise of exact future version
-numbers. The release MUST allocate and record one consistent new version set.
-
-| Surface | Current source contract | Cutover obligation |
-|---|---|---|
-| Logical RAM digests | Flat writable-RAM SHA-256 domain `crucible.qemu.guest-ram.v1` | Adopt chapter 02's unkeyed BLAKE3-256 scoped Merkle schema and bind its version and coverage. |
-| Production fingerprint | `crucible.qemu.black-box-execution-fingerprint.v1` | Change domain and define the RAM scope; never relabel an old digest. |
-| Harness fingerprint | Definition v2; full-memory algorithm v1 | Replace definition and algorithm identity together. |
-| Trace plugin | Trace-fingerprint v7 | Version fields and aggregate semantics containing the new RAM root. |
-| Shared/control protocol | Shared-memory ABI 30; control protocol 3 | Bump changed semantics and negotiate new records before mapping or execution. |
-| Instruction/hardware evidence | `CRUCIEV1`, `crucible.instruction-state.v1`, before/after full RAM SHA-256 | Version evidence, system digest and selectors/preconditions that name them. |
-| Lifecycle evidence | `CRUCLFS1` with full-RAM FNV contribution | Version snapshot semantics and affected precondition/result evidence. |
-| Memory mutation evidence | Separate mapping, translation, dirty and range-content contracts | Preserve valid unchanged meanings; version any changed scope or generation semantics. |
-| QMP checkpoint | Schema 2; CRUCRAM direct/delta representation | Replace or version the RAM representation and validate full identity bindings. |
-| Portable exact closure | Closure v9, root envelope v5, production objects v5, index v1 | Version the manifest/representation and every enclosing semantic contract affected. |
-| Hot-fork protocol | Multiple template, barrier, resource and child-runtime schemas | Inventory changes for pager/tree ownership and quiescence; bump affected schemas. |
-| Worker/replay authority | Pinned build, ABI inventory, exact closure and guarded comparison | Bind the new RAM contract; expire incompatible process-local authority. |
-
-Sources for this inventory are listed in
-[01-current-system-and-integration.md](01-current-system-and-integration.md).
-The current instruction evidence verifies combined state digests independently
-on both sides; both implementations and canonical vectors must change together.
-Serialized artifact SHA-256 and CAS `ContentId` remain representation
-authentication and MUST NOT be replaced by a logical root without a new
-specified representation contract.
+Implementation review MUST enumerate every affected version, including unchanged
+schemas whose contents incorporate changed identities, and allocate one
+consistent release version set. The informative
+[current-version inventory](../../plans/crucible-paged-ram/current-state.md)
+is a migration input, not a promise of future version numbers. Serialized
+artifact authentication and CAS ContentId remain representation identities;
+they MUST NOT be replaced by a logical RAM root without a separately specified
+representation contract. Both sides of public state evidence and their canonical
+vectors MUST change together when their meaning changes.
 
 - **[CUT-4]** The coordinated release MUST update public specifications,
   generated language views, canonical vectors, package identities, reproduction

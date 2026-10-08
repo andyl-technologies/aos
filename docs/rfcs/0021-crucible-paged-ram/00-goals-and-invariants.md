@@ -23,11 +23,15 @@ exhaust storage bandwidth before host RAM.
   a guest kernel patch, balloon driver, agent, paravirtual swap device, changed
   guest memory map, or guest awareness of residency policy. Paging MUST NOT
   reduce configured guest RAM or convert RAM into a different guest device.
-- **[INV-2] Modeled time.** Host page faults, preservation, reclamation,
-  prefetch, hashing, and storage waits MUST NOT advance modeled guest time,
+- **[INV-2] Modeled time in deterministic profiles.** For QEMU-SIM and any
+  qualified deterministic gem5 profile, host page faults, preservation,
+  reclamation, prefetch, hashing, and storage waits MUST NOT advance modeled guest time,
   consume modeled execution quanta, alter deterministic event order, or
   change an architectural result. The existing modeled CPU/memory timing
-  contract MUST remain identical across admitted residency policies.
+  contract MUST remain identical across admitted residency policies. The
+  nondeterministic quantized KVM profile MUST instead satisfy the explicit
+  clock, budget, input, and publication contract in chapter 14; it MUST NOT
+  advertise this deterministic guarantee.
 - **[INV-3] Deterministic identity.** Given the same logical memory and
   complete machine state at the same admitted boundary, fingerprints MUST
   match regardless of host residency, host page size, storage representation,
@@ -65,6 +69,13 @@ already restrict accelerators, devices, or nondeterministic inputs; this RFC
 does not broaden that profile to arbitrary unsupported QEMU configurations.
 It MUST NOT impose a new guest-side paging dependency within that profile.
 
+The common contract addresses logical regions, execution owners, capture owners,
+coherent boundaries, and paging contexts. An execution owner controls one or
+more nodes; a capture owner preserves an enumerated set of state domains. They
+need not be one process or one public node. Chapter 14 allocates the common
+requirements to named implementation profiles. QEMU-specific mechanisms in this
+RFC apply to QEMU-SIM, not by inference to gem5 or KVM.
+
 ## 0.3 Goals and non-goals
 
 Required outcomes are a measurable kernel-swap baseline; precise custom paging;
@@ -73,8 +84,8 @@ contents; complete tracking of supported write origins; coherent hot forks;
 durable logical checkpoints; lazy restore from a locally available authenticated
 closure; and bounded, cancellable missing-state transfer.
 
-Remote postcopy, a network fault server, coordinated live migration, general
-KVM support, arbitrary accelerators, guest-visible memory overcommit, and
+Remote postcopy, a network fault server, coordinated live migration, shipping
+gem5 or KVM support, arbitrary accelerators, guest-visible memory overcommit, and
 simulation of realistic hardware RAM latency are separate work. The new memory
 foundation may support them, but none is claimed by this RFC. Storage compression,
 encryption, deduplication across trust domains, and concurrent eviction during
@@ -90,7 +101,10 @@ is validation of the actual image, not a mandatory runtime overlay.
 
 | Term | Meaning |
 | --- | --- |
-| Logical RAM | Bytes required by the admitted machine's memory inventory, independent of host placement |
+| Logical RAM | Bytes of declared backing regions in the admitted memory inventory, independent of host placement; not necessarily the latest coherent architectural view of a detailed memory hierarchy |
+| Execution owner | Exclusive authority for native execution of an admitted set of nodes |
+| Capture owner | Authority preserving explicitly owned future-affecting state domains at a coherent boundary |
+| Paging context | Generation-bound mapping, backing, fault-service, and resource authority for one independently mutable branch |
 | Logical page | A fixed 4,096-byte unit; the final page of a region may have fewer valid bytes |
 | Region | Stable, uniquely owned logical byte sequence identified by a portable region ID |
 | Page coordinate | `(region_id, logical_page_index)` in one validated topology |
@@ -117,7 +131,9 @@ not establish that guarantee.
 
 ## 0.5 Conformance and requirements ownership
 
-- **[CONF-1]** Every advertised backend MUST declare its supported mapping,
+- **[CONF-1]** Every advertised implementation profile and paging backend MUST
+  bind the actual implementation/build, resolved semantic configuration,
+  operating mode, capture fidelity, and supported mapping,
   fork, restore, supervision, and resource capabilities. Unsupported modes
   MUST be rejected before they are used. Silent fallback that weakens an
   explicitly requested guarantee is forbidden.
@@ -132,5 +148,6 @@ not establish that guarantee.
 Chapter 02 owns hash construction. Chapter 03 owns tracking and coherent RAM
 views. Chapter 04 owns local page states and fault authority. Chapter 05 owns
 resource and deadline updates. Chapter 06 owns fork/lifecycle transactions.
-Chapters 07 and 08 own durable storage and transfer publication. A consumer
-may add stricter admission constraints but may not weaken a shared invariant.
+Chapters 07 and 08 own durable storage and transfer publication. Chapter 14
+owns implementation-profile allocation and explicitly scoped timing guarantees.
+A consumer may add stricter admission constraints but may not weaken a shared invariant.

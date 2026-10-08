@@ -8,22 +8,27 @@ configuration example below is **proposed**; none describes a currently availabl
 CLI or a shipped configuration surface.
 
 The policy changes where the host preserves guest bytes and how long it waits
-for host operations. It does not change guest capacity, memory access semantics,
-virtual clocks, instruction accounting, or scheduler decisions. An unmodified
-guest observes the same logical machine when its host residency target changes
-repeatedly during an execution. Successful executions have identical canonical
-results across policies; insufficient resources or expired host budgets produce
-operational failures, never additional guest behavior.
+for host operations, while preserving guest capacity and memory semantics.
+For deterministic QEMU-SIM and qualified deterministic gem5 profiles it leaves
+virtual clocks, instruction/service accounting, event ordering, and canonical
+results unchanged. The declared nondeterministic KVM profile instead obeys
+[chapter 14.5](14-implementation-profiles.md#145-proposed-nondeterministic-quantized-kvm-profile):
+clock holds, remaining execution budget, input custody, and window closure are
+explicit, without promising repeatable hardware interleavings. Insufficient
+resources or expired host budgets remain operational failures in every profile.
 
 ## Identity and policy ownership
 
 **[POLICY-1]** Host RAM policy MUST be an operational object separate from the
 immutable authored `CampaignPolicy`, scenario definition, execution
 configuration, and guest RAM identities. Its values, revisions, application
-times, host measurements, and update history MUST NOT enter guest event ordering,
-canonical execution fingerprints, modeled deadlines, or checkpoint semantic
-identity. Authenticating an operational control request does not make its fields
-modeled state.
+times, host measurements, and update history MUST NOT be inputs to canonical
+RAM identity, authored guest events, modeled deadlines, or checkpoint semantic
+identity. For deterministic modes they MUST NOT affect canonical event ordering
+or execution fingerprints. KVM policy changes MUST preserve PROFILE-5 and
+PROFILE-6's admitted clock, budget, and publication contract; this separation
+MUST NOT be described as deterministic hardware execution. Authenticating an
+operational control request does not make its fields modeled state.
 
 The logical format defined in
 [logical RAM and the Merkle format](02-logical-ram-and-merkle-format.md) uses

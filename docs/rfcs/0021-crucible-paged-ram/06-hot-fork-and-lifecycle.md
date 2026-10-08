@@ -1,9 +1,17 @@
 # 06 — Hot fork and page-state lifecycle
 
-This chapter extends the retained QEMU template transaction to include paged
-RAM, immutable RAM roots, and the resources needed to resolve faults. It governs
-local process descendants, their backing leases, and their retirement. The
-[logical RAM format](02-logical-ram-and-merkle-format.md),
+This chapter defines private mutable RAM branches, source seals, backing leases,
+and their retirement. A RAM branch owns independent mutation authority over a
+retained immutable basis; it is not inherently a Unix process fork or a complete
+machine clone. Each implementation profile in chapter 14 MUST separately prove
+CPU/device continuation, worker and descriptor custody, paging-context
+reconstruction, and any kernel execution objects before admitting a child.
+
+Sections 06.1, 06.3 through 06.5, and their QEMU barrier/child-repair details
+allocate the retained QEMU-SIM template transaction. The common source, private
+page-state, lease, cancellation, and resource obligations apply to any advertised
+branch capability. QEMU process machinery MUST NOT be inferred for other profiles.
+The [logical RAM format](02-logical-ram-and-merkle-format.md),
 [write tracking](03-write-tracking-and-fingerprints.md), and
 [host paging](04-host-paging.md) define the contents being retained. The
 [runtime policy](05-runtime-policy-and-supervision.md) governs their physical
@@ -16,31 +24,12 @@ new admission capabilities.
 
 ## 06.1 Existing fork machinery and its limits
 
-The current [RFC-0020 hot-fork contract](../0020-crucible-campaigns/05-hot-fork-and-checkpoints.md)
-retains an exact paused boundary, frozen block sources, quiescent plugin, RCU,
-and asynchronous-worker barriers, and authenticated child resources. The
-coordinator executes `fork(2)` on QEMU's designated main-loop thread. Child
-startup migrates into its target cgroup, establishes process containment,
-reconstructs process-local runtime state, applies descriptor dispositions, and
-authenticates the resulting writable shared mappings. Host continuation and
-QEMU child readiness commit as one candidate world.
-
-The [QEMU patch](../../../pkgs/emulation/qemu-patches/crucible-qemu-11.1.1.patch)
-implements `qemu_crucible_hot_fork_ram_set_forkable()` by advising each RAMBlock
-with `MADV_DOFORK` or `MADV_DONTFORK`. This helper does not change a shared
-writable RAM mapping into a private mapping or construct immutable file backing.
-The existing child mapping-table scan rejects writable shared VMAs that do not
-match the closed authenticated disposition table. The RFC-0020 description of
-rejecting or converting shared RAM is therefore not evidence that conversion
-exists in the implementation.
-
-Current admission is also conservative. The
-[source resource measurement](../../../crates/crucible-api/src/vm_lifecycle/hot_fork/resource_usage.rs)
-charges at least full guest RAM as template bytes and another full guest-RAM
-allowance in expected private dirties. The
-[managed pool](../../../crates/crucible-daemon/src/managed_qemu_hot_fork_source_world_pool/pool.rs)
-reserves another source profile for a child lease. Paging does not increase
-admitted concurrency until those policies change explicitly.
+The QEMU-SIM profile extends
+[RFC-0020's retained-source transaction](../0020-crucible-campaigns/05-hot-fork-and-checkpoints.md).
+The [implementation inventory](../../plans/crucible-paged-ram/current-state.md)
+records the existing fork coordinator, mapping dispositions, child repair, and
+conservative full-RAM reservations. Those mechanisms do not by themselves prove
+paged fork readiness, shared-mapping conversion, or smaller admitted peaks.
 
 - **[FORK-1]** A paged hot-fork capability MUST be negotiated independently of
   ordinary stopped runstate. A matching build, capability profile, and protocol
@@ -94,7 +83,7 @@ must have a committed readable backing realization. An independently retained
 exact fallback has the stronger durable-closure requirements of
 [chapter 07](07-checkpoints-and-storage.md).
 
-## 06.3 Extended retained-template transaction
+## 06.3 QEMU-SIM extended retained-template transaction
 
 The existing subsystem barriers remain mandatory. The page-state extension adds
 work to their transaction; it does not permit an external host process to infer
@@ -153,7 +142,7 @@ not establish correctness of custom discard operations.
   admitted capability proving write exclusion, page-version validation,
   dirty preservation, and interaction with every fork barrier.
 
-## 06.4 Child service and rebinding
+## 06.4 QEMU-SIM child service and common rebinding obligations
 
 A child inherits ordinary process COW memory, not the parent's worker threads.
 Before reconstruction, the child may already need RAM for device or plugin
@@ -214,7 +203,9 @@ prevent a completion from the parent context from installing bytes into a child.
 
 Fault service remains an operational obligation while semantic writers are
 quiescent. It must not need any worker or lock parked by the transaction. The
-following wait-for table is normative for capability review.
+following QEMU-SIM wait-for table is normative for that profile's capability
+review. Other profiles MUST construct corresponding concrete dependencies under
+FORK-16 and FORK-17; QEMU worker names are not a universal service architecture.
 
 | Waiting operation | Resources it may retain | Fault service MUST NOT require | Required evidence |
 | --- | --- | --- | --- |
@@ -389,11 +380,15 @@ runtime target changes during staging and retention, source demotion with live
 backing references, storage failure, and ambiguous cancellation after fork.
 
 - **[LIFE-15]** Admission of the paged hot-fork capability MUST require evidence
-  that resident and paged realizations produce identical canonical results and
-  RAM roots, preserve sibling isolation, and terminate or quarantine failed
-  lifecycle operations without losing backing authority. The validation MUST
-  exercise actual QEMU RAM and retained barriers; scripted endpoint tests alone
-  are insufficient.
+  that deterministic resident and paged realizations produce identical canonical
+  results and RAM roots, preserve sibling isolation, and terminate or quarantine
+  failed lifecycle operations without losing backing authority. QEMU-SIM
+  validation MUST exercise actual QEMU RAM and retained barriers; gem5 exact
+  branching MUST exercise the complete admitted modeled state and event trace.
+  KVM MUST instead validate its declared nondeterministic reconstruction,
+  coherent RAM, isolation, and quantized containment contract in chapter 14,
+  without claiming identical future execution. Scripted endpoint tests alone
+  are insufficient for any profile.
 
 [Chapter 10](10-validation-and-performance.md) specifies reproducible failure
 injection and performance measurements. More parallel processes are a benefit

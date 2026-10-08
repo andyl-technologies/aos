@@ -6,19 +6,12 @@ This chapter proposes transfer of complete authenticated exact closures using
 logical RAM trees. Transfer operates on host-side state; an unmodified guest
 does not participate, expose a paging interface, or receive migration-related
 events. The same logical image can be materialized on a different admitted
-instance or machine without changing guest RAM capacity or virtual access
-timing.
+instance or machine without changing guest RAM capacity or the declared
+operating-mode contract. Equal RAM contents do not authorize cross-profile
+continuation.
 
-The current implementation provides campaign archive transfer and offline
-maintenance transfer. The archive primitive streams logical objects between
-configured content stores, verifies destination content, obtains durable
-receipts, and publishes destination refs. The durable owner installs independent
-source and destination GC journals before copying. See
-[archive transfer](../../../crates/crucible-campaign/src/repository/transfer.rs)
-and [transfer ownership](../../../crates/crucible-daemon/src/campaign_transfer.rs).
-The current documented maintenance workflow exactly pauses the campaign,
-transfers its complete executable closure, and restores through a separate
-operator action.
+The [historical transfer inventory](../../plans/crucible-paged-ram/current-state.md)
+records existing archive and offline maintenance integration points.
 
 These facilities are a foundation for the design here. They are not evidence
 that live migration, remote fault serving, pre-copy, post-copy, or distributed
@@ -32,8 +25,11 @@ future modes.
   alone MUST NOT be offered as a resumable machine or world.
 - **[TRANSFER-2]** Host location, transfer progress, packing, physical page
   size, and paging-policy settings MUST NOT alter the logical RAM roots or
-  modeled configuration. Destination execution MUST retain the same guest
-  transparency and deterministic-clock contract.
+  modeled configuration. Destination execution MUST retain guest transparency,
+  capture compatibility, and the admitted operating-mode contract. Deterministic
+  profiles MUST retain their deterministic clock/event-order contract; KVM MUST
+  retain PROFILE-5 and PROFILE-6's quantized clock, budget, and publication rules,
+  without claiming deterministic hardware execution.
 
 ## 08.2 Identities and selected closure
 

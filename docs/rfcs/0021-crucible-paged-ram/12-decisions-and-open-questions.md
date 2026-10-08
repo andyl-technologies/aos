@@ -5,7 +5,7 @@
 | Decision | Reason and consequence |
 | --- | --- |
 | Keep guest machines unmodified | RAM placement remains a host implementation detail; no ballooning, guest swap interface, or guest agent dependency |
-| Keep virtual timing identical | Host latency changes completion time and operational supervision, never modeled access latency or event order |
+| Preserve timing under the declared operating mode | Deterministic QEMU-SIM and qualified gem5 retain modeled access latency and event order; nondeterministic KVM follows the explicit clock, budget, and quantum contract in chapter 14.5 |
 | Fix logical pages at 4 KiB | Digests and checkpoint coordinates stay portable across host/target page geometry |
 | Use unkeyed BLAKE3 with 32-byte output for logical pages and Merkle digests | Reuses the existing CAS hash primitive and its C/Rust ecosystem; preserves explicit logical domains and representation-independent identities |
 | Keep storage identities distinct | Existing CAS representation authentication, packing, and future encodings are not conflated with decoded RAM identity |
@@ -15,7 +15,7 @@
 | Start removal at coherent paused boundaries | Requires physical-borrow safety and sound inter-boundary peak admission; unsupported smaller peaks are refused |
 | Gate fault-safe reclamation separately | A blocked fault must be able to reach a safe reclamation mechanism or fail, rather than wait for an unreachable boundary |
 | Prefer a precise custom backend after a kernel-swap baseline | Kernel swap remains measurement-only unless independent preserved-byte integrity qualification satisfies the unchanged threat model |
-| Place native mapping/fault work GPL side | Preserves QEMU implementation ownership and keeps host-side contracts portable |
+| Keep implementation-private mapping work with its execution owner | QEMU mapping/fault work remains GPL-side across the public process boundary; gem5/KVM mechanisms require their own admitted profile and boundary review |
 | Make runtime policy operational and revisioned | Tuning does not change guest identity; reservation and convergence remain auditable |
 | Amend outer caps through separate operational transactions | Expiry precedence, original elapsed time, shared supervision, and restart recovery stay explicit |
 | Store direct root-based RAM checkpoints | Persistent trees encode shared unchanged state without an eight-layer replay chain |
@@ -142,10 +142,12 @@ consequences and is not enabled merely because two pages have equal hashes.
 Huge pages can improve resident performance but complicate fine reclamation;
 their use is backend capability, not a change to logical geometry.
 
-KVM and additional nondeterministic accelerators require separate execution
-contracts. The baseline hot-fork helper explicitly rejects KVM. This RFC does
-not treat a software memory pager as proof that hardware execution obeys the
-same modeled-time or fork-lifecycle invariants.
+gem5 and KVM implementation remains future work. [Chapter 14](14-implementation-profiles.md)
+specifies separate proposed profiles and their admission gates, without declaring
+support. Paging does not establish exact capture, deterministic execution,
+branch reconstruction, or cross-implementation continuation. Common guest images
+can be tested in fresh KVM, QEMU-SIM, and gem5 runs; moving a reached continuation
+requires a separately specified conversion with explicit lost guarantees.
 
 Continuous reference/fault-modified RAM layers are deferred. This RFC does not
 maintain a parallel hypothetical fault-free image or require fault-overlay
@@ -169,4 +171,4 @@ disk-oriented mode with an admitted minimum operational working set. They are
 not proof that every workload benefits from maximum eviction. Aggressive
 reclamation may increase useful parallelism for sparse or paused guests and
 reduce throughput for active random access. Runtime tuning lets the operator
-respond while preserving deterministic guest behavior and complete ownership.
+respond while preserving the declared operating-mode contract and complete ownership.

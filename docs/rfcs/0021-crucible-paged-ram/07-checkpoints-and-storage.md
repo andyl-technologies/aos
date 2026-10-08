@@ -39,17 +39,16 @@ remain separate capabilities.
 - **[CHECK-2]** The checkpoint MUST bind RAM, CPU/device state, modeled disks,
   scheduler and host continuation, plugin/fault state, pending modeled I/O,
   permanently failed nodes, and provenance to one exact whole-world boundary.
-  A valid RAM root alone MUST NOT authorize restore or execution.
+  A valid RAM root alone MUST NOT authorize restore or execution. The enclosing
+  capture MUST bind implementation/build identity, resolved semantic
+  configuration, capture schema and fidelity, and operating mode. Compatible RAM
+  bytes MUST NOT imply compatible CPU/device or kernel execution state.
 
 ## 07.2 Replacement of direct-plus-delta RAM chains
 
-The current production format has a direct RAM layer followed by up to seven
-parent-relative layers. A ninth capture rebases through another complete direct
-image. The current constant and representation are in
-[the exact-checkpoint relations](../../../crates/crucible/src/exact_checkpoint.rs);
-capture selection is in
-[the checkpoint capture loop](../../../crates/crucible-api/src/vm_lifecycle/quantum_loop/checkpoint_capture.rs).
-Those links describe the baseline, not the new format.
+The [implementation inventory](../../plans/crucible-paged-ram/current-state.md)
+records the current direct/delta layer format and rebase behavior. Those are
+migration inputs, not the proposed complete-image root representation.
 
 Under this proposal, a checkpoint names immutable region roots and a complete
 logical catalog. Unchanged page contents and metadata subtrees are reused;
@@ -98,6 +97,22 @@ scoped logical RAM root; including physical compatibility in provenance does
 not make it an input to `PageDigest` or `RamRootDigest`.
 
 ## 07.3 Capture boundary and candidate construction
+
+The common capture owner preserves the reached state at an admitted coherent
+boundary. Exact capture MUST NOT drain modeled pipelines or transactions, flush
+or invalidate modeled caches, advance events, or retire instructions to make
+RAM current. For gem5, the backing-region roots may remain older than dirty
+cache data; both belong to the complete, uniquely owned state closure described
+in chapter 14. Host-only representation normalization is permitted only with a
+proof of unchanged future modeled behavior. A request for an unsupported exact
+boundary MUST fail or remain pending under the declared boundary contract, not
+move silently to a drained state.
+
+The pre-save sequence below is specifically the admitted QEMU-SIM contract.
+CHECK-4 preserves its existing ordering; permission for documented pre-save RAM
+effects MUST NOT authorize modeled cache writeback or event advancement in
+another implementation. Any pre-save transition that changes future modeled
+behavior cannot be hidden inside an exact capture.
 
 Capture begins after the host has established the existing exact boundary:
 required QEMU nodes are paused, selectable requests are drained into the
@@ -234,15 +249,10 @@ bounded metadata objects instead of requiring a separate filesystem object for
 every binary branch. Grouping changes physical object organization, not the
 ordered binary logical digest definition.
 
-The baseline packed backend has a 65,536-object index limit. Incompressible
-512 MiB RAM has 131,072 logical 4096-byte pages before metadata or checkpoint
-history. Its
-[packed backend](../../../crates/crucible-cas/src/content_store/packed.rs)
-therefore cannot serve as the unchanged page-object implementation. Likewise,
-the current
-[content envelope](../../../crates/crucible-cas/src/content_envelope.rs)
-limits one envelope to 65,536 children, and production exact roots already use
-bounded inventory index pages.
+The [implementation inventory](../../plans/crucible-paged-ram/current-state.md)
+records current flat index and envelope limits. A dense page-object closure
+can exceed those limits before retained history or metadata is included;
+scalability MUST be established against the actual admitted capacity.
 
 - **[STORE-4]** Admission MUST account for worst-case unique pages and retained
   metadata, not expected deduplication. The implementation MUST provide
@@ -321,13 +331,10 @@ idempotent and cannot revert logical ownership.
 
 ## 07.8 Local lazy restore
 
-The baseline restore fully copies RAM layer streams into sealed memfds before
-launch, then QEMU validates and applies the direct/delta records. See
-[exact restore materialization](../../../crates/crucible-qemu/src/spawn/materialization/exact_restore.rs)
-and [sealed inputs](../../../crates/crucible-qemu/src/exact_checkpoint_input.rs).
-This duplicates full-image staging and live RAM pressure despite bounded copy
-buffers. The new path replaces that RAM contract with authenticated immutable
-catalogs and leased local page sources.
+The [implementation inventory](../../plans/crucible-paged-ram/current-state.md)
+records the existing full-image staging route. The proposed lazy route uses
+authenticated immutable catalogs and leased local sources instead; it does
+not claim that the current route already avoids full-RAM pressure.
 
 Before launch, restore validates the whole-world manifest, exact provenance,
 logical region geometry, complete page associations, required object
@@ -359,7 +366,10 @@ of continued physical possession.
 If device restore callbacks access RAM, the pager and page-source leases must
 already be operational before those callbacks execute. Such accesses populate
 only the necessary pages under the restore budget. A fault during restoration
-cannot advance guest-visible virtual time or invent a modeled I/O event.
+MUST obey the profile's clock and event contract. Deterministic restoration
+cannot advance guest-visible virtual time or invent a modeled I/O event; KVM
+restoration remains held under its declared clock origins and quantized admission
+until fresh kernel execution objects and all other components are ready.
 
 - **[CHECK-14]** Restore MUST create fresh node/controller incarnations,
   registrations, waiter and request namespaces, and mutable page-state owners
@@ -405,7 +415,10 @@ Capture/restore adversaries additionally hold page-in, install, removal,
 writeback, and accepted policy changes across the disposition barrier and then
 deliver their completions after cancellation or controller replacement.
 
-The decisive correctness result is equal logical roots and equal whole-world
-continuation across resident, aggressively paged, restored, and forked
-realizations. The decisive resource result is bounded memory during cold
-capture and lazy restore, with measured temporary disk and object counts.
+For deterministic profiles, the decisive correctness result is equal logical
+roots and equal complete modeled continuation across resident, aggressively
+paged, restored, and branched realizations. KVM qualification uses coherent
+capture, authenticated contents, isolation, and its declared quantized
+clock/publication guarantees; repeated bit-identical nondeterministic trajectories
+are not its acceptance criterion. The decisive resource result is bounded memory
+during cold capture and lazy restore, with measured temporary disk and object counts.

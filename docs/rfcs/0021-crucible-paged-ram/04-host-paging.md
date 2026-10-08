@@ -18,17 +18,21 @@ establish that the proposed mechanism already exists.
 Guest RAM capacity and its logical contents are independent of host residency.
 Every supported guest continues to execute without a changed kernel, guest
 agent, balloon device, paging-aware driver, or cooperative workload. A host
-page fault delays execution in wall time while preserving the virtual-time and
-event-ordering contract. It is not a guest page fault, memory error, modeled
+page fault delays execution in wall time under the selected implementation
+profile's clock, budget, and publication contract in chapter 14. It is not a guest
+page fault, memory error, modeled
 storage operation, or additional simulated memory latency.
 
 - **[PAGER-1]** Paging MUST preserve the configured guest physical address
-  space, every logical RAM byte, and the existing deterministic execution
-  contract. Storage placement, fetch latency, reclaim decisions, and access
-  sampling MUST NOT enter semantic fingerprints or guest-visible event order.
+  space and every logical RAM byte. In deterministic QEMU-SIM and qualified
+  gem5 profiles it MUST preserve the existing deterministic execution contract:
+  storage placement, fetch latency, reclaim decisions, and access sampling MUST
+  NOT enter semantic fingerprints or guest-visible event order. Proposed
+  nondeterministic KVM execution MUST satisfy chapter 14's quantized timing
+  contract and MUST NOT claim deterministic equivalence across residency policies.
 - **[PAGER-2]** The initial precise paging backend MUST retain ordinary,
-  stable virtual mappings for QEMU RAM. It MUST NOT replace translated memory
-  accesses with a separate file operation for every load or store.
+  stable virtual mappings for the execution owner's RAM. It MUST NOT replace
+  translated memory accesses with a separate file operation for every load or store.
 - **[PAGER-3]** An executor MUST distinguish a qualified kernel-reclaim backend
   from an explicit pager. It MUST NOT advertise strict control of individual
   guest RAM residency from process-wide kernel limits alone.
@@ -90,15 +94,18 @@ huge pages, and storage extent size are implementation properties. A backend
 may service several logical pages in one host fault or I/O, but it must retain
 their individual logical identities and mutation ownership.
 
-A GPL-side mapping registry relates a logical page to its process-local RAM
-address. Its authoritative key includes node incarnation, RAM-block identity,
+A paging context relates a logical page to its implementation-local mapping.
+Its authoritative key includes execution-owner incarnation, canonical region
+identity,
 topology generation, and logical page index. Host-facing storage requests use
-checked identities and offsets. The registry must describe aliases and RAM
-blocks that do not belong to the main `-m` allocation; placing the main block
-alone under a pager is not coverage of all logical RAM.
+checked identities and offsets. The context must describe every admitted owner
+and alias. For QEMU-SIM this is
+a GPL-side RAMBlock registry, including blocks outside the main `-m` allocation.
+For gem5 and KVM the distinct mapping, translation, and removal proofs in
+chapter 14 apply; registering only main RAM is not complete coverage.
 
 - **[PAGER-4]** Eviction and population MUST preserve each live RAM mapping's
-  virtual address and declared extent. Cached QEMU pointers remain valid
+  virtual address and declared extent. Cached implementation pointers remain valid
   addresses; they MUST NOT become references into a replacement allocation.
 - **[PAGER-5]** Every page operation MUST bind the node incarnation, topology
   generation, page index, applicable `page_version`, and unique operation
@@ -306,7 +313,12 @@ evidence that a deployed kernel or architecture supports them. The backend
 must negotiate actual features. It must provide a qualified policy using the
 selected baseline capabilities, or reject the requested capability.
 
-## 04.6 Fault-service placement and licensing
+## 04.6 QEMU-SIM fault-service placement and licensing
+
+PAGER-12's QEMU-private/GPL allocation and the candidate below are specific to
+QEMU-SIM. Other implementations need their own license and process-boundary
+review; they do not inherit permission to interpret QEMU-private state.
+PAGER-13's acyclic service obligation applies to every implementation profile.
 
 The initial custom-pager candidate is a supervised GPL-side companion process.
 QEMU owns mapping registration and logical mutation authority. The companion
@@ -396,7 +408,13 @@ kernel removal event has occurred. Remap and unmap events revoke the affected
 mapping-generation authority and reconcile pending faults before a new range
 can be admitted.
 
-## 04.8 Fork and retained-template obligations
+## 04.8 Branch and retained-source obligations
+
+PAGER-16 applies to each independently mutable branch and its earliest
+reconstruction access. The Linux process-fork details below are the QEMU-SIM
+profile. A gem5 branch requires event/thread reconstruction; KVM requires fresh
+kernel execution objects under chapter 14. Neither inherits a branch capability
+from private RAM alone.
 
 Present private pages inherit kernel copy-on-write isolation. Absent pages
 inherit their logical backing map and must populate independently in each
@@ -517,13 +535,11 @@ best-effort. `MADV_PAGEOUT` preserves anonymous contents through swap or writes
 dirty file-backed pages; destructive discard is not anonymous swap. See the
 [Linux madvise manual](https://man7.org/linux/man-pages/man2/madvise.2.html).
 
-## 04.11 Qualification evidence and baseline integration
+## 04.11 Qualification evidence and QEMU-SIM baseline integration
 
-The current launch supplies `-m` without an explicit backend, the cgroup guard
-sets `memory.swap.max` to zero, and launch admission reserves the guest-RAM
-baseline as resident memory. The QEMU patch makes RAM forkable using
-`MADV_DOFORK`. These are integration points, not implementations of this chapter.
-See [Chapter 01](01-current-system-and-integration.md) for the evidence map.
+The [implementation inventory](../../plans/crucible-paged-ram/current-state.md)
+records the QEMU-SIM launch, cgroup/swap, full-RAM reservation, and mapping
+disposition integration points. They do not establish a paging capability.
 
 Initial qualification must compare fully resident and paged runs, exercise
 cold-page forks and child divergence, and change runtime targets during CPU,

@@ -10,8 +10,11 @@ do not establish paging correctness. Implementation sequencing is specified in
 
 Paging is admissible as host work outside the guest-observable boundary. The
 argument is that it changes placement and completion time of host work while
-preserving the logical bytes, virtual event coordinates, and modeled state
-transition sequence. Merkle hashing is similarly observation-only when it
+preserving logical bytes and the admitted operating-mode contract. Deterministic
+QEMU-SIM and qualified gem5 additionally preserve virtual event coordinates and
+the complete modeled state transition sequence. KVM's nondeterministic quantized
+contract is separately tested; run-twice equality does not qualify that mode.
+Merkle hashing is similarly observation-only when it
 consumes a coherent immutable view. The existing Class A/Class B distinction in
 [RFC-0010 performance admission](../0010-crucible/25-performance-targets.md)
 remains applicable. Successful run-twice comparison supports that mechanism
@@ -21,9 +24,14 @@ argument; it does not replace it.
   every RAM reader and writer, every publication barrier, ownership generation,
   and every path by which a host operation could affect modeled state. It MUST
   explain why policy updates, reclaim, reads, writeback, prefetch and background
-  hashing cannot change guest-visible timing or canonical event ordering.
+  hashing preserve the declared profile. For deterministic modes they MUST NOT
+  change guest-visible modeled timing or canonical event ordering. For KVM the
+  argument MUST establish PROFILE-5 and PROFILE-6's clock, budget, and causal
+  publication rules without claiming deterministic hardware interleavings.
 - **[TEST-2]** Tests MUST distinguish pure format tests, controlled model tests,
-  live patched-QEMU tests, and packaged multi-host acceptance. Reports MUST
+  live implementation tests, and packaged multi-host acceptance. QEMU-SIM MUST
+  retain live patched-QEMU coverage; gem5 and KVM require their own actual
+  implementation/build/configuration coverage. Reports MUST
   identify which class supplies each claim. Static source-pattern checks MUST
   NOT stand in for live eviction, fault handling, fork isolation, or restart
   evidence. Every adversarial test MUST record whether the intended condition
@@ -123,7 +131,7 @@ restrictions; they MUST NOT be hidden by silently omitting a writer or region.
 | Root acknowledgement | Queued hash work, cancelled request, stale generation and worker failure | Publication and matching acknowledgement retain their specified order. |
 | Fork ownership | Shared immutable tree, private updates, simultaneous sibling writes | Parent and siblings retain their own logical contents and roots. |
 
-The current fingerprint path captures a coherent scoped paged RAM root and
+The QEMU-SIM fingerprint contract captures a coherent scoped paged RAM root and
 bounded device material. The worker must publish the resulting fingerprint
 before acknowledging the matching request. Tests must preserve that ordering
 without requiring a full-RAM material allocation. Every pager/hash worker
@@ -176,15 +184,21 @@ actually promises that target.
   changed disk image, special allocator or workload cooperation. Input bytes,
   guest RAM capacity, launch entropy and modeled device configuration MUST be
   identical. Immutable disk backing MUST remain unchanged.
-- **[TEST-11]** `gate:ram-determinism` MUST compare completed runs at identical
+- **[TEST-11]** For deterministic QEMU-SIM and qualified deterministic gem5,
+  `gate:ram-determinism` MUST compare completed runs at identical
   logical coordinates across residency budgets, eviction order, runtime update
   timing and artificial storage delays. The compared evidence MUST include all
   scoped RAM roots, architectural/device fingerprints, modeled clocks, I/O
   delivery coordinates, canonical logs and outcome signatures. Every mismatch
   MUST fail and localize to the first differing boundary.
-- **[TEST-12]** `gate:ram-continuation` MUST compare local hot forks, cold exact
-  restore and thin replay at the same authenticated boundary and subsequent
-  trajectory. It MUST repeat the comparison after changing host residency and
+- **[TEST-12]** `gate:ram-continuation` MUST compare each claimed branch, restore,
+  and replay capability at the same authenticated boundary under its admitted
+  capture fidelity and operating mode. Deterministic QEMU-SIM and qualified gem5
+  MUST preserve the subsequent complete modeled trajectory. KVM MUST preserve
+  its declared exposed state, independent kernel execution-object ownership,
+  and quantized continuation contract; repeated trajectory equality MUST NOT
+  substitute for that proof or be claimed for a nondeterministic profile.
+  It MUST repeat the comparison after changing host residency and
   moving the portable checkpoint to another admitted instance. Every restored
   RAM scope MUST also pass the independent full-Merkle oracle.
 
@@ -458,7 +472,7 @@ Residency comparisons MUST state the operational contract being compared.
 Fully resident execution establishes ordinary execution overhead; cold and warm
 backing-store cases establish paging costs; equal aggregate host resources and
 completed work establish campaign throughput. Extra admitted guests alone do
-not establish throughput parity. The unchanged virtual memory-access latency
+not establish throughput parity. Unchanged modeled memory-access latency in deterministic profiles
 MUST NOT be reported as unchanged host access latency. Limits, deadlines, guest
 inputs, or correctness checks MUST NOT be relaxed to repair a performance
 failure.
@@ -498,118 +512,46 @@ be wired into the same packaged execution families rather than recorded as
 unattached local successes. No performance waiver may turn a RAM integrity or
 determinism mismatch into an accepted tolerance.
 
-## 10.9 Informative design-completion validation record
+## 10.9 Evidence allocation by implementation profile
 
-The design audit and format validation on 2026-10-05 used RFC revision
-`991bf1e3549d4d6838711afb0bf6e62b736f3468`. Repository checks ran against the
-same runtime, package, and test sources, unchanged from the source baseline
-in the overview. Subsequent documentation edits add this record and clarify
-qualification wording; they change no normative requirements or format
-fixtures. This record supplies evidence about the document, its fixtures,
-and the executed repository checks; it does not qualify an implementation
-of this proposal. The `gate:ram-*` gates remain future work.
+The shared format and custody gates apply to each admitted implementation.
+They do not qualify implementation-private writers, physical references, capture
+state, clocks, or lifecycle mechanisms. [Chapter 14](14-implementation-profiles.md)
+defines those profiles; the [companion qualification plan](../../plans/crucible-paged-ram/qualification-plan.md)
+records their evidence allocation and explicit unavailable capabilities.
 
-Every Nix invocation disabled remote builders with `--option builders ''`.
-Checks were invoked through the AOS development shell and repository CLI;
-production check derivations used `aos-dev --no-cache`. Local builds may reuse
-existing store outputs, but no test execution was offloaded to another host.
+| Evidence | Common obligation | Deterministic QEMU-SIM / qualified gem5 | Nondeterministic quantized KVM |
+| --- | --- | --- | --- |
+| Logical identity | Independent complete recomputation of each declared backing scope; malformed topology and content substitution controls | Same byte/root equality, independent of resident or paged realization | Same byte/root equality at a coherent held boundary; no repeatable execution claim |
+| Complete execution state | Every future-affecting domain has one capture owner | QEMU CPU/device/RR state; gem5 dirty caches, coherence, pending transactions, controllers, pipelines, predictors, and event ordering when realized | Qualified exposed VM/vCPU/device state in fresh kernel objects; fidelity explicitly excludes unexposed physical microstate |
+| Writer completeness | Every supported origin reaches all independent dirty consumers | QEMU translated/device/native paths; gem5 cache/coherence/backing, DMA, functional/debug, loader/reset/restore/fault paths | Hardware dirty logging plus device/DMA/host paths, rotation and coherent reconciliation |
+| Fault progress and removal | Actual fault origin, granularity, permissions, feature set, physical-borrow and progress proof | Original modeled operation survives host population without additional access, service event, or event dispatch | Kernel-originated faults, secondary translations, mappings/pins, stopped owners, and controlled clocks/timers; unsupported passthrough refuses admission |
+| Capture and branch | Immutable backing shares; private mutation; retained leases; fresh generations | No modeled drain, flush, event advance, instruction retirement, or hidden warm-up to obtain exact capture; deterministic complete-state equivalence | New qualified VM/vCPU/device execution objects; descriptor inheritance or RAM COW alone is insufficient |
+| Window closure | Operational failure cannot publish a guest finding or release uncertain ownership | Identical complete canonical trajectory at identical admitted coordinates | Original grant/input batch retained; acknowledged hold/stop, due timer custody, unchanged remaining-budget basis, no premature output publication |
 
-| Validation | Outcome | Evidence and limit |
-|---|---|---|
-| Document integrity | PASS | All 234 requirement definitions are unique and contiguous within their families; local requirement references, document links, tagged fences, and JSON syntax are valid. |
-| RAM format fixtures | PASS | A freshly compiled official BLAKE3 1.8.5 portable C implementation agreed with independent reconstruction of 15 named digests, every tree level and supplied preimage, and all three scoped roots. Domain, endianness, length, padding, and scope controls were also checked. |
-| Nix formatting | PASS | All 2,046 Nix files passed Alejandra. |
-| Rust formatting | FAIL | `aos-dev fmt all --check` reported differences in unchanged baseline Rust files. The check did not modify them. |
-| System evaluation and structure | PASS | The `eval` check completed locally, including its Linux 7.2.3 and ZFS dependencies. |
-| Packaged Rust test targets | PASS | `rust.aos-test-targets` compiled all application unit and integration test targets. This compilation check does not execute their tests. |
-| Packaged license boundary | PASS | All 18 boundary tests passed. Its controller prerequisite also passed Clippy, doctests, and 5,560 executed tests across 266 binaries, with 75 explicitly skipped tests. |
-| All-features Rust workspace | FAIL | Compilation completed and the `--no-fail-fast` run finished with seven failed test targets, listed below. This run does not establish an all-green workspace. |
-| Full repository aggregate | BLOCKED | `all checks` failed during evaluation on missing Samba resource classifications, before it could schedule the full check inventory. |
-| Crucible phase 1 aggregate | BLOCKED | Evaluation rejected the baseline `packaged-midpoint-flight` feature declaration without a consuming `cfg`. |
-| Shared-memory ABI check | FAIL | Eight Rust cases passed; the unchanged generated C fixture then failed to compile against renamed or removed instruction-count fields. This is not a passing ABI gate. |
-| VM boot basics | FAIL | The guest booted and passed OS-release, hostname, and running-system checks, then failed an unchanged assertion requiring `6.18` in `uname -r`; the repository builds Linux 7.2.3. Later assertions did not execute. |
-| Packaged live SQL dialects | FAIL | Local VM fixtures started PostgreSQL 18.6 and MariaDB 12.3.3. PostgreSQL and SQLite contracts passed; the MariaDB contract failed on an unchanged GC query with unknown column `cache_gc_generations.cutoff_at`. |
+The full-RAM oracle in TEST-4 commits declared backing regions. For gem5 it does
+not assert that backing bytes are the latest architectural view: a dirty cache
+may own newer bytes. PROFILE-2 requires complete ownership of both, and PROFILE-4
+requires separate coherent observation for fault predicates and assertions.
+Tests MUST include dirty cache lines, outstanding requests, partial operations,
+and cold accesses during capture/reconstruction. Observational checks MUST NOT
+flush caches, dispatch modeled events, or change replacement/coherence state.
 
-The aggregate failures are explicit missing coverage, not waivers. The package
-platform-support check requires classifications for
-`networking/_samba-cross/aarch64-linux.answers` and
-`networking/_samba-cross/heimdal-build-tools.nix`. The ABI fixture still names
-`icount_shift` and `preemption_*_icount` fields that its current public headers
-do not expose. These sources, the feature declaration, and the VM assertion
-were not changed to obtain a passing result for this documentation change.
+KVM tests MUST establish actual held-clock/timer behavior, original quantum and
+input-batch containment, stop acknowledgment, kernel-fault progress, coherent
+writer reconciliation, private branch isolation, and restore refusal for an
+incompatible build/mode. Repeated bit-identical execution MUST NOT be the pass
+criterion for its declared nondeterministic profile. Coupled scenarios retain
+PROFILE-8's nondeterministic provenance unless separately qualified record/replay
+establishes a stronger guarantee.
 
-The workspace command used a separate worktree-owned Cargo target directory,
-denoted by `RFC_CARGO_TARGET_DIR` below:
+PROFILE-1 through PROFILE-8 have individual positive and causal negative cases
+in the companion matrix. A QEMU result cannot fill a gem5/KVM evidence cell.
+The proposed future profiles remain unqualified; a common-format pass, equal RAM
+roots, or specification acceptance cannot authorize their execution or restore.
 
-```bash
-nix develop --accept-flake-config --option builders '' -c \
-  env CARGO_TARGET_DIR="$RFC_CARGO_TARGET_DIR" \
-  cargo test --manifest-path crates/Cargo.toml --workspace --all-targets \
-  --all-features --no-fail-fast -j 16
-```
+## 10.10 Historical evidence
 
-Its failed targets were:
-
-- `-p aos --test apr_cache_cli`
-- `-p aos-hub --test dialect`
-- `-p aos-hub-core --lib`
-- `-p aos-package --lib`
-- `-p crucible-api --lib`
-- `-p crucible-cli --test campaign_store_process`
-- `-p crucible-cli --test gate_campaign_store_composition`
-
-The workspace dialect failures reported missing live database URLs. The separate
-packaged live-SQL result above uses actual fixtures and therefore supplies
-different evidence. Three failures from the parallel workspace run passed when
-rerun individually using the same compiled executables with `--test-threads=1`:
-the Hub concurrent baseline installation test, its expired inventory range-owner
-test, and Crucible's host-continuation clone-cost test. The latter originally
-reported 88,352 KiB private memory for 64 clones. Isolated reruns do not erase
-the original failures or establish the other failed targets passed. No runtime
-or test sources were edited to address these failures in this RFC change.
-
-The packaged check commands were:
-
-```bash
-nix develop --accept-flake-config --option builders '' -c \
-  aos-dev fmt all --check
-
-nix develop --accept-flake-config --option builders '' -c \
-  aos-dev --no-cache all checks \
-  --no-out-link --keep-going --option builders '' --show-trace
-
-nix develop --accept-flake-config --option builders '' -c \
-  aos-dev --no-cache build check eval \
-  --no-out-link --keep-going --option builders ''
-
-nix develop --accept-flake-config --option builders '' -c \
-  aos-dev --no-cache build check rust.aos-test-targets \
-  --no-out-link --keep-going --option builders ''
-
-nix develop --accept-flake-config --option builders '' -c \
-  aos-dev --no-cache build check crucible.phase1 \
-  --no-out-link --keep-going --option builders ''
-
-nix develop --accept-flake-config --option builders '' -c \
-  aos-dev --no-cache build check crucible.phase2.shmemAbiConformance \
-  --no-out-link --keep-going --option builders ''
-
-nix develop --accept-flake-config --option builders '' -c \
-  aos-dev --no-cache build check crucible.phase1.gates.licenseBoundary \
-  --no-out-link --keep-going --option builders ''
-
-nix develop --accept-flake-config --option builders '' -c \
-  aos-dev --no-cache build check vm.boot-basics \
-  --no-out-link --keep-going --option builders ''
-
-nix develop --accept-flake-config --option builders '' -c \
-  aos-dev --no-cache build check integration.aos-hub-dialect-tests-live-dialects \
-  --no-out-link --keep-going --option builders ''
-```
-
-The earlier format review additionally established agreement with the official
-Rust reference, 210 primitive checks, agreement across 35 selected-mode input
-lengths, and nine RAM mutation controls. The completion run above freshly
-recompiled the C implementation and reconstructed the RAM fixtures; it did not
-repeat every earlier primitive/reference experiment. Neither set of format
-results supplies live page-fault, eviction, fork, or transfer evidence.
+The [dated design-validation record](../../plans/crucible-paged-ram/historical-design-validation.md)
+preserves the original 2026-10-05 checks, failures, and limits. It qualifies
+neither the current code revision nor a future implementation profile.

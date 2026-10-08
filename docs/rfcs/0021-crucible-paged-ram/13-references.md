@@ -20,6 +20,19 @@ Repository policies apply independently of this proposal's status.
 - [QEMU patch license manifest](../../../pkgs/emulation/qemu-patches/LICENSES.md):
   per-file obligations for additions and removals on the QEMU side.
 
+The proposed [RFC-0025 node contract](https://github.com/andyl-technologies/aos/tree/9f5015bd5a1813b6c9383f64a81d763882f094c2/docs/rfcs/0025-crucible-node-contract)
+is reviewed at commit `9f5015bd5a1813b6c9383f64a81d763882f094c2` in
+[PR 711](https://github.com/andyl-technologies/aos/pull/711). It is a proposed
+design, not an available implementation. Its
+[admission](https://github.com/andyl-technologies/aos/blob/9f5015bd5a1813b6c9383f64a81d763882f094c2/docs/rfcs/0025-crucible-node-contract/02-ports-capabilities-and-admission.md),
+[timing](https://github.com/andyl-technologies/aos/blob/9f5015bd5a1813b6c9383f64a81d763882f094c2/docs/rfcs/0025-crucible-node-contract/03-time-and-scheduling.md),
+[quantized operation](https://github.com/andyl-technologies/aos/blob/9f5015bd5a1813b6c9383f64a81d763882f094c2/docs/rfcs/0025-crucible-node-contract/04-quantized-and-physical-nodes.md),
+[state preservation](https://github.com/andyl-technologies/aos/blob/9f5015bd5a1813b6c9383f64a81d763882f094c2/docs/rfcs/0025-crucible-node-contract/05-state-and-replay.md),
+and [reference profiles](https://github.com/andyl-technologies/aos/blob/9f5015bd5a1813b6c9383f64a81d763882f094c2/docs/rfcs/0025-crucible-node-contract/07-reference-profiles-and-examples.md)
+provide the owner, mode, and compatibility vocabulary used by chapter 14.
+These pinned links deliberately do not assume that RFC-0025 exists in this
+checkout.
+
 ## 13.2 External standards and primary technical references
 
 - [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119.html) and
@@ -63,34 +76,30 @@ Repository policies apply independently of this proposal's status.
 - [QEMU VM templating](https://www.qemu.org/docs/master/system/vm-templating.html):
   memory sharing/COW options and their limitations.
 
+- [gem5 memory system](https://www.gem5.org/documentation/general_docs/memory_system/):
+  timing, atomic, and functional access paths and packet ownership. An observation
+  must audit its selected model's coherence and mutation behavior.
+- [gem5 checkpoints](https://www.gem5.org/documentation/general_docs/checkpoints/):
+  upstream checkpoint facilities; availability alone does not prove the no-drain,
+  complete modeled-state continuation required by the proposed exact profile.
+- [Linux KVM API](https://docs.kernel.org/virt/kvm/api.html): capability checks,
+  VM/vCPU/device object creation, dirty tracking, and descriptor lifetime. Its
+  process/thread restrictions and exposed-state interfaces do not establish
+  private continuation from inherited VM descriptors.
+
 Upstream `master` documentation is an explanatory reference, not a promise of
 feature availability in the patched QEMU version. The checked-in patch and
 capability tests against the release build control actual behavior.
 
-## 13.3 Source baseline
+## 13.3 Implementation companion and historical evidence
 
-The [integration map](01-current-system-and-integration.md) and consumer
-chapters link the relevant implementation. They were researched against
-`9d8ab78dff67348bbb38e2eda609eca67e413561` and are informative historical
-references. Particularly important evidence includes:
-
-- [Atomic QEMU integration patch](../../../pkgs/emulation/qemu-patches/crucible-qemu-11.1.1.patch):
-  memory observers, dirty clients, pre-save ordering, restore writes, fork
-  barriers, mapping disposition, and child reconstruction.
-- [Guest launch](../../../crates/crucible-qemu/src/launch.rs) and
-  [cgroups](../../../crates/crucible-qemu/src/linux_cgroup.rs): present anonymous
-  memory setup, deterministic timing profile, and disabled attempt swap.
-- [Exact checkpoint closure](../../../crates/crucible/src/exact_checkpoint.rs):
-  complete machine continuation and present direct/delta layer rules.
-- [CAS storage](../../../crates/crucible-cas/src/content_store.rs),
-  [packing](../../../crates/crucible-cas/src/content_store/packed.rs), and
-  [envelopes](../../../crates/crucible-cas/src/content_envelope.rs): existing
-  canonical serialized object identity, indices, limits, and closure ownership.
-- [Repository transfer](../../../crates/crucible-campaign/src/repository/transfer.rs):
-  transfer planning, closure validation, and publication integration.
-- [Campaign performance qualification](../../../tests/crucible/phase9-campaign-performance.nix):
-  baseline approval remains blocked at this revision; no new performance result
-  is asserted by this design record.
+The [implementation companion](../../plans/crucible-paged-ram/README.md)
+keeps current-code inventories, migration work, rollout phases, and evidence
+allocation separate from the normative RAM/profile contract. Its
+[current-state inventory](../../plans/crucible-paged-ram/current-state.md)
+identifies the source revision for each informative claim; the original RAM
+inventory was researched against `9d8ab78dff67348bbb38e2eda609eca67e413561`.
+Source links and historical measurements do not qualify a proposed capability.
 
 There are no IANA registrations requested by this RFC. New edition names,
 protocol majors, object kinds, control opcodes, and capability identifiers

@@ -21,6 +21,7 @@
     (chapter "10-validation-and-performance.md" "crucible-harness" ["gate:ram-performance"])
     (chapter "11-implementation-plan.md" "crucible-harness" [])
     (chapter "12-decisions-and-open-questions.md" "crucible-ram" ["gate:ram-performance"])
+    (chapter "14-implementation-profiles.md" "crucible-harness" [])
   ];
   discover = entry: let
     lines = lib.splitString "\n" (builtins.readFile entry.path);
