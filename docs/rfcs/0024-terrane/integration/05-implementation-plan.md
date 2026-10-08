@@ -1597,6 +1597,34 @@ inputs to the sealed commit and verifies both source checkouts remain unchanged
 through the original executions. The complete owning Nix request and current T1
 floor remain required on the combined candidate; no task or freeze advances.
 
+The reviewed Raw durability scope admits only actually created, canonical
+immutable metadata outputs unused by any consumed present or absent input.
+Complete source/current checks, target descriptor checks and exhaustive final
+output validation remain intact. The first `b2d113ee9b` all-target compile stops
+at four borrowed temporary view lifetimes in new tests. The separate
+`40420fa3ad` correction adds only four retained local bindings, preserving all
+production bytes and assertions. Its SDK build, strict library/all-targets
+Clippy, four genuine producer tests, ten real durability tests and thirteen
+focused cohort/handoff/cancellation regressions pass. The first new-test filter
+selected only four cases; the complementary ten run separately against their
+exact compiled names, with no ignored selected cases or repeat of the four.
+Independent review matches all 3,255 captured inputs to the sealed commit and
+verifies they remain unchanged through all eight original invocations.
+
+The unchanged 1,024-entry ordinary witness still fails in 75.880 seconds.
+Actual scope eligibility contains 233 outputs; Raw acknowledgement returns at
+25.255086930 seconds and durable staging completes at original ref elapsed
+28.336830056 seconds. The next genuine candidate-history call takes
+22.681971475 seconds, then the original ref deadline explicitly rejects
+51.359950697 seconds against 30 seconds with `Expired`. Baseline output,
+measured maintenance and independent oracles are not reached. This localizes
+the complete history-call span, without measuring its internal contributors or
+establishing throughput or DRV-29 conformance. The frozen combined `8e86fc32bc`
+candidate passes both mandatory format checks; its six owning fork derivations
+bind one independently reviewed immutable source containing 5,010 files and
+877 directories. The complete owning request and current T1 floor remain
+required; no task checkbox, milestone exit or freeze advances.
+
 Deployable as: a local tool that initializes a store under a `file://`
 root, commits a directory, forks and merges branches, and checks a commit
 out to a directory through the `sdk` surface.
@@ -1647,11 +1675,15 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   limits before dependency reads and actual current ACL revocation. The
   `chunk-bomb-cap` check also passes. The reviewed helper returns genuine
   dependency-first envelopes with verified plaintext lengths as ordinary data.
-  Native preload consumption and complete joint qualification remain required;
-  the reader stays on its task branch and T-CDC-1 remains open.
+  The reader stays on its task branch and T-CDC-1 remains open.
   Both actual codec checks also pass on the isolated joint candidate with the
-  reviewed reader merged. Native preload consumption remains on its workline;
-  these joint codec results do not advance task completion.
+  reviewed reader merged. The native preload consumer and its exact
+  paired-publication gate witness are implemented on the task branch.
+  Read-only review of the combined candidate confirms dependency-first genuine
+  envelopes, verified decoded lengths, every registered dictionary codec and
+  fresh source/destination checks. Current joint qualification of all five
+  task gates remains required; the earlier serial codec results do not advance
+  task completion.
   — satisfies
   OBJ-11 to OBJ-18, CDC-1 to CDC-20;
   `checks.terrane.gates.object-identity-from-manifest`,
