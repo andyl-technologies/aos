@@ -162,6 +162,25 @@
     else args;
 in
   mkDerivation (withCrossPreparation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          # Only the narrow server carries reviewed ARM64 cross answers; the
+          # full AD/DC suite still needs target Python cross configuration.
+          cpu = ["x86_64"] ++ lib.optional smbdOnly "aarch64";
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname =
       if smbdOnly
       then "samba-smbd"

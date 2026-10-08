@@ -18,6 +18,25 @@
   version = "0.8";
 in
   mkDerivation {
+    # The daemon closure includes Linux capabilities and requires ELF libraries.
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
+
     pname = "avahi-core";
     inherit version;
 
