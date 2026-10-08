@@ -80,7 +80,6 @@ pub mod ownership_authority_runtime;
 pub mod ownership_authority_server;
 mod ownership_clock;
 pub mod policy_authority_client;
-pub mod policy_binding_barrier;
 pub mod policy_cache_readback_client;
 pub mod policy_root_ack_client;
 pub mod policy_root_ack_v8_client;

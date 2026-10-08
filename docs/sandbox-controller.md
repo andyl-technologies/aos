@@ -51,23 +51,6 @@ legacy `AOSPHQ02`/`AOSPHQ03` queries; all services reject `AOSPHQ04`.
 The two versions cannot be configured together, and neither request version
 can select the other's signed project source.
 
-The closed `commit_fixed_parentless_create_closed_binding_v4` bridge starts
-with a held controller Create, then opens source-domain ancestry, physical
-Cache, and root CAS custody in order. It checks a supplied typed compiler
-input against those heads and derives the proposal's normalized input and
-candidate commitments under that cut. No controller production effect calls
-the bridge: its current executor retains the source-domain writer before the
-controller effect receives its journal. The accepted Create path also lacks
-a complete authenticated `PolicyCompilerInputV1` producer and recoverable
-policy effect handoff. Root still treats independently owned head fields as
-claims, and V2 replay remains non-authorizing.
-
-The Controller/source-domain portion is separately exposed as a held,
-non-authorizing callback. It re-reads the accepted Create, publisher,
-cache-domain, revocation, and ancestry heads before releasing either writer;
-the existing closed bridge composes physical Cache custody inside that scope.
-This does not make the root or Cache head independently current at publication.
-
 The physical Cache owner can now refuse release when volatile memory,
 quarantined orphans, staged disk operations, or uncertain manifest durability
 cannot be replayed. Its opaque reopen ticket reacquires the fixed owner lock

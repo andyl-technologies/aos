@@ -156,7 +156,9 @@ application-facing ports; this source grouping does not establish the target
 The fixed raw ownership-clock sampler now belongs to a private session-security
 mechanics module. Controller credential and lease factories remain private to
 the Controller integration; lower clock consumers no longer import that owner.
-The policy barrier's fixed Controller hold credential recipe remains a backedge.
+The unconsumed old policy barrier recipe is removed. The selected original
+generation-1 Q04 owner and live Controller hold credential recipes remain;
+retiring the old bridge's pure fixtures does not qualify that selected path.
 Inventory/history attestation also remains privately co-located with protected
 session recovery. In the current live inventory
 recipe, terminal revalidation drops its journal-and-peer loan before deriving

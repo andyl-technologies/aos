@@ -142,7 +142,7 @@ mod authority_effect;
 mod cache_readback_credential;
 mod capture_candidate_exchange;
 mod guest_root_credentials;
-pub(crate) mod hold_credential;
+mod hold_credential;
 pub(crate) mod inventory;
 mod no_apply_exchange;
 mod output_exchange;
