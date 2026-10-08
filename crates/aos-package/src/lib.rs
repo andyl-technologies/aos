@@ -20,9 +20,10 @@
 //! - **System** — selected by `--system`. State uses the system configuration
 //!   and profile under `/var/lib/profiles/system/`. On an AOS machine or VM,
 //!   system installation, upgrade, and rollback use the sysroot and boot
-//!   machinery (see [`sysroot`]). In an AOS container, these commands mutate
-//!   native package generations with startup phases deferred until the
-//!   container service runtime is available.
+//!   machinery (see [`sysroot`]). In an AOS container, `--system` aliases the
+//!   image's user package profile. Package and configuration mutations share
+//!   its native generations, with startup phases deferred until the container
+//!   service runtime is available.
 //!
 //! # Module map
 //!
@@ -196,8 +197,11 @@ use clap::{Args, Subcommand, ValueEnum};
 use aos_core::error::AosError;
 use aos_core::output::{OutputMode, Printer};
 use sysroot::SystemTransitionMode;
+#[cfg(test)]
+use types::ProfileScope;
+
 use types::{
-    ProfileScope, RegistryUploadAuthConfig, validate_branch_name, validate_channel_name,
+    RegistryUploadAuthConfig, validate_branch_name, validate_channel_name,
     validate_commit_hash, validate_git_ref_name, validate_registry_name,
 };
 
@@ -983,13 +987,14 @@ impl PackageCommand {
         }
     }
 
-    /// Returns whether the command selects system scope.
+    /// Returns whether the command requests system scope.
     ///
     /// Mutating and sysroot commands (`install`, `remove`, `upgrade`, `rollback`,
     /// `update`, `registry`) select the system scope to act on it; the
     /// read-only query commands (`search`, `show`, `list`, `depends`,
     /// `rdepends`, `policy`, `files`, `held`, `orphans`, `info`) select it to
     /// read the system registry cache and profile instead of the per-user ones.
+    /// Containers resolve both requests to their image's user package profile.
     pub fn is_system(&self) -> bool {
         match self {
             PackageCommand::Image { .. } => true,
@@ -2796,7 +2801,8 @@ async fn apply_runtime_worktree(
 /// Main entry point for package-consumer and private runtime operations.
 ///
 /// Loads the [`config::ApmConfig`] for the scope implied by the command
-/// (`--system` selects [`ProfileScope::System`]) and dispatches to the
+/// (`--system` selects [`types::ProfileScope::System`] on machines and aliases the
+/// image's user profile in containers) and dispatches to the
 /// matching module. Private configuration evaluation, materialization,
 /// checked activation, and stage commands are dispatched before generic
 /// package configuration loading because they authenticate and load their
@@ -2958,12 +2964,7 @@ pub async fn run(
 
     validate_system_transition_options(command)?;
 
-    let system = command.is_system();
-    let scope = if system {
-        ProfileScope::System
-    } else {
-        ProfileScope::User
-    };
+    let scope = runtime_boundary::profile_scope(command.is_system());
 
     let config = config::ApmConfig::load(scope)?;
 
@@ -3739,7 +3740,7 @@ fn package_attestation_catalog_from_sources(
 
 fn embedded_package_attestation_catalog()
 -> Result<Vec<package_attestation::PackageMeasurementCatalogEntry>> {
-    let profile = profile::Profile::open_readonly(ProfileScope::System);
+    let profile = profile::Profile::open_readonly(runtime_boundary::profile_scope(true));
     let Some(generation) = profile.current_generation()? else {
         return Ok(Vec::new());
     };
@@ -3929,11 +3930,7 @@ pub async fn run_apr(
     if system {
         environment::RuntimeRequirement::AosRoot.validate()?;
     }
-    let scope = if system {
-        ProfileScope::System
-    } else {
-        ProfileScope::User
-    };
+    let scope = runtime_boundary::profile_scope(system);
     let config = config::ApmConfig::load(scope)?;
     let _dry_run_guard = dry_run.then(dry_run::ScopedDryRun::enter);
 

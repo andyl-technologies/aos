@@ -164,10 +164,10 @@ in {
           --output /var/lib/aos-container-fixtures/cache \
           --cache-url http://127.0.0.1:18120 \
           --priority 45 \
-          --no-commit
-        ${pkgs.git}/bin/git -C "$REG_DIR" add -A
-        ${pkgs.git}/bin/git -C "$REG_DIR" commit \
-          -m 'release: container-runtime-tool 1.0.0'
+          --registry-key-id initial
+        "$APR" release 1.0.0 \
+          --registry container-runtime-reg \
+          --key-id initial --channel stable --init-channel
 
         cp -a "$REG_DIR" /var/lib/aos-container-fixtures/registry
         PYTHONUNBUFFERED=1 ${pkgs.coreutils}/bin/nohup \
