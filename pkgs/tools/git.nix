@@ -32,7 +32,7 @@
   isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
   nativeCargoTarget = lib.toUpper (builtins.replaceStrings ["-"] ["_"] stdenv.buildPlatform.config);
   buildBash =
-    if isDarwinCross
+    if stdenv.isCross
     then buildPackages.bash
     else bash;
   buildPerl =
@@ -81,7 +81,8 @@
     if minimal
     then featureFlags
     else "PERL_PATH=${buildPerl}/bin/perl PYTHON_PATH=${buildPython3}/bin/python3";
-  buildShellFlag = "SHELL_PATH=${buildBash}/bin/bash";
+  # Make's parse-time commands and Git's helper scripts both need the builder shell.
+  buildShellFlag = "SHELL=${buildBash}/bin/bash SHELL_PATH=${buildBash}/bin/bash";
   # Link the declared target library without executing curl-config, whose
   # interpreter may be unavailable in the sandbox or on a cross builder.
   curlLinkFlag = ''CURL_LDFLAGS="-L${curl}/lib -lcurl"'';
@@ -136,11 +137,12 @@ in
         python3
       ];
     propagatedDeps = [];
-    disallowedReferences = lib.optionals isDarwinCross (
-      [buildBash]
-      ++ lib.optionals (!minimal) [buildPerl buildPython3]
-      ++ [buildPackages.gettext]
-    );
+    disallowedReferences =
+      lib.optionals stdenv.isCross [buildBash]
+      ++ lib.optionals isDarwinCross (
+        lib.optionals (!minimal) [buildPerl buildPython3]
+        ++ [buildPackages.gettext]
+      );
 
     phases = [
       {
@@ -153,7 +155,8 @@ in
       {
         name = "configure";
         script = ''
-          make configure${lib.optionalString stdenv.isCross ''
+          export CONFIG_SHELL=${buildBash}/bin/bash
+          make configure ${buildShellFlag}${lib.optionalString stdenv.isCross ''
 
             # These runtime probes describe fixed target-libc behavior. Seed
             # them when the target binaries cannot run on the Linux builder.
@@ -162,7 +165,7 @@ in
           ''}${lib.optionalString isDarwinCross ''
             export ac_cv_iconv_omits_bom=no
           ''}
-          ./configure \
+          "$CONFIG_SHELL" ./configure \
             $configureFlags \
             --prefix=$out \
             --with-curl=${curl} \
@@ -210,7 +213,7 @@ in
             ${curlLinkFlag} \
             ${cargoTargetFlags} \
             ${buildFeatureFlags}
-          ${lib.optionalString isDarwinCross ''
+          ${lib.optionalString stdenv.isCross ''
             retarget_tool_root() {
               nativeRoot=$1
               targetRoot=$2
@@ -219,14 +222,14 @@ in
                 echo "cannot retarget unequal-length store paths" >&2
                 exit 1
               fi
-              # Git also compiles these paths into Mach-O binaries, so search
+              # Git also compiles these paths into target binaries, so search
               # binary and text outputs. Equal-length replacement preserves
               # load-command and string-table offsets.
               { grep -rlZ -F "$nativeRoot" "$out" 2>/dev/null || true; } \
                 | xargs -0 -r sed -i "s|$nativeRoot|$targetRoot|g"
             }
             retarget_tool_root ${buildBash} ${bash}
-            ${lib.optionalString (!minimal) ''
+            ${lib.optionalString (isDarwinCross && !minimal) ''
               retarget_tool_root ${buildPerl} ${perl}
               retarget_tool_root ${buildPython3} ${python3}
             ''}
