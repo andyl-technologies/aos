@@ -2025,6 +2025,21 @@ resolver's final physical fence. Its dispatch and observation timing can differ;
 no identical sampling or performance improvement is claimed. Fresh compiler,
 protected-read, ACK/counter and deadline qualification remain pending.
 
+That frozen `201f568606` subsequently passes fresh SDK compilation, strict
+library and all-target Clippy, and actual discovery of 794 native cases.
+All 76 reviewed, disjoint exact regressions execute once and pass in
+173.597 seconds, including protected/scalar reads, final physical fences,
+native backfill and actual ACK/counter checks. One successful case is reported
+as slow; no selected case is ignored. Its single unchanged ordinary 1,024-entry
+witness then fails after 65.432 seconds with explicit expiry at
+38.539708890 seconds against the original 30-second writer maximum.
+Baseline publication, maintenance and independent oracles remain unreached;
+the other five required populations remain unrun. Independent review verifies
+all six original terminal commands, twelve source snapshots, 6,077 unchanged
+tracked contents and modes, actual compiled selections and the selected
+runtime executable's pre/post bindings. The failure is preserved without retry;
+these passes do not qualify DRV-29 or prove a cross-run speedup.
+
 Reviewed private `85558972ae` adds six public format properties for the existing
 common Memo, closed index bindings and recipes, opaque index keys, and generic
 empty Nodes in explicit index roles. SDK compilation, strict library and
@@ -2140,6 +2155,29 @@ and the mandatory formatter pair passes. Compiler, runtime and full-floor
 qualification remain unrun; historical component successes do not qualify this
 joint source. The original collector run and queued native-read qualification
 retain their separate frozen sources and evidence.
+
+Read-only review of that joint source identifies a remaining TEST-4 coverage
+gap: existing algebra tests lack an independent ordered-map model for every
+current trunk operation, and equal-root or loose work bounds do not prove
+internal triple-equal subtree pruning. An isolated test-only correction adds
+separate map semantics and an exact changed-ancestor expansion witness through
+seven existing registered selectors, preserving their original assertions.
+Its initial strict Clippy run finds a range-loop lint; the mechanical correction
+on private `e63ae23652` passes fresh Core compilation, strict all-target Clippy,
+the no-default-features build and both mandatory formats. Its seven exact
+registered cases then pass in 0.780 seconds, and the complete Core run passes
+all 718 tests with zero skips in 18.140 seconds; strict private rustdoc passes.
+Independent review binds actual compiled nonignored cases, original commands,
+unchanged 6,092 inputs and all ten pre/post executable captures. The original
+reporting omits individual successful names, so full-run coverage depends on
+the unfiltered command, compiled inventory and zero-skipped summary.
+The subsequent test-only cleanup on `f5f1f3a57d` documents reachable panics and
+removes one newly duplicated assertion; both mandatory formats pass. Its owning
+graft and diff Nix checks pass 25 and five exact cases. The owning merge check
+is still running; historical Core results do not qualify its complete native
+body or the full trunk floor. This work changes no production behavior or format.
+The `perf-merge-delta` reporting gate
+remains T6 work under T-PERF-1, independently of these current T1 test obligations.
 
 The sealed current floor contains 89 aggregate gates, including all 69 T0/T1
 plan-required names and twenty implemented supporting checks. Read-only evaluation
