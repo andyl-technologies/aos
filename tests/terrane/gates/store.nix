@@ -76,6 +76,16 @@ in {
     if not selected <= packages.keys():
         raise SystemExit(f"missing Terrane crates: {sorted(selected - packages.keys())}")
 
+    # New declarations need an explicit compatibility decision in the aggregate
+    # profiles below; isolated feature tests cannot establish their interactions.
+    aggregate_features = {"default", "std", "send", "tokio", "wasm", "surface-sdk"}
+    declared_features = set(packages["terrane"]["features"])
+    if declared_features != aggregate_features:
+        raise SystemExit(
+            "update Terrane aggregate profiles for declared features: "
+            f"{sorted(declared_features)}"
+        )
+
     for name in ("terrane-cli", "aos-terrane"):
         dependency = next(dep for dep in packages[name]["dependencies"] if dep["name"] == "terrane")
         bindings = set(dependency["features"]) & {"tokio", "wasm"}
@@ -104,8 +114,8 @@ in {
         for crate in terrane-core terrane terrane-fs terrane-cli aos-terrane; do
           test_crate "$crate" --no-default-features
           if [ "$crate" = terrane ]; then
-            test_crate "$crate" --no-default-features --features std,send,tokio
-            test_crate "$crate" --no-default-features --features std,wasm
+            test_crate "$crate" --no-default-features --features std,send,tokio,surface-sdk
+            test_crate "$crate" --no-default-features --features std,wasm,surface-sdk
           else
             test_crate "$crate" --all-features
           fi

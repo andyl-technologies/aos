@@ -2230,8 +2230,19 @@ The reviewed seven-file private feature-boundary correction on `a91cf86221`
 fails its first strict no-default library check with two remaining unused
 imports: the provenance module qualifier and `SelectedReadInterpretation`
 reexport. Its later profiles and principal runtime tests remain unrun; a minimal
-correction is being prepared within the same file ownership, without lint
-exceptions or unchanged-source retries. Test-only native-check instrumentation
+correction on `b98ace483a` passes strict no-default library and all-target
+Clippy. Both genuine principal tests and the portable graft-interpretation
+test are discovered before exact execution and each passes without ignored
+cases on the same compiled executable. The following strict `std` all-target
+check stops on three unused test helpers/imports; later profiles and private
+rustdoc remain unrun. The reviewed correction `a5efcc7ceb` adjusts only their
+existing consumer feature boundaries; its new-source checks remain pending.
+Original failures, source seals and the portable test executable are retained,
+without lint exceptions or unchanged-source retries. A CRATE-29 source audit
+also finds `surface-sdk` absent from both compatible feature-matrix aggregates.
+The shared gate now selects it in the native and native-target WASM-binding
+profiles and rejects declared-feature inventory drift; its full execution on
+composed source remains required. Test-only native-check instrumentation
 on `772cf43ea7` passes source review: removing the reviewed diagnostic insertions
 restores both production files' exact original bytes. Its physical refusal,
 clock-sample and effect parity tests remain unrun. These local commits remain
