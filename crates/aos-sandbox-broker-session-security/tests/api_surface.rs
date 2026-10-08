@@ -12,12 +12,21 @@ const NETWORK_SERVICE_SOURCE: &str = include_str!("../../aos-sandbox-network/src
 
 #[test]
 fn dependency_boundary_keeps_crypto_and_application_ownership_explicit() {
-    for forbidden in ["\nrand =", "\nrand_core =", "\ngetrandom =", "journal"] {
+    for forbidden in ["\nrand =", "\nrand_core =", "\ngetrandom ="] {
         assert!(
             !CRATE_MANIFEST.contains(forbidden),
             "forbidden dependency marker: {forbidden}"
         );
     }
+
+    // The native floor shares checked preparation geometry with the mechanics
+    // crate; keep that existing edge explicit without admitting application owners.
+    assert_eq!(
+        CRATE_MANIFEST
+            .matches("aos-sandbox-journal.workspace = true")
+            .count(),
+        1
+    );
 
     // The complete method adapters own canonical protobuf traffic directly;
     // keep that wire dependency explicit instead of adding a generic codec.
