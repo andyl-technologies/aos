@@ -661,7 +661,7 @@ mod tests {
     };
     use aos_sandbox_core::format::encode_policy;
     use aos_sandbox_core::model::{
-        CacheDomain, Policy, ResourceProfile, RevocationMode, RevocationPolicy,
+        CacheDomain, CacheDomainKind, Policy, ResourceProfile, RevocationMode, RevocationPolicy,
     };
     use aos_sandbox_core::{CacheDomainId, Grant, GrantId, OperationSet};
     use ed25519_dalek::{Signer as _, SigningKey};

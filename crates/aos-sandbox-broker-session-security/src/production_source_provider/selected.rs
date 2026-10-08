@@ -818,7 +818,7 @@ mod tests {
     #[test]
     fn failed_read_refuses_reentry_without_replacing_its_native_cause() {
         let mut reader = SelectedCatalogReadV1 {
-            filesystem_root: Some(Err(rustix::io::Errno::ACCES)),
+            filesystem_root: Some(Err(rustix::io::Errno::ACCESS)),
             attempted: true,
             ..SelectedCatalogReadV1::default()
         };
@@ -827,7 +827,7 @@ mod tests {
 
         assert!(result.is_err());
         assert!(matches!(reader.failure(), Some(CatalogReadFailureRefV1::Kernel(error))
-            if *error == rustix::io::Errno::ACCES));
+            if *error == rustix::io::Errno::ACCESS));
         assert!(reader.checked_root.is_none());
         assert!(reader.directory.is_none());
         assert!(reader.file.is_none());

@@ -8768,6 +8768,9 @@ mod tests {
                 ControllerCommand::ReadPublicProjection { .. } => {
                     panic!("root diagnostics must not enter public projection reads")
                 }
+                ControllerCommand::InspectGitRead { .. } => {
+                    panic!("root diagnostics must not enter delegated Git reads")
+                }
                 ControllerCommand::BootstrapPublicCapability { .. }
                 | ControllerCommand::PlanPublicPolicy { .. }
                 | ControllerCommand::AdmitPublicOperatorRecovery { .. }
