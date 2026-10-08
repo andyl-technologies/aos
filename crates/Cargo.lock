@@ -847,6 +847,7 @@ dependencies = [
  "aos-proto",
  "aos-sandbox-agent",
  "aos-sandbox-broker-session-protocol",
+ "aos-sandbox-coordinator-protocol",
  "aos-sandbox-core",
  "aos-sandbox-guest-root-tree",
  "aos-sandbox-journal",
@@ -1046,6 +1047,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-sandbox-coordinator-protocol"
+version = "0.1.0"
+dependencies = [
+ "aos-proto",
+ "buffa",
+ "buffa-codegen",
+ "connectrpc",
+ "connectrpc-build",
+ "futures",
+ "http-body 1.0.1",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "aos-sandbox-core"
 version = "0.1.0"
 dependencies = [
@@ -1079,6 +1095,7 @@ version = "0.1.0"
 dependencies = [
  "aos-sandbox-agent",
  "aos-sandbox-core",
+ "aos-sandbox-guest-root-realization",
  "aos-sandbox-guest-root-tree",
  "aos-sandbox-linux",
  "ed25519-dalek",
@@ -1091,6 +1108,18 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "zeroize",
+]
+
+[[package]]
+name = "aos-sandbox-guest-root-realization"
+version = "0.1.0"
+dependencies = [
+ "aos-sandbox-agent",
+ "aos-sandbox-guest-root-tree",
+ "aos-sandbox-linux",
+ "rustix 1.1.4",
+ "tempfile",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -1114,7 +1143,7 @@ dependencies = [
  "aos-sandbox-broker",
  "aos-sandbox-core",
  "aos-sandbox-guardian",
- "aos-sandbox-guest",
+ "aos-sandbox-guest-root-realization",
  "aos-sandbox-linux",
  "aos-sandbox-protocol",
  "aos-systemd",
@@ -1437,7 +1466,7 @@ dependencies = [
  "aos-sandbox-agent",
  "aos-sandbox-broker",
  "aos-sandbox-core",
- "aos-sandbox-guest",
+ "aos-sandbox-guest-root-realization",
  "aos-sandbox-guest-root-tree",
  "aos-sandbox-journal",
  "aos-sandbox-linux",

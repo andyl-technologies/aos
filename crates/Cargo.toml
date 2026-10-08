@@ -130,6 +130,7 @@ default-members = [
     "aos-sandbox-agent",
     "aos-sandbox-client",
     "aos-sandbox-guest",
+    "aos-sandbox-guest-root-realization",
     "aos-sandbox-guest-root-tree",
     "aos-sandbox-core",
     "aos-sandbox-journal",
