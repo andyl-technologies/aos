@@ -25,7 +25,10 @@ Requirement keywords in capital letters use the interpretation of BCP 14,
 [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119.html) and
 [RFC 8174](https://www.rfc-editor.org/rfc/rfc8174.html). Lowercase words carry
 their ordinary prose meaning. This RFC places binding requirements in uniquely
-identified paragraphs; surrounding explanations and sketches are informative.
+identified paragraphs and in schemas or tables explicitly incorporated by those
+requirements. For example, CN-IPC-39 incorporates the normative CNP/1 core
+object schemas. Surrounding explanations and sketches are informative unless
+an identified requirement explicitly incorporates them.
 
 **[CN-MODEL-1]** A conformance claim MUST identify the implemented requirement
 set, node roles, operating modes, guarantee profiles, and protocol versions;

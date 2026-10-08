@@ -140,8 +140,13 @@ An introspection facet does not grant debugger mutation permission.
 The lifecycle states are `Unrealized`, `Prepared`, `Stopped`, `Executing`,
 `FailedContained`, `Quarantined`, and `Released`. `Prepared` means native
 resources exist but are not available for semantic execution. `Stopped` means
-the admitted stopped-boundary contract is established. `Executing` means an
-operation is outstanding; it does not imply completed logical progress.
+the admitted logical operation or visibility window is closed. It does not
+universally mean that a physical environment has paused. An autonomous USB
+device, for example, can continue physical activity while its adapter retains
+the closed window's inputs for later classification. Physical stopped-state
+claims require the separately supported pause facet and its authentic receipt.
+`Executing` means an operation is outstanding; it does not imply completed
+logical progress.
 
 Typical successful paths are:
 
@@ -161,13 +166,35 @@ to an owner that can complete containment and reclamation.
 semantic activity such as runnable, halted, event-driven, or powered off.
 An unknown process status MUST NOT imply a stopped boundary.
 
-**[CN-NODE-11]** Activation MUST occur only after realization admission and
-complete initialization or restore validation. A prepared node MUST NOT accept
-an ordinary execution admission before that activation succeeds.
+**[CN-NODE-11]** Before any owner accepts an ordinary execution grant, the
+complete activation group MUST have passed realization admission and initial
+state or restore validation, every required owner MUST have staged an
+authenticated ready token, and the coordinator MUST have durably published the
+world activation record binding that roster and generation. Individual owner
+activation MUST only establish readiness and MUST NOT grant semantic execution
+or external input publication before that world barrier.
+
+**[CN-NODE-54]** Each ordinary execution or semantic publication admission
+MUST refer to the committed world activation record and matching owner-ready
+generation. A stale ready token, unknown publication status, or incomplete
+owner roster MUST prevent dispatch effects until reconciliation or containment.
+
+**[CN-NODE-55]** Failure before world activation publication MUST leave staged
+owners inaccessible to ordinary semantic operations and MUST preserve or
+contain their resources without publishing a partial world. Failure after
+publication MUST retain and contain actual committed effects; it MUST NOT be
+reported as rollback of those effects or as proof of simultaneous physical
+startup across owners.
 
 **[CN-NODE-12]** A stopped node MUST retain its authentic boundary and all
 pending outputs, inputs, queue custody, and incomplete publications until the
 coordinator completes the corresponding protocol or containment action.
+
+**[CN-NODE-56]** A node MUST distinguish logical window closure from actual
+physical suspension in its status and receipts. A request for genuine physical
+pause MUST require the supported pause facet and MUST refuse without claiming
+suspension when that facet is unavailable. Closing a visibility window MUST NOT
+be used to acknowledge a physical pause request.
 
 **[CN-NODE-13]** Lifecycle release MUST occur only after all retained native
 resource obligations are discharged or transferred to an authenticated
@@ -194,12 +221,12 @@ cross-process names and encodings are those of chapter 06.
 | `exact_run` | Execute within an authenticated exact permission and report the actual stop. |
 | `quantum_begin` | Start an admitted quantized window, retaining its actual-progress obligation. |
 | `quantum_close` | Close that original window and settle its admitted visibility/evidence policy. |
-| `pause` | Establish an authenticated physical stop without inventing a completion coordinate. |
+| `pause` | Use the supported physical pause facet to establish an authenticated stop without inventing a completion coordinate. |
 | `input` | Stage or publish one original admitted input under retained owner custody. |
 | `observe` | Read an authorized boundary or operation observation without semantic mutation. |
-| `capture` | Contribute exact preserved owner state to a specified capture transaction. |
+| `capture` | Contribute preserved owner state within the declared capture scope to a specified transaction. |
 | `prepare_restore` | Prepare an inactive compatible owner from a validated state contribution. |
-| `world_activate` | Make the complete restored/realized capture group available after admission. |
+| `world_activate` | Durably publish the complete ready owner roster and world generation before any ordinary execution grant. |
 | `shutdown` | End semantic access and initiate supervised owner shutdown. |
 | `abort` | Contain an incomplete realization, restoration, or world transaction. |
 | `release` | Discharge resource custody after authenticated reclamation or transfer. |
@@ -207,8 +234,13 @@ cross-process names and encodings are those of chapter 06.
 `begin`, `poll`, and `cancel` manage outstanding operations; they do not change
 the semantics of the contained operation. `hello`, `discover`, `realize`,
 `admit`, and `activate` establish the provider relationship and initial
-realization. World activation is the atomic publication barrier when multiple
-prepared owners participate in one transaction.
+realization. Initial `activate`, like restored owner activation, produces a
+ready token while withholding ordinary execution and semantic publication.
+`world_activate` is the coordinator's durable publication barrier for the
+complete group, including a singleton group. It authorizes subsequent admitted
+operations, not simultaneous physical starts. Autonomous physical activity
+before publication remains subject to chapter 04's capture and containment
+policy and does not become an admitted semantic event by itself.
 
 **[CN-NODE-15]** Every mutating operation MUST validate its admission against
 the actual realization, owner incarnation, boundary generation, operation kind,
@@ -259,7 +291,8 @@ chapters. The selected mode supplies the exact receipt structure.
 | Observe | Authorized observation scope | Bounded observation with completeness status | Preserve unknown; refuse corrupt observations |
 | Capture | Stopped compatible owner roster | Immutable capture contribution | Keep source stopped; discard unpublished partial manifest |
 | Restore | Compatible validated state closure | Prepared replacement owners | Keep replacements inactive; quarantine failed native owners |
-| Activate | Complete world/group admission | Accessible stopped realization | Keep incomplete world inaccessible |
+| Activate owner | Validated prepared owner | Staged ready token with execution withheld | Keep incomplete world inaccessible |
+| Activate world | Complete ready roster and durable publication | Execution admissions can refer to committed world record | Reconcile uncertain publication; contain actual committed effects |
 | Cancel | Original operation association | Cancellation status and eventual terminal receipt | Do not infer rollback or stopped state |
 | Release | End of semantic access and retained custody | Reclamation or supervised transfer | Retain resource ownership through failure |
 
@@ -368,6 +401,10 @@ trait NodeProvider {
 
 The prepared and realized values retain resource custody. A failure containing
 live native resources is an owned failure value, not merely a diagnostic string.
+The `RealizedNodeSet` returned by provider admission contains admitted handles;
+those handles remain unavailable for ordinary execution until the coordinator's
+world activation barrier has completed. Neither the return value nor a local
+provider ready acknowledgement constitutes that barrier.
 
 **[CN-NODE-36]** Provider discovery MUST identify executable/model identities,
 protocol versions, supported profiles, and qualification evidence before

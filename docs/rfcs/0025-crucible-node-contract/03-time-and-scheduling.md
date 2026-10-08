@@ -121,6 +121,13 @@ An exact grant is an immutable coordinator authorization for one state owner to
 execute within a bounded simulation interval. Authorization and evidence of
 actual execution are distinct records.
 
+The protocol represents a position as `{ time_ps, microstep, phase }` under the
+selected ordering profile. A time-window limit at physical tick `H` is the
+position `(H, 0, boundary-control)`: its half-open bound excludes every semantic
+position at `H`. A boundary-settlement grant instead names a bounded range of
+positions at one physical tick. These forms share a representation but confer
+different permission.
+
 **[CN-TIME-8]** An exact grant MUST bind the world realization, node or jointly
 owned node set, owner generation, grant identity, start coordinate, limit,
 boundary policy, complete input authorization, and selected operating mode.
@@ -128,16 +135,32 @@ Retries MUST retain the same identity and MUST NOT duplicate inputs or effects.
 A provider MUST NOT widen a grant, choose another node, or derive a new grant
 from host completion order.
 
-The basic executable interval is `[start, limit)`. Work at `limit` is not
-authorized by the grant. A provider may reach a parked position at `limit` while
-retaining all execution that would observe events there blocked. Settlement and
-a new grant authorize subsequent execution.
+The basic executable interval is `[start, limit)`. No semantic transition at
+`limit` is authorized by that grant, whether or not it requires external input.
+A provider may report an administrative parked position at `limit`, but that
+park MUST change no modeled state or consume any due event there. An explicit
+boundary-settlement authorization and, where applicable, a new execution grant
+authorize subsequent work.
 
-**[CN-TIME-9]** An exact provider MUST NOT execute any state transition requiring
-input or arbitration at or beyond its granted limit. It MUST return an
+**[CN-TIME-9]** An exact provider MUST NOT execute any semantic transition at or
+beyond its granted limit. It MUST return an
 authenticated reached position and stop reason, including any retained
 input-blocked boundary. A returned scalar equal to the limit MUST NOT substitute
-for proof that the provider stopped before executing boundary-dependent work.
+for proof that the provider stopped before executing any transition there.
+
+A semantic transition is any modeled state mutation, event consumption,
+instruction retirement, observation-dependent decision, or visible effect. Its
+coordinate is the modeled instant and superdense microstep/phase at which the
+change occurs, not when its host callback starts or returns. A private pipeline
+event remains semantic work even when no public port reports it.
+
+**[CN-TIME-27]** An atomic modeled step with effects spanning a granted limit
+MUST be refused before those effects occur, or divided into qualified,
+preservable in-flight transitions whose individual coordinates obey the grant.
+An implementation MUST NOT execute across a limit and then clamp the reported
+time or buffer only the public output. Internal native events wholly inside an
+authorized window MAY execute without a host stop after every event; all
+externally relevant arbitration and output bounds still apply.
 
 Stopping before the limit is permitted for an actual output, selectable request,
 timer or device arbitration, lifecycle event, or an authenticated tighter bound.
@@ -265,40 +288,164 @@ decisions made without an earlier input.
 
 ## 6. Same-Time Events and Zero-Latency Paths
 
-**[CN-TIME-17]** External event delivery MUST use a canonical total order with
-the simulation instant first and stable consumer, producer, and sequence
-identities as tie-breakers. Host collection order, thread completion order,
-socket arrival order, and memory address MUST NOT determine that order.
-Each producer sequence MUST survive capture and restore without renumbering.
+**[CN-TIME-17]** The target baseline event-order profile MUST be
+`superdense-v1`, ordered by `(instant, microstep, phase, consumer identity,
+producer identity, sequence)`. Microstep MUST be an unsigned 64-bit integer.
+The fixed phases in increasing order are `boundary-control = 0`,
+`publication = 1`, `delivery = 2`, and `reaction = 3`. Host collection order,
+thread completion order, socket arrival order, and memory address MUST NOT
+determine this order. Each producer sequence MUST survive capture and restore
+without renumbering.
 
-The compatibility baseline orders admitted deliveries by
-`(instant, consumer identity, producer identity, sequence)`. A transport's own
-authoritative FIFO order remains part of the producing node's semantics. A
-coordinator must not reorder a live FIFO to imitate a complete modeled arrival
-batch that it did not actually collect.
+**[CN-TIME-35]** The sequence used in the public ordering key MUST be monotone
+and unique across all events from one producer node, including all output ports,
+lanes, connections, and per-recipient fanout deliveries. The producer's sequence
+allocation state MUST be preserved with its continuation. Native FIFO sequence,
+request identity, and transport epoch MUST remain separate retained provenance;
+their narrower scope MUST NOT be substituted for the public node-wide sequence.
+Fanout deliveries MUST retain their common publication lineage while using
+distinct public sequence identities.
 
-**[CN-TIME-18]** The coordinator MUST distinguish arrival collection, node-local
-evaluation, publication, delivery arbitration, and subsequent execution.
-At an unresolved input boundary, all authorized due inputs MUST be staged and
-acknowledged before dependent execution resumes. A model requiring a same-time
-phase or microstep order MUST bind that policy in the realized world and saved
-continuation; it MUST NOT introduce an implicit phase change based on payload
-class or provider implementation.
+A superdense coordinate describes ordered work at one physical simulation tick.
+It does not add picoseconds to that tick. Root events at an instant use microstep
+zero: coordinator controls occupy phase zero, already produced publications
+phase one, due input delivery phase two, and independent native alarms or node
+reactions phase three. A reaction to an admitted event MUST NOT be classified as
+an independent root merely because its provider received it through a different
+operation.
 
-Boundary settlement is not permission to execute arbitrary zero-time work. A
-node's native equal-timestamp event order is also part of its preserved state;
-the public canonical order does not replace or reconstruct that internal order.
+**[CN-TIME-18]** Every semantic reaction at `(t, m, phase)` that emits another
+event at `t` MUST assign that publication microstep at least `m + 1`.
+This applies to input and control reactions, independently armed native alarms,
+internal model events, device completion evaluation, and execution that
+discovers an output. The baseline assigns exactly one microstep after the
+greatest same-time causal parent; its delivery uses phase two of that new
+microstep. An independent native alarm at `(t, 0, reaction)` therefore publishes
+a same-time interrupt at `(t, 1, publication)`, never retroactively in phase one
+of microstep zero.
 
-**[CN-TIME-19]** Zero-latency cycles MUST be refused unless the realized graph
-selects a qualified same-time arbitration policy. Such a policy MUST define
-microstep identity, deterministic tie-breaking, finite convergence or explicit
-nonconvergence failure, and how input closure is established. Advancing time by
-one tick to break a cycle MUST NOT occur implicitly.
+A publication delivered through a direct zero-delay connection MAY use delivery
+phase two of the publication's existing microstep: this is transfer of an
+already produced event, not a new reaction emission. A modeled link or device
+that evaluates a delivery and emits a new event follows the next-microstep rule.
+An event scheduled at a strictly later physical instant becomes a root there,
+unless it already has a retained same-time causal coordinate. An earlier
+evaluation can thus retain a future root publication; evaluating a native event
+at the publication's own instant cannot claim that earlier-origin exemption.
 
-Acyclic zero-latency paths can be evaluated in a defined topological same-time
-order. Cyclic combinational device graphs may require a fixed-point policy. An
-arbitrary microstep limit is an operational nonconvergence guard, not evidence
-that a stable physical state exists or a guest assertion failed.
+No reaction can precede its cause in the public order. Distinct unrelated events
+within one microstep and phase use endpoint and sequence ties. An authoritative
+native FIFO remains part of the producing node's semantics; the public order
+does not authorize reordering that FIFO or reconstructing a simulator's private
+equal-time queue.
+
+**[CN-TIME-19]** Zero-latency cycles MAY be admitted under `superdense-v1` only
+when the participant set supports complete microstep closure and the world binds
+a finite maximum microstep count per instant. If the cycle does not quiesce
+within that count, execution MUST end with operational nonconvergence failure.
+The coordinator MUST NOT implicitly advance physical time, suppress events, or
+claim a fixed point to break the cycle. Microstep arithmetic overflow MUST fail
+before the resulting event is published.
+
+**[CN-TIME-28]** At each microstep, the coordinator MUST complete a phase before
+committing a later phase that could observe its effects. Closure MUST prove that
+no authorized participant can subsequently publish earlier-phase work at that
+coordinate. Input deliveries at one phase MUST be collected and canonically
+staged before its dependent reaction phase executes. An instant is globally
+closed only after all same-time causal microsteps and required owner receipts
+are resolved, with no unresolved same-time source remaining.
+
+**[CN-TIME-32]** A producer's physical tick alone MUST NOT be treated as proof of
+closure of every microstep at that tick. Bounds and receipts MUST identify
+whether they close a prefix before
+a superdense coordinate, through a phase, through a microstep, or through the
+whole instant. Future grants cannot reinterpret the weaker claim as the stronger
+one. Provider-private events may remain internal where their execution cannot
+produce unresolved public work in an already closed phase. Private event
+ordering and causal ancestry MUST remain sufficient to assign any resulting
+public emission to the correct unclosed microstep.
+
+**[CN-TIME-33]** An ordinary `exact_run` MUST NOT close all phases at each tick
+merely by reaching that tick. If native execution discovers an output during
+reaction work at
+`(t, m, reaction)`, the retained publication belongs to microstep `m + 1` and
+remains pending until its phase is authorized and committed. The returned receipt
+MUST identify that reaction position, pending publication membership, and actual
+closure prefix. It MUST NOT insert the output into a publication phase already
+closed earlier in the run. A provider unable to establish this ordering MUST
+refuse the applicable same-time capability before execution.
+
+**[CN-TIME-29]** Due work at an execution limit MUST use an explicit
+boundary-settlement grant naming the instant, authorized microstep/phase range,
+complete relevant input authorization, and execution owner. Settlement MAY
+permit admitted reaction work at that instant but MUST NOT authorize execution
+at a later physical tick. A provider unable to separate settlement from later
+execution MUST refuse that operation. A parked receipt alone supplies no such
+permission.
+
+**[CN-TIME-31]** Exact execution and boundary-settlement grants MUST carry
+ordered start and limit positions and apply half-open position semantics.
+An `exact_run` physical time ceiling MUST exclude all positions at its ceiling
+tick; `boundary_settle` MUST restrict work to the authorized position range at
+one tick. A receipt MUST distinguish an administrative park at the physical
+ceiling from a committed semantic prefix there. Position fields MUST NOT permit
+an implementation to reinterpret a time-window grant as unlimited settlement.
+
+**[CN-TIME-30]** Realization identity, grants, receipts, causal bounds, pending
+events, transcripts, and captures MUST bind the event-order profile and retained
+microstep/phase fields. The legacy positive-latency order
+`(instant, consumer, producer, sequence)` MAY be supported only as a separately
+versioned compatibility profile whose admission excludes cross-owner same-time
+reactions that need causal microsteps. A new codec and compatibility binding MUST
+be used for `superdense-v1`; missing fields MUST NOT be inferred from endpoint
+order or silently assigned zero during restore.
+
+**[CN-TIME-34]** A publication's position and its destination delivery position
+MUST be retained as distinct lifecycle evidence. A direct same-time transfer
+publishes in phase one and is
+delivered in phase two of the same microstep. The event's retained identity and
+causal parent membership connect those records; a codec MUST NOT overwrite the
+publication position to hide how its delivery was authorized. Same-time fanout
+retains each recipient's delivery identity and the common publication lineage.
+
+### 6.1. Worked Example: Reverse Lexical Chain
+
+Suppose a root event from `Z` is delivered to `B` at tick 100. Its reaction emits
+an event to `A` with zero modeled latency. Endpoint names sort `A < B < Z`.
+
+```text
+cause:       (100, 0, delivery, B, Z, 0)
+reaction:    (100, 0, reaction, B, B, 0)
+effect:      (100, 1, publication, A, B, 0)
+delivery:    (100, 1, delivery, A, B, 0)
+```
+
+Sorting only by tick and endpoint would place the effect on `A` ahead of the
+cause on `B`. The superdense fields put the entire causal step before its effect
+without changing tick 100. The intermediate publication's endpoint denotes its
+declared recipient; for a fanout publication the profile retains a distinct
+delivery identity per recipient, with the same causal publication membership.
+
+### 6.2. Worked Example: Zero-Time Feedback
+
+If `A` then responds to `B` at the same tick, its output belongs to microstep two.
+Further responses alternate through later microsteps. If the world permits at
+most 32 microsteps at one instant, a required microstep 32, where numbering starts
+at zero, terminates the attempt as nonconvergent before publication. Capture of
+tick 100 between microsteps MUST retain the unresolved chain and exact closure
+prefix; capture must not label the instant globally closed. A conformance test
+must exercise reversed endpoint names, a finite feedback chain, and an infinite
+feedback loop with this operational outcome.
+
+### 6.3. Worked Example: Native Timer Output
+
+A timer was armed earlier for tick 200. Firing the timer is independent root
+reaction work at `(200, 0, reaction)`. If that firing creates an interrupt on a
+public port, its publication belongs to `(200, 1, publication)` and its direct
+zero-delay delivery to `(200, 1, delivery)`. The coordinator cannot put it into
+`(200, 0, publication)` after closing that phase, even if no application input
+caused the timer to fire. The conformance fixtures cover this case and output
+discovered by ordinary native execution after an earlier same-time phase closed.
 
 ## 7. Concurrency and Composite Owners
 

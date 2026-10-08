@@ -237,11 +237,55 @@ active quantum to influence its peer's same quantum. This is a deliberate
 boundary model, not a claim of continuous-time hardware interaction.
 
 **[CN-QUANT-16]** Equal-boundary publication and next-interval input sampling
-MUST complete under one defined coordinator arbitration order. Mutual end-output
-to-next-start connections MUST NOT require either peer to start the next quantum
-to close the preceding one. A connection policy introducing same-boundary
-feedback MUST use the qualified same-time arbitration rules of the exact timing
-chapter or be refused.
+MUST follow the bound `superdense-v1` order from the exact timing chapter. Closed
+previous-window outputs are root publications at microstep zero of the boundary;
+direct zero-latency sampled deliveries use its delivery phase. The complete
+start batch and all admitted boundary-settlement reactions MUST close before
+dependent next-window activation. Mutual end-output-to-next-start connections
+MUST NOT require either peer to start the next quantum to close the preceding
+one. A connection policy introducing same-boundary feedback MUST use qualified
+microstep arbitration or be refused.
+
+The next active interval's work is not a zero-time response to the preceding
+interval. Its ordinary output remains an end-boundary publication at the next
+physical instant. Only an explicitly granted boundary-settlement reaction may
+emit an additional event at the current boundary; that event uses the next
+microstep rather than being inserted ahead of its cause.
+
+**[CN-QUANT-37]** A quantum receipt, sampled batch, pending publication,
+observation transcript, and captured window MUST preserve their superdense
+membership and closure prefix. Physical window closure does not establish
+global same-time closure. The coordinator MUST NOT activate a next-window start
+batch while an admitted same-boundary reaction could still add required input.
+
+**[CN-QUANT-38]** Sampling an event at a strictly later physical boundary MAY
+make its destination delivery a root at microstep zero there. A conversion
+that retains the event's physical instant MUST preserve its causal microstep;
+it MUST NOT reset a same-boundary reaction to microstep zero. The retained record
+MUST identify original publication and converted delivery positions, including
+their causal membership.
+
+### 5.3. Worked Example: A Boundary Reaction Adds Input
+
+At boundary 1,000,000, a closed hardware window publishes to exact node `B`.
+An admitted zero-time reaction on `B` sends an input to quantized node `A`.
+Names again sort `A < B`.
+
+```text
+(1000000, 0, publication) hardware's retained end-window output
+(1000000, 0, delivery)    B receives that output
+(1000000, 0, reaction)    B evaluates the authorized boundary reaction
+(1000000, 1, publication) B emits to A
+(1000000, 1, delivery)    A's start batch receives the additional input
+after closure:            A may activate its 1000000..2000000 interval
+```
+
+`A` cannot activate after microstep-zero delivery alone. It waits for the complete
+boundary closure relevant to its input batch. If `B` instead requires positive
+modeled CPU execution to create its response, that response occurs later and is
+sampled at a later `A` boundary; the coordinator must not fabricate a zero-time
+reaction. This distinction is a property of the realized model and operation,
+not a preference inferred from a fast host callback.
 
 ## 6. Different Grids and Phases
 

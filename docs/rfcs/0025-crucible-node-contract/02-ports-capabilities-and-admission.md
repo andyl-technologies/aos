@@ -381,8 +381,12 @@ binding.
 ## Whole-Graph Admission
 
 Admission is a staged transaction. Preparation can reserve resources or create
-stopped provider instances. Activation permits modeled execution or external
-effects. Reversible resource preparation is not permission to publish effects.
+stopped provider instances. Physical adapters establish their selected safe
+preparation contract; preparation does not claim to stop an autonomous physical
+device. Activation arms readiness, while durable publication of the complete
+world gates execution permission and semantic access. This gate applies to
+initial realization as well as restoration. Reversible resource preparation
+is not permission to publish effects.
 
 | Stage | Required result before proceeding |
 | --- | --- |
@@ -392,15 +396,38 @@ effects. Reversible resource preparation is not permission to publish effects.
 | Validate nodes | Every requirement admitted by the selected realization. |
 | Validate edges | Complete port compatibility and timing/ownership relations. |
 | Validate graph | Causal progress, capture closure, world guarantees, and operational policy. |
-| Prepare | Resource reservation and stopped realization with authenticated live owners. |
+| Prepare | Resource reservation and the selected safe preparation boundary for every authenticated live owner. |
 | Seal | Final realized descriptors and whole-graph execution binding verified. |
-| Activate | Coordinator releases only the sealed admitted graph. |
+| Arm readiness | All owners acknowledge their selected ready contract while execution grants remain withheld. |
+| Publish world | Durable publication identifies the complete sealed world and activation generation. |
+| Grant execution | Coordinator exposes the published world and issues mode-specific grants. |
 
 **[CN-CAP-14]** The coordinator MUST complete whole-graph validation and seal
-the execution binding before activating any participant. Preparation MUST
-prevent guest/device execution and outward effects not authorized as preparation
-by an explicit operational contract. Failure at any stage MUST leave no
-partially activated world.
+the execution binding before arming any participant for activation. Initial
+realization and restored realization MUST use the same all-owner preparation,
+ready acknowledgment, durable world publication, and execution-grant gate.
+Every execution and capture owner MUST acknowledge readiness under its selected
+contract before the complete world and its activation generation are published.
+Individual ready acknowledgments MUST NOT authorize execution grants, semantic
+access, or input/output publication. Before publication, preparation MUST
+prevent unauthorized modeled execution and external operations or publications
+through the admitted graph; any preparation effects MUST be explicitly
+authorized by the operational contract and retained as evidence. A failure
+before publication MUST refuse exposure of a partially runnable or semantically
+accessible world and release or quarantine prepared owners. If publication
+status is uncertain, the coordinator MUST withhold new grants and recover the
+durable publication outcome before retrying activation. After publication, an
+owner failure MUST trigger containment or quarantine with retained effect and
+ownership evidence; it MUST NOT be represented as simultaneous physical-start
+failure with automatic rollback, successful partial activation, or reversal of
+an external effect already performed.
+
+The atomicity promised here is admission and logical access to one complete
+world. Physical owners need not begin at the same host instant. An autonomous
+device can continue physical activity while its adapter withholds modeled
+input publication; its admitted mode determines what observation boundaries,
+uncertainty, and side effects can be controlled. Neither readiness nor world
+publication implies exact pausing of physical hardware.
 
 **[CN-CAP-15]** Realized descriptors MUST match the selections admitted during
 resolution. The coordinator MUST revalidate any parameter or resource condition

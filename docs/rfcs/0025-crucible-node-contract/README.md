@@ -55,7 +55,8 @@ production support, or successful qualification of gem5, KVM quantized
 execution, or external hardware. Requirement language follows BCP 14 as
 specified in [conventions](00-conventions-and-model.md).
 
-The normative contract is this RFC's numbered topic set. Current-code analysis,
+The normative contract is this RFC's numbered topic set and the CNP/1 reference
+records linked below. Current-code analysis,
 rename candidates, rollout tasks, gate commands, and delivery sequencing live
 in the implementation companion. Source links there are anchored by an audited
 Git revision and describe an implementation baseline, not vendor obligations.
@@ -79,6 +80,14 @@ meaning of a saved instruction count.
 | [07 — Reference profiles and examples](07-reference-profiles-and-examples.md) | Compute, device, clock, link, and hardware profiles; mixed-world examples |
 | [08 — Conformance](08-conformance.md) | Independent qualification classes, evidence, negative cases, state preservation, and performance |
 | [09 — Decisions and extensions](09-decisions-and-extensions.md) | Design rationale, extension registration, version policy, deferred profiles, and acceptance decisions |
+
+Chapter 06 includes two normative references:
+
+- [CNP/1 core object schemas](reference/cnp-v1-core-types.md) define portable
+  descriptors, bindings, positions, events, custody records, and manifests.
+- [CNP/1 primitive vectors](reference/cnp-v1-vectors.json) fix small encoding,
+  canonicalization, domain-separated hash, and rejection examples. These are
+  protocol fixtures, not complete node descriptors or execution evidence.
 
 ## Reading paths
 
