@@ -1239,6 +1239,7 @@ name = "aos-sandbox-policy"
 version = "0.1.0"
 dependencies = [
  "aos-sandbox-core",
+ "ed25519-dalek",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -1294,6 +1295,7 @@ dependencies = [
  "aos-sandbox-linux",
  "aos-sandbox-mount",
  "aos-sandbox-network",
+ "aos-sandbox-policy",
  "aos-sandbox-protocol",
  "aos-sandbox-source-provider",
  "aos-sandbox-source-provider-security",

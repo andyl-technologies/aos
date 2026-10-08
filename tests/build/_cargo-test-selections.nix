@@ -104,9 +104,9 @@ let
 
   controllerSelectionsRetained = online: let
     package = controllerPackage online;
-    roles = ["controller" "git" "entitlement" "policy" "cache-signer" "source-signer" "publisher" "nix-provision"] ++ lib.optional online "nix";
+    roles = ["controller" "git" "entitlement" "policy" "policy-key-pin" "cache-signer" "source-signer" "publisher" "nix-provision"] ++ lib.optional online "nix";
     selectedRoles = command:
-      lib.filter (role: matches ".*--features aos-sandbox-services/${role}([,[:space:]].*)?" command) roles;
+      lib.filter (role: matches ".*(--features |,)aos-sandbox-services/${role}([,[:space:]].*)?" command) roles;
     independentRoles = commands:
       lib.all (command: lib.length (selectedRoles command) == 1) commands
       && lib.all (role: lib.length (lib.filter (command: builtins.elem role (selectedRoles command)) commands) == 1) roles;
@@ -119,6 +119,8 @@ let
     artifactCommands = package.cargoArtifacts.cargoBuildCommands;
     artifactBuilds = lib.filter (lib.hasPrefix "build ") artifactCommands;
     artifactTests = lib.filter (lib.hasPrefix "test --no-run ") artifactCommands;
+    policyBuilds = lib.filter (command: builtins.elem "policy" (selectedRoles command)) artifactBuilds;
+    keyPinBuilds = lib.filter (command: builtins.elem "policy-key-pin" (selectedRoles command)) artifactBuilds;
     roleArtifactTests = lib.filter (lib.hasInfix "-p aos-sandbox-services") artifactTests;
     coreArtifactTests = lib.filter (lib.hasInfix "-p aos-sandbox -p aos-sandbox-broker-session-security") artifactTests;
   in
@@ -127,11 +129,17 @@ let
     lib.all (lib.hasPrefix "build ") package.cargoBuildCommands
     && independentRoles package.cargoBuildCommands
     && artifactBuilds == package.cargoBuildCommands
+    && selectedRoles "--features aos-sandbox-services/policy,aos-sandbox-services/policy-key-pin" == ["policy" "policy-key-pin"]
+    && selectedRoles "--features aos-sandbox-services/policy-key-pin,aos-sandbox-services/policy" == ["policy" "policy-key-pin"]
+    && policyBuilds == ["build --release --frozen --offline -j$NIX_BUILD_CORES --no-default-features --features aos-sandbox-services/policy -p aos-sandbox-services --bin aos-sandbox-policy-authorityd"]
+    && keyPinBuilds == ["build --release --frozen --offline -j$NIX_BUILD_CORES --no-default-features --features aos-sandbox-services/policy-key-pin -p aos-sandbox-services --bin aos-sandbox-policy-key-pin"]
     && independentRoles roleArtifactTests
+    && signerTestsRetained "policy-key-pin" "aos-sandbox-policy" roleArtifactTests
     && signerTestsRetained "cache-signer" "aos-sandbox-cache-signer" roleArtifactTests
     && signerTestsRetained "source-signer" "aos-sandbox-source-signer" roleArtifactTests
     && lib.length coreArtifactTests == 1
     && independentRoles package.cargoTestFlagSets
+    && signerTestsRetained "policy-key-pin" "aos-sandbox-policy" package.cargoTestFlagSets
     && signerTestsRetained "cache-signer" "aos-sandbox-cache-signer" package.cargoTestFlagSets
     && signerTestsRetained "source-signer" "aos-sandbox-source-signer" package.cargoTestFlagSets
     && lib.any (lib.hasInfix "-p aos-sandbox-services -p aos-sandbox -p aos-sandbox-broker-session-security") package.cargoTestFlagSets
@@ -238,6 +246,7 @@ in
   assert lib.any (lib.hasInfix "-p aos-sandbox-cache-signer") nativeAos.passthru.testTargets.cargoBuildCommands;
   assert lib.any (lib.hasInfix "-p aos-sandbox-guest-root-tree") nativeAos.passthru.testTargets.cargoBuildCommands;
   assert lib.any (lib.hasInfix "-p aos-sandbox-source-signer") nativeAos.passthru.testTargets.cargoBuildCommands;
+  assert lib.any (lib.hasInfix "-p aos-sandbox-policy") nativeAos.passthru.testTargets.cargoBuildCommands;
   assert lib.any (lib.hasInfix "-p aos-sandbox-network") networkPackage.cargoArtifacts.cargoBuildCommands;
   assert lib.hasInfix "-p aos-sandbox-network" networkPackage.cargoTestFlags;
   assert lib.all (environment: !(environment ? AOS_NO_SETID_TEST_LAUNCHER)) darwinEnvironments; true

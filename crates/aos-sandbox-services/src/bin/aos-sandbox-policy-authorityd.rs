@@ -168,9 +168,7 @@ use aos_sandbox_broker_session_security::policy_root_ack_v8_client::{
     encode_root_v8_ack_reply, encode_root_v8_release_reply, encode_root_v8_release_stage,
     encode_root_v8_terminal_reply, encode_root_v8_terminal_stage_ack,
 };
-use aos_sandbox_broker_session_security::policy_signer_credential::{
-    PinnedPolicySignerV1, PolicySignerRoleV1,
-};
+use aos_sandbox_policy::policy_signer_credential::{PinnedPolicySignerV1, PolicySignerRoleV1};
 use aos_sandbox_broker_session_security::source_genesis_flight::{
     RootFirstSourceSuccessorAttemptV2, RootFirstSourceSuccessorRouteV2, RootProjectGenesisAttemptV3,
     RootGlobalGenesisAttemptV2,

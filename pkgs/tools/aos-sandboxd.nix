@@ -34,7 +34,8 @@
     controller = ["aos-sandboxd"];
     git = ["aos-sandbox-git-gateway"];
     entitlement = ["aos-sandbox-entitlement-sign"];
-    policy = ["aos-sandbox-policy-authorityd" "aos-sandbox-policy-key-pin"];
+    policy = ["aos-sandbox-policy-authorityd"];
+    policy-key-pin = ["aos-sandbox-policy-key-pin"];
     cache-signer = ["aos-sandbox-cache-signerd"];
     source-signer = ["aos-sandbox-source-signerd"];
     publisher = ["aos-view-publisher"];
@@ -47,6 +48,7 @@
       "git"
       "entitlement"
       "policy"
+      "policy-key-pin"
       "cache-signer"
       "source-signer"
       "publisher"
@@ -60,6 +62,7 @@
   controllerRoleFlags = roleFlags "controller";
   roleTestPackages = role:
     "-p aos-sandbox-services"
+    + lib.optionalString (role == "policy-key-pin") " -p aos-sandbox-policy"
     + lib.optionalString (role == "cache-signer") " -p aos-sandbox-cache-signer"
     + lib.optionalString (role == "source-signer") " -p aos-sandbox-source-signer";
 

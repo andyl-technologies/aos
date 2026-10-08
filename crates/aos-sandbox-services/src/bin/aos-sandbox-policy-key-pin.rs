@@ -12,7 +12,7 @@ use std::process::ExitCode;
 
 use aos_sandbox::cache_residency::encode_cache_owner_readback_signer_credential_v1;
 use aos_sandbox::policy_compiler::encode_controller_hold_signer_credential_v1;
-use aos_sandbox_broker_session_security::policy_signer_credential::{
+use aos_sandbox_policy::policy_signer_credential::{
     PolicySignerRoleV1, encode_policy_signer_credential_v1,
 };
 use ed25519_dalek::VerifyingKey;
@@ -128,7 +128,7 @@ fn usage() -> io::Error {
 mod tests {
     use aos_sandbox::cache_residency::PinnedCacheOwnerReadbackSignerV1;
     use aos_sandbox::policy_compiler::PinnedControllerHoldSignerV1;
-    use aos_sandbox_broker_session_security::policy_signer_credential::PinnedPolicySignerV1;
+    use aos_sandbox_policy::policy_signer_credential::PinnedPolicySignerV1;
     use ed25519_dalek::SigningKey;
 
     use super::*;

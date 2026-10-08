@@ -27,10 +27,18 @@ policy = [
     "dep:aos-sandbox-broker-session-security",
     "dep:aos-sandbox-cache-signer",
     "dep:aos-sandbox-core",
+    "dep:aos-sandbox-policy",
     "dep:aos-sandbox-source-signer",
     "dep:ed25519-dalek",
     "dep:rustix",
     "dep:sha2",
+]
+# Selects only the existing offline helper; installed CLI availability is unchanged.
+policy-key-pin = [
+    "dep:aos-sandbox",
+    "dep:aos-sandbox-policy",
+    "dep:ed25519-dalek",
+    "dep:rustix",
 ]
 cache-signer = ["dep:aos-sandbox-cache-signer"]
 source-signer = ["dep:aos-sandbox-source-signer"]
@@ -106,6 +114,7 @@ aos-sandbox-host = { workspace = true, optional = true }
 aos-sandbox-linux = { workspace = true, optional = true }
 aos-sandbox-mount = { workspace = true, optional = true }
 aos-sandbox-network = { workspace = true, optional = true }
+aos-sandbox-policy = { workspace = true, optional = true }
 aos-sandbox-protocol = { workspace = true, optional = true }
 aos-sandbox-source-provider = { workspace = true, optional = true }
 aos-sandbox-source-provider-security = { workspace = true, optional = true }
@@ -151,7 +160,7 @@ required-features = ["policy"]
 [[bin]]
 name = "aos-sandbox-policy-key-pin"
 path = "src/bin/aos-sandbox-policy-key-pin.rs"
-required-features = ["policy"]
+required-features = ["policy-key-pin"]
 
 [[bin]]
 name = "aos-sandbox-cache-signerd"

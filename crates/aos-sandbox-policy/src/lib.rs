@@ -5,6 +5,10 @@
 //! protected input provenance, publication currentness or runtime authority.
 //! Those joins and all signing, Journal and effect custody remain with callers.
 //!
+//! On Linux, `policy_signer_credential` owns the existing public verifier DATA
+//! and its role-specific framing. These public keys do not establish protected
+//! credential custody, currentness, signing authority, or admission.
+//!
 //! The private model module owns bounded inputs and candidate DATA. The compiler
 //! module orders authority, namespace, resources and advisory lowering.
 
@@ -14,6 +18,9 @@ mod compiler;
 mod model;
 mod namespace;
 mod resources;
+
+#[cfg(target_os = "linux")]
+pub mod policy_signer_credential;
 
 pub use advisory::{
     AdvisoryActionV1, AdvisoryDecisionV1, AdvisoryDegradationV1, AdvisoryKindV1, AdvisoryPlanV1,
