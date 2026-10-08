@@ -12,6 +12,7 @@
 //! head = recipe-identity || terminal-state || protected-head-digest
 //! ```
 
+use aos_sandbox_core::bounded_codec::{BoundedReader, ReadError};
 use aos_sandbox_core::{
     AssignmentEpoch, AttachmentId, AttachmentSlotId, DecodeLimits, DesiredGeneration, ExportId,
     IncarnationId, NamespaceGeneration, NodeId, ObjectDescriptor, ObjectDigest, ProjectId,
@@ -455,9 +456,9 @@ pub(crate) fn decode_realization_plan_v1(
     bytes: &[u8],
 ) -> Result<ViewRealizationPlanV1, HierarchyArtifactCodecError> {
     let mut cursor = ArtifactCursor::new(bytes, REALIZATION_MAGIC)?;
-    let project = ProjectId::from_bytes(cursor.take::<16>()?);
-    let tree_generation = Revision::new(cursor.u64()?);
-    let observation_set_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
+    let project = ProjectId::from_bytes(cursor.reader.array::<16>()?);
+    let tree_generation = Revision::new(cursor.reader.u64()?);
+    let observation_set_commitment = ObjectDigest::from_bytes(cursor.reader.array::<32>()?);
 
     let publication_count = cursor.bounded_count(MAXIMUM_REALIZATION_ACTIONS)?;
     let mut publications = Vec::new();
@@ -491,8 +492,8 @@ pub(crate) fn decode_realization_plan_v1(
         .try_reserve_exact(execution_count)
         .map_err(|_| HierarchyArtifactCodecError::Capacity)?;
     for _ in 0..execution_count {
-        let discriminant = cursor.u8()?;
-        let attachment = AttachmentId::from_bytes(cursor.take::<16>()?);
+        let discriminant = cursor.reader.u8()?;
+        let attachment = AttachmentId::from_bytes(cursor.reader.array::<16>()?);
         let action = match discriminant {
             0 => RealizationTransactionActionV1::Publish(attachment),
             1 => RealizationTransactionActionV1::Detach(attachment),
@@ -500,8 +501,8 @@ pub(crate) fn decode_realization_plan_v1(
         };
         execution_order.push(action);
     }
-    let plan_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
-    cursor.finish()?;
+    let plan_commitment = ObjectDigest::from_bytes(cursor.reader.array::<32>()?);
+    cursor.reader.finish()?;
 
     let plan = ViewRealizationPlanV1::new(project, publications, detaches)
         .map_err(|_| HierarchyArtifactCodecError::InvalidModel)?;
@@ -523,12 +524,12 @@ pub(crate) fn decode_realization_progress_v1(
     bytes: &[u8],
 ) -> Result<DurableRealizationProgressV1, HierarchyArtifactCodecError> {
     let mut cursor = ArtifactCursor::new(bytes, REALIZATION_PROGRESS_MAGIC)?;
-    let project = ProjectId::from_bytes(cursor.take::<16>()?);
-    let tree_generation = Revision::new(cursor.u64()?);
-    let attachment = AttachmentId::from_bytes(cursor.take::<16>()?);
-    let attachment_generation = DesiredGeneration::new(cursor.u64()?);
-    let plan_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
-    let recipe_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
+    let project = ProjectId::from_bytes(cursor.reader.array::<16>()?);
+    let tree_generation = Revision::new(cursor.reader.u64()?);
+    let attachment = AttachmentId::from_bytes(cursor.reader.array::<16>()?);
+    let attachment_generation = DesiredGeneration::new(cursor.reader.u64()?);
+    let plan_commitment = ObjectDigest::from_bytes(cursor.reader.array::<32>()?);
+    let recipe_commitment = ObjectDigest::from_bytes(cursor.reader.array::<32>()?);
     let replacement = decode_replacement(&mut cursor)?;
     let count = cursor.bounded_count(super::recovery::MAXIMUM_REALIZATION_STAGE_HISTORY)?;
     let mut observations = Vec::new();
@@ -536,17 +537,17 @@ pub(crate) fn decode_realization_progress_v1(
         .try_reserve_exact(count)
         .map_err(|_| HierarchyArtifactCodecError::Capacity)?;
     for _ in 0..count {
-        let sequence = cursor.u64()?;
-        let stage = decode_realization_stage(cursor.u8()?)?;
-        let inventory_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
+        let sequence = cursor.reader.u64()?;
+        let stage = decode_realization_stage(cursor.reader.u8()?)?;
+        let inventory_commitment = ObjectDigest::from_bytes(cursor.reader.array::<32>()?);
         observations.push(RealizationStageObservationV1::from_durable_parts(
             sequence,
             stage,
             inventory_commitment,
         ));
     }
-    let history_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
-    cursor.finish()?;
+    let history_commitment = ObjectDigest::from_bytes(cursor.reader.array::<32>()?);
+    cursor.reader.finish()?;
     let progress = DurableRealizationProgressV1::from_canonical_parts(
         project,
         tree_generation,
@@ -570,11 +571,11 @@ pub(crate) fn decode_detach_progress_v1(
     bytes: &[u8],
 ) -> Result<DurableDetachProgressV1, HierarchyArtifactCodecError> {
     let mut cursor = ArtifactCursor::new(bytes, DETACH_PROGRESS_MAGIC)?;
-    let project = ProjectId::from_bytes(cursor.take::<16>()?);
-    let tree_generation = Revision::new(cursor.u64()?);
-    let attachment = AttachmentId::from_bytes(cursor.take::<16>()?);
-    let attachment_generation = DesiredGeneration::new(cursor.u64()?);
-    let detach_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
+    let project = ProjectId::from_bytes(cursor.reader.array::<16>()?);
+    let tree_generation = Revision::new(cursor.reader.u64()?);
+    let attachment = AttachmentId::from_bytes(cursor.reader.array::<16>()?);
+    let attachment_generation = DesiredGeneration::new(cursor.reader.u64()?);
+    let detach_commitment = ObjectDigest::from_bytes(cursor.reader.array::<32>()?);
     let count = cursor.bounded_count(super::recovery::MAXIMUM_REALIZATION_STAGE_HISTORY)?;
     let mut observations = Vec::new();
     observations
@@ -582,13 +583,13 @@ pub(crate) fn decode_detach_progress_v1(
         .map_err(|_| HierarchyArtifactCodecError::Capacity)?;
     for _ in 0..count {
         observations.push(DetachStageObservationV1::from_verified_parts(
-            cursor.u64()?,
-            decode_detach_stage(cursor.u8()?)?,
-            ObjectDigest::from_bytes(cursor.take::<32>()?),
+            cursor.reader.u64()?,
+            decode_detach_stage(cursor.reader.u8()?)?,
+            ObjectDigest::from_bytes(cursor.reader.array::<32>()?),
         ));
     }
-    let history_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
-    cursor.finish()?;
+    let history_commitment = ObjectDigest::from_bytes(cursor.reader.array::<32>()?);
+    cursor.reader.finish()?;
     let progress = DurableDetachProgressV1::from_canonical_parts(
         project,
         tree_generation,
@@ -610,24 +611,24 @@ pub(crate) fn decode_realization_transaction_state_v1(
     bytes: &[u8],
 ) -> Result<DurableRealizationTransactionV1, HierarchyArtifactCodecError> {
     let mut cursor = ArtifactCursor::new(bytes, TRANSACTION_STATE_MAGIC)?;
-    let project = ProjectId::from_bytes(cursor.take::<16>()?);
-    let tree_generation = Revision::new(cursor.u64()?);
-    let plan_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
+    let project = ProjectId::from_bytes(cursor.reader.array::<16>()?);
+    let tree_generation = Revision::new(cursor.reader.u64()?);
+    let plan_commitment = ObjectDigest::from_bytes(cursor.reader.array::<32>()?);
     let count = cursor.bounded_count(MAXIMUM_REALIZATION_ACTIONS)?;
     let mut actions = Vec::new();
     actions
         .try_reserve_exact(count)
         .map_err(|_| HierarchyArtifactCodecError::Capacity)?;
     for _ in 0..count {
-        let attachment = AttachmentId::from_bytes(cursor.take::<16>()?);
-        let action_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
-        let outcome = match cursor.u8()? {
+        let attachment = AttachmentId::from_bytes(cursor.reader.array::<16>()?);
+        let action_commitment = ObjectDigest::from_bytes(cursor.reader.array::<32>()?);
+        let outcome = match cursor.reader.u8()? {
             0 => TransactionActionOutcomeV1::Completed,
             1 => TransactionActionOutcomeV1::Aborted,
             2 => TransactionActionOutcomeV1::Faulted,
             _ => return Err(HierarchyArtifactCodecError::NonCanonical),
         };
-        let inventory_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
+        let inventory_commitment = ObjectDigest::from_bytes(cursor.reader.array::<32>()?);
         actions.push(TransactionActionObservationV1::from_verified_parts(
             attachment,
             action_commitment,
@@ -635,8 +636,8 @@ pub(crate) fn decode_realization_transaction_state_v1(
             inventory_commitment,
         ));
     }
-    let state_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
-    cursor.finish()?;
+    let state_commitment = ObjectDigest::from_bytes(cursor.reader.array::<32>()?);
+    cursor.reader.finish()?;
     let state = DurableRealizationTransactionV1::from_canonical_parts(
         project,
         tree_generation,
@@ -657,19 +658,19 @@ pub(crate) fn decode_protected_realization_head_v1(
 ) -> Result<RetainedRealizationHeadV1, HierarchyArtifactCodecError> {
     let mut cursor = ArtifactCursor::new(bytes, REALIZATION_HEAD_MAGIC)?;
     let head = RetainedRealizationHeadV1::from_verified_parts(
-        ProjectId::from_bytes(cursor.take::<16>()?),
-        Revision::new(cursor.u64()?),
-        AttachmentId::from_bytes(cursor.take::<16>()?),
-        DesiredGeneration::new(cursor.u64()?),
-        ObjectDigest::from_bytes(cursor.take::<32>()?),
-        ObjectDigest::from_bytes(cursor.take::<32>()?),
-        cursor.u64()?,
-        decode_realization_stage(cursor.u8()?)?,
-        ObjectDigest::from_bytes(cursor.take::<32>()?),
-        ObjectDigest::from_bytes(cursor.take::<32>()?),
-        ObjectDigest::from_bytes(cursor.take::<32>()?),
+        ProjectId::from_bytes(cursor.reader.array::<16>()?),
+        Revision::new(cursor.reader.u64()?),
+        AttachmentId::from_bytes(cursor.reader.array::<16>()?),
+        DesiredGeneration::new(cursor.reader.u64()?),
+        ObjectDigest::from_bytes(cursor.reader.array::<32>()?),
+        ObjectDigest::from_bytes(cursor.reader.array::<32>()?),
+        cursor.reader.u64()?,
+        decode_realization_stage(cursor.reader.u8()?)?,
+        ObjectDigest::from_bytes(cursor.reader.array::<32>()?),
+        ObjectDigest::from_bytes(cursor.reader.array::<32>()?),
+        ObjectDigest::from_bytes(cursor.reader.array::<32>()?),
     );
-    cursor.finish()?;
+    cursor.reader.finish()?;
     if encode_protected_realization_head_v1(head)? != bytes {
         return Err(HierarchyArtifactCodecError::NonCanonical);
     }
@@ -682,15 +683,15 @@ pub(crate) fn decode_protected_detach_head_v1(
 ) -> Result<RetainedDetachHeadV1, HierarchyArtifactCodecError> {
     let mut cursor = ArtifactCursor::new(bytes, DETACH_HEAD_MAGIC)?;
     let head = RetainedDetachHeadV1::from_verified_parts(
-        ProjectId::from_bytes(cursor.take::<16>()?),
-        Revision::new(cursor.u64()?),
-        AttachmentId::from_bytes(cursor.take::<16>()?),
-        DesiredGeneration::new(cursor.u64()?),
-        ObjectDigest::from_bytes(cursor.take::<32>()?),
-        ObjectDigest::from_bytes(cursor.take::<32>()?),
-        ObjectDigest::from_bytes(cursor.take::<32>()?),
+        ProjectId::from_bytes(cursor.reader.array::<16>()?),
+        Revision::new(cursor.reader.u64()?),
+        AttachmentId::from_bytes(cursor.reader.array::<16>()?),
+        DesiredGeneration::new(cursor.reader.u64()?),
+        ObjectDigest::from_bytes(cursor.reader.array::<32>()?),
+        ObjectDigest::from_bytes(cursor.reader.array::<32>()?),
+        ObjectDigest::from_bytes(cursor.reader.array::<32>()?),
     );
-    cursor.finish()?;
+    cursor.reader.finish()?;
     if encode_protected_detach_head_v1(head)? != bytes {
         return Err(HierarchyArtifactCodecError::NonCanonical);
     }
@@ -703,13 +704,13 @@ pub(crate) fn decode_protected_transaction_head_v1(
 ) -> Result<RetainedRealizationTransactionHeadV1, HierarchyArtifactCodecError> {
     let mut cursor = ArtifactCursor::new(bytes, TRANSACTION_HEAD_MAGIC)?;
     let head = RetainedRealizationTransactionHeadV1::from_verified_parts(
-        ProjectId::from_bytes(cursor.take::<16>()?),
-        Revision::new(cursor.u64()?),
-        ObjectDigest::from_bytes(cursor.take::<32>()?),
-        ObjectDigest::from_bytes(cursor.take::<32>()?),
-        ObjectDigest::from_bytes(cursor.take::<32>()?),
+        ProjectId::from_bytes(cursor.reader.array::<16>()?),
+        Revision::new(cursor.reader.u64()?),
+        ObjectDigest::from_bytes(cursor.reader.array::<32>()?),
+        ObjectDigest::from_bytes(cursor.reader.array::<32>()?),
+        ObjectDigest::from_bytes(cursor.reader.array::<32>()?),
     );
-    cursor.finish()?;
+    cursor.reader.finish()?;
     if encode_protected_transaction_head_v1(head)? != bytes {
         return Err(HierarchyArtifactCodecError::NonCanonical);
     }
@@ -916,25 +917,25 @@ fn decode_publication(
     {
         return Err(HierarchyArtifactCodecError::NonCanonical);
     }
-    let consumer_node = NodeId::from_bytes(cursor.take::<16>()?);
-    let assignment_epoch = AssignmentEpoch::new(cursor.u64()?);
-    let observation_set_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
-    let assignment_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
-    let source_owner = SandboxId::from_bytes(cursor.take::<16>()?);
-    let source_owner_generation = DesiredGeneration::new(cursor.u64()?);
-    let source_export = ExportId::from_bytes(cursor.take::<16>()?);
+    let consumer_node = NodeId::from_bytes(cursor.reader.array::<16>()?);
+    let assignment_epoch = AssignmentEpoch::new(cursor.reader.u64()?);
+    let observation_set_commitment = ObjectDigest::from_bytes(cursor.reader.array::<32>()?);
+    let assignment_commitment = ObjectDigest::from_bytes(cursor.reader.array::<32>()?);
+    let source_owner = SandboxId::from_bytes(cursor.reader.array::<16>()?);
+    let source_owner_generation = DesiredGeneration::new(cursor.reader.u64()?);
+    let source_export = ExportId::from_bytes(cursor.reader.array::<16>()?);
     let source_node = cursor.optional_bytes()?.map(NodeId::from_bytes);
     let source_namespace_generation = cursor.optional_u64()?.map(NamespaceGeneration::new);
     let source_assignment_epoch = cursor.optional_u64()?.map(AssignmentEpoch::new);
-    let source_handle_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
-    let source_retention_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
-    let request_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
-    let policy_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
-    let lease_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
-    let inventory_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
+    let source_handle_commitment = ObjectDigest::from_bytes(cursor.reader.array::<32>()?);
+    let source_retention_commitment = ObjectDigest::from_bytes(cursor.reader.array::<32>()?);
+    let request_commitment = ObjectDigest::from_bytes(cursor.reader.array::<32>()?);
+    let policy_commitment = ObjectDigest::from_bytes(cursor.reader.array::<32>()?);
+    let lease_commitment = ObjectDigest::from_bytes(cursor.reader.array::<32>()?);
+    let inventory_commitment = ObjectDigest::from_bytes(cursor.reader.array::<32>()?);
     let replacement = decode_replacement(cursor)?;
     let dependencies = cursor.attachments(MAXIMUM_REALIZATION_DEPENDENCIES)?;
-    let recipe_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
+    let recipe_commitment = ObjectDigest::from_bytes(cursor.reader.array::<32>()?);
 
     AttachmentRealizationV1::from_canonical_parts(
         project,
@@ -968,22 +969,22 @@ fn decode_detach(
     project: ProjectId,
     tree_generation: Revision,
 ) -> Result<AttachmentDetachV1, HierarchyArtifactCodecError> {
-    let attachment = AttachmentId::from_bytes(cursor.take::<16>()?);
-    let generation = DesiredGeneration::new(cursor.u64()?);
-    let consumer = SandboxId::from_bytes(cursor.take::<16>()?);
-    let consumer_incarnation = IncarnationId::from_bytes(cursor.take::<16>()?);
-    let consumer_node = NodeId::from_bytes(cursor.take::<16>()?);
-    let assignment_epoch = AssignmentEpoch::new(cursor.u64()?);
-    let observation_set_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
-    let namespace_generation = NamespaceGeneration::new(cursor.u64()?);
-    let destination_slot = AttachmentSlotId::from_bytes(cursor.take::<16>()?);
-    let recipe_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
-    let assignment_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
-    let request_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
-    let policy_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
-    let inventory_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
+    let attachment = AttachmentId::from_bytes(cursor.reader.array::<16>()?);
+    let generation = DesiredGeneration::new(cursor.reader.u64()?);
+    let consumer = SandboxId::from_bytes(cursor.reader.array::<16>()?);
+    let consumer_incarnation = IncarnationId::from_bytes(cursor.reader.array::<16>()?);
+    let consumer_node = NodeId::from_bytes(cursor.reader.array::<16>()?);
+    let assignment_epoch = AssignmentEpoch::new(cursor.reader.u64()?);
+    let observation_set_commitment = ObjectDigest::from_bytes(cursor.reader.array::<32>()?);
+    let namespace_generation = NamespaceGeneration::new(cursor.reader.u64()?);
+    let destination_slot = AttachmentSlotId::from_bytes(cursor.reader.array::<16>()?);
+    let recipe_commitment = ObjectDigest::from_bytes(cursor.reader.array::<32>()?);
+    let assignment_commitment = ObjectDigest::from_bytes(cursor.reader.array::<32>()?);
+    let request_commitment = ObjectDigest::from_bytes(cursor.reader.array::<32>()?);
+    let policy_commitment = ObjectDigest::from_bytes(cursor.reader.array::<32>()?);
+    let inventory_commitment = ObjectDigest::from_bytes(cursor.reader.array::<32>()?);
     let detach_after = cursor.attachments(MAXIMUM_REALIZATION_DEPENDENCIES)?;
-    let detach_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
+    let detach_commitment = ObjectDigest::from_bytes(cursor.reader.array::<32>()?);
 
     AttachmentDetachV1::from_canonical_parts(
         project,
@@ -1011,14 +1012,15 @@ fn decode_detach(
 fn decode_replacement(
     cursor: &mut ArtifactCursor<'_>,
 ) -> Result<Option<ReplacementTransactionV1>, HierarchyArtifactCodecError> {
-    match cursor.u8()? {
+    match cursor.reader.u8()? {
         0 => Ok(None),
         1 => {
-            let predecessor = AttachmentId::from_bytes(cursor.take::<16>()?);
-            let successor = AttachmentId::from_bytes(cursor.take::<16>()?);
-            let predecessor_generation = DesiredGeneration::new(cursor.u64()?);
-            let predecessor_recipe_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
-            let transaction_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
+            let predecessor = AttachmentId::from_bytes(cursor.reader.array::<16>()?);
+            let successor = AttachmentId::from_bytes(cursor.reader.array::<16>()?);
+            let predecessor_generation = DesiredGeneration::new(cursor.reader.u64()?);
+            let predecessor_recipe_commitment =
+                ObjectDigest::from_bytes(cursor.reader.array::<32>()?);
+            let transaction_commitment = ObjectDigest::from_bytes(cursor.reader.array::<32>()?);
             Ok(Some(ReplacementTransactionV1::from_durable_parts(
                 predecessor,
                 successor,
@@ -1117,8 +1119,7 @@ fn encode_replacement(
 }
 
 struct ArtifactCursor<'bytes> {
-    bytes: &'bytes [u8],
-    offset: usize,
+    reader: BoundedReader<'bytes, HierarchyArtifactCodecError>,
 }
 
 impl<'bytes> ArtifactCursor<'bytes> {
@@ -1129,54 +1130,20 @@ impl<'bytes> ArtifactCursor<'bytes> {
         if bytes.len() > MAXIMUM_HIERARCHY_ARTIFACT_BYTES {
             return Err(HierarchyArtifactCodecError::Capacity);
         }
-        let mut cursor = Self { bytes, offset: 0 };
-        if cursor.take::<8>()? != *expected_magic
-            || u16::from_be_bytes(cursor.take::<2>()?) != VERSION
-            || cursor.take::<2>()? != [0; 2]
+        let mut cursor = Self {
+            reader: BoundedReader::new(bytes, artifact_read_error),
+        };
+        if cursor.reader.array::<8>()? != *expected_magic
+            || u16::from_be_bytes(cursor.reader.array::<2>()?) != VERSION
+            || cursor.reader.array::<2>()? != [0; 2]
         {
             return Err(HierarchyArtifactCodecError::NonCanonical);
         }
         Ok(cursor)
     }
 
-    fn take<const N: usize>(&mut self) -> Result<[u8; N], HierarchyArtifactCodecError> {
-        let end = self
-            .offset
-            .checked_add(N)
-            .ok_or(HierarchyArtifactCodecError::Capacity)?;
-        let value = self
-            .bytes
-            .get(self.offset..end)
-            .ok_or(HierarchyArtifactCodecError::NonCanonical)?
-            .try_into()
-            .map_err(|_| HierarchyArtifactCodecError::NonCanonical)?;
-        self.offset = end;
-        Ok(value)
-    }
-
-    fn take_slice(&mut self, length: usize) -> Result<&'bytes [u8], HierarchyArtifactCodecError> {
-        let end = self
-            .offset
-            .checked_add(length)
-            .ok_or(HierarchyArtifactCodecError::Capacity)?;
-        let value = self
-            .bytes
-            .get(self.offset..end)
-            .ok_or(HierarchyArtifactCodecError::NonCanonical)?;
-        self.offset = end;
-        Ok(value)
-    }
-
-    fn u8(&mut self) -> Result<u8, HierarchyArtifactCodecError> {
-        Ok(self.take::<1>()?[0])
-    }
-
-    fn u64(&mut self) -> Result<u64, HierarchyArtifactCodecError> {
-        Ok(u64::from_be_bytes(self.take::<8>()?))
-    }
-
     fn bounded_count(&mut self, maximum: usize) -> Result<usize, HierarchyArtifactCodecError> {
-        let count = usize::try_from(u32::from_be_bytes(self.take::<4>()?))
+        let count = usize::try_from(self.reader.u32()?)
             .map_err(|_| HierarchyArtifactCodecError::Capacity)?;
         if count > maximum {
             return Err(HierarchyArtifactCodecError::Capacity);
@@ -1189,14 +1156,14 @@ impl<'bytes> ArtifactCursor<'bytes> {
         maximum: usize,
     ) -> Result<&'bytes [u8], HierarchyArtifactCodecError> {
         let length = self.bounded_count(maximum)?;
-        self.take_slice(length)
+        self.reader.bytes(length)
     }
 
     fn optional_bytes<const N: usize>(
         &mut self,
     ) -> Result<Option<[u8; N]>, HierarchyArtifactCodecError> {
-        let present = self.u8()?;
-        let value = self.take::<N>()?;
+        let present = self.reader.u8()?;
+        let value = self.reader.array::<N>()?;
         match (present, value == [0; N]) {
             (0, true) => Ok(None),
             (1, false) => Ok(Some(value)),
@@ -1205,8 +1172,8 @@ impl<'bytes> ArtifactCursor<'bytes> {
     }
 
     fn optional_u64(&mut self) -> Result<Option<u64>, HierarchyArtifactCodecError> {
-        let present = self.u8()?;
-        let value = self.u64()?;
+        let present = self.reader.u8()?;
+        let value = self.reader.u64()?;
         match (present, value) {
             (0, 0) => Ok(None),
             (1, value) if value != 0 => Ok(Some(value)),
@@ -1224,16 +1191,17 @@ impl<'bytes> ArtifactCursor<'bytes> {
             .try_reserve_exact(count)
             .map_err(|_| HierarchyArtifactCodecError::Capacity)?;
         for _ in 0..count {
-            attachments.push(AttachmentId::from_bytes(self.take::<16>()?));
+            attachments.push(AttachmentId::from_bytes(self.reader.array::<16>()?));
         }
         Ok(attachments)
     }
+}
 
-    fn finish(self) -> Result<(), HierarchyArtifactCodecError> {
-        if self.offset == self.bytes.len() {
-            Ok(())
-        } else {
-            Err(HierarchyArtifactCodecError::NonCanonical)
+fn artifact_read_error(error: ReadError) -> HierarchyArtifactCodecError {
+    match error {
+        ReadError::LengthOverflow => HierarchyArtifactCodecError::Capacity,
+        ReadError::Truncated | ReadError::NonzeroReserved | ReadError::TrailingBytes => {
+            HierarchyArtifactCodecError::NonCanonical
         }
     }
 }
@@ -1356,4 +1324,96 @@ pub enum HierarchyArtifactCodecError {
     /// Checked length or bounded allocation capacity was exhausted.
     #[error("hierarchy artifact encoding capacity is exhausted")]
     Capacity,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn read_errors_preserve_capacity_and_failed_range_position() {
+        let mut writer = ArtifactWriter::new(REALIZATION_MAGIC).unwrap();
+        writer.bytes(&[1, 2]).unwrap();
+        let bytes = writer.finish();
+        let mut cursor = ArtifactCursor::new(&bytes, REALIZATION_MAGIC).unwrap();
+        assert_eq!(cursor.reader.u8(), Ok(1));
+
+        assert_eq!(
+            cursor.reader.bytes(usize::MAX),
+            Err(HierarchyArtifactCodecError::Capacity)
+        );
+        assert_eq!(
+            cursor.reader.array::<2>(),
+            Err(HierarchyArtifactCodecError::NonCanonical)
+        );
+        assert_eq!(cursor.reader.remaining_bytes(), &[2]);
+        assert_eq!(
+            cursor.reader.finish(),
+            Err(HierarchyArtifactCodecError::NonCanonical)
+        );
+    }
+
+    #[test]
+    fn counts_precede_payload_reads_and_optional_sentinels_consume_their_fields() {
+        let mut writer = ArtifactWriter::new(REALIZATION_MAGIC).unwrap();
+        writer.count(1).unwrap();
+        let bytes = writer.finish();
+        let mut cursor = ArtifactCursor::new(&bytes, REALIZATION_MAGIC).unwrap();
+        assert_eq!(
+            cursor.length_prefixed(0),
+            Err(HierarchyArtifactCodecError::Capacity)
+        );
+        assert!(cursor.reader.is_empty());
+
+        let mut cursor = ArtifactCursor::new(&bytes, REALIZATION_MAGIC).unwrap();
+        assert_eq!(
+            cursor.length_prefixed(1),
+            Err(HierarchyArtifactCodecError::NonCanonical)
+        );
+        assert!(cursor.reader.is_empty());
+
+        let mut writer = ArtifactWriter::new(REALIZATION_MAGIC).unwrap();
+        writer.bytes(&[2, 1]).unwrap();
+        let bytes = writer.finish();
+        let mut cursor = ArtifactCursor::new(&bytes, REALIZATION_MAGIC).unwrap();
+        assert_eq!(
+            cursor.optional_bytes::<2>(),
+            Err(HierarchyArtifactCodecError::NonCanonical)
+        );
+        assert_eq!(cursor.reader.remaining_bytes(), &[1]);
+
+        let mut writer = ArtifactWriter::new(REALIZATION_MAGIC).unwrap();
+        writer.bytes(&[0, 1, 0]).unwrap();
+        let bytes = writer.finish();
+        let mut cursor = ArtifactCursor::new(&bytes, REALIZATION_MAGIC).unwrap();
+        assert_eq!(
+            cursor.optional_bytes::<2>(),
+            Err(HierarchyArtifactCodecError::NonCanonical)
+        );
+        assert!(cursor.reader.is_empty());
+    }
+
+    #[test]
+    fn trailing_bytes_are_rejected_before_realization_plan_reconstruction() {
+        let mut writer = ArtifactWriter::new(REALIZATION_MAGIC).unwrap();
+        writer.bytes(&[0; 16]).unwrap();
+        writer.u64(0).unwrap();
+        writer.bytes(&[0; 32]).unwrap();
+        for _ in 0..5 {
+            writer.count(0).unwrap();
+        }
+        writer.bytes(&[0; 32]).unwrap();
+        let mut bytes = writer.finish();
+
+        assert_eq!(
+            decode_realization_plan_v1(&bytes),
+            Err(HierarchyArtifactCodecError::InvalidModel)
+        );
+
+        bytes.push(0);
+        assert_eq!(
+            decode_realization_plan_v1(&bytes),
+            Err(HierarchyArtifactCodecError::NonCanonical)
+        );
+    }
 }

@@ -4,6 +4,7 @@
 //! big-endian, reject trailing bytes and reserved values, and carry independent
 //! domain-separated SHA-256 commitments.
 
+use aos_sandbox_core::bounded_codec::{BoundedReader, ReadError};
 use aos_sandbox_core::{
     AttachmentId, DesiredGeneration, IncarnationId, ObjectDigest, OperationId, ProjectId, Revision,
     SandboxId, SnapshotId,
@@ -119,27 +120,27 @@ pub fn decode_tree_v1(bytes: &[u8]) -> Result<SandboxTreeV1, HierarchyCodecError
     if bytes.len() < TREE_HEADER_BYTES || bytes.len() > MAXIMUM_HIERARCHY_SNAPSHOT_BYTES {
         return Err(HierarchyCodecError::InvalidLength);
     }
-    let mut cursor = Cursor::new(bytes);
-    if cursor.take::<8>()? != *TREE_MAGIC
-        || u16::from_be_bytes(cursor.take::<2>()?) != FORMAT_VERSION
-        || cursor.take::<2>()? != [0; 2]
+    let mut cursor = BoundedReader::new(bytes, hierarchy_read_error);
+    if cursor.array::<8>()? != *TREE_MAGIC
+        || u16::from_be_bytes(cursor.array::<2>()?) != FORMAT_VERSION
+        || cursor.array::<2>()? != [0; 2]
     {
         return Err(HierarchyCodecError::InvalidHeader);
     }
-    let project = ProjectId::from_bytes(cursor.take::<16>()?);
-    let tree_generation = Revision::new(u64::from_be_bytes(cursor.take::<8>()?));
+    let project = ProjectId::from_bytes(cursor.array::<16>()?);
+    let tree_generation = Revision::new(u64::from_be_bytes(cursor.array::<8>()?));
     let limits = TreeLimitsV1::new(
-        cursor.take_u32()? as usize,
-        cursor.take_u32()? as usize,
-        cursor.take_u32()? as usize,
-        cursor.take_u32()? as usize,
-        cursor.take_u32()? as usize,
-        cursor.take_u32()? as usize,
-        cursor.take_u32()? as usize,
+        cursor.u32()? as usize,
+        cursor.u32()? as usize,
+        cursor.u32()? as usize,
+        cursor.u32()? as usize,
+        cursor.u32()? as usize,
+        cursor.u32()? as usize,
+        cursor.u32()? as usize,
     )
     .map_err(|_| HierarchyCodecError::InvalidTree)?;
-    let count = cursor.take_u32()? as usize;
-    let tombstone_count = cursor.take_u32()? as usize;
+    let count = cursor.u32()? as usize;
+    let tombstone_count = cursor.u32()? as usize;
     if count > MAXIMUM_TREE_SANDBOXES {
         return Err(HierarchyCodecError::Capacity);
     }
@@ -164,17 +165,17 @@ pub fn decode_tree_v1(bytes: &[u8]) -> Result<SandboxTreeV1, HierarchyCodecError
         .try_reserve_exact(count)
         .map_err(|_| HierarchyCodecError::Capacity)?;
     for _ in 0..count {
-        let sandbox = SandboxId::from_bytes(cursor.take::<16>()?);
-        let parent_present = cursor.take::<1>()?[0];
-        let parent_bytes = cursor.take::<16>()?;
+        let sandbox = SandboxId::from_bytes(cursor.array::<16>()?);
+        let parent_present = cursor.array::<1>()?[0];
+        let parent_bytes = cursor.array::<16>()?;
         let parent = match parent_present {
             0 if parent_bytes == [0; 16] => None,
             1 if parent_bytes != [0; 16] => Some(SandboxId::from_bytes(parent_bytes)),
             _ => return Err(HierarchyCodecError::CorruptEncoding),
         };
-        let desired_generation = DesiredGeneration::new(u64::from_be_bytes(cursor.take::<8>()?));
-        let incarnation_present = cursor.take::<1>()?[0];
-        let incarnation_bytes = cursor.take::<16>()?;
+        let desired_generation = DesiredGeneration::new(u64::from_be_bytes(cursor.array::<8>()?));
+        let incarnation_present = cursor.array::<1>()?[0];
+        let incarnation_bytes = cursor.array::<16>()?;
         let incarnation = match incarnation_present {
             0 if incarnation_bytes == [0; 16] => None,
             1 if incarnation_bytes != [0; 16] => Some(IncarnationId::from_bytes(incarnation_bytes)),
@@ -190,7 +191,7 @@ pub fn decode_tree_v1(bytes: &[u8]) -> Result<SandboxTreeV1, HierarchyCodecError
         .try_reserve_exact(tombstone_count)
         .map_err(|_| HierarchyCodecError::Capacity)?;
     for _ in 0..tombstone_count {
-        tombstones.push(SandboxId::from_bytes(cursor.take::<16>()?));
+        tombstones.push(SandboxId::from_bytes(cursor.array::<16>()?));
     }
     if !cursor.is_empty() {
         return Err(HierarchyCodecError::InvalidLength);
@@ -292,18 +293,18 @@ pub fn decode_history_record_v1(
     if bytes.len() != HISTORY_RECORD_BYTES {
         return Err(HierarchyCodecError::InvalidLength);
     }
-    let mut cursor = Cursor::new(bytes);
-    if cursor.take::<8>()? != *HISTORY_MAGIC
-        || u16::from_be_bytes(cursor.take::<2>()?) != FORMAT_VERSION
+    let mut cursor = BoundedReader::new(bytes, hierarchy_read_error);
+    if cursor.array::<8>()? != *HISTORY_MAGIC
+        || u16::from_be_bytes(cursor.array::<2>()?) != FORMAT_VERSION
     {
         return Err(HierarchyCodecError::InvalidHeader);
     }
-    let transition = HierarchyTransitionKindV1::from_byte(cursor.take::<1>()?[0])
+    let transition = HierarchyTransitionKindV1::from_byte(cursor.array::<1>()?[0])
         .map_err(HierarchyCodecError::History)?;
-    let subject_tag = cursor.take::<1>()?[0];
-    let project = ProjectId::from_bytes(cursor.take::<16>()?);
-    let sequence = u64::from_be_bytes(cursor.take::<8>()?);
-    let subject_bytes = cursor.take::<16>()?;
+    let subject_tag = cursor.array::<1>()?[0];
+    let project = ProjectId::from_bytes(cursor.array::<16>()?);
+    let sequence = u64::from_be_bytes(cursor.array::<8>()?);
+    let subject_bytes = cursor.array::<16>()?;
     let subject = match subject_tag {
         0 => HierarchyHistorySubjectV1::Project(ProjectId::from_bytes(subject_bytes)),
         1 => HierarchyHistorySubjectV1::Sandbox(SandboxId::from_bytes(subject_bytes)),
@@ -311,25 +312,25 @@ pub fn decode_history_record_v1(
         3 => HierarchyHistorySubjectV1::Snapshot(SnapshotId::from_bytes(subject_bytes)),
         _ => return Err(HierarchyCodecError::CorruptEncoding),
     };
-    let operation = OperationId::from_bytes(cursor.take::<16>()?);
-    let idempotency_key = ObjectDigest::from_bytes(cursor.take::<32>()?);
-    let request_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
-    let resource_head_present = cursor.take::<1>()?[0];
-    let resource_head_bytes = cursor.take::<32>()?;
+    let operation = OperationId::from_bytes(cursor.array::<16>()?);
+    let idempotency_key = ObjectDigest::from_bytes(cursor.array::<32>()?);
+    let request_commitment = ObjectDigest::from_bytes(cursor.array::<32>()?);
+    let resource_head_present = cursor.array::<1>()?[0];
+    let resource_head_bytes = cursor.array::<32>()?;
     let prior_resource_commitment = match resource_head_present {
         0 if resource_head_bytes == [0; 32] => None,
         1 if resource_head_bytes != [0; 32] => Some(ObjectDigest::from_bytes(resource_head_bytes)),
         _ => return Err(HierarchyCodecError::CorruptEncoding),
     };
-    let predecessor_present = cursor.take::<1>()?[0];
-    let predecessor_bytes = cursor.take::<32>()?;
+    let predecessor_present = cursor.array::<1>()?[0];
+    let predecessor_bytes = cursor.array::<32>()?;
     let predecessor = match predecessor_present {
         0 if predecessor_bytes == [0; 32] => None,
         1 if predecessor_bytes != [0; 32] => Some(ObjectDigest::from_bytes(predecessor_bytes)),
         _ => return Err(HierarchyCodecError::CorruptEncoding),
     };
-    let result_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
-    let record_commitment = ObjectDigest::from_bytes(cursor.take::<32>()?);
+    let result_commitment = ObjectDigest::from_bytes(cursor.array::<32>()?);
+    let record_commitment = ObjectDigest::from_bytes(cursor.array::<32>()?);
     HierarchyHistoryRecordV1::from_decoded_parts(
         project,
         sequence,
@@ -388,15 +389,15 @@ pub fn decode_history_v1(bytes: &[u8]) -> Result<HierarchyHistoryV1, HierarchyCo
     if bytes.len() < HISTORY_LOG_HEADER_BYTES || bytes.len() > MAXIMUM_HIERARCHY_SNAPSHOT_BYTES {
         return Err(HierarchyCodecError::InvalidLength);
     }
-    let mut cursor = Cursor::new(bytes);
-    if cursor.take::<8>()? != *HISTORY_LOG_MAGIC
-        || u16::from_be_bytes(cursor.take::<2>()?) != FORMAT_VERSION
-        || cursor.take::<2>()? != [0; 2]
+    let mut cursor = BoundedReader::new(bytes, hierarchy_read_error);
+    if cursor.array::<8>()? != *HISTORY_LOG_MAGIC
+        || u16::from_be_bytes(cursor.array::<2>()?) != FORMAT_VERSION
+        || cursor.array::<2>()? != [0; 2]
     {
         return Err(HierarchyCodecError::InvalidHeader);
     }
-    let project = ProjectId::from_bytes(cursor.take::<16>()?);
-    let count = cursor.take_u32()? as usize;
+    let project = ProjectId::from_bytes(cursor.array::<16>()?);
+    let count = cursor.u32()? as usize;
     if count > MAXIMUM_HIERARCHY_HISTORY_RECORDS {
         return Err(HierarchyCodecError::Capacity);
     }
@@ -412,7 +413,7 @@ pub fn decode_history_v1(bytes: &[u8]) -> Result<HierarchyHistoryV1, HierarchyCo
         .try_reserve_exact(count)
         .map_err(|_| HierarchyCodecError::Capacity)?;
     for _ in 0..count {
-        let record_bytes = cursor.take_slice(HISTORY_RECORD_BYTES)?;
+        let record_bytes = cursor.bytes(HISTORY_RECORD_BYTES)?;
         records.push(decode_history_record_v1(record_bytes)?);
     }
     HierarchyHistoryV1::from_records(project, records).map_err(HierarchyCodecError::History)
@@ -516,25 +517,25 @@ pub fn decode_compacted_history_v1(
     {
         return Err(HierarchyCodecError::InvalidLength);
     }
-    let mut cursor = Cursor::new(bytes);
-    if cursor.take::<8>()? != *COMPACTED_HISTORY_MAGIC
-        || u16::from_be_bytes(cursor.take::<2>()?) != FORMAT_VERSION
-        || cursor.take::<2>()? != [0; 2]
-        || ProjectId::from_bytes(cursor.take::<16>()?) != verified_checkpoint.project()
-        || u64::from_be_bytes(cursor.take::<8>()?) != verified_checkpoint.through_sequence()
-        || ObjectDigest::from_bytes(cursor.take::<32>()?)
+    let mut cursor = BoundedReader::new(bytes, hierarchy_read_error);
+    if cursor.array::<8>()? != *COMPACTED_HISTORY_MAGIC
+        || u16::from_be_bytes(cursor.array::<2>()?) != FORMAT_VERSION
+        || cursor.array::<2>()? != [0; 2]
+        || ProjectId::from_bytes(cursor.array::<16>()?) != verified_checkpoint.project()
+        || u64::from_be_bytes(cursor.array::<8>()?) != verified_checkpoint.through_sequence()
+        || ObjectDigest::from_bytes(cursor.array::<32>()?)
             != verified_checkpoint.through_record_commitment()
-        || ObjectDigest::from_bytes(cursor.take::<32>()?) != verified_checkpoint.state_commitment()
-        || ObjectDigest::from_bytes(cursor.take::<32>()?)
+        || ObjectDigest::from_bytes(cursor.array::<32>()?) != verified_checkpoint.state_commitment()
+        || ObjectDigest::from_bytes(cursor.array::<32>()?)
             != verified_checkpoint.checkpoint_commitment()
-        || ObjectDigest::from_bytes(cursor.take::<32>()?)
+        || ObjectDigest::from_bytes(cursor.array::<32>()?)
             != verified_checkpoint.protected_checkpoint_commitment()
     {
         return Err(HierarchyCodecError::InvalidHeader);
     }
-    let state_count = cursor.take_u32()? as usize;
-    let retired_count = cursor.take_u32()? as usize;
-    let suffix_count = cursor.take_u32()? as usize;
+    let state_count = cursor.u32()? as usize;
+    let retired_count = cursor.u32()? as usize;
+    let suffix_count = cursor.u32()? as usize;
     let retained_units = state_count
         .checked_add(suffix_count)
         .ok_or(HierarchyCodecError::Capacity)?;
@@ -569,11 +570,11 @@ pub fn decode_compacted_history_v1(
         .try_reserve_exact(state_count)
         .map_err(|_| HierarchyCodecError::Capacity)?;
     for _ in 0..state_count {
-        let subject_tag = cursor.take::<1>()?[0];
-        let transition = HierarchyTransitionKindV1::from_byte(cursor.take::<1>()?[0])?;
-        let identity = cursor.take::<16>()?;
+        let subject_tag = cursor.array::<1>()?[0];
+        let transition = HierarchyTransitionKindV1::from_byte(cursor.array::<1>()?[0])?;
+        let identity = cursor.array::<16>()?;
         let subject = decode_subject(subject_tag, identity)?;
-        let resource_head = ObjectDigest::from_bytes(cursor.take::<32>()?);
+        let resource_head = ObjectDigest::from_bytes(cursor.array::<32>()?);
         floor_states.push((subject, transition));
         floor_heads.push((subject, resource_head));
     }
@@ -582,7 +583,7 @@ pub fn decode_compacted_history_v1(
         .try_reserve_exact(retired_count)
         .map_err(|_| HierarchyCodecError::Capacity)?;
     for _ in 0..retired_count {
-        retired_keys.push(ObjectDigest::from_bytes(cursor.take::<32>()?));
+        retired_keys.push(ObjectDigest::from_bytes(cursor.array::<32>()?));
     }
     let mut suffix = Vec::new();
     suffix
@@ -590,7 +591,7 @@ pub fn decode_compacted_history_v1(
         .map_err(|_| HierarchyCodecError::Capacity)?;
     for _ in 0..suffix_count {
         suffix.push(decode_history_record_v1(
-            cursor.take_slice(HISTORY_RECORD_BYTES)?,
+            cursor.bytes(HISTORY_RECORD_BYTES)?,
         )?);
     }
     CompactedHierarchyHistoryV1::recover(
@@ -642,50 +643,12 @@ fn write<const N: usize>(
     Ok(())
 }
 
-struct Cursor<'a> {
-    bytes: &'a [u8],
-    offset: usize,
-}
-
-impl<'a> Cursor<'a> {
-    fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, offset: 0 }
-    }
-
-    fn take<const N: usize>(&mut self) -> Result<[u8; N], HierarchyCodecError> {
-        let end = self
-            .offset
-            .checked_add(N)
-            .ok_or(HierarchyCodecError::Capacity)?;
-        let source = self
-            .bytes
-            .get(self.offset..end)
-            .ok_or(HierarchyCodecError::InvalidLength)?;
-        let mut value = [0; N];
-        value.copy_from_slice(source);
-        self.offset = end;
-        Ok(value)
-    }
-
-    fn take_u32(&mut self) -> Result<u32, HierarchyCodecError> {
-        Ok(u32::from_be_bytes(self.take::<4>()?))
-    }
-
-    fn take_slice(&mut self, length: usize) -> Result<&'a [u8], HierarchyCodecError> {
-        let end = self
-            .offset
-            .checked_add(length)
-            .ok_or(HierarchyCodecError::Capacity)?;
-        let value = self
-            .bytes
-            .get(self.offset..end)
-            .ok_or(HierarchyCodecError::InvalidLength)?;
-        self.offset = end;
-        Ok(value)
-    }
-
-    fn is_empty(&self) -> bool {
-        self.offset == self.bytes.len()
+// The tree/history formats retain their header and semantic checks.
+fn hierarchy_read_error(error: ReadError) -> HierarchyCodecError {
+    match error {
+        ReadError::LengthOverflow => HierarchyCodecError::Capacity,
+        ReadError::Truncated | ReadError::TrailingBytes => HierarchyCodecError::InvalidLength,
+        ReadError::NonzeroReserved => HierarchyCodecError::InvalidHeader,
     }
 }
 
@@ -710,4 +673,30 @@ pub enum HierarchyCodecError {
     /// History record validation failed.
     #[error(transparent)]
     History(#[from] HierarchyHistoryError),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn read_errors_preserve_length_classes_and_failed_range_position() {
+        let bytes = [1, 2, 3];
+        let mut cursor = BoundedReader::new(&bytes, hierarchy_read_error);
+        assert_eq!(cursor.array::<1>().unwrap(), [1]);
+
+        assert!(matches!(
+            cursor.bytes(usize::MAX),
+            Err(HierarchyCodecError::Capacity)
+        ));
+        assert!(matches!(
+            cursor.array::<3>(),
+            Err(HierarchyCodecError::InvalidLength)
+        ));
+        assert_eq!(cursor.remaining_bytes(), &bytes[1..]);
+        assert!(matches!(
+            cursor.finish(),
+            Err(HierarchyCodecError::InvalidLength)
+        ));
+    }
 }
