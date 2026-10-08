@@ -38,9 +38,7 @@ impl SourceViews {
         staging: &Path,
         control: &dyn RuntimeControl,
     ) -> Result<Self> {
-        let directory = tempfile::Builder::new()
-            .prefix("evaluation-sources-")
-            .tempdir_in(staging)?;
+        let directory = source_directory(staging)?;
         let mut roots = BTreeMap::new();
         let selected = aos_core::nix::identity::store_command(nix_store)?;
         // Nix selects its legacy command mode from argv[0]. Resolving this
@@ -138,9 +136,65 @@ impl SourceViews {
     }
 }
 
+fn source_directory(staging: &Path) -> Result<tempfile::TempDir> {
+    // fetchTree rejects symlink ancestors even for NAR-hash-pinned inputs.
+    // Use one physical prefix for restoration, restricted reads, and fetching.
+    let staging =
+        std::fs::canonicalize(staging).context("resolving evaluation staging directory")?;
+    Ok(tempfile::Builder::new()
+        .prefix("evaluation-sources-")
+        .tempdir_in(staging)?)
+}
+
 fn explicit_environment(command: &Command) -> Vec<(OsString, OsString)> {
     command
         .get_envs()
         .filter_map(|(key, value)| value.map(|value| (key.to_owned(), value.to_owned())))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::Engine as _;
+
+    #[test]
+    fn symlink_profile_staging_preserves_source_identity_and_hash() {
+        let temporary = tempfile::tempdir().unwrap();
+        let physical = temporary.path().join("physical-profiles");
+        std::fs::create_dir(&physical).unwrap();
+        let profile = temporary.path().join("profiles");
+        std::os::unix::fs::symlink(&physical, &profile).unwrap();
+        let staging = profile.join("operation");
+        std::fs::create_dir(&staging).unwrap();
+        let directory = source_directory(&staging).unwrap();
+        let identity = PathBuf::from(format!("/nix/store/{}-operator-source", "a".repeat(32)));
+        let path = directory.path().join(identity.file_name().unwrap());
+        std::fs::create_dir(&path).unwrap();
+        let digest = Sha256Digest::of_bytes(b"original exported NAR");
+        let nar_hash = digest.to_string();
+        let nar_sri = format!(
+            "sha256-{}",
+            base64::engine::general_purpose::STANDARD.encode(digest.as_bytes())
+        );
+        let views = SourceViews {
+            directory,
+            roots: BTreeMap::from([(
+                identity.clone(),
+                SourceView {
+                    path: path.clone(),
+                    nar_hash: nar_hash.clone(),
+                },
+            )]),
+        };
+
+        let expression = views.expression(&identity).unwrap();
+
+        assert!(views.directory().starts_with(physical.join("operation")));
+        assert_eq!(views.read_path(&identity).unwrap(), path);
+        assert_eq!(views.nar_hash(&identity).unwrap(), nar_hash);
+        assert!(expression.contains(path.to_str().unwrap()));
+        assert!(expression.contains(&super::super::nix::nix_string(&nar_sri)));
+        assert!(!expression.contains(profile.to_str().unwrap()));
+    }
 }
