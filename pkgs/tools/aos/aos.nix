@@ -4,6 +4,7 @@
   mkCargoPackage,
   mkCargoArtifacts,
   mkCargoDummySource,
+  mkDerivation,
   fetchCargoVendor,
   bash,
   ca-certificates,
@@ -234,6 +235,9 @@
       ]
     );
   };
+  noSetidTestLauncher = import ./_network-test-launcher.nix {
+    inherit mkDerivation version;
+  };
   cargoEnv =
     {
       OPENSSL_DIR = "${openssl}";
@@ -245,6 +249,7 @@
       PROTOC = "${buildProtobuf}/bin/protoc";
     }
     // lib.optionalAttrs stdenv.hostPlatform.isLinux {
+      AOS_NO_SETID_TEST_LAUNCHER = "${noSetidTestLauncher}/bin/no-setid-exec";
       AOS_METHOD46_TPM_HELPER = "${aos-method46-tpm-helper}/libexec/aos-method46-tpm-helper";
       AOS_METHOD46_TPM_PID1 = "${systemd}/lib/systemd/systemd";
       AOS_RUNTIME_DEPLOYMENT_TPM_HELPER = "${aos-runtime-deployment-tpm-helper}/libexec/aos-runtime-deployment-tpm-helper";

@@ -68,6 +68,79 @@ let
     && lib.any (lib.hasInfix "-p aos-sandbox-services -p aos-sandbox -p aos-sandbox-broker-session-security") package.cargoTestFlagSets
     && package.doCheck
     && package.cargoNextest;
+
+  # Capture the actual package arguments without building their dependencies.
+  aosPackage = darwin: let
+    packageFunction = import ../../pkgs/tools/aos/aos.nix;
+    dependencies = lib.genAttrs (builtins.attrNames (builtins.functionArgs packageFunction)) (
+      name: "unused-${name}"
+    );
+  in
+    packageFunction (dependencies // {
+      inherit lib;
+      mkCargoPackage = capturePackage;
+      mkCargoArtifacts = capturePackage;
+      mkCargoDummySource = _: "unused-dummy-source";
+      fetchCargoVendor = _: "unused-vendor";
+      mkDerivation =
+        if darwin
+        then _: throw "Darwin test environment must not construct a Linux launcher"
+        else capturePackage;
+      stdenv = {
+        isCross = darwin;
+        hostPlatform = {
+          isDarwin = darwin;
+          isLinux = !darwin;
+        };
+      };
+      buildPackages = dependencies;
+    });
+  networkPackage = import ../../pkgs/tools/aos-netd.nix {
+    inherit lib;
+    mkCargoPackage = capturePackage;
+    mkCargoArtifacts = capturePackage;
+    mkCargoDummySource = _: "unused-dummy-source";
+    fetchCargoVendor = _: "unused-vendor";
+    mkDerivation = capturePackage;
+    protobuf = "unused-protobuf";
+    stdenv = {
+      isCross = false;
+      hostPlatform = {
+        isDarwin = false;
+        isLinux = true;
+      };
+    };
+    buildPackages = {};
+  };
+  launcher = import ../../pkgs/tools/aos/_network-test-launcher.nix {
+    mkDerivation = capturePackage;
+    version = "0.1.0";
+  };
+  launcherPath = "${launcher}/bin/no-setid-exec";
+  launcherEnvironmentRetained = environment: let
+    configure = builtins.head (builtins.filter (phase: phase.name == "configure") (
+      phases.cargoPhases {
+        cargoDeps = "unused";
+        cargoEnv = environment;
+      }
+    ));
+  in
+    (environment.AOS_NO_SETID_TEST_LAUNCHER or null) == launcherPath
+    && lib.hasInfix "export AOS_NO_SETID_TEST_LAUNCHER='${launcherPath}'" configure.script;
+  nativeAos = aosPackage false;
+  darwinAos = aosPackage true;
+  nativeLauncherEnvironments = [
+    nativeAos.cargoEnv
+    nativeAos.cargoArtifacts.cargoEnv
+    nativeAos.passthru.testTargets.cargoEnv
+    networkPackage.cargoEnv
+    networkPackage.cargoArtifacts.cargoEnv
+  ];
+  darwinEnvironments = [
+    darwinAos.cargoEnv
+    darwinAos.cargoArtifacts.cargoEnv
+    darwinAos.passthru.testTargets.cargoEnv
+  ];
 in
   assert scalar == singleton;
   assert matches ".*AOS_CROSS_COMPILING.*" cargo;
@@ -84,4 +157,12 @@ in
   assert invalid [1];
   assert invalid "not-a-list";
   assert controllerSelectionsRetained false;
-  assert controllerSelectionsRetained true; true
+  assert controllerSelectionsRetained true;
+  assert launcher.src == ../../crates/aos-sandbox-network/tests/no_setid_exec.c;
+  assert launcher.buildDeps == [] && launcher.runtimeDeps == [];
+  assert lib.hasInfix ''$CC -O2 -Wall -Wextra -Werror "$src" -o no-setid-exec'' (builtins.head launcher.phases).script;
+  assert lib.all launcherEnvironmentRetained nativeLauncherEnvironments;
+  assert lib.any (lib.hasInfix "-p aos-sandbox-network") nativeAos.passthru.testTargets.cargoBuildCommands;
+  assert lib.any (lib.hasInfix "-p aos-sandbox-network") networkPackage.cargoArtifacts.cargoBuildCommands;
+  assert lib.hasInfix "-p aos-sandbox-network" networkPackage.cargoTestFlags;
+  assert lib.all (environment: !(environment ? AOS_NO_SETID_TEST_LAUNCHER)) darwinEnvironments; true

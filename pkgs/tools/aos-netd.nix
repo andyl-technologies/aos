@@ -27,27 +27,8 @@
     PROTOC = "${buildProtobuf}/bin/protoc";
     AOS_NO_SETID_TEST_LAUNCHER = "${noSetidTestLauncher}/bin/no-setid-exec";
   };
-  noSetidTestLauncher = mkDerivation {
-    pname = "aos-network-no-setid-test-launcher";
-    inherit version;
-    src = ../../crates/aos-sandbox-network/tests/no_setid_exec.c;
-    buildDeps = [];
-    runtimeDeps = [];
-    phases = [
-      {
-        name = "build";
-        script = ''
-          $CC -O2 -Wall -Wextra -Werror "$src" -o no-setid-exec
-        '';
-      }
-      {
-        name = "install";
-        script = ''
-          mkdir -p "$out/bin"
-          cp no-setid-exec "$out/bin/no-setid-exec"
-        '';
-      }
-    ];
+  noSetidTestLauncher = import ./aos/_network-test-launcher.nix {
+    inherit mkDerivation version;
   };
   cargoArtifactContract = {
     family = "aos-netd-native";
