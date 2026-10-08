@@ -1,4 +1,8 @@
-//! Guards the portable Agent's resolved production dependency boundary.
+//! Guards the normal package dependency boundaries of the portable wire roots.
+//!
+//! Workspace metadata does not prove isolated active feature selection or the
+//! absence of external transport runtimes. Coordinator generation is checked
+//! separately by the Proto crate's descriptor tests.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
@@ -7,7 +11,7 @@ use std::process::Command;
 use serde_json::Value;
 
 #[test]
-fn agent_production_graph_has_no_linux_or_effect_owner() -> Result<(), Box<dyn Error>> {
+fn portable_production_graphs_have_no_linux_or_effect_owner() -> Result<(), Box<dyn Error>> {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let output = Command::new(cargo)
         .args(["metadata", "--format-version", "1", "--locked", "--offline"])
@@ -32,10 +36,50 @@ fn agent_production_graph_has_no_linux_or_effect_owner() -> Result<(), Box<dyn E
         .iter()
         .filter_map(|node| node["id"].as_str().map(|id| (id, node)))
         .collect();
+
+    let roots: [(&str, &[&str]); 3] = [
+        ("aos-sandbox-core", &["aos-sandbox-core"]),
+        (
+            "aos-sandbox-agent",
+            &["aos-sandbox-agent", "aos-sandbox-core", "aos-proto"],
+        ),
+        (
+            "aos-sandbox-protocol",
+            &[
+                "aos-sandbox-protocol",
+                "aos-sandbox-agent",
+                "aos-sandbox-core",
+                "aos-proto",
+                "aos-sandbox-broker-session-protocol",
+                "aos-sandbox-source-provider-protocol",
+            ],
+        ),
+    ];
+    for (root_name, allowed_path_packages) in roots {
+        check_production_graph(
+            root_name,
+            allowed_path_packages,
+            packages,
+            &packages_by_id,
+            &nodes_by_id,
+        )?;
+    }
+    Ok(())
+}
+
+// Keep each root's boundary independent: Protocol's wider wire closure must
+// not permit an Agent or Core dependency backedge.
+fn check_production_graph(
+    root_name: &str,
+    allowed_path_packages: &[&str],
+    packages: &[Value],
+    packages_by_id: &BTreeMap<&str, &Value>,
+    nodes_by_id: &BTreeMap<&str, &Value>,
+) -> Result<(), Box<dyn Error>> {
     let root = packages
         .iter()
-        .find(|package| package["name"].as_str() == Some("aos-sandbox-agent"))
-        .ok_or("missing Agent package")?;
+        .find(|package| package["name"].as_str() == Some(root_name))
+        .ok_or("missing portable root package")?;
 
     assert!(
         root["targets"]
@@ -45,10 +89,10 @@ fn agent_production_graph_has_no_linux_or_effect_owner() -> Result<(), Box<dyn E
             .all(|target| !target["kind"]
                 .as_array()
                 .is_some_and(|kinds| { kinds.iter().any(|kind| kind.as_str() == Some("bin")) })),
-        "portable Agent must not own an executable target",
+        "portable root {root_name} must not own an executable target",
     );
 
-    let mut pending = vec![root["id"].as_str().ok_or("missing Agent id")?];
+    let mut pending = vec![root["id"].as_str().ok_or("missing portable root id")?];
     let mut visited = BTreeSet::new();
     while let Some(id) = pending.pop() {
         if !visited.insert(id) {
@@ -58,13 +102,13 @@ fn agent_production_graph_has_no_linux_or_effect_owner() -> Result<(), Box<dyn E
         let name = package["name"].as_str().ok_or("missing package name")?;
         if package["source"].is_null() {
             assert!(
-                ["aos-sandbox-agent", "aos-sandbox-core", "aos-proto"].contains(&name),
-                "portable Agent reaches implementation crate {name}",
+                allowed_path_packages.contains(&name),
+                "portable root {root_name} reaches implementation crate {name}",
             );
         }
         assert!(
             !["nix", "rustix", "linux-raw-sys"].contains(&name),
-            "portable Agent reaches Linux dependency {name}",
+            "portable root {root_name} reaches Linux dependency {name}",
         );
 
         let node = nodes_by_id.get(id).ok_or("missing dependency node")?;
