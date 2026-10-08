@@ -2966,7 +2966,13 @@ impl ProtectedBrokerSessionOwnerV1 {
 
 impl ProtectedBrokerOutcomeCommittedAdvancementV1 {
     /// Borrows the actual completed Controller-client method-41 terminal.
-    pub(crate) fn capture_candidate_client_originals(
+    ///
+    /// This projection does not replace the session's currentness comparison.
+    ///
+    /// # Errors
+    /// Rejects a mismatched method, direction, Storage protocol, Controller
+    /// audience, or negotiated method with a currentness error.
+    pub fn capture_candidate_client_originals(
         &self,
     ) -> Result<(&AuthenticatedBrokerMethodOutcomeV1, &ProtectedBrokerOutcomeCurrentnessOwnerV1), BrokerSessionSecurityError> {
         let owner = &self.currentness_owner;
@@ -3014,7 +3020,13 @@ impl ProtectedBrokerOutcomeCommittedAdvancementV1 {
     }
 
     /// Borrows only the completed original Controller-client Storage46 result.
-    pub(crate) fn output_registration_originals_v1(
+    ///
+    /// This projection does not replace the session's currentness comparison.
+    ///
+    /// # Errors
+    /// Rejects a mismatched method, direction, Storage protocol, or Controller
+    /// audience with a currentness error.
+    pub fn output_registration_originals_v1(
         &self,
     ) -> Result<(&AuthenticatedBrokerMethodOutcomeV1, &ProtectedBrokerOutcomeCurrentnessOwnerV1), BrokerSessionSecurityError> {
         let owner = &self.currentness_owner;

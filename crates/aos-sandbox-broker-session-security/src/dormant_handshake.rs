@@ -467,7 +467,7 @@ pub struct DormantPreparedBrokerDescriptorRequestV1 {
 
 impl DormantPreparedBrokerDescriptorRequestV1 {
     /// Borrows the original signed deadline without releasing descriptor custody.
-    pub(crate) const fn deadline_boottime_nanoseconds(&self) -> u64 {
+    pub const fn deadline_boottime_nanoseconds(&self) -> u64 {
         self.request.deadline_boottime_nanoseconds()
     }
 }

@@ -31,7 +31,12 @@ pub(crate) fn is_storage(method: BrokerMethod) -> bool {
 }
 
 impl DormantAuthenticatedBrokerSessionV1 {
-    pub(crate) fn capture_git_coverage_checkpoint_v1(
+    /// Encodes the protected checkpoint for the retained Git coverage outcome.
+    ///
+    /// # Errors
+    /// Rejects an invalid byte bound, changed outcome or connection peer, or
+    /// missing or mismatched protected checkpoint; propagates journal failures.
+    pub fn capture_git_coverage_checkpoint_v1(
         &mut self,
         currentness: &crate::ProtectedBrokerOutcomeCurrentnessOwnerV1,
         maximum_bytes: usize,
@@ -39,17 +44,28 @@ impl DormantAuthenticatedBrokerSessionV1 {
         self.0.capture_git_coverage_checkpoint_v1(currentness, maximum_bytes)
     }
 
-    pub(crate) fn compare_git_coverage_outcome_v1(
+    /// Compares the retained Git coverage outcome against its protected session.
+    ///
+    /// # Errors
+    /// Rejects a non-coverage method or changed outcome, session, or connection
+    /// peer; propagates protected journal failures.
+    pub fn compare_git_coverage_outcome_v1(
         &mut self,
         currentness: &crate::ProtectedBrokerOutcomeCurrentnessOwnerV1,
     ) -> Result<(), crate::BrokerSessionSecurityError> {
         self.0.compare_git_coverage_outcome_v1(currentness)
     }
 
-    // The payload and cutoff are correlation DATA from the retained original
-    // enrollment attempt. The existing negotiated method/signature/Journal
-    // engine remains the only producer of an authenticated request.
-    pub(crate) fn prepare_git_coverage_request_v1(
+    /// Prepares one of the four fixed Git coverage methods with its original cut.
+    ///
+    /// The payload and cutoff are correlation DATA from the retained enrollment
+    /// attempt. The session engine authenticates the request and admits only
+    /// the original authorization-free sequence-one or sequence-two exchange.
+    ///
+    /// # Errors
+    /// Rejects another method, noncanonical or oversized coverage DATA, or an
+    /// occupied original sequence; propagates session preparation failures.
+    pub fn prepare_git_coverage_request_v1(
         &mut self,
         method: BrokerMethod,
         original_body: &[u8],

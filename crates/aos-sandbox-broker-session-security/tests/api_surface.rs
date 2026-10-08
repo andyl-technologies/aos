@@ -316,6 +316,7 @@ fn controller_composition_has_an_exact_closed_declaration_surface() {
             "deadline_boottime_nanoseconds",
             "deadline_boottime_nanoseconds",
             "deadline_boottime_nanoseconds",
+            "deadline_boottime_nanoseconds",
             "decode_error",
             "digest",
             "error",
@@ -440,6 +441,35 @@ fn controller_composition_has_an_exact_closed_declaration_surface() {
     );
 
     assert_eq!(
+        public_declaration_names(include_str!("../src/dormant_handshake/git_coverage.rs")),
+        [
+            "capture_git_coverage_checkpoint_v1",
+            "compare_git_coverage_outcome_v1",
+            "execute_mount_git_coverage_and_commit_v1",
+            "execute_storage_git_coverage_and_commit_v1",
+            "prepare_git_coverage_request_v1",
+        ],
+        "dormant_handshake/git_coverage.rs public composition surface changed"
+    );
+
+    let journal = include_str!("../src/recovery/journal.rs");
+    let committed = journal
+        .split("impl ProtectedBrokerOutcomeCommittedAdvancementV1 {")
+        .nth(1)
+        .unwrap()
+        .split("\n}\n")
+        .next()
+        .unwrap();
+    assert_eq!(
+        public_declaration_names(committed),
+        [
+            "capture_candidate_client_originals",
+            "output_registration_originals_v1",
+        ],
+        "committed outcome projections changed"
+    );
+
+    assert_eq!(
         public_declaration_names(include_str!("../src/production_startup.rs")),
         [
             "ControllerStartupContinuationV1",
@@ -480,6 +510,7 @@ fn controller_composition_has_an_exact_closed_declaration_surface() {
             "OriginalOutputClientFlightV1",
             "OutputPreparationClosedV1",
             "OutputPreparationCustodyV1",
+            "committed",
             "coordinates",
             "empty",
             "empty",

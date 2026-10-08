@@ -500,7 +500,7 @@ impl ControllerStorageCaptureCandidateExchangeV1 {
         if !self.wait(session, 1, false, coordinates.deadline_boottime_nanoseconds()) { return Err(closed()); }
         let received = session.receive_original_output_client_terminal(&mut self.flight);
         if !received { self.first_site = Some(CandidateFailureSiteV1::Flight); }
-        let Some(ProtectedBrokerOutcomeCommitResultV1::Committed(committed)) = &self.flight.committed else {
+        let Some(ProtectedBrokerOutcomeCommitResultV1::Committed(committed)) = self.flight.committed() else {
             return Err(closed());
         };
         let (outcome, currentness) = match committed.capture_candidate_client_originals() {

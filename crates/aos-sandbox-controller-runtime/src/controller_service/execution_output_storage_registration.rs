@@ -420,7 +420,7 @@ where
     if !attempt.wait(session, 3, false, coordinates.deadline_boottime_nanoseconds()) { return Err(closed()); }
     let received = session.receive_original_output_client_terminal(&mut attempt.flight);
     let mut terminal_success = false;
-    if let Some(ProtectedBrokerOutcomeCommitResultV1::Committed(committed)) = &attempt.flight.committed {
+    if let Some(ProtectedBrokerOutcomeCommitResultV1::Committed(committed)) = attempt.flight.committed() {
         match committed.output_registration_originals_v1() {
             Ok((outcome, currentness)) => {
                 attempt.terminal_witness_checks[0] = Some(session.bookend_output_terminal_witnesses(

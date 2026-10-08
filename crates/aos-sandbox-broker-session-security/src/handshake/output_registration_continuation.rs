@@ -524,6 +524,11 @@ impl OriginalOutputClientFlightV1 {
         self.coordinates.as_ref()
     }
 
+    /// Borrows the parked terminal commit result without releasing flight custody.
+    pub fn committed(&self) -> Option<&crate::ProtectedBrokerOutcomeCommitResultV1> {
+        self.committed.as_ref()
+    }
+
     /// Borrows the original authenticated request without releasing its flight.
     pub fn request(&self) -> Option<&AuthenticatedBrokerMethodRequestV1> {
         Some(&self.prepared.as_ref()?.as_ref().ok()?.0)
