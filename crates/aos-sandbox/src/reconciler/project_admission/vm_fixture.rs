@@ -18,6 +18,7 @@ use aos_sandbox_core::{
     ObjectDigest, OperationId, PrincipalId, ProjectId, ResourceId, ResourceKind, RevocationScopeId,
     SandboxId, Selector,
 };
+use buffa::Message as _;
 
 use super::{
     ProjectAdmissionMetadata, ProjectAdmissionPhase,
@@ -288,8 +289,8 @@ fn require_terminal_operation(
 ) -> Result<(), Box<dyn Error>> {
     let public = public_operation_resource_from_journal_v1(journal, operation)?
         .ok_or("VM original public operation absent")?;
-    if public.phase.enum_value() != Some(OperationPhase::OPERATION_PHASE_PERMANENTLY_BLOCKED)
-        || public.retry_class.enum_value() != Some(RetryClass::RETRY_CLASS_NEVER)
+    if public.phase.as_known() != Some(OperationPhase::OPERATION_PHASE_PERMANENTLY_BLOCKED)
+        || public.retry_class.as_known() != Some(RetryClass::RETRY_CLASS_NEVER)
         || public.completed_at.as_option().is_none()
         || public
             .progress
