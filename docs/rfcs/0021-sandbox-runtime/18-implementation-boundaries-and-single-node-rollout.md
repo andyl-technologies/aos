@@ -184,6 +184,17 @@ Journal. Semantic replay, protected admission, compaction guards, and authority
 factories remain domain-owned. This organization adds no constructor, descriptor
 escape, or callback and does not complete a protected role-crate migration.
 
+The private `journal::semantic_append` group owns the complete ordinary and
+closed semantic append recipes, paired advisory preflights, Q04 adapters and
+append-only guards as inherent methods on the original Journal. Its fields,
+selector DATA and independent loan lifetimes stay in the parent. Native final
+crossings, clocks, retained causes, durable append and subsequent publication
+keep their original order, while the actual callers retain their outcomes and
+postchecks. Thirteen private methods use `pub(super)` inside the child to
+restore exactly their former journal-module access; fields and crate/public API
+access do not widen. This is an internal cohesion improvement, not a lower
+crate cut, an authority-interface solution or production qualification.
+
 Linux owns the unchanged bounded optional credential reader and its retained
 native read DATA; role-specific decoding, key separation, and startup admission
 remain with their original owners.
