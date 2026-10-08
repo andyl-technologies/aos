@@ -117,7 +117,7 @@ mod tests {
             self.0.root_record()
         }
 
-        fn read_page_with_proof(
+        fn with_page_response(
             &self,
             region: &str,
             page: u64,
@@ -125,8 +125,9 @@ mod tests {
                 (),
                 crucible_qemu::ram_source::QemuRamReadBoundaryError,
             >,
-        ) -> Result<(Vec<u8>, crucible_ram::PageProof), QemuRamSourceError> {
-            self.0.read_page_with_proof(region, page, boundary)
+            consumer: &mut crucible_qemu::ram_source::QemuRamResponseConsumer<'_>,
+        ) -> Result<(), QemuRamSourceError> {
+            self.0.with_page_response(region, page, boundary, consumer)
         }
     }
 
@@ -174,10 +175,15 @@ mod tests {
 
         let region = &backing.root_record().topology().regions()[0];
         let mut checked_original_boundary = false;
-        let result = observed.read_page_with_proof(region.id(), 0, &mut || {
-            checked_original_boundary = true;
-            Err(crucible_qemu::ram_source::QemuRamReadBoundaryError::Canceled)
-        });
+        let result = observed.with_page_response(
+            region.id(),
+            0,
+            &mut || {
+                checked_original_boundary = true;
+                Err(crucible_qemu::ram_source::QemuRamReadBoundaryError::Canceled)
+            },
+            &mut |_, _| panic!("the original refusal cannot produce a response"),
+        );
 
         assert!(checked_original_boundary);
         assert!(matches!(result, Err(QemuRamSourceError::Canceled)));

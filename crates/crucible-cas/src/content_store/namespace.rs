@@ -5,6 +5,7 @@
 //! capability separately at construction. The capability remains operational:
 //! its policy and credentials do not enter content or graph identity.
 
+use super::CheckedPublicationMetadata;
 use super::batch::admission_under;
 
 use super::ObjectKind;
@@ -170,6 +171,13 @@ impl NamespacedStore {
 }
 
 impl ImmutableBlobBackend for NamespacedStore {
+    fn checked_publication_metadata(
+        &self,
+        kind: ObjectKind,
+    ) -> Result<CheckedPublicationMetadata, StoreError> {
+        self.child.checked_publication_metadata(kind)
+    }
+
     fn put_many_if_absent_with_boundary(
         &self,
         original: &crate::owned_decode::DecodeBudget,

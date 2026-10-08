@@ -735,7 +735,11 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
             .observations
     );
 
-    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    let restarted = CampaignRepository::new(
+        repository.blobs.clone(),
+        repository.refs.clone(),
+        repository.ram_admission().clone(),
+    );
     assert_eq!(
         restarted
             .load_expansion_state(observed_id)
@@ -868,8 +872,11 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
         nested_request.stop().clone(),
     )
     .expect("nested attempt");
-    let admission_restarted =
-        CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    let admission_restarted = CampaignRepository::new(
+        repository.blobs.clone(),
+        repository.refs.clone(),
+        repository.ram_admission().clone(),
+    );
     let nested_admitted = admission_restarted
         .admit_proposal(
             "finite-expansion",
@@ -1043,8 +1050,11 @@ fn finite_expansion_pages_are_snapshot_bound_admission_backed_and_owner_recomput
         nested_puct.edge_scores()[&nested_edge].mean_reward_micros(),
         -3_000_000
     );
-    let nested_restarted =
-        CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    let nested_restarted = CampaignRepository::new(
+        repository.blobs.clone(),
+        repository.refs.clone(),
+        repository.ram_admission().clone(),
+    );
     assert_eq!(
         nested_restarted
             .load_expansion_state(nested_root_id)

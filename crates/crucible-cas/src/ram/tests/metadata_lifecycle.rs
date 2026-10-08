@@ -130,7 +130,8 @@ fn contains_original_quota(error: &(dyn Error + 'static)) -> bool {
 fn page_object(store: &RamStore) -> ContentId {
     let retention = Retention::default();
     let mut boundary = || Ok(());
-    let mut work = Work::new(store.limits, &mut boundary);
+    let work_original_133 = fixture_original(store);
+    let mut work = Work::new(store.limits, &work_original_133, &mut boundary).unwrap();
     store.put_page(&[7; 4096], &retention, &mut work).unwrap().0
 }
 
@@ -199,10 +200,11 @@ fn completed_child_codec_accounts_reuse_only_the_same_original_bank() {
         let child = parent.child().unwrap();
         let scope = child.enter();
         let mut boundary = || Ok(());
-        let mut work = Work::new(store.limits, &mut boundary);
+        let mut work = Work::new(store.limits, &child, &mut boundary).unwrap();
         let envelope = store.read_envelope(page, &mut work).unwrap();
         assert_eq!(envelope.body().len(), 4132);
         drop(envelope);
+        drop(work);
         drop(scope);
         drop(child);
         assert_eq!(quota.used(), parent_used);
@@ -221,7 +223,7 @@ fn completed_child_codec_accounts_reuse_only_the_same_original_bank() {
         let child = parent.child().unwrap();
         let scope = child.enter();
         let mut boundary = || Ok(());
-        let mut work = Work::new(store.limits, &mut boundary);
+        let mut work = Work::new(store.limits, &child, &mut boundary).unwrap();
         match store.read_envelope(page, &mut work) {
             Ok(envelope) => retained.push((envelope, child.custody())),
             Err(error) => break error,
@@ -271,6 +273,7 @@ fn capture_and_verification_release_completed_object_codec_credits() {
             Ok(())
         },
         &Retention::default(),
+        &budget,
         &mut || Ok(()),
     );
     let root = result.unwrap();
@@ -279,13 +282,17 @@ fn capture_and_verification_release_completed_object_codec_credits() {
     let capture_verifications = quota.verifications.load(Ordering::SeqCst) - verification_start;
     let reservation_start = quota.reservations.load(Ordering::SeqCst);
     let verification_start = quota.verifications.load(Ordering::SeqCst);
-    let verified = store.verify(&root, &mut || Ok(())).unwrap();
+    let verified = store.verify(&root, &budget, &mut || Ok(())).unwrap();
     assert_eq!(verified.pages, 256);
     assert_eq!(verified.logical_bytes, 256 * 4096);
     assert!(quota.refusal.lock().unwrap().is_none());
     // The unchanged original implementation's observed peak is the ceiling;
     // additional sharing and batch-control credits cannot consume more bank.
-    assert!(quota.peak.load(Ordering::SeqCst) <= 819_663);
+    assert!(
+        quota.peak.load(Ordering::SeqCst) <= 819_663,
+        "actual peak={}",
+        quota.peak.load(Ordering::SeqCst)
+    );
     let reference = crucible_ram::oracle::recompute(
         &topology(256 * 4096),
         Scope::Exact,
@@ -312,6 +319,109 @@ fn capture_and_verification_release_completed_object_codec_credits() {
     drop(scope);
     drop(budget);
     assert_eq!(quota.used(), baseline);
+}
+
+#[test]
+fn committed_batch_readback_detects_corruption_after_original_inputs_close() {
+    let directory = tempfile::tempdir().unwrap();
+    let quota = ObservedQuota::new();
+    let store = directory_store(directory.path(), &quota);
+    let original = DecodeBudget::for_store(quota.clone()).unwrap();
+    let retention = Retention::default();
+    let mut no_boundary = || Ok(());
+    let mut work = Work::new(store.limits, &original, &mut no_boundary).unwrap();
+    store.begin_capture_batch(&mut work).unwrap();
+    let (id, _) = store.put_page(&[7; 4096], &retention, &mut work).unwrap();
+    store.put_page(&[8; 4096], &retention, &mut work).unwrap();
+
+    // This test fault uses the same finite bank before allocating its path or
+    // opening a file. It mutates published storage, not the canonical inputs.
+    let fault_credit = quota.reserve_resources(1, 8192).unwrap();
+    let path = directory
+        .path()
+        .join("objects")
+        .join(format!("{:02x}", id.digest()[0]))
+        .join(id.encode());
+    let mut altered = false;
+    let mut boundary = || {
+        if !altered && path.exists() {
+            let mut bytes = std::fs::read(&path).unwrap();
+            *bytes.last_mut().unwrap() ^= 1;
+            std::fs::write(&path, &bytes).unwrap();
+            altered = true;
+        }
+        Ok(())
+    };
+    work.boundary = &mut boundary;
+    let error = store.flush_capture_batch(&mut work).unwrap_err();
+    drop(work);
+
+    assert!(altered);
+    let RamStoreError::Store(StoreError::DirectoryScope { source }) = &error else {
+        panic!("committed readback corruption retains its outcome: {error:?}")
+    };
+    assert!(
+        matches!(source.work_failure(), Some(StoreError::Corrupt { id: corrupted }) if *corrupted == id)
+    );
+    assert_eq!(source.outcome().published_objects, 2);
+    assert_eq!(source.outcome().durable_objects, 2);
+    assert!(!source.outcome().durability_uncertain);
+    assert!(source.cleanup_failure().is_none());
+
+    drop(error);
+    drop(path);
+    drop(fault_credit);
+    original.check().unwrap();
+}
+
+#[test]
+fn committed_batch_late_readback_refusal_retains_full_original_cause_and_outcome() {
+    let mut successful_polls = 0;
+    for refuse in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let quota = ObservedQuota::new();
+        let store = directory_store(directory.path(), &quota);
+        let original = DecodeBudget::for_store(quota).unwrap();
+        let retention = Retention::default();
+        let mut polls = 0;
+        let mut boundary = || {
+            polls += 1;
+            if refuse && polls == successful_polls - 2 {
+                Err(RamStoreError::Canceled)
+            } else {
+                Ok(())
+            }
+        };
+        let mut work = Work::new(store.limits, &original, &mut boundary).unwrap();
+        store.begin_capture_batch(&mut work).unwrap();
+        store.put_page(&[7; 4096], &retention, &mut work).unwrap();
+        store.put_page(&[8; 4096], &retention, &mut work).unwrap();
+        let result = store.flush_capture_batch(&mut work);
+        drop(work);
+
+        if refuse {
+            let error = result.unwrap_err();
+            let RamStoreError::Store(StoreError::DirectoryScope { source }) = &error else {
+                panic!("late readback refusal retains its outcome: {error:?}")
+            };
+            let Some(StoreError::RamValidation { source: original }) = source.work_failure() else {
+                panic!("the first RAM refusal remains typed: {error:?}")
+            };
+            assert!(matches!(
+                original.storage_failure(),
+                RamStoreError::Canceled
+            ));
+            assert_eq!(source.outcome().published_objects, 2);
+            assert_eq!(source.outcome().durable_objects, 2);
+            assert!(!source.outcome().durability_uncertain);
+            assert!(source.cleanup_failure().is_none());
+            assert_eq!(polls, successful_polls - 2);
+        } else {
+            result.unwrap();
+            successful_polls = polls;
+            assert!(successful_polls > 2);
+        }
+    }
 }
 
 #[test]
@@ -469,6 +579,7 @@ fn capture_cancellation_discards_only_transient_batch_custody() {
                 Ok(())
             },
             &Retention::default(),
+            &parent,
             &mut || Ok(()),
         )
         .unwrap_err();
@@ -493,6 +604,7 @@ fn transfer_object_clones_share_final_canonical_byte_custody() {
             Scope::Exact,
             &mut patterned,
             &Retention::default(),
+            &parent,
             &mut || Ok(()),
         )
         .unwrap();
@@ -503,6 +615,7 @@ fn transfer_object_clones_share_final_canonical_byte_custody() {
                 region_id: "main".into(),
                 page_index: 0,
             },
+            &parent,
             &mut || Ok(()),
         )
         .unwrap();
@@ -538,6 +651,7 @@ fn receiver_refuses_an_oversized_page_before_assembly_allocation() {
             Scope::Exact,
             &mut patterned,
             &retention,
+            &fixture_original(&source),
             &mut || Ok(()),
         )
         .unwrap();
@@ -552,7 +666,11 @@ fn receiver_refuses_an_oversized_page_before_assembly_allocation() {
         RamTransferReceiver::new(destination.clone(), &retention, sender.offer()).unwrap();
     let mut altered = false;
     let mut exchange = |message: RamTransferMessage| {
-        let mut response = sender.respond(message, &mut || Ok(()))?;
+        let mut response = sender.respond(
+            message,
+            &sender.original_for_test().unwrap(),
+            &mut || Ok(()),
+        )?;
         if let RamTransferControl::ObjectChunk {
             object,
             length,
@@ -571,7 +689,13 @@ fn receiver_refuses_an_oversized_page_before_assembly_allocation() {
         Ok(response)
     };
 
-    let error = receiver.receive(&mut exchange, &mut || Ok(())).unwrap_err();
+    let error = receiver
+        .receive(
+            &mut exchange,
+            &receiver.original_for_test().unwrap(),
+            &mut || Ok(()),
+        )
+        .unwrap_err();
     assert!(altered);
     assert!(matches!(
         error,
@@ -598,6 +722,7 @@ fn receiver_multichunk_scratch_reuses_the_original_bank_after_refusal() {
             Scope::Exact,
             &mut patterned,
             &retention,
+            &fixture_original(&source),
             &mut || Ok(()),
         )
         .unwrap();
@@ -614,13 +739,19 @@ fn receiver_multichunk_scratch_reuses_the_original_bank_after_refusal() {
             RamTransferReceiver::new(destination.clone(), &retention, sender.offer()).unwrap();
         let budget = DecodeBudget::for_store(quota.clone()).unwrap();
         let scope = budget.enter();
+        let operation = budget.child().unwrap();
+        let source_original = fixture_original(&source);
         let mut competing = None;
+        let mut chunk_original = None;
         let mut chunks = 0;
         let mut exchange = |message: RamTransferMessage| {
-            let response = sender.respond(message, &mut || Ok(()))?;
+            let response = sender.respond(message, &source_original, &mut || Ok(()))?;
             if matches!(response.control, RamTransferControl::ObjectChunk { .. }) {
                 chunks += 1;
                 if refuse && competing.is_none() {
+                    // Observe the already-entered receiver object child. This
+                    // retains its real sticky refusal; it grants no new bank.
+                    chunk_original = crate::owned_decode::current_budget();
                     competing = Some(
                         quota
                             .resources
@@ -631,12 +762,18 @@ fn receiver_multichunk_scratch_reuses_the_original_bank_after_refusal() {
             }
             Ok(response)
         };
-        let result = receiver.receive(&mut exchange, &mut || Ok(()));
+        let result = receiver.receive(&mut exchange, &operation, &mut || Ok(()));
         drop(competing);
         if refuse {
             let error = result.unwrap_err();
             assert!(contains_original_quota(&error), "{error:?}");
             assert!(!destination.backend.contains(root.object_id()).unwrap());
+            let failed = chunk_original.take().unwrap();
+            let first = failed.check().unwrap_err();
+            assert_eq!(failed.check().unwrap_err(), first);
+            drop(first);
+            drop(failed);
+            drop(error);
         } else {
             let RamTransferStep::ClosureStored(stored) = result.unwrap() else {
                 panic!("expected complete stored closure")
@@ -644,9 +781,13 @@ fn receiver_multichunk_scratch_reuses_the_original_bank_after_refusal() {
             assert!(chunks > 8192, "one small credit per actual wire chunk");
             assert_eq!(stored.root().logical_digest(), root.logical_digest());
             assert_eq!(quota.limit, RECEIVER_METADATA_BYTES);
-            destination.verify(stored.root(), &mut || Ok(())).unwrap();
+            destination
+                .verify(stored.root(), &operation, &mut || Ok(()))
+                .unwrap();
             drop(stored);
         }
+        drop(operation);
+        drop(source_original);
         budget.check().unwrap();
         drop(scope);
         drop(budget);

@@ -14,16 +14,13 @@ use crucible_cas::content_store::{ContentId, DurabilityRequirement, StorePhysica
 use crucible_cas::ram::{
     LeasedRamRoot, RamRetention, RamRootLease, RamStore, RamStoreError, RamStoreLimits,
 };
-use crucible_ram::{RootRecord, Scope, Topology};
+use crucible_ram::{RootRecord, Scope};
 use rustix::fs::{FlockOperation, flock};
 
 use super::*;
 
 const DIRECTORY: &str = "checkpoint-ram-objects";
 const FENCE: &str = "retention.lock";
-
-type CapturePageReader<'a> =
-    dyn FnMut(&crucible_ram::RegionDescriptor, u64, &mut [u8]) -> Result<(), RamStoreError> + 'a;
 
 /// Preserves the supervisor's typed cancellation or resource-limit result.
 ///
@@ -78,6 +75,7 @@ pub(in crate::vm_lifecycle) struct PagedRamCatalog {
     store: RamStore,
     retention: Arc<CatalogRetention>,
     provider: Arc<dyn ProductionRamCatalogProvider>,
+    original: crucible_cas::owned_decode::DecodeBudget,
 }
 
 impl std::fmt::Debug for PagedRamCatalog {
@@ -135,29 +133,8 @@ impl PagedRamCatalog {
                 _root_credit: Default::default(),
             }),
             provider: Arc::clone(provider),
+            original: storage.original,
         })
-    }
-
-    /// Captures a complete image without constructing a flat page inventory.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for unavailable or invalid bytes, cancellation, a
-    /// resource bound, or failure to persist and retain a complete root.
-    pub(in crate::vm_lifecycle) fn capture(
-        &self,
-        topology: Topology,
-        read_page: &mut CapturePageReader<'_>,
-        boundary: &mut dyn FnMut() -> Result<(), RamStoreError>,
-    ) -> Result<LeasedRamRoot, RamStoreError> {
-        let retention = self.retention()?;
-        self.store.capture(
-            topology,
-            Scope::Exact,
-            read_page,
-            retention.as_ref(),
-            boundary,
-        )
     }
 
     /// Reopens and verifies a complete image under a retained catalog fence.
@@ -172,14 +149,38 @@ impl PagedRamCatalog {
         expected: &RootRecord,
         boundary: &mut dyn FnMut() -> Result<(), RamStoreError>,
     ) -> Result<LeasedRamRoot, RamStoreError> {
+        let account = self.operation_account()?;
         let retention = self.retention()?;
         let lease = retention.retain_root(identity)?;
-        let root = self.store.open(lease, boundary)?;
+        let root = self.store.open(lease, &account, boundary)?;
         if root.record() != expected || root.record().scope() != Scope::Exact {
             return Err(RamStoreError::Invalid("checkpoint RAM root binding"));
         }
-        self.store.verify(&root, boundary)?;
+        self.store.verify(&root, &account, boundary)?;
         Ok(root)
+    }
+
+    /// Authenticates one complete graph under an independent original operation account.
+    ///
+    /// # Errors
+    /// Refuses canceled namespace authority, exhausted resources or corrupt descendants.
+    pub(in crate::vm_lifecycle) fn verify(
+        &self,
+        root: &LeasedRamRoot,
+        boundary: &mut dyn FnMut() -> Result<(), RamStoreError>,
+    ) -> Result<crucible_cas::ram::RamVerificationReport, RamStoreError> {
+        let account = self.operation_account()?;
+        self.store.verify(root, &account, boundary)
+    }
+
+    pub(in crate::vm_lifecycle) fn original(&self) -> &crucible_cas::owned_decode::DecodeBudget {
+        &self.original
+    }
+
+    fn operation_account(&self) -> Result<crucible_cas::owned_decode::DecodeBudget, RamStoreError> {
+        self.original
+            .child()
+            .map_err(|source| RamStoreError::from_admission(&self.original, source))
     }
 
     pub(in crate::vm_lifecycle) fn store(&self) -> &RamStore {
@@ -219,7 +220,7 @@ impl PagedRamCatalog {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "test-support"))]
 impl PagedRamCatalog {
     /// Corrupts exactly one authenticated leaf realization in a small test image.
     pub(in crate::vm_lifecycle) fn corrupt_page_object_for_test(
@@ -367,6 +368,7 @@ impl RamRootLease for CatalogRootLease {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+    use crucible_ram::Topology;
 
     #[test]
     fn absent_physical_quota_authority_refuses_before_catalog_allocation() {
@@ -467,9 +469,15 @@ mod tests {
             crucible_ram::Limits::default(),
         )
         .expect("topology");
-        let root = catalog
-            .capture(
+        let root = {
+            let account = catalog
+                .operation_account()
+                .expect("original capture account");
+            let retention = catalog.retention().expect("capture retention");
+
+            catalog.store().capture(
                 topology,
+                Scope::Exact,
                 &mut |_, _, output| {
                     assert_eq!(
                         loans.load(Ordering::SeqCst),
@@ -479,9 +487,12 @@ mod tests {
                     output.fill(7);
                     Ok(())
                 },
+                retention.as_ref(),
+                &account,
                 &mut || Ok(()),
             )
-            .expect("capture");
+        }
+        .expect("capture");
         let reader = root.clone();
 
         drop(root);
@@ -513,16 +524,25 @@ mod tests {
             crucible_ram::Limits::default(),
         )
         .expect("topology");
-        let parent = catalog
-            .capture(
+        let parent = {
+            let account = catalog
+                .operation_account()
+                .expect("original capture account");
+            let retention = catalog.retention().expect("capture retention");
+
+            catalog.store().capture(
                 topology,
+                Scope::Exact,
                 &mut |_, _, output| {
                     output.fill(3);
                     Ok(())
                 },
+                retention.as_ref(),
+                &account,
                 &mut || Ok(()),
             )
-            .expect("committed image");
+        }
+        .expect("committed image");
 
         let mut changes = [crucible_cas::ram::RamPageChange {
             region_id: String::from("main"),
@@ -545,6 +565,10 @@ mod tests {
                     &parent,
                     &mut || Ok(changes.next()),
                     catalog.retention().expect("admit successor root").as_ref(),
+                    &catalog
+                        .original()
+                        .child()
+                        .expect("same original update account"),
                     boundary,
                 )
             },
@@ -555,13 +579,22 @@ mod tests {
         assert_eq!(
             catalog
                 .store()
-                .read_page(&parent, "main", 1, &mut || Ok(()))
-                .expect("preserved parent page"),
+                .read_page(
+                    &parent,
+                    "main",
+                    1,
+                    &catalog
+                        .original()
+                        .child()
+                        .expect("same original read account"),
+                    &mut || Ok(())
+                )
+                .expect("preserved parent page")
+                .bytes(),
             vec![3; 4096]
         );
         assert_eq!(
             catalog
-                .store()
                 .verify(&parent, &mut || Ok(()))
                 .expect("preserved complete image")
                 .pages,

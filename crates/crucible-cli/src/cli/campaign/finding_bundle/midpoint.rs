@@ -18,6 +18,7 @@ pub(super) struct PreparedFindingBundleMidpoint {
     pub(super) report: Value,
     pub(super) private: tempfile::TempDir,
     pub(super) decoding: crucible_session::engine::owned_decode::DecodeBudget,
+    pub(super) archive_admission: ArchiveBundleAdmission,
 }
 
 /// Opens a private QEMU restore and exposes one read-only local GDB relay.
@@ -35,18 +36,20 @@ pub(crate) fn run_finding_bundle_midpoint(
     }
 
     let prepared = prepare_finding_bundle_midpoint(cli, args)?;
-    let PreparedFindingBundleMidpoint {
-        imported,
-        report,
-        private,
-        decoding,
-    } = prepared;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let output_budget = decoding.clone();
+    let output_budget = prepared.decoding.clone();
     let admitted = crucible_api::admit_future(
         async move {
+            // Restore and relay owners close before the original archive service.
+            let PreparedFindingBundleMidpoint {
+                archive_admission,
+                imported,
+                report,
+                private,
+                decoding,
+            } = prepared;
             let transport = private_midpoint_transport(private.path())?;
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
                 .await
@@ -120,7 +123,8 @@ pub(crate) fn run_finding_bundle_midpoint(
                 };
             destroyed?;
             served?;
-            relay
+            relay?;
+            archive_admission.complete()
         },
         output_budget,
     )
@@ -132,6 +136,13 @@ pub(super) fn prepare_finding_bundle_midpoint(
     cli: &Cli,
     args: &CampaignFindingBundleMidpointArgs,
 ) -> Result<PreparedFindingBundleMidpoint, CliError> {
+    let archive_admission = ArchiveBundleAdmission::open(
+        args.archive_policy.as_deref(),
+        crucible_api::host_operational::HostOperationClass::Preparation,
+        None,
+        Some(&args.input),
+        None,
+    )?;
     let FindingSourceAuthentication {
         owner,
         deployment,
@@ -140,9 +151,15 @@ pub(super) fn prepare_finding_bundle_midpoint(
         workspace,
         decoding,
         ..
-    } = FindingSourceAuthentication::open(cli, &args.input)?;
+    } = FindingSourceAuthentication::open(cli, archive_admission.input_path(&args.input))?;
     let _scope = decoding.enter();
-    let bundle = load_authenticated_bundle_in_workspace(&args.input, &workspace, &mut || Ok(()))?;
+    let archive_scope = archive_admission.input_scope()?;
+    let bundle = load_authenticated_bundle_in_workspace(
+        archive_admission.input_path(&args.input),
+        &workspace,
+        &archive_admission,
+        &mut || archive_admission.boundary(),
+    )?;
     let finding =
         bundle.evidence.finding.id().map_err(|error| {
             backend_error(format!("verified finding identity is invalid: {error}"))
@@ -236,11 +253,13 @@ pub(super) fn prepare_finding_bundle_midpoint(
         selected,
         fault_trace.as_ref(),
     )?;
+    drop(archive_scope);
     Ok(PreparedFindingBundleMidpoint {
         imported,
         report,
         private,
         decoding,
+        archive_admission,
     })
 }
 

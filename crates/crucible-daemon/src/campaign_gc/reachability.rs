@@ -13,7 +13,6 @@ use crucible_campaign::{
 };
 use crucible_cas::content_store::{
     ContentId, DurabilityRequirement, ImmutableBlobBackend, RefInventoryFence, StoreError,
-    StorePhysicalQuotaGuard,
 };
 use crucible_cas::owned_decode::DecodeBudget;
 use crucible_cas::ram::{RamStore, RamStoreError, RamStoreLimits};
@@ -28,7 +27,7 @@ pub(super) struct Reachability {
     root: MerkleMapRoot,
     #[cfg(test)]
     directory: Option<tempfile::TempDir>,
-    resources: Arc<dyn StorePhysicalQuotaGuard>,
+    original: DecodeBudget,
 }
 
 impl Reachability {
@@ -40,7 +39,7 @@ impl Reachability {
         operation: &CampaignGcOperationContext<'_>,
     ) -> Result<Self, StoreError> {
         operation.check()?;
-        let mut marks = Self::with_backend(operation.marks())?;
+        let mut marks = Self::with_backend(operation.marks(), operation.original())?;
         let closure = repository
             .authenticated_storage_closure_with_boundary(roots, inventory, &mut || {
                 operation.check().map_err(Into::into)
@@ -72,10 +71,16 @@ impl Reachability {
         )
         .map_err(|error| marks.failure("open GC RAM inventory", error))?;
         for root in closure.ram_roots() {
-            ram.visit_inventory_graph(*root, inventory, &mut |id| {
-                operation.check()?;
-                marks.insert(id).map_err(Into::into)
-            })
+            ram.visit_inventory_graph(
+                *root,
+                inventory,
+                operation.original(),
+                &mut || operation.check().map_err(Into::into),
+                &mut |id| {
+                    operation.check()?;
+                    marks.insert(id).map_err(Into::into)
+                },
+            )
             .map_err(|error| match error {
                 RamStoreError::Store(source) => source,
                 other => marks.failure("authenticate GC RAM graph", other),
@@ -84,22 +89,32 @@ impl Reachability {
         Ok(marks)
     }
 
-    fn with_backend(backend: Arc<dyn ImmutableBlobBackend>) -> Result<Self, StoreError> {
-        let resources = backend.metadata_resources()?;
-        let account = mark_account(&resources)?;
+    fn with_backend(
+        backend: Arc<dyn ImmutableBlobBackend>,
+        original: &DecodeBudget,
+    ) -> Result<Self, StoreError> {
+        original
+            .verify_live()
+            .map_err(|error| mark_admission(original, error))?;
+        backend.metadata_resources()?;
+        let account = original
+            .child()
+            .map_err(|error| mark_admission(original, error))?;
         let _scope = account.enter();
         let map = MerkleMap::new(backend);
         let root = map.empty().map_err(|source| StoreError::StreamIo {
             operation: "initialize GC mark tree",
             source: io::Error::other(source),
         })?;
-        account.check().map_err(mark_admission)?;
+        account
+            .check()
+            .map_err(|error| mark_admission(&account, error))?;
         Ok(Self {
             map,
             root,
             #[cfg(test)]
             directory: None,
-            resources,
+            original: original.clone(),
         })
     }
 
@@ -109,13 +124,19 @@ impl Reachability {
             fixture_metadata_backend, fixture_ram_root_resources,
         };
 
+        let resources = fixture_ram_root_resources().map_err(|source| StoreError::Supervision {
+            source: Box::new(source),
+        })?;
+        let original = DecodeBudget::for_store(resources.clone()).map_err(|source| {
+            StoreError::DecodeAdmission {
+                source,
+                custody: None,
+            }
+        })?;
         let directory = tempfile::tempdir().map_err(|source| StoreError::Io {
             operation: "create component GC mark directory",
             path: std::env::temp_dir(),
             source,
-        })?;
-        let resources = fixture_ram_root_resources().map_err(|source| StoreError::Supervision {
-            source: Box::new(source),
         })?;
         let backend = fixture_metadata_backend(
             Arc::new(crucible_cas::content_store::SqliteBlobBackend::open(
@@ -124,13 +145,13 @@ impl Reachability {
             )?),
             resources,
         );
-        let mut marks = Self::with_backend(backend)?;
+        let mut marks = Self::with_backend(backend, &original)?;
         marks.directory = Some(directory);
         Ok(marks)
     }
 
     fn insert(&mut self, id: ContentId) -> Result<(), StoreError> {
-        let account = mark_account(&self.resources)?;
+        let account = mark_account(&self.original)?;
         let _scope = account.enter();
         // Keeping the immutable root in memory authenticates both presence and
         // absence. A damaged SQLite row must never turn a reachable object into
@@ -139,7 +160,9 @@ impl Reachability {
             .map
             .insert(self.root.content_id(), mark_key(id), id)
             .map_err(|source| self.failure("insert GC mark", source))?;
-        account.check().map_err(mark_admission)?;
+        account
+            .check()
+            .map_err(|error| mark_admission(&account, error))?;
         if root.entry_count() > MAX_CAMPAIGN_CLOSURE_OBJECTS as u64 {
             return Err(StoreError::Quota);
         }
@@ -148,13 +171,15 @@ impl Reachability {
     }
 
     pub(super) fn contains(&self, id: &ContentId) -> Result<bool, StoreError> {
-        let account = mark_account(&self.resources)?;
+        let account = mark_account(&self.original)?;
         let _scope = account.enter();
         let value = self
             .map
             .get(self.root.content_id(), mark_key(*id))
             .map_err(|source| self.failure("authenticate GC mark", source))?;
-        account.check().map_err(mark_admission)?;
+        account
+            .check()
+            .map_err(|error| mark_admission(&account, error))?;
         match value {
             None => Ok(false),
             Some(found) if found == *id => Ok(true),
@@ -183,18 +208,22 @@ impl Reachability {
 // Mark operations return only scalar identities. Their decoded nodes, source
 // handles and publication buffers close before this child account; immutable
 // backend copies retain their own original-account custody independently.
-fn mark_account(resources: &Arc<dyn StorePhysicalQuotaGuard>) -> Result<DecodeBudget, StoreError> {
-    if let Some(account) =
-        crucible_cas::owned_decode::current_child_budget().map_err(mark_admission)?
-    {
-        return Ok(account);
-    }
-    DecodeBudget::for_store(Arc::clone(resources)).map_err(mark_admission)
+fn mark_account(original: &DecodeBudget) -> Result<DecodeBudget, StoreError> {
+    original
+        .verify_live()
+        .map_err(|error| mark_admission(original, error))?;
+    original
+        .child()
+        .map_err(|error| mark_admission(original, error))
 }
 
-fn mark_admission(source: crucible_cas::owned_decode::DecodeAdmissionError) -> StoreError {
-    StoreError::Supervision {
-        source: Box::new(source),
+fn mark_admission(
+    original: &DecodeBudget,
+    source: crucible_cas::owned_decode::DecodeAdmissionError,
+) -> StoreError {
+    StoreError::DecodeAdmission {
+        source,
+        custody: Some(original.custody()),
     }
 }
 

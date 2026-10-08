@@ -1,162 +1,68 @@
 //! Actual worker-control close before original service credit becomes reusable.
+//!
+//! The sole shared observer captures each original worker control exactly once.
+//! One family mutex covers capture, all real borrower joins, probe teardown and
+//! refund verification; concurrent borrowers still contend within each action.
 
 // crucible-lint: allow panic-shortcut -- allocation-order fixtures panic to localize proof failures.
 #![allow(clippy::unwrap_used)]
 
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::cell::Cell;
-use std::sync::atomic::{AtomicPtr, AtomicU8, Ordering};
+use std::sync::atomic::Ordering;
 
 mod backend_cause;
 mod worker_scope;
 
-static DETACHED_TARGET: AtomicUsize = AtomicUsize::new(0);
-static DETACHED_ACCOUNT: AtomicPtr<HostServiceAllocator> = AtomicPtr::new(std::ptr::null_mut());
-static DETACHED_OBSERVATION: AtomicU8 = AtomicU8::new(0);
-
 use super::*;
 use crucible_linux_resource::host_services::{HostServiceAllocator, HostServiceError};
-
-#[derive(Clone, Copy)]
-struct Watch {
-    capture: bool,
-    expected: usize,
-    target: usize,
-    account: *const HostServiceAllocator,
-    observation: u8,
-}
-
-thread_local! {
-    static WATCH: Cell<Watch> = const { Cell::new(Watch {
-        capture: false,
-        expected: 0,
-        target: 0,
-        account: std::ptr::null(),
-        observation: 0,
-    }) };
-}
-
-struct ObserverAllocator;
-
-// SAFETY: Every allocation delegates unchanged to System. The observer stores
-// integer addresses, never accesses allocation contents, and disarms its probe.
-unsafe impl GlobalAlloc for ObserverAllocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        // SAFETY: The exact caller layout is forwarded unchanged to System.
-        let pointer = unsafe { System.alloc(layout) };
-        let _ = WATCH.try_with(|watch| {
-            let mut state = watch.get();
-            if state.capture && layout.size() == state.expected && layout.align() == 8 {
-                state.capture = false;
-                state.target = pointer as usize;
-                watch.set(state);
-            }
-        });
-        pointer
-    }
-
-    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
-        let observed = WATCH
-            .try_with(|watch| {
-                let mut state = watch.get();
-                if state.target != 0 && state.target == pointer as usize {
-                    state.target = 0;
-                    watch.set(state);
-                    Some(state)
-                } else {
-                    None
-                }
-            })
-            .ok()
-            .flatten();
-
-        // SAFETY: The original allocation and layout are delegated exactly once.
-        unsafe { System.dealloc(pointer, layout) };
-        if DETACHED_TARGET
-            .compare_exchange(pointer as usize, 0, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-        {
-            let account = DETACHED_ACCOUNT.load(Ordering::Acquire);
-            // SAFETY: The serialized detached-worker fixture keeps this actual
-            // allocator borrowed through actual worker join, including panic.
-            // The pointer is cleared only after that worker has fully closed.
-            let result = unsafe { &*account }.reserve_resources(0, 0, 1);
-            let observation = match result {
-                Err(HostServiceError::CapacityExhausted) => 1,
-                Ok(_) => 2,
-                Err(_) => 3,
-            };
-            DETACHED_OBSERVATION.store(observation, Ordering::Release);
-        }
-        if let Some(mut state) = observed {
-            // SAFETY: Arm borrows this actual allocator throughout synchronous
-            // Drop and the probe. Scoped threads cannot outlive that allocator;
-            // its pointer never escapes the thread-local observation guard.
-            let result = unsafe { &*state.account }.reserve_resources(0, 0, 1);
-            state.observation = match result {
-                Err(HostServiceError::CapacityExhausted) => 1,
-                Ok(_) => 2,
-                Err(_) => 3,
-            };
-            let _ = WATCH.try_with(|watch| watch.set(state));
-        }
-    }
-}
+use crucible_linux_resource::test_support::{
+    AllocationIdentity, ResidentProbeOutcome, ResidentProbeReport, TestAllocationObserver,
+};
 
 #[global_allocator]
-static ALLOCATOR: ObserverAllocator = ObserverAllocator;
+static ALLOCATOR: TestAllocationObserver = TestAllocationObserver;
 
-fn clear() -> Watch {
-    WATCH.with(|watch| {
-        watch.replace(Watch {
-            capture: false,
-            expected: 0,
-            target: 0,
-            account: std::ptr::null(),
-            observation: 0,
-        })
-    })
-}
+static TEST_LOCK: Mutex<()> = Mutex::new(());
 
-fn arm(account: &HostServiceAllocator, target: usize) {
-    WATCH.with(|watch| {
-        watch.set(Watch {
-            capture: false,
-            expected: 0,
-            target,
-            account,
-            observation: 0,
-        })
-    });
-}
-
-fn failure(account: &HostServiceAllocator) -> (QemuRamWorkerFailure, usize) {
+fn failure(account: &HostServiceAllocator) -> (QemuRamWorkerFailure, AllocationIdentity) {
     failure_with_error(account, QemuRamSourceError::Ownership)
 }
 
 fn failure_with_error(
     account: &HostServiceAllocator,
     error: QemuRamSourceError,
-) -> (QemuRamWorkerFailure, usize) {
+) -> (QemuRamWorkerFailure, AllocationIdentity) {
     let bytes = account.maximum_resident_bytes();
     let loan = account.reserve_resources(1, 1, bytes).unwrap();
-    let expected = QemuRamWorkerFailure::allocation_bytes().unwrap() as usize;
-    WATCH.with(|watch| {
-        watch.set(Watch {
-            capture: true,
-            expected,
-            target: 0,
-            account,
-            observation: 0,
-        })
-    });
-    let failure = QemuRamWorkerFailure::new(error, loan);
-    let captured = clear();
-    assert_ne!(
-        captured.target, 0,
-        "actual worker Arc extent differs from admission"
+    captured_failure(error, loan)
+}
+
+fn captured_failure(
+    error: QemuRamSourceError,
+    loan: HostServiceLease,
+) -> (QemuRamWorkerFailure, AllocationIdentity) {
+    let expected = usize::try_from(QemuRamWorkerFailure::allocation_bytes().unwrap()).unwrap();
+    let layout = Layout::from_size_align(expected, 8).unwrap();
+    let (failure, identity, counts) =
+        TestAllocationObserver::capture_layout_and_count(layout, || {
+            QemuRamWorkerFailure::new(error, loan)
+        });
+
+    assert_eq!(counts.allocations, 1);
+    assert_eq!(counts.reallocations, 0);
+    assert!(!counts.overflow);
+    (failure, identity.unwrap())
+}
+
+fn verify_original_refusal(report: ResidentProbeReport) {
+    assert_eq!(
+        report.outcome,
+        ResidentProbeOutcome::Refused(HostServiceError::CapacityExhausted),
+        "worker credit became reusable before actual control free"
     );
-    (failure, captured.target)
+    assert_eq!(report.counts.allocations, 0);
+    assert_eq!(report.counts.reallocations, 0);
+    assert!(!report.counts.overflow);
+    assert_eq!(report.first_allocation, None);
 }
 
 fn verify_closed(account: &HostServiceAllocator) {
@@ -165,10 +71,12 @@ fn verify_closed(account: &HostServiceAllocator) {
         .unwrap();
     assert_eq!(restored.tasks(), 1);
     assert_eq!(restored.file_descriptors(), 1);
+    assert_eq!(restored.resident_bytes(), account.maximum_resident_bytes());
 }
 
 #[test]
 fn actual_worker_allocation_closes_before_original_credit_refund() {
+    let _serial = TEST_LOCK.lock().unwrap();
     let account = HostServiceAllocator::new(1, 1, 4096).unwrap();
     let (failure, target) = failure(&account);
     eprintln!(
@@ -187,68 +95,75 @@ fn actual_worker_allocation_closes_before_original_credit_refund() {
         Err(HostServiceError::CapacityExhausted)
     ));
 
-    arm(&account, target);
-    drop(clone);
-    let observation = clear().observation;
+    let (_, report) =
+        TestAllocationObserver::observe_resident_after_free(&account, target, || drop(clone))
+            .unwrap();
 
-    assert_eq!(
-        observation, 1,
-        "worker credit became reusable before actual control free"
-    );
+    verify_original_refusal(report);
     verify_closed(&account);
 }
 
 #[test]
 fn simultaneous_worker_observers_release_original_credit_once_after_close() {
+    let _serial = TEST_LOCK.lock().unwrap();
     let account = HostServiceAllocator::new(1, 1, 4096).unwrap();
     let (failure, target) = failure(&account);
     let barrier = std::sync::Barrier::new(8);
     let clones: Vec<_> = (0..8).map(|_| failure.clone()).collect();
     drop(failure);
-    let observations = std::thread::scope(|scope| {
-        let workers: Vec<_> = clones
-            .into_iter()
-            .enumerate()
-            .map(|(index, clone)| {
-                let account = &account;
-                let barrier = &barrier;
-                scope.spawn(move || {
-                    arm(account, target);
-                    barrier.wait();
-                    if index % 2 == 0 {
-                        drop(clone.into_backend_cause());
-                    } else {
-                        drop(clone);
-                    }
-                    clear().observation
-                })
-            })
-            .collect();
-        workers
-            .into_iter()
-            .map(|worker| worker.join().unwrap())
-            .collect::<Vec<_>>()
-    });
 
-    assert_eq!(observations.iter().filter(|&&value| value == 1).count(), 1);
-    assert!(observations.iter().all(|&value| value <= 1));
+    let (joined, report) =
+        TestAllocationObserver::observe_resident_after_free(&account, target, || {
+            std::thread::scope(|scope| {
+                let workers: Vec<_> = clones
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, clone)| {
+                        let barrier = &barrier;
+                        scope.spawn(move || {
+                            barrier.wait();
+                            if index % 2 == 0 {
+                                drop(clone.into_backend_cause());
+                            } else {
+                                drop(clone);
+                            }
+                        })
+                    })
+                    .collect();
+
+                workers
+                    .into_iter()
+                    .map(|worker| {
+                        worker.join().unwrap();
+                        1usize
+                    })
+                    .sum::<usize>()
+            })
+        })
+        .unwrap();
+
+    assert_eq!(joined, 8);
+    verify_original_refusal(report);
     verify_closed(&account);
 }
 
 #[test]
 fn worker_observer_unwind_closes_control_before_original_refund() {
+    let _serial = TEST_LOCK.lock().unwrap();
     let account = HostServiceAllocator::new(1, 1, 4096).unwrap();
     let (failure, target) = failure(&account);
 
-    arm(&account, target);
-    // The panic destroys the moved owner; no mutable payload is reused afterward.
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-        let _observer = failure;
-        panic!("intentional worker observer unwind");
-    }));
-    let observation = clear().observation;
+    let (result, report) =
+        TestAllocationObserver::observe_resident_after_free(&account, target, || {
+            // The panic destroys the moved owner; no mutable payload is reused.
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                let _observer = failure;
+                panic!("intentional worker observer unwind");
+            }))
+        })
+        .unwrap();
 
     assert!(result.is_err());
-    assert_eq!(observation, 1);
+    verify_original_refusal(report);
     verify_closed(&account);
 }

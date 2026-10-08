@@ -238,6 +238,7 @@ fn ambiguous_monitor_custody_keeps_reservation_after_local_descriptors_close()
 struct Backing {
     record: crucible_ram::RootRecord,
     tree: crucible_ram::RegionTree,
+    original: crucible_ram::MetadataBudget,
 }
 
 impl QemuRamBacking for Backing {
@@ -247,19 +248,23 @@ impl QemuRamBacking for Backing {
     fn root_record(&self) -> &crucible_ram::RootRecord {
         &self.record
     }
-    fn read_page_with_proof(
+    fn with_page_response(
         &self,
         region: &str,
         index: u64,
         boundary: &mut dyn FnMut() -> Result<(), crate::ram_source::QemuRamReadBoundaryError>,
-    ) -> Result<(Vec<u8>, crucible_ram::PageProof), crate::ram_source::QemuRamSourceError> {
+        consumer: &mut crate::ram_source::QemuRamResponseConsumer<'_>,
+    ) -> Result<(), crate::ram_source::QemuRamSourceError> {
         boundary()?;
-        Ok((
-            vec![9; 4096],
-            self.tree
-                .proof(region, index)
-                .map_err(|_| crate::ram_source::QemuRamSourceError::Ownership)?,
-        ))
+        crate::qmp::checkpoint_paged_source_support::fixture_page_response(
+            &self.tree,
+            region,
+            index,
+            &self.original,
+            &[9; 4096],
+            boundary,
+            consumer,
+        )
     }
 }
 
@@ -277,11 +282,9 @@ fn fresh_source_keeps_backing_until_join_and_refuses_another_namespace()
     let (_root, directory) = directory()?;
     let (registration, owner) = registration()?;
     let cleanup = LaunchCleanup::new(&registration);
-    let tree = RegionTree::from_page_digests(
-        4096,
-        &[PageDigest::hash(&vec![9; 4096])?],
-        &MetadataBudget::new(1 << 20),
-    )?;
+    let budget = MetadataBudget::new(1024 * 1024);
+    let original = budget.clone();
+    let tree = RegionTree::from_page_digests(4096, &[PageDigest::hash(&vec![9; 4096])?], &budget)?;
     let topology = Topology::new(
         vec![RegionDescriptor::new(
             "machine.ram",
@@ -293,6 +296,7 @@ fn fresh_source_keeps_backing_until_join_and_refuses_another_namespace()
     let backing = Arc::new(Backing {
         record: RootRecord::new(topology, Scope::Exact, vec![tree.digest()])?,
         tree,
+        original,
     });
     let binding = RamPageBinding {
         session: [4; 16],

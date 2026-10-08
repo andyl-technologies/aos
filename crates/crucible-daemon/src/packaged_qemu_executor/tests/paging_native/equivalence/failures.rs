@@ -101,12 +101,14 @@ pub(crate) fn run(
         |root, storage| {
             let refs = Arc::clone(&storage.refs);
             let original = native_repository(&source, root, storage);
+            let admission = original.ram_admission().clone();
             Arc::new(CampaignRepository::new(
                 Arc::new(FailOnceObservationBackend {
                     inner: original.blob_backend(),
                     failures: Arc::clone(&publication),
                 }),
                 refs,
+                admission,
             ))
         },
         |config| resources(config, &source, NativeEquivalenceCase::Depth),

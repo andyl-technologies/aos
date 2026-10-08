@@ -20,7 +20,17 @@ fn live_lazy_ram_reader_and_fork_allow_unrelated_gc_then_release_the_exact_graph
     ));
     let refs = Arc::new(DirectoryRefBackend::new(directory.path().join("refs")));
     let admitted = Arc::new(ComponentRamBackend::new(blobs.clone(), None));
-    let repository = CampaignRepository::new(admitted.clone(), refs.clone());
+    let ram_original = crucible_cas::owned_decode::DecodeBudget::for_store(
+        admitted
+            .metadata_resources()
+            .expect("original RAM resources"),
+    )
+    .expect("admitted component RAM namespace");
+    let repository = CampaignRepository::new(
+        admitted.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Available(ram_original.clone()),
+    );
     let ram = RamStore::new(
         admitted,
         crucible_cas::content_store::DurabilityRequirement::new(1, false).expect("durable reader"),
@@ -39,6 +49,7 @@ fn live_lazy_ram_reader_and_fork_allow_unrelated_gc_then_release_the_exact_graph
         Limits::default(),
     )
     .expect("topology");
+    let capture_original = ram_original.child().expect("capture operation");
     let source = ram
         .capture(
             topology,
@@ -48,9 +59,11 @@ fn live_lazy_ram_reader_and_fork_allow_unrelated_gc_then_release_the_exact_graph
                 Ok(())
             },
             &publication,
+            &capture_original,
             &mut || Ok(()),
         )
         .expect("root publication");
+    drop(capture_original);
     let fork = source.clone();
     drop(publication);
 
@@ -100,13 +113,16 @@ fn live_lazy_ram_reader_and_fork_allow_unrelated_gc_then_release_the_exact_graph
     assert!(!blobs.contains(orphan).expect("orphan absent"));
 
     drop(source);
-    let (bytes, proof) = ram
-        .read_page_with_proof(&fork, "machine.ram", 5, &mut || Ok(()))
+    let page_original = ram_original.child().expect("page operation");
+    let page = ram
+        .read_page_with_proof(&fork, "machine.ram", 5, &page_original, &mut || Ok(()))
         .expect("fork still reads actual retained tail page");
-    assert_eq!(bytes, vec![6; 19]);
-    proof
-        .verify(&bytes, fork.record(), fork.logical_digest())
+    assert_eq!(page.bytes(), vec![6; 19]);
+    page.proof()
+        .verify(page.bytes(), fork.record(), fork.logical_digest())
         .expect("retained page proof");
+    drop(page);
+    drop(page_original);
     let root = fork.object_id();
     drop(fork);
 
@@ -176,6 +192,13 @@ impl ImmutableBlobBackend for ComponentRamBackend {
         self.backend.capabilities()
     }
 
+    fn checked_publication_metadata(
+        &self,
+        kind: ObjectKind,
+    ) -> Result<crucible_cas::content_store::CheckedPublicationMetadata, StoreError> {
+        self.backend.checked_publication_metadata(kind)
+    }
+
     fn metadata_resources(
         &self,
     ) -> Result<Arc<dyn crucible_cas::content_store::StorePhysicalQuotaGuard>, StoreError> {
@@ -211,6 +234,34 @@ impl ImmutableBlobBackend for ComponentRamBackend {
     ) -> Result<crucible_cas::content_store::PutReceipt, StoreError> {
         self.backend.put_if_absent(id, source)
     }
+
+    fn read_with_boundary(
+        &self,
+        original: &crucible_cas::owned_decode::DecodeBudget,
+        id: ContentId,
+        range: Option<crucible_cas::content_store::ByteRange>,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<BlobHandle, StoreError> {
+        let handle = self
+            .backend
+            .read_with_boundary(original, id, range, boundary)?;
+        if id.kind() == ObjectKind::RamExtent
+            && let Some(page_read) = &self.page_read
+        {
+            page_read.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        Ok(handle)
+    }
+
+    fn put_many_if_absent_with_boundary(
+        &self,
+        original: &crucible_cas::owned_decode::DecodeBudget,
+        objects: &[(ContentId, BlobHandle)],
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<crucible_cas::content_store::PutBatchReceipt, StoreError> {
+        self.backend
+            .put_many_if_absent_with_boundary(original, objects, boundary)
+    }
 }
 
 #[test]
@@ -225,7 +276,17 @@ fn nested_authenticated_ram_walk_preserves_original_supervision_cause() {
     let refs = Arc::new(DirectoryRefBackend::new(directory.path().join("refs")));
     let page_read = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let observed = Arc::new(ComponentRamBackend::new(blobs, Some(page_read.clone())));
-    let repository = CampaignRepository::new(observed.clone(), refs.clone());
+    let ram_original = crucible_cas::owned_decode::DecodeBudget::for_store(
+        observed
+            .metadata_resources()
+            .expect("original RAM resources"),
+    )
+    .expect("admitted component RAM namespace");
+    let repository = CampaignRepository::new(
+        observed.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Available(ram_original.clone()),
+    );
     let ram = RamStore::new(
         observed,
         crucible_cas::content_store::DurabilityRequirement::new(1, false).expect("durability"),
@@ -236,6 +297,7 @@ fn nested_authenticated_ram_walk_preserves_original_supervision_cause() {
         .ram_retention_authority()
         .acquire()
         .expect("real ref publication fence");
+    let capture_original = ram_original.child().expect("capture operation");
     let root = ram
         .capture(
             Topology::new(
@@ -252,9 +314,11 @@ fn nested_authenticated_ram_walk_preserves_original_supervision_cause() {
                 Ok(())
             },
             &publication,
+            &capture_original,
             &mut || Ok(()),
         )
         .expect("real authenticated RAM graph");
+    drop(capture_original);
     drop(publication);
     page_read.store(false, std::sync::atomic::Ordering::SeqCst);
     let fence = refs
@@ -269,8 +333,9 @@ fn nested_authenticated_ram_walk_preserves_original_supervision_cause() {
         }
         Ok(())
     };
-    let operation = CampaignGcOperationContext::new(original.marks(), &mut boundary)
-        .expect("original admitted mark resources");
+    let operation =
+        CampaignGcOperationContext::new(original.marks(), original.original(), &mut boundary)
+            .expect("original admitted mark resources");
 
     let result = super::super::reachability::Reachability::authenticate(
         &repository,

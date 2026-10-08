@@ -164,7 +164,11 @@ fn semantic_and_operational_roots_share_one_terminal_inventory() {
         64 * 1024 * 1024,
     ));
     let refs = Arc::new(MemoryRefBackend::new());
-    let repository = CampaignRepository::new(blobs, refs);
+    let repository = CampaignRepository::new(
+        blobs,
+        refs,
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
     let scenario = ScenarioDefId::from_hash(CampaignHash::derive(
         "crucible.test.retention.scenario.v1",
         b"scenario",

@@ -200,13 +200,13 @@ pub(crate) fn fixture_source()
         fn root_record(&self) -> &RootRecord {
             &self.0
         }
-        fn read_page_with_proof(
+        fn with_page_response(
             &self,
             _: &str,
             _: u64,
             _: &mut dyn FnMut() -> Result<(), crate::ram_source::QemuRamReadBoundaryError>,
-        ) -> Result<(Vec<u8>, crucible_ram::PageProof), crate::ram_source::QemuRamSourceError>
-        {
+            _: &mut crate::ram_source::QemuRamResponseConsumer<'_>,
+        ) -> Result<(), crate::ram_source::QemuRamSourceError> {
             Err(crate::ram_source::QemuRamSourceError::Backing(
                 "unexpected fixture page read".to_owned(),
             ))

@@ -43,7 +43,13 @@ use super::admin::{
 };
 use super::*;
 
+mod checked;
+mod checked_publication;
+mod file_pin;
 mod ref_admin;
+
+pub(in crate::content_store) use checked_publication::Accepted;
+pub use checked_publication::{DirectoryPublicationOutcome, DirectoryScopeError};
 
 static STAGING_COUNTER: AtomicU64 = AtomicU64::new(0);
 static INVENTORY_INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -138,7 +144,8 @@ impl DirectoryBlobBackend {
                 + std::mem::size_of::<File>()
                 + 4 * std::mem::size_of::<usize>()) as u64
                 + operation_bytes,
-            reader_bytes: std::mem::size_of::<AuthenticatingFileReader>() as u64 + 64 * 1024,
+            reader_bytes: (std::mem::size_of::<AuthenticatingFileReader>() as u64 + 64 * 1024)
+                .max(checked::reader_metadata_bytes()),
             operation_bytes,
         })
     }
@@ -183,12 +190,12 @@ impl DirectoryBlobBackend {
             length: logical_length,
         });
         validate_range(logical_length, range)?;
-        let source: Arc<dyn BlobSource> = Arc::new(DirectoryBlobSource {
+        let source = DirectoryBlobSource {
             file,
             id,
             logical_length,
             range,
-        });
+        };
         if range.offset == 0 && range.length == logical_length {
             Ok(BlobHandle::authenticated(id, source))
         } else {
@@ -339,6 +346,35 @@ fn inject_corrupt_tier_copy(path: &Path) -> Result<(), StoreError> {
 }
 
 impl ImmutableBlobBackend for DirectoryBlobBackend {
+    fn checked_publication_metadata(
+        &self,
+        _kind: ObjectKind,
+    ) -> Result<CheckedPublicationMetadata, StoreError> {
+        Ok(CheckedPublicationMetadata {
+            maximum_placements: 1,
+            maximum_backend_name_bytes: self.name.len(),
+        })
+    }
+
+    fn put_many_if_absent_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        objects: &[(ContentId, BlobHandle)],
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<PutBatchReceipt, StoreError> {
+        checked_publication::publish(self, original, objects, boundary)
+    }
+
+    fn read_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        id: ContentId,
+        range: Option<ByteRange>,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<BlobHandle, StoreError> {
+        checked::lookup(self, original, id, range, boundary)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -895,8 +931,19 @@ impl BlobSource for DirectoryBlobSource {
     }
 }
 
-struct AuthenticatingFileReader {
-    file: Arc<File>,
+// Only these private concrete file owners participate in reader monomorphs.
+trait FileBorrow {
+    fn file(&self) -> Option<&File>;
+}
+
+impl FileBorrow for Arc<File> {
+    fn file(&self) -> Option<&File> {
+        Some(self)
+    }
+}
+
+struct AuthenticatingFileReader<F = Arc<File>> {
+    file: F,
     id: ContentId,
     logical_length: u64,
     range: ByteRange,
@@ -906,8 +953,8 @@ struct AuthenticatingFileReader {
     finalized: bool,
 }
 
-impl AuthenticatingFileReader {
-    fn new(file: Arc<File>, id: ContentId, logical_length: u64, range: ByteRange) -> Self {
+impl<F: FileBorrow> AuthenticatingFileReader<F> {
+    fn new(file: F, id: ContentId, logical_length: u64, range: ByteRange) -> Self {
         Self {
             file,
             id,
@@ -926,7 +973,15 @@ impl AuthenticatingFileReader {
             let remaining = target - self.scan_offset;
             let limit = usize::try_from(remaining.min(buffer.len() as u64))
                 .map_err(|_| invalid_object_data())?;
-            let read = read_at_retry(&self.file, &mut buffer[..limit], self.scan_offset)?;
+            let file = match self.file.file() {
+                Some(file) => file,
+                None => {
+                    return Err(io::Error::from_raw_os_error(
+                        rustix::io::Errno::BADF.raw_os_error(),
+                    ));
+                }
+            };
+            let read = read_at_retry(file, &mut buffer[..limit], self.scan_offset)?;
             if read == 0 {
                 return Err(invalid_object_data());
             }
@@ -939,7 +994,15 @@ impl AuthenticatingFileReader {
     fn finalize(&mut self) -> io::Result<()> {
         self.scan_until(self.logical_length)?;
         let mut extra = [0_u8; 1];
-        if read_at_retry(&self.file, &mut extra, self.logical_length)? != 0
+        let file = match self.file.file() {
+            Some(file) => file,
+            None => {
+                return Err(io::Error::from_raw_os_error(
+                    rustix::io::Errno::BADF.raw_os_error(),
+                ));
+            }
+        };
+        if read_at_retry(file, &mut extra, self.logical_length)? != 0
             || *self.hasher.finalize().as_bytes() != self.id.digest()
         {
             return Err(invalid_object_data());
@@ -949,7 +1012,7 @@ impl AuthenticatingFileReader {
     }
 }
 
-impl Read for AuthenticatingFileReader {
+impl<F: FileBorrow> Read for AuthenticatingFileReader<F> {
     fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
         if output.is_empty() || self.finalized {
             return Ok(0);
@@ -959,8 +1022,16 @@ impl Read for AuthenticatingFileReader {
             let remaining = self.range.length - self.output_offset;
             let limit = usize::try_from(remaining.min(output.len() as u64))
                 .map_err(|_| invalid_object_data())?;
+            let file = match self.file.file() {
+                Some(file) => file,
+                None => {
+                    return Err(io::Error::from_raw_os_error(
+                        rustix::io::Errno::BADF.raw_os_error(),
+                    ));
+                }
+            };
             let read = read_at_retry(
-                &self.file,
+                file,
                 &mut output[..limit],
                 self.range.offset + self.output_offset,
             )?;

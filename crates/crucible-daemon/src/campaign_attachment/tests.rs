@@ -82,6 +82,7 @@ fn fixture_with_explorer(
         CampaignRepository::with_component_authorities(
             blobs.clone(),
             Arc::new(MemoryRefBackend::new()),
+            crucible_campaign::CampaignRamAdmission::Unavailable,
             planner.clone(),
             debugger,
         )

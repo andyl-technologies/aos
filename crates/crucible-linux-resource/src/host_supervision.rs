@@ -14,7 +14,10 @@ use std::time::{Duration, Instant};
 
 use self::deadline::{OperationDecision, decide_operation, operation_status_from_decision};
 
+mod bootstrap;
 mod deadline;
+
+pub use bootstrap::HostSupervisionBootstrap;
 
 /// Number of classes in the fixed operational budget roster.
 pub const HOST_OPERATION_CLASS_COUNT: usize = 14;
@@ -794,6 +797,34 @@ impl HostOperationSupervisor {
         drop(state);
         self.notify_owners()?;
         Ok(revision)
+    }
+
+    /// Verifies the original cap without allocating an operation or status roster.
+    ///
+    /// The check uses the unchanged original clock origin and current authored
+    /// allowance. It publishes elapsed expiry into the same sticky outer state
+    /// without beginning work, renewing a deadline, or completing the owner.
+    ///
+    /// # Errors
+    /// Refuses uncertain ownership or an original cap that is no longer running.
+    pub fn verify_original_live(&self) -> Result<(), HostSupervisionError> {
+        let mut state = self.lock()?;
+        let mut outer = self
+            .shared
+            .outer
+            .lock()
+            .map_err(|_| HostSupervisionError::Unavailable)?;
+        state.cap_revision = outer.revision;
+        state.cap_allowance = outer.allowance;
+        state.cap_state = outer.state;
+        refresh_cap(&mut state, self.elapsed());
+        outer.state = state.cap_state;
+        if state.cap_state != HostOperationState::Running {
+            return Err(HostSupervisionError::Terminal {
+                state: state.cap_state,
+            });
+        }
+        Ok(())
     }
 
     /// Returns coherent cap status and atomically records an elapsed cap.

@@ -1023,6 +1023,7 @@ root = {write_destination_root:?}
             &profilers,
             &binders,
             &StoreGraphS3Clients::new(),
+            None,
         )?;
         Ok((graph, decoding))
     }
@@ -1047,6 +1048,7 @@ struct NativeFindingInspection {
     checkpoints: crucible_daemon::ExactCheckpointStore,
     backend: Arc<dyn crucible_cas::content_store::ImmutableBlobBackend>,
     authority: Arc<dyn crucible_cas::content_store::StorePhysicalQuotaGuard>,
+    original: crucible_session::engine::owned_decode::DecodeBudget,
 }
 
 impl FlightFixture {
@@ -1120,12 +1122,13 @@ root = {objects:?}
 
     #[cfg(feature = "packaged-midpoint-flight")]
     fn inspection_store(&self) -> Result<NativeFindingInspection, Box<dyn Error>> {
-        let authority = self
+        let input = self
             ._native_input
             .as_ref()
-            .ok_or("native finding inspection requires the original source policy")?
-            .authority
-            .clone();
+            .ok_or("native finding inspection requires the original source policy")?;
+        let original = input.decoding.clone();
+        original.verify_live()?;
+        let authority = input.authority.clone();
         let backend = DirectoryBlobBackend::new_with_physical_quota(
             "midpoint-selection-inspection",
             &self.objects,
@@ -1137,6 +1140,7 @@ root = {objects:?}
                 self._temporary.path().join("refs"),
                 authority.clone(),
             )?,
+            crucible_campaign::CampaignRamAdmission::Available(original.clone()),
         );
         let checkpoints = crucible_daemon::ExactCheckpointStore::new(
             backend.clone(),
@@ -1148,6 +1152,7 @@ root = {objects:?}
             checkpoints,
             backend,
             authority,
+            original,
         })
     }
 

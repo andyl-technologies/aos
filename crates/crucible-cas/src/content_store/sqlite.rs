@@ -468,7 +468,7 @@ impl SqliteBlobBackend {
                 )
             })
             .transpose()?;
-        let source: Arc<dyn BlobSource> = Arc::new(SqliteBlobSource {
+        let source = SqliteBlobSource {
             connection: self.read_connection.clone(),
             id,
             logical_length,
@@ -477,10 +477,10 @@ impl SqliteBlobBackend {
             resident_lease: self.resident_lease.clone(),
             maximum_sqlite_heap_bytes: self.maximum_sqlite_heap_bytes,
             quarantined: self.quarantined.clone(),
-            original: None,
+            original: crate::owned_decode::DecodeBudgetSlot::default(),
             _source_lease: source_lease.into(),
             _source_credit: None,
-        });
+        };
         let handle = if range.offset == 0 && range.length == logical_length {
             BlobHandle::authenticated(id, source)
         } else {
@@ -579,6 +579,16 @@ fn reject_wal_database_header(path: &Path) -> Result<(), StoreError> {
 }
 
 impl ImmutableBlobBackend for SqliteBlobBackend {
+    fn checked_publication_metadata(
+        &self,
+        _kind: ObjectKind,
+    ) -> Result<CheckedPublicationMetadata, StoreError> {
+        Ok(CheckedPublicationMetadata {
+            maximum_placements: 1,
+            maximum_backend_name_bytes: self.name.len(),
+        })
+    }
+
     fn put_many_if_absent_with_boundary(
         &self,
         account: &crate::owned_decode::DecodeBudget,
@@ -998,7 +1008,7 @@ struct SqliteBlobSource {
     quarantined: Arc<std::sync::atomic::AtomicBool>,
     resident_lease: crate::owned_decode::ResourceLoanSlot,
     maximum_sqlite_heap_bytes: Option<u64>,
-    original: Option<crate::owned_decode::DecodeBudget>,
+    original: crate::owned_decode::DecodeBudgetSlot,
     _source_lease: crate::owned_decode::ResourceLoanSlot,
     _source_credit: Option<crate::owned_decode::DecodeScratch>,
 }

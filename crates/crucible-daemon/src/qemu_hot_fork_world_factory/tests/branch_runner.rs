@@ -45,6 +45,7 @@ fn branch_execution_input(
             8 * 1024 * 1024,
         )),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     );
     repository
         .publish_choice_domain(&domain)

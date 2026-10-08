@@ -975,7 +975,7 @@ fn repository_adapter_authorizes_before_repository_access() {
     let repository = CampaignRepository::new(
         Arc::new(MemoryBlobBackend::new("campaign-service-test", u64::MAX)),
         Arc::new(MemoryRefBackend::new()),
-    );
+     crate::CampaignRamAdmission::Unavailable,);
     let service = RepositoryCampaignService::new(&repository, DenyAll);
     let list = ListCampaignsRequest::new(
         CampaignPrincipal::new("operator:alice").expect("principal"),

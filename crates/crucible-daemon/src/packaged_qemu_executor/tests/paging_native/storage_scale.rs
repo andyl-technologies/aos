@@ -166,6 +166,7 @@ fn production_ram_storage_scales_past_packed_index_limit() {
                         Ok(())
                     },
                     &retention,
+                    &decoding,
                     &mut || store_boundary().map_err(Into::into),
                 )
                 .expect("complete non-deduplicating durable root publication");
@@ -189,7 +190,9 @@ fn production_ram_storage_scales_past_packed_index_limit() {
             assert!(physical.pages > crate::campaign_gc::MAX_CAMPAIGN_GC_MANIFEST_ENTRIES as u64);
             let read_start = monotonic_nanoseconds();
             let verified = ram
-                .verify(&root, &mut || store_boundary().map_err(Into::into))
+                .verify(&root, &decoding, &mut || {
+                    store_boundary().map_err(Into::into)
+                })
                 .expect("authenticated full graph without flat page inventory");
             let read_ns = monotonic_nanoseconds() - read_start;
             assert_eq!(verified.pages, PAGE_COUNT);
@@ -203,19 +206,22 @@ fn production_ram_storage_scales_past_packed_index_limit() {
                 .open_with_metadata_resources(
                     crucible_cas::ram::RamRetention::retain_root(&reopened_retention, root_id)
                         .expect("real read claim"),
+                    &decoding,
                     &mut || store_boundary().map_err(Into::into),
                 )
                 .expect("admitted reopen of actual durable root");
             drop(reopened_retention);
             let warm_start = monotonic_nanoseconds();
             let warm = ram
-                .verify(&reopened, &mut || store_boundary().map_err(Into::into))
+                .verify(&reopened, &decoding, &mut || {
+                    store_boundary().map_err(Into::into)
+                })
                 .expect("repeated complete authenticated read");
             let warm_ns = monotonic_nanoseconds() - warm_start;
             assert_eq!(verified, warm);
             for index in [0, PAGE_COUNT / 2, PAGE_COUNT - 1] {
                 let page = ram
-                    .read_page(&reopened, "storage.scale", index, &mut || {
+                    .read_page(&reopened, "storage.scale", index, &decoding, &mut || {
                         store_boundary().map_err(Into::into)
                     })
                     .expect("bounded proof lookup");
@@ -243,8 +249,10 @@ fn production_ram_storage_scales_past_packed_index_limit() {
                 let storage = provider
                     .open_catalog(&journal_root.join(format!("marks-{pass}")))
                     .expect("actual admitted supervised mark catalog");
-                let maintenance = crate::CampaignGcOperationContext::new(storage.backend, boundary)
-                    .expect("same original complete work boundary");
+                let original = storage.original;
+                let maintenance =
+                    crate::CampaignGcOperationContext::new(storage.backend, &original, boundary)
+                        .expect("same original complete work boundary");
                 prepared
                     .actor
                     .with_supervisor(|actor| {

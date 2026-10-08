@@ -25,6 +25,7 @@ fn configuration(root: &Path) -> StoreGraphConfig {
                 node("data"),
                 StoreNodeSpec::Memory {
                     max_logical_bytes: 4096,
+                    max_objects: 16,
                 },
             ),
             (
@@ -89,9 +90,10 @@ impl StorePhysicalQuotaGuard for MarkGuard {
     }
 }
 
+#[derive(Clone)]
 struct MarkBinder {
     guard: Arc<MarkGuard>,
-    calls: AtomicUsize,
+    calls: Arc<AtomicUsize>,
 }
 
 impl StorePhysicalQuotaBinder for MarkBinder {
@@ -113,10 +115,13 @@ impl StorePhysicalQuotaBinder for MarkBinder {
 
 fn build(
     config: StoreGraphConfig,
-    binder: Arc<MarkBinder>,
+    binder: MarkBinder,
 ) -> Result<(StoreGraph, StoreGraphAdmin), StoreError> {
     let mut quotas = StoreGraphPhysicalQuotaBinders::new();
-    quotas.insert(StorePhysicalQuotaPolicyId::new("fixture/marks")?, binder)?;
+    quotas.insert(
+        StorePhysicalQuotaPolicyId::new("fixture/marks")?,
+        crate::content_store::StorePhysicalQuotaBinderHandle::new(binder),
+    )?;
     StoreGraph::build_with_admin_and_all_capabilities(
         config,
         &StoreGraphKeyring::new(),
@@ -124,18 +129,19 @@ fn build(
         &StoreGraphObjectProfilers::new(),
         &quotas,
         &StoreGraphS3Clients::new(),
+        None,
     )
 }
 
-fn binder(root: &Path, allowed: bool) -> Arc<MarkBinder> {
-    Arc::new(MarkBinder {
+fn binder(root: &Path, allowed: bool) -> MarkBinder {
+    MarkBinder {
         guard: Arc::new(MarkGuard {
             root: root.to_owned(),
             allowed: AtomicBool::new(allowed),
             resources: FixtureResourceBudget::new(128, 1 << 20),
         }),
-        calls: AtomicUsize::new(0),
-    })
+        calls: Arc::new(AtomicUsize::new(0)),
+    }
 }
 
 #[test]

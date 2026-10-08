@@ -311,6 +311,10 @@ fn operational_boundary_regression_failures() -> Vec<String> {
     let mut failures = Vec::new();
     let boundaries = [
         ("crucible-linux-resource", "src/host_supervision.rs"),
+        (
+            "crucible-linux-resource",
+            "src/host_supervision/bootstrap.rs",
+        ),
         ("crucible-daemon", "src/host_operational_registry.rs"),
         ("crucible-qemu", "src/node/shutdown_budget.rs"),
         ("crucible-qemu", "src/ram_control/supervision.rs"),
@@ -611,6 +615,99 @@ fn operational_boundary_regression_failures() -> Vec<String> {
         if !finding_contains(&findings, "raw host clock in public operational signature") {
             failures.push(format!(
                 "reviewed export name accepts raw public clock signature: {source}: {findings:?}"
+            ));
+        }
+    }
+    let bootstrap = "crucible-linux-resource/src/host_supervision/bootstrap.rs";
+    let root = "crucible-linux-resource/src/host_supervision.rs";
+    for (path, source) in [
+        (
+            bootstrap,
+            "pub struct HostSupervisionBootstrap { started: std::time::Instant, original_monotonic_ns: u64 }",
+        ),
+        (
+            root,
+            "pub use bootstrap::HostSupervisionBootstrap; fn wait() { std::time::Instant::now(); }",
+        ),
+        (
+            root,
+            "pub use bootstrap::HostSupervisionBootstrap as HostSupervisionBootstrap; fn wait() { std::time::Instant::now(); }",
+        ),
+    ] {
+        let findings = package_source_confinement_findings(
+            "crucible-linux-resource",
+            Path::new("crucible-linux-resource"),
+            &source_pairs(&[(path, source)]),
+        );
+        if !findings.is_empty() {
+            failures.push(format!("private bootstrap clock or exact public reexport rejected: {path}: {source}: {findings:?}"));
+        }
+    }
+    for (path, source) in [
+        (
+            bootstrap,
+            "pub struct HostSupervisionBootstrap { pub started: std::time::Instant }",
+        ),
+        (
+            bootstrap,
+            "pub struct HostSupervisionBootstrap { private: u64, pub started: Pair<u64, std::time::Instant> }",
+        ),
+        (
+            bootstrap,
+            "pub struct HostSupervisionBootstrap(std::time::Instant);",
+        ),
+        (
+            bootstrap,
+            "pub struct HostSupervisionBootstrap<T: Clock<std::time::Instant>> { private: T }",
+        ),
+        (
+            bootstrap,
+            "pub struct HostSupervisionBootstrap<const N: usize = { 1 }> { pub started: std::time::Instant }",
+        ),
+        (
+            bootstrap,
+            "pub struct HostSupervisionBootstrap<const N: usize = { let n = 1; n }> { pub started: std::time::Instant }",
+        ),
+        (
+            bootstrap,
+            "pub struct HostSupervisionBootstrap<F: Fn() -> (), const N: usize = { 1 }> { pub started: std::time::Instant, private: F }",
+        ),
+        (
+            bootstrap,
+            "pub struct HostSupervisionBootstrap<T> where [(); 1]: Sized { pub started: std::time::Instant, private: T }",
+        ),
+        (
+            bootstrap,
+            "pub struct HostSupervisionBootstrap where [(); { 1 }]: Sized { pub started: std::time::Instant }",
+        ),
+    ] {
+        let findings = package_source_confinement_findings(
+            "crucible-linux-resource",
+            Path::new("crucible-linux-resource"),
+            &source_pairs(&[(path, source)]),
+        );
+        if !finding_contains(&findings, "raw host clock in public operational signature") {
+            failures.push(format!(
+                "bootstrap raw clock exposure accepted: {path}: {source}: {findings:?}"
+            ));
+        }
+    }
+    for source in [
+        "pub use bootstrap::Instant as HostSupervisionBootstrap;",
+        "pub use bootstrap::UnreviewedClock; fn wait() { std::time::Instant::now(); }",
+        "pub use bootstrap::HostSupervisionBootstrap as UnreviewedClock; fn wait() { std::time::Instant::now(); }",
+        "pub use bootstrap::UnreviewedClock as HostSupervisionBootstrap; fn wait() { std::time::Instant::now(); }",
+        "pub use bootstrap::{HostSupervisionBootstrap, UnreviewedClock}; fn wait() { std::time::Instant::now(); }",
+        "pub use bootstrap::*; fn wait() { std::time::Instant::now(); }",
+    ] {
+        let findings = package_source_confinement_findings(
+            "crucible-linux-resource",
+            Path::new("crucible-linux-resource"),
+            &source_pairs(&[(root, source)]),
+        );
+        if !finding_contains(&findings, "public export from nondeterministic boundary") {
+            failures.push(format!(
+                "unreviewed bootstrap reexport accepted: {source}: {findings:?}"
             ));
         }
     }

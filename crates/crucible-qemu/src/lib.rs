@@ -206,7 +206,7 @@ pub use node::operational_health::native_actor::{
 };
 #[cfg(target_os = "linux")]
 pub use node::{
-    MAX_QEMU_HOT_FORK_CHILD_DIAGNOSTIC_BYTES, QemuCapturedRamPage,
+    CaptureReadError, MAX_QEMU_HOT_FORK_CHILD_DIAGNOSTIC_BYTES, QemuCapturedRamPage,
     QemuExactCheckpointCaptureAdmission, QemuExactCheckpointCaptureBoundary,
     QemuExactCheckpointCaptureOutputs, QemuExactCheckpointCaptureResult,
     QemuHotForkChildConsoleObservation, QemuHotForkChildConsoleStageError,

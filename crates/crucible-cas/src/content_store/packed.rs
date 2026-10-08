@@ -615,12 +615,12 @@ impl PackedBlobBackend {
         }
         Ok(BlobHandle::integrity_checked(
             id,
-            Arc::new(PackedBlobSource {
+            PackedBlobSource {
                 file,
                 id,
                 offset: entry.offset,
                 logical_length: entry.length,
-            }),
+            },
         ))
     }
 

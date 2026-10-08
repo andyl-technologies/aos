@@ -664,7 +664,11 @@ fn observation_ref_conflict_leaves_the_admitted_head_authoritative() {
     let (fixture_repository, lineage, policy, blobs) = counted_fixture();
     drop(fixture_repository);
     let refs = Arc::new(ConflictAfterCreateRefBackend::new());
-    let repository = CampaignRepository::new(blobs, refs.clone());
+    let repository = CampaignRepository::new(
+        blobs,
+        refs.clone(),
+        crate::CampaignRamAdmission::Unavailable,
+    );
     let (_, admitted, observation) =
         admitted_observation_fixture(&repository, &lineage, &policy, "observation-cas");
     let checkpoint_count = repository
@@ -904,8 +908,11 @@ fn complete_exact_retention_requires_executor_authentication_and_cold_loads_atte
         "selected-exact-checkpoint-source",
         64 * 1024 * 1024,
     ));
-    let checkpoint_repository =
-        CampaignRepository::new(checkpoint_blobs.clone(), Arc::new(MemoryRefBackend::new()));
+    let checkpoint_repository = CampaignRepository::new(
+        checkpoint_blobs.clone(),
+        Arc::new(MemoryRefBackend::new()),
+        crate::CampaignRamAdmission::Unavailable,
+    );
     let (checkpoint, selected_leaf, selected_leaf_bytes) =
         publish_test_exact_checkpoint_closure(&checkpoint_repository, b"selected");
     let (unselected_checkpoint, _, _) =
@@ -1193,7 +1200,11 @@ fn complete_exact_retention_requires_executor_authentication_and_cold_loads_atte
         )
         .expect("incorporate executor-attested bundle");
     assert!(!incorporated.replayed);
-    let cold = CampaignRepository::new(Arc::clone(&repository.blobs), Arc::clone(&repository.refs));
+    let cold = CampaignRepository::new(
+        Arc::clone(&repository.blobs),
+        Arc::clone(&repository.refs),
+        repository.ram_admission().clone(),
+    );
     assert!(
         cold.incorporate_finding_candidate_bundle(
             "authenticated-exact-retention",
@@ -1224,11 +1235,14 @@ fn complete_exact_retention_requires_executor_authentication_and_cold_loads_atte
             private.path().join("objects"),
         )),
         Arc::new(DirectoryRefBackend::new(private.path().join("refs"))),
+        crate::CampaignRamAdmission::Unavailable,
     );
     cold.transfer_campaign_archive_objects(
         &imported,
         &plan,
         DurabilityRequirement::new(1, false).expect("private store durability"),
+        cold.ram_admission().original(),
+        imported.ram_admission().original(),
     )
     .expect("transfer exact finding handoff");
     imported

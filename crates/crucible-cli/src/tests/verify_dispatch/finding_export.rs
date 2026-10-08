@@ -155,6 +155,7 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
             u64::MAX,
         )),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     );
     let scenario = ScenarioDefId::from_hash(CampaignHash::from_bytes(form.id().bytes));
     let scenario_artifact =
@@ -479,11 +480,14 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
             archive_root.join("objects"),
         )),
         Arc::new(DirectoryRefBackend::new(archive_root.join("refs"))),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     );
     repository.transfer_campaign_archive_objects(
         &private_archive,
         &executable,
         DurabilityRequirement::new(1, false)?,
+        None,
+        None,
     )?;
     assert_eq!(
         private_archive.inspect_archived_finding(executable.manifest_id(), published.finding)?,

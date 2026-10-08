@@ -874,6 +874,8 @@ pub fn transfer_campaign_archive_durably_with_boundary(
             destination_durability,
             operation.0,
             destination.identity,
+            source.repository.ram_admission().original(),
+            destination.repository.ram_admission().original(),
             boundary,
         )?;
     if let Some(checkpoints) = destination.checkpoints {

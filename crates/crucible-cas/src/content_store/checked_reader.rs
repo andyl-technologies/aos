@@ -60,6 +60,19 @@ impl CheckedReader {
         }
     }
 
+    /// Retains a test reader's prepaid allocation without trusting its identity.
+    ///
+    /// The caller reserves the exact reader extent from its original account
+    /// before allocating the Box. The same loan closes after that Box, and
+    /// ordinary handle validation still authenticates the exposed stream.
+    #[cfg(test)]
+    pub(crate) fn funded(reader: Box<dyn CheckedBlobReader>, credit: DecodeScratch) -> Self {
+        Self {
+            _credit: Some(credit),
+            ..Self::new(reader)
+        }
+    }
+
     /// Borrows the genuine original account retained by the reader.
     #[must_use]
     pub fn original_account(&self) -> &DecodeBudget {
@@ -130,6 +143,12 @@ pub(crate) fn check_pair(
     source: &DecodeBudget,
     boundary: &mut dyn FnMut() -> Result<(), StoreError>,
 ) -> Result<(), StoreError> {
+    // Exact aliases share all failure and liveness state. The same callback
+    // still runs once between the original account's preflight and recheck.
+    if caller.same_account(source) {
+        return check(caller, boundary);
+    }
+
     caller
         .verify_live()
         .map_err(|error| batch::admission_under(caller, error))?;
@@ -508,11 +527,11 @@ pub(super) fn slice_handle(
         .map_err(|error| batch::admission_under(&original, error))?;
     let integrity_id = handle.integrity_id;
     let self_authenticating = handle.self_authenticating;
-    let mut sliced = BlobHandle::new(Arc::new(RangeBlobSource {
+    let mut sliced = BlobHandle::new(RangeBlobSource {
         source: handle,
         range,
         _credit: Some(credit),
-    }));
+    });
     sliced.integrity_id = integrity_id;
     sliced.self_authenticating = self_authenticating;
     check(&original, boundary)?;
@@ -524,3 +543,6 @@ mod tests;
 
 #[cfg(test)]
 mod fastpath_tests;
+
+#[cfg(test)]
+mod pair_tests;

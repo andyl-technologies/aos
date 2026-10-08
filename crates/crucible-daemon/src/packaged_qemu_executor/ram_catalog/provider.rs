@@ -29,6 +29,8 @@ use std::sync::{Arc, Mutex, MutexGuard, TryLockError, Weak};
 
 mod directory_storage;
 #[cfg(test)]
+mod retirement_tests;
+#[cfg(test)]
 mod spool;
 
 pub(in crate::packaged_qemu_executor) use directory_storage::GuardedCampaignStorage;
@@ -83,12 +85,88 @@ impl CatalogCache {
             .map(|(_, value)| value)
     }
 
-    fn remove(&mut self, path: &Path) -> Option<CatalogEntry> {
+    fn cached_open(&self, path: &Path) -> Result<Option<ProductionRamCatalogStorage>, StoreError> {
+        match self.get(path) {
+            Some(CatalogEntry::Open { storage, closed }) if !closed.load(Ordering::Acquire) => {
+                storage.quota.verify()?;
+                Ok(Some(storage.clone()))
+            }
+            Some(_) => Err(StoreError::Unauthorized),
+            None => Ok(None),
+        }
+    }
+
+    fn take(&mut self, path: &Path) -> Option<(PathBuf, CatalogEntry)> {
         self.entries
             .iter_mut()
             .find(|entry| entry.as_ref().is_some_and(|(key, _)| key == path))
             .and_then(Option::take)
-            .map(|(_, value)| value)
+    }
+
+    fn remove(&mut self, path: &Path) -> Option<CatalogEntry> {
+        self.take(path).map(|(_, value)| value)
+    }
+
+    fn close_for_retirement(
+        &mut self,
+        directory: &Path,
+    ) -> Result<Option<ClosedCatalog>, StoreError> {
+        let Some((path, entry)) = self.take(directory) else {
+            return Ok(None);
+        };
+        let (mut storage, closed) = match entry {
+            CatalogEntry::Open { storage, closed } => {
+                // Closed admission prevents new children while cleanup proves
+                // that all existing operation and reader custody has ended.
+                closed.store(true, Ordering::Release);
+                if !storage.original.is_exclusive() {
+                    self.insert(path, CatalogEntry::Open { storage, closed })?;
+                    return Err(StoreError::Quota);
+                }
+                let ProductionRamCatalogStorage {
+                    backend,
+                    quota,
+                    retention_fence,
+                    original,
+                } = storage;
+                drop(original);
+                (
+                    ClosedCatalog {
+                        backend: Some(backend),
+                        quota,
+                        retention_fence,
+                    },
+                    closed,
+                )
+            }
+            CatalogEntry::Closed { storage, closed } => (storage, closed),
+            CatalogEntry::Retiring(receipt) => {
+                self.insert(path, CatalogEntry::Retiring(receipt))?;
+                return Err(StoreError::Unauthorized);
+            }
+        };
+
+        if let Some(backend) = storage.backend.as_ref() {
+            if Arc::strong_count(backend) != 1
+                || Arc::strong_count(&storage.retention_fence) != 1
+                || Arc::strong_count(&storage.quota) != 2
+            {
+                self.insert(path, CatalogEntry::Closed { storage, closed })?;
+                return Err(StoreError::Quota);
+            }
+            // The physical facade retains its own resource loan. Closing its
+            // unique backend removes that intrinsic closed-namespace alias.
+            drop(storage.backend.take());
+        }
+
+        if Arc::strong_count(&storage.retention_fence) != 1
+            || Arc::strong_count(&storage.quota) != 1
+            || Arc::strong_count(&closed) != 2
+        {
+            self.insert(path, CatalogEntry::Closed { storage, closed })?;
+            return Err(StoreError::Quota);
+        }
+        Ok(Some(storage))
     }
 
     fn insert(&mut self, path: PathBuf, entry: CatalogEntry) -> Result<(), StoreError> {
@@ -129,7 +207,18 @@ enum CatalogEntry {
         storage: ProductionRamCatalogStorage,
         closed: Arc<AtomicBool>,
     },
+    Closed {
+        storage: ClosedCatalog,
+        closed: Arc<AtomicBool>,
+    },
     Retiring(Arc<CatalogRetirement>),
+}
+
+// Closing the saved account does not release endpoint custody or reopen admission.
+struct ClosedCatalog {
+    backend: Option<Arc<dyn ImmutableBlobBackend>>,
+    quota: Arc<dyn StorePhysicalQuotaGuard>,
+    retention_fence: Arc<File>,
 }
 
 impl CatalogService {
@@ -443,18 +532,11 @@ impl ProductionRamCatalogProvider for CatalogService {
             .begin(HostOperationClass::Preparation)
             .map_err(sqlite_supervision_error)?;
         let mut catalogs = supervised_lock(&self.catalogs, &operation)?;
-        if let Some(entry) = catalogs.get(directory) {
-            return match entry {
-                CatalogEntry::Open { storage, closed } if !closed.load(Ordering::Acquire) => {
-                    storage.quota.verify()?;
-                    operation.complete().map_err(sqlite_supervision_error)?;
-                    Ok(storage.clone())
-                }
-                _ => Err(StoreError::Unauthorized),
-            };
+        if let Some(storage) = catalogs.cached_open(directory)? {
+            operation.complete().map_err(sqlite_supervision_error)?;
+            return Ok(storage);
         }
 
-        self.authority.prepare(directory)?;
         let resources = self
             .authority
             .allocator
@@ -469,6 +551,13 @@ impl ProductionRamCatalogProvider for CatalogService {
             _resources: resources,
             _metadata: metadata_credit,
         });
+        let original = crucible_cas::owned_decode::DecodeBudget::for_store(quota.clone()).map_err(
+            |source| StoreError::DecodeAdmission {
+                source,
+                custody: None,
+            },
+        )?;
+        self.authority.prepare(directory)?;
         let path = directory.join("retention.lock");
         let fence: File = OpenOptions::new()
             .read(true)
@@ -507,6 +596,7 @@ impl ProductionRamCatalogProvider for CatalogService {
             backend,
             quota,
             retention_fence: Arc::new(fence),
+            original,
         };
         catalogs.insert(
             directory.to_path_buf(),
@@ -549,22 +639,8 @@ impl ProductionRamCatalogProvider for CatalogService {
             operation.complete().map_err(sqlite_supervision_error)?;
             return Ok(receipt.clone());
         }
-        let quota = match catalogs.get(directory) {
-            Some(CatalogEntry::Open { storage, closed }) => {
-                // Close admission before the loan proof. Refused deletion stays
-                // closed until existing readers release their actual guards.
-                closed.store(true, Ordering::Release);
-                if Arc::strong_count(&storage.backend) != 1
-                    || Arc::strong_count(&storage.retention_fence) != 1
-                    || Arc::strong_count(&storage.quota) != 2
-                    || Arc::strong_count(closed) != 2
-                {
-                    return Err(StoreError::Quota);
-                }
-                let Some(CatalogEntry::Open { storage, .. }) = catalogs.remove(directory) else {
-                    return Err(StoreError::Unauthorized);
-                };
-                drop(storage.backend);
+        let quota = match catalogs.close_for_retirement(directory)? {
+            Some(storage) => {
                 drop(storage.retention_fence);
                 storage.quota
             }
@@ -588,7 +664,6 @@ impl ProductionRamCatalogProvider for CatalogService {
                     _metadata: metadata_credit,
                 }) as Arc<dyn StorePhysicalQuotaGuard>
             }
-            Some(CatalogEntry::Retiring(_)) => return Err(StoreError::Unauthorized),
         };
         let receipt = Arc::new(CatalogRetirement {
             directory: directory.to_path_buf(),

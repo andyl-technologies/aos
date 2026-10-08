@@ -24,6 +24,7 @@ fn authenticated_lineage_fixture() -> (CampaignExecutorStore, CampaignLineage) {
             16 * 1024 * 1024,
         )),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     let scenario = crucible::crash_restart_scenario()
         .expect("built-in scenario")

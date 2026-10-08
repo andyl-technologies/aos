@@ -110,6 +110,7 @@ fn verifier_backed_store_imports_complete_lineage_artifacts() {
     let repository = Arc::new(CampaignRepository::new(
         Arc::new(MemoryBlobBackend::new("crucible-artifact-import", u64::MAX)),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     let store = CrucibleCampaignArtifactStore::new(Arc::clone(&repository));
 
@@ -167,6 +168,7 @@ fn resolved_app_random_model_sample_is_verified_before_execution() {
             u64::MAX,
         )),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     repository
         .publish_choice_domain(selectable.domain())
@@ -249,6 +251,7 @@ fn selection_resolution_refuses_a_domain_above_its_canonical_byte_limit() {
     let repository = Arc::new(CampaignRepository::new(
         Arc::new(MemoryBlobBackend::new("large-selected-domain", u64::MAX)),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     repository
         .publish_choice_domain(&domain)
@@ -307,6 +310,7 @@ fn nested_signal_fault_selections_resolve_to_one_exact_ordered_plan() {
             u64::MAX,
         )),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     publish_signal_selection(&repository, &first_selectable, &first_selection);
     publish_signal_selection(&repository, &second_selectable, &second_selection);
@@ -384,6 +388,7 @@ fn network_fault_selections_survive_configuration_artifact_restart() {
     let repository = Arc::new(CampaignRepository::new(
         Arc::new(MemoryBlobBackend::new("network-choice-artifact", u64::MAX)),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     let parent = Configuration::genesis(scenario.scenario_def());
     let selectable = crucible::NetworkFaultSelectable::next(

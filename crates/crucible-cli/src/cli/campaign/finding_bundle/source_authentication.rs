@@ -61,13 +61,10 @@ impl FindingSourceAuthentication {
             deployment.execution_config(lifecycle, campaign, &input, deployment.resources)?;
         let owner = GuardedCampaignOwner::open(config)
             .map_err(|error| backend_error(format!("finding source admission failed: {error}")))?;
-        let authority = owner.repository_metadata_resources().map_err(|error| {
+        let original = owner.repository_decode_budget().map_err(|error| {
             backend_error(format!("finding source resources are unavailable: {error}"))
         })?;
-        let decoding = crucible_session::engine::owned_decode::DecodeBudget::for_store(authority)
-            .map_err(|error| {
-            backend_error(format!("finding metadata admission failed: {error}"))
-        })?;
+        let decoding = original.child().map_err(CliError::MetadataAdmission)?;
         let workspace = owner.prepare_import_workspace().map_err(|error| {
             backend_error(format!("finding workspace admission failed: {error}"))
         })?;
@@ -89,6 +86,17 @@ impl FindingSourceAuthentication {
     /// Refuses exhausted original credits, a nonregular file, changing length,
     /// allocation failure or file I/O errors.
     pub(crate) fn read_input(&self, path: &Path) -> Result<Vec<u8>, CliError> {
+        self.decoding.check().map_err(CliError::MetadataAdmission)?;
+        self.owner
+            .repository_decode_budget()
+            .map_err(|error| {
+                backend_error(format!(
+                    "artifact metadata admission is unavailable: {error}"
+                ))
+            })?
+            .check()
+            .map_err(CliError::MetadataAdmission)?;
+
         let authority = self
             .owner
             .repository_metadata_resources()

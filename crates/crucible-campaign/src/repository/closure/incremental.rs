@@ -34,6 +34,10 @@ pub(in crate::repository) struct ClosureCollection<'a> {
     pub(in crate::repository) objects: Option<&'a mut BTreeSet<ContentId>>,
     pub(in crate::repository) exact_leaves: Option<&'a mut BTreeSet<ContentId>>,
     pub(in crate::repository) ram: Option<&'a mut ArchiveRamInventory>,
+    // None selects saved repository admission. Some(None) explicitly denies
+    // RAM for an archive operation whose validated closure must contain none.
+    pub(in crate::repository) ram_original:
+        Option<Option<&'a crucible_cas::owned_decode::DecodeBudget>>,
 }
 
 pub(in crate::repository) struct ArchiveRamInventory {
@@ -227,6 +231,17 @@ impl CampaignRepository {
         verify_contents: bool,
         boundary: &mut dyn FnMut() -> Result<(), crucible_cas::ram::RamStoreError>,
     ) -> Result<CampaignStorageClosure, CampaignRepositoryError> {
+        self.authenticated_archive_closure_under(roots, verify_contents, None, boundary)
+    }
+
+    pub(in crate::repository) fn authenticated_archive_closure_under(
+        &self,
+        roots: impl IntoIterator<Item = ContentId>,
+        verify_contents: bool,
+        ram_original: Option<Option<&crucible_cas::owned_decode::DecodeBudget>>,
+        boundary: &mut dyn FnMut() -> Result<(), crucible_cas::ram::RamStoreError>,
+    ) -> Result<CampaignStorageClosure, CampaignRepositoryError> {
+        self.verify_ram_admission()?;
         let mut objects = BTreeSet::new();
         let mut exact_leaves = BTreeSet::new();
         let mut ram = ArchiveRamInventory {
@@ -242,6 +257,7 @@ impl CampaignRepository {
                 objects: Some(&mut objects),
                 exact_leaves: Some(&mut exact_leaves),
                 ram: Some(&mut ram),
+                ram_original,
             },
             boundary,
         )?;
@@ -266,8 +282,24 @@ impl CampaignRepository {
         verify_contents: bool,
         boundary: &mut dyn FnMut() -> Result<(), crucible_cas::ram::RamStoreError>,
     ) -> Result<(), CampaignRepositoryError> {
+        let original = self.ram_operation_account()?;
+        self.authenticate_ram_root_under(id, verify_contents, &original, boundary)
+    }
+
+    fn authenticate_ram_root_under(
+        &self,
+        id: ContentId,
+        verify_contents: bool,
+        original: &crucible_cas::owned_decode::DecodeBudget,
+        boundary: &mut dyn FnMut() -> Result<(), crucible_cas::ram::RamStoreError>,
+    ) -> Result<(), CampaignRepositoryError> {
         use crucible_cas::ram::{RamRetention, RamStore, RamStoreLimits};
         let map_error = CampaignRepositoryError::Ram;
+        original.verify_live().map_err(|source| {
+            map_error(crucible_cas::ram::RamStoreError::from_admission(
+                original, source,
+            ))
+        })?;
         let store = RamStore::new(
             Arc::clone(&self.blobs),
             crucible_cas::content_store::DurabilityRequirement::new(1, false)?,
@@ -281,15 +313,15 @@ impl CampaignRepository {
                 .map_err(map_error)?;
             let lease = retention.retain_root(id).map_err(map_error)?;
             let root = store
-                .open_with_metadata_resources(lease, boundary)
+                .open_with_metadata_resources(lease, original, boundary)
                 .map_err(map_error)?;
             if root.record().scope() != crucible_ram::Scope::Exact {
                 return Err(integrity("campaign-ram-root-wrong-scope"));
             }
-            store.verify(&root, boundary).map_err(map_error)?;
+            store.verify(&root, original, boundary).map_err(map_error)?;
         } else {
             let metadata = store
-                .inspect_root_with_metadata_resources(id, boundary)
+                .inspect_root_with_metadata_resources(id, original, boundary)
                 .map_err(map_error)?;
             if metadata.record().scope() != crucible_ram::Scope::Exact {
                 return Err(integrity("campaign-ram-root-wrong-scope"));
@@ -352,6 +384,7 @@ impl CampaignRepository {
         mut collection: ClosureCollection<'_>,
         boundary: &mut dyn FnMut() -> Result<(), crucible_cas::ram::RamStoreError>,
     ) -> Result<usize, CampaignRepositoryError> {
+        self.verify_ram_admission()?;
         let mut stack = roots.into_iter().map(|id| (id, false)).collect::<Vec<_>>();
         let mut visited = BTreeSet::new();
         let mut verified_merkle_positions = BTreeSet::new();
@@ -453,7 +486,18 @@ impl CampaignRepository {
                         .ram
                         .as_ref()
                         .is_none_or(|ram| ram.verify_contents);
-                    self.authenticate_ram_root(id, verify, boundary)?;
+                    match collection.ram_original {
+                        None => self.authenticate_ram_root(id, verify, boundary)?,
+                        Some(Some(original)) => {
+                            self.authenticate_ram_root_under(id, verify, original, boundary)?;
+                        }
+                        Some(None) => {
+                            return Err(StoreError::Unsupported {
+                                capability: "campaign-archive-ram-admission",
+                            }
+                            .into());
+                        }
+                    }
                     if let Some(ram) = collection.ram.as_deref_mut() {
                         ram.roots.insert(id);
                     }

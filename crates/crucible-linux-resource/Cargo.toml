@@ -18,4 +18,5 @@ rustix = { workspace = true, features = ["time"] }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+crucible-linux-resource = { path = ".", features = ["test-support"] }
 tempfile = { workspace = true }

@@ -19,6 +19,7 @@ pub(in crate::packaged_qemu_executor) struct GuardedCampaignStorage {
     pub(in crate::packaged_qemu_executor) ref_admin:
         Arc<dyn crucible_cas::content_store::RefStoreAdmin>,
     pub(in crate::packaged_qemu_executor) quota: Arc<dyn StorePhysicalQuotaGuard>,
+    pub(in crate::packaged_qemu_executor) original: crucible_cas::owned_decode::DecodeBudget,
     _resources: crucible_cas::owned_decode::ResourceLoan,
 }
 
@@ -28,6 +29,8 @@ impl CatalogService {
         directory: &Path,
     ) -> Result<GuardedCampaignStorage, StoreError> {
         let quota = self.prepare_directory(directory)?;
+        let original = crucible_cas::owned_decode::DecodeBudget::for_store(quota.clone())
+            .map_err(|source| StoreError::DecodeAdmission { source, custody: None })?;
         let resources =
             quota.reserve_resources(0, std::mem::size_of::<GuardedCampaignStorage>() as u64)?;
         let objects = directory.join("objects");
@@ -51,6 +54,7 @@ impl CatalogService {
             #[cfg(test)]
             ref_admin: _ref_admin,
             quota,
+            original,
             _resources: resources,
         })
     }

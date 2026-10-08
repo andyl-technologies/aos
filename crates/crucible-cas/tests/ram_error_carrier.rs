@@ -1,11 +1,11 @@
 //! Causal allocation-close evidence for the shared RAM failure carrier.
 //!
-//! The test allocator watches exactly the next carrier allocation on this
-//! thread. It proves actual deallocation precedes both payload destruction and
-//! release of the original loan, including concurrent final owners and unwind.
+//! The shared observer captures the exact original carrier layout and publishes
+//! its original close flag after physical deallocation. Payload destruction and
+//! original loan release follow that publication, including sixteen concurrent
+//! final owners and actual payload unwind.
 
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::cell::Cell;
+use std::alloc::Layout;
 use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
@@ -15,53 +15,14 @@ use crucible_cas::content_store::StoreError;
 use crucible_cas::owned_decode::{DecodeAdmissionError, DecodeBudget, DecodeResourceAuthority};
 use crucible_cas::ram::{PreparedRamFailure, RamStoreError};
 
-thread_local! {
-    static WATCH_ALLOCATION: Cell<bool> = const { Cell::new(false) };
-}
+use crucible_linux_resource::test_support::{CloseMarkerOutcome, TestAllocationObserver};
 
-static EXPECTED_SIZE: AtomicUsize = AtomicUsize::new(0);
-static EXPECTED_ALIGNMENT: AtomicUsize = AtomicUsize::new(0);
-static BODY_POINTER: AtomicUsize = AtomicUsize::new(0);
 static BODY_CLOSED: AtomicBool = AtomicBool::new(false);
 static PAYLOAD_DROPS: AtomicUsize = AtomicUsize::new(0);
 static LOAN_DROPS: AtomicUsize = AtomicUsize::new(0);
 
-struct ObserverAllocator;
-
-// SAFETY: Every allocation operation delegates unchanged to System. The
-// observer records integer addresses and never reads or modifies allocations.
-unsafe impl GlobalAlloc for ObserverAllocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        // SAFETY: The exact caller layout is forwarded to the system allocator.
-        let pointer = unsafe { System.alloc(layout) };
-        let watching = WATCH_ALLOCATION.try_with(Cell::get).unwrap_or(false);
-        if watching
-            && layout.size() == EXPECTED_SIZE.load(Ordering::Relaxed)
-            && layout.align() == EXPECTED_ALIGNMENT.load(Ordering::Relaxed)
-        {
-            let _ = BODY_POINTER.compare_exchange(
-                0,
-                pointer as usize,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            );
-        }
-        pointer
-    }
-
-    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
-        let watched = pointer as usize == BODY_POINTER.load(Ordering::SeqCst);
-        // SAFETY: Pointer and original layout are forwarded unchanged; the
-        // observer cannot deallocate twice or alter the allocation's contents.
-        unsafe { System.dealloc(pointer, layout) };
-        if watched {
-            BODY_CLOSED.store(true, Ordering::SeqCst);
-        }
-    }
-}
-
 #[global_allocator]
-static ALLOCATOR: ObserverAllocator = ObserverAllocator;
+static ALLOCATOR: TestAllocationObserver = TestAllocationObserver;
 
 struct Loan {
     watched: bool,
@@ -139,7 +100,6 @@ impl fmt::Display for Boundary {
 impl Error for Boundary {}
 
 fn reset() {
-    BODY_POINTER.store(0, Ordering::SeqCst);
     BODY_CLOSED.store(false, Ordering::SeqCst);
     PAYLOAD_DROPS.store(0, Ordering::SeqCst);
     LOAN_DROPS.store(0, Ordering::SeqCst);
@@ -175,55 +135,62 @@ fn retained_failure_closes_real_allocation_before_payload_and_credit() {
         let storage = RamStoreError::Store(StoreError::Supervision {
             source: Box::new(Payload { panic }),
         });
-        EXPECTED_SIZE.store(
-            PreparedRamFailure::<Boundary>::allocation_bytes().unwrap() as usize,
-            Ordering::Relaxed,
-        );
-        EXPECTED_ALIGNMENT.store(64, Ordering::Relaxed);
-        WATCH_ALLOCATION.with(|watch| watch.set(true));
-        let cause = prepared.retain(has_boundary.then_some(Boundary(7)), storage);
-        WATCH_ALLOCATION.with(|watch| watch.set(false));
-        assert_ne!(
-            BODY_POINTER.load(Ordering::SeqCst),
-            0,
-            "actual Arc extent differed from admitted layout"
-        );
-        assert_eq!(
-            cause.first_boundary().map(|first| first.0),
-            has_boundary.then_some(7)
-        );
-        assert!(matches!(
-            cause.storage_failure(),
-            RamStoreError::Store(StoreError::Supervision { .. })
-        ));
+        let extent = PreparedRamFailure::<Boundary>::allocation_bytes().unwrap();
+        assert!(extent > 0);
+        let layout = Layout::from_size_align(usize::try_from(extent).unwrap(), 64).unwrap();
+        let (cause, identity, counts) =
+            TestAllocationObserver::capture_layout_and_count(layout, || {
+                prepared.retain(has_boundary.then_some(Boundary(7)), storage)
+            });
+        let identity = identity.unwrap();
+        assert_eq!(counts.allocations, 1);
+        assert_eq!(counts.reallocations, 0);
+        assert!(!counts.overflow);
 
-        // Closing constructor/account scopes does not release the carrier loan.
-        drop(original);
-        if concurrent {
-            let barrier = Arc::new(std::sync::Barrier::new(17));
-            let mut owners = Vec::new();
-            for _ in 0..16 {
-                let clone = cause.clone();
-                assert_eq!(clone, cause);
-                let barrier = barrier.clone();
-                owners.push(std::thread::spawn(move || {
+        // Constructor/account close and all final owners remain inside the
+        // same original process-wide physical-close observation.
+        let ((), outcome) =
+            TestAllocationObserver::observe_close_marker_after_free(&BODY_CLOSED, identity, || {
+                assert_eq!(
+                    cause.first_boundary().map(|first| first.0),
+                    has_boundary.then_some(7)
+                );
+                assert!(matches!(
+                    cause.storage_failure(),
+                    RamStoreError::Store(StoreError::Supervision { .. })
+                ));
+
+                drop(original);
+                if concurrent {
+                    let barrier = Arc::new(std::sync::Barrier::new(17));
+                    let mut owners = Vec::new();
+                    for _ in 0..16 {
+                        let clone = cause.clone();
+                        assert_eq!(clone, cause);
+                        let barrier = barrier.clone();
+                        owners.push(std::thread::spawn(move || {
+                            barrier.wait();
+                            drop(clone);
+                        }));
+                    }
+                    drop(cause);
+                    assert_eq!(LOAN_DROPS.load(Ordering::SeqCst), 0);
+                    assert_eq!(owners.len(), 16);
                     barrier.wait();
-                    drop(clone);
-                }));
-            }
-            drop(cause);
-            assert_eq!(LOAN_DROPS.load(Ordering::SeqCst), 0);
-            barrier.wait();
-            for owner in owners {
-                owner.join().unwrap();
-            }
-        } else {
-            let clone = cause.clone();
-            drop(cause);
-            assert_eq!(LOAN_DROPS.load(Ordering::SeqCst), 0);
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(clone)));
-            assert_eq!(result.is_err(), panic);
-        }
+                    for owner in owners {
+                        owner.join().unwrap();
+                    }
+                } else {
+                    let clone = cause.clone();
+                    drop(cause);
+                    assert_eq!(LOAN_DROPS.load(Ordering::SeqCst), 0);
+                    let result =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(clone)));
+                    assert_eq!(result.is_err(), panic);
+                }
+            })
+            .unwrap();
+        assert_eq!(outcome, CloseMarkerOutcome::Published);
         assert!(BODY_CLOSED.load(Ordering::SeqCst));
         assert_eq!(PAYLOAD_DROPS.load(Ordering::SeqCst), 1);
         assert_eq!(LOAN_DROPS.load(Ordering::SeqCst), 1);
@@ -236,20 +203,27 @@ fn retained_failure_closes_real_allocation_before_payload_and_credit() {
     });
     let original = DecodeBudget::new(authority.clone(), 16 * 1024).unwrap();
     let prepared = PreparedRamFailure::<Boundary>::new(&original).unwrap();
-    WATCH_ALLOCATION.with(|watch| watch.set(true));
-    let result = prepared.run(&mut || Ok(()), |boundary| {
-        boundary()?;
-        boundary()?;
-        Ok(17)
-    });
-    WATCH_ALLOCATION.with(|watch| watch.set(false));
+    let extent = PreparedRamFailure::<Boundary>::allocation_bytes().unwrap();
+    let layout = Layout::from_size_align(usize::try_from(extent).unwrap(), 64).unwrap();
+    let (result, identity, counts) =
+        TestAllocationObserver::capture_layout_and_count(layout, || {
+            prepared
+                .run(&mut || Ok(()), |boundary| {
+                    boundary()?;
+                    boundary()?;
+                    Ok(17)
+                })
+                .unwrap()
+        });
 
-    assert!(matches!(result, Ok(17)));
-    assert_eq!(
-        BODY_POINTER.load(Ordering::SeqCst),
-        0,
+    assert_eq!(result, 17);
+    assert!(
+        identity.is_none(),
         "successful operation allocated a carrier"
     );
+    assert_eq!(counts.allocations, 0);
+    assert_eq!(counts.reallocations, 0);
+    assert!(!counts.overflow);
     assert_eq!(
         authority.reservations.load(Ordering::SeqCst),
         2,

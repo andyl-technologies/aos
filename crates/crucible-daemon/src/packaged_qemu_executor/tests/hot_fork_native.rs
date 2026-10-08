@@ -822,7 +822,13 @@ pub(super) fn native_repository(
         super::paging_native::environment::environment_path("CRUCIBLE_PAGING_PLUGIN"),
     )
     .expect("actual matching native launch artifact markers");
-    let repository = Arc::new(CampaignRepository::new(storage.backend, storage.refs));
+    let admission =
+        crucible_campaign::CampaignRamAdmission::Available(storage._custody.original.clone());
+    let repository = Arc::new(CampaignRepository::new(
+        storage.backend,
+        storage.refs,
+        admission,
+    ));
     let scenario = encode_crucible_scenario_artifact(source).expect("actual scenario encoding");
     let scenario_id = repository
         .publish_scenario_artifact(

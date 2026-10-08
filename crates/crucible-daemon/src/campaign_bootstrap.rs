@@ -21,7 +21,7 @@ use std::sync::Arc;
 use crucible::{ScenarioDefForm, Schedule};
 use crucible_campaign::{
     CampaignAuthorizationError, CampaignCodecError, CampaignHash, CampaignName, CampaignPrincipal,
-    CampaignPrincipalAuthorizer, CampaignRepository, CampaignRepositoryError,
+    CampaignPrincipalAuthorizer, CampaignRamAdmission, CampaignRepository, CampaignRepositoryError,
     CampaignServiceFailure, CampaignServiceOperation, CandidateGeneratorSpec,
     CandidateGeneratorSpecId, ConfigurationArtifactId, DebuggerAuthorityKey, PlannerAuthorityKey,
 };
@@ -121,6 +121,7 @@ pub struct CampaignLocalRepositoryStore {
     blobs: Arc<dyn ImmutableBlobBackend>,
     refs: Arc<dyn MutableRefBackend>,
     maintenance: Option<CampaignLocalRepositoryMaintenance>,
+    ram_admission: CampaignRamAdmission,
 }
 
 /// Separately retained maintenance authority for one composed repository.
@@ -146,7 +147,8 @@ impl CampaignLocalRepositoryStore {
     /// Returns [`CampaignLocalServiceError::InvalidRepositoryStore`] when the
     /// immutable backend is not durable or can overwrite existing logical IDs,
     /// or when the mutable-ref backend does not retain successful comparisons
-    /// across restart.
+    /// across restart. Also returns an original namespace admission failure
+    /// when an advertised metadata authority is denied, expired, or ambiguous.
     #[cfg(test)]
     fn new(
         blobs: Arc<dyn ImmutableBlobBackend>,
@@ -157,10 +159,12 @@ impl CampaignLocalRepositoryStore {
         {
             return Err(CampaignLocalServiceError::InvalidRepositoryStore);
         }
+        let ram_admission = repository_ram_admission(blobs.as_ref())?;
         Ok(Self {
             blobs,
             refs,
             maintenance: None,
+            ram_admission,
         })
     }
 
@@ -177,6 +181,8 @@ impl CampaignLocalRepositoryStore {
     /// Returns [`CampaignLocalServiceError::InvalidRepositoryStore`] when the
     /// graph is not durably conditional, the ref backend is not durable, or
     /// the maintenance authority belongs to a different graph configuration.
+    /// Returns an original namespace admission failure when an advertised
+    /// metadata authority is denied, expired, or ambiguous.
     pub fn new_with_maintenance<R>(
         graph: Arc<StoreGraph>,
         refs: Arc<R>,
@@ -199,6 +205,7 @@ impl CampaignLocalRepositoryStore {
         {
             return Err(CampaignLocalServiceError::InvalidRepositoryStore);
         }
+        let ram_admission = repository_ram_admission(blobs.as_ref())?;
         Ok(Self {
             blobs,
             refs: mutable_refs,
@@ -207,6 +214,7 @@ impl CampaignLocalRepositoryStore {
                 graph: graph_maintenance,
                 refs: maintenance_refs,
             }),
+            ram_admission,
         })
     }
 
@@ -216,9 +224,32 @@ impl CampaignLocalRepositoryStore {
         Arc<dyn ImmutableBlobBackend>,
         Arc<dyn MutableRefBackend>,
         Option<CampaignLocalRepositoryMaintenance>,
+        CampaignRamAdmission,
     ) {
-        (self.blobs, self.refs, self.maintenance)
+        (self.blobs, self.refs, self.maintenance, self.ram_admission)
     }
+}
+
+// The exact unsupported capability preserves checkpoint-free deployments.
+// A refused or ambiguous original namespace must never become unavailable mode.
+fn repository_ram_admission(
+    backend: &dyn ImmutableBlobBackend,
+) -> Result<CampaignRamAdmission, CampaignLocalServiceError> {
+    let resources = match backend.metadata_resources() {
+        Ok(resources) => resources,
+        Err(StoreError::Unsupported {
+            capability: "decoded-metadata-resources",
+        }) => return Ok(CampaignRamAdmission::Unavailable),
+        Err(source) => return Err(CampaignLocalServiceError::RepositoryRamAdmission(source)),
+    };
+    let original =
+        crucible_cas::owned_decode::DecodeBudget::for_store(resources).map_err(|source| {
+            CampaignLocalServiceError::RepositoryRamAdmission(StoreError::DecodeAdmission {
+                source,
+                custody: None,
+            })
+        })?;
+    Ok(CampaignRamAdmission::Available(original))
 }
 
 impl CampaignLocalServiceMode {
@@ -454,7 +485,7 @@ impl CampaignLocalServiceConfig {
         policy: Arc<UnixPeerCampaignPolicy>,
         component_authorities: CampaignComponentAuthorities,
     ) -> Result<PreparedCampaignLocalService, CampaignLocalServiceError> {
-        let (blobs, refs, maintenance) = store.into_parts();
+        let (blobs, refs, maintenance, ram_admission) = store.into_parts();
         let hot_fork_retention =
             Arc::new(crate::DirectoryHotCheckpointFallbackRetentionStore::open(
                 self.state_directory.join(HOT_FORK_FALLBACK_DIRECTORY),
@@ -469,14 +500,21 @@ impl CampaignLocalServiceConfig {
                 (
                     Arc::new(
                         CampaignRepository::with_component_authorities(
-                            blobs, refs, planner, debugger,
+                            blobs,
+                            refs,
+                            ram_admission,
+                            planner,
+                            debugger,
                         )
                         .map_err(|_| CampaignLocalServiceError::InvalidComponentAuthorityFile)?,
                     ),
                     Some(retained_planner),
                 )
             }
-            None => (Arc::new(CampaignRepository::new(blobs, refs)), None),
+            None => (
+                Arc::new(CampaignRepository::new(blobs, refs, ram_admission)),
+                None,
+            ),
         };
         Ok(PreparedCampaignLocalService {
             endpoint: self.endpoint.clone(),
@@ -937,6 +975,7 @@ impl PreparedCampaignLocalService {
         plan: &crucible_campaign::CampaignArchivePlan,
         destination: &CampaignRepository,
         durability: crucible_cas::content_store::DurabilityRequirement,
+        destination_original: Option<&crucible_cas::owned_decode::DecodeBudget>,
         boundary: &mut dyn FnMut() -> Result<(), crucible_cas::ram::RamStoreError>,
     ) -> Result<crucible_campaign::CampaignArchiveTransferReport, CampaignRepositoryError> {
         boundary().map_err(CampaignRepositoryError::Ram)?;
@@ -955,6 +994,8 @@ impl PreparedCampaignLocalService {
                 durability,
                 *operation.finalize().as_bytes(),
                 "private-finding-bundle",
+                self.repository.ram_admission().original(),
+                destination_original,
                 boundary,
             )?;
         destination.publish_campaign_archive_with_boundary(
@@ -1656,6 +1697,9 @@ pub enum CampaignLocalServiceError {
     /// The supplied immutable repository backend is not durably conditional.
     #[error("campaign service repository store is not durably conditional")]
     InvalidRepositoryStore,
+    /// The original repository namespace refused RAM metadata admission.
+    #[error("campaign repository RAM admission failed: {0}")]
+    RepositoryRamAdmission(#[source] StoreError),
     /// Store maintenance was requested without retained graph administration.
     #[error("campaign service repository store has no maintenance authority")]
     StoreMaintenanceUnavailable,

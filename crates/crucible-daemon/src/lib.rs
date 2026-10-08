@@ -110,7 +110,6 @@ pub fn component_ram_root_resources() -> Result<
 mod anchored_fs;
 pub mod assignment_ledger;
 pub mod automatic_finding_runner;
-pub mod campaign_archive_import;
 pub mod campaign_attachment;
 pub mod campaign_bootstrap;
 pub mod campaign_debug_control;
@@ -213,9 +212,6 @@ pub use automatic_finding_runner::{
     AutomaticFindingExecutionRunner, AutomaticFindingExecutionRunnerError,
     PrivateFindingReplayRunner,
 };
-pub use campaign_archive_import::{
-    CampaignArchiveImportError, CampaignArchiveImportOwnership, import_campaign_archive_objects,
-};
 pub use campaign_attachment::{
     AttachedCanonicalCampaignRuntime, CanonicalCampaignRuntimeConfig,
     CanonicalCampaignRuntimeConfigError, CanonicalCampaignRuntimeError,
@@ -310,7 +306,7 @@ pub use campaign_server::{
     CampaignLoopbackServerShutdown, MAX_CAMPAIGN_LISTENER_WORKERS,
     MAX_CAMPAIGN_PENDING_CONNECTIONS,
 };
-pub use campaign_store_quota::{CampaignQuotaServiceConfig, LinuxProjectQuotaBinder};
+pub use campaign_store_quota::LinuxProjectQuotaBinder;
 pub use campaign_transfer::{
     CampaignArchiveDurabilityReceipt, CampaignArchiveTransferEndpoint,
     CampaignArchiveTransferError, CampaignTransferJournalError, CampaignTransferOperationId,

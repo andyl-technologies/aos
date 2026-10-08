@@ -613,6 +613,9 @@ fn runtime_control_failure(error: &CampaignLocalServiceError) -> CampaignService
         | CampaignLocalServiceError::RuntimeMonitorPanicked => {
             CampaignServiceFailure::IntegrityFailure
         }
+        CampaignLocalServiceError::RepositoryRamAdmission(error) => {
+            crucible_campaign::CampaignRepositoryError::classify_store_failure(error)
+        }
         CampaignLocalServiceError::Runtime(error) => runtime_control_runtime_failure(error),
         CampaignLocalServiceError::Endpoint(_) => CampaignServiceFailure::Unavailable,
         CampaignLocalServiceError::InvalidStatePath

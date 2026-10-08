@@ -16,7 +16,8 @@ pub(in crate::packaged_qemu_executor::tests) struct NativeCampaignStorage {
         Arc<dyn crucible_cas::content_store::BlobStoreAdmin>,
     pub(in crate::packaged_qemu_executor::tests) ref_admin:
         Arc<dyn crucible_cas::content_store::RefStoreAdmin>,
-    _custody: crate::packaged_qemu_executor::ram_catalog::GuardedCampaignStorage,
+    pub(in crate::packaged_qemu_executor::tests) _custody:
+        crate::packaged_qemu_executor::ram_catalog::GuardedCampaignStorage,
 }
 
 pub(in crate::packaged_qemu_executor::tests) const OPERATOR: &str =

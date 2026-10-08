@@ -170,6 +170,13 @@ fn gc_requires_current_selection_and_ignores_stale_record_after_unpin() {
     )
     .expect("plan with exact materialization");
     let exact_closure = {
+        let original = fixture
+            .repository
+            .ram_admission()
+            .original()
+            .expect("same original exact-pin namespace account")
+            .child()
+            .expect("exact-pin inventory operation account");
         let inventory = fixture
             .refs
             .acquire_ref_inventory_fence()
@@ -189,10 +196,16 @@ fn gc_requires_current_selection_and_ignores_stale_record_after_unpin() {
         let mut retained = closure.objects().clone();
         for root in closure.ram_roots() {
             ram_store
-                .visit_inventory_graph(*root, inventory.as_ref(), &mut |id| {
-                    retained.insert(id);
-                    Ok(())
-                })
+                .visit_inventory_graph(
+                    *root,
+                    inventory.as_ref(),
+                    &original,
+                    &mut || Ok(()),
+                    &mut |id| {
+                        retained.insert(id);
+                        Ok(())
+                    },
+                )
                 .expect("authenticated transitive RAM inventory");
         }
         retained
@@ -509,7 +522,11 @@ fn fixture_with_backend(name: &str, backend: Arc<dyn ImmutableBlobBackend>) -> F
     )
     .expect("production checkpoint fixture");
     let refs = Arc::new(MemoryRefBackend::new());
-    let repository = CampaignRepository::new(backend.clone(), refs.clone());
+    let repository = CampaignRepository::new(
+        backend.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Available(decoding.clone()),
+    );
     let scenario_source = production.source().clone();
     let scenario = scenario_source.scenario_def();
     let configuration = production.configuration().clone();

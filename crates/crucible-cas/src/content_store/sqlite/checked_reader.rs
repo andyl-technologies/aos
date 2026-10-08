@@ -78,7 +78,7 @@ pub(super) fn lookup(
                 })
                 .transpose()?;
             check()?;
-            let source: Arc<dyn BlobSource> = Arc::new(SqliteBlobSource {
+            let source = SqliteBlobSource {
                 connection: backend.read_connection.clone(),
                 id,
                 logical_length: length,
@@ -87,10 +87,10 @@ pub(super) fn lookup(
                 quarantined: backend.quarantined.clone(),
                 resident_lease: backend.resident_lease.clone(),
                 maximum_sqlite_heap_bytes: backend.maximum_sqlite_heap_bytes,
-                original: Some(original.clone()),
+                original: original.clone().into(),
                 _source_lease: source_lease.into(),
                 _source_credit: Some(credit),
-            });
+            };
             Ok(if range.offset == 0 && range.length == length {
                 BlobHandle::authenticated(id, source)
             } else {
@@ -109,7 +109,7 @@ pub(super) fn open(
     caller: &DecodeBudget,
     boundary: &mut dyn FnMut() -> Result<(), StoreError>,
 ) -> Result<super::super::CheckedReader, StoreError> {
-    let original = match &source.original {
+    let original = match source.original.as_ref() {
         Some(original) => original.clone(),
         None => caller.clone(),
     };

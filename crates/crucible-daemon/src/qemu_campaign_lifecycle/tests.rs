@@ -2628,6 +2628,7 @@ fn assert_composed_candidate_replay_retains_choice_and_measurement(
     let store = CampaignExecutorStore::new(Arc::new(CampaignRepository::new(
         Arc::new(MemoryBlobBackend::new("composed-exact-candidate", u64::MAX)),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     )));
     let final_event = SchedulerEventLogEntry::assertion_state_observation(
         1,
@@ -2886,6 +2887,7 @@ fn automatic_wrapper_retains_supplemental_violation_when_offline_source_also_fai
     let repository = Arc::new(CampaignRepository::new(
         Arc::new(MemoryBlobBackend::new("supplemental-wrapper", u64::MAX)),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     let artifacts = crate::CrucibleCampaignArtifactStore::new(Arc::clone(&repository));
     artifacts

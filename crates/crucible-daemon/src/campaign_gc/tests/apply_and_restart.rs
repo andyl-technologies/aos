@@ -95,7 +95,11 @@ fn stale_ledger_generation_fails_before_deletion() {
 
     let blobs = Arc::new(MemoryBlobBackend::new("ledger-primary", 1024 * 1024));
     let refs = Arc::new(MemoryRefBackend::new());
-    let repository = CampaignRepository::new(blobs.clone(), refs.clone());
+    let repository = CampaignRepository::new(
+        blobs.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
     let orphan_bytes = b"ledger stale orphan";
     let orphan = ContentId::for_bytes(ObjectKind::Trace, 1, orphan_bytes);
     blobs
@@ -205,7 +209,11 @@ fn directory_plan_journal_and_apply_survive_full_backend_restart() {
 
     let blobs = Arc::new(DirectoryBlobBackend::new("directory-primary", &blob_root));
     let refs = Arc::new(DirectoryRefBackend::new(&ref_root));
-    let repository = CampaignRepository::new(blobs.clone(), refs.clone());
+    let repository = CampaignRepository::new(
+        blobs.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
     let live = ContentEnvelope::new(
         "crucible.test.gc-directory-live",
         1,
@@ -251,7 +259,11 @@ fn directory_plan_journal_and_apply_survive_full_backend_restart() {
 
     let blobs = Arc::new(DirectoryBlobBackend::new("directory-primary", &blob_root));
     let refs = Arc::new(DirectoryRefBackend::new(&ref_root));
-    let repository = CampaignRepository::new(blobs.clone(), refs.clone());
+    let repository = CampaignRepository::new(
+        blobs.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
     let mut ledger =
         DirectoryAssignmentLedger::open(&ledger_root).expect("reopen directory ledger");
     let mut journal = DirectoryCampaignGcJournal::open(&journal_root, &gc_operation)
@@ -299,7 +311,11 @@ fn compressed_graph_admin_drives_plaintext_accounted_gc_across_restart() {
     let (graph, admin) = StoreGraph::build_with_admin(graph_config()).expect("compressed graph");
     let graph = Arc::new(graph);
     let refs = Arc::new(DirectoryRefBackend::new(&ref_root));
-    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+    let repository = CampaignRepository::new(
+        graph.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
     let live = ContentEnvelope::new(
         "crucible.test.gc-compressed-live",
         1,
@@ -362,7 +378,11 @@ fn compressed_graph_admin_drives_plaintext_accounted_gc_across_restart() {
         StoreGraph::build_with_admin(graph_config()).expect("restart compressed graph");
     let graph = Arc::new(graph);
     let refs = Arc::new(DirectoryRefBackend::new(&ref_root));
-    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+    let repository = CampaignRepository::new(
+        graph.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
     let mut ledger =
         DirectoryAssignmentLedger::open(&ledger_root).expect("reopen compressed ledger");
     let mut journal = DirectoryCampaignGcJournal::open(&journal_root, &gc_operation)
@@ -453,7 +473,11 @@ fn run_encrypted_graph_gc_restart(compressed: bool) {
         StoreGraph::build_with_admin_and_keys(graph_config(), &keys).expect("encrypted graph");
     let graph = Arc::new(graph);
     let refs = Arc::new(DirectoryRefBackend::new(&ref_root));
-    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+    let repository = CampaignRepository::new(
+        graph.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
     let live = ContentEnvelope::new(
         "crucible.test.gc-encrypted-live",
         1,
@@ -509,7 +533,11 @@ fn run_encrypted_graph_gc_restart(compressed: bool) {
         .expect("restart encrypted graph");
     let graph = Arc::new(graph);
     let refs = Arc::new(DirectoryRefBackend::new(&ref_root));
-    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+    let repository = CampaignRepository::new(
+        graph.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
     let mut ledger =
         DirectoryAssignmentLedger::open(&ledger_root).expect("reopen encrypted ledger");
     let mut journal = DirectoryCampaignGcJournal::open(&journal_root, &gc_operation)
@@ -582,7 +610,11 @@ fn logical_quota_graph_gc_reclaims_admission_capacity_across_restart() {
     let (graph, admin) = StoreGraph::build_with_admin(graph_config()).expect("quota GC graph");
     let graph = Arc::new(graph);
     let refs = Arc::new(DirectoryRefBackend::new(&ref_root));
-    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+    let repository = CampaignRepository::new(
+        graph.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
     let live = ContentEnvelope::new(
         "crucible.test.gc-quota-live",
         1,
@@ -642,7 +674,11 @@ fn logical_quota_graph_gc_reclaims_admission_capacity_across_restart() {
         StoreGraph::build_with_admin(graph_config()).expect("restart quota GC graph");
     let graph = Arc::new(graph);
     let refs = Arc::new(DirectoryRefBackend::new(&ref_root));
-    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+    let repository = CampaignRepository::new(
+        graph.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
     let mut ledger = DirectoryAssignmentLedger::open(&ledger_root).expect("reopen quota GC ledger");
     let mut journal = DirectoryCampaignGcJournal::open(&journal_root, &gc_operation)
         .expect("reopen quota GC journal");
@@ -692,7 +728,11 @@ fn packed_graph_admin_drives_restart_safe_logical_gc_without_deleting_live_pack_
     let (graph, admin) = StoreGraph::build_with_admin(graph_config()).expect("packed graph");
     let graph = Arc::new(graph);
     let refs = Arc::new(DirectoryRefBackend::new(&ref_root));
-    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+    let repository = CampaignRepository::new(
+        graph.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
     let live = ContentEnvelope::new(
         "crucible.test.gc-packed-live",
         1,
@@ -801,7 +841,11 @@ fn packed_graph_admin_drives_restart_safe_logical_gc_without_deleting_live_pack_
         StoreGraph::build_with_admin(graph_config()).expect("restart packed graph");
     let graph = Arc::new(graph);
     let refs = Arc::new(DirectoryRefBackend::new(&ref_root));
-    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+    let repository = CampaignRepository::new(
+        graph.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
     let mut ledger = DirectoryAssignmentLedger::open(&ledger_root).expect("reopen packed ledger");
     let mut journal = DirectoryCampaignGcJournal::open(&journal_root, &gc_operation)
         .expect("reopen packed GC journal");

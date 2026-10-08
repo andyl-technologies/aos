@@ -449,6 +449,9 @@ enum CampaignFindingBundleCommand {
 
 #[derive(Args, Debug, PartialEq, Eq)]
 struct CampaignFindingBundleExportArgs {
+    /// Admit RAM archives with explicit resources and installed project quotas.
+    #[arg(long, value_name = "PATH")]
+    archive_policy: Option<PathBuf>,
     /// Bound the complete host planning and transfer lifetime in milliseconds.
     #[arg(long, default_value_t = 3_600_000, value_name = "ms",
         value_parser = clap::value_parser!(u64).range(1..))]
@@ -481,6 +484,9 @@ struct CampaignFindingBundleExportArgs {
 
 #[derive(Args, Debug, PartialEq, Eq)]
 struct CampaignFindingBundleVerifyArgs {
+    /// Admit RAM archives with explicit resources and installed project quotas.
+    #[arg(long, value_name = "PATH")]
+    archive_policy: Option<PathBuf>,
     /// Exported finding bundle directory.
     #[arg(value_name = "DIR")]
     input: PathBuf,
@@ -494,6 +500,9 @@ struct CampaignFindingBundleVerifyArgs {
 
 #[derive(Args, Debug, PartialEq, Eq)]
 struct CampaignFindingBundleMidpointArgs {
+    /// Admit RAM archives with explicit resources and installed project quotas.
+    #[arg(long, value_name = "PATH")]
+    archive_policy: Option<PathBuf>,
     /// Exported finding bundle directory.
     #[arg(value_name = "DIR")]
     input: PathBuf,
@@ -525,6 +534,9 @@ struct CampaignFindingBundleForkWriteArgs {
 
 #[derive(Args, Debug, PartialEq, Eq)]
 struct CampaignFindingBundleBranchArgs {
+    /// Admit RAM archives with explicit resources and installed project quotas.
+    #[arg(long, value_name = "PATH")]
+    archive_policy: Option<PathBuf>,
     /// Bound the original host lifetime through archive preparation and branch publication.
     #[arg(long, default_value_t = 3_600_000, value_name = "ms",
         value_parser = clap::value_parser!(u64).range(1..))]

@@ -5,6 +5,9 @@ use std::sync::Arc;
 #[path = "transfer_resources.rs"]
 mod resources;
 
+#[path = "transfer/no_ram.rs"]
+mod no_ram;
+
 use crucible_cas::content_envelope::ContentEnvelope;
 use crucible_cas::content_store::{
     BlobHandle, ContentId, DirectoryBlobBackend, DirectoryRefBackend, DurabilityRequirement,
@@ -103,6 +106,7 @@ fn metadata_archive_inspects_without_becoming_a_campaign_head() {
             temporary.path().join("objects"),
         )),
         Arc::new(DirectoryRefBackend::new(temporary.path().join("refs"))),
+        crate::CampaignRamAdmission::Unavailable,
     );
     source
         .stage_campaign_archive_metadata(&plan)
@@ -112,6 +116,8 @@ fn metadata_archive_inspects_without_becoming_a_campaign_head() {
             &destination,
             &plan,
             DurabilityRequirement::new(1, false).expect("destination durability"),
+            source.ram_admission().original(),
+            destination.ram_admission().original(),
         )
         .expect("transfer partial archive");
     destination
@@ -245,12 +251,15 @@ fn every_archive_policy_preserves_its_partition_and_head_eligibility() {
             Arc::new(DirectoryRefBackend::new(
                 temporary.path().join(format!("refs-{index}")),
             )),
+            crate::CampaignRamAdmission::Unavailable,
         );
         source
             .transfer_campaign_archive_objects(
                 &destination,
                 &plan,
                 DurabilityRequirement::new(1, false).expect("destination durability"),
+                source.ram_admission().original(),
+                destination.ram_admission().original(),
             )
             .expect("transfer policy archive");
         destination
@@ -376,15 +385,28 @@ fn existing_destination_objects_must_meet_the_explicit_durability_requirement() 
             temporary.path().join("objects"),
         )),
         Arc::new(DirectoryRefBackend::new(temporary.path().join("refs"))),
+        crate::CampaignRamAdmission::Unavailable,
     );
     let one = DurabilityRequirement::new(1, false).expect("one durable placement");
     source
-        .transfer_campaign_archive_objects(&destination, &plan, one)
+        .transfer_campaign_archive_objects(
+            &destination,
+            &plan,
+            one,
+            source.ram_admission().original(),
+            destination.ram_admission().original(),
+        )
         .expect("seed complete destination objects");
 
     let two = DurabilityRequirement::new(2, false).expect("two durable placements");
     assert!(matches!(
-        source.transfer_campaign_archive_objects(&destination, &plan, two),
+        source.transfer_campaign_archive_objects(
+            &destination,
+            &plan,
+            two,
+            source.ram_admission().original(),
+            destination.ram_admission().original(),
+        ),
         Err(CampaignRepositoryError::Store(
             crucible_cas::content_store::StoreError::DurabilityUnsatisfied {
                 minimum_durable_placements: 2,
@@ -494,6 +516,9 @@ fn publish_paged_ram_fixture(repository: &CampaignRepository) -> (ContentId, Vec
         RamStoreLimits::default(),
     )
     .expect("RAM store");
+    let original = repository
+        .ram_operation_account()
+        .expect("saved source RAM operation");
     let retention = repository
         .ram_retention_authority()
         .acquire()
@@ -515,6 +540,7 @@ fn publish_paged_ram_fixture(repository: &CampaignRepository) -> (ContentId, Vec
                 Ok(())
             },
             &retention,
+            &original,
             &mut || Ok(()),
         )
         .expect("durable RAM capture");
@@ -537,6 +563,8 @@ fn archive_ram_graphs_have_compact_inventories_and_real_transitive_possession() 
     let source_directory = tempfile::tempdir().expect("durable source directory");
     let resources: Arc<dyn crucible_cas::content_store::StorePhysicalQuotaGuard> =
         Arc::new(resources::TransferResources::new(128, 256 * 1024 * 1024));
+    let original = crucible_cas::owned_decode::DecodeBudget::for_store(resources.clone())
+        .expect("original source and receiver fixture namespace");
     let (source_blobs, _source_admin) = DirectoryBlobBackend::new_with_physical_quota_and_admin(
         "ram-source",
         source_directory.path().join("objects"),
@@ -561,7 +589,11 @@ fn archive_ram_graphs_have_compact_inventories_and_real_transitive_possession() 
             .put_if_absent(id, &bytes)
             .expect("durable metadata seed");
     }
-    let source = CampaignRepository::new(source_blobs, source_refs);
+    let source = CampaignRepository::new(
+        source_blobs,
+        source_refs,
+        crate::CampaignRamAdmission::Available(original.clone()),
+    );
     let head = source
         .create("ram-source", &lineage, &policy, &BTreeMap::new())
         .expect("source head");
@@ -643,6 +675,7 @@ fn archive_ram_graphs_have_compact_inventories_and_real_transitive_possession() 
     source
         .stage_campaign_archive_metadata(&plan)
         .expect("stage compact archive");
+    no_ram::assert_hidden_ram_refuses_before_dispatch(&source, &plan);
     let mut inspection_boundaries = 0_u64;
     let refused_inspection =
         source.inspect_campaign_archive_with_boundary(plan.manifest_id(), &mut || {
@@ -673,10 +706,20 @@ fn archive_ram_graphs_have_compact_inventories_and_real_transitive_possession() 
         &resources
     ));
     let refs = Arc::new(DirectoryRefBackend::new(temporary.path().join("refs")));
-    let destination = CampaignRepository::new(blobs.clone(), refs.clone());
+    let destination = CampaignRepository::new(
+        blobs.clone(),
+        refs.clone(),
+        crate::CampaignRamAdmission::Available(original),
+    );
     let durability = DurabilityRequirement::new(1, false).expect("destination durability");
     source
-        .transfer_campaign_archive_objects(&destination, &plan, durability)
+        .transfer_campaign_archive_objects(
+            &destination,
+            &plan,
+            durability,
+            source.ram_admission().original(),
+            destination.ram_admission().original(),
+        )
         .expect("complete descendant transfer");
     destination
         .inspect_campaign_archive(plan.manifest_id())
@@ -705,6 +748,9 @@ fn archive_ram_graphs_have_compact_inventories_and_real_transitive_possession() 
         "root metadata alone cannot establish archive availability"
     );
 
+    let original = destination
+        .ram_operation_account()
+        .expect("saved inventory namespace");
     let inventory = refs
         .acquire_ref_inventory_fence()
         .expect("actual exclusive GC authority");
@@ -721,7 +767,13 @@ fn archive_ram_graphs_have_compact_inventories_and_real_transitive_possession() 
         RamStore::new(blobs, durability, RamStoreLimits::default()).expect("inventory RAM store");
     assert!(
         store
-            .visit_inventory_graph(ram_root, inventory.as_ref(), &mut |_| Ok(()))
+            .visit_inventory_graph(
+                ram_root,
+                inventory.as_ref(),
+                &original,
+                &mut || Ok(()),
+                &mut |_| Ok(())
+            )
             .is_err(),
         "destructive inventory must refuse the missing descendant"
     );

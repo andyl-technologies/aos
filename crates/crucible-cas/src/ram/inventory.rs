@@ -15,6 +15,8 @@ impl RamStore {
     /// root lease. Visitors may stream IDs into a disk-backed marking table;
     /// repeated contents are visited by position without an in-memory seen set.
     /// Every actual page is read and validated before collection can proceed.
+    /// The caller's real supervision boundary runs before root metadata work
+    /// and through every checked backend access; no replacement scope is made.
     ///
     /// # Errors
     ///
@@ -25,13 +27,17 @@ impl RamStore {
         &self,
         root: ContentId,
         _authority: &dyn RefInventoryFence,
+        original: &crate::owned_decode::DecodeBudget,
+        boundary: &mut dyn FnMut() -> Result<(), RamStoreError>,
         visitor: &mut dyn FnMut(ContentId) -> Result<(), RamStoreError>,
     ) -> Result<(), RamStoreError> {
         // Borrow the existing exclusive fence; resource admission obtains no
         // publication fence and covers the root throughout this bounded walk.
+        let mut work = Work::new(self.limits, original, boundary)?;
+        work.original().verify_live().map_err(|error| RamStoreError::from_admission(original, error))?;
+        (work.boundary)()?;
+        work.original().verify_live().map_err(|error| RamStoreError::from_admission(original, error))?;
         let _metadata = self.reserve_root_metadata(1)?;
-        let mut boundary = || Ok(());
-        let mut work = Work::new(self.limits, &mut boundary);
         let (record, regions) = self.read_root(root, &mut work)?;
         self.admit_topology(record.topology())?;
         self.validate_root_catalogs(&record, &regions)?;

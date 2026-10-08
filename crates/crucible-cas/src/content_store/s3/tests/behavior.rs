@@ -536,6 +536,7 @@ fn graph_binds_exact_endpoint_capability_and_canonical_configuration() {
         &StoreGraphObjectProfilers::new(),
         &StoreGraphPhysicalQuotaBinders::new(),
         &clients,
+        None,
     )
     .assert_value("S3 graph");
     assert_eq!(graph.describe()[0].kind, StoreNodeKind::S3);
@@ -561,6 +562,7 @@ fn graph_binds_exact_endpoint_capability_and_canonical_configuration() {
             &StoreGraphObjectProfilers::new(),
             &StoreGraphPhysicalQuotaBinders::new(),
             &clients,
+            None,
         ),
         Err(StoreError::InvalidComposition { .. })
     ));
@@ -573,6 +575,7 @@ fn graph_binds_exact_endpoint_capability_and_canonical_configuration() {
         &StoreGraphObjectProfilers::new(),
         &StoreGraphPhysicalQuotaBinders::new(),
         &clients,
+        None,
     )
     .assert_value("administrable S3 graph");
     assert_eq!(admin.physical().len(), 1);

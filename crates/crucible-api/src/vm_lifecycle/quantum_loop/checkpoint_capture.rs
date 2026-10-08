@@ -1234,16 +1234,26 @@ mod tests {
             crucible_ram::Limits::default(),
         )
         .expect("topology");
-        let first = catalog
-            .capture(
+        let first = {
+            let account = catalog
+                .original()
+                .child()
+                .expect("same original capture account");
+            let retention = catalog.retention().expect("capture retention");
+
+            catalog.store().capture(
                 topology,
+                crucible_ram::Scope::Exact,
                 &mut |_, index, output| {
                     output.fill(index as u8);
                     Ok(())
                 },
+                retention.as_ref(),
+                &account,
                 &mut || Ok(()),
             )
-            .expect("initial image");
+        }
+        .expect("initial image");
         let mut changes = [crucible_cas::ram::RamPageChange {
             region_id: String::from("main"),
             page_index: 1,
@@ -1256,6 +1266,10 @@ mod tests {
                 &first,
                 &mut || Ok(changes.next()),
                 catalog.retention().expect("admit successor root").as_ref(),
+                &catalog
+                    .original()
+                    .child()
+                    .expect("same original update account"),
                 &mut || Ok(()),
             )
             .expect("persistent successor");
@@ -1264,20 +1278,39 @@ mod tests {
         assert_eq!(
             catalog
                 .store()
-                .read_page(&first, "main", 1, &mut || Ok(()))
-                .expect("parent page"),
+                .read_page(
+                    &first,
+                    "main",
+                    1,
+                    &catalog
+                        .original()
+                        .child()
+                        .expect("same original read account"),
+                    &mut || Ok(())
+                )
+                .expect("parent page")
+                .bytes(),
             vec![1; 4096]
         );
         assert_eq!(
             catalog
                 .store()
-                .read_page(&second, "main", 1, &mut || Ok(()))
-                .expect("successor page"),
+                .read_page(
+                    &second,
+                    "main",
+                    1,
+                    &catalog
+                        .original()
+                        .child()
+                        .expect("same original read account"),
+                    &mut || Ok(())
+                )
+                .expect("successor page")
+                .bytes(),
             vec![9; 4096]
         );
         assert_eq!(
             catalog
-                .store()
                 .verify(&second, &mut || Ok(()))
                 .expect("complete successor")
                 .pages,
@@ -1416,7 +1449,6 @@ mod tests {
         assert_eq!(
             parent
                 .catalog
-                .store()
                 .verify(&parent.ram, &mut || Ok(()))
                 .expect("complete retained RAM")
                 .pages,

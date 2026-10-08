@@ -75,6 +75,7 @@ pub(super) fn measure_campaign_planner_queue_at_boundary(
         CampaignRepository::with_component_authorities(
             Arc::new(blobs),
             Arc::new(DirectoryRefBackend::new(storage_root.join("refs"))),
+            crucible_campaign::CampaignRamAdmission::Unavailable,
             authority.clone(),
             debugger_authority,
         )

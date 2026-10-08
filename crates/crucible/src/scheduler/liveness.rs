@@ -488,6 +488,20 @@ pub enum SchedulerError {
         /// Original failure and any retained continuation allocation custody.
         source: crate::HostAssertionCheckpointError,
     },
+    /// RAM checkpoint admission refused its original namespace authority.
+    RamAdmission {
+        /// Original typed admission refusal or unrepresentable carrier extent.
+        source: crucible_cas::ram::RamFailureAdmission,
+        /// Keeps the refusing namespace account alive without another allocation.
+        custody: crucible_cas::owned_decode::DecodeCustody,
+    },
+    /// RAM checkpoint storage retained its complete original failure and custody.
+    RamFailure {
+        /// Shared cause prepaid before capture effects under the original account.
+        source: crucible_cas::ram::RamFailureCause<SchedulerError>,
+        /// Disposition of the first callback refusal, when one occurred.
+        class: Option<SchedulerOperationalFailureClass>,
+    },
     /// A backend operation failed while driven by the scheduler.
     Backend(BackendError),
     /// A component attempted to bypass the scheduler boundary.
@@ -539,6 +553,12 @@ impl fmt::Display for SchedulerError {
             Self::AssertionCheckpoint { source } => {
                 write!(f, "assertion checkpoint refused: {source}")
             }
+            Self::RamAdmission { source, .. } => {
+                write!(f, "RAM checkpoint admission refused: {source}")
+            }
+            Self::RamFailure { source, .. } => {
+                write!(f, "RAM checkpoint failed: {source}")
+            }
             Self::Backend(error) => write!(f, "backend failed under scheduler control: {error}"),
             Self::BoundaryViolation { message } => f.write_str(message),
             Self::OperationalBoundary { message, .. } => f.write_str(message),
@@ -570,12 +590,26 @@ impl Error for SchedulerError {
             Self::Backend(source) => Some(source),
             Self::Evaluation { source } => Some(source.as_ref()),
             Self::AssertionCheckpoint { source } => Some(source),
+            Self::RamAdmission { source, .. } => Some(source),
+            Self::RamFailure { source, .. } => Some(source),
             _ => None,
         }
     }
 }
 
 impl SchedulerError {
+    /// Retains an already prepaid RAM cause without allocating or reserving again.
+    ///
+    /// The first callback's disposition remains stable through scheduler clones.
+    /// Storage failures without a callback refusal remain unclassified.
+    #[must_use]
+    pub fn from_ram_failure(source: crucible_cas::ram::RamFailureCause<Self>) -> Self {
+        let class = source
+            .first_boundary()
+            .and_then(Self::operational_failure_class);
+        Self::RamFailure { source, class }
+    }
+
     /// Classifies explicit infrastructure failures without evaluating a guest outcome.
     ///
     /// Unknown semantic or backend rejections remain unclassified. The original
@@ -586,6 +620,7 @@ impl SchedulerError {
         use crate::BackendOperationalFailureKind;
         match self {
             Self::OperationalBoundary { class, .. } => Some(*class),
+            Self::RamFailure { class, .. } => *class,
             Self::Evaluation { .. } | Self::AssertionCheckpoint { .. } => {
                 Some(SchedulerOperationalFailureClass::Retryable)
             }

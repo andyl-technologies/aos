@@ -952,7 +952,11 @@ fn planner_authenticates_roots_and_selects_only_unreachable_placements() {
 
     let blobs = Arc::new(MemoryBlobBackend::new("gc-primary", 8 * 1024 * 1024));
     let refs = Arc::new(MemoryRefBackend::new());
-    let repository = CampaignRepository::new(blobs.clone(), refs.clone());
+    let repository = CampaignRepository::new(
+        blobs.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
 
     let live = ContentEnvelope::new(
         "crucible.test.gc-live",
@@ -1060,7 +1064,11 @@ fn policy_aware_gc_evicts_a_wrapped_read_through_cache_with_a_required_copy() {
     let (graph, admin) = StoreGraph::build_with_admin(config).expect("read-through graph");
     let graph = Arc::new(graph);
     let refs = Arc::new(MemoryRefBackend::new());
-    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+    let repository = CampaignRepository::new(
+        graph.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
     let live = ContentEnvelope::new(
         "crucible.test.gc-read-through-live",
         1,
@@ -1313,7 +1321,11 @@ fn policy_aware_gc_refuses_same_path_source_and_cache_aliases() {
     .expect("aliased graph");
     let graph = Arc::new(graph);
     let refs = Arc::new(MemoryRefBackend::new());
-    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+    let repository = CampaignRepository::new(
+        graph.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
     let live = ContentEnvelope::new(
         "crucible.test.gc-aliased-live",
         1,
@@ -1405,12 +1417,14 @@ fn required_graph_path_dominates_a_read_through_cache_role() {
                 cache.clone(),
                 StoreNodeSpec::Memory {
                     max_logical_bytes: 1024,
+                    max_objects: 16,
                 },
             ),
             (
                 source.clone(),
                 StoreNodeSpec::Memory {
                     max_logical_bytes: 1024,
+                    max_objects: 16,
                 },
             ),
         ]),
@@ -1439,15 +1453,22 @@ fn pending_finding_candidate_closure_survives_gc_and_ledger_restart() {
         "pending-finding-gc",
         8 * 1024 * 1024,
     ));
-    let fixture_repository =
-        CampaignRepository::new(blobs.clone(), Arc::new(MemoryRefBackend::new()));
+    let fixture_repository = CampaignRepository::new(
+        blobs.clone(),
+        Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
     let (lineage, attempt, observation, candidate) =
         publish_pending_finding_fixture(&fixture_repository);
 
     // The executor ledger is the only root owner in this flight. Campaign
     // construction records not referenced by the handoff remain collectible.
     let refs = Arc::new(MemoryRefBackend::new());
-    let repository = CampaignRepository::new(blobs.clone(), refs.clone());
+    let repository = CampaignRepository::new(
+        blobs.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
     let expected_closure = repository
         .authenticated_closure_ids([candidate.content_id(), observation.content_id()])
         .expect("authenticate pending finding closure");
@@ -1543,7 +1564,11 @@ fn pending_finding_candidate_closure_survives_gc_and_ledger_restart() {
     drop(ledger);
     let mut restarted_ledger = DirectoryAssignmentLedger::open(ledger_root.path())
         .expect("restart assignment ledger after GC");
-    let restarted_repository = CampaignRepository::new(blobs.clone(), refs.clone());
+    let restarted_repository = CampaignRepository::new(
+        blobs.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
     restarted_repository
         .load_finding_candidate_bundle(candidate)
         .expect("load retained finding candidate after restart");
@@ -1582,7 +1607,11 @@ fn incorporated_finding_releases_exact_candidate_root_across_restart() {
             &blob_root,
         ));
         let refs = Arc::new(DirectoryRefBackend::new(&ref_root));
-        let repository = CampaignRepository::new(blobs, refs);
+        let repository = CampaignRepository::new(
+            blobs,
+            refs,
+            crucible_campaign::CampaignRamAdmission::Unavailable,
+        );
         let (lineage, attempt, observation, candidate) =
             publish_pending_finding_fixture(&repository);
         let expected_snapshot = repository
@@ -1629,7 +1658,11 @@ fn incorporated_finding_releases_exact_candidate_root_across_restart() {
         &blob_root,
     ));
     let refs = Arc::new(DirectoryRefBackend::new(&ref_root));
-    let repository = CampaignRepository::new(blobs.clone(), refs.clone());
+    let repository = CampaignRepository::new(
+        blobs.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
     let mut restarted =
         DirectoryAssignmentLedger::open(&ledger_root).expect("restart before acknowledgement");
     assert_eq!(
@@ -1698,7 +1731,11 @@ fn incorporated_finding_releases_exact_candidate_root_across_restart() {
         &blob_root,
     ));
     let refs = Arc::new(DirectoryRefBackend::new(&ref_root));
-    let repository = CampaignRepository::new(blobs.clone(), refs.clone());
+    let repository = CampaignRepository::new(
+        blobs.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
     let mut replayed_ledger =
         DirectoryAssignmentLedger::open(&ledger_root).expect("restart after release");
     let replayed = incorporate_and_acknowledge_finding_candidate(
@@ -1780,6 +1817,7 @@ fn pending_finding_restart_publishes_observation_before_finding_and_release() {
             64 * 1024 * 1024,
         )),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     );
     let (lineage, attempt, observation, candidate) =
         publish_pending_finding_fixture_with_observation(&repository, false);
@@ -1847,7 +1885,11 @@ fn finding_acknowledgement_and_gc_follow_directory_ref_before_ledger_lock_order(
         storage.path().join("blobs"),
     ));
     let refs = Arc::new(LockOrderDirectoryRefs::new(storage.path().join("refs")));
-    let repository = Arc::new(CampaignRepository::new(blobs.clone(), refs.clone()));
+    let repository = Arc::new(CampaignRepository::new(
+        blobs.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    ));
     let (lineage, attempt, observation, candidate) = publish_pending_finding_fixture(&repository);
     let expected_snapshot = repository
         .head(CAMPAIGN)
@@ -1966,7 +2008,11 @@ fn completed_status_and_control_fail_closed_on_missing_candidate_descendant() {
         storage.path().join("blobs"),
     ));
     let refs = Arc::new(DirectoryRefBackend::new(storage.path().join("refs")));
-    let repository = Arc::new(CampaignRepository::new(blobs.clone(), refs));
+    let repository = Arc::new(CampaignRepository::new(
+        blobs.clone(),
+        refs,
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    ));
     let (lineage, attempt, observation, candidate) = publish_pending_finding_fixture(&repository);
     let request = pending_finding_request(lineage, attempt);
     let execution = ExecutionId::from_bytes([0x67; 16]).expect("execution");
@@ -2072,7 +2118,11 @@ fn hot_checkpoint_fallback_is_a_fenced_gc_root_until_durable_removal() {
 
     let blobs = Arc::new(MemoryBlobBackend::new("hot-gc-primary", 8 * 1024 * 1024));
     let refs = Arc::new(MemoryRefBackend::new());
-    let repository = CampaignRepository::new(blobs.clone(), refs.clone());
+    let repository = CampaignRepository::new(
+        blobs.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
     let scenario = ScenarioDefId::from_hash(hash("crucible.test.gc.hot-scenario.v1", 1));
     let scenario_artifact = repository
         .publish_scenario_artifact(scenario, 1, b"hot scenario".to_vec())
@@ -2187,7 +2237,11 @@ fn direct_transfer_root_promoted_to_hot_root_revalidates_its_closure() {
         1024 * 1024,
     ));
     let refs = Arc::new(MemoryRefBackend::new());
-    let repository = CampaignRepository::new(blobs.clone(), refs.clone());
+    let repository = CampaignRepository::new(
+        blobs.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
 
     let transfer_scenario =
         ScenarioDefId::from_hash(hash("crucible.test.gc.transfer-scenario.v1", 1));
@@ -2377,7 +2431,11 @@ fn policy_aware_gc_retains_write_back_staging_until_durable_journal_completion()
     let (graph, admin) = StoreGraph::build_with_admin(config.clone()).expect("write-back graph");
     let graph = Arc::new(graph);
     let refs = Arc::new(MemoryRefBackend::new());
-    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+    let repository = CampaignRepository::new(
+        graph.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
     let live_bytes = b"reachable write-back staging object".to_vec();
     let live_id = ContentId::for_bytes(ObjectKind::Trace, 1, &live_bytes);
     graph
@@ -2425,7 +2483,11 @@ fn policy_aware_gc_retains_write_back_staging_until_durable_journal_completion()
 
     let (graph, admin) = StoreGraph::build_with_admin(config).expect("restart write-back graph");
     let graph = Arc::new(graph);
-    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+    let repository = CampaignRepository::new(
+        graph.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
 
     let mut ledger = MemoryAssignmentLedger::default();
     let before_transfer = super::plan_single_host_campaign_gc(
@@ -2594,7 +2656,11 @@ fn write_back_journal_roots_are_planned_and_revalidated_before_gc_deletion() {
         .expect("write-back store graph"),
     );
     let refs = Arc::new(MemoryRefBackend::new());
-    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+    let repository = CampaignRepository::new(
+        graph.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
 
     let pending = ContentEnvelope::new(
         "crucible.test.gc-write-back-pending",
@@ -2731,7 +2797,11 @@ fn write_back_roots_retain_exact_pending_objects_and_refs_retain_closures() {
         .expect("exact write-back graph"),
     );
     let refs = Arc::new(MemoryRefBackend::new());
-    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+    let repository = CampaignRepository::new(
+        graph.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
 
     let pending_child = ContentEnvelope::new(
         "crucible.test.gc-write-back-child",
@@ -3170,7 +3240,11 @@ struct ApplyFixture {
 fn apply_fixture(orphan_count: u8, gc_operation: &CampaignGcOperationContext<'_>) -> ApplyFixture {
     let blobs = Arc::new(MemoryBlobBackend::new("apply-primary", 1024 * 1024));
     let refs = Arc::new(MemoryRefBackend::new());
-    let repository = CampaignRepository::new(blobs.clone(), refs.clone());
+    let repository = CampaignRepository::new(
+        blobs.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
     for index in 0..orphan_count {
         let bytes = [index; 8];
         let id = ContentId::for_bytes(ObjectKind::Trace, 1, &bytes);
@@ -3208,7 +3282,11 @@ fn journal_plan_fixture(graph_byte: u8) -> CampaignGcPreparedPlan {
 
     let blobs = Arc::new(MemoryBlobBackend::new("journal-primary", 1024 * 1024));
     let refs = Arc::new(MemoryRefBackend::new());
-    let repository = CampaignRepository::new(blobs.clone(), refs.clone());
+    let repository = CampaignRepository::new(
+        blobs.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
     let orphan_bytes = b"journal orphan";
     let orphan = ContentId::for_bytes(ObjectKind::Trace, 1, orphan_bytes);
     blobs

@@ -738,9 +738,6 @@ fn map_checkpoint_selection_failure(
     error: crate::ExactCheckpointStoreError,
 ) -> CampaignServiceFailure {
     use crate::ExactCheckpointStoreError;
-    use crucible_cas::content_store::StoreError;
-    use crucible_cas::ram::RamStoreError;
-
     match error {
         ExactCheckpointStoreError::Canceled
         | ExactCheckpointStoreError::Supervision(_)
@@ -748,60 +745,89 @@ fn map_checkpoint_selection_failure(
         | ExactCheckpointStoreError::UnsupportedBackend { .. }
         | ExactCheckpointStoreError::InvalidLimit
         | ExactCheckpointStoreError::NativeRetirement(_) => CampaignServiceFailure::Unavailable,
-        ExactCheckpointStoreError::Store(source)
-        | ExactCheckpointStoreError::Ram(RamStoreError::Store(source)) => match source
-            .original_failure()
-        {
-            StoreError::Quota => CampaignServiceFailure::ResourceExhausted,
-            StoreError::ProviderDiagnostic { source } => match source.kind() {
-                crucible_cas::content_store::ProviderFailureKind::Resources => {
-                    CampaignServiceFailure::ResourceExhausted
-                }
-                crucible_cas::content_store::ProviderFailureKind::Supervision
-                | crucible_cas::content_store::ProviderFailureKind::PhysicalQuota => {
-                    CampaignServiceFailure::Unavailable
-                }
-            },
-            StoreError::Supervision { .. }
-            | StoreError::Unavailable
-            | StoreError::Unsupported { .. }
-            | StoreError::Poisoned { .. }
-            | StoreError::Io { .. }
-            | StoreError::StreamIo { .. }
-            | StoreError::DecodeAdmission { .. }
-            | StoreError::Allocation { .. }
-            | StoreError::SqliteDiagnostic { .. }
-            | StoreError::SqliteScope { .. }
-            | StoreError::Unauthorized
-            | StoreError::InvalidComposition { .. }
-            | StoreError::InvalidGraph { .. }
-            | StoreError::DurabilityUnsatisfied { .. }
-            | StoreError::MultipartCleanupRequired => CampaignServiceFailure::Unavailable,
-            StoreError::NotFound { .. }
-            | StoreError::Corrupt { .. }
-            | StoreError::InvalidId
-            | StoreError::InvalidRefName { .. }
-            | StoreError::InvalidRange { .. }
-            | StoreError::Incompatible
-            | StoreError::InvalidSourceLength { .. } => CampaignServiceFailure::IntegrityFailure,
-        },
-        ExactCheckpointStoreError::Ram(RamStoreError::Canceled | RamStoreError::Retention(_)) => {
-            CampaignServiceFailure::Unavailable
-        }
-        ExactCheckpointStoreError::Ram(RamStoreError::Limit(_))
-        | ExactCheckpointStoreError::ArtifactLimit { .. } => {
+        ExactCheckpointStoreError::Store(source) => checkpoint_store_selection_failure(&source),
+        ExactCheckpointStoreError::Ram(source) => checkpoint_ram_selection_failure(&source),
+        ExactCheckpointStoreError::ArtifactLimit { .. } => {
             CampaignServiceFailure::ResourceExhausted
         }
         ExactCheckpointStoreError::Production(source) => map_lifecycle_failure(source),
         ExactCheckpointStoreError::InvalidRoot { .. }
         | ExactCheckpointStoreError::InvalidReceipt { .. }
-        | ExactCheckpointStoreError::Envelope(_)
-        | ExactCheckpointStoreError::Ram(
-            RamStoreError::Invalid(_)
-            | RamStoreError::Logical(_)
-            | RamStoreError::Envelope(_)
-            | RamStoreError::Transfer(_),
-        ) => CampaignServiceFailure::IntegrityFailure,
+        | ExactCheckpointStoreError::Envelope(_) => CampaignServiceFailure::IntegrityFailure,
+    }
+}
+
+fn checkpoint_store_selection_failure(
+    source: &crucible_cas::content_store::StoreError,
+) -> CampaignServiceFailure {
+    use crucible_cas::content_store::StoreError;
+
+    match source.original_failure() {
+        StoreError::RamValidation { source } => {
+            checkpoint_ram_selection_failure(source.storage_failure())
+        }
+        StoreError::RamBoundary { .. } | StoreError::CompositeBoundary { .. } => {
+            CampaignServiceFailure::IntegrityFailure
+        }
+        StoreError::Quota => CampaignServiceFailure::ResourceExhausted,
+        StoreError::ProviderDiagnostic { source } => match source.kind() {
+            crucible_cas::content_store::ProviderFailureKind::Resources => {
+                CampaignServiceFailure::ResourceExhausted
+            }
+            crucible_cas::content_store::ProviderFailureKind::Supervision
+            | crucible_cas::content_store::ProviderFailureKind::PhysicalQuota => {
+                CampaignServiceFailure::Unavailable
+            }
+        },
+        StoreError::Supervision { .. }
+        | StoreError::Unavailable
+        | StoreError::Unsupported { .. }
+        | StoreError::Poisoned { .. }
+        | StoreError::Io { .. }
+        | StoreError::StreamIo { .. }
+        | StoreError::DecodeAdmission { .. }
+        | StoreError::Allocation { .. }
+        | StoreError::SqliteDiagnostic { .. }
+        | StoreError::DirectoryScope { .. }
+        | StoreError::MemoryScope { .. }
+        | StoreError::CompositeScope { .. }
+        | StoreError::SqliteScope { .. }
+        | StoreError::Unauthorized
+        | StoreError::InvalidComposition { .. }
+        | StoreError::InvalidGraph { .. }
+        | StoreError::DurabilityUnsatisfied { .. }
+        | StoreError::MultipartCleanupRequired => CampaignServiceFailure::Unavailable,
+        StoreError::NotFound { .. }
+        | StoreError::Corrupt { .. }
+        | StoreError::InvalidId
+        | StoreError::InvalidRefName { .. }
+        | StoreError::InvalidRange { .. }
+        | StoreError::Incompatible
+        | StoreError::InvalidSourceLength { .. } => CampaignServiceFailure::IntegrityFailure,
+    }
+}
+
+fn checkpoint_ram_selection_failure(
+    source: &crucible_cas::ram::RamStoreError,
+) -> CampaignServiceFailure {
+    use crucible_cas::ram::RamStoreError;
+
+    match source {
+        RamStoreError::Boundary(cause) => checkpoint_ram_selection_failure(
+            cause
+                .first_boundary()
+                .unwrap_or_else(|| cause.storage_failure()),
+        ),
+        RamStoreError::Store(error) => checkpoint_store_selection_failure(error),
+        RamStoreError::Canceled | RamStoreError::Retention(_) => {
+            CampaignServiceFailure::Unavailable
+        }
+        RamStoreError::Limit(_) => CampaignServiceFailure::ResourceExhausted,
+        RamStoreError::Invalid(_)
+        | RamStoreError::Logical(_)
+        | RamStoreError::LogicalValidation(_)
+        | RamStoreError::Envelope(_)
+        | RamStoreError::Transfer(_) => CampaignServiceFailure::IntegrityFailure,
     }
 }
 
@@ -864,6 +890,12 @@ mod tests {
             }),
             CampaignServiceFailure::IntegrityFailure,
         );
+        assert_eq!(
+            map_checkpoint_selection_failure(ExactCheckpointStoreError::Ram(
+                RamStoreError::LogicalValidation(crucible_ram::RamError::OutOfRange),
+            )),
+            CampaignServiceFailure::IntegrityFailure,
+        );
     }
 
     #[test]
@@ -912,6 +944,7 @@ mod tests {
         let repository = CampaignRepository::new(
             Arc::new(MemoryBlobBackend::new("debug-admission-rollback", u64::MAX)),
             Arc::new(MemoryRefBackend::new()),
+            crucible_campaign::CampaignRamAdmission::Unavailable,
         );
         let (campaign, snapshot, finding, _) =
             crate::campaign_gc::publish_retained_finding_fixture(&repository);

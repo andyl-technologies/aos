@@ -19,15 +19,17 @@ use std::sync::Arc;
 mod capture;
 #[cfg(target_os = "linux")]
 mod paged_capture;
+
+#[cfg(all(test, target_os = "linux"))]
+mod frontier_identity_tests;
 #[cfg(target_os = "linux")]
 mod topology_preflight;
 #[cfg(target_os = "linux")]
-pub use paged_capture::QemuCapturedRamPage;
+pub use paged_capture::{CaptureReadError, QemuCapturedRamPage};
 #[cfg(target_os = "linux")]
 use topology_preflight::read_capture_topology;
 
 const EXACT_RAM_TARGET_IDENTITY_DOMAIN: &str = "crucible.production-vm-exact-ram-target.v1";
-const EXACT_RAM_FRONTIER_IDENTITY_DOMAIN: &str = "crucible.production-vm-exact-ram-frontier.v1";
 
 /// Typed immutable provenance for one production exact-checkpoint capture.
 struct QemuExactCheckpointCaptureBasis<'a> {
@@ -157,18 +159,9 @@ impl<'a> QemuExactCheckpointCaptureBasis<'a> {
                 self.fault_identity.to_hex(),
             ),
         );
-        let scheduler_bytes = self.scheduler.canonical_bytes().map_err(|error| {
+        let frontier = self.scheduler.exact_ram_frontier_identity().map_err(|error| {
             QemuNodeError::checkpoint(format!("encode exact RAM scheduler frontier: {error}"))
         })?;
-        let mut scheduler_hex = String::with_capacity(scheduler_bytes.len().saturating_mul(2));
-        use std::fmt::Write as _;
-        for byte in scheduler_bytes {
-            let _ = write!(scheduler_hex, "{byte:02x}");
-        }
-        let frontier = ContentHash::from_canonical_material(
-            EXACT_RAM_FRONTIER_IDENTITY_DOMAIN,
-            &scheduler_hex,
-        );
         Ok(crate::QmpCheckpointIdentity::new(
             self.checkpoint.id,
             target,
@@ -464,7 +457,7 @@ impl QemuExactCheckpointCaptureResult {
     ///
     /// Returns an error for malformed, unordered, truncated, or excessive
     /// records, or an I/O or allocation failure.
-    pub fn read_next_page(&mut self) -> Result<Option<QemuCapturedRamPage>, QemuNodeError> {
+    pub fn read_next_page(&mut self) -> Result<Option<QemuCapturedRamPage>, CaptureReadError> {
         self.paged.next_page()
     }
 

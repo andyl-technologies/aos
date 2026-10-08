@@ -24,6 +24,7 @@ fn verifier_backed_store_replays_finding_before_reproduction_publication() {
             u64::MAX,
         )),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     let store = CrucibleCampaignArtifactStore::new(Arc::clone(&repository));
 
@@ -172,6 +173,7 @@ fn finding_candidate_preparation_deduplicates_bounded_replay_records_without_wri
             u64::MAX,
         )),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     let mut truncated = transcript.clone();
     truncated.verification_pass.pop();

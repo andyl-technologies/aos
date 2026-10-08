@@ -7,6 +7,10 @@
 
 use std::sync::{Arc, Mutex};
 
+mod bootstrap;
+
+pub use bootstrap::{AdmittedHostServiceBootstrap, HostServiceBootstrap};
+
 /// A refused or uncertain host service resource reservation.
 #[derive(Clone, Copy, Debug, thiserror::Error, PartialEq, Eq)]
 pub enum HostServiceError {
@@ -40,6 +44,13 @@ struct ServiceCapacity {
 #[derive(Clone, Debug)]
 pub struct HostServiceAllocator {
     capacity: Arc<ServiceCapacity>,
+}
+
+#[cfg(feature = "test-support")]
+pub(crate) enum ResidentProbe {
+    Granted(HostServiceLease),
+    Refused(HostServiceError),
+    Contended,
 }
 
 impl PartialEq for HostServiceAllocator {
@@ -118,6 +129,47 @@ impl HostServiceAllocator {
             return Err(HostServiceError::CapacityExhausted);
         }
         Ok(())
+    }
+
+    #[cfg(feature = "test-support")]
+    pub(crate) fn observed_resident_bytes(&self) -> Option<u64> {
+        self.capacity
+            .used
+            .try_lock()
+            .ok()
+            .map(|used| used.resident_bytes)
+    }
+
+    // This fixed test probe uses the original accounting and concrete lease.
+    // The observer retains a granted lease until teardown outside its hook.
+    #[cfg(feature = "test-support")]
+    pub(crate) fn probe_one_resident_byte(&self) -> ResidentProbe {
+        let mut used = match self.capacity.used.try_lock() {
+            Ok(used) => used,
+            Err(std::sync::TryLockError::WouldBlock) => return ResidentProbe::Contended,
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                return ResidentProbe::Refused(HostServiceError::Unavailable);
+            }
+        };
+        let Some(resident_bytes) = used.resident_bytes.checked_add(1) else {
+            return ResidentProbe::Refused(HostServiceError::CapacityExhausted);
+        };
+        if resident_bytes > self.capacity.resident_bytes
+            || used.tasks > self.capacity.tasks
+            || used.descriptors > self.capacity.descriptors
+        {
+            return ResidentProbe::Refused(HostServiceError::CapacityExhausted);
+        }
+
+        let reservation = ServiceReservation {
+            capacity: Arc::clone(&self.capacity),
+            tasks: 0,
+            descriptors: 0,
+            resident_bytes: 1,
+        };
+        used.resident_bytes = resident_bytes;
+        drop(used);
+        ResidentProbe::Granted(reservation.into_lease())
     }
 
     /// Reserves a complete service peak before any worker or descriptor creation.
@@ -290,6 +342,19 @@ impl Drop for HostServiceLease {
 }
 
 impl HostServiceLease {
+    /// Closes both supplied controls before refunding either extracted charge.
+    ///
+    /// A provider uses this for a privately retained pair whose halves never
+    /// escape or acquire independent aliases. Sharing that complete enclosing
+    /// owner preserves the pair. Independently cloned halves do not establish
+    /// joint custody: their remaining aliases still own their own charges.
+    pub fn close_pair(mut first: Self, mut second: Self) {
+        let first = first.reservation.take().and_then(Arc::into_inner);
+        let second = second.reservation.take().and_then(Arc::into_inner);
+        // Both deallocations precede either ServiceReservation destructor.
+        drop((first, second));
+    }
+
     fn reservation(&self) -> &ServiceReservation {
         // Only Drop takes this reference; neither the emptied wrapper nor an
         // Arc or Weak reference to its reservation can escape to a caller.
@@ -331,6 +396,51 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn fixed_resident_probe_distinguishes_exhaustion_contention_and_poison() {
+        let account = HostServiceAllocator::new(1, 1, 48).unwrap();
+        let held = account.reserve_resources(1, 1, 48).unwrap();
+        LEASE_CONTROL_CONSTRUCTIONS.with(|count| count.set(0));
+        assert!(matches!(
+            account.probe_one_resident_byte(),
+            ResidentProbe::Refused(HostServiceError::CapacityExhausted)
+        ));
+        assert_eq!(LEASE_CONTROL_CONSTRUCTIONS.with(std::cell::Cell::get), 0);
+
+        let guard = account.capacity.used.lock().unwrap();
+        assert!(matches!(
+            account.probe_one_resident_byte(),
+            ResidentProbe::Contended
+        ));
+        drop(guard);
+        drop(held);
+
+        let probe = account.probe_one_resident_byte();
+        let ResidentProbe::Granted(grant) = probe else {
+            panic!("returned original byte must admit the actual fixed lease");
+        };
+        assert_eq!(grant.resident_bytes(), 1);
+        assert_eq!(grant.tasks(), 0);
+        assert_eq!(grant.file_descriptors(), 0);
+        assert_eq!(LEASE_CONTROL_CONSTRUCTIONS.with(std::cell::Cell::get), 1);
+        assert_eq!(account.observed_resident_bytes(), Some(1));
+        drop(grant);
+        assert_eq!(account.observed_resident_bytes(), Some(0));
+
+        let poisoned = account.clone();
+        let result = std::thread::spawn(move || {
+            let _guard = poisoned.capacity.used.lock().unwrap();
+            panic!("intentional original-account poison control");
+        })
+        .join();
+        assert!(result.is_err());
+        assert!(matches!(
+            account.probe_one_resident_byte(),
+            ResidentProbe::Refused(HostServiceError::Unavailable)
+        ));
+    }
 
     #[test]
     fn paired_refusal_allocates_neither_lease_control_and_restores_both_accounts() {

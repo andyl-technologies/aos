@@ -54,6 +54,43 @@ pub struct PutBatchReceipt {
 }
 
 impl PutBatchReceipt {
+    pub(super) fn new_composite(
+        accepted: super::composite_publication::Accepted<Vec<PutReceipt>>,
+        credit: DecodeScratch,
+        original: DecodeBudget,
+    ) -> Self {
+        Self {
+            receipt: CheckedReceipt::new_composite(accepted, credit),
+            original,
+        }
+    }
+
+    pub(super) fn release_diagnostic(&mut self) {
+        self.receipt.release_diagnostic();
+    }
+
+    pub(super) fn new_memory(
+        accepted: super::memory::Accepted<Vec<PutReceipt>>,
+        credit: DecodeScratch,
+        original: DecodeBudget,
+    ) -> Self {
+        Self {
+            receipt: CheckedReceipt::new_memory(accepted, credit),
+            original,
+        }
+    }
+
+    pub(super) fn new_directory(
+        accepted: super::directory::Accepted<Vec<PutReceipt>>,
+        credit: DecodeScratch,
+        original: DecodeBudget,
+    ) -> Self {
+        Self {
+            receipt: CheckedReceipt::new_directory(accepted, credit),
+            original,
+        }
+    }
+
     pub(super) fn new(
         accepted: Accepted<Vec<PutReceipt>>,
         credit: DecodeScratch,
@@ -69,7 +106,7 @@ impl PutBatchReceipt {
         self.receipt.retain_resources(prepared);
     }
 
-    pub(super) fn check(
+    pub(crate) fn check(
         self,
         check: impl FnOnce(&mut Vec<PutReceipt>) -> Result<(), StoreError>,
     ) -> Result<Self, StoreError> {

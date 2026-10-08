@@ -248,6 +248,7 @@ fn authority_adapters_bind_canonical_messages_without_prevalidation_writes() {
         CampaignRepository::with_component_authorities(
             Arc::new(MemoryBlobBackend::new("equal-authority", 1024)),
             Arc::new(MemoryRefBackend::new()),
+            crate::CampaignRamAdmission::Unavailable,
             PlannerAuthorityKey::from_bytes(shared).expect("shared planner authority"),
             DebuggerAuthorityKey::from_bytes(shared).expect("shared debugger authority"),
         ),

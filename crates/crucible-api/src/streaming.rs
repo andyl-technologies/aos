@@ -1230,10 +1230,15 @@ fn schedule_error_rejection_kind(error: &crucible::ScheduleError) -> CommandReje
 fn scheduler_error_rejection_kind(error: &SchedulerError) -> CommandRejectionKind {
     match error {
         SchedulerError::Backend(error) => backend_error_rejection_kind(error),
+        SchedulerError::RamFailure { source, .. } => source
+            .first_boundary()
+            .map(scheduler_error_rejection_kind)
+            .unwrap_or(CommandRejectionKind::Internal),
         SchedulerError::TimeConversion(_) | SchedulerError::TopologyActivationInPast { .. } => {
             CommandRejectionKind::InvalidArgument
         }
         SchedulerError::BoundaryViolation { .. }
+        | SchedulerError::RamAdmission { .. }
         | SchedulerError::Evaluation { .. }
         | SchedulerError::AssertionCheckpoint { .. }
         | SchedulerError::OperationalBoundary { .. }
@@ -1471,6 +1476,49 @@ fn require_send_mapping() -> Result<(), StreamingEquivalenceError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn typed_ram_failures_preserve_original_command_rejection_kind() {
+        let _scope = crucible::test_support::fixture_decode_scope(64 * 1024).unwrap();
+        let original = crucible::owned_decode::current_budget().unwrap();
+        for first in [
+            SchedulerError::Backend(BackendError::Unsupported {
+                capability: "original checkpoint capability",
+            }),
+            SchedulerError::Backend(BackendError::Rejected {
+                message: String::from("original checkpoint rejection"),
+            }),
+            SchedulerError::TopologyActivationInPast { at: 1, frontier: 2 },
+            SchedulerError::BoundaryViolation {
+                message: String::from("original checkpoint boundary"),
+            },
+            SchedulerError::OperationalBoundary {
+                class: crucible::SchedulerOperationalFailureClass::Canceled,
+                message: String::from("original checkpoint cancellation"),
+            },
+        ] {
+            let expected = scheduler_error_rejection_kind(&first);
+            let prepared =
+                crucible_cas::ram::PreparedRamFailure::<SchedulerError>::new(&original).unwrap();
+            let error = SchedulerError::from_ram_failure(prepared.retain(
+                Some(first),
+                crucible_cas::ram::RamStoreError::Invalid("retained storage failure"),
+            ));
+            assert_eq!(scheduler_error_rejection_kind(&error), expected);
+            assert_eq!(scheduler_error_rejection_kind(&error.clone()), expected);
+        }
+
+        let prepared =
+            crucible_cas::ram::PreparedRamFailure::<SchedulerError>::new(&original).unwrap();
+        let error = SchedulerError::from_ram_failure(prepared.retain(
+            None,
+            crucible_cas::ram::RamStoreError::Invalid("original storage rejection"),
+        ));
+        assert_eq!(
+            scheduler_error_rejection_kind(&error),
+            CommandRejectionKind::Internal
+        );
+    }
 
     #[test]
     fn continue_acknowledges_an_immediate_breakpoint_pause() {

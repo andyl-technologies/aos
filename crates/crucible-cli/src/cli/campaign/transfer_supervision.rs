@@ -30,6 +30,18 @@ impl StandaloneArchiveOperation {
         Ok(Self { operation })
     }
 
+    pub(super) fn start_with_quota(
+        class: HostOperationClass,
+        budgets: crucible_api::host_operational::HostOperationBudgets,
+        lifetime: Duration,
+        resources: crucible_api::host_operational::HostResourceVector,
+    ) -> Result<Self, CliError> {
+        let operation =
+            CampaignArchiveHostOperation::start_with_quota(class, budgets, lifetime, resources)
+                .map_err(CliError::ProviderAdmission)?;
+        Ok(Self { operation })
+    }
+
     /// Checks every real storage boundary without renewing progress time.
     ///
     /// # Errors

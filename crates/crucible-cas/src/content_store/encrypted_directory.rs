@@ -411,13 +411,13 @@ impl EncryptedDirectoryBlobBackend {
             length: header.logical_length,
         });
         validate_range(header.logical_length, range)?;
-        let source: Arc<dyn BlobSource> = Arc::new(EncryptedDirectoryBlobSource {
+        let source = EncryptedDirectoryBlobSource {
             file,
             id,
             header,
             range,
             key: Arc::clone(&self.key),
-        });
+        };
         if range.offset == 0 && range.length == header.logical_length {
             Ok(BlobHandle::authenticated(id, source))
         } else {

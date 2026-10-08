@@ -14,8 +14,8 @@ use crucible_linux_resource::host_supervision::{HostOperationBudgets, HostOperat
 use crucible_linux_resource::ram_policy::{HostRamMode, HostRamPolicy};
 use crucible_protocol::ram_page::{RamPageBinding, RamPageRequest};
 use crucible_ram::{
-    Limits, MetadataBudget, PageDigest, PageProof, RegionClass, RegionDescriptor, RegionTree,
-    RootRecord, Scope, Topology,
+    Limits, MetadataBudget, PageDigest, RegionClass, RegionDescriptor, RegionTree, RootRecord,
+    Scope, Topology,
 };
 
 use crate::ram_control::RamControlClient;
@@ -467,6 +467,7 @@ struct Backing {
     tree: RegionTree,
     entered: Option<mpsc::Sender<()>>,
     release: Mutex<Option<mpsc::Receiver<()>>>,
+    original: crucible_ram::MetadataBudget,
 }
 
 impl QemuRamBacking for Backing {
@@ -476,12 +477,13 @@ impl QemuRamBacking for Backing {
     fn root_record(&self) -> &RootRecord {
         &self.record
     }
-    fn read_page_with_proof(
+    fn with_page_response(
         &self,
         region: &str,
         index: u64,
         boundary: &mut dyn FnMut() -> Result<(), crate::ram_source::QemuRamReadBoundaryError>,
-    ) -> Result<(Vec<u8>, PageProof), QemuRamSourceError> {
+        consumer: &mut crate::ram_source::QemuRamResponseConsumer<'_>,
+    ) -> Result<(), QemuRamSourceError> {
         if let Some(entered) = &self.entered {
             let _ = entered.send(());
         }
@@ -494,12 +496,15 @@ impl QemuRamBacking for Backing {
             release.recv().map_err(|_| QemuRamSourceError::Ownership)?;
         }
         boundary()?;
-        Ok((
-            vec![7; 4096],
-            self.tree
-                .proof(region, index)
-                .map_err(|_| QemuRamSourceError::Ownership)?,
-        ))
+        crate::qmp::checkpoint_paged_source_support::fixture_page_response(
+            &self.tree,
+            region,
+            index,
+            &self.original,
+            &[7; 4096],
+            boundary,
+            consumer,
+        )
     }
 }
 
@@ -512,11 +517,13 @@ fn backing(entered: Option<mpsc::Sender<()>>, release: Option<mpsc::Receiver<()>
         Limits::default(),
     )
     .unwrap_or_else(|error| panic!("cleanup fixture failed: {error:?}"));
+    let budget = MetadataBudget::new(1024 * 1024);
+    let original = budget.clone();
     let tree = RegionTree::from_page_digests(
         4096,
         &[PageDigest::hash(&vec![7; 4096])
             .unwrap_or_else(|error| panic!("cleanup fixture failed: {error:?}"))],
-        &MetadataBudget::new(1024 * 1024),
+        &budget,
     )
     .unwrap_or_else(|error| panic!("cleanup fixture failed: {error:?}"));
     let record = RootRecord::new(topology, Scope::Exact, vec![tree.digest()])
@@ -526,6 +533,7 @@ fn backing(entered: Option<mpsc::Sender<()>>, release: Option<mpsc::Receiver<()>
         tree,
         entered,
         release: Mutex::new(release),
+        original,
     })
 }
 

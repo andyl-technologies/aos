@@ -1132,6 +1132,7 @@ mod tests {
         let repository = Arc::new(CampaignRepository::new(
             repository_backend,
             Arc::new(crucible_cas::content_store::MemoryRefBackend::new()),
+            crucible_campaign::CampaignRamAdmission::Unavailable,
         ));
         let scenario = fixture.source().scenario_def();
         let scenario_id = ScenarioDefId::from_hash(CampaignHash::from_bytes(scenario.id().bytes));

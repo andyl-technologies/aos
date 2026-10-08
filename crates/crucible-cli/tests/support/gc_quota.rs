@@ -21,6 +21,7 @@ pub use setup::{mark_node, prepare, quota_budget_toml};
 /// Retains a genuine inspection scope through decoding a persisted GC journal.
 pub struct Inspection {
     marks: std::sync::Arc<dyn crucible_daemon::campaign_store_composition::ImmutableBlobBackend>,
+    decoding: crucible_cas::owned_decode::DecodeBudget,
     boundary:
         Box<dyn FnMut() -> Result<(), crucible_daemon::campaign_store_composition::StoreError>>,
     _resources: crucible_cas::owned_decode::ResourceLoan,
@@ -37,7 +38,11 @@ impl Inspection {
         crucible_daemon::CampaignGcOperationContext<'_>,
         crucible_daemon::campaign_store_composition::StoreError,
     > {
-        crucible_daemon::CampaignGcOperationContext::new(self.marks.clone(), self.boundary.as_mut())
+        crucible_daemon::CampaignGcOperationContext::new(
+            self.marks.clone(),
+            &self.decoding,
+            self.boundary.as_mut(),
+        )
     }
 }
 
@@ -85,7 +90,7 @@ pub fn inspection(store: &Path, scope: &str) -> Result<Inspection, Box<dyn Error
             .and_then(toml::Value::as_integer)
             .ok_or("inspection project missing")?,
     )?;
-    let configuration = quota_service_config(
+    let (supervisor, resources) = inspection_authority(
         Duration::from_secs(300),
         crucible_api::host_operational::HostResourceVector {
             resident_peak_bytes: 134217728,
@@ -98,15 +103,16 @@ pub fn inspection(store: &Path, scope: &str) -> Result<Inspection, Box<dyn Error
             file_descriptors: 256,
         },
     )?;
-    let operation = configuration
-        .supervisor
-        .begin(crucible_api::host_operational::HostOperationClass::Writeback)?;
-    let binder = crucible_daemon::LinuxProjectQuotaBinder::new(configuration)?;
+    let operation =
+        supervisor.begin(crucible_api::host_operational::HostOperationClass::Writeback)?;
+    let binder = crucible_daemon::LinuxProjectQuotaBinder::for_inspection(supervisor, resources)?;
     let quota = binder.bind(Path::new(directory), project, 2147483648, 1048576)?;
+    let decoding = crucible_cas::owned_decode::DecodeBudget::for_store(Arc::clone(&quota))?;
     let resources = quota.reserve_resources(0, std::mem::size_of::<Inspection>() as u64 + 512)?;
     let marks = Arc::clone(&quota).gc_mark_backend(scope)?;
     Ok(Inspection {
         marks,
+        decoding,
         boundary: Box::new(move || {
             operation.wait_slice().map(|_| ()).map_err(|source| {
                 crucible_daemon::campaign_store_composition::StoreError::Supervision {
@@ -125,14 +131,15 @@ pub fn inspection(store: &Path, scope: &str) -> Result<Inspection, Box<dyn Error
 /// original resource credits before constructing an inspection graph.
 pub fn composed_inspection(read_source: &Path) -> Result<ComposedInspection, Box<dyn Error>> {
     use crucible_cas::content_store::{
-        StoreGraphPhysicalQuotaBinders, StorePhysicalQuotaBinder, StorePhysicalQuotaPolicyId,
+        StoreGraphPhysicalQuotaBinders, StorePhysicalQuotaBinder, StorePhysicalQuotaBinderHandle,
+        StorePhysicalQuotaPolicyId,
     };
     use crucible_session::engine::owned_decode::DecodeBudget;
     use std::sync::Arc;
     use std::time::Duration;
 
     let project = std::env::var("CRUCIBLE_FLIGHT_STORE_PROJECT")?.parse::<u32>()?;
-    let binder = crucible_daemon::LinuxProjectQuotaBinder::new(quota_service_config(
+    let (supervisor, resources) = inspection_authority(
         Duration::from_secs(300),
         crucible_api::host_operational::HostResourceVector {
             resident_peak_bytes: 134217728,
@@ -144,20 +151,19 @@ pub fn composed_inspection(read_source: &Path) -> Result<ComposedInspection, Box
             task_slots: 1,
             file_descriptors: 256,
         },
-    )?)?;
+    )?;
+    let binder = crucible_daemon::LinuxProjectQuotaBinder::for_inspection(supervisor, resources)?;
     let source = binder.bind(read_source, project, 2147483648, 1048576)?;
     let decoding = DecodeBudget::for_store(Arc::clone(&source))?;
     decoding.charge_bytes(
-        (std::mem::size_of::<InspectionBinder>()
-            + 2 * std::mem::size_of::<usize>()
+        (StorePhysicalQuotaBinderHandle::allocation_bytes::<InspectionBinder>()?
             + read_source.as_os_str().len()) as u64,
     )?;
-    decoding
-        .charge_btree_entry::<StorePhysicalQuotaPolicyId, Arc<dyn StorePhysicalQuotaBinder>>()?;
+    decoding.charge_btree_entry::<StorePhysicalQuotaPolicyId, StorePhysicalQuotaBinderHandle>()?;
     let mut binders = StoreGraphPhysicalQuotaBinders::new();
     binders.insert(
         StorePhysicalQuotaPolicyId::new("native/gc-store")?,
-        Arc::new(InspectionBinder {
+        StorePhysicalQuotaBinderHandle::new(InspectionBinder {
             binder,
             source_path: read_source.to_owned(),
             source,
@@ -279,6 +285,7 @@ pub fn contains_stopped_leaf(
         &StoreGraphObjectProfilers::new(),
         &binders,
         &StoreGraphS3Clients::new(),
+        None,
     )?;
     Ok(graph.contains(content)?)
 }
@@ -287,23 +294,30 @@ pub fn contains_stopped_leaf(
 ///
 /// # Errors
 /// Refuses invalid finite supervision before opening the operator namespace.
-pub fn quota_service_config(
+fn inspection_authority(
     total_timeout: std::time::Duration,
     resources: crucible_api::host_operational::HostResourceVector,
-) -> Result<crucible_daemon::CampaignQuotaServiceConfig, Box<dyn Error>> {
+) -> Result<
+    (
+        crucible_linux_resource::host_supervision::HostOperationSupervisor,
+        crucible_api::host_operational::HostResourceVector,
+    ),
+    Box<dyn Error>,
+> {
     use crucible_api::host_operational::{HostOperationBudget, HostOperationBudgets};
-    crucible_daemon::CampaignQuotaServiceConfig::from_authored_budgets(
-        HostOperationBudgets {
-            classes: [HostOperationBudget {
-                poll_interval: std::time::Duration::from_millis(10),
-                progress_timeout: None,
-                total_timeout: Some(total_timeout),
-            }; 14],
-        },
+    let budgets = HostOperationBudgets {
+        classes: [HostOperationBudget {
+            poll_interval: std::time::Duration::from_millis(10),
+            progress_timeout: None,
+            total_timeout: Some(total_timeout),
+        }; 14],
+    };
+    budgets.validate(false)?;
+    let supervisor = crucible_linux_resource::host_supervision::HostOperationSupervisor::new(
+        budgets,
         Some(total_timeout),
-        resources,
-    )
-    .map_err(Into::into)
+    )?;
+    Ok((supervisor, resources))
 }
 
 #[cfg(test)]

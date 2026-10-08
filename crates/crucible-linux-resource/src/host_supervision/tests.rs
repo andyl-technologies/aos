@@ -352,3 +352,109 @@ fn saturated_work_inventory_retains_two_finite_control_records() {
     assert!(supervisor.begin(HostOperationClass::Cleanup).is_ok());
     assert!(containment.wait_slice().is_ok());
 }
+
+#[test]
+fn original_liveness_preserves_shared_origin_amendment_and_operation_rosters() {
+    let root = HostOperationSupervisor::new(
+        HostOperationBudgets::default(),
+        Some(Duration::from_secs(30)),
+    )
+    .unwrap();
+    let child = root
+        .new_budget_owner(HostOperationBudgets::default())
+        .unwrap();
+    let guard = root.begin(HostOperationClass::PageIn).unwrap();
+    let origin = root.shared.original_monotonic_ns;
+    let started = root.shared.started;
+
+    root.verify_original_live().unwrap();
+    child.verify_original_live().unwrap();
+    assert_eq!(root.lock().unwrap().operations.len(), 1);
+    assert!(root.lock().unwrap().operations.contains_key(&guard.id));
+    assert!(child.lock().unwrap().operations.is_empty());
+    root.amend_outer_cap(0, Some(Duration::from_secs(60)))
+        .unwrap();
+    child.verify_original_live().unwrap();
+
+    assert!(root.shares_outer_cap(&child));
+    assert_eq!(root.shared.original_monotonic_ns, origin);
+    assert_eq!(root.shared.started, started);
+    assert_eq!(child.shared.original_monotonic_ns, origin);
+    assert_eq!(child.lock().unwrap().cap_revision, 1);
+    assert!(child.lock().unwrap().operations.is_empty());
+}
+
+#[test]
+fn original_liveness_records_expiry_without_renewing_the_original_cap() {
+    let mut root = HostOperationSupervisor::new(
+        HostOperationBudgets::default(),
+        Some(Duration::from_secs(1)),
+    )
+    .unwrap();
+    Arc::get_mut(&mut root.shared).unwrap().started = host_now() - Duration::from_secs(2);
+
+    assert!(matches!(
+        root.verify_original_live(),
+        Err(HostSupervisionError::Terminal {
+            state: HostOperationState::Expired
+        })
+    ));
+    assert_eq!(
+        root.shared.outer.lock().unwrap().state,
+        HostOperationState::Expired
+    );
+    assert!(matches!(
+        root.amend_outer_cap(0, Some(Duration::from_secs(60))),
+        Err(HostSupervisionError::Terminal {
+            state: HostOperationState::Expired
+        })
+    ));
+    assert!(root.lock().unwrap().operations.is_empty());
+}
+
+#[test]
+fn original_liveness_refuses_canceled_and_completed_original_owners() {
+    for completed in [false, true] {
+        let root = HostOperationSupervisor::new(HostOperationBudgets::default(), None).unwrap();
+        let child = root
+            .new_budget_owner(HostOperationBudgets::default())
+            .unwrap();
+        if completed {
+            root.complete().unwrap();
+        } else {
+            root.cancel().unwrap();
+        }
+
+        let expected = if completed {
+            HostOperationState::Completed
+        } else {
+            HostOperationState::Canceled
+        };
+        assert!(
+            matches!(child.verify_original_live(), Err(HostSupervisionError::Terminal { state }) if state == expected)
+        );
+        assert!(child.lock().unwrap().operations.is_empty());
+    }
+}
+
+#[test]
+fn original_liveness_refuses_either_poisoned_ownership_lock() {
+    for poison_outer in [false, true] {
+        let root = HostOperationSupervisor::new(HostOperationBudgets::default(), None).unwrap();
+        let result = std::panic::catch_unwind(|| {
+            if poison_outer {
+                let _held = root.shared.outer.lock().unwrap();
+                panic!("intentional original outer-lock poison");
+            } else {
+                let _held = root.shared.state.lock().unwrap();
+                panic!("intentional original state-lock poison");
+            }
+        });
+
+        assert!(result.is_err());
+        assert!(matches!(
+            root.verify_original_live(),
+            Err(HostSupervisionError::Unavailable)
+        ));
+    }
+}

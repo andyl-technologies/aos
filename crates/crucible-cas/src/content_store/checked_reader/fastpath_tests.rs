@@ -51,9 +51,9 @@ fn full_bytes_reads_borrow_body_and_pay_only_output_under_saved_caller() {
         let (quota, caller) = account();
         let (foreign_quota, foreign) = account();
         let bytes: Arc<[u8]> = vec![0x61; length].into();
-        let handle = BlobHandle::new(Arc::new(BytesBlobSource {
+        let handle = BlobHandle::new(BytesBlobSource {
             bytes: bytes.clone(),
-        }));
+        });
         let body_owners = Arc::strong_count(&bytes);
         let retained = quota.resources.usage().unwrap().1;
         let loans = quota.loans.load(Ordering::SeqCst);
@@ -134,7 +134,8 @@ fn every_full_bytes_boundary_refuses_revocation_and_closes_output_credit() {
     }
 }
 
-struct OpaqueSource(AtomicUsize);
+#[derive(Clone)]
+struct OpaqueSource(Arc<AtomicUsize>);
 
 impl BlobSource for OpaqueSource {
     fn logical_length(&self) -> u64 {
@@ -150,7 +151,7 @@ impl BlobSource for OpaqueSource {
 #[test]
 fn ordinary_opaque_open_never_grants_checked_full_dispatch() {
     let (_, caller) = account();
-    let source = Arc::new(OpaqueSource(AtomicUsize::new(0)));
+    let source = OpaqueSource(Arc::new(AtomicUsize::new(0)));
     let handle = BlobHandle::new(source.clone());
 
     let error = handle

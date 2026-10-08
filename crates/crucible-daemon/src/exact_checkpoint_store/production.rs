@@ -21,6 +21,20 @@ use crucible_cas::ram::{
 mod metadata;
 use metadata::{array_bytes, reserve_envelope_decode, reserve_metadata};
 
+// Admission selects the retained namespace guard before RAM effects or source publication.
+// An initial constructor refusal has no completed account to borrow for custody.
+fn ram_namespace_original(
+    resources: Option<&Arc<dyn StorePhysicalQuotaGuard>>,
+) -> Result<crucible_cas::owned_decode::DecodeBudget, StoreError> {
+    let guard = resources.ok_or(StoreError::Quota)?;
+    crucible_cas::owned_decode::DecodeBudget::for_store(guard.clone()).map_err(|source| {
+        StoreError::DecodeAdmission {
+            source,
+            custody: None,
+        }
+    })
+}
+
 const PRODUCTION_MANIFEST_ROLE: &str = "production-manifest";
 const PRODUCTION_PROMOTION_SOURCE_ROLE: &str = "replay-oracle-source";
 const PRODUCTION_PROMOTION_EVIDENCE_ROLE: &str = "replay-oracle-evidence";
@@ -65,10 +79,15 @@ trait ProductionExactCheckpointPublicationSource: Send + Sync {
         Ok(0)
     }
 
+    fn has_paged_ram(&self) -> bool {
+        false
+    }
+
     fn publish_ram(
         &self,
         _destination: &RamStore,
         _retention: &dyn RamRetention,
+        _original: &crucible_cas::owned_decode::DecodeBudget,
         _boundary: &mut dyn FnMut() -> Result<(), RamStoreError>,
     ) -> Result<(), RamStoreError> {
         if !self.ram_root_ids().is_empty() {
@@ -79,6 +98,9 @@ trait ProductionExactCheckpointPublicationSource: Send + Sync {
 }
 
 impl ProductionExactCheckpointPublicationSource for ProductionExactCheckpointClosure {
+    fn has_paged_ram(&self) -> bool {
+        !self.ram_sources().is_empty()
+    }
     fn ram_logical_bytes(&self) -> Result<u64, ExactCheckpointStoreError> {
         self.ram_sources().iter().try_fold(0_u64, |total, source| {
             total
@@ -97,10 +119,11 @@ impl ProductionExactCheckpointPublicationSource for ProductionExactCheckpointClo
         &self,
         destination: &RamStore,
         retention: &dyn RamRetention,
+        original: &crucible_cas::owned_decode::DecodeBudget,
         boundary: &mut dyn FnMut() -> Result<(), RamStoreError>,
     ) -> Result<(), RamStoreError> {
         for source in self.ram_sources() {
-            source.transfer_to(destination, retention, boundary)?;
+            source.transfer_to(destination, retention, original, boundary)?;
         }
         Ok(())
     }
@@ -333,6 +356,7 @@ pub struct LoadedProductionExactCheckpoint {
     ram_logical_bytes: u64,
     ram_root_resources: Option<Arc<dyn StorePhysicalQuotaGuard>>,
     _metadata_credits: Vec<crucible_cas::owned_decode::ResourceLoan>,
+    ram_original: Option<crucible_cas::owned_decode::DecodeBudget>,
 }
 
 struct ChargedRamRootLease {
@@ -361,6 +385,10 @@ fn reserve_ram_root_decode(
 }
 
 impl LoadedProductionExactCheckpoint {
+    fn ram_original(&self) -> Result<&crucible_cas::owned_decode::DecodeBudget, StoreError> {
+        self.ram_original.as_ref().ok_or(StoreError::Quota)
+    }
+
     pub(super) fn authenticate_storage_owner(
         &self,
         store: &ExactCheckpointStore,
@@ -385,6 +413,11 @@ impl LoadedProductionExactCheckpoint {
         retention: &dyn RamRetention,
         boundary: &mut dyn FnMut() -> Result<(), RamStoreError>,
     ) -> Result<Vec<crucible_api::ProductionPagedRamSource>, ExactCheckpointStoreError> {
+        let original = if self.ram_root_ids.is_empty() {
+            None
+        } else {
+            Some(self.ram_original()?.clone())
+        };
         let closure = self.authenticate_closure(owned_byte_limit)?;
         // The visitor decodes one expected portable RootRecord at a time.
         // Its temporary credit is independent of each retained source loan.
@@ -427,7 +460,9 @@ impl LoadedProductionExactCheckpoint {
                     lease: identity_lease,
                     _credit: inventory_credit.clone(),
                 });
-                let (store, root) = self.open_paged_ram(sources.len(), lease, boundary)?;
+                let original = original.as_ref().ok_or(StoreError::Quota)?;
+                let (store, root) =
+                    self.open_paged_ram_under(sources.len(), lease, original, boundary)?;
                 binding
                     .authenticate_source(&root)
                     .map_err(|_| invalid_root("RAM source differs from whole-world target"))?;
@@ -437,6 +472,7 @@ impl LoadedProductionExactCheckpoint {
                     },
                     store,
                     root,
+                    original.clone(),
                     boundary,
                 )
                 .map_err(ExactCheckpointStoreError::from)
@@ -480,10 +516,35 @@ impl LoadedProductionExactCheckpoint {
         ordinal: usize,
         lease: Arc<dyn RamRootLease>,
         boundary: &mut dyn FnMut() -> Result<(), RamStoreError>,
+    ) -> Result<
+        (
+            RamStore,
+            LeasedRamRoot,
+            crucible_cas::owned_decode::DecodeBudget,
+        ),
+        ExactCheckpointStoreError,
+    > {
+        if self.ram_root_ids.get(ordinal).copied() != Some(lease.root()) {
+            return Err(invalid_root("RAM source lease does not match target"));
+        }
+        let original = self.ram_original()?.clone();
+        let (store, root) = self.open_paged_ram_under(ordinal, lease, &original, boundary)?;
+        Ok((store, root, original))
+    }
+
+    fn open_paged_ram_under(
+        &self,
+        ordinal: usize,
+        lease: Arc<dyn RamRootLease>,
+        original: &crucible_cas::owned_decode::DecodeBudget,
+        boundary: &mut dyn FnMut() -> Result<(), RamStoreError>,
     ) -> Result<(RamStore, LeasedRamRoot), ExactCheckpointStoreError> {
         if self.ram_root_ids.get(ordinal).copied() != Some(lease.root()) {
             return Err(invalid_root("RAM source lease does not match target"));
         }
+        let account = original
+            .child()
+            .map_err(|source| RamStoreError::from_admission(original, source))?;
         let credit = reserve_ram_root_decode(self.ram_root_resources.as_ref())?;
         let lease = Arc::new(ChargedRamRootLease {
             lease,
@@ -494,7 +555,7 @@ impl LoadedProductionExactCheckpoint {
             crucible_cas::content_store::DurabilityRequirement::new(1, false)?,
             RamStoreLimits::default(),
         )?;
-        let root = store.open(lease, boundary)?;
+        let root = store.open(lease, &account, boundary)?;
         Ok((store, root))
     }
     /// Returns the root-authenticated bounded choice records captured at pause.
@@ -606,6 +667,16 @@ impl LoadedProductionExactCheckpoint {
         owned_byte_limit: u64,
     ) -> Result<crucible::exact_checkpoint::ExactCheckpointClosureBinding, ExactCheckpointStoreError>
     {
+        let account = if self.ram_root_ids.is_empty() {
+            None
+        } else {
+            let original = self.ram_original()?;
+            Some(
+                original
+                    .child()
+                    .map_err(|source| RamStoreError::from_admission(original, source))?,
+            )
+        };
         let _record_credit = if self.ram_root_ids.is_empty() {
             None
         } else {
@@ -654,9 +725,10 @@ impl LoadedProductionExactCheckpoint {
                 crucible_cas::content_store::DurabilityRequirement::new(1, false)?,
                 RamStoreLimits::default(),
             )?;
+            let account = account.as_ref().ok_or(StoreError::Quota)?;
             let mut failure = None;
             let result = closure.visit_paged_ram_roots(|_, binding| {
-                let result = store.inspect_root(binding.object_id(), &mut || {
+                let result = store.inspect_root(binding.object_id(), account, &mut || {
                     if self.cancellation.as_ref().is_some_and(ExecutionCancellation::is_canceled) {
                         return Err(RamStoreError::Canceled);
                     }
@@ -809,6 +881,9 @@ fn take_evidence_bytes<'a>(
 }
 
 impl ProductionExactCheckpointPublicationSource for LoadedProductionExactCheckpoint {
+    fn has_paged_ram(&self) -> bool {
+        !self.ram_root_ids.is_empty()
+    }
     fn ram_logical_bytes(&self) -> Result<u64, ExactCheckpointStoreError> {
         Ok(self.ram_logical_bytes)
     }
@@ -1037,6 +1112,11 @@ impl ExactCheckpointStore {
     ) -> Result<ProductionExactCheckpointPublication, ExactCheckpointStoreError> {
         boundary()?;
         check_cancellation(prepared.cancellation.as_ref())?;
+        let ram_original = if prepared.reuse_backend.is_none() && prepared.source.has_paged_ram() {
+            Some(ram_namespace_original(self.ram_root_resources.as_ref())?)
+        } else {
+            None
+        };
         let ram_retention = self.ram_retention.acquire()?;
         validate_production_checkpoint_bytes(
             prepared.manifest_source.logical_length(),
@@ -1056,18 +1136,22 @@ impl ExactCheckpointStore {
             )?;
             let cancellation = prepared.cancellation.as_ref();
             let mut operational_failure = None;
-            let published = prepared
-                .source
-                .publish_ram(&ram_store, &ram_retention, &mut || {
-                    if let Err(error) = boundary() {
-                        operational_failure = Some(error);
-                        return Err(RamStoreError::Canceled);
-                    }
-                    if cancellation.is_some_and(ExecutionCancellation::is_canceled) {
-                        return Err(RamStoreError::Canceled);
-                    }
-                    Ok(())
-                });
+            let published = if let Some(original) = ram_original.as_ref() {
+                prepared
+                    .source
+                    .publish_ram(&ram_store, &ram_retention, original, &mut || {
+                        if let Err(error) = boundary() {
+                            operational_failure = Some(error);
+                            return Err(RamStoreError::Canceled);
+                        }
+                        if cancellation.is_some_and(ExecutionCancellation::is_canceled) {
+                            return Err(RamStoreError::Canceled);
+                        }
+                        Ok(())
+                    })
+            } else {
+                Ok(())
+            };
             if let Some(error) = operational_failure {
                 return Err(error);
             }
@@ -1202,6 +1286,13 @@ impl ExactCheckpointStore {
         cancellation: Option<ExecutionCancellation>,
     ) -> Result<LoadedProductionExactCheckpoint, ExactCheckpointStoreError> {
         check_cancellation(cancellation.as_ref())?;
+        // Capture the actual namespace before the first read; lazy readers keep
+        // this unspent parent rather than renewing admission after load effects.
+        let ram_original = self
+            .ram_root_resources
+            .as_ref()
+            .map(|resources| ram_namespace_original(Some(resources)))
+            .transpose()?;
         let mut root_handle = self.backend.read(root.content_id(), None)?;
         check_cancellation(cancellation.as_ref())?;
         if let Some(cancellation) = cancellation.as_ref() {
@@ -1293,6 +1384,10 @@ impl ExactCheckpointStore {
         metadata_credits.push(inventory_credit);
         let mut ram_logical_bytes = 0_u64;
         if !ram_root_ids.is_empty() {
+            let original = ram_original.as_ref().ok_or(StoreError::Quota)?;
+            let account = original
+                .child()
+                .map_err(|source| RamStoreError::from_admission(original, source))?;
             let _record_credit = reserve_ram_root_decode(self.ram_root_resources.as_ref())?;
             let store = RamStore::new(
                 Arc::clone(&self.backend),
@@ -1303,7 +1398,7 @@ impl ExactCheckpointStore {
                 },
             )?;
             for id in &ram_root_ids {
-                let record = store.inspect_root(*id, &mut || {
+                let record = store.inspect_root(*id, &account, &mut || {
                     if cancellation
                         .as_ref()
                         .is_some_and(ExecutionCancellation::is_canceled)
@@ -1502,6 +1597,7 @@ impl ExactCheckpointStore {
             ram_logical_bytes,
             ram_root_resources: self.ram_root_resources.clone(),
             _metadata_credits: metadata_credits,
+            ram_original,
         })
     }
 }

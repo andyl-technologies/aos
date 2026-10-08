@@ -4,6 +4,9 @@
 //! reserved its cut. It preserves native capture generations and source leases
 //! through durable publication, commit, and uncertain-outcome reconciliation.
 
+#[cfg(test)]
+mod tests;
+
 use super::super::checkpoint_store::{
     PersistExactCheckpointError, hash_exact_checkpoint_open_file_sha256_with_boundary,
     prepare_exact_checkpoint_set_with_boundary,
@@ -11,6 +14,47 @@ use super::super::checkpoint_store::{
     stage_sparse_checkpoint_artifact_chunks_with_boundary,
 };
 use super::*;
+
+/// Moves the original page-reader cause into the already-prepared RAM failure.
+fn ram_capture_read_failure(
+    error: crucible::exact_checkpoint::CaptureReadError,
+) -> crucible_cas::ram::RamStoreError {
+    use crucible::exact_checkpoint::CaptureReadError;
+    use crucible_cas::content_store::StoreError;
+    use crucible_cas::ram::RamStoreError;
+
+    match error {
+        CaptureReadError::Io(source) => StoreError::StreamIo {
+            operation: "read retained RAM page capture",
+            source,
+        }
+        .into(),
+        CaptureReadError::Malformed(message) => RamStoreError::Invalid(message),
+        CaptureReadError::Validation(source) => RamStoreError::LogicalValidation(source),
+        CaptureReadError::Allocation(source) => StoreError::Allocation {
+            source,
+            custody: None,
+        }
+        .into(),
+    }
+}
+
+/// Transfers the existing operation cause without another reservation or body.
+fn ram_checkpoint_failure(
+    failure: crucible_cas::ram::RamOperationFailure<SchedulerError>,
+    original: &crucible_cas::owned_decode::DecodeBudget,
+) -> SchedulerError {
+    match failure {
+        crucible_cas::ram::RamOperationFailure::Admission(source) => SchedulerError::RamAdmission {
+            source: crucible_cas::ram::RamFailureAdmission::Original(source),
+            custody: original.custody(),
+        },
+        crucible_cas::ram::RamOperationFailure::Boundary(source) => source,
+        crucible_cas::ram::RamOperationFailure::Retained(source) => {
+            SchedulerError::from_ram_failure(source)
+        }
+    }
+}
 
 impl ProductionVmLifecycleLoop {
     /// Captures and publishes one scheduler-reserved exact world boundary.
@@ -231,6 +275,22 @@ impl ProductionVmLifecycleLoop {
                         self.config.ram_catalog_provider(),
                     )?
                 };
+                // The namespace child and its complete failure carrier are
+                // admitted before QEMU capture can mutate native state.
+                let ram_account =
+                    catalog
+                        .original()
+                        .child()
+                        .map_err(|source| SchedulerError::RamAdmission {
+                            source: crucible_cas::ram::RamFailureAdmission::Original(source),
+                            custody: catalog.original().custody(),
+                        })?;
+                let ram_failure =
+                    crucible_cas::ram::PreparedRamFailure::<SchedulerError>::new(&ram_account)
+                        .map_err(|source| SchedulerError::RamAdmission {
+                            source,
+                            custody: ram_account.custody(),
+                        })?;
                 let publication_catalog = catalog.clone();
                 let admission = QemuExactCheckpointCaptureAdmission::admit_paged(
                     capture_boundary(),
@@ -377,62 +437,52 @@ impl ProductionVmLifecycleLoop {
                     .map_err(|error| SchedulerError::BoundaryViolation {
                         message: format!("admit complete logical RAM capture: {error}"),
                     })?;
-                let ram_boundary_failure = std::cell::RefCell::new(None);
-                let mut ram_boundary = || {
-                    boundary().map_err(|error| {
-                        let description = error.to_string();
-                        *ram_boundary_failure.borrow_mut() = Some(error);
-                        crucible_cas::ram::RamStoreError::Retention(description)
-                    })
-                };
                 let ram = if exact_capture.initial_capture() {
-                    let mut read_page =
-                        |region: &crucible_ram::RegionDescriptor, index, output: &mut [u8]| {
-                            let page = exact_capture
+                    ram_failure
+                        .run(boundary, |ram_boundary| {
+                            let mut read_page =
+                                |region: &crucible_ram::RegionDescriptor,
+                                 index,
+                                 output: &mut [u8]| {
+                                    let page = exact_capture
+                                        .read_next_page()
+                                        .map_err(ram_capture_read_failure)?
+                                        .ok_or(crucible_cas::ram::RamStoreError::Invalid(
+                                            "truncated initial RAM capture",
+                                        ))?;
+                                    if page.region_id != region.id()
+                                        || page.page_index != index
+                                        || page.bytes.len() != output.len()
+                                        || page.version == 0
+                                    {
+                                        return Err(crucible_cas::ram::RamStoreError::Invalid(
+                                            "initial RAM capture page coordinate",
+                                        ));
+                                    }
+                                    output.copy_from_slice(&page.bytes);
+                                    Ok(())
+                                };
+                            let retention = catalog.retention()?;
+                            let ram = catalog.store().capture(
+                                expected_record.topology().clone(),
+                                crucible_ram::Scope::Exact,
+                                &mut read_page,
+                                retention.as_ref(),
+                                &ram_account,
+                                ram_boundary,
+                            )?;
+                            if exact_capture
                                 .read_next_page()
-                                .map_err(|error| {
-                                    crucible_cas::ram::RamStoreError::Logical(error.to_string())
-                                })?
-                                .ok_or(crucible_cas::ram::RamStoreError::Invalid(
-                                    "truncated initial RAM capture",
-                                ))?;
-                            if page.region_id != region.id()
-                                || page.page_index != index
-                                || page.bytes.len() != output.len()
-                                || page.version == 0
+                                .map_err(ram_capture_read_failure)?
+                                .is_some()
                             {
                                 return Err(crucible_cas::ram::RamStoreError::Invalid(
-                                    "initial RAM capture page coordinate",
+                                    "initial RAM capture has trailing pages",
                                 ));
                             }
-                            output.copy_from_slice(&page.bytes);
-                            Ok(())
-                        };
-                    let ram = catalog
-                        .capture(
-                            expected_record.topology().clone(),
-                            &mut read_page,
-                            &mut ram_boundary,
-                        )
-                        .map_err(|error| {
-                            ram_boundary_failure.borrow_mut().take().unwrap_or_else(|| {
-                                SchedulerError::BoundaryViolation {
-                                    message: format!("persist initial paged RAM capture: {error}"),
-                                }
-                            })
-                        })?;
-                    if exact_capture
-                        .read_next_page()
-                        .map_err(|error| SchedulerError::BoundaryViolation {
-                            message: format!("validate end of initial RAM capture: {error}"),
-                        })?
-                        .is_some()
-                    {
-                        return Err(SchedulerError::BoundaryViolation {
-                            message: String::from("initial RAM capture has trailing pages"),
-                        });
-                    }
-                    ram
+                            Ok(ram)
+                        })
+                        .map_err(|error| ram_checkpoint_failure(error, &ram_account))?
                 } else {
                     let parent = parent_checkpoint.as_ref().ok_or_else(|| {
                         SchedulerError::BoundaryViolation {
@@ -449,9 +499,7 @@ impl ProductionVmLifecycleLoop {
                     let mut next = || {
                         exact_capture
                             .read_next_page()
-                            .map_err(|error| {
-                                crucible_cas::ram::RamStoreError::Logical(error.to_string())
-                            })?
+                            .map_err(ram_capture_read_failure)?
                             .map(|page| {
                                 if page.version == 0 {
                                     return Err(crucible_cas::ram::RamStoreError::Invalid(
@@ -466,28 +514,18 @@ impl ProductionVmLifecycleLoop {
                             })
                             .transpose()
                     };
-                    catalog
-                        .store()
-                        .update_with_reader(
-                            &parent.ram,
-                            &mut next,
-                            catalog
-                                .retention()
-                                .map_err(|error| SchedulerError::BoundaryViolation {
-                                    message: format!("admit incremental RAM root: {error}"),
-                                })?
-                                .as_ref(),
-                            &mut ram_boundary,
-                        )
-                        .map_err(|error| {
-                            ram_boundary_failure.borrow_mut().take().unwrap_or_else(|| {
-                                SchedulerError::BoundaryViolation {
-                                    message: format!(
-                                        "persist incremental paged RAM capture: {error}"
-                                    ),
-                                }
-                            })
-                        })?
+                    ram_failure
+                        .run(boundary, |ram_boundary| {
+                            let retention = catalog.retention()?;
+                            catalog.store().update_with_reader(
+                                &parent.ram,
+                                &mut next,
+                                retention.as_ref(),
+                                &ram_account,
+                                ram_boundary,
+                            )
+                        })
+                        .map_err(|error| ram_checkpoint_failure(error, &ram_account))?
                 };
                 if ram.record() != &expected_record {
                     return Err(SchedulerError::BoundaryViolation {

@@ -133,8 +133,9 @@ fn interrupted_batch_retains_typed_cause_and_requires_fresh_plan() {
         }
         Ok(())
     };
-    let interrupted = CampaignGcOperationContext::new(original.marks(), &mut boundary)
-        .expect("same admitted mark authority");
+    let interrupted =
+        CampaignGcOperationContext::new(original.marks(), original.original(), &mut boundary)
+            .expect("same admitted mark authority");
     let physical =
         CampaignGcRawPhysicalStore::new("apply-primary", &admin).expect("same physical authority");
 

@@ -5,7 +5,7 @@
 use std::error::Error;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use crucible_cas::content_store::{MemoryBlobBackend, ObjectKind};
+use crucible_cas::content_store::{MemoryBlobBackend, ObjectKind, StorePhysicalQuotaGuard};
 use crucible_linux_resource::host_services::{HostServiceAllocator, HostServiceLease};
 
 use super::*;
@@ -103,7 +103,7 @@ fn completed_mark_operations_reuse_one_bank_without_poisoning_the_parent() {
     let parent = DecodeBudget::for_store(resources.clone())
         .unwrap_or_else(|error| panic!("original parent account: {error}"));
     let _scope = parent.enter();
-    let mut marks = Reachability::with_backend(backend(&resources))
+    let mut marks = Reachability::with_backend(backend(&resources), &parent)
         .unwrap_or_else(|error| panic!("original mark backend: {error}"));
     for index in 0..96 {
         marks
@@ -165,10 +165,12 @@ fn completed_mark_operations_reuse_one_bank_without_poisoning_the_parent() {
 }
 
 #[test]
-fn unscoped_marks_project_original_authority_and_keep_the_last_reader_charged() {
+fn explicit_marks_keep_the_original_account_and_last_reader_charged() {
     let resources = resources();
+    let parent = DecodeBudget::for_store(resources.clone())
+        .unwrap_or_else(|error| panic!("original namespace decoder: {error}"));
     let backend = backend(&resources);
-    let mut marks = Reachability::with_backend(Arc::clone(&backend))
+    let mut marks = Reachability::with_backend(Arc::clone(&backend), &parent)
         .unwrap_or_else(|error| panic!("unscoped original metadata projection: {error}"));
     marks
         .insert(page(1))
@@ -186,6 +188,7 @@ fn unscoped_marks_project_original_authority_and_keep_the_last_reader_charged() 
     let mut reader = source
         .open()
         .unwrap_or_else(|error| panic!("actual delayed root reader: {error}"));
+    drop(parent);
     drop(marks);
     drop(backend);
     drop(source);
@@ -218,9 +221,13 @@ fn unscoped_marks_project_original_authority_and_keep_the_last_reader_charged() 
 
 #[test]
 fn missing_or_closed_metadata_authority_refuses_before_the_mark_root_changes() {
-    let error = Reachability::with_backend(Arc::new(MemoryBlobBackend::new("unowned", 4096)))
-        .err()
-        .unwrap_or_else(|| panic!("an unowned mark backend must refuse"));
+    let resources = resources();
+    let parent = DecodeBudget::for_store(resources.clone())
+        .unwrap_or_else(|error| panic!("original namespace decoder: {error}"));
+    let error =
+        Reachability::with_backend(Arc::new(MemoryBlobBackend::new("unowned", 4096)), &parent)
+            .err()
+            .unwrap_or_else(|| panic!("an unowned mark backend must refuse"));
     assert!(matches!(
         error,
         StoreError::Unsupported {
@@ -228,8 +235,7 @@ fn missing_or_closed_metadata_authority_refuses_before_the_mark_root_changes() {
         }
     ));
 
-    let resources = resources();
-    let mut marks = Reachability::with_backend(backend(&resources))
+    let mut marks = Reachability::with_backend(backend(&resources), &parent)
         .unwrap_or_else(|error| panic!("original mark backend: {error}"));
     let root = marks.root;
     resources.closed.store(true, Ordering::Release);
@@ -247,19 +253,21 @@ fn missing_or_closed_metadata_authority_refuses_before_the_mark_root_changes() {
     assert_eq!(marks.root, root);
     drop(error);
     drop(marks);
+    drop(parent);
     assert_eq!(resources.used.load(Ordering::Acquire), 0);
 }
 
 #[test]
-fn poisoned_ambient_decode_is_not_reset_by_a_completed_mark_operation() {
+fn poisoned_original_decode_is_not_replaced_by_an_ambient_account() {
     let resources = resources();
-    let backend = backend(&resources);
-    let mut marks = Reachability::with_backend(backend)
+    let parent = DecodeBudget::for_store(resources.clone())
+        .unwrap_or_else(|error| panic!("original decoder: {error}"));
+    let mut marks = Reachability::with_backend(backend(&resources), &parent)
         .unwrap_or_else(|error| panic!("original mark backend: {error}"));
     let root = marks.root;
-    let parent = DecodeBudget::for_store(resources.clone())
-        .unwrap_or_else(|error| panic!("original ambient decoder: {error}"));
-    let _scope = parent.enter();
+    let ambient = DecodeBudget::for_store(resources.clone())
+        .unwrap_or_else(|error| panic!("other ambient decoder: {error}"));
+    let _scope = ambient.enter();
 
     assert!(parent.charge_bytes(RESIDENT_BYTES).is_err());
     let used = resources.used.load(Ordering::Acquire);
@@ -269,18 +277,89 @@ fn poisoned_ambient_decode_is_not_reset_by_a_completed_mark_operation() {
     assert_eq!(marks.root, root);
     assert_eq!(resources.used.load(Ordering::Acquire), used);
 
-    let error = Reachability::with_backend(Arc::new(MemoryBlobBackend::new("unowned", 4096)))
-        .err()
-        .unwrap_or_else(|| panic!("ambient authority cannot authorize an unowned backend"));
-    assert!(matches!(
-        error,
-        StoreError::Unsupported {
-            capability: "decoded-metadata-resources"
-        }
-    ));
+    let error =
+        Reachability::with_backend(Arc::new(MemoryBlobBackend::new("unowned", 4096)), &parent)
+            .err()
+            .unwrap_or_else(|| panic!("ambient authority cannot replace the original refusal"));
+    assert!(matches!(error, StoreError::DecodeAdmission { .. }));
+    ambient
+        .check()
+        .unwrap_or_else(|error| panic!("ambient account stays healthy: {error}"));
     drop(error);
     drop(_scope);
+    drop(ambient);
     drop(parent);
     drop(marks);
     assert_eq!(resources.used.load(Ordering::Acquire), 0);
+}
+
+#[test]
+fn refused_original_gc_account_precedes_boundary_and_ambient_authority() {
+    let resources = resources();
+    let parent = DecodeBudget::for_store(resources.clone())
+        .unwrap_or_else(|error| panic!("original namespace decoder: {error}"));
+    let other_resources = self::resources();
+    let ambient = DecodeBudget::for_store(other_resources.clone())
+        .unwrap_or_else(|error| panic!("other namespace decoder: {error}"));
+    let _scope = ambient.enter();
+    resources.closed.store(true, Ordering::Release);
+    let retained = resources.used.load(Ordering::Acquire);
+    let other_retained = other_resources.used.load(Ordering::Acquire);
+    let mut calls = 0;
+    let mut boundary = || {
+        calls += 1;
+        Ok(())
+    };
+
+    let error = CampaignGcOperationContext::new(backend(&resources), &parent, &mut boundary)
+        .err()
+        .unwrap_or_else(|| panic!("closed original refuses before any GC callback"));
+
+    assert!(has_store_cause(&error, |error| matches!(
+        error,
+        StoreError::Unsupported {
+            capability: "component-original-owner-closed"
+        }
+    )));
+    assert_eq!(calls, 0);
+    assert_eq!(resources.used.load(Ordering::Acquire), retained);
+    assert_eq!(other_resources.used.load(Ordering::Acquire), other_retained);
+    ambient
+        .check()
+        .unwrap_or_else(|error| panic!("other account stays healthy: {error}"));
+}
+
+#[test]
+fn boundary_cannot_replace_or_poison_the_original_before_gc_storage_admission() {
+    let resources = resources();
+    let parent = DecodeBudget::for_store(resources.clone())
+        .unwrap_or_else(|error| panic!("original namespace decoder: {error}"));
+    let other_resources = self::resources();
+    let ambient = DecodeBudget::for_store(other_resources.clone())
+        .unwrap_or_else(|error| panic!("other namespace decoder: {error}"));
+    let _scope = ambient.enter();
+    let retained = resources.used.load(Ordering::Acquire);
+    let other_retained = other_resources.used.load(Ordering::Acquire);
+    let mut calls = 0;
+    let mut boundary = || {
+        calls += 1;
+        assert!(parent.charge_bytes(RESIDENT_BYTES).is_err());
+        Ok(())
+    };
+
+    let error = CampaignGcOperationContext::new(backend(&resources), &parent, &mut boundary)
+        .err()
+        .unwrap_or_else(|| panic!("callback refusal must precede storage admission"));
+
+    assert!(has_store_cause(&error, |error| matches!(
+        error,
+        StoreError::Quota
+    )));
+    assert_eq!(calls, 1);
+    assert!(parent.check().is_err());
+    assert_eq!(resources.used.load(Ordering::Acquire), retained);
+    assert_eq!(other_resources.used.load(Ordering::Acquire), other_retained);
+    ambient
+        .check()
+        .unwrap_or_else(|error| panic!("ambient account stays healthy: {error}"));
 }

@@ -17,11 +17,13 @@ use crucible_linux_resource::host_supervision::{
 };
 
 use crate::campaign_gc::CampaignGcOperationContext;
+use crucible_cas::owned_decode::DecodeBudget;
 
 /// Owns one finite component maintenance scope across planning and apply.
 pub(crate) struct ComponentGcOperation {
     marks: Arc<dyn ImmutableBlobBackend>,
     resources: Arc<dyn StorePhysicalQuotaGuard>,
+    decoding: DecodeBudget,
     boundary: Box<dyn FnMut() -> Result<(), StoreError>>,
     _scratch: tempfile::TempDir,
 }
@@ -35,6 +37,8 @@ impl ComponentGcOperation {
     }
 
     pub(super) fn with_resources(resources: Arc<dyn StorePhysicalQuotaGuard>) -> Self {
+        let decoding = DecodeBudget::for_store(Arc::clone(&resources))
+            .unwrap_or_else(|error| panic!("original component GC decoding authority: {error}"));
         let scratch = tempfile::tempdir()
             .unwrap_or_else(|error| panic!("component GC scratch directory: {error}"));
         let supervisor = HostOperationSupervisor::new(
@@ -64,6 +68,7 @@ impl ComponentGcOperation {
         Self {
             marks,
             resources,
+            decoding,
             boundary: Box::new(move || {
                 original.wait_slice().map(|_| ()).map_err(supervision_error)
             }),
@@ -78,8 +83,12 @@ impl ComponentGcOperation {
 
     /// Borrows the same original scope and scratch authority for all GC calls.
     pub(crate) fn context(&mut self) -> CampaignGcOperationContext<'_> {
-        CampaignGcOperationContext::new(Arc::clone(&self.marks), self.boundary.as_mut())
-            .unwrap_or_else(|error| panic!("component GC operation context: {error}"))
+        CampaignGcOperationContext::new(
+            Arc::clone(&self.marks),
+            &self.decoding,
+            self.boundary.as_mut(),
+        )
+        .unwrap_or_else(|error| panic!("component GC operation context: {error}"))
     }
 }
 

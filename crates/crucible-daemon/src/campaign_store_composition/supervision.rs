@@ -15,8 +15,10 @@ use super::CampaignArchiveBoundaryError;
 
 /// Retains a finite original host lifetime through standalone archive work.
 pub struct CampaignArchiveHostOperation {
-    supervisor: HostOperationSupervisor,
     operation: HostOperationGuard,
+    supervisor: HostOperationSupervisor,
+    // Original service controls remain funded until both supervisor aliases close.
+    quota: Option<crate::campaign_store_quota::LinuxProjectQuotaBinder>,
 }
 
 impl CampaignArchiveHostOperation {
@@ -35,9 +37,72 @@ impl CampaignArchiveHostOperation {
         let supervisor = HostOperationSupervisor::new(budgets, Some(lifetime))?;
         let operation = supervisor.begin(class)?;
         Ok(Self {
-            supervisor,
             operation,
+            supervisor,
+            quota: None,
         })
+    }
+
+    /// Starts archive work with one operator-authored original quota service.
+    ///
+    /// Supervision and resource controls are admitted before publication. The
+    /// archive record starts before service construction or namespace I/O, and
+    /// every later phase retains that same original clock and finite capacity.
+    ///
+    /// # Errors
+    /// Refuses invalid budgets or resource limits, original supervision refusal,
+    /// or insufficient capacity before any archive namespace is accessed.
+    pub fn start_with_quota(
+        class: HostOperationClass,
+        budgets: HostOperationBudgets,
+        lifetime: Duration,
+        resources: crucible_linux_resource::ram_policy::HostResourceVector,
+    ) -> Result<Self, crate::ProviderServiceAdmissionError> {
+        crate::campaign_store_quota::LinuxProjectQuotaBinder::for_archive(
+            class, budgets, lifetime, resources,
+        )
+    }
+
+    pub(crate) fn from_admitted_quota(
+        operation: HostOperationGuard,
+        supervisor: HostOperationSupervisor,
+        quota: crate::campaign_store_quota::LinuxProjectQuotaBinder,
+    ) -> Self {
+        Self {
+            operation,
+            supervisor,
+            quota: Some(quota),
+        }
+    }
+
+    /// Binds one operator-installed archive project before its first access.
+    ///
+    /// The independently authored primary service supplies the namespace and
+    /// decode account. Missing quota admission never becomes metadata-only mode.
+    ///
+    /// # Errors
+    /// Preserves original supervision, namespace, quota and account refusals.
+    pub fn bind_archive_namespace(
+        &self,
+        root: &std::path::Path,
+        project_id: u32,
+        maximum_physical_bytes: u64,
+        maximum_inodes: u64,
+    ) -> Result<
+        crate::campaign_store_quota::CampaignArchiveNamespace,
+        crate::ProviderServiceAdmissionError,
+    > {
+        self.operation.wait_slice()?;
+        let quota =
+            self.quota
+                .as_ref()
+                .ok_or(crucible_cas::content_store::StoreError::Unsupported {
+                    capability: "admitted-archive-namespace",
+                })?;
+        let namespace =
+            quota.archive_namespace(root, project_id, maximum_physical_bytes, maximum_inodes)?;
+        self.operation.wait_slice()?;
+        Ok(namespace)
     }
 
     /// Borrows the original supervisor for an independently admitted worker.

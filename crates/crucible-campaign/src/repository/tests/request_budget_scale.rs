@@ -38,7 +38,11 @@ fn distinct_request_transitions_keep_indexed_cap_queries_bounded() {
         inner: original.blobs.clone(),
         reads: AtomicUsize::new(0),
     });
-    let repository = CampaignRepository::new(reads.clone(), original.refs.clone());
+    let repository = CampaignRepository::new(
+        reads.clone(),
+        original.refs.clone(),
+        crate::CampaignRamAdmission::Unavailable,
+    );
     let head = repository
         .create(CAMPAIGN, &lineage, &policy, &BTreeMap::new())
         .expect("create");
@@ -202,7 +206,11 @@ fn distinct_request_transitions_keep_indexed_cap_queries_bounded() {
     let before = repository
         .budget_projection(CAMPAIGN)
         .expect("final budget");
-    let cold = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    let cold = CampaignRepository::new(
+        repository.blobs.clone(),
+        repository.refs.clone(),
+        repository.ram_admission().clone(),
+    );
     assert_eq!(
         cold.budget_projection(CAMPAIGN)
             .expect("cold index and planner validation"),

@@ -113,9 +113,7 @@ pub(super) fn run_public_campaign_debug_flight_with_stopped_finding(
     // after the source process has closed its exclusive authority.
     service.stop()?;
     let inspection = fixture.inspection_store()?;
-    let decoding = crucible_session::engine::owned_decode::DecodeBudget::for_store(
-        inspection.authority.clone(),
-    )?;
+    let decoding = inspection.original.child()?;
     let scope = decoding.enter();
     let first_selection =
         validate_public_debug_selection(&inspection.checkpoints, &first, &finding_proof, 2)?;
@@ -177,6 +175,7 @@ fn validate_failed_property_after_source_stop(
         Arc::new(crucible_cas::content_store::DirectoryRefBackend::new(
             fixture._temporary.path().join("refs"),
         )),
+        crucible_campaign::CampaignRamAdmission::Available(inspection.original.clone()),
     );
     let observation_record =
         repository.load_observation(crucible_campaign::ObservationId::parse(observation)?)?;
@@ -203,11 +202,13 @@ fn validate_imported_production_capture_handoff(
     use crucible_campaign::{CampaignArchivePolicy, CampaignFindingTriageReplayRole, FindingId};
     use crucible_cas::content_store::{DirectoryRefBackend, DurabilityRequirement};
 
+    let source_original = inspection.original.child()?;
     let source = crucible_campaign::CampaignRepository::new(
         inspection.backend.clone(),
         Arc::new(DirectoryRefBackend::new(
             fixture._temporary.path().join("refs"),
         )),
+        crucible_campaign::CampaignRamAdmission::Available(source_original.clone()),
     );
     let head = source.head(CAMPAIGN)?;
     let plan = source.plan_campaign_archive(
@@ -218,6 +219,7 @@ fn validate_imported_production_capture_handoff(
     )?;
     source.stage_campaign_archive_metadata(&plan)?;
 
+    let destination_original = inspection.original.child()?;
     let private = tempfile::tempdir()?;
     let imported = crucible_campaign::CampaignRepository::new(
         DirectoryBlobBackend::new_with_physical_quota(
@@ -226,11 +228,14 @@ fn validate_imported_production_capture_handoff(
             inspection.authority.clone(),
         )?,
         Arc::new(DirectoryRefBackend::new(private.path().join("refs"))),
+        crucible_campaign::CampaignRamAdmission::Available(destination_original.clone()),
     );
     source.transfer_campaign_archive_objects(
         &imported,
         &plan,
         DurabilityRequirement::new(1, false)?,
+        Some(&source_original),
+        Some(&destination_original),
     )?;
     imported.publish_transferred_campaign("private-midpoint-handoff", None, plan.manifest_id())?;
     drop(source);
@@ -927,6 +932,11 @@ fn validate_replayed_failure_boundary(
         );
     }
     let bundle_id = finding.finding().latest_candidate_bundle();
+    let input = fixture
+        ._native_input
+        .as_ref()
+        .ok_or("midpoint replay inspection requires the original source policy")?;
+    input.decoding.verify_live()?;
     let repository = crucible_campaign::CampaignRepository::new(
         Arc::new(DirectoryBlobBackend::new(
             "midpoint-debug-replay-proof",
@@ -935,6 +945,7 @@ fn validate_replayed_failure_boundary(
         Arc::new(crucible_cas::content_store::DirectoryRefBackend::new(
             fixture._temporary.path().join("refs"),
         )),
+        crucible_campaign::CampaignRamAdmission::Available(input.decoding.clone()),
     );
     let bundle = repository.load_finding_candidate_bundle(bundle_id)?;
     let triage = bundle
@@ -1086,9 +1097,7 @@ pub(super) fn verify_public_debug_handoff(
     )?;
     // The product finding may have only its terminal exact checkpoint.
     let inspection = fixture.inspection_store()?;
-    let decoding = crucible_session::engine::owned_decode::DecodeBudget::for_store(
-        inspection.authority.clone(),
-    )?;
+    let decoding = inspection.original.child()?;
     let _scope = decoding.enter();
     let first_selection =
         validate_public_debug_selection(&inspection.checkpoints, &first, finding_proof, 1)?;

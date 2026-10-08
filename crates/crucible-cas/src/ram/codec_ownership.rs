@@ -10,26 +10,10 @@ use crate::owned_decode::{DecodeBudget, DecodeCustody, DecodeScratch};
 
 use super::RamStoreError;
 
-impl super::RamStore {
-    /// Admits one bounded object from the caller or backend's original bank.
-    ///
-    /// # Errors
-    /// Refuses missing original metadata authority, earlier caller failure, or
-    /// exhausted aggregate credits. It creates no independent allowance.
-    pub(super) fn object_account(&self) -> Result<DecodeBudget, RamStoreError> {
-        if let Some(account) = crate::owned_decode::current_child_budget().map_err(admission)? {
-            return Ok(account);
-        }
-        // Native source workers may carry explicit root/page-in loans without
-        // an ambient thread scope. Project their existing namespace authority
-        // before any backend read can populate a persistent memory cache.
-        DecodeBudget::for_store(self.backend.metadata_resources()?).map_err(admission)
-    }
-}
-
 pub(super) fn admission(source: crate::owned_decode::DecodeAdmissionError) -> RamStoreError {
-    StoreError::Supervision {
-        source: Box::new(source),
+    StoreError::DecodeAdmission {
+        source,
+        custody: None,
     }
     .into()
 }
@@ -45,6 +29,20 @@ impl OwnedEnvelope {
             envelope,
             _custody: account.custody(),
         }
+    }
+
+    pub(super) fn body_mut(&mut self) -> &mut [u8] {
+        self.envelope.body_mut()
+    }
+
+    #[cfg(feature = "test-support")]
+    pub(super) fn flip_body_byte_for_test(&mut self, index: usize) -> bool {
+        self.envelope.flip_body_byte_for_test(index)
+    }
+
+    #[cfg(feature = "test-support")]
+    pub(super) fn remove_last_body_byte_for_test(&mut self) -> bool {
+        self.envelope.remove_last_body_byte_for_test()
     }
 }
 
@@ -246,7 +244,7 @@ pub(super) fn encoded_source(
         original: original.clone(),
         _custody: account.custody(),
     });
-    Ok(BlobHandle::new(Arc::new(EncodedSource(body))))
+    Ok(BlobHandle::new(EncodedSource(body)))
 }
 
 struct CheckedEncodedReader {

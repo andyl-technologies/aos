@@ -25,6 +25,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use crucible_campaign::{CAMPAIGN_OBJECT_PROFILE_POLICY_V1, CampaignObjectProfiler};
+use crucible_daemon::LinuxProjectQuotaBinder;
 use crucible_daemon::campaign_store_composition::{
     ContentId, DirectoryRefBackend, DurabilityRequirement, ImmutableBlobBackend,
     MAX_STORE_GRAPH_VERIFY_LOGICAL_BYTES, MAX_STORE_GRAPH_VERIFY_PLACEMENTS, ObjectKind,
@@ -35,7 +36,6 @@ use crucible_daemon::campaign_store_composition::{
     StoreNamespaceOperation, StoreNodeId, StoreNodeSpec, StoreObjectProfilePolicyId,
     StorePhysicalQuotaPolicyId, StoreS3EndpointId, StoreTierPolicy,
 };
-use crucible_daemon::{CampaignQuotaServiceConfig, LinuxProjectQuotaBinder};
 use rustix::fs::{Mode, OFlags};
 use serde::Deserialize;
 
@@ -140,6 +140,10 @@ struct AuthoredStoreNode {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 enum AuthoredStoreNodeSpec {
+    Memory {
+        max_logical_bytes: u64,
+        max_objects: u64,
+    },
     Directory {
         root: PathBuf,
     },
@@ -621,41 +625,40 @@ fn load_campaign_repository_graph(
         ));
     }
     let mut physical_quotas = StoreGraphPhysicalQuotaBinders::new();
-    let quota_binder = match (
-        configured_physical_quotas.is_empty(),
+    let uses_memory = nodes
+        .values()
+        .any(|node| matches!(node, StoreNodeSpec::Memory { .. }));
+    let mut memory_namespaces = None;
+    match (
+        configured_physical_quotas.is_empty() && !uses_memory,
         deployment.physical_quota_service,
     ) {
-        (true, None) => None,
-        (false, Some(service)) => Some(Arc::new(
-            LinuxProjectQuotaBinder::new(
-                CampaignQuotaServiceConfig::from_authored_budgets(
-                    crate::cli_verify_serve::deployed_budgets(&service.host_operation_budgets)?,
-                    Some(std::time::Duration::from_millis(service.lifetime_ms)),
-                    service.resources.resources(),
-                )
-                .map_err(|error| {
-                    campaign_store_error(format!("physical-quota supervision refused: {error}"))
-                })?,
+        (true, None) => {}
+        (false, Some(service)) => {
+            let binder = LinuxProjectQuotaBinder::new_for_graph(
+                crate::cli_verify_serve::deployed_budgets(&service.host_operation_budgets)?,
+                Some(std::time::Duration::from_millis(service.lifetime_ms)),
+                service.resources.resources(),
             )
             .map_err(|error| {
                 campaign_store_error(format!("physical-quota service admission failed: {error}"))
-            })?,
-        )),
+            })?;
+            for policy in configured_physical_quotas {
+                physical_quotas
+                    .insert(policy, binder.clone())
+                    .map_err(|error| {
+                        campaign_store_error(format!("duplicate physical-quota policy: {error}"))
+                    })?;
+            }
+            if uses_memory {
+                memory_namespaces = Some(binder);
+            }
+        }
         _ => {
             return Err(campaign_store_error(
-                "physical-quota service must be authored exactly when quota policies are configured",
+                "quota service must be authored exactly when physical policies or Memory namespaces are configured",
             ));
         }
-    };
-    for policy in configured_physical_quotas {
-        let binder = quota_binder
-            .as_ref()
-            .ok_or_else(|| campaign_store_error("physical-quota service authority is absent"))?;
-        physical_quotas
-            .insert(policy, binder.clone())
-            .map_err(|error| {
-                campaign_store_error(format!("duplicate physical-quota policy: {error}"))
-            })?;
     }
 
     let uses_campaign_profile = nodes
@@ -713,6 +716,7 @@ fn load_campaign_repository_graph(
         &profilers,
         &physical_quotas,
         &s3_capabilities.graph,
+        memory_namespaces.as_ref(),
     )
     .map_err(|error| campaign_store_error(format!("graph admission failed: {error}")))?;
     let refs = match ref_backend {
@@ -745,6 +749,13 @@ fn resolve_ref_backend(
 impl AuthoredStoreNodeSpec {
     fn into_store(self, user_id: u32, group_id: u32) -> Result<StoreNodeSpec, CliError> {
         match self {
+            Self::Memory {
+                max_logical_bytes,
+                max_objects,
+            } => Ok(StoreNodeSpec::Memory {
+                max_logical_bytes,
+                max_objects,
+            }),
             Self::Directory { root } => {
                 validate_secure_directory(&root, user_id, group_id, "directory leaf")?;
                 Ok(StoreNodeSpec::Directory { root })
@@ -1778,8 +1789,116 @@ policy = "crucible.campaign.object-profile.v1"
         format!("[{kinds}]")
     }
 
+    fn write_memory_deployment(
+        fixture: &StoreDeploymentFixture,
+        max_objects: Option<u64>,
+        authored_service: Option<&str>,
+    ) -> PathBuf {
+        let capacity = max_objects
+            .map(|maximum| format!("max_objects = {maximum}\n"))
+            .unwrap_or_default();
+        let service = authored_service
+            .map(|authored| {
+                format!(
+                    "\n[physical_quota_service]\n{}",
+                    authored.replace("\n[", "\n[physical_quota_service.")
+                )
+            })
+            .unwrap_or_default();
+        let deployment = fixture.root.join("memory-store.toml");
+        fs::write(
+            &deployment,
+            format!(
+                r#"schema = "crucible.campaign-repository-store"
+version = 3
+root = "memory"
+admitted_kinds = {}
+ref_directory = {:?}
+{service}
+[[nodes]]
+id = "memory"
+[nodes.spec]
+kind = "memory"
+max_logical_bytes = 0
+{capacity}"#,
+                all_object_kinds_toml(),
+                fixture.refs,
+            ),
+        )
+        .expect("write finite Memory deployment");
+        fs::set_permissions(&deployment, fs::Permissions::from_mode(0o600))
+            .expect("secure finite Memory deployment");
+        deployment
+    }
+
     #[test]
-    fn standalone_quota_service_requires_the_complete_authored_resource_contract() {
+    fn authored_memory_requires_finite_objects_and_a_genuine_service() {
+        let fixture = StoreDeploymentFixture::new();
+        let deployment = write_memory_deployment(&fixture, None, None);
+        let error = load_campaign_repository_graph(&deployment).err().unwrap();
+        assert!(error.to_string().contains("max_objects"));
+
+        let deployment = write_memory_deployment(&fixture, Some(1), None);
+        let error = load_campaign_repository_graph(&deployment).err().unwrap();
+        assert!(error.to_string().contains("quota service must be authored"));
+    }
+
+    #[test]
+    fn authored_memory_refuses_global_4096_before_namespace_effects() {
+        let fixture = StoreDeploymentFixture::new();
+        let original_service = authored_quota_service();
+        for maximum in [1, 64] {
+            let deployment =
+                write_memory_deployment(&fixture, Some(maximum), Some(&original_service));
+            let error = load_campaign_repository_graph(&deployment).err().unwrap();
+            // Global4096 cannot cover the existing service bootstrap/constructor,
+            // before either namespace reaches its own fixed map admission.
+            assert!(error.to_string().contains("service admission failed"));
+        }
+    }
+
+    #[test]
+    fn authored_memory_uses_an_existing_finite_service_profile() {
+        let fixture = StoreDeploymentFixture::new();
+        // Reuse the exact authored GC inspection resource vector. This is a
+        // separate original service; the global4096 refusal fixture stays fixed.
+        let original_service = authored_quota_service()
+            .replace(
+                "resident_peak_bytes = 1048576",
+                "resident_peak_bytes = 134217728",
+            )
+            .replace(
+                "backing_peak_bytes = 1048576",
+                "backing_peak_bytes = 2147483648",
+            )
+            .replace("metadata_bytes = 4096", "metadata_bytes = 67108864")
+            .replace("staging_bytes = 131072", "staging_bytes = 8388608")
+            .replace("file_descriptors = 36", "file_descriptors = 256");
+        let deployment = write_memory_deployment(&fixture, Some(1), Some(&original_service));
+        let loaded = load_campaign_repository_graph(&deployment)
+            .expect("one object under the existing finite inspection profile");
+        assert_eq!(loaded.graph.describe()[0].kind, StoreNodeKind::Memory);
+        assert!(
+            loaded
+                .graph
+                .checked_publication_metadata(ObjectKind::Trace)
+                .is_ok()
+        );
+        assert_eq!(loaded.maintenance.physical_count(), 1);
+        drop(loaded);
+
+        for maximum in [0, i64::MAX as u64] {
+            let deployment =
+                write_memory_deployment(&fixture, Some(maximum), Some(&original_service));
+            let error = load_campaign_repository_graph(&deployment).err().unwrap();
+            assert!(error.to_string().contains("graph admission failed"));
+        }
+        let deployment = write_memory_deployment(&fixture, Some(u64::MAX), Some(&original_service));
+        let error = load_campaign_repository_graph(&deployment).err().unwrap();
+        assert!(error.to_string().contains("invalid deployment"));
+    }
+
+    fn authored_quota_service() -> String {
         let authored = r#"lifetime_ms = 60000
 [resources]
 resident_peak_bytes = 1048576
@@ -1810,6 +1929,12 @@ file_descriptors = 36
         ] {
             authored.push_str(&format!("\n[host_operation_budgets.{name}]\npoll_interval_ms = 10\ntotal_timeout_ms = 60000\n"));
         }
+        authored
+    }
+
+    #[test]
+    fn standalone_quota_service_requires_the_complete_authored_resource_contract() {
+        let authored = authored_quota_service();
         let parsed = toml::from_str::<AuthoredQuotaService>(&authored)
             .unwrap_or_else(|error| panic!("parse explicit standalone service: {error}"));
         assert_eq!(parsed.lifetime_ms, 60000);

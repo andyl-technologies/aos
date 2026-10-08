@@ -60,6 +60,7 @@ fn prepared_finding_publishes_and_authenticates_an_admitted_observation_closure(
             u64::MAX,
         )),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     repository
         .publish_scenario_artifact(
@@ -1355,6 +1356,7 @@ fn finding_candidate_publication_waits_for_both_replay_passes() {
             u64::MAX,
         )),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     let store = CrucibleCampaignArtifactStore::new(Arc::clone(&repository));
     let mut calls = 0;

@@ -28,9 +28,11 @@ pub struct AuthenticatedProductionCheckpointCodecFixture {
 /// Authenticated closure containing a persistent RAM image with one changed page.
 pub struct AuthenticatedProductionExactRamCodecFixture {
     source: ScenarioDefForm,
-    configuration: Configuration,
+    // Retains the complete captured configuration when inspection is disabled.
+    _configuration: Configuration,
     closure: ProductionExactCheckpointClosure,
-    previous_ram: crucible_cas::ram::LeasedRamRoot,
+    // Keeps the preceding RAM image leased for the entire fixture lifetime.
+    _previous_ram: crucible_cas::ram::LeasedRamRoot,
 }
 
 impl AuthenticatedProductionExactRamCodecFixture {
@@ -41,9 +43,10 @@ impl AuthenticatedProductionExactRamCodecFixture {
     }
 
     /// Returns the modeled configuration captured by the fixture.
+    #[cfg(feature = "test-support")]
     #[must_use]
     pub const fn configuration(&self) -> &Configuration {
-        &self.configuration
+        &self._configuration
     }
 
     /// Returns the self-contained closure with its leased persistent RAM tree.
@@ -53,9 +56,10 @@ impl AuthenticatedProductionExactRamCodecFixture {
     }
 
     /// Returns the independently retained RAM image preceding the page change.
+    #[cfg(feature = "test-support")]
     #[must_use]
     pub fn previous_ram(&self) -> &crucible_cas::ram::LeasedRamRoot {
-        &self.previous_ram
+        &self._previous_ram
     }
 }
 
@@ -103,6 +107,7 @@ impl AuthenticatedProductionCheckpointCodecFixture {
 ///
 /// Returns [`LifecycleApiError`] when fixture construction or durable closure
 /// publication under `run_state_root` fails.
+#[cfg(feature = "test-support")]
 pub fn build_authenticated_production_checkpoint_codec_fixture(
     run_state_root: &Path,
 ) -> Result<AuthenticatedProductionCheckpointCodecFixture, LifecycleApiError> {
@@ -184,6 +189,10 @@ fn build_exact_ram_production_checkpoint_codec_fixture_inner(
         page_index: 1,
         bytes: vec![0x7f; 4096],
     });
+    let account = catalog
+        .original()
+        .child()
+        .map_err(|error| fixture_error("admit fixture RAM operation", error))?;
     let changed_ram = catalog
         .store()
         .update_with_reader(
@@ -193,6 +202,7 @@ fn build_exact_ram_production_checkpoint_codec_fixture_inner(
                 .retention()
                 .map_err(|error| fixture_error("admit fixture RAM root", error))?
                 .as_ref(),
+            &account,
             &mut || Ok(()),
         )
         .map_err(|error| fixture_error("replace fixture RAM page", error))?;
@@ -226,9 +236,9 @@ fn build_exact_ram_production_checkpoint_codec_fixture_inner(
     )?;
     Ok(AuthenticatedProductionExactRamCodecFixture {
         source,
-        configuration,
+        _configuration: configuration,
         closure,
-        previous_ram,
+        _previous_ram: previous_ram,
     })
 }
 
@@ -526,9 +536,21 @@ fn build_production_checkpoint_codec_fixture(
         Some(&test_ram_catalog_provider()),
     )
     .map_err(|error| fixture_error("open fixture RAM catalog", error))?;
-    let ram = catalog
-        .capture(
-            fixture_ram_topology()?,
+    let topology = fixture_ram_topology()?;
+    let ram = {
+        let account = catalog.original().child().map_err(|source| {
+            fixture_error(
+                "capture fixture RAM tree",
+                crucible_cas::ram::RamStoreError::from_admission(catalog.original(), source),
+            )
+        })?;
+        let retention = catalog
+            .retention()
+            .map_err(|error| fixture_error("capture fixture RAM tree", error))?;
+
+        catalog.store().capture(
+            topology,
+            crucible_ram::Scope::Exact,
             &mut |region, index, bytes| {
                 bytes.fill(if region.id() == "machine.rom" {
                     0xa5
@@ -537,9 +559,12 @@ fn build_production_checkpoint_codec_fixture(
                 });
                 Ok(())
             },
+            retention.as_ref(),
+            &account,
             &mut || Ok(()),
         )
-        .map_err(|error| fixture_error("capture fixture RAM tree", error))?;
+    }
+    .map_err(|error| fixture_error("capture fixture RAM tree", error))?;
     let bootstrap_exact_ram = ProductionExactRamCheckpoint::from_paged_capture(
         bootstrap_identity,
         hash_exact_checkpoint_file_sha256_with_boundary(&vmstate, &mut || Ok(()))

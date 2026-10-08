@@ -73,10 +73,14 @@ impl ExactCheckpointStore {
             let verify = (|| {
                 let retention = self.ram_retention.acquire()?;
                 let lease = retention.retain_root(*id)?;
-                let (store, root) = loaded.open_paged_ram(ordinal, lease, &mut boundary)?;
+                let (store, root, original) =
+                    loaded.open_paged_ram(ordinal, lease, &mut boundary)?;
+                let account = original
+                    .child()
+                    .map_err(|source| RamStoreError::from_admission(&original, source))?;
                 drop(retention);
                 store
-                    .verify(&root, &mut boundary)
+                    .verify(&root, &account, &mut boundary)
                     .map_err(ExactCheckpointStoreError::from)
             })();
             if let Some(error) = supervision_failure {

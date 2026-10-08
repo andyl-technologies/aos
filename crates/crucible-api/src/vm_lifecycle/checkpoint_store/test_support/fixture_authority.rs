@@ -236,6 +236,12 @@ impl ProductionRamCatalogProvider for FixtureRamCatalogProvider {
         }
 
         let quota = self.prepare_directory(directory)?;
+        let original = crucible_cas::owned_decode::DecodeBudget::for_store(quota.clone()).map_err(
+            |source| StoreError::DecodeAdmission {
+                source,
+                custody: None,
+            },
+        )?;
         let path = directory.join("retention.lock");
         let fence = fs::OpenOptions::new()
             .read(true)
@@ -265,6 +271,7 @@ impl ProductionRamCatalogProvider for FixtureRamCatalogProvider {
             backend,
             quota,
             retention_fence: Arc::new(fence),
+            original,
         };
         catalogs.insert(
             directory.to_path_buf(),
@@ -284,9 +291,12 @@ impl ProductionRamCatalogProvider for FixtureRamCatalogProvider {
         match catalogs.get(directory) {
             Some(FixtureCatalogState::Retiring(receipt)) => return Ok(receipt.clone()),
             Some(FixtureCatalogState::Open(storage)) => {
-                if Arc::strong_count(&storage.backend) != 1
+                // The private StoreAuthority retains one intrinsic quota alias;
+                // exclusivity excludes all operation accounts and decoded readers.
+                if !storage.original.is_exclusive()
+                    || Arc::strong_count(&storage.backend) != 1
                     || Arc::strong_count(&storage.retention_fence) != 1
-                    || Arc::strong_count(&storage.quota) != 2
+                    || Arc::strong_count(&storage.quota) != 3
                 {
                     return Err(StoreError::Quota);
                 }
@@ -307,6 +317,7 @@ impl ProductionRamCatalogProvider for FixtureRamCatalogProvider {
         let Some(FixtureCatalogState::Open(storage)) = catalogs.remove(directory) else {
             return Err(StoreError::Unauthorized);
         };
+        drop(storage.original);
         let receipt = Arc::new(FixtureCatalogRetirement {
             active,
             retired,
@@ -322,9 +333,10 @@ impl ProductionRamCatalogProvider for FixtureRamCatalogProvider {
     }
 
     fn maximum_sqlite_heap_bytes(&self) -> u64 {
-        // SQLite's hard heap limit is process-wide. Exhaustion tests use a
-        // separate process rather than lowering unrelated codec fixtures.
-        i64::MAX as u64
+        // Checked error copies need a finite native bound. This authored heap
+        // preserves the existing 2 GiB component admission bank. Exhaustion
+        // tests isolate lower process-wide hard limits in a child process.
+        8 * 1024 * 1024
     }
 }
 

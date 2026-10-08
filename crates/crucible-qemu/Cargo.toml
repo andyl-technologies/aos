@@ -7,7 +7,7 @@ publish = false
 
 [features]
 default = []
-test-support = ["crucible/test-double"]
+test-support = ["crucible/test-double", "crucible-ram/test-support"]
 
 [lints]
 workspace = true
@@ -32,5 +32,7 @@ tempfile = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+crucible-linux-resource = { path = "../crucible-linux-resource", default-features = false, features = ["test-support"] }
+crucible-cas = { workspace = true, features = ["test-support"] }
 crucible = { path = "../crucible", features = ["test-double"] }
 rustix = { workspace = true, features = ["time"] }

@@ -1972,6 +1972,7 @@ pub(super) fn directory_checkpoint_inspection_store(
         Arc::new(crucible_cas::content_store::DirectoryRefBackend::new(
             fixture._temporary.path().join("refs"),
         )),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     );
     Ok(ExactCheckpointStore::new(
         backend,

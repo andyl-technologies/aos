@@ -211,6 +211,24 @@ impl GuardedCampaignOwner {
         self.inner.repository.blob_backend().metadata_resources()
     }
 
+    /// Borrows the original metadata admission retained by the repository owner.
+    ///
+    /// Independent readers derive children from this parent before opening
+    /// inputs. Reusing it preserves earlier refusals and namespace cancellation.
+    ///
+    /// # Errors
+    /// Refuses a repository without original namespace metadata admission.
+    pub fn repository_decode_budget(
+        &self,
+    ) -> Result<&crucible::owned_decode::DecodeBudget, crucible_cas::content_store::StoreError>
+    {
+        self.inner.repository.ram_admission().original().ok_or(
+            crucible_cas::content_store::StoreError::Unsupported {
+                capability: "decoded-metadata-resources",
+            },
+        )
+    }
+
     /// Adopts authenticated guest inputs before this owner is shared or used.
     ///
     /// Executable, plugin, contained namespace and catalog provider remain
@@ -297,8 +315,8 @@ impl GuardedCampaignOwner {
         finding: FindingId,
         scenario: &ScenarioDefForm,
     ) -> Result<GuardedImportedFindingMidpoint, GuardedFindingMidpointError> {
-        let decoding =
-            crucible::owned_decode::DecodeBudget::for_store(self.repository_metadata_resources()?)?;
+        let original = self.repository_decode_budget()?;
+        let decoding = original.child()?;
         let _decode_scope = decoding.enter();
         let cancellation = ExecutionCancellation::default();
         let authentication = self
@@ -347,6 +365,8 @@ impl GuardedCampaignOwner {
             &self.inner.repository,
             &plan,
             DurabilityRequirement::new(1, false)?,
+            source.ram_admission().original(),
+            Some(original),
             &mut boundary,
         )?;
         let selections_path = self

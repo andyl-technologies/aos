@@ -144,11 +144,11 @@ fn compressed_directory_rejects_oversized_sources_and_corrupt_physical_records()
     let oversized_bytes = Arc::<[u8]>::from(vec![0x44; 65]);
     let oversized_id = ContentId::for_bytes(ObjectKind::Trace, 1, &oversized_bytes);
     let opens = Arc::new(AtomicUsize::new(0));
-    let oversized = BlobHandle::new(Arc::new(CountingSource {
+    let oversized = BlobHandle::new(CountingSource {
         bytes: Arc::clone(&oversized_bytes),
         opens: Arc::clone(&opens),
         bytes_read: Arc::new(AtomicUsize::new(0)),
-    }));
+    });
     assert!(matches!(
         store.put_if_absent(oversized_id, &oversized),
         Err(StoreError::Quota)
@@ -535,11 +535,11 @@ fn encrypted_directory_fails_closed_on_limits_wrong_keys_and_corruption() {
     let oversized_bytes = Arc::<[u8]>::from(vec![0x44; 128 * 1024 + 1]);
     let oversized_id = ContentId::for_bytes(ObjectKind::Trace, 1, &oversized_bytes);
     let opens = Arc::new(AtomicUsize::new(0));
-    let oversized = BlobHandle::new(Arc::new(CountingSource {
+    let oversized = BlobHandle::new(CountingSource {
         bytes: Arc::clone(&oversized_bytes),
         opens: Arc::clone(&opens),
         bytes_read: Arc::new(AtomicUsize::new(0)),
-    }));
+    });
     assert!(matches!(
         store.put_if_absent(oversized_id, &oversized),
         Err(StoreError::Quota)

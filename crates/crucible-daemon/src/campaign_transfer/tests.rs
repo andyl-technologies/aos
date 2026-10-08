@@ -32,6 +32,7 @@ fn archive_plan() -> CampaignArchivePlan {
     let repository = CampaignRepository::new(
         Arc::new(MemoryBlobBackend::new("transfer-test", 64 * 1024 * 1024)),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     );
     plan_in_repository(&repository)
 }
@@ -287,6 +288,7 @@ fn durable_transfer_stages_source_metadata_and_retries_idempotently() {
         Arc::new(DirectoryRefBackend::new(
             temporary.path().join("source-refs"),
         )),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     );
     let destination = CampaignRepository::new(
         Arc::new(DirectoryBlobBackend::new(
@@ -296,6 +298,7 @@ fn durable_transfer_stages_source_metadata_and_retries_idempotently() {
         Arc::new(DirectoryRefBackend::new(
             temporary.path().join("destination-refs"),
         )),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     );
     let plan = plan_in_repository(&source);
     let mut source_journal =
@@ -378,6 +381,7 @@ fn durable_transfer_rejects_read_only_source_before_journaling() {
         Arc::new(DirectoryRefBackend::new(
             temporary.path().join("source-refs"),
         )),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     );
     let destination = CampaignRepository::new(
         Arc::new(DirectoryBlobBackend::new(
@@ -387,6 +391,7 @@ fn durable_transfer_rejects_read_only_source_before_journaling() {
         Arc::new(DirectoryRefBackend::new(
             temporary.path().join("destination-refs"),
         )),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     );
     let plan = plan_in_repository(&source);
     let mut source_journal =
@@ -445,6 +450,7 @@ fn invalid_publication_intent_is_rejected_before_transfer_ownership() {
         Arc::new(DirectoryRefBackend::new(
             temporary.path().join("source-refs"),
         )),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     );
     let destination = CampaignRepository::new(
         Arc::new(DirectoryBlobBackend::new(
@@ -454,6 +460,7 @@ fn invalid_publication_intent_is_rejected_before_transfer_ownership() {
         Arc::new(DirectoryRefBackend::new(
             temporary.path().join("destination-refs"),
         )),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     );
     let plan = plan_in_repository(&source);
     let mut source_journal =
@@ -520,6 +527,7 @@ fn corrupt_destination_object_retains_ownership_and_retries_after_repair() {
         Arc::new(DirectoryRefBackend::new(
             temporary.path().join("source-refs"),
         )),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     );
     let destination_backend = Arc::new(DirectoryBlobBackend::new(
         "destination",
@@ -530,6 +538,7 @@ fn corrupt_destination_object_retains_ownership_and_retries_after_repair() {
         Arc::new(DirectoryRefBackend::new(
             temporary.path().join("destination-refs"),
         )),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     );
     let plan = plan_in_repository(&source);
     let damaged = plan.selected()[0];
@@ -657,7 +666,17 @@ fn imported_promoted_checkpoint_survives_fresh_store_and_idempotent_retry() {
     let source_refs = Arc::new(DirectoryRefBackend::new(
         temporary.path().join("source-refs"),
     ));
-    let source = CampaignRepository::new(source_backend.clone(), source_refs.clone());
+    let source_original = crucible::owned_decode::DecodeBudget::for_store(
+        source_backend
+            .metadata_resources()
+            .expect("original source namespace metadata"),
+    )
+    .expect("same original source namespace account");
+    let source = CampaignRepository::new(
+        source_backend.clone(),
+        source_refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Available(source_original.clone()),
+    );
     let source_checkpoints = ExactCheckpointStore::new(
         source_backend.clone(),
         64 * 1024 * 1024,
@@ -824,6 +843,9 @@ fn imported_promoted_checkpoint_survives_fresh_store_and_idempotent_retry() {
     drop(promoted);
     drop(raw);
     {
+        let original = source_original
+            .child()
+            .expect("source inventory operation account");
         let inventory = source_refs
             .acquire_ref_inventory_fence()
             .expect("selected source inventory authority");
@@ -841,10 +863,16 @@ fn imported_promoted_checkpoint_survives_fresh_store_and_idempotent_retry() {
         let mut expected_closure = split.objects().clone();
         for ram_root in split.ram_roots() {
             ram_store
-                .visit_inventory_graph(*ram_root, inventory.as_ref(), &mut |object| {
-                    expected_closure.insert(object);
-                    Ok(())
-                })
+                .visit_inventory_graph(
+                    *ram_root,
+                    inventory.as_ref(),
+                    &original,
+                    &mut || Ok(()),
+                    &mut |object| {
+                        expected_closure.insert(object);
+                        Ok(())
+                    },
+                )
                 .expect("authenticate every RAM descendant");
         }
         assert!(expected_closure.contains(&promoted_root.content_id()));
@@ -886,11 +914,18 @@ fn imported_promoted_checkpoint_survives_fresh_store_and_idempotent_retry() {
         crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
             .expect("finite destination component metadata authority"),
     );
+    let destination_original = crucible::owned_decode::DecodeBudget::for_store(
+        destination_backend
+            .metadata_resources()
+            .expect("original destination namespace metadata"),
+    )
+    .expect("same original destination namespace account");
     let destination = CampaignRepository::new(
         destination_backend.clone(),
         Arc::new(DirectoryRefBackend::new(
             temporary.path().join("destination-refs"),
         )),
+        crucible_campaign::CampaignRamAdmission::Available(destination_original),
     );
     let destination_checkpoints = ExactCheckpointStore::new(
         destination_backend.clone(),

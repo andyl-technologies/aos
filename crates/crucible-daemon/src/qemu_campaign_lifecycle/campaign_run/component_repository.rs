@@ -19,6 +19,7 @@ where
     let repository = CampaignRepository::with_component_authorities(
         blobs,
         refs,
+        crucible_campaign::CampaignRamAdmission::Unavailable,
         planner_authority.clone(),
         debugger_authority,
     )

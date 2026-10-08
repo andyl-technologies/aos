@@ -101,7 +101,14 @@ fn paged_loader_rejects_corrupt_page_with_retained_root_metadata()
     assert_eq!(
         catalog
             .store()
-            .read_page(&root, "machine.ram", 1, &mut || Ok(()))?,
+            .read_page(
+                &root,
+                "machine.ram",
+                1,
+                &catalog.original().child()?,
+                &mut || Ok(())
+            )?
+            .bytes(),
         vec![0x7f; 4096]
     );
     load_exact_checkpoint_set(
@@ -116,7 +123,13 @@ fn paged_loader_rejects_corrupt_page_with_retained_root_metadata()
     assert!(
         catalog
             .store()
-            .read_page(&root, "machine.ram", 1, &mut || Ok(()))
+            .read_page(
+                &root,
+                "machine.ram",
+                1,
+                &catalog.original().child()?,
+                &mut || Ok(())
+            )
             .is_err()
     );
     assert!(
@@ -145,7 +158,14 @@ fn paged_loader_rejects_corrupt_page_with_retained_root_metadata()
     assert_eq!(
         catalog
             .store()
-            .read_page(&root, "machine.ram", 1, &mut || Ok(()))?,
+            .read_page(
+                &root,
+                "machine.ram",
+                1,
+                &catalog.original().child()?,
+                &mut || Ok(())
+            )?
+            .bytes(),
         vec![0x7f; 4096]
     );
     load_exact_checkpoint_set(

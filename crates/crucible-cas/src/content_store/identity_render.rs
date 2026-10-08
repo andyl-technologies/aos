@@ -3,8 +3,12 @@
 use super::{ContentId, ObjectKind, content_hasher};
 
 impl ContentId {
-    /// Borrows the bounded ASCII identity spelling from fixed stack storage.
-    pub(crate) fn with_encoded_text<T>(self, consume: impl FnOnce(&[u8]) -> T) -> T {
+    /// Borrows the canonical ASCII identity spelling from fixed stack storage.
+    ///
+    /// The callback receives the same bytes as [`Self::encode`] without a heap
+    /// allocation or ambient decoder charge. The spelling remains valid only
+    /// during the callback; no storage identity or admission is changed.
+    pub fn with_encoded_text<T>(self, consume: impl FnOnce(&[u8]) -> T) -> T {
         // The longest closed kind tag is 17 bytes. Two separators, ten decimal
         // version digits and 64 digest digits need at most 93 bytes.
         let mut encoded = [0_u8; 96];

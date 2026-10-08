@@ -16,6 +16,7 @@ use crate::content_store::{
 
 use super::*;
 
+mod checked_graph_adapters;
 mod metadata_lifecycle;
 
 fn archive_offer(
@@ -131,7 +132,7 @@ fn admitted_store(
         "ram-test",
         path,
         quota.clone(),
-        i64::MAX as u64,
+        8 * 1024 * 1024,
         Arc::new(FixtureCatalogSupervisor(quota.clone())),
     )
     .unwrap();
@@ -148,6 +149,24 @@ fn store(path: &std::path::Path, limits: RamStoreLimits) -> RamStore {
     admitted_store(path, limits).0
 }
 
+fn fixture_original(store: &RamStore) -> crate::owned_decode::DecodeBudget {
+    crate::owned_decode::DecodeBudget::for_store(store.backend.metadata_resources().unwrap())
+        .unwrap()
+}
+
+fn fixture_boundary(
+    original: &crate::owned_decode::DecodeBudget,
+    boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+) -> Result<(), StoreError> {
+    original
+        .verify_live()
+        .map_err(|error| crate::content_store::batch::admission_under(original, error))?;
+    boundary()?;
+    original
+        .verify_live()
+        .map_err(|error| crate::content_store::batch::admission_under(original, error))
+}
+
 #[test]
 fn admitted_root_credit_survives_facades_and_last_shared_metadata_clone() {
     let directory = tempfile::tempdir().unwrap();
@@ -159,12 +178,14 @@ fn admitted_root_credit_survives_facades_and_last_shared_metadata_clone() {
             Scope::Exact,
             &mut patterned,
             &retention,
+            &fixture_original(&store),
             &mut || Ok(()),
         )
         .unwrap();
     let root = store
         .open_with_metadata_resources(
             retention.retain_root(captured.object_id()).unwrap(),
+            &fixture_original(&store),
             &mut || Ok(()),
         )
         .unwrap();
@@ -191,6 +212,7 @@ fn admitted_root_refuses_missing_authority_and_discovery_retains_its_credit() {
             Scope::Exact,
             &mut patterned,
             &retention,
+            &fixture_original(&store),
             &mut || Ok(()),
         )
         .unwrap();
@@ -204,6 +226,7 @@ fn admitted_root_refuses_missing_authority_and_discovery_retains_its_credit() {
     assert!(matches!(
         bare.open_with_metadata_resources(
             retention.retain_root(captured.object_id()).unwrap(),
+            &fixture_original(&store),
             &mut || Ok(()),
         ),
         Err(RamStoreError::Store(StoreError::Unsupported {
@@ -212,7 +235,11 @@ fn admitted_root_refuses_missing_authority_and_discovery_retains_its_credit() {
     ));
     let baseline = quota.0.usage().unwrap();
     let discovery = store
-        .inspect_root_with_metadata_resources(captured.object_id(), &mut || Ok(()))
+        .inspect_root_with_metadata_resources(
+            captured.object_id(),
+            &fixture_original(&store),
+            &mut || Ok(()),
+        )
         .unwrap();
     assert!(quota.0.usage().unwrap().1 >= baseline.1 + maximum_ram_root_decoding_bytes().unwrap());
     assert_eq!(discovery.record(), captured.record());
@@ -259,6 +286,7 @@ fn encoded_backing_bound_covers_four_unique_graphs_with_partial_regions() {
                         Ok(())
                     },
                     &retention,
+                    &fixture_original(&store),
                     &mut || Ok(()),
                 )
                 .unwrap(),
@@ -290,23 +318,30 @@ fn lazy_lookup_proves_partial_pages_and_persistent_updates() {
             Scope::Exact,
             &mut patterned,
             &retention,
+            &fixture_original(&store),
             &mut || Ok(()),
         )
         .unwrap();
-    let (bytes, proof) = store
-        .read_page_with_proof(&root, "main", 7, &mut || Ok(()))
+    let page = store
+        .read_page_with_proof(&root, "main", 7, &fixture_original(&store), &mut || Ok(()))
         .unwrap();
+    let bytes = page.bytes();
+    let proof = page.proof();
 
     assert_eq!(bytes, vec![7; 19]);
     proof
-        .verify(&bytes, root.record(), root.logical_digest())
+        .verify(bytes, root.record(), root.logical_digest())
         .unwrap();
     assert!(
         proof
             .verify(&[8; 19], root.record(), root.logical_digest())
             .is_err()
     );
-    assert!(store.read_page(&root, "main", 8, &mut || Ok(())).is_err());
+    assert!(
+        store
+            .read_page(&root, "main", 8, &fixture_original(&store), &mut || Ok(()))
+            .is_err()
+    );
 
     let updated = store
         .update(
@@ -317,6 +352,7 @@ fn lazy_lookup_proves_partial_pages_and_persistent_updates() {
                 bytes: vec![99; 4096],
             }],
             &retention,
+            &fixture_original(&store),
             &mut || Ok(()),
         )
         .unwrap();
@@ -329,6 +365,7 @@ fn lazy_lookup_proves_partial_pages_and_persistent_updates() {
                 differences.push((region.to_owned(), index));
                 Ok(())
             },
+            &fixture_original(&store),
             &mut || Ok(()),
         )
         .unwrap();
@@ -336,18 +373,22 @@ fn lazy_lookup_proves_partial_pages_and_persistent_updates() {
     assert_eq!(changed, 1);
     assert_eq!(differences, vec![("main".to_owned(), 3)]);
     assert_eq!(
-        store.read_page(&root, "main", 3, &mut || Ok(())).unwrap(),
+        store
+            .read_page(&root, "main", 3, &fixture_original(&store), &mut || Ok(()))
+            .unwrap(),
         vec![3; 4096]
     );
     assert_eq!(
         store
-            .read_page(&updated, "main", 3, &mut || Ok(()))
+            .read_page(&updated, "main", 3, &fixture_original(&store), &mut || Ok(
+                ()
+            ))
             .unwrap(),
         vec![99; 4096]
     );
     assert_eq!(
         store
-            .verify(&updated, &mut || Ok(()))
+            .verify(&updated, &fixture_original(&store), &mut || Ok(()))
             .unwrap()
             .logical_bytes,
         4096 * 7 + 19
@@ -367,6 +408,7 @@ fn archive_wire_transfer_validates_repeated_and_changed_content() {
             Scope::Exact,
             &mut patterned,
             &retention,
+            &fixture_original(&source),
             &mut || Ok(()),
         )
         .unwrap();
@@ -380,12 +422,18 @@ fn archive_wire_transfer_validates_repeated_and_changed_content() {
             "destination",
             [1; 32],
             &retention,
+            &fixture_original(&source),
+            &fixture_original(&destination),
             &mut || Ok(()),
         )
         .unwrap();
     assert_eq!(
         destination
-            .verify(first.root(), &mut || Ok(()))
+            .verify(
+                first.root(),
+                &fixture_original(&destination),
+                &mut || Ok(())
+            )
             .unwrap()
             .logical_bytes,
         4096 * 16 + 7
@@ -398,6 +446,8 @@ fn archive_wire_transfer_validates_repeated_and_changed_content() {
             "destination",
             [1; 32],
             &retention,
+            &fixture_original(&source),
+            &fixture_original(&destination),
             &mut || Ok(()),
         )
         .unwrap();
@@ -413,6 +463,7 @@ fn archive_wire_transfer_validates_repeated_and_changed_content() {
                 bytes: vec![99; 4096],
             }],
             &retention,
+            &fixture_original(&source),
             &mut || Ok(()),
         )
         .unwrap();
@@ -424,6 +475,8 @@ fn archive_wire_transfer_validates_repeated_and_changed_content() {
             "destination",
             [2; 32],
             &retention,
+            &fixture_original(&source),
+            &fixture_original(&destination),
             &mut || Ok(()),
         )
         .unwrap();
@@ -431,7 +484,13 @@ fn archive_wire_transfer_validates_repeated_and_changed_content() {
     assert!(next.report().copied_bytes < first.report().copied_bytes);
     assert_eq!(
         destination
-            .read_page(next.root(), "main", 16, &mut || Ok(()))
+            .read_page(
+                next.root(),
+                "main",
+                16,
+                &fixture_original(&destination),
+                &mut || Ok(())
+            )
             .unwrap(),
         vec![16; 7]
     );
@@ -451,6 +510,7 @@ fn absolute_wire_credits_are_idempotent_and_coordinates_do_not_authorize_other_o
             Scope::Exact,
             &mut patterned,
             &retention,
+            &fixture_original(&source),
             &mut || Ok(()),
         )
         .unwrap();
@@ -463,7 +523,13 @@ fn absolute_wire_credits_are_idempotent_and_coordinates_do_not_authorize_other_o
             object: root.object_id().encode(),
         },
     };
-    let first = sender.respond(request, &mut || Ok(())).unwrap();
+    let first = sender
+        .respond(
+            request,
+            &sender.original_for_test().unwrap(),
+            &mut || Ok(()),
+        )
+        .unwrap();
     let RamTransferControl::ObjectChunk {
         bytes,
         offset,
@@ -485,14 +551,30 @@ fn absolute_wire_credits_are_idempotent_and_coordinates_do_not_authorize_other_o
         },
     };
     assert_eq!(
-        sender.respond(credit.clone(), &mut || Ok(())).unwrap(),
-        sender.respond(credit, &mut || Ok(())).unwrap()
+        sender
+            .respond(
+                credit.clone(),
+                &sender.original_for_test().unwrap(),
+                &mut || Ok(())
+            )
+            .unwrap(),
+        sender
+            .respond(credit, &sender.original_for_test().unwrap(), &mut || Ok(()))
+            .unwrap()
     );
     let foreign = RamTransferMessage {
         operation: [4; 32],
         control: RamTransferControl::Cancel,
     };
-    assert!(sender.respond(foreign, &mut || Ok(())).is_err());
+    assert!(
+        sender
+            .respond(
+                foreign,
+                &sender.original_for_test().unwrap(),
+                &mut || Ok(())
+            )
+            .is_err()
+    );
     let forged = RamTransferMessage {
         operation: [3; 32],
         control: RamTransferControl::WantObject {
@@ -502,13 +584,18 @@ fn absolute_wire_credits_are_idempotent_and_coordinates_do_not_authorize_other_o
                 .encode(),
         },
     };
-    assert!(sender.respond(forged, &mut || Ok(())).is_err());
+    assert!(
+        sender
+            .respond(forged, &sender.original_for_test().unwrap(), &mut || Ok(()))
+            .is_err()
+    );
     let acknowledgment = sender
         .respond(
             RamTransferMessage {
                 operation: [3; 32],
                 control: RamTransferControl::Cancel,
             },
+            &sender.original_for_test().unwrap(),
             &mut || Ok(()),
         )
         .unwrap();
@@ -527,6 +614,7 @@ fn corrupt_or_foreign_wire_chunk_never_publishes_a_destination_root() {
             Scope::Exact,
             &mut patterned,
             &retention,
+            &fixture_original(&source),
             &mut || Ok(()),
         )
         .unwrap();
@@ -543,7 +631,11 @@ fn corrupt_or_foreign_wire_chunk_never_publishes_a_destination_root() {
         let mut receiver =
             RamTransferReceiver::new(destination.clone(), &retention, sender.offer()).unwrap();
         let mut exchange = |message: RamTransferMessage| {
-            let mut response = sender.respond(message, &mut || Ok(()))?;
+            let mut response = sender.respond(
+                message,
+                &sender.original_for_test().unwrap(),
+                &mut || Ok(()),
+            )?;
             if let RamTransferControl::ObjectChunk { bytes, .. } = &mut response.control {
                 if foreign {
                     response.operation = [6; 32];
@@ -553,7 +645,15 @@ fn corrupt_or_foreign_wire_chunk_never_publishes_a_destination_root() {
             }
             Ok(response)
         };
-        assert!(receiver.receive(&mut exchange, &mut || Ok(())).is_err());
+        assert!(
+            receiver
+                .receive(
+                    &mut exchange,
+                    &receiver.original_for_test().unwrap(),
+                    &mut || Ok(())
+                )
+                .is_err()
+        );
         assert!(!destination.backend.contains(root.object_id()).unwrap());
     }
 }
@@ -576,6 +676,7 @@ fn framed_transfer_operates_between_independent_socket_instances() {
             Scope::Exact,
             &mut patterned,
             &source_retention,
+            &fixture_original(&source),
             &mut || Ok(()),
         )
         .unwrap();
@@ -590,13 +691,22 @@ fn framed_transfer_operates_between_independent_socket_instances() {
             .set_write_timeout(Some(Duration::from_secs(5)))
             .unwrap();
     }
-    let sending =
-        std::thread::spawn(move || sender.serve_transport(&mut source_socket, &mut || Ok(())));
+    let sending = std::thread::spawn(move || {
+        sender.serve_transport(
+            &mut source_socket,
+            &sender.original_for_test().unwrap(),
+            &mut || Ok(()),
+        )
+    });
     let offer = RamTransferMessage::read(&mut destination_socket).unwrap();
     let mut receiver =
         RamTransferReceiver::new(destination.clone(), &destination_retention, offer).unwrap();
     let RamTransferStep::ClosureStored(stored) = receiver
-        .receive_transport(&mut destination_socket, &mut || Ok(()))
+        .receive_transport(
+            &mut destination_socket,
+            &receiver.original_for_test().unwrap(),
+            &mut || Ok(()),
+        )
         .unwrap()
     else {
         panic!("expected closure possession")
@@ -606,13 +716,21 @@ fn framed_transfer_operates_between_independent_socket_instances() {
     assert_eq!(stored.root().logical_digest(), root.logical_digest());
     assert_eq!(
         destination
-            .read_page(stored.root(), "main", 3, &mut || Ok(()))
+            .read_page(
+                stored.root(),
+                "main",
+                3,
+                &fixture_original(&destination),
+                &mut || Ok(())
+            )
             .unwrap(),
         vec![3; 19]
     );
     assert_eq!(
         destination
-            .verify(stored.root(), &mut || Ok(()))
+            .verify(stored.root(), &fixture_original(&destination), &mut || Ok(
+                ()
+            ))
             .unwrap()
             .pages,
         4
@@ -631,6 +749,7 @@ fn inventory_walk_authenticates_actual_pages_under_borrowed_exclusive_authority(
             Scope::Exact,
             &mut patterned,
             &retention,
+            &fixture_original(&source),
             &mut || Ok(()),
         )
         .unwrap();
@@ -638,10 +757,16 @@ fn inventory_walk_authenticates_actual_pages_under_borrowed_exclusive_authority(
     let fence = refs.acquire_ref_inventory_fence().unwrap();
     let mut visited = BTreeSet::new();
     source
-        .visit_inventory_graph(root.object_id(), fence.as_ref(), &mut |id| {
-            visited.insert(id);
-            Ok(())
-        })
+        .visit_inventory_graph(
+            root.object_id(),
+            fence.as_ref(),
+            &fixture_original(&source),
+            &mut || Ok(()),
+            &mut |id| {
+                visited.insert(id);
+                Ok(())
+            },
+        )
         .unwrap();
     assert!(visited.contains(&root.object_id()));
     assert!(visited.contains(&first_page_object(&source, &root)));
@@ -659,14 +784,24 @@ fn inventory_walk_authenticates_actual_pages_under_borrowed_exclusive_authority(
     .unwrap();
     assert!(
         corrupt
-            .visit_inventory_graph(root.object_id(), fence.as_ref(), &mut |_| Ok(()))
+            .visit_inventory_graph(
+                root.object_id(),
+                fence.as_ref(),
+                &fixture_original(&corrupt),
+                &mut || Ok(()),
+                &mut |_| Ok(())
+            )
             .is_err()
     );
     assert!(
         source
-            .visit_inventory_graph(root.object_id(), fence.as_ref(), &mut |_| Err(
-                RamStoreError::Canceled
-            ))
+            .visit_inventory_graph(
+                root.object_id(),
+                fence.as_ref(),
+                &fixture_original(&source),
+                &mut || Ok(()),
+                &mut |_| Err(RamStoreError::Canceled)
+            )
             .is_err()
     );
 }
@@ -684,6 +819,7 @@ fn canceled_wire_transfer_leaves_root_unpublished_and_retries_from_actual_conten
             Scope::Exact,
             &mut patterned,
             &retention,
+            &fixture_original(&source),
             &mut || Ok(()),
         )
         .unwrap();
@@ -696,6 +832,8 @@ fn canceled_wire_transfer_leaves_root_unpublished_and_retries_from_actual_conten
         "destination",
         [7; 32],
         &retention,
+        &fixture_original(&source),
+        &fixture_original(&destination),
         &mut || {
             boundaries += 1;
             if boundaries > 120 {
@@ -715,13 +853,19 @@ fn canceled_wire_transfer_leaves_root_unpublished_and_retries_from_actual_conten
             "destination",
             [7; 32],
             &retention,
+            &fixture_original(&source),
+            &fixture_original(&destination),
             &mut || Ok(()),
         )
         .unwrap();
     assert!(retry.report().authenticated_existing_objects > 0);
     assert_eq!(
         destination
-            .verify(retry.root(), &mut || Ok(()))
+            .verify(
+                retry.root(),
+                &fixture_original(&destination),
+                &mut || Ok(())
+            )
             .unwrap()
             .pages,
         32
@@ -742,23 +886,42 @@ fn transfer_authenticates_existing_closure_and_copies_only_changed_content() {
             Scope::Exact,
             &mut patterned,
             &source_retention,
+            &fixture_original(&source),
             &mut || Ok(()),
         )
         .unwrap();
     let first = source
-        .transfer_to(&root, &destination, &destination_retention, &mut || Ok(()))
+        .transfer_to(
+            &root,
+            &destination,
+            &destination_retention,
+            &fixture_original(&source),
+            &fixture_original(&destination),
+            &mut || Ok(()),
+        )
         .unwrap();
 
     assert!(first.report().copied_objects > 0);
     assert_eq!(
         destination
-            .verify(first.root(), &mut || Ok(()))
+            .verify(
+                first.root(),
+                &fixture_original(&destination),
+                &mut || Ok(())
+            )
             .unwrap()
             .pages,
         16
     );
     let repeated = source
-        .transfer_to(&root, &destination, &destination_retention, &mut || Ok(()))
+        .transfer_to(
+            &root,
+            &destination,
+            &destination_retention,
+            &fixture_original(&source),
+            &fixture_original(&destination),
+            &mut || Ok(()),
+        )
         .unwrap();
     assert_eq!(repeated.report().copied_objects, 0);
     assert!(repeated.report().authenticated_existing_objects > 0);
@@ -772,20 +935,32 @@ fn transfer_authenticates_existing_closure_and_copies_only_changed_content() {
                 bytes: vec![99; 4096],
             }],
             &source_retention,
+            &fixture_original(&source),
             &mut || Ok(()),
         )
         .unwrap();
     let next = source
-        .transfer_to(&updated, &destination, &destination_retention, &mut || {
-            Ok(())
-        })
+        .transfer_to(
+            &updated,
+            &destination,
+            &destination_retention,
+            &fixture_original(&source),
+            &fixture_original(&destination),
+            &mut || Ok(()),
+        )
         .unwrap();
 
     assert_eq!(next.report().copied_objects, 7); // Page, leaf, four ancestors, root.
     assert!(next.report().copied_bytes < first.report().copied_bytes);
     assert_eq!(
         destination
-            .read_page(next.root(), "main", 2, &mut || Ok(()))
+            .read_page(
+                next.root(),
+                "main",
+                2,
+                &fixture_original(&destination),
+                &mut || Ok(())
+            )
             .unwrap(),
         vec![99; 4096]
     );
@@ -807,6 +982,7 @@ fn operation_budget_and_cancellation_do_not_publish_a_root() {
         Scope::Exact,
         &mut patterned,
         &retention,
+        &fixture_original(&store),
         &mut || Ok(()),
     );
 
@@ -816,6 +992,7 @@ fn operation_budget_and_cancellation_do_not_publish_a_root() {
         Scope::Exact,
         &mut patterned,
         &retention,
+        &fixture_original(&store),
         &mut || Err(RamStoreError::Canceled),
     );
     assert!(matches!(canceled, Err(RamStoreError::Canceled)));
@@ -840,6 +1017,7 @@ fn exact_scope_includes_immutable_images_but_execution_omits_them() {
             Scope::Exact,
             &mut patterned,
             &retention,
+            &fixture_original(&store),
             &mut || Ok(()),
         )
         .unwrap();
@@ -849,20 +1027,23 @@ fn exact_scope_includes_immutable_images_but_execution_omits_them() {
             Scope::Execution,
             &mut patterned,
             &retention,
+            &fixture_original(&store),
             &mut || Ok(()),
         )
         .unwrap();
 
     assert_eq!(
         store
-            .read_page(&exact, "rom", 0, &mut || Ok(()))
+            .read_page(&exact, "rom", 0, &fixture_original(&store), &mut || Ok(()))
             .unwrap()
             .len(),
         19
     );
     assert!(
         store
-            .read_page(&execution, "rom", 0, &mut || Ok(()))
+            .read_page(&execution, "rom", 0, &fixture_original(&store), &mut || Ok(
+                ()
+            ))
             .is_err()
     );
     assert_eq!(
@@ -885,6 +1066,30 @@ impl ImmutableBlobBackend for UnavailableObject {
 
     fn capabilities(&self) -> BackendCapabilities {
         self.backend.capabilities()
+    }
+
+    fn metadata_resources(
+        &self,
+    ) -> Result<Arc<dyn crate::content_store::StorePhysicalQuotaGuard>, StoreError> {
+        self.backend.metadata_resources()
+    }
+
+    fn read_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        id: ContentId,
+        range: Option<ByteRange>,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<BlobHandle, StoreError> {
+        fixture_boundary(original, boundary)?;
+        if id == self.blocked {
+            if self.corrupt {
+                return Ok(BlobHandle::from_bytes(b"corrupt object".to_vec()));
+            }
+            return Err(StoreError::NotFound { id });
+        }
+        self.backend
+            .read_with_boundary(original, id, range, boundary)
     }
 
     fn admit_object_graph(&self, objects: &[(ObjectKind, u64)]) -> Result<(), StoreError> {
@@ -913,7 +1118,8 @@ impl ImmutableBlobBackend for UnavailableObject {
 fn first_page_object(store: &RamStore, root: &LeasedRamRoot) -> ContentId {
     let mut reference = root.regions[0];
     let mut boundary = || Ok(());
-    let mut work = Work::new(store.limits, &mut boundary);
+    let work_original_921 = fixture_original(store);
+    let mut work = Work::new(store.limits, &work_original_921, &mut boundary).unwrap();
     loop {
         match store.read_tree(reference, &mut work).unwrap() {
             codec::TreeNode::Branch { left, .. } => reference = left,
@@ -936,11 +1142,19 @@ fn destination_presence_hint_cannot_hide_missing_or_corrupt_actual_page() {
             Scope::Exact,
             &mut patterned,
             &retention,
+            &fixture_original(&source),
             &mut || Ok(()),
         )
         .unwrap();
     source
-        .transfer_to(&root, &destination, &retention, &mut || Ok(()))
+        .transfer_to(
+            &root,
+            &destination,
+            &retention,
+            &fixture_original(&source),
+            &fixture_original(&destination),
+            &mut || Ok(()),
+        )
         .unwrap();
     let page = first_page_object(&source, &root);
 
@@ -960,7 +1174,14 @@ fn destination_presence_hint_cannot_hide_missing_or_corrupt_actual_page() {
 
         assert!(
             source
-                .transfer_to(&root, &thin, &retention, &mut || Ok(()))
+                .transfer_to(
+                    &root,
+                    &thin,
+                    &retention,
+                    &fixture_original(&source),
+                    &fixture_original(&thin),
+                    &mut || Ok(())
+                )
                 .is_err()
         );
     }
@@ -977,6 +1198,7 @@ fn fallible_change_stream_cannot_publish_a_truncated_successor() {
             Scope::Exact,
             &mut patterned,
             &retention,
+            &fixture_original(&store),
             &mut || Ok(()),
         )
         .unwrap();
@@ -997,12 +1219,15 @@ fn fallible_change_stream_cannot_publish_a_truncated_successor() {
             ))
         },
         &retention,
+        &fixture_original(&store),
         &mut || Ok(()),
     );
 
     assert!(result.is_err());
     assert_eq!(
-        store.read_page(&root, "main", 0, &mut || Ok(())).unwrap(),
+        store
+            .read_page(&root, "main", 0, &fixture_original(&store), &mut || Ok(()))
+            .unwrap(),
         vec![0; 4096]
     );
 }
@@ -1026,6 +1251,7 @@ fn logical_page_limit_is_rejected_before_reading_guest_bytes() {
             Ok(())
         },
         &Retention::default(),
+        &fixture_original(&store),
         &mut || Ok(()),
     );
 
@@ -1047,6 +1273,7 @@ fn equal_subtrees_prune_root_difference_traversal() {
             Scope::Exact,
             &mut patterned,
             &retention,
+            &fixture_original(&store),
             &mut || Ok(()),
         )
         .unwrap();
@@ -1059,6 +1286,7 @@ fn equal_subtrees_prune_root_difference_traversal() {
                 bytes: vec![255; 4096],
             }],
             &retention,
+            &fixture_original(&store),
             &mut || Ok(()),
         )
         .unwrap();
@@ -1072,6 +1300,7 @@ fn equal_subtrees_prune_root_difference_traversal() {
                 changed.push(page);
                 Ok(())
             },
+            &fixture_original(&store),
             &mut || {
                 boundaries += 1;
                 Ok(())
@@ -1082,7 +1311,7 @@ fn equal_subtrees_prune_root_difference_traversal() {
     assert_eq!(changed, vec![129]);
     assert!(
         boundaries <= 80,
-        "an eight-level difference must not enumerate 256 pages"
+        "an eight-level difference must not enumerate 256 pages: boundaries={boundaries}"
     );
 }
 
@@ -1101,6 +1330,12 @@ fn dense_ram_capture_rejects_insufficient_packed_index_before_reading_pages() {
     .unwrap();
     let retention = Retention::default();
     let mut reads = 0;
+    // Packed capacity is tested independently of its absent metadata facade.
+    // The caller supplies the same finite model authority as RAM operations.
+    let quota = Arc::new(FixtureRamQuota(
+        crate::content_store::test_resources::FixtureResourceBudget::new(128, 256 << 20),
+    ));
+    let original = crate::owned_decode::DecodeBudget::for_store(quota).unwrap();
     let result = ram.capture(
         topology(4096 * 32_768),
         Scope::Exact,
@@ -1109,6 +1344,7 @@ fn dense_ram_capture_rejects_insufficient_packed_index_before_reading_pages() {
             Ok(())
         },
         &retention,
+        &original,
         &mut || Ok(()),
     );
 
@@ -1163,6 +1399,17 @@ impl ImmutableBlobBackend for OversizedBackend {
         Ok(self.source.clone())
     }
 
+    fn read_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        _: ContentId,
+        _: Option<ByteRange>,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<BlobHandle, StoreError> {
+        fixture_boundary(original, boundary)?;
+        Ok(self.source.clone())
+    }
+
     fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
         self.backend.put_if_absent(id, source)
     }
@@ -1184,10 +1431,10 @@ fn oversized_ram_objects_are_rejected_before_opening_the_stream() {
         (ObjectKind::ExactManifest, MAX_RAM_OBJECT_BYTES),
     ] {
         let opens = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let source = BlobHandle::new(Arc::new(OversizedSource {
+        let source = BlobHandle::new(OversizedSource {
             length: maximum_bytes + 1,
             opens: opens.clone(),
-        }));
+        });
         let store = RamStore::new(
             Arc::new(OversizedBackend {
                 backend: backend.clone(),
@@ -1199,7 +1446,7 @@ fn oversized_ram_objects_are_rejected_before_opening_the_stream() {
         .unwrap();
         let id = ContentId::for_bytes(kind, 1, b"untrusted oversized object");
         let mut boundary = || Ok(());
-        let mut work = Work::new(store.limits, &mut boundary);
+        let mut work = Work::new(store.limits, &decoding, &mut boundary).unwrap();
 
         assert!(matches!(
             store.read_envelope(id, &mut work),
@@ -1221,6 +1468,7 @@ fn leased_root_clones_share_the_origin_metadata_allocation() {
             Scope::Exact,
             &mut patterned,
             &retention,
+            &fixture_original(&store),
             &mut || Ok(()),
         )
         .unwrap();
@@ -1235,7 +1483,9 @@ fn leased_root_clones_share_the_origin_metadata_allocation() {
     let id = root.object_id();
     drop(root);
     assert_eq!(cloned.object_id(), id);
-    store.verify(&cloned, &mut || Ok(())).unwrap();
+    store
+        .verify(&cloned, &fixture_original(&store), &mut || Ok(()))
+        .unwrap();
 }
 
 #[test]
@@ -1252,6 +1502,7 @@ fn shared_transfer_metadata_retains_its_origin_until_destination_reader_closes()
             Scope::Exact,
             &mut patterned,
             &source_retention,
+            &fixture_original(&source_store),
             &mut || Ok(()),
         )
         .unwrap();
@@ -1261,6 +1512,8 @@ fn shared_transfer_metadata_retains_its_origin_until_destination_reader_closes()
             &source,
             &destination_store,
             &destination_retention,
+            &fixture_original(&source_store),
+            &fixture_original(&destination_store),
             &mut || Ok(()),
         )
         .unwrap();
@@ -1277,7 +1530,11 @@ fn shared_transfer_metadata_retains_its_origin_until_destination_reader_closes()
         "destination reader still borrows the origin allocation"
     );
     destination_store
-        .verify(transferred.root(), &mut || Ok(()))
+        .verify(
+            transferred.root(),
+            &fixture_original(&destination_store),
+            &mut || Ok(()),
+        )
         .unwrap();
     drop(transferred);
     assert!(

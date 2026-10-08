@@ -234,8 +234,14 @@ fn grant_finding_export(fixture: &FlightFixture) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn repository(fixture: &FlightFixture) -> Arc<CampaignRepository> {
-    Arc::new(CampaignRepository::new(
+fn repository(fixture: &FlightFixture) -> Result<Arc<CampaignRepository>, Box<dyn Error>> {
+    let input = fixture
+        ._native_input
+        .as_ref()
+        .ok_or("Envoy finding inspection requires the original source policy")?;
+    input.decoding.verify_live()?;
+
+    Ok(Arc::new(CampaignRepository::new(
         Arc::new(DirectoryBlobBackend::new(
             "envoy-known-finding-evidence",
             &fixture.objects,
@@ -243,7 +249,8 @@ fn repository(fixture: &FlightFixture) -> Arc<CampaignRepository> {
         Arc::new(crucible_cas::content_store::DirectoryRefBackend::new(
             fixture._temporary.path().join("refs"),
         )),
-    ))
+        crucible_campaign::CampaignRamAdmission::Available(input.decoding.clone()),
+    )))
 }
 
 fn verified_observation(
@@ -259,7 +266,7 @@ fn verified_observation(
     ),
     Box<dyn Error>,
 > {
-    let repository = repository(fixture);
+    let repository = repository(fixture)?;
     let observation = repository.load_observation(ObservationId::parse(observation)?)?;
     let measurements = repository.load_measurement_set(observation.measurements())?;
     let evidence_id = *measurements
@@ -293,7 +300,7 @@ fn verify_measured_objective(
     policy: &Path,
     observation_id: &str,
 ) -> Result<ObjectiveEvaluation, Box<dyn Error>> {
-    let repository = repository(fixture);
+    let repository = repository(fixture)?;
     let (observation, measurements, evaluation) =
         verified_observation(fixture, scenario, lineage, observation_id)?;
     let properties = repository.load_property_verdict_set(observation.properties())?;
@@ -343,7 +350,7 @@ fn verify_failed_observation(
     policy: &Path,
     observation_id: &str,
 ) -> Result<ObjectiveEvaluation, Box<dyn Error>> {
-    let repository = repository(fixture);
+    let repository = repository(fixture)?;
     let (observation, measurements, evaluation) =
         verified_observation(fixture, scenario, lineage, observation_id)?;
     if observation.stop() != &StopOutcome::AssertionFailure(FAILURE_PROPERTY.to_owned()) {
@@ -511,7 +518,7 @@ fn retain_and_cleanup_product_finding(
     service.stop()?;
 
     let retained_configuration = ConfigurationId::parse(configuration)?;
-    let retention_repository = repository(fixture);
+    let retention_repository = repository(fixture)?;
     let mut pin_records = Vec::new();
     let pin_summary = retention_repository.visit_pin_retention_roots(CAMPAIGN, &mut |record| {
         pin_records.push(record);
@@ -613,7 +620,7 @@ fn retain_and_cleanup_product_finding(
     assert_eq!(retained.finding(), original_proof.finding());
     let mut retained_pins = Vec::new();
     let retained_summary =
-        repository(fixture).visit_pin_retention_roots(CAMPAIGN, &mut |record| {
+        repository(fixture)?.visit_pin_retention_roots(CAMPAIGN, &mut |record| {
             retained_pins.push(record);
         })?;
     assert_eq!(retained_summary, pin_summary);

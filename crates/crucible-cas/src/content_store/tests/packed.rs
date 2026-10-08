@@ -137,11 +137,11 @@ fn packed_initialization_waits_for_in_flight_staging() {
     let id = ContentId::for_bytes(ObjectKind::RamExtent, 1, &bytes);
     let (opened_sender, opened_receiver) = mpsc::channel();
     let (release_sender, release_receiver) = mpsc::channel();
-    let source = BlobHandle::new(Arc::new(BlockingSource {
+    let source = BlobHandle::new(BlockingSource {
         bytes: Arc::clone(&bytes),
         opened: opened_sender,
         release: Mutex::new(Some(release_receiver)),
-    }));
+    });
     let writer = thread::spawn(move || writer_store.put_if_absent(id, &source));
 
     opened_receiver

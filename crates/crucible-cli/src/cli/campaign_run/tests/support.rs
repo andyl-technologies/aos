@@ -9,7 +9,11 @@ pub(super) fn open_transient_checkpoint_store(
     root: &Path,
 ) -> Result<ExactCheckpointStore, crucible_daemon::ExactCheckpointStoreError> {
     let refs = Arc::new(DirectoryRefBackend::new(root.join("refs")));
-    let repository = CampaignRepository::new(backend.clone(), refs);
+    let repository = CampaignRepository::new(
+        backend.clone(),
+        refs,
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
     let resources = crucible_daemon::component_ram_root_resources()?;
     Ok(ExactCheckpointStore::new(
         backend,

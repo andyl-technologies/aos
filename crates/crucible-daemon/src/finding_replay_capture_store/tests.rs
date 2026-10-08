@@ -27,7 +27,11 @@ fn repository(root: &std::path::Path) -> CampaignRepository {
         root.join("objects"),
     ));
     let refs: Arc<dyn MutableRefBackend> = Arc::new(DirectoryRefBackend::new(root.join("refs")));
-    CampaignRepository::new(blobs, refs)
+    CampaignRepository::new(
+        blobs,
+        refs,
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    )
 }
 
 #[test]
@@ -195,6 +199,7 @@ fn publication_handoff_keeps_actual_ref_inventory_excluded_until_final_close() {
             temporary.path().join("objects"),
         )),
         refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     )));
     let publication = executor
         .acquire_finding_replay_publication_guard()

@@ -17,12 +17,14 @@ pub use crucible_campaign::ExactCheckpointId;
 use crucible_cas::content_envelope::ContentEnvelope;
 use crucible_cas::content_store::{ContentId, ObjectKind};
 
+mod capture_read;
 mod codec;
 mod decode;
 mod repository;
 mod semantics;
 mod streams;
 
+pub use capture_read::CaptureReadError;
 pub use repository::authenticate_exact_checkpoint_repository;
 pub use semantics::ExactCheckpointSemanticObjectRole;
 pub use streams::ExactCheckpointRestoreStreams;

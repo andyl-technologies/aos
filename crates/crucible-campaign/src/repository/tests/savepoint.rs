@@ -342,7 +342,11 @@ fn capture_request_owns_no_semantic_admission_budget_or_configuration_pin() {
     assert!(replayed.replayed);
     assert_ne!(paused.new_snapshot, replayed.new_snapshot);
 
-    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    let restarted = CampaignRepository::new(
+        repository.blobs.clone(),
+        repository.refs.clone(),
+        repository.ram_admission().clone(),
+    );
     assert_eq!(
         restarted
             .savepoint_capture_request_at(accepted.new_snapshot, accepted.request)
@@ -537,7 +541,11 @@ fn mutated_capture_reason_is_rejected_before_repository_writes() {
         reads: AtomicUsize::new(0),
         writes: AtomicUsize::new(0),
     });
-    let repository = CampaignRepository::new(writes.clone(), original.refs.clone());
+    let repository = CampaignRepository::new(
+        writes.clone(),
+        original.refs.clone(),
+        crate::CampaignRamAdmission::Unavailable,
+    );
     let mut request = capture_request(
         &repository,
         "mutated-reason",
@@ -633,7 +641,11 @@ fn cold_validation_rejects_a_forged_capture_successor_while_paused() {
         .put_snapshot(&forged)
         .expect("publish forged successor");
 
-    let cold = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    let cold = CampaignRepository::new(
+        repository.blobs.clone(),
+        repository.refs.clone(),
+        repository.ram_admission().clone(),
+    );
     assert!(matches!(
         cold.validate_complete_head(forged_content),
         Err(CampaignRepositoryError::Integrity {
@@ -730,7 +742,11 @@ fn ordinary_attempt_and_scoped_capture_coexist_and_resolution_survives_restart()
             .is_empty()
     );
 
-    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    let restarted = CampaignRepository::new(
+        repository.blobs.clone(),
+        repository.refs.clone(),
+        repository.ram_admission().clone(),
+    );
     assert!(
         restarted
             .project_pending_savepoint_captures("savepoint-coexist", None, 10_000)
@@ -1101,7 +1117,11 @@ fn continuation_closure_authenticates_a_valid_origin_chain_with_linear_reads() {
         reads: AtomicUsize::new(0),
         writes: AtomicUsize::new(0),
     });
-    let cold = CampaignRepository::new(reads.clone(), Arc::clone(&repository.refs));
+    let cold = CampaignRepository::new(
+        reads.clone(),
+        Arc::clone(&repository.refs),
+        crate::CampaignRamAdmission::Unavailable,
+    );
     let root = attempt.id().expect("continuation root").content_id();
 
     let closure = cold
@@ -1228,7 +1248,11 @@ fn cold_selected_continuation_history_authenticates_each_attempt_a_constant_numb
         attempts: attempt_contents,
         reads: AtomicUsize::new(0),
     });
-    let cold = CampaignRepository::new(reads.clone(), Arc::clone(&repository.refs));
+    let cold = CampaignRepository::new(
+        reads.clone(),
+        Arc::clone(&repository.refs),
+        crate::CampaignRamAdmission::Unavailable,
+    );
     cold.head(CAMPAIGN)
         .expect("cold selected-continuation history");
 
@@ -1304,7 +1328,11 @@ fn cold_capture_history_validation_is_iterative_and_linearly_bounded() {
         .name(String::from("cold-capture-validation"))
         .stack_size(256 * 1024)
         .spawn(move || {
-            let cold = CampaignRepository::new(thread_reads, refs);
+            let cold = CampaignRepository::new(
+                thread_reads,
+                refs,
+                crate::CampaignRamAdmission::Unavailable,
+            );
             cold.head(CAMPAIGN).map(|head| head.snapshot_id())
         })
         .expect("spawn small-stack cold validator")
@@ -1476,6 +1504,7 @@ fn executor_driver_runs_scoped_capture_to_ready_without_resume_or_semantic_owner
     let restarted_repository = Arc::new(CampaignRepository::new(
         repository.blobs.clone(),
         repository.refs.clone(),
+        repository.ram_admission().clone(),
     ));
     let mut restarted = CampaignExecutorDriver::new(
         restarted_repository,

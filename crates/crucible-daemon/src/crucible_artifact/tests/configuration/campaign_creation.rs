@@ -37,6 +37,7 @@ fn campaign_creation_refuses_obsolete_schema_and_accepts_actual_imported_basis()
     let repository = Arc::new(CampaignRepository::new(
         Arc::new(MemoryBlobBackend::new("creation-schema", u64::MAX)),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     let store = CrucibleCampaignArtifactStore::new(Arc::clone(&repository));
     let scenario_id = store.import_scenario(&scenario)?;

@@ -1083,6 +1083,7 @@ mod tests {
         let repository = Arc::new(CampaignRepository::new(
             Arc::new(MemoryBlobBackend::new(label, u64::MAX)),
             Arc::new(MemoryRefBackend::new()),
+            crucible_campaign::CampaignRamAdmission::Unavailable,
         ));
         repository
             .publish_choice_domain(discovery.domain())

@@ -1841,6 +1841,7 @@ fn external_store_rejects_foreign_graph_maintenance_authority() {
             node,
             StoreNodeSpec::Memory {
                 max_logical_bytes: 1024,
+                max_objects: 16,
             },
         )]),
     };
@@ -2028,6 +2029,7 @@ fn managed_store_maintenance_failure_stops_the_service_with_exact_operation() {
         &StoreGraphObjectProfilers::new(),
         &StoreGraphPhysicalQuotaBinders::new(),
         &clients,
+        None,
     )
     .expect("failing maintained S3 graph");
     let refs = Arc::new(DirectoryRefBackend::new(
@@ -2113,6 +2115,7 @@ fn managed_store_maintenance_round_robins_and_resumes_exact_s3_cursors() {
         &StoreGraphObjectProfilers::new(),
         &StoreGraphPhysicalQuotaBinders::new(),
         &clients,
+        None,
     )
     .expect("paged maintained S3 graph");
     let refs = Arc::new(DirectoryRefBackend::new(

@@ -355,16 +355,26 @@ fn build_one_node_raw_checkpoint(
         crucible_ram::Limits::default(),
     )
     .expect("admit valid paged RAM fixture");
-    let ram = catalog
-        .capture(
+    let ram = {
+        let account = catalog
+            .original()
+            .child()
+            .expect("same original capture account");
+        let retention = catalog.retention().expect("capture retention");
+
+        catalog.store().capture(
             topology,
+            crucible_ram::Scope::Exact,
             &mut |_, index, bytes| {
                 bytes.fill((index + 1) as u8);
                 Ok(())
             },
+            retention.as_ref(),
+            &account,
             &mut || Ok(()),
         )
-        .expect("capture fixture RAM pages");
+    }
+    .expect("capture fixture RAM pages");
     let exact_ram = ProductionExactRamCheckpoint::from_paged_capture(
         qmp_identity.into(),
         hash_exact_checkpoint_file_sha256_with_boundary(&device_state, &mut || Ok(()))
@@ -1936,29 +1946,69 @@ fn paged_exact_fixture_retains_independent_complete_images() {
     assert_eq!(
         ram_source
             .store()
-            .read_page(fixture.previous_ram(), "machine.ram", 1, &mut || Ok(()))
-            .expect("admit valid paged RAM fixture"),
+            .read_page(
+                fixture.previous_ram(),
+                "machine.ram",
+                1,
+                &ram_source
+                    .original
+                    .child()
+                    .expect("same original read account"),
+                &mut || Ok(())
+            )
+            .expect("admit valid paged RAM fixture")
+            .bytes(),
         vec![2; 4096]
     );
     assert_eq!(
         ram_source
             .store()
-            .read_page(ram_source.root(), "machine.ram", 1, &mut || Ok(()))
-            .expect("admit valid paged RAM fixture"),
+            .read_page(
+                ram_source.root(),
+                "machine.ram",
+                1,
+                &ram_source
+                    .original
+                    .child()
+                    .expect("same original read account"),
+                &mut || Ok(())
+            )
+            .expect("admit valid paged RAM fixture")
+            .bytes(),
         vec![0x7f; 4096]
     );
     assert_eq!(
         ram_source
             .store()
-            .read_page(ram_source.root(), "machine.ram", 2, &mut || Ok(()))
-            .expect("admit valid paged RAM fixture"),
+            .read_page(
+                ram_source.root(),
+                "machine.ram",
+                2,
+                &ram_source
+                    .original
+                    .child()
+                    .expect("same original read account"),
+                &mut || Ok(())
+            )
+            .expect("admit valid paged RAM fixture")
+            .bytes(),
         vec![3; 19]
     );
     assert_eq!(
         ram_source
             .store()
-            .read_page(ram_source.root(), "machine.rom", 0, &mut || Ok(()))
-            .expect("admit valid paged RAM fixture"),
+            .read_page(
+                ram_source.root(),
+                "machine.rom",
+                0,
+                &ram_source
+                    .original
+                    .child()
+                    .expect("same original read account"),
+                &mut || Ok(())
+            )
+            .expect("admit valid paged RAM fixture")
+            .bytes(),
         vec![0xa5; 37]
     );
     fixture
@@ -2018,8 +2068,15 @@ fn paged_catalog_rejects_substituted_authenticated_root() {
     assert_eq!(
         source
             .store()
-            .read_page(source.root(), "machine.ram", 1, &mut || Ok(()))
-            .expect("admit valid paged RAM fixture"),
+            .read_page(
+                source.root(),
+                "machine.ram",
+                1,
+                &source.original.child().expect("same original read account"),
+                &mut || Ok(())
+            )
+            .expect("admit valid paged RAM fixture")
+            .bytes(),
         vec![0x7f; 4096]
     );
 }
@@ -2045,34 +2102,65 @@ fn paged_catalog_cancellation_refuses_capture_and_preserves_existing_root() {
         Limits::default(),
     )
     .expect("admit valid paged RAM fixture");
-    let root = catalog
-        .capture(
+    let root = {
+        let account = catalog
+            .original()
+            .child()
+            .expect("same original capture account");
+        let retention = catalog.retention().expect("capture retention");
+
+        catalog.store().capture(
             topology.clone(),
+            crucible_ram::Scope::Exact,
             &mut |_, index, bytes| {
                 bytes.fill(index as u8 + 1);
                 Ok(())
             },
+            retention.as_ref(),
+            &account,
             &mut || Ok(()),
         )
-        .expect("admit valid paged RAM fixture");
+    }
+    .expect("admit valid paged RAM fixture");
 
     let mut page_reads = 0;
-    let canceled = catalog.capture(
-        topology,
-        &mut |_, _, bytes| {
-            page_reads += 1;
-            bytes.fill(0x7f);
-            Ok(())
-        },
-        &mut || Err(RamStoreError::Canceled),
-    );
+    let canceled = {
+        let account = catalog
+            .original()
+            .child()
+            .expect("same original canceled capture account");
+        let retention = catalog.retention().expect("capture retention");
+
+        catalog.store().capture(
+            topology,
+            crucible_ram::Scope::Exact,
+            &mut |_, _, bytes| {
+                page_reads += 1;
+                bytes.fill(0x7f);
+                Ok(())
+            },
+            retention.as_ref(),
+            &account,
+            &mut || Err(RamStoreError::Canceled),
+        )
+    };
     assert!(matches!(canceled, Err(RamStoreError::Canceled)));
     assert_eq!(page_reads, 0);
     assert_eq!(
         catalog
             .store()
-            .read_page(&root, "ram", 1, &mut || Ok(()))
-            .expect("admit valid paged RAM fixture"),
+            .read_page(
+                &root,
+                "ram",
+                1,
+                &catalog
+                    .original()
+                    .child()
+                    .expect("same original read account"),
+                &mut || Ok(())
+            )
+            .expect("admit valid paged RAM fixture")
+            .bytes(),
         vec![2; 4096]
     );
 }

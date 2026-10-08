@@ -778,6 +778,7 @@ pub(super) fn repository(paths: &FixturePaths) -> CampaignRepository {
             &paths.blobs,
         )),
         Arc::new(DirectoryRefBackend::new(&paths.refs)),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     )
 }
 

@@ -523,13 +523,7 @@ impl CampaignRepositoryError {
     pub fn executor_rejection(&self) -> ExecutorRejection {
         match self {
             Self::Store(error) => store_executor_rejection(error),
-            Self::Ram(crucible_cas::ram::RamStoreError::Store(error)) => {
-                store_executor_rejection(error)
-            }
-            Self::Ram(
-                crucible_cas::ram::RamStoreError::Canceled
-                | crucible_cas::ram::RamStoreError::Limit(_),
-            ) => ExecutorRejection::UnavailableInput,
+            Self::Ram(error) => ram_executor_rejection(error),
             Self::Merkle(crate::CampaignStoreError::Store(error)) => {
                 store_executor_rejection(error)
             }
@@ -540,7 +534,6 @@ impl CampaignRepositoryError {
                 crucible_cas::content_envelope::ContentEnvelopeError::DecodeAdmission(_),
             )) => ExecutorRejection::UnavailableInput,
             Self::Budget(_)
-            | Self::Ram(_)
             | Self::Codec(_)
             | Self::SelectionResolutionBudgetExceeded { .. }
             | Self::Merkle(_)
@@ -555,8 +548,27 @@ impl CampaignRepositoryError {
     }
 }
 
+fn ram_executor_rejection(error: &crucible_cas::ram::RamStoreError) -> ExecutorRejection {
+    use crucible_cas::ram::RamStoreError;
+
+    match error {
+        RamStoreError::Boundary(cause) => ram_executor_rejection(
+            cause
+                .first_boundary()
+                .unwrap_or_else(|| cause.storage_failure()),
+        ),
+        RamStoreError::Store(error) => store_executor_rejection(error),
+        RamStoreError::Canceled | RamStoreError::Limit(_) => ExecutorRejection::UnavailableInput,
+        _ => ExecutorRejection::Incompatible,
+    }
+}
+
 fn store_executor_rejection(error: &StoreError) -> ExecutorRejection {
     match error.original_failure() {
+        StoreError::RamValidation { source } => ram_executor_rejection(source.storage_failure()),
+        StoreError::RamBoundary { .. } | StoreError::CompositeBoundary { .. } => {
+            ExecutorRejection::Incompatible
+        }
         StoreError::NotFound { .. }
         | StoreError::Quota
         | StoreError::Unavailable
@@ -567,6 +579,9 @@ fn store_executor_rejection(error: &StoreError) -> ExecutorRejection {
         | StoreError::DecodeAdmission { .. }
         | StoreError::Allocation { .. }
         | StoreError::SqliteDiagnostic { .. }
+        | StoreError::DirectoryScope { .. }
+        | StoreError::MemoryScope { .. }
+        | StoreError::CompositeScope { .. }
         | StoreError::ProviderDiagnostic { .. }
         | StoreError::SqliteScope { .. } => ExecutorRejection::UnavailableInput,
         StoreError::Unauthorized => ExecutorRejection::Unauthorized,
@@ -584,11 +599,37 @@ fn store_executor_rejection(error: &StoreError) -> ExecutorRejection {
     }
 }
 
+/// Declares the original namespace admission available for repository RAM work.
+///
+/// Available admission is supplied before repository construction. Every RAM
+/// operation derives a disposable child; the saved parent is never replaced or
+/// used as a cumulative page ledger. Memory-only repositories explicitly lack
+/// RAM authority and fail closed when RAM authentication is requested.
+#[derive(Clone)]
+pub enum CampaignRamAdmission {
+    /// Retains the genuine namespace account used by all RAM operations.
+    Available(crucible_cas::owned_decode::DecodeBudget),
+    /// Grants no RAM retention, read, or publication authority.
+    Unavailable,
+}
+
+impl CampaignRamAdmission {
+    /// Borrows the saved original account without renewing its admission.
+    #[must_use]
+    pub fn original(&self) -> Option<&crucible_cas::owned_decode::DecodeBudget> {
+        match self {
+            Self::Available(original) => Some(original),
+            Self::Unavailable => None,
+        }
+    }
+}
+
 /// Repository and sole-writer transaction boundary for local campaigns.
 pub struct CampaignRepository {
     blobs: Arc<dyn ImmutableBlobBackend>,
     refs: Arc<dyn MutableRefBackend>,
     merkle: MerkleMap,
+    ram_admission: CampaignRamAdmission,
     mutation_lock: Mutex<()>,
     // Immutable heads are promoted only after a complete validation or from a
     // validated parent through one of the repository's exact owner mutations.

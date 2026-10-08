@@ -612,11 +612,11 @@ pub(super) fn portable_object_handle(
     object: ProductionExactCheckpointObject,
     cancellation: Option<ExecutionCancellation>,
 ) -> BlobHandle {
-    BlobHandle::new(Arc::new(PortableObjectBlobSource {
+    BlobHandle::new(PortableObjectBlobSource {
         source,
         object,
         cancellation,
-    }))
+    })
 }
 
 pub(super) fn production_object_content_id(

@@ -598,7 +598,11 @@ fn finding_publication_clusters_replay_and_fails_before_invalid_writes() {
             .snapshot_id(),
         published.new_snapshot
     );
-    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    let restarted = CampaignRepository::new(
+        repository.blobs.clone(),
+        repository.refs.clone(),
+        repository.ram_admission().clone(),
+    );
     assert_eq!(
         restarted
             .project_branch_puct(published.new_snapshot, segment.branch_point())

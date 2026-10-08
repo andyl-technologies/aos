@@ -16,13 +16,18 @@ fn larger_inventory_keeps_live_root_and_continues_in_a_fresh_batch() {
             node,
             StoreNodeSpec::Memory {
                 max_logical_bytes: 2 * 1024 * 1024,
+                max_objects: (MAX_CAMPAIGN_GC_MANIFEST_ENTRIES as u64) + 2,
             },
         )]),
     })
     .expect("memory graph");
     let graph = Arc::new(graph);
     let refs = Arc::new(MemoryRefBackend::new());
-    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+    let repository = CampaignRepository::new(
+        graph.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
     let live = ContentEnvelope::new(
         "crucible.test.gc.retained-batch-root",
         1,

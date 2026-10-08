@@ -63,6 +63,7 @@ pub struct ProductionPagedRamSource {
     pub(super) store: crucible_cas::ram::RamStore,
     pub(super) root: crucible_cas::ram::LeasedRamRoot,
     pub(super) object_id: Arc<String>,
+    pub(super) original: crucible_cas::owned_decode::DecodeBudget,
 }
 
 impl std::fmt::Debug for ProductionPagedRamSource {
@@ -86,6 +87,7 @@ impl ProductionPagedRamSource {
         node: NodeId,
         store: crucible_cas::ram::RamStore,
         root: crucible_cas::ram::LeasedRamRoot,
+        original: crucible_cas::owned_decode::DecodeBudget,
         boundary: &mut dyn FnMut() -> Result<(), crucible_cas::ram::RamStoreError>,
     ) -> Result<Self, crucible_cas::ram::RamStoreError> {
         if root.record().scope() != crucible_ram::Scope::Exact {
@@ -93,13 +95,17 @@ impl ProductionPagedRamSource {
                 "exact source coverage scope",
             ));
         }
-        store.verify(&root, boundary)?;
+        let account = original
+            .child()
+            .map_err(|source| RamStoreError::from_admission(&original, source))?;
+        store.verify(&root, &account, boundary)?;
         let object_id = root.object_id().encode();
         Ok(Self {
             node: Arc::new(node),
             store,
             root,
             object_id: Arc::new(object_id),
+            original,
         })
     }
 
@@ -131,10 +137,24 @@ impl ProductionPagedRamSource {
         &self,
         destination: &crucible_cas::ram::RamStore,
         retention: &dyn crucible_cas::ram::RamRetention,
+        destination_original: &crucible_cas::owned_decode::DecodeBudget,
         boundary: &mut dyn FnMut() -> Result<(), crucible_cas::ram::RamStoreError>,
     ) -> Result<crucible_cas::ram::RamClosureStored, crucible_cas::ram::RamStoreError> {
-        self.store
-            .transfer_to(&self.root, destination, retention, boundary)
+        let source_account = self
+            .original
+            .child()
+            .map_err(|source| RamStoreError::from_admission(&self.original, source))?;
+        let destination_account = destination_original
+            .child()
+            .map_err(|source| RamStoreError::from_admission(destination_original, source))?;
+        self.store.transfer_to(
+            &self.root,
+            destination,
+            retention,
+            &source_account,
+            &destination_account,
+            boundary,
+        )
     }
 }
 
@@ -147,18 +167,30 @@ impl crucible_qemu::ram_source::QemuRamBacking for ProductionPagedRamSource {
         self.root.record()
     }
 
-    fn read_page_with_proof(
+    fn with_page_response(
         &self,
         region_id: &str,
         page_index: u64,
         boundary: &mut dyn FnMut()
             -> Result<(), crucible_qemu::ram_source::QemuRamReadBoundaryError>,
-    ) -> Result<(Vec<u8>, crucible_ram::PageProof), crucible_qemu::ram_source::QemuRamSourceError>
-    {
-        boundary::read_with_boundary(boundary, |ram_boundary| {
-            self.store
-                .read_page_with_proof(&self.root, region_id, page_index, ram_boundary)
-        })
+        consumer: &mut crucible_qemu::ram_source::QemuRamResponseConsumer<'_>,
+    ) -> Result<(), crucible_qemu::ram_source::QemuRamSourceError> {
+        let mut response = boundary::read_with_boundary(boundary, |ram_boundary| {
+            ram_boundary()?;
+            let account = self
+                .original
+                .child()
+                .map_err(|source| RamStoreError::from_admission(&self.original, source))?;
+            self.store.read_page_with_proof(
+                &self.root,
+                region_id,
+                page_index,
+                &account,
+                ram_boundary,
+            )
+        })?;
+        consumer(response.borrow_response(), boundary);
+        Ok(())
     }
 }
 
@@ -216,11 +248,12 @@ fn ram_backing_failure_kind(error: &RamStoreError) -> crucible::BackendOperation
                 }
             };
         }
-        if matches!(
-            current.downcast_ref::<RamStoreError>(),
-            Some(RamStoreError::Canceled)
-        ) {
-            return Kind::Canceled;
+        if let Some(source) = current.downcast_ref::<RamStoreError>() {
+            match source {
+                RamStoreError::Canceled => return Kind::Canceled,
+                RamStoreError::Limit(_) => return Kind::CapacityExhausted,
+                _ => {}
+            }
         }
         cause = current.source();
     }
@@ -229,12 +262,34 @@ fn ram_backing_failure_kind(error: &RamStoreError) -> crucible::BackendOperation
         RamStoreError::Limit(_) | RamStoreError::Store(StoreError::Quota) => {
             Kind::CapacityExhausted
         }
-        RamStoreError::Store(_)
+        RamStoreError::Boundary(_)
+        | RamStoreError::Store(_)
         | RamStoreError::Invalid(_)
         | RamStoreError::Logical(_)
+        | RamStoreError::LogicalValidation(_)
         | RamStoreError::Envelope(_)
         | RamStoreError::Retention(_)
         | RamStoreError::Transfer(_) => Kind::Unavailable,
+    }
+}
+
+#[cfg(test)]
+mod typed_validation_tests {
+    use super::*;
+
+    #[test]
+    fn owned_logical_validation_preserves_backing_failure_classification() {
+        let previous = RamStoreError::Logical(crucible_ram::RamError::OutOfRange.to_string());
+        let retained = RamStoreError::LogicalValidation(crucible_ram::RamError::OutOfRange);
+
+        assert_eq!(
+            ram_backing_failure_kind(&previous),
+            ram_backing_failure_kind(&retained)
+        );
+        assert_eq!(
+            ram_backing_failure_kind(&retained),
+            crucible::BackendOperationalFailureKind::Unavailable
+        );
     }
 }
 

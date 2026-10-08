@@ -7,6 +7,7 @@
 //! facade, rejects physical allocation beyond the admitted byte or inode
 //! ceiling, including staging, compression, encryption, and pack slack.
 
+use super::CheckedPublicationMetadata;
 use super::batch::{admission_under, allocation_under};
 
 use super::ObjectKind;
@@ -18,7 +19,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use super::admin::{PhysicalRepairAuthority, PreparedResources};
-use crate::owned_decode::{DecodeBudget, DecodeScratch};
+use crate::owned_decode::DecodeScratch;
 
 use super::{
     BackendCapabilities, BlobHandle, BlobInventoryFence, BlobInventoryRecord, BlobInventorySummary,
@@ -154,6 +155,36 @@ pub trait StorePhysicalQuotaGuard: Send + Sync {
 
 /// External capability that binds one persistent leaf to a hard physical quota.
 pub trait StorePhysicalQuotaBinder: Send + Sync {
+    /// Reserves fixed map-node custody from the provider's original service.
+    ///
+    /// This grant authenticates no filesystem or disk quota. The existing
+    /// opaque binder retains the actual service owner, and the returned loan
+    /// prepays its own control before allocation in the same original accounts.
+    ///
+    /// # Errors
+    /// Refuses unsupported memory admission or unavailable original capacity.
+    fn reserve_memory_namespace(
+        &self,
+        _bytes: u64,
+    ) -> Result<crate::owned_decode::ResourceLoan, StoreError> {
+        Err(StoreError::Unsupported {
+            capability: "memory-namespace-grant",
+        })
+    }
+
+    /// Checks the original service before a covered memory namespace effect.
+    ///
+    /// This check neither binds a disk root nor renews an operation deadline.
+    /// It supplies execution permission for map mutation, not later reads.
+    ///
+    /// # Errors
+    /// Refuses unsupported memory admission or closed original service authority.
+    fn verify_memory_namespace(&self) -> Result<(), StoreError> {
+        Err(StoreError::Unsupported {
+            capability: "memory-namespace-grant",
+        })
+    }
+
     /// Authenticates and pins one exact operator-installed quota boundary.
     ///
     /// `root` is the exclusively owned physical leaf root. The implementation
@@ -181,10 +212,14 @@ pub trait StorePhysicalQuotaBinder: Send + Sync {
     ) -> Result<Arc<dyn StorePhysicalQuotaGuard>, StoreError>;
 }
 
+mod binder_handle;
+
+pub use binder_handle::StorePhysicalQuotaBinderHandle;
+
 /// External physical-quota capabilities used while constructing a store graph.
 #[derive(Default)]
 pub struct StoreGraphPhysicalQuotaBinders {
-    binders: BTreeMap<StorePhysicalQuotaPolicyId, Arc<dyn StorePhysicalQuotaBinder>>,
+    binders: BTreeMap<StorePhysicalQuotaPolicyId, StorePhysicalQuotaBinderHandle>,
 }
 
 impl StoreGraphPhysicalQuotaBinders {
@@ -205,7 +240,7 @@ impl StoreGraphPhysicalQuotaBinders {
     pub fn insert(
         &mut self,
         policy: StorePhysicalQuotaPolicyId,
-        binder: Arc<dyn StorePhysicalQuotaBinder>,
+        binder: StorePhysicalQuotaBinderHandle,
     ) -> Result<(), StoreError> {
         match self.binders.entry(policy) {
             Entry::Vacant(entry) => {
@@ -221,7 +256,7 @@ impl StoreGraphPhysicalQuotaBinders {
     pub(super) fn resolve(
         &self,
         policy: &StorePhysicalQuotaPolicyId,
-    ) -> Result<Arc<dyn StorePhysicalQuotaBinder>, StoreError> {
+    ) -> Result<StorePhysicalQuotaBinderHandle, StoreError> {
         self.binders
             .get(policy)
             .cloned()
@@ -305,6 +340,22 @@ impl PhysicalQuotaStore {
 }
 
 impl ImmutableBlobBackend for PhysicalQuotaStore {
+    fn checked_publication_metadata(
+        &self,
+        kind: ObjectKind,
+    ) -> Result<CheckedPublicationMetadata, StoreError> {
+        let child = self.child.checked_publication_metadata(kind)?;
+        if child.maximum_placements != 1 {
+            return Err(StoreError::InvalidComposition {
+                reason: "physical checked publisher must declare one placement",
+            });
+        }
+        Ok(CheckedPublicationMetadata {
+            maximum_placements: 1,
+            maximum_backend_name_bytes: self.name.len(),
+        })
+    }
+
     fn put_many_if_absent_with_boundary(
         &self,
         account: &crate::owned_decode::DecodeBudget,
@@ -382,7 +433,7 @@ impl ImmutableBlobBackend for PhysicalQuotaStore {
             }
             for receipt in receipts {
                 check()?;
-                // The checked producer is one physical SQLite leaf. Reject
+                // The checked producer is one physical leaf. Reject
                 // unexpected composition before consuming any prepared label.
                 if receipt.placements.len() != 1
                     || receipt.placements[0].backend != self.child.name()
@@ -452,14 +503,13 @@ impl ImmutableBlobBackend for PhysicalQuotaStore {
             .child
             .read_with_boundary(&original, id, range, &mut check)?;
         check()?;
-        let source = Arc::new(PhysicalQuotaBlobSource {
+        let source = PhysicalQuotaBlobSource {
             handle: handle.clone(),
             guard: self.guard.clone(),
             reader_bytes: costs.map_or(0, |costs| costs.reader_bytes),
-            original: Some(original),
             _credit: Some(credit),
             _resources: resources,
-        });
+        };
         Ok(handle.with_observed_source(source))
     }
 
@@ -473,14 +523,13 @@ impl ImmutableBlobBackend for PhysicalQuotaStore {
                 .ok_or(StoreError::Quota)?,
         )?;
         let handle = self.child.read(id, range)?;
-        let source = Arc::new(PhysicalQuotaBlobSource {
+        let source = PhysicalQuotaBlobSource {
             handle: handle.clone(),
             guard: self.guard.clone(),
             reader_bytes: costs.map_or(0, |costs| costs.reader_bytes),
-            original: None,
             _credit: None,
             _resources: resources,
-        });
+        };
         Ok(handle.with_observed_source(source))
     }
 
@@ -499,7 +548,6 @@ struct PhysicalQuotaBlobSource {
     handle: BlobHandle,
     guard: Arc<dyn StorePhysicalQuotaGuard>,
     reader_bytes: u64,
-    original: Option<crate::owned_decode::DecodeBudget>,
     _credit: Option<crate::owned_decode::DecodeScratch>,
     _resources: crate::owned_decode::ResourceLoan,
 }
@@ -524,12 +572,9 @@ impl BlobSource for PhysicalQuotaBlobSource {
         caller: &crate::owned_decode::DecodeBudget,
         boundary: &mut dyn FnMut() -> Result<(), StoreError>,
     ) -> Result<super::CheckedReader, StoreError> {
-        let original = match &self.original {
-            Some(original) => original.clone(),
-            None => caller.clone(),
-        };
+        let original = caller.clone();
         let mut check = || {
-            super::checked_reader::check_pair(caller, &original, boundary)?;
+            super::checked_reader::check(&original, boundary)?;
             self.guard.verify()
         };
         check()?;
@@ -549,7 +594,6 @@ impl BlobSource for PhysicalQuotaBlobSource {
                 reader,
                 guard: self.guard.clone(),
                 original,
-                caller: caller.clone(),
                 failed: false,
                 _source_resources: self._resources.clone(),
             }),
@@ -650,7 +694,7 @@ impl BlobStoreAdmin for PhysicalQuotaStore {
         Ok(Box::new(PhysicalQuotaInventoryFence {
             store: self,
             child,
-            checked_account: Some(account),
+            checked_account: account.into(),
             _resources: resources,
             _checked_credit: Some(credit),
         }))
@@ -662,7 +706,7 @@ impl BlobStoreAdmin for PhysicalQuotaStore {
         Ok(Box::new(PhysicalQuotaInventoryFence {
             store: self,
             child: self.child_admin.acquire_inventory_fence()?,
-            checked_account: None,
+            checked_account: crate::owned_decode::DecodeBudgetSlot::default(),
             _resources: resources,
             _checked_credit: None,
         }))
@@ -672,7 +716,7 @@ impl BlobStoreAdmin for PhysicalQuotaStore {
 struct PhysicalQuotaInventoryFence<'a> {
     store: &'a PhysicalQuotaStore,
     child: Box<dyn BlobInventoryFence + 'a>,
-    checked_account: Option<DecodeBudget>,
+    checked_account: crate::owned_decode::DecodeBudgetSlot,
     _resources: crate::owned_decode::ResourceLoan,
     _checked_credit: Option<DecodeScratch>,
 }
@@ -838,7 +882,6 @@ struct PhysicalCheckedReader {
     reader: super::CheckedReader,
     guard: Arc<dyn StorePhysicalQuotaGuard>,
     original: crate::owned_decode::DecodeBudget,
-    caller: crate::owned_decode::DecodeBudget,
     failed: bool,
     _source_resources: crate::owned_decode::ResourceLoan,
 }
@@ -864,7 +907,7 @@ impl super::CheckedBlobReader for PhysicalCheckedReader {
         }
         let original = &self.original;
         let mut check = || {
-            super::checked_reader::check_pair(&self.caller, original, boundary)?;
+            super::checked_reader::check(original, boundary)?;
             self.guard.verify()
         };
         let result = self.reader.read_with_boundary(output, &mut check);

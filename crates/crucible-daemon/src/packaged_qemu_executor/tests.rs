@@ -617,6 +617,7 @@ fn repository_with_campaigns(campaigns: &[(&str, &[u8], &str)]) -> Arc<CampaignR
             64 * 1024 * 1024,
         )),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     for (name, scenario_label, qemu_build) in campaigns {
         let scenario = ScenarioDefId::from_hash(CampaignHash::derive(
@@ -943,9 +944,18 @@ fn exact_pin_materializer_fixture(directory: &tempfile::TempDir) -> ExactPinMate
         "packaged-exact-pin-store",
         directory.path().join("objects"),
     ));
+    let metadata = crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
+        .expect("finite component RAM-root credit");
+    let backend = crate::exact_checkpoint_store::test_support::fixture_metadata_backend(
+        backend,
+        metadata.clone(),
+    );
+    let original = crucible::owned_decode::DecodeBudget::for_store(metadata.clone())
+        .expect("same original exact-pin namespace account");
     let repository = Arc::new(CampaignRepository::new(
         backend.clone(),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Available(original),
     ));
     let scenario = production.source().scenario_def();
     let configuration = production.configuration().clone();
@@ -994,10 +1004,7 @@ fn exact_pin_materializer_fixture(directory: &tempfile::TempDir) -> ExactPinMate
             repository.ram_retention_authority(),
         )
         .expect("exact checkpoint store")
-        .with_ram_root_resources(
-            crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
-                .expect("finite component RAM-root credit"),
-        ),
+        .with_ram_root_resources(metadata),
     );
     let prepared = checkpoints
         .prepare_production_closure(production.closure().clone())
@@ -1833,6 +1840,7 @@ fn invalid_campaign_fails_before_operational_owner_mutation() {
             1024 * 1024,
         )),
         Arc::new(crucible_cas::content_store::MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
 
     let checkpoint_backend = Arc::new(crucible_cas::content_store::MemoryBlobBackend::new(

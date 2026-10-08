@@ -32,7 +32,10 @@ toml = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+crucible-linux-resource = { path = "../crucible-linux-resource", default-features = false, features = ["test-support"] }
+crucible-cas = { workspace = true, features = ["test-support"] }
 regex = { workspace = true }
+tempfile = { workspace = true }
 crucible-shmem = { path = "../crucible-shmem" }
 crucible-harness = { path = "../crucible-harness" }
 

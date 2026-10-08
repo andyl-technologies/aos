@@ -143,7 +143,11 @@ fn campaign_allowances_gate_new_work_but_never_charge_replay() {
         admitted.new_snapshot
     );
 
-    let cold = CampaignRepository::new(Arc::clone(&repository.blobs), Arc::clone(&repository.refs));
+    let cold = CampaignRepository::new(
+        Arc::clone(&repository.blobs),
+        Arc::clone(&repository.refs),
+        repository.ram_admission().clone(),
+    );
     assert_eq!(
         cold.budget_projection("budget").expect("cold budget"),
         budget
@@ -263,7 +267,11 @@ fn imported_successors_cannot_inflate_or_drop_the_budget_contract() {
     )
     .expect("forged successor");
     let content = repository.put_snapshot(&forged).expect("forged snapshot");
-    let cold = CampaignRepository::new(Arc::clone(&repository.blobs), Arc::clone(&repository.refs));
+    let cold = CampaignRepository::new(
+        Arc::clone(&repository.blobs),
+        Arc::clone(&repository.refs),
+        repository.ram_admission().clone(),
+    );
     assert!(matches!(
         cold.validate_complete_head(content),
         Err(CampaignRepositoryError::Integrity {

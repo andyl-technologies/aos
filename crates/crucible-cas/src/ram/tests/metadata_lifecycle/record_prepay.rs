@@ -36,13 +36,10 @@ fn prepaid_codec_refusal_is_local_and_preserves_original_poisoning() {
     let refusal = RecordAccount::new(&parent, RecordAllocationPlan::read(4179, 0).unwrap())
         .err()
         .unwrap();
-    let RamStoreError::Store(StoreError::Supervision { source }) = refusal else {
+    let RamStoreError::Store(StoreError::DecodeAdmission { source, .. }) = refusal else {
         panic!("expected original admission")
     };
-    assert_eq!(
-        source.downcast_ref::<crate::owned_decode::DecodeAdmissionError>(),
-        Some(&poisoned)
-    );
+    assert_eq!(source, poisoned);
     drop(parent);
     assert_eq!(quota.used(), 0);
 }
@@ -56,7 +53,7 @@ fn tree_decoder_uses_fewer_real_original_bank_reservations() {
     let scope = parent.enter();
     let retention = Retention::default();
     let mut boundary = || Ok(());
-    let mut work = Work::new(store.limits, &mut boundary);
+    let mut work = Work::new(store.limits, &parent, &mut boundary).unwrap();
     let (page, digest) = store.put_page(&[3; 4096], &retention, &mut work).unwrap();
     let left = store
         .put_tree(
@@ -188,7 +185,7 @@ fn sixty_four_pending_pages_overlap_only_independent_actual_cache_copy_loans() {
     let scope = parent.enter();
     let baseline = quota.used();
     let mut boundary = || Ok(());
-    let mut work = Work::new(store.limits, &mut boundary);
+    let mut work = Work::new(store.limits, &parent, &mut boundary).unwrap();
     store.begin_capture_batch(&mut work).unwrap();
     for index in 0_u64..64 {
         let mut page = [0; 4096];
@@ -259,19 +256,27 @@ impl ImmutableBlobBackend for CallbackBackend {
     fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
         self.backend.put_if_absent(id, source)
     }
-    fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
-        let source = self.backend.read(id, range)?;
-        let account = crate::owned_decode::current_child_budget()
-            .unwrap()
-            .unwrap();
-        let credit = account
-            .reserve_scratch_bytes(
-                (std::mem::size_of::<CallbackSource>() + 2 * std::mem::size_of::<usize>()) as u64,
-            )
-            .map_err(|source| StoreError::Supervision {
-                source: Box::new(source),
-            })?;
-        let observed = Arc::new(CallbackSource {
+    fn read(&self, _: ContentId, _: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
+        Err(StoreError::Unsupported {
+            capability: "checked adversarial callback fixture",
+        })
+    }
+
+    fn read_with_boundary(
+        &self,
+        original: &DecodeBudget,
+        id: ContentId,
+        range: Option<ByteRange>,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<BlobHandle, StoreError> {
+        self.observations.fetch_add(1, Ordering::SeqCst);
+        let source = self
+            .backend
+            .read_with_boundary(original, id, range, boundary)?;
+        let credit = original
+            .reserve_scratch_bytes(BlobHandle::source_allocation_bytes::<CallbackSource>())
+            .map_err(|error| crate::content_store::batch::admission_under(original, error))?;
+        let observed = CallbackSource {
             source: source.clone(),
             observations: self.observations.clone(),
             fail_at_eof: self.fail_at_eof.clone(),
@@ -279,8 +284,8 @@ impl ImmutableBlobBackend for CallbackBackend {
             corrupt_first_read: self.corrupt_first_read,
             revoke_after_eof_verifications: self.revoke_after_eof_verifications,
             _credit: credit,
-        });
-        Ok(source.with_observed_source(observed))
+        };
+        Ok(source.with_untrusted_source(observed))
     }
 }
 
@@ -294,63 +299,99 @@ struct CallbackSource {
     _credit: crate::owned_decode::DecodeScratch,
 }
 
-fn observe_original_callback(counter: &AtomicU64) -> Result<(), StoreError> {
-    let original = crate::owned_decode::current_child_budget()
-        .map_err(|source| StoreError::Supervision {
-            source: Box::new(source),
-        })?
-        .ok_or(StoreError::Unsupported {
-            capability: "original callback scope",
-        })?;
+fn observe_original_callback(
+    original: &DecodeBudget,
+    counter: &AtomicU64,
+) -> Result<(), StoreError> {
     let _scratch = original
         .reserve_scratch_bytes(128 * 1024)
-        .map_err(|source| StoreError::Supervision {
-            source: Box::new(source),
-        })?;
+        .map_err(|error| crate::content_store::batch::admission_under(original, error))?;
     counter.fetch_add(1, Ordering::SeqCst);
     Ok(())
 }
 
 impl crate::content_store::BlobSource for CallbackSource {
+    fn checked_read_access(&self) -> crate::content_store::CheckedReadAccess {
+        crate::content_store::CheckedReadAccess::Owning
+    }
+
     fn logical_length(&self) -> u64 {
         self.source.logical_length()
     }
     fn open(&self) -> Result<Box<dyn std::io::Read + Send>, StoreError> {
-        observe_original_callback(&self.observations)?;
-        let original = crate::owned_decode::current_child_budget()
-            .unwrap()
-            .unwrap();
+        Err(StoreError::Unsupported {
+            capability: "checked adversarial callback fixture",
+        })
+    }
+
+    fn open_with_boundary(
+        &self,
+        original: &DecodeBudget,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<crate::content_store::CheckedReader, StoreError> {
+        fixture_boundary(original, boundary)?;
+        observe_original_callback(original, &self.observations)?;
         let credit = original
-            .reserve_scratch_bytes(std::mem::size_of::<CallbackReader>() as u64)
-            .map_err(|source| StoreError::Supervision {
-                source: Box::new(source),
-            })?;
-        Ok(Box::new(CallbackReader {
-            reader: self.source.open()?,
-            observations: self.observations.clone(),
-            fail_at_eof: self.fail_at_eof.clone(),
-            revoke_at_eof: self.revoke_at_eof.clone(),
-            corrupt_first_read: self.corrupt_first_read,
-            revoke_after_eof_verifications: self.revoke_after_eof_verifications,
-            _credit: credit,
-        }))
+            .reserve_scratch_array::<CallbackReader>(1)
+            .map_err(|error| crate::content_store::batch::admission_under(original, error))?;
+        let reader =
+            crate::content_store::BlobSource::open_with_boundary(&self.source, original, boundary)?;
+        Ok(crate::content_store::CheckedReader::funded(
+            Box::new(CallbackReader {
+                reader,
+                original: original.clone(),
+                observations: self.observations.clone(),
+                fail_at_eof: self.fail_at_eof.clone(),
+                revoke_at_eof: self.revoke_at_eof.clone(),
+                corrupt_first_read: self.corrupt_first_read,
+                revoke_after_eof_verifications: self.revoke_after_eof_verifications,
+                failed: false,
+            }),
+            credit,
+        ))
     }
 }
 
 struct CallbackReader {
-    reader: Box<dyn std::io::Read + Send>,
+    reader: crate::content_store::CheckedReader,
+    original: DecodeBudget,
     observations: Arc<AtomicU64>,
     fail_at_eof: Arc<std::sync::atomic::AtomicBool>,
     revoke_at_eof: Option<Arc<ObservedQuota>>,
     corrupt_first_read: bool,
     revoke_after_eof_verifications: u64,
-    _credit: crate::owned_decode::DecodeScratch,
+    failed: bool,
 }
 
-impl std::io::Read for CallbackReader {
-    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
-        observe_original_callback(&self.observations).map_err(std::io::Error::other)?;
-        let read = self.reader.read(bytes)?;
+impl crate::content_store::CheckedBlobReader for CallbackReader {
+    fn original_account(&self) -> &DecodeBudget {
+        &self.original
+    }
+
+    fn read_with_boundary(
+        &mut self,
+        bytes: &mut [u8],
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<usize, StoreError> {
+        if self.failed {
+            return Err(StoreError::Unsupported {
+                capability: "failed adversarial callback reader",
+            });
+        }
+        let result = self.read_inner(bytes, boundary);
+        self.failed = result.is_err();
+        result
+    }
+}
+
+impl CallbackReader {
+    fn read_inner(
+        &mut self,
+        bytes: &mut [u8],
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<usize, StoreError> {
+        observe_original_callback(&self.original, &self.observations)?;
+        let read = self.reader.read_with_boundary(bytes, boundary)?;
         if read != 0 && self.corrupt_first_read {
             bytes[0] ^= 1;
             self.corrupt_first_read = false;
@@ -367,7 +408,10 @@ impl std::io::Read for CallbackReader {
             }
         }
         if read == 0 && self.fail_at_eof.load(Ordering::SeqCst) {
-            return Err(std::io::Error::other(LateReadFailure));
+            return Err(StoreError::StreamIo {
+                operation: "verify-blob-source-length",
+                source: std::io::Error::other(LateReadFailure),
+            });
         }
         Ok(read)
     }
@@ -399,12 +443,13 @@ fn source_open_read_and_late_auth_callbacks_run_outside_prepaid_tls() {
     let scope = original.enter();
     let baseline = quota.used();
     let mut boundary = || Ok(());
-    let mut work = Work::new(store.limits, &mut boundary);
+    let mut work = Work::new(store.limits, &original, &mut boundary).unwrap();
+    let prepared = quota.used();
     let envelope = store.read_envelope(page, &mut work).unwrap();
     assert_eq!(envelope.schema_name(), PAGE_SCHEMA);
     assert!(observations.load(Ordering::SeqCst) >= 3);
     drop(envelope);
-    assert_eq!(quota.used(), baseline);
+    assert_eq!(quota.used(), prepared);
 
     fail_at_eof.store(true, Ordering::SeqCst);
     let error = store.read_envelope(page, &mut work).err().unwrap();
@@ -420,8 +465,10 @@ fn source_open_read_and_late_auth_callbacks_run_outside_prepaid_tls() {
             .is_some()
     );
     drop(error);
-    assert_eq!(quota.used(), baseline);
+    assert_eq!(quota.used(), prepared);
     original.check().unwrap();
+    drop(work);
+    assert_eq!(quota.used(), baseline);
     drop(scope);
     drop(original);
 }
@@ -450,13 +497,14 @@ fn original_authority_revoked_at_eof_refuses_decoded_owner_and_releases_both_loa
     let scope = parent.enter();
     let baseline = quota.used();
     let mut boundary = || quota.verify().map_err(RamStoreError::from);
-    let mut work = Work::new(store.limits, &mut boundary);
+    let mut work = Work::new(store.limits, &parent, &mut boundary).unwrap();
+    let prepared = quota.used();
     let error = store.read_envelope(page, &mut work).err().unwrap();
     assert!(quota.revoked.load(Ordering::SeqCst));
     assert_eq!(decoder_failure(&error), DecoderFailure::OriginalRevocation);
     assert_eq!(
         quota.used(),
-        baseline,
+        prepared,
         "raw and retained decoder loans must both close on refusal"
     );
     // Partition failure must not poison the original ambient decoder account;
@@ -464,6 +512,8 @@ fn original_authority_revoked_at_eof_refuses_decoded_owner_and_releases_both_loa
     parent.check().unwrap();
     assert!(parent.child().is_err());
     drop(error);
+    drop(work);
+    assert_eq!(quota.used(), baseline);
     drop(scope);
     drop(parent);
 }
@@ -495,6 +545,18 @@ fn revoked_decoder_comparison(
     corrupt_first_read: bool,
     revoke_after_eof_verifications: u64,
 ) -> [DecoderFailure; 2] {
+    decoder_stage_comparison(
+        bytes,
+        corrupt_first_read,
+        Some(revoke_after_eof_verifications),
+    )
+}
+
+fn decoder_stage_comparison(
+    bytes: &[u8],
+    corrupt_first_read: bool,
+    revoke_at_eof: Option<u64>,
+) -> [DecoderFailure; 2] {
     let directory = tempfile::tempdir().unwrap();
     let quota = ObservedQuota::new();
     let source_store = directory_store(directory.path(), &quota);
@@ -507,9 +569,9 @@ fn revoked_decoder_comparison(
         backend: source_store.backend.clone(),
         observations: Arc::new(AtomicU64::new(0)),
         fail_at_eof: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        revoke_at_eof: Some(quota.clone()),
+        revoke_at_eof: revoke_at_eof.map(|_| quota.clone()),
         corrupt_first_read,
-        revoke_after_eof_verifications,
+        revoke_after_eof_verifications: revoke_at_eof.unwrap_or(0),
     });
     let store = RamStore::new(
         backend,
@@ -524,7 +586,7 @@ fn revoked_decoder_comparison(
     let failures = [false, true].map(|prepaid| {
         quota.revoked.store(false, Ordering::SeqCst);
         let mut boundary = || quota.verify().map_err(RamStoreError::from);
-        let mut work = Work::new(store.limits, &mut boundary);
+        let mut work = Work::new(store.limits, &original, &mut boundary).unwrap();
         let error = if prepaid {
             store.read_envelope(id, &mut work)
         } else {
@@ -532,7 +594,10 @@ fn revoked_decoder_comparison(
         }
         .err()
         .unwrap();
-        assert!(quota.revoked.load(Ordering::SeqCst));
+        assert_eq!(
+            quota.revoked.load(Ordering::SeqCst),
+            revoke_at_eof.is_some()
+        );
         let failure = decoder_failure(&error);
         drop(error);
         drop(work);
@@ -582,40 +647,107 @@ fn eof_revocation_preserves_original_first_allocation_error_priority() {
 }
 
 #[test]
-fn eof_revocation_preserves_digest_and_preallocation_framing_error_priority() {
+fn checked_eof_refusal_precedes_framing_while_live_reads_preserve_framing_errors() {
     use crate::content_envelope::ContentEnvelopeError;
 
-    let incompatible = b"CRUCOBJF\0\0\0\x01";
-    assert_eq!(
-        revoked_decoder_comparison(incompatible, false, 0),
-        [
-            DecoderFailure::Envelope(ContentEnvelopeError::Incompatible),
-            DecoderFailure::Envelope(ContentEnvelopeError::Incompatible),
-        ]
-    );
-    assert_eq!(
-        revoked_decoder_comparison(b"CRU", false, 0),
-        [
-            DecoderFailure::Envelope(ContentEnvelopeError::Truncated),
-            DecoderFailure::Envelope(ContentEnvelopeError::Truncated),
-        ]
-    );
     let mut invalid_utf8 = b"CRUCOBJE".to_vec();
     invalid_utf8.extend_from_slice(&1_u32.to_be_bytes());
     invalid_utf8.extend_from_slice(&1_u16.to_be_bytes());
     invalid_utf8.push(0xff);
-    assert_eq!(
-        revoked_decoder_comparison(&invalid_utf8, false, 0),
-        [
-            DecoderFailure::Envelope(ContentEnvelopeError::InvalidIdentifier),
-            DecoderFailure::Envelope(ContentEnvelopeError::InvalidIdentifier),
-        ]
-    );
+    let cases: &[(&[u8], ContentEnvelopeError)] = &[
+        (b"CRUCOBJF\0\0\0\x01", ContentEnvelopeError::Incompatible),
+        (b"CRU", ContentEnvelopeError::Truncated),
+        (&invalid_utf8, ContentEnvelopeError::InvalidIdentifier),
+    ];
+
+    for (bytes, framing) in cases {
+        assert_eq!(
+            revoked_decoder_comparison(bytes, false, 0),
+            [
+                DecoderFailure::OriginalRevocation,
+                DecoderFailure::OriginalRevocation
+            ],
+            "an observed checked EOF refusal never exposes bytes to the codec"
+        );
+        assert_eq!(
+            decoder_stage_comparison(bytes, false, None),
+            [
+                DecoderFailure::Envelope(framing.clone()),
+                DecoderFailure::Envelope(framing.clone())
+            ],
+            "successful live checked reads retain pure framing errors"
+        );
+    }
     assert_eq!(
         revoked_decoder_comparison(&borrowed_valid_schema_prefix(), true, 0),
         [DecoderFailure::Digest, DecoderFailure::Digest],
-        "a failed object digest must precede any decoder authority check"
+        "already-computed object digest failure precedes final EOF authority verification"
     );
+}
+
+#[test]
+fn successful_checked_read_allows_pure_framing_before_later_codec_admission() {
+    use crate::content_envelope::ContentEnvelopeError;
+
+    let directory = tempfile::tempdir().unwrap();
+    let quota = ObservedQuota::new();
+    let store = directory_store(directory.path(), &quota);
+    let original = DecodeBudget::for_store(quota.clone()).unwrap();
+    let baseline = quota.used();
+    let mut invalid_utf8 = b"CRUCOBJE".to_vec();
+    invalid_utf8.extend_from_slice(&1_u32.to_be_bytes());
+    invalid_utf8.extend_from_slice(&1_u16.to_be_bytes());
+    invalid_utf8.push(0xff);
+    let cases: &[(&[u8], Option<ContentEnvelopeError>)] = &[
+        (
+            b"CRUCOBJF\0\0\0\x01",
+            Some(ContentEnvelopeError::Incompatible),
+        ),
+        (b"CRU", Some(ContentEnvelopeError::Truncated)),
+        (&invalid_utf8, Some(ContentEnvelopeError::InvalidIdentifier)),
+        (&borrowed_valid_schema_prefix(), None),
+    ];
+
+    for (bytes, framing) in cases {
+        quota.revoked.store(false, Ordering::SeqCst);
+        let id = ContentId::for_bytes(ObjectKind::RamTree, 1, bytes);
+        store
+            .backend
+            .put_if_absent(id, &BlobHandle::from_bytes(bytes.to_vec()))
+            .unwrap();
+        let account = original.child().unwrap();
+        let source = store
+            .backend
+            .read_with_boundary(&account, id, None, &mut || Ok(()))
+            .unwrap();
+        let read = source
+            .read_all_with_boundary(&account, 4096, &mut || Ok(()))
+            .unwrap();
+        assert_eq!(&*read, *bytes);
+        assert!(id.authenticates(&read));
+
+        // Only after a genuine successful checked read does the later codec
+        // stage lose original authority. Pure framing does not allocate.
+        quota.revoked.store(true, Ordering::SeqCst);
+        let before = quota.reservations.load(Ordering::SeqCst);
+        let scope = account.enter();
+        let error = ContentEnvelope::from_canonical_bytes_with_child_limit(&read, 2).unwrap_err();
+        if let Some(framing) = framing {
+            assert_eq!(&error, framing);
+        } else {
+            assert!(matches!(error, ContentEnvelopeError::DecodeAdmission(_)));
+            assert_eq!(
+                decoder_failure(&RamStoreError::Envelope(error)),
+                DecoderFailure::OriginalRevocation
+            );
+        }
+        assert_eq!(quota.reservations.load(Ordering::SeqCst), before);
+        drop(scope);
+        drop(read);
+        drop(source);
+        drop(account);
+        assert_eq!(quota.used(), baseline);
+    }
 }
 
 #[test]
@@ -626,8 +758,8 @@ fn later_original_admission_revocation_precedes_malformed_child_utf8() {
     bytes.extend_from_slice(&1_u16.to_be_bytes());
     bytes.push(0xff);
 
-    // Schema admission succeeds; revocation occurs at the second original
-    // verification, the child-node admission before malformed role decoding.
+    // This delay still expires within the checked EOF stage. No malformed
+    // child bytes become visible after its actual original refusal.
     assert_eq!(
         revoked_decoder_comparison(&bytes, false, 2),
         [
@@ -641,8 +773,10 @@ fn later_original_admission_revocation_precedes_malformed_child_utf8() {
 fn optimized_scalar_refusal_preserves_original_cancellation_and_partial_counts() {
     let directory = tempfile::tempdir().unwrap();
     let quota = ObservedQuota::new();
-    let store = directory_store(directory.path(), &quota);
-    let page = page_object(&store);
+    let source_store = directory_store(directory.path(), &quota);
+    let page = page_object(&source_store);
+    let observations = Arc::new(AtomicU64::new(0));
+    let store = callback_store(&source_store, observations.clone());
     let original = DecodeBudget::for_store(quota.clone()).unwrap();
     let _scope = original.enter();
     let baseline = quota.used();
@@ -665,7 +799,7 @@ fn optimized_scalar_refusal_preserves_original_cancellation_and_partial_counts()
                         Ok(())
                     }
                 };
-                let mut work = Work::new(store.limits, &mut boundary);
+                let mut work = Work::new(store.limits, &original, &mut boundary).unwrap();
                 (work.visits, work.io_bytes) = counts;
                 let reservations = quota.reservations.load(Ordering::SeqCst);
                 let error = if prepaid {
@@ -687,6 +821,12 @@ fn optimized_scalar_refusal_preserves_original_cancellation_and_partial_counts()
                     polls.get(),
                     quota.reservations.load(Ordering::SeqCst) - reservations,
                 );
+                assert_eq!(
+                    observations.load(Ordering::SeqCst),
+                    0,
+                    "guaranteed refusal performs no metadata lookup or stream callback"
+                );
+                assert_eq!(observed.4, 0, "already-prepared Work acquires no new loan");
                 drop(work);
                 assert_eq!(quota.used(), baseline);
                 observed
@@ -702,6 +842,114 @@ fn optimized_scalar_refusal_preserves_original_cancellation_and_partial_counts()
     original.check().unwrap();
 }
 
+fn callback_store(source: &RamStore, observations: Arc<AtomicU64>) -> RamStore {
+    RamStore::new(
+        Arc::new(CallbackBackend {
+            backend: source.backend.clone(),
+            observations,
+            fail_at_eof: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            revoke_at_eof: None,
+            corrupt_first_read: false,
+            revoke_after_eof_verifications: 0,
+        }),
+        DurabilityRequirement::new(1, false).unwrap(),
+        source.limits,
+    )
+    .unwrap()
+}
+
+#[test]
+fn exhausted_scalar_preflight_keeps_original_refusal_before_callback_under_foreign_tls() {
+    let directory = tempfile::tempdir().unwrap();
+    let quota = ObservedQuota::new();
+    let source_store = directory_store(directory.path(), &quota);
+    let page = page_object(&source_store);
+    let observations = Arc::new(AtomicU64::new(0));
+    let store = callback_store(&source_store, observations.clone());
+    let original = DecodeBudget::for_store(quota.clone()).unwrap();
+    let unrelated_quota = ObservedQuota::new();
+    let unrelated = DecodeBudget::for_store(unrelated_quota).unwrap();
+    let polls = std::cell::Cell::new(0);
+    let mut boundary = || {
+        polls.set(polls.get() + 1);
+        Ok(())
+    };
+    let mut work = Work::new(store.limits, &original, &mut boundary).unwrap();
+    work.io_bytes = store.limits.maximum_io_bytes;
+    let before = quota.reservations.load(Ordering::SeqCst);
+    quota.revoked.store(true, Ordering::SeqCst);
+    let scope = unrelated.enter();
+
+    let error = store.read_envelope(page, &mut work).err().unwrap();
+    assert_eq!(decoder_failure(&error), DecoderFailure::OriginalRevocation);
+    assert_eq!(polls.get(), 0);
+    assert_eq!(observations.load(Ordering::SeqCst), 0);
+    assert_eq!(quota.reservations.load(Ordering::SeqCst), before);
+    assert_eq!(work.visits, 0);
+    assert_eq!(work.io_bytes, store.limits.maximum_io_bytes);
+    unrelated.verify_live().unwrap();
+    drop(scope);
+}
+
+#[test]
+fn scalar_preflight_inspects_only_when_capacity_does_not_guarantee_refusal() {
+    let directory = tempfile::tempdir().unwrap();
+    let quota = ObservedQuota::new();
+    let source_store = directory_store(directory.path(), &quota);
+    let page = page_object(&source_store);
+    let empty = ContentId::for_bytes(ObjectKind::RamTree, 1, b"");
+    source_store
+        .backend
+        .put_if_absent(empty, &BlobHandle::from_bytes(Vec::new()))
+        .unwrap();
+    let observations = Arc::new(AtomicU64::new(0));
+    let store = callback_store(&source_store, observations.clone());
+    let original = DecodeBudget::for_store(quota.clone()).unwrap();
+
+    let mut boundary = || Ok(());
+    let mut work = Work::new(store.limits, &original, &mut boundary).unwrap();
+    let error = store.read_envelope(empty, &mut work).err().unwrap();
+    assert_eq!(
+        decoder_failure(&error),
+        DecoderFailure::Envelope(crate::content_envelope::ContentEnvelopeError::Truncated)
+    );
+    assert!(observations.load(Ordering::SeqCst) > 0);
+    drop(work);
+
+    observations.store(0, Ordering::SeqCst);
+    let mut work = Work::new(store.limits, &original, &mut boundary).unwrap();
+    work.io_bytes = store.limits.maximum_io_bytes - 1;
+    assert!(matches!(
+        store.read_envelope(page, &mut work),
+        Err(RamStoreError::Limit("I/O bytes"))
+    ));
+    assert_eq!(
+        observations.load(Ordering::SeqCst),
+        1,
+        "remaining capacity requires the actual metadata length; no stream opens after scalar accounting refusal"
+    );
+    drop(work);
+
+    observations.store(0, Ordering::SeqCst);
+    let polls = std::cell::Cell::new(0);
+    let mut boundary = || {
+        polls.set(polls.get() + 1);
+        Ok(())
+    };
+    let mut work = Work::new(store.limits, &original, &mut boundary).unwrap();
+    work.io_bytes = store.limits.maximum_io_bytes;
+    assert!(matches!(
+        store.read_envelope(empty, &mut work),
+        Err(RamStoreError::Limit("I/O bytes"))
+    ));
+    assert_eq!(
+        work.io_bytes, store.limits.maximum_io_bytes,
+        "no unread length is invented"
+    );
+    assert_eq!(observations.load(Ordering::SeqCst), 0);
+    assert_eq!(polls.get(), 2);
+}
+
 #[test]
 fn canonical_readers_do_not_retain_the_shared_input_phase() {
     let directory = tempfile::tempdir().unwrap();
@@ -712,7 +960,7 @@ fn canonical_readers_do_not_retain_the_shared_input_phase() {
     let scope = parent.enter();
     let baseline = quota.used();
     let mut boundary = || Ok(());
-    let mut work = Work::new(store.limits, &mut boundary);
+    let mut work = Work::new(store.limits, &parent, &mut boundary).unwrap();
     store.begin_capture_batch(&mut work).unwrap();
     store
         .put_page(&[7; 4096], &OriginalRetention, &mut work)
@@ -727,7 +975,9 @@ fn canonical_readers_do_not_retain_the_shared_input_phase() {
     };
     let input_clone = Arc::clone(&input);
     let source = object.source.clone();
-    let mut reader = source.open().unwrap();
+    let mut reader =
+        crate::content_store::BlobSource::open_with_boundary(&source, &parent, &mut || Ok(()))
+            .unwrap();
     drop(work.pending.take());
     let both_phases = quota.used();
     drop(input);
@@ -738,10 +988,19 @@ fn canonical_readers_do_not_retain_the_shared_input_phase() {
     drop(source);
     assert_eq!(quota.used(), canonical_only);
     let mut bytes = [0; 4179];
-    reader.read_exact(&mut bytes).unwrap();
+    assert_eq!(
+        reader
+            .read_with_boundary(&mut bytes, &mut || Ok(()))
+            .unwrap(),
+        bytes.len()
+    );
     assert!(bytes.ends_with(&[7; 4096]));
-    assert_eq!(reader.read(&mut [0]).unwrap(), 0);
+    assert_eq!(
+        reader.read_with_boundary(&mut [0], &mut || Ok(())).unwrap(),
+        0
+    );
     drop(reader);
+    drop(work);
     assert_eq!(quota.used(), baseline);
     drop(scope);
     drop(parent);
@@ -751,28 +1010,51 @@ fn canonical_readers_do_not_retain_the_shared_input_phase() {
 }
 
 #[test]
-fn batch_array_refusal_keeps_the_original_parent_healthy_and_reusable() {
+fn batch_array_refusal_keeps_the_namespace_healthy_and_the_failed_operation_sticky() {
     let directory = tempfile::tempdir().unwrap();
     let quota = ObservedQuota::new();
     let store = directory_store(directory.path(), &quota);
     let store_baseline = quota.used();
     let parent = DecodeBudget::for_store(quota.clone()).unwrap();
-    let scope = parent.enter();
     let baseline = quota.used();
+    let operation = parent.child().unwrap();
+    let mut boundary = || Ok(());
+    let mut work = Work::new(store.limits, &operation, &mut boundary).unwrap();
+    let prepared = quota.used();
     let competitor = quota
         .resources
-        .reserve(0, METADATA_BYTES - baseline - 4096)
+        .reserve(0, METADATA_BYTES - prepared - 4096)
         .unwrap();
-    let mut boundary = || Ok(());
-    let mut work = Work::new(store.limits, &mut boundary);
+
     let error = store.begin_capture_batch(&mut work).unwrap_err();
     assert!(contains_original_quota(&error));
     assert!(work.pending.is_none());
-    parent.check().unwrap();
-    drop(error);
+    let first = operation.failure().unwrap().unwrap();
     drop(competitor);
-    assert_eq!(quota.used(), baseline);
+    let reservations = quota.reservations.load(Ordering::SeqCst);
+    let repeated_refusal = store.begin_capture_batch(&mut work).unwrap_err();
+    let RamStoreError::Store(StoreError::DecodeAdmission { source, .. }) = &repeated_refusal else {
+        panic!("expected the same original admission failure: {repeated_refusal:?}")
+    };
+    assert_eq!(source, &first);
+    assert_eq!(operation.failure().unwrap(), Some(first.clone()));
+    assert_eq!(quota.reservations.load(Ordering::SeqCst), reservations);
+    assert!(work.pending.is_none());
+    assert_eq!((work.visits, work.io_bytes), (0, 0));
+    assert_eq!(quota.used(), prepared);
 
+    // The failed operation never renews its allowance. Close all of its
+    // borrowers before reusing the same namespace in a separate operation.
+    drop(error);
+    drop(repeated_refusal);
+    drop(first);
+    drop(work);
+    drop(operation);
+    assert_eq!(quota.used(), baseline);
+    parent.verify_live().unwrap();
+
+    let operation = parent.child().unwrap();
+    let mut work = Work::new(store.limits, &operation, &mut boundary).unwrap();
     store.begin_capture_batch(&mut work).unwrap();
     let array_used = quota.used();
     assert!(
@@ -784,9 +1066,10 @@ fn batch_array_refusal_keeps_the_original_parent_healthy_and_reusable() {
         RamStoreError::Invalid("capture batch already present")
     ));
     assert_eq!(quota.used(), array_used);
+    drop(error);
     drop(work);
+    drop(operation);
     assert_eq!(quota.used(), baseline);
-    drop(scope);
     drop(parent);
     assert_eq!(quota.used(), store_baseline);
     drop(store);

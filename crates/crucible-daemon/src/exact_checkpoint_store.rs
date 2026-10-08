@@ -773,10 +773,10 @@ fn map_checkpoint_store_error(error: StoreError) -> ExactCheckpointStoreError {
 }
 
 fn cancellation_blob_handle(source: BlobHandle, cancellation: ExecutionCancellation) -> BlobHandle {
-    BlobHandle::new(Arc::new(CancellationBlobSource {
+    BlobHandle::new(CancellationBlobSource {
         source,
         cancellation,
-    }))
+    })
 }
 
 struct CancellationBlobSource {

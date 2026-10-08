@@ -104,6 +104,7 @@ impl CampaignRepository {
         mut checkpoint_resolver: Option<&mut dyn CampaignArchiveCheckpointResolver>,
         boundary: &mut dyn FnMut() -> Result<(), crucible_cas::ram::RamStoreError>,
     ) -> Result<CampaignArchivePlan, CampaignRepositoryError> {
+        self.verify_ram_admission()?;
         self.validate_complete_head_with_boundary(snapshot.content_id(), boundary)?;
         let snapshot_record = self.read_snapshot(snapshot.content_id())?;
         let snapshot_closure =
@@ -289,6 +290,7 @@ impl CampaignRepository {
         plan: &CampaignArchivePlan,
         boundary: &mut dyn FnMut() -> Result<(), crucible_cas::ram::RamStoreError>,
     ) -> Result<CampaignArchiveManifestId, CampaignRepositoryError> {
+        self.verify_ram_admission()?;
         let _mutation = self.lock_mutation()?;
         for envelope in &plan.page_envelopes {
             boundary().map_err(CampaignRepositoryError::Ram)?;
@@ -345,6 +347,7 @@ impl CampaignRepository {
         plan: &CampaignArchivePlan,
         boundary: &mut dyn FnMut() -> Result<(), crucible_cas::ram::RamStoreError>,
     ) -> Result<CampaignArchiveManifestId, CampaignRepositoryError> {
+        self.verify_ram_admission()?;
         self.verify_plan_against_source_with_boundary(plan, boundary)?;
         for envelope in &plan.page_envelopes {
             boundary().map_err(CampaignRepositoryError::Ram)?;
@@ -377,11 +380,15 @@ impl CampaignRepository {
         destination: &CampaignRepository,
         plan: &CampaignArchivePlan,
         destination_durability: DurabilityRequirement,
+        source_original: Option<&crucible_cas::owned_decode::DecodeBudget>,
+        destination_original: Option<&crucible_cas::owned_decode::DecodeBudget>,
     ) -> Result<CampaignArchiveTransferReport, CampaignRepositoryError> {
         self.transfer_campaign_archive_objects_with_boundary(
             destination,
             plan,
             destination_durability,
+            source_original,
+            destination_original,
             &mut || Ok(()),
         )
     }
@@ -401,17 +408,25 @@ impl CampaignRepository {
         destination: &CampaignRepository,
         plan: &CampaignArchivePlan,
         destination_durability: DurabilityRequirement,
+        source_original: Option<&crucible_cas::owned_decode::DecodeBudget>,
+        destination_original: Option<&crucible_cas::owned_decode::DecodeBudget>,
         boundary: &mut dyn FnMut() -> Result<(), crucible_cas::ram::RamStoreError>,
     ) -> Result<CampaignArchiveTransferReport, CampaignRepositoryError> {
         let mut operation = blake3::Hasher::new();
         operation.update(b"crucible.campaign.local-archive-copy.v1\0");
-        operation.update(plan.manifest_id().content_id().encode().as_bytes());
+        plan.manifest_id()
+            .content_id()
+            .with_encoded_text(|encoded| {
+                operation.update(encoded);
+            });
         self.transfer_campaign_archive_objects_for_operation(
             destination,
             plan,
             destination_durability,
             *operation.finalize().as_bytes(),
             "selected-campaign-store",
+            source_original,
+            destination_original,
             boundary,
         )
     }
@@ -435,9 +450,35 @@ impl CampaignRepository {
         destination_durability: DurabilityRequirement,
         operation: [u8; 32],
         destination_identity: &str,
+        source_original: Option<&crucible_cas::owned_decode::DecodeBudget>,
+        destination_original: Option<&crucible_cas::owned_decode::DecodeBudget>,
         boundary: &mut dyn FnMut() -> Result<(), crucible_cas::ram::RamStoreError>,
     ) -> Result<CampaignArchiveTransferReport, CampaignRepositoryError> {
-        self.verify_plan_against_source_with_boundary(plan, boundary)?;
+        self.verify_ram_admission()?;
+        destination.verify_ram_admission()?;
+        let child = |original: &crucible_cas::owned_decode::DecodeBudget| {
+            original.verify_live().map_err(|source| {
+                CampaignRepositoryError::Ram(crucible_cas::ram::RamStoreError::from_admission(
+                    original, source,
+                ))
+            })?;
+            original.child().map_err(|source| {
+                CampaignRepositoryError::Ram(crucible_cas::ram::RamStoreError::from_admission(
+                    original, source,
+                ))
+            })
+        };
+        let source_account = source_original.map(child).transpose()?;
+        let destination_account = destination_original.map(child).transpose()?;
+        if !plan.ram_roots().is_empty()
+            && (source_account.is_none() || destination_account.is_none())
+        {
+            return Err(StoreError::Unsupported {
+                capability: "campaign-archive-ram-admission",
+            }
+            .into());
+        }
+        self.verify_plan_against_source_under(plan, Some(source_account.as_ref()), boundary)?;
         let capabilities = destination.blobs.capabilities();
         if !capabilities.durable
             || (capabilities.deferred_write && !destination_durability.allows_deferred_write())
@@ -457,6 +498,18 @@ impl CampaignRepository {
         let map_ram_error = CampaignRepositoryError::Ram;
         // Ordinary campaign archives may use an ephemeral source backend.
         // Admit durable RAM capabilities only when a paged RAM graph is selected.
+        let ram_accounts = if plan.ram_roots().is_empty() {
+            None
+        } else {
+            Some((
+                source_account
+                    .as_ref()
+                    .ok_or_else(|| integrity("campaign-archive-source-ram-admission"))?,
+                destination_account
+                    .as_ref()
+                    .ok_or_else(|| integrity("campaign-archive-destination-ram-admission"))?,
+            ))
+        };
         let ram_retentions = if plan.ram_roots().is_empty() {
             None
         } else {
@@ -471,6 +524,9 @@ impl CampaignRepository {
             ))
         };
         if let Some((source_retention, destination_retention)) = &ram_retentions {
+            let (source_original, destination_original) = ram_accounts
+                .as_ref()
+                .ok_or_else(|| integrity("campaign-archive-ram-admission-missing"))?;
             let source_ram = RamStore::new(
                 Arc::clone(&self.blobs),
                 destination_durability,
@@ -491,7 +547,7 @@ impl CampaignRepository {
                     .ok_or_else(|| integrity("campaign-archive-ram-owner-missing"))?;
                 let lease = source_retention.retain_root(*id).map_err(map_ram_error)?;
                 let root = source_ram
-                    .open_with_metadata_resources(lease, boundary)
+                    .open_with_metadata_resources(lease, source_original, boundary)
                     .map_err(map_ram_error)?;
                 let stored = source_ram
                     .transfer_archive_to(
@@ -501,6 +557,8 @@ impl CampaignRepository {
                         destination_identity,
                         operation,
                         destination_retention,
+                        source_original,
+                        destination_original,
                         boundary,
                     )
                     .map_err(map_ram_error)?;
@@ -590,6 +648,7 @@ impl CampaignRepository {
         archive: CampaignArchiveManifestId,
         boundary: &mut dyn FnMut() -> Result<(), crucible_cas::ram::RamStoreError>,
     ) -> Result<CampaignSnapshotId, CampaignRepositoryError> {
+        self.verify_ram_admission()?;
         let inspection = self.inspect_campaign_archive_with_boundary(archive, boundary)?;
         if !matches!(
             inspection.manifest().policy(),
@@ -627,6 +686,15 @@ impl CampaignRepository {
         plan: &CampaignArchivePlan,
         boundary: &mut dyn FnMut() -> Result<(), crucible_cas::ram::RamStoreError>,
     ) -> Result<(), CampaignRepositoryError> {
+        self.verify_plan_against_source_under(plan, None, boundary)
+    }
+
+    fn verify_plan_against_source_under(
+        &self,
+        plan: &CampaignArchivePlan,
+        ram_original: Option<Option<&crucible_cas::owned_decode::DecodeBudget>>,
+        boundary: &mut dyn FnMut() -> Result<(), crucible_cas::ram::RamStoreError>,
+    ) -> Result<(), CampaignRepositoryError> {
         let roots = [plan.manifest.source_snapshot().content_id()]
             .into_iter()
             .chain(
@@ -636,7 +704,8 @@ impl CampaignRepository {
                     .map(|selection| selection.checkpoint().content_id()),
             )
             .chain(plan.manifest.retained_roots().iter().copied());
-        let closure = self.authenticated_archive_closure(roots, true, boundary)?;
+        let closure =
+            self.authenticated_archive_closure_under(roots, true, ram_original, boundary)?;
         self.reject_nested_archive_metadata(&closure.objects, &closure.exact_leaves)?;
         let represented = closure.objects;
         let selected = plan

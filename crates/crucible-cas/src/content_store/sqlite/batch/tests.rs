@@ -753,16 +753,44 @@ fn opaque_checked_dispatch_refuses_without_changing_singleton_metrics() {
     use crate::content_store::composition::MetricsStore;
 
     let root = tempfile::tempdir().expect("component catalog");
+    struct OpaqueBackend(Arc<SqliteBlobBackend>);
+
+    impl ImmutableBlobBackend for OpaqueBackend {
+        fn name(&self) -> &str {
+            self.0.name()
+        }
+
+        fn capabilities(&self) -> BackendCapabilities {
+            self.0.capabilities()
+        }
+
+        fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
+            self.0.contains(id)
+        }
+
+        fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
+            self.0.read(id, range)
+        }
+
+        fn put_if_absent(
+            &self,
+            id: ContentId,
+            source: &BlobHandle,
+        ) -> Result<PutReceipt, StoreError> {
+            self.0.put_if_absent(id, source)
+        }
+    }
+
     let backend =
         Arc::new(SqliteBlobBackend::open("component", root.path()).expect("component database"));
-    let (metrics, state) = MetricsStore::new("metrics", backend);
+    let (metrics, state) = MetricsStore::new("metrics", Arc::new(OpaqueBackend(backend)));
     let input = objects();
     let account =
         DecodeBudget::for_store(original_quota()).expect("explicit finite caller account");
     assert!(matches!(
         metrics.put_many_if_absent_with_boundary(&account, &input, &mut || Ok(())),
         Err(StoreError::Unsupported {
-            capability: "supervised-immutable-batch"
+            capability: "checked-publication-metadata-bound"
         })
     ));
     assert_eq!(state.snapshot().put_calls, 0);

@@ -30,6 +30,10 @@ use super::authoring::{read_bounded_bytes, write_new_bundle_with_boundary, write
 use super::replay::{CampaignReplayReport, render_campaign_replay, replay_finding_object};
 use super::*;
 
+#[path = "finding_bundle/admission.rs"]
+mod admission;
+use admission::ArchiveBundleAdmission;
+
 #[path = "finding_bundle/exact.rs"]
 mod exact;
 use exact::{ExactFindingReplayReport, replay_exact_finding};
@@ -135,16 +139,28 @@ pub(crate) fn verify_exported_finding(
     args: &CampaignFindingBundleVerifyArgs,
     format: OutputFormat,
 ) -> Result<String, CliError> {
+    let admission = ArchiveBundleAdmission::open(
+        args.archive_policy.as_deref(),
+        crucible_api::host_operational::HostOperationClass::Preparation,
+        None,
+        Some(&args.input),
+        None,
+    )?;
+    let input = admission.input_path(&args.input);
     let source = args
         .exact
-        .then(|| FindingSourceAuthentication::open(cli, &args.input))
+        .then(|| FindingSourceAuthentication::open(cli, input))
         .transpose()?;
     let _scope = source.as_ref().map(|source| source.decoding.enter());
+    let _archive_scope = admission.input_scope()?;
     let bundle = match &source {
-        Some(source) => {
-            load_authenticated_bundle_in_workspace(&args.input, &source.workspace, &mut || Ok(()))?
-        }
-        None => load_authenticated_bundle(&args.input)?,
+        Some(source) => load_authenticated_bundle_in_workspace(
+            input,
+            &source.workspace,
+            &admission,
+            &mut || admission.boundary(),
+        )?,
+        None => load_authenticated_bundle(input, &admission)?,
     };
     let finding = &bundle.evidence;
     let finding_id = finding
@@ -186,34 +202,39 @@ pub(crate) fn verify_exported_finding(
         minimization: finding_bundle_minimization_report(finding)?,
         exact_replay,
     };
+    admission.complete()?;
     render_verification(&report, format)
 }
 
-fn load_authenticated_bundle(input: &Path) -> Result<AuthenticatedFindingBundle, CliError> {
-    load_authenticated_bundle_with_boundary(input, &mut || Ok(()))
+fn load_authenticated_bundle(
+    input: &Path,
+    admission: &ArchiveBundleAdmission,
+) -> Result<AuthenticatedFindingBundle, CliError> {
+    load_authenticated_bundle_with_boundary(input, admission, &mut || admission.boundary())
 }
 
 fn load_authenticated_bundle_with_boundary(
     input: &Path,
+    admission: &ArchiveBundleAdmission,
     boundary: &mut dyn FnMut() -> Result<
         (),
         crucible_daemon::campaign_store_composition::CampaignArchiveBoundaryError,
     >,
 ) -> Result<AuthenticatedFindingBundle, CliError> {
     let temporary = private_bundle_tempdir()?;
-    load_authenticated_bundle_in_workspace(input, temporary.path(), boundary)
+    load_authenticated_bundle_in_workspace(input, temporary.path(), admission, boundary)
 }
 
 fn load_authenticated_bundle_in_workspace(
     input: &Path,
     workspace: &Path,
+    admission: &ArchiveBundleAdmission,
     boundary: &mut dyn FnMut() -> Result<
         (),
         crucible_daemon::campaign_store_composition::CampaignArchiveBoundaryError,
     >,
 ) -> Result<AuthenticatedFindingBundle, CliError> {
-    boundary()
-        .map_err(|error| backend_error(format!("finding bundle preparation canceled: {error}")))?;
+    boundary().map_err(|source| CliError::CampaignArchive(source.into()))?;
     validate_bundle_entries_with_boundary(input, boundary)?;
     let manifest = read_bounded_bytes(&input.join("manifest"), "finding bundle manifest", 512)?;
     let archive_id = parse_manifest(&manifest)?;
@@ -238,10 +259,10 @@ fn load_authenticated_bundle_in_workspace(
         .finding
         .id()
         .map_err(|error| backend_error(format!("verified finding identity is invalid: {error}")))?;
-    let archive = archive_repository(&input.join("archive"));
+    let archive = admission.input_repository(&input.join("archive"))?;
     let inspection = archive
         .inspect_campaign_archive_with_boundary(archive_id, boundary)
-        .map_err(|error| backend_error(format!("finding archive is invalid: {error}")))?;
+        .map_err(CliError::CampaignArchive)?;
     if inspection.manifest().source_snapshot() != finding.snapshot {
         return Err(backend_error(
             "finding ledger and archive snapshot disagree",
@@ -249,7 +270,7 @@ fn load_authenticated_bundle_in_workspace(
     }
     let archived_finding = archive
         .inspect_archived_finding_with_boundary(archive_id, finding_id, boundary)
-        .map_err(|error| backend_error(format!("finding archive lacks finding: {error}")))?;
+        .map_err(CliError::CampaignArchive)?;
     if archived_finding != finding.finding {
         return Err(backend_error("finding ledger and archive record disagree"));
     }
@@ -283,9 +304,12 @@ pub(crate) fn export_finding_bundle(
     args: &CampaignFindingBundleExportArgs,
     format: OutputFormat,
 ) -> Result<String, CliError> {
-    let supervision = super::transfer_supervision::StandaloneArchiveOperation::start(
+    let supervision = ArchiveBundleAdmission::open(
+        args.archive_policy.as_deref(),
         crucible_api::host_operational::HostOperationClass::Transfer,
-        args.host_transfer_timeout_ms,
+        Some(args.host_transfer_timeout_ms),
+        None,
+        Some(&args.output),
     )?;
     let mut boundary = || supervision.boundary();
     let campaign = campaign_name(&args.name)?;
@@ -313,7 +337,8 @@ pub(crate) fn export_finding_bundle(
             (&checkpoints, &mut exact_pins),
             &mut boundary,
         )
-        .map_err(|error| backend_error(format!("finding archive planning failed: {error}")))?;
+        .map_err(CliError::ArchiveTransfer)?;
+    supervision.require_output(&plan)?;
     let principal = source.campaign_export_principal().map_err(|error| {
         backend_error(format!("local finding principal is unauthorized: {error}"))
     })?;
@@ -340,18 +365,15 @@ pub(crate) fn export_finding_bundle(
         "{MANIFEST_HEADER}\narchive_manifest={}\n",
         plan.manifest_id()
     );
-    let mut publication_boundary = || {
-        supervision
-            .boundary()
-            .map_err(|error| backend_error(format!("finding bundle publication canceled: {error}")))
-    };
+    let mut publication_boundary = || supervision.publication_boundary();
     let (output, ()) = write_new_bundle_with_boundary(
         &args.output,
         "finding bundle",
         |staged, _| {
+            supervision.prepare_output_directory(staged)?;
             std::fs::set_permissions(staged, std::fs::Permissions::from_mode(0o700))
                 .map_err(CliError::Io)?;
-            let archive = archive_repository(&staged.join("archive"));
+            let archive = supervision.output_repository(&staged.join("archive"))?;
             source
                 .export_campaign_archive_to_repository_with_boundary(
                     &plan,
@@ -359,16 +381,13 @@ pub(crate) fn export_finding_bundle(
                     DurabilityRequirement::new(1, false).map_err(|error| {
                         backend_error(format!("private archive durability is invalid: {error}"))
                     })?,
+                    supervision.output_original(),
                     &mut boundary,
                 )
-                .map_err(|error| {
-                    backend_error(format!("finding archive transfer failed: {error}"))
-                })?;
+                .map_err(CliError::CampaignArchive)?;
             archive
                 .inspect_archived_finding_with_boundary(plan.manifest_id(), finding, &mut boundary)
-                .map_err(|error| {
-                    backend_error(format!("transferred finding is invalid: {error}"))
-                })?;
+                .map_err(CliError::CampaignArchive)?;
             write_new_record(
                 &staged.join("manifest"),
                 "finding bundle manifest",
@@ -502,13 +521,17 @@ fn parse_manifest(bytes: &[u8]) -> Result<CampaignArchiveManifestId, CliError> {
         .map_err(|error| usage_error(format!("invalid finding archive identity: {error}")))
 }
 
-fn archive_repository(root: &Path) -> CampaignRepository {
+fn archive_repository(
+    root: &Path,
+    admission: crucible_campaign::CampaignRamAdmission,
+) -> CampaignRepository {
     CampaignRepository::new(
         Arc::new(DirectoryBlobBackend::new(
             "finding-bundle",
             root.join("objects"),
         )),
         Arc::new(DirectoryRefBackend::new(root.join("refs"))),
+        admission,
     )
 }
 

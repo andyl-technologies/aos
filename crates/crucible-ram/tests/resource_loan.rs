@@ -3,57 +3,22 @@
 // crucible-lint: allow panic-shortcut -- test fixtures intentionally localize ownership failures.
 #![allow(clippy::unwrap_used)]
 
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::cell::Cell;
+use std::alloc::Layout;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier};
 
 use crucible_ram::{ResourceLoan, ResourceLoanSlot};
 
-thread_local! {
-    static CAPTURE: Cell<bool> = const { Cell::new(false) };
-}
+use crucible_linux_resource::test_support::{
+    AllocationIdentity, CloseMarkerOutcome, TestAllocationObserver,
+};
 
-static EXPECTED_SIZE: AtomicUsize = AtomicUsize::new(0);
-static EXPECTED_ALIGNMENT: AtomicUsize = AtomicUsize::new(0);
-static TARGET: AtomicUsize = AtomicUsize::new(0);
 static CLOSED: AtomicBool = AtomicBool::new(false);
 static EARLY_REFUND: AtomicBool = AtomicBool::new(false);
 static DROPS: AtomicUsize = AtomicUsize::new(0);
 
-struct ObserverAllocator;
-
-// SAFETY: Every allocator operation delegates unchanged to System. The observer
-// uses integer addresses and atomics only, never touches allocation contents,
-// and disarms its exact target before forwarding the actual deallocation.
-unsafe impl GlobalAlloc for ObserverAllocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        // SAFETY: The caller's exact original layout is forwarded to System.
-        let pointer = unsafe { System.alloc(layout) };
-        if CAPTURE.try_with(Cell::get).unwrap_or(false)
-            && layout.size() == EXPECTED_SIZE.load(Ordering::Relaxed)
-            && layout.align() == EXPECTED_ALIGNMENT.load(Ordering::Relaxed)
-        {
-            let _ =
-                TARGET.compare_exchange(0, pointer as usize, Ordering::SeqCst, Ordering::SeqCst);
-        }
-        pointer
-    }
-
-    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
-        let watched = TARGET
-            .compare_exchange(pointer as usize, 0, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok();
-        // SAFETY: The original pointer and layout are forwarded exactly once.
-        unsafe { System.dealloc(pointer, layout) };
-        if watched {
-            CLOSED.store(true, Ordering::SeqCst);
-        }
-    }
-}
-
 #[global_allocator]
-static ALLOCATOR: ObserverAllocator = ObserverAllocator;
+static ALLOCATOR: TestAllocationObserver = TestAllocationObserver;
 
 struct Loan {
     original_account: Arc<AtomicUsize>,
@@ -76,19 +41,34 @@ impl Drop for Loan {
 #[repr(align(64))]
 struct AlignedLoan(Loan);
 
-fn reset<L>() {
-    EXPECTED_SIZE.store(
-        ResourceLoan::allocation_bytes::<L>() as usize,
-        Ordering::SeqCst,
-    );
-    EXPECTED_ALIGNMENT.store(
-        std::mem::align_of::<L>().max(std::mem::align_of::<usize>()),
-        Ordering::SeqCst,
-    );
-    TARGET.store(0, Ordering::SeqCst);
+fn reset<L>() -> Layout {
     CLOSED.store(false, Ordering::SeqCst);
     EARLY_REFUND.store(false, Ordering::SeqCst);
     DROPS.store(0, Ordering::SeqCst);
+
+    let (layout, _) = Layout::new::<[AtomicUsize; 2]>()
+        .extend(Layout::new::<L>())
+        .unwrap();
+    let layout = layout.pad_to_align();
+    assert_eq!(layout.size() as u64, ResourceLoan::allocation_bytes::<L>());
+    assert_eq!(
+        layout.align(),
+        std::mem::align_of::<L>().max(std::mem::align_of::<usize>())
+    );
+    assert!(layout.size() > 0);
+    layout
+}
+
+fn capture_loan<L: Send + Sync + 'static>(
+    layout: Layout,
+    loan: L,
+) -> (ResourceLoan, AllocationIdentity) {
+    let (loan, identity, counts) =
+        TestAllocationObserver::capture_layout_and_count(layout, || ResourceLoan::new(loan));
+    assert_eq!(counts.allocations, 1);
+    assert_eq!(counts.reallocations, 0);
+    assert!(!counts.overflow);
+    (loan, identity.unwrap())
 }
 
 fn verify_closed(account: &AtomicUsize) {
@@ -110,124 +90,154 @@ fn actual_controls_close_before_concrete_refund_across_aliases_and_unwind() {
     assert_eq!(ResourceLoan::allocation_bytes::<()>(), 16);
     assert_eq!(ResourceLoan::allocation_bytes::<AlignedLoan>(), 128);
 
-    // One test serializes the global exact-allocation observer's scenarios.
+    // One test serializes the process-wide original close-marker scenarios.
     for aligned in [false, true] {
-        if aligned {
-            reset::<AlignedLoan>();
+        let layout = if aligned {
+            reset::<AlignedLoan>()
         } else {
-            reset::<Loan>();
-        }
-        let bytes = EXPECTED_SIZE.load(Ordering::SeqCst);
+            reset::<Loan>()
+        };
+        let bytes = layout.size();
         let account = Arc::new(AtomicUsize::new(bytes));
         let credit = Loan {
             original_account: account.clone(),
             bytes,
             panic: false,
         };
-        CAPTURE.with(|capture| capture.set(true));
-        let loan = if aligned {
-            {
-                let aligned = AlignedLoan(credit);
-                assert_eq!(aligned.0.bytes, bytes);
-                ResourceLoan::new(aligned)
-            }
+        let (loan, identity) = if aligned {
+            let aligned = AlignedLoan(credit);
+            assert_eq!(aligned.0.bytes, bytes);
+            capture_loan(layout, aligned)
         } else {
-            ResourceLoan::new(credit)
+            capture_loan(layout, credit)
         };
-        CAPTURE.with(|capture| capture.set(false));
-        assert_ne!(TARGET.load(Ordering::SeqCst), 0);
-        let mut slot = ResourceLoanSlot::from(loan);
-        assert!(slot.as_ref().is_some());
-        let mut alias_slot = slot.clone();
-        let loan = slot.take().unwrap();
-        assert!(slot.as_ref().is_none());
-        drop(slot);
-        drop(loan);
-        assert!(!CLOSED.load(Ordering::SeqCst));
-        assert_eq!(account.load(Ordering::SeqCst), bytes);
-        let alias = alias_slot.take().unwrap();
-        assert!(alias_slot.as_ref().is_none());
-        drop(alias_slot);
-        drop(alias);
+
+        let ((), outcome) =
+            TestAllocationObserver::observe_close_marker_after_free(&CLOSED, identity, || {
+                let mut slot = ResourceLoanSlot::from(loan);
+                assert!(slot.as_ref().is_some());
+                let mut alias_slot = slot.clone();
+                let loan = slot.take().unwrap();
+                assert!(slot.as_ref().is_none());
+                drop(slot);
+                drop(loan);
+                assert!(!CLOSED.load(Ordering::SeqCst));
+                assert_eq!(account.load(Ordering::SeqCst), bytes);
+                let alias = alias_slot.take().unwrap();
+                assert!(alias_slot.as_ref().is_none());
+                drop(alias_slot);
+                drop(alias);
+            })
+            .unwrap();
+
+        assert_eq!(outcome, CloseMarkerOutcome::Published);
         verify_closed(&account);
     }
 
-    reset::<Loan>();
-    let bytes = EXPECTED_SIZE.load(Ordering::SeqCst);
+    let layout = reset::<Loan>();
+    let bytes = layout.size();
     let account = Arc::new(AtomicUsize::new(bytes));
-    CAPTURE.with(|capture| capture.set(true));
-    let loan = ResourceLoan::new(Loan {
-        original_account: account.clone(),
-        bytes,
-        panic: false,
-    });
-    CAPTURE.with(|capture| capture.set(false));
-    let slot = ResourceLoanSlot::from(Some(loan));
-    let borrowers: Vec<_> = (0..8).map(|_| slot.clone()).collect();
-    let barrier = Arc::new(Barrier::new(borrowers.len()));
-    drop(slot);
-    std::thread::scope(|scope| {
-        let workers: Vec<_> = borrowers
-            .into_iter()
-            .map(|borrower| {
-                let barrier = &barrier;
-                scope.spawn(move || {
-                    barrier.wait();
-                    drop(borrower);
-                })
-            })
-            .collect();
-        for worker in workers {
-            worker.join().unwrap();
-        }
-    });
-    verify_closed(&account);
-
-    reset::<Loan>();
-    let bytes = EXPECTED_SIZE.load(Ordering::SeqCst);
-    let account = Arc::new(AtomicUsize::new(bytes));
-    CAPTURE.with(|capture| capture.set(true));
-    let loan = ResourceLoan::new(Loan {
-        original_account: account.clone(),
-        bytes,
-        panic: false,
-    });
-    CAPTURE.with(|capture| capture.set(false));
-    assert!(
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-            let _slot = ResourceLoanSlot::from(loan);
-            panic!("intentional slot borrower unwind");
-        }))
-        .is_err()
+    let (loan, identity) = capture_loan(
+        layout,
+        Loan {
+            original_account: account.clone(),
+            bytes,
+            panic: false,
+        },
     );
+    let ((), outcome) =
+        TestAllocationObserver::observe_close_marker_after_free(&CLOSED, identity, || {
+            let slot = ResourceLoanSlot::from(Some(loan));
+            let borrowers: Vec<_> = (0..8).map(|_| slot.clone()).collect();
+            let barrier = Arc::new(Barrier::new(borrowers.len()));
+            drop(slot);
+            std::thread::scope(|scope| {
+                let workers: Vec<_> = borrowers
+                    .into_iter()
+                    .map(|borrower| {
+                        let barrier = &barrier;
+                        scope.spawn(move || {
+                            barrier.wait();
+                            drop(borrower);
+                        })
+                    })
+                    .collect();
+                assert_eq!(workers.len(), 8);
+                for worker in workers {
+                    worker.join().unwrap();
+                }
+            });
+        })
+        .unwrap();
+    assert_eq!(outcome, CloseMarkerOutcome::Published);
     verify_closed(&account);
 
-    reset::<Loan>();
-    let bytes = EXPECTED_SIZE.load(Ordering::SeqCst);
+    let layout = reset::<Loan>();
+    let bytes = layout.size();
     let account = Arc::new(AtomicUsize::new(bytes));
-    CAPTURE.with(|capture| capture.set(true));
-    let slot = ResourceLoanSlot::from(ResourceLoan::new(Loan {
-        original_account: account.clone(),
-        bytes,
-        panic: true,
-    }));
-    CAPTURE.with(|capture| capture.set(false));
-    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || drop(slot))).is_err());
+    let (loan, identity) = capture_loan(
+        layout,
+        Loan {
+            original_account: account.clone(),
+            bytes,
+            panic: false,
+        },
+    );
+    let (result, outcome) =
+        TestAllocationObserver::observe_close_marker_after_free(&CLOSED, identity, || {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                let _slot = ResourceLoanSlot::from(loan);
+                panic!("intentional slot borrower unwind");
+            }))
+        })
+        .unwrap();
+    assert!(result.is_err());
+    assert_eq!(outcome, CloseMarkerOutcome::Published);
     verify_closed(&account);
 
-    // The same observer rejects an ordinary raw Arc concrete owner. This is a
-    // controlled input fault, never a production fallback or exposed handle.
-    reset::<Loan>();
-    let bytes = EXPECTED_SIZE.load(Ordering::SeqCst);
+    let layout = reset::<Loan>();
+    let bytes = layout.size();
     let account = Arc::new(AtomicUsize::new(bytes));
-    CAPTURE.with(|capture| capture.set(true));
-    let old = Arc::new(Loan {
-        original_account: account.clone(),
-        bytes,
-        panic: false,
+    let (loan, identity) = capture_loan(
+        layout,
+        Loan {
+            original_account: account.clone(),
+            bytes,
+            panic: true,
+        },
+    );
+    let slot = ResourceLoanSlot::from(loan);
+    let (result, outcome) =
+        TestAllocationObserver::observe_close_marker_after_free(&CLOSED, identity, || {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || drop(slot)))
+        })
+        .unwrap();
+    assert!(result.is_err());
+    assert_eq!(outcome, CloseMarkerOutcome::Published);
+    verify_closed(&account);
+
+    // The actual ordinary Arc predecessor drops its credit before control free.
+    // This controlled negative input never becomes a production fallback.
+    let layout = reset::<Loan>();
+    let bytes = layout.size();
+    let account = Arc::new(AtomicUsize::new(bytes));
+    let (old, identity, counts) = TestAllocationObserver::capture_layout_and_count(layout, || {
+        Arc::new(Loan {
+            original_account: account.clone(),
+            bytes,
+            panic: false,
+        })
     });
-    CAPTURE.with(|capture| capture.set(false));
-    drop(old);
+    assert_eq!(counts.allocations, 1);
+    assert_eq!(counts.reallocations, 0);
+    assert!(!counts.overflow);
+
+    let ((), outcome) =
+        TestAllocationObserver::observe_close_marker_after_free(&CLOSED, identity.unwrap(), || {
+            drop(old)
+        })
+        .unwrap();
+    assert_eq!(outcome, CloseMarkerOutcome::Published);
     assert!(CLOSED.load(Ordering::SeqCst));
     assert!(EARLY_REFUND.load(Ordering::SeqCst));
     assert_eq!(DROPS.load(Ordering::SeqCst), 1);

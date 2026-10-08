@@ -66,7 +66,7 @@ impl RamStore {
         retention: &dyn RamRetention,
         work: &mut Work<'_>,
     ) -> Result<ContentId, RamStoreError> {
-        let account = self.object_account()?;
+        let account = work.original().child().map_err(admission)?;
         self.put_envelope_with_account(
             PublicationInput::Borrowed(envelope),
             kind,
@@ -139,12 +139,27 @@ impl RamStore {
                 return Ok(id);
             }
         }
-        let receipt = self.backend.put_if_absent(id, &source)?;
-        self.validate_receipt(&receipt, id, source.logical_length())?;
-        let persisted = self.read_envelope(id, work)?;
-        if persisted != *envelope {
-            return Err(StoreError::Corrupt { id }.into());
-        }
+        let objects = [(id, source)];
+        let receipt = work.checked(|original, boundary| {
+            self.backend
+                .put_many_if_absent_with_boundary(original, &objects, boundary)
+        })?;
+        let receipt = receipt
+            .check(|receipts| {
+                let result = (|| {
+                    if receipts.len() != 1 {
+                        return Err(RamStoreError::Invalid("singleton RAM receipt count"));
+                    }
+                    self.validate_receipt(&receipts[0], id, objects[0].1.logical_length())?;
+                    if self.read_envelope(id, work)? != *envelope {
+                        return Err(StoreError::Corrupt { id }.into());
+                    }
+                    Ok(())
+                })();
+                result.map_err(|error| work.validation_error(error))
+            })
+            .map_err(RamStoreError::from)?;
+        work.checked(|_, boundary| receipt.accept_with_boundary(boundary))?;
         Ok(id)
     }
 
@@ -153,29 +168,60 @@ impl RamStore {
             return Ok(());
         };
         if !pending.is_empty() {
+            if pending.len() > MAX_CAPTURE_BATCH_OBJECTS {
+                return Err(RamStoreError::Limit("capture batch object count"));
+            }
+            let mut expected = [None; MAX_CAPTURE_BATCH_OBJECTS];
+            for (slot, object) in expected.iter_mut().zip(pending.iter()) {
+                *slot = Some((object.id, object.source.logical_length()));
+            }
             (work.boundary)()?;
-            let account = self.object_account()?;
-            let _scope = account.enter();
-            crate::owned_decode::charge_array::<(ContentId, crate::content_store::BlobHandle)>(
-                pending.len(),
-            )
-            .map_err(admission)?;
+            let original = work.original();
+            let _scope = original.enter();
+            let _objects_credit = original
+                .reserve_scratch_array::<(ContentId, crate::content_store::BlobHandle)>(
+                    pending.len(),
+                )
+                .map_err(|error| crate::content_store::batch::admission_under(original, error))?;
             let objects = pending
                 .iter()
                 .map(|object| (object.id, object.source.clone()))
                 .collect::<Vec<_>>();
-            let receipts = self.backend.put_many_if_absent(&objects)?;
-            if receipts.len() != pending.len() {
-                return Err(RamStoreError::Invalid("capture batch receipt count"));
-            }
-            for (object, receipt) in pending.iter().zip(&receipts) {
-                self.validate_receipt(receipt, object.id, object.source.logical_length())?;
-                if self.read_envelope(object.id, work)? != *object.envelope {
-                    return Err(StoreError::Corrupt { id: object.id }.into());
-                }
-            }
+            let receipts = work.checked(|original, boundary| {
+                self.backend
+                    .put_many_if_absent_with_boundary(original, &objects, boundary)
+            })?;
+            // The input ID commits to its complete canonical bytes, including
+            // schema and children. The owning receipt now retains the actual
+            // publication outcome; authenticated readback needs only that ID
+            // and length, not all original codec bodies and encoded vectors.
+            drop(objects);
+            drop(_objects_credit);
+            drop(pending);
+            let receipts = receipts
+                .check(|receipts| {
+                    let result = (|| {
+                        let count = expected.iter().flatten().count();
+                        if receipts.len() != count {
+                            return Err(RamStoreError::Invalid("capture batch receipt count"));
+                        }
+                        for ((id, length), receipt) in
+                            expected.iter().flatten().zip(receipts.iter())
+                        {
+                            self.validate_receipt(receipt, *id, *length)?;
+                            // This authenticates the exact committed input and
+                            // still applies the canonical schema/child limits.
+                            self.read_envelope(*id, work)?;
+                        }
+                        Ok(())
+                    })();
+                    result.map_err(|error| work.validation_error(error))
+                })
+                .map_err(RamStoreError::from)?;
+            work.checked(|_, boundary| receipts.accept_with_boundary(boundary))?;
+        } else {
+            drop(pending);
         }
-        drop(pending);
         self.begin_capture_batch(work)?;
         Ok(())
     }
@@ -184,7 +230,7 @@ impl RamStore {
         if work.pending.is_some() {
             return Err(RamStoreError::Invalid("capture batch already present"));
         }
-        let account = self.object_account()?;
+        let account = work.original();
         let extent = (std::mem::size_of::<PendingPublication>() as u64)
             .checked_mul(MAX_CAPTURE_BATCH_OBJECTS as u64)
             .and_then(|bytes| bytes.checked_add(std::mem::size_of::<PendingBatch>() as u64))
@@ -255,7 +301,15 @@ impl RamStore {
         work: &mut Work<'_>,
         prepaid: bool,
     ) -> Result<OwnedEnvelope, RamStoreError> {
-        let account = self.object_account()?;
+        if id.schema_version() == SCHEMA_VERSION
+            && matches!(
+                id.kind(),
+                ObjectKind::RamExtent | ObjectKind::RamTree | ObjectKind::ExactManifest
+            )
+        {
+            work.reject_exhausted_nonempty_visit()?;
+        }
+        let account = work.original().child().map_err(admission)?;
         let _scope = account.enter();
         if id.schema_version() != SCHEMA_VERSION {
             return Err(RamStoreError::Invalid("RAM storage schema"));
@@ -265,7 +319,10 @@ impl RamStore {
         // larger catalog allocation merely by declaring a large body/table.
         let (maximum_bytes, maximum_children) = object_limits(id)?;
         (work.boundary)()?;
-        let source = self.backend.read(id, None)?;
+        let source = work.checked(|original, boundary| {
+            self.backend
+                .read_with_boundary(original, id, None, boundary)
+        })?;
         if source.logical_length() > maximum_bytes {
             return Err(RamStoreError::Limit("single canonical object"));
         }
@@ -286,24 +343,9 @@ impl RamStore {
                 &account,
                 RecordAllocationPlan::read(length, maximum_children)?,
             )?;
-            // This whole temporary loan stays outside ReservoirOwner. The Vec
-            // is declared afterward and therefore closes before its own credit
-            // on every return, including decoder and terminal-boundary failures.
-            let _raw_credit = record
-                .original
-                .reserve_scratch_array::<u8>(length)
-                .map_err(admission)?;
-            let mut bytes = Vec::new();
-            bytes.try_reserve_exact(length).map_err(|source| {
-                admission(crate::owned_decode::DecodeAdmissionError::new(source))
+            let bytes = work.checked(|original, boundary| {
+                source.read_all_with_boundary(original, maximum_bytes, boundary)
             })?;
-            bytes.resize(length, 0);
-            // Restore the real account for source.open/read/EOF and deferred
-            // authentication. A backend may allocate an independent cache copy.
-            {
-                let _io_scope = record.original.enter();
-                read_exact_object(&source, &mut bytes)?;
-            }
             let envelope = {
                 let _codec_scope = record.codec.enter();
                 decode_envelope(id, &bytes, maximum_children, &record.codec)?
@@ -321,7 +363,9 @@ impl RamStore {
             return Ok(envelope);
         }
         work.visit(source.logical_length())?;
-        let bytes = source.read_all(maximum_bytes)?;
+        let bytes = work.checked(|original, boundary| {
+            source.read_all_with_boundary(original, maximum_bytes, boundary)
+        })?;
         decode_envelope(id, &bytes, maximum_children, &account)
     }
 
@@ -332,7 +376,7 @@ impl RamStore {
         work: &mut Work<'_>,
     ) -> Result<(ContentId, PageDigest), RamStoreError> {
         let digest = PageDigest::hash(bytes).map_err(logical)?;
-        let original = self.object_account()?;
+        let original = work.original();
         let body_length = 36 + bytes.len();
         let original = original.child().map_err(admission)?;
         let record = RecordAccount::phase(
@@ -379,7 +423,7 @@ impl RamStore {
         id: ContentId,
         expected: PageDigest,
         work: &mut Work<'_>,
-    ) -> Result<Vec<u8>, RamStoreError> {
+    ) -> Result<super::RamPageBytes, RamStoreError> {
         if id.kind() != ObjectKind::RamExtent {
             return Err(RamStoreError::Invalid("page object kind"));
         }
@@ -397,7 +441,7 @@ impl RamStore {
         if recorded != expected || PageDigest::hash(bytes).map_err(logical)? != expected {
             return Err(RamStoreError::Invalid("logical page digest"));
         }
-        Ok(bytes.to_vec())
+        Ok(super::RamPageBytes::new(envelope))
     }
 
     pub(super) fn put_tree(
@@ -408,7 +452,7 @@ impl RamStore {
         retention: &dyn RamRetention,
         work: &mut Work<'_>,
     ) -> Result<TreeRef, RamStoreError> {
-        let original = self.object_account()?;
+        let original = work.original();
         let (roles, body_length, child_length): (&[&str], usize, usize) = match node {
             TreeNode::Padding => (&[], 45, 0),
             TreeNode::Leaf { page, .. } => (&["page"], 77, 4 + "page".len() + page.encoded_len()),
@@ -563,35 +607,6 @@ fn decode_envelope(
         return Err(RamStoreError::Invalid("RAM envelope schema"));
     }
     Ok(OwnedEnvelope::new(envelope, account))
-}
-
-fn read_exact_object(
-    source: &crate::content_store::BlobHandle,
-    bytes: &mut [u8],
-) -> Result<(), RamStoreError> {
-    use crate::content_store::read_retry;
-    let mut reader = source.open()?;
-    let mut observed = 0;
-    while observed < bytes.len() {
-        let read = read_retry(&mut reader, &mut bytes[observed..])
-            .map_err(|error| source.map_read_error("read-blob-source", error))?;
-        if read == 0 {
-            break;
-        }
-        observed += read;
-    }
-    let mut extra = [0; 1];
-    let has_extra = read_retry(&mut reader, &mut extra)
-        .map_err(|error| source.map_read_error("verify-blob-source-length", error))?
-        != 0;
-    if observed != bytes.len() || has_extra {
-        return Err(StoreError::InvalidSourceLength {
-            declared: source.logical_length(),
-            observed: (observed as u64).saturating_add(u64::from(has_extra)),
-        }
-        .into());
-    }
-    Ok(())
 }
 
 pub(super) fn decode_root_envelope(

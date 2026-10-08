@@ -183,7 +183,11 @@ fn public_repository_and_executor_seams_cover_the_idempotence_matrix() {
     // repository truth. The executor independently deduplicates an exact retry
     // during execution and rejects a conflicting execution basis.
     drop(repository);
-    let before_publication = CampaignRepository::new(blobs.clone(), refs.clone());
+    let before_publication = CampaignRepository::new(
+        blobs.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
     let resources =
         AttemptResourceLimits::new(1, 256 * 1024 * 1024, 0, 10_000).expect("resource limits");
     let first_assignment = SubmitAttemptRequest::new(
@@ -267,7 +271,11 @@ fn public_repository_and_executor_seams_cover_the_idempotence_matrix() {
         Err(CampaignRepositoryError::RefConflict { .. })
     ));
     drop(before_publication);
-    let publication_recovery = CampaignRepository::new(blobs.clone(), refs.clone());
+    let publication_recovery = CampaignRepository::new(
+        blobs.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
     let published = publication_recovery
         .publish_observation(CAMPAIGN, admitted.new_snapshot, &observation)
         .expect("publish after pre-CAS death");
@@ -282,7 +290,11 @@ fn public_repository_and_executor_seams_cover_the_idempotence_matrix() {
     // Daemon death after the ref CAS but before acknowledgement replays the
     // canonical publication, produces an equal completion, and adds no credit.
     drop(publication_recovery);
-    let after_publication = CampaignRepository::new(blobs.clone(), refs.clone());
+    let after_publication = CampaignRepository::new(
+        blobs.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
     let equal = after_publication
         .publish_observation(CAMPAIGN, admitted.new_snapshot, &observation)
         .expect("retry after publication");
@@ -362,7 +374,11 @@ fn fixture() -> (
         128 * 1024 * 1024,
     ));
     let refs = Arc::new(ConflictOnceRefBackend::new());
-    let repository = CampaignRepository::new(blobs.clone(), refs.clone());
+    let repository = CampaignRepository::new(
+        blobs.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
     let scenario_content = repository
         .publish_scenario_artifact(scenario, 1, b"scenario".to_vec())
         .expect("scenario artifact");

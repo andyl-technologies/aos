@@ -328,14 +328,14 @@ impl ObservedBackend {
         traffic: Traffic,
         fail_after: Option<u64>,
     ) -> BlobHandle {
-        BlobHandle::new(Arc::new(ObservedSource {
+        BlobHandle::new(ObservedSource {
             source,
             traffic,
             fragment_bytes: self.fragment_bytes,
             read_synchronization: self.read_synchronization.clone(),
             fail_after,
             observations: Arc::clone(&self.observations),
-        }))
+        })
     }
 }
 

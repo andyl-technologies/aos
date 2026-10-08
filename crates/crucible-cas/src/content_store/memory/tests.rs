@@ -9,13 +9,52 @@ use super::*;
 use crate::owned_decode::DecodeBudget;
 use crate::ram::{RamRetention, RamRootLease, RamStore, RamStoreError, RamStoreLimits};
 
-struct Quota {
-    resources: crate::content_store::test_resources::FixtureResourceBudget,
-    closed: AtomicBool,
+pub(super) struct Quota {
+    pub(super) resources: crate::content_store::test_resources::FixtureResourceBudget,
+    pub(super) closed: AtomicBool,
+}
+
+struct NamespaceBinder(Arc<Quota>);
+
+// Fixture binder controls are modeled outside the production namespace grant.
+// The actual map loan still comes from this exact finite original N bank.
+pub(super) fn namespace_binder(original: Arc<Quota>) -> StorePhysicalQuotaBinderHandle {
+    StorePhysicalQuotaBinderHandle::new(NamespaceBinder(original))
+}
+
+impl StorePhysicalQuotaBinder for NamespaceBinder {
+    fn reserve_memory_namespace(
+        &self,
+        bytes: u64,
+    ) -> Result<crate::owned_decode::ResourceLoan, StoreError> {
+        self.verify_memory_namespace()?;
+        self.0.resources.reserve(0, bytes)
+    }
+
+    fn verify_memory_namespace(&self) -> Result<(), StoreError> {
+        self.0
+            .verify()
+            .map_err(|source| StoreError::DecodeAdmission {
+                source: crate::owned_decode::DecodeAdmissionError::new(source),
+                custody: None,
+            })
+    }
+
+    fn bind(
+        &self,
+        _root: &std::path::Path,
+        _project_id: u32,
+        _maximum_physical_bytes: u64,
+        _maximum_inodes: u64,
+    ) -> Result<Arc<dyn StorePhysicalQuotaGuard>, StoreError> {
+        Err(StoreError::Unsupported {
+            capability: "namespace-model-disk-binding",
+        })
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
-enum CacheTestError {
+pub(super) enum CacheTestError {
     #[error(transparent)]
     Store(#[from] StoreError),
     #[error(transparent)]
@@ -50,7 +89,22 @@ impl StorePhysicalQuotaGuard for Quota {
     }
 }
 
-struct Lease(ContentId);
+impl crate::owned_decode::DecodeResourceAuthority for Quota {
+    fn verify_live(&self) -> Result<(), crate::owned_decode::DecodeAdmissionError> {
+        self.verify()
+            .map_err(crate::owned_decode::DecodeAdmissionError::new)
+    }
+
+    fn reserve(
+        &self,
+        bytes: u64,
+    ) -> Result<crate::owned_decode::ResourceLoan, crate::owned_decode::DecodeAdmissionError> {
+        self.reserve_resources(0, bytes)
+            .map_err(crate::owned_decode::DecodeAdmissionError::new)
+    }
+}
+
+pub(super) struct Lease(pub(super) ContentId);
 
 impl RamRootLease for Lease {
     fn root(&self) -> ContentId {
@@ -58,7 +112,7 @@ impl RamRootLease for Lease {
     }
 }
 
-struct Retention;
+pub(super) struct Retention;
 
 impl RamRetention for Retention {
     fn retain_object(&self, _: ContentId) -> Result<(), RamStoreError> {
@@ -114,10 +168,14 @@ fn cold_ram_directory_cache_without_tls_retains_original_bank_until_last_reader(
             Ok(())
         },
         &Retention,
+        &budget,
         &mut || Ok(()),
     )?;
-    let root =
-        ram.open_with_metadata_resources(Arc::new(Lease(captured.object_id())), &mut || Ok(()))?;
+    let root = ram.open_with_metadata_resources(
+        Arc::new(Lease(captured.object_id())),
+        &budget,
+        &mut || Ok(()),
+    )?;
     drop(captured);
     drop(scope);
     drop(budget);
@@ -140,8 +198,11 @@ fn cold_ram_directory_cache_without_tls_retains_original_bank_until_last_reader(
         .acquire_inventory_fence()?
         .visit_inventory(&mut |_| Ok(()))?;
     assert_eq!(empty.objects(), 0);
-    let page = ram.read_page(&root, "main", 0, &mut || Ok(()))?;
+    let page_original = DecodeBudget::for_store(quota.clone())?;
+    let page = ram.read_page(&root, "main", 0, &page_original, &mut || Ok(()))?;
     assert_eq!(page, vec![11; 4096]);
+    drop(page);
+    drop(page_original);
     let mut fence = cache_admin.acquire_inventory_fence()?;
     let mut page_id = None;
     fence.visit_inventory(&mut |record| {

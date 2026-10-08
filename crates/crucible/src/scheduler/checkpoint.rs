@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use super::*;
 use crate::ConditionEvaluationError;
 
+mod frontier_identity;
+
 const MAGIC: &[u8] = b"crucible.single-scheduler-continuation.v6\0";
 /// Maximum canonical byte length of one complete single-scheduler continuation.
 pub const MAX_SINGLE_SCHEDULER_CHECKPOINT_BYTES: usize =
@@ -388,6 +390,25 @@ impl SingleSchedulerCheckpoint {
         bytes.extend_from_slice(MAGIC);
         bytes.extend_from_slice(&payload);
         Ok(bytes)
+    }
+
+    /// Computes the exact RAM frontier identity from borrowed canonical state.
+    ///
+    /// It streams the canonical encoding and its lowercase hexadecimal
+    /// material into the identity hasher without constructing either output
+    /// buffer. A bounded counting pass precedes hashing because the material
+    /// length is part of the identity framing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SingleSchedulerCheckpointError::Limit`] for an encoded payload
+    /// above the compiled byte ceiling, or
+    /// [`SingleSchedulerCheckpointError::Malformed`] when serialization fails
+    /// or its encoded length changes between passes.
+    pub fn exact_ram_frontier_identity(
+        &self,
+    ) -> Result<ContentHash, SingleSchedulerCheckpointError> {
+        frontier_identity::identity(&self.wire)
     }
 
     /// Decodes a byte-canonical scheduler continuation.
@@ -807,6 +828,9 @@ pub enum SingleSchedulerCheckpointError {
     #[error("noncanonical single-scheduler checkpoint")]
     Noncanonical,
 }
+
+#[cfg(test)]
+mod frontier_identity_tests;
 
 #[cfg(test)]
 mod epoch_ready_point_tests {

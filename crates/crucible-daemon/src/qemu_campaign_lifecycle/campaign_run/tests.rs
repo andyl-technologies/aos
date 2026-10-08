@@ -85,6 +85,7 @@ fn supplemental_finding_source_round_trips_and_reopens_by_exact_identity() {
             1024 * 1024,
         )),
         Arc::new(crucible_cas::content_store::MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     let store = CampaignExecutorStore::new(repository);
     let content = source.content_id();
@@ -916,6 +917,7 @@ fn unpublished_default_selection_survives_root_closure_restart_without_repositor
             1024 * 1024,
         )),
         Arc::new(crucible_cas::content_store::MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     let store = CampaignExecutorStore::new(repository);
     let completed = restarted

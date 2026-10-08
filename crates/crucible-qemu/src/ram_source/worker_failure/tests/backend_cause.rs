@@ -12,6 +12,7 @@ use crucible_linux_resource::host_supervision::{HostOperationClass, HostSupervis
 
 #[test]
 fn backend_observers_share_original_worker_allocation_through_final_close() {
+    let _serial = TEST_LOCK.lock().unwrap();
     let account = HostServiceAllocator::new(1, 1, 4096).unwrap();
     let (failure, target) = failure(&account);
     let original = failure.shared.source_ref() as *const WorkerFailureBody;
@@ -37,19 +38,17 @@ fn backend_observers_share_original_worker_allocation_through_final_close() {
         Err(HostServiceError::CapacityExhausted)
     ));
 
-    arm(&account, target);
-    drop(right);
-    let observation = clear().observation;
+    let (_, report) =
+        TestAllocationObserver::observe_resident_after_free(&account, target, || drop(right))
+            .unwrap();
 
-    assert_eq!(
-        observation, 1,
-        "erased last observer refunded before control close"
-    );
+    verify_original_refusal(report);
     verify_closed(&account);
 }
 
 #[test]
 fn scheduler_retains_first_boundary_and_complete_typed_ram_error() {
+    let _serial = TEST_LOCK.lock().unwrap();
     let account = HostServiceAllocator::new(1, 1, 4096).unwrap();
     let error = QemuRamSourceError::RamBackingFailure {
         kind: BackendOperationalFailureKind::Expired,
@@ -98,11 +97,11 @@ fn scheduler_retains_first_boundary_and_complete_typed_ram_error() {
     ));
     assert!(source.source().unwrap().is::<RamStoreError>());
 
-    arm(&account, target);
-    drop(scheduler);
-    let observation = clear().observation;
+    let (_, report) =
+        TestAllocationObserver::observe_resident_after_free(&account, target, || drop(scheduler))
+            .unwrap();
 
-    assert_eq!(observation, 1);
+    verify_original_refusal(report);
     verify_closed(&account);
 }
 
@@ -130,6 +129,7 @@ impl Error for RetainedFileError {}
 
 #[test]
 fn erased_worker_observer_retains_actual_file_until_original_control_closes() {
+    let _serial = TEST_LOCK.lock().unwrap();
     let account = HostServiceAllocator::new(1, 1, 4096).unwrap();
     let lease = account.reserve_resources(1, 1, 4096).unwrap();
     FILE_CLOSED.store(false, Ordering::Release);
@@ -145,29 +145,17 @@ fn erased_worker_observer_retains_actual_file_until_original_control_closes() {
         kind: BackendOperationalFailureKind::Unavailable,
         source: BackendOperationalCause::new(RetainedFileError { file: Some(file) }),
     };
-    let expected = QemuRamWorkerFailure::allocation_bytes().unwrap() as usize;
-    WATCH.with(|watch| {
-        watch.set(Watch {
-            capture: true,
-            expected,
-            target: 0,
-            account: &account,
-            observation: 0,
-        })
-    });
-    let failure = QemuRamWorkerFailure::new(error, lease);
-    let target = clear().target;
-    assert_ne!(target, 0);
+    let (failure, target) = captured_failure(error, lease);
     let backend = failure.clone().into_backend_cause();
     drop(failure);
     assert!(std::fs::metadata(&fd_path).is_ok());
     assert!(!FILE_CLOSED.load(Ordering::Acquire));
 
-    arm(&account, target);
-    drop(backend);
-    let observation = clear().observation;
+    let (_, report) =
+        TestAllocationObserver::observe_resident_after_free(&account, target, || drop(backend))
+            .unwrap();
 
-    assert_eq!(observation, 1);
+    verify_original_refusal(report);
     assert!(FILE_CLOSED.load(Ordering::Acquire));
     verify_closed(&account);
 }

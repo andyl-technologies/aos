@@ -130,13 +130,14 @@ impl QemuRamBacking for ObservedBacking {
         self.backing.root_record()
     }
 
-    fn read_page_with_proof(
+    fn with_page_response(
         &self,
         region_id: &str,
         page_index: u64,
         boundary: &mut dyn FnMut()
             -> Result<(), crucible_qemu::ram_source::QemuRamReadBoundaryError>,
-    ) -> Result<(Vec<u8>, crucible_ram::PageProof), QemuRamSourceError> {
+        consumer: &mut crucible_qemu::ram_source::QemuRamResponseConsumer<'_>,
+    ) -> Result<(), QemuRamSourceError> {
         let damage_storage = {
             let mut state = self
                 .gate
@@ -162,9 +163,15 @@ impl QemuRamBacking for ObservedBacking {
                 page_index,
                 boundary,
             )?;
-            let result = self
-                .backing
-                .read_page_with_proof(region_id, page_index, boundary);
+            let mut unexpected_completion = false;
+            let result =
+                self.backing
+                    .with_page_response(region_id, page_index, boundary, &mut |_, _| {
+                        unexpected_completion = true
+                    });
+            if unexpected_completion {
+                return Err(QemuRamSourceError::Ownership);
+            }
             let error = match result {
                 Err(error) if corrupted_object_in_chain(&error) == Some(object) => error,
                 _ => return Err(QemuRamSourceError::Ownership),
@@ -189,66 +196,99 @@ impl QemuRamBacking for ObservedBacking {
             });
             return Err(error);
         }
-        let (mut bytes, proof) = self
-            .backing
-            .read_page_with_proof(region_id, page_index, boundary)?;
-        boundary()?;
-        let mut state = self
-            .gate
-            .state
-            .lock()
-            .map_err(|_| QemuRamSourceError::Ownership)?;
-        if !state.armed {
-            return Ok((bytes, proof));
-        }
-        state.armed = false;
-        proof
-            .verify(&bytes, self.root_record(), self.root_record().digest())
-            .map_err(|error| QemuRamSourceError::Proof(error.to_string()))?;
-        let authentic_length = bytes.len();
-        match self.gate.case {
-            CompletionCase::Reference
-            | CompletionCase::ChangedWireByte
-            | CompletionCase::PartialWireBody
-            | CompletionCase::SourceDisconnect
-            | CompletionCase::StaleSourceGeneration
-            | CompletionCase::StoredCasCorruption => {}
-            CompletionCase::FaultActorExit => state
-                .actor
-                .as_ref()
-                .ok_or(QemuRamSourceError::Ownership)?
-                .request_before_response()?,
-            CompletionCase::ChangedByte => {
-                let first = bytes.first_mut().ok_or(QemuRamSourceError::Ownership)?;
-                *first ^= 1;
-            }
-            CompletionCase::ShortPage => {
-                bytes.pop().ok_or(QemuRamSourceError::Ownership)?;
-            }
-        }
-        let proof_rejected = proof
-            .verify(&bytes, self.root_record(), self.root_record().digest())
-            .is_err();
-        assert_eq!(proof_rejected, self.gate.case.rejects_before_transport());
-        state.transport = self.gate.case.transport_fault();
-        state.evidence = Some(CompletionEvidence {
-            region_ordinal: self
-                .root_record()
-                .topology()
-                .regions()
-                .iter()
-                .position(|region| region.id() == region_id)
-                .ok_or(QemuRamSourceError::Ownership)?,
+        let mut first = None;
+        let result = self.backing.with_page_response(
+            region_id,
             page_index,
-            authentic_length,
-            proof_rejected,
-            transport_applied: false,
-            stored_object: None,
-        });
-        // Returning the damaged tuple exercises the real source service's
-        // independent proof check and terminal socket disposition.
-        boundary()?;
-        Ok((bytes, proof))
+            boundary,
+            &mut |mut page, boundary| {
+                if first.is_some() {
+                    return;
+                }
+                let outcome = (|| {
+                    boundary()?;
+                    let mut state = self
+                        .gate
+                        .state
+                        .lock()
+                        .map_err(|_| QemuRamSourceError::Ownership)?;
+                    if !state.armed {
+                        drop(state);
+                        consumer(page, boundary);
+                        return Ok(());
+                    }
+                    state.armed = false;
+                    page.proof()
+                        .verify(
+                            page.bytes(),
+                            self.root_record(),
+                            self.root_record().digest(),
+                        )
+                        .map_err(|error| QemuRamSourceError::Proof(error.to_string()))?;
+                    let authentic_length = page.bytes().len();
+                    match self.gate.case {
+                        CompletionCase::Reference
+                        | CompletionCase::ChangedWireByte
+                        | CompletionCase::PartialWireBody
+                        | CompletionCase::SourceDisconnect
+                        | CompletionCase::StaleSourceGeneration
+                        | CompletionCase::StoredCasCorruption => {}
+                        CompletionCase::FaultActorExit => state
+                            .actor
+                            .as_ref()
+                            .ok_or(QemuRamSourceError::Ownership)?
+                            .request_before_response()?,
+                        CompletionCase::ChangedByte => {
+                            page = page
+                                .with_flipped_first_byte_for_test()
+                                .map_err(|_| QemuRamSourceError::Ownership)?;
+                        }
+                        CompletionCase::ShortPage => {
+                            page = page
+                                .with_truncated_page_for_test()
+                                .map_err(|_| QemuRamSourceError::Ownership)?;
+                        }
+                    }
+                    let proof_rejected = page
+                        .proof()
+                        .verify(
+                            page.bytes(),
+                            self.root_record(),
+                            self.root_record().digest(),
+                        )
+                        .is_err();
+                    assert_eq!(proof_rejected, self.gate.case.rejects_before_transport());
+                    state.transport = self.gate.case.transport_fault();
+                    state.evidence = Some(CompletionEvidence {
+                        region_ordinal: self
+                            .root_record()
+                            .topology()
+                            .regions()
+                            .iter()
+                            .position(|region| region.id() == region_id)
+                            .ok_or(QemuRamSourceError::Ownership)?,
+                        page_index,
+                        authentic_length,
+                        proof_rejected,
+                        transport_applied: false,
+                        stored_object: None,
+                    });
+                    // Release the gate before the worker observes the armed transport
+                    // fault. The backing still retains the original page/proof custody.
+                    drop(state);
+                    boundary()?;
+                    consumer(page, boundary);
+                    Ok(())
+                })();
+                if let Err(error) = outcome {
+                    first = Some(error);
+                }
+            },
+        );
+        match first {
+            Some(error) => Err(error),
+            None => result,
+        }
     }
 
     fn take_response_fault_for_test(&self) -> Option<QemuRamResponseFault> {

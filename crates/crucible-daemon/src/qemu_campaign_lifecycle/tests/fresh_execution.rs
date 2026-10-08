@@ -162,6 +162,7 @@ fn fresh_replay_applies_campaign_selection_at_exact_guest_request() {
             1024 * 1024,
         )),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     );
     repository
         .publish_choice_domain(discovery.domain())

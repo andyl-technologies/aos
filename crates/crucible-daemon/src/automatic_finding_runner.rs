@@ -52,6 +52,7 @@ pub(crate) fn test_finding_exact_retention_source() -> Arc<dyn FindingExactReten
             u64::MAX,
         )),
         Arc::new(crucible_cas::content_store::MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     let checkpoint_directory = match tempfile::tempdir() {
         Ok(directory) => directory.keep(),

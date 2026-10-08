@@ -28,6 +28,7 @@ zeroize = { workspace = true }
 zstd = { workspace = true }
 
 [dev-dependencies]
+crucible-linux-resource = { path = "../crucible-linux-resource", default-features = false, features = ["test-support"] }
 tempfile = { workspace = true }
 
 [[test]]

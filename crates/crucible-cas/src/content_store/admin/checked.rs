@@ -9,9 +9,48 @@ use crate::owned_decode::{DecodeBudget, DecodeScratch};
 use super::*;
 use crate::content_store::sqlite::Accepted;
 
+enum ReceiptOutcome<T> {
+    Composite(crate::content_store::composite_publication::Accepted<T>),
+    Sqlite(Accepted<T>),
+    Memory(crate::content_store::memory::Accepted<T>),
+    Directory(crate::content_store::directory::Accepted<T>),
+}
+
+impl<T> ReceiptOutcome<T> {
+    fn value(&self) -> &T {
+        match self {
+            Self::Composite(accepted) => accepted.value(),
+            Self::Sqlite(accepted) => accepted.value(),
+            Self::Memory(accepted) => accepted.value(),
+            Self::Directory(accepted) => accepted.value(),
+        }
+    }
+
+    fn release_diagnostic(&mut self) {
+        match self {
+            Self::Composite(accepted) => accepted.release_diagnostic(),
+            Self::Sqlite(accepted) => accepted.release_diagnostic(),
+            Self::Memory(accepted) => accepted.release_diagnostic(),
+            Self::Directory(accepted) => accepted.release_diagnostic(),
+        }
+    }
+
+    fn check(
+        self,
+        check: impl FnOnce(&mut T) -> Result<(), StoreError>,
+    ) -> Result<Self, StoreError> {
+        match self {
+            Self::Composite(accepted) => accepted.check(check).map(Self::Composite),
+            Self::Sqlite(accepted) => accepted.check(check).map(Self::Sqlite),
+            Self::Memory(accepted) => accepted.check(check).map(Self::Memory),
+            Self::Directory(accepted) => accepted.check(check).map(Self::Directory),
+        }
+    }
+}
+
 // Payload and resource owners close before their corresponding linear credits.
 pub(in crate::content_store) struct CheckedReceipt<T> {
-    accepted: Accepted<T>,
+    accepted: ReceiptOutcome<T>,
     resources: Option<Box<Resources>>,
     credit: DecodeScratch,
 }
@@ -51,9 +90,42 @@ impl PreparedResources {
 }
 
 impl<T> CheckedReceipt<T> {
+    pub(in crate::content_store) fn new_composite(
+        accepted: crate::content_store::composite_publication::Accepted<T>,
+        credit: DecodeScratch,
+    ) -> Self {
+        Self {
+            accepted: ReceiptOutcome::Composite(accepted),
+            resources: None,
+            credit,
+        }
+    }
+
     pub(in crate::content_store) fn new(accepted: Accepted<T>, credit: DecodeScratch) -> Self {
         Self {
-            accepted,
+            accepted: ReceiptOutcome::Sqlite(accepted),
+            resources: None,
+            credit,
+        }
+    }
+
+    pub(in crate::content_store) fn new_memory(
+        accepted: crate::content_store::memory::Accepted<T>,
+        credit: DecodeScratch,
+    ) -> Self {
+        Self {
+            accepted: ReceiptOutcome::Memory(accepted),
+            resources: None,
+            credit,
+        }
+    }
+
+    pub(in crate::content_store) fn new_directory(
+        accepted: crate::content_store::directory::Accepted<T>,
+        credit: DecodeScratch,
+    ) -> Self {
+        Self {
+            accepted: ReceiptOutcome::Directory(accepted),
             resources: None,
             credit,
         }

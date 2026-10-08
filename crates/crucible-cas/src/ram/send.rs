@@ -25,6 +25,14 @@ pub struct RamTransferSender {
 }
 
 impl RamTransferSender {
+    #[cfg(test)]
+    pub(super) fn original_for_test(
+        &self,
+    ) -> Result<crate::owned_decode::DecodeBudget, RamStoreError> {
+        crate::owned_decode::DecodeBudget::for_store(self.store.backend.metadata_resources()?)
+            .map_err(super::codec_ownership::admission)
+    }
+
     /// Serves framed controls on an already authenticated archive channel.
     ///
     /// The channel owner authenticates the destination and configures transport
@@ -39,13 +47,14 @@ impl RamTransferSender {
     pub fn serve_transport<T: std::io::Read + std::io::Write>(
         &mut self,
         transport: &mut T,
+        original: &crate::owned_decode::DecodeBudget,
         boundary: &mut dyn FnMut() -> Result<(), RamStoreError>,
     ) -> Result<(), RamStoreError> {
         self.offer().write(transport)?;
         while !self.terminal {
             boundary()?;
             let request = RamTransferMessage::read(transport)?;
-            let response = self.respond(request, boundary)?;
+            let response = self.respond(request, original, boundary)?;
             response.write(transport)?;
         }
         Ok(())
@@ -101,6 +110,7 @@ impl RamTransferSender {
     pub fn respond(
         &mut self,
         message: RamTransferMessage,
+        original: &crate::owned_decode::DecodeBudget,
         boundary: &mut dyn FnMut() -> Result<(), RamStoreError>,
     ) -> Result<RamTransferMessage, RamStoreError> {
         message.encode()?;
@@ -170,7 +180,7 @@ impl RamTransferSender {
         if self.requested > self.offer.limits.objects {
             return Err(RamStoreError::Limit("transfer requests"));
         }
-        let mut work = Work::new(self.store.limits, boundary);
+        let mut work = Work::new(self.store.limits, original, boundary)?;
         work.visits = self.visits;
         work.io_bytes = self.io_bytes;
         let result = self

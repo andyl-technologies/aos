@@ -226,13 +226,19 @@ fn physical_quota_binds_exact_leaf_limits_and_survives_restart_and_admin() {
         Err(StoreError::Unauthorized)
     ));
 
-    let binder = Arc::new(RecordingPhysicalQuotaBinder::new(true));
+    let binder = RecordingPhysicalQuotaBinder::new(true);
     let mut binders = StoreGraphPhysicalQuotaBinders::new();
     binders
-        .insert(policy.clone(), binder.clone())
+        .insert(
+            policy.clone(),
+            StorePhysicalQuotaBinderHandle::new(binder.clone()),
+        )
         .expect("physical quota capability");
     assert!(matches!(
-        binders.insert(policy.clone(), binder.clone()),
+        binders.insert(
+            policy.clone(),
+            StorePhysicalQuotaBinderHandle::new(binder.clone())
+        ),
         Err(StoreError::InvalidComposition { .. })
     ));
     let build = |config| {
@@ -243,6 +249,7 @@ fn physical_quota_binds_exact_leaf_limits_and_survives_restart_and_admin() {
             &StoreGraphObjectProfilers::new(),
             &binders,
             &StoreGraphS3Clients::new(),
+            None,
         )
     };
     let (graph, admin) =
@@ -317,7 +324,7 @@ fn physical_quota_binds_exact_leaf_limits_and_survives_restart_and_admin() {
     .expect("golden physical quota graph");
     assert_eq!(
         encode_hex(&golden.configuration_id().as_bytes()),
-        "02740e8d4155393174a0938c00b5cf7ee17ce7ae02a5e38cace00d770e3c3fac"
+        "d213f86d8c02238e0d3911e87be3d492c125aa3199c7b050ce864a24f8286edd"
     );
 }
 
@@ -443,10 +450,10 @@ fn physical_quota_binding_precedes_allocating_leaf_construction() {
     let policy =
         StorePhysicalQuotaPolicyId::new("host/ext4/preflight").expect("physical quota policy");
     let pack_root = temp.path().join("packs");
-    let binder = Arc::new(RecordingPhysicalQuotaBinder::new(false));
+    let binder = RecordingPhysicalQuotaBinder::new(false);
     let mut binders = StoreGraphPhysicalQuotaBinders::new();
     binders
-        .insert(policy.clone(), binder)
+        .insert(policy.clone(), StorePhysicalQuotaBinderHandle::new(binder))
         .expect("physical quota capability");
     let result = StoreGraph::build_with_admin_and_all_capabilities(
         StoreGraphConfig {
@@ -478,6 +485,7 @@ fn physical_quota_binding_precedes_allocating_leaf_construction() {
         &StoreGraphObjectProfilers::new(),
         &binders,
         &StoreGraphS3Clients::new(),
+        None,
     );
     assert!(matches!(result, Err(StoreError::Quota)));
     assert!(!pack_root.exists());
@@ -491,10 +499,10 @@ fn logical_and_physical_quotas_compose_without_an_admin_bypass() {
     let directory = node_id("directory");
     let policy =
         StorePhysicalQuotaPolicyId::new("host/ext4/composed").expect("physical quota policy");
-    let binder = Arc::new(RecordingPhysicalQuotaBinder::new(true));
+    let binder = RecordingPhysicalQuotaBinder::new(true);
     let mut binders = StoreGraphPhysicalQuotaBinders::new();
     binders
-        .insert(policy.clone(), binder)
+        .insert(policy.clone(), StorePhysicalQuotaBinderHandle::new(binder))
         .expect("physical quota capability");
     let (graph, admin) = StoreGraph::build_with_admin_and_all_capabilities(
         StoreGraphConfig {
@@ -534,6 +542,7 @@ fn logical_and_physical_quotas_compose_without_an_admin_bypass() {
         &StoreGraphObjectProfilers::new(),
         &binders,
         &StoreGraphS3Clients::new(),
+        None,
     )
     .expect("composed quota graph");
     assert_eq!(admin.physical().len(), 1);
@@ -558,10 +567,13 @@ fn sqlite_physical_quota_binds_the_database_and_wal_root() {
     let object_root = temp.path().join("sqlite-objects");
     let policy =
         StorePhysicalQuotaPolicyId::new("host/ext4/sqlite").expect("SQLite physical quota policy");
-    let binder = Arc::new(RecordingPhysicalQuotaBinder::new(true));
+    let binder = RecordingPhysicalQuotaBinder::new(true);
     let mut binders = StoreGraphPhysicalQuotaBinders::new();
     binders
-        .insert(policy.clone(), binder.clone())
+        .insert(
+            policy.clone(),
+            StorePhysicalQuotaBinderHandle::new(binder.clone()),
+        )
         .expect("physical quota capability");
     let (graph, admin) = StoreGraph::build_with_admin_and_all_capabilities(
         StoreGraphConfig {
@@ -592,6 +604,7 @@ fn sqlite_physical_quota_binds_the_database_and_wal_root() {
         &StoreGraphObjectProfilers::new(),
         &binders,
         &StoreGraphS3Clients::new(),
+        None,
     )
     .expect("quota-owned SQLite graph");
     assert_eq!(admin.physical().len(), 1);
@@ -676,11 +689,11 @@ fn logical_quota_reclaims_accounting_through_graph_admin_and_survives_restart() 
     let rejected_bytes = b"more";
     let rejected = ContentId::for_bytes(ObjectKind::Trace, 1, rejected_bytes);
     let rejected_opens = Arc::new(AtomicUsize::new(0));
-    let rejected_source = BlobHandle::new(Arc::new(CountingSource {
+    let rejected_source = BlobHandle::new(CountingSource {
         bytes: Arc::from(rejected_bytes.as_slice()),
         opens: Arc::clone(&rejected_opens),
         bytes_read: Arc::new(AtomicUsize::new(0)),
-    }));
+    });
     assert!(matches!(
         graph.put_if_absent(rejected, &rejected_source),
         Err(StoreError::Quota)
@@ -929,6 +942,7 @@ fn logical_quota_admission_rejects_unbounded_shared_and_nonleaf_children() {
                     directory.clone(),
                     StoreNodeSpec::Memory {
                         max_logical_bytes: 1,
+                        max_objects: 16,
                     },
                 ),
             ]),
@@ -1039,4 +1053,101 @@ fn logical_quota_admission_rejects_unbounded_shared_and_nonleaf_children() {
             ..
         })
     ));
+}
+
+#[test]
+fn graph_checked_read_refuses_closed_original_before_callback_or_child_lookup()
+-> Result<(), StoreError> {
+    use crate::owned_decode::{
+        DecodeAdmissionError, DecodeBudget, DecodeResourceAuthority, ResourceLoan,
+    };
+
+    struct ReadAuthority(Arc<dyn StorePhysicalQuotaGuard>);
+
+    impl DecodeResourceAuthority for ReadAuthority {
+        fn verify_live(&self) -> Result<(), DecodeAdmissionError> {
+            self.0.verify().map_err(DecodeAdmissionError::new)
+        }
+
+        fn reserve(&self, bytes: u64) -> Result<ResourceLoan, DecodeAdmissionError> {
+            self.0
+                .reserve_resources(0, bytes)
+                .map_err(DecodeAdmissionError::new)
+        }
+    }
+
+    let temporary = TempDir::new().unwrap();
+    let physical = node_id("original-physical");
+    let directory = node_id("original-directory");
+    let policy = StorePhysicalQuotaPolicyId::new("fixture/original-read")?;
+    let binder = RecordingPhysicalQuotaBinder::new(true);
+    let mut binders = StoreGraphPhysicalQuotaBinders::new();
+    binders.insert(
+        policy.clone(),
+        StorePhysicalQuotaBinderHandle::new(binder.clone()),
+    )?;
+    let (graph, _admin) = StoreGraph::build_with_admin_and_all_capabilities(
+        StoreGraphConfig {
+            gc_mark_root: None,
+            root: physical.clone(),
+            admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
+            nodes: BTreeMap::from([
+                (
+                    physical,
+                    StoreNodeSpec::PhysicalQuota {
+                        child: directory.clone(),
+                        policy,
+                        project_id: 42,
+                        maximum_physical_bytes: 128 * 1024,
+                        maximum_inodes: 64,
+                    },
+                ),
+                (
+                    directory,
+                    StoreNodeSpec::Directory {
+                        root: temporary.path().join("objects"),
+                    },
+                ),
+            ]),
+        },
+        &StoreGraphKeyring::new(),
+        &StoreGraphNamespaceAuthorizers::new(),
+        &StoreGraphObjectProfilers::new(),
+        &binders,
+        &StoreGraphS3Clients::new(),
+        None,
+    )?;
+    // The projection borrows this graph's actual guard and the fixture's
+    // existing 256 MiB ledger; it creates no independent physical allowance.
+    let original = DecodeBudget::new(
+        Arc::new(ReadAuthority(graph.metadata_resources()?)),
+        256 * 1024 * 1024,
+    )
+    .unwrap();
+    let unrelated_guard = Arc::new(RecordingPhysicalQuotaGuard::default());
+    unrelated_guard.set_allowed(true);
+    let unrelated =
+        DecodeBudget::new(Arc::new(ReadAuthority(unrelated_guard)), 256 * 1024 * 1024).unwrap();
+    let foreign_scope = unrelated.enter();
+    binder.guard.set_allowed(false);
+    let before = binder.guard.calls.load(Ordering::SeqCst);
+    let callbacks = AtomicUsize::new(0);
+
+    // Even kind admission and the genuine child guard must not precede the
+    // borrowed original's refusal; unrelated live TLS cannot donate authority.
+    let id = ContentId::for_bytes(ObjectKind::Finding, 1, b"not read");
+    let error = graph
+        .read_with_boundary(&original, id, None, &mut || {
+            callbacks.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+        .err()
+        .unwrap();
+    assert!(matches!(error, StoreError::DecodeAdmission { .. }));
+    assert!(matches!(error.original_failure(), StoreError::Quota));
+    assert_eq!(callbacks.load(Ordering::SeqCst), 0);
+    assert_eq!(binder.guard.calls.load(Ordering::SeqCst), before + 1);
+    unrelated.verify_live().unwrap();
+    drop(foreign_scope);
+    Ok(())
 }

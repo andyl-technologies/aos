@@ -98,6 +98,7 @@ impl GuardedCampaignOwner {
         let repository = Arc::new(CampaignRepository::with_component_authorities(
             storage.backend.clone(),
             storage.refs,
+            crucible_campaign::CampaignRamAdmission::Available(storage.original.clone()),
             planner.clone(),
             debugger.clone(),
         )?);

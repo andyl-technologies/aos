@@ -91,12 +91,11 @@ pub fn open() -> Result<NativeInputResources, Box<dyn Error>> {
             total_timeout: authored.total_timeout_ms.map(Duration::from_millis),
         };
     }
-    let service = crucible_daemon::CampaignQuotaServiceConfig::from_authored_budgets(
+    let binder = crucible_daemon::LinuxProjectQuotaBinder::new(
         HostOperationBudgets { classes },
         None,
         policy.resources.vector(),
     )?;
-    let binder = crucible_daemon::LinuxProjectQuotaBinder::new(service)?;
     let authority = binder.bind(
         &policy.root,
         policy.project_id,

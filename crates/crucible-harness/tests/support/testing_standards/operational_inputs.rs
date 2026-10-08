@@ -1,4 +1,4 @@
-//! Binds four operational inputs to exact local and original-caller obligations.
+//! Binds operational waits to exact local and original-caller obligations.
 //!
 //! These harness contracts remove only reviewed tokens from flaky-test scanning.
 //! They do not grant a runtime deadline or permit another test attempt.
@@ -23,39 +23,6 @@ struct Contract {
 }
 
 const CONTRACTS: &[Contract] = &[
-    // Resume only an interrupted physical source read; preserve exact bounded body and EOF
-    // verification, original account scope and typed source errors.
-    Contract {
-        package: "crucible-cas",
-        target: "src/ram/codec",
-        required: &[
-            "fnread_exact_object(",
-            "letmutreader=source.open()?;",
-            "whileobserved<bytes.len(){",
-            "ifread==0{break;}",
-            "observed+=read;",
-            "letmutextra=[0;1];",
-            "ifobserved!=bytes.len()||has_extra{",
-            "StoreError::InvalidSourceLength{",
-            "declared:source.logical_length(),",
-            "observed:(observedasu64).saturating_add(u64::from(has_extra)),",
-            "let_io_scope=record.original.enter();",
-            "read_exact_object(&source,&mutbytes)?;",
-            "if!id.authenticates(bytes){",
-        ],
-        expressions: &[
-            ("usecrate::content_store::read_retry;", 1),
-            ("read_retry(&mutreader,&mutbytes[observed..])", 1),
-            ("read_retry(&mutreader,&mutextra)", 1),
-        ],
-        companions: &[Companion {
-            path: "crates/crucible-cas/src/content_store.rs",
-            required: &[
-                "pub(crate)fnread_retry(reader:&mutdynRead,buffer:&mut[u8])->io::Result<usize>{loop{matchreader.read(buffer){Err(source)ifsource.kind()==io::ErrorKind::Interrupted=>continue,result=>returnresult,}}}",
-            ],
-            counts: &[],
-        }],
-    },
     // Two deliberate idle intervals longer than unchanged 25 ms admission polling; one Hello
     // record, physical stop/join/resume, same sequence continued by Status.
     Contract {

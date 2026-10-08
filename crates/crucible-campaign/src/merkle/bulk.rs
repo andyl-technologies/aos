@@ -358,7 +358,11 @@ mod tests {
                 frontier.content_id(),
             )
             .expect("attach frontier index to exploration root");
-        let repository = CampaignRepository::new(blobs.clone(), Arc::new(MemoryRefBackend::new()));
+        let repository = CampaignRepository::new(
+            blobs.clone(),
+            Arc::new(MemoryRefBackend::new()),
+            crate::CampaignRamAdmission::Unavailable,
+        );
 
         let (first, _, first_proof) = repository
             .scan_frontier_page(exploration.content_id(), None, PAGE_SIZE)
@@ -384,7 +388,11 @@ mod tests {
         // A new repository has no process-local projection or validation cache.
         // It must reproduce the same page and typed projection bodies solely
         // from the immutable exploration/frontier roots.
-        let restarted = CampaignRepository::new(blobs.clone(), Arc::new(MemoryRefBackend::new()));
+        let restarted = CampaignRepository::new(
+            blobs.clone(),
+            Arc::new(MemoryRefBackend::new()),
+            crate::CampaignRamAdmission::Unavailable,
+        );
         let (reopened, _, _) = restarted
             .scan_frontier_page(exploration.content_id(), Some(after), PAGE_SIZE)
             .expect("cold-reopen final frontier page");

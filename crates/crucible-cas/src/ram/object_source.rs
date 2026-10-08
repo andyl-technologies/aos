@@ -78,10 +78,11 @@ impl RamStore {
         &self,
         root: &LeasedRamRoot,
         coordinate: &RamObjectCoordinate,
+        original: &crate::owned_decode::DecodeBudget,
         boundary: &mut dyn FnMut() -> Result<(), RamStoreError>,
     ) -> Result<RamObjectRecord, RamStoreError> {
         self.admit_topology(root.record.topology())?;
-        let mut work = Work::new(self.limits, boundary);
+        let mut work = Work::new(self.limits, original, boundary)?;
         self.read_transfer_object_with_work(root, coordinate, &mut work)
     }
 
@@ -91,7 +92,10 @@ impl RamStore {
         coordinate: &RamObjectCoordinate,
         work: &mut Work<'_>,
     ) -> Result<RamObjectRecord, RamStoreError> {
-        let account = self.object_account()?;
+        let account = work
+            .original()
+            .child()
+            .map_err(super::codec_ownership::admission)?;
         let _scope = account.enter();
         let id = match coordinate {
             RamObjectCoordinate::Root => {

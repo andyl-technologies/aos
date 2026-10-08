@@ -348,6 +348,31 @@ fn exported_item_after_visibility(tokens: &[Token], index: usize) -> Option<(&st
     if declaration == "const" && tokens.get(cursor)?.kind.as_ident() == Some("fn") {
         cursor += 1;
     }
+    if declaration == "use" {
+        let path = tokens[cursor..]
+            .iter()
+            .take_while(|token| token.kind != TokenKind::Punct(';'));
+        let mut target = None;
+        let mut alias = None;
+        let mut aliased = false;
+        for token in path {
+            match &token.kind {
+                TokenKind::Ident(name) if name == "as" && !aliased && target.is_some() => {
+                    aliased = true;
+                }
+                TokenKind::Ident(name) if !aliased => target = Some(name.as_str()),
+                TokenKind::Ident(name) if alias.is_none() => alias = Some(name.as_str()),
+                TokenKind::Punct(':') if !aliased => {}
+                // Grouped or wildcard exports need their own explicit review.
+                _ => return Some((declaration, None)),
+            }
+        }
+        // An approved name must not conceal an unreviewed target by renaming it.
+        return Some((
+            declaration,
+            target.filter(|target| !aliased || alias == Some(*target)),
+        ));
+    }
     Some((
         declaration,
         tokens.get(cursor).and_then(|token| token.kind.as_ident()),
@@ -357,6 +382,12 @@ fn exported_item_after_visibility(tokens: &[Token], index: usize) -> Option<(&st
 // Approved names are operational contracts, not permission to expose absolute
 // clock values through an otherwise accepted constructor or public state field.
 fn public_signature_contains_clock(tokens: &[Token], index: usize, declaration: &str) -> bool {
+    if declaration == "struct"
+        && exported_item_after_visibility(tokens, index)
+            .is_some_and(|(_, name)| name == Some("HostSupervisionBootstrap"))
+    {
+        return opaque_bootstrap_signature_contains_clock(tokens, index);
+    }
     let structured = matches!(declaration, "struct" | "enum" | "trait");
     let mut body_depth = 0usize;
     for token in &tokens[index + 1..] {
@@ -373,6 +404,36 @@ fn public_signature_contains_clock(tokens: &[Token], index: usize, declaration: 
         }
     }
     false
+}
+
+// The reviewed bootstrap stores its original clocks behind entirely private
+// fields. New header grammar or exposed fields require an explicit review.
+fn opaque_bootstrap_signature_contains_clock(tokens: &[Token], index: usize) -> bool {
+    let Some(declaration) = tokens[index + 1..]
+        .iter()
+        .position(|token| token.kind.as_ident() == Some("struct"))
+        .map(|offset| index + 1 + offset)
+    else {
+        return true;
+    };
+    let body = declaration + 2;
+    if tokens.get(body).map(|token| &token.kind) != Some(&TokenKind::Punct('{')) {
+        return true;
+    }
+
+    let mut depth = 1usize;
+    for token in &tokens[body + 1..] {
+        match token.kind {
+            TokenKind::Punct('{') => depth += 1,
+            TokenKind::Punct('}') if depth == 1 => return false,
+            TokenKind::Punct('}') => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        if token.kind.as_ident() == Some("pub") {
+            return true;
+        }
+    }
+    true
 }
 
 fn route_ingress_findings(

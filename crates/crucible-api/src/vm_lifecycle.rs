@@ -215,6 +215,8 @@ pub struct ProductionRamCatalogStorage {
     pub quota: Arc<dyn crucible_cas::content_store::StorePhysicalQuotaGuard>,
     /// Shared deletion exclusion held until authenticated catalog retirement.
     pub retention_fence: Arc<std::fs::File>,
+    /// Unspent original namespace account used to admit independent RAM operations.
+    pub original: crucible_cas::owned_decode::DecodeBudget,
 }
 
 /// Retains catalog quota and service custody during authenticated deletion.

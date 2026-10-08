@@ -37,6 +37,7 @@ impl CampaignRepository {
         name: &str,
         boundary: &mut dyn FnMut() -> Result<(), crucible_cas::ram::RamStoreError>,
     ) -> Result<CampaignArchiveInspection, CampaignRepositoryError> {
+        self.verify_ram_admission()?;
         boundary().map_err(CampaignRepositoryError::Ram)?;
         let target = self
             .refs
@@ -116,6 +117,7 @@ impl CampaignRepository {
         verify_ram: bool,
         boundary: &mut dyn FnMut() -> Result<(), crucible_cas::ram::RamStoreError>,
     ) -> Result<CampaignArchiveInspection, CampaignRepositoryError> {
+        self.verify_ram_admission()?;
         boundary().map_err(CampaignRepositoryError::Ram)?;
         let envelope =
             self.require_record_kind(id.content_id(), CampaignRecordKind::ArchiveManifest)?;

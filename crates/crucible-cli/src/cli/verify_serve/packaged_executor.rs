@@ -447,14 +447,12 @@ impl GuardedCampaignRunDeployment {
         use crucible_daemon::campaign_store_composition::StorePhysicalQuotaBinder;
 
         let resources = self.policy.ram_catalog_resources.resources();
-        let service = crucible_daemon::CampaignQuotaServiceConfig::from_authored_budgets(
+        let binder = crucible_daemon::LinuxProjectQuotaBinder::new(
             host_operation_budgets::deployed_budgets(&self.policy.host_operation_budgets)?,
             None,
             resources,
         )
         .map_err(CliError::ProviderAdmission)?;
-        let binder = crucible_daemon::LinuxProjectQuotaBinder::new(service)
-            .map_err(CliError::ProviderAdmission)?;
         binder
             .bind(
                 &self.policy.ram_catalog_root,

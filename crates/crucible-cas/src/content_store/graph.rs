@@ -50,6 +50,9 @@ mod verification;
 #[cfg(test)]
 mod verification_tests;
 
+#[cfg(test)]
+mod memory_namespace_tests;
+
 use format::canonical_graph_configuration;
 pub use verification::{
     MAX_STORE_GRAPH_VERIFY_LOGICAL_BYTES, MAX_STORE_GRAPH_VERIFY_PLACEMENTS,
@@ -142,6 +145,8 @@ pub enum StoreNodeSpec {
     Memory {
         /// Hard cap on retained authenticated logical bytes.
         max_logical_bytes: u64,
+        /// Hard cap on unique objects, including zero-byte bodies.
+        max_objects: u64,
     },
     /// Crash-safe loose-object directory leaf.
     Directory {
@@ -421,6 +426,10 @@ pub struct StoreNodeDescription {
 }
 
 /// Saturating operational counters for one metrics node.
+///
+/// Stream counters observe ordinary read handles. Checked dispatch records
+/// logical lookup and publication operations while retaining the child's
+/// source and reader directly; zero stream counters do not imply zero I/O.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct StoreNodeMetrics {
     /// `contains` operations attempted.
@@ -1193,6 +1202,7 @@ impl StoreGraph {
             &profilers,
             &physical_quotas,
             &s3_clients,
+            None,
         )?;
         Ok(graph)
     }
@@ -1221,6 +1231,7 @@ impl StoreGraph {
             &profilers,
             &physical_quotas,
             &s3_clients,
+            None,
         )?;
         Ok(graph)
     }
@@ -1250,6 +1261,7 @@ impl StoreGraph {
             &profilers,
             &physical_quotas,
             &s3_clients,
+            None,
         )?;
         Ok(graph)
     }
@@ -1260,7 +1272,9 @@ impl StoreGraph {
     /// physical-quota binders authenticate kernel-enforced leaf allocation;
     /// S3 clients bind separately configured transport and credentials to one
     /// non-secret endpoint-policy identity; namespace policy and encryption key
-    /// material remain operational.
+    /// material remain operational. An optional original Memory namespace
+    /// issuer admits each fixed node envelope before graph leaf effects. Without
+    /// it, bounded ordinary Memory models refuse checked RAM access.
     ///
     /// # Errors
     ///
@@ -1273,6 +1287,7 @@ impl StoreGraph {
         profilers: &StoreGraphObjectProfilers,
         physical_quotas: &StoreGraphPhysicalQuotaBinders,
         s3_clients: &StoreGraphS3Clients,
+        memory_namespaces: Option<&StorePhysicalQuotaBinderHandle>,
     ) -> Result<Self, StoreError> {
         let (graph, _admin) = Self::build_with_admin_and_all_capabilities(
             config,
@@ -1281,6 +1296,7 @@ impl StoreGraph {
             profilers,
             physical_quotas,
             s3_clients,
+            memory_namespaces,
         )?;
         Ok(graph)
     }
@@ -1312,6 +1328,7 @@ impl StoreGraph {
             &profilers,
             &physical_quotas,
             &s3_clients,
+            None,
         )
     }
 
@@ -1339,6 +1356,7 @@ impl StoreGraph {
             &profilers,
             &physical_quotas,
             &s3_clients,
+            None,
         )
     }
 
@@ -1351,6 +1369,9 @@ impl StoreGraph {
     /// unfinished-upload cleanup. A separately supplied strong S3
     /// administration capability additionally contributes committed-object
     /// inventory/delete authority to the returned administration value.
+    /// `memory_namespaces` retains the existing genuine issuer for fixed Memory
+    /// node grants. `None` constructs ordinary bounded models without checked
+    /// RAM authority; it never enables a raw RAM fallback.
     ///
     /// # Errors
     ///
@@ -1363,6 +1384,7 @@ impl StoreGraph {
         profilers: &StoreGraphObjectProfilers,
         physical_quotas: &StoreGraphPhysicalQuotaBinders,
         s3_clients: &StoreGraphS3Clients,
+        memory_namespaces: Option<&StorePhysicalQuotaBinderHandle>,
     ) -> Result<(Self, StoreGraphAdmin), StoreError> {
         validate_structure(&config)?;
         validate_demands(&config)?;
@@ -1389,7 +1411,35 @@ impl StoreGraph {
             profilers,
             physical_quotas,
             s3_clients,
+            memory_namespaces,
         };
+        // Admit every Memory namespace before instantiating any disk leaf or
+        // wrapper. The existing registries retain the same concrete leaf; no
+        // policy identifier or disk/project authority is invented for Memory.
+        for (id, node) in &config.nodes {
+            if let StoreNodeSpec::Memory {
+                max_logical_bytes,
+                max_objects,
+            } = node
+            {
+                let backend = match capabilities.memory_namespaces {
+                    Some(original) => MemoryBlobBackend::new_admitted(
+                        id.as_str(),
+                        *max_logical_bytes,
+                        *max_objects,
+                        original.clone(),
+                    )?,
+                    None => MemoryBlobBackend::new_bounded(
+                        id.as_str(),
+                        *max_logical_bytes,
+                        *max_objects,
+                    )?,
+                };
+                let leaf = Arc::new(backend);
+                state.physical.insert(id.clone(), leaf.clone());
+                state.built.insert(id.clone(), leaf);
+            }
+        }
         let root = instantiate(
             configuration,
             &config.root,
@@ -1591,6 +1641,13 @@ impl WriteBackRetentionAdmin for StoreGraph {
 }
 
 impl ImmutableBlobBackend for StoreGraph {
+    fn checked_publication_metadata(
+        &self,
+        kind: ObjectKind,
+    ) -> Result<CheckedPublicationMetadata, StoreError> {
+        self.root.checked_publication_metadata(kind)
+    }
+
     fn put_many_if_absent_with_boundary(
         &self,
         original: &crate::owned_decode::DecodeBudget,
@@ -1648,6 +1705,9 @@ impl ImmutableBlobBackend for StoreGraph {
         range: Option<ByteRange>,
         boundary: &mut dyn FnMut() -> Result<(), StoreError>,
     ) -> Result<BlobHandle, StoreError> {
+        account
+            .verify_live()
+            .map_err(|error| admission_under(account, error))?;
         boundary()?;
         self.require_admitted(id)?;
         self.root.read_with_boundary(account, id, range, boundary)
@@ -2259,6 +2319,7 @@ struct GraphBuildCapabilities<'a> {
     profilers: &'a StoreGraphObjectProfilers,
     physical_quotas: &'a StoreGraphPhysicalQuotaBinders,
     s3_clients: &'a StoreGraphS3Clients,
+    memory_namespaces: Option<&'a StorePhysicalQuotaBinderHandle>,
 }
 
 fn instantiate(
@@ -2275,8 +2336,15 @@ fn instantiate(
         .get(id)
         .ok_or_else(|| invalid_graph(id.as_str(), GraphViolation::MissingNode))?;
     let backend: Arc<dyn ImmutableBlobBackend> = match node {
-        StoreNodeSpec::Memory { max_logical_bytes } => {
-            let leaf = Arc::new(MemoryBlobBackend::new(id.as_str(), *max_logical_bytes));
+        StoreNodeSpec::Memory {
+            max_logical_bytes,
+            max_objects,
+        } => {
+            let leaf = Arc::new(MemoryBlobBackend::new_bounded(
+                id.as_str(),
+                *max_logical_bytes,
+                *max_objects,
+            )?);
             state.physical.insert(id.clone(), leaf.clone());
             leaf
         }

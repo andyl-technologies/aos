@@ -969,6 +969,7 @@ fn test_branch_input(stop: StopCondition) -> CrucibleAttemptExecution {
             1024 * 1024,
         )),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     );
     repository
         .publish_choice_domain(&domain)

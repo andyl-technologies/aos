@@ -79,6 +79,8 @@ impl RamStore {
         destination_identity: &str,
         operation: [u8; 32],
         retention: &dyn RamRetention,
+        source_original: &crate::owned_decode::DecodeBudget,
+        destination_original: &crate::owned_decode::DecodeBudget,
         boundary: &mut dyn FnMut() -> Result<(), RamStoreError>,
     ) -> Result<RamClosureStored, RamStoreError> {
         let offer = RamTransferOffer {
@@ -112,10 +114,13 @@ impl RamStore {
         let boundary = std::cell::RefCell::new(boundary);
         let mut exchange = |request: RamTransferMessage| {
             let request = RamTransferMessage::decode(&request.encode()?)?;
-            let response = sender.respond(request, &mut || (boundary.borrow_mut())())?;
+            let response =
+                sender.respond(request, source_original, &mut || (boundary.borrow_mut())())?;
             Ok(RamTransferMessage::decode(&response.encode()?)?)
         };
-        match receiver.receive(&mut exchange, &mut || (boundary.borrow_mut())())? {
+        match receiver.receive(&mut exchange, destination_original, &mut || {
+            (boundary.borrow_mut())()
+        })? {
             RamTransferStep::ClosureStored(stored) => Ok(stored),
             RamTransferStep::Canceled => Err(RamStoreError::Canceled),
         }
@@ -138,6 +143,8 @@ impl RamStore {
         source: &LeasedRamRoot,
         destination: &Self,
         retention: &dyn RamRetention,
+        source_original: &crate::owned_decode::DecodeBudget,
+        destination_original: &crate::owned_decode::DecodeBudget,
         boundary: &mut dyn FnMut() -> Result<(), RamStoreError>,
     ) -> Result<RamClosureStored, RamStoreError> {
         self.admit_topology(source.record.topology())?;
@@ -163,7 +170,8 @@ impl RamStore {
                 .maximum_io_bytes
                 .min(destination.limits.maximum_io_bytes),
         };
-        let mut work = Work::new(limits, boundary);
+        let mut work = Work::new(limits, source_original, boundary)?;
+        work.destination(destination_original)?;
         let mut report = RamTransferReport::default();
         for (region, reference) in source
             .record
@@ -219,6 +227,7 @@ impl RamStore {
         before: &LeasedRamRoot,
         after: &LeasedRamRoot,
         visitor: &mut dyn FnMut(&str, u64) -> Result<(), RamStoreError>,
+        original: &crate::owned_decode::DecodeBudget,
         boundary: &mut dyn FnMut() -> Result<(), RamStoreError>,
     ) -> Result<u64, RamStoreError> {
         self.admit_topology(before.record.topology())?;
@@ -230,7 +239,7 @@ impl RamStore {
         }
         self.validate_root_catalogs(&before.record, &before.regions)?;
         self.validate_root_catalogs(&after.record, &after.regions)?;
-        let mut work = Work::new(self.limits, boundary);
+        let mut work = Work::new(self.limits, original, boundary)?;
         let mut changed = 0_u64;
         for ((region, before), after) in before
             .record
@@ -301,32 +310,35 @@ impl RamStore {
     ) -> Result<(), RamStoreError> {
         retention.retain_object(id)?;
         let source = self.read_envelope(id, work)?;
-        match destination.read_envelope(id, work) {
-            Ok(existing) => {
-                if existing != source {
-                    return Err(StoreError::Corrupt { id }.into());
+        work.with_destination(|work| {
+            match destination.read_envelope(id, work) {
+                Ok(existing) => {
+                    if existing != source {
+                        return Err(StoreError::Corrupt { id }.into());
+                    }
+                    // Re-put produces authenticated durable placement evidence even
+                    // when the object was already present in a composed backend.
+                    destination.put_envelope(&existing, id.kind(), retention, work)?;
+                    report.authenticated_existing_objects = report
+                        .authenticated_existing_objects
+                        .checked_add(1)
+                        .ok_or(RamStoreError::Limit("transfer object count"))?;
                 }
-                // Re-put produces authenticated durable placement evidence even
-                // when the object was already present in a composed backend.
-                destination.put_envelope(&existing, id.kind(), retention, work)?;
-                report.authenticated_existing_objects = report
-                    .authenticated_existing_objects
-                    .checked_add(1)
-                    .ok_or(RamStoreError::Limit("transfer object count"))?;
+                Err(error) if super::store_boundary::confirmed_absence(&error, id) => {
+                    destination.put_envelope(&source, id.kind(), retention, work)?;
+                    report.copied_objects = report
+                        .copied_objects
+                        .checked_add(1)
+                        .ok_or(RamStoreError::Limit("transfer object count"))?;
+                    report.copied_bytes = report
+                        .copied_bytes
+                        .checked_add(source.canonical_bytes().len() as u64)
+                        .ok_or(RamStoreError::Limit("transfer copied bytes"))?;
+                }
+                Err(error) => return Err(error),
             }
-            Err(RamStoreError::Store(StoreError::NotFound { .. })) => {
-                destination.put_envelope(&source, id.kind(), retention, work)?;
-                report.copied_objects = report
-                    .copied_objects
-                    .checked_add(1)
-                    .ok_or(RamStoreError::Limit("transfer object count"))?;
-                report.copied_bytes = report
-                    .copied_bytes
-                    .checked_add(source.canonical_bytes().len() as u64)
-                    .ok_or(RamStoreError::Limit("transfer copied bytes"))?;
-            }
-            Err(error) => return Err(error),
-        }
+            Ok(())
+        })?;
         Ok(())
     }
 

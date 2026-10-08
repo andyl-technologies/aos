@@ -19,6 +19,7 @@ mod tests;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 
+pub use crucible::exact_checkpoint::CaptureReadError;
 use crucible_ram::{Limits, RootRecord, Scope};
 
 use super::QemuNodeError;
@@ -128,18 +129,18 @@ impl QemuPagedRamCapture {
         self.initial
     }
 
-    pub(super) fn next_page(&mut self) -> Result<Option<QemuCapturedRamPage>, QemuNodeError> {
+    pub(super) fn next_page(&mut self) -> Result<Option<QemuCapturedRamPage>, CaptureReadError> {
         if self.remaining_records == 0 {
             if self.remaining_bytes != 0 {
-                return Err(invalid("trailing page capture bytes"));
+                return Err(CaptureReadError::Malformed("trailing page capture bytes"));
             }
             return Ok(None);
         }
         if self.remaining_bytes < PAGE_HEADER_BYTES as u64 {
-            return Err(invalid("truncated page capture record"));
+            return Err(CaptureReadError::Malformed("truncated page capture record"));
         }
         let mut header = [0; PAGE_HEADER_BYTES];
-        self.file.read_exact(&mut header).map_err(capture_io)?;
+        self.file.read_exact(&mut header)?;
         let region_ordinal = u32be(&header[..4]);
         let length = u32be(&header[4..8]);
         let page_index = u64be(&header[8..16]);
@@ -150,25 +151,22 @@ impl QemuPagedRamCapture {
             .topology()
             .regions()
             .get(region_ordinal as usize)
-            .ok_or_else(|| invalid("page capture region ordinal"))?;
-        let valid_length = region
-            .geometry()
-            .valid_length(page_index)
-            .map_err(|_| invalid("page capture logical coordinate"))?;
+            .ok_or(CaptureReadError::Malformed("page capture region ordinal"))?;
+        let valid_length = region.geometry().valid_length(page_index)?;
         let encoded_bytes = PAGE_HEADER_BYTES as u64 + u64::from(length);
         if length != valid_length
             || version == 0
             || self.previous.is_some_and(|previous| previous >= coordinate)
             || encoded_bytes > self.remaining_bytes
         {
-            return Err(invalid("page capture ordering, version, or length"));
+            return Err(CaptureReadError::Malformed(
+                "page capture ordering, version, or length",
+            ));
         }
         let mut bytes = Vec::new();
-        bytes
-            .try_reserve_exact(length as usize)
-            .map_err(|_| invalid("page allocation"))?;
+        bytes.try_reserve_exact(length as usize)?;
         bytes.resize(length as usize, 0);
-        self.file.read_exact(&mut bytes).map_err(capture_io)?;
+        self.file.read_exact(&mut bytes)?;
         self.previous = Some(coordinate);
         self.remaining_records -= 1;
         self.remaining_bytes -= encoded_bytes;

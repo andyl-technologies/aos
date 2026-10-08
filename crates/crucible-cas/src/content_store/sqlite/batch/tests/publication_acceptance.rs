@@ -21,6 +21,13 @@ impl ImmutableBlobBackend for ReturnedLeaf {
         self.leaf.capabilities()
     }
 
+    fn checked_publication_metadata(
+        &self,
+        kind: ObjectKind,
+    ) -> Result<crate::content_store::CheckedPublicationMetadata, StoreError> {
+        self.leaf.checked_publication_metadata(kind)
+    }
+
     fn contains(&self, id: ContentId) -> Result<bool, StoreError> {
         self.leaf.contains(id)
     }
@@ -825,10 +832,10 @@ fn outer_completion_poison_precedes_hashing_and_closes_the_returned_byte_owner()
     let account = DecodeBudget::for_store(origin.clone()).expect("caller A");
     let scope = account.enter();
     let completed = Arc::new(AtomicBool::new(false));
-    let mut handle = BlobHandle::new(Arc::new(CompletedSource {
+    let mut handle = BlobHandle::new(CompletedSource {
         handle: BlobHandle::from_bytes(b"actual returned bytes"),
         completed: completed.clone(),
-    }));
+    });
     // An intentionally wrong exposed identity makes the postponed hash an
     // observable competing failure, rather than merely counting callbacks.
     handle.integrity_id = Some(ContentId::for_bytes(
@@ -949,10 +956,10 @@ fn full_integrity_identity_still_hashes_the_exposed_synchronous_output() {
         let origin = original_quota();
         let account = DecodeBudget::for_store(origin).expect("finite original caller");
         let completed = Arc::new(AtomicBool::new(false));
-        let mut handle = BlobHandle::new(Arc::new(CompletedSource {
+        let mut handle = BlobHandle::new(CompletedSource {
             handle: BlobHandle::from_bytes(b"actual returned bytes"),
             completed: completed.clone(),
-        }));
+        });
         let wrong = ContentId::for_bytes(ObjectKind::Trace, 1, b"different bytes");
         handle.integrity_id = Some(wrong);
         if previously_authenticated {

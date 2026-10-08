@@ -168,12 +168,7 @@ fn validate_exact_device_content_sha256_with_boundary(
 
     paged::with_ram_boundary(
         boundary,
-        |ram_boundary| {
-            checkpoint
-                .catalog
-                .store()
-                .verify(&checkpoint.ram, ram_boundary)
-        },
+        |ram_boundary| checkpoint.catalog.verify(&checkpoint.ram, ram_boundary),
         |error| loop_factory_error(format!("authenticate complete RAM catalog: {error}")),
     )?;
 
@@ -1345,6 +1340,7 @@ pub(super) fn open_exact_checkpoint_closure_with_boundary(
                 name: target.node.to_string(),
             }),
             store: catalog.store().clone(),
+            original: catalog.original().clone(),
             object_id: Arc::new(ram.object_id().encode()),
             root: ram,
         });
@@ -1809,12 +1805,7 @@ fn persist_target_machine_state_with_boundary(
     )?;
     paged::with_ram_boundary(
         boundary,
-        |ram_boundary| {
-            exact_ram
-                .catalog
-                .store()
-                .verify(&exact_ram.ram, ram_boundary)
-        },
+        |ram_boundary| exact_ram.catalog.verify(&exact_ram.ram, ram_boundary),
         |error| store_error(format!("persist complete RAM graph: {error}")),
     )?;
     Ok(())

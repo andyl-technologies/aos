@@ -63,6 +63,7 @@ impl FallbackFixture {
         let repository = Arc::new(crucible_campaign::CampaignRepository::new(
             Arc::new(MemoryBlobBackend::new(name, 64 * 1024 * 1024)),
             Arc::new(MemoryRefBackend::new()),
+            crucible_campaign::CampaignRamAdmission::Unavailable,
         ));
         let scenario = crucible::happy_path_scenario()
             .expect("built-in scenario")

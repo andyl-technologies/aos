@@ -332,7 +332,7 @@ pub(super) fn run_campaign_store_gc(
     )
     .map_err(|error| maintenance_error(format!("GC output metadata admission failed: {error}")))?;
     let _scope = decoding.enter();
-    let operation = CampaignGcOperationContext::new(marks, &mut boundary)
+    let operation = CampaignGcOperationContext::new(marks, &decoding, &mut boundary)
         .map_err(|error| maintenance_error(format!("GC operation admission failed: {error}")))?;
     let report = match args.operation {
         CampaignStoreGcCommand::Plan => {

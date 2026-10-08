@@ -44,12 +44,14 @@ fn read_through_and_metrics_nodes_report_exact_operations_and_streams() {
                 cache,
                 StoreNodeSpec::Memory {
                     max_logical_bytes: 1_024,
+                    max_objects: 16,
                 },
             ),
             (
                 source,
                 StoreNodeSpec::Memory {
                     max_logical_bytes: 1_024,
+                    max_objects: 16,
                 },
             ),
         ]),
@@ -144,10 +146,10 @@ fn metrics_distinguish_complete_abandoned_and_failed_deferred_reads() {
     assert_eq!(snapshot.read_stream_bytes, bytes.len() as u64 + 4);
 
     let broken = Arc::new(FixedReadBackend {
-        source: BlobHandle::new(Arc::new(MismatchedLengthSource {
+        source: BlobHandle::new(MismatchedLengthSource {
             declared: 4,
             bytes: b"abc",
-        })),
+        }),
     });
     let (broken_metrics, broken_state) = MetricsStore::new("broken-metrics", broken);
     assert!(matches!(
@@ -242,7 +244,8 @@ fn closed_store_graph_rejects_cycles_missing_routes_and_unreachable_nodes() {
                 (
                     leaf,
                     StoreNodeSpec::Memory {
-                        max_logical_bytes: 1_024
+                        max_logical_bytes: 1_024,
+                        max_objects: 16,
                     }
                 ),
             ]),
@@ -264,13 +267,15 @@ fn closed_store_graph_rejects_cycles_missing_routes_and_unreachable_nodes() {
                 (
                     root,
                     StoreNodeSpec::Memory {
-                        max_logical_bytes: 1_024
+                        max_logical_bytes: 1_024,
+                        max_objects: 16,
                     }
                 ),
                 (
                     unused,
                     StoreNodeSpec::Memory {
-                        max_logical_bytes: 1_024
+                        max_logical_bytes: 1_024,
+                        max_objects: 16,
                     }
                 ),
             ]),

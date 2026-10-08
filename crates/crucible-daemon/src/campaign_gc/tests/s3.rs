@@ -480,6 +480,7 @@ fn build_graph_with_config(
         &StoreGraphObjectProfilers::new(),
         &StoreGraphPhysicalQuotaBinders::new(),
         &clients,
+        None,
     )
     .expect("administrable S3 graph")
 }
@@ -551,7 +552,11 @@ fn s3_graph_admin_drives_global_gc_across_restart() {
     let (graph, admin) = build_graph(service.clone());
     let graph = Arc::new(graph);
     let refs = Arc::new(DirectoryRefBackend::new(&ref_root));
-    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+    let repository = CampaignRepository::new(
+        graph.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
 
     let live = ContentEnvelope::new(
         "crucible.test.gc-s3-live",
@@ -607,7 +612,11 @@ fn s3_graph_admin_drives_global_gc_across_restart() {
     let (graph, admin) = build_graph(service);
     let graph = Arc::new(graph);
     let refs = Arc::new(DirectoryRefBackend::new(&ref_root));
-    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+    let repository = CampaignRepository::new(
+        graph.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
     let mut ledger = DirectoryAssignmentLedger::open(&ledger_root).expect("reopen S3 ledger");
     let mut journal = DirectoryCampaignGcJournal::open(&journal_root, &gc_operation)
         .expect("reopen S3 GC journal");
@@ -650,7 +659,11 @@ fn s3_publication_after_planning_invalidates_apply_without_deletion() {
     let (graph, admin) = build_graph(service);
     let graph = Arc::new(graph);
     let refs = Arc::new(DirectoryRefBackend::new(temp.path().join("refs")));
-    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+    let repository = CampaignRepository::new(
+        graph.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
     let orphan_bytes = b"planned S3 orphan";
     let orphan = ContentId::for_bytes(ObjectKind::Trace, 1, orphan_bytes);
     graph
@@ -704,7 +717,11 @@ fn s3_gc_retains_multiple_refs_and_transfer_during_backend_faults() {
     let (graph, admin) = build_graph(service.clone());
     let graph = Arc::new(graph);
     let refs = Arc::new(DirectoryRefBackend::new(temp.path().join("refs")));
-    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+    let repository = CampaignRepository::new(
+        graph.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
     let mut ledger = DirectoryAssignmentLedger::open(temp.path().join("ledger"))
         .expect("open S3 recovery ledger");
 
@@ -1016,7 +1033,11 @@ fn paused_derived_s3_campaign_recovers_with_pending_write_back_transfer_and_gc()
     let (graph, admin) = build_graph_with_config(service.clone(), config);
     let graph = Arc::new(graph);
     let refs = Arc::new(DirectoryRefBackend::new(temp.path().join("refs")));
-    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+    let repository = CampaignRepository::new(
+        graph.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
     let mut ledger = DirectoryAssignmentLedger::open(temp.path().join("ledger"))
         .expect("open paused S3 recovery ledger");
     let [paused, east, west] = publish_paused_s3_campaign(&repository);
@@ -1240,7 +1261,11 @@ fn paused_derived_s3_campaign_recovers_with_pending_write_back_transfer_and_gc()
     let reopened_config = write_back_graph_config(service.endpoint.clone(), temp.path());
     let (reopened_graph, _) = build_graph_with_config(service, reopened_config);
     let reopened_refs = Arc::new(DirectoryRefBackend::new(temp.path().join("refs")));
-    let reopened = CampaignRepository::new(Arc::new(reopened_graph), reopened_refs);
+    let reopened = CampaignRepository::new(
+        Arc::new(reopened_graph),
+        reopened_refs,
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
     assert_eq!(
         reopened.state("s3-west").expect("reopen paused west"),
         CampaignState::Paused

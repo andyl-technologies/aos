@@ -24,8 +24,13 @@ use thiserror::Error;
 
 mod admin;
 pub(crate) mod batch;
+mod blob_source_owner;
 pub(crate) mod checked_reader;
+mod composite_publication;
 mod composition;
+
+#[cfg(test)]
+pub(crate) use composition::{MetricsStore, RoutedStore};
 mod compressed_directory;
 mod directory;
 mod encrypted_directory;
@@ -55,9 +60,13 @@ pub use admin::{
 };
 pub use batch::{OwnedBlobBytes, PutBatchReceipt};
 pub use checked_reader::{CheckedBlobReader, CheckedReader};
+pub use composite_publication::{
+    CheckedPublicationMetadata, CompositeBoundaryRefusal, CompositeScopeError,
+};
 pub use compressed_directory::CompressedDirectoryBlobBackend;
 pub use directory::{
-    DirectoryBlobAuthorities, DirectoryBlobBackend, DirectoryRefAuthorities, DirectoryRefBackend,
+    DirectoryBlobAuthorities, DirectoryBlobBackend, DirectoryPublicationOutcome,
+    DirectoryRefAuthorities, DirectoryRefBackend, DirectoryScopeError,
 };
 pub use encrypted_directory::{
     EncryptedDirectoryBlobBackend, StoreEncryptionKey, StoreEncryptionKeyId, StoreGraphKeyring,
@@ -72,7 +81,7 @@ pub use graph::{
     StoreNodeMetrics, StoreNodeMetricsDescription, StoreNodeSpec, StorePhysicalRepairDisposition,
     StorePhysicalRepairReceipt, StoreTierPolicy, StoreWriteBackFlushSummary,
 };
-pub use memory::{MemoryBlobBackend, MemoryRefBackend};
+pub use memory::{MemoryBlobBackend, MemoryPublicationOutcome, MemoryRefBackend, MemoryScopeError};
 pub use namespace::{
     StoreGraphNamespaceAuthorizers, StoreNamespaceAuthorizer, StoreNamespaceId,
     StoreNamespaceOperation,
@@ -82,8 +91,8 @@ pub use packed::{
     PackedRepackReport, PackedStorageAccounting,
 };
 pub use physical_quota::{
-    StoreGraphPhysicalQuotaBinders, StorePhysicalQuotaBinder, StorePhysicalQuotaGuard,
-    StorePhysicalQuotaPolicyId,
+    StoreGraphPhysicalQuotaBinders, StorePhysicalQuotaBinder, StorePhysicalQuotaBinderHandle,
+    StorePhysicalQuotaGuard, StorePhysicalQuotaPolicyId,
 };
 pub use profile::{
     ObjectProfile, Reconstructibility, RetentionRole, SensitivityClass, StoreGraphObjectProfilers,
@@ -481,7 +490,7 @@ pub trait BlobSource: Send + Sync {
 /// completion rule for common consumers.
 #[derive(Clone)]
 pub struct BlobHandle {
-    source: Arc<dyn BlobSource>,
+    source: blob_source_owner::SourceOwner,
     logical_length: u64,
     authenticated_id: Option<ContentId>,
     integrity_id: Option<ContentId>,
@@ -489,9 +498,19 @@ pub struct BlobHandle {
 }
 
 impl BlobHandle {
-    /// Wraps a reopenable source.
+    /// Owns a concrete reopenable source in one shared allocation.
+    ///
+    /// The source value moves into a private owner; every handle clone retains
+    /// that same allocation. Its control closes before the source and any
+    /// credits stored inside it are dropped. The caller admits the source's
+    /// allocation and any incoming payloads before construction. This method
+    /// grants no resource allowance or authentication contract.
+    ///
+    /// Shared payloads held inside a custom source keep their own ownership
+    /// contract. They do not become admitted or terminally owned by this handle.
     #[must_use]
-    pub fn new(source: Arc<dyn BlobSource>) -> Self {
+    pub fn new<S: BlobSource + 'static>(source: S) -> Self {
+        let source = blob_source_owner::SourceOwner::new(source);
         let logical_length = source.logical_length();
         Self {
             source,
@@ -502,13 +521,25 @@ impl BlobHandle {
         }
     }
 
+    /// Returns the complete shared allocation extent for a concrete source.
+    ///
+    /// This includes the control counters and their alignment padding. It
+    /// excludes the separately stored handle and allocations already owned by
+    /// the source. Callers admit this extent in their original account before
+    /// calling [`Self::new`]. No allowance is created by this query.
+    #[must_use]
+    pub const fn source_allocation_bytes<S: BlobSource + 'static>() -> u64 {
+        blob_source_owner::allocation_bytes::<S>()
+    }
+
     /// Creates an in-memory source from owned bytes.
     #[must_use]
     pub fn from_bytes(bytes: impl Into<Vec<u8>>) -> Self {
-        Self::new(Arc::new(BytesBlobSource::new(bytes.into())))
+        Self::new(BytesBlobSource::new(bytes.into()))
     }
 
-    pub(crate) fn authenticated(id: ContentId, source: Arc<dyn BlobSource>) -> Self {
+    pub(crate) fn authenticated<S: BlobSource + 'static>(id: ContentId, source: S) -> Self {
+        let source = blob_source_owner::SourceOwner::new(source);
         let logical_length = source.logical_length();
         Self {
             source,
@@ -519,7 +550,8 @@ impl BlobHandle {
         }
     }
 
-    pub(crate) fn integrity_checked(id: ContentId, source: Arc<dyn BlobSource>) -> Self {
+    pub(crate) fn integrity_checked<S: BlobSource + 'static>(id: ContentId, source: S) -> Self {
+        let source = blob_source_owner::SourceOwner::new(source);
         let logical_length = source.logical_length();
         Self {
             source,
@@ -534,7 +566,8 @@ impl BlobHandle {
     ///
     /// Composition layers use this only for transparent observation wrappers
     /// whose declared length and bytes are identical to the wrapped handle.
-    pub(crate) fn with_observed_source(self, source: Arc<dyn BlobSource>) -> Self {
+    pub(crate) fn with_observed_source<S: BlobSource + 'static>(self, source: S) -> Self {
+        let source = blob_source_owner::SourceOwner::new(source);
         debug_assert_eq!(source.logical_length(), self.logical_length);
         Self {
             source,
@@ -543,6 +576,19 @@ impl BlobHandle {
             integrity_id: self.integrity_id,
             self_authenticating: self.self_authenticating,
         }
+    }
+
+    /// Replaces a fixture source without trusting its bytes or EOF identity.
+    ///
+    /// The exact integrity identity remains for ordinary handle hashing, while
+    /// corrupted or adversarial replacement bytes lose the original source's
+    /// transparent observation and authenticated-output contract.
+    #[cfg(test)]
+    pub(crate) fn with_untrusted_source<S: BlobSource + 'static>(self, source: S) -> Self {
+        let mut handle = self.with_observed_source(source);
+        handle.authenticated_id = None;
+        handle.self_authenticating = false;
+        handle
     }
 
     /// Returns the source's declared logical length.
@@ -576,11 +622,6 @@ impl BlobHandle {
         checked_reader::open_handle(self, &original, boundary)
     }
 
-    /// Preserves this handle's original deferred-authentication error mapping.
-    pub(crate) fn map_read_error(&self, operation: &'static str, error: io::Error) -> StoreError {
-        map_stream_error(operation, self.integrity_id, error)
-    }
-
     /// Copies the complete stream to a destination without full-size buffering.
     ///
     /// The destination may contain unauthenticated bytes before this method
@@ -608,11 +649,11 @@ impl BlobHandle {
             return Ok(self.clone());
         };
         validate_range(self.logical_length(), range)?;
-        let mut sliced = Self::new(Arc::new(RangeBlobSource {
+        let mut sliced = Self::new(RangeBlobSource {
             source: self.clone(),
             range,
             _credit: None,
-        }));
+        });
         sliced.integrity_id = self.integrity_id;
         sliced.self_authenticating = self.self_authenticating;
         Ok(sliced)
@@ -1105,6 +1146,42 @@ pub enum RefCasOutcome {
 /// Failure returned by immutable/ref store components.
 #[derive(Debug, Error)]
 pub enum StoreError {
+    /// The originating composite adapter recorded a first callback refusal.
+    #[error(transparent)]
+    CompositeBoundary {
+        /// Private-constructor marker; no failure evidence is contained here.
+        source: CompositeBoundaryRefusal,
+    },
+    /// A checked multiwriter retains every earlier publication and the failure.
+    #[error(transparent)]
+    CompositeScope {
+        /// Complete current failure and prior concrete outcome owners.
+        source: CompositeScopeError,
+    },
+    /// A checked memory operation retains its actual visible publication state.
+    #[error(transparent)]
+    MemoryScope {
+        /// Original work failure and synchronous map publication outcome.
+        source: MemoryScopeError,
+    },
+    /// A checked directory operation retains its actual visibility and cleanup.
+    #[error(transparent)]
+    DirectoryScope {
+        /// Original work, cleanup and filesystem publication outcome.
+        source: DirectoryScopeError,
+    },
+    /// The current RAM callback adapter recorded an original boundary refusal.
+    #[error(transparent)]
+    RamBoundary {
+        /// Private-constructor inline marker; it carries no discarded cause.
+        source: crate::ram::RamBoundaryRefusal,
+    },
+    /// RAM readback failed while a publication outcome remained owned.
+    #[error(transparent)]
+    RamValidation {
+        /// Complete RAM failure retained by its prepaid original loan.
+        source: crate::ram::RamFailureCause<std::convert::Infallible>,
+    },
     /// The requested logical object does not exist in this store.
     #[error("content object {id} was not found")]
     NotFound {
@@ -1267,6 +1344,33 @@ pub enum StoreError {
 }
 
 impl StoreError {
+    pub(crate) fn confirmed_absence(&self, id: ContentId) -> bool {
+        match self {
+            Self::NotFound { id: missing } => *missing == id,
+            Self::SqliteDiagnostic { source } => source.failure().confirmed_absence(id),
+            Self::SqliteScope { source }
+                if source.outcome() == SqliteCommitOutcome::NotCommitted
+                    && source.rollback_failure().is_none()
+                    && source.restoration_failure().is_none() =>
+            {
+                source
+                    .work_failure()
+                    .is_some_and(|error| error.confirmed_absence(id))
+            }
+            Self::DirectoryScope { source }
+                if source.outcome().published_objects == 0
+                    && source.outcome().durable_objects == 0
+                    && !source.outcome().durability_uncertain
+                    && source.cleanup_failure().is_none() =>
+            {
+                source
+                    .work_failure()
+                    .is_some_and(|error| error.confirmed_absence(id))
+            }
+            _ => false,
+        }
+    }
+
     /// Borrows the original work failure through retained SQLite carriers.
     ///
     /// The enclosing error continues to own diagnostic and cleanup credits.
@@ -1277,6 +1381,19 @@ impl StoreError {
         let mut failure = self;
         loop {
             failure = match failure {
+                Self::MemoryScope { source } => source.work_failure(),
+                Self::CompositeScope { source } => {
+                    match source.first_boundary().or_else(|| source.work_failure()) {
+                        Some(original) => original,
+                        None => return failure,
+                    }
+                }
+                Self::DirectoryScope { source } => {
+                    match source.work_failure().or_else(|| source.cleanup_failure()) {
+                        Some(original) => original,
+                        None => return failure,
+                    }
+                }
                 Self::SqliteDiagnostic { source } => source.failure(),
                 Self::SqliteScope { source } => match source.work_failure() {
                     Some(work) => work,
@@ -1411,6 +1528,23 @@ pub trait ImmutableBlobBackend: Send + Sync {
 
     /// Returns capabilities available through this component.
     fn capabilities(&self) -> BackendCapabilities;
+
+    /// Declares metadata bounds for one input of checked publication.
+    ///
+    /// The declaration performs no publication, callback, or admission. Its
+    /// placement and backend label bounds let a composition prepay aggregate
+    /// arrays before invoking any writer. Unsupported publishers fail closed.
+    ///
+    /// # Errors
+    /// Returns unsupported dispatch, routing failure, or checked bound overflow.
+    fn checked_publication_metadata(
+        &self,
+        _kind: ObjectKind,
+    ) -> Result<CheckedPublicationMetadata, StoreError> {
+        Err(StoreError::Unsupported {
+            capability: "checked-publication-metadata-bound",
+        })
+    }
 
     /// Returns the original admitted owner of decoded caller metadata.
     ///

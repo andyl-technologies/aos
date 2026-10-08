@@ -281,3 +281,109 @@ fn malformed_or_oversized_policy_is_read_only_failure() {
     assert!(!config.state_directory().join(REF_DIRECTORY).exists());
     assert!(!config.endpoint().path().exists());
 }
+
+struct RefusedMetadataBackend {
+    inner: DirectoryBlobBackend,
+    ambiguous: bool,
+}
+
+impl ImmutableBlobBackend for RefusedMetadataBackend {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn capabilities(&self) -> crucible_cas::content_store::BackendCapabilities {
+        self.inner.capabilities()
+    }
+
+    fn metadata_resources(
+        &self,
+    ) -> Result<Arc<dyn crucible_cas::content_store::StorePhysicalQuotaGuard>, StoreError> {
+        if self.ambiguous {
+            Err(StoreError::Unsupported {
+                capability: "shared-decoded-metadata-resources",
+            })
+        } else {
+            Err(StoreError::Unauthorized)
+        }
+    }
+
+    fn contains(&self, _: ContentId) -> Result<bool, StoreError> {
+        panic!("constructor admission must precede object inspection")
+    }
+
+    fn read(
+        &self,
+        _: ContentId,
+        _: Option<crucible_cas::content_store::ByteRange>,
+    ) -> Result<BlobHandle, StoreError> {
+        panic!("constructor admission must precede object reads")
+    }
+
+    fn put_if_absent(
+        &self,
+        _: ContentId,
+        _: &BlobHandle,
+    ) -> Result<crucible_cas::content_store::PutReceipt, StoreError> {
+        panic!("constructor admission must precede object publication")
+    }
+}
+
+#[test]
+fn constructor_preserves_denied_and_ambiguous_original_admission() {
+    for ambiguous in [false, true] {
+        let directory = tempdir().expect("constructor-only namespace fixture");
+        let objects = directory.path().join("objects");
+        let references = directory.path().join("refs");
+        let blobs = Arc::new(RefusedMetadataBackend {
+            inner: DirectoryBlobBackend::new("refused-original", &objects),
+            ambiguous,
+        });
+        let refs = Arc::new(crucible_cas::content_store::DirectoryRefBackend::new(
+            &references,
+        ));
+
+        let result = CampaignLocalRepositoryStore::new(blobs, refs);
+
+        if ambiguous {
+            assert!(matches!(
+                result,
+                Err(CampaignLocalServiceError::RepositoryRamAdmission(
+                    StoreError::Unsupported {
+                        capability: "shared-decoded-metadata-resources",
+                    }
+                ))
+            ));
+        } else {
+            assert!(matches!(
+                result,
+                Err(CampaignLocalServiceError::RepositoryRamAdmission(
+                    StoreError::Unauthorized
+                ))
+            ));
+        }
+        assert!(!objects.exists());
+        assert!(!references.exists());
+    }
+}
+
+#[test]
+fn constructor_keeps_exact_absent_metadata_capability_explicit() {
+    let directory = tempdir().expect("checkpoint-free constructor fixture");
+    let objects = directory.path().join("objects");
+    let references = directory.path().join("refs");
+    let blobs = Arc::new(DirectoryBlobBackend::new("checkpoint-free", &objects));
+    let refs = Arc::new(crucible_cas::content_store::DirectoryRefBackend::new(
+        &references,
+    ));
+
+    let store =
+        CampaignLocalRepositoryStore::new(blobs, refs).expect("durable checkpoint-free store");
+
+    assert!(matches!(
+        store.ram_admission,
+        CampaignRamAdmission::Unavailable
+    ));
+    assert!(!objects.exists());
+    assert!(!references.exists());
+}

@@ -95,9 +95,10 @@ impl StorePhysicalQuotaGuard for RecordingPhysicalQuotaGuard {
     }
 }
 
+#[derive(Clone)]
 pub(super) struct RecordingPhysicalQuotaBinder {
     pub(super) guard: Arc<RecordingPhysicalQuotaGuard>,
-    pub(super) bindings: Mutex<Vec<RecordedPhysicalQuotaBinding>>,
+    pub(super) bindings: Arc<Mutex<Vec<RecordedPhysicalQuotaBinding>>>,
 }
 
 impl RecordingPhysicalQuotaBinder {
@@ -106,7 +107,7 @@ impl RecordingPhysicalQuotaBinder {
         guard.set_allowed(allowed);
         Self {
             guard,
-            bindings: Mutex::new(Vec::new()),
+            bindings: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -653,10 +654,10 @@ impl ImmutableBlobBackend for SynchronizedMetricsBackend {
     fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
         self.synchronization.rendezvous();
         let blob = self.child.read(id, range)?;
-        let source = Arc::new(SynchronizedBlobSource {
+        let source = SynchronizedBlobSource {
             source: blob.clone(),
             synchronization: Arc::clone(&self.synchronization),
-        });
+        };
         Ok(blob.with_observed_source(source))
     }
 

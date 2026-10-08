@@ -680,7 +680,7 @@ fn gate_targets_follow_per_layer_testing_standards() -> Result<(), Box<dyn Error
 fn gate_target_sources_treat_flaky_as_failing() -> Result<(), Box<dyn Error>> {
     let root = workspace_root();
     let baseline = TestingStandardsBaseline::load(&root)?;
-    let mut failures = Vec::new();
+    let mut failures = checked_ram_read_failures(&root)?;
 
     for source in crucible_test_sources(&root)? {
         let content = fs::read_to_string(&source.path)?;

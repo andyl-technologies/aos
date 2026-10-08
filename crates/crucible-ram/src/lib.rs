@@ -5,8 +5,9 @@
 //!
 //! The crate implements the canonical format's fixed 4096-byte logical pages, unkeyed
 //! BLAKE3-256 domains, ordered region trees, and scoped topology commitments.
-//! It contains no QEMU dependencies, callbacks, native addresses, or storage
-//! authority. Both sides of the public process boundary may use its codecs.
+//! It contains no QEMU dependencies, callbacks, or storage authority. Its
+//! codecs contain no native addresses; both sides of the public process boundary
+//! may use them. In-process borrowed views never enter those codecs.
 //!
 //! Module map: [`Topology`] validates byte ownership and scope membership. [`RegionTree`]
 //! shares immutable subtrees and [`RamSnapshot`] freezes their logical identity.
@@ -55,6 +56,7 @@ mod digest;
 mod dirty;
 mod error;
 pub mod oracle;
+mod page_response;
 mod resource_loan;
 mod snapshot;
 mod topology;
@@ -71,6 +73,7 @@ pub use dirty::{
     TrackingLimits,
 };
 pub use error::RamError;
+pub use page_response::{BorrowedPageResponse, EncodedPageProof};
 pub use resource_loan::{ResourceLoan, ResourceLoanSlot};
 pub use snapshot::RamSnapshot;
 pub use topology::{Geometry, Limits, RegionClass, RegionDescriptor, Scope, Topology};

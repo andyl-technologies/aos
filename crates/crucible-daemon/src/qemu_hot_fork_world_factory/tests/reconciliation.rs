@@ -45,6 +45,7 @@ pub(super) fn repository_execution_fixture() -> (
             64 * 1024 * 1024,
         )),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     let scenario = guest_selectable_scenario();
     let scenario_artifact =

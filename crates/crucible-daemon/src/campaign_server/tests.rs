@@ -99,6 +99,7 @@ fn repository(label: &str) -> Arc<CampaignRepository> {
     Arc::new(CampaignRepository::new(
         Arc::new(MemoryBlobBackend::new(label, u64::MAX)),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ))
 }
 

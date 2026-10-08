@@ -4,6 +4,21 @@ use crate::content_envelope::{ContentChild, ContentEnvelope};
 
 use super::*;
 
+fn original_ram_failure(error: &RamStoreError) -> &RamStoreError {
+    match error {
+        RamStoreError::Boundary(cause) => original_ram_failure(
+            cause
+                .first_boundary()
+                .unwrap_or_else(|| cause.storage_failure()),
+        ),
+        RamStoreError::Store(storage) => match storage.original_failure() {
+            StoreError::RamValidation { source } => original_ram_failure(source.storage_failure()),
+            _ => error,
+        },
+        error => error,
+    }
+}
+
 #[test]
 fn publication_hashes_match_the_former_envelope_identity_path() {
     let directory = tempfile::tempdir().unwrap();
@@ -43,26 +58,51 @@ fn publication_hashes_match_the_former_envelope_identity_path() {
                     // identity computation, independently of its admitted Vec.
                     let former = envelope.content_id(kind);
                     let mut boundary = || Ok(());
-                    let mut work = Work::new(store.limits, &mut boundary);
+                    let mut work = Work::new(store.limits, &parent, &mut boundary).unwrap();
                     let result = store.put_envelope(&envelope, kind, &retention, &mut work);
                     if version == 1 && kind == ObjectKind::RamExtent && child_count != 0 {
-                        assert!(matches!(
-                            result,
-                            Err(RamStoreError::Envelope(
-                                crate::content_envelope::ContentEnvelopeError::LimitExceeded {
-                                    limit: "child-count"
-                                }
-                            ))
-                        ));
+                        let error = result.unwrap_err();
+                        assert!(
+                            matches!(
+                                original_ram_failure(&error),
+                                RamStoreError::Envelope(
+                                    crate::content_envelope::ContentEnvelopeError::LimitExceeded {
+                                        limit: "child-count"
+                                    }
+                                )
+                            ),
+                            "{error:?}"
+                        );
+                        let RamStoreError::Store(StoreError::DirectoryScope { source }) = &error
+                        else {
+                            panic!(
+                                "actual published directory outcome must remain owned: {error:?}"
+                            )
+                        };
+                        assert_eq!(source.outcome().published_objects, 1);
+                        assert_eq!(source.outcome().durable_objects, 1);
+                        assert!(!source.outcome().durability_uncertain);
+                        assert!(source.cleanup_failure().is_none());
                         assert!(retention.objects.lock().unwrap().contains(&former));
+                        drop(error);
                     } else if version == 1 {
                         assert_eq!(result.unwrap(), former);
                     } else {
+                        let error = result.unwrap_err();
                         assert!(matches!(
-                            result,
-                            Err(RamStoreError::Invalid("RAM storage schema"))
+                            original_ram_failure(&error),
+                            RamStoreError::Invalid("RAM storage schema")
                         ));
+                        let RamStoreError::Store(StoreError::DirectoryScope { source }) = &error
+                        else {
+                            panic!("published invalid schema keeps its actual outcome: {error:?}")
+                        };
+                        assert_eq!(source.outcome().published_objects, 1);
+                        assert_eq!(source.outcome().durable_objects, 1);
+                        assert!(!source.outcome().durability_uncertain);
+                        assert!(source.cleanup_failure().is_none());
                         assert!(retention.objects.lock().unwrap().contains(&former));
+                        drop(error);
                     }
                     drop(work);
                     drop(envelope);
@@ -95,6 +135,7 @@ fn changed_unchanged_and_reverted_pages_match_independent_full_capture() {
             Scope::Exact,
             &mut patterned,
             &retention,
+            &parent,
             &mut || Ok(()),
         )
         .unwrap();
@@ -114,6 +155,7 @@ fn changed_unchanged_and_reverted_pages_match_independent_full_capture() {
                     bytes: vec![value; length],
                 }],
                 &retention,
+                &parent,
                 &mut || Ok(()),
             )
             .unwrap();
@@ -126,6 +168,7 @@ fn changed_unchanged_and_reverted_pages_match_independent_full_capture() {
                     Ok(())
                 },
                 &retention,
+                &parent,
                 &mut || Ok(()),
             )
             .unwrap();
@@ -137,7 +180,7 @@ fn changed_unchanged_and_reverted_pages_match_independent_full_capture() {
     }
     assert_eq!(
         store
-            .read_page(&original, "main", 1, &mut || Ok(()))
+            .read_page(&original, "main", 1, &parent, &mut || Ok(()))
             .unwrap(),
         vec![1; 4096]
     );
@@ -164,6 +207,7 @@ fn corrupt_old_page_refuses_equal_and_changed_input_before_publication() {
             Scope::Exact,
             &mut patterned,
             &retention,
+            &parent,
             &mut || Ok(()),
         )
         .unwrap();
@@ -192,6 +236,7 @@ fn corrupt_old_page_refuses_equal_and_changed_input_before_publication() {
                 bytes: vec![value; 4096],
             }],
             &retention,
+            &parent,
             &mut || Ok(()),
         );
         assert!(
@@ -222,6 +267,7 @@ fn each_existing_update_boundary_refuses_without_losing_original_custody() {
             Scope::Exact,
             &mut patterned,
             &retention,
+            &parent,
             &mut || Ok(()),
         )
         .unwrap();
@@ -232,7 +278,7 @@ fn each_existing_update_boundary_refuses_without_losing_original_custody() {
     };
     let mut successful_polls = 0;
     let changed = store
-        .update(&root, [change()], &retention, &mut || {
+        .update(&root, [change()], &retention, &parent, &mut || {
             successful_polls += 1;
             Ok(())
         })
@@ -242,7 +288,7 @@ fn each_existing_update_boundary_refuses_without_losing_original_custody() {
 
     for refused_at in 1..=successful_polls {
         let mut polls = 0;
-        let result = store.update(&root, [change()], &retention, &mut || {
+        let result = store.update(&root, [change()], &retention, &parent, &mut || {
             polls += 1;
             if polls == refused_at {
                 Err(RamStoreError::Canceled)
@@ -250,12 +296,34 @@ fn each_existing_update_boundary_refuses_without_losing_original_custody() {
                 Ok(())
             }
         });
-        assert!(matches!(result, Err(RamStoreError::Canceled)));
+        let error = result.unwrap_err();
+        assert!(
+            matches!(original_ram_failure(&error), RamStoreError::Canceled),
+            "refused_at={refused_at} error={error:?}"
+        );
+        if let RamStoreError::Boundary(cause) = &error {
+            assert!(matches!(
+                cause.first_boundary(),
+                Some(RamStoreError::Canceled)
+            ));
+            let RamStoreError::Store(StoreError::DirectoryScope { source }) =
+                cause.storage_failure()
+            else {
+                panic!("actual directory refusal must remain owned: {error:?}")
+            };
+            assert!(source.cleanup_failure().is_none());
+            assert_eq!(source.outcome().published_objects, 0);
+            assert!(source.outcome().durable_objects <= 1);
+            assert!(!source.outcome().durability_uncertain);
+        }
         assert_eq!(polls, refused_at);
+        drop(error);
         assert_eq!(quota.used(), baseline);
         parent.check().unwrap();
         assert_eq!(
-            store.read_page(&root, "main", 1, &mut || Ok(())).unwrap(),
+            store
+                .read_page(&root, "main", 1, &parent, &mut || Ok(()))
+                .unwrap(),
             vec![1; 4096]
         );
     }

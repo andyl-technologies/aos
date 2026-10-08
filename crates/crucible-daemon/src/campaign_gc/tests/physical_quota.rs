@@ -89,7 +89,7 @@ fn physical_quota_drift_stops_global_gc_before_deletion() {
     binders
         .insert(
             policy.clone(),
-            Arc::new(ToggleQuotaBinder {
+            crucible_cas::content_store::StorePhysicalQuotaBinderHandle::new(ToggleQuotaBinder {
                 guard: guard.clone(),
             }),
         )
@@ -123,11 +123,16 @@ fn physical_quota_drift_stops_global_gc_before_deletion() {
         &StoreGraphObjectProfilers::new(),
         &binders,
         &StoreGraphS3Clients::new(),
+        None,
     )
     .expect("physical-quota graph");
     let graph = Arc::new(graph);
     let refs = Arc::new(DirectoryRefBackend::new(temp.path().join("refs")));
-    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+    let repository = CampaignRepository::new(
+        graph.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
 
     let orphan_bytes = b"physical quota orphan";
     let orphan = ContentId::for_bytes(ObjectKind::Trace, 1, orphan_bytes);

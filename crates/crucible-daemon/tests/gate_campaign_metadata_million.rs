@@ -260,6 +260,7 @@ fn run_corpus(
     let repository = Arc::new(CampaignRepository::with_component_authorities(
         repository_blobs,
         refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
         planner_authority.clone(),
         debugger_authority.clone(),
     )?);
@@ -509,6 +510,7 @@ fn run_corpus(
     let cold = CampaignRepository::with_component_authorities(
         cold_blobs,
         Arc::new(DirectoryRefBackend::new(root.join("refs"))),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
         PlannerAuthorityKey::from_bytes([0x91; 32])?,
         debugger_authority,
     )?;

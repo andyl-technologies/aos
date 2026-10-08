@@ -17,11 +17,11 @@ fn durable_write_back_survives_restart_and_exposes_exact_retention_roots() {
     let id = ContentId::for_bytes(ObjectKind::Finding, 1, bytes);
     let opens = Arc::new(AtomicUsize::new(0));
     let bytes_read = Arc::new(AtomicUsize::new(0));
-    let source = BlobHandle::new(Arc::new(CountingSource {
+    let source = BlobHandle::new(CountingSource {
         bytes: Arc::from(bytes.as_slice()),
         opens: Arc::clone(&opens),
         bytes_read: Arc::clone(&bytes_read),
-    }));
+    });
     let receipt = graph
         .put_if_absent(id, &source)
         .expect("stage write-back object");
@@ -188,6 +188,7 @@ fn write_back_bounds_and_durable_child_requirements_fail_closed() {
                     staging,
                     StoreNodeSpec::Memory {
                         max_logical_bytes: 1_024,
+                        max_objects: 16,
                     },
                 ),
                 (

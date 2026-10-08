@@ -27,3 +27,6 @@ optional = true
 name = "ram-hash-benchmark"
 path = "examples/ram_hash_benchmark.rs"
 required-features = ["test-support"]
+
+[dev-dependencies]
+crucible-linux-resource = { path = "../crucible-linux-resource", default-features = false, features = ["test-support"] }

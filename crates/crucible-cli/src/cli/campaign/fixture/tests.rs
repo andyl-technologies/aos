@@ -123,6 +123,7 @@ fn worked_network_fixture_validates_imports_and_creates_on_a_blank_repository() 
     let repository = Arc::new(CampaignRepository::new(
         Arc::new(MemoryBlobBackend::new("worked-network-fixture", u64::MAX)),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     let store = CrucibleCampaignArtifactStore::new(Arc::clone(&repository));
     store
@@ -561,6 +562,7 @@ fn worked_network_fixture_binds_envoy_boot_artifacts_and_scenario_identity() {
     let repository = Arc::new(CampaignRepository::new(
         Arc::new(MemoryBlobBackend::new("envoy-network-fixture", u64::MAX)),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     let store = CrucibleCampaignArtifactStore::new(Arc::clone(&repository));
     let schedule = Schedule::from_compact_binary(

@@ -64,6 +64,10 @@ fn decoded_ram_root_credit_survives_the_last_delayed_reader_clone() {
         .prepare_paged_ram_sources(1 << 30, &publication, &mut || Ok(()))
         .expect("admit source container and immutable identities");
     assert_eq!(sources.len(), 1);
+    let page_original = loaded
+        .ram_original()
+        .expect("same saved namespace parent")
+        .clone();
     let source = sources[0].clone();
     assert!(std::ptr::eq(source.node(), sources[0].node()));
     drop(sources);
@@ -74,21 +78,54 @@ fn decoded_ram_root_credit_survives_the_last_delayed_reader_clone() {
         resources.reserve_resources(0, full_allowance),
         Err(StoreError::Quota)
     ));
-    let (bytes, proof) = source
+    crucible_qemu::ram_source::QemuRamBacking::with_page_response(
+        &source,
+        "machine.ram",
+        0,
+        &mut || Ok(()),
+        &mut |read, _| {
+            read.proof()
+                .verify(
+                    read.bytes(),
+                    source.root().record(),
+                    source.root().logical_digest(),
+                )
+                .expect("scoped source proves its authenticated page");
+            assert!(matches!(
+                resources.reserve_resources(0, full_allowance),
+                Err(StoreError::Quota)
+            ));
+        },
+    )
+    .expect("source clone retains cold-read and metadata authority");
+
+    // The direct storage API independently retains a completion after
+    // the scoped host response and its last source owner close.
+    let page_account = page_original.child().expect("same saved operation bank");
+    let read = source
         .store()
-        .read_page_with_proof(source.root(), "machine.ram", 0, &mut || Ok(()))
-        .expect("source clone retains cold-read and metadata authority");
-    proof
+        .read_page_with_proof(source.root(), "machine.ram", 0, &page_account, &mut || {
+            Ok(())
+        })
+        .expect("same original retains an independent storage completion");
+    drop(page_account);
+    drop(page_original);
+    read.proof()
         .verify(
-            &bytes,
+            read.bytes(),
             source.root().record(),
             source.root().logical_digest(),
         )
         .expect("returned source proves the same authenticated page");
     drop(source);
+    assert!(matches!(
+        resources.reserve_resources(0, full_allowance),
+        Err(StoreError::Quota)
+    ));
+    drop(read);
     let released_sources = resources
         .reserve_resources(0, full_allowance)
-        .expect("last source releases inventory, identity and root decode loans");
+        .expect("last page consumer releases its retained original decode loans");
     drop(released_sources);
 
     let loaded = store
@@ -98,7 +135,7 @@ fn decoded_ram_root_credit_survives_the_last_delayed_reader_clone() {
     let lease = publication
         .retain_root(loaded.paged_ram_root_ids()[0])
         .expect("claim actual durable RAM root");
-    let (ram_store, root) = loaded
+    let (ram_store, root, original) = loaded
         .open_paged_ram(0, lease, &mut || Ok(()))
         .expect("open actual credited delayed reader");
     drop(publication);
@@ -112,15 +149,23 @@ fn decoded_ram_root_credit_survives_the_last_delayed_reader_clone() {
         resources.reserve_resources(0, full_allowance),
         Err(StoreError::Quota)
     ));
-    let (bytes, proof) = ram_store
-        .read_page_with_proof(&delayed, "machine.ram", 0, &mut || Ok(()))
+    let account = original.child().expect("same retained operation bank");
+    let read = ram_store
+        .read_page_with_proof(&delayed, "machine.ram", 0, &account, &mut || Ok(()))
         .expect("authenticate real cold page after every facade closes");
-    assert_eq!(bytes.len(), 4096);
-    proof
-        .verify(&bytes, delayed.record(), delayed.logical_digest())
+    assert_eq!(read.bytes().len(), 4096);
+    read.proof()
+        .verify(read.bytes(), delayed.record(), delayed.logical_digest())
         .expect("page proof retains the exact logical RAM authority");
 
     drop(delayed);
+    assert!(matches!(
+        resources.reserve_resources(0, full_allowance),
+        Err(StoreError::Quota)
+    ));
+    drop(read);
+    drop(account);
+    drop(original);
     let reusable = resources
         .reserve_resources(0, full_allowance)
         .expect("last delayed borrower releases its original decode credit");

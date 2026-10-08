@@ -201,7 +201,11 @@ fn budget_successor_conflict_keeps_parent_checkpoint() {
     let retried = repository
         .apply_control("budget-witness-cas", &request)
         .expect("retry grant");
-    let cold = CampaignRepository::new(reads, refs);
+    let cold = CampaignRepository::new(
+        reads,
+        refs,
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
     assert_eq!(
         cold.head("budget-witness-cas")
             .expect("cold authenticated child")
@@ -373,7 +377,11 @@ fn ten_thousand_instrumented_mutations_cover_the_cperf9_contract() {
     // instance must perform the same complete restart/import validation, then
     // retain one bounded checkpoint for subsequent reads.
     reads.reset();
-    let cold = CampaignRepository::new(reads.clone(), refs.clone());
+    let cold = CampaignRepository::new(
+        reads.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
     assert_eq!(
         cold.head(CAMPAIGN)
             .expect("cold complete validation")
@@ -393,7 +401,11 @@ fn ten_thousand_instrumented_mutations_cover_the_cperf9_contract() {
     );
 
     reads.reset();
-    let discarded = CampaignRepository::new(reads.clone(), refs.clone());
+    let discarded = CampaignRepository::new(
+        reads.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
     discarded
         .head(CAMPAIGN)
         .expect("complete validation after checkpoint discard");
@@ -403,7 +415,11 @@ fn ten_thousand_instrumented_mutations_cover_the_cperf9_contract() {
     // nested closure. Losing a deep generator leaf fails closed even though the
     // current ref and every snapshot remain present.
     reads.hide(nested_leaf);
-    let missing_history = CampaignRepository::new(reads.clone(), refs.clone());
+    let missing_history = CampaignRepository::new(
+        reads.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
     assert!(matches!(
         missing_history.head(CAMPAIGN),
         Err(CampaignRepositoryError::Store(StoreError::NotFound { id })) if id == nested_leaf
@@ -461,7 +477,11 @@ fn fixture() -> (
         last_put: Mutex::new(None),
     });
     let refs = Arc::new(ConflictOnceRefBackend::new());
-    let repository = CampaignRepository::new(reads.clone(), refs.clone());
+    let repository = CampaignRepository::new(
+        reads.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
     let scenario_content = repository
         .publish_scenario_artifact(scenario, 1, b"scenario".to_vec())
         .expect("scenario artifact");

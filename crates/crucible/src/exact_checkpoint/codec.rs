@@ -3,7 +3,6 @@
 use super::*;
 
 const FINAL_RAM_TARGET_DOMAIN: &str = "crucible.production-vm-exact-ram-target.v1";
-const FINAL_RAM_FRONTIER_DOMAIN: &str = "crucible.production-vm-exact-ram-frontier.v1";
 
 pub(super) fn final_ram_identity(
     configuration: ContentHash,
@@ -25,15 +24,9 @@ pub(super) fn final_ram_identity(
         ),
     );
 
-    let scheduler_bytes = scheduler
-        .canonical_bytes()
+    let final_frontier = scheduler
+        .exact_ram_frontier_identity()
         .map_err(|_| ExactCheckpointRelationError::TargetManifestMismatch)?;
-    let scheduler_hex = scheduler_bytes
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    let final_frontier =
-        ContentHash::from_canonical_material(FINAL_RAM_FRONTIER_DOMAIN, &scheduler_hex);
 
     Ok(ExactCheckpointIdentity {
         checkpoint,

@@ -50,8 +50,9 @@ mod host_policy;
 mod network_output;
 #[cfg(target_os = "linux")]
 pub use exact_snapshot::{
-    QemuCapturedRamPage, QemuExactCheckpointCaptureAdmission, QemuExactCheckpointCaptureBoundary,
-    QemuExactCheckpointCaptureOutputs, QemuExactCheckpointCaptureResult,
+    CaptureReadError, QemuCapturedRamPage, QemuExactCheckpointCaptureAdmission,
+    QemuExactCheckpointCaptureBoundary, QemuExactCheckpointCaptureOutputs,
+    QemuExactCheckpointCaptureResult,
 };
 mod fault_events;
 #[cfg(target_os = "linux")]

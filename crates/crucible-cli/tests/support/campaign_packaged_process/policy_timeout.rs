@@ -29,6 +29,11 @@ pub(super) fn validate(fixture: &FlightFixture, explanation: &Value) -> Result<(
         return Err(format!("packaged timeout returned a different stop: {label}").into());
     }
 
+    let input = fixture
+        ._native_input
+        .as_ref()
+        .ok_or("policy timeout inspection requires the original source policy")?;
+    input.decoding.verify_live()?;
     let repository = crucible_campaign::CampaignRepository::new(
         Arc::new(DirectoryBlobBackend::new(
             "packaged-policy-timeout-proof",
@@ -37,6 +42,7 @@ pub(super) fn validate(fixture: &FlightFixture, explanation: &Value) -> Result<(
         Arc::new(crucible_cas::content_store::DirectoryRefBackend::new(
             fixture._temporary.path().join("refs"),
         )),
+        crucible_campaign::CampaignRamAdmission::Available(input.decoding.clone()),
     );
     let observation = repository.load_observation(ObservationId::parse(&observation_id)?)?;
     let StopOutcome::PolicyTimeout { stop, kind, proof } = observation.stop() else {

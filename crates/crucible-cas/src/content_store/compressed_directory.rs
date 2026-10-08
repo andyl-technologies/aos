@@ -94,12 +94,12 @@ impl CompressedDirectoryBlobBackend {
             length: header.logical_length,
         });
         validate_range(header.logical_length, range)?;
-        let source: Arc<dyn BlobSource> = Arc::new(CompressedDirectoryBlobSource {
+        let source = CompressedDirectoryBlobSource {
             file,
             id,
             header,
             range,
-        });
+        };
         if range.offset == 0 && range.length == header.logical_length {
             Ok(BlobHandle::authenticated(id, source))
         } else {

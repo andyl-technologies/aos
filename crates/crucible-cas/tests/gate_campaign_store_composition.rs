@@ -409,6 +409,7 @@ fn graph_config(root: &std::path::Path, order: [TransparentLayer; 3]) -> StoreGr
             memory.clone(),
             StoreNodeSpec::Memory {
                 max_logical_bytes: 4 * 1024 * 1024,
+                max_objects: 128,
             },
         ),
         (

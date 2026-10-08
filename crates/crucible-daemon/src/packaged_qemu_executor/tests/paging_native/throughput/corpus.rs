@@ -43,10 +43,13 @@ pub(super) fn repository(
     source: &ScenarioDefForm,
     storage: environment::NativeCampaignStorage,
 ) -> Arc<CampaignRepository> {
+    let admission =
+        crucible_campaign::CampaignRamAdmission::Available(storage._custody.original.clone());
     let repository = Arc::new(
         CampaignRepository::with_component_authorities(
             storage.backend,
             storage.refs,
+            admission,
             PlannerAuthorityKey::from_bytes([0x31; 32]).expect("actual planner key"),
             DebuggerAuthorityKey::from_bytes([0x47; 32]).expect("separate debugger key"),
         )

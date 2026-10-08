@@ -67,11 +67,12 @@ impl RamStore {
     pub fn open_with_metadata_resources(
         &self,
         lease: Arc<dyn RamRootLease>,
+        original: &crate::owned_decode::DecodeBudget,
         boundary: &mut dyn FnMut() -> Result<(), RamStoreError>,
     ) -> Result<LeasedRamRoot, RamStoreError> {
         boundary()?;
         let resources = self.reserve_root_metadata(1)?;
-        self.open(retain_resources(lease, resources), boundary)
+        self.open(retain_resources(lease, resources), original, boundary)
     }
 
     /// Inspects root metadata while retaining original predecode admission.
@@ -85,11 +86,12 @@ impl RamStore {
     pub fn inspect_root_with_metadata_resources(
         &self,
         id: ContentId,
+        original: &crate::owned_decode::DecodeBudget,
         boundary: &mut dyn FnMut() -> Result<(), RamStoreError>,
     ) -> Result<AdmittedRamRootMetadata, RamStoreError> {
         boundary()?;
         let resources = self.reserve_root_metadata(1)?;
-        let record = self.inspect_root(id, boundary)?;
+        let record = self.inspect_root(id, original, boundary)?;
         Ok(AdmittedRamRootMetadata {
             record,
             _resources: resources,

@@ -397,13 +397,13 @@ impl ImmutableBlobBackend for S3BlobBackend {
         }
         BlobHandle::integrity_checked(
             id,
-            Arc::new(S3BlobSource {
+            S3BlobSource {
                 client: self.client.clone(),
                 bucket: self.bucket.clone(),
                 key: self.key(id),
                 id,
                 logical_length,
-            }),
+            },
         )
         .slice(range)
     }

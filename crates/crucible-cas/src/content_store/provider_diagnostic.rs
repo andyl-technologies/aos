@@ -36,6 +36,16 @@ pub trait ProviderDiagnosticStorage: Send + Sync {
 
     /// Releases occupancy after every covered diagnostic source has closed.
     fn release(&self);
+
+    /// Consumes one storage alias and releases its occupied diagnostic slot.
+    ///
+    /// The default preserves ordinary retained-storage behavior. It does not
+    /// establish terminal control funding. An exclusively owned funded storage
+    /// overrides this method to close its control before releasing occupancy
+    /// and the original credit; no independent alias or weak owner may escape.
+    fn close(self: Arc<Self>) {
+        self.release();
+    }
 }
 
 /// Exclusive custody for one already-funded provider diagnostic.
@@ -44,7 +54,7 @@ pub trait ProviderDiagnosticStorage: Send + Sync {
 /// provider checks still run after checkout under their unchanged supervision.
 #[must_use = "the permit must outlive every diagnostic allocation it covers"]
 pub struct ProviderDiagnosticPermit {
-    storage: Arc<dyn ProviderDiagnosticStorage>,
+    storage: Option<Arc<dyn ProviderDiagnosticStorage>>,
 }
 
 impl ProviderDiagnosticPermit {
@@ -57,7 +67,9 @@ impl ProviderDiagnosticPermit {
     /// Refuses occupied storage inline, without allocating a source or receipt.
     pub fn checkout(storage: Arc<dyn ProviderDiagnosticStorage>) -> Result<Self, StoreError> {
         storage.try_occupy()?;
-        Ok(Self { storage })
+        Ok(Self {
+            storage: Some(storage),
+        })
     }
 
     /// Moves an originally funded boxed source into retained error custody.
@@ -89,8 +101,9 @@ impl Drop for ProviderDiagnosticPermit {
     fn drop(&mut self) {
         // This permit lives INLINE after the source box in the carrier below.
         // The source box is deallocated before another checkout can succeed.
-        // The issuing Arc stays live through release, then closes normally.
-        self.storage.release();
+        if let Some(storage) = self.storage.take() {
+            storage.close();
+        }
     }
 }
 

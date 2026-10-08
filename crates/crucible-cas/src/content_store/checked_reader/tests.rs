@@ -95,11 +95,11 @@ fn custom_reader_identity_claim_never_suppresses_actual_eof_hashing() {
     let (quota, account) = account();
     let wrong = ContentId::for_bytes(ObjectKind::Trace, 1, b"different bytes");
     let queries = Arc::new(AtomicUsize::new(0));
-    let source = Arc::new(ClaimedIdentitySource {
+    let source = ClaimedIdentitySource {
         bytes: Arc::from(b"actual returned bytes".as_slice()),
         claimed: wrong,
         queries: queries.clone(),
-    });
+    };
     let custom = source
         .open_with_boundary(&account, &mut || Ok(()))
         .expect("custom checked reader");
@@ -183,10 +183,11 @@ fn generic_verified_bytes_proper_slice_checks_full_identity_at_eof() {
     assert_eq!(quota.0.usage().expect("remaining original loans"), (0, 0));
 }
 
+#[derive(Clone)]
 pub(super) struct GenericSource {
-    pub(super) bytes: Mutex<Arc<[u8]>>,
+    pub(super) bytes: Arc<Mutex<Arc<[u8]>>>,
     length: u64,
-    opens: AtomicUsize,
+    opens: Arc<AtomicUsize>,
 }
 
 impl BlobSource for GenericSource {
@@ -217,7 +218,7 @@ impl BlobSource for GenericSource {
 
 struct GenericCheckedChild {
     id: ContentId,
-    source: Arc<GenericSource>,
+    source: GenericSource,
 }
 
 impl ImmutableBlobBackend for GenericCheckedChild {
@@ -267,13 +268,13 @@ impl ImmutableBlobBackend for GenericCheckedChild {
     }
 }
 
-pub(super) fn generic(bytes: &[u8]) -> (ContentId, Arc<GenericSource>, VerifiedStore) {
+pub(super) fn generic(bytes: &[u8]) -> (ContentId, GenericSource, VerifiedStore) {
     let id = ContentId::for_bytes(ObjectKind::Trace, 1, bytes);
-    let source = Arc::new(GenericSource {
-        bytes: Mutex::new(Arc::from(bytes)),
+    let source = GenericSource {
+        bytes: Arc::new(Mutex::new(Arc::from(bytes))),
         length: bytes.len() as u64,
-        opens: AtomicUsize::new(0),
-    });
+        opens: Arc::new(AtomicUsize::new(0)),
+    };
     let child = Arc::new(GenericCheckedChild {
         id,
         source: source.clone(),

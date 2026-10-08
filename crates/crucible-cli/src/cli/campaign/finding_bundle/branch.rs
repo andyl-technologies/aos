@@ -57,10 +57,15 @@ pub(crate) fn run_finding_bundle_branch(
             "branch timeout must be between 1 and 3600 seconds",
         ));
     }
-    let supervision = super::super::transfer_supervision::StandaloneArchiveOperation::start(
+    let supervision = ArchiveBundleAdmission::open(
+        args.archive_policy.as_deref(),
         crucible_api::host_operational::HostOperationClass::Transfer,
-        args.host_transfer_timeout_ms
-            .min(args.timeout_seconds * 1000),
+        Some(
+            args.host_transfer_timeout_ms
+                .min(args.timeout_seconds * 1000),
+        ),
+        Some(&args.input),
+        Some(&args.output),
     )?;
     let mut boundary = || supervision.boundary();
     let FindingSourceAuthentication {
@@ -71,9 +76,15 @@ pub(crate) fn run_finding_bundle_branch(
         workspace,
         decoding,
         ..
-    } = FindingSourceAuthentication::open(cli, &args.input)?;
+    } = FindingSourceAuthentication::open(cli, supervision.input_path(&args.input))?;
     let _decoding_scope = decoding.enter();
-    let bundle = load_authenticated_bundle_in_workspace(&args.input, &workspace, &mut boundary)?;
+    let _archive_scope = supervision.input_scope()?;
+    let bundle = load_authenticated_bundle_in_workspace(
+        supervision.input_path(&args.input),
+        &workspace,
+        &supervision,
+        &mut boundary,
+    )?;
     let finding =
         bundle.evidence.finding.id().map_err(|error| {
             backend_error(format!("verified finding identity is invalid: {error}"))
@@ -106,9 +117,11 @@ pub(crate) fn run_finding_bundle_branch(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(CliError::Io(error)),
     }
+    supervision.publication_boundary()?;
     let private = tempfile::Builder::new()
         .prefix(".crucible-finding-branch-")
         .tempdir_in(&output_parent)?;
+    supervision.prepare_output_directory(private.path())?;
     fs::set_permissions(private.path(), fs::Permissions::from_mode(0o700))?;
     let capture = crucible_daemon::load_archived_finding_production_capture(
         &bundle.archive,
@@ -372,7 +385,7 @@ pub(crate) fn run_finding_bundle_branch(
             &campaign,
             attempt_id,
             crucible_daemon::ExecutionCancellation::default(),
-            supervision.original_operation().supervisor(),
+            supervision.original_operation()?.supervisor(),
             &mut execution_boundary,
         )
         .map_err(branch_error)?;
@@ -439,9 +452,9 @@ pub(crate) fn run_finding_bundle_branch(
     };
     let json = serde_json::to_string_pretty(&report)
         .map_err(|error| backend_error(format!("branch report encoding failed: {error}")))?;
-    boundary().map_err(branch_error)?;
+    supervision.publication_boundary()?;
     write_private_file(&private.path().join("branch-report.json"), json.as_bytes())?;
-    boundary().map_err(branch_error)?;
+    supervision.publication_boundary()?;
     rustix::fs::renameat_with(
         rustix::fs::CWD,
         private.path(),

@@ -954,6 +954,7 @@ fn input_fixture() -> (
             u64::MAX,
         )),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     repository
         .publish_scenario_artifact(

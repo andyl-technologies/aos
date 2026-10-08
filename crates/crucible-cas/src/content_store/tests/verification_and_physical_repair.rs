@@ -43,6 +43,7 @@ fn verification_evidence_bounds_source_passes_through_a_mirror_graph() {
                 memory,
                 StoreNodeSpec::Memory {
                     max_logical_bytes: 1024 * 1024,
+                    max_objects: 16,
                 },
             ),
         ]),
@@ -51,11 +52,11 @@ fn verification_evidence_bounds_source_passes_through_a_mirror_graph() {
     let bytes = vec![0x5a; 128 * 1024];
     let opens = Arc::new(AtomicUsize::new(0));
     let bytes_read = Arc::new(AtomicUsize::new(0));
-    let source = BlobHandle::new(Arc::new(CountingSource {
+    let source = BlobHandle::new(CountingSource {
         bytes: Arc::from(bytes.clone()),
         opens: opens.clone(),
         bytes_read: bytes_read.clone(),
-    }));
+    });
     let id = ContentId::for_bytes(ObjectKind::CampaignFact, 1, &bytes);
     let receipt = graph
         .put_if_absent(id, &source)

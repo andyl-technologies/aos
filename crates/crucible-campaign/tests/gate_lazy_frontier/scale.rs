@@ -55,6 +55,7 @@ fn spent_requests_leave_active_scan_without_losing_cold_history() -> Result<(), 
     let cold = CampaignRepository::with_component_authorities(
         fixture.blobs.clone(),
         fixture.refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
         fixture.planner_authority.clone(),
         fixture.debugger_authority.clone(),
     )?;
@@ -159,6 +160,7 @@ fn proposal_head_tracks_pending_and_out_of_order_admission() -> Result<(), Box<d
     let reopened = CampaignRepository::with_component_authorities(
         fixture.blobs.clone(),
         fixture.refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
         fixture.planner_authority.clone(),
         fixture.debugger_authority.clone(),
     )?;
@@ -202,6 +204,7 @@ fn proposal_head_tracks_pending_and_out_of_order_admission() -> Result<(), Box<d
     let cold = CampaignRepository::with_component_authorities(
         fixture.blobs.clone(),
         fixture.refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
         fixture.planner_authority.clone(),
         fixture.debugger_authority.clone(),
     )?;
@@ -227,6 +230,7 @@ fn proposal_head_tracks_pending_and_out_of_order_admission() -> Result<(), Box<d
     let damaged = CampaignRepository::with_component_authorities(
         fixture.blobs.clone(),
         fixture.refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
         fixture.planner_authority.clone(),
         fixture.debugger_authority.clone(),
     )?;
@@ -306,6 +310,7 @@ fn admitted_attempt_planner_queue_profile() -> Result<(), Box<dyn Error>> {
                 let reopened = CampaignRepository::with_component_authorities(
                     fixture.blobs.clone(),
                     fixture.refs.clone(),
+                    crucible_campaign::CampaignRamAdmission::Unavailable,
                     fixture.planner_authority.clone(),
                     fixture.debugger_authority.clone(),
                 )?;
@@ -359,6 +364,7 @@ fn admitted_attempt_planner_queue_profile() -> Result<(), Box<dyn Error>> {
     let reopened = CampaignRepository::with_component_authorities(
         fixture.blobs.clone(),
         fixture.refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
         fixture.planner_authority.clone(),
         fixture.debugger_authority.clone(),
     )?;
@@ -730,6 +736,7 @@ fn progressive_source_waits_widens_exhausts_and_recovers_after_restart()
     let waiting_restart = CampaignRepository::with_component_authorities(
         fixture.blobs.clone(),
         fixture.refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
         fixture.planner_authority.clone(),
         fixture.debugger_authority.clone(),
     )?;
@@ -778,6 +785,7 @@ fn progressive_source_waits_widens_exhausts_and_recovers_after_restart()
                 CampaignRepository::with_component_authorities(
                     fixture.blobs.clone(),
                     fixture.refs.clone(),
+                    crucible_campaign::CampaignRamAdmission::Unavailable,
                     fixture.planner_authority.clone(),
                     fixture.debugger_authority.clone(),
                 )
@@ -841,6 +849,7 @@ fn progressive_source_waits_widens_exhausts_and_recovers_after_restart()
     let restarted = CampaignRepository::with_component_authorities(
         fixture.blobs.clone(),
         fixture.refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
         fixture.planner_authority.clone(),
         fixture.debugger_authority.clone(),
     )?;

@@ -12,8 +12,21 @@ use super::admin::{
 };
 use super::*;
 
+mod checked;
+mod checked_publication;
+mod namespace;
+
+pub(in crate::content_store) use checked_publication::Accepted;
+pub use checked_publication::{MemoryPublicationOutcome, MemoryScopeError};
+
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod checked_tests;
+
+#[cfg(test)]
+mod namespace_tests;
 
 static MEMORY_INVENTORY_INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(0);
 static MEMORY_REF_INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -24,56 +37,116 @@ static MEMORY_REF_INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// copy until the final map, source, or reader owner closes. A map deletion does
 /// not discharge a borrowed immutable body. Unscoped component/offline use
 /// remains bounded by the logical ceiling and grants no native admission.
+///
+/// Checked publication retains the copied payload's actual payer separately
+/// from caller-funded body metadata. Admitted namespaces retain one fixed map
+/// escrow under their genuine original owner through every node close.
+/// Later checked reads use their current caller for execution and new outputs;
+/// retained copy credits do not grant permission to execute a completed
+/// publication operation.
 #[derive(Debug)]
 pub struct MemoryBlobBackend {
     name: String,
     max_logical_bytes: u64,
+    max_objects: Option<std::num::NonZeroU64>,
     inventory_instance: [u8; 32],
     state: Mutex<MemoryBlobState>,
+    // The Mutex and complete map close before this original node credit.
+    namespace: Option<namespace::Namespace>,
 }
 
 #[derive(Debug)]
 struct MemoryBlobState {
-    objects: BTreeMap<ContentId, Arc<MemoryObject>>,
+    objects: BTreeMap<ContentId, MemoryBody>,
     logical_bytes: u64,
     generation: u64,
 }
 
-#[derive(Debug)]
 struct MemoryObject {
-    bytes: Vec<u8>,
+    bytes: MemoryBytes,
     custody: crate::owned_decode::DecodeCustody,
+    _credit: Option<crate::owned_decode::DecodeScratch>,
+}
+
+impl std::fmt::Debug for MemoryObject {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MemoryObject")
+            .field("bytes", &self.bytes)
+            .field("custody", &self.custody)
+            .finish_non_exhaustive()
+    }
 }
 
 impl std::ops::Deref for MemoryObject {
     type Target = [u8];
 
     fn deref(&self) -> &[u8] {
-        &self.bytes
+        match &self.bytes {
+            MemoryBytes::Legacy(bytes) => bytes,
+            MemoryBytes::Checked(bytes) => bytes,
+        }
     }
+}
+
+// Every body alias closes through this private owner. The slot becomes empty
+// only during Drop, when no safe borrower can observe it. No Weak/raw Arc escapes.
+#[derive(Clone, Debug)]
+struct MemoryBody(Option<Arc<MemoryObject>>);
+
+impl MemoryBody {
+    fn new(object: MemoryObject) -> Self {
+        Self(Some(Arc::new(object)))
+    }
+
+    fn object(&self) -> Result<&MemoryObject, StoreError> {
+        self.0.as_deref().ok_or(StoreError::Unavailable)
+    }
+
+    fn bytes(&self) -> Result<&[u8], StoreError> {
+        Ok(self.object()?)
+    }
+
+    fn enter_custody(&self) -> Result<Option<crate::owned_decode::DecodeScope>, StoreError> {
+        Ok(self.object()?.custody.enter())
+    }
+}
+
+impl Drop for MemoryBody {
+    fn drop(&mut self) {
+        if let Some(object) = self.0.take() {
+            // The final body and its payload/control credits close only after
+            // the original shared allocation has been deallocated.
+            drop(Arc::into_inner(object));
+        }
+    }
+}
+
+#[derive(Debug)]
+enum MemoryBytes {
+    Legacy(Vec<u8>),
+    Checked(OwnedBlobBytes),
 }
 
 struct MemoryObjectSource {
-    object: Arc<MemoryObject>,
+    object: MemoryBody,
+    length: u64,
     _credit: Option<crate::owned_decode::DecodeScratch>,
 }
 
-struct SharedMemoryObject(Arc<MemoryObject>);
-
-impl AsRef<[u8]> for SharedMemoryObject {
-    fn as_ref(&self) -> &[u8] {
-        &self.0.bytes
-    }
-}
-
 struct MemoryObjectReader {
-    reader: std::io::Cursor<SharedMemoryObject>,
+    object: MemoryBody,
+    offset: usize,
     _credit: Option<crate::owned_decode::DecodeScratch>,
 }
 
 impl std::io::Read for MemoryObjectReader {
-    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
-        self.reader.read(bytes)
+    fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+        let bytes = self.object.bytes().map_err(std::io::Error::other)?;
+        let count = output.len().min(bytes.len() - self.offset);
+        output[..count].copy_from_slice(&bytes[self.offset..self.offset + count]);
+        self.offset += count;
+        Ok(count)
     }
 }
 
@@ -85,11 +158,11 @@ fn memory_admission(source: crate::owned_decode::DecodeAdmissionError) -> StoreE
 
 impl BlobSource for MemoryObjectSource {
     fn logical_length(&self) -> u64 {
-        self.object.bytes.len() as u64
+        self.length
     }
 
     fn open(&self) -> Result<Box<dyn std::io::Read + Send>, StoreError> {
-        let _scope = self.object.custody.enter();
+        let _scope = self.object.enter_custody()?;
         let account = crate::owned_decode::current_child_budget().map_err(memory_admission)?;
         let credit = account
             .as_ref()
@@ -99,66 +172,170 @@ impl BlobSource for MemoryObjectSource {
             .transpose()
             .map_err(memory_admission)?;
         Ok(Box::new(MemoryObjectReader {
-            reader: std::io::Cursor::new(SharedMemoryObject(Arc::clone(&self.object))),
+            object: self.object.clone(),
+            offset: 0,
             _credit: credit,
         }))
     }
 }
 
-fn memory_object(bytes: Vec<u8>) -> Result<Arc<MemoryObject>, StoreError> {
-    // Move the admitted input vector into one immutable body. A whole B-tree
-    // node per insertion conservatively covers the retained map slot, and the
-    // Arc header/body is admitted before construction. Readers share that body.
+fn memory_object(bytes: Vec<u8>) -> Result<MemoryBody, StoreError> {
+    // Move the admitted vector into its immutable body. The current caller
+    // owns this Arc; an admitted namespace owns every map node separately.
     crate::owned_decode::charge_bytes(
-        (std::mem::size_of::<MemoryObject>()
-            + 2 * std::mem::size_of::<usize>()
-            + 11 * std::mem::size_of::<(ContentId, Arc<MemoryObject>)>()
-            + 16 * std::mem::size_of::<usize>()) as u64,
+        (std::mem::size_of::<MemoryObject>() + 2 * std::mem::size_of::<usize>()) as u64,
     )
     .map_err(memory_admission)?;
-    Ok(Arc::new(MemoryObject {
-        bytes,
+    Ok(MemoryBody::new(MemoryObject {
+        bytes: MemoryBytes::Legacy(bytes),
         custody: crate::owned_decode::current_custody().unwrap_or_default(),
+        _credit: None,
     }))
 }
 
-fn memory_handle(id: ContentId, object: Arc<MemoryObject>) -> Result<BlobHandle, StoreError> {
-    let _scope = object.custody.enter();
+fn memory_handle(id: ContentId, object: MemoryBody) -> Result<BlobHandle, StoreError> {
+    let length = object.bytes()?.len() as u64;
+    let _scope = object.enter_custody()?;
     let account = crate::owned_decode::current_child_budget().map_err(memory_admission)?;
     let credit = account
         .as_ref()
         .map(|budget| {
-            budget.reserve_scratch_bytes(
-                (std::mem::size_of::<MemoryObjectSource>() + 2 * std::mem::size_of::<usize>())
-                    as u64,
-            )
+            budget
+                .reserve_scratch_bytes(BlobHandle::source_allocation_bytes::<MemoryObjectSource>())
         })
         .transpose()
         .map_err(memory_admission)?;
     Ok(BlobHandle::authenticated(
         id,
-        Arc::new(MemoryObjectSource {
+        MemoryObjectSource {
             object,
+            length,
             _credit: credit,
-        }),
+        },
     ))
 }
 
+fn check_object_capacity(
+    maximum: Option<std::num::NonZeroU64>,
+    current_objects: usize,
+) -> Result<(), StoreError> {
+    if let Some(maximum) = maximum {
+        let current = u64::try_from(current_objects).map_err(|_| StoreError::Quota)?;
+        if current >= maximum.get() {
+            return Err(StoreError::Quota);
+        }
+    }
+    Ok(())
+}
+
 impl MemoryBlobBackend {
-    /// Creates an empty non-durable memory backend with a hard logical-byte cap.
+    /// Creates an ordinary non-durable backend with a hard logical-byte cap.
+    ///
+    /// This constructor supplies no original namespace escrow. Checked RAM
+    /// access requires [`Self::new_admitted`] and refuses this ordinary backend.
     #[must_use]
     pub fn new(name: impl Into<String>, max_logical_bytes: u64) -> Self {
+        Self::empty(name, max_logical_bytes, None, None)
+    }
+
+    fn empty(
+        name: impl Into<String>,
+        max_logical_bytes: u64,
+        max_objects: Option<std::num::NonZeroU64>,
+        namespace: Option<namespace::Namespace>,
+    ) -> Self {
         let name = name.into();
         Self {
             inventory_instance: new_memory_inventory_instance(&name),
             name,
             max_logical_bytes,
+            max_objects,
             state: Mutex::new(MemoryBlobState {
                 objects: BTreeMap::new(),
                 logical_bytes: 0,
                 generation: 1,
             }),
+            namespace,
         }
+    }
+
+    // Ordinary graph models obey their authored object ceiling but acquire no
+    // namespace grant. Their checked RAM methods remain unsupported.
+    pub(super) fn new_bounded(
+        name: impl Into<String>,
+        max_logical_bytes: u64,
+        max_objects: u64,
+    ) -> Result<Self, StoreError> {
+        namespace::allocation_bytes(max_objects)?;
+        let maximum = std::num::NonZeroU64::new(max_objects).ok_or(StoreError::Quota)?;
+        Ok(Self::empty(name, max_logical_bytes, Some(maximum), None))
+    }
+
+    /// Admits one empty namespace with finite object and logical-byte ceilings.
+    ///
+    /// The exact supplied original authority reserves the complete pinned map
+    /// node/split envelope before any node allocation. It supplies no new bank,
+    /// decoder account, or deadline. Zero-byte unique objects consume slots;
+    /// duplicate objects do not. Namespace escrow survives deletion and churn.
+    /// Body and output credits continue to belong to their genuine callers.
+    ///
+    /// This admission covers map nodes. The caller remains responsible for
+    /// incoming name, backend, graph and original-authority controls.
+    ///
+    /// # Errors
+    ///
+    /// Refuses zero object capacity, arithmetic overflow, or unavailable,
+    /// canceled or exhausted original namespace authority before node effects.
+    pub fn new_admitted(
+        name: impl Into<String>,
+        max_logical_bytes: u64,
+        max_objects: u64,
+        original: StorePhysicalQuotaBinderHandle,
+    ) -> Result<Self, StoreError> {
+        let namespace = namespace::Namespace::admit(max_objects, original)?;
+        let maximum = std::num::NonZeroU64::new(max_objects).ok_or(StoreError::Quota)?;
+        Ok(Self::empty(
+            name,
+            max_logical_bytes,
+            Some(maximum),
+            Some(namespace),
+        ))
+    }
+
+    /// Returns the fixed pinned map node/split envelope for a finite ceiling.
+    ///
+    /// Provider admission adds its actual grant controls separately. This is a
+    /// conservative simultaneous peak, not a shared decoder maximum or a loan
+    /// per insertion. The namespace retains it while empty for later reuse.
+    ///
+    /// # Errors
+    ///
+    /// Refuses zero capacity, unsupported layout, or arithmetic overflow.
+    pub fn map_namespace_bytes(max_objects: u64) -> Result<u64, StoreError> {
+        namespace::allocation_bytes(max_objects)
+    }
+
+    /// Returns the authored object ceiling for a bounded graph namespace.
+    #[must_use]
+    pub fn max_objects(&self) -> Option<u64> {
+        self.max_objects.map(std::num::NonZeroU64::get)
+    }
+
+    fn require_namespace(&self) -> Result<(), StoreError> {
+        self.namespace
+            .as_ref()
+            .map(|_| ())
+            .ok_or(StoreError::Unsupported {
+                capability: "checked-memory-namespace",
+            })
+    }
+
+    fn check_unique_insertion(&self, current_objects: usize) -> Result<(), StoreError> {
+        check_object_capacity(self.max_objects, current_objects)?;
+        if let Some(namespace) = &self.namespace {
+            namespace.verify_original()?;
+        }
+        Ok(())
     }
 
     /// Returns the number of unique logical objects.
@@ -187,6 +364,36 @@ impl MemoryBlobBackend {
 }
 
 impl ImmutableBlobBackend for MemoryBlobBackend {
+    fn checked_publication_metadata(
+        &self,
+        _kind: ObjectKind,
+    ) -> Result<CheckedPublicationMetadata, StoreError> {
+        self.require_namespace()?;
+        Ok(CheckedPublicationMetadata {
+            maximum_placements: 1,
+            maximum_backend_name_bytes: self.name.len(),
+        })
+    }
+
+    fn read_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        id: ContentId,
+        range: Option<ByteRange>,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<BlobHandle, StoreError> {
+        checked::lookup(self, original, id, range, boundary)
+    }
+
+    fn put_many_if_absent_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        objects: &[(ContentId, BlobHandle)],
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<PutBatchReceipt, StoreError> {
+        checked_publication::publish(self, original, objects, boundary)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -211,7 +418,7 @@ impl ImmutableBlobBackend for MemoryBlobBackend {
         let Some(bytes) = state.objects.get(&id) else {
             return Ok(false);
         };
-        validate_bytes(id, bytes)?;
+        validate_bytes(id, bytes.bytes()?)?;
         Ok(true)
     }
 
@@ -224,7 +431,7 @@ impl ImmutableBlobBackend for MemoryBlobBackend {
             .get(&id)
             .cloned()
             .ok_or(StoreError::NotFound { id })?;
-        validate_bytes(id, &bytes)?;
+        validate_bytes(id, bytes.bytes()?)?;
         memory_handle(id, bytes)?.slice(range)
     }
 
@@ -247,8 +454,9 @@ impl ImmutableBlobBackend for MemoryBlobBackend {
             operation: "memory-put",
         })?;
         if let Some(existing) = state.objects.get(&id) {
-            validate_bytes(id, existing)?;
+            validate_bytes(id, existing.bytes()?)?;
         } else {
+            self.check_unique_insertion(state.objects.len())?;
             let next_logical_bytes = state
                 .logical_bytes
                 .checked_add(logical_length)
@@ -282,6 +490,8 @@ impl BlobStoreAdmin for MemoryBlobBackend {
             backend: &self.name,
             instance: self.inventory_instance,
             max_logical_bytes: self.max_logical_bytes,
+            max_objects: self.max_objects,
+            namespace: self.namespace.as_ref(),
             state,
         }))
     }
@@ -291,6 +501,8 @@ struct MemoryBlobInventoryFence<'a> {
     backend: &'a str,
     instance: [u8; 32],
     max_logical_bytes: u64,
+    max_objects: Option<std::num::NonZeroU64>,
+    namespace: Option<&'a namespace::Namespace>,
     state: MutexGuard<'a, MemoryBlobState>,
 }
 
@@ -304,7 +516,8 @@ impl BlobInventoryFence for MemoryBlobInventoryFence<'_> {
         let mut inventory =
             InventoryCounter::new(physical_storage_identity(self.instance), generation);
         for (id, bytes) in &self.state.objects {
-            let logical_length = u64::try_from(bytes.len()).map_err(|_| StoreError::Quota)?;
+            let logical_length =
+                u64::try_from(bytes.bytes()?.len()).map_err(|_| StoreError::Quota)?;
             let record = BlobInventoryRecord::new(*id, logical_length);
             inventory.push(record)?;
             visitor(record)?;
@@ -325,11 +538,11 @@ impl BlobInventoryFence for MemoryBlobInventoryFence<'_> {
             operation: "memory-delete-candidate",
         })?;
         if self.state.objects.is_empty() {
-            // Removal can leave an allocated empty root node. Release it while
-            // the removed object's conservative map-node credit still lives.
+            // Removal can retain an empty root. Its fixed namespace credit
+            // remains live across this close and any later new root.
             self.state.objects = BTreeMap::new();
         }
-        let logical_length = u64::try_from(bytes.len()).map_err(|_| StoreError::Quota)?;
+        let logical_length = u64::try_from(bytes.bytes()?.len()).map_err(|_| StoreError::Quota)?;
         self.state.logical_bytes =
             self.state
                 .logical_bytes
@@ -355,8 +568,12 @@ impl BlobInventoryFence for MemoryBlobInventoryFence<'_> {
         let bytes = read_handle_all(source, self.max_logical_bytes)?;
         validate_bytes(id, &bytes)?;
         if let Some(existing) = self.state.objects.get(&id) {
-            validate_bytes(id, existing)?;
+            validate_bytes(id, existing.bytes()?)?;
         } else {
+            check_object_capacity(self.max_objects, self.state.objects.len())?;
+            if let Some(namespace) = self.namespace {
+                namespace.verify_original()?;
+            }
             let next_logical_bytes = self
                 .state
                 .logical_bytes

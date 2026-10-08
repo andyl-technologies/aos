@@ -137,3 +137,86 @@ fn complete_record_count_cannot_hide_trailing_bytes() {
     );
     assert!(capture.next_page().is_err());
 }
+
+#[test]
+fn truncated_admitted_spool_retains_io_without_acknowledging_a_page() {
+    let (root, bytes) = fixture();
+    let first = HEADER_BYTES + root.encoded_len();
+
+    for length in [first + 1, first + PAGE_HEADER_BYTES + 1] {
+        let mut capture =
+            admit(&bytes).unwrap_or_else(|error| panic!("valid capture fixture: {error}"));
+        let remaining = (capture.remaining_records, capture.remaining_bytes);
+        capture
+            .file
+            .set_len(length as u64)
+            .unwrap_or_else(|error| panic!("truncate admitted spool: {error}"));
+
+        let error = capture
+            .next_page()
+            .err()
+            .unwrap_or_else(|| panic!("expected original typed failure"));
+        let CaptureReadError::Io(source) = error else {
+            panic!("truncation must retain the original IO error");
+        };
+        assert_eq!(source.kind(), std::io::ErrorKind::UnexpectedEof);
+        assert_eq!(
+            (capture.remaining_records, capture.remaining_bytes),
+            remaining
+        );
+        assert_eq!(capture.previous, None);
+    }
+}
+
+#[test]
+fn admitted_reader_retains_actual_descriptor_errno() {
+    let (_, bytes) = fixture();
+    let mut spool = tempfile::NamedTempFile::new()
+        .unwrap_or_else(|error| panic!("create capture spool: {error}"));
+    spool
+        .write_all(&bytes)
+        .unwrap_or_else(|error| panic!("write capture spool: {error}"));
+    let file = spool
+        .reopen()
+        .unwrap_or_else(|error| panic!("open readable capture spool: {error}"));
+    let mut capture = QemuPagedRamCapture::admit(file, bytes.len() as u64)
+        .unwrap_or_else(|error| panic!("admit capture spool: {error}"));
+    capture.file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(spool.path())
+        .unwrap_or_else(|error| panic!("open deliberately unreadable capture spool: {error}"));
+
+    let error = capture
+        .next_page()
+        .err()
+        .unwrap_or_else(|| panic!("expected original typed failure"));
+    let CaptureReadError::Io(source) = error else {
+        panic!("descriptor failure must retain the original IO error");
+    };
+    assert_eq!(source.raw_os_error(), Some(libc::EBADF));
+    assert_eq!(capture.remaining_records, 2);
+    assert_eq!(capture.previous, None);
+}
+
+#[test]
+fn logical_coordinate_validation_keeps_its_typed_cause() {
+    let (root, mut bytes) = fixture();
+    let first = HEADER_BYTES + root.encoded_len();
+    bytes[first + 8..first + 16].copy_from_slice(&u64::MAX.to_be_bytes());
+    let mut capture =
+        admit(&bytes).unwrap_or_else(|error| panic!("valid capture fixture: {error}"));
+
+    assert!(matches!(
+        capture.next_page(),
+        Err(CaptureReadError::Validation(
+            crucible_ram::RamError::OutOfRange
+        ))
+    ));
+    assert_eq!(capture.remaining_records, 2);
+    assert_eq!(capture.previous, None);
+    eprintln!(
+        "owned capture read error={} align={}",
+        std::mem::size_of::<CaptureReadError>(),
+        std::mem::align_of::<CaptureReadError>()
+    );
+}

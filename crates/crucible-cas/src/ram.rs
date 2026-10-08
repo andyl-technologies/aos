@@ -43,10 +43,14 @@ pub use metadata::AdmittedRamRootMetadata;
 mod retention;
 pub use retention::{FencedRamRetention, RamRetentionAuthority};
 mod object_source;
+mod page_read;
+pub use page_read::{RamPageBytes, RamPageRead};
 mod receive;
 mod send;
+mod store_boundary;
 mod transfer;
 mod tree;
+pub use store_boundary::RamBoundaryRefusal;
 
 #[cfg(test)]
 mod tests;
@@ -117,6 +121,9 @@ impl Default for RamStoreLimits {
 /// Error while capturing, looking up, updating, or transferring paged RAM.
 #[derive(Debug, Error)]
 pub enum RamStoreError {
+    /// A checked boundary failed with complete original storage cleanup retained.
+    #[error(transparent)]
+    Boundary(RamFailureCause<RamStoreError>),
     /// The immutable content backend rejected an operation.
     #[error(transparent)]
     Store(#[from] StoreError),
@@ -126,6 +133,9 @@ pub enum RamStoreError {
     /// The logical format rejected a descriptor, digest, or geometry.
     #[error("logical RAM validation failed: {0}")]
     Logical(String),
+    /// An owned logical validation cause is retained without formatting it.
+    #[error("logical RAM validation failed: {0}")]
+    LogicalValidation(#[source] crucible_ram::RamError),
     /// A bounded CAS envelope failed validation.
     #[error(transparent)]
     Envelope(#[from] ContentEnvelopeError),
@@ -141,6 +151,20 @@ pub enum RamStoreError {
     /// A bounded transfer control or transport rejected a message.
     #[error(transparent)]
     Transfer(#[from] crucible_protocol::ram_transfer::RamTransferCodecError),
+}
+
+impl RamStoreError {
+    /// Retains a typed admission refusal with its already existing account.
+    ///
+    /// This inline bridge requests no additional loan or shared allocation. It
+    /// does not prepay the incoming refusal's own independently created payload.
+    #[must_use]
+    pub fn from_admission(
+        original: &crate::owned_decode::DecodeBudget,
+        source: crate::owned_decode::DecodeAdmissionError,
+    ) -> Self {
+        crate::content_store::batch::admission_under(original, source).into()
+    }
 }
 
 /// Retention capability keeping one immutable root and its descendants readable.
@@ -264,11 +288,13 @@ impl RamStore {
 }
 
 struct Work<'a> {
+    pending: Option<PendingBatch>,
     limits: RamStoreLimits,
     visits: u64,
     io_bytes: u64,
     boundary: &'a mut dyn FnMut() -> Result<(), RamStoreError>,
-    pending: Option<PendingBatch>,
+    account: store_boundary::WorkAccount<'a>,
+    destination: Option<store_boundary::WorkAccount<'a>>,
 }
 
 struct PendingPublication {
@@ -310,15 +336,41 @@ impl<'a> IntoIterator for &'a PendingBatch {
 impl<'a> Work<'a> {
     fn new(
         limits: RamStoreLimits,
+        original: &'a crate::owned_decode::DecodeBudget,
         boundary: &'a mut dyn FnMut() -> Result<(), RamStoreError>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, RamStoreError> {
+        let account = store_boundary::WorkAccount::new(original)?;
+        Ok(Self {
+            pending: None,
             limits,
             visits: 0,
             io_bytes: 0,
             boundary,
-            pending: None,
-        }
+            account,
+            destination: None,
+        })
+    }
+
+    fn destination(
+        &mut self,
+        original: &'a crate::owned_decode::DecodeBudget,
+    ) -> Result<(), RamStoreError> {
+        self.destination = Some(store_boundary::WorkAccount::new(original)?);
+        Ok(())
+    }
+
+    fn with_destination<T>(
+        &mut self,
+        operation: impl FnOnce(&mut Self) -> Result<T, RamStoreError>,
+    ) -> Result<T, RamStoreError> {
+        let destination = self
+            .destination
+            .take()
+            .ok_or(RamStoreError::Invalid("destination operation account"))?;
+        let source = std::mem::replace(&mut self.account, destination);
+        let result = operation(self);
+        self.destination = Some(std::mem::replace(&mut self.account, source));
+        result
     }
 
     fn visit(&mut self, bytes: u64) -> Result<(), RamStoreError> {

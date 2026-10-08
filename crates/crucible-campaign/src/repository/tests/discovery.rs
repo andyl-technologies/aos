@@ -93,7 +93,11 @@ fn batched_choice_and_request_roots_match_sequential_owner_edits() {
     }
 
     let hot = repository.head(campaign).expect("hot head");
-    let cold = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    let cold = CampaignRepository::new(
+        repository.blobs.clone(),
+        repository.refs.clone(),
+        repository.ram_admission().clone(),
+    );
     assert_eq!(cold.head(campaign).expect("cold authenticated head"), hot);
 }
 
@@ -347,8 +351,11 @@ fn initial_discovery_requires_running_state_and_attempt_budget() {
 
     // Discard all validation caches so import/restart recomputes the owner
     // delta and cannot pass solely because local publication trusted itself.
-    let repository =
-        CampaignRepository::new(Arc::clone(&repository.blobs), Arc::clone(&repository.refs));
+    let repository = CampaignRepository::new(
+        Arc::clone(&repository.blobs),
+        Arc::clone(&repository.refs),
+        repository.ram_admission().clone(),
+    );
     repository
         .validate_complete_head(after.content_id())
         .expect("cold closure validation");
@@ -475,7 +482,11 @@ fn explicit_discovery_is_idempotent_and_cold_recomputable() {
         Err(CampaignRepositoryError::CommandReuse)
     ));
 
-    let cold = CampaignRepository::new(Arc::clone(&repository.blobs), Arc::clone(&repository.refs));
+    let cold = CampaignRepository::new(
+        Arc::clone(&repository.blobs),
+        Arc::clone(&repository.refs),
+        repository.ram_admission().clone(),
+    );
     cold.validate_complete_head(accepted.new_snapshot.content_id())
         .expect("cold discovery validation");
     let cold_replay = cold
@@ -511,7 +522,11 @@ fn explicit_discovery_with_execution_quanta_is_cold_recomputable() {
     assert_eq!(attempt.stop(), &stop);
     assert_eq!(accepted.attempt.content_id().schema_version(), 9);
 
-    let cold = CampaignRepository::new(Arc::clone(&repository.blobs), Arc::clone(&repository.refs));
+    let cold = CampaignRepository::new(
+        Arc::clone(&repository.blobs),
+        Arc::clone(&repository.refs),
+        repository.ram_admission().clone(),
+    );
     cold.validate_complete_head(accepted.new_snapshot.content_id())
         .expect("cold execution-quanta discovery validation");
     let replay = cold
@@ -647,7 +662,11 @@ fn explicit_discovery_cold_validation_rejects_a_tampered_configuration() {
         .0;
     let forged_content = repository.put_snapshot(&forged).expect("forged snapshot");
 
-    let cold = CampaignRepository::new(Arc::clone(&repository.blobs), Arc::clone(&repository.refs));
+    let cold = CampaignRepository::new(
+        Arc::clone(&repository.blobs),
+        Arc::clone(&repository.refs),
+        repository.ram_admission().clone(),
+    );
     assert!(matches!(
         cold.validate_complete_head(forged_content),
         Err(CampaignRepositoryError::InvalidRequest {
@@ -661,7 +680,11 @@ fn explicit_discovery_ref_conflict_does_not_promote_the_successor() {
     let (fixture_repository, lineage, policy, blobs) = counted_fixture();
     drop(fixture_repository);
     let refs = Arc::new(ConflictAfterCreateRefBackend::new());
-    let repository = CampaignRepository::new(blobs, refs.clone());
+    let repository = CampaignRepository::new(
+        blobs,
+        refs.clone(),
+        crate::CampaignRamAdmission::Unavailable,
+    );
     let head = running_discovery_head(&repository, "conflict", &lineage, &policy, true);
     let request = DiscoveryRequest::new(
         crate::CampaignCommandId::from_hash(CampaignHash::derive("test", b"conflict")),

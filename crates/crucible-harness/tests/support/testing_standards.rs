@@ -7,6 +7,10 @@ mod operational_waits;
 #[path = "testing_standards/source_inventory.rs"]
 mod source_inventory;
 pub(super) use source_inventory::*;
+#[path = "testing_standards/checked_ram_read.rs"]
+mod checked_ram_read;
+pub(super) use checked_ram_read::failures as checked_ram_read_failures;
+
 pub(super) fn testing_standard_failures(
     targets: &[GateTargetSpec],
     source_overrides: &GateSourceOverrides,

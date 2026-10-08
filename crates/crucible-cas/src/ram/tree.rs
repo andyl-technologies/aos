@@ -51,9 +51,10 @@ impl RamStore {
     pub fn inspect_root(
         &self,
         id: crate::content_store::ContentId,
+        original: &crate::owned_decode::DecodeBudget,
         boundary: &mut dyn FnMut() -> Result<(), RamStoreError>,
     ) -> Result<RootRecord, RamStoreError> {
-        let mut work = Work::new(self.limits, boundary);
+        let mut work = Work::new(self.limits, original, boundary)?;
         let (record, regions) = self.read_root(id, &mut work)?;
         self.admit_topology(record.topology())?;
         self.validate_root_catalogs(&record, &regions)?;
@@ -78,10 +79,11 @@ impl RamStore {
         scope: Scope,
         read_page: &mut RamPageReader<'_>,
         retention: &dyn RamRetention,
+        original: &crate::owned_decode::DecodeBudget,
         boundary: &mut dyn FnMut() -> Result<(), RamStoreError>,
     ) -> Result<LeasedRamRoot, RamStoreError> {
         self.admit_ram_publication(&topology, scope)?;
-        let mut work = Work::new(self.limits, boundary);
+        let mut work = Work::new(self.limits, original, boundary)?;
         self.begin_capture_batch(&mut work)?;
         let mut regions = Vec::new();
         let mut roots = Vec::new();
@@ -136,9 +138,10 @@ impl RamStore {
     pub fn open(
         &self,
         lease: Arc<dyn RamRootLease>,
+        original: &crate::owned_decode::DecodeBudget,
         boundary: &mut dyn FnMut() -> Result<(), RamStoreError>,
     ) -> Result<LeasedRamRoot, RamStoreError> {
-        let mut work = Work::new(self.limits, boundary);
+        let mut work = Work::new(self.limits, original, boundary)?;
         let (record, regions) = self.read_root(lease.root(), &mut work)?;
         self.admit_topology(record.topology())?;
         self.validate_root_catalogs(&record, &regions)?;
@@ -161,10 +164,11 @@ impl RamStore {
         root: &LeasedRamRoot,
         region_id: &str,
         page_index: u64,
+        original: &crate::owned_decode::DecodeBudget,
         boundary: &mut dyn FnMut() -> Result<(), RamStoreError>,
-    ) -> Result<Vec<u8>, RamStoreError> {
-        self.read_page_with_proof(root, region_id, page_index, boundary)
-            .map(|(bytes, _)| bytes)
+    ) -> Result<super::RamPageBytes, RamStoreError> {
+        self.read_page_with_proof(root, region_id, page_index, original, boundary)
+            .map(super::RamPageRead::into_page)
     }
 
     /// Reads a page and supplies its bounded portable proof to the trusted root.
@@ -181,14 +185,17 @@ impl RamStore {
         root: &LeasedRamRoot,
         region_id: &str,
         page_index: u64,
+        original: &crate::owned_decode::DecodeBudget,
         boundary: &mut dyn FnMut() -> Result<(), RamStoreError>,
-    ) -> Result<(Vec<u8>, PageProof), RamStoreError> {
+    ) -> Result<super::RamPageRead, RamStoreError> {
         self.admit_topology(root.record.topology())?;
         let (index, region) = selected_region(&root.record, region_id)?;
         let expected_length = valid_length(region, page_index)?;
         let mut reference = root.regions[index];
         let mut page = page_index;
-        let mut work = Work::new(self.limits, boundary);
+        let mut work = Work::new(self.limits, original, boundary)?;
+        let proof_credit =
+            super::page_read::proof_credit(original, region_id, reference.height as usize)?;
         let mut siblings = Vec::with_capacity(reference.height as usize);
 
         loop {
@@ -216,7 +223,7 @@ impl RamStore {
                     proof
                         .verify(&bytes, &root.record, root.logical_digest())
                         .map_err(logical)?;
-                    return Ok((bytes, proof));
+                    return Ok(super::RamPageRead::new(bytes, proof, proof_credit));
                 }
                 TreeNode::Branch { left, right } => {
                     let width = 1_u64 << (reference.height - 1);
@@ -248,10 +255,17 @@ impl RamStore {
         root: &LeasedRamRoot,
         changes: impl IntoIterator<Item = RamPageChange>,
         retention: &dyn RamRetention,
+        original: &crate::owned_decode::DecodeBudget,
         boundary: &mut dyn FnMut() -> Result<(), RamStoreError>,
     ) -> Result<LeasedRamRoot, RamStoreError> {
         let mut changes = changes.into_iter();
-        self.update_with_reader(root, &mut || Ok(changes.next()), retention, boundary)
+        self.update_with_reader(
+            root,
+            &mut || Ok(changes.next()),
+            retention,
+            original,
+            boundary,
+        )
     }
 
     /// Publishes an ordered fallible page stream without concealing source errors.
@@ -268,13 +282,14 @@ impl RamStore {
         root: &LeasedRamRoot,
         next: &mut dyn FnMut() -> Result<Option<RamPageChange>, RamStoreError>,
         retention: &dyn RamRetention,
+        original: &crate::owned_decode::DecodeBudget,
         boundary: &mut dyn FnMut() -> Result<(), RamStoreError>,
     ) -> Result<LeasedRamRoot, RamStoreError> {
         self.admit_ram_publication(root.record.topology(), root.record.scope())?;
         let mut regions = root.regions.to_vec();
         let mut roots = root.record.region_roots().to_vec();
         let mut previous: Option<(String, u64)> = None;
-        let mut work = Work::new(self.limits, boundary);
+        let mut work = Work::new(self.limits, original, boundary)?;
 
         loop {
             (work.boundary)()?;
@@ -332,12 +347,13 @@ impl RamStore {
     pub fn verify(
         &self,
         root: &LeasedRamRoot,
+        original: &crate::owned_decode::DecodeBudget,
         boundary: &mut dyn FnMut() -> Result<(), RamStoreError>,
     ) -> Result<RamVerificationReport, RamStoreError> {
         self.admit_topology(root.record.topology())?;
         self.validate_root_catalogs(&root.record, &root.regions)?;
         let mut report = RamVerificationReport::default();
-        let mut work = Work::new(self.limits, boundary);
+        let mut work = Work::new(self.limits, original, boundary)?;
         for (region, reference) in root
             .record
             .topology()
@@ -504,7 +520,7 @@ impl RamStore {
             TreeNode::Padding => Err(RamStoreError::Invalid("update targets padding")),
             TreeNode::Leaf { page, digest } => {
                 let current = self.read_page_object(page, digest, work)?;
-                if PageDigest::hash(bytes).map_err(logical)? == digest && current == bytes {
+                if PageDigest::hash(bytes).map_err(logical)? == digest && current.bytes() == bytes {
                     retention.retain_object(reference.id)?;
                     return Ok(reference);
                 }

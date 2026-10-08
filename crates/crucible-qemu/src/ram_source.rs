@@ -22,7 +22,7 @@ use crucible_protocol::ram_page::{
     RAM_PAGE_REQUEST_BYTES, RamPageBinding, RamPageProtocolError, RamPageRequest, RamPageResponse,
     RamPageStatus,
 };
-use crucible_ram::{PageProof, RootRecord, Scope};
+use crucible_ram::{RootRecord, Scope};
 use thiserror::Error;
 
 mod worker_failure;
@@ -49,18 +49,24 @@ pub trait QemuRamBacking: Send + Sync {
     /// Returns the complete authenticated root retained by this authority.
     fn root_record(&self) -> &RootRecord;
 
-    /// Reads and authenticates one real logical page through its binary path.
+    /// Authenticates one page and consumes it under its original allocation custody.
+    ///
+    /// Successful sources deliver exactly one completion before returning. The
+    /// worker independently retains consumption failures and rejects missing or
+    /// duplicate deliveries before another publication. The source retains the
+    /// original page, proof, encoding, and resource owners until consumption ends.
     ///
     /// # Errors
     ///
     /// Returns an error for absent coordinates, unavailable or corrupt backing,
     /// cancellation, resource limits, or an operational deadline.
-    fn read_page_with_proof(
+    fn with_page_response(
         &self,
         region_id: &str,
         page_index: u64,
         boundary: &mut dyn FnMut() -> Result<(), QemuRamReadBoundaryError>,
-    ) -> Result<(Vec<u8>, PageProof), QemuRamSourceError>;
+        consumer: &mut QemuRamResponseConsumer<'_>,
+    ) -> Result<(), QemuRamSourceError>;
 
     /// Takes one authored transport adversary after normal page authentication.
     ///
@@ -72,6 +78,16 @@ pub trait QemuRamBacking: Send + Sync {
         None
     }
 }
+
+/// Borrows the actual page-in operation's continuation check.
+pub type QemuRamReadBoundary<'a> = dyn FnMut() -> Result<(), QemuRamReadBoundaryError> + 'a;
+
+/// Consumes a borrowed completion while its source retains original custody.
+///
+/// The callback returns no failure to the provider: the worker retains its
+/// original result independently, so a provider cannot replace that first cause.
+pub type QemuRamResponseConsumer<'a> =
+    dyn FnMut(crucible_ram::BorrowedPageResponse<'_>, &mut QemuRamReadBoundary<'_>) + 'a;
 
 /// A closed test-support adversary applied to one real authenticated response.
 ///
@@ -519,48 +535,89 @@ fn serve_pages(
             Ok(())
         };
         boundary()?;
-        let (page, proof) =
-            backing.read_page_with_proof(region.id(), request.page_index, &mut boundary)?;
-        if proof.region_id() != region.id() || proof.page_index() != request.page_index {
-            return Err(QemuRamSourceError::Ownership);
-        }
-        proof
-            .verify(&page, backing.root_record(), backing.root_record().digest())
-            .map_err(|error| QemuRamSourceError::Proof(error.to_string()))?;
-        boundary()?;
-        let proof = proof.encode();
-        #[cfg(any(test, feature = "test-support"))]
-        if let Some(fault) = backing.take_response_fault_for_test() {
-            send_faulted_response(
-                &mut socket,
-                &operation,
-                RamPageResponse {
-                    binding,
-                    sequence: request.sequence,
-                    status: RamPageStatus::Page,
-                    page: &page,
-                    proof: &proof,
-                },
-                fault,
-            )?;
-            return Err(
-                io::Error::other("authored test-support response transport failure").into(),
-            );
-        }
-        send_response(
-            &mut socket,
-            &operation,
-            RamPageResponse {
-                binding,
-                sequence: request.sequence,
-                status: RamPageStatus::Page,
-                page: &page,
-                proof: &proof,
+        consume_backing_page(
+            backing.as_ref(),
+            region.id(),
+            request.page_index,
+            &mut boundary,
+            &mut |read, boundary| {
+                let page = read.bytes();
+                let proof = read.proof();
+                if proof.region_id() != region.id() || proof.page_index() != request.page_index {
+                    return Err(QemuRamSourceError::Ownership);
+                }
+                proof
+                    .verify(page, backing.root_record(), backing.root_record().digest())
+                    .map_err(|error| QemuRamSourceError::Proof(error.to_string()))?;
+                boundary()?;
+                let proof = read.encoded_proof();
+                #[cfg(any(test, feature = "test-support"))]
+                if let Some(fault) = backing.take_response_fault_for_test() {
+                    send_faulted_response(
+                        &mut socket,
+                        &operation,
+                        RamPageResponse {
+                            binding,
+                            sequence: request.sequence,
+                            status: RamPageStatus::Page,
+                            page,
+                            proof,
+                        },
+                        fault,
+                    )?;
+                    return Err(io::Error::other(
+                        "authored test-support response transport failure",
+                    )
+                    .into());
+                }
+                send_response(
+                    &mut socket,
+                    &operation,
+                    RamPageResponse {
+                        binding,
+                        sequence: request.sequence,
+                        status: RamPageStatus::Page,
+                        page,
+                        proof,
+                    },
+                )?;
+                operation.progress(1)?;
+                operation.complete()?;
+                Ok(())
             },
         )?;
-        operation.progress(1)?;
-        operation.complete()?;
         sequence = request.sequence;
+    }
+}
+
+fn consume_backing_page(
+    backing: &dyn QemuRamBacking,
+    region_id: &str,
+    page_index: u64,
+    boundary: &mut QemuRamReadBoundary<'_>,
+    consume: &mut impl FnMut(
+        crucible_ram::BorrowedPageResponse<'_>,
+        &mut QemuRamReadBoundary<'_>,
+    ) -> Result<(), QemuRamSourceError>,
+) -> Result<(), QemuRamSourceError> {
+    let mut consumed = None;
+    let source =
+        backing.with_page_response(region_id, page_index, boundary, &mut |page, boundary| {
+            match &consumed {
+                // A second delivery never reaches another boundary or publication.
+                Some(Ok(())) => consumed = Some(Err(QemuRamSourceError::Ownership)),
+                // The full first failure remains owned here, even if swallowed or
+                // replaced by a later provider result.
+                Some(Err(_)) => {}
+                None => consumed = Some(consume(page, boundary)),
+            }
+        });
+
+    match (consumed, source) {
+        (Some(Err(first)), _) => Err(first),
+        (None, Ok(())) => Err(QemuRamSourceError::Ownership),
+        (_, Err(source)) => Err(source),
+        (Some(Ok(())), Ok(())) => Ok(()),
     }
 }
 
@@ -684,3 +741,6 @@ fn write_response_bytes(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod scoped_response_tests;

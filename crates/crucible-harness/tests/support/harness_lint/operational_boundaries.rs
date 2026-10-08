@@ -27,6 +27,7 @@ const SUPERVISION_EXPORTS: &[&str] = &[
     "HostOuterCapBinding",
     "HostSupervisionError",
     "HostOperationSupervisor",
+    "HostSupervisionBootstrap",
     "new",
     "new_budget_owner",
     "shares_outer_cap",
@@ -49,7 +50,16 @@ const SUPERVISION_EXPORTS: &[&str] = &[
     "wait_slice",
     "wait_for_change",
     "wait_for_active_work_change",
+    "verify_original_live",
     "progress",
+];
+
+const SUPERVISION_BOOTSTRAP_EXPORTS: &[&str] = &[
+    "HostSupervisionBootstrap",
+    "new",
+    "wait_slice",
+    "publish",
+    "structure_bytes",
 ];
 
 const REGISTRY_EXPORTS: &[&str] = &[
@@ -91,6 +101,10 @@ pub(super) fn operational_boundary_source(package: &str, package_dir: &Path, pat
     matches!(
         (package, relative.as_str()),
         ("crucible-linux-resource", "src/host_supervision.rs")
+            | (
+                "crucible-linux-resource",
+                "src/host_supervision/bootstrap.rs"
+            )
             | ("crucible-daemon", "src/host_operational_registry.rs")
             | ("crucible-qemu", "src/node/shutdown_budget.rs")
             | ("crucible-qemu", "src/ram_control/supervision.rs")
@@ -108,6 +122,9 @@ pub(super) fn operational_public_exports(
     };
     match (package, relative.as_str()) {
         ("crucible-linux-resource", "src/host_supervision.rs") => SUPERVISION_EXPORTS,
+        ("crucible-linux-resource", "src/host_supervision/bootstrap.rs") => {
+            SUPERVISION_BOOTSTRAP_EXPORTS
+        }
         ("crucible-daemon", "src/host_operational_registry.rs") => REGISTRY_EXPORTS,
         ("crucible-daemon", "src/supervision.rs") => &[
             "HOST_WATCHDOG_STACK_BYTES",

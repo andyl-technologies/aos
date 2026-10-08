@@ -12,6 +12,10 @@ use std::error::Error;
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
+mod ownership;
+pub(crate) use ownership::DecodeBudgetSlot;
+use ownership::{Authority, TerminalOwner};
+
 #[cfg(test)]
 mod tests;
 
@@ -89,20 +93,41 @@ struct State {
 
 struct Account {
     state: Mutex<State>,
-    authority: Arc<dyn DecodeResourceAuthority>,
+    authority: Authority,
     maximum: u64,
     _initial: crate::owned_decode::ResourceLoan,
 }
 
 /// Shares one finite independently authored account across a complete decode.
 #[derive(Clone)]
-pub struct DecodeBudget(Arc<Account>);
+pub struct DecodeBudget(TerminalOwner<Account>);
 
 thread_local! {
-    static CURRENT: RefCell<Option<DecodeBudget>> = const { RefCell::new(None) };
+    static CURRENT: RefCell<DecodeBudgetSlot> = const {
+        RefCell::new(DecodeBudgetSlot::empty())
+    };
 }
 
 impl DecodeBudget {
+    /// Reports exact shared failure, liveness and limit ownership.
+    ///
+    /// Accounts sharing only a resource bank or authority remain distinct.
+    pub(crate) fn same_account(&self, other: &Self) -> bool {
+        self.0.shares_owner(&other.0)
+    }
+
+    /// Reports whether this account and its authority have no shared borrowers.
+    ///
+    /// This conservative snapshot supports cleanup after the owner has already
+    /// stopped admission and synchronized its users. It grants no revocation or
+    /// concurrency barrier. A retained child, custody token, account clone, or
+    /// external authority alias makes the result false; public constructors may
+    /// therefore remain nonexclusive until their external authority closes.
+    #[must_use]
+    pub fn is_exclusive(&self) -> bool {
+        self.0.is_exclusive() && self.0.authority.is_exclusive()
+    }
+
     /// Returns the exact control extent charged by the account constructor.
     pub(crate) const fn allocation_bytes() -> u64 {
         (std::mem::size_of::<Account>() + 2 * std::mem::size_of::<usize>()) as u64
@@ -110,18 +135,26 @@ impl DecodeBudget {
 
     /// Admits the account's retained metadata before creating it.
     ///
+    /// The supplied external authority retains its existing shared-control
+    /// contract. This constructor pays and closes the new account control; it
+    /// does not pay or change the external authority's control lifetime.
+    ///
     /// # Errors
     /// Refuses an empty, exhausted or unavailable original allowance.
     pub fn new(
         authority: Arc<dyn DecodeResourceAuthority>,
         maximum: u64,
     ) -> Result<Self, DecodeAdmissionError> {
+        Self::from_authority(Authority::External(authority), maximum)
+    }
+
+    fn from_authority(authority: Authority, maximum: u64) -> Result<Self, DecodeAdmissionError> {
         let initial_bytes = Self::allocation_bytes();
         if initial_bytes > maximum {
             return Err(refusal("decoded metadata allowance is too small"));
         }
         let initial = authority.reserve(initial_bytes)?;
-        Ok(Self(Arc::new(Account {
+        Ok(Self(TerminalOwner::new(Account {
             state: Mutex::new(State {
                 used: initial_bytes,
                 receipts: Vec::new(),
@@ -143,7 +176,7 @@ impl DecodeBudget {
     /// Refuses an earlier parent failure or exhausted original authority.
     pub fn child(&self) -> Result<Self, DecodeAdmissionError> {
         self.check()?;
-        Self::new(Arc::clone(&self.0.authority), self.0.maximum)
+        Self::from_authority(self.0.authority.clone(), self.0.maximum)
     }
 
     /// Admits owned bytes and the bounded receipt-vector growth before allocation.
@@ -208,7 +241,7 @@ impl DecodeBudget {
     /// Routes nested codec reservations to this account on the current thread.
     #[must_use]
     pub fn enter(&self) -> DecodeScope {
-        let previous = CURRENT.with(|current| current.replace(Some(self.clone())));
+        let previous = CURRENT.with(|current| current.replace(self.clone().into()));
         DecodeScope {
             previous,
             _thread: std::marker::PhantomData,
@@ -219,7 +252,7 @@ impl DecodeBudget {
     #[must_use]
     pub fn custody(&self) -> DecodeCustody {
         DecodeCustody {
-            _account: Some(self.clone()),
+            _account: self.clone().into(),
         }
     }
 
@@ -376,7 +409,7 @@ impl DecodeBudget {
 /// Retains the original resource receipts after successful decoding.
 #[derive(Clone, Default)]
 pub struct DecodeCustody {
-    _account: Option<DecodeBudget>,
+    _account: DecodeBudgetSlot,
 }
 
 impl fmt::Debug for DecodeCustody {
@@ -402,7 +435,7 @@ impl std::hash::Hash for DecodeCustody {
 
 /// Restores the previous thread-local decode account when a codec returns.
 pub struct DecodeScope {
-    previous: Option<DecodeBudget>,
+    previous: DecodeBudgetSlot,
     _thread: std::marker::PhantomData<std::rc::Rc<()>>,
 }
 
@@ -450,7 +483,7 @@ fn refusal(message: &'static str) -> DecodeAdmissionError {
 /// `None` grants no resources and denotes an unscoped component codec.
 #[must_use]
 pub fn current_budget() -> Option<DecodeBudget> {
-    CURRENT.with(|current| current.borrow().clone())
+    CURRENT.with(|current| current.borrow().as_ref().cloned())
 }
 
 /// Returns current original custody for a successfully decoded owning value.
@@ -581,11 +614,11 @@ impl DecodeBudget {
                 (std::mem::size_of::<StoreAuthority>() + 2 * std::mem::size_of::<usize>()) as u64,
             )
             .map_err(DecodeAdmissionError::new)?;
-        Self::new(
-            Arc::new(StoreAuthority {
+        Self::from_authority(
+            Authority::Store(TerminalOwner::new(StoreAuthority {
                 guard,
                 _resources: resources,
-            }),
+            })),
             maximum,
         )
     }

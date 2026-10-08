@@ -164,6 +164,24 @@ impl ContentEnvelope {
         &self.body
     }
 
+    pub(crate) fn body_mut(&mut self) -> &mut [u8] {
+        &mut self.body
+    }
+
+    #[cfg(feature = "test-support")]
+    pub(crate) fn flip_body_byte_for_test(&mut self, index: usize) -> bool {
+        let Some(byte) = self.body.get_mut(index) else {
+            return false;
+        };
+        *byte ^= 1;
+        true
+    }
+
+    #[cfg(feature = "test-support")]
+    pub(crate) fn remove_last_body_byte_for_test(&mut self) -> bool {
+        self.body.pop().is_some()
+    }
+
     /// Returns canonical envelope bytes.
     #[must_use]
     pub fn canonical_bytes(&self) -> Vec<u8> {

@@ -105,7 +105,11 @@ fn failed_batched_trie_publication_never_advances_ref_and_retries_after_reopen()
         target_id: Mutex::new(None),
     });
     let refs = Arc::new(DirectoryRefBackend::new(&ref_root));
-    let repository = CampaignRepository::new(backend.clone(), refs.clone());
+    let repository = CampaignRepository::new(
+        backend.clone(),
+        refs.clone(),
+        crate::CampaignRamAdmission::Unavailable,
+    );
     let (repository, lineage, policy) = initialize_fixture(repository);
     let name = "failed-batch-ref";
     backend.fail_next_batch.store(true, Ordering::SeqCst);
@@ -128,7 +132,11 @@ fn failed_batched_trie_publication_never_advances_ref_and_retries_after_reopen()
         SqliteBlobBackend::open("failed-batch-ref-test", &blob_root).expect("reopen blobs"),
     );
     let reopened_refs = Arc::new(DirectoryRefBackend::new(&ref_root));
-    let reopened = CampaignRepository::new(reopened_blobs.clone(), reopened_refs.clone());
+    let reopened = CampaignRepository::new(
+        reopened_blobs.clone(),
+        reopened_refs.clone(),
+        crate::CampaignRamAdmission::Unavailable,
+    );
     assert!(matches!(
         reopened.head(name),
         Err(CampaignRepositoryError::NotFound)
@@ -142,6 +150,7 @@ fn failed_batched_trie_publication_never_advances_ref_and_retries_after_reopen()
     let cold = CampaignRepository::new(
         Arc::new(SqliteBlobBackend::open("failed-batch-ref-test", &blob_root).expect("cold blobs")),
         Arc::new(DirectoryRefBackend::new(&ref_root)),
+        crate::CampaignRamAdmission::Unavailable,
     );
     assert_eq!(
         cold.head(name)
@@ -166,6 +175,7 @@ fn failed_request_spending_batch_retries_after_cold_reopen() {
     let repository = CampaignRepository::new(
         backend.clone(),
         Arc::new(DirectoryRefBackend::new(&ref_root)),
+        crate::CampaignRamAdmission::Unavailable,
     );
     let prior = repository
         .merkle
@@ -204,6 +214,7 @@ fn failed_request_spending_batch_retries_after_cold_reopen() {
             SqliteBlobBackend::open("request-index-batch-test", &blob_root).expect("reopen blobs"),
         ),
         Arc::new(DirectoryRefBackend::new(&ref_root)),
+        crate::CampaignRamAdmission::Unavailable,
     );
     let retried = reopened
         .update_request_spending_map(prior, &upserts, true)
@@ -217,6 +228,7 @@ fn failed_request_spending_batch_retries_after_cold_reopen() {
                 .expect("cold committed blobs"),
         ),
         Arc::new(DirectoryRefBackend::new(&ref_root)),
+        crate::CampaignRamAdmission::Unavailable,
     );
     for (key, value) in &upserts {
         assert_eq!(
@@ -239,8 +251,11 @@ fn failed_planner_issue_record_batch_keeps_prior_head_and_retries_after_reopen()
         target_id: Mutex::new(None),
     });
     let refs = Arc::new(DirectoryRefBackend::new(&ref_root));
-    let (repository, lineage, policy) =
-        initialize_fixture(CampaignRepository::new(backend.clone(), refs.clone()));
+    let (repository, lineage, policy) = initialize_fixture(CampaignRepository::new(
+        backend.clone(),
+        refs.clone(),
+        crate::CampaignRamAdmission::Unavailable,
+    ));
     let name = "failed-planner-issue-batch";
     let genesis = repository
         .create_funded(name, &lineage, &policy, &BTreeMap::new())
@@ -342,7 +357,11 @@ fn failed_planner_issue_record_batch_keeps_prior_head_and_retries_after_reopen()
         SqliteBlobBackend::open("planner-issue-batch-test", &blob_root).expect("reopen blobs"),
     );
     let reopened_refs = Arc::new(DirectoryRefBackend::new(&ref_root));
-    let reopened = CampaignRepository::new(reopened_blobs.clone(), reopened_refs.clone());
+    let reopened = CampaignRepository::new(
+        reopened_blobs.clone(),
+        reopened_refs.clone(),
+        crate::CampaignRamAdmission::Unavailable,
+    );
     assert_eq!(
         reopened.head(name).expect("cold prior head").snapshot_id(),
         requested.new_snapshot
@@ -358,6 +377,7 @@ fn failed_planner_issue_record_batch_keeps_prior_head_and_retries_after_reopen()
             SqliteBlobBackend::open("planner-issue-batch-test", &blob_root).expect("cold blobs"),
         ),
         Arc::new(DirectoryRefBackend::new(&ref_root)),
+        crate::CampaignRamAdmission::Unavailable,
     );
     assert_eq!(
         cold.head(name).expect("cold committed head").snapshot_id(),
@@ -396,10 +416,10 @@ impl ImmutableBlobBackend for FailOnOpenBlobBackend {
             return self.inner.read(id, range);
         }
 
-        Ok(BlobHandle::new(Arc::new(FailOnOpenBlobSource {
+        Ok(BlobHandle::new(FailOnOpenBlobSource {
             logical_length: self.target_logical_length,
             open_calls: self.open_calls.clone(),
-        })))
+        }))
     }
 
     fn put_if_absent(
@@ -695,10 +715,20 @@ fn fixture_with_quota_and_authorities(
     let blobs = Arc::new(MemoryBlobBackend::new("campaign", max_logical_bytes));
     let refs = Arc::new(MemoryRefBackend::new());
     let repository = if let Some((planner, debugger)) = authorities {
-        CampaignRepository::with_component_authorities(blobs.clone(), refs, planner, debugger)
-            .expect("distinct component authorities")
+        CampaignRepository::with_component_authorities(
+            blobs.clone(),
+            refs,
+            crate::CampaignRamAdmission::Unavailable,
+            planner,
+            debugger,
+        )
+        .expect("distinct component authorities")
     } else {
-        CampaignRepository::new(blobs.clone(), refs)
+        CampaignRepository::new(
+            blobs.clone(),
+            refs,
+            crate::CampaignRamAdmission::Unavailable,
+        )
     };
 
     let (repository, lineage, policy) = initialize_fixture(repository);
@@ -1075,6 +1105,7 @@ fn selection_batch_resolution_shares_dependencies_and_bounds_records() {
             open_calls: open_calls.clone(),
         }),
         repository.refs.clone(),
+        crate::CampaignRamAdmission::Unavailable,
     );
     let undersized_limit = usize::try_from(target_logical_length)
         .expect("selection record length")

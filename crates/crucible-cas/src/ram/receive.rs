@@ -52,6 +52,14 @@ pub struct RamTransferReceiver<'a> {
 }
 
 impl<'a> RamTransferReceiver<'a> {
+    #[cfg(test)]
+    pub(super) fn original_for_test(
+        &self,
+    ) -> Result<crate::owned_decode::DecodeBudget, RamStoreError> {
+        crate::owned_decode::DecodeBudget::for_store(self.store.backend.metadata_resources()?)
+            .map_err(super::codec_ownership::admission)
+    }
+
     /// Receives the offered image on an authenticated bounded archive channel.
     ///
     /// The caller first reads and authenticates the offer, then constructs this
@@ -65,6 +73,7 @@ impl<'a> RamTransferReceiver<'a> {
     pub fn receive_transport<T: std::io::Read + std::io::Write>(
         &mut self,
         transport: &mut T,
+        original: &crate::owned_decode::DecodeBudget,
         boundary: &mut dyn FnMut() -> Result<(), RamStoreError>,
     ) -> Result<RamTransferStep, RamStoreError> {
         self.receive(
@@ -72,6 +81,7 @@ impl<'a> RamTransferReceiver<'a> {
                 message.write(transport)?;
                 Ok(RamTransferMessage::read(transport)?)
             },
+            original,
             boundary,
         )
     }
@@ -130,12 +140,13 @@ impl<'a> RamTransferReceiver<'a> {
     pub fn receive(
         &mut self,
         exchange: &mut dyn FnMut(RamTransferMessage) -> Result<RamTransferMessage, RamStoreError>,
+        original: &crate::owned_decode::DecodeBudget,
         boundary: &mut dyn FnMut() -> Result<(), RamStoreError>,
     ) -> Result<RamTransferStep, RamStoreError> {
         if self.terminal {
             return Err(RamStoreError::Invalid("terminal transfer receiver"));
         }
-        let mut work = Work::new(self.store.limits, boundary);
+        let mut work = Work::new(self.store.limits, original, boundary)?;
         let result = self.receive_inner(exchange, &mut work);
         self.terminal = true;
         if result.is_err() {
@@ -248,13 +259,16 @@ impl<'a> RamTransferReceiver<'a> {
         exchange: &mut dyn FnMut(RamTransferMessage) -> Result<RamTransferMessage, RamStoreError>,
         work: &mut Work<'_>,
     ) -> Result<(super::codec_ownership::OwnedEnvelope, bool), RamStoreError> {
-        let account = self.store.object_account()?;
+        let account = work
+            .original()
+            .child()
+            .map_err(super::codec_ownership::admission)?;
         let _scope = account.enter();
         let (maximum_bytes, maximum_children) = object_limits(id)?;
         self.retention.retain_object(id)?;
         match self.store.read_envelope(id, work) {
             Ok(envelope) => return Ok((envelope, true)),
-            Err(RamStoreError::Store(StoreError::NotFound { .. })) => {}
+            Err(error) if super::store_boundary::confirmed_absence(&error, id) => {}
             Err(error) => return Err(error),
         }
         self.requested = self

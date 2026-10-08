@@ -1219,6 +1219,7 @@ fn campaign_controls_remain_responsive_while_every_executor_slot_is_busy() {
     let repository = Arc::new(CampaignRepository::new(
         blobs,
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     let campaign = "busy-campaign-control";
     let (lineage, _, _, admitted, _) = campaign_attempt_fixture(&repository, campaign);
@@ -1522,7 +1523,11 @@ fn repository_admission_does_not_hold_supervisor_actor_ownership() {
 fn campaign_driver_pool_flight_incorporates_one_execution_without_submit_polling() {
     let blobs = Arc::new(MemoryBlobBackend::new("executor-flight", 64 * 1024 * 1024));
     let refs = Arc::new(MemoryRefBackend::new());
-    let repository = Arc::new(CampaignRepository::new(blobs.clone(), refs.clone()));
+    let repository = Arc::new(CampaignRepository::new(
+        blobs.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    ));
     let (lineage, _policy, request, admitted, candidate) =
         campaign_attempt_fixture(&repository, "executor-flight");
     let resume = ControlRequest {
@@ -1693,7 +1698,11 @@ fn campaign_driver_pool_flight_incorporates_one_execution_without_submit_polling
     assert_eq!(report.reconciled(), 1);
     assert_eq!(report.active(), 0);
 
-    let restarted = CampaignRepository::new(blobs, refs);
+    let restarted = CampaignRepository::new(
+        blobs,
+        refs,
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
     let head = restarted.head("executor-flight").expect("restart head");
     assert_eq!(head.snapshot_id(), incorporated.final_snapshot());
     assert_eq!(request.stop(), &StopCondition::NextChoice);
@@ -1721,6 +1730,7 @@ fn retained_measurement_trace_publishes_the_named_beam_objective() {
     let repository = Arc::new(CampaignRepository::new(
         blobs.clone(),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     let scenario = beam_objective_scenario();
     let metric = "beam-window.scheduler-events";
@@ -1972,7 +1982,11 @@ fn recover_complete_prepared_journal(
         blobs.clone(),
         metadata,
     );
-    let repository = Arc::new(CampaignRepository::new(backend, refs));
+    let repository = Arc::new(CampaignRepository::new(
+        backend,
+        refs,
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    ));
     let (lineage, _, _, admitted, candidate) =
         campaign_attempt_fixture(&repository, "prepared-recovery");
     let scenario = minimal_campaign_scenario();
@@ -2252,6 +2266,7 @@ fn stable_completed_journal_requires_matching_authenticated_roots_before_cleanup
             64 * 1024 * 1024,
         )),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     let (lineage, _, _, admitted, candidate) =
         campaign_attempt_fixture(&repository, "completed-prepared-cleanup");
@@ -2347,6 +2362,7 @@ fn incomplete_prepared_journal_fails_closed_without_guest_execution() {
             64 * 1024 * 1024,
         )),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     let (lineage, _, _, admitted, candidate) =
         campaign_attempt_fixture(&repository, "incomplete-prepared-recovery");
@@ -2440,6 +2456,7 @@ fn stable_journal_creation_failure_is_terminal_not_canceled() {
     let repository = Arc::new(CampaignRepository::new(
         backend,
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     let (lineage, _, _, admitted, candidate) =
         campaign_attempt_fixture(&repository, "stable-prepared-journal-failure");
@@ -2571,6 +2588,7 @@ fn repository_worker_rejects_branch_capture_before_model_execution() {
             64 * 1024 * 1024,
         )),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     let (lineage, _policy, branch, admitted, candidate) =
         campaign_attempt_fixture(&repository, "branch-materialized-start-capture");
@@ -2631,6 +2649,7 @@ fn raw_pause_restart_resolves_exact_materialized_start_capture() {
             64 * 1024 * 1024,
         )),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     let (lineage, attempt, configuration) =
         crucible_discovery_attempt_fixture(&repository, "capture-promotion-recovery");
@@ -2668,6 +2687,7 @@ fn raw_pause_restart_rejects_capture_for_another_configuration() {
             64 * 1024 * 1024,
         )),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     let (lineage, attempt, _configuration) =
         crucible_discovery_attempt_fixture(&repository, "capture-promotion-wrong-configuration");
@@ -2717,6 +2737,7 @@ fn raw_pause_restart_rejects_capture_for_a_branch_attempt() {
             64 * 1024 * 1024,
         )),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     let (lineage, _policy, branch, admitted, _candidate) =
         campaign_attempt_fixture(&repository, "capture-promotion-branch");
@@ -2754,6 +2775,7 @@ fn raw_pause_restart_rejects_an_inconsistent_execution_basis_before_repository_r
             64 * 1024 * 1024,
         )),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     let (lineage, _policy, _branch, admitted, _candidate) =
         campaign_attempt_fixture(&repository, "raw-pause-recovery");
@@ -2839,6 +2861,7 @@ fn production_restart_dispatch_replays_raw_roots_and_rejects_invalid_sources() {
             128 * 1024 * 1024,
         )),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     let (lineage, attempt) = production_discovery_attempt_fixture(
         &repository,
@@ -2937,6 +2960,7 @@ fn production_restart_dispatch_replays_raw_roots_and_rejects_invalid_sources() {
             64 * 1024 * 1024,
         )),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     let (foreign_lineage, foreign_attempt, _) =
         crucible_discovery_attempt_fixture(&foreign_repository, "foreign-production-restart");
@@ -3814,6 +3838,7 @@ fn store() -> CampaignExecutorStore {
     CampaignExecutorStore::new(Arc::new(CampaignRepository::new(
         Arc::new(MemoryBlobBackend::new("executor-pool", u64::MAX)),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     )))
 }
 

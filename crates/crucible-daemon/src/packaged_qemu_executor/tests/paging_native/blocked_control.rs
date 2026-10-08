@@ -94,34 +94,52 @@ impl QemuRamBacking for HeldBacking {
         self.backing.root_record()
     }
 
-    fn read_page_with_proof(
+    fn with_page_response(
         &self,
         region: &str,
         page: u64,
         boundary: &mut dyn FnMut()
             -> Result<(), crucible_qemu::ram_source::QemuRamReadBoundaryError>,
-    ) -> Result<(Vec<u8>, crucible_ram::PageProof), QemuRamSourceError> {
-        let result = self.backing.read_page_with_proof(region, page, boundary)?;
-        let action = self
-            .gate
-            .state
-            .lock()
-            .map_err(|_| QemuRamSourceError::Ownership)?
-            .action
-            .take();
-        if let Some(action) = action {
-            let ordinal = self
-                .root_record()
-                .topology()
-                .regions()
-                .iter()
-                .position(|candidate| candidate.id() == region)
-                .ok_or(QemuRamSourceError::Ownership)?;
-            self.gate
-                .control_while_held(action, ordinal, page, boundary)?;
+        consumer: &mut crucible_qemu::ram_source::QemuRamResponseConsumer<'_>,
+    ) -> Result<(), QemuRamSourceError> {
+        let mut first = None;
+        let result =
+            self.backing
+                .with_page_response(region, page, boundary, &mut |response, boundary| {
+                    if first.is_some() {
+                        return;
+                    }
+                    let outcome = (|| {
+                        let action = self
+                            .gate
+                            .state
+                            .lock()
+                            .map_err(|_| QemuRamSourceError::Ownership)?
+                            .action
+                            .take();
+                        if let Some(action) = action {
+                            let ordinal = self
+                                .root_record()
+                                .topology()
+                                .regions()
+                                .iter()
+                                .position(|candidate| candidate.id() == region)
+                                .ok_or(QemuRamSourceError::Ownership)?;
+                            self.gate
+                                .control_while_held(action, ordinal, page, boundary)?;
+                        }
+                        boundary()?;
+                        consumer(response, boundary);
+                        Ok(())
+                    })();
+                    if let Err(error) = outcome {
+                        first = Some(error);
+                    }
+                });
+        match first {
+            Some(error) => Err(error),
+            None => result,
         }
-        boundary()?;
-        Ok(result)
     }
 }
 

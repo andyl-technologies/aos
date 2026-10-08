@@ -26,10 +26,11 @@ impl StorePhysicalQuotaGuard for Quota {
     }
 }
 
+#[derive(Clone)]
 struct WholeOnlySource {
     access: CheckedReadAccess,
-    whole_attempts: AtomicUsize,
-    raw_attempts: AtomicUsize,
+    whole_attempts: Arc<AtomicUsize>,
+    raw_attempts: Arc<AtomicUsize>,
 }
 
 impl BlobSource for WholeOnlySource {
@@ -62,25 +63,24 @@ fn physical_owning_contract_never_retries_a_whole_only_or_opaque_child() {
     for access in [CheckedReadAccess::Whole, CheckedReadAccess::Unsupported] {
         let quota = Arc::new(Quota(FixtureResourceBudget::new(8, 4 * 1024 * 1024)));
         let caller = DecodeBudget::for_store(quota.clone()).unwrap();
-        let source = Arc::new(WholeOnlySource {
+        let source = WholeOnlySource {
             access,
-            whole_attempts: AtomicUsize::new(0),
-            raw_attempts: AtomicUsize::new(0),
-        });
+            whole_attempts: Arc::new(AtomicUsize::new(0)),
+            raw_attempts: Arc::new(AtomicUsize::new(0)),
+        };
         let resources = quota
             .reserve_resources(0, deferred_source_metadata_bytes() as u64)
             .unwrap();
         let credit = caller
             .reserve_scratch_bytes(deferred_source_metadata_bytes() as u64)
             .unwrap();
-        let wrapped = BlobHandle::new(Arc::new(PhysicalQuotaBlobSource {
+        let wrapped = BlobHandle::new(PhysicalQuotaBlobSource {
             handle: BlobHandle::new(source.clone()),
             guard: quota.clone(),
             reader_bytes: 0,
-            original: Some(caller.clone()),
             _credit: Some(credit),
             _resources: resources,
-        }));
+        });
         let retained = quota.0.usage().unwrap();
 
         let error = wrapped
