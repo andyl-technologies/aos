@@ -9,11 +9,11 @@
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use aos_sandbox_core::ProjectId;
+use aos_sandbox_core::{ObjectDigest, ProjectId};
 use ed25519_dalek::VerifyingKey;
 
 use crate::hierarchy::genesis_profile::SourceGenesisErrorV1;
-use crate::hierarchy::source_genesis::SourceTreeGenesisStateV1;
+use crate::hierarchy::source_genesis::{SourceTreeGenesisReceiptV1, SourceTreeGenesisStateV1};
 use crate::journal::{
     Journal, JournalRecord, JournalTransaction, ProtectedJournalNamesV1, RecordNamespace,
 };
@@ -37,6 +37,9 @@ use super::records::{
     FLOOR_PREFIX, INSTANCE_KEY, INTENT_PREFIX, PINS_KEY, RootSourceGenesisIntentRecordV1,
     SourceHierarchyFloorRecordV1, decode_instance, instance_bytes, project_key,
 };
+
+#[cfg(test)]
+mod tests;
 
 pub(super) const INSTANCE_TRANSACTION_DOMAIN: &[u8] =
     b"aos.sandbox.source-genesis.root-instance-transaction.v1\0";
@@ -585,10 +588,35 @@ impl RootSourceGenesisAuthorityV1 {
                 || &receipt.seed_packet() != accepted.acceptance.seed_packet()
                 || receipt.auth_packet() != accepted.acceptance.auth_packet()
             { return Err(SourceGenesisErrorV1::Conflict); }
-            SourceTreeGenesisIntentContextV1::new(self.source_uid, self.pins.digest(), accepted.acceptance.clone())?
-                .require_actual_receipt(receipt, self.intent(project)?.as_ref().map(RootSourceGenesisIntentRecordV1::nonce))?;
+            self.require_retained_project_genesis_receipt_v3(receipt)?;
         }
         Ok(())
+    }
+
+    // Root joins its own durable intent or settled floor. Source's independent
+    // replay instead joins its complete pending fence; a nonce is neither.
+    fn require_retained_project_genesis_receipt_v3(
+        &self,
+        receipt: &SourceTreeGenesisReceiptV1,
+    ) -> Result<(), SourceGenesisErrorV1> {
+        let accepted = self.accepted.as_ref().ok_or(SourceGenesisErrorV1::Stale)?;
+        let project = accepted.acceptance.project();
+        let intent = self.intent(project)?;
+        if let Some(intent) = intent.as_ref() {
+            require_acceptance(intent, accepted, self.source_uid)?;
+        }
+
+        let floor = if intent.is_none() {
+            self.floor(project)?
+        } else {
+            None
+        };
+        require_receipt_matches_retained_root(
+            receipt,
+            intent.as_ref(),
+            floor.as_ref(),
+            self.pins.digest(),
+        )
     }
 
     /// Accepts only the full-resource Global family on the same strict Root owner.
@@ -2246,6 +2274,32 @@ impl RootSourceGenesisAuthorityV1 {
             .map(SourceHierarchyFloorRecordV1::from_record_bytes)
             .transpose()
     }
+}
+
+// DATA-only comparisons: the caller retains Root, validates history and pins,
+// and checks the actual Controller acceptance before selecting these records.
+fn require_receipt_matches_retained_root(
+    receipt: &SourceTreeGenesisReceiptV1,
+    intent: Option<&RootSourceGenesisIntentRecordV1>,
+    floor: Option<&SourceHierarchyFloorRecordV1>,
+    roles: ObjectDigest,
+) -> Result<(), SourceGenesisErrorV1> {
+    match (intent, floor) {
+        (Some(intent), None) => {
+            if receipt.intent_digest() != intent.digest() || receipt.instance() != intent.instance()
+            {
+                return Err(SourceGenesisErrorV1::Conflict);
+            }
+        }
+        (None, Some(floor)) => {
+            let candidate = SourceHierarchyFloorRecordV1::new(receipt.clone(), roles)?;
+            if &candidate != floor {
+                return Err(SourceGenesisErrorV1::Conflict);
+            }
+        }
+        _ => return Err(SourceGenesisErrorV1::Conflict),
+    }
+    Ok(())
 }
 
 fn require_acceptance(
