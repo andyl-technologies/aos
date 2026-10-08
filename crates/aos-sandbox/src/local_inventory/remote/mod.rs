@@ -1,4 +1,4 @@
-//! Explicitly selected future placement, transport and ordered-watch adapters.
+//! Explicitly selected remote placement, transport, and protected orchestration.
 //!
 //! This module is absent without `multi-node`. Its adapters consume the local
 //! protected owner's validated views; they do not replace lease or complete
@@ -23,4 +23,19 @@ pub use placement::{
 pub use watch_service::{
     DormantOrderedWatchClientV1, DormantOrderedWatchServiceV1, DormantWatchClientOutcomeV1,
     DormantWatchReadOutcomeV1, MAX_DORMANT_WATCH_HISTORY,
+};
+
+pub use super::store_authority::remote::{
+    ProtectedAssignmentEffectReadyV1, ProtectedAssignmentRecoveryRequiredV1,
+    ProtectedAssignmentStoreCommitV1, ProtectedAssignmentWriteErrorV1,
+    ProtectedAssignmentWriteOutcomeV1, ProtectedAssignmentWriteResolutionV1,
+    ProtectedDestinationAssignmentRestoreV1, ProtectedMultiNodeEvidenceSessionV1,
+    ProtectedMultiNodeUpdateErrorV1, ProtectedOutboundNodeRequestV1,
+    ProtectedSnapshotArtifactRecoveryV1, ProtectedSnapshotChunkCommitOutcomeV1,
+    ProtectedSnapshotDependencyCommitOutcomeV1, ProtectedSnapshotDependencyRecoveryV1,
+    ProtectedSnapshotDestinationAuthorityOwnerV1, ProtectedSnapshotResumeReadyV1,
+    ProtectedSnapshotSourceAdmissionV1, ProtectedSnapshotTransferRolesV1,
+    ProtectedWatchArtifactRecoveryOutcomeV1, ProtectedWatchArtifactRecoveryV1,
+    ProtectedWatchBootstrapCommitOutcomeV1, ProtectedWatchCommitOutcomeV1,
+    ProtectedWatchResyncRequiredV1,
 };

@@ -15,10 +15,13 @@
 //!
 //! Placement, transport and ordered-watch adapters require `multi-node` and
 //! are selected through `local_inventory::remote`. The transport verifier
-//! retains its private feature-gated child to preserve custody. Mixed remote
-//! orchestration remains with the current store owner, and persistence codecs
-//! still use coordinator messages. This establishes module ownership, not an
-//! isolated ownership crate or coordinator-free generated-schema dependency graph.
+//! retains its private feature-gated child to preserve custody. Protected-store
+//! remote exchange, assignment, drain, watch writes, and destination transfer
+//! orchestration are feature-gated private children of that same owner. Local
+//! opener, inventory discovery, readback, and all retained-history checks remain
+//! available by default. Coordinator persistence DATA, shared session verifiers,
+//! and model helpers are retained; this is not a fully isolated ownership crate
+//! or a coordinator-free implementation graph.
 
 pub mod assignment;
 pub mod capability;
@@ -30,9 +33,9 @@ pub mod journal;
 mod protected_artifact_store;
 pub mod protocol;
 mod reducer_state;
-mod store_authority;
 #[cfg(feature = "multi-node")]
 pub mod remote;
+mod store_authority;
 
 pub use assignment::{
     AssignmentAcceptanceApplyOutcomeV1, AssignmentAcceptanceReducerV1, AssignmentIntentV1,
@@ -96,19 +99,8 @@ pub use reducer_state::{
     MultiNodeReducerStateV1, SnapshotTransferJournalStateV1, WatchJournalStateV1,
 };
 pub use store_authority::{
-    ProtectedAssignmentEffectReadyV1, ProtectedAssignmentRecoveryRequiredV1,
-    ProtectedAssignmentStoreCommitV1, ProtectedAssignmentWriteErrorV1,
-    ProtectedAssignmentWriteOutcomeV1, ProtectedAssignmentWriteResolutionV1,
-    ProtectedCheckpointCommitOutcomeV1, ProtectedDestinationAssignmentRestoreV1,
-    ProtectedMultiNodeAuthorityOpenErrorV1, ProtectedMultiNodeAuthorityOwnerV1,
-    ProtectedMultiNodeCurrentRecordV1, ProtectedMultiNodeEvidenceSessionV1,
-    ProtectedMultiNodeUpdateErrorV1, ProtectedOutboundNodeRequestV1,
-    ProtectedRecordCommitOutcomeV1, ProtectedSnapshotArtifactRecoveryV1,
-    ProtectedSnapshotChunkCommitOutcomeV1, ProtectedSnapshotDependencyCommitOutcomeV1,
-    ProtectedSnapshotDependencyRecoveryV1, ProtectedSnapshotDestinationAuthorityOwnerV1,
-    ProtectedSnapshotResumeReadyV1, ProtectedSnapshotSourceAdmissionV1,
-    ProtectedSnapshotTransferRolesV1, ProtectedStoreRecoveryOutcomeV1,
-    ProtectedStoreRecoveryRequiredV1, ProtectedWatchArtifactRecoveryOutcomeV1,
-    ProtectedWatchArtifactRecoveryV1, ProtectedWatchBootstrapCommitOutcomeV1,
-    ProtectedWatchCommitOutcomeV1, ProtectedWatchResyncRequiredV1,
+    ProtectedCheckpointCommitOutcomeV1, ProtectedMultiNodeAuthorityOpenErrorV1,
+    ProtectedMultiNodeAuthorityOwnerV1, ProtectedMultiNodeCurrentRecordV1,
+    ProtectedRecordCommitOutcomeV1, ProtectedStoreRecoveryOutcomeV1,
+    ProtectedStoreRecoveryRequiredV1,
 };
