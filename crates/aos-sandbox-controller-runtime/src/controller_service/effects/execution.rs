@@ -981,8 +981,7 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
 }
 
 /// Samples the original paired clock DATA and checked effect deadline.
-pub(in crate::controller_service) fn production_authority_effect_timing()
--> Option<AuthorityEffectAttemptTimingV1> {
+pub(in crate::controller_service) fn production_authority_effect_timing() -> Option<AuthorityEffectAttemptTimingV1> {
     let (host_boot_id, boottime_nanoseconds) = current_boot_and_boottime()?;
     let realtime = rustix::time::clock_gettime(rustix::time::ClockId::Realtime);
     let deadline = boottime_nanoseconds.checked_add(5_000_000_000)?;
@@ -1002,8 +1001,7 @@ pub(in crate::controller_service) fn production_authority_effect_timing()
 /// # Errors
 ///
 /// Rejects the original negative or overflowing realtime projection.
-pub(in crate::controller_service) fn current_lifecycle_time()
--> Result<LifecycleTimeV1, EffectFailure> {
+pub(in crate::controller_service) fn current_lifecycle_time() -> Result<LifecycleTimeV1, EffectFailure> {
     let realtime = rustix::time::clock_gettime(rustix::time::ClockId::Realtime);
     let seconds = u64::try_from(realtime.tv_sec).map_err(|_| {
         EffectFailure::Retryable("system realtime is outside the lifecycle range".to_owned())
