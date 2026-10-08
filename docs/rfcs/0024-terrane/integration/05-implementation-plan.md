@@ -1894,6 +1894,30 @@ Tokio-future cancellation. The thirteen existing scoped tests remain a
 byte-identical prefix. Both mandatory formats pass; compilation, the actual
 selected runtime corpus and the unchanged large-population gate remain pending.
 
+That frozen candidate now passes fresh SDK compilation, strict library and
+all-target Clippy. Compiled discovery contains 794 native library cases; the
+exact previous 54 regressions and four new witnesses each execute once and
+pass, with zero ignored cases, in 2.569 seconds. Independent review verifies
+all six original invocations, the actual passing-name counter, all twelve
+before/after source snapshots, 6,076 unchanged tracked contents and modes,
+and the selected executable captured before and after runtime. The source
+wrapper follows symlink contents and modes; clean Git separately preserves
+the tracked link targets. These focused results do not qualify publication.
+
+The single unchanged ordinary 1,024-entry witness fails after 71.643 seconds.
+Its original deadline explicitly rejects 43.783866096 seconds against the
+unchanged 30-second maximum. That execution installs 233 fresh outputs in
+thirty cohorts; the preceding candidate's 234-output count remains separate.
+Tracked installation takes 16.887083587 seconds and the final Raw
+acknowledgment interval takes 6.993096876 seconds. Durable staging is observed
+at 27.524723947 seconds of the original deadline. The subsequent history
+entry-to-return interval takes 15.820675950 seconds; the enclosing post-stage
+interval takes 16.103341643 seconds. Nested measurements are not additive,
+and separate executions establish no causal speedup. Baseline publication,
+maintenance and independent oracles are not reached; the other five required
+populations remain unrun. The original process is terminal, with no retry or
+source change. DRV-29 and the complete T1 exit remain unqualified.
+
 Reviewed private `85558972ae` adds six public format properties for the existing
 common Memo, closed index bindings and recipes, opaque index keys, and generic
 empty Nodes in explicit index roles. SDK compilation, strict library and
