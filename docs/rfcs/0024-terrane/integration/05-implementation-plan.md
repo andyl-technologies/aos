@@ -1781,6 +1781,21 @@ and the other interrupted prerequisites and unfinished SDK image supply no
 completed conformance outputs. All 6,074 captured source inputs remain unchanged;
 the original failure and actual per-case reports are retained without retry.
 The denied setup requires diagnosis before replacement qualification.
+Source diagnosis identifies revision-3 index publication on a fixture that
+selected Legacy authoring before installing its protected Guard. A late
+profile replacement would violate the existing Guard snapshot and is rejected.
+Reviewed private `767f5dd234` instead opts only two indexed tests into explicit
+current/property revision 3 and attribute revision 2 before the first Guard,
+native initialization and genuinely signed source. Both reopen paths retain
+that independently selected profile; the changed-ACL refusal changes only its
+original ACL. Legacy fixtures and every existing oracle remain unchanged.
+Both formats, SDK build and library Clippy pass, but all-target Clippy finds
+a missing optional field in the existing Legacy restore-copy initializer.
+That compiler failure is preserved; no inventory or runtime starts on it.
+Reviewed private `05e50903cb` adds only `authoring: None` to that initializer.
+All 6,074 tracked inputs, modes and symlink targets are independently verified;
+both formats and fresh SDK/library/all-target Clippy pass. Compiled discovery,
+the two actual indexed cases and owning collector qualification remain pending.
 GC-15, GC-16 and GC-29 also require D-82 copied-retirement and permanent-owner
 recovery. The current source implements their codecs and portable-copy
 registration, but no genuine copied or permanent-owner collector path.
@@ -1917,6 +1932,22 @@ and separate executions establish no causal speedup. Baseline publication,
 maintenance and independent oracles are not reached; the other five required
 populations remain unrun. The original process is terminal, with no retry or
 source change. DRV-29 and the complete T1 exit remain unqualified.
+
+Independent pairing of the original history interval's 609 complete held-GET
+scopes separates observation, catalog checking, member-body verification and
+final backend revalidation. Their interval unions are respectively
+3.972804657, 7.481632365, 0.774585248 and 4.821814172 seconds. Concurrent
+phase unions overlap: they are not additive exclusive time, physical I/O,
+CPU measurements or complete Guard authorization. Fresh selected state,
+actual shard/filter and container bytes, membership, current physical checks,
+Guard policy and post-await Original revalidation remain required. A reviewed
+two-file test-only loader profiler at private `a89a88aa90` separates awaited
+reads from local hash, decode, context/traversal and owner-binding work without
+changing ordered production operations. All 2,365 stripped production tokens
+match `6cc17e62af`; 6,077 tracked contents and modes are independently sealed,
+and both formats pass. Its diagnostic child field holds no authority and
+does not alter the Fetcher's existing field moves. Compilation and runtime
+qualification remain pending; no read reuse or optimization is qualified.
 
 Reviewed private `85558972ae` adds six public format properties for the existing
 common Memo, closed index bindings and recipes, opaque index keys, and generic
