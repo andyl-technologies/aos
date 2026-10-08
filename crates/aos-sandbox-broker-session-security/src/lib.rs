@@ -14,10 +14,10 @@
 //! no detached signer, caller-built authenticated request, or raw channel
 //! authority is exposed.
 //!
-//! [`controller_service`] retains the protected Controller integration and
-//! reconciliation above the controller core. Executable entry points, HTTP
-//! listeners, and service registration live in `aos-sandbox-services`; its
-//! assembly port receives opaque handlers and negative-only terminal loans.
+//! Protected Controller integration and reconciliation live above this crate
+//! in `aos-sandbox-controller-runtime`. Executable entry points, HTTP listeners,
+//! and service registration live in `aos-sandbox-services`; its assembly port
+//! receives opaque handlers and negative-only terminal loans.
 //! Brokers and Controller retain separate identities, state, and confinement.
 //!
 //! Broker-side execution reserves the authenticated request durably before
@@ -30,9 +30,7 @@
 //! method profile, and retain recovery custody before advertising readiness.
 //!
 //! [`manifest`] owns the fixed `AOSBSC01` format.
-//! Controller's private Cache/View integration binds public Cache consumers
-//! to independently authenticated View source projections and retains the
-//! fixed sealed project source roots. The private protected-files module pins
+//! The private protected-files module pins
 //! the endpoint directory and its three role-local files. The private
 //! self-execution module pins and revalidates the loading
 //! process. The private entropy module implements bounded kernel acquisition;
@@ -46,7 +44,7 @@
 
 #![cfg(target_os = "linux")]
 
-pub mod controller_service;
+pub mod controller_composition;
 mod dormant_handshake;
 mod endpoint;
 mod entropy;
@@ -62,7 +60,6 @@ mod host_consumer_cgroup_transfer;
 mod host_execution_handoff;
 mod host_mount_scope_identity_transfer;
 mod immutable_image;
-mod inventory_transport;
 pub mod manifest;
 pub mod ownership_authority_client;
 pub mod ownership_authority_runtime;
@@ -89,14 +86,12 @@ mod production_startup;
 )]
 mod protected_files;
 mod recovery;
-mod retained_exchange;
 #[allow(
     dead_code,
     reason = "sealed handshake boot access stays unreachable until P0-10"
 )]
 mod self_execution;
 pub mod source_genesis_flight;
-mod storage_create_preparation;
 mod storage_host_consumer_client;
 mod storage_host_output_readback;
 
@@ -155,13 +150,6 @@ pub use host_execution_handoff::HostExecutionHandoffErrorV1;
 pub use host_mount_scope_identity_transfer::{
     ProtectedHostMountScopeCurrentV1, ProtectedHostMountScopeIdentityTransferV1,
     ProtectedHostMountScopeIdentityV1,
-};
-pub use controller_service::inventory::{
-    DormantAtomicStorageInventoryCompletionV1, DormantAtomicStorageInventoryFinishProgressV1,
-    DormantAtomicStorageInventoryFinishRecoveryV1, DormantAtomicStorageInventoryPredecessorV1,
-    DormantHostRuntimeInventoryOwnerV1, DormantLifecycleInventoryQueryProgressV1,
-    DormantLifecycleInventoryQueryRecoveryV1, DormantMountLifecycleInventoryOwnerV1,
-    DormantNetworkLifecycleInventoryOwnerV1, DormantStorageLifecycleInventoryOwnerV1,
 };
 pub use manifest::{
     BROKER_SESSION_SECURITY_MANIFEST_BYTES, BrokerSessionManifestBindingV1,
@@ -225,7 +213,6 @@ pub use recovery::{
     ProtectedBrokerSessionFixedEndpointV1, ProtectedBrokerSessionInitializationRecoveryV1,
     ProtectedBrokerSessionInitializationResultV1,
 };
-pub use storage_create_preparation::AuthenticatedStorageCreatePreparationV1;
 pub use storage_host_consumer_client::{
     StorageHostConsumerClientErrorV1, StorageHostConsumerClientV1,
 };

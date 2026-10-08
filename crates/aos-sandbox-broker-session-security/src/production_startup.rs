@@ -28,7 +28,7 @@ use crate::{ProductionBrokerSessionActivationV1, ProtectedBrokerSessionFixedEndp
 
 /// Retains an original launch observation, not a currentness or TPM proof.
 #[derive(Clone)]
-pub(crate) struct Pid1LaunchImageV1 {
+pub struct Pid1LaunchImageV1 {
     endpoint: ProtectedBrokerSessionFixedEndpointV1,
     process: u32,
     file: LaunchImageFile,
@@ -1019,7 +1019,8 @@ impl Drop for AbortStartupCaptureUnwind {
 // This continuation is local (!Sync through FIRST6). Only successful existing
 // Arc owners are shared with runtime. Publisher/lower/Arc-allocation custody
 // exclusions are deliberate; no whole-role/drain guarantee is implied.
-pub(crate) struct ControllerStartupContinuationV1 {
+/// Retains the original Controller capture, admission, and startup failure destinations.
+pub struct ControllerStartupContinuationV1 {
     capture: ControllerStartupCaptureAttemptV1,
     returned: Option<CapturedControllerStartupV1>,
     root: Option<aos_sandbox::normal_root::ProductionControllerSelectedProfileAdmissionV1>,
@@ -1074,7 +1075,8 @@ impl std::fmt::Debug for ControllerContinuationFailureRef<'_> {
 }
 
 impl ControllerStartupContinuationV1 {
-    pub(crate) fn new(publisher: bool, nix: bool, issue: bool) -> Self {
+    /// Creates only the original empty startup capture destinations.
+    pub fn new(publisher: bool, nix: bool, issue: bool) -> Self {
         Self {
             capture: ControllerStartupCaptureAttemptV1::new(publisher, nix, false),
             returned: None,
@@ -1094,7 +1096,8 @@ impl ControllerStartupContinuationV1 {
         }
     }
 
-    pub(crate) fn capture_once(&mut self) -> bool {
+    /// Captures the original installed Controller startup once.
+    pub fn capture_once(&mut self) -> bool {
         if self.first_failure.is_some() || self.returned.is_some() || self.root.is_some() {
             self.first_failure.get_or_insert(ControllerContinuationFailure::Closed);
             return false;
@@ -1111,7 +1114,8 @@ impl ControllerStartupContinuationV1 {
         true
     }
 
-    pub(crate) fn admit_root_once(&mut self, uid: u32, gid: u32) -> bool {
+    /// Admits only the original captured Controller root.
+    pub fn admit_root_once(&mut self, uid: u32, gid: u32) -> bool {
         if self.first_failure.is_some()
             || self.root_completed
             || self.root.is_some()
@@ -1188,7 +1192,8 @@ impl ControllerStartupContinuationV1 {
         true
     }
 
-    pub(crate) fn require_source_delivery_absent(&mut self) -> bool {
+    /// Checks the original source-delivery absence without manufacturing it.
+    pub fn require_source_delivery_absent(&mut self) -> bool {
         if self.first_failure.is_some() || !self.root_completed {
             self.first_failure.get_or_insert(ControllerContinuationFailure::Closed);
             return false;
@@ -1204,7 +1209,8 @@ impl ControllerStartupContinuationV1 {
         }
     }
 
-    pub(crate) fn bind_launch_in_place(&mut self) -> bool {
+    /// Binds the original captured launch image in its existing destination.
+    pub fn bind_launch_in_place(&mut self) -> bool {
         if self.first_failure.is_some() || !self.root_completed {
             self.first_failure.get_or_insert(ControllerContinuationFailure::Closed);
             return false;
@@ -1218,7 +1224,8 @@ impl ControllerStartupContinuationV1 {
         true
     }
 
-    pub(crate) fn admit_nix_once(
+    /// Admits the original selected Nix startup without replacing its capture.
+    pub fn admit_nix_once(
         &mut self,
         uid: u32,
         gid: u32,
@@ -1259,34 +1266,41 @@ impl ControllerStartupContinuationV1 {
         true
     }
 
-    pub(crate) fn profile(&self) -> Option<&ProductionControllerNormalRootProfileV1> {
+    /// Borrows the original admitted Controller profile.
+    pub fn profile(&self) -> Option<&ProductionControllerNormalRootProfileV1> {
         self.profile.as_deref()
     }
 
-    pub(crate) fn take_resource_opening(
+    /// Moves the original admitted resource opening into its existing consumer.
+    pub fn take_resource_opening(
         &mut self,
     ) -> Option<aos_sandbox::ControllerResourceBankOpeningV1> {
         self.resource_opening.take()
     }
 
-    pub(crate) fn profile_share(&self) -> Option<Arc<ProductionControllerNormalRootProfileV1>> {
+    /// Shares only the original admitted Controller profile.
+    pub fn profile_share(&self) -> Option<Arc<ProductionControllerNormalRootProfileV1>> {
         self.profile.clone()
     }
 
-    pub(crate) fn selector_share(&self) -> Option<Arc<aos_sandbox::production_operation_compiler::ControllerNixStartRecipeSelectorV2>> {
+    /// Shares only the original retained Nix selector.
+    pub fn selector_share(&self) -> Option<Arc<aos_sandbox::production_operation_compiler::ControllerNixStartRecipeSelectorV2>> {
         self.selector.clone()
     }
 
-    pub(crate) fn image_share(&self) -> Option<Pid1LaunchImageV1> {
+    /// Shares only the original captured launch observation.
+    pub fn image_share(&self) -> Option<Pid1LaunchImageV1> {
         self.image.clone()
     }
 
     // The unchanged consuming publisher lower path remains a functional gap.
-    pub(crate) fn take_publisher(&mut self) -> Option<OwnedFd> {
+    /// Moves the original captured publisher descriptor without admitting a substitute.
+    pub fn take_publisher(&mut self) -> Option<OwnedFd> {
         self.publisher.take()
     }
 
-    pub(crate) fn complete_worker_handoff(&mut self) {
+    /// Settles the original local startup lifetime after its worker handoff.
+    pub fn complete_worker_handoff(&mut self) {
         // Called only after actual successful spawn. Parent Arc shares remain
         // resident through later startup errors; no drain is inferred.
         if self.first_failure.is_some() || !self.root_completed || self.nix.is_some() {
@@ -1295,13 +1309,15 @@ impl ControllerStartupContinuationV1 {
         self.armed = false;
     }
 
-    pub(crate) fn complete_issue_finish(&mut self) {
+    /// Settles the original local startup lifetime after Core's same-flight finish.
+    pub fn complete_issue_finish(&mut self) {
         // Called only after Core's SAME-flight Finish, without another Root
         // predicate. This is local lifetime settlement, never physical drain.
         self.armed = false;
     }
 
-    pub(crate) fn must_retain_failure(&self) -> bool {
+    /// Observes whether the original startup custody must remain resident.
+    pub fn must_retain_failure(&self) -> bool {
         self.armed || self.profile.is_some() || self.selector.is_some() || self.image.is_some()
     }
 
@@ -1310,12 +1326,13 @@ impl ControllerStartupContinuationV1 {
     /// The application parks its actual typed failure before this call. Earlier
     /// capture/admission failures keep precedence and all resident custody stays
     /// armed through the unchanged process exit.
-    pub(crate) fn terminate_runtime_refusal(&mut self) -> ! {
+    pub fn terminate_runtime_refusal(&mut self) -> ! {
         self.first_failure.get_or_insert(ControllerContinuationFailure::RuntimeRefused);
         self.terminate_failed()
     }
 
-    pub(crate) fn terminate_failed(&mut self) -> ! {
+    /// Terminates with the original startup failure and resident custody.
+    pub fn terminate_failed(&mut self) -> ! {
         // Diagnostic unwinding must not release post-handoff parent custody.
         self.armed = true;
 

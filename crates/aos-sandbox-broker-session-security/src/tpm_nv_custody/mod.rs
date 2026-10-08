@@ -32,7 +32,7 @@ pub(crate) use floor::{
 
 // Sibling owners share only canonical DATA, never physical or durable permits.
 pub(crate) use floor::{
-    CHECKPOINT_BYTES, FloorCheckpointV1, FloorCutV1, FloorEndpointV1, FloorErrorV1,
+    CHECKPOINT_BYTES, FloorCheckpointV1, FloorCutV1, FloorEndpointV1,
     FloorIntentV1, FloorProfileV1, FloorRecoveryV1, HostFloorCheckpointDataV1,
     HostFloorIntentDataV1, INTENT_BYTES, NV_ATTRIBUTES_DEFINED, NV_ATTRIBUTES_WRITTEN,
     PROFILE_BYTES, broker_cut_from_records_v1, broker_transaction_digest_v1, hash_parts,
@@ -42,6 +42,8 @@ pub(crate) use floor::{
     online_cut_from_records_v1, online_transaction_digest_v1,
     FloorProfileDataV1, FloorCheckpointDataV1, FloorIntentDataV1, reconcile_floor_data_v1,
 };
+
+pub use floor::FloorErrorV1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum NvCustodyEndpointV1 {

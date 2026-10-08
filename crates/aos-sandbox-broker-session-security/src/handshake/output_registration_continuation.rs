@@ -49,16 +49,17 @@ impl OriginalOutputRequestIdentityV1 {
     }
 }
 
+/// Reports a negative preparation refusal while original custody stays resident.
 #[derive(Debug, thiserror::Error)]
 #[error("original output preparation is closed; its custody remains resident")]
-pub(crate) struct OutputPreparationClosedV1;
+pub struct OutputPreparationClosedV1;
 
 #[derive(Debug, thiserror::Error)]
 #[error("original output witness cause requires its resident Session loan")]
 struct OutputWitnessUnavailableV1;
 
 /// Owns original transport results separately from the Session it will borrow.
-pub(crate) struct OutputPreparationCustodyV1 {
+pub struct OutputPreparationCustodyV1 {
     original_request: Option<OriginalOutputRequestIdentityV1>,
     original_head: Option<[u8; 32]>,
     encoded: [Option<Result<Vec<u8>, ProtocolValidationError>>; 2],
@@ -73,7 +74,8 @@ pub(crate) struct OutputPreparationCustodyV1 {
 }
 
 impl OutputPreparationCustodyV1 {
-    pub(crate) fn empty() -> Self {
+    /// Creates only empty result custody without request or authority admission.
+    pub fn empty() -> Self {
         Self {
             original_request: None,
             original_head: None,
@@ -128,11 +130,13 @@ impl OutputPreparationCustodyV1 {
         self.postcheck_debt.as_ref().map(|error| error as &dyn std::error::Error)
     }
 
-    pub(crate) fn has_postcheck_debt(&self) -> bool {
+    /// Observes whether the original retained postcheck debt is present.
+    pub fn has_postcheck_debt(&self) -> bool {
         self.witness_postcheck_debt || self.postcheck_debt.is_some()
     }
 
-    pub(crate) fn record(&self, stage: u32) -> Option<&StorageOutputRegistrationPreparationV1> {
+    /// Borrows the original decoded preparation record for the requested stage.
+    pub fn record(&self, stage: u32) -> Option<&StorageOutputRegistrationPreparationV1> {
         let index = stage_index(stage)?;
         self.decoded[index].as_ref()?.as_ref().ok()
     }
@@ -150,7 +154,7 @@ impl OutputPreparationCustodyV1 {
 }
 
 /// Borrows the real pending writer/socket; Drop never releases or replaces them.
-pub(crate) struct HeldOutputPreparationV1<'session> {
+pub struct HeldOutputPreparationV1<'session> {
     session: &'session mut DormantAuthenticatedBrokerSessionV1,
     state: &'session mut OutputPreparationCustodyV1,
     completed_turn: bool,
@@ -175,7 +179,11 @@ impl<'session> HeldOutputPreparationV1<'session> {
         }
     }
 
-    pub(crate) fn original_head(
+    /// Observes the original protected preparation head under its same loan.
+    ///
+    /// # Errors
+    /// Rejects a closed or mismatched request, changed witnesses/journal head, or an unavailable preparation head.
+    pub fn original_head(
         &mut self,
         request: &AuthenticatedBrokerMethodRequestV1,
     ) -> Result<[u8; 32], OutputPreparationClosedV1> {
@@ -226,7 +234,11 @@ impl<'session> HeldOutputPreparationV1<'session> {
         }
     }
 
-    pub(crate) fn send(
+    /// Sends the original preparation record under its existing borrowed custody.
+    ///
+    /// # Errors
+    /// Rejects wrong or repeated stages, request/head mismatches, encoding/send failures, or failed custody bookends.
+    pub fn send(
         &mut self,
         request: &AuthenticatedBrokerMethodRequestV1,
         record: &StorageOutputRegistrationPreparationV1,
@@ -270,7 +282,11 @@ impl<'session> HeldOutputPreparationV1<'session> {
         }
     }
 
-    pub(crate) fn receive(
+    /// Receives the original preparation stage into its same retained destination.
+    ///
+    /// # Errors
+    /// Rejects wrong or repeated stages, receive/decode failures, request mismatches, or failed custody bookends.
+    pub fn receive(
         &mut self,
         request: &AuthenticatedBrokerMethodRequestV1,
         stage: u32,
@@ -348,7 +364,10 @@ impl<'session> HeldOutputPreparationV1<'session> {
     }
 
     /// Ends only this successful short loan; it does not retire the request.
-    pub(crate) fn finish_turn(
+    ///
+    /// # Errors
+    /// Rejects a closed or mismatched request, changed witnesses, or a changed protected preparation head.
+    pub fn finish_turn(
         mut self,
         request: &AuthenticatedBrokerMethodRequestV1,
     ) -> Result<(), OutputPreparationClosedV1> {
@@ -451,7 +470,7 @@ mod tests {
 /// Owns the same authenticated client request across preparation and terminal CAS.
 /// Protocol engines consume a gate/advancement once; they never take/reinsert a
 /// Session or replace a failed request. Complete native records stay resident.
-pub(crate) struct OriginalOutputClientFlightV1 {
+pub struct OriginalOutputClientFlightV1 {
     pub(crate) coordinates: Option<Result<crate::DormantBrokerRequestCoordinatesV1, BrokerSessionSecurityError>>,
     prepared: Option<Result<(AuthenticatedBrokerMethodRequestV1, bool), BrokerSessionSecurityError>>,
     initialization: Option<Result<crate::ProtectedBrokerSessionInitializationResultV1, BrokerSessionSecurityError>>,
@@ -480,7 +499,8 @@ enum ClientWitnessSiteV1 {
 }
 
 impl OriginalOutputClientFlightV1 {
-    pub(crate) fn empty() -> Self {
+    /// Creates only empty result custody without request or authority admission.
+    pub fn empty() -> Self {
         Self {
             coordinates: None,
             prepared: None,
@@ -499,7 +519,13 @@ impl OriginalOutputClientFlightV1 {
         }
     }
 
-    pub(crate) fn request(&self) -> Option<&AuthenticatedBrokerMethodRequestV1> {
+    /// Borrows the original parked coordinates or their actual preparation error.
+    pub fn coordinates(&self) -> Option<&Result<crate::DormantBrokerRequestCoordinatesV1, BrokerSessionSecurityError>> {
+        self.coordinates.as_ref()
+    }
+
+    /// Borrows the original authenticated request without releasing its flight.
+    pub fn request(&self) -> Option<&AuthenticatedBrokerMethodRequestV1> {
         Some(&self.prepared.as_ref()?.as_ref().ok()?.0)
     }
 
@@ -583,7 +609,8 @@ impl OriginalOutputClientFlightV1 {
         self.postcheck_debt.as_ref().map(|error| error as &dyn std::error::Error)
     }
 
-    pub(crate) fn has_postcheck_debt(&self) -> bool {
+    /// Observes whether the original retained postcheck debt is present.
+    pub fn has_postcheck_debt(&self) -> bool {
         self.witness_postcheck_debt || self.postcheck_debt.is_some()
     }
 

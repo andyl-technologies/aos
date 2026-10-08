@@ -63,7 +63,8 @@ pub enum BrokerSessionSecurityError {
 }
 
 impl BrokerSessionSecurityError {
-    pub(crate) const fn manifest(field: &'static str) -> Self {
+    /// Constructs a redacted manifest failure from its stable field class.
+    pub const fn manifest(field: &'static str) -> Self {
         Self::Manifest { field }
     }
 

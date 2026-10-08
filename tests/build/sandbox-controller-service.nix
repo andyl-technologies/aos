@@ -5,7 +5,7 @@
 }: let
   moduleSource = builtins.readFile ../../modules/sandbox/controller-service.nix;
   hostModuleSource = builtins.readFile ../../modules/sandbox/host-broker.nix;
-  runtimeSource = builtins.readFile ../../crates/aos-sandbox-broker-session-security/src/controller_service.rs;
+  runtimeSource = builtins.readFile ../../crates/aos-sandbox-controller-runtime/src/controller_service.rs;
   diagnosticSource = builtins.readFile ../../crates/aos-sandbox-services/src/controller/diagnostic.rs;
   assemblySource = builtins.readFile ../../crates/aos-sandbox-services/src/controller.rs;
   journalSource = builtins.readFile ../../crates/aos-sandbox/src/controller_service/journal.rs;
@@ -293,7 +293,7 @@ in
   assert requires ''--frozen --offline'' packageSource;
   assert requires ''-p aos-sandbox-services --bin aos-sandboxd'' packageSource;
   assert requires "cargoTestFlags =" packageSource;
-  assert requires "-p aos-sandbox-services -p aos-sandbox -p aos-sandbox-broker-session-security" packageSource;
+  assert requires "-p aos-sandbox-services -p aos-sandbox -p aos-sandbox-broker-session-security -p aos-sandbox-controller-runtime" packageSource;
     pkgs.mkDerivation {
       pname = "sandbox-controller-service-source-contract";
       version = "0";

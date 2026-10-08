@@ -30,12 +30,12 @@ pub(crate) use tpm_floor::{
     require_broker_floor_owner_v1, require_lock_ack_v2,
 };
 pub(crate) use tpm_floor::ModePinV1;
-pub(crate) use storage_inventory_archive::ArchivedStorageInventoryHeadV1;
+pub use storage_inventory_archive::ArchivedStorageInventoryHeadV1;
 
 pub(crate) use historical_checkpoint::HistoricalSessionCheckpointV1;
 use owner::JournalOwnerV1;
 pub(crate) use pending_request::ProtectedPendingBrokerRequestCutV1;
-pub(crate) use original_create_failure::RetainedFailedCreateOriginalsDataV3;
+pub use original_create_failure::RetainedFailedCreateOriginalsDataV3;
 
 use std::path::{Path, PathBuf};
 
@@ -244,22 +244,25 @@ pub(crate) enum ProtectedVerifiedAtomicStorageHistoryV1 {
 /// This historical readback cannot send, reobserve Guest arguments, or settle
 /// Controller Create. Its signed identity must still be joined to a fresh
 /// authenticated method-39/40 Host marker under both owners' currentness.
-pub(crate) struct AuthenticatedOriginalHostArgumentArchiveV1 {
+pub struct AuthenticatedOriginalHostArgumentArchiveV1 {
     source: ControllerExecutionArgumentAttemptV1,
     request: AuthenticatedBrokerMethodRequestV1,
     archive_head: [u8; 32],
 }
 
 impl AuthenticatedOriginalHostArgumentArchiveV1 {
-    pub(crate) const fn source(&self) -> &ControllerExecutionArgumentAttemptV1 {
+    /// Borrows the original reauthenticated Host argument source.
+    pub const fn source(&self) -> &ControllerExecutionArgumentAttemptV1 {
         &self.source
     }
 
-    pub(crate) const fn request(&self) -> &AuthenticatedBrokerMethodRequestV1 {
+    /// Borrows the original authenticated request without releasing its flight.
+    pub const fn request(&self) -> &AuthenticatedBrokerMethodRequestV1 {
         &self.request
     }
 
-    pub(crate) const fn archive_head(&self) -> [u8; 32] {
+    /// Observes the original protected archive head as comparison DATA.
+    pub const fn archive_head(&self) -> [u8; 32] {
         self.archive_head
     }
 
@@ -285,22 +288,25 @@ impl AuthenticatedOriginalHostArgumentArchiveV1 {
 }
 
 /// Retains the typed identity-only join, without Controller settlement authority.
-pub(crate) struct AuthenticatedOriginalHostNoApplyJoinV1 {
+pub struct AuthenticatedOriginalHostNoApplyJoinV1 {
     original: AuthenticatedOriginalHostArgumentArchiveV1,
     no_apply_outcome: AuthenticatedBrokerMethodOutcomeV1,
     no_apply_record: HostExecutionNoApplyRecordV1,
 }
 
 impl AuthenticatedOriginalHostNoApplyJoinV1 {
-    pub(crate) const fn original(&self) -> &AuthenticatedOriginalHostArgumentArchiveV1 {
+    /// Borrows the original authenticated Host argument archive.
+    pub const fn original(&self) -> &AuthenticatedOriginalHostArgumentArchiveV1 {
         &self.original
     }
 
-    pub(crate) const fn no_apply_outcome(&self) -> &AuthenticatedBrokerMethodOutcomeV1 {
+    /// Borrows the original authenticated Host no-apply outcome.
+    pub const fn no_apply_outcome(&self) -> &AuthenticatedBrokerMethodOutcomeV1 {
         &self.no_apply_outcome
     }
 
-    pub(crate) const fn no_apply_record(&self) -> HostExecutionNoApplyRecordV1 {
+    /// Observes the original checked no-apply record as comparison DATA.
+    pub const fn no_apply_record(&self) -> HostExecutionNoApplyRecordV1 {
         self.no_apply_record
     }
 }
@@ -1540,7 +1546,10 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
     }
 
     /// Carries only the actual startup observation into its exact Storage role.
-    pub(crate) fn retain_launch_image(
+    ///
+    /// # Errors
+    /// Rejects a non-Storage endpoint or a launch observation that does not match its exact fixed role.
+    pub fn retain_launch_image(
         mut self,
         image: Option<crate::production_startup::Pid1LaunchImageV1>,
     ) -> Result<Self, BrokerSessionSecurityError> {

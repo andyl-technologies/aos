@@ -73,7 +73,7 @@
     + lib.concatStringsSep " " (map (bin: "--bin ${bin}") roleBins.${role}))
   serviceRoles;
   roleTestCommands = map (role: "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${roleFlags role} ${roleTestPackages role}") serviceRoles;
-  coreTestCommand = "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${controllerRoleFlags} -p aos-sandbox -p aos-sandbox-broker-session-security";
+  coreTestCommand = "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${controllerRoleFlags} -p aos-sandbox -p aos-sandbox-broker-session-security -p aos-sandbox-controller-runtime";
   onlineInputs = lib.optionals onlineSelected [nixOnlineStoreReader aos-nix-runtime-tpm-helpers];
   workspaceCargo = import ./aos/_workspace-cargo.nix {inherit lib fetchCargoVendor;};
   inherit (workspaceCargo) src cargoDeps;
@@ -118,10 +118,10 @@ in
       cargoFlags = "${controllerRoleFlags} -p aos-sandbox-services --bin aos-sandboxd";
       checkType = "debug";
       # The Controller role and retained integration suites keep their own tests.
-      cargoTestFlags = "${controllerRoleFlags} -p aos-sandbox-services -p aos-sandbox -p aos-sandbox-broker-session-security";
+      cargoTestFlags = "${controllerRoleFlags} -p aos-sandbox-services -p aos-sandbox -p aos-sandbox-broker-session-security -p aos-sandbox-controller-runtime";
       cargoTestFlagSets =
         [
-          "${controllerRoleFlags} -p aos-sandbox-services -p aos-sandbox -p aos-sandbox-broker-session-security"
+          "${controllerRoleFlags} -p aos-sandbox-services -p aos-sandbox -p aos-sandbox-broker-session-security -p aos-sandbox-controller-runtime"
         ]
         ++ map (role: "${roleFlags role} ${roleTestPackages role}")
         (lib.filter (role: role != "controller") serviceRoles);

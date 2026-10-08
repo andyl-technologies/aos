@@ -55,15 +55,16 @@ mod role_direction;
 use role_direction::request_direction_for_endpoint;
 
 pub(crate) use journal::{
-    ArchivedStorageInventoryHeadV1, AuthenticatedOriginalHostNoApplyJoinV1,
     HistoricalSessionCheckpointV1, ProtectedBrokerReceivedRequestAdmissionV1,
     ProtectedBrokerSessionOwnerV1, ProtectedPendingBrokerRequestCutV1,
     ProtectedPriorAtomicStorageHistoryV1, ProtectedPriorTerminalExchangeV1,
-    ProtectedVerifiedAtomicStorageHistoryV1, RetainedFailedCreateOriginalsDataV3,
+    ProtectedVerifiedAtomicStorageHistoryV1,
 };
 pub(crate) use journal::{FixedEndpointCustodyV1, ProtectedBrokerSessionJournalV1};
 pub(crate) use journal::BrokerMainOpenV1;
 pub use journal::{
+    ArchivedStorageInventoryHeadV1, AuthenticatedOriginalHostArgumentArchiveV1,
+    AuthenticatedOriginalHostNoApplyJoinV1, RetainedFailedCreateOriginalsDataV3,
     ProtectedBrokerOutcomeCommitRecoveryV1, ProtectedBrokerOutcomeCommitResultV1,
     ProtectedBrokerRequestCommitRecoveryV1, ProtectedBrokerRequestCommitResultV1,
     ProtectedBrokerSessionFixedCustodyV1, ProtectedBrokerSessionFixedEndpointV1,
@@ -1000,6 +1001,20 @@ pub struct ProtectedBrokerOutcomeCurrentnessOwnerV1 {
     pub(super) qualification_record_commitment: Option<[u8; 32]>,
 }
 
+impl ProtectedBrokerOutcomeCurrentnessOwnerV1 {
+    /// Borrows the authenticated outcome DATA without releasing its currentness owner.
+    pub const fn authenticated_outcome(&self) -> &AuthenticatedBrokerMethodOutcomeV1 {
+        &self.outcome
+    }
+
+    /// Compares the original protected context and transcript without exposing them.
+    ///
+    /// This equality observation supplies no live validation or currentness grant.
+    pub fn same_original_context(&self, other: &Self) -> bool {
+        !(self.context != other.context || self.transcript != other.transcript)
+    }
+}
+
 /// Borrows the sole protected journal owner after an exact currentness sandwich.
 ///
 /// Keeping this token alive keeps the mutable journal-owner borrow live through
@@ -1016,7 +1031,8 @@ impl ProtectedBrokerOutcomeCurrentV1<'_> {
         &self.owner.outcome
     }
 
-    pub(crate) fn into_currentness_owner(self) -> ProtectedBrokerOutcomeCurrentnessOwnerV1 {
+    /// Releases the borrow while retaining the original terminal currentness owner.
+    pub fn into_currentness_owner(self) -> ProtectedBrokerOutcomeCurrentnessOwnerV1 {
         self.owner
     }
 
@@ -1026,7 +1042,7 @@ impl ProtectedBrokerOutcomeCurrentV1<'_> {
     ///
     /// Returns an error unless the protected journal, endpoint context,
     /// transcript, terminal packet, and pidfd-backed peer remain exact.
-    pub(crate) fn revalidate(&mut self) -> Result<(), BrokerSessionSecurityError> {
+    pub fn revalidate(&mut self) -> Result<(), BrokerSessionSecurityError> {
         self.authority
             .validate_broker_outcome(&self.owner, self.connection_peer)
     }

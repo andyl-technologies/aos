@@ -27,19 +27,19 @@ use super::{
 };
 
 /// Retains complete selected history bytes without a live continuation permit.
-pub(crate) struct RetainedFailedCreateOriginalsDataV3 {
+pub struct RetainedFailedCreateOriginalsDataV3 {
     bundle: Vec<u8>,
     historical_join: AuthenticatedOriginalHostNoApplyJoinV1,
 }
 
 impl RetainedFailedCreateOriginalsDataV3 {
     /// Borrows the exact bounded AOSCFH04 encoding for immutable Root archival.
-    pub(crate) fn bundle(&self) -> &[u8] {
+    pub fn bundle(&self) -> &[u8] {
         &self.bundle
     }
 
     /// Borrows the genuine historical H/T identity join, never current authority.
-    pub(crate) const fn historical_join(&self) -> &AuthenticatedOriginalHostNoApplyJoinV1 {
+    pub const fn historical_join(&self) -> &AuthenticatedOriginalHostNoApplyJoinV1 {
         &self.historical_join
     }
 }

@@ -67,7 +67,7 @@ fn retirement_leaf(candidates: &[RetirementCandidate]) -> Option<&RetirementCand
 }
 
 /// Classifies only the exact signed inventory immediately after a terminal group.
-pub(crate) struct ArchivedStorageInventoryHeadV1 {
+pub struct ArchivedStorageInventoryHeadV1 {
     pub(crate) inventory_request_id: [u8; 16],
     pub(crate) inventory_request_digest: [u8; 32],
     pub(crate) inventory_request_packet: Vec<u8>,
@@ -75,6 +75,21 @@ pub(crate) struct ArchivedStorageInventoryHeadV1 {
     pub(crate) archive_digest: [u8; 32],
     pub(crate) terminal_packet: Option<Vec<u8>>,
     pub(crate) fresh: bool,
+}
+
+impl ArchivedStorageInventoryHeadV1 {
+    /// Moves every original buffer into inert DATA without minting archive custody.
+    pub fn into_data(self) -> crate::controller_composition::ArchivedStorageInventoryHeadDataV1 {
+        crate::controller_composition::ArchivedStorageInventoryHeadDataV1 {
+            inventory_request_id: self.inventory_request_id,
+            inventory_request_digest: self.inventory_request_digest,
+            inventory_request_packet: self.inventory_request_packet,
+            original_head: self.original_head,
+            archive_digest: self.archive_digest,
+            terminal_packet: self.terminal_packet,
+            fresh: self.fresh,
+        }
+    }
 }
 
 pub(super) struct StorageInventoryArchiveV1 {

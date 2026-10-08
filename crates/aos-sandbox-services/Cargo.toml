@@ -9,8 +9,8 @@ autobins = false
 default = []
 controller = [
     "dep:aos-proto",
+    "dep:aos-sandbox-controller-runtime",
     "dep:aos-sandbox",
-    "dep:aos-sandbox-broker-session-security",
     "dep:axum",
     "dep:connectrpc",
     "dep:rustix",
@@ -92,8 +92,12 @@ source-provider = [
 runtime-publisher = ["dep:aos-sandbox", "dep:aos-sandbox-broker-session-security"]
 nix-provision = ["dep:aos-sandbox", "dep:aos-sandbox-broker-session-security"]
 nix = ["dep:aos-sandbox-broker-session-security", "aos-sandbox-broker-session-security/online-nix"]
-online-nix = ["aos-sandbox-broker-session-security?/online-nix"]
+online-nix = [
+    "aos-sandbox-broker-session-security?/online-nix",
+    "aos-sandbox-controller-runtime?/online-nix",
+]
 kernel-tests = [
+    "aos-sandbox-controller-runtime?/kernel-tests",
     "aos-sandbox-broker-session-security?/kernel-tests",
     "dep:aos-sandbox-core",
     "dep:aos-sandbox-protocol",
@@ -109,6 +113,7 @@ aos-proto = { workspace = true, optional = true }
 aos-sandbox = { workspace = true, optional = true }
 aos-sandbox-broker-session-security = { workspace = true, optional = true }
 aos-sandbox-cache-signer = { workspace = true, optional = true }
+aos-sandbox-controller-runtime = { workspace = true, optional = true }
 aos-sandbox-core = { workspace = true, optional = true }
 aos-sandbox-host = { workspace = true, optional = true }
 aos-sandbox-linux = { workspace = true, optional = true }

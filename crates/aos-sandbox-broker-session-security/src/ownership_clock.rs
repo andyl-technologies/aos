@@ -8,7 +8,7 @@ use aos_sandbox_core::{RawClockProvenance, RawPairedClockSample};
 use aos_sandbox_linux::boot::KernelBootId;
 
 /// Names the unchanged raw ownership-clock observation provenance.
-pub(crate) const CLOCK_PROVENANCE: [u8; 16] = *b"AOSOWNCTRLCLKV1!";
+pub const CLOCK_PROVENANCE: [u8; 16] = *b"AOSOWNCTRLCLKV1!";
 
 /// Samples paired host clocks without accepting clock facts from a caller.
 ///
@@ -16,7 +16,7 @@ pub(crate) const CLOCK_PROVENANCE: [u8; 16] = *b"AOSOWNCTRLCLKV1!";
 ///
 /// Returns an error if the boot identity cannot be read or changes across the
 /// samples, elapsed time is unrepresentable, or raw sample validation fails.
-pub(crate) fn sample_ownership_clock() -> Result<RawPairedClockSample, OwnershipClockObservationError> {
+pub fn sample_ownership_clock() -> Result<RawPairedClockSample, OwnershipClockObservationError> {
     let boot_before = KernelBootId::current()
         .map_err(|_| OwnershipClockObservationError)?
         .into_bytes();

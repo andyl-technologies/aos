@@ -101,7 +101,7 @@ pub(crate) enum FloorRecoveryV1 {
 
 /// Reports the original redacted Broker floor failure categories.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-pub(crate) enum FloorErrorV1 {
+pub enum FloorErrorV1 {
     /// The fixed framing, fields or arithmetic are noncanonical.
     #[error("TPM floor encoding is noncanonical")]
     Encoding,

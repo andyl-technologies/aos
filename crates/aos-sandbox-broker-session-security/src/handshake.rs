@@ -1116,11 +1116,14 @@ struct AuthenticatedClientWitnessesV1 {
     first_failure: Option<ClientWitnessFailureV1>,
 }
 
+/// Identifies the original negative witness-check frontier as diagnostic DATA.
 #[derive(Clone, Copy, Eq, PartialEq)]
-pub(crate) enum OutputCurrentnessBoundaryV1 {
+pub enum OutputCurrentnessBoundaryV1 {
+    /// Records refusal before the original action.
     BeforeAction,
+    /// Records refusal after the original action.
     PostAction,
-    // A previous native protected postcheck already owns earlier debt.
+    /// Preserves earlier debt already owned by a native protected postcheck.
     PostProtectedFailure,
 }
 
@@ -1260,14 +1263,14 @@ enum HandshakeCompletionV1 {
 /// callers derive it once at their old handshake boundary and retain it
 /// through every cold-open phase; no lower phase manufactures a new cutoff.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct OriginalBrokerColdDeadlineV1(u64);
+pub struct OriginalBrokerColdDeadlineV1(u64);
 
 impl OriginalBrokerColdDeadlineV1 {
     /// Samples the installed Controller's original ten-second cutoff once.
     ///
     /// # Errors
     /// Returns the existing transport projection for clock/overflow failure.
-    pub(crate) fn controller() -> Result<Self, crate::DormantBrokerSessionHandshakeErrorV1> {
+    pub fn controller() -> Result<Self, crate::DormantBrokerSessionHandshakeErrorV1> {
         crate::production_deadline_after(std::time::Duration::from_secs(10))
             .map(Self)
             .map_err(|_| crate::DormantBrokerSessionHandshakeErrorV1::Transport)
@@ -1275,7 +1278,11 @@ impl OriginalBrokerColdDeadlineV1 {
 
     // Samples the same fixed ten-second handshake bound once and intersects
     // it with the actual original Root flight. Neither cutoff is renewed.
-    pub(crate) fn git_coverage(original_root_cut: u64)
+    /// Intersects the original fixed handshake cutoff with the original Root cutoff.
+    ///
+    /// # Errors
+    /// Returns the fixed cutoff sampling error or rejects an expired original Root cutoff.
+    pub fn git_coverage(original_root_cut: u64)
         -> Result<Self, crate::DormantBrokerSessionHandshakeErrorV1>
     {
         let original = Self::controller()?;
@@ -1290,7 +1297,8 @@ impl OriginalBrokerColdDeadlineV1 {
         Self(deadline)
     }
 
-    pub(crate) fn value(self) -> u64 {
+    /// Observes the original cold-flight deadline as comparison DATA.
+    pub fn value(self) -> u64 {
         self.0
     }
 
@@ -1324,7 +1332,7 @@ impl OriginalBrokerColdDeadlineV1 {
     ///
     /// # Errors
     /// Preserves direct clock/encoding failure and deadline expiry.
-    pub(crate) fn check(self) -> Result<(), crate::DormantBrokerSessionHandshakeErrorV1> {
+    pub fn check(self) -> Result<(), crate::DormantBrokerSessionHandshakeErrorV1> {
         self.remaining().map(|_| ())
     }
 }
@@ -1464,7 +1472,7 @@ enum OutputColdFailureSiteV1 {
 /// All returned owners are parked before later gates. Its first outer cause
 /// is separate from native/physical causes and cleanup debt retained below.
 /// An unfinished selected owner cannot be silently dropped or resumed.
-pub(crate) struct RetainedStorageColdOpenV1 {
+pub struct RetainedStorageColdOpenV1 {
     verified: VerifiedStorageHandshakeV1,
     deadline: OriginalBrokerColdDeadlineV1,
     #[cfg(feature = "online-nix")]
@@ -1558,7 +1566,8 @@ impl RetainedStorageColdOpenV1 {
         retained
     }
 
-    pub(crate) fn is_failed(&self) -> bool {
+    /// Observes whether the original cold open remains unfinished.
+    pub fn is_failed(&self) -> bool {
         self.phase.is_unfinished()
     }
 
@@ -1787,7 +1796,8 @@ impl RetainedStorageColdOpenV1 {
 
     // Resolves only the site latched before the next independent bookend.
     // Later witness debt cannot displace the actual earlier protected cause.
-    pub(crate) fn output_failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+    /// Borrows the original primary cold-open failure without consuming its custody.
+    pub fn output_failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self.output_failure_site? {
             OutputColdFailureSiteV1::WitnessCreation
             | OutputColdFailureSiteV1::WitnessPrecheck
@@ -1978,7 +1988,7 @@ impl VerifiedStorageHandshakeV1 {
 
 /// Reports failure of an explicitly driven dormant protected handshake.
 #[derive(Debug, thiserror::Error)]
-pub(super) enum DormantBrokerSessionHandshakeErrorV1 {
+pub enum DormantBrokerSessionHandshakeErrorV1 {
     /// The fixed endpoint role does not match the selected client or broker flow.
     #[error("fixed broker-session endpoint has the wrong handshake role")]
     EndpointRole,
@@ -2398,25 +2408,35 @@ pub(crate) enum OnlinePostflightClockErrorV1 {
 /// Reports selected transport failures while originals stay in caller slots.
 #[cfg(feature = "online-nix")]
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum OnlineTransportFailureV1 {
+pub enum OnlineTransportFailureV1 {
+    /// The original protected Session or currentness check refused.
     #[error("online protected Session custody failed: {0}")]
     Protected(#[from] BrokerSessionSecurityError),
+    /// The returned record did not bind to the original socket.
     #[error("online original record binding failed: {0}")]
     Binding(#[from] aos_sandbox_linux::seqpacket::RecordBindingError),
+    /// The original kernel record-subject observation failed.
     #[error("online original record subject failed: {0}")]
     Kernel(#[from] aos_sandbox_linux::Error),
+    /// The original HELLO witness refused its currentness check.
     #[error("online original HELLO witness failed: {0}")]
     Witness(#[from] DormantBrokerSessionHandshakeErrorV1),
+    /// The actual owning native receive failure remains in its resident slot.
     #[error("the actual owning receive failure is retained in this attempt")]
     Receive,
+    /// The actual admission failure remains in its resident slot.
     #[error("the actual request admission error is retained in this attempt")]
     Admission,
+    /// The original paired ownership-clock observation failed.
     #[error("original paired clock observation failed: {0}")]
     Clock(#[from] aos_sandbox::ownership_resume::OwnershipClockObservationError),
+    /// The actual selected request decoder failure remains in its slot.
     #[error("the actual selected request decoder error remains in its slot")]
     Decode,
+    /// The actual selected send failure remains in its slot.
     #[error("the actual selected send error remains in its slot")]
     Send,
+    /// The original transport or result destination is closed.
     #[error("online original transport or destination slot is closed")]
     Closed,
 }
@@ -3994,7 +4014,11 @@ fn require_negotiated_method(
     Ok(())
 }
 
-pub(super) fn protected_boottime_nanoseconds() -> Result<u64, BrokerSessionSecurityError> {
+/// Samples the original direct BOOTTIME clock without accepting caller clock facts.
+///
+/// # Errors
+/// Returns the original currentness error for invalid or unrepresentable clock values.
+pub fn protected_boottime_nanoseconds() -> Result<u64, BrokerSessionSecurityError> {
     let now = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
     let seconds = u64::try_from(now.tv_sec).map_err(|_| BrokerSessionSecurityError::Currentness)?;
     let nanoseconds =

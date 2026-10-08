@@ -1013,6 +1013,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-sandbox-controller-runtime"
+version = "0.1.0"
+dependencies = [
+ "aos-filesystem-view-core",
+ "aos-proto",
+ "aos-sandbox",
+ "aos-sandbox-agent",
+ "aos-sandbox-broker-session-protocol",
+ "aos-sandbox-broker-session-security",
+ "aos-sandbox-core",
+ "aos-sandbox-linux",
+ "aos-sandbox-mount",
+ "aos-sandbox-ownership-protocol",
+ "aos-sandbox-protocol",
+ "aos-sandbox-source-provider-protocol",
+ "aos-systemd",
+ "axum",
+ "buffa",
+ "connectrpc",
+ "ed25519-dalek",
+ "futures",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "ssh-key",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "zeroize",
+]
+
+[[package]]
 name = "aos-sandbox-core"
 version = "0.1.0"
 dependencies = [
@@ -1290,6 +1323,7 @@ dependencies = [
  "aos-sandbox",
  "aos-sandbox-broker-session-security",
  "aos-sandbox-cache-signer",
+ "aos-sandbox-controller-runtime",
  "aos-sandbox-core",
  "aos-sandbox-host",
  "aos-sandbox-linux",

@@ -11,7 +11,7 @@ confinement stay unchanged.
 | `aos-sandbox-services::controller` | Socket custody, root-only diagnostic acceptance, bounded registered TLS acceptance, HTTP registration and serving |
 | `aos-sandbox-services::host` | Fixed-role session scheduling, fairness, guest-launch retention and sealed request-cycle composition |
 | Role-selected binaries | Arguments, installed daemon composition and the existing selected startup recipes |
-| Session security `controller_service` | Opaque authenticated API handlers, sole worker command channel, reconciliation, retained startup parent and readiness/terminal ordering |
+| `aos-sandbox-controller-runtime::controller_service` | Opaque authenticated API handlers, sole worker command channel, reconciliation, retained startup parent and readiness/terminal ordering |
 | Session security and domain owners | Protected credentials, authentication, verified handoffs, replay/currentness and semantic/physical checks |
 
 The Controller assembly contract accepts opaque handlers and a negative-only
@@ -28,19 +28,19 @@ handshake and Storage peer checks around each selected request cycle. Readiness
 is descriptor observation only; it grants no authority. The scheduler composes
 existing sealed receive/completion methods without exposing signing or raw
 transport. Its VM broker fixture follows the scheduler into a separate explicit
-`host,kernel-tests` executable; the Controller inventory client stays lower.
+`host,kernel-tests` executable; the Controller inventory client follows its complete Runtime owner.
 
 The public port is a trusted application contract: arbitrary implementations
 are not proof of authenticated transport or retained custody. The installed
 binary selects the private fixed assembly; the opaque handler still performs
 its existing public identity and admission checks.
 
-This is an application extraction, not the completed RFC-0021 security split.
-Protected exchanges still refer to Controller execution/output/Nix integration
-and startup errors. Those reverse dependencies prevent moving reconciliation
-out without first separating their sealed domain contracts. Session security
-still selects concrete domain implementations transitively; role features here
-do not claim that this lower dependency closure is already isolated.
+The complete Controller integration now belongs to its Runtime crate above
+Session Security; lower authentication and history have no dependency back to
+Runtime. Closed sealed composition ports preserve the original custody and
+fixed signing recipes. This is not the completed RFC-0021 security split:
+Session Security still selects concrete domain implementations transitively,
+and role features do not claim that its dependency closure is isolated.
 
 Packaging builds and compiles package tests in separate role invocations,
 including dependency artifacts. The Controller output package co-installs its

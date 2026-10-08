@@ -194,6 +194,7 @@
     "aos-sandbox-broker"
     "aos-sandbox-broker-session-protocol"
     "aos-sandbox-broker-session-security"
+    "aos-sandbox-controller-runtime"
     "aos-sandbox-cache-signer"
     "aos-sandbox-client"
     "aos-sandbox-core"

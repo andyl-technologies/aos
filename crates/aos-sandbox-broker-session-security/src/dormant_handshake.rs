@@ -121,7 +121,10 @@ pub(crate) fn remaining_handshake_nanoseconds(
 }
 
 /// Rejects expired production exchanges even when their sockets are already ready.
-pub(crate) fn check_production_deadline(
+///
+/// # Errors
+/// Returns Deadline after expiry, or Transport if the BOOTTIME value is unrepresentable.
+pub fn check_production_deadline(
     deadline_boottime_nanoseconds: u64,
 ) -> Result<(), DormantBrokerSessionHandshakeErrorV1> {
     remaining_handshake_nanoseconds(deadline_boottime_nanoseconds).map(|_| ())
@@ -194,7 +197,11 @@ mod production_deadline_tests {
     }
 }
 
-pub(crate) fn wait_for_handshake_readiness(
+/// Waits for original descriptor readiness without admitting traffic.
+///
+/// # Errors
+/// Returns Deadline for expiry or a timed-out poll, and Transport for clock or poll failure.
+pub fn wait_for_handshake_readiness(
     descriptor: BorrowedFd<'_>,
     wants_write: bool,
     deadline_boottime_nanoseconds: u64,
@@ -340,12 +347,12 @@ pub struct DormantAuthenticatedBrokerSessionV1(
 /// Only the protected session owner can mint this value after revalidating
 /// its live peer, transcript, and journal custody. It is not effect authority.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct ProtectedStorageSessionBindingV1([u8; 32]);
+pub struct ProtectedStorageSessionBindingV1([u8; 32]);
 
 impl ProtectedStorageSessionBindingV1 {
     /// Returns the exact complete-hello transcript binding.
     #[must_use]
-    pub(crate) const fn digest(self) -> [u8; 32] {
+    pub const fn digest(self) -> [u8; 32] {
         self.0
     }
 }
@@ -392,7 +399,7 @@ impl DormantBrokerRequestCoordinatesV1 {
     }
 
     /// Builds the canonical request header from protected session coordinates.
-    pub(crate) fn request_header(self) -> RequestHeader {
+    pub fn request_header(self) -> RequestHeader {
         RequestHeader {
             protocol_major: u32::from(self.protocol_version.major()),
             protocol_minor: u32::from(self.protocol_version.minor()),
@@ -411,7 +418,7 @@ pub struct DormantPreparedBrokerRequestV1(AuthenticatedBrokerMethodRequestV1);
 
 impl DormantPreparedBrokerRequestV1 {
     /// Returns the signed deadline without releasing request custody.
-    pub(crate) const fn deadline_boottime_nanoseconds(&self) -> u64 {
+    pub const fn deadline_boottime_nanoseconds(&self) -> u64 {
         self.0.deadline_boottime_nanoseconds()
     }
 }
@@ -422,7 +429,7 @@ pub struct DormantOutstandingBrokerRequestV1(AuthenticatedBrokerMethodRequestV1)
 
 /// Retains returned execution response DATA and failed native admission.
 #[derive(Default)]
-pub(crate) struct ExecutionPublicationReceiveCustodyV1 {
+pub struct ExecutionPublicationReceiveCustodyV1 {
     pub(crate) packet: Option<Vec<u8>>,
     pub(crate) decoded: Option<Result<
         aos_sandbox_broker_session_protocol::CanonicalBrokerResponseEnvelopeV1,
@@ -432,9 +439,21 @@ pub(crate) struct ExecutionPublicationReceiveCustodyV1 {
     pub(crate) rejected_replay: Option<ProtectedBrokerOutcomeReplayV1>,
 }
 
+impl ExecutionPublicationReceiveCustodyV1 {
+    /// Borrows the original response decoder failure without releasing custody.
+    pub fn decode_error(&self) -> Option<&aos_sandbox_broker_session_protocol::BrokerSessionProjectionError> {
+        self.decoded.as_ref().and_then(|result| result.as_ref().err())
+    }
+
+    /// Borrows the original protected admission failure without releasing custody.
+    pub fn native_error(&self) -> Option<&BrokerSessionSecurityError> {
+        self.native_error.as_ref()
+    }
+}
+
 impl DormantOutstandingBrokerRequestV1 {
     /// Returns the original signed deadline for response readiness polling.
-    pub(crate) const fn deadline_boottime_nanoseconds(&self) -> u64 {
+    pub const fn deadline_boottime_nanoseconds(&self) -> u64 {
         self.0.deadline_boottime_nanoseconds()
     }
 }
@@ -1057,7 +1076,7 @@ pub enum DormantBrokerRequestPreparationV1 {
 
 impl DormantBrokerRequestPreparationV1 {
     /// Borrows the exact signed request retained across protected preparation ambiguity.
-    pub(crate) const fn signed_request(&self) -> &AuthenticatedBrokerMethodRequestV1 {
+    pub const fn signed_request(&self) -> &AuthenticatedBrokerMethodRequestV1 {
         match self {
             Self::Prepared(request) => &request.0,
             Self::InitializationRecoveryRequired { request, .. }
@@ -1680,14 +1699,22 @@ impl DormantAuthenticatedBrokerSessionV1 {
         self.0.hold_pending_request(&request.0)
     }
 
-    pub(crate) fn require_negotiated_client_method(
+    /// Checks the method against the original authenticated client transcript.
+    ///
+    /// # Errors
+    /// Rejects an unnegotiated method or changed protected endpoint, journal, or peer custody.
+    pub fn require_negotiated_client_method(
         &mut self,
         method: BrokerMethod,
     ) -> Result<(), BrokerSessionSecurityError> {
         self.0.require_negotiated_client_method(method)
     }
 
-    pub(crate) fn historical_host_terminal_no_apply_archive(
+    /// Reauthenticates the original immutable Host no-apply archive.
+    ///
+    /// # Errors
+    /// Rejects missing or inconsistent H/T archive evidence, or changed live Host-session custody.
+    pub fn historical_host_terminal_no_apply_archive(
         &mut self,
         source: &aos_sandbox::controller_execution_argument_attempt::ControllerExecutionArgumentAttemptV1,
     ) -> Result<crate::recovery::AuthenticatedOriginalHostNoApplyJoinV1, BrokerSessionSecurityError>
@@ -1696,7 +1723,10 @@ impl DormantAuthenticatedBrokerSessionV1 {
     }
 
     /// Captures bounded complete originals without reserving another request.
-    pub(crate) fn capture_failed_create_originals_v3(
+    ///
+    /// # Errors
+    /// Rejects incomplete or invalid failed-Create originals, or changed protected Host-session custody.
+    pub fn capture_failed_create_originals_v3(
         &mut self,
         source: &aos_sandbox::controller_execution_argument_attempt::ControllerExecutionArgumentAttemptV1,
     ) -> Result<crate::recovery::RetainedFailedCreateOriginalsDataV3, BrokerSessionSecurityError> {
@@ -1709,7 +1739,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
     ///
     /// Rejects a non-Storage session or changed protected owner, transcript,
     /// or live peer.
-    pub(crate) fn current_storage_session_binding(
+    pub fn current_storage_session_binding(
         &mut self,
     ) -> Result<ProtectedStorageSessionBindingV1, BrokerSessionSecurityError> {
         Ok(ProtectedStorageSessionBindingV1(
@@ -1717,14 +1747,21 @@ impl DormantAuthenticatedBrokerSessionV1 {
         ))
     }
 
-    pub(crate) fn retain_authenticated_peer_pidfd(
+    /// Retains the original authenticated peer pidfd after its existing checks.
+    ///
+    /// # Errors
+    /// Rejects changed authenticated peer evidence or a failed pidfd retention.
+    pub fn retain_authenticated_peer_pidfd(
         &mut self,
     ) -> Result<OwnedFd, DormantBrokerSessionHandshakeErrorV1> {
         Ok(self.0.retain_authenticated_peer_pidfd()?)
     }
 
     /// Reauthenticates immutable original Repair Inventory, never a live hold.
-    pub(crate) fn operator_repair_inventory_history(
+    ///
+    /// # Errors
+    /// Rejects an unavailable or invalid original Repair inventory in the protected history.
+    pub fn operator_repair_inventory_history(
         &mut self,
         request_id: [u8; 16],
         packet: Option<&[u8]>,
@@ -1735,7 +1772,11 @@ impl DormantAuthenticatedBrokerSessionV1 {
         self.0.operator_repair_inventory_history(request_id, packet)
     }
 
-    pub(crate) fn original_storage_inventory_coordinates(
+    /// Recovers only the archived original Storage inventory coordinates.
+    ///
+    /// # Errors
+    /// Rejects inconsistent group/archive bindings or failed protected history verification.
+    pub fn original_storage_inventory_coordinates(
         &mut self,
         group_request_id: [u8; 16],
         group_request_digest: [u8; 32],
@@ -1745,7 +1786,11 @@ impl DormantAuthenticatedBrokerSessionV1 {
             .original_storage_inventory_coordinates(group_request_id, group_request_digest)
     }
 
-    pub(crate) fn fresh_storage_inventory_coordinates(
+    /// Selects the original fresh status coordinates for the archived Storage group.
+    ///
+    /// # Errors
+    /// Rejects inconsistent group/status bindings or failed protected history verification.
+    pub fn fresh_storage_inventory_coordinates(
         &mut self,
         group_request_id: [u8; 16],
         group_request_digest: [u8; 32],
@@ -1755,7 +1800,11 @@ impl DormantAuthenticatedBrokerSessionV1 {
             .fresh_storage_inventory_coordinates(group_request_id, group_request_digest)
     }
 
-    pub(crate) fn archive_original_storage_inventory(
+    /// Archives the exact original Storage inventory request and predecessor.
+    ///
+    /// # Errors
+    /// Rejects mismatched group/request history or a failed durable inventory archive.
+    pub fn archive_original_storage_inventory(
         &mut self,
         group_request_id: [u8; 16],
         group_request_digest: [u8; 32],
@@ -1770,7 +1819,11 @@ impl DormantAuthenticatedBrokerSessionV1 {
         )
     }
 
-    pub(crate) fn client_storage_inventory_abandonment_committed(
+    /// Checks the original protected Storage inventory abandonment commitment.
+    ///
+    /// # Errors
+    /// Rejects inconsistent group/request/head bindings or invalid abandonment history.
+    pub fn client_storage_inventory_abandonment_committed(
         &mut self,
         group_request_id: [u8; 16],
         group_request_digest: [u8; 32],
@@ -1787,7 +1840,11 @@ impl DormantAuthenticatedBrokerSessionV1 {
         )
     }
 
-    pub(crate) fn verify_original_storage_inventory_terminal(
+    /// Reauthenticates the exact original archived Storage inventory terminal.
+    ///
+    /// # Errors
+    /// Rejects a terminal packet that fails authentication or its archived group/request binding.
+    pub fn verify_original_storage_inventory_terminal(
         &mut self,
         group_request_id: [u8; 16],
         group_request_digest: [u8; 32],
@@ -1807,7 +1864,11 @@ impl DormantAuthenticatedBrokerSessionV1 {
         )
     }
 
-    pub(crate) fn client_confirm_storage_inventory_abandonment(
+    /// Commits only the original protected Storage inventory abandonment.
+    ///
+    /// # Errors
+    /// Rejects changed group/request custody or a failed native abandonment commitment.
+    pub fn client_confirm_storage_inventory_abandonment(
         &mut self,
         group_request_id: [u8; 16],
         group_request_digest: [u8; 32],
@@ -1822,20 +1883,28 @@ impl DormantAuthenticatedBrokerSessionV1 {
         )
     }
 
-    pub(crate) fn historical_checkpoint_digest(
+    /// Observes the original retained historical checkpoint digest.
+    ///
+    /// # Errors
+    /// Returns Currentness if the retained checkpoint cannot be canonically verified or encoded.
+    pub fn historical_checkpoint_digest(
         &self,
     ) -> Result<[u8; 32], BrokerSessionSecurityError> {
         self.0.historical_checkpoint_digest()
     }
 
-    pub(crate) fn prior_verified_atomic_storage_history(
+    /// Reconstructs the exact authenticated historical trio as nonauthorizing DATA.
+    ///
+    /// # Errors
+    /// Rejects mismatched request, predecessor, session, or checkpoint commitments in the protected history.
+    pub fn prior_verified_atomic_storage_history(
         &mut self,
         request_id: [u8; 16],
         request_packet: [u8; 32],
         predecessor_packet: [u8; 32],
         session_binding: [u8; 32],
         checkpoint_digest: [u8; 32],
-    ) -> Result<crate::recovery::ProtectedVerifiedAtomicStorageHistoryV1, BrokerSessionSecurityError>
+    ) -> Result<crate::controller_composition::HistoricalAtomicStorageHistoryV1, BrokerSessionSecurityError>
     {
         self.0.prior_verified_atomic_storage_history(
             request_id,
@@ -1844,9 +1913,14 @@ impl DormantAuthenticatedBrokerSessionV1 {
             session_binding,
             checkpoint_digest,
         )
+        .map(crate::controller_composition::HistoricalAtomicStorageHistoryV1)
     }
 
-    pub(crate) fn archive_verified_atomic_storage_history(
+    /// Archives the original verified atomic Storage history without replacement.
+    ///
+    /// # Errors
+    /// Rejects invalid historical commitments or a failed native archive of the verified history.
+    pub fn archive_verified_atomic_storage_history(
         &mut self,
         request_id: [u8; 16],
         request_packet: [u8; 32],
@@ -1863,7 +1937,11 @@ impl DormantAuthenticatedBrokerSessionV1 {
         )
     }
 
-    pub(crate) fn retire_atomic_storage_archive(
+    /// Retires only the named original temporary Storage archive.
+    ///
+    /// # Errors
+    /// Rejects changed protected custody, an invalid retirement chain, or a failed native retirement.
+    pub fn retire_atomic_storage_archive(
         &mut self,
         request_id: [u8; 16],
     ) -> Result<(), BrokerSessionSecurityError> {
@@ -1891,7 +1969,10 @@ impl DormantAuthenticatedBrokerSessionV1 {
     /// The lookup happens before a new initial request can roll over the prior
     /// process history. A nonmatching or pending history returns absence; a
     /// matching terminal broker rejection remains a permanent effect failure.
-    pub(crate) fn recover_terminal_authority_effect(
+    ///
+    /// # Errors
+    /// Rejects a malformed effect or mismatched terminal receipt permanently; unavailable protected history is retryable.
+    pub fn recover_terminal_authority_effect(
         &mut self,
         effect: &PreparedAuthorityEffectV1,
     ) -> Result<Option<ValidatedAuthorityEffectReceiptV1>, EffectFailure> {
@@ -1940,7 +2021,10 @@ impl DormantAuthenticatedBrokerSessionV1 {
     /// Checks the fixed protected session against the controller's bound node.
     ///
     /// No identity is inferred from a socket path or an inventory response.
-    pub(crate) fn require_current_node(
+    ///
+    /// # Errors
+    /// Rejects a different node or changed protected endpoint, transcript, journal, or peer custody.
+    pub fn require_current_node(
         &mut self,
         expected_node: [u8; 16],
     ) -> Result<(), BrokerSessionSecurityError> {
@@ -5566,7 +5650,10 @@ impl DormantAuthenticatedBrokerSessionV1 {
 
     /// Reserves the complete selected wrapper on this same Session request ID.
     /// No nested field is passed through the ordinary deadline injector.
-    pub(crate) fn prepare_nix_generation_request(
+    ///
+    /// # Errors
+    /// Rejects an unavailable method57, mismatched draft/plan/lease/deadline, or failed protected request preparation.
+    pub fn prepare_nix_generation_request(
         &mut self,
         draft: &aos_sandbox::production_operation_compiler::StorageGenerationPreparationDraftV1,
         signed: &aos_sandbox_protocol::authorization_artifact::SignedBrokerPlan,
@@ -5606,7 +5693,10 @@ impl DormantAuthenticatedBrokerSessionV1 {
     }
 
     /// Checks the named method before any selected grant is signed.
-    pub(crate) fn nix_generation_request_id(&mut self) -> Result<[u8; 16], BrokerSessionSecurityError> {
+    ///
+    /// # Errors
+    /// Rejects missing method57, incompatible version/audience/response limits, or failed protected coordinate acquisition.
+    pub fn nix_generation_request_id(&mut self) -> Result<[u8; 16], BrokerSessionSecurityError> {
         self.0.require_negotiated_client_method(BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_NIX_GENERATION_V1)?;
         let (request_id, _, maximum, version, audience) = self.0.client_request_coordinates()?;
         if maximum < 65_536 || version != aos_sandbox_core::ProtocolVersion::new(1, 0)
@@ -5650,7 +5740,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
     ///
     /// Returns the issuer error before any request append, or an ordinary
     /// authenticated-session preparation error after envelope construction.
-    pub(crate) fn prepare_authenticated_request_checked_fallible(
+    pub fn prepare_authenticated_request_checked_fallible(
         &mut self,
         method: BrokerMethod,
         build: impl FnOnce(
@@ -5954,7 +6044,11 @@ impl DormantAuthenticatedBrokerSessionV1 {
         self.reserve_exact_authenticated_request(authenticated, initialize)
     }
 
-    pub(crate) fn mount_request_coordinates(
+    /// Selects original Mount request coordinates from the same protected session.
+    ///
+    /// # Errors
+    /// Rejects incompatible Mount version/audience/response limits or failed protected coordinate acquisition.
+    pub fn mount_request_coordinates(
         &mut self,
     ) -> Result<DormantBrokerRequestCoordinatesV1, BrokerSessionSecurityError> {
         let (request_id, deadline, maximum_response_bytes, protocol_version, audience) =
@@ -5976,7 +6070,11 @@ impl DormantAuthenticatedBrokerSessionV1 {
         })
     }
 
-    pub(crate) fn prepare_authenticated_mount_catalog_query(
+    /// Prepares the original sealed Mount catalog query on this session.
+    ///
+    /// # Errors
+    /// Rejects incompatible Mount coordinates, a mismatched catalog-query scope, or failed protected preparation.
+    pub fn prepare_authenticated_mount_catalog_query(
         &mut self,
         query: &PreparedCurrentMountCatalogQueryV1,
     ) -> Result<DormantBrokerRequestPreparationV1, BrokerSessionSecurityError> {
@@ -6025,7 +6123,11 @@ impl DormantAuthenticatedBrokerSessionV1 {
         self.reserve_exact_authenticated_request(authenticated, initialize)
     }
 
-    pub(crate) fn prepare_authenticated_mount_apply(
+    /// Prepares the original durably custodied Mount attempt on this session.
+    ///
+    /// # Errors
+    /// Rejects incompatible Mount coordinates or a request that differs from the retained durable attempt.
+    pub fn prepare_authenticated_mount_apply(
         &mut self,
         attempt: &DurableCurrentMountAttemptV1,
     ) -> Result<DormantBrokerRequestPreparationV1, BrokerSessionSecurityError> {
@@ -6089,7 +6191,10 @@ impl DormantAuthenticatedBrokerSessionV1 {
     }
 
     /// Reserves one exact durably custodied Mount source effect packet.
-    pub(crate) fn prepare_authenticated_mount_source_effect(
+    ///
+    /// # Errors
+    /// Rejects a request that differs from the retained Mount source effect or fails protected preparation.
+    pub fn prepare_authenticated_mount_source_effect(
         &mut self,
         attempt: &DurableCurrentAttachmentSourceDispatchV1,
     ) -> Result<DormantBrokerRequestPreparationV1, BrokerSessionSecurityError> {
@@ -6469,7 +6574,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
     ///
     /// Returns the exact prepared request with the actual send error. No
     /// replacement request, retry, or recovery is performed.
-    pub(crate) fn send_execution_publication_request(
+    pub fn send_execution_publication_request(
         &mut self,
         request: DormantPreparedBrokerRequestV1,
     ) -> Result<DormantBrokerRequestSendProgressV1,
@@ -6526,7 +6631,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
     /// Returns the exact outstanding request with the actual transport error.
     /// Returned packet, decode failure and native admission error remain in the
     /// supplied DATA custody; ambiguous native commits retain their recovery.
-    pub(crate) fn receive_execution_publication_response(
+    pub fn receive_execution_publication_response(
         &mut self,
         outstanding: DormantOutstandingBrokerRequestV1,
         custody: &mut ExecutionPublicationReceiveCustodyV1,
@@ -6890,7 +6995,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
     ///
     /// Returns the original owner and actual error when the fixed execution
     /// endpoint, protected terminal, floor, or live peer is no longer current.
-    pub(crate) fn retain_execution_outcome_current<'session>(
+    pub fn retain_execution_outcome_current<'session>(
         &'session mut self,
         currentness: ProtectedBrokerOutcomeCurrentnessOwnerV1,
     ) -> Result<
@@ -6901,7 +7006,10 @@ impl DormantAuthenticatedBrokerSessionV1 {
     }
 
     /// Rechecks the exact borrowed Inventory predecessor without consuming it.
-    pub(crate) fn compare_atomic_snapshot_predecessor_v3(
+    ///
+    /// # Errors
+    /// Rejects changed predecessor/session bindings or a stale protected journal and peer.
+    pub fn compare_atomic_snapshot_predecessor_v3(
         &mut self,
         currentness: &ProtectedBrokerOutcomeCurrentnessOwnerV1,
     ) -> Result<(), BrokerSessionSecurityError> {
@@ -6916,7 +7024,11 @@ impl DormantAuthenticatedBrokerSessionV1 {
         self.0.compare_host_storage_output_outcome_v1(currentness)
     }
 
-    pub(crate) fn compare_original_storage_output_outcome_v1(
+    /// Compares the original Storage output outcome against this protected session.
+    ///
+    /// # Errors
+    /// Rejects changed Storage output/session bindings or a stale protected journal and peer.
+    pub fn compare_original_storage_output_outcome_v1(
         &mut self,
         currentness: &crate::ProtectedBrokerOutcomeCurrentnessOwnerV1,
     ) -> Result<(), BrokerSessionSecurityError> {
@@ -6924,7 +7036,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
     }
 
     /// Prearms a short exclusive preparation loan before any observation.
-    pub(crate) fn output_registration_transport<'session>(
+    pub fn output_registration_transport<'session>(
         &'session mut self,
         request: &AuthenticatedBrokerMethodRequestV1,
         state: &'session mut crate::handshake::output_registration_continuation::OutputPreparationCustodyV1,
@@ -6963,7 +7075,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
     }
 
     /// Parks the selected coordinates under the same original nonrenewable cutoff.
-    pub(crate) fn park_output_client_coordinates(
+    pub fn park_output_client_coordinates(
         &mut self,
         method: BrokerMethod,
         original_cutoff: u64,
@@ -6989,12 +7101,12 @@ impl DormantAuthenticatedBrokerSessionV1 {
     }
 
     /// Reports only the method list of the actual completed transcript.
-    pub(crate) fn has_selected_capture_candidate_profile(&self) -> bool {
+    pub fn has_selected_capture_candidate_profile(&self) -> bool {
         self.0.has_selected_capture_candidate_profile()
     }
 
     /// Parks method-41 coordinates once from the same actual fixed Session.
-    pub(crate) fn park_capture_candidate_client_coordinates(
+    pub fn park_capture_candidate_client_coordinates(
         &mut self,
         assignment: &aos_sandbox::runtime_scope::CurrentAssignmentTarget,
         flight: &mut crate::handshake::output_registration_continuation::OriginalOutputClientFlightV1,
@@ -7017,20 +7129,29 @@ impl DormantAuthenticatedBrokerSessionV1 {
         })());
     }
 
-    pub(crate) fn recheck_original_capture_candidate_client(
+    /// Rechecks the original selected capture-candidate client custody.
+    ///
+    /// # Errors
+    /// Rejects a nonselected capture-candidate client or changed protected session and peer custody.
+    pub fn recheck_original_capture_candidate_client(
         &mut self,
     ) -> Result<(), BrokerSessionSecurityError> {
         self.0.recheck_original_capture_candidate_client()
     }
 
-    pub(crate) fn compare_original_capture_candidate_outcome(
+    /// Compares the original capture-candidate outcome without replacing custody.
+    ///
+    /// # Errors
+    /// Rejects changed capture-candidate/session bindings or a stale protected journal and peer.
+    pub fn compare_original_capture_candidate_outcome(
         &mut self,
         currentness: &crate::ProtectedBrokerOutcomeCurrentnessOwnerV1,
     ) -> Result<(), BrokerSessionSecurityError> {
         self.0.compare_original_capture_candidate_outcome(currentness)
     }
 
-    pub(crate) fn park_output_client_request(
+    /// Parks the original Output Client request in its same retained flight.
+    pub fn park_output_client_request(
         &mut self,
         flight: &mut crate::handshake::output_registration_continuation::OriginalOutputClientFlightV1,
         envelope: BrokerRequestEnvelope,
@@ -7039,39 +7160,44 @@ impl DormantAuthenticatedBrokerSessionV1 {
     }
 
     /// Borrows the actual witness cause at this flight's recorded primary site.
-    pub(crate) fn output_client_flight_failure<'a>(
+    pub fn output_client_flight_failure<'a>(
         &'a self,
         flight: &'a crate::handshake::output_registration_continuation::OriginalOutputClientFlightV1,
     ) -> Option<&'a (dyn std::error::Error + 'static)> {
         flight.failure_with_session(&self.0)
     }
 
-    pub(crate) fn output_client_flight_postcheck_debt<'a>(
+    /// Borrows this flight's original postcheck debt through the same Session.
+    pub fn output_client_flight_postcheck_debt<'a>(
         &'a self,
         flight: &'a crate::handshake::output_registration_continuation::OriginalOutputClientFlightV1,
     ) -> Option<&'a (dyn std::error::Error + 'static)> {
         flight.postcheck_debt_with_session(&self.0)
     }
 
-    pub(crate) fn output_preparation_failure<'a>(
+    /// Borrows the original preparation failure through its same Session.
+    pub fn output_preparation_failure<'a>(
         &'a self,
         preparation: &'a crate::handshake::output_registration_continuation::OutputPreparationCustodyV1,
     ) -> Option<&'a (dyn std::error::Error + 'static)> {
         preparation.failure_with_session(&self.0)
     }
 
-    pub(crate) fn output_preparation_postcheck_debt<'a>(
+    /// Borrows the original preparation postcheck debt through its same Session.
+    pub fn output_preparation_postcheck_debt<'a>(
         &'a self,
         preparation: &'a crate::handshake::output_registration_continuation::OutputPreparationCustodyV1,
     ) -> Option<&'a (dyn std::error::Error + 'static)> {
         preparation.postcheck_debt_with_session(&self.0)
     }
 
-    pub(crate) fn output_terminal_witness_failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+    /// Borrows the original terminal witness failure without consuming it.
+    pub fn output_terminal_witness_failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
         self.0.output_terminal_witness_failure()
     }
 
-    pub(crate) fn output_terminal_witness_debt(&self) -> Option<&(dyn std::error::Error + 'static)> {
+    /// Borrows the original terminal witness debt without consuming it.
+    pub fn output_terminal_witness_debt(&self) -> Option<&(dyn std::error::Error + 'static)> {
         self.0.output_terminal_witness_debt()
     }
 
@@ -7079,18 +7205,21 @@ impl DormantAuthenticatedBrokerSessionV1 {
         self.0.output_terminal_witness_debt_before_protected()
     }
 
-    pub(crate) fn bookend_output_terminal_witnesses(&mut self, boundary: handshake::OutputCurrentnessBoundaryV1) -> bool {
+    /// Performs the original witness bookend at the named diagnostic frontier.
+    pub fn bookend_output_terminal_witnesses(&mut self, boundary: handshake::OutputCurrentnessBoundaryV1) -> bool {
         self.0.bookend_output_terminal_witnesses(boundary)
     }
 
-    pub(crate) fn send_original_output_client_request(
+    /// Attempts the original retained Output Client send once.
+    pub fn send_original_output_client_request(
         &mut self,
         flight: &mut crate::handshake::output_registration_continuation::OriginalOutputClientFlightV1,
     ) -> bool {
         flight.send_once(&mut self.0)
     }
 
-    pub(crate) fn receive_original_output_client_terminal(
+    /// Receives the original terminal into its same retained Output Client flight.
+    pub fn receive_original_output_client_terminal(
         &mut self,
         flight: &mut crate::handshake::output_registration_continuation::OriginalOutputClientFlightV1,
     ) -> bool {
@@ -7194,7 +7323,11 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
 
     // The selected coordinator uses the same verified-cold destination and
     // handshake engine before any inventory request on this original session.
-    pub(crate) fn connect_retained_git_coverage_storage_session_v1(
+    /// Connects the fixed Git-coverage Storage session through its original cold slot.
+    ///
+    /// # Errors
+    /// Rejects the fixed Storage role, HELLO, cold journal/floor, peer, or original cutoff; failures remain in the cold slot.
+    pub fn connect_retained_git_coverage_storage_session_v1(
         self,
         deadline: handshake::OriginalBrokerColdDeadlineV1,
         slot: &mut Option<handshake::RetainedStorageColdOpenV1>,
@@ -7219,7 +7352,11 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
         )
     }
 
-    pub(crate) fn connect_retained_output_storage_session(
+    /// Connects the fixed Output Storage session through its original cold slot.
+    ///
+    /// # Errors
+    /// Rejects the fixed Output Storage role, HELLO witnesses, cold journal/floor, peer, or original cutoff.
+    pub fn connect_retained_output_storage_session(
         self,
         deadline: handshake::OriginalBrokerColdDeadlineV1,
         slot: &mut Option<handshake::RetainedStorageColdOpenV1>,
@@ -7233,7 +7370,10 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
     }
 
     /// Selects only method57 in the same original fixed Storage flight.
-    pub(crate) fn connect_retained_nix_generation_storage_session(
+    ///
+    /// # Errors
+    /// Rejects the fixed method57 Storage role, HELLO, cold journal/floor, peer, or original cutoff.
+    pub fn connect_retained_nix_generation_storage_session(
         self,
         deadline: handshake::OriginalBrokerColdDeadlineV1,
         slot: &mut Option<handshake::RetainedStorageColdOpenV1>,
@@ -7415,7 +7555,10 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
     }
 
     /// Keeps the original HELLO writer for the two fixed Output Clients.
-    pub(crate) fn connect_output_client_session(
+    ///
+    /// # Errors
+    /// Rejects a non-Output Client endpoint, failed HELLO witnesses, transport, or protected cold admission.
+    pub fn connect_output_client_session(
         self,
         deadline_boottime_nanoseconds: u64,
     ) -> Result<DormantAuthenticatedBrokerSessionV1, DormantBrokerSessionHandshakeErrorV1> {
@@ -7451,7 +7594,11 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
         )
     }
 
-    pub(crate) fn connect_git_coverage_mount_session_v1(
+    /// Connects only the fixed original Git-coverage Mount client session.
+    ///
+    /// # Errors
+    /// Rejects the fixed Mount role, Git-coverage HELLO, peer, journal, or original handshake cutoff.
+    pub fn connect_git_coverage_mount_session_v1(
         self,
         deadline_boottime_nanoseconds: u64,
     ) -> Result<DormantAuthenticatedBrokerSessionV1, DormantBrokerSessionHandshakeErrorV1> {

@@ -11,7 +11,7 @@ use aos_proto::aos::sandbox::v1::{
     FilesystemViewServiceExt, OperationServiceExt, OperatorServiceExt, SandboxServiceExt,
     SnapshotServiceExt,
 };
-use aos_sandbox_broker_session_security::controller_service::{
+use aos_sandbox_controller_runtime::controller_service::{
     CapabilityService, ControllerRuntimeError,
     assembly::{ControllerServerAssembly, ControllerServerTerminal},
 };
@@ -27,7 +27,7 @@ use diagnostic::bind_controller_socket;
 /// Returns the existing process, configuration, startup, reconciliation, or
 /// server error. Selected original-custody failures terminate in the runtime.
 pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
-    aos_sandbox_broker_session_security::controller_service::run_from_environment::<
+    aos_sandbox_controller_runtime::controller_service::run_from_environment::<
         ControllerAssembly,
     >()
 }

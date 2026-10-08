@@ -7,6 +7,7 @@
   packages = [
     "aos-sandbox"
     "aos-sandbox-broker-session-security"
+    "aos-sandbox-controller-runtime"
     "aos-sandbox-services"
     "aos-sandbox-linux"
     "aos-sandbox-host"
@@ -43,7 +44,7 @@
     # distinct default-feature test binaries into the same Cargo target tree.
     postBuild = ''
       mkdir kernel-fixtures
-      for crate in aos_sandbox aos_sandbox_broker_session_security aos_sandbox_services aos_sandbox_linux aos_sandbox_host aos_sandbox_mount aos_sandbox_network; do
+      for crate in aos_sandbox aos_sandbox_broker_session_security aos_sandbox_controller_runtime aos_sandbox_services aos_sandbox_linux aos_sandbox_host aos_sandbox_mount aos_sandbox_network; do
         count=0
         for candidate in target/debug/deps/"$crate"-*; do
           if [ -f "$candidate" ] && [ -x "$candidate" ]; then
@@ -256,12 +257,12 @@ in
       for filter in \
         controller_service::qualification_mount_inventory::fixed_mount_inventory_broker \
         controller_service::qualification_mount_inventory::fixed_controller_mount_inventory_client; do
-        ${fixtures}/bin/aos_sandbox_broker_session_security \
+        ${fixtures}/bin/aos_sandbox_controller_runtime \
           --ignored --list "$filter" > /tmp/selected-mount-tests
         ${pkgs.grep}/bin/grep -q ': test$' /tmp/selected-mount-tests
       done
 
-      ${fixtures}/bin/aos_sandbox_broker_session_security \
+      ${fixtures}/bin/aos_sandbox_controller_runtime \
         --ignored --exact \
         controller_service::qualification_mount_inventory::fixed_mount_inventory_broker \
         --test-threads=1 --nocapture > /tmp/fixed-mount-inventory-broker.log 2>&1 &
@@ -281,7 +282,7 @@ in
       echo $$ > /sys/fs/cgroup/aos.slice/aos-control.slice/aos-sandboxd.service/cgroup.procs
       export CREDENTIALS_DIRECTORY=/run/aos/controller-qualification
       if ! ${pkgs.coreutils}/bin/chroot --userspec=+811:+811 --groups= / \
-        ${fixtures}/bin/aos_sandbox_broker_session_security \
+        ${fixtures}/bin/aos_sandbox_controller_runtime \
           --ignored --exact \
           controller_service::qualification_mount_inventory::fixed_controller_mount_inventory_client \
           --test-threads=1 --nocapture; then
@@ -324,7 +325,7 @@ in
         --ignored --list host::qualification::fixed_host_inventory_broker \
         > /tmp/selected-host-tests
       ${pkgs.grep}/bin/grep -q ': test$' /tmp/selected-host-tests
-      ${fixtures}/bin/aos_sandbox_broker_session_security \
+      ${fixtures}/bin/aos_sandbox_controller_runtime \
         --ignored --list \
         controller_service::qualification_host_inventory::fixed_controller_host_inventory_client \
         > /tmp/selected-host-tests
@@ -354,7 +355,7 @@ in
       echo $$ > /sys/fs/cgroup/aos.slice/aos-control.slice/aos-sandboxd.service/cgroup.procs
       export CREDENTIALS_DIRECTORY=/run/aos/controller-qualification
       if ! ${pkgs.coreutils}/bin/chroot --userspec=+811:+811 --groups= / \
-        ${fixtures}/bin/aos_sandbox_broker_session_security \
+        ${fixtures}/bin/aos_sandbox_controller_runtime \
           --ignored --exact \
           controller_service::qualification_host_inventory::fixed_controller_host_inventory_client \
           --test-threads=1 --nocapture; then
