@@ -10,6 +10,12 @@ mod exchange;
 mod snapshot;
 mod watch;
 
+pub use assignment::{
+    ProtectedAssignmentEffectReadyV1, ProtectedAssignmentRecoveryRequiredV1,
+    ProtectedAssignmentStoreCommitV1, ProtectedAssignmentWriteErrorV1,
+    ProtectedAssignmentWriteOutcomeV1, ProtectedAssignmentWriteResolutionV1,
+};
+
 use snapshot::{
     protected_cross_owner_admission_digest, protected_empty_dependency_digest,
     protected_snapshot_dependency_liveness, protected_snapshot_dependency_receipt,
@@ -35,25 +41,23 @@ use aos_sandbox_core::{NodeId, ObjectDigest, OperationId, RestoreScopeId};
 use crate::journal::{Journal, JournalLimits, RecordNamespace, RecoveryReport};
 
 use crate::local_inventory::assignment::{
-    AssignmentEffectPlanV1, AssignmentIntentV1, AssignmentObservationReducerV1,
-    AtomicSnapshotPublicationV1, AuthenticatedSnapshotChunkV1,
+    AssignmentIntentV1, AtomicSnapshotPublicationV1, AuthenticatedSnapshotChunkV1,
     AuthenticatedSnapshotDependencyRangeV1, DurableSnapshotDependencySetV1,
-    DurableSnapshotTransferCheckpointV1, InvalidAssignmentModel, InvalidSnapshotTransfer,
-    SnapshotDependencyRangeV1, SnapshotRestoreAdmissionDecisionV1, SnapshotRestoreAdmissionV1,
-    SnapshotTransferChunkRequestV1, SnapshotTransferCompletionV1, SnapshotTransferManifestV1,
-    SnapshotTransferResumeV1, VerifiedAssignmentAuthorityV1, VerifiedRestoreAuthorizationV1,
-    VerifiedSnapshotDependencySetV1, VerifiedStagedSnapshotV1, staged_prefix_commitment,
+    DurableSnapshotTransferCheckpointV1, InvalidSnapshotTransfer, SnapshotDependencyRangeV1,
+    SnapshotRestoreAdmissionDecisionV1, SnapshotRestoreAdmissionV1, SnapshotTransferChunkRequestV1,
+    SnapshotTransferCompletionV1, SnapshotTransferManifestV1, SnapshotTransferResumeV1,
+    VerifiedAssignmentAuthorityV1, VerifiedRestoreAuthorizationV1, VerifiedSnapshotDependencySetV1,
+    VerifiedStagedSnapshotV1, staged_prefix_commitment,
 };
 #[cfg(feature = "multi-node")]
 use crate::local_inventory::capability::PlacementCandidateV1;
-use crate::local_inventory::carrier_authority::{
-    AuthenticatedAssignmentCarrierContractV1, issue_response_from_protected_channel,
-    issue_session_from_protected_channel, verify_assignment_contract_from_protected_channel,
-};
 #[cfg(feature = "multi-node")]
 use crate::local_inventory::carrier_authority::{
     DormantAuthenticatedCoordinatorNodeTransportV1, DormantOutboundExchangeV1,
     DormantOutboundResponseV1, DormantTransportHandshakeV1,
+};
+use crate::local_inventory::carrier_authority::{
+    issue_response_from_protected_channel, issue_session_from_protected_channel,
 };
 use crate::local_inventory::draining::{
     DrainAssignmentPlanV1, DrainAssignmentStrategyV1, DrainDirectiveV1, DrainObservationV1,
@@ -62,9 +66,8 @@ use crate::local_inventory::draining::{
 use crate::local_inventory::evidence::AuthenticatedEvidenceContextV1;
 use crate::local_inventory::evidence_authority::ProtectedEvidenceIntegrationV1;
 use crate::local_inventory::journal::{
-    AssignmentEffectSemanticGrantV1, InvalidMultiNodeJournal, JournalEffectStateV1,
-    MultiNodeJournalDomainV1, MultiNodeJournalRecordV1, MultiNodeJournalReducerV1,
-    ProtectedJournalRecordV1,
+    InvalidMultiNodeJournal, JournalEffectStateV1, MultiNodeJournalDomainV1,
+    MultiNodeJournalRecordV1, MultiNodeJournalReducerV1, ProtectedJournalRecordV1,
 };
 use crate::local_inventory::protected_artifact_store::ProtectedArtifactKindV1;
 use crate::local_inventory::protected_artifact_store::remote::{
@@ -118,99 +121,6 @@ pub enum ProtectedMultiNodeUpdateErrorV1 {
     /// Protected replay, transition validation, or persistence failed.
     #[error("multi-node protected update failed: {0}")]
     Journal(#[from] InvalidMultiNodeJournal),
-}
-
-/// Couples an assignment journal record to its authenticated carrier contract.
-///
-/// The wrapper is singular. It is the only value in this module that allows a
-/// future publisher to retain peer, node, epoch, assignment, lease, detached
-/// signature, and replay binding alongside the durable record.
-#[must_use]
-pub struct ProtectedAssignmentStoreCommitV1 {
-    record: ProtectedJournalRecordV1,
-    carrier: AuthenticatedAssignmentCarrierContractV1,
-}
-
-/// Retains exact assignment authority across an outcome-unknown store write.
-#[must_use]
-pub struct ProtectedAssignmentRecoveryRequiredV1 {
-    recovery: ProtectedStoreRecoveryRequiredV1,
-    carrier: AuthenticatedAssignmentCarrierContractV1,
-}
-
-/// Reports a protected assignment write without discarding ambiguity state.
-#[must_use]
-pub enum ProtectedAssignmentWriteOutcomeV1 {
-    /// The exact protected assignment row was read back after commit.
-    Committed(ProtectedAssignmentStoreCommitV1),
-    /// The exact transaction and carrier authority must be recovered.
-    RecoveryRequired(ProtectedAssignmentRecoveryRequiredV1),
-}
-
-/// Reports recovery of one protected assignment write.
-#[must_use]
-pub enum ProtectedAssignmentWriteResolutionV1 {
-    /// The exact protected assignment row was authenticated as committed.
-    Committed(ProtectedAssignmentStoreCommitV1),
-    /// Recovery remains indeterminate or found a conflicting current value.
-    RecoveryRequired {
-        /// Retains the exact transaction and carrier authority for another observation.
-        recovery: ProtectedAssignmentRecoveryRequiredV1,
-        /// Describes the fail-closed recovery classification.
-        reason: InvalidMultiNodeJournal,
-    },
-}
-
-/// Reports protected assignment verification or persistence failure.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-pub enum ProtectedAssignmentWriteErrorV1 {
-    /// Carrier, signature, trust-policy, or protected identity verification failed.
-    #[error("protected assignment carrier verification failed: {0}")]
-    Protocol(#[from] InvalidMultiNodeProtocol),
-    /// Assignment intent or reducer plan construction failed.
-    #[error("protected assignment reducer planning failed: {0}")]
-    Assignment(#[from] InvalidAssignmentModel),
-    /// Protected storage or canonical replay validation failed.
-    #[error("protected assignment journal write failed: {0}")]
-    Journal(#[from] InvalidMultiNodeJournal),
-}
-
-/// Allows publication only after the exact assignment store commit completed.
-#[must_use]
-pub(in crate::local_inventory::store_authority) struct ProtectedAssignmentPublicationV1 {
-    record: ProtectedJournalRecordV1,
-    carrier: AuthenticatedAssignmentCarrierContractV1,
-}
-
-/// Carries an exact prepared multi-node effect after durable publication.
-#[must_use]
-pub(in crate::local_inventory::store_authority) struct ProtectedAssignmentEffectHandoffV1 {
-    publication: ProtectedAssignmentPublicationV1,
-    semantic_grant: AssignmentEffectSemanticGrantV1,
-    effect_time_carrier: AuthenticatedAssignmentCarrierContractV1,
-}
-
-/// Retains a current, reducer-authorized assignment effect without dispatching it.
-#[must_use]
-pub struct ProtectedAssignmentEffectReadyV1 {
-    handoff: ProtectedAssignmentEffectHandoffV1,
-}
-
-pub(in crate::local_inventory::store_authority) enum ProtectedAssignmentCommitOutcomeV1 {
-    Committed(ProtectedAssignmentStoreCommitV1),
-    RecoveryRequired {
-        recovery: ProtectedStoreRecoveryRequiredV1,
-        carrier: AuthenticatedAssignmentCarrierContractV1,
-    },
-}
-
-pub(in crate::local_inventory::store_authority) enum ProtectedAssignmentResolutionV1 {
-    Committed(ProtectedAssignmentStoreCommitV1),
-    RecoveryRequired {
-        recovery: ProtectedStoreRecoveryRequiredV1,
-        carrier: AuthenticatedAssignmentCarrierContractV1,
-        reason: InvalidMultiNodeJournal,
-    },
 }
 
 /// Owns destination-only protected storage and restore admission.
@@ -460,148 +370,6 @@ impl ProtectedMultiNodeEvidenceSessionV1 {
     #[must_use]
     pub fn context(&self) -> AuthenticatedEvidenceContextV1 {
         self.integration.context()
-    }
-}
-
-impl ProtectedAssignmentStoreCommitV1 {
-    /// Returns the exact protected assignment journal record.
-    #[must_use]
-    pub fn record(&self) -> &ProtectedJournalRecordV1 {
-        &self.record
-    }
-
-    /// Consumes the readback-confirmed commit into a publication typestate.
-    pub(in crate::local_inventory::store_authority) fn into_publication(
-        self,
-    ) -> ProtectedAssignmentPublicationV1 {
-        ProtectedAssignmentPublicationV1 {
-            record: self.record,
-            carrier: self.carrier,
-        }
-    }
-}
-
-impl ProtectedAssignmentPublicationV1 {
-    /// Releases only the reducer-authorized effect under current assignment authority.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`InvalidMultiNodeJournal::InvalidRecoveryTransition`] unless the
-    /// semantic grant names this exact protected row and a current effect-time
-    /// carrier preserves its peer, assignment, and lease authority.
-    pub(in crate::local_inventory::store_authority) fn into_effect_handoff(
-        self,
-        semantic_grant: AssignmentEffectSemanticGrantV1,
-        effect_time_carrier: AuthenticatedAssignmentCarrierContractV1,
-        effect_time_unix_seconds: u64,
-    ) -> Result<ProtectedAssignmentEffectHandoffV1, InvalidMultiNodeJournal> {
-        let record = self.record.record();
-        let intent = record
-            .state_payload()
-            .assignment_state()
-            .ok_or(InvalidMultiNodeJournal::InvalidRecoveryTransition)?
-            .intent();
-        if record.domain() != crate::local_inventory::journal::MultiNodeJournalDomainV1::Assignment
-            || record.effect_state()
-                != crate::local_inventory::journal::JournalEffectStateV1::EffectPrepared
-            || record.payload_digest() != semantic_grant.payload_digest()
-            || semantic_grant.intent() != intent
-            || !semantic_grant.matches(record.operation(), intent, record.effect_digest())
-            || record.digest() != semantic_grant.record_digest()
-            || self.record.receipt_commitment() != semantic_grant.receipt_commitment()
-            || self.record.authority_binding_digest()
-                != Some(semantic_grant.authority_binding_digest())
-            || self.record.authority_binding_digest() != Some(self.carrier.digest())
-            || !effect_time_carrier.matches_assignment_and_lease_of(&self.carrier)
-            || effect_time_carrier.replay_fence() != self.carrier.replay_fence()
-            || effect_time_carrier.verified_at_unix_seconds() != effect_time_unix_seconds
-            || !effect_time_carrier.is_current_for(intent, effect_time_unix_seconds)
-        {
-            return Err(InvalidMultiNodeJournal::InvalidRecoveryTransition);
-        }
-        Ok(ProtectedAssignmentEffectHandoffV1 {
-            publication: self,
-            semantic_grant,
-            effect_time_carrier,
-        })
-    }
-}
-
-impl ProtectedAssignmentEffectHandoffV1 {
-    /// Returns the exact typed assignment intent selected by the reducer plan.
-    pub(in crate::local_inventory::store_authority) fn intent(
-        &self,
-    ) -> &crate::local_inventory::assignment::AssignmentIntentV1 {
-        self.semantic_grant.intent()
-    }
-
-    /// Returns the exact durable operation identity.
-    pub(in crate::local_inventory::store_authority) fn operation(&self) -> OperationId {
-        self.semantic_grant.operation()
-    }
-
-    /// Returns the exact durable effect commitment.
-    pub(in crate::local_inventory::store_authority) fn effect_digest(&self) -> ObjectDigest {
-        self.semantic_grant.effect_digest()
-    }
-
-    /// Returns the carrier contract that authenticated the durable row.
-    pub(in crate::local_inventory::store_authority) fn carrier_contract_digest(
-        &self,
-    ) -> ObjectDigest {
-        self.publication.carrier.digest()
-    }
-
-    /// Returns the current carrier contract checked at effect handoff time.
-    pub(in crate::local_inventory::store_authority) fn effect_time_carrier_contract_digest(
-        &self,
-    ) -> ObjectDigest {
-        self.effect_time_carrier.digest()
-    }
-
-    /// Returns the reducer-issued semantic authority retained by the handoff.
-    pub(in crate::local_inventory::store_authority) fn semantic_authority_binding_digest(
-        &self,
-    ) -> ObjectDigest {
-        self.semantic_grant.authority_binding_digest()
-    }
-}
-
-impl ProtectedAssignmentEffectReadyV1 {
-    /// Returns the exact reducer-selected assignment intent.
-    #[must_use]
-    pub fn intent(&self) -> &crate::local_inventory::assignment::AssignmentIntentV1 {
-        self.handoff.intent()
-    }
-
-    /// Returns the exact durable operation identity.
-    #[must_use]
-    pub fn operation(&self) -> OperationId {
-        self.handoff.operation()
-    }
-
-    /// Returns the exact durable effect commitment.
-    #[must_use]
-    pub fn effect_digest(&self) -> ObjectDigest {
-        self.handoff.effect_digest()
-    }
-
-    /// Returns the carrier commitment persisted with the assignment row.
-    #[must_use]
-    pub fn carrier_contract_digest(&self) -> ObjectDigest {
-        self.handoff.carrier_contract_digest()
-    }
-
-    /// Returns the freshly reauthenticated effect-time carrier commitment.
-    #[must_use]
-    pub fn effect_time_carrier_contract_digest(&self) -> ObjectDigest {
-        self.handoff.effect_time_carrier_contract_digest()
-    }
-
-    /// Returns the reducer-issued semantic authority commitment.
-    #[must_use]
-    pub fn semantic_authority_binding_digest(&self) -> ObjectDigest {
-        self.handoff.semantic_authority_binding_digest()
     }
 }
 
