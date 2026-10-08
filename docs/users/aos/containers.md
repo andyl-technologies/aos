@@ -6,18 +6,20 @@ utilities, and runtime dependencies. Pull the published image and install
 additional packages through APM. Building a derived image is optional.
 
 Packages use the same payload and native module declarations on machines and
-in containers. The target selects handlers for their abilities. Vim needs only
-ordinary package publication. nginx can materialize its configuration and
-directories without registering a managed daemon. Explicitly enabling a
-managed service requires a service-management handler.
+in containers. The target selects handlers for their abilities. Packages can
+install files and configuration independently of optional managed services.
+Explicitly enabling a managed service requires a service-management handler.
+Use generated package documentation to inspect each package's options and
+the abilities it consumes or exposes.
 
 ## Installing while building an image
 
-For a derived image, package installation runs in ordinary Dockerfile steps:
+For a derived image, package installation runs in ordinary Dockerfile steps.
+Replace `package-name` with the package you want to install:
 
 ```dockerfile
 FROM registry.example.com/aos:stable
-RUN apm install vim
+RUN apm install package-name
 ```
 
 APM initializes the embedded local package/store state when the entrypoint has
@@ -33,22 +35,16 @@ builder. Pending outputs are not available as if their operations had executed.
 ## Selecting an init implementation
 
 An init implementation consumes `initSystem.install` and can provide other
-abilities. For example, systemd provides `serviceManagement.realize` and
-`serviceManagement.resourceGroup`; it does not need an external service handler
-to run as init.
-
-```dockerfile
-FROM registry.example.com/aos:stable
-RUN apm install systemd
-RUN apm install nginx
-```
+abilities, including service management. It does not need an external service
+handler to run as init. Install the chosen init package through APM during the
+image build and configure it through its native module options.
 
 The init effect prepares the retained executable and arguments. The inherited
 AOS entrypoint reads that configuration when the finished container starts and
 executes the selected init. Service activation resumes when that manager is
-ready. Installing nginx alone does not enable a service when no manager is
-selected; configure its virtual hosts and service enablement through its native
-module options.
+ready. Packages can leave their optional managed services disabled when no
+manager is selected; use their generated options documentation to configure
+service enablement.
 
 The container launcher must provide the environment required by the selected
 init and service features. Installation during a Docker build does not establish
