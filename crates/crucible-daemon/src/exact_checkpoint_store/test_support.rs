@@ -85,6 +85,23 @@ struct FixtureMetadataBackend {
 
 #[cfg(test)]
 impl ImmutableBlobBackend for FixtureMetadataBackend {
+    fn checked_publication_metadata(
+        &self,
+        kind: ObjectKind,
+    ) -> Result<crucible_cas::content_store::CheckedPublicationMetadata, StoreError> {
+        self.backend.checked_publication_metadata(kind)
+    }
+
+    fn put_many_if_absent_with_boundary(
+        &self,
+        original: &crucible::owned_decode::DecodeBudget,
+        objects: &[(crucible_cas::content_store::ContentId, BlobHandle)],
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<crucible_cas::content_store::PutBatchReceipt, StoreError> {
+        self.backend
+            .put_many_if_absent_with_boundary(original, objects, boundary)
+    }
+
     fn name(&self) -> &str {
         self.backend.name()
     }
@@ -107,6 +124,17 @@ impl ImmutableBlobBackend for FixtureMetadataBackend {
 
     fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
         self.backend.read(id, range)
+    }
+
+    fn read_with_boundary(
+        &self,
+        original: &crucible::owned_decode::DecodeBudget,
+        id: ContentId,
+        range: Option<ByteRange>,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<BlobHandle, StoreError> {
+        self.backend
+            .read_with_boundary(original, id, range, boundary)
     }
 
     fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {

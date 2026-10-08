@@ -4,65 +4,22 @@ use crucible_cas::content_store::{BlobHandle, BlobSource, StoreError};
 use crucible_cas::owned_decode::{
     DecodeAdmissionError, DecodeBudget, DecodeResourceAuthority, DecodeScratch, ResourceLoan,
 };
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::cell::Cell;
+use std::alloc::Layout;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use crucible_linux_resource::test_support::{
+    OriginalControlSelection, OriginalControlSlot, OriginalControlSnapshot,
+    OriginalControlsOutcome, OriginalStaticCounters, TestAllocationObserver,
+};
 
 static USED: AtomicUsize = AtomicUsize::new(0);
 static BASELINE: AtomicUsize = AtomicUsize::new(0);
 static EXTENT: AtomicUsize = AtomicUsize::new(0);
-static ADDRESS: AtomicUsize = AtomicUsize::new(0);
-static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
-static ALLOCATION_SIZE: AtomicUsize = AtomicUsize::new(0);
 static DROPS: AtomicUsize = AtomicUsize::new(0);
-static DEALLOCATED: AtomicBool = AtomicBool::new(false);
-static FUNDED_AT_CLOSE: AtomicBool = AtomicBool::new(false);
-static VALUE_LIVE_AT_CLOSE: AtomicBool = AtomicBool::new(false);
-
-thread_local! {
-    static WATCH: Cell<bool> = const { Cell::new(false) };
-}
-
-struct Observer;
-
-// SAFETY: Pointer/layout pairs are forwarded unchanged to System. Callbacks
-// use only fixed atomics and an allocation-free TLS flag, never inspect memory,
-// and neither allocate nor panic.
-unsafe impl GlobalAlloc for Observer {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        // SAFETY: The caller supplies a valid allocation layout.
-        let pointer = unsafe { System.alloc(layout) };
-        if !pointer.is_null() && WATCH.try_with(Cell::get).unwrap_or(false) {
-            ALLOCATIONS.fetch_add(1, Ordering::SeqCst);
-            ADDRESS.store(pointer.addr(), Ordering::SeqCst);
-            ALLOCATION_SIZE.store(layout.size(), Ordering::SeqCst);
-        }
-        pointer
-    }
-
-    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
-        if pointer.addr() != 0
-            && pointer.addr() == ADDRESS.load(Ordering::SeqCst)
-            && DEALLOCATED
-                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-                .is_ok()
-        {
-            FUNDED_AT_CLOSE.store(
-                USED.load(Ordering::SeqCst)
-                    >= BASELINE.load(Ordering::SeqCst) + EXTENT.load(Ordering::SeqCst),
-                Ordering::SeqCst,
-            );
-            VALUE_LIVE_AT_CLOSE.store(DROPS.load(Ordering::SeqCst) == 0, Ordering::SeqCst);
-        }
-        // SAFETY: The caller supplies the live allocation and original layout;
-        // observation neither changes nor dereferences either.
-        unsafe { System.dealloc(pointer, layout) };
-    }
-}
-
 #[global_allocator]
-static ALLOCATOR: Observer = Observer;
+static ALLOCATOR: TestAllocationObserver = TestAllocationObserver;
 
 struct Credit(usize);
 
@@ -117,28 +74,6 @@ impl Drop for Source {
     }
 }
 
-struct Observation;
-
-impl Observation {
-    fn arm() -> Self {
-        ADDRESS.store(0, Ordering::SeqCst);
-        ALLOCATIONS.store(0, Ordering::SeqCst);
-        ALLOCATION_SIZE.store(0, Ordering::SeqCst);
-        DROPS.store(0, Ordering::SeqCst);
-        DEALLOCATED.store(false, Ordering::SeqCst);
-        FUNDED_AT_CLOSE.store(false, Ordering::SeqCst);
-        VALUE_LIVE_AT_CLOSE.store(false, Ordering::SeqCst);
-        WATCH.with(|watch| watch.set(true));
-        Self
-    }
-}
-
-impl Drop for Observation {
-    fn drop(&mut self) {
-        WATCH.with(|watch| watch.set(false));
-    }
-}
-
 #[test]
 fn source_control_closes_before_credit_on_drop_callback_unwind_and_concurrent_last_aliases() {
     let extent = BlobHandle::source_allocation_bytes::<Source>() as usize;
@@ -155,57 +90,102 @@ fn source_control_closes_before_credit_on_drop_callback_unwind_and_concurrent_la
             _credit: credit,
         };
 
-        if mode == "reference" {
-            let observation = Observation::arm();
-            let reference: Arc<dyn BlobSource> = Arc::new(source);
-            drop(observation);
-            drop(reference);
-            assert!(!FUNDED_AT_CLOSE.load(Ordering::SeqCst));
-            assert!(!VALUE_LIVE_AT_CLOSE.load(Ordering::SeqCst));
-        } else if mode == "callback-unwind" {
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let _observation = Observation::arm();
-                // Disable allocation recording before the real callback panic
-                // creates its runtime payload; source deallocation stays armed.
-                struct CallbackSource(Source);
-                impl BlobSource for CallbackSource {
-                    fn logical_length(&self) -> u64 {
-                        WATCH.with(|watch| watch.set(false));
-                        self.0.logical_length()
-                    }
+        DROPS.store(0, Ordering::SeqCst);
+        let layout = Layout::from_size_align(extent, std::mem::align_of::<Source>()).unwrap();
+        let ((identity, counts), report) =
+            TestAllocationObserver::observe_original_controls(|session| {
+                session
+                    .arm(
+                        OriginalControlSlot::First,
+                        OriginalControlSelection::FirstThreadExtent(
+                            NonZeroUsize::new(extent).unwrap(),
+                        ),
+                        OriginalStaticCounters::UsageAndDrops {
+                            used: &USED,
+                            baseline: &BASELINE,
+                            extent: &EXTENT,
+                            drops: &DROPS,
+                        },
+                        false,
+                    )
+                    .unwrap();
+                if mode == "reference" {
+                    let (reference, identity, counts) =
+                        TestAllocationObserver::capture_layout_and_count(layout, || {
+                            let reference: Arc<dyn BlobSource> = Arc::new(source);
+                            reference
+                        });
+                    drop(reference);
+                    (identity, counts)
+                } else if mode == "callback-unwind" {
+                    // The original callback stops only constructor counting.
+                    // Actual unwind closes the selected source while its watch
+                    // and original usage/drop counters remain armed.
+                    struct CallbackSource(Source);
+                    impl BlobSource for CallbackSource {
+                        fn logical_length(&self) -> u64 {
+                            TestAllocationObserver::pause_allocation_count();
+                            self.0.logical_length()
+                        }
 
-                    fn open(&self) -> Result<Box<dyn std::io::Read + Send>, StoreError> {
-                        self.0.open()
+                        fn open(&self) -> Result<Box<dyn std::io::Read + Send>, StoreError> {
+                            self.0.open()
+                        }
                     }
+                    let (result, identity, counts) =
+                        TestAllocationObserver::capture_layout_and_count(layout, || {
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                let _handle = BlobHandle::new(CallbackSource(source));
+                            }))
+                        });
+                    assert!(result.is_err());
+                    (identity, counts)
+                } else {
+                    let (handle, identity, counts) =
+                        TestAllocationObserver::capture_layout_and_count(layout, || {
+                            BlobHandle::new(source)
+                        });
+                    if mode == "concurrent" {
+                        let first = handle.clone();
+                        let second = handle.clone();
+                        drop(handle);
+                        assert_eq!(DROPS.load(Ordering::SeqCst), 0);
+                        std::thread::scope(|scope| {
+                            scope.spawn(move || drop(first));
+                            scope.spawn(move || drop(second));
+                        });
+                    } else {
+                        drop(handle);
+                    }
+                    (identity, counts)
                 }
-                let _handle = BlobHandle::new(CallbackSource(source));
-            }));
-            assert!(result.is_err());
-        } else {
-            let observation = Observation::arm();
-            let handle = BlobHandle::new(source);
-            drop(observation);
-            if mode == "concurrent" {
-                let first = handle.clone();
-                let second = handle.clone();
-                drop(handle);
-                assert_eq!(DROPS.load(Ordering::SeqCst), 0);
-                std::thread::scope(|scope| {
-                    scope.spawn(move || drop(first));
-                    scope.spawn(move || drop(second));
-                });
-            } else {
-                drop(handle);
-            }
-        }
+            })
+            .unwrap();
 
-        assert_eq!(ALLOCATIONS.load(Ordering::SeqCst), 1, "{mode}");
-        assert_eq!(ALLOCATION_SIZE.load(Ordering::SeqCst), extent, "{mode}");
-        assert!(DEALLOCATED.load(Ordering::SeqCst), "{mode}");
+        assert_eq!(counts.allocations, 1, "{mode}");
+        assert_eq!(counts.reallocations, 0, "{mode}");
+        assert!(!counts.overflow, "{mode}");
+        assert_eq!(report.outcome, OriginalControlsOutcome::Complete, "{mode}");
+        let observed = report.controls[0].unwrap();
+        assert_eq!(Some(observed.identity), identity, "{mode}");
+        let OriginalControlSnapshot::UsageAndDrops {
+            used,
+            baseline: sampled_baseline,
+            extent: sampled_extent,
+            drops,
+        } = observed.before
+        else {
+            panic!("actual original source usage and drop sample missing");
+        };
+        assert_eq!(sampled_baseline, baseline, "{mode}");
+        assert_eq!(sampled_extent, extent, "{mode}");
         assert_eq!(DROPS.load(Ordering::SeqCst), 1, "{mode}");
-        if mode != "reference" {
-            assert!(FUNDED_AT_CLOSE.load(Ordering::SeqCst), "{mode}");
-            assert!(VALUE_LIVE_AT_CLOSE.load(Ordering::SeqCst), "{mode}");
+        if mode == "reference" {
+            assert!(used < baseline + extent, "{mode}");
+            assert_ne!(drops, 0, "{mode}");
+        } else {
+            assert!(used >= baseline + extent, "{mode}");
+            assert_eq!(drops, 0, "{mode}");
         }
         assert_eq!(USED.load(Ordering::SeqCst), baseline, "{mode}");
         drop(original);

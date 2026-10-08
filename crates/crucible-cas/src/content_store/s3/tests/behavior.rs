@@ -545,7 +545,7 @@ fn graph_binds_exact_endpoint_capability_and_canonical_configuration() {
     assert_eq!(admin.s3_multipart_cleanup()[0].node().as_str(), "archive");
     assert_eq!(
         encode_hex(&graph.configuration_id().as_bytes()),
-        "4764502287640c1e6b4818928ca456600d39eb21745c1fae8622cf43ac8b7a92"
+        "d95fb09818b8d32f23cdb0b12e156d9fdb050bf2a079bda182c5d0eb99606cdf"
     );
 
     clients

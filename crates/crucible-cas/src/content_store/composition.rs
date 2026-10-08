@@ -8,6 +8,9 @@ mod checked_cache;
 #[cfg(test)]
 mod checked_dispatch_tests;
 
+#[cfg(test)]
+mod checked_mirror_tests;
+
 use super::batch::{admission_under, allocation_under};
 
 use std::collections::BTreeMap;
@@ -325,6 +328,26 @@ impl DurabilityPolicyStore {
 }
 
 impl ImmutableBlobBackend for DurabilityPolicyStore {
+    fn read_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        id: ContentId,
+        range: Option<ByteRange>,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<BlobHandle, StoreError> {
+        super::composite_publication::checked_read(original, boundary, |boundary| {
+            super::checked_reader::check(original, boundary)?;
+            self.requirement(id)?;
+            let handle = self
+                .child
+                .read_with_boundary(original, id, range, boundary)?;
+            original
+                .verify_live()
+                .map_err(|error| admission_under(original, error))?;
+            Ok(handle)
+        })
+    }
+
     fn checked_publication_metadata(
         &self,
         kind: ObjectKind,
@@ -1190,6 +1213,37 @@ impl WriteThroughStore {
 }
 
 impl ImmutableBlobBackend for WriteThroughStore {
+    fn read_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        id: ContentId,
+        range: Option<ByteRange>,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<BlobHandle, StoreError> {
+        super::composite_publication::checked_read(original, boundary, |boundary| {
+            for child in &self.children {
+                super::checked_reader::check(original, boundary)?;
+                match child.read_with_boundary(original, id, range, boundary) {
+                    Ok(handle) => {
+                        original
+                            .verify_live()
+                            .map_err(|error| admission_under(original, error))?;
+                        return Ok(handle);
+                    }
+                    Err(error) if error.confirmed_absence(id) => {
+                        // A clean absence has no outcome to retain. Recheck
+                        // this original before considering another mirror.
+                        original
+                            .verify_live()
+                            .map_err(|error| admission_under(original, error))?;
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            Err(StoreError::NotFound { id })
+        })
+    }
+
     fn put_many_if_absent_with_boundary(
         &self,
         original: &crate::owned_decode::DecodeBudget,

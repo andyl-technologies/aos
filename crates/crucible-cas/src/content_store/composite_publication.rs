@@ -3,6 +3,8 @@
 //! Metadata bounds admit aggregate arrays before the first writer runs. Leaf
 //! strings move into those arrays while each leaf keeps its original outcome,
 //! diagnostic credit, and now-empty array allocations through outer acceptance.
+//! Checked read compositions reuse the same first-refusal and cleanup owner,
+//! with an empty publication inventory and deferred diagnostic allocation.
 
 use super::batch::{admission_under, allocation_under};
 use super::*;
@@ -55,6 +57,53 @@ impl std::error::Error for CompositeBoundaryRefusal {}
 fn refusal_marker() -> StoreError {
     StoreError::CompositeBoundary {
         source: CompositeBoundaryRefusal(()),
+    }
+}
+
+/// Keeps a read composition's first callback refusal beside child cleanup.
+pub(super) fn checked_read(
+    original: &DecodeBudget,
+    boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    operation: impl FnOnce(&mut dyn FnMut() -> Result<(), StoreError>) -> Result<BlobHandle, StoreError>,
+) -> Result<BlobHandle, StoreError> {
+    original
+        .verify_live()
+        .map_err(|error| admission_under(original, error))?;
+    let failure_credit = original
+        .reserve_scratch_array::<CompositeFailure>(1)
+        .map_err(|error| admission_under(original, error))?;
+    let leaves_credit = original
+        .reserve_scratch_bytes(0)
+        .map_err(|error| admission_under(original, error))?;
+
+    let mut first = None;
+    let result = operation(&mut || {
+        if first.is_some() {
+            return Err(refusal_marker());
+        }
+        match boundary() {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                first = Some(error);
+                Err(refusal_marker())
+            }
+        }
+    });
+
+    match (first, result) {
+        (None, result) => result,
+        (Some(first), Ok(value)) => {
+            drop(value);
+            Err(first)
+        }
+        (Some(first), Err(StoreError::CompositeBoundary { .. })) => Err(first),
+        (Some(first), Err(work)) => Err(failure(
+            work,
+            Some(first),
+            Vec::new(),
+            failure_credit,
+            leaves_credit,
+        )),
     }
 }
 

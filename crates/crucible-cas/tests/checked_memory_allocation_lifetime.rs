@@ -7,30 +7,26 @@ use crucible_cas::content_store::{
 use crucible_cas::owned_decode::{
     DecodeAdmissionError, DecodeBudget, DecodeResourceAuthority, ResourceLoan,
 };
-use std::alloc::{GlobalAlloc, Layout, System};
+use crucible_linux_resource::test_support::{
+    AllocationIdentity, AllocationRosterOutcome, AllocationTrace, MemoryNodeCounters,
+    OriginalControlSelection, OriginalControlSlot, OriginalControlSnapshot,
+    OriginalControlsOutcome, OriginalStaticCounters, TestAllocationObserver,
+};
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::{Arc, atomic::Ordering};
 
 const CAPACITY: usize = 64;
-static ALLOCATION_COUNT: AtomicUsize = AtomicUsize::new(0);
-static ADDRESSES: [AtomicUsize; CAPACITY] = [const { AtomicUsize::new(0) }; CAPACITY];
-static SIZES: [AtomicUsize; CAPACITY] = [const { AtomicUsize::new(0) }; CAPACITY];
+static TRACE: AllocationTrace<CAPACITY> = AllocationTrace::new();
 static LOAN_COUNT: AtomicUsize = AtomicUsize::new(0);
 static LOAN_SIZES: [AtomicUsize; CAPACITY] = [const { AtomicUsize::new(0) }; CAPACITY];
 static LOAN_AFTER_ALLOCATION: [AtomicUsize; CAPACITY] = [const { AtomicUsize::new(0) }; CAPACITY];
 static COPIED_PAYLOAD: AtomicUsize = AtomicUsize::new(0);
 static LOAN_BANKS: [AtomicUsize; CAPACITY] = [const { AtomicUsize::new(0) }; CAPACITY];
-static BODY_ADDRESS: AtomicUsize = AtomicUsize::new(0);
-static PAYLOAD_ADDRESS: AtomicUsize = AtomicUsize::new(0);
 static BODY_LOAN: AtomicUsize = AtomicUsize::new(usize::MAX);
 static PAYLOAD_LOAN: AtomicUsize = AtomicUsize::new(usize::MAX);
 static BODY_CLOSED: AtomicBool = AtomicBool::new(false);
 static PAYLOAD_CLOSED: AtomicBool = AtomicBool::new(false);
-static BODY_DEALLOCATED: AtomicBool = AtomicBool::new(false);
-static PAYLOAD_DEALLOCATED: AtomicBool = AtomicBool::new(false);
-static BODY_FUNDED: AtomicBool = AtomicBool::new(false);
-static PAYLOAD_FUNDED: AtomicBool = AtomicBool::new(false);
 static NAMESPACE_CLOSED: AtomicBool = AtomicBool::new(false);
 static NODES_FUNDED: AtomicBool = AtomicBool::new(true);
 static NODE_ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
@@ -44,76 +40,17 @@ thread_local! {
     static WATCH: Cell<bool> = const { Cell::new(false) };
 }
 
-struct Observer;
-
-// SAFETY: Allocation/deallocation delegate unchanged pointer/layout pairs to
-// System. Observation uses fixed atomics and thread-local flags, reads no
-// allocated memory, and cannot allocate or panic in allocator callbacks.
-unsafe impl GlobalAlloc for Observer {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        // SAFETY: The allocator caller supplies a valid allocation layout.
-        let pointer = unsafe { System.alloc(layout) };
-        if !pointer.is_null() && WATCH.try_with(Cell::get).unwrap_or(false) {
-            if matches!(layout.size(), 544 | 640) {
-                NODE_ALLOCATIONS.fetch_add(1, Ordering::SeqCst);
-                if !NODE_ADDRESSES.iter().any(|entry| {
-                    entry
-                        .compare_exchange(0, pointer.addr(), Ordering::SeqCst, Ordering::SeqCst)
-                        .is_ok()
-                }) {
-                    NODE_OVERFLOW.store(true, Ordering::SeqCst);
-                }
-            }
-            let index = ALLOCATION_COUNT.fetch_add(1, Ordering::SeqCst);
-            if index < CAPACITY {
-                ADDRESSES[index].store(pointer.addr(), Ordering::SeqCst);
-                SIZES[index].store(layout.size(), Ordering::SeqCst);
-            }
-        }
-        pointer
-    }
-
-    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
-        let address = pointer.addr();
-        if address != 0
-            && NODE_ADDRESSES.iter().any(|entry| {
-                entry
-                    .compare_exchange(address, 0, Ordering::SeqCst, Ordering::SeqCst)
-                    .is_ok()
-            })
-        {
-            NODE_DEALLOCATIONS.fetch_add(1, Ordering::SeqCst);
-            if NAMESPACE_CLOSED.load(Ordering::SeqCst) {
-                NODES_FUNDED.store(false, Ordering::SeqCst);
-            }
-        }
-        if address != 0
-            && address == BODY_ADDRESS.load(Ordering::SeqCst)
-            && BODY_DEALLOCATED
-                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-                .is_ok()
-        {
-            BODY_FUNDED.store(
-                !BODY_CLOSED.load(Ordering::SeqCst) && !PAYLOAD_CLOSED.load(Ordering::SeqCst),
-                Ordering::SeqCst,
-            );
-        }
-        if address != 0
-            && address == PAYLOAD_ADDRESS.load(Ordering::SeqCst)
-            && PAYLOAD_DEALLOCATED
-                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-                .is_ok()
-        {
-            PAYLOAD_FUNDED.store(!PAYLOAD_CLOSED.load(Ordering::SeqCst), Ordering::SeqCst);
-        }
-        // SAFETY: The caller supplies the live pointer and its original layout;
-        // observation neither changes nor dereferences the allocation.
-        unsafe { System.dealloc(pointer, layout) };
-    }
-}
-
 #[global_allocator]
-static ALLOCATOR: Observer = Observer;
+static ALLOCATOR: TestAllocationObserver = TestAllocationObserver;
+
+static NODE_COUNTERS: MemoryNodeCounters = MemoryNodeCounters {
+    addresses: &NODE_ADDRESSES,
+    allocations: &NODE_ALLOCATIONS,
+    deallocations: &NODE_DEALLOCATIONS,
+    overflow: &NODE_OVERFLOW,
+    funded: &NODES_FUNDED,
+    namespace_closed: &NAMESPACE_CLOSED,
+};
 
 struct Loan {
     bank: usize,
@@ -213,8 +150,7 @@ impl StorePhysicalQuotaGuard for Quota {
             observation: index,
         });
         if let Some(index) = index.filter(|index| *index < CAPACITY) {
-            LOAN_AFTER_ALLOCATION[index]
-                .store(ALLOCATION_COUNT.load(Ordering::SeqCst), Ordering::SeqCst);
+            LOAN_AFTER_ALLOCATION[index].store(TRACE.allocation_count(), Ordering::SeqCst);
         }
         Ok(loan)
     }
@@ -285,18 +221,11 @@ impl BlobSource for Source {
 }
 
 fn reset() {
-    BODY_ADDRESS.store(0, Ordering::SeqCst);
-    PAYLOAD_ADDRESS.store(0, Ordering::SeqCst);
     BODY_LOAN.store(usize::MAX, Ordering::SeqCst);
     PAYLOAD_LOAN.store(usize::MAX, Ordering::SeqCst);
-    ALLOCATION_COUNT.store(0, Ordering::SeqCst);
     LOAN_COUNT.store(0, Ordering::SeqCst);
     BODY_CLOSED.store(false, Ordering::SeqCst);
     PAYLOAD_CLOSED.store(false, Ordering::SeqCst);
-    BODY_DEALLOCATED.store(false, Ordering::SeqCst);
-    PAYLOAD_DEALLOCATED.store(false, Ordering::SeqCst);
-    BODY_FUNDED.store(false, Ordering::SeqCst);
-    PAYLOAD_FUNDED.store(false, Ordering::SeqCst);
     NAMESPACE_CLOSED.store(false, Ordering::SeqCst);
     NODES_FUNDED.store(true, Ordering::SeqCst);
     NODE_ALLOCATIONS.store(0, Ordering::SeqCst);
@@ -342,134 +271,180 @@ fn body_and_payload_loans_close_after_actual_allocations_on_drop_unwind_and_conc
             original: source_original.clone(),
         });
 
-        WATCH.with(|watch| watch.set(true));
-        let receipt = backend
-            .put_many_if_absent_with_boundary(
-                &publication_original,
-                &[(id, source.clone())],
-                &mut || Ok(()),
-            )
-            .unwrap();
-        WATCH.with(|watch| watch.set(false));
-        let allocations = ALLOCATION_COUNT.load(Ordering::SeqCst);
-        let loans = LOAN_COUNT.load(Ordering::SeqCst);
-        assert!(allocations <= CAPACITY);
-        assert!(loans <= CAPACITY);
-        let body_loan = (0..loans)
-            .find(|&index| {
-                let allocation = LOAN_AFTER_ALLOCATION[index].load(Ordering::SeqCst);
-                LOAN_BANKS[index].load(Ordering::SeqCst) == 2
-                    && allocation + 1 < allocations
-                    && SIZES[allocation].load(Ordering::SeqCst)
-                        == LOAN_SIZES[index].load(Ordering::SeqCst)
-                    && SIZES[allocation + 1].load(Ordering::SeqCst) == 544
-            })
-            .expect("actual original A control loan");
-        // Returning the actual control loan allocates no additional control:
-        // the next allocation is Memory's body Arc, followed by its map node.
-        // The independent N owns every node; A owns just this body allocation.
-        let body_allocation = LOAN_AFTER_ALLOCATION[body_loan].load(Ordering::SeqCst);
-        assert!(body_allocation < allocations);
-        let body_extent = SIZES[body_allocation].load(Ordering::SeqCst);
-        assert_eq!(LOAN_SIZES[body_loan].load(Ordering::SeqCst), body_extent);
-        println!(
-            "actual Memory {mode}: body_arc={} namespace_escrow=8544 body_control_loan={body_extent} copied_payload=65539 original_control_bank=A original_payload_bank=S original_node_bank=N",
-            SIZES[body_allocation].load(Ordering::SeqCst)
-        );
-        let payload_address = COPIED_PAYLOAD.load(Ordering::SeqCst);
-        let payload_allocation = (0..allocations)
-            .find(|&index| ADDRESSES[index].load(Ordering::SeqCst) == payload_address)
-            .expect("actual copied S payload moved unchanged into Memory");
-        assert_eq!(SIZES[payload_allocation].load(Ordering::SeqCst), 65_539);
-        let payload_loans: Vec<_> = (0..loans)
-            .filter(|&index| {
-                LOAN_BANKS[index].load(Ordering::SeqCst) == 1
-                    && LOAN_SIZES[index].load(Ordering::SeqCst) == 65_539
-            })
-            .collect();
-        assert_eq!(payload_loans.len(), 1, "one independently funded S copy");
-        BODY_LOAN.store(body_loan, Ordering::SeqCst);
-        PAYLOAD_LOAN.store(payload_loans[0], Ordering::SeqCst);
-        BODY_ADDRESS.store(
-            ADDRESSES[body_allocation].load(Ordering::SeqCst),
-            Ordering::SeqCst,
-        );
-        PAYLOAD_ADDRESS.store(payload_address, Ordering::SeqCst);
-
-        let read_quota = Arc::new(Quota {
-            bank: 3,
-            usage: Arc::new(AtomicUsize::new(0)),
-        });
-        let read_original = DecodeBudget::for_store(read_quota.clone()).unwrap();
-        // Independent actual lookups create distinct body aliases. Merely
-        // cloning one BlobHandle would test only the outer Source owner.
-        let first_body = backend
-            .read_with_boundary(&read_original, id, None, &mut || Ok(()))
-            .unwrap();
-        let second_body = backend
-            .read_with_boundary(&read_original, id, None, &mut || Ok(()))
-            .unwrap();
-        backend
-            .acquire_inventory_fence()
-            .unwrap()
-            .delete_candidate(id)
-            .unwrap();
-        drop(backend);
-        drop(receipt);
-        drop(source);
-        drop(source_original);
-        drop(publication_original);
-        drop(read_original);
-        assert!(!BODY_CLOSED.load(Ordering::SeqCst));
-        assert!(!PAYLOAD_CLOSED.load(Ordering::SeqCst));
-        match mode {
-            "drop" => {
-                drop(first_body);
-                drop(second_body);
-            }
-            "unwind" => {
-                assert!(
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-                        drop(first_body);
-                        let _body = second_body;
-                        panic!("intentional immutable body unwind");
-                    }))
-                    .is_err()
+        let (_, nodes) = TestAllocationObserver::observe_memory_nodes64(
+            &NODE_COUNTERS,
+            |node_session| {
+                let receipt = TRACE.capture(|| {
+                    WATCH.with(|watch| watch.set(true));
+                    let receipt = backend
+                        .put_many_if_absent_with_boundary(
+                            &publication_original,
+                            &[(id, source.clone())],
+                            &mut || Ok(()),
+                        )
+                        .unwrap();
+                    WATCH.with(|watch| watch.set(false));
+                    receipt
+                }).unwrap();
+                node_session.pause_allocations().unwrap();
+                assert_eq!(TRACE.reallocations(), 0);
+                assert!(!TRACE.overflowed());
+                let allocations = TRACE.allocation_count();
+                let loans = LOAN_COUNT.load(Ordering::SeqCst);
+                assert!(allocations <= CAPACITY);
+                assert!(loans <= CAPACITY);
+                let body_loan = (0..loans)
+                    .find(|&index| {
+                        let allocation = LOAN_AFTER_ALLOCATION[index].load(Ordering::SeqCst);
+                        LOAN_BANKS[index].load(Ordering::SeqCst) == 2
+                            && allocation + 1 < allocations
+                            && TRACE.entries().nth(allocation).unwrap().bytes()
+                                == LOAN_SIZES[index].load(Ordering::SeqCst)
+                            && TRACE.entries().nth(allocation + 1).unwrap().bytes() == 544
+                    })
+                    .expect("actual original A control loan");
+                // Returning the actual control loan allocates no additional control:
+                // the next allocation is Memory's body Arc, followed by its map node.
+                // The independent N owns every node; A owns just this body allocation.
+                let body_allocation = LOAN_AFTER_ALLOCATION[body_loan].load(Ordering::SeqCst);
+                assert!(body_allocation < allocations);
+                let body_extent = TRACE.entries().nth(body_allocation).unwrap().bytes();
+                assert_eq!(LOAN_SIZES[body_loan].load(Ordering::SeqCst), body_extent);
+                println!(
+                    "actual Memory {mode}: body_arc={} namespace_escrow=8544 body_control_loan={body_extent} copied_payload=65539 original_control_bank=A original_payload_bank=S original_node_bank=N",
+                    TRACE.entries().nth(body_allocation).unwrap().bytes()
                 );
-            }
-            "concurrent" => {
-                let barrier = Arc::new(std::sync::Barrier::new(2));
-                let other_barrier = barrier.clone();
-                let first = std::thread::spawn(move || {
-                    barrier.wait();
-                    drop(first_body);
+                let payload_address = COPIED_PAYLOAD.load(Ordering::SeqCst);
+                let payload_allocation = (0..allocations)
+                    .find(|&index| TRACE.entries().nth(index).unwrap().identity() == AllocationIdentity::from_address(std::num::NonZeroUsize::new(payload_address).unwrap()))
+                    .expect("actual copied S payload moved unchanged into Memory");
+                assert_eq!(TRACE.entries().nth(payload_allocation).unwrap().bytes(), 65_539);
+                let payload_loans: Vec<_> = (0..loans)
+                    .filter(|&index| {
+                        LOAN_BANKS[index].load(Ordering::SeqCst) == 1
+                            && LOAN_SIZES[index].load(Ordering::SeqCst) == 65_539
+                    })
+                    .collect();
+                assert_eq!(payload_loans.len(), 1, "one independently funded S copy");
+                BODY_LOAN.store(body_loan, Ordering::SeqCst);
+                PAYLOAD_LOAN.store(payload_loans[0], Ordering::SeqCst);
+                let body_identity = TRACE.entries().nth(body_allocation).unwrap().identity();
+                let payload_identity = TRACE.entries().nth(payload_allocation).unwrap().identity();
+
+                let read_quota = Arc::new(Quota {
+                    bank: 3,
+                    usage: Arc::new(AtomicUsize::new(0)),
                 });
-                let second = std::thread::spawn(move || {
-                    other_barrier.wait();
-                    drop(second_body);
-                });
-                first.join().unwrap();
-                second.join().unwrap();
-            }
-            _ => unreachable!("fixed test modes"),
-        }
-        BODY_ADDRESS.store(0, Ordering::SeqCst);
-        PAYLOAD_ADDRESS.store(0, Ordering::SeqCst);
-        assert!(BODY_DEALLOCATED.load(Ordering::SeqCst), "{mode}");
-        assert!(PAYLOAD_DEALLOCATED.load(Ordering::SeqCst), "{mode}");
-        assert!(BODY_FUNDED.load(Ordering::SeqCst), "{mode}");
-        assert!(PAYLOAD_FUNDED.load(Ordering::SeqCst), "{mode}");
-        assert!(BODY_CLOSED.load(Ordering::SeqCst), "{mode}");
-        assert!(PAYLOAD_CLOSED.load(Ordering::SeqCst), "{mode}");
-        assert_eq!(source_quota.usage.load(Ordering::SeqCst), 0);
-        assert_eq!(publication_quota.usage.load(Ordering::SeqCst), 0);
-        assert_eq!(read_quota.usage.load(Ordering::SeqCst), 0);
-        assert_eq!(namespace_quota.usage.load(Ordering::SeqCst), 0);
-        assert!(NODES_FUNDED.load(Ordering::SeqCst));
-        assert_eq!(
-            NODE_ALLOCATIONS.load(Ordering::SeqCst),
-            NODE_DEALLOCATIONS.load(Ordering::SeqCst)
-        );
+                let read_original = DecodeBudget::for_store(read_quota.clone()).unwrap();
+                // Independent actual lookups create distinct body aliases. Merely
+                // cloning one BlobHandle would test only the outer Source owner.
+                let first_body = backend
+                    .read_with_boundary(&read_original, id, None, &mut || Ok(()))
+                    .unwrap();
+                let second_body = backend
+                    .read_with_boundary(&read_original, id, None, &mut || Ok(()))
+                    .unwrap();
+                backend
+                    .acquire_inventory_fence()
+                    .unwrap()
+                    .delete_candidate(id)
+                    .unwrap();
+                drop(backend);
+                drop(receipt);
+                drop(source);
+                drop(source_original);
+                drop(publication_original);
+                drop(read_original);
+                assert!(!BODY_CLOSED.load(Ordering::SeqCst));
+                assert!(!PAYLOAD_CLOSED.load(Ordering::SeqCst));
+                let (_, report) = TestAllocationObserver::observe_original_controls(|session| {
+                    session
+                        .arm(
+                            OriginalControlSlot::First,
+                            OriginalControlSelection::Explicit(body_identity),
+                            OriginalStaticCounters::BothFlags {
+                                first: &BODY_CLOSED,
+                                second: &PAYLOAD_CLOSED,
+                            },
+                            false,
+                        )
+                        .unwrap();
+                    session
+                        .arm(
+                            OriginalControlSlot::Second,
+                            OriginalControlSelection::Explicit(payload_identity),
+                            OriginalStaticCounters::Bool(&PAYLOAD_CLOSED),
+                            false,
+                        )
+                        .unwrap();
+                    match mode {
+                        "drop" => {
+                            drop(first_body);
+                            drop(second_body);
+                        }
+                        "unwind" => {
+                            assert!(
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                                    drop(first_body);
+                                    let _body = second_body;
+                                    panic!("intentional immutable body unwind");
+                                }))
+                                .is_err()
+                            );
+                        }
+                        "concurrent" => {
+                            let barrier = Arc::new(std::sync::Barrier::new(2));
+                            let other_barrier = barrier.clone();
+                            let first = std::thread::spawn(move || {
+                                barrier.wait();
+                                drop(first_body);
+                            });
+                            let second = std::thread::spawn(move || {
+                                other_barrier.wait();
+                                drop(second_body);
+                            });
+                            first.join().unwrap();
+                            second.join().unwrap();
+                        }
+                        _ => unreachable!("fixed test modes"),
+                    }
+                })
+                .unwrap();
+                assert_eq!(report.outcome, OriginalControlsOutcome::Complete, "{mode}");
+                let body = report.controls[0].unwrap();
+                let payload = report.controls[1].unwrap();
+                assert_eq!(body.identity, body_identity);
+                assert_eq!(payload.identity, payload_identity);
+                assert_eq!(
+                    body.before,
+                    OriginalControlSnapshot::BothFlags {
+                        first: false,
+                        second: false
+                    },
+                    "{mode}"
+                );
+                assert_eq!(
+                    payload.before,
+                    OriginalControlSnapshot::Bool(false),
+                    "{mode}"
+                );
+                assert_ne!(body.ordinal, payload.ordinal);
+                assert!(BODY_CLOSED.load(Ordering::SeqCst), "{mode}");
+                assert!(PAYLOAD_CLOSED.load(Ordering::SeqCst), "{mode}");
+                assert_eq!(source_quota.usage.load(Ordering::SeqCst), 0);
+                assert_eq!(publication_quota.usage.load(Ordering::SeqCst), 0);
+                assert_eq!(read_quota.usage.load(Ordering::SeqCst), 0);
+                assert_eq!(namespace_quota.usage.load(Ordering::SeqCst), 0);
+                assert!(NODES_FUNDED.load(Ordering::SeqCst));
+                assert_eq!(
+                    NODE_ALLOCATIONS.load(Ordering::SeqCst),
+                    NODE_DEALLOCATIONS.load(Ordering::SeqCst)
+                );
+            },
+        ).unwrap();
+        assert_eq!(nodes.outcome, AllocationRosterOutcome::Complete, "{mode}");
+        assert!(nodes.funded, "{mode}");
+        assert_eq!(nodes.live, 0);
     }
     // One test owns these fixed observer slots; cohorts cannot race one another.
     for mode in [
@@ -505,148 +480,163 @@ fn actual_namespace_nodes(mode: &str) {
     assert_eq!(namespace.usage.load(Ordering::SeqCst), 8544);
     let original_control_credit = first.usage.load(Ordering::SeqCst);
 
-    WATCH.set(true);
-    for schema in 0..64 {
-        let original = if schema % 2 == 0 {
-            &first_original
-        } else {
-            &second_original
-        };
-        publish_empty(&backend, original, schema);
-        if schema == 0 {
-            // Bind the empty body's original loan to its actual allocation,
-            // followed by the first544 map node; never reuse an older layout.
-            let loans = LOAN_COUNT.load(Ordering::SeqCst).min(CAPACITY);
-            let allocations = ALLOCATION_COUNT.load(Ordering::SeqCst).min(CAPACITY);
-            let body_loan = (0..loans)
-                .find(|&index| {
-                    let allocation = LOAN_AFTER_ALLOCATION[index].load(Ordering::SeqCst);
-                    LOAN_BANKS[index].load(Ordering::SeqCst) == 1
-                        && allocation + 1 < allocations
-                        && SIZES[allocation].load(Ordering::SeqCst)
-                            == LOAN_SIZES[index].load(Ordering::SeqCst)
-                        && SIZES[allocation + 1].load(Ordering::SeqCst) == 544
-                })
-                .unwrap_or_else(|| panic!("actual empty-body loan/allocation pair"));
-            let extent = LOAN_SIZES[body_loan].load(Ordering::SeqCst);
-            assert_eq!(
-                first.usage.load(Ordering::SeqCst),
-                original_control_credit + extent
-            );
-            BODY_CREDIT_EXTENT.store(extent, Ordering::SeqCst);
-        }
-    }
-    assert_eq!(
-        backend
-            .object_count()
-            .unwrap_or_else(|error| panic!("count populated objects: {error:?}")),
-        64
-    );
-    assert_eq!(
-        backend
-            .logical_bytes()
-            .unwrap_or_else(|error| panic!("read empty-body logical usage: {error:?}")),
-        0
-    );
-    let baseline = first.usage.load(Ordering::SeqCst);
-    let body_extent = BODY_CREDIT_EXTENT.load(Ordering::SeqCst);
-    assert_eq!(baseline, original_control_credit + 32 * body_extent);
-    let id = ContentId::for_bytes(ObjectKind::Trace, 1, &[]);
-    backend
-        .acquire_inventory_fence()
-        .unwrap_or_else(|error| panic!("acquire first deletion fence: {error:?}"))
-        .delete_candidate(id)
-        .unwrap_or_else(|error| panic!("delete first existing object: {error:?}"));
-    assert_eq!(first.usage.load(Ordering::SeqCst), baseline - body_extent);
-    assert_eq!(namespace.usage.load(Ordering::SeqCst), 8544);
-    assert!(!NAMESPACE_CLOSED.load(Ordering::SeqCst));
-    publish_empty(&backend, &first_original, 0);
-
-    for round in 0..4 {
-        for offset in 0..64 {
-            let schema = (offset * 37 + round) % 64;
-            let id = ContentId::for_bytes(ObjectKind::Trace, schema + 1, &[]);
-            backend
-                .acquire_inventory_fence()
-                .unwrap_or_else(|error| panic!("acquire churn deletion fence: {error:?}"))
-                .delete_candidate(id)
-                .unwrap_or_else(|error| panic!("delete churn object: {error:?}"));
-            let original = if schema % 2 == 0 {
-                &first_original
-            } else {
-                &second_original
-            };
-            publish_empty(&backend, original, schema);
-            assert_eq!(namespace.usage.load(Ordering::SeqCst), 8544);
+    let (_, nodes) = TestAllocationObserver::observe_memory_nodes64(
+        &NODE_COUNTERS,
+        |node_session| {
+            for schema in 0..64 {
+                let original = if schema % 2 == 0 {
+                    &first_original
+                } else {
+                    &second_original
+                };
+                if schema == 0 {
+                    TRACE.capture(|| {
+                        WATCH.set(true);
+                        publish_empty(&backend, original, schema);
+                        WATCH.set(false);
+                    }).unwrap_or_else(|error| panic!("capture original first-body trace: {error:?}"));
+                    assert_eq!(TRACE.reallocations(), 0);
+                    assert!(!TRACE.overflowed());
+                    // Bind the empty body's original loan to its actual allocation,
+                    // followed by the first544 map node; never reuse an older layout.
+                    let loans = LOAN_COUNT.load(Ordering::SeqCst).min(CAPACITY);
+                    let allocations = TRACE.allocation_count().min(CAPACITY);
+                    let body_loan = (0..loans)
+                        .find(|&index| {
+                            let allocation = LOAN_AFTER_ALLOCATION[index].load(Ordering::SeqCst);
+                            LOAN_BANKS[index].load(Ordering::SeqCst) == 1
+                                && allocation + 1 < allocations
+                                && TRACE.entries().nth(allocation).unwrap_or_else(|| panic!("original first-body allocation entry")).bytes()
+                                    == LOAN_SIZES[index].load(Ordering::SeqCst)
+                                && TRACE.entries().nth(allocation + 1).unwrap_or_else(|| panic!("original first544 node entry")).bytes() == 544
+                        })
+                        .unwrap_or_else(|| panic!("actual empty-body loan/allocation pair"));
+                    let extent = LOAN_SIZES[body_loan].load(Ordering::SeqCst);
+                    assert_eq!(
+                        first.usage.load(Ordering::SeqCst),
+                        original_control_credit + extent
+                    );
+                    BODY_CREDIT_EXTENT.store(extent, Ordering::SeqCst);
+                } else {
+                    publish_empty(&backend, original, schema);
+                }
+            }
             assert_eq!(
                 backend
                     .object_count()
-                    .unwrap_or_else(|error| panic!("count churn objects: {error:?}")),
+                    .unwrap_or_else(|error| panic!("count populated objects: {error:?}")),
                 64
             );
-        }
-    }
-    WATCH.set(false);
+            assert_eq!(
+                backend
+                    .logical_bytes()
+                    .unwrap_or_else(|error| panic!("read empty-body logical usage: {error:?}")),
+                0
+            );
+            let baseline = first.usage.load(Ordering::SeqCst);
+            let body_extent = BODY_CREDIT_EXTENT.load(Ordering::SeqCst);
+            assert_eq!(baseline, original_control_credit + 32 * body_extent);
+            let id = ContentId::for_bytes(ObjectKind::Trace, 1, &[]);
+            backend
+                .acquire_inventory_fence()
+                .unwrap_or_else(|error| panic!("acquire first deletion fence: {error:?}"))
+                .delete_candidate(id)
+                .unwrap_or_else(|error| panic!("delete first existing object: {error:?}"));
+            assert_eq!(first.usage.load(Ordering::SeqCst), baseline - body_extent);
+            assert_eq!(namespace.usage.load(Ordering::SeqCst), 8544);
+            assert!(!NAMESPACE_CLOSED.load(Ordering::SeqCst));
+            publish_empty(&backend, &first_original, 0);
 
-    match mode {
-        "populated-drop" => drop(backend),
-        "populated-unwind" => {
-            PANIC_ON_BODY_REFUND.store(true, Ordering::SeqCst);
+            for round in 0..4 {
+                for offset in 0..64 {
+                    let schema = (offset * 37 + round) % 64;
+                    let id = ContentId::for_bytes(ObjectKind::Trace, schema + 1, &[]);
+                    backend
+                        .acquire_inventory_fence()
+                        .unwrap_or_else(|error| panic!("acquire churn deletion fence: {error:?}"))
+                        .delete_candidate(id)
+                        .unwrap_or_else(|error| panic!("delete churn object: {error:?}"));
+                    let original = if schema % 2 == 0 {
+                        &first_original
+                    } else {
+                        &second_original
+                    };
+                    publish_empty(&backend, original, schema);
+                    assert_eq!(namespace.usage.load(Ordering::SeqCst), 8544);
+                    assert_eq!(
+                        backend
+                            .object_count()
+                            .unwrap_or_else(|error| panic!("count churn objects: {error:?}")),
+                        64
+                    );
+                }
+            }
+            node_session.pause_allocations().unwrap_or_else(|error| panic!("pause original node request scope: {error:?}"));
+
+            match mode {
+                "populated-drop" => drop(backend),
+                "populated-unwind" => {
+                    PANIC_ON_BODY_REFUND.store(true, Ordering::SeqCst);
+                    assert!(
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(backend))).is_err()
+                    );
+                    assert!(
+                        !PANIC_ON_BODY_REFUND.load(Ordering::SeqCst),
+                        "actual body loan must unwind"
+                    );
+                }
+                "concurrent-backend-close" => {
+                    let backend = Arc::new(backend);
+                    let other = backend.clone();
+                    let barrier = Arc::new(std::sync::Barrier::new(2));
+                    let other_barrier = barrier.clone();
+                    let first = std::thread::spawn(move || {
+                        barrier.wait();
+                        drop(backend);
+                    });
+                    let second = std::thread::spawn(move || {
+                        other_barrier.wait();
+                        drop(other);
+                    });
+                    first
+                        .join()
+                        .unwrap_or_else(|error| panic!("join first complete backend owner: {error:?}"));
+                    second
+                        .join()
+                        .unwrap_or_else(|error| panic!("join second complete backend owner: {error:?}"));
+                }
+                _ => unreachable!("fixed namespace witness modes"),
+            }
+
+            assert!(!NODE_OVERFLOW.load(Ordering::SeqCst));
             assert!(
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(backend))).is_err()
+                NODE_ALLOCATIONS.load(Ordering::SeqCst) > 1,
+                "exercise actual splits"
+            );
+            assert_eq!(
+                NODE_ALLOCATIONS.load(Ordering::SeqCst),
+                NODE_DEALLOCATIONS.load(Ordering::SeqCst),
+                "{mode}"
             );
             assert!(
-                !PANIC_ON_BODY_REFUND.load(Ordering::SeqCst),
-                "actual body loan must unwind"
+                NODES_FUNDED.load(Ordering::SeqCst),
+                "{mode}: original N survives every deallocation"
             );
-        }
-        "concurrent-backend-close" => {
-            let backend = Arc::new(backend);
-            let other = backend.clone();
-            let barrier = Arc::new(std::sync::Barrier::new(2));
-            let other_barrier = barrier.clone();
-            let first = std::thread::spawn(move || {
-                barrier.wait();
-                drop(backend);
-            });
-            let second = std::thread::spawn(move || {
-                other_barrier.wait();
-                drop(other);
-            });
-            first
-                .join()
-                .unwrap_or_else(|error| panic!("join first complete backend owner: {error:?}"));
-            second
-                .join()
-                .unwrap_or_else(|error| panic!("join second complete backend owner: {error:?}"));
-        }
-        _ => unreachable!("fixed namespace witness modes"),
-    }
-
-    assert!(!NODE_OVERFLOW.load(Ordering::SeqCst));
-    assert!(
-        NODE_ALLOCATIONS.load(Ordering::SeqCst) > 1,
-        "exercise actual splits"
-    );
-    assert_eq!(
-        NODE_ALLOCATIONS.load(Ordering::SeqCst),
-        NODE_DEALLOCATIONS.load(Ordering::SeqCst),
-        "{mode}"
-    );
-    assert!(
-        NODES_FUNDED.load(Ordering::SeqCst),
-        "{mode}: original N survives every deallocation"
-    );
-    assert!(NAMESPACE_CLOSED.load(Ordering::SeqCst));
-    assert_eq!(namespace.usage.load(Ordering::SeqCst), 0);
-    drop(first_original);
-    drop(second_original);
-    assert_eq!(first.usage.load(Ordering::SeqCst), 0);
-    assert_eq!(second.usage.load(Ordering::SeqCst), 0);
-    println!(
-        "actual Memory {mode}: leaf544/internal640, originalN8544, mixedA zero-byte objects/churn, node allocations/deallocations={}",
-        NODE_ALLOCATIONS.load(Ordering::SeqCst)
-    );
+            assert!(NAMESPACE_CLOSED.load(Ordering::SeqCst));
+            assert_eq!(namespace.usage.load(Ordering::SeqCst), 0);
+            drop(first_original);
+            drop(second_original);
+            assert_eq!(first.usage.load(Ordering::SeqCst), 0);
+            assert_eq!(second.usage.load(Ordering::SeqCst), 0);
+            println!(
+                "actual Memory {mode}: leaf544/internal640, originalN8544, mixedA zero-byte objects/churn, node allocations/deallocations={}",
+                NODE_ALLOCATIONS.load(Ordering::SeqCst)
+            );
+        },
+    ).unwrap_or_else(|error| panic!("observe original N node closes: {error:?}"));
+    assert_eq!(nodes.outcome, AllocationRosterOutcome::Complete, "{mode}");
+    assert!(nodes.funded, "{mode}");
+    assert_eq!(nodes.live, 0);
 }
 
 fn publish_empty(backend: &MemoryBlobBackend, original: &DecodeBudget, schema: u32) {

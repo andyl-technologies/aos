@@ -60,6 +60,39 @@ impl CheckedReader {
         }
     }
 
+    /// Prepays a reader's Box from the same original account it retains.
+    ///
+    /// The original loan is admitted before the Box allocation and closes
+    /// after that Box is deallocated. This constructor does not grant an EOF
+    /// authentication contract; owning handles still validate the full stream.
+    ///
+    /// # Errors
+    /// Returns an original admission refusal or rejects a reader that retains
+    /// a different account from the supplied original.
+    pub fn new_prepaid<T: CheckedBlobReader + 'static>(
+        reader: T,
+        original: &DecodeBudget,
+    ) -> Result<Self, StoreError> {
+        original
+            .verify_live()
+            .map_err(|error| batch::admission_under(original, error))?;
+        if !original.same_account(reader.original_account()) {
+            return Err(StoreError::InvalidComposition {
+                reason: "checked reader retains another original account",
+            });
+        }
+        let credit = original
+            .reserve_scratch_array::<T>(1)
+            .map_err(|error| batch::admission_under(original, error))?;
+
+        Ok(Self {
+            reader: Box::new(reader),
+            _resources: ResourceLoanSlot::default(),
+            _credit: Some(credit),
+            audited_eof_contract: false,
+        })
+    }
+
     /// Retains a test reader's prepaid allocation without trusting its identity.
     ///
     /// The caller reserves the exact reader extent from its original account

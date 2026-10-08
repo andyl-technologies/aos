@@ -7,80 +7,29 @@ use crucible_cas::content_store::{
     StorePhysicalQuotaBinder, StorePhysicalQuotaBinderHandle, StorePhysicalQuotaGuard,
 };
 use crucible_cas::owned_decode::{DecodeBudget, ResourceLoan};
-use std::alloc::{GlobalAlloc, Layout, System};
+use crucible_linux_resource::test_support::{
+    AllocationTrace, TestAllocationObserver, ThroughFreeMarkerOutcome,
+};
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 const CAPACITY: usize = 512;
-static ALLOCATION_COUNT: AtomicUsize = AtomicUsize::new(0);
-static ADDRESSES: [AtomicUsize; CAPACITY] = [const { AtomicUsize::new(0) }; CAPACITY];
-static SIZES: [AtomicUsize; CAPACITY] = [const { AtomicUsize::new(0) }; CAPACITY];
-static ALIGNS: [AtomicUsize; CAPACITY] = [const { AtomicUsize::new(0) }; CAPACITY];
+static TRACE: AllocationTrace<CAPACITY> = AllocationTrace::new();
 static LOAN_COUNT: AtomicUsize = AtomicUsize::new(0);
 static LOAN_SIZES: [AtomicUsize; CAPACITY] = [const { AtomicUsize::new(0) }; CAPACITY];
 static LOAN_CLOSED: [AtomicBool; CAPACITY] = [const { AtomicBool::new(false) }; CAPACITY];
 static OVERFLOW: AtomicBool = AtomicBool::new(false);
-static TARGET: AtomicUsize = AtomicUsize::new(0);
-static TARGET_LOAN: AtomicUsize = AtomicUsize::new(CAPACITY);
-static DEALLOCATED: AtomicBool = AtomicBool::new(false);
-static FUNDED_BEFORE: AtomicBool = AtomicBool::new(false);
-static FUNDED_AFTER: AtomicBool = AtomicBool::new(false);
 
 thread_local! {
+    // This original fixture flag selects loan bookkeeping on the constructor
+    // thread; allocation requests use the shared trace's independent arm.
     static WATCH: Cell<bool> = const { Cell::new(false) };
 }
 
-struct Observer;
-
-// SAFETY: All allocator requests delegate unchanged pointer/layout pairs to
-// System. Observation uses only fixed atomics and a fallible thread-local flag;
-// it reads no allocated memory, acquires no locks, allocates nothing, and cannot
-// panic. A compare_exchange consumes the specific target once, preventing reuse
-// of its address from producing a second or unrelated deallocation observation.
-unsafe impl GlobalAlloc for Observer {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        // SAFETY: The allocator caller supplies a valid layout.
-        let pointer = unsafe { System.alloc(layout) };
-        if !pointer.is_null() && WATCH.try_with(Cell::get).unwrap_or(false) {
-            let index = ALLOCATION_COUNT.fetch_add(1, Ordering::SeqCst);
-            if index < CAPACITY {
-                ADDRESSES[index].store(pointer.addr(), Ordering::SeqCst);
-                SIZES[index].store(layout.size(), Ordering::SeqCst);
-                ALIGNS[index].store(layout.align(), Ordering::SeqCst);
-            } else {
-                OVERFLOW.store(true, Ordering::SeqCst);
-            }
-        }
-        pointer
-    }
-
-    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
-        let observed = TARGET
-            .compare_exchange(pointer.addr(), 0, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok();
-        let loan = TARGET_LOAN.load(Ordering::SeqCst);
-        if observed {
-            FUNDED_BEFORE.store(
-                loan < CAPACITY && !LOAN_CLOSED[loan].load(Ordering::SeqCst),
-                Ordering::SeqCst,
-            );
-        }
-        // SAFETY: The caller supplies the original live pointer and its layout.
-        unsafe { System.dealloc(pointer, layout) };
-        if observed {
-            FUNDED_AFTER.store(
-                loan < CAPACITY && !LOAN_CLOSED[loan].load(Ordering::SeqCst),
-                Ordering::SeqCst,
-            );
-            DEALLOCATED.store(true, Ordering::SeqCst);
-        }
-    }
-}
-
 #[global_allocator]
-static ALLOCATOR: Observer = Observer;
+static ALLOCATOR: TestAllocationObserver = TestAllocationObserver;
 
 struct Quota {
     used: Arc<AtomicUsize>,
@@ -207,13 +156,7 @@ fn graph(original: Arc<Quota>) -> Result<StoreGraph, StoreError> {
 }
 
 fn reset() {
-    ALLOCATION_COUNT.store(0, Ordering::SeqCst);
     LOAN_COUNT.store(0, Ordering::SeqCst);
-    TARGET.store(0, Ordering::SeqCst);
-    TARGET_LOAN.store(CAPACITY, Ordering::SeqCst);
-    DEALLOCATED.store(false, Ordering::SeqCst);
-    FUNDED_BEFORE.store(false, Ordering::SeqCst);
-    FUNDED_AFTER.store(false, Ordering::SeqCst);
     OVERFLOW.store(false, Ordering::SeqCst);
     for closed in &LOAN_CLOSED {
         closed.store(false, Ordering::SeqCst);
@@ -233,72 +176,89 @@ fn same_failure_box_is_funded_through_system_free_on_drop_and_unwind() {
         let id = ContentId::for_bytes(ObjectKind::RamExtent, 1, &bytes);
         let inputs = [(id, BlobHandle::from_bytes(bytes))];
         reset();
-        WATCH.with(|watch| watch.set(true));
-        let result = store.put_many_if_absent_with_boundary(&original, &inputs, &mut || Ok(()));
-        // Do not assert or panic while the observation is armed. The real error
-        // is closed in every branch before thread-local/global targets disarm.
-        let mut binding = None;
-        let mut prior_count = None;
-        if let Err(StoreError::CompositeScope { source }) = &result {
-            prior_count = Some(source.prior_publications().len());
-            if let Some(work) = source.work_failure() {
-                let address = std::ptr::from_ref(work).addr();
-                for index in 0..ALLOCATION_COUNT.load(Ordering::SeqCst).min(CAPACITY) {
-                    let start = ADDRESSES[index].load(Ordering::SeqCst);
-                    let size = SIZES[index].load(Ordering::SeqCst);
-                    if start <= address && address < start.saturating_add(size) {
-                        let mut matched_loan = None;
-                        let mut matching_loans = 0;
-                        for (loan, loan_size) in LOAN_SIZES
-                            .iter()
-                            .enumerate()
-                            .take(LOAN_COUNT.load(Ordering::SeqCst).min(CAPACITY))
-                        {
-                            if loan_size.load(Ordering::SeqCst) == size {
-                                matching_loans += 1;
-                                matched_loan = Some(loan);
+        let (result, binding, prior_count) = TRACE
+            .capture(|| {
+                WATCH.with(|watch| watch.set(true));
+                let result =
+                    store.put_many_if_absent_with_boundary(&original, &inputs, &mut || Ok(()));
+                // Identify the actual error field inside its enclosing allocation
+                // and the uniquely matching original loan before closing either.
+                let mut binding = None;
+                let mut prior_count = None;
+                if let Err(StoreError::CompositeScope { source }) = &result {
+                    prior_count = Some(source.prior_publications().len());
+                    if let Some(work) = source.work_failure() {
+                        let address = std::ptr::from_ref(work).addr();
+                        for entry in TRACE.entries() {
+                            if entry.contains_address(address) {
+                                let size = entry.bytes();
+                                let mut matched_loan = None;
+                                let mut matching_loans = 0;
+                                for (loan, loan_size) in LOAN_SIZES
+                                    .iter()
+                                    .enumerate()
+                                    .take(LOAN_COUNT.load(Ordering::SeqCst).min(CAPACITY))
+                                {
+                                    if loan_size.load(Ordering::SeqCst) == size {
+                                        matching_loans += 1;
+                                        matched_loan = Some(loan);
+                                    }
+                                }
+                                if matching_loans == 1 && binding.is_none() {
+                                    if let Some(loan) = matched_loan {
+                                        binding =
+                                            Some((entry.identity(), size, entry.alignment(), loan));
+                                    }
+                                } else {
+                                    binding = None;
+                                    break;
+                                }
                             }
-                        }
-                        if matching_loans == 1 && binding.is_none() {
-                            if let Some(loan) = matched_loan {
-                                binding =
-                                    Some((start, size, ALIGNS[index].load(Ordering::SeqCst), loan));
-                            }
-                        } else {
-                            binding = None;
-                            break;
                         }
                     }
                 }
+                WATCH.with(|watch| watch.set(false));
+                (result, binding, prior_count)
+            })
+            .unwrap();
+
+        let close = move || {
+            if unwind {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let _result = result;
+                    panic!("causal composite unwind");
+                }))
+                .is_err()
+            } else {
+                drop(result);
+                true
             }
-        }
-        if let Some((address, _, _, loan)) = binding {
-            TARGET_LOAN.store(loan, Ordering::SeqCst);
-            TARGET.store(address, Ordering::SeqCst);
-        }
-        WATCH.with(|watch| watch.set(false));
-        let closed = if unwind {
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let _result = result;
-                panic!("causal composite unwind");
-            }))
-            .is_err()
-        } else {
-            drop(result);
-            true
         };
-        TARGET.store(0, Ordering::SeqCst);
-        let observed = DEALLOCATED.load(Ordering::SeqCst);
-        let funded_before = FUNDED_BEFORE.load(Ordering::SeqCst);
-        let funded_after = FUNDED_AFTER.load(Ordering::SeqCst);
+        let (closed, observation) = if let Some((identity, _, _, loan)) = binding {
+            TestAllocationObserver::observe_close_marker_through_free(
+                &LOAN_CLOSED[loan],
+                identity,
+                close,
+            )
+            .unwrap()
+        } else {
+            (close(), ThroughFreeMarkerOutcome::Missing)
+        };
+        let (observed, funded_before, funded_after) = match observation {
+            ThroughFreeMarkerOutcome::Sampled { before, after } => (true, !before, !after),
+            _ => (false, false, false),
+        };
         let body_closed =
             binding.is_some_and(|(_, _, _, loan)| LOAN_CLOSED[loan].load(Ordering::SeqCst));
-        let overflow = OVERFLOW.load(Ordering::SeqCst);
+        let overflow = OVERFLOW.load(Ordering::SeqCst) || TRACE.overflowed();
+        let reallocations = TRACE.reallocations();
         drop(store);
         drop(inputs);
         drop(original);
         assert!(closed);
         assert!(!overflow);
+        assert_eq!(reallocations, 0);
+        assert_eq!(TRACE.entries().count(), TRACE.allocation_count());
         assert_eq!(prior_count, Some(1));
         let (_, size, align, _) =
             binding.expect("exact failure allocation and original loan identity");

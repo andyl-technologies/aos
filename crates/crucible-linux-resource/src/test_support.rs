@@ -12,7 +12,11 @@ pub use device_mapper::LinuxDeviceMapperFaultTarget;
 pub use allocation_observer::{
     AllocationCounts, AllocationEvent, AllocationEvents, AllocationEventsSetupError,
     AllocationExtent, AllocationIdentity, AllocationRoster, AllocationRosterOutcome,
-    AllocationRosterSetupError, BeforeFreeMarkerOutcome, CloseMarkerOutcome, CloseMarkerSetupError,
-    ControlObservation, ControlSample, ProbeAllocationLayout, ResidentProbeOutcome,
-    ResidentProbeReport, ResidentProbeSetupError, TestAllocationObserver,
+    AllocationRosterSetupError, AllocationTrace, AllocationTraceEntry, AllocationTraceSetupError,
+    BeforeFreeMarkerOutcome, CloseMarkerOutcome, CloseMarkerSetupError, ControlObservation,
+    ControlSample, GlobalAllocationTraceSession, MemoryNodeCounters, MemoryNodeReport,
+    MemoryNodeSession, OriginalControlObservation, OriginalControlReport, OriginalControlSelection,
+    OriginalControlSession, OriginalControlSlot, OriginalControlSnapshot, OriginalControlsOutcome,
+    OriginalStaticCounters, ProbeAllocationLayout, ResidentProbeOutcome, ResidentProbeReport,
+    ResidentProbeSetupError, TestAllocationObserver, ThroughFreeMarkerOutcome,
 };

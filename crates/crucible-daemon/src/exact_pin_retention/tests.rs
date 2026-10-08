@@ -55,6 +55,23 @@ impl TestDurableBackend {
 }
 
 impl ImmutableBlobBackend for TestDurableBackend {
+    fn checked_publication_metadata(
+        &self,
+        kind: ObjectKind,
+    ) -> Result<crucible_cas::content_store::CheckedPublicationMetadata, StoreError> {
+        self.directory.checked_publication_metadata(kind)
+    }
+
+    fn put_many_if_absent_with_boundary(
+        &self,
+        original: &crucible::owned_decode::DecodeBudget,
+        objects: &[(crucible_cas::content_store::ContentId, BlobHandle)],
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<crucible_cas::content_store::PutBatchReceipt, StoreError> {
+        self.directory
+            .put_many_if_absent_with_boundary(original, objects, boundary)
+    }
+
     fn name(&self) -> &str {
         "exact-pin-materialization-test"
     }
@@ -85,6 +102,17 @@ impl ImmutableBlobBackend for TestDurableBackend {
         source: &BlobHandle,
     ) -> Result<PutReceipt, StoreError> {
         self.directory.put_if_absent(id, source)
+    }
+
+    fn read_with_boundary(
+        &self,
+        original: &crucible::owned_decode::DecodeBudget,
+        id: crucible_cas::content_store::ContentId,
+        range: Option<ByteRange>,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<BlobHandle, StoreError> {
+        self.directory
+            .read_with_boundary(original, id, range, boundary)
     }
 }
 

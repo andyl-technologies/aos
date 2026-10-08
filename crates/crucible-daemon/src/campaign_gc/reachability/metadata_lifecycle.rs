@@ -6,6 +6,7 @@ use std::error::Error;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crucible_cas::content_store::{MemoryBlobBackend, ObjectKind, StorePhysicalQuotaGuard};
+use crucible_cas::owned_decode::DecodeAdmissionError;
 use crucible_linux_resource::host_services::{HostServiceAllocator, HostServiceLease};
 
 use super::*;
@@ -343,6 +344,13 @@ fn boundary_cannot_replace_or_poison_the_original_before_gc_storage_admission() 
     let mut calls = 0;
     let mut boundary = || {
         calls += 1;
+        // Refuse the original aggregate allocator, rather than the decoder's
+        // separate monotone receipt limit, and retain that actual typed cause.
+        let refusal = resources
+            .reserve_resources(0, RESIDENT_BYTES)
+            .err()
+            .unwrap_or_else(|| panic!("the original full-bank reservation must refuse"));
+        parent.record_failure(DecodeAdmissionError::new(refusal));
         assert!(parent.charge_bytes(RESIDENT_BYTES).is_err());
         Ok(())
     };

@@ -16,11 +16,12 @@ use std::thread;
 
 use crucible_api::build_streaming_production_checkpoint_codec_fixture;
 use crucible_cas::content_store::{
-    BackendCapabilities, BlobHandle, BlobInventoryRecord, BlobSource, ByteRange, ContentId,
-    DirectoryBlobBackend, DurabilityRequirement, ImmutableBlobBackend, ObjectKind, PutReceipt,
-    StoreError, StoreGraph, StoreGraphAdmin, StoreGraphConfig, StoreNodeId, StoreNodeSpec,
-    StorePhysicalQuotaGuard,
+    BackendCapabilities, BlobHandle, BlobInventoryRecord, BlobSource, ByteRange, CheckedBlobReader,
+    CheckedReadAccess, CheckedReader, ContentId, DirectoryBlobBackend, DurabilityRequirement,
+    ImmutableBlobBackend, ObjectKind, PutReceipt, StoreError, StoreGraph, StoreGraphAdmin,
+    StoreGraphConfig, StoreNodeId, StoreNodeSpec, StorePhysicalQuotaGuard,
 };
+use crucible_cas::owned_decode::{DecodeBudget, DecodeScratch};
 use crucible_daemon::ExactCheckpointStore;
 
 #[path = "gate_exact_closure_streaming/metadata.rs"]
@@ -327,6 +328,7 @@ impl ObservedBackend {
         source: BlobHandle,
         traffic: Traffic,
         fail_after: Option<u64>,
+        credit: Option<DecodeScratch>,
     ) -> BlobHandle {
         BlobHandle::new(ObservedSource {
             source,
@@ -335,11 +337,79 @@ impl ObservedBackend {
             read_synchronization: self.read_synchronization.clone(),
             fail_after,
             observations: Arc::clone(&self.observations),
+            _credit: credit,
         })
     }
 }
 
 impl ImmutableBlobBackend for ObservedBackend {
+    fn checked_publication_metadata(
+        &self,
+        kind: ObjectKind,
+    ) -> Result<crucible_cas::content_store::CheckedPublicationMetadata, StoreError> {
+        self.inner.checked_publication_metadata(kind)
+    }
+
+    fn put_many_if_absent_with_boundary(
+        &self,
+        original: &DecodeBudget,
+        objects: &[(ContentId, BlobHandle)],
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<crucible_cas::content_store::PutBatchReceipt, StoreError> {
+        original
+            .verify_live()
+            .map_err(|source| StoreError::DecodeAdmission {
+                source,
+                custody: Some(original.custody()),
+            })?;
+        boundary()?;
+        original
+            .verify_live()
+            .map_err(|source| StoreError::DecodeAdmission {
+                source,
+                custody: Some(original.custody()),
+            })?;
+
+        let _objects_credit = original
+            .reserve_scratch_array::<(ContentId, BlobHandle)>(objects.len())
+            .map_err(|source| StoreError::DecodeAdmission {
+                source,
+                custody: Some(original.custody()),
+            })?;
+        let mut observed = Vec::new();
+        observed
+            .try_reserve_exact(objects.len())
+            .map_err(|source| StoreError::Allocation {
+                source,
+                custody: Some(original.custody()),
+            })?;
+        for (id, source) in objects {
+            let credit = original
+                .reserve_scratch_bytes(BlobHandle::source_allocation_bytes::<ObservedSource>())
+                .map_err(|source| StoreError::DecodeAdmission {
+                    source,
+                    custody: Some(original.custody()),
+                })?;
+            let fail_after = {
+                let mut state = self.observations.lock().expect("lock observations");
+                state.put.calls += 1;
+                if source.logical_length() >= 4 * 1024 * 1024 && state.fail_next_large_put {
+                    state.fail_next_large_put = false;
+                    Some(FAIL_AFTER_BYTES)
+                } else {
+                    None
+                }
+            };
+            observed.push((
+                *id,
+                self.observed_source(source.clone(), Traffic::Put, fail_after, Some(credit)),
+            ));
+        }
+
+        self.inner
+            .put_many_if_absent_with_boundary(original, &observed, boundary)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -367,7 +437,31 @@ impl ImmutableBlobBackend for ObservedBackend {
             .expect("lock observations")
             .read
             .calls += 1;
-        Ok(self.observed_source(handle, Traffic::Read, None))
+        Ok(self.observed_source(handle, Traffic::Read, None, None))
+    }
+
+    fn read_with_boundary(
+        &self,
+        original: &DecodeBudget,
+        id: ContentId,
+        range: Option<ByteRange>,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<BlobHandle, StoreError> {
+        let handle = self
+            .inner
+            .read_with_boundary(original, id, range, boundary)?;
+        let credit = original
+            .reserve_scratch_bytes(BlobHandle::source_allocation_bytes::<ObservedSource>())
+            .map_err(|source| StoreError::DecodeAdmission {
+                source,
+                custody: Some(original.custody()),
+            })?;
+        self.observations
+            .lock()
+            .expect("lock observations")
+            .read
+            .calls += 1;
+        Ok(self.observed_source(handle, Traffic::Read, None, Some(credit)))
     }
 
     fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
@@ -381,7 +475,7 @@ impl ImmutableBlobBackend for ObservedBackend {
                 None
             }
         };
-        let source = self.observed_source(source.clone(), Traffic::Put, fail_after);
+        let source = self.observed_source(source.clone(), Traffic::Put, fail_after, None);
         self.inner.put_if_absent(id, &source)
     }
 }
@@ -393,9 +487,17 @@ struct ObservedSource {
     read_synchronization: Option<Arc<ReadSynchronization>>,
     fail_after: Option<u64>,
     observations: Arc<Mutex<ObservationState>>,
+    _credit: Option<DecodeScratch>,
 }
 
 impl BlobSource for ObservedSource {
+    fn checked_read_access(&self) -> CheckedReadAccess {
+        match self.source.checked_read_access() {
+            CheckedReadAccess::Owning => CheckedReadAccess::Owning,
+            _ => CheckedReadAccess::Unsupported,
+        }
+    }
+
     fn logical_length(&self) -> u64 {
         self.source.logical_length()
     }
@@ -419,6 +521,122 @@ impl BlobSource for ObservedSource {
             bytes: 0,
             observations: Arc::clone(&self.observations),
         }))
+    }
+
+    fn open_with_boundary(
+        &self,
+        original: &DecodeBudget,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<CheckedReader, StoreError> {
+        let reader = BlobSource::open_with_boundary(&self.source, original, boundary)?;
+        let source_original = reader.original_account().clone();
+        {
+            let mut observations = self.observations.lock().expect("lock observations");
+            let stats = traffic_stats(&mut observations, self.traffic);
+            stats.opens += 1;
+            stats.active += 1;
+            stats.maximum_active = stats.maximum_active.max(stats.active);
+            stats.opened_declared_bytes += self.source.logical_length();
+        }
+
+        CheckedReader::new_prepaid(
+            ObservedCheckedReader {
+                reader,
+                traffic: self.traffic,
+                fragment_bytes: self.fragment_bytes,
+                read_synchronization: self.read_synchronization.clone(),
+                observations: Arc::clone(&self.observations),
+                fail_after: self.fail_after,
+                bytes: 0,
+                failed: false,
+            },
+            &source_original,
+        )
+    }
+}
+
+struct ObservedCheckedReader {
+    reader: CheckedReader,
+    traffic: Traffic,
+    fragment_bytes: usize,
+    read_synchronization: Option<Arc<ReadSynchronization>>,
+    observations: Arc<Mutex<ObservationState>>,
+    fail_after: Option<u64>,
+    bytes: u64,
+    failed: bool,
+}
+
+impl CheckedBlobReader for ObservedCheckedReader {
+    fn original_account(&self) -> &DecodeBudget {
+        self.reader.original_account()
+    }
+
+    fn read_with_boundary(
+        &mut self,
+        output: &mut [u8],
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<usize, StoreError> {
+        if self.failed {
+            return Err(StoreError::Unsupported {
+                capability: "failed-observed-checked-reader",
+            });
+        }
+        let result = (|| {
+            let verify = || {
+                self.reader
+                    .original_account()
+                    .verify_live()
+                    .map_err(|source| StoreError::DecodeAdmission {
+                        source,
+                        custody: Some(self.reader.original_account().custody()),
+                    })
+            };
+            verify()?;
+            boundary()?;
+            verify()?;
+            if let Some(synchronization) = &self.read_synchronization
+                && !output.is_empty()
+            {
+                synchronization.rendezvous();
+            }
+            verify()?;
+
+            if self.fail_after.is_some_and(|limit| self.bytes >= limit) {
+                return Err(StoreError::Io {
+                    operation: "read observed stream",
+                    path: std::path::PathBuf::new(),
+                    source: io::Error::other("injected mid-object source failure"),
+                });
+            }
+            let mut limit = output.len().min(self.fragment_bytes.max(1)).min(64 * 1024);
+            if let Some(fail_after) = self.fail_after {
+                limit = limit.min(usize::try_from(fail_after - self.bytes).unwrap_or(usize::MAX));
+            }
+            let read = self
+                .reader
+                .read_with_boundary(&mut output[..limit], boundary)?;
+            self.bytes = self.bytes.saturating_add(read as u64);
+            let mut observations = self.observations.lock().expect("lock observations");
+            let stats = traffic_stats(&mut observations, self.traffic);
+            stats.maximum_request = stats.maximum_request.max(output.len());
+            stats.maximum_returned = stats.maximum_returned.max(read);
+            stats.bytes = stats.bytes.saturating_add(read as u64);
+            if self.read_synchronization.is_some() && !output.is_empty() {
+                stats.synchronized_reads += 1;
+            }
+            Ok(read)
+        })();
+        self.failed |= result.is_err();
+        result
+    }
+}
+
+impl Drop for ObservedCheckedReader {
+    fn drop(&mut self) {
+        if let Ok(mut observations) = self.observations.lock() {
+            let stats = traffic_stats(&mut observations, self.traffic);
+            stats.active = stats.active.saturating_sub(1);
+        }
     }
 }
 

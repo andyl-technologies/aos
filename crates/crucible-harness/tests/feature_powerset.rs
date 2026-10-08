@@ -70,7 +70,10 @@ fn crucible_manifest_feature_layout_is_explicit() -> Result<(), Box<dyn Error>> 
         "crucible-qemu",
         &[
             ("default", &[][..]),
-            ("test-support", &["crucible/test-double"][..]),
+            (
+                "test-support",
+                &["crucible/test-double", "crucible-ram/test-support"][..],
+            ),
         ],
     );
     assert_features(

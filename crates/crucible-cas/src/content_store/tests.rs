@@ -623,7 +623,7 @@ fn encrypted_directory_graph_identity_excludes_secret_key_material() {
     .expect("golden encrypted graph");
     assert_eq!(
         encode_hex(&golden.configuration_id().as_bytes()),
-        "a96eac25551f21b41109de9c12ed41c36fdb119b1cb3e6614f7b9ddc7c14fb90"
+        "b78d75fd1ec65c6fbfd5a2477059f79360a02d54fcac3122f5351ee71901e78a"
     );
 
     let bytes = vec![0x71; 96 * 1024];
@@ -766,7 +766,7 @@ fn compressed_encrypted_directory_is_a_versioned_graph_leaf() {
     .expect("golden compressed encrypted graph");
     assert_eq!(
         encode_hex(&golden.configuration_id().as_bytes()),
-        "ac25cbfd88f617ce72b97120866b87c33055059dc16860aa386fa698644c7bf7"
+        "1e6a032fff8ab3d5a5f2ebd051fd2e2feacb7d7c96a139574a7f284ddc54985f"
     );
 
     let bytes = vec![0x5a; 256 * 1024];

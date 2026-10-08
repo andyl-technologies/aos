@@ -45,6 +45,39 @@ fn account() -> (Arc<Quota>, DecodeBudget) {
     (quota, original)
 }
 
+#[test]
+fn healthy_checked_read_reserves_one_exact_diagnostic_body_until_child_completion() {
+    let (quota, original) = account();
+    let handle = BlobHandle::from_bytes(b"bounded checked read");
+    let retained = quota.resources.usage().unwrap();
+    let reservations = quota.reservations.load(Ordering::SeqCst);
+    let bytes = std::mem::size_of::<CompositeFailure>() as u64;
+    let mut polls = 0;
+
+    let returned = checked_read(
+        &original,
+        &mut || {
+            polls += 1;
+            Ok(())
+        },
+        |boundary| {
+            super::super::checked_reader::check(&original, boundary)?;
+            assert_eq!(
+                quota.resources.usage().unwrap(),
+                (retained.0, retained.1 + bytes)
+            );
+            assert_eq!(quota.reservations.load(Ordering::SeqCst), reservations + 1);
+            Ok(handle.clone())
+        },
+    )
+    .unwrap();
+
+    assert_eq!(polls, 1);
+    assert_eq!(quota.resources.usage().unwrap(), retained);
+    assert_eq!(returned.logical_length(), handle.logical_length());
+    eprintln!("checked read diagnostic prepayment={bytes}, added wrapper callback={polls}");
+}
+
 // All leaves in one fixture retain the same originally prepaid binder control.
 struct FixtureMemoryBinder {
     quota: Arc<Quota>,

@@ -4,7 +4,7 @@
 //! physical funding of the fixture's own controls or incoming error allocations.
 //! SQL cases use the existing capped native transaction and cleanup fixture.
 
-use std::alloc::{GlobalAlloc, Layout, System};
+use std::alloc::Layout;
 use std::cell::Cell;
 use std::error::Error;
 use std::fmt;
@@ -23,38 +23,10 @@ use crucible_cas::owned_decode::{
 use crucible_cas::ram::{
     PreparedRamFailure, RamFailureAdmission, RamOperationFailure, RamStoreError,
 };
-
-thread_local! {
-    static ALLOCATION_COUNT: Cell<Option<usize>> = const { Cell::new(None) };
-    static ALLOCATION_LAYOUT: Cell<Option<(usize, usize)>> = const { Cell::new(None) };
-}
-
-struct ObserverAllocator;
-
-// SAFETY: Every original pointer and layout is forwarded unchanged to System.
-// The thread-local observer counts calls without allocating or accessing memory.
-unsafe impl GlobalAlloc for ObserverAllocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let _ = ALLOCATION_COUNT.try_with(|count| {
-            if let Some(value) = count.get() {
-                count.set(Some(value + 1));
-                let _ = ALLOCATION_LAYOUT.try_with(|observed| {
-                    observed.set(Some((layout.size(), layout.align())));
-                });
-            }
-        });
-        // SAFETY: The caller's exact layout is forwarded to System.
-        unsafe { System.alloc(layout) }
-    }
-
-    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
-        // SAFETY: The caller's original pointer and layout are forwarded unchanged.
-        unsafe { System.dealloc(pointer, layout) }
-    }
-}
+use crucible_linux_resource::test_support::TestAllocationObserver;
 
 #[global_allocator]
-static ALLOCATOR: ObserverAllocator = ObserverAllocator;
+static ALLOCATOR: TestAllocationObserver = TestAllocationObserver;
 
 // The existing SQL scope fixture reserves a sixfold diagnostic-copy bound for
 // its 8 MiB native heap. Match its established 64 MiB finite fixture allowance.
@@ -207,21 +179,28 @@ fn typed_io_clone_and_final_unwind_keep_original_loan() {
         // Retaining an already produced failure uses the earlier credit even
         // after original cancellation; it does not seek another live authority.
         let reservations = state.reservations.load(Ordering::Acquire);
-        ALLOCATION_COUNT.set(Some(0));
-        let error = SchedulerError::from_ram_failure(prepared.retain(Some(first), incoming));
-        assert_eq!(ALLOCATION_COUNT.replace(None), Some(1));
-        assert_eq!(
-            ALLOCATION_LAYOUT.take(),
-            Some((
-                PreparedRamFailure::<SchedulerError>::allocation_bytes().unwrap() as usize,
-                std::mem::align_of::<SchedulerError>(),
-            )),
+        let carrier_layout = Layout::from_size_align(
+            PreparedRamFailure::<SchedulerError>::allocation_bytes().unwrap() as usize,
+            std::mem::align_of::<SchedulerError>(),
+        )
+        .unwrap();
+        let (error, allocation, counts) =
+            TestAllocationObserver::capture_layout_and_count(carrier_layout, || {
+                SchedulerError::from_ram_failure(prepared.retain(Some(first), incoming))
+            });
+        assert!(
+            allocation.is_some(),
             "actual carrier request matches the before-effect original charge"
         );
+        assert_eq!(counts.allocations, 1);
+        assert_eq!(counts.reallocations, 0);
+        assert!(!counts.overflow);
+
         let custody = error.clone();
-        ALLOCATION_COUNT.set(Some(0));
-        let clone = custody.clone();
-        assert_eq!(ALLOCATION_COUNT.replace(None), Some(0));
+        let (clone, counts) = TestAllocationObserver::count(|| custody.clone());
+        assert_eq!(counts.allocations, 0);
+        assert_eq!(counts.reallocations, 0);
+        assert!(!counts.overflow);
         assert_eq!(error, clone);
         assert_eq!(state.reservations.load(Ordering::Acquire), reservations);
         assert_eq!(
@@ -314,15 +293,19 @@ fn healthy_operation_releases_prepayment_without_shared_body_allocation() {
     );
     let reservations = state.reservations.load(Ordering::Acquire);
 
-    ALLOCATION_COUNT.set(Some(0));
-    let result = prepared.run(&mut || Ok(()), |boundary| {
-        boundary()?;
-        Ok::<_, RamStoreError>(42)
+    let (result, counts) = TestAllocationObserver::count(|| {
+        prepared
+            .run(&mut || Ok(()), |boundary| {
+                boundary()?;
+                Ok::<_, RamStoreError>(42)
+            })
+            .unwrap()
     });
-    let allocations = ALLOCATION_COUNT.replace(None);
 
-    assert_eq!(result.unwrap(), 42);
-    assert_eq!(allocations, Some(0));
+    assert_eq!(result, 42);
+    assert_eq!(counts.allocations, 0);
+    assert_eq!(counts.reallocations, 0);
+    assert!(!counts.overflow);
     assert_eq!(state.used.load(Ordering::Acquire), initial);
     assert_eq!(state.reservations.load(Ordering::Acquire), reservations);
     drop(original);

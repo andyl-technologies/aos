@@ -194,6 +194,39 @@ impl RejectingPromotionBackend {
 }
 
 impl ImmutableBlobBackend for RejectingPromotionBackend {
+    fn checked_publication_metadata(
+        &self,
+        kind: ObjectKind,
+    ) -> Result<crucible_cas::content_store::CheckedPublicationMetadata, StoreError> {
+        self.memory.checked_publication_metadata(kind)
+    }
+
+    fn put_many_if_absent_with_boundary(
+        &self,
+        original: &crucible::owned_decode::DecodeBudget,
+        objects: &[(crucible_cas::content_store::ContentId, BlobHandle)],
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<crucible_cas::content_store::PutBatchReceipt, StoreError> {
+        original
+            .verify_live()
+            .map_err(|source| StoreError::DecodeAdmission {
+                source,
+                custody: Some(original.custody()),
+            })?;
+        boundary()?;
+        original
+            .verify_live()
+            .map_err(|source| StoreError::DecodeAdmission {
+                source,
+                custody: Some(original.custody()),
+            })?;
+        if self.reject_put.load(Ordering::Acquire) {
+            return Err(StoreError::Unauthorized);
+        }
+        self.memory
+            .put_many_if_absent_with_boundary(original, objects, boundary)
+    }
+
     fn name(&self) -> &str {
         "rejecting-promotion-backend"
     }
@@ -212,6 +245,17 @@ impl ImmutableBlobBackend for RejectingPromotionBackend {
 
     fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
         self.memory.read(id, range)
+    }
+
+    fn read_with_boundary(
+        &self,
+        original: &crucible::owned_decode::DecodeBudget,
+        id: ContentId,
+        range: Option<ByteRange>,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<BlobHandle, StoreError> {
+        self.memory
+            .read_with_boundary(original, id, range, boundary)
     }
 
     fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {
@@ -274,6 +318,23 @@ impl LocalCheckpointPromotionWorker for PreparedPromotionWorker {
 }
 
 impl ImmutableBlobBackend for TestDurableBackend {
+    fn checked_publication_metadata(
+        &self,
+        kind: ObjectKind,
+    ) -> Result<crucible_cas::content_store::CheckedPublicationMetadata, StoreError> {
+        self.directory.checked_publication_metadata(kind)
+    }
+
+    fn put_many_if_absent_with_boundary(
+        &self,
+        original: &crucible::owned_decode::DecodeBudget,
+        objects: &[(crucible_cas::content_store::ContentId, BlobHandle)],
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<crucible_cas::content_store::PutBatchReceipt, StoreError> {
+        self.directory
+            .put_many_if_absent_with_boundary(original, objects, boundary)
+    }
+
     fn name(&self) -> &str {
         "executor-pool-checkpoints"
     }
@@ -301,6 +362,17 @@ impl ImmutableBlobBackend for TestDurableBackend {
 
     fn read(&self, id: ContentId, range: Option<ByteRange>) -> Result<BlobHandle, StoreError> {
         self.directory.read(id, range)
+    }
+
+    fn read_with_boundary(
+        &self,
+        original: &crucible::owned_decode::DecodeBudget,
+        id: ContentId,
+        range: Option<ByteRange>,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<BlobHandle, StoreError> {
+        self.directory
+            .read_with_boundary(original, id, range, boundary)
     }
 
     fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {

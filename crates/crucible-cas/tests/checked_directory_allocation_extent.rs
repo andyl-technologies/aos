@@ -1,6 +1,5 @@
 //! Observes original source/file credit through both concrete allocation closes.
 
-use std::alloc::{GlobalAlloc, Layout, System};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -10,57 +9,22 @@ use crucible_cas::content_store::{
     StoreError, StorePhysicalQuotaGuard,
 };
 use crucible_cas::owned_decode::{DecodeBudget, ResourceLoan};
+use crucible_linux_resource::test_support::{
+    AllocationRosterOutcome, AllocationTrace, GlobalAllocationTraceSession,
+    OriginalControlSelection, OriginalControlSession, OriginalControlSlot, OriginalControlSnapshot,
+    OriginalControlsOutcome, OriginalStaticCounters, TestAllocationObserver,
+};
 
 const CAPACITY: usize = 32;
 const LIMIT: usize = 8 * 1024 * 1024;
 static WATCH: AtomicBool = AtomicBool::new(false);
-static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
-static ALLOCATION_BYTES: [AtomicUsize; CAPACITY] = [const { AtomicUsize::new(0) }; CAPACITY];
+static TRACE: AllocationTrace<CAPACITY> = AllocationTrace::new();
 static ALLOCATION_FUNDED: [AtomicBool; CAPACITY] = [const { AtomicBool::new(false) }; CAPACITY];
-static ALLOCATION_POINTERS: [AtomicUsize; CAPACITY] = [const { AtomicUsize::new(0) }; CAPACITY];
 static LOANS: AtomicUsize = AtomicUsize::new(0);
 static LOAN_BYTES: [AtomicUsize; CAPACITY] = [const { AtomicUsize::new(0) }; CAPACITY];
 static SOURCE_LOAN_LIVE: AtomicBool = AtomicBool::new(false);
-static TARGETS: [AtomicUsize; 2] = [const { AtomicUsize::new(0) }; 2];
-static FREED: [AtomicBool; 2] = [const { AtomicBool::new(false) }; 2];
-static EARLY_REFUND: AtomicBool = AtomicBool::new(false);
-
-struct ObservingAllocator;
-
-// SAFETY: System receives the original pointer/layout. Fixed atomic observations
-// neither access allocated storage nor allocate, acquire locks, or panic.
-unsafe impl GlobalAlloc for ObservingAllocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        // SAFETY: The caller supplied the valid allocation layout.
-        let allocation = unsafe { System.alloc(layout) };
-        if !allocation.is_null() && WATCH.load(Ordering::SeqCst) {
-            let index = ALLOCATIONS.fetch_add(1, Ordering::SeqCst);
-            if index < CAPACITY {
-                ALLOCATION_BYTES[index].store(layout.size(), Ordering::SeqCst);
-                ALLOCATION_POINTERS[index].store(allocation as usize, Ordering::SeqCst);
-                ALLOCATION_FUNDED[index]
-                    .store(SOURCE_LOAN_LIVE.load(Ordering::SeqCst), Ordering::SeqCst);
-            }
-        }
-        allocation
-    }
-
-    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
-        for index in 0..2 {
-            if TARGETS[index].load(Ordering::SeqCst) == pointer as usize
-                && !FREED[index].swap(true, Ordering::SeqCst)
-                && !SOURCE_LOAN_LIVE.load(Ordering::SeqCst)
-            {
-                EARLY_REFUND.store(true, Ordering::SeqCst);
-            }
-        }
-        // SAFETY: The caller supplied this live pointer and its original layout.
-        unsafe { System.dealloc(pointer, layout) };
-    }
-}
-
 #[global_allocator]
-static ALLOCATOR: ObservingAllocator = ObservingAllocator;
+static ALLOCATOR: TestAllocationObserver = TestAllocationObserver;
 
 struct Quota {
     source: bool,
@@ -136,53 +100,81 @@ fn account(source: bool) -> Result<(Arc<Quota>, DecodeBudget), Box<dyn std::erro
     Ok((quota, original))
 }
 
-struct Observation;
+struct Observation<'a> {
+    capture: &'a GlobalAllocationTraceSession,
+    controls: &'a OriginalControlSession,
+}
 
-impl Observation {
-    fn begin() -> Self {
-        ALLOCATIONS.store(0, Ordering::SeqCst);
+impl<'a> Observation<'a> {
+    fn begin(
+        controls: &'a OriginalControlSession,
+        capture: &'a GlobalAllocationTraceSession,
+    ) -> Self {
         LOANS.store(0, Ordering::SeqCst);
-        EARLY_REFUND.store(false, Ordering::SeqCst);
-        for index in 0..2 {
-            TARGETS[index].store(0, Ordering::SeqCst);
-            FREED[index].store(false, Ordering::SeqCst);
-        }
         WATCH.store(true, Ordering::SeqCst);
-        Self
+        Self { capture, controls }
     }
 
     fn capture(&self) -> (usize, usize) {
         WATCH.store(false, Ordering::SeqCst);
-        let allocations = ALLOCATIONS.load(Ordering::SeqCst);
+        assert_eq!(
+            self.capture
+                .pause()
+                .unwrap_or_else(|error| panic!("original global32 capture: {error}")),
+            AllocationRosterOutcome::Complete
+        );
+        let allocations = TRACE.allocation_count();
         assert!((2..=CAPACITY).contains(&allocations));
+        assert!(!TRACE.overflowed());
+        assert_eq!(TRACE.reallocations(), 0);
+        assert_eq!(TRACE.entries().count(), allocations);
         assert_eq!(LOANS.load(Ordering::SeqCst), 2);
-        let file = ALLOCATION_BYTES[allocations - 2].load(Ordering::SeqCst);
-        let source = ALLOCATION_BYTES[allocations - 1].load(Ordering::SeqCst);
-        assert_eq!(LOAN_BYTES[1].load(Ordering::SeqCst), file + source);
+        let file = TRACE
+            .entries()
+            .nth(allocations - 2)
+            .unwrap_or_else(|| panic!("actual original file allocation must be recorded"));
+        let source = TRACE
+            .entries()
+            .nth(allocations - 1)
+            .unwrap_or_else(|| panic!("actual original source allocation must be recorded"));
+        assert_eq!(
+            LOAN_BYTES[1].load(Ordering::SeqCst),
+            file.bytes() + source.bytes()
+        );
         assert!(SOURCE_LOAN_LIVE.load(Ordering::SeqCst));
-        for index in 0..2 {
-            assert!(ALLOCATION_FUNDED[allocations - 2 + index].load(Ordering::SeqCst));
-            TARGETS[index].store(
-                ALLOCATION_POINTERS[allocations - 2 + index].load(Ordering::SeqCst),
-                Ordering::SeqCst,
-            );
+        for (slot, index, extent) in [
+            (OriginalControlSlot::First, allocations - 2, file),
+            (OriginalControlSlot::Second, allocations - 1, source),
+        ] {
+            assert!(ALLOCATION_FUNDED[index].load(Ordering::SeqCst));
+            self.controls
+                .arm(
+                    slot,
+                    OriginalControlSelection::Explicit(extent.identity()),
+                    OriginalStaticCounters::Bool(&SOURCE_LOAN_LIVE),
+                    false,
+                )
+                .unwrap_or_else(|error| panic!("original Directory control arm: {error}"));
         }
-        (file, source)
+        (file.bytes(), source.bytes())
     }
 
     fn assert_closed(&self) {
-        assert!(FREED.iter().all(|freed| freed.load(Ordering::SeqCst)));
-        assert!(!EARLY_REFUND.load(Ordering::SeqCst));
+        let report = self
+            .controls
+            .report()
+            .unwrap_or_else(|error| panic!("original Directory close report: {error}"));
+        assert_eq!(report.outcome, OriginalControlsOutcome::Complete);
+        assert!(report.controls.iter().all(|observed| {
+            observed.is_some_and(|observed| observed.before == OriginalControlSnapshot::Bool(true))
+        }));
         assert!(!SOURCE_LOAN_LIVE.load(Ordering::SeqCst));
     }
 }
 
-impl Drop for Observation {
+impl Drop for Observation<'_> {
     fn drop(&mut self) {
         WATCH.store(false, Ordering::SeqCst);
-        for target in &TARGETS {
-            target.store(0, Ordering::SeqCst);
-        }
     }
 }
 
@@ -202,83 +194,127 @@ fn original_source_loan_closes_after_both_controls_in_every_alias_order()
 
     let mut geometry = None;
     for mode in 0..4 {
-        let observation = Observation::begin();
-        let handle = backend.read_with_boundary(&original, id, None, &mut || Ok(()))?;
-        let (file, source) = observation.capture();
-        println!(
-            "mode={mode} actual file control={file} source control={source} original loan={}",
-            file + source
-        );
-        if let Some(previous) = geometry {
-            assert_eq!((file, source), previous);
-        } else {
-            geometry = Some((file, source));
-        }
-        let mut reader = BlobSource::open_with_boundary(&handle, &caller, &mut || Ok(()))?;
-        source_bank.live.store(false, Ordering::SeqCst);
+        let (captured, original_report) = TestAllocationObserver::observe_original_controls(
+            |controls| {
+                TestAllocationObserver::capture_global_allocation_trace32(
+                    &TRACE,
+                    &SOURCE_LOAN_LIVE,
+                    &ALLOCATION_FUNDED,
+                    |capture| -> Result<(), Box<dyn std::error::Error>> {
+                        let observation = Observation::begin(controls, capture);
+                        let handle =
+                            backend.read_with_boundary(&original, id, None, &mut || Ok(()))?;
+                        let (file, source) = observation.capture();
+                        println!(
+                            "mode={mode} actual file control={file} source control={source} original loan={}",
+                            file + source
+                        );
+                        if let Some(previous) = geometry {
+                            assert_eq!((file, source), previous);
+                        } else {
+                            geometry = Some((file, source));
+                        }
+                        let mut reader =
+                            BlobSource::open_with_boundary(&handle, &caller, &mut || Ok(()))?;
+                        source_bank.live.store(false, Ordering::SeqCst);
 
-        match mode {
-            0 => {
-                drop(reader);
-                assert!(SOURCE_LOAN_LIVE.load(Ordering::SeqCst));
-                drop(handle);
-            }
-            1 => {
-                drop(handle);
-                assert!(FREED[1].load(Ordering::SeqCst));
-                assert!(!FREED[0].load(Ordering::SeqCst));
-                let mut bytes = [0; 5];
-                assert_eq!(reader.read_with_boundary(&mut bytes, &mut || Ok(()))?, 5);
-                assert_eq!(&bytes, b"bytes");
-                drop(reader);
-            }
-            2 => {
-                let alias = handle.clone();
-                let other = BlobSource::open_with_boundary(&handle, &caller, &mut || Ok(()))?;
-                drop(handle);
-                std::thread::scope(|scope| {
-                    scope.spawn(move || drop(alias));
-                    scope.spawn(move || drop(reader));
-                    scope.spawn(move || drop(other));
-                });
-            }
-            _ => {
-                let unwind = catch_unwind(AssertUnwindSafe(move || {
-                    let _source = handle;
-                    let mut reader = reader;
-                    let _ = reader.read_with_boundary(&mut [0; 1], &mut || {
-                        panic!("actual caller boundary unwind")
-                    });
-                }));
-                assert!(unwind.is_err());
-            }
-        }
-        observation.assert_closed();
-        source_bank.live.store(true, Ordering::SeqCst);
+                        match mode {
+                            0 => {
+                                drop(reader);
+                                assert!(SOURCE_LOAN_LIVE.load(Ordering::SeqCst));
+                                drop(handle);
+                            }
+                            1 => {
+                                drop(handle);
+                                let intermediate = observation.controls.report().unwrap();
+                                assert!(intermediate.controls[1].is_some());
+                                assert!(intermediate.controls[0].is_none());
+                                let mut bytes = [0; 5];
+                                assert_eq!(
+                                    reader.read_with_boundary(&mut bytes, &mut || Ok(()))?,
+                                    5
+                                );
+                                assert_eq!(&bytes, b"bytes");
+                                drop(reader);
+                            }
+                            2 => {
+                                let alias = handle.clone();
+                                let other =
+                                    BlobSource::open_with_boundary(&handle, &caller, &mut || {
+                                        Ok(())
+                                    })?;
+                                drop(handle);
+                                std::thread::scope(|scope| {
+                                    scope.spawn(move || drop(alias));
+                                    scope.spawn(move || drop(reader));
+                                    scope.spawn(move || drop(other));
+                                });
+                            }
+                            _ => {
+                                let unwind = catch_unwind(AssertUnwindSafe(move || {
+                                    let _source = handle;
+                                    let mut reader = reader;
+                                    let _ = reader.read_with_boundary(&mut [0; 1], &mut || {
+                                        panic!("actual caller boundary unwind")
+                                    });
+                                }));
+                                assert!(unwind.is_err());
+                            }
+                        }
+                        observation.assert_closed();
+                        source_bank.live.store(true, Ordering::SeqCst);
+                        Ok(())
+                    },
+                )
+            },
+        )?;
+        let (result, outcome) = captured?;
+        result?;
+        assert_eq!(outcome, AllocationRosterOutcome::Complete);
+        assert_eq!(original_report.outcome, OriginalControlsOutcome::Complete);
     }
 
     // This separately covers unwind after both actual controls are published,
     // before lookup returns an owned source to its caller.
     let (file, source) = geometry.ok_or("missing observed source geometry")?;
-    let observation = Observation::begin();
-    let mut captured = false;
-    let unwind = catch_unwind(AssertUnwindSafe(|| {
-        let _ = backend.read_with_boundary(&original, id, None, &mut || {
-            let count = ALLOCATIONS.load(Ordering::SeqCst);
-            if (2..=CAPACITY).contains(&count)
-                && ALLOCATION_BYTES[count - 2].load(Ordering::SeqCst) == file
-                && ALLOCATION_BYTES[count - 1].load(Ordering::SeqCst) == source
-            {
-                observation.capture();
-                captured = true;
-                panic!("actual post-publication lookup boundary unwind");
-            }
-            Ok(())
-        });
-    }));
-    assert!(captured && unwind.is_err());
-    observation.assert_closed();
-    drop(observation);
+    let (captured, original_report) =
+        TestAllocationObserver::observe_original_controls(|controls| {
+            TestAllocationObserver::capture_global_allocation_trace32(
+                &TRACE,
+                &SOURCE_LOAN_LIVE,
+                &ALLOCATION_FUNDED,
+                |capture| {
+                    let observation = Observation::begin(controls, capture);
+                    let mut captured = false;
+                    let unwind = catch_unwind(AssertUnwindSafe(|| {
+                        let _ = backend.read_with_boundary(&original, id, None, &mut || {
+                            let count = TRACE.allocation_count();
+                            if (2..=CAPACITY).contains(&count)
+                                && TRACE
+                                    .entries()
+                                    .nth(count - 2)
+                                    .is_some_and(|entry| entry.bytes() == file)
+                                && TRACE
+                                    .entries()
+                                    .nth(count - 1)
+                                    .is_some_and(|entry| entry.bytes() == source)
+                            {
+                                observation.capture();
+                                captured = true;
+                                panic!("actual post-publication lookup boundary unwind");
+                            }
+                            Ok(())
+                        });
+                    }));
+                    assert!(captured && unwind.is_err());
+                    observation.assert_closed();
+                    drop(observation);
+                },
+            )
+        })?;
+    let (_, outcome) = captured?;
+    assert_eq!(outcome, AllocationRosterOutcome::Complete);
+    assert_eq!(original_report.outcome, OriginalControlsOutcome::Complete);
     drop(original);
     assert_eq!(source_bank.used.load(Ordering::SeqCst), 0);
     Ok(())
