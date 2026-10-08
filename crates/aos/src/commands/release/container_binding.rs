@@ -113,6 +113,11 @@ fn validate_image_attribute(attribute: &str, images: &[ImagePlan]) -> Result<()>
 }
 
 #[cfg(test)]
+#[path = "../../../../aos-release/src/test_support/qualification/mod.rs"]
+#[allow(dead_code)]
+mod qualification_fixture;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -127,11 +132,7 @@ mod tests {
     }
 
     fn contract(deferred: &[Platform]) -> QualificationContract {
-        let mut contract: QualificationContract = aos_release::canonical::from_slice(
-            include_bytes!("../../../../aos-release/tests/fixtures/qualification-contract.json"),
-            "qualification contract fixture",
-        )
-        .unwrap();
+        let mut contract = qualification_fixture::contract().unwrap();
         contract.deferred_platforms = deferred.to_vec();
         contract
     }
