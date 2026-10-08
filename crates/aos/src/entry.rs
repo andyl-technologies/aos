@@ -486,8 +486,8 @@ fn validate_runtime(command: &Commands, runtime: Option<&OsStr>) -> Result<()> {
 /// Maps an `anyhow::Error` to an appropriate exit code while printing a
 /// user-facing message.
 fn handle_error(printer: &Printer, err: anyhow::Error) -> i32 {
-    if let Some(status) = err.downcast_ref::<commands::sandbox::SandboxAttachExitCode>() {
-        return status.0;
+    if let Some(status) = err.downcast_ref::<aos_sandbox_client::ClientAttachExitStatusV1>() {
+        return status.code();
     }
     // Walk the error chain looking for a typed AosError so we can pick the
     // right exit code.

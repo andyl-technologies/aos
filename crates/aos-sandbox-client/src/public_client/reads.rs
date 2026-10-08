@@ -8,33 +8,26 @@ use aos_proto::aos::sandbox::v1::{
     ListSnapshotsResponse, ListViewsResponse, PageInfo, SandboxServiceClient,
     SnapshotServiceClient,
 };
+use aos_sandbox_core::CapabilityId;
+use aos_sandbox_protocol::public_api::client_state::{
+    ImmutableListPageV1, MAXIMUM_COLLECTED_BYTES, MAXIMUM_COLLECTED_ITEMS, PageApplyOutcomeV1,
+    PaginationReducerV1,
+};
+use aos_sandbox_protocol::public_api::continuation::DormantListContinuationV1;
+use aos_sandbox_protocol::public_api::proto_json::{
+    CheckedCacheStatusV1, CheckedListProtoJsonV1, CheckedPolicyPlanV1, CheckedSandboxTreeV1,
+};
 use aos_sandbox_protocol::public_api::request::{
     DormantPublicApiRequestV1, DormantSandboxOutputV1, DormantSandboxRequestKindV1,
     DormantSandboxTreePageConsumerV1,
 };
-use aos_sandbox_protocol::public_api::proto_json::{
-    CheckedCacheStatusV1, CheckedListProtoJsonV1, CheckedPolicyPlanV1, CheckedSandboxTreeV1,
-};
-use aos_sandbox_protocol::public_api::continuation::DormantListContinuationV1;
-use aos_sandbox_protocol::public_api::client_state::{
-    ImmutableListPageV1,
-    MAXIMUM_COLLECTED_BYTES,
-    MAXIMUM_COLLECTED_ITEMS,
-    PageApplyOutcomeV1,
-    PaginationReducerV1,
-};
 use aos_sandbox_protocol::public_api::{
-    CheckedAttachmentResourceV1,
-    CheckedCapabilityResourceV1,
-    CheckedExecutionResourceV1,
-    CheckedFilesystemViewResourceV1,
-    CheckedSandboxResourceV1,
-    CheckedSnapshotResourceV1,
+    CheckedAttachmentResourceV1, CheckedCapabilityResourceV1, CheckedExecutionResourceV1,
+    CheckedFilesystemViewResourceV1, CheckedSandboxResourceV1, CheckedSnapshotResourceV1,
 };
-use aos_sandbox_core::CapabilityId;
 use connectrpc::client::SharedHttp2Connection;
 
-use crate::cli::sandbox::SandboxArgs;
+use crate::PublicClientOptionsV1;
 
 use super::{AuthorizedEndpoint, authenticated_query_binding, is_supported_read};
 
@@ -180,8 +173,8 @@ macro_rules! fetch_paginated_list {
 ///
 /// Returns an error for protected credential, transport, server, response
 /// validation, or rendering failure.
-pub(in crate::commands::sandbox) async fn dispatch_read(
-    args: &SandboxArgs,
+pub(crate) async fn dispatch_read(
+    args: &PublicClientOptionsV1,
     request: &DormantPublicApiRequestV1,
     output: DormantSandboxOutputV1,
     expected_capability_id: Option<CapabilityId>,

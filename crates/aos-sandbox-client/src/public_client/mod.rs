@@ -11,36 +11,25 @@ use aos_proto::aos::sandbox::v1::{
     FilesystemViewServiceClient, GetOperationRequest, Operation, OperationServiceClient,
     OperatorServiceClient, SandboxServiceClient, SnapshotServiceClient,
 };
+use aos_sandbox_core::CapabilityId;
+use aos_sandbox_protocol::public_api::client_state::{
+    MAXIMUM_WAIT_OBSERVATIONS, OperationWaitApplyOutcomeV1, OperationWaitPolicyV1,
+    OperationWaitReducerV1, OperationWaitTerminationV1,
+};
+use aos_sandbox_protocol::public_api::proto_json::CheckedExecutionControlResultV1;
 use aos_sandbox_protocol::public_api::request::{
     DormantPublicApiRequestV1, DormantSandboxOutputV1, DormantSandboxRequestKindV1,
 };
-use aos_sandbox_protocol::public_api::proto_json::CheckedExecutionControlResultV1;
-use aos_sandbox_protocol::public_api::client_state::{
-    MAXIMUM_WAIT_OBSERVATIONS,
-    OperationWaitApplyOutcomeV1,
-    OperationWaitPolicyV1,
-    OperationWaitReducerV1,
-    OperationWaitTerminationV1,
-};
 use aos_sandbox_protocol::public_api::{
-    CheckedAttachmentResourceV1,
-    CheckedCapabilityResourceV1,
-    CheckedExecutionResourceV1,
-    CheckedFilesystemViewResourceV1,
-    CheckedOperationObservationV1,
-    CheckedOperationPhaseV1,
-    CheckedOperationResourceV1,
-    CheckedSandboxResourceV1,
-    CheckedSnapshotResourceV1,
-    PublicOperationMethodV1,
-    QUERY_BINDING_TRANSPORT_BYTES,
-    QueryBindingV1,
+    CheckedAttachmentResourceV1, CheckedCapabilityResourceV1, CheckedExecutionResourceV1,
+    CheckedFilesystemViewResourceV1, CheckedOperationObservationV1, CheckedOperationPhaseV1,
+    CheckedOperationResourceV1, CheckedSandboxResourceV1, CheckedSnapshotResourceV1,
+    PublicOperationMethodV1, QUERY_BINDING_TRANSPORT_BYTES, QueryBindingV1,
 };
-use aos_sandbox_core::CapabilityId;
 use connectrpc::client::{ClientConfig, SharedHttp2Connection};
 use http::Uri;
 
-use crate::cli::sandbox::SandboxArgs;
+use crate::PublicClientOptionsV1;
 
 mod reads;
 mod ssh_attach;
@@ -138,7 +127,7 @@ struct AuthorizedEndpoint {
 
 impl AuthorizedEndpoint {
     async fn connect(
-        args: &SandboxArgs,
+        args: &PublicClientOptionsV1,
         expected_capability_id: Option<CapabilityId>,
     ) -> Result<Self> {
         let credentials = args
@@ -195,7 +184,7 @@ impl AuthorizedEndpoint {
 /// invalid response resources, contradictory operation progress, bounded-wait
 /// expiry, or rendering failure.
 pub(super) async fn dispatch_mutation(
-    args: &SandboxArgs,
+    args: &PublicClientOptionsV1,
     request: &DormantPublicApiRequestV1,
     output: DormantSandboxOutputV1,
     expected_capability_id: Option<CapabilityId>,
@@ -304,8 +293,10 @@ pub(super) async fn dispatch_mutation(
             .await?;
         }
         DormantSandboxRequestKindV1::Exec(message) => {
-            aos_sandbox_protocol::public_api::create_holder_proof::verify_create_holder_proof_v1(message)
-                .context("execution creation proof does not match the final request")?;
+            aos_sandbox_protocol::public_api::create_holder_proof::verify_create_holder_proof_v1(
+                message,
+            )
+            .context("execution creation proof does not match the final request")?;
             let response =
                 ExecutionServiceClient::new(endpoint.connection.clone(), endpoint.config()?)
                     .create_execution(message.clone())
@@ -937,14 +928,14 @@ async fn poll_before_wait_deadline<T>(
         .map_err(|_| anyhow::anyhow!("operation wait deadline reached"))?
 }
 
-fn save_successor_capability(args: &SandboxArgs, id: &[u8], handle: &[u8]) -> Result<()> {
+fn save_successor_capability(args: &PublicClientOptionsV1, id: &[u8], handle: &[u8]) -> Result<()> {
     let directory = args
         .public_credentials
         .as_deref()
         .context("successor capability requires protected public credentials")?;
     let name = args
-        .command
-        .successor_capability_name()
+        .successor_capability_name
+        .as_deref()
         .context("successor capability requires an explicit output name")?;
     super::public_transport::save_named_capability(directory, name, id, handle)
 }

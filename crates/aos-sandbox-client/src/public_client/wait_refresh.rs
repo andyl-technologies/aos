@@ -12,12 +12,8 @@ use aos_proto::aos::sandbox::v1::{
 };
 use aos_sandbox_protocol::public_api::proto_json::EstablishedProtoJson;
 use aos_sandbox_protocol::public_api::{
-    CheckedAttachmentResourceV1,
-    CheckedCapabilityResourceV1,
-    CheckedExecutionResourceV1,
-    CheckedFilesystemViewResourceV1,
-    CheckedOperationResourceV1,
-    CheckedSandboxResourceV1,
+    CheckedAttachmentResourceV1, CheckedCapabilityResourceV1, CheckedExecutionResourceV1,
+    CheckedFilesystemViewResourceV1, CheckedOperationResourceV1, CheckedSandboxResourceV1,
     CheckedSnapshotResourceV1,
 };
 

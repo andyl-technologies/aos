@@ -5,6 +5,7 @@ use std::str::FromStr;
 
 use anyhow::{Result, bail};
 use aos_proto::aos::sandbox::v1 as wire;
+use aos_sandbox_client::capability_name;
 use aos_sandbox_protocol::public_api::request::{
     DormantClientStatePlanV1, DormantCompletionShellV1, DormantPublicApiAuthorizationV1,
     DormantPublicApiRequestV1, DormantSandboxRequestKindV1,
@@ -1588,25 +1589,6 @@ fn fixed_hex(value: &str, length: usize) -> Result<HexValue, String> {
     } else {
         Ok(decoded)
     }
-}
-
-/// Validates a single path component for a named capability record.
-///
-/// # Errors
-///
-/// Rejects empty, reserved, overlong, or non-ASCII-safe names.
-pub(crate) fn capability_name(value: &str) -> Result<String, String> {
-    if value.is_empty()
-        || value.len() > 64
-        || matches!(value, "id" | "handle")
-        || !value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-    {
-        return Err("capability name must contain 1..=64 ASCII letters, digits, '-' or '_'".into());
-    }
-
-    Ok(value.to_owned())
 }
 
 fn environment(value: &str) -> Result<(String, Vec<u8>), String> {

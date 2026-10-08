@@ -2,24 +2,19 @@
 
 use anyhow::{Context as _, Result};
 use aos_proto::aos::sandbox::v1::{EventKind, OperationServiceClient};
+use aos_sandbox_core::CapabilityId;
+use aos_sandbox_protocol::public_api::client_state::{WatchApplyOutcomeV1, WatchResumePointV1};
+use aos_sandbox_protocol::public_api::continuation::DormantWatchContinuationV1;
 use aos_sandbox_protocol::public_api::request::{
     DormantPublicApiRequestV1, DormantSandboxOutputV1, DormantSandboxRequestKindV1,
 };
-use aos_sandbox_protocol::public_api::continuation::DormantWatchContinuationV1;
-use aos_sandbox_protocol::public_api::client_state::{WatchApplyOutcomeV1, WatchResumePointV1};
 use aos_sandbox_protocol::public_api::{
-    AuthenticatedWatchReadBatchV1,
-    CheckedAuditWatchEventV1,
-    CheckedObservationWatchInputV1,
-    CheckedWatchEventV1,
-    CheckedWatchRequestV1,
-    ObservationWatchAdvanceV1,
-    ObservationWatchContinuationV1,
-    checked_watch_request_commitment_v1,
+    AuthenticatedWatchReadBatchV1, CheckedAuditWatchEventV1, CheckedObservationWatchInputV1,
+    CheckedWatchEventV1, CheckedWatchRequestV1, ObservationWatchAdvanceV1,
+    ObservationWatchContinuationV1, checked_watch_request_commitment_v1,
 };
-use aos_sandbox_core::CapabilityId;
 
-use crate::cli::sandbox::SandboxArgs;
+use crate::PublicClientOptionsV1;
 
 use super::{AuthorizedEndpoint, authenticated_query_binding};
 
@@ -29,8 +24,8 @@ use super::{AuthorizedEndpoint, authenticated_query_binding};
 ///
 /// Returns an error for protected transport failure, a rejected watch, an
 /// invalid event, or output failure.
-pub(in crate::commands::sandbox) async fn dispatch_watch(
-    args: &SandboxArgs,
+pub(crate) async fn dispatch_watch(
+    args: &PublicClientOptionsV1,
     request: &DormantPublicApiRequestV1,
     output: DormantSandboxOutputV1,
     expected_capability_id: Option<CapabilityId>,

@@ -175,10 +175,7 @@ fn load_authorized_bundle(
 ///
 /// Rejects an absent, unsafe, malformed, noncanonical, or zero capability
 /// identity credential.
-pub(super) fn load_capability_id(
-    path: &Path,
-    capability_name: Option<&str>,
-) -> Result<CapabilityId> {
+pub fn load_capability_id(path: &Path, capability_name: Option<&str>) -> Result<CapabilityId> {
     let uid = rustix::process::geteuid().as_raw();
     let directory = open_protected_directory(path, uid)?;
     let (capability, _) = load_capability_from(&directory, uid, capability_name)?;
@@ -202,7 +199,7 @@ fn load_capability_from(
 }
 
 fn named_capability_filename(name: &str) -> Result<String> {
-    crate::cli::sandbox::capability_name(name)
+    crate::capability_name(name)
         .map_err(anyhow::Error::msg)
         .context("named capability selector is invalid")?;
     Ok(format!("sandbox-capability-{name}"))

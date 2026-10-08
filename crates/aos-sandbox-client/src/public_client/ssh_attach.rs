@@ -19,8 +19,8 @@ use aos_sandbox_protocol::public_api::proto_json::CheckedExecutionControlResultV
 use aos_sandbox_protocol::public_api::{CheckedExecutionResourceV1, PublicOperationMethodV1};
 use zeroize::Zeroizing;
 
-use crate::cli::sandbox::SandboxArgs;
-use crate::commands::sandbox::SandboxAttachExitCode;
+use crate::ClientAttachExitStatusV1;
+use crate::PublicClientOptionsV1;
 
 use super::AuthorizedEndpoint;
 
@@ -30,7 +30,7 @@ use super::AuthorizedEndpoint;
 ///
 /// Rejects missing credentials, an invalid execution ID, or unsafe key custody.
 pub(super) fn load_holder_key(
-    args: &SandboxArgs,
+    args: &PublicClientOptionsV1,
     request: &ExecutionControlRequest,
 ) -> Result<Zeroizing<Vec<u8>>> {
     let credential_path = args
@@ -171,7 +171,7 @@ pub(super) async fn attach(
     if status.success() {
         Ok(())
     } else {
-        Err(SandboxAttachExitCode(status.code().unwrap_or(1)).into())
+        Err(ClientAttachExitStatusV1(status.code().unwrap_or(1)).into())
     }
 }
 
