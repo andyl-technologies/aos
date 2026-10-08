@@ -12,6 +12,12 @@
   stdenv,
 }: let
   version = "1.0";
+  # Installed scripts need an interpreter, while interactive defaults belong
+  # to the public shell. Cross builds still require their target interpreter.
+  scriptBash =
+    if stdenv.isCross
+    then bash
+    else stdenv.bash;
   splitDarwinRuntime = stdenv.isCross && stdenv.hostPlatform.isDarwin;
 in
   mkDerivation {
@@ -103,7 +109,7 @@ in
     buildDeps =
       [
         gnumake
-        bash
+        scriptBash
         python3
       ]
       ++ (
@@ -117,7 +123,7 @@ in
       else [
         ncurses
         libxcrypt
-        bash
+        scriptBash
         python3
       ];
     propagatedDeps = [];
@@ -125,7 +131,7 @@ in
       if splitDarwinRuntime
       then "nukeRefsKeep"
       else null
-    } = [bash python3];
+    } = [scriptBash python3];
     ${
       if splitDarwinRuntime
       then "outputChecks"
@@ -137,7 +143,7 @@ in
         buildPackages.llvm
       ];
       lib.disallowedReferences = [
-        bash
+        scriptBash
         python3
         buildPackages.bash
         buildPackages.python3
@@ -238,7 +244,7 @@ in
             nativeBashRoot=$(dirname "$(dirname "$CONFIG_SHELL")")
             nativePythonRoot=$(dirname "$(dirname "$(command -v python3)")")
             grep -IrlZ -F "$nativeBashRoot" "$out" 2>/dev/null \
-              | xargs -0 -r sed -i "s|$nativeBashRoot|${bash}|g"
+              | xargs -0 -r sed -i "s|$nativeBashRoot|${scriptBash}|g"
             grep -IrlZ -F "$nativePythonRoot" "$out" 2>/dev/null \
               | xargs -0 -r sed -i "s|$nativePythonRoot|${python3}|g"
           ''

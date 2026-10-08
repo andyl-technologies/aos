@@ -70,8 +70,10 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
 
   # Existing package recipes historically referred to one package fixed point
   # for both tools and target libraries. Preserve their authored buildDeps API
-  # while resolving each identifiable executable dependency through the native
-  # build package set. A version mismatch is left untouched so constraint
+  # while resolving cross-target executables through the native build package
+  # set. Native dependencies retain the exact package the recipe selected,
+  # including completed bootstrap tools and explicitly configured variants.
+  # A version mismatch is left untouched so constraint
   # validation fails visibly instead of silently substituting another tool.
   buildDependencyAliases = {
     make = "gnumake";
@@ -81,7 +83,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     jdk = "openjdk";
   };
   spliceBuildDependency = dep:
-    if !builtins.isAttrs dep
+    if !stdenv.isCross || !builtins.isAttrs dep
     then dep
     else let
       pname = dep.pname or null;

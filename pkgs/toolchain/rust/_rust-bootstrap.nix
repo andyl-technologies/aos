@@ -28,6 +28,8 @@
   disableDarwinLld ? disableLld,
   qualification ? null,
 }: let
+  # Compiler launchers are noninteractive and use the completed build shell.
+  compilerBash = stdenv.bash;
   mkRustDerivation = attrs:
     mkDerivation (attrs
       // (
@@ -100,7 +102,7 @@ in
         ninja
         pkg-config
         python3
-        bash
+        compilerBash
         which
         prevRust
         llvm
@@ -139,7 +141,7 @@ in
             # Must return exit 1 for unknown commands (especially rev-parse),
             # otherwise bootstrap tries canonicalize("") and panics.
             mkdir -p .fake-bin
-            printf '#!${bash}/bin/bash\nexit 1\n' > .fake-bin/git
+            printf '#!${compilerBash}/bin/bash\nexit 1\n' > .fake-bin/git
             chmod +x .fake-bin/git
             export PATH="$PWD/.fake-bin:$PATH"
 
@@ -269,7 +271,7 @@ in
                         if head -c4 "$f" | grep -q "ELF"; then
                           mv "$f" "$f.unwrapped"
                           cat > "$f" <<WRAP
-            #!${bash}/bin/bash
+            #!${compilerBash}/bin/bash
             export LD_LIBRARY_PATH="$LIB_PATH''${LD_LIBRARY_PATH:+:}''${LD_LIBRARY_PATH:-}"
             exec "$f.unwrapped" "\$@"
             WRAP
