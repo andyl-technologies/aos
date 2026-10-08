@@ -346,8 +346,18 @@
   # Python script to repackage a self-extracting ELF+zip Bazel binary after
   # patchelf. Patchelf changes the ELF portion's size, corrupting the zip
   # central directory offsets. This script splits, patches, and recombines.
+  runtimePythonWrapperPy = ''
+    def rewrite_runtime_python_wrapper(payload, build_shell, target_shell):
+        build_shebang = b'#!' + build_shell.encode() + b'\n'
+        if not payload.startswith(build_shebang):
+            raise SystemExit("embedded Python wrapper does not use the declared build shell")
+        return b'#!' + target_shell.encode() + b'\n' + payload[len(build_shebang):]
+  '';
+
   repackBazelPy = builtins.toFile "repack_bazel.py" ''
     import zipfile, os, sys, subprocess, tempfile, shutil
+
+    ${runtimePythonWrapperPy}
 
     bazel_path = sys.argv[1]
     interp = sys.argv[2]
@@ -404,6 +414,26 @@
         except Exception as e:
             print(f"Skipping {name}: {e}")
 
+    # Source actions use build Bash; the installed toolchain uses target Bash.
+    if '--runtime-python-wrapper' in flags:
+        index = sys.argv.index('--runtime-python-wrapper')
+        if len(sys.argv) < index + 4:
+            raise SystemExit("runtime Python wrapper rewrite requires build/target shells and presence")
+        build_shell, target_shell, presence = sys.argv[index + 1:index + 4]
+        if presence not in ('required', 'optional'):
+            raise SystemExit("invalid runtime Python wrapper presence")
+        wrapper_name = 'embedded_tools/tools/python/pywrapper_template.txt'
+        wrappers = [entry for entry in zf.infolist() if entry.filename == wrapper_name]
+        if len(wrappers) > 1 or (presence == 'required' and len(wrappers) != 1):
+            raise SystemExit("expected one source-owned embedded Python wrapper template")
+        if wrappers:
+            wrapper_path = os.path.join(extract_dir, wrapper_name)
+            with open(wrapper_path, 'rb') as wrapper:
+                payload = wrapper.read()
+            rewritten = rewrite_runtime_python_wrapper(payload, build_shell, target_shell)
+            with open(wrapper_path, 'wb') as wrapper:
+                wrapper.write(rewritten)
+
     # Repackage directly after the ELF prefix. Bazel's embedded zip reader
     # expects central-directory offsets to be relative to the whole file, while
     # a separately generated payload zip would record offsets from byte 0 of the
@@ -456,9 +486,15 @@
     import sys
     import zipfile
 
+    ${runtimePythonWrapperPy}
+
     input_path = sys.argv[1]
     output_path = sys.argv[2]
-    raw_pairs = sys.argv[3:]
+    build_shell, target_shell, presence = sys.argv[3:6]
+    if presence not in ('required', 'optional'):
+        raise SystemExit("invalid runtime Python wrapper presence")
+    wrapper_name = 'embedded_tools/tools/python/pywrapper_template.txt'
+    raw_pairs = sys.argv[6:]
     if len(raw_pairs) % 2:
         raise SystemExit("cross Bazel rewrite requires old/new path pairs")
 
@@ -473,7 +509,7 @@
             data = data.replace(old, new)
         return data.replace(b"/build/", b"/aos__/")
 
-    def rewrite_zip(data):
+    def rewrite_zip(data, outer=False):
         source = io.BytesIO(data)
         try:
             archive = zipfile.ZipFile(source, "r")
@@ -489,6 +525,8 @@
                 # Some Java dependencies bundle Linux async-profiler variants
                 # alongside their Darwin library. They are unusable on the
                 # target host and must not leak ELF into a Darwin cache root.
+                if outer and entry.filename == wrapper_name:
+                    payload = rewrite_runtime_python_wrapper(payload, build_shell, target_shell)
                 if payload.startswith(bytes.fromhex("7f454c46")):
                     continue
                 if zipfile.is_zipfile(io.BytesIO(payload)):
@@ -534,11 +572,15 @@
         bazel = source_file.read()
 
     with zipfile.ZipFile(io.BytesIO(bazel), "r") as archive:
-        first_offset = min(entry.header_offset for entry in archive.infolist())
+        entries = archive.infolist()
+        wrappers = [entry for entry in entries if entry.filename == wrapper_name]
+        if len(wrappers) > 1 or (presence == 'required' and len(wrappers) != 1):
+            raise SystemExit("expected one source-owned embedded Python wrapper template")
+        first_offset = min(entry.header_offset for entry in entries)
     macho_prefix = replace_plain(bazel[:first_offset])
     assert_clean(macho_prefix, "Mach-O prefix")
 
-    payload = rewrite_zip(bazel)
+    payload = rewrite_zip(bazel, outer=True)
     assert_clean(payload, "ZIP")
 
     with open(output_path, "wb") as output_file:
@@ -1510,6 +1552,12 @@ in
                     sed -i 's|"/bin/sh"|"${bash}/bin/bash"|g' "$command_builder"
                   fi
 
+                  # Source-side wrappers execute on the build platform.
+                  if test -f tools/python/pywrapper_template.txt; then
+                    sed -i '1s|^#!/bin/sh$|#!${buildBash}/bin/bash|' \
+                      tools/python/pywrapper_template.txt
+                  fi
+
                   # Patch Python bootstrap template shebang placeholder
                   sed -i "s|%shebang%|#!${buildPython3}/bin/python3|" \
                     tools/python/python_bootstrap_template.txt 2>/dev/null || true
@@ -1911,8 +1959,14 @@ in
               exit 1
             fi
 
+            wrapper_presence=optional
+            if test -f tools/python/pywrapper_template.txt; then
+              wrapper_presence=required
+            fi
+
             ${buildPython3}/bin/python3 ${crossRepackBazelPy} \
               "$BAZEL_BIN" "$out/bin/bazel-real" \
+              "${buildBash}/bin/bash" "${bash}/bin/bash" "$wrapper_presence" \
               "${stdenv.cc}/bin/cc" "${llvm}/bin/clang" \
               "${buildBash}" "${bash}" \
               "${buildCoreutils}" "${coreutils}" \
@@ -1974,10 +2028,18 @@ in
             BT_LIB=$(dirname "$INTERP")
             RPATH="$BT_LIB:${gcc-libs}/lib"
 
+            ${lib.optionalString isCross ''
+              wrapper_presence=optional
+              if test -f tools/python/pywrapper_template.txt; then
+                wrapper_presence=required
+              fi
+            ''}
+
             python3 ${repackBazelPy} \
               "$BAZEL_BIN" "$INTERP" "$RPATH" \
               "${patchelf}/bin/patchelf" \
-              "$out/bin/bazel-real"
+              "$out/bin/bazel-real" ${lib.optionalString isCross ''\
+                --runtime-python-wrapper "${buildBash}/bin/bash" "${bash}/bin/bash" "$wrapper_presence"''}
 
             # Create wrapper script
             cat > $out/bin/bazel << WRAPPER
