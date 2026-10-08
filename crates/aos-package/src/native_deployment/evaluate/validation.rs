@@ -137,16 +137,36 @@ fn validate_with(
             solver::check_os_requirement(&envelope, descriptor.os_release.as_ref())?;
             insert(&mut envelopes, envelope)?;
         }
-        lock.validate(&envelopes.values().cloned().collect::<Vec<_>>())?;
+    }
+
+    // Linked payloads retain their identity and OS constraints without importing
+    // their configuration modules. Only selected modules and moduleless aggregate
+    // declarations participate in the configuration dependency graph.
+    let declarations: BTreeMap<_, _> = envelopes
+        .iter()
+        .filter(|(_, envelope)| {
+            envelope
+                .module_record()
+                .is_none_or(|module| descriptor.packages.modules.contains(&module))
+        })
+        .map(|(name, envelope)| (name.as_str(), envelope))
+        .collect();
+    if let Some(lock) = &descriptor.resolution_lock {
+        lock.validate(
+            &declarations
+                .values()
+                .map(|envelope| (*envelope).clone())
+                .collect::<Vec<_>>(),
+        )?;
     } else {
-        for envelope in envelopes.values() {
+        for envelope in declarations.values() {
             for dependency in &envelope.module_dependencies {
                 ensure!(
                     !dependency.is_ranged(),
                     "replay ranged dependency has no retained resolution lock"
                 );
-                let selected = envelopes
-                    .get(&dependency.seed().name)
+                let selected = declarations
+                    .get(dependency.seed().name.as_str())
                     .context("replay exact module dependency is absent")?;
                 ensure!(
                     solver::matches_requirement(dependency, selected)?,

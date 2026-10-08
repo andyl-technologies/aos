@@ -125,6 +125,59 @@ fn replays_exact_and_locked_modules_without_registry_discovery() {
 }
 
 #[test]
+fn validates_payload_identity_without_importing_its_configuration_dependencies() {
+    for ranged in [false, true] {
+        let (mut descriptor, mut companions) = fixture(ranged, false);
+        let mut payload = envelope("runtime-library", "1.0.0", 'c');
+        let missing = envelope("configuration-provider", "1.0.0", 'h');
+        payload
+            .module_dependencies
+            .push(ModuleDependency::Exact(missing.module.unwrap()));
+        descriptor.packages.artifacts.push(payload.package.clone());
+        descriptor
+            .package_envelopes
+            .insert(payload.package.path.clone(), companion(&payload));
+        companions.insert(companion(&payload), payload.clone());
+
+        check(&descriptor, &companions).unwrap();
+
+        payload.os_version = Some("^2".into());
+        companions.insert(companion(&payload), payload);
+        descriptor.os_release = Some(aos_doc_model::runtime::OsRelease {
+            name: "aos".into(),
+            version: "1.0.0".into(),
+        });
+        assert!(check(&descriptor, &companions).is_err());
+    }
+}
+
+#[test]
+fn checks_payload_configuration_dependencies_when_its_module_is_selected() {
+    for ranged in [false, true] {
+        let (mut descriptor, mut companions) = fixture(ranged, false);
+        let mut payload = envelope("runtime-library", "1.0.0", 'c');
+        let missing = envelope("configuration-provider", "1.0.0", 'h');
+        payload
+            .module_dependencies
+            .push(ModuleDependency::Exact(missing.module.unwrap()));
+        descriptor.packages.artifacts.push(payload.package.clone());
+        descriptor
+            .package_envelopes
+            .insert(payload.package.path.clone(), companion(&payload));
+        descriptor
+            .packages
+            .modules
+            .push(payload.module_record().unwrap());
+        descriptor
+            .module_envelopes
+            .insert(payload.package.name.clone(), companion(&payload));
+        companions.insert(companion(&payload), payload);
+
+        assert!(check(&descriptor, &companions).is_err());
+    }
+}
+
+#[test]
 fn rejects_edited_original_requirement_and_selected_source() {
     let (descriptor, companions) = fixture(true, false);
     let mut requirement = descriptor.clone();
