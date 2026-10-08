@@ -493,8 +493,11 @@ struct ObservedSource {
 impl BlobSource for ObservedSource {
     fn checked_read_access(&self) -> CheckedReadAccess {
         match self.source.checked_read_access() {
-            CheckedReadAccess::Owning => CheckedReadAccess::Owning,
-            _ => CheckedReadAccess::Unsupported,
+            // This transparent observer delegates an owning checked open for
+            // both source forms. A source without that entry still refuses in
+            // open_with_boundary; ordinary open never supplies a fallback.
+            CheckedReadAccess::Whole | CheckedReadAccess::Owning => CheckedReadAccess::Owning,
+            CheckedReadAccess::Unsupported => CheckedReadAccess::Unsupported,
         }
     }
 

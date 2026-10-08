@@ -5,10 +5,10 @@
 //! storage a dependency on model formats or JSON.
 
 pub use crucible_cas::owned_decode::{
-    DecodeAdmissionError, DecodeBudget, DecodeCustody, DecodeResourceAuthority, DecodeScope,
-    DecodeScratch, ResourceLoan, ResourceLoanSlot, charge_array, charge_btree_entry,
-    charge_btree_set_entry, charge_bytes, current_budget, current_child_budget, current_custody,
-    reserve_vec,
+    DecodeAdmissionError, DecodeBudget, DecodeCustody, DecodeDescriptorLoan,
+    DecodeResourceAuthority, DecodeScope, DecodeScratch, ResourceLoan, ResourceLoanSlot,
+    charge_array, charge_btree_entry, charge_btree_set_entry, charge_bytes, current_budget,
+    current_child_budget, current_custody, reserve_vec,
 };
 
 mod serde_budget;

@@ -69,6 +69,42 @@ pub(super) fn decode_index(
     if hasher.finalize().as_bytes() != checksum {
         return Err(StoreError::Incompatible);
     }
+    let mut entries = BTreeMap::new();
+    let header = scan_index_payload(payload, configuration, &mut || Ok(()), &mut |id, entry| {
+        entries.insert(id, entry);
+        Ok(())
+    })?;
+    if entries
+        .values()
+        .map(|entry| entry.pack)
+        .collect::<BTreeSet<_>>()
+        .len()
+        > MAX_PACKS
+    {
+        return Err(StoreError::Quota);
+    }
+    Ok(IndexState {
+        instance: header.instance,
+        generation: header.generation,
+        last_repack_plan: header.last_repack_plan,
+        entries,
+    })
+}
+
+/// Borrowed canonical grammar, shared by ordinary decoding and checked snapshots.
+pub(super) struct IndexHeader {
+    pub(super) instance: [u8; 32],
+    pub(super) generation: u64,
+    pub(super) last_repack_plan: Option<PackedRepackPlanId>,
+    pub(super) count: usize,
+}
+
+pub(super) fn scan_index_payload(
+    payload: &[u8],
+    configuration: [u8; 32],
+    check: &mut impl FnMut() -> Result<(), StoreError>,
+    visit: &mut impl FnMut(ContentId, IndexEntry) -> Result<(), StoreError>,
+) -> Result<IndexHeader, StoreError> {
     let mut cursor = PackedCursor::new(payload);
     if cursor.fixed(INDEX_MAGIC.len())? != INDEX_MAGIC || cursor.array_32()? != configuration {
         return Err(StoreError::Incompatible);
@@ -84,9 +120,13 @@ pub(super) fn decode_index(
     if count > MAX_LOGICAL_OBJECTS {
         return Err(StoreError::Quota);
     }
-    let mut entries = BTreeMap::new();
     let mut prior = None;
+    let mut checked_position = cursor.position;
     for _ in 0..count {
+        if cursor.position - checked_position >= 64 * 1024 {
+            check()?;
+            checked_position = cursor.position;
+        }
         let id_length = usize::from(cursor.u16()?);
         let id = std::str::from_utf8(cursor.fixed(id_length)?)
             .map_err(|_| StoreError::Incompatible)
@@ -96,28 +136,26 @@ pub(super) fn decode_index(
             offset: cursor.u64()?,
             length: cursor.u64()?,
         };
-        if prior.is_some_and(|prior| id <= prior) || entries.insert(id, entry).is_some() {
+        if prior.is_some_and(|prior| id <= prior) {
             return Err(StoreError::Incompatible);
         }
         prior = Some(id);
+        visit(id, entry)?;
     }
     if !cursor.is_empty() {
         return Err(StoreError::Incompatible);
     }
-    if entries
-        .values()
-        .map(|entry| entry.pack)
-        .collect::<BTreeSet<_>>()
-        .len()
-        > MAX_PACKS
-    {
+    // A unique pack count cannot exceed this admitted logical row count.
+    // Both bounds are currently equal; retain the relation explicitly.
+    if count > MAX_PACKS {
         return Err(StoreError::Quota);
     }
-    Ok(IndexState {
+    check()?;
+    Ok(IndexHeader {
         instance,
         generation,
         last_repack_plan,
-        entries,
+        count,
     })
 }
 
@@ -350,11 +388,29 @@ fn decode_pack_manifest(
     manifest: &[u8],
     count: usize,
 ) -> Result<Vec<PackManifestEntry>, StoreError> {
-    let mut cursor = PackedCursor::new(manifest);
     let mut entries = Vec::with_capacity(count);
+    scan_pack_manifest(manifest, count, &mut || Ok(()), &mut |entry| {
+        entries.push(entry);
+        Ok(())
+    })?;
+    Ok(entries)
+}
+
+pub(super) fn scan_pack_manifest(
+    manifest: &[u8],
+    count: usize,
+    check: &mut impl FnMut() -> Result<(), StoreError>,
+    visit: &mut impl FnMut(PackManifestEntry) -> Result<(), StoreError>,
+) -> Result<(), StoreError> {
+    let mut cursor = PackedCursor::new(manifest);
     let mut prior = None;
     let mut prior_end = None;
+    let mut checked_position = 0;
     for _ in 0..count {
+        if cursor.position - checked_position >= 64 * 1024 {
+            check()?;
+            checked_position = cursor.position;
+        }
         let id_length = usize::from(cursor.u16()?);
         let id = std::str::from_utf8(cursor.fixed(id_length)?)
             .map_err(|_| StoreError::Incompatible)
@@ -369,12 +425,12 @@ fn decode_pack_manifest(
         if prior_end.is_none() {
             return Err(StoreError::Incompatible);
         }
-        entries.push(PackManifestEntry { id, offset, length });
+        visit(PackManifestEntry { id, offset, length })?;
     }
     if !cursor.is_empty() {
         return Err(StoreError::Incompatible);
     }
-    Ok(entries)
+    check()
 }
 
 pub(super) fn pack_id(configuration: [u8; 32], manifest: &[u8]) -> PackId {
@@ -389,17 +445,17 @@ pub(super) fn pack_fixed_header_length() -> u64 {
     PACK_MAGIC.len() as u64 + 32 + 4 + 4 + 32
 }
 
-struct PackedCursor<'a> {
+pub(super) struct PackedCursor<'a> {
     bytes: &'a [u8],
     position: usize,
 }
 
 impl<'a> PackedCursor<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
+    pub(super) const fn new(bytes: &'a [u8]) -> Self {
         Self { bytes, position: 0 }
     }
 
-    fn fixed(&mut self, length: usize) -> Result<&'a [u8], StoreError> {
+    pub(super) fn fixed(&mut self, length: usize) -> Result<&'a [u8], StoreError> {
         let end = self
             .position
             .checked_add(length)
@@ -410,20 +466,20 @@ impl<'a> PackedCursor<'a> {
         Ok(bytes)
     }
 
-    fn array_32(&mut self) -> Result<[u8; 32], StoreError> {
+    pub(super) fn array_32(&mut self) -> Result<[u8; 32], StoreError> {
         self.fixed(32)?
             .try_into()
             .map_err(|_| StoreError::Incompatible)
     }
 
-    fn u8(&mut self) -> Result<u8, StoreError> {
+    pub(super) fn u8(&mut self) -> Result<u8, StoreError> {
         self.fixed(1)?
             .first()
             .copied()
             .ok_or(StoreError::Incompatible)
     }
 
-    fn u16(&mut self) -> Result<u16, StoreError> {
+    pub(super) fn u16(&mut self) -> Result<u16, StoreError> {
         Ok(u16::from_be_bytes(
             self.fixed(2)?
                 .try_into()
@@ -431,7 +487,7 @@ impl<'a> PackedCursor<'a> {
         ))
     }
 
-    fn u32(&mut self) -> Result<u32, StoreError> {
+    pub(super) fn u32(&mut self) -> Result<u32, StoreError> {
         Ok(u32::from_be_bytes(
             self.fixed(4)?
                 .try_into()
@@ -439,7 +495,7 @@ impl<'a> PackedCursor<'a> {
         ))
     }
 
-    fn u64(&mut self) -> Result<u64, StoreError> {
+    pub(super) fn u64(&mut self) -> Result<u64, StoreError> {
         Ok(u64::from_be_bytes(
             self.fixed(8)?
                 .try_into()
@@ -447,7 +503,7 @@ impl<'a> PackedCursor<'a> {
         ))
     }
 
-    const fn is_empty(&self) -> bool {
+    pub(super) const fn is_empty(&self) -> bool {
         self.position == self.bytes.len()
     }
 }

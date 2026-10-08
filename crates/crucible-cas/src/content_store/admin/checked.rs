@@ -14,6 +14,7 @@ enum ReceiptOutcome<T> {
     Sqlite(Accepted<T>),
     Memory(crate::content_store::memory::Accepted<T>),
     Directory(crate::content_store::directory::Accepted<T>),
+    Packed(crate::content_store::packed::Accepted<T>),
 }
 
 impl<T> ReceiptOutcome<T> {
@@ -23,6 +24,7 @@ impl<T> ReceiptOutcome<T> {
             Self::Sqlite(accepted) => accepted.value(),
             Self::Memory(accepted) => accepted.value(),
             Self::Directory(accepted) => accepted.value(),
+            Self::Packed(accepted) => accepted.value(),
         }
     }
 
@@ -32,6 +34,7 @@ impl<T> ReceiptOutcome<T> {
             Self::Sqlite(accepted) => accepted.release_diagnostic(),
             Self::Memory(accepted) => accepted.release_diagnostic(),
             Self::Directory(accepted) => accepted.release_diagnostic(),
+            Self::Packed(accepted) => accepted.release_diagnostic(),
         }
     }
 
@@ -44,6 +47,7 @@ impl<T> ReceiptOutcome<T> {
             Self::Sqlite(accepted) => accepted.check(check).map(Self::Sqlite),
             Self::Memory(accepted) => accepted.check(check).map(Self::Memory),
             Self::Directory(accepted) => accepted.check(check).map(Self::Directory),
+            Self::Packed(accepted) => accepted.check(check).map(Self::Packed),
         }
     }
 }
@@ -126,6 +130,17 @@ impl<T> CheckedReceipt<T> {
     ) -> Self {
         Self {
             accepted: ReceiptOutcome::Directory(accepted),
+            resources: None,
+            credit,
+        }
+    }
+
+    pub(in crate::content_store) fn new_packed(
+        accepted: crate::content_store::packed::Accepted<T>,
+        credit: DecodeScratch,
+    ) -> Self {
+        Self {
+            accepted: ReceiptOutcome::Packed(accepted),
             resources: None,
             credit,
         }

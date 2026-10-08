@@ -30,7 +30,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use rustix::fs::{FlockOperation, Mode, OFlags, flock, open};
 
+mod checked;
+mod checked_publication;
+
+pub(in crate::content_store) use checked_publication::Accepted;
+pub use checked_publication::{PackedPublicationOutcome, PackedScopeError};
+mod checked_io;
 mod format;
+mod index_snapshot;
 
 use format::{
     decode_index, decode_repack_plan, encode_index, encode_pack_manifest, encode_repack_plan,
@@ -791,6 +798,25 @@ fn inject_pack_index_interruption() {
 }
 
 impl ImmutableBlobBackend for PackedBlobBackend {
+    fn checked_publication_metadata(
+        &self,
+        _kind: ObjectKind,
+    ) -> Result<super::CheckedPublicationMetadata, StoreError> {
+        Ok(super::CheckedPublicationMetadata {
+            maximum_placements: 1,
+            maximum_backend_name_bytes: self.name.len(),
+        })
+    }
+
+    fn put_many_if_absent_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        objects: &[(ContentId, BlobHandle)],
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<super::PutBatchReceipt, StoreError> {
+        checked_publication::publish(self, original, objects, boundary)
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -840,6 +866,16 @@ impl ImmutableBlobBackend for PackedBlobBackend {
         let index = self.load_index()?;
         let entry = index.entries.get(&id).ok_or(StoreError::NotFound { id })?;
         self.open_entry(id, entry)?.slice(range)
+    }
+
+    fn read_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        id: ContentId,
+        range: Option<ByteRange>,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<BlobHandle, StoreError> {
+        checked::lookup(self, original, id, range, boundary)
     }
 
     fn put_if_absent(&self, id: ContentId, source: &BlobHandle) -> Result<PutReceipt, StoreError> {

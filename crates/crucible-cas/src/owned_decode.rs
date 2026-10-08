@@ -19,6 +19,9 @@ use ownership::{Authority, TerminalOwner};
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod descriptor_tests;
+
 /// Provides actual original-owner memory credits for one artifact decoder.
 pub trait DecodeResourceAuthority: Send + Sync {
     /// Verifies the retained original authority without acquiring new credit.
@@ -37,6 +40,25 @@ pub trait DecodeResourceAuthority: Send + Sync {
         &self,
         bytes: u64,
     ) -> Result<crate::owned_decode::ResourceLoan, DecodeAdmissionError>;
+
+    /// Reserves file descriptors from this same original owner before opening them.
+    ///
+    /// Memory-only authorities do not infer descriptor entitlement from bytes.
+    /// Their default refuses; a provider overrides this method only when its
+    /// retained original owner supplies an actual descriptor allowance.
+    ///
+    /// # Errors
+    /// Returns an original descriptor refusal or unsupported descriptor authority.
+    fn reserve_descriptors(
+        &self,
+        _descriptors: u64,
+    ) -> Result<crate::owned_decode::ResourceLoan, DecodeAdmissionError> {
+        Err(DecodeAdmissionError::new(
+            crate::content_store::StoreError::Unsupported {
+                capability: "original-decode-descriptors",
+            },
+        ))
+    }
 }
 
 /// Retains a typed operational or decoder-accounting refusal.
@@ -301,6 +323,53 @@ impl DecodeBudget {
             .map_err(|_| refusal("decoded metadata account is poisoned"))?
             .failure
             .clone())
+    }
+}
+
+/// Retains an original descriptor reservation until its actual descriptors close.
+///
+/// This non-cloneable owner grants no memory or physical filesystem quota.
+/// Callers place it after their owned descriptors, or inside a shared pin whose
+/// final closer deallocates its control before closing the descriptors and loan.
+/// It never creates an account, renews an operation, or exposes a raw descriptor.
+#[must_use]
+pub struct DecodeDescriptorLoan {
+    _resources: ResourceLoan,
+    _original: DecodeBudget,
+}
+
+impl DecodeBudget {
+    /// Reserves descriptor custody from the same saved original authority.
+    ///
+    /// The original is checked before dispatch and again before the caller may
+    /// open a descriptor. A refused operation becomes the account's first sticky
+    /// failure. Descriptor credit is separate from resident scratch allocations.
+    ///
+    /// # Errors
+    /// Returns an earlier original refusal, unsupported descriptor authority,
+    /// or original descriptor exhaustion, cancellation, or expiry.
+    pub fn reserve_descriptors(
+        &self,
+        descriptors: u64,
+    ) -> Result<DecodeDescriptorLoan, DecodeAdmissionError> {
+        let result: Result<DecodeDescriptorLoan, DecodeAdmissionError> = (|| {
+            self.verify_live()?;
+            let resources = self.0.authority.reserve_descriptors(descriptors)?;
+            self.verify_live()?;
+
+            Ok(DecodeDescriptorLoan {
+                _resources: resources,
+                _original: self.clone(),
+            })
+        })();
+        match result {
+            Ok(loan) => Ok(loan),
+            Err(error) => {
+                self.record_failure(error.clone());
+                self.check()?;
+                Err(error)
+            }
+        }
     }
 }
 
@@ -589,6 +658,12 @@ impl DecodeResourceAuthority for StoreAuthority {
     ) -> Result<crate::owned_decode::ResourceLoan, DecodeAdmissionError> {
         self.guard
             .reserve_resources(0, bytes)
+            .map_err(DecodeAdmissionError::new)
+    }
+
+    fn reserve_descriptors(&self, descriptors: u64) -> Result<ResourceLoan, DecodeAdmissionError> {
+        self.guard
+            .reserve_resources(descriptors, 0)
             .map_err(DecodeAdmissionError::new)
     }
 }

@@ -789,6 +789,7 @@ fn checkpoint_store_selection_failure(
         | StoreError::Allocation { .. }
         | StoreError::SqliteDiagnostic { .. }
         | StoreError::DirectoryScope { .. }
+        | StoreError::PackedScope { .. }
         | StoreError::MemoryScope { .. }
         | StoreError::CompositeScope { .. }
         | StoreError::SqliteScope { .. }

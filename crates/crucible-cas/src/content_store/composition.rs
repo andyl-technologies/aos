@@ -201,7 +201,24 @@ impl ImmutableBlobBackend for RoutedStore {
             }
             child.checked_publication_metadata(id.kind())?;
         }
-        selected.put_many_if_absent_with_boundary(original, objects, boundary)
+        // Ordinary routed publication verifies the input before selecting a
+        // writer. The checked route retains that guarantee with the same
+        // original account and a prepaid vector of authenticated handles.
+        let _verified_credit = original
+            .reserve_scratch_array::<(ContentId, BlobHandle)>(objects.len())
+            .map_err(|error| admission_under(original, error))?;
+        let mut verified = Vec::new();
+        verified
+            .try_reserve_exact(objects.len())
+            .map_err(|error| allocation_under(original, error))?;
+        for (id, source) in objects {
+            let source =
+                super::composite_publication::checked_read(original, boundary, |boundary| {
+                    super::batch::verify_source(original, *id, source, boundary)
+                })?;
+            verified.push((*id, source));
+        }
+        selected.put_many_if_absent_with_boundary(original, &verified, boundary)
     }
 
     fn checked_publication_metadata(

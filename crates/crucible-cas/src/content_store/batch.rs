@@ -91,6 +91,17 @@ impl PutBatchReceipt {
         }
     }
 
+    pub(super) fn new_packed(
+        accepted: super::packed::Accepted<Vec<PutReceipt>>,
+        credit: DecodeScratch,
+        original: DecodeBudget,
+    ) -> Self {
+        Self {
+            receipt: CheckedReceipt::new_packed(accepted, credit),
+            original,
+        }
+    }
+
     pub(super) fn new(
         accepted: Accepted<Vec<PutReceipt>>,
         credit: DecodeScratch,

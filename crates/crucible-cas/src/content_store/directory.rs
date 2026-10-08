@@ -45,7 +45,7 @@ use super::*;
 
 mod checked;
 mod checked_publication;
-mod file_pin;
+pub(in crate::content_store) mod file_pin;
 mod ref_admin;
 
 pub(in crate::content_store) use checked_publication::Accepted;

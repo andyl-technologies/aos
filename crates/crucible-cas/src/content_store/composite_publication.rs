@@ -54,7 +54,7 @@ impl std::fmt::Display for CompositeBoundaryRefusal {
 
 impl std::error::Error for CompositeBoundaryRefusal {}
 
-fn refusal_marker() -> StoreError {
+pub(super) fn refusal_marker() -> StoreError {
     StoreError::CompositeBoundary {
         source: CompositeBoundaryRefusal(()),
     }

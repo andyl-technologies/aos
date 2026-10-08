@@ -457,3 +457,133 @@ fn missing_mixed_and_opaque_routes_refuse_before_any_publication() -> Result<(),
     assert_eq!(leaf.puts.load(Ordering::SeqCst), 0);
     Ok(())
 }
+
+#[test]
+fn routed_checked_publication_authenticates_corrupt_source_before_calling_leaf()
+-> Result<(), StoreError> {
+    let directory = tempfile::tempdir().unwrap();
+    let quota = Quota::new();
+    let original = DecodeBudget::for_store(quota.clone()).unwrap();
+    let leaf = observed_leaf(directory.path(), &quota, &original)?;
+    let id = ContentId::for_bytes(ObjectKind::RamExtent, 1, b"expected routed bytes");
+    let routed = RoutedStore::new(
+        "routed",
+        BTreeMap::from([(id.kind(), leaf.clone() as Arc<dyn ImmutableBlobBackend>)]),
+    )?;
+    let baseline = quota.budget.usage()?;
+
+    let error = routed
+        .put_many_if_absent_with_boundary(
+            &original,
+            &[(id, BlobHandle::from_bytes(b"corrupt routed bytes"))],
+            &mut || Ok(()),
+        )
+        .err()
+        .unwrap();
+
+    assert!(
+        matches!(error.original_failure(), StoreError::Corrupt { id: actual } if *actual == id)
+    );
+    assert_eq!(leaf.puts.load(Ordering::SeqCst), 0);
+    assert!(!leaf.child.contains(id)?);
+    drop(error);
+    assert_eq!(quota.budget.usage()?, baseline);
+    Ok(())
+}
+
+struct RoutedSwallowingSource(Arc<AtomicBool>);
+
+impl BlobSource for RoutedSwallowingSource {
+    fn checked_read_access(&self) -> CheckedReadAccess {
+        CheckedReadAccess::Owning
+    }
+
+    fn logical_length(&self) -> u64 {
+        b"routed swallowed callback".len() as u64
+    }
+
+    fn open(&self) -> Result<Box<dyn std::io::Read + Send>, StoreError> {
+        panic!("checked routed verification must not open an ordinary source")
+    }
+
+    fn open_with_boundary(
+        &self,
+        original: &DecodeBudget,
+        _boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<CheckedReader, StoreError> {
+        CheckedReader::new_prepaid(
+            RoutedSwallowingReader {
+                original: original.clone(),
+                reading: self.0.clone(),
+                bytes: b"routed swallowed callback",
+            },
+            original,
+        )
+    }
+}
+
+struct RoutedSwallowingReader {
+    original: DecodeBudget,
+    reading: Arc<AtomicBool>,
+    bytes: &'static [u8],
+}
+
+impl CheckedBlobReader for RoutedSwallowingReader {
+    fn original_account(&self) -> &DecodeBudget {
+        &self.original
+    }
+
+    fn read_with_boundary(
+        &mut self,
+        output: &mut [u8],
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<usize, StoreError> {
+        self.reading.store(true, Ordering::SeqCst);
+        let _swallowed = boundary();
+        std::io::Read::read(&mut self.bytes, output).map_err(|source| StoreError::StreamIo {
+            operation: "routed-swallowing-fixture",
+            source,
+        })
+    }
+}
+
+#[test]
+fn routed_checked_authentication_keeps_swallowed_first_refusal_before_leaf()
+-> Result<(), StoreError> {
+    let directory = tempfile::tempdir().unwrap();
+    let quota = Quota::new();
+    let original = DecodeBudget::for_store(quota.clone()).unwrap();
+    let leaf = observed_leaf(directory.path(), &quota, &original)?;
+    let id = ContentId::for_bytes(ObjectKind::RamExtent, 1, b"routed swallowed callback");
+    let routed = RoutedStore::new(
+        "routed",
+        BTreeMap::from([(id.kind(), leaf.clone() as Arc<dyn ImmutableBlobBackend>)]),
+    )?;
+    let baseline = quota.budget.usage()?;
+    let reading = Arc::new(AtomicBool::new(false));
+    let input = BlobHandle::new(RoutedSwallowingSource(reading.clone()));
+    let mut refused = false;
+    let mut calls_after_refusal = 0;
+
+    let error = routed
+        .put_many_if_absent_with_boundary(&original, &[(id, input)], &mut || {
+            if refused {
+                calls_after_refusal += 1;
+            } else if reading.load(Ordering::SeqCst) {
+                refused = true;
+                return Err(StoreError::Unauthorized);
+            }
+            Ok(())
+        })
+        .err()
+        .unwrap();
+
+    assert!(refused);
+    assert_eq!(calls_after_refusal, 0);
+    assert!(matches!(error.original_failure(), StoreError::Unauthorized));
+    assert_eq!(leaf.puts.load(Ordering::SeqCst), 0);
+    assert!(!leaf.child.contains(id)?);
+    drop(error);
+    assert_eq!(quota.budget.usage()?, baseline);
+    Ok(())
+}

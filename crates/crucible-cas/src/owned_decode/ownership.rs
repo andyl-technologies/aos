@@ -88,6 +88,16 @@ impl Authority {
             Self::Store(value) => value.reserve(bytes),
         }
     }
+
+    pub(super) fn reserve_descriptors(
+        &self,
+        descriptors: u64,
+    ) -> Result<super::ResourceLoan, DecodeAdmissionError> {
+        match self {
+            Self::External(value) => value.reserve_descriptors(descriptors),
+            Self::Store(value) => value.reserve_descriptors(descriptors),
+        }
+    }
 }
 
 /// Stores an optional account in the same one-pointer extent as its owner.

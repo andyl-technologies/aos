@@ -37,7 +37,7 @@ pub(super) fn lookup(
     let credit = original
         .reserve_scratch_bytes(
             BlobHandle::source_allocation_bytes::<Source>()
-                .checked_add(FilePin::allocation_bytes())
+                .checked_add(FilePin::<()>::allocation_bytes())
                 .ok_or(StoreError::Quota)?,
         )
         .map_err(|error| batch::admission_under(original, error))?;
@@ -347,7 +347,7 @@ mod tests {
             std::mem::size_of::<Source>(),
             std::mem::align_of::<Source>(),
             BlobHandle::source_allocation_bytes::<Source>(),
-            FilePin::allocation_bytes(),
+            FilePin::<()>::allocation_bytes(),
             std::mem::size_of::<Reader>(),
             std::mem::size_of::<AuthenticatingFileReader>(),
         );

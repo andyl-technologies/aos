@@ -87,8 +87,8 @@ pub use namespace::{
     StoreNamespaceOperation,
 };
 pub use packed::{
-    PackedBlobBackend, PackedIncompleteCleanupReport, PackedRepackPlan, PackedRepackPlanId,
-    PackedRepackReport, PackedStorageAccounting,
+    PackedBlobBackend, PackedIncompleteCleanupReport, PackedPublicationOutcome, PackedRepackPlan,
+    PackedRepackPlanId, PackedRepackReport, PackedScopeError, PackedStorageAccounting,
 };
 pub use physical_quota::{
     StoreGraphPhysicalQuotaBinders, StorePhysicalQuotaBinder, StorePhysicalQuotaBinderHandle,
@@ -1170,6 +1170,12 @@ pub enum StoreError {
         /// Original work, cleanup and filesystem publication outcome.
         source: DirectoryScopeError,
     },
+    /// A checked Packed operation retains physical/index visibility and cleanup.
+    #[error(transparent)]
+    PackedScope {
+        /// Original work and cleanup causes with the actual publication outcome.
+        source: PackedScopeError,
+    },
     /// The current RAM callback adapter recorded an original boundary refusal.
     #[error(transparent)]
     RamBoundary {
@@ -1390,6 +1396,16 @@ impl StoreError {
                 }
                 Self::DirectoryScope { source } => {
                     match source.work_failure().or_else(|| source.cleanup_failure()) {
+                        Some(original) => original,
+                        None => return failure,
+                    }
+                }
+                Self::PackedScope { source } => {
+                    match source
+                        .first_boundary()
+                        .or_else(|| source.work_failure())
+                        .or_else(|| source.cleanup_failure())
+                    {
                         Some(original) => original,
                         None => return failure,
                     }

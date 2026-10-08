@@ -161,6 +161,7 @@ pub(super) fn store_service_failure(error: &StoreError) -> CampaignServiceFailur
         | StoreError::Allocation { .. }
         | StoreError::SqliteDiagnostic { .. }
         | StoreError::DirectoryScope { .. }
+        | StoreError::PackedScope { .. }
         | StoreError::MemoryScope { .. }
         | StoreError::CompositeScope { .. }
         | StoreError::SqliteScope { .. } => CampaignServiceFailure::Unavailable,
