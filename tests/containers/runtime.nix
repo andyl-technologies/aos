@@ -221,11 +221,18 @@ in
               || fail "baked root is not valid after initialization: $baked_root"
           done
 
+          # Repeated setup must keep an exact root directory in place. Docker
+          # RUN layers cannot atomically exchange an inherited lower directory.
+          roots_identity=$(stat -c '%d:%i' "$gcroots/aos-container-baked")
+          PATH="$runtime_path" ${initProgram}/init --setup-only
+          test "$(stat -c '%d:%i' "$gcroots/aos-container-baked")" = "$roots_identity" \
+            || fail "repeated setup replaced an unchanged baked GC-root set"
+
           # Simulate an interrupted initializer and a corrupted live root set.
           stale="$gcroots/.aos-container-baked.fresh.interrupted"
           mkdir "$stale"
-          ln -s ${firstPackage} "$stale/leaked-root"
           first_name=${builtins.baseNameOf (builtins.toString firstPackage)}
+          ln -s ${firstPackage} "$stale/$first_name"
           rm "$gcroots/aos-container-baked/$first_name"
           ln -s ${secondPackage} "$gcroots/aos-container-baked/tampered"
 
@@ -235,9 +242,26 @@ in
             || fail "init did not clean an interrupted temporary GC-root set"
           test ! -e "$gcroots/aos-container-baked/tampered" \
             || fail "init did not replace a corrupted baked GC-root set"
+          test "$(stat -c '%d:%i' "$gcroots/aos-container-baked")" = "$roots_identity" \
+            || fail "repair replaced the baked GC-root directory"
           test "$(find "$gcroots/aos-container-baked" -mindepth 1 -maxdepth 1 | wc -l)" \
             -eq ${toString (builtins.length roots)} \
             || fail "reconciled baked GC-root set has unexpected entries"
+
+          # A substituted directory symlink must be replaced without writing
+          # roots into its target, even when that target is otherwise writable.
+          foreign="$TMPDIR/foreign-baked-roots"
+          mkdir "$foreign"
+          printf preserved > "$foreign/unrelated"
+          foreign_before=$(find "$foreign" -printf '%P:%y:%l\n' | sort | sha256sum)
+          rm -rf "$gcroots/aos-container-baked"
+          ln -s "$foreign" "$gcroots/aos-container-baked"
+          PATH="$runtime_path" ${initProgram}/init --setup-only
+          test -d "$gcroots/aos-container-baked" && test ! -L "$gcroots/aos-container-baked" \
+            || fail "init did not repair a substituted baked-root directory symlink"
+          foreign_after=$(find "$foreign" -printf '%P:%y:%l\n' | sort | sha256sum)
+          test "$foreign_before" = "$foreign_after" \
+            || fail "baked-root repair changed a foreign symlink target"
 
           nix-store --store "$store_uri" --gc
           while IFS= read -r baked_root; do
