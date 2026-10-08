@@ -45,7 +45,7 @@ fn detect_at(boot_state: &Path, input: &Path, profile: &Path) -> Result<LockAuth
         immutable_document(&input.join("evaluation.json"))?;
     let descriptor = EvaluationInput::decode(&descriptor_bytes)?;
     let (_, transaction) = immutable_document(&input.join("transaction.json"))?;
-    let (_, admission_bytes) = immutable_document(&input.join("admission.json"))?;
+    let (admission_identity, admission_bytes) = immutable_document(&input.join("admission.json"))?;
     let (_, digest_bytes) = immutable_document(&input.join("admission-sha256"))?;
     let digest = Sha256Digest::parse(std::str::from_utf8(&digest_bytes)?.trim())?;
     let admission = AdmissionCatalog::decode(&admission_bytes, digest)?;
@@ -55,6 +55,7 @@ fn detect_at(boot_state: &Path, input: &Path, profile: &Path) -> Result<LockAuth
         &transaction,
         &descriptor_root,
         &admission,
+        &admission_identity,
         crate::environment::os_release()?.as_ref(),
     )?;
     validate_profile(profile)?;
@@ -66,6 +67,7 @@ fn validate_bundle(
     transaction: &[u8],
     descriptor_root: &Path,
     admission: &AdmissionCatalog,
+    admission_identity: &Path,
     release: Option<&OsRelease>,
 ) -> Result<()> {
     ensure!(
@@ -92,13 +94,23 @@ fn validate_bundle(
         deployment.inputs().iter().any(|input| input == root),
         "native container transaction does not retain its descriptor"
     );
+    let receipt_root = crate::native_deployment::image_receipt_root(admission_identity)?;
+    ensure!(
+        deployment.inputs().contains(&receipt_root),
+        "native transaction does not retain its image admission receipt"
+    );
     admission.require_roots(
-        deployment.inputs().iter().map(String::as_str).chain(
-            deployment
-                .artifacts()
-                .iter()
-                .map(|artifact| artifact.path.as_str()),
-        ),
+        deployment
+            .inputs()
+            .iter()
+            .map(String::as_str)
+            .filter(|input| *input != receipt_root)
+            .chain(
+                deployment
+                    .artifacts()
+                    .iter()
+                    .map(|artifact| artifact.path.as_str()),
+            ),
     )?;
     Ok(())
 }
@@ -167,6 +179,7 @@ mod tests {
     use crate::types::ProfileScope;
 
     const SOURCE: &str = "/nix/store/00000000000000000000000000000000-native-container-input";
+    const RECEIPT: &str = "/nix/store/11111111111111111111111111111111-image-admission";
 
     fn fixture() -> (EvaluationInput, Vec<u8>, AdmissionCatalog, OsRelease) {
         let release = OsRelease {
@@ -187,7 +200,7 @@ mod tests {
             "schema": "aos.package.transaction",
             "scope": input.scope,
             "system": input.packages.system,
-            "artifacts": [], "retire": [], "inputs": [SOURCE], "packages": [],
+            "artifacts": [], "retire": [], "inputs": [SOURCE, RECEIPT], "packages": [],
             "graph": {"schema": "aos.activation.graph", "nodes": {}, "order": []},
         }))
         .unwrap();
@@ -223,55 +236,44 @@ mod tests {
     #[test]
     fn native_authority_requires_the_image_scope_release_and_admitted_inputs() {
         let (mut input, transaction, admission, release) = fixture();
-        validate_bundle(
-            &input,
-            &transaction,
-            Path::new(SOURCE),
-            &admission,
-            Some(&release),
-        )
-        .unwrap();
-
-        assert!(
-            validate_bundle(&input, &transaction, Path::new(SOURCE), &admission, None).is_err()
-        );
-        input.os_release.as_mut().unwrap().version = "different".into();
-        assert!(
+        let validate = |input: &EvaluationInput,
+                        admission: &AdmissionCatalog,
+                        receipt: &Path,
+                        release: Option<&OsRelease>| {
             validate_bundle(
-                &input,
+                input,
                 &transaction,
                 Path::new(SOURCE),
+                admission,
+                receipt,
+                release,
+            )
+        };
+        // The canonical, digest-checked receipt is retained but cannot include
+        // its own NAR record. Every unrelated source still requires coverage.
+        validate(&input, &admission, Path::new(RECEIPT), Some(&release)).unwrap();
+        assert!(validate(&input, &admission, Path::new(RECEIPT), None).is_err());
+        assert!(validate(&input, &admission, Path::new(SOURCE), Some(&release)).is_err());
+        assert!(
+            validate(
+                &input,
                 &admission,
+                &Path::new(RECEIPT).join("catalog.json"),
                 Some(&release)
             )
             .is_err()
         );
+
+        input.os_release.as_mut().unwrap().version = "different".into();
+        assert!(validate(&input, &admission, Path::new(RECEIPT), Some(&release)).is_err());
         input.os_release = Some(release.clone());
         let empty_catalog = br#"{"schema":"aos.package.admission","roots":[]}"#;
         let empty_admission =
             AdmissionCatalog::decode(empty_catalog, Sha256Digest::of_bytes(empty_catalog)).unwrap();
-        assert!(
-            validate_bundle(
-                &input,
-                &transaction,
-                Path::new(SOURCE),
-                &empty_admission,
-                Some(&release)
-            )
-            .is_err()
-        );
+        assert!(validate(&input, &empty_admission, Path::new(RECEIPT), Some(&release)).is_err());
 
         input.scope[1] = "/var/lib/profiles/system".into();
-        assert!(
-            validate_bundle(
-                &input,
-                &transaction,
-                Path::new(SOURCE),
-                &admission,
-                Some(&release)
-            )
-            .is_err()
-        );
+        assert!(validate(&input, &admission, Path::new(RECEIPT), Some(&release)).is_err());
     }
 
     struct EmptyStore;

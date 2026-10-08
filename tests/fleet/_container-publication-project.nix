@@ -13,6 +13,8 @@
   inventory = policy.releaseDerivations {
     inherit system packages names;
   };
+  # Recipe paths retain source evidence without requesting every compiler or
+  # sibling output that the recipe's original evaluation made available.
   nativeRoots = lib.concatMap (name: let
     package = packages.${name};
   in
