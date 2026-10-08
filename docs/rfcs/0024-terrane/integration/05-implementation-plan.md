@@ -1391,8 +1391,16 @@ correction drops that adapter before the holder; no production behavior,
 incarnation assertion or deadline changes. Its separately frozen replacement
 executes all twelve owning cases successfully in 138.261 seconds, with no ignored
 selected tests and unchanged 120-second case deadlines. The original two
-timeouts remain preserved. The owning Nix gate with all four prerequisites is
-running and remains unqualified; this focused pass closes no task.
+timeouts remain preserved. The owning Nix gate exits 1 at its mandatory
+cold-source prerequisite: eleven exact cases pass, then the older-lineage
+witness rejects the acknowledged logical change keys in 15.00 seconds. The
+final thirteenth case, other three prerequisites and owning runtime are not
+qualified. Independent review matches all 4,996 actual immutable source files
+with the clean candidate. Canonical branch publication requires the destination
+record, `CAPABILITIES` inventory insertion and selected-history update; the
+fixture's ref-prefix-only assertion incorrectly excludes the latter two.
+An exact predecessor-snapshot oracle is under review; no prerequisite is waived
+and this focused pass closes no task.
 No task checkbox, milestone exit or freeze advances.
 
 The isolated retained catalog cohort passes six focused real-worker tests in
@@ -1433,7 +1441,16 @@ observations around the original refresh and synchronization results. Its
 deadline diagnostic reports the rejecting predicate's existing clock sample;
 no clock read, check, returned failure or deadline is changed. Review verifies
 the same ordered check calls in all four instrumented existing files. Its
-traced native execution remains pending. The separate `4b5d80d0dd` quality
+original traced 1,024-entry case fails in 58.218 seconds, with all 3,252 inputs
+unchanged. The original rejecting deadline predicate now explicitly reports
+`Expired` at 30.002351228 seconds against the unchanged 30-second bound. It fails
+the final current refresh after syncing an actual Original bootstrap record,
+inside Raw output synchronization; public STORE-30 reporting remains `Denied`
+with no exposed source. Baseline output, measured maintenance and independent
+oracles remain unreached. The isolated `e43bf27e90` allocates the bounded whole-read
+buffer once before the same fresh read, preserving every physical/current check
+and proper allocation failure. Its unchanged owning witness is running;
+no throughput or DRV-29 success is established. The separate `4b5d80d0dd` quality
 composition groups admission's owned inputs, shares the genuine existing
 backfill fixture through a test-only import, and preserves the source oracle's
 short-circuit order in an equivalent let-chain. Independent review verifies
