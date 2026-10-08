@@ -1710,6 +1710,17 @@ compares the complete actual pre-deletion record. Its two-file diff and all
 6,062 unaffected source images are verified; compilation and execution remain
 pending. No complete witness or collector qualification follows.
 
+Corrected `b82427b68c` subsequently passes fresh SDK library compilation,
+strict library and all-target Clippy, fresh test compilation and the single
+integrated missing-Trash recovery witness in 108.737 seconds: one pass, no
+failures or ignored tests. The complete full-D/native-Done and final current
+preservation assertions execute. All 6,064 captured source images remain
+identical. A wrong-working-directory metadata helper failed before runtime
+capture; its refusal is preserved separately, and no pre-runtime executable
+seal is claimed. The executable's first-live and post-run captures match.
+This actual scoped pass does not qualify the owning Nix collector gate,
+post-deletion cold-source witnesses or the complete current trunk floor.
+
 Reviewed private `f1f178a8cb` adds opt-in, test-only aggregate timings for Raw
 installation, recapture and synchronization. Independent comparison preserves
 the ordered production tokens of all four instrumented files, and both complete
