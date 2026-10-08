@@ -12,6 +12,11 @@
 //! seal + exact current Pending -> protected Committed + directory sync
 //! ```
 
+/// Hosts opt-in native test diagnostics without changing returned failures.
+#[cfg(test)]
+#[path = "artifact_seal/diagnostic.rs"]
+mod diagnostic;
+
 /// Synchronizes genuine publication metadata without creating result channels.
 #[path = "artifact_seal/publication_sync.rs"]
 mod publication_sync;
