@@ -8,55 +8,22 @@
     reason = "Regression assertions intentionally panic."
 )]
 
-use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
-
 use aos_sandbox_core::{OperationId, PrincipalId};
 
-use crate::publication::{AuthorityPublicationStore, tests::activation_claim};
 use crate::runtime_authority::RuntimeAuthorityIntentV1;
-use crate::{
-    EffectFailure, EffectObservation, EffectPlan, EffectReceipt, IdempotencyKey, JournalLimits,
-    OperationPlan, Reconciler, SingleNodeEffectExecutor,
-};
+use crate::{JournalLimits, Reconciler};
 
 use super::*;
+use crate::publication::tests::runtime_activation_support::{self, NoEffects};
 
-struct NoEffects;
-
-impl SingleNodeEffectExecutor for NoEffects {
-    fn observe(
-        &mut self,
-        _: OperationId,
-        _: u32,
-        _: &EffectPlan,
-    ) -> Result<EffectObservation, EffectFailure> {
-        panic!("audit tests must not dispatch effects")
-    }
-
-    fn apply(
-        &mut self,
-        _: OperationId,
-        _: u32,
-        _: &EffectPlan,
-    ) -> Result<EffectReceipt, EffectFailure> {
-        panic!("audit tests must not dispatch effects")
-    }
-}
+const NO_EFFECTS: NoEffects = NoEffects::new("audit tests must not dispatch effects");
 
 fn open(directory: &std::path::Path) -> Journal {
-    std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700)).unwrap();
-    Journal::open_protected_at_uid(
-        directory,
-        "controller.journal",
-        JournalLimits::default(),
-        std::fs::metadata(directory).unwrap().uid(),
-    )
-    .unwrap()
-    .0
+    runtime_activation_support::open_protected(directory, "controller.journal")
 }
 
 fn fixture(journal: Journal) -> (Reconciler<NoEffects>, Facts) {
-    let mut reconciler = Reconciler::new(journal, NoEffects);
+    let mut reconciler = Reconciler::new(journal, NO_EFFECTS);
     let facts = activate(
         &mut reconciler,
         1,
@@ -73,28 +40,15 @@ fn activate(
     let (draft, prepared) =
         crate::publication::tests::runtime_scope_activation_fixture(u64::from(generation));
     let sandbox = draft.manifest().manifest().sandbox();
-    let operation = OperationId::from_bytes([generation; 16]);
     let effect = draft.bind_effect(draft.templates()[0].digest()).unwrap();
-    let plan = OperationPlan::ownership_gated(
-        operation,
-        IdempotencyKey::new(vec![generation]).unwrap(),
-        [generation; 32],
-        vec![generation],
-        vec![generation],
-        vec![effect],
-        activation_claim(&draft, u64::from(generation)),
-        draft.clone(),
-    )
-    .unwrap()
-    .with_runtime_authority(intent)
-    .unwrap();
-    reconciler.accept(&plan).unwrap();
-    let activation = AuthorityPublicationStore::new(reconciler.journal_mut())
-        .prepare_gate_activation(&draft, &prepared)
-        .unwrap();
-    reconciler
-        .activate_ownership_gate(operation, activation)
-        .unwrap();
+    let _activation_plan = runtime_activation_support::activate(
+        reconciler,
+        generation,
+        effect,
+        intent,
+        &draft,
+        &prepared,
+    );
     let binding =
         RuntimeAuthorityStore::load(reconciler.journal_mut(), RuntimeAuthorityLimits::default())
             .unwrap()

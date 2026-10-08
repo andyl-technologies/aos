@@ -8,9 +8,7 @@
     reason = "Audit fixtures and regression assertions intentionally panic."
 )]
 
-use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
-
-use aos_sandbox_core::{OperationId, PrincipalId};
+use aos_sandbox_core::PrincipalId;
 use sha2::{Digest as _, Sha256};
 
 use super::super::{
@@ -18,49 +16,17 @@ use super::super::{
     PublisherCapabilityRegistry, RECORD_KEY_BYTES, capability_key, decode_record, encode_record,
 };
 use super::*;
-use crate::publication::{
-    AuthorityPublicationStore,
-    tests::{activation_claim, runtime_scope_activation_fixture},
-};
+use crate::publication::tests::runtime_activation_support::{self, NoEffects};
+use crate::publication::tests::runtime_scope_activation_fixture;
 use crate::runtime_authority::{
     RuntimeAuthorityIntentV1, RuntimeAuthorityLimits, RuntimeAuthorityStore,
 };
-use crate::{
-    EffectFailure, EffectObservation, EffectPlan, EffectReceipt, IdempotencyKey, JournalLimits,
-    JournalRecord, JournalTransaction, OperationPlan, Reconciler, RecordNamespace,
-    SingleNodeEffectExecutor,
-};
+use crate::{JournalRecord, JournalTransaction, Reconciler, RecordNamespace};
 
-struct NoEffects;
-impl SingleNodeEffectExecutor for NoEffects {
-    fn observe(
-        &mut self,
-        _: OperationId,
-        _: u32,
-        _: &EffectPlan,
-    ) -> Result<EffectObservation, EffectFailure> {
-        panic!("audit fixture must not dispatch effects");
-    }
-    fn apply(
-        &mut self,
-        _: OperationId,
-        _: u32,
-        _: &EffectPlan,
-    ) -> Result<EffectReceipt, EffectFailure> {
-        panic!("audit fixture must not dispatch effects");
-    }
-}
+const NO_EFFECTS: NoEffects = NoEffects::new("audit fixture must not dispatch effects");
 
 fn open(path: &std::path::Path) -> Journal {
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
-    Journal::open_protected_at_uid(
-        path,
-        "runtime-issuance.journal",
-        JournalLimits::default(),
-        std::fs::metadata(path).unwrap().uid(),
-    )
-    .unwrap()
-    .0
+    runtime_activation_support::open_protected(path, "runtime-issuance.journal")
 }
 
 fn activate(
@@ -91,27 +57,14 @@ fn activate_holder(
     } else {
         RuntimeAuthorityIntentV1::bind_holder(holder, revision).unwrap()
     };
-    let operation = OperationId::from_bytes([generation; 16]);
-    let plan = OperationPlan::ownership_gated(
-        operation,
-        IdempotencyKey::new(vec![generation]).unwrap(),
-        [generation; 32],
-        vec![generation],
-        vec![generation],
-        vec![effect],
-        activation_claim(&draft, u64::from(generation)),
-        draft.clone(),
-    )
-    .unwrap()
-    .with_runtime_authority(intent)
-    .unwrap();
-    reconciler.accept(&plan).unwrap();
-    let activation = AuthorityPublicationStore::new(reconciler.journal_mut())
-        .prepare_gate_activation(&draft, &prepared)
-        .unwrap();
-    reconciler
-        .activate_ownership_gate(operation, activation)
-        .unwrap();
+    let _activation_plan = runtime_activation_support::activate(
+        reconciler,
+        generation,
+        effect,
+        intent,
+        &draft,
+        &prepared,
+    );
     RuntimeAuthorityStore::load(reconciler.journal_mut(), RuntimeAuthorityLimits::default())
         .unwrap()
         .current(sandbox)
@@ -122,7 +75,7 @@ fn activate_holder(
 #[test]
 fn protected_continuity_accepts_renewal_but_rejects_stale_or_reversed_endpoints() {
     let directory = tempfile::tempdir().unwrap();
-    let mut reconciler = Reconciler::new(open(directory.path()), NoEffects);
+    let mut reconciler = Reconciler::new(open(directory.path()), NO_EFFECTS);
     let origin = activate(&mut reconciler, 1, false);
     let current = activate(&mut reconciler, 2, false);
     let store =
@@ -145,7 +98,7 @@ fn protected_continuity_accepts_renewal_but_rejects_stale_or_reversed_endpoints(
 #[test]
 fn protected_continuity_rejects_revocation_and_same_holder_rebind_aba() {
     let directory = tempfile::tempdir().unwrap();
-    let mut reconciler = Reconciler::new(open(directory.path()), NoEffects);
+    let mut reconciler = Reconciler::new(open(directory.path()), NO_EFFECTS);
     let origin = activate(&mut reconciler, 1, false);
     let revoked = activate(&mut reconciler, 2, true);
     let store =
@@ -167,7 +120,7 @@ fn protected_continuity_rejects_revocation_and_same_holder_rebind_aba() {
 #[test]
 fn protected_continuity_rejects_intervening_holder_replacement_aba() {
     let directory = tempfile::tempdir().unwrap();
-    let mut reconciler = Reconciler::new(open(directory.path()), NoEffects);
+    let mut reconciler = Reconciler::new(open(directory.path()), NO_EFFECTS);
     let origin = activate(&mut reconciler, 1, false);
     let replacement = activate_holder(
         &mut reconciler,
@@ -258,7 +211,7 @@ fn install_audit_fixture(journal: &mut Journal, capability: &CapabilityRecord, b
 #[test]
 fn runtime_issuance_retains_historical_origin_after_renewal_revocation_and_reopen() {
     let directory = tempfile::tempdir().unwrap();
-    let mut reconciler = Reconciler::new(open(directory.path()), NoEffects);
+    let mut reconciler = Reconciler::new(open(directory.path()), NO_EFFECTS);
     let binding = activate(&mut reconciler, 1, false);
     let (capability, metadata, runtime) = evidence(&binding);
     let bytes = encoded(&capability, &metadata, &runtime);
@@ -331,7 +284,7 @@ fn runtime_issuance_retains_historical_origin_after_renewal_revocation_and_reope
 #[test]
 fn canonical_v1_runtime_issuance_has_a_fixed_golden_and_closed_bounded_shape() {
     let directory = tempfile::tempdir().unwrap();
-    let mut reconciler = Reconciler::new(open(directory.path()), NoEffects);
+    let mut reconciler = Reconciler::new(open(directory.path()), NO_EFFECTS);
     let binding = activate(&mut reconciler, 1, false);
     let (capability, metadata, runtime) = evidence(&binding);
     let bytes = encoded(&capability, &metadata, &runtime);
@@ -444,7 +397,7 @@ fn canonical_v1_runtime_issuance_has_a_fixed_golden_and_closed_bounded_shape() {
 fn runtime_provenance_substitution_is_rejected_by_protected_replay() {
     for field in 0..6 {
         let directory = tempfile::tempdir().unwrap();
-        let mut reconciler = Reconciler::new(open(directory.path()), NoEffects);
+        let mut reconciler = Reconciler::new(open(directory.path()), NO_EFFECTS);
         let binding = activate(&mut reconciler, 1, false);
         let (capability, metadata, mut runtime) = evidence(&binding);
         match field {
@@ -478,7 +431,7 @@ fn runtime_provenance_substitution_is_rejected_by_protected_replay() {
 #[test]
 fn timing_identity_and_zero_field_substitution_are_rejected_by_the_codec() {
     let directory = tempfile::tempdir().unwrap();
-    let mut reconciler = Reconciler::new(open(directory.path()), NoEffects);
+    let mut reconciler = Reconciler::new(open(directory.path()), NO_EFFECTS);
     let binding = activate(&mut reconciler, 1, false);
     let (capability, metadata, runtime) = evidence(&binding);
     for field in 0..10 {
@@ -517,7 +470,7 @@ fn timing_identity_and_zero_field_substitution_are_rejected_by_the_codec() {
 #[test]
 fn missing_runtime_history_cannot_be_replaced_by_issuance_claims() {
     let directory = tempfile::tempdir().unwrap();
-    let mut reconciler = Reconciler::new(open(directory.path()), NoEffects);
+    let mut reconciler = Reconciler::new(open(directory.path()), NO_EFFECTS);
     let binding = activate(&mut reconciler, 1, false);
     let (capability, metadata, runtime) = evidence(&binding);
     install_audit_fixture(

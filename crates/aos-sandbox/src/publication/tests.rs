@@ -33,6 +33,8 @@ use aos_sandbox_ownership_protocol::ExpectedOwnershipLease;
 
 use super::*;
 
+pub(crate) mod runtime_activation_support;
+
 struct TestDirectory(PathBuf);
 
 impl TestDirectory {

@@ -20,22 +20,19 @@ use std::path::Path;
 use aos_sandbox_core::format::{descriptor_for_bytes, encode_trust_policy};
 use aos_sandbox_core::model::{KeyReference, KeyUsage, SignaturePurpose, StableKeyId, TrustPolicy};
 use aos_sandbox_core::{
-    MediaType, ObjectDescriptor, ObjectDigest, OperationId, OwnershipLeaseTrustAnchor,
-    PortableMediaType, RawClockProvenance, RevocationScopeId, TrustScopeId,
+    MediaType, ObjectDescriptor, ObjectDigest, OwnershipLeaseTrustAnchor, PortableMediaType,
+    RawClockProvenance, RevocationScopeId, TrustScopeId,
 };
 use ed25519_dalek::SigningKey;
 use sha2::{Digest as _, Sha256};
 
 use crate::publication::tests::{
-    activation_claim, descriptor_free_activation_fixture, runtime_scope_activation_fixture,
+    descriptor_free_activation_fixture, runtime_scope_activation_fixture,
 };
 use crate::runtime_authority::{
     ControllerRuntimeCurrentnessReceiptV1, RuntimeAuthorityError, RuntimeAuthorityIntentV1,
 };
-use crate::{
-    EffectFailure, EffectObservation, EffectPlan, EffectReceipt, IdempotencyKey, JournalLimits,
-    OperationPlan, Reconciler, SingleNodeEffectExecutor,
-};
+use crate::{JournalLimits, Reconciler};
 
 #[cfg(feature = "kernel-tests")]
 use aos_proto::aos::sandbox::local::v1::BrokerMethod;
@@ -57,37 +54,12 @@ use aos_sandbox_protocol::{
 use rustix::net::{AddressFamily, SocketFlags, SocketType, socketpair};
 
 use super::*;
+use crate::publication::tests::runtime_activation_support::{self, NoEffects};
 
-struct NoEffects;
-impl SingleNodeEffectExecutor for NoEffects {
-    fn observe(
-        &mut self,
-        _: OperationId,
-        _: u32,
-        _: &EffectPlan,
-    ) -> Result<EffectObservation, EffectFailure> {
-        panic!("scope preparation must not dispatch runtime effects");
-    }
-    fn apply(
-        &mut self,
-        _: OperationId,
-        _: u32,
-        _: &EffectPlan,
-    ) -> Result<EffectReceipt, EffectFailure> {
-        panic!("scope preparation must not dispatch runtime effects");
-    }
-}
+const NO_EFFECTS: NoEffects = NoEffects::new("scope preparation must not dispatch runtime effects");
 
 fn open(directory: &std::path::Path) -> Journal {
-    std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700)).unwrap();
-    Journal::open_protected_at_uid(
-        directory,
-        "controller.journal",
-        JournalLimits::default(),
-        std::fs::metadata(directory).unwrap().uid(),
-    )
-    .unwrap()
-    .0
+    runtime_activation_support::open_protected(directory, "controller.journal")
 }
 
 fn activate(
@@ -115,28 +87,15 @@ fn activate_prepared(
         sandbox: draft.manifest().manifest().sandbox(),
         holder: PrincipalId::from_bytes([0x91; 16]),
     };
-    let operation = OperationId::from_bytes([generation; 16]);
     let effect = draft.bind_effect(draft.templates()[0].digest()).unwrap();
-    let plan = OperationPlan::ownership_gated(
-        operation,
-        IdempotencyKey::new(vec![generation]).unwrap(),
-        [generation; 32],
-        vec![generation],
-        vec![generation],
-        vec![effect],
-        activation_claim(&draft, u64::from(generation)),
-        draft.clone(),
-    )
-    .unwrap()
-    .with_runtime_authority(intent)
-    .unwrap();
-    reconciler.accept(&plan).unwrap();
-    let activation = AuthorityPublicationStore::new(reconciler.journal_mut())
-        .prepare_gate_activation(&draft, &prepared)
-        .unwrap();
-    reconciler
-        .activate_ownership_gate(operation, activation)
-        .unwrap();
+    let _activation_plan = runtime_activation_support::activate(
+        reconciler,
+        generation,
+        effect,
+        intent,
+        &draft,
+        &prepared,
+    );
     selection
 }
 
@@ -240,7 +199,7 @@ pub(crate) struct ConsumerResourceFixture {
 impl ConsumerResourceFixture {
     pub(crate) fn new(directory: &std::path::Path, spec: ObjectDescriptor) -> Self {
         let mut fixture = Self {
-            reconciler: Reconciler::new(open(directory), NoEffects),
+            reconciler: Reconciler::new(open(directory), NO_EFFECTS),
             spec,
         };
         fixture.activate(1, bind(None));
@@ -283,7 +242,7 @@ pub(crate) struct CurrentNamespaceFixture {
 #[cfg(feature = "kernel-tests")]
 impl CurrentNamespaceFixture {
     pub(crate) fn new(directory: &Path) -> Self {
-        let mut reconciler = Reconciler::new(open(directory), NoEffects);
+        let mut reconciler = Reconciler::new(open(directory), NO_EFFECTS);
         let selection = activate(&mut reconciler, 1, bind(None), true);
         Self {
             reconciler,
@@ -449,7 +408,7 @@ fn missing_holder_and_unprotected_journal_are_not_authority() {
 #[test]
 fn protected_reopen_derives_exact_current_request_and_verified_lease() {
     let directory = tempfile::tempdir().unwrap();
-    let mut reconciler = Reconciler::new(open(directory.path()), NoEffects);
+    let mut reconciler = Reconciler::new(open(directory.path()), NO_EFFECTS);
     let selection = activate(&mut reconciler, 1, bind(None), true);
     let prepared = prepare(reconciler.journal_mut(), selection, &policy(), clock(150)).unwrap();
     let decoded = decode_local_body(&prepared.body, 1_000).unwrap();
@@ -486,7 +445,7 @@ fn protected_reopen_derives_exact_current_request_and_verified_lease() {
 #[test]
 fn controller_node_validation_checks_every_current_runtime_binding() {
     let directory = tempfile::tempdir().unwrap();
-    let mut reconciler = Reconciler::new(open(directory.path()), NoEffects);
+    let mut reconciler = Reconciler::new(open(directory.path()), NO_EFFECTS);
     let selection = activate(&mut reconciler, 1, bind(None), false);
     let store =
         RuntimeAuthorityStore::load(reconciler.journal_mut(), RuntimeAuthorityLimits::default())
@@ -505,7 +464,7 @@ fn controller_node_validation_checks_every_current_runtime_binding() {
 fn controller_currentness_receipt_requires_exact_cold_replayed_head() {
     let directory = tempfile::tempdir().unwrap();
     let controller_uid = std::fs::metadata(directory.path()).unwrap().uid();
-    let mut reconciler = Reconciler::new(open(directory.path()), NoEffects);
+    let mut reconciler = Reconciler::new(open(directory.path()), NO_EFFECTS);
     let selection = activate(&mut reconciler, 1, bind(None), false);
     let signer = SigningKey::from_bytes(&[0x35; 32]);
     let receipt = ControllerRuntimeCurrentnessReceiptV1::issue_at_uid_for_test(
@@ -569,7 +528,7 @@ fn controller_currentness_receipt_requires_exact_cold_replayed_head() {
     );
     drop(cold);
 
-    let mut reconciler = Reconciler::new(open(directory.path()), NoEffects);
+    let mut reconciler = Reconciler::new(open(directory.path()), NO_EFFECTS);
     activate(&mut reconciler, 2, bind(Some(1)), false);
     assert!(
         recovered
@@ -588,7 +547,7 @@ fn controller_currentness_receipt_requires_exact_cold_replayed_head() {
 fn controller_currentness_receipt_rejects_noncanonical_or_revoked_state() {
     let directory = tempfile::tempdir().unwrap();
     let controller_uid = std::fs::metadata(directory.path()).unwrap().uid();
-    let mut reconciler = Reconciler::new(open(directory.path()), NoEffects);
+    let mut reconciler = Reconciler::new(open(directory.path()), NO_EFFECTS);
     let selection = activate(&mut reconciler, 1, bind(None), false);
     let signer = SigningKey::from_bytes(&[0x37; 32]);
     assert!(
@@ -651,7 +610,7 @@ fn controller_currentness_receipt_rejects_noncanonical_or_revoked_state() {
 fn controller_currentness_receipt_rejects_orphaned_writer_after_root_replacement() {
     let directory = tempfile::tempdir().unwrap();
     let controller_uid = std::fs::metadata(directory.path()).unwrap().uid();
-    let mut reconciler = Reconciler::new(open(directory.path()), NoEffects);
+    let mut reconciler = Reconciler::new(open(directory.path()), NO_EFFECTS);
     let selection = activate(&mut reconciler, 1, bind(None), false);
     let signer = SigningKey::from_bytes(&[0x38; 32]);
     let receipt = ControllerRuntimeCurrentnessReceiptV1::issue_at_uid_for_test(
@@ -732,7 +691,7 @@ fn controller_currentness_receipt_rejects_orphaned_writer_after_root_replacement
 #[test]
 fn prelaunch_assignment_target_requires_no_host_observation() {
     let directory = tempfile::tempdir().unwrap();
-    let mut reconciler = Reconciler::new(open(directory.path()), NoEffects);
+    let mut reconciler = Reconciler::new(open(directory.path()), NO_EFFECTS);
     let selection = activate(&mut reconciler, 1, bind(None), false);
     let target =
         prepare_assignment(reconciler.journal_mut(), selection, policy(), clock(150)).unwrap();
@@ -764,7 +723,7 @@ fn prelaunch_assignment_target_requires_no_host_observation() {
 #[test]
 fn prelaunch_target_allows_only_uninterrupted_same_holder_renewal() {
     let directory = tempfile::tempdir().unwrap();
-    let mut reconciler = Reconciler::new(open(directory.path()), NoEffects);
+    let mut reconciler = Reconciler::new(open(directory.path()), NO_EFFECTS);
     let selection = activate(&mut reconciler, 1, bind(None), false);
     let origin =
         prepare_assignment(reconciler.journal_mut(), selection, policy(), clock(150)).unwrap();
@@ -804,7 +763,7 @@ fn prelaunch_target_allows_only_uninterrupted_same_holder_renewal() {
 #[test]
 fn mismatched_holder_node_and_revoked_head_fail_before_host_io() {
     let directory = tempfile::tempdir().unwrap();
-    let mut reconciler = Reconciler::new(open(directory.path()), NoEffects);
+    let mut reconciler = Reconciler::new(open(directory.path()), NO_EFFECTS);
     let selection = activate(&mut reconciler, 1, bind(None), true);
     let mut wrong = selection;
     wrong.holder = PrincipalId::from_bytes([0x92; 16]);
@@ -833,7 +792,7 @@ fn mismatched_holder_node_and_revoked_head_fail_before_host_io() {
 #[test]
 fn renewal_and_same_holder_rebind_select_new_revision_and_exact_lease() {
     let directory = tempfile::tempdir().unwrap();
-    let mut reconciler = Reconciler::new(open(directory.path()), NoEffects);
+    let mut reconciler = Reconciler::new(open(directory.path()), NO_EFFECTS);
     let selection = activate(&mut reconciler, 1, bind(None), true);
     let original = prepare(reconciler.journal_mut(), selection, &policy(), clock(150)).unwrap();
     activate(&mut reconciler, 2, bind(Some(1)), true);
@@ -886,14 +845,14 @@ fn renewal_and_same_holder_rebind_select_new_revision_and_exact_lease() {
 #[test]
 fn old_plans_missing_observation_grants_and_wrong_trust_keys_are_rejected() {
     let directory = tempfile::tempdir().unwrap();
-    let mut reconciler = Reconciler::new(open(directory.path()), NoEffects);
+    let mut reconciler = Reconciler::new(open(directory.path()), NO_EFFECTS);
     let selection = activate(&mut reconciler, 1, bind(None), false);
     assert!(matches!(
         prepare(reconciler.journal_mut(), selection, &policy(), clock(150)),
         Err(CurrentRuntimeScopeError::MissingGrant)
     ));
     let second_directory = tempfile::tempdir().unwrap();
-    let mut reconciler = Reconciler::new(open(second_directory.path()), NoEffects);
+    let mut reconciler = Reconciler::new(open(second_directory.path()), NO_EFFECTS);
     let selection = activate(&mut reconciler, 1, bind(None), true);
     assert!(matches!(
         prepare(
