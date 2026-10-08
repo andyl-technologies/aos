@@ -37,7 +37,7 @@ use sha2::{Digest, Sha256};
 #[cfg(test)]
 use self::framing::CHECKSUM_OFFSET;
 use self::framing::{
-    COMMIT_PAYLOAD_BYTES, EncodedFrameLayout, Frame, FrameKind, HEADER_BYTES,
+    COMMIT_PAYLOAD_BYTES, EncodedFrameLayout, Frame, FrameError, FrameKind, HEADER_BYTES,
     ReadOnlyFrameScratchV1, append_and_sync, encode_frame, read_frame,
     read_frame_retained, transaction_hasher,
 };
@@ -717,6 +717,20 @@ pub enum JournalError {
     #[cfg(target_os = "linux")]
     #[error("journal coverage native history failed: {0}")]
     GitCoverageNativeHistory(#[source] Box<GitCoverageNativeHistoryErrorV1>),
+}
+
+impl From<FrameError> for JournalError {
+    fn from(error: FrameError) -> Self {
+        match error {
+            FrameError::Io(error) => Self::Io(error),
+            FrameError::JournalTooLarge => Self::JournalTooLarge,
+            FrameError::UnsupportedVersion(version) => Self::UnsupportedVersion(version),
+            FrameError::ChecksumMismatch(offset) => Self::ChecksumMismatch(offset),
+            FrameError::MalformedTransaction(reason) => Self::MalformedTransaction(reason),
+            FrameError::LimitExceeded(bound) => Self::LimitExceeded(bound),
+            FrameError::MissingRetainedPayload => Self::ProtectedBoundary,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -5151,7 +5165,7 @@ impl Journal {
             Ok(bytes) => bytes,
             Err(error) => {
                 self.poisoned = true;
-                return Err(error);
+                return Err(error.into());
             }
         };
         if durable_bytes != expected_length {
@@ -8777,7 +8791,7 @@ fn replay_original_retained<R: Read + Seek + Borrow<File>>(
 
         loop {
             let Some((frame, bytes_read)) = read_frame_retained(
-                file, offset, limits, retained.then_some(&mut partial_frame),
+                file, offset, limits.maximum_record_bytes, retained.then_some(&mut partial_frame),
             )? else {
                 break;
             };
@@ -10363,6 +10377,46 @@ mod tests {
     };
 
     #[test]
+    fn framing_error_adapter_preserves_original_classification_and_io() {
+        use super::FrameError;
+
+        let cases = [
+            (FrameError::JournalTooLarge, JournalError::JournalTooLarge),
+            (FrameError::UnsupportedVersion(2), JournalError::UnsupportedVersion(2)),
+            (FrameError::ChecksumMismatch(17), JournalError::ChecksumMismatch(17)),
+            (
+                FrameError::MalformedTransaction("unknown frame kind"),
+                JournalError::MalformedTransaction("unknown frame kind"),
+            ),
+            (
+                FrameError::LimitExceeded("frame payload bytes"),
+                JournalError::LimitExceeded("frame payload bytes"),
+            ),
+            (FrameError::MissingRetainedPayload, JournalError::ProtectedBoundary),
+        ];
+
+        for (framing, expected) in cases {
+            assert_eq!(framing.to_string(), expected.to_string());
+
+            let actual = JournalError::from(framing);
+
+            assert_eq!(std::mem::discriminant(&actual), std::mem::discriminant(&expected));
+            assert_eq!(actual.to_string(), expected.to_string());
+        }
+
+        let original_io = std::io::Error::from_raw_os_error(5);
+        let expected_kind = original_io.kind();
+        let expected_message = original_io.to_string();
+        let JournalError::Io(actual_io) = JournalError::from(FrameError::Io(original_io)) else {
+            panic!("framing I/O error lost its journal classification");
+        };
+
+        assert_eq!(actual_io.raw_os_error(), Some(5));
+        assert_eq!(actual_io.kind(), expected_kind);
+        assert_eq!(actual_io.to_string(), expected_message);
+    }
+
+    #[test]
     fn measured_widths_match_encoded_put_delete_and_empty_transactions() {
         let cases = [
             vec![],
@@ -10488,7 +10542,7 @@ mod tests {
                 Err(JournalError::LimitExceeded("record value bytes")),
             ));
             assert!(matches!(
-                EncodedFrameLayout::new(maximum_put.payload_bytes),
+                EncodedFrameLayout::new(maximum_put.payload_bytes).map_err(JournalError::from),
                 Err(JournalError::LimitExceeded("frame payload bytes")),
             ));
             let maximum_frame = EncodedFrameLayout::new(u32::MAX as usize).unwrap();
@@ -10502,7 +10556,7 @@ mod tests {
                 Err(JournalError::JournalTooLarge),
             ));
             assert!(matches!(
-                EncodedFrameLayout::new(u32::MAX as usize),
+                EncodedFrameLayout::new(u32::MAX as usize).map_err(JournalError::from),
                 Err(JournalError::JournalTooLarge),
             ));
         }
