@@ -28,7 +28,7 @@ pub use resource::{
 use validation::*;
 
 use crate::state::{
-    ExecutionPhase, ObservationAdvanceError, ObservedPhase, ObservedState, ReasonCode,
+    ObservationAdvanceError, ObservedPhase, ObservedState, ReasonCode,
     TransitionTime,
 };
 use crate::{
@@ -981,25 +981,6 @@ impl ExecutionObservationPhaseV1 {
     pub fn can_transition_to(self, next: Self) -> bool {
         ObservedPhase::can_transition_to(self, next)
     }
-
-    /// Projects a v1 phase into the legacy unversioned phase vocabulary.
-    ///
-    /// `Lost` deliberately returns `None`: silently projecting it to `Failed`
-    /// would erase the recovery distinction, while adding it to the old Serde
-    /// enum would change that enum's compatibility contract.
-    #[must_use]
-    pub const fn legacy_projection(self) -> Option<ExecutionPhase> {
-        match self {
-            Self::Requested => Some(ExecutionPhase::Requested),
-            Self::Admitted => Some(ExecutionPhase::Admitted),
-            Self::Starting => Some(ExecutionPhase::Starting),
-            Self::Running => Some(ExecutionPhase::Running),
-            Self::Exited => Some(ExecutionPhase::Exited),
-            Self::Canceled => Some(ExecutionPhase::Canceled),
-            Self::Failed => Some(ExecutionPhase::Failed),
-            Self::Lost => None,
-        }
-    }
 }
 
 impl ObservedPhase for ExecutionObservationPhaseV1 {
@@ -1180,28 +1161,6 @@ impl ExecutionObservationV1 {
             captured_output,
         })
     }
-
-    /// Projects a representable v1 observation into the legacy state type.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`UnrepresentableLegacyExecutionObservation`] for `Lost`; no
-    /// lossy substitute is selected.
-    pub fn project_legacy(
-        &self,
-    ) -> Result<ObservedState<ExecutionPhase>, UnrepresentableLegacyExecutionObservation> {
-        let phase = self
-            .phase()
-            .legacy_projection()
-            .ok_or(UnrepresentableLegacyExecutionObservation)?;
-        Ok(ObservedState::new(
-            phase,
-            self.desired_generation(),
-            self.sequence(),
-            self.reason().clone(),
-            self.transition_time(),
-        ))
-    }
 }
 
 /// Reports invalid execution-observation content or ordering.
@@ -1214,8 +1173,3 @@ pub enum ExecutionObservationAdvanceError {
     #[error(transparent)]
     Content(#[from] InvalidExecutionSpec),
 }
-
-/// Reports that a versioned execution observation has no faithful legacy form.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-#[error("lost execution observation cannot be projected into the legacy phase vocabulary")]
-pub struct UnrepresentableLegacyExecutionObservation;
