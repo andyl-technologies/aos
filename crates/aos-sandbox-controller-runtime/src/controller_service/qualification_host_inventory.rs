@@ -11,7 +11,7 @@ use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBroke
 use buffa::Message as _;
 
 use super::activation::read_node_id;
-use super::{CycleFailure, connect_controller_session};
+use super::worker::{CycleFailure, connect_controller_session};
 use crate::{DormantHostRuntimeInventoryOwnerV1, ProtectedBrokerSessionFixedEndpointV1};
 
 const CLIENT_DONE: &str = "/run/aos/controller-qualification/host-inventory-complete";

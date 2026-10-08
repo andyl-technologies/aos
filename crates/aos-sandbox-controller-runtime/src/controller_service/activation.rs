@@ -17,6 +17,7 @@ use rustix::net::{
     sendmsg_addr, socket_with,
 };
 
+use super::worker::{WorkerEvent, controller_worker, retained_controller_worker};
 use super::*;
 use configuration::RuntimeConfiguration;
 
