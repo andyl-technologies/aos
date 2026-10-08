@@ -1399,8 +1399,18 @@ qualified. Independent review matches all 4,996 actual immutable source files
 with the clean candidate. Canonical branch publication requires the destination
 record, `CAPABILITIES` inventory insertion and selected-history update; the
 fixture's ref-prefix-only assertion incorrectly excludes the latter two.
-An exact predecessor-snapshot oracle is under review; no prerequisite is waived
-and this focused pass closes no task.
+The separate test-only `015467114e` correction reconstructs the independently
+selected prior snapshot, checks every exact predecessor edge, and compares all
+three complete logical changes and the full resulting state. It retains source
+record, log, Guard, lineage and Original bytes and incarnations, as well as the
+zero-Node, root, parent and signing assertions. Its repaired case passes in
+15.439 seconds; the complete thirteen-case cold-source prerequisite passes in
+156.174 seconds and all twelve owning cases pass in 148.565 seconds at unchanged
+deadlines. The original three-file capture remains scoped to those files;
+complete 6,051-input source and compiled-binary captures are added during the
+prerequisite run and before the owning run, then verified unchanged at completion.
+Mandatory Nix qualification remains open; no prerequisite is waived and these
+local passes close no task.
 No task checkbox, milestone exit or freeze advances.
 
 The isolated retained catalog cohort passes six focused real-worker tests in
@@ -1477,6 +1487,26 @@ and strict all-target Clippy. Independent review matches all 3,252 captured
 inputs against the sealed commit for each original invocation. Application
 test-target compilation, owning gates and full native qualification remain
 open; these edits close no task.
+
+The separate `d352aa412d` adds only test-process-clock boundaries after durable
+staging. Removing its six new statements restores the prior selected-publication
+file byte for byte, including every authority clock sample and check. Its
+unchanged 1,024-entry case fails in 57.003 seconds before those boundaries: the
+original Raw acknowledgment deadline rejects 30.001059197 seconds against
+30 seconds before synchronizing `objects/index/21/235.idx`. All 3,252 captured
+inputs remain unchanged. No acknowledgment return, post-stage timings, baseline
+output, measured maintenance or independent oracles are reached. The new run
+does not measure the individual costs of the earlier candidate's post-stage
+interval or establish DRV-29 qualification.
+
+Shared native test-image registration preserves all 292 specification gates and
+69 current T0/T1 gate names. Its compiler output remains explicitly pending on
+trunk while the isolated implementation is reviewed. The intended reuse covers
+only immutable compilation; each prerequisite and owning fork gate retains its
+own exact inventory, execution, protected namespace and fresh fixtures. Source,
+feature and profile binding are checked before consumption, and required runtime
+references are preserved through AOS fixup. No execution qualification is claimed
+from registration or static checks.
 
 Deployable as: a local tool that initializes a store under a `file://`
 root, commits a directory, forks and merges branches, and checks a commit
