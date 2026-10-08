@@ -1471,8 +1471,12 @@ composition groups admission's owned inputs, shares the genuine existing
 backfill fixture through a test-only import, and preserves the source oracle's
 short-circuit order in an equivalent let-chain. Independent review verifies
 the unchanged admission validation/effect tail and complete fixture bodies.
-The compiler, strict quality checks, application test-target compilation and
-owning gates remain unrun on this composition; these edits close no task.
+The private `2c1c723412` composition combines these reviewed corrections with
+the catalog candidate and passes its native SDK build, strict library Clippy
+and strict all-target Clippy. Independent review matches all 3,252 captured
+inputs against the sealed commit for each original invocation. Application
+test-target compilation, owning gates and full native qualification remain
+open; these edits close no task.
 
 Deployable as: a local tool that initializes a store under a `file://`
 root, commits a directory, forks and merges branches, and checks a commit
