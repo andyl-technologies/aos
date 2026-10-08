@@ -56,13 +56,22 @@
 
   algebraFormatVectors = import ./algebra-models.nix {inherit sourceGate;};
 
+  # Share compilation of one immutable native test image, while every gate
+  # retains its own protected execution and fresh filesystem fixtures.
+  nativeSdkTestImage = import ./native-sdk-test-image.nix {inherit sourceGate;};
+  nativeSdkGate = name: script:
+    sourceGate name ''
+      export TERRANE_NATIVE_SDK_TEST_BINARY="${nativeSdkTestImage}/bin/terrane-native-sdk-tests"
+      ${script}
+    '';
+
   # A zero-node fork depends on genuine selected source lineage. Full source
   # requalification and preservation are qualified outside the cold interval.
   nativeForkPrerequisites = {
-    coldSource = import ./native-cold-fork-source.nix {inherit sourceGate;};
-    requalification = import ./native-source-requalification.nix {inherit sourceGate;};
-    sourcePreservation = import ./native-source-preserving-retirement.nix {inherit sourceGate;};
-    importedPreservation = import ./native-imported-source-retirement.nix {inherit sourceGate;};
+    coldSource = import ./native-cold-fork-source.nix {sourceGate = nativeSdkGate;};
+    requalification = import ./native-source-requalification.nix {sourceGate = nativeSdkGate;};
+    sourcePreservation = import ./native-source-preserving-retirement.nix {sourceGate = nativeSdkGate;};
+    importedPreservation = import ./native-imported-source-retirement.nix {sourceGate = nativeSdkGate;};
   };
 
   structureGate = name:
@@ -146,10 +155,13 @@
   taskGates =
     builtins.foldl' (
       accumulated: file: let
-        added = import (./gates + "/${file}") {
-          inherit pkgs lib sourceGate structureGate;
-          forkPrerequisites = builtins.attrValues nativeForkPrerequisites;
-        };
+        added = import (./gates + "/${file}") (
+          {
+            inherit pkgs lib sourceGate structureGate;
+            forkPrerequisites = builtins.attrValues nativeForkPrerequisites;
+          }
+          // lib.optionalAttrs (file == "algebra.nix") {inherit nativeSdkGate;}
+        );
         duplicates = builtins.filter (name: builtins.hasAttr name accumulated) (builtins.attrNames added);
       in
         if duplicates == []
