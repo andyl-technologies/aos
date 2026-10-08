@@ -32,8 +32,9 @@
     "${pkgs.kmod}/sbin"
   ];
 
-  # The transfer service must unpack into the snapshotter selected by nerdctl.
-  # Its default unpack configuration covers only overlayfs.
+  # Overlay snapshots retain shared image layers instead of copying the entire
+  # parent filesystem during every layer import and workload launch.
+  snapshotter = "overlayfs";
   containerPlatform =
     if pkgs.stdenv.hostPlatform.isAarch64
     then "linux/arm64"
@@ -45,7 +46,7 @@
       version = 3
       [[plugins."io.containerd.transfer.v1.local".unpack_config]]
         platform = "${containerPlatform}"
-        snapshotter = "native"
+        snapshotter = "${snapshotter}"
     '';
   };
 
@@ -83,7 +84,7 @@
     "${pkgs.nerdctl}/bin/nerdctl"
     + " --address ${address}"
     + " --namespace aos-container-test"
-    + " --snapshotter native";
+    + " --snapshotter ${snapshotter}";
   bash = "${pkgs.bash}/bin/bash";
   nixStore = "${pkgs.nix}/bin/nix-store";
   profileBin = "/var/lib/profiles/per-user/root/current/bin/container-runtime-tool";
@@ -209,8 +210,8 @@ in {
     )
     assert literal_output.strip() == literal, literal_output
 
-    # Each invocation first copies the native snapshot, just like the workload
-    # launches above; the short default command timeout only suits exec calls.
+    # Each fresh container initializes its local Nix state before the workload
+    # starts; the short default command timeout only suits later exec calls.
     runtime.succeed(
         "${nerdctl} run --rm --net none aos:latest /usr/bin/aos --version",
         timeout=120,
