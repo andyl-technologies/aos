@@ -1389,7 +1389,9 @@ refusal, whole-byte change and expiry between primitives, partial rename
 failure, and lock retention after waiter cancellation. The subsequent sealed
 native SDK candidate `7bd19e5edb` includes the exact unchanged five-file
 `2857045eac` fixture. Its first 1,024-entry ordinary case fails after 63.554
-seconds with baseline publication denied at the existing writer deadline.
+seconds when baseline publication returns STORE-30's `Denied`. The unchanged
+30-second writer budget remains in force, but this uninstrumented original
+run establishes neither expiry nor the duration of individual phases.
 All 3,251 captured inputs remain unchanged; baseline output, measured
 maintenance and independent oracles are not reached. The full-upfront cohort
 does not establish a throughput fix or DRV-29 qualification. Native regressions
