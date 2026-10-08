@@ -3,6 +3,12 @@
   _module.strict = true;
 
   options = {
+    phase = lib.mkOption {
+      type = lib.types.enum ["installation" "startup"];
+      default = "installation";
+      description = "Earliest deployment phase in which the handler may execute.";
+    };
+
     program = lib.mkOption {
       type = lib.types.nullOr lib.types.package;
       default = null;

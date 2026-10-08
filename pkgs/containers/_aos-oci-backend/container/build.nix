@@ -40,6 +40,24 @@
   uniqueByPath =
     lib.uniqueBy (value:
       builtins.unsafeDiscardStringContext (builtins.toString value));
+  # The runtime is an admitted baked root. Keep its location in this replay
+  # module without forcing the executable build merely to evaluate the module.
+  startupExecutable = builtins.unsafeDiscardStringContext "${pkgs.aos.packageRuntime}/bin/aos-package-runtime";
+  shellExecutable = builtins.unsafeDiscardStringContext "${pkgs.bash}/bin/bash";
+  shellInitConfiguration = buildPkgs.writeTextFile {
+    name = "aos-container-shell-init-configuration";
+    text = ''
+      {lib, ...}: {
+        aos.initSystem.container = true;
+        aos.initSystem.containerStartupExecutable = "${startupExecutable}";
+        aos.abilities.initSystem.operations.install.effects.default.input = {
+          executable = lib.mkDefault "${shellExecutable}";
+          arguments = lib.mkDefault [];
+        };
+      }
+    '';
+  };
+  imageConfiguration = configuration ++ lib.optional container.filesystem.shell (builtins.toString shellInitConfiguration);
 
   deploymentLayer = {
     name = "native-deployment";
@@ -214,34 +232,37 @@
     then evaluationInput
     else
       lib.build.evaluationInput {
-        inherit lib pkgs configuration runtimeConfiguration;
+        inherit lib pkgs runtimeConfiguration;
+        configuration = imageConfiguration;
         osRelease = hostOsRelease;
         packages = container.packageModules;
         packageArtifacts = lib.packageModules.payloads container.packageRoots;
-        scope = ["container" container.name];
+        scope = ["profile" "/var/lib/profiles/per-user/root"];
         system = lib.platform.system;
       };
   evaluatedDeployment = lib.evalPackageModules {
     osRelease = hostOsRelease;
     enforceOsRequirements = true;
-    scope = ["container" container.name];
+    scope = ["profile" "/var/lib/profiles/per-user/root"];
     packages = container.packageModules;
     packageArtifacts = lib.packageModules.payloads container.packageRoots;
-    operatorModules = operatorModules ++ configuration;
+    operatorModules = operatorModules ++ imageConfiguration;
     runtimeModules = runtimeConfiguration;
     evaluationInput = preparedInput;
     evaluationInputs = [lib.packageModuleLibrary preparedInput];
   };
   deploymentArtifact = oci.mkDeploymentArtifact {
     pname = "aos-container-${container.name}-deployment";
+    withProfileRecords = true;
     inherit pkgs;
     osRelease = hostOsRelease;
     evaluated = evaluatedDeployment;
     evaluationInput = preparedInput;
-    inherit configuration runtimeConfiguration;
+    inherit runtimeConfiguration;
+    configuration = imageConfiguration;
     packages = container.packageModules;
     packageArtifacts = lib.packageModules.payloads container.packageRoots;
-    scope = ["container" container.name];
+    scope = ["profile" "/var/lib/profiles/per-user/root"];
     platform = {inherit (container.platform) os architecture;};
     runtimeRoots = auditRoots;
   };
@@ -256,6 +277,7 @@
     AOS_CONTAINER=1
     AOS_SYSTEM=${container.platform.aosSystem}
     AOS_STATE_VERSION=${systemIdentity.stateVersion}
+    AOS_PACKAGE_MODULE_LIBRARY=${lib.packageModuleLibrary}
     ${releaseOsMetadata}
   '';
   releaseAnnotations =
@@ -330,6 +352,11 @@
         text = osRelease;
       }
       {
+        path = "/usr/lib/aos/toplevel/os-release";
+        mode = "0444";
+        text = osRelease;
+      }
+      {
         path = "/etc/passwd";
         mode = "0644";
         text = "root:x:0:0:root:/root:/usr/bin/sh\n";
@@ -384,6 +411,11 @@
       symlinks =
         compatibilitySymlinks
         ++ [
+          {
+            path = "/usr/lib/aos-container/setup";
+            target = "/usr/bin/aos-container-init";
+            requireExecutable = true;
+          }
           {
             path = "/usr/lib/aos-container/native-deployment";
             target = builtins.toString deploymentArtifact.artifact;

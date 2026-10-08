@@ -13,10 +13,10 @@
   coreRoots = [pkgs.glibc pkgs.glibc-tools pkgs.glibc-locales pkgs.gcc-libs pkgs.ca-certificates];
   shellRoots = [pkgs.bash pkgs.coreutils pkgs.findutils pkgs.grep pkgs.sed pkgs.gawk];
   # The CLI is intentionally split into independently portable outputs.  Keep
-  # all three commands in the image closure and expose their canonical names
-  # explicitly; the server login profile is not the authority for the base
+  # public commands and the private startup runtime in the image closure. Expose
+  # the public names explicitly; the server login profile is not the authority for the base
   # image's documented command surface.
-  cliRoots = [pkgs.aos pkgs.aos.apm pkgs.aos.apr];
+  cliRoots = [pkgs.aos pkgs.aos.apm pkgs.aos.apr pkgs.aos.packageRuntime];
   packageRoots = lib.uniqueBy builtins.toString (coreRoots ++ shellRoots ++ systemPackageSlice ++ cliRoots);
 in {
   config = {
@@ -27,7 +27,7 @@ in {
     inherit packageRoots;
     # Available handlers retain their implementations only when selected by
     # the checked graph, rather than installing the host provider set.
-    packageModules = lib.uniqueBy builtins.toString (packageRoots ++ [pkgs.aos-filesystem-provider pkgs.aos-configuration-provider]);
+    packageModules = lib.uniqueBy builtins.toString (packageRoots ++ [pkgs.aos-filesystem-provider pkgs.aos-configuration-provider pkgs.aos-init-provider]);
     layers = [
       {
         name = "runtime-core";
@@ -135,7 +135,9 @@ in {
 
     runtime = {
       entrypoint = ["/usr/bin/aos-container-init"];
-      command = ["/bin/bash"];
+      # The stable entrypoint selects the installed init. An explicit runtime
+      # command replaces it; an empty command falls back to the local shell.
+      command = [];
       environment = {
         AOS_RUNTIME = "container";
         HOME = "/root";

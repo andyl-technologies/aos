@@ -3,6 +3,9 @@
 //! Records carry a tagged JSON body inside the shared journal frame:
 //! `begin` retains the graph, `started` retains an exact invocation, `finished`
 //! retains checked results, and `commit` closes the active transaction.
+//! `begin-installation` binds restricted execution; `deferred-commit` closes it
+//! with the exact unexecuted dependency closure. `reused-installation` carries
+//! an existing one-shot outcome into startup without dispatching it again.
 //! `restoration-started` and `restoration-finished` reestablish completed
 //! resources without replacing the primary intent or its consumed results.
 
@@ -16,7 +19,7 @@ use serde_json::Value;
 
 use crate::journal::{JournalError, JournalLimits, JournalPayload};
 
-use super::{Action, Invocation, PreviousState};
+use super::{Action, ExecutionPolicy, Invocation, PreviousState};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "event", rename_all = "kebab-case", deny_unknown_fields)]
@@ -25,6 +28,14 @@ pub(super) enum Event {
         transaction: String,
         document: Value,
         retire: Vec<String>,
+    },
+    BeginInstallation {
+        transaction: String,
+        document: Value,
+        retire: Vec<String>,
+    },
+    DeferredCommit {
+        deferred: BTreeSet<String>,
     },
     Started {
         invocation: Box<Invocation>,
@@ -37,6 +48,9 @@ pub(super) enum Event {
     },
     RestorationFinished {
         outputs: Value,
+    },
+    ReusedInstallation {
+        id: String,
     },
     Released,
     Commit,
@@ -51,12 +65,17 @@ impl JournalPayload for Event {
             max_string_bytes: limits.max_string_bytes,
         };
         let values: Vec<&Value> = match self {
-            Self::Begin { document, .. } => vec![document],
+            Self::Begin { document, .. } | Self::BeginInstallation { document, .. } => {
+                vec![document]
+            }
             Self::Started { invocation } | Self::RestorationStarted { invocation } => {
                 vec![&invocation.input]
             }
             Self::Finished { outputs } | Self::RestorationFinished { outputs } => vec![outputs],
-            Self::Released | Self::Commit => vec![],
+            Self::Released
+            | Self::Commit
+            | Self::DeferredCommit { .. }
+            | Self::ReusedInstallation { .. } => vec![],
         };
         for value in values {
             bounds
@@ -85,6 +104,12 @@ pub(super) struct State {
     pub transaction: Option<String>,
     pub sequence: u64,
     pub completed: Option<(String, String, BTreeMap<String, Value>)>,
+    pub policy: ExecutionPolicy,
+    pub completed_policy: ExecutionPolicy,
+    pub completed_deferred: BTreeSet<String>,
+    pub deferred: BTreeSet<String>,
+    startup_desired: BTreeSet<String>,
+    startup_established: BTreeSet<String>,
     pub retire: Vec<String>,
     pub pending: Option<Invocation>,
     pub restoration: Vec<Invocation>,
@@ -160,7 +185,8 @@ impl State {
                         .order
                         .iter()
                         .take_while(|id| *id != &invocation.id)
-                        .all(|id| self.transaction_results.contains_key(id)),
+                        .all(|id| self.deferred.contains(id)
+                            || self.transaction_results.contains_key(id)),
                     "restoration violates completed graph prefix"
                 );
             }
@@ -177,6 +203,11 @@ impl State {
                 );
             }
             Event::Begin {
+                transaction,
+                document,
+                retire,
+            }
+            | Event::BeginInstallation {
                 transaction,
                 document,
                 retire,
@@ -216,11 +247,10 @@ impl State {
                 invocation.effect.check_input(&invocation.input)?;
                 let expected = match invocation.action {
                     Action::Apply => {
-                        let next = graph
-                            .graph()
-                            .order
-                            .iter()
-                            .find(|id| !self.transaction_results.contains_key(*id));
+                        let next = graph.graph().order.iter().find(|id| {
+                            !self.deferred.contains(*id)
+                                && !self.transaction_results.contains_key(*id)
+                        });
                         ensure!(
                             next == Some(&invocation.id),
                             "dispatch violates graph order"
@@ -237,9 +267,11 @@ impl State {
                             retained.invocation.effect.lifetime == Lifetime::Transaction;
                         ensure!(
                             (absent
+                                && self.removal_allowed(&retained.invocation.effect)
                                 && (retained.invocation.effect.lifetime != Lifetime::Persistent
                                     || self.retire.contains(&invocation.id)))
                                 || (temporary
+                                    && self.removal_allowed(&retained.invocation.effect)
                                     && self.transaction_results.len() == graph.graph().nodes.len()),
                             "teardown is not authorized by the active transaction"
                         );
@@ -269,11 +301,80 @@ impl State {
                     ),
                 }
             }
+            Event::ReusedInstallation { id } => {
+                ensure!(
+                    self.policy == ExecutionPolicy::Complete
+                        && self.completed_policy == ExecutionPolicy::Installation,
+                    "installation reuse requires startup completion"
+                );
+                ensure!(
+                    self.pending.is_none() && self.releases.is_empty(),
+                    "reuse during unfinished dispatch or cleanup"
+                );
+                let graph = self
+                    .active
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("reuse outside activation"))?;
+                ensure!(
+                    graph
+                        .graph()
+                        .order
+                        .iter()
+                        .find(|id| !self.transaction_results.contains_key(*id))
+                        == Some(id),
+                    "reuse violates graph order"
+                );
+                ensure!(
+                    self.can_reuse_installation(id)?,
+                    "reuse does not match an established installation outcome"
+                );
+            }
             Event::Released => ensure!(
                 !self.releases.is_empty(),
                 "artifact release without retained cleanup"
             ),
+            Event::DeferredCommit { deferred } => {
+                let graph = self
+                    .active
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("completion outside activation"))?;
+                ensure!(
+                    self.policy == ExecutionPolicy::Installation,
+                    "deferred completion outside installation"
+                );
+                ensure!(
+                    self.pending.is_none() && self.releases.is_empty(),
+                    "completion before dispatch or cleanup finishes"
+                );
+                ensure!(
+                    deferred == &self.deferred,
+                    "deferred completion differs from checked phase closure"
+                );
+                ensure!(
+                    self.transaction_results.len() + deferred.len() == graph.graph().nodes.len(),
+                    "installation completed before eligible effects"
+                );
+                ensure!(
+                    self.transaction_results
+                        .keys()
+                        .all(|id| graph.graph().nodes.contains_key(id) && !deferred.contains(id)),
+                    "installation outcome overlaps deferred effects"
+                );
+                ensure!(
+                    self.retained.iter().all(|(id, retained)| {
+                        !self.removal_allowed(&retained.invocation.effect)
+                            || graph.graph().nodes.contains_key(id)
+                            || (retained.invocation.effect.lifetime == Lifetime::Persistent
+                                && !self.retire.contains(id))
+                    }),
+                    "installation completion before required teardown"
+                );
+            }
             Event::Commit => {
+                ensure!(
+                    self.policy == ExecutionPolicy::Complete,
+                    "complete commit outside complete execution policy"
+                );
                 let graph = self
                     .active
                     .as_ref()
@@ -296,6 +397,42 @@ impl State {
             }
         }
         Ok(None)
+    }
+
+    pub fn removal_allowed(&self, effect: &Effect) -> bool {
+        if self.policy == ExecutionPolicy::Complete {
+            return true;
+        }
+        // Preserve the original graph's lifecycle requirement even when a
+        // transaction-scoped prerequisite has already been released.
+        effect.phase != aos_ability_plan::module_graph::ExecutionPhase::Startup
+            && !aos_ability_plan::module_graph::identity_key(&effect.identity)
+                .is_ok_and(|id| self.startup_established.contains(&id))
+    }
+
+    pub fn can_reuse_installation(&self, id: &str) -> Result<bool> {
+        if self.policy != ExecutionPolicy::Complete
+            || self.completed_policy != ExecutionPolicy::Installation
+        {
+            return Ok(false);
+        }
+        let Some(previous) = self.retained.get(id) else {
+            return Ok(false);
+        };
+        if previous.invocation.effect.lifetime != Lifetime::Transaction
+            || previous.invocation.effect.phase
+                != aos_ability_plan::module_graph::ExecutionPhase::Installation
+            || self.completed_deferred.contains(id)
+        {
+            return Ok(false);
+        }
+        let invocation = self.application(id)?;
+        Ok(previous.invocation.revision == invocation.revision
+            && previous.invocation.effect == invocation.effect
+            && self
+                .completed
+                .as_ref()
+                .is_some_and(|(_, _, outputs)| outputs.get(id) == Some(&previous.outputs)))
     }
 
     /// Reconstructs the only application authorized by the active graph.
@@ -358,10 +495,22 @@ impl State {
                 transaction,
                 retire,
                 ..
+            }
+            | Event::BeginInstallation {
+                transaction,
+                retire,
+                ..
             } => {
                 let desired = checked_graph
                     .ok_or_else(|| anyhow::anyhow!("begin without a checked graph"))?;
 
+                self.policy = if matches!(event, Event::BeginInstallation { .. }) {
+                    ExecutionPolicy::Installation
+                } else {
+                    ExecutionPolicy::Complete
+                };
+                self.deferred = self.policy.deferred_effects(&desired);
+                self.startup_desired = ExecutionPolicy::Installation.deferred_effects(&desired);
                 self.transaction = Some(transaction.clone());
                 self.sequence += 1;
                 self.active = Some(desired);
@@ -386,6 +535,11 @@ impl State {
                                 self.releases.push_back(previous.invocation.effect.clone());
                             }
                         }
+                        if self.startup_desired.contains(&invocation.id) {
+                            self.startup_established.insert(invocation.id.clone());
+                        } else {
+                            self.startup_established.remove(&invocation.id);
+                        }
                         self.retired.remove(&invocation.id);
                         self.retained.insert(
                             invocation.id.clone(),
@@ -403,6 +557,7 @@ impl State {
                         if artifact(&invocation.effect).is_some() {
                             self.releases.push_back(invocation.effect.clone());
                         }
+                        self.startup_established.remove(&invocation.id);
                         self.retained.remove(&invocation.id);
                         self.retired.insert(invocation.id.clone());
                         self.established.retain(|id| id != &invocation.id);
@@ -410,10 +565,18 @@ impl State {
                 }
                 self.pending = None;
             }
+            Event::ReusedInstallation { id } => {
+                let previous = self
+                    .retained
+                    .get(id)
+                    .ok_or_else(|| anyhow::anyhow!("reused installation outcome is absent"))?;
+                self.transaction_results
+                    .insert(id.clone(), previous.outputs.clone());
+            }
             Event::Released => {
                 self.releases.pop_front();
             }
-            Event::Commit => {
+            Event::Commit | Event::DeferredCommit { .. } => {
                 let active = self
                     .active
                     .as_ref()
@@ -424,9 +587,12 @@ impl State {
                     .ok_or_else(|| anyhow::anyhow!("commit without transaction identity"))?;
                 self.completed = Some((
                     transaction,
-                    fingerprint(active, &self.retire)?,
+                    policy_fingerprint(active, &self.retire, self.policy)?,
                     self.transaction_results.clone(),
                 ));
+                self.completed_policy = self.policy;
+                self.completed_deferred = self.deferred.clone();
+                self.deferred.clear();
                 self.active = None;
                 self.retire.clear();
                 self.transaction_results.clear();
@@ -746,4 +912,16 @@ mod tests {
                 .is_err()
         );
     }
+}
+
+pub(super) fn policy_fingerprint(
+    graph: &CheckedModuleGraph,
+    retire: &[String],
+    policy: ExecutionPolicy,
+) -> Result<String> {
+    let content = fingerprint(graph, retire)?;
+    if policy == ExecutionPolicy::Complete {
+        return Ok(content);
+    }
+    Ok(aos_contract::Sha256Digest::of_bytes(canonical::to_vec(&(content, policy))?).hex())
 }

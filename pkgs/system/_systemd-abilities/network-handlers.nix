@@ -21,7 +21,10 @@ in {
         default = accountPolicy.references;
         description = "Native account identities required by upstream network manager units.";
       };
-      handler = {inherit program;};
+      handler = {
+        inherit program;
+        phase = "startup";
+      };
     };
     ready = {
       input.options.prepared = lib.mkOption {
@@ -31,9 +34,15 @@ in {
           (lib.filterAttrs (_: effect: effect.enable) config.aos.abilities.network.operations.configure.effects);
         description = "Configured network resources required before observing readiness.";
       };
-      handler = {inherit program;};
+      handler = {
+        inherit program;
+        phase = "startup";
+      };
     };
-    bootstrap.handler = {inherit program;};
+    bootstrap.handler = {
+      inherit program;
+      phase = "startup";
+    };
   };
   aos.abilities.identity.operations = {
     group.effects = accountPolicy.groups;

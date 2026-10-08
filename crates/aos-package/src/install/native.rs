@@ -567,6 +567,13 @@ pub(crate) fn recover(profile: &Profile) -> Result<()> {
     )?;
     let mut consumer = ProfileDeployment::open(profile, store, journal_limits())?;
     let cancellation = crate::cancellation::AbilityCancellationGuard::install()?;
+    ensure!(
+        crate::container_environment::policy()?
+            != aos_ability_runtime::activation::ExecutionPolicy::Installation
+            || consumer.pending_policy()
+                != Some(aos_ability_runtime::activation::ExecutionPolicy::Complete),
+        "startup activation needs recovery; start the selected container init before changing packages"
+    );
     if let Some((descriptor_path, pending)) = consumer.recovery_evaluation()? {
         // Recovery can execute a different desired generation than the committed
         // profile. Check its exact staged descriptor against one current snapshot.
@@ -982,7 +989,12 @@ impl Prepared {
             Some(&self.observer),
             cancellation.token(),
         )?;
-        consumer.apply(&self.deployment, generation, cancellation.token())
+        consumer.apply_with_policy(
+            &self.deployment,
+            generation,
+            crate::container_environment::policy_for_deployment(&self.deployment)?,
+            cancellation.token(),
+        )
     }
 }
 
@@ -1258,7 +1270,12 @@ pub(crate) fn rollback_locked(
         Some((&target.path.join("evaluation.json"), &desired)),
         cancellation.token(),
     )?;
-    consumer.apply(&desired, &generation, cancellation.token())?;
+    consumer.apply_with_policy(
+        &desired,
+        &generation,
+        crate::container_environment::policy_for_deployment(&desired)?,
+        cancellation.token(),
+    )?;
     Ok(generation)
 }
 

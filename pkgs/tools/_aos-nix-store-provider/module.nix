@@ -12,7 +12,7 @@
   hostRuntime =
     cfg.enable
     && (config.aos.boot.stage or "host") == "host"
-    && lib.take 1 config.aos.activation.scope != ["container"];
+    && !(config.aos.initSystem.container or false);
   configuration = config.aos.abilities.configuration.operations.file.effects.nix-store;
   profiles = config.aos.abilities.filesystem.operations.view.effects.nix-profiles;
   bridge = config.aos.abilities.mount.operations.ensure.effects.nix-profile-gcroots;

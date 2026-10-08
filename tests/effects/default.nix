@@ -25,6 +25,7 @@
     stages = import ./stages.nix;
     frozenHandler = import ./frozen-handler.nix;
     bootConsumers = import ./boot-consumers.nix;
+    initSystem = import ./init-system.nix;
     hostActivationNamespace = hostActivationNamespace.checks;
     bakedTestStorage = import ./baked-test-storage.nix {inherit lib pkgs;};
     fleetBootPolicy = import ./fleet-boot-policy.nix {inherit lib pkgs;};

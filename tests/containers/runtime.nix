@@ -81,6 +81,24 @@
     destination = "/init";
     executable = true;
   };
+  unexpectedStartup = pkgs.writeShellScriptBin "aos-package-runtime" ''
+    printf 'read-only startup attempted package mutation\n' >&2
+    exit 99
+  '';
+  readOnlyInitProgram = pkgs.writeTextFile {
+    name = "aos-container-read-only-runtime-test-init";
+    text = import ../../pkgs/containers/_aos-oci-backend/container/init-script.nix {
+      inherit lib;
+      pkgs = pkgs // {aos = pkgs.aos // {packageRuntime = unexpectedStartup;};};
+      rootPrefix = testRoot;
+      registrationPath = "${referenceGraph}/registration";
+      storePathsPath = "${referenceGraph}/store-paths";
+      bakedRootsPath = "${bakedRootInventory}/baked-roots";
+      deploymentPath = "${testRoot}/usr/lib/aos-container/native-deployment";
+    };
+    destination = "/init";
+    executable = true;
+  };
   productionMetadata = containerImage.checks.metadataLayer;
   productionFacade = containerImage.checks.facadeLayer;
   productionReferenceGraph = containerImage.checks.referenceGraph;
@@ -110,6 +128,7 @@ in
         bakedRootInventory
         facadeLayer
         initProgram
+        readOnlyInitProgram
         productionFacade
         productionDockerArchive
         productionImage
@@ -234,7 +253,7 @@ in
           mkdir -p "$state_dir"
           chmod 0555 "$store_dir"
           PATH="$runtime_path" AOS_CONTAINER_TEST_RECORD="$record" \
-            ${initProgram}/init ${recorder}/bin/aos-container-runtime-recorder store-read-only
+            ${readOnlyInitProgram}/init ${recorder}/bin/aos-container-runtime-recorder store-read-only
           grep -Fx 'read-only=1' "$record" >/dev/null \
             || fail "read-only store did not export the runtime marker"
           cmp "$state_dir/.aos-container-read-only" - <<'EOF' \
@@ -312,6 +331,13 @@ in
           grep -Fx 'sandbox = false' production-metadata/etc/nix/nix.conf >/dev/null
           grep -Fx 'substituters =' production-metadata/etc/nix/nix.conf >/dev/null
           test -s production-metadata/usr/lib/aos/nix-registration
+          cmp production-metadata/etc/os-release production-metadata/usr/lib/aos/toplevel/os-release \
+            || fail "immutable container identity differs from the installed identity"
+          grep -Fx 'ID=aos' production-metadata/usr/lib/aos/toplevel/os-release >/dev/null
+          grep -Fx 'AOS_PACKAGE_MODULE_LIBRARY=${lib.packageModuleLibrary}' \
+            production-metadata/usr/lib/aos/toplevel/os-release >/dev/null
+          test "$(stat -c %a production-metadata/usr/lib/aos/toplevel/os-release)" = 444 \
+            || fail "immutable container identity mode is incorrect"
           cmp production-metadata/usr/lib/aos/nix-registration ${productionReferenceGraph}/registration \
             || fail "embedded production registration differs from the authoritative graph"
           cmp production-metadata/usr/lib/aos-container/store-paths \

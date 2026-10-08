@@ -8,6 +8,8 @@
   cfg = config.aos.services.nginx;
   types = lib.types;
   operations = config.aos.abilities;
+  managedServiceAvailable = operations.serviceManagement.operations.realize.handler != null;
+  configurationEnabled = config.aos.nginx.configuration.enable;
   resourceGroup = operations.serviceManagement.operations.resourceGroup.effects.${package.name};
   positiveInt = types.ints.between 1 9007199254740991;
   nonNegativeInt = types.ints.between 0 9007199254740991;
@@ -409,6 +411,18 @@
     builtins.map (host: host.root) (builtins.attrValues virtualHosts)
     ++ lib.concatMap (host: builtins.filter (value: value != null) (builtins.map (location: location.root) (builtins.attrValues host.locations))) (builtins.attrValues virtualHosts)
   );
+  directoryEffects = lib.mapAttrs (name: path: {
+    lifetime =
+      if name == "runtime"
+      then "instance"
+      else "persistent";
+    input = {
+      inherit path;
+      mode = "0750";
+    };
+  })
+  storagePaths;
+  directoryResources = lib.mapAttrsToList (name: _: operations.filesystem.operations.directory.effects."nginx-${name}".outputs.resource) directoryEffects;
   command = arguments: {
     executable = {
       path = "${package}/bin/nginx";
@@ -420,6 +434,7 @@
     configurationPath = operations.configuration.operations.file.effects.nginx.outputs.path;
   in {
     activationInputs = [operations.configuration.operations.file.effects.nginx.outputs.resource];
+    activationAfter = directoryResources;
     resources.resource_group = resourceGroup.outputs.name;
     policy.hardening = {
       allow_privilege_escalation = false;
@@ -553,6 +568,12 @@
     };
   };
 in {
+  options.aos.nginx.configuration.enable = lib.mkOption {
+    type = types.bool;
+    default = true;
+    description = "Materialize nginx configuration and package directories independently of service supervision.";
+  };
+
   options.aos.services = lib.mkOption {
     type = lib.types.lazyAttrsOf (lib.types.submodule ({
       name,
@@ -644,7 +665,10 @@ in {
 
   config = lib.mkMerge [
     {
-      aos.services.nginx = lib.mkDefault service;
+      aos.services.nginx = lib.mkDefault (service
+        // {
+          enable = managedServiceAvailable && cfg.virtualHosts != {};
+        });
 
       assertions = [
         {
@@ -656,15 +680,23 @@ in {
           message = "aos.services.nginx.enable requires at least one virtual host";
         }
         {
+          assertion = !cfg.enable || managedServiceAvailable;
+          message = "aos.services.nginx.enable requires a selected serviceManagement.realize handler";
+        }
+        {
+          assertion = !cfg.enable || configurationEnabled;
+          message = "aos.services.nginx.enable requires aos.nginx.configuration.enable";
+        }
+        {
           assertion =
-            !cfg.enable
+            !configurationEnabled
             || !usesTls
             || credentialConfigured tlsCredentials.certificate;
           message = "TLS-enabled nginx virtual hosts require a certificate credential reference";
         }
         {
           assertion =
-            !cfg.enable
+            !configurationEnabled
             || !usesTls
             || credentialConfigured tlsCredentials.privateKey;
           message = "TLS-enabled nginx virtual hosts require a private-key credential reference";
@@ -687,9 +719,22 @@ in {
         }
       ];
     }
-    (lib.mkIf cfg.enable {
+    (lib.mkIf configurationEnabled {
       aos.abilities = {
-        serviceManagement.operations.resourceGroup.effects.${package.name}.input.name = "aos-pkg-${package.name}";
+        filesystem.operations.directory.effects =
+          lib.mapAttrs' (name: value: lib.nameValuePair "nginx-${name}" value) directoryEffects
+          // builtins.listToAttrs (builtins.map (relativePath: {
+              name = "nginx-document-${builtins.hashString "sha256" relativePath}";
+              value = {
+                lifetime = "persistent";
+                input = {
+                  path = documentPath relativePath;
+                  parentResource = operations.filesystem.operations.directory.effects.nginx-state.outputs.resource;
+                  mode = "0750";
+                };
+              };
+            })
+            documentRoots);
         credential.operations.deliver.effects = lib.optionalAttrs usesTls {
           nginx-tls-certificate.input = tlsCredentials.certificate;
           nginx-tls-private-key.input = tlsCredentials.privateKey;
@@ -700,6 +745,9 @@ in {
           mode = "0444";
         };
       };
+    })
+    (lib.mkIf cfg.enable {
+      aos.abilities.serviceManagement.operations.resourceGroup.effects.${package.name}.input.name = "aos-pkg-${package.name}";
     })
   ];
 }

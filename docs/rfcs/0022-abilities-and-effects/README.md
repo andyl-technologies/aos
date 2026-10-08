@@ -14,6 +14,10 @@ recursive fixed point per installation scope. An ability operation declares
 typed input and result modules. Its selected handler is either a retained
 program or a composition of other operations. Evaluation produces a deferred
 effect graph; Rust checks and executes it, retaining results and generations.
+Installation can commit a generation with checked installation results and
+explicitly pending startup work. A complete activation receipt requires those
+startup effects to finish. The [container guide](../../users/aos/containers.md)
+explains image-build installation and startup convergence.
 
 ```mermaid
 flowchart LR

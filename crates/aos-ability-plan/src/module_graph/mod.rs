@@ -45,6 +45,9 @@ pub struct ModuleGraph {
 pub struct Effect {
     /// Names the package owning this operation, or the deployment environment.
     pub owner: String,
+    /// Selects the earliest lifecycle phase allowed to execute this operation.
+    #[serde(default, skip_serializing_if = "ExecutionPhase::is_installation")]
+    pub phase: ExecutionPhase,
     /// Names the environment, ability, operation, and invocation scope.
     pub identity: Vec<String>,
     /// Contains literal inputs and typed deferred references.
@@ -98,6 +101,23 @@ pub enum Handler {
         /// Connects the operation's results to their actual producers.
         exports: BTreeMap<String, OutputReference>,
     },
+}
+
+/// Selects when a process operation may establish its resources.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ExecutionPhase {
+    /// Executes while constructing or updating an installation.
+    #[default]
+    Installation,
+    /// Requires the deployment's startup environment.
+    Startup,
+}
+
+impl ExecutionPhase {
+    fn is_installation(&self) -> bool {
+        *self == Self::Installation
+    }
 }
 
 /// Determines when established state may be reused or automatically removed.

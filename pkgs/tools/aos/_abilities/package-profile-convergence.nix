@@ -9,7 +9,7 @@
   hostStage =
     (config.aos.boot.stage or "host")
     == "host"
-    && lib.take 1 config.aos.activation.scope != ["container"];
+    && !(config.aos.initSystem.container or false);
   specification = config.aos.abilities.configuration.operations.file.effects.package-profile-specification;
   service = {
     service = "package-profile-convergence";

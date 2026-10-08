@@ -80,7 +80,9 @@
       };
       rootfs = {
         closureRoots = ["${systemdPackage}"];
-        initExecutable = "${systemdPackage}/lib/systemd/systemd";
+        # Bootstrapping reads the declaration; the live installer prepares the
+        # identical command for subsequent launches without replacing PID 1.
+        initExecutable = config.aos.abilities.initSystem.operations.install.effects.default.input.executable;
         trees = [
           {
             collision = "reject";

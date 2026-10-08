@@ -19,7 +19,7 @@ mod tests;
 #[cfg(test)]
 mod restoration_tests;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::adapter::CancellationToken;
 use anyhow::Result;
@@ -160,3 +160,61 @@ pub trait ActivationAdapter {
 
 /// Returns the typed results produced by a complete activation transaction.
 pub type ActivationResults = BTreeMap<String, Value>;
+
+/// Limits execution to the environment currently available to the caller.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ExecutionPolicy {
+    /// Executes every configured operation and authorized teardown.
+    #[default]
+    Complete,
+    /// Establishes installation resources while retaining pending startup work.
+    Installation,
+}
+
+/// Reports actual operation results separately from unexecuted desired work.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct ActivationOutcome {
+    /// Contains only schema-checked outcomes from completed operations.
+    pub outputs: ActivationResults,
+    /// Names configured operations delayed until startup, including consumers.
+    pub deferred: BTreeSet<String>,
+}
+
+impl ExecutionPolicy {
+    /// Computes the receipt identity for a checked graph, retirement, and policy.
+    ///
+    /// # Errors
+    /// Returns an error if canonical graph or receipt encoding fails.
+    pub fn content_identity(
+        self,
+        graph: &aos_ability_plan::module_graph::CheckedModuleGraph,
+        retire: &BTreeSet<String>,
+    ) -> Result<String> {
+        let retirement: Vec<_> = retire.iter().cloned().collect();
+        journal::policy_fingerprint(graph, &retirement, self)
+    }
+
+    /// Computes the checked dependency closure awaiting startup under this policy.
+    #[must_use]
+    pub fn deferred_effects(
+        self,
+        graph: &aos_ability_plan::module_graph::CheckedModuleGraph,
+    ) -> BTreeSet<String> {
+        let mut deferred = BTreeSet::new();
+        if self == Self::Installation {
+            for id in &graph.graph().order {
+                let effect = &graph.graph().nodes[id];
+                if effect.phase == aos_ability_plan::module_graph::ExecutionPhase::Startup
+                    || effect
+                        .dependencies
+                        .iter()
+                        .any(|dependency| deferred.contains(dependency))
+                {
+                    deferred.insert(id.clone());
+                }
+            }
+        }
+        deferred
+    }
+}

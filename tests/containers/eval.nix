@@ -214,7 +214,10 @@
   experimentalFilePaths = map (file: file.path) experimentalAos.filesystem.files;
   experimentalFileText = lib.concatMapStringsSep "\n" (file: file.text) experimentalAos.filesystem.files;
   containerFilePaths = map (file: file.path) aos.filesystem.files;
-  containerNodes = builtins.attrValues (builtins.head server.config.system.build.containers.aos.deploymentArtifact.platforms).transaction.graph.nodes;
+  containerTransaction = (builtins.head server.config.system.build.containers.aos.deploymentArtifact.platforms).transaction;
+  containerNodes = builtins.attrValues containerTransaction.graph.nodes;
+  containerAbilities = lib.sort builtins.lessThan (lib.unique (map (node: builtins.elemAt node.identity 3) containerNodes));
+  containerInitNodes = builtins.filter (node: builtins.elemAt node.identity 3 == "initSystem") containerNodes;
 in
   assert aos.name == "aos";
   assert !aos.runtimePolicy.allowTestArtifacts;
@@ -238,9 +241,17 @@ in
   assert builtins.elem (builtins.toString pkgs.aos-configuration-provider) (map builtins.toString aos.packageModules);
   assert !(builtins.elem (builtins.toString pkgs.aos-configuration-provider) (map builtins.toString aos.packageRoots));
   assert !(builtins.elem (builtins.toString pkgs.systemd) (map builtins.toString aos.packageModules));
-  assert builtins.all (node:
-    builtins.elem (builtins.elemAt node.identity 3) ["filesystem" "configuration" "nixStoreDatabase"])
-  containerNodes;
+  assert aos.runtime.entrypoint == ["/usr/bin/aos-container-init"];
+  assert aos.runtime.command == [];
+  assert containerTransaction.scope == ["profile" "/var/lib/profiles/per-user/root"];
+  assert containerAbilities == ["configuration" "filesystem" "initSystem"];
+  assert builtins.all (node: node.phase == "installation") containerNodes;
+  assert builtins.length containerInitNodes == 1;
+  assert (builtins.head containerInitNodes).input
+  == {
+    executable = "${pkgs.bash}/bin/bash";
+    arguments = [];
+  };
   assert builtins.all (layer: let
     paths = map builtins.toString layer.subtractRoots;
   in

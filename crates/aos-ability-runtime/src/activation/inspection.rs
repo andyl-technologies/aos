@@ -62,6 +62,14 @@ pub struct CompletedTransaction {
     pub transaction: String,
     /// Identifies the checked graph and explicit retirement decision.
     pub content: String,
+    /// Names desired operations awaiting startup rather than completed outcomes.
+    pub deferred: BTreeSet<String>,
+    /// Identifies the execution environment bound to this receipt.
+    pub policy: super::ExecutionPolicy,
+    /// Preserves exact checked completion outcomes for paired-journal validation.
+    /// These potentially sensitive results are omitted from inspection JSON.
+    #[serde(skip)]
+    pub outputs: super::ActivationResults,
 }
 
 /// Preserves the exact established invocation and its checked result.
@@ -90,6 +98,8 @@ pub struct ActivationInspection {
     pub incomplete_tail_bytes: u64,
     /// Names the active transaction, if any.
     pub transaction: Option<String>,
+    /// Reports the execution policy bound to the active desired graph.
+    pub policy: Option<super::ExecutionPolicy>,
     /// Identifies its pending invocation, if any.
     pub pending: Option<DispatchIdentity>,
     /// Identifies the active restoration intent without replacing the primary dispatch.
@@ -195,16 +205,20 @@ fn project_snapshot(snapshot: JournalSnapshot<Event>) -> Result<ActivationInspec
             _ => None,
         };
         let event = match record.body() {
-            Event::Begin { .. } => "begin",
+            Event::Begin { .. } | Event::BeginInstallation { .. } => "begin",
             Event::Started { .. } => "started",
             Event::Finished { .. } => "finished",
             Event::RestorationStarted { .. } => "restoration-started",
             Event::RestorationFinished { .. } => "restoration-finished",
             Event::Released => "released",
+            Event::ReusedInstallation { .. } => "reused-installation",
             Event::Commit => "commit",
+            Event::DeferredCommit { .. } => "deferred-commit",
         };
         let transaction = match record.body() {
-            Event::Begin { transaction, .. } => Some(transaction.clone()),
+            Event::Begin { transaction, .. } | Event::BeginInstallation { transaction, .. } => {
+                Some(transaction.clone())
+            }
             _ => state.transaction.clone(),
         };
         state.apply(record.body())?;
@@ -257,11 +271,15 @@ fn project_snapshot(snapshot: JournalSnapshot<Event>) -> Result<ActivationInspec
         completed: state
             .completed
             .as_ref()
-            .map(|(transaction, content, _)| CompletedTransaction {
+            .map(|(transaction, content, outputs)| CompletedTransaction {
                 transaction: transaction.clone(),
                 content: content.clone(),
+                deferred: state.completed_deferred.clone(),
+                policy: state.completed_policy,
+                outputs: outputs.clone(),
             }),
         desired: state.active.as_ref().map(|graph| graph.document().clone()),
+        policy: state.transaction.as_ref().map(|_| state.policy),
         transaction: state.transaction,
         retained_outputs,
         retained_effects,

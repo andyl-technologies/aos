@@ -250,7 +250,7 @@
 in
   assert compatibility.checkSeeds packages;
   assert compatibility.checkOsRequirements (compatibility.osRequirements packages) osRelease;
-    (runArtifact "aos-${lib.concatStringsSep "-" scope}-deployment" {} ''
+    (runArtifact "aos-${lib.replaceStrings ["/"] ["-"] (lib.concatStringsSep "-" scope)}-deployment" {} ''
       # Validate the complete composed transaction at the same boundary used
       # by runtime activation, before publishing a bootable bundle.
       ${buildPackages.jq}/bin/jq -n \

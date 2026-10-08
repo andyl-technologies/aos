@@ -877,3 +877,352 @@ fn runtime_bindings_preserve_distinct_roles_for_the_same_package_name() {
     empty_binding["runtimeDependencies"][""] = dependency;
     assert!(Envelope::decode(&serde_json::to_vec(&empty_binding).unwrap()).is_err());
 }
+
+fn lifecycle_deployment(value: &str) -> (Deployment, String, String) {
+    let mut document: serde_json::Value =
+        serde_json::from_slice(&service_sized_deployment().canonical_bytes().unwrap()).unwrap();
+    let root = "/nix/store/00000000000000000000000000000000-handler";
+    let mut nodes = serde_json::Map::new();
+    let mut order = Vec::new();
+    for (name, phase) in [("files", "installation"), ("service", "startup")] {
+        let identity = vec!["profile".to_owned(), "main".to_owned(), name.to_owned()];
+        let id = aos_ability_plan::module_graph::identity_key(&identity).unwrap();
+        let mut node = json!({
+            "identity":identity, "owner":"@environment", "phase":phase,
+            "input":{"value":value},
+            "input_type":{"kind":"submodule","open":false,"fields":{"value":{"kind":"string"}}},
+            "after":[], "results":{"value":{"kind":"string"}},
+            "lifetime":"instance", "timeout_ms":1000,
+            "handler":{"kind":"process","artifact":root,"executable":format!("{root}/bin/run")}
+        });
+        let dependencies = if name == "service" {
+            node["input"]["value"] = json!({"_type":"aos-effect-output", "identity":["profile","main","files"], "output":"value", "schema":{"kind":"string"}});
+            order.clone()
+        } else {
+            Vec::new()
+        };
+        node["revision"] =
+            json!(aos_contract::Sha256Digest::of_bytes(serde_json::to_vec(&node).unwrap()).hex());
+        node["dependencies"] = json!(dependencies);
+        node["inputs"] = json!({});
+        nodes.insert(id.clone(), node);
+        order.push(id);
+    }
+    document["graph"] = json!({"schema":"aos.activation.graph", "nodes":nodes, "order":order});
+    let resolved = service_sized_deployment().resolved();
+    let desired = Deployment::decode(&serde_json::to_vec(&document).unwrap(), &resolved).unwrap();
+    (desired, order[0].clone(), order[1].clone())
+}
+
+struct RecordedOutcomes(Store);
+
+impl aos_ability_runtime::activation::ActivationAdapter for RecordedOutcomes {
+    fn retain(&mut self, effect: &Effect) -> Result<()> {
+        self.0.retain(effect)
+    }
+
+    fn release(&mut self, _: &Effect) -> Result<()> {
+        Ok(())
+    }
+
+    fn observe(
+        &mut self,
+        _: &aos_ability_runtime::activation::Invocation,
+        _: &CancellationToken,
+    ) -> Result<aos_ability_runtime::activation::Observation> {
+        Ok(aos_ability_runtime::activation::Observation::RetrySafe)
+    }
+
+    fn invoke(
+        &mut self,
+        invocation: &aos_ability_runtime::activation::Invocation,
+        _: &CancellationToken,
+    ) -> Result<serde_json::Value> {
+        Ok(match invocation.action {
+            aos_ability_runtime::activation::Action::Apply => invocation.input.clone(),
+            aos_ability_runtime::activation::Action::Remove => json!({}),
+        })
+    }
+}
+
+fn complete_native_effects(
+    directory: &std::path::Path,
+    store: &Store,
+    deployment: &Deployment,
+    identity: &str,
+    policy: aos_ability_runtime::activation::ExecutionPolicy,
+) {
+    // Exercise the supported durable effect/publication handoff without
+    // requiring a process fixture to be installed into the immutable store.
+    let mut activation = aos_ability_runtime::activation::Activation::open(
+        directory.join("effects.journal"),
+        JournalLimits::default(),
+    )
+    .unwrap();
+    activation
+        .activate_once_with_policy(
+            identity,
+            deployment.graph(),
+            deployment.retire(),
+            policy,
+            &mut RecordedOutcomes(store.clone()),
+            &CancellationToken::default(),
+        )
+        .unwrap();
+}
+
+#[test]
+fn consecutive_installations_publish_partial_receipts_and_start_only_latest_generation() {
+    use aos_ability_runtime::activation::ExecutionPolicy;
+
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::default();
+    store.0.lock().unwrap().admit_handlers = true;
+    let cancellation = CancellationToken::default();
+    let interrupted = CancellationToken::default();
+    interrupted.cancel();
+    let (first, files, service) = lifecycle_deployment("first");
+    let (second, _, _) = lifecycle_deployment("second");
+
+    for (sequence, desired, value) in [(1, &first, "first"), (2, &second, "second")] {
+        let mut transactions =
+            Transactions::open(directory.path(), store.clone(), JournalLimits::default()).unwrap();
+        assert!(
+            transactions
+                .apply_with_policy(desired, ExecutionPolicy::Installation, &interrupted)
+                .is_err()
+        );
+        assert_eq!(transactions.pending_sequence(), Some(sequence));
+        drop(transactions);
+
+        complete_native_effects(
+            directory.path(),
+            &store,
+            desired,
+            &format!("package-{sequence}-{}", desired.id().unwrap()),
+            ExecutionPolicy::Installation,
+        );
+        let mut transactions =
+            Transactions::open(directory.path(), store.clone(), JournalLimits::default()).unwrap();
+        let generation = transactions.resume(&cancellation).unwrap().unwrap();
+        assert_eq!(generation.sequence, sequence);
+        assert_eq!(generation.outputs[&files], json!({"value":value}));
+        assert!(!generation.outputs.contains_key(&service));
+        assert_eq!(generation.deferred, BTreeSet::from([service.clone()]));
+        assert_eq!(transactions.next_sequence().unwrap(), sequence + 1);
+        drop(transactions);
+    }
+
+    let mut transactions =
+        Transactions::open(directory.path(), store.clone(), JournalLimits::default()).unwrap();
+    transactions.prune(1).unwrap();
+    store.0.lock().unwrap().retained.clear();
+    transactions.restore_retention().unwrap();
+    assert_eq!(
+        store.0.lock().unwrap().retained,
+        BTreeSet::from([format!("package-2-{}", second.id().unwrap())])
+    );
+    assert!(
+        transactions
+            .reconcile_current_with_policy(ExecutionPolicy::Complete, &interrupted)
+            .is_err()
+    );
+    assert_eq!(transactions.current().unwrap().sequence, 2);
+    drop(transactions);
+
+    complete_native_effects(
+        directory.path(),
+        &store,
+        &second,
+        &format!("reconcile-2-1-{}", second.id().unwrap()),
+        ExecutionPolicy::Complete,
+    );
+    let mut transactions =
+        Transactions::open(directory.path(), store, JournalLimits::default()).unwrap();
+    let complete = transactions.resume(&cancellation).unwrap().unwrap();
+    assert_eq!(complete.sequence, 2);
+    assert!(complete.deferred.is_empty());
+    assert_eq!(complete.outputs[&service], json!({"value":"second"}));
+    assert_eq!(transactions.generations().len(), 1);
+    drop(transactions);
+
+    let snapshot = super::transaction::inspect(directory.path(), JournalLimits::default()).unwrap();
+    assert!(!snapshot.has_pending_work());
+    assert_eq!(snapshot.current().unwrap().outputs.len(), 2);
+    assert!(
+        snapshot
+            .activation()
+            .completed
+            .as_ref()
+            .unwrap()
+            .deferred
+            .is_empty()
+    );
+}
+
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+#[serde(transparent)]
+struct UncheckedNativeEvent(serde_json::Value);
+
+impl aos_ability_runtime::journal::JournalPayload for UncheckedNativeEvent {
+    fn validate_for_journal(
+        &self,
+        _: JournalLimits,
+    ) -> Result<(), aos_ability_runtime::journal::JournalError> {
+        Ok(())
+    }
+}
+
+#[test]
+fn native_replay_rejects_fabricated_and_incomplete_partial_results() {
+    use aos_ability_runtime::activation::ExecutionPolicy;
+    use aos_ability_runtime::journal::FileJournal;
+
+    let (desired, files, service) = lifecycle_deployment("ready");
+    let cases = [
+        (json!({}), vec![service.clone()]),
+        (
+            json!({files.clone():{"value":"ready"},service.clone():{"value":"invented"}}),
+            vec![service.clone()],
+        ),
+        (json!({files.clone():{"value":"ready"}}), Vec::new()),
+        (json!({files.clone():{"value":true}}), vec![service]),
+    ];
+    for (outputs, deferred) in cases {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::default();
+        store.0.lock().unwrap().admit_handlers = true;
+        let interrupted = CancellationToken::default();
+        interrupted.cancel();
+        let mut transactions =
+            Transactions::open(directory.path(), store.clone(), JournalLimits::default()).unwrap();
+        assert!(
+            transactions
+                .apply_with_policy(&desired, ExecutionPolicy::Installation, &interrupted)
+                .is_err()
+        );
+        drop(transactions);
+
+        let path = directory.path().join("generations.journal");
+        let opened =
+            FileJournal::<UncheckedNativeEvent>::open(&path, JournalLimits::default()).unwrap();
+        let mut journal = opened.journal;
+        journal
+            .append(&UncheckedNativeEvent(
+                json!({"event":"committed", "sequence":1, "outputs":outputs, "deferred":deferred}),
+            ))
+            .unwrap();
+        drop(journal);
+        let before = std::fs::read(&path).unwrap();
+
+        assert!(Transactions::open(directory.path(), store, JournalLimits::default()).is_err());
+        assert!(super::transaction::inspect(directory.path(), JournalLimits::default()).is_err());
+        assert_eq!(std::fs::read(path).unwrap(), before);
+    }
+}
+
+#[test]
+fn paired_journals_reject_schema_valid_fabricated_installation_results() {
+    use aos_ability_runtime::activation::ExecutionPolicy;
+    use aos_ability_runtime::journal::FileJournal;
+
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::default();
+    store.0.lock().unwrap().admit_handlers = true;
+    let (desired, files, service) = lifecycle_deployment("actual");
+    let interrupted = CancellationToken::default();
+    interrupted.cancel();
+    let mut transactions =
+        Transactions::open(directory.path(), store.clone(), JournalLimits::default()).unwrap();
+    assert!(
+        transactions
+            .apply_with_policy(&desired, ExecutionPolicy::Installation, &interrupted)
+            .is_err()
+    );
+    drop(transactions);
+    complete_native_effects(
+        directory.path(),
+        &store,
+        &desired,
+        &format!("package-1-{}", desired.id().unwrap()),
+        ExecutionPolicy::Installation,
+    );
+
+    // This result satisfies the graph's type and subset rules, but no actual
+    // operation produced it. Only the paired effects journal exposes the forgery.
+    let path = directory.path().join("generations.journal");
+    let opened =
+        FileJournal::<UncheckedNativeEvent>::open(&path, JournalLimits::default()).unwrap();
+    let mut journal = opened.journal;
+    journal
+        .append(&UncheckedNativeEvent(json!({
+            "event":"committed", "sequence":1,
+            "outputs":{files:{"value":"fabricated"}}, "deferred":[service],
+        })))
+        .unwrap();
+    drop(journal);
+    let before = std::fs::read(&path).unwrap();
+
+    let error = match Transactions::open(directory.path(), store, JournalLimits::default()) {
+        Ok(_) => panic!("fabricated package results accepted"),
+        Err(error) => error,
+    };
+    assert!(
+        error.to_string().contains("durable activation receipt"),
+        "{error:#}"
+    );
+    assert!(super::transaction::inspect(directory.path(), JournalLimits::default()).is_err());
+    assert_eq!(std::fs::read(path).unwrap(), before);
+}
+
+#[test]
+fn paired_journals_bind_active_graph_and_policy_to_native_preparation() {
+    use aos_ability_runtime::activation::{Activation, ExecutionPolicy};
+
+    let (desired, _, _) = lifecycle_deployment("actual");
+    let (changed, _, _) = lifecycle_deployment("changed");
+    for (graph, policy) in [
+        (&changed, ExecutionPolicy::Installation),
+        (&desired, ExecutionPolicy::Complete),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::default();
+        {
+            let mut state = store.0.lock().unwrap();
+            state.admit_handlers = true;
+            state.fail_preflight = true;
+        }
+        let interrupted = CancellationToken::default();
+        interrupted.cancel();
+        let mut transactions =
+            Transactions::open(directory.path(), store.clone(), JournalLimits::default()).unwrap();
+        assert!(
+            transactions
+                .apply_with_policy(&desired, ExecutionPolicy::Installation, &interrupted)
+                .is_err()
+        );
+        drop(transactions);
+
+        let mut activation = Activation::open(
+            directory.path().join("effects.journal"),
+            JournalLimits::default(),
+        )
+        .unwrap();
+        assert!(
+            activation
+                .activate_once_with_policy(
+                    &format!("package-1-{}", desired.id().unwrap()),
+                    graph.graph(),
+                    graph.retire(),
+                    policy,
+                    &mut RecordedOutcomes(store.clone()),
+                    &interrupted,
+                )
+                .is_err()
+        );
+        drop(activation);
+
+        assert!(Transactions::open(directory.path(), store, JournalLimits::default()).is_err());
+        assert!(super::transaction::inspect(directory.path(), JournalLimits::default()).is_err());
+    }
+}

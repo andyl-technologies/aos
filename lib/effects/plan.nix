@@ -29,6 +29,7 @@
       input = effect.input;
       inputs = effect.contract.inputs;
       input_type = effect.contract.input_type;
+      phase = execution.phase;
       lifetime = effect.lifetime;
       timeout_ms = effect.timeoutMs;
       after = effect.after;

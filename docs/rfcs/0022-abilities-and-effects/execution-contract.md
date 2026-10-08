@@ -64,10 +64,18 @@ reconciliation. Instance removal and transaction cleanup invoke teardown;
 persistent effects require explicit retirement. Handler artifacts remain rooted
 until the operation or its removal no longer needs recovery.
 
-`Transactions` commits a generation after effect completion. The most recent
-caller transaction receipt closes the crash window between those two commits.
-Recovery resumes pending work before accepting another generation. Retained
-generations supply rollback inputs; rollback is a new reconciliation transaction.
+`Transactions` commits a generation after the selected execution policy
+finishes. An `Installation` receipt retains checked results and the exact
+startup effects still pending, including their dependent consumers; it does not
+claim complete activation. A `Complete` receipt requires every selected effect
+to finish. Container startup converges the latest committed desired generation,
+rather than replaying obsolete startup work from earlier installations.
+
+The most recent caller transaction receipt records its policy, results, and
+deferred work, closing the crash window between effect and generation commits.
+Recovery resumes interrupted work under its original policy before accepting
+another generation. Retained generations supply rollback inputs; rollback is a
+new reconciliation transaction.
 Recovery first checks completed resource prerequisites through durable
 restoration intents, preserving the primary pending invocation and its original
 results. See [runtime recovery](../../users/aos/runtime-abilities.md#runtime-state-reconfiguration-and-recovery)
@@ -77,4 +85,6 @@ not compact the bounded journals.
 
 See [infrastructure cutover](infrastructure-cutover.md) for the concrete Rust APIs
 and [runtime abilities](../../users/aos/runtime-abilities.md) for the full
-build/publication/evaluation/execution path.
+build/publication/evaluation/execution path. The
+[container guide](../../users/aos/containers.md) covers installation before
+startup and selection of an init implementation.

@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
-use aos_ability_plan::module_graph::Handler;
+use aos_ability_plan::module_graph::{ExecutionPhase, Handler};
 
 use super::{DefinitionSource, ModuleReference, ModuleRequirement, NativeOption, Source};
 use crate::OptionType;
@@ -23,6 +23,13 @@ pub(super) fn type_label(option: &OptionType) -> String {
         OptionType::Opaque { signature } => signature.clone(),
         // Preserve all bounds and structured constraints in the portable notation.
         other => serde_json::to_string(other).unwrap_or_else(|_| format!("{other:?}")),
+    }
+}
+
+fn phase_label(phase: ExecutionPhase) -> &'static str {
+    match phase {
+        ExecutionPhase::Installation => "installation",
+        ExecutionPhase::Startup => "startup",
     }
 }
 
@@ -47,7 +54,7 @@ pub(super) fn plain(source: &Source) -> String {
                 reference.system
             );
             output
-                .push_str("Declarations and configured uses; no live runtime state.\n\nPackages\n");
+                .push_str("Declarations and configured uses; no live runtime state.\nHandler execution phases may depend on invocation inputs; checked transactions show the selected phase.\n\nPackages\n");
             for package in &reference.packages {
                 let _ = writeln!(output, "  {} {}", package.name, package.version);
                 if let Some(requirement) = &package.version_requirement {
@@ -146,10 +153,11 @@ pub(super) fn plain(source: &Source) -> String {
                 let effect = &graph.graph().nodes[id];
                 let _ = writeln!(
                     output,
-                    "\n{}. {}\n   Owner: {}\n   Lifetime: {:?}\n   Depends on: {}",
+                    "\n{}. {}\n   Owner: {}\n   Execution phase: {}\n   Lifetime: {:?}\n   Depends on: {}",
                     position + 1,
                     effect.identity.join(" / "),
                     effect.owner,
+                    phase_label(effect.phase),
                     effect.lifetime,
                     effect.dependencies.join(", ")
                 );
@@ -348,7 +356,7 @@ pub(super) fn html(source: &Source) -> String {
                     .or_default()
                     .push(requirement);
             }
-            html.push_str("<h3>Packages and environment</h3><p>Exposed contracts come from input/result declarations; consumed operations come from configured effects. Handler definitions link implementation ownership; Handler selected records availability in this fixed point. Configured instances may be disabled; only a checked transaction identifies the selected execution path.</p>");
+            html.push_str("<h3>Packages and environment</h3><p>Exposed contracts come from input/result declarations; consumed operations come from configured effects. Handler definitions link implementation ownership; Handler selected records availability in this fixed point. Configured instances may be disabled; only a checked transaction identifies the selected execution path. Handler execution phases may depend on invocation inputs; checked transactions show the selected phase.</p>");
             for (owner, relations) in owner_relations(reference) {
                 let _ = write!(
                     html,
@@ -539,10 +547,11 @@ pub(super) fn html(source: &Source) -> String {
                 let effect = &graph.graph().nodes[id];
                 let _ = write!(
                     html,
-                    "<li id=\"{}\"><strong>{}</strong><p>Owner: {}. Lifetime: {:?}.</p>",
+                    "<li id=\"{}\"><strong>{}</strong><p>Owner: {}. Execution phase: {}. Lifetime: {:?}.</p>",
                     scoped_anchor(namespace, "runtime-effect", id),
                     escape(&effect.identity.join(" / ")),
                     escape(&effect.owner),
+                    phase_label(effect.phase),
                     effect.lifetime
                 );
                 let _ = write!(
@@ -703,6 +712,8 @@ mod tests {
         let plain = document.render_plain();
         assert!(plain.contains("read-only: true, extensible: false"));
         assert!(plain.contains("Complete input contract:"));
+        assert!(plain.contains("Handler execution phases may depend on invocation inputs"));
+        assert!(html.contains("checked transactions show the selected phase"));
         assert!(plain.contains("max_items"));
         assert!(!plain.contains("secret-plumbing"));
         require_fragment_links_resolve(&html);
@@ -757,6 +768,52 @@ mod tests {
     }
 
     #[test]
+    fn legacy_transaction_shows_default_installation_phase() {
+        // The selected graph uses the authoritative phase default, not a
+        // handler declaration or the availability of configured instances.
+        let identity = vec!["host", "main", "consumer", "test", "echo", "one"];
+        let id = aos_ability_plan::module_graph::identity_key(
+            &identity
+                .iter()
+                .map(|segment| (*segment).into())
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        let mut node = json!({
+            "identity":identity,"owner":"consumer","input":{},
+            "inputs":{},"input_type":{"kind":"submodule","fields":{},"open":false},
+            "after":[],"results":{},
+            "handler":{"kind":"process","artifact":"/nix/store/00000000000000000000000000000000-handler",
+                "executable":"/nix/store/00000000000000000000000000000000-handler/bin/run"},
+            "dependencies":[],"lifetime":"instance","timeout_ms":1000
+        });
+        let mut semantic = node.as_object().unwrap().clone();
+        for key in ["inputs", "dependencies"] {
+            semantic.remove(key);
+        }
+        node["revision"] =
+            aos_contract::Sha256Digest::of_bytes(serde_json::to_vec(&semantic).unwrap())
+                .hex()
+                .into();
+        let value = json!({
+            "schema":"aos.package.transaction","scope":["host","main"],"system":"x86_64-linux",
+            "retire":[],"graph":{"schema":"aos.activation.graph","order":[id],"nodes":{(id):node}}
+        });
+        let document = document(value);
+
+        assert!(
+            document
+                .render_plain()
+                .contains("Execution phase: installation")
+        );
+        assert!(
+            document
+                .render_html()
+                .contains("Execution phase: installation")
+        );
+    }
+
+    #[test]
     fn checked_selection_shows_actual_inputs_revisions_and_composed_result_links() {
         let mut child = json!({
             "identity":["host","main","test","echo","child"],"owner":"@environment",
@@ -766,7 +823,7 @@ mod tests {
             "after":[],"results":{"value":{"kind":"string"}},
             "handler":{"kind":"process","artifact":"/nix/store/00000000000000000000000000000000-handler",
                 "executable":"/nix/store/00000000000000000000000000000000-handler/bin/run"},
-            "dependencies":[],"lifetime":"instance","timeout_ms":1000
+            "dependencies":[],"phase":"startup","lifetime":"instance","timeout_ms":1000
         });
         let child_identity: Vec<String> =
             serde_json::from_value(child["identity"].clone()).unwrap();
@@ -803,6 +860,7 @@ mod tests {
             "Logical ID",
             "Desired revision",
             "Attempt timeout: 1000 ms",
+            "Execution phase: startup",
             "Composes:",
             "Result value from",
             "previous-instance",
@@ -815,6 +873,7 @@ mod tests {
                 .render_plain()
                 .contains("Input: {\"message\":\"<chosen>\"}")
         );
+        assert!(document.render_plain().contains("Execution phase: startup"));
         require_fragment_links_resolve(&html);
         // Rendering never substitutes a reference catalog for the selected graph.
         assert_eq!(

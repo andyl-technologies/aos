@@ -4,17 +4,22 @@
 //! declarations. They intentionally run outside pure Nix builds because TPM2
 //! signed-PCR credential sealing depends on target/runtime key material.
 
-use std::fs::Permissions;
-use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
+use std::ffi::OsStr;
+use std::fs::{OpenOptions, Permissions};
+use std::io::Read;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use aos_ability_model::LocalKey;
 use aos_core::output::{OutputMode, Printer};
 
 use crate::CredentialCommand;
 use crate::types::validate_credential_ciphertext;
+
+const PROVIDER_LOCATOR: &str = "/etc/aos/providers/credential-encrypt";
+const MAX_PROVIDER_PATH_BYTES: u64 = 4096;
 
 /// Runs an `apm credential ...` helper command.
 pub(crate) fn run(command: &CredentialCommand, printer: &Printer) -> Result<()> {
@@ -105,8 +110,17 @@ fn encrypt_with_selected_provider(
     input: &Path,
     public_key: Option<&Path>,
 ) -> Result<String> {
-    let provider = std::env::var_os("AOS_CREDENTIAL_ENCRYPT_PROVIDER")
-        .context("the selected credential encryption provider is unavailable")?;
+    let override_path = std::env::var_os("AOS_CREDENTIAL_ENCRYPT_PROVIDER");
+    let provider = selected_provider(override_path.as_deref(), Path::new(PROVIDER_LOCATOR))?;
+    let resolved = std::fs::canonicalize(&provider)
+        .context("resolving the selected credential encryption provider")?;
+    checked_provider_path(resolved.as_os_str())?;
+    let metadata = std::fs::metadata(&resolved)?;
+    ensure!(
+        metadata.is_file() && metadata.permissions().mode() & 0o111 != 0,
+        "the selected credential encryption provider must be an executable store file"
+    );
+
     let mut command = Command::new(provider);
     command.arg("--name").arg(name).arg("--input").arg(input);
     if let Some(public_key) = public_key {
@@ -134,4 +148,123 @@ fn encrypt_with_selected_provider(
     validate_credential_ciphertext(&ciphertext)
         .context("credential encryption provider returned an invalid ciphertext")?;
     Ok(ciphertext)
+}
+
+/// Resolves the explicit override or the target's installed provider locator.
+fn selected_provider(override_path: Option<&OsStr>, locator: &Path) -> Result<PathBuf> {
+    if let Some(path) = override_path {
+        return checked_provider_path(path);
+    }
+
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(locator)
+        .context("the selected credential encryption provider is unavailable")?;
+    let metadata = file.metadata()?;
+    ensure!(
+        metadata.is_file() && metadata.len() <= MAX_PROVIDER_PATH_BYTES + 1,
+        "credential encryption provider locator must be a bounded regular file"
+    );
+
+    let mut content = String::new();
+    file.take(MAX_PROVIDER_PATH_BYTES + 2)
+        .read_to_string(&mut content)
+        .context("reading the selected credential encryption provider locator")?;
+    ensure!(
+        content.len() as u64 <= MAX_PROVIDER_PATH_BYTES + 1,
+        "credential encryption provider locator exceeds its byte bound"
+    );
+    let path = content.strip_suffix('\n').unwrap_or(&content);
+    checked_provider_path(OsStr::new(path))
+}
+
+/// Requires an exact executable locator within an immutable store object.
+fn checked_provider_path(value: &OsStr) -> Result<PathBuf> {
+    let value = value
+        .to_str()
+        .context("credential encryption provider path is not UTF-8")?;
+    ensure!(
+        value.len() as u64 <= MAX_PROVIDER_PATH_BYTES
+            && !value.contains(['\0', '\n', '\r'])
+            && value
+                .split('/')
+                .skip(1)
+                .all(|part| !matches!(part, "" | "." | "..")),
+        "credential encryption provider path must be a bounded canonical store path"
+    );
+    let path = PathBuf::from(value);
+    let (_, suffix) = crate::deployment::nix::store_root_and_suffix(&path)
+        .context("credential encryption provider must be retained in the Nix store")?;
+    ensure!(
+        !suffix.as_os_str().is_empty(),
+        "credential encryption provider must name an executable inside its store object"
+    );
+    Ok(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{checked_provider_path, selected_provider};
+    use std::ffi::OsStr;
+    use std::fs;
+    use std::os::unix::fs::symlink;
+
+    const PROVIDER: &str = "/nix/store/00000000000000000000000000000000-provider/bin/encrypt";
+
+    #[test]
+    fn installed_locator_selects_exact_provider() {
+        let temporary = tempfile::tempdir().unwrap();
+        let locator = temporary.path().join("provider");
+        fs::write(&locator, format!("{PROVIDER}\n")).unwrap();
+
+        assert_eq!(
+            selected_provider(None, &locator).unwrap(),
+            std::path::Path::new(PROVIDER)
+        );
+    }
+
+    #[test]
+    fn explicit_override_does_not_require_a_locator() {
+        let temporary = tempfile::tempdir().unwrap();
+
+        assert_eq!(
+            selected_provider(
+                Some(OsStr::new(PROVIDER)),
+                &temporary.path().join("missing")
+            )
+            .unwrap(),
+            std::path::Path::new(PROVIDER)
+        );
+    }
+
+    #[test]
+    fn locator_rejects_symlinks_and_oversized_contents() {
+        let temporary = tempfile::tempdir().unwrap();
+        let locator = temporary.path().join("provider");
+        let target = temporary.path().join("target");
+        fs::write(&target, PROVIDER).unwrap();
+        symlink(&target, &locator).unwrap();
+
+        assert!(selected_provider(None, &locator).is_err());
+
+        fs::remove_file(&locator).unwrap();
+        fs::write(&locator, "x".repeat(4098)).unwrap();
+
+        assert!(selected_provider(None, &locator).is_err());
+    }
+
+    #[test]
+    fn provider_paths_reject_host_paths_and_noncanonical_suffixes() {
+        for path in [
+            "/usr/bin/encrypt".to_owned(),
+            format!("{PROVIDER}\n\n"),
+            format!("{PROVIDER}/../other"),
+            format!("{PROVIDER}/./other"),
+            format!("{PROVIDER}//other"),
+            "/nix/store/00000000000000000000000000000000-provider".to_owned(),
+        ] {
+            assert!(checked_provider_path(OsStr::new(&path)).is_err(), "{path}");
+        }
+    }
 }

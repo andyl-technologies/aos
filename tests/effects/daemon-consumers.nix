@@ -225,7 +225,7 @@ in {
       (builtins.attrValues nixDaemon.deployment.graph.nodes))
     == 1)
   nixDaemonPersistentFiles; true;
-  dynamicStorageHasOneOwner = assert builtins.all
+  dynamicStorageKeepsManagerIdentity = assert builtins.all
   (name:
     evaluated.config.aos.services.${name}.identity.ephemeral
     && builtins.all (mount: mount.ownership == "service-identity" && mount.directory_mode != null)
@@ -234,7 +234,7 @@ in {
   assert !(builtins.any
     (node:
       builtins.elem "filesystem" node.identity
-      && builtins.elem node.owner ["nginx" "envoy" "etcd"])
+      && builtins.elem node.owner ["envoy" "etcd"])
     nodes); true;
   staticStorageKeepsProviderPermissions = assert builtins.all
   (mount: mount.ownership == "provider" && mount.directory_mode == null)
