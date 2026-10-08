@@ -1499,6 +1499,19 @@ output, measured maintenance or independent oracles are reached. The new run
 does not measure the individual costs of the earlier candidate's post-stage
 interval or establish DRV-29 qualification.
 
+The separate `899ba3119b` reuses one local read-buffer allocation within each
+complete native preimage sweep. Every fresh physical read, incarnation check,
+policy check, comparison and final current check remains in its original order;
+buffer capacity carries no authority across sweeps. Its native SDK build, strict
+library and all-target Clippy pass, as do all six real-worker cohort tests. The
+unchanged 1,024-entry witness still fails in 56.219 seconds: the original deadline
+rejects 30.00259983 seconds against 30 seconds after synchronizing
+`objects/index/21/53.idx`, during its final Raw current refresh. Independent
+review matches all 3,252 captured inputs to the sealed commit for all five
+original invocations. No acknowledgment return, post-stage timings, baseline
+output, measured maintenance or independent oracles are reached. Allocation
+cost remains unmeasured; this change does not qualify DRV-29 or advance a task.
+
 Shared native test-image registration preserves all 292 specification gates and
 69 current T0/T1 gate names. Its compiler output remains explicitly pending on
 trunk while the isolated implementation is reviewed. The intended reuse covers
