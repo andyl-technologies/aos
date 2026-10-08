@@ -1,0 +1,61 @@
+syntax = "proto3";
+
+package aos.sandbox.coordinator.v1;
+
+import "aos/sandbox/coordinator/v1/coordinator.proto";
+
+message AuthenticatedSessionBinding {
+  bytes node_uid = 1;
+  bytes node_boot_uid = 2;
+  uint64 node_boot_generation = 3;
+  bytes channel_binding_sha256 = 4;
+  bytes audience_sha256 = 5;
+  bytes disclosure_domain_sha256 = 6;
+  uint64 coordinator_epoch = 7;
+  uint64 authenticated_at_unix_seconds = 8;
+  uint64 valid_until_unix_seconds = 9;
+  ProtocolVersion protocol = 10;
+  uint32 maximum_request_bytes = 11;
+  uint32 maximum_response_bytes = 12;
+  bytes replay_fence_sha256 = 13;
+  bytes lineage_sha256 = 14;
+  bytes predecessor_boot_uid = 15;
+  bytes predecessor_lineage_sha256 = 16;
+  SemanticEncoding semantic_encoding = 17;
+}
+
+enum SemanticEncoding {
+  SEMANTIC_ENCODING_UNSPECIFIED = 0;
+  SEMANTIC_ENCODING_PROTOBUF_V1 = 1;
+  SEMANTIC_ENCODING_LEGACY_JSON_V1 = 2;
+}
+
+message CoordinatorNodeRequest {
+  bytes request_uid = 1;
+  AuthenticatedSessionBinding session = 2;
+  SemanticEnvelope semantic = 3;
+}
+
+message CoordinatorNodeResponse {
+  bytes request_uid = 1;
+  AuthenticatedSessionBinding session = 2;
+  SemanticEnvelope semantic = 3;
+}
+
+message OrderedWatchRequest {
+  WatchCursor cursor = 1;
+  uint32 maximum_events = 2;
+}
+
+message OrderedWatchBatch {
+  repeated WatchEvent events = 1;
+  WatchCursor next_cursor = 2;
+  WatchBinding resync_binding = 3;
+}
+
+// Code generation for this service is dormant. No router registers it and no
+// listener or readiness advertisement is introduced by this package.
+service CoordinatorNode {
+  rpc Exchange(CoordinatorNodeRequest) returns (CoordinatorNodeResponse);
+  rpc Watch(OrderedWatchRequest) returns (stream OrderedWatchBatch);
+}

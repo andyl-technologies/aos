@@ -5,7 +5,8 @@
 //! or readiness advertisement. Callers must provide and move response bytes.
 //! Handshake bytes and live session comparisons share one protobuf field map.
 
-use aos_proto::aos::sandbox::coordinator::v1 as wire;
+use aos_proto::aos::sandbox::coordinator::v1 as shared_wire;
+use aos_sandbox_coordinator_protocol::aos::sandbox::coordinator::v1 as wire;
 use aos_sandbox_core::{NodeId, ObjectDigest, OperationId, ProtocolVersion};
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
@@ -210,7 +211,7 @@ impl DormantAuthenticatedCoordinatorNodeTransportV1 {
             return Err(InvalidMultiNodeProtocol::SessionMismatch);
         }
         let semantic_bytes = self.codec.encode_request(body)?;
-        let semantic = wire::SemanticEnvelope::decode_from_slice(semantic_bytes.as_slice())
+        let semantic = shared_wire::SemanticEnvelope::decode_from_slice(semantic_bytes.as_slice())
             .map_err(|_| InvalidMultiNodeProtocol::NonCanonicalFrame)?;
         let generated = wire::CoordinatorNodeRequest {
             request_uid: request.as_bytes().to_vec(),
@@ -297,7 +298,7 @@ impl DormantAuthenticatedCoordinatorNodeTransportV1 {
         validate_response_body(&self.session, request.body(), body)?;
 
         let semantic_bytes = self.codec.encode_response(body)?;
-        let semantic = wire::SemanticEnvelope::decode_from_slice(semantic_bytes.as_slice())
+        let semantic = shared_wire::SemanticEnvelope::decode_from_slice(semantic_bytes.as_slice())
             .map_err(|_| InvalidMultiNodeProtocol::NonCanonicalFrame)?;
         let generated = wire::CoordinatorNodeResponse {
             request_uid: request.request().as_bytes().to_vec(),
@@ -554,7 +555,7 @@ fn session_binding_from_fields(
         coordinator_epoch,
         authenticated_at_unix_seconds,
         valid_until_unix_seconds,
-        protocol: Some(wire::ProtocolVersion {
+        protocol: Some(shared_wire::ProtocolVersion {
             major: u32::from(version.major()),
             minor: u32::from(version.minor()),
             ..Default::default()

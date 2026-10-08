@@ -3,6 +3,8 @@
 #[path = "build_support/coordinator_descriptor.rs"]
 mod coordinator_descriptor;
 
+use coordinator_descriptor::complete_schema_fingerprint;
+
 // Descriptor names are relative to the same include root used by protoc.
 const PROTO_FILES: [&str; 8] = [
     "aos/cache/v1/cache.proto",
@@ -26,15 +28,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let original_path = out_dir.join("aos-original-descriptor.bin");
     compile_descriptor(&original_path)?;
     let original = std::fs::read(&original_path)?;
-    let selected = coordinator_descriptor::select_descriptor(
+    coordinator_descriptor::validate_descriptor(
         &original,
-        std::env::var_os("CARGO_FEATURE_MULTI_NODE").is_some(),
+        coordinator_descriptor::COORDINATOR_FILE,
     )?;
-    let selected_path = out_dir.join("aos-selected-descriptor.bin");
-    std::fs::write(&selected_path, selected)?;
 
     connectrpc_build::Config::new()
-        .descriptor_set(&selected_path)
+        .descriptor_set(&original_path)
         .files(&PROTO_FILES)
         .include_file("_connectrpc.rs")
         // Track source inputs below, not the descriptor produced by this build.
@@ -84,7 +84,10 @@ fn verify_sandbox_coordinator_compatibility() -> Result<(), Box<dyn std::error::
     // syntax/package declarations, every message and enum field's spelling,
     // type, cardinality, number, oneof membership, and every RPC signature.
     // A V1 compatibility edit therefore requires an explicit baseline review.
-    const EXPECTED_COORDINATOR_V1_FINGERPRINT: u64 = 0xd99c_ce9e_ffb7_be9e;
+    // The original complete 0xd99c_ce9e_ffb7_be9e baseline is split only
+    // by ownership. These shared declarations and the selected transport file
+    // retain every original field, enum value and RPC signature.
+    const EXPECTED_COORDINATOR_V1_FINGERPRINT: u64 = 0x2898_7641_eee4_10f1;
     let actual = complete_schema_fingerprint(source);
     if actual != EXPECTED_COORDINATOR_V1_FINGERPRINT {
         return Err(std::io::Error::other(format!(
@@ -95,30 +98,6 @@ fn verify_sandbox_coordinator_compatibility() -> Result<(), Box<dyn std::error::
     }
     println!("cargo:rerun-if-changed=src/proto/aos/sandbox/coordinator/v1/coordinator.proto");
     Ok(())
-}
-
-fn complete_schema_fingerprint(source: &str) -> u64 {
-    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
-    const FNV_PRIME: u64 = 0x100000001b3;
-    let mut fingerprint = FNV_OFFSET;
-    let mut first = true;
-    for declaration in source
-        .lines()
-        .filter_map(|line| line.split("//").next())
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-    {
-        if !first {
-            fingerprint ^= u64::from(b'\n');
-            fingerprint = fingerprint.wrapping_mul(FNV_PRIME);
-        }
-        for byte in declaration.bytes() {
-            fingerprint ^= u64::from(byte);
-            fingerprint = fingerprint.wrapping_mul(FNV_PRIME);
-        }
-        first = false;
-    }
-    fingerprint
 }
 
 fn verify_sandbox_local_compatibility() -> Result<(), Box<dyn std::error::Error>> {

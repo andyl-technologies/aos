@@ -1,35 +1,34 @@
-//! Selects coordinator RPC generation without changing persistence DATA.
+//! Validates authoritative coordinator descriptors without selecting or rewriting DATA.
 //!
-//! The complete schema remains compatibility-owned. Only its descriptor's
-//! coordinator service declarations are omitted from default code generation;
-//! messages, enums, options, source information, and unknown fields survive.
+//! Shared local generation and the separately selected transport owner both
+//! pass protoc's complete original bytes to the generator after validation.
 
 use buffa::Message;
 use buffa_codegen::generated::descriptor::FileDescriptorSet;
 
-/// Names the authoritative coordinator schema relative to the proto include root.
+/// Names the shared schema relative to the proto include root.
 pub(super) const COORDINATOR_FILE: &str = "aos/sandbox/coordinator/v1/coordinator.proto";
 
-/// Names the unchanged module package shared by local DATA and optional RPCs.
+/// Names the unchanged package shared by local DATA and optional transport.
 pub(super) const COORDINATOR_PACKAGE: &str = "aos.sandbox.coordinator.v1";
 
-/// Selects the code-generation descriptor after validating its coordinator file.
+/// Validates the named coordinator file in a complete code-generation descriptor.
 ///
 /// # Errors
 ///
 /// Returns an error for invalid descriptor bytes, invalid tooling decode limits,
 /// a missing or duplicate coordinator file, a mismatched package, or an
 /// oversized encoded descriptor.
-pub(super) fn select_descriptor(
+pub(super) fn validate_descriptor(
     original: &[u8],
-    multi_node: bool,
-) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    expected_file: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     let options = buffa_codegen::tooling_decode_options().map_err(std::io::Error::other)?;
-    let mut descriptor = options.decode_from_slice::<FileDescriptorSet>(original)?;
+    let descriptor = options.decode_from_slice::<FileDescriptorSet>(original)?;
     let mut coordinator_files = descriptor
         .file
-        .iter_mut()
-        .filter(|file| file.name.as_deref() == Some(COORDINATOR_FILE));
+        .iter()
+        .filter(|file| file.name.as_deref() == Some(expected_file));
     let coordinator = coordinator_files.next().ok_or_else(|| {
         std::io::Error::other("code-generation descriptor is missing the coordinator file")
     })?;
@@ -46,12 +45,32 @@ pub(super) fn select_descriptor(
         .into());
     }
 
-    // The opt-in path passes protoc's original bytes to the existing generator.
-    // Default generation changes just this vector; buffa's descriptor model
-    // retains unknown fields, unlike a reduced/manual descriptor projection.
-    if multi_node {
-        return Ok(original.to_vec());
+    // Preserve the encoder bound without replacing the original descriptor bytes.
+    descriptor.try_encode_to_vec()?;
+    Ok(())
+}
+
+/// Computes the complete comment-free schema compatibility fingerprint.
+pub(super) fn complete_schema_fingerprint(source: &str) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+    let mut fingerprint = FNV_OFFSET;
+    let mut first = true;
+    for declaration in source
+        .lines()
+        .filter_map(|line| line.split("//").next())
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        if !first {
+            fingerprint ^= u64::from(b'\n');
+            fingerprint = fingerprint.wrapping_mul(FNV_PRIME);
+        }
+        for byte in declaration.bytes() {
+            fingerprint ^= u64::from(byte);
+            fingerprint = fingerprint.wrapping_mul(FNV_PRIME);
+        }
+        first = false;
     }
-    coordinator.service.clear();
-    Ok(descriptor.try_encode_to_vec()?)
+    fingerprint
 }

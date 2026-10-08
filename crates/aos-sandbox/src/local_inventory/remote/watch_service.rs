@@ -5,7 +5,7 @@
 
 use std::collections::VecDeque;
 
-use aos_proto::aos::sandbox::coordinator::v1 as wire;
+use aos_sandbox_coordinator_protocol::aos::sandbox::coordinator::v1 as wire;
 use aos_sandbox_core::ObjectDigest;
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};

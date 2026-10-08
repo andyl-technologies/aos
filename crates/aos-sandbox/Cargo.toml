@@ -7,7 +7,7 @@ license.workspace = true
 [features]
 # Selects reserved remote placement, transport and watch adapters explicitly.
 # Local lease issuance and snapshot inventory remain available without it.
-multi-node = ["aos-proto/multi-node"]
+multi-node = ["dep:aos-sandbox-coordinator-protocol"]
 # Compiles private fixed-helper mechanics without installing an authority caller.
 git-helper-mechanics = []
 # Run explicitly in the AOS kernel-test VM, outside the package-build sandbox.
@@ -22,6 +22,7 @@ project-negative-recovery-vm-fixture = []
 [dependencies]
 aos-filesystem-view-core.workspace = true
 aos-proto.workspace = true
+aos-sandbox-coordinator-protocol = { workspace = true, optional = true }
 aos-sandbox-agent.workspace = true
 aos-sandbox-guest-root-tree.workspace = true
 aos-sandbox-broker-session-protocol.workspace = true
