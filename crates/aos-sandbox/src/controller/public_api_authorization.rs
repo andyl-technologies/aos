@@ -5,24 +5,169 @@
 //! a certificate registration alone grants authority. RPC admission constructs
 //! its canonical authorization envelope from the exact body received on the
 //! retained stream.
+//!
+//! The same private owner binds authenticated local-session records through
+//! the shared protected capability evaluator. Its Journal and fixed clock stay
+//! together across both paths; transport evidence and current authorization
+//! remain separate inputs to exact request binding.
 
 use aos_sandbox_core::CapabilityId;
 
-use super::{
-    AuditAuthorizationV1, AuthenticatedCliChannelEvidenceV1, AuthenticatedCliIdentityEvidenceV1,
-    AuthenticatedCliSessionEvidenceV1, CliAuthorizationAdapterError, ControllerProtectedClockV1,
-    CurrentProtectedCliAuthorizationV1, DORMANT_CLI_OBSERVATION_SCHEMA_V1,
-    DecodedAuthenticatedCliRequestV1, DormantAuthenticatedCliRequestV1,
-    DormantCliAuthorizationOwnerV1, PublisherAuthorityLimits, PublisherPolicyLimits,
-};
+use super::{ActivatedOperationCompiler, ControllerProtectedClockV1, NodeController};
 use crate::PublicOperationAuthorizationV1;
-use crate::cli_model::PublicMutationAuthorizationV1;
+use crate::SingleNodeEffectExecutor;
 use crate::cli_model::authorization_adapter::{
-    CurrentCapabilityDecisionV1, PublicApiAuditMethodV1, canonical_public_audit_request_v2,
+    AuthenticatedCliChannelEvidenceV1, AuthenticatedCliIdentityEvidenceV1,
+    AuthenticatedCliSessionEvidenceV1, CliAuthorizationAdapterError, CurrentCapabilityDecisionV1,
+    CurrentProtectedCliAuthorizationV1, DecodedAuthenticatedCliRequestV1,
+    DormantAuthenticatedCliRequestV1, PublicApiAuditMethodV1, canonical_public_audit_request_v2,
     canonical_public_mutation_request_v2,
+};
+use crate::cli_model::{
+    AuditAuthorizationV1, AuthorizedOperatorRecoveryV1, AuthorizedResolvedMutationV1,
+    DormantClientStatePlanV1, DormantSandboxOutputV1, DormantSandboxRequestV1,
+    OperatorRecoveryRequestV1, PublicMutationAuthorizationV1, RequestProvenanceV1,
+    ResolvedPublicMutationV1,
 };
 use crate::public_api_session::PublicApiPeer;
 use crate::public_mutation_compiler::ResolvedPublicMutationRequestV1;
+use crate::publisher_authority::PublisherAuthorityLimits;
+use crate::publisher_policy::PublisherPolicyLimits;
+
+#[cfg(target_os = "linux")]
+const DORMANT_CLI_OBSERVATION_SCHEMA_V1: &[u8] = b"aos.sandbox.cli.observation-schema.v1\0";
+
+/// Borrows the controller's sole protected journal for dormant CLI authorization.
+///
+/// Construction belongs to [`NodeController::dormant_cli_authorization`] and
+/// the fixed protected public-compiler bridges in this module.
+/// It cannot be redirected to a caller-selected journal and exposes no journal
+/// accessor, command registration, route, or effect-dispatch operation. Its
+/// fixed clock owner reads only kernel realtime, BOOTTIME, and boot identity;
+/// callers cannot supply samples or replace its source.
+#[cfg(target_os = "linux")]
+#[must_use = "the dormant CLI authorization owner must be used while borrowed"]
+pub(crate) struct DormantCliAuthorizationOwnerV1<'controller> {
+    journal: &'controller mut crate::Journal,
+    protected_clock: ControllerProtectedClockV1,
+}
+
+#[cfg(target_os = "linux")]
+impl DormantCliAuthorizationOwnerV1<'_> {
+    /// Authenticates and routes one mutation with retained sealed authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CliAuthorizationAdapterError`] unless the authenticated payload,
+    /// protected authorization head, resolver result, and routed protobuf agree.
+    pub(crate) fn authorize_routed_mutation<F>(
+        &mut self,
+        authenticated: &crate::local_sessions::AuthenticatedLocalRecord<'_>,
+        output: DormantSandboxOutputV1,
+        client_state: DormantClientStatePlanV1,
+        resolve: F,
+    ) -> Result<DormantSandboxRequestV1, CliAuthorizationAdapterError>
+    where
+        F: FnOnce(
+            &DecodedAuthenticatedCliRequestV1,
+            &RequestProvenanceV1,
+        ) -> ResolvedPublicMutationV1,
+    {
+        let authorized = self.authorize_mutation(authenticated, resolve)?;
+        DormantSandboxRequestV1::from_authorized_mutation(authorized, output, client_state)
+            .map_err(|_| CliAuthorizationAdapterError::MutationBindingMismatch)
+    }
+
+    /// Authenticates and authorizes one exact protected operator-recovery request.
+    pub(crate) fn authorize_operator_recovery(
+        &mut self,
+        authenticated: &crate::local_sessions::AuthenticatedLocalRecord<'_>,
+        request: OperatorRecoveryRequestV1,
+    ) -> Result<AuthorizedOperatorRecoveryV1, CliAuthorizationAdapterError> {
+        self.authenticate_request(authenticated)?
+            .authorize_operator_recovery(request)
+    }
+
+    /// Authenticates, currently authorizes, resolves, and seals one CLI mutation.
+    ///
+    /// The authenticated local record supplies every transport identity. The
+    /// resolver receives only the nonforgeable provenance created after exact
+    /// request and protected-state binding, allowing it to construct required
+    /// action-specific fences before the same one-shot authority is consumed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CliAuthorizationAdapterError`] when live transport rechecking,
+    /// protected current authorization, exact binding, or mutation fencing fails.
+    pub(crate) fn authorize_mutation<F>(
+        &mut self,
+        authenticated: &crate::local_sessions::AuthenticatedLocalRecord<'_>,
+        resolve: F,
+    ) -> Result<AuthorizedResolvedMutationV1, CliAuthorizationAdapterError>
+    where
+        F: FnOnce(
+            &DecodedAuthenticatedCliRequestV1,
+            &RequestProvenanceV1,
+        ) -> ResolvedPublicMutationV1,
+    {
+        let request = self.authenticate_request(authenticated)?;
+        let mutation = resolve(request.decoded_request(), request.mutation_provenance()?);
+        request.authorize_mutation(mutation)
+    }
+
+    /// Authenticates and currently authorizes one exact CLI audit request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CliAuthorizationAdapterError`] when live transport rechecking,
+    /// protected current authorization, exact binding, or surface checks fail.
+    pub(crate) fn authorize_audit(
+        &mut self,
+        authenticated: &crate::local_sessions::AuthenticatedLocalRecord<'_>,
+    ) -> Result<AuditAuthorizationV1, CliAuthorizationAdapterError> {
+        self.authenticate_request(authenticated)?.authorize_audit()
+    }
+
+    fn authenticate_request(
+        &mut self,
+        authenticated: &crate::local_sessions::AuthenticatedLocalRecord<'_>,
+    ) -> Result<DormantAuthenticatedCliRequestV1, CliAuthorizationAdapterError> {
+        authenticated
+            .recheck_execution_scope()
+            .map_err(|_| CliAuthorizationAdapterError::InvalidAuthenticatedEvidence)?;
+
+        let principal = authenticated.scope().holder;
+        let session_id = authenticated.session_id();
+        let decoded =
+            DecodedAuthenticatedCliRequestV1::decode_authenticated(authenticated.payload())?;
+        let identity =
+            AuthenticatedCliIdentityEvidenceV1::from_verified_transport_identity(principal)?;
+        let session = AuthenticatedCliSessionEvidenceV1::from_verified_session(
+            principal,
+            session_id.as_bytes(),
+        )?;
+        let channel = AuthenticatedCliChannelEvidenceV1::from_verified_channel(
+            principal,
+            session_id.as_bytes(),
+            authenticated.channel_binding(),
+            authenticated.payload(),
+            DORMANT_CLI_OBSERVATION_SCHEMA_V1,
+        )?;
+        let authorization = CurrentProtectedCliAuthorizationV1::from_current_protected_capability(
+            self.journal,
+            PublisherAuthorityLimits::default(),
+            PublisherPolicyLimits::default(),
+            authenticated.capability_id(),
+            authenticated.scope().project,
+            &mut self.protected_clock,
+            &decoded,
+            &identity,
+            &channel,
+        )?;
+
+        DormantAuthenticatedCliRequestV1::bind(decoded, identity, session, channel, authorization)
+    }
+}
 
 /// Inspects an original fixed Gateway request against the sole protected engine.
 /// The opaque owner, not received scalar fields, establishes its live origin.
@@ -53,17 +198,23 @@ pub(crate) fn prepare_original_gateway_git_read_v1(
 
     let facts = match original.begin_evaluation(acceptor) {
         Ok(facts) => facts,
-        Err(cause) => { original.decision = Some(Err(cause)); return None; }
+        Err(cause) => {
+            original.decision = Some(Err(cause));
+            return None;
+        }
     };
     let lookup = (|| {
-        let registry = PublisherCapabilityRegistry::load(journal, PublisherAuthorityLimits::default())?;
+        let registry =
+            PublisherCapabilityRegistry::load(journal, PublisherAuthorityLimits::default())?;
         registry.resolve_holder_handle(&facts.holder, facts.principal, facts.binding)
     })();
     let capability = match lookup {
         Ok(capability) => capability,
         Err(cause) => {
             original.lookup_failure = Some(cause);
-            original.decision = Some(Err(CliAuthorizationAdapterError::ProtectedAuthorizationRejected));
+            original.decision = Some(Err(
+                CliAuthorizationAdapterError::ProtectedAuthorizationRejected,
+            ));
             return None;
         }
     };
@@ -375,5 +526,33 @@ impl DormantCliAuthorizationOwnerV1<'_> {
             authorization,
         )?;
         Ok((authenticated, decision))
+    }
+}
+
+impl<C, E> NodeController<C, E>
+where
+    C: ActivatedOperationCompiler,
+    E: SingleNodeEffectExecutor,
+{
+    /// Borrows the sole controller journal for dormant authenticated CLI requests.
+    ///
+    /// This source-only factory registers no public command or route and grants
+    /// no effect authority. The returned owner derives CLI provenance from
+    /// an authenticated local-session record or a live registered public TLS
+    /// peer, the fixed controller-owned paired clock, and current protected
+    /// state. Both paths bind the capability to the authenticated project.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProtectedOwnershipClockError`](crate::ProtectedOwnershipClockError)
+    /// when the fixed kernel boot identity cannot be read or validated.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn dormant_cli_authorization(
+        &mut self,
+    ) -> Result<DormantCliAuthorizationOwnerV1<'_>, crate::ProtectedOwnershipClockError> {
+        Ok(DormantCliAuthorizationOwnerV1 {
+            journal: self.reconciler.journal_mut(),
+            protected_clock: ControllerProtectedClockV1::open_fixed()?,
+        })
     }
 }

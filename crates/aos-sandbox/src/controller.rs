@@ -19,25 +19,13 @@ use aos_sandbox_ownership_protocol::protocol::session_client::OwnershipAuthority
 #[cfg(target_os = "linux")]
 use sha2::{Digest as _, Sha256};
 
-use crate::cli_model::{
-    AuthorizedOperatorRecoveryV1, DormantPublicApiClientV1,
-    OperatorRecoveryRequestV1,
-};
+use crate::cli_model::DormantPublicApiClientV1;
 #[cfg(test)]
 use crate::RecordNamespace;
 
 #[cfg(target_os = "linux")]
-use crate::cli_model::authorization_adapter::{
-    AuthenticatedCliChannelEvidenceV1, AuthenticatedCliIdentityEvidenceV1,
-    AuthenticatedCliSessionEvidenceV1, CliAuthorizationAdapterError,
-    CurrentProtectedCliAuthorizationV1, DecodedAuthenticatedCliRequestV1,
-    DormantAuthenticatedCliRequestV1,
-};
-#[cfg(target_os = "linux")]
 use crate::cli_model::{
-    AuditAuthorizationV1, AuthorizedResolvedMutationV1, CheckedPolicyPlanV1,
-    DormantClientStatePlanV1, DormantSandboxOutputV1, DormantSandboxRequestV1,
-    PublicApiAuditMethodV1, RequestProvenanceV1, ResolvedPublicMutationV1,
+    AuditAuthorizationV1, CheckedPolicyPlanV1, PublicApiAuditMethodV1,
 };
 #[cfg(target_os = "linux")]
 use crate::public_policy_planner::{
@@ -105,6 +93,12 @@ mod original_attach_grant;
 #[cfg(target_os = "linux")]
 mod public_api_authorization;
 #[cfg(target_os = "linux")]
+mod protected_clock;
+#[cfg(target_os = "linux")]
+pub(crate) use protected_clock::ControllerProtectedClockV1;
+#[cfg(target_os = "linux")]
+pub(crate) use public_api_authorization::DormantCliAuthorizationOwnerV1;
+#[cfg(target_os = "linux")]
 pub(crate) use public_api_authorization::prepare_original_gateway_git_read_v1;
 #[cfg(target_os = "linux")]
 pub use original_attach_grant::{
@@ -121,8 +115,6 @@ const PUBLIC_REQUEST_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.controller-public-requ
 const MAXIMUM_ACTIVATION_BYTES: usize = 1024 * 1024;
 const MAXIMUM_PENDING_OPERATIONS: usize = 1_000_000;
 const MAXIMUM_RECONCILIATION_QUANTUM: usize = 4096;
-#[cfg(target_os = "linux")]
-const DORMANT_CLI_OBSERVATION_SCHEMA_V1: &[u8] = b"aos.sandbox.cli.observation-schema.v1\0";
 
 /// Identifies one closed activated service method in request digests.
 ///
@@ -693,205 +685,6 @@ struct RecoveryCurrentHeadV1 {
     transition: (i64, u32),
 }
 
-/// Borrows the controller's sole protected journal for dormant CLI authorization.
-///
-/// Only [`NodeController::dormant_cli_authorization`] constructs this owner.
-/// It cannot be redirected to a caller-selected journal and exposes no journal
-/// accessor, command registration, route, or effect-dispatch operation. Its
-/// fixed clock owner reads only kernel realtime, BOOTTIME, and boot identity;
-/// callers cannot supply samples or replace its source.
-#[cfg(target_os = "linux")]
-#[must_use = "the dormant CLI authorization owner must be used while borrowed"]
-pub(crate) struct DormantCliAuthorizationOwnerV1<'controller> {
-    journal: &'controller mut crate::Journal,
-    protected_clock: ControllerProtectedClockV1,
-}
-
-#[cfg(target_os = "linux")]
-impl DormantCliAuthorizationOwnerV1<'_> {
-    /// Authenticates and routes one mutation with retained sealed authority.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CliAuthorizationAdapterError`] unless the authenticated payload,
-    /// protected authorization head, resolver result, and routed protobuf agree.
-    pub(crate) fn authorize_routed_mutation<F>(
-        &mut self,
-        authenticated: &crate::local_sessions::AuthenticatedLocalRecord<'_>,
-        output: DormantSandboxOutputV1,
-        client_state: DormantClientStatePlanV1,
-        resolve: F,
-    ) -> Result<DormantSandboxRequestV1, CliAuthorizationAdapterError>
-    where
-        F: FnOnce(
-            &DecodedAuthenticatedCliRequestV1,
-            &RequestProvenanceV1,
-        ) -> ResolvedPublicMutationV1,
-    {
-        let authorized = self.authorize_mutation(authenticated, resolve)?;
-        DormantSandboxRequestV1::from_authorized_mutation(authorized, output, client_state)
-            .map_err(|_| CliAuthorizationAdapterError::MutationBindingMismatch)
-    }
-
-    /// Authenticates and authorizes one exact protected operator-recovery request.
-    pub(crate) fn authorize_operator_recovery(
-        &mut self,
-        authenticated: &crate::local_sessions::AuthenticatedLocalRecord<'_>,
-        request: OperatorRecoveryRequestV1,
-    ) -> Result<AuthorizedOperatorRecoveryV1, CliAuthorizationAdapterError> {
-        self.authenticate_request(authenticated)?
-            .authorize_operator_recovery(request)
-    }
-
-    /// Authenticates, currently authorizes, resolves, and seals one CLI mutation.
-    ///
-    /// The authenticated local record supplies every transport identity. The
-    /// resolver receives only the nonforgeable provenance created after exact
-    /// request and protected-state binding, allowing it to construct required
-    /// action-specific fences before the same one-shot authority is consumed.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CliAuthorizationAdapterError`] when live transport rechecking,
-    /// protected current authorization, exact binding, or mutation fencing fails.
-    pub(crate) fn authorize_mutation<F>(
-        &mut self,
-        authenticated: &crate::local_sessions::AuthenticatedLocalRecord<'_>,
-        resolve: F,
-    ) -> Result<AuthorizedResolvedMutationV1, CliAuthorizationAdapterError>
-    where
-        F: FnOnce(
-            &DecodedAuthenticatedCliRequestV1,
-            &RequestProvenanceV1,
-        ) -> ResolvedPublicMutationV1,
-    {
-        let request = self.authenticate_request(authenticated)?;
-        let mutation = resolve(request.decoded_request(), request.mutation_provenance()?);
-        request.authorize_mutation(mutation)
-    }
-
-    /// Authenticates and currently authorizes one exact CLI audit request.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CliAuthorizationAdapterError`] when live transport rechecking,
-    /// protected current authorization, exact binding, or surface checks fail.
-    pub(crate) fn authorize_audit(
-        &mut self,
-        authenticated: &crate::local_sessions::AuthenticatedLocalRecord<'_>,
-    ) -> Result<AuditAuthorizationV1, CliAuthorizationAdapterError> {
-        self.authenticate_request(authenticated)?.authorize_audit()
-    }
-
-    fn authenticate_request(
-        &mut self,
-        authenticated: &crate::local_sessions::AuthenticatedLocalRecord<'_>,
-    ) -> Result<DormantAuthenticatedCliRequestV1, CliAuthorizationAdapterError> {
-        authenticated
-            .recheck_execution_scope()
-            .map_err(|_| CliAuthorizationAdapterError::InvalidAuthenticatedEvidence)?;
-
-        let principal = authenticated.scope().holder;
-        let session_id = authenticated.session_id();
-        let decoded =
-            DecodedAuthenticatedCliRequestV1::decode_authenticated(authenticated.payload())?;
-        let identity =
-            AuthenticatedCliIdentityEvidenceV1::from_verified_transport_identity(principal)?;
-        let session = AuthenticatedCliSessionEvidenceV1::from_verified_session(
-            principal,
-            session_id.as_bytes(),
-        )?;
-        let channel = AuthenticatedCliChannelEvidenceV1::from_verified_channel(
-            principal,
-            session_id.as_bytes(),
-            authenticated.channel_binding(),
-            authenticated.payload(),
-            DORMANT_CLI_OBSERVATION_SCHEMA_V1,
-        )?;
-        let authorization = CurrentProtectedCliAuthorizationV1::from_current_protected_capability(
-            self.journal,
-            PublisherAuthorityLimits::default(),
-            PublisherPolicyLimits::default(),
-            authenticated.capability_id(),
-            authenticated.scope().project,
-            &mut self.protected_clock,
-            &decoded,
-            &identity,
-            &channel,
-        )?;
-
-        DormantAuthenticatedCliRequestV1::bind(decoded, identity, session, channel, authorization)
-    }
-}
-
-#[cfg(target_os = "linux")]
-pub(crate) struct ControllerProtectedClockV1 {
-    provenance: aos_sandbox_core::RawClockProvenance,
-    host_boot_id: [u8; 16],
-}
-
-#[cfg(target_os = "linux")]
-impl ControllerProtectedClockV1 {
-    pub(crate) fn open_fixed() -> Result<Self, crate::ProtectedOwnershipClockError> {
-        let boot_id = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
-            .map_err(|_| crate::ProtectedOwnershipClockError)?;
-        let compact = boot_id.trim().replace('-', "");
-        if compact.len() != 32 {
-            return Err(crate::ProtectedOwnershipClockError);
-        }
-        let mut host_boot_id = [0_u8; 16];
-        for (target, pair) in host_boot_id
-            .iter_mut()
-            .zip(compact.as_bytes().chunks_exact(2))
-        {
-            let high = fixed_hex_nibble(pair[0]).ok_or(crate::ProtectedOwnershipClockError)?;
-            let low = fixed_hex_nibble(pair[1]).ok_or(crate::ProtectedOwnershipClockError)?;
-            *target = (high << 4) | low;
-        }
-        let provenance = aos_sandbox_core::RawClockProvenance::new_untrusted(*b"aos-cli-clock-v1")
-            .map_err(|_| crate::ProtectedOwnershipClockError)?;
-
-        Ok(Self {
-            provenance,
-            host_boot_id,
-        })
-    }
-
-    pub(crate) fn sample(
-        &mut self,
-    ) -> Result<RawPairedClockSample, crate::ProtectedOwnershipClockError> {
-        let boottime = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
-        let realtime = rustix::time::clock_gettime(rustix::time::ClockId::Realtime);
-        let boottime_nanoseconds = u64::try_from(boottime.tv_sec)
-            .ok()
-            .and_then(|seconds| seconds.checked_mul(1_000_000_000))
-            .and_then(|value| {
-                u64::try_from(boottime.tv_nsec)
-                    .ok()
-                    .and_then(|nanoseconds| value.checked_add(nanoseconds))
-            })
-            .ok_or(crate::ProtectedOwnershipClockError)?;
-
-        RawPairedClockSample::new_untrusted(
-            self.provenance,
-            self.host_boot_id,
-            realtime.tv_sec,
-            boottime_nanoseconds,
-        )
-        .map_err(|_| crate::ProtectedOwnershipClockError)
-    }
-}
-
-#[cfg(target_os = "linux")]
-const fn fixed_hex_nibble(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
-    }
-}
-
 impl<C, E> NodeController<C, E>
 where
     C: ActivatedOperationCompiler,
@@ -974,28 +767,6 @@ where
             compiler,
             reconciler,
         }
-    }
-
-    /// Borrows the sole controller journal for dormant authenticated CLI requests.
-    ///
-    /// This source-only factory registers no public command or route and grants
-    /// no effect authority. The returned owner derives CLI provenance from
-    /// an authenticated local-session record or a live registered public TLS
-    /// peer, the fixed controller-owned paired clock, and current protected
-    /// state. Both paths bind the capability to the authenticated project.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ProtectedOwnershipClockError`](crate::ProtectedOwnershipClockError)
-    /// when the fixed kernel boot identity cannot be read or validated.
-    #[cfg(target_os = "linux")]
-    pub(crate) fn dormant_cli_authorization(
-        &mut self,
-    ) -> Result<DormantCliAuthorizationOwnerV1<'_>, crate::ProtectedOwnershipClockError> {
-        Ok(DormantCliAuthorizationOwnerV1 {
-            journal: self.reconciler.journal_mut(),
-            protected_clock: ControllerProtectedClockV1::open_fixed()?,
-        })
     }
 
     /// Borrows the protected publisher capability registry for controller administration.
