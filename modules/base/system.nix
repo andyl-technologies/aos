@@ -148,7 +148,7 @@ in {
 
       # /etc/hostname — static hostname file.
       # systemd-hostnamed reads this on boot.
-      environment.etc."hostname" = {
+      environment.etc."hostname" = lib.mkIf (config.aos.networking.hostName != null) {
         text = config.aos.networking.hostName + "\n";
       };
 

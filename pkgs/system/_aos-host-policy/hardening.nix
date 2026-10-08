@@ -5,6 +5,7 @@
   ...
 }: let
   cfg = config.aos.security.hardening;
+  containerTarget = config.aos.initSystem.container or false;
 in {
   options.aos.security.hardening = {
     ## Enable system hardening (sysctl, core dump restrictions).
@@ -29,52 +30,55 @@ in {
     ## ```
     sysctl = lib.mkOption {
       type = lib.types.attrsOf lib.types.str;
-      default = {
-        # -- Address space layout randomization --
-        "kernel.randomize_va_space" = "2";
+      default =
+        if containerTarget
+        then {}
+        else {
+          # -- Address space layout randomization --
+          "kernel.randomize_va_space" = "2";
 
-        # -- Kernel pointer and debug restrictions --
-        "kernel.kptr_restrict" = "2";
-        "kernel.dmesg_restrict" = "1";
-        "kernel.perf_event_paranoid" = "3";
-        "kernel.yama.ptrace_scope" = "2";
+          # -- Kernel pointer and debug restrictions --
+          "kernel.kptr_restrict" = "2";
+          "kernel.dmesg_restrict" = "1";
+          "kernel.perf_event_paranoid" = "3";
+          "kernel.yama.ptrace_scope" = "2";
 
-        # -- Network hardening: IPv4 (all zone) --
-        "net.ipv4.conf.all.rp_filter" = "1";
-        "net.ipv4.conf.all.accept_redirects" = "0";
-        "net.ipv4.conf.all.send_redirects" = "0";
-        "net.ipv4.conf.all.accept_source_route" = "0";
-        "net.ipv4.conf.all.log_martians" = "1";
-        "net.ipv4.icmp_echo_ignore_broadcasts" = "1";
-        "net.ipv4.tcp_syncookies" = "1";
+          # -- Network hardening: IPv4 (all zone) --
+          "net.ipv4.conf.all.rp_filter" = "1";
+          "net.ipv4.conf.all.accept_redirects" = "0";
+          "net.ipv4.conf.all.send_redirects" = "0";
+          "net.ipv4.conf.all.accept_source_route" = "0";
+          "net.ipv4.conf.all.log_martians" = "1";
+          "net.ipv4.icmp_echo_ignore_broadcasts" = "1";
+          "net.ipv4.tcp_syncookies" = "1";
 
-        # -- Network hardening: IPv4 (default zone) --
-        # The "all" zone only applies to interfaces that existed when
-        # the sysctls were set; "default" is inherited by NICs brought
-        # up later (hotplug, late DHCP, second-NIC hardware).
-        "net.ipv4.conf.default.rp_filter" = "1";
-        "net.ipv4.conf.default.accept_redirects" = "0";
-        "net.ipv4.conf.default.accept_source_route" = "0";
-        "net.ipv4.conf.default.log_martians" = "1";
+          # -- Network hardening: IPv4 (default zone) --
+          # The "all" zone only applies to interfaces that existed when
+          # the sysctls were set; "default" is inherited by NICs brought
+          # up later (hotplug, late DHCP, second-NIC hardware).
+          "net.ipv4.conf.default.rp_filter" = "1";
+          "net.ipv4.conf.default.accept_redirects" = "0";
+          "net.ipv4.conf.default.accept_source_route" = "0";
+          "net.ipv4.conf.default.log_martians" = "1";
 
-        # Secure ICMP redirects: accept only from listed gateways.
-        "net.ipv4.conf.all.secure_redirects" = "1";
-        "net.ipv4.conf.default.secure_redirects" = "1";
+          # Secure ICMP redirects: accept only from listed gateways.
+          "net.ipv4.conf.all.secure_redirects" = "1";
+          "net.ipv4.conf.default.secure_redirects" = "1";
 
-        # Ignore malformed ICMP error responses (prevents log-spam DoS).
-        "net.ipv4.icmp_ignore_bogus_error_responses" = "1";
+          # Ignore malformed ICMP error responses (prevents log-spam DoS).
+          "net.ipv4.icmp_ignore_bogus_error_responses" = "1";
 
-        # -- Network hardening: IPv6 --
-        "net.ipv6.conf.all.accept_redirects" = "0";
-        "net.ipv6.conf.default.accept_redirects" = "0";
-        "net.ipv6.conf.all.accept_source_route" = "0";
-        "net.ipv6.conf.default.accept_source_route" = "0";
+          # -- Network hardening: IPv6 --
+          "net.ipv6.conf.all.accept_redirects" = "0";
+          "net.ipv6.conf.default.accept_redirects" = "0";
+          "net.ipv6.conf.all.accept_source_route" = "0";
+          "net.ipv6.conf.default.accept_source_route" = "0";
 
-        # -- Filesystem protections --
-        "fs.protected_hardlinks" = "1";
-        "fs.protected_symlinks" = "1";
-        "fs.suid_dumpable" = "0";
-      };
+          # -- Filesystem protections --
+          "fs.protected_hardlinks" = "1";
+          "fs.protected_symlinks" = "1";
+          "fs.suid_dumpable" = "0";
+        };
       description = ''
         Kernel parameters converged through the native kernel-tunable
         provider. The defaults follow CIS benchmark recommendations for

@@ -14,14 +14,15 @@ let
         [
           ../../lib/effects/module.nix
           ../../pkgs/system/_service-management/module.nix
+          ../../pkgs/system/_init-system/module.nix
+          ../../pkgs/system/_kmod-abilities/module.nix
+          ../../pkgs/tools/_aos-kernel-tunable-provider/module.nix
+          ../../pkgs/system/_aos-host-policy/kernel.nix
+          ../../pkgs/system/_aos-host-policy/hardening.nix
           ../../pkgs/system/_aos-host-policy/networking.nix
           ../../pkgs/networking/_nftables/module.nix
           ../../pkgs/security/_audit/module.nix
           ({lib, ...}: {
-            options.aos.kernel.sysctl = lib.mkOption {
-              type = lib.types.attrsOf lib.types.str;
-              default = {};
-            };
             options.aos.kernel.commandLineParts = lib.mkOption {
               type = lib.types.attrsOf (lib.types.listOf lib.types.str);
               default = {};
@@ -45,6 +46,19 @@ let
     aos.networkPolicy.enable = false;
   };
   explicit = evaluate {aos.networking.interfaces.eth0.address = "192.0.2.5/24";};
+  container = evaluate {aos.initSystem.container = true;};
+  explicitContainer = evaluate {
+    aos.initSystem.container = true;
+    aos.kernel.bbr = true;
+    aos.kernel.sysctl."vm.swappiness" = "25";
+    aos.security.hardening.sysctl."kernel.kptr_restrict" = "1";
+    aos.networking = {
+      hostName = "authored-container";
+      tuning."net.core.somaxconn" = "1024";
+      interfaces.eth0.address = "192.0.2.6/24";
+    };
+    aos.networkPolicy.enable = true;
+  };
   links = evaluated: evaluated.config.aos.abilities.network.operations.configure.effects.host.input.links;
   defaultLink = builtins.head (links defaults);
   explicitLink = builtins.head (links explicit);
@@ -68,5 +82,38 @@ in {
   baselineFirewallEnabled = defaults.config.aos.networkPolicy.enable && defaults.config.aos.abilities.networkPolicy.operations.ruleset.effects.host.enable;
   baselineAuditEnabled = defaults.config.aos.security.audit.enable && defaults.config.aos.services."audit.auditd".enable && defaults.config.aos.services."audit.audit-rules".enable;
   explicitSecurityDisablePreserved = disabled.config.aos.abilities.networkPolicy.operations.ruleset.effects == {} && disabled.config.aos.abilities.serviceManagement.operations.realize.effects == {};
+  hostKernelDefaultsUnchanged =
+    defaults.config.aos.kernel.bbr
+    && defaults.config.aos.kernel.sysctl."fs.inotify.max_user_instances" == "8192"
+    && defaults.config.aos.kernel.sysctl."kernel.kptr_restrict" == "2"
+    && defaults.config.aos.kernel.sysctl."kernel.hostname" == "aos";
+  containerKernelDefaultsAreInert =
+    !container.config.aos.kernel.bbr
+    && container.config.aos.kernel.sysctl == {}
+    && container.config.aos.abilities.kernelTunables.operations.ensure.effects == {}
+    && container.config.aos.abilities.kernelModules.operations.ensure.effects == {};
+  containerNetworkDefaultsAreInert =
+    !container.config.aos.networking.useDHCP
+    && !container.config.aos.networking.resolved.enable
+    && container.config.aos.networking.hostName == null
+    && container.config.aos.abilities.network.operations.configure.effects == {}
+    && !container.config.aos.networkPolicy.enable;
+  containerUserspaceHardeningRemains =
+    container.config.aos.security.hardening.enable
+    && container.config.aos.abilities.configuration.operations.file.effects.hardening-limits.enable;
+  explicitContainerKernelPolicyIsRetained =
+    explicitContainer.config.aos.kernel.bbr
+    && explicitContainer.config.aos.kernel.sysctl."vm.swappiness" == "25"
+    && explicitContainer.config.aos.kernel.sysctl."kernel.kptr_restrict" == "1"
+    && explicitContainer.config.aos.kernel.sysctl."net.core.somaxconn" == "1024"
+    && explicitContainer.config.aos.kernel.sysctl."kernel.hostname" == "authored-container"
+    && explicitContainer.config.aos.abilities.kernelTunables.operations.ensure.effects.settings.enable
+    && explicitContainer.config.aos.abilities.kernelModules.operations.ensure.effects.kernel-policy.enable;
+  explicitContainerNetworkingIsRetained =
+    (builtins.head (links explicitContainer)).addressing.addresses
+    == ["192.0.2.6/24"]
+    && explicitContainer.config.aos.networkPolicy.enable
+    && explicitContainer.config.aos.abilities.networkPolicy.operations.ruleset.effects.host.enable;
   defaultGraphChecked = builtins.deepSeq graph true;
+  containerGraphsChecked = builtins.deepSeq container.config.aos.activation.graph (builtins.deepSeq explicitContainer.config.aos.activation.graph true);
 }
