@@ -234,6 +234,7 @@ pub use production_root_mount_source_provider::{
 pub use production_service::{
     ProductionBrokerDeadlineErrorV1, ProductionBrokerServiceErrorV1, ProductionMountBrokerOwnersV1,
     ProductionOriginalMountCycleV1, ProductionOriginalMountCycleFailureV1,
+    ProductionOriginalNixGenerationCycleV1,
     production_deadline_after,
 };
 pub use production_source_provider::{

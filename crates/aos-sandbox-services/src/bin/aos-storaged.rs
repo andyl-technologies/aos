@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use aos_sandbox_broker_session_security::{
     DormantAuthenticatedBrokerSessionV1, ProductionBrokerSessionActivationErrorV1,
+    ProductionOriginalNixGenerationCycleV1,
     production_deadline_after,
 };
 use aos_sandbox_linux::cgroup::CgroupV2Root;
@@ -455,7 +456,7 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
         // The named Session operation returns its opaque concrete cycle. It
         // needs no public constructor, raw owner export, or empty-custody factory.
         let mut original_output_cycle = None;
-        let mut original_generation_cycle = None;
+        let mut original_generation_cycle: Option<ProductionOriginalNixGenerationCycleV1> = None;
         let mut generation_accepted = nix_generation_selected.then(|| Box::new(None));
         loop {
             // An unresolved sidecar hold admits its same-socket recovery and a
@@ -1273,8 +1274,9 @@ mod tests {
     use std::ffi::OsString;
 
     use super::{
-        GIT_COVERAGE_ARGUMENT, StorageStartupCommandV4, parse_arguments, parse_provision_source,
-        parse_selected_startup_command, parse_startup_command,
+        GIT_COVERAGE_ARGUMENT, NIX_GENERATION_ARGUMENT, StorageStartupCommandV4, parse_arguments,
+        parse_nix_generation_startup_command, parse_provision_source, parse_selected_startup_command,
+        parse_startup_command,
     };
 
     fn service_arguments(zfs_key: &str, output_key: &str) -> Vec<OsString> {
