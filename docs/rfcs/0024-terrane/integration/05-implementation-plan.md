@@ -1823,6 +1823,20 @@ the actual successful names, log hash, result and derivation input/output bindin
 and all 5,020 immutable source files with their executable bits against the
 frozen worktree. The broader local collector auxiliary is still running;
 its partial prerequisite results do not qualify its complete fourteen-case body.
+That original auxiliary request subsequently exits successfully on the same
+frozen source. Its ten prerequisites report eighty successful exact executions,
+and all fourteen direct local-v1 retirement and post-Done cases pass, totaling
+94 successful occurrences across 88 distinct cases with zero failed or ignored.
+The earlier owning mark output is reused as its same-source prerequisite;
+it is not executed a second time. Independent review verifies all fifty
+evidence artifacts, the direct discovery and execution selectors against their
+actual successful names, all twelve derivation outputs and their common source,
+and all 6,074 tracked contents, modes and symlink targets. The two indexed
+Nextest cases retain unchanged pre/post executable bindings. The packaged
+SDK test image also matches all 3,069 recorded source inputs and its eight
+finalized files. These successful checks cover ordinary local-v1 retirement,
+physical recovery and post-Done reuse on this source; they do not qualify
+the separate joint candidate or the missing D-82 collector paths.
 GC-15, GC-16 and GC-29 also require D-82 copied-retirement and permanent-owner
 recovery. The current source implements their codecs and portable-copy
 registration, but no genuine copied or permanent-owner collector path.
