@@ -319,6 +319,14 @@ explicit failing qualification guards for the native DRV-12 indexed-value limit
 refusal and DRV-29 multi-edit batching/resynchronization witnesses. Registration
 and successful evaluation do not qualify this gate or any owning task.
 
+The corrected raw-selector fixture on `9e20164d3a` passes its exact read-only
+divergence/nonmutation case. The complete three-case recovery selection then
+passes that case and fails the other two; their auxiliary-loss setup and
+independent producer/current/final-ACK coverage remain unqualified. All six
+exact native/structural locality cases pass separately on the same unchanged
+6,047-input source. The owning locality Nix build remains in progress; no full
+recovery, maintenance gate, task or milestone claim follows.
+
 An isolated instrumented run of the fourth private backfill case on
 `faf2f0adfa` still fails with `Expired`. It reaches both catalog ACKs and
 durable reflog staging, then observes 30.803 seconds against the unchanged
