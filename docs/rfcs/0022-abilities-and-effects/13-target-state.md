@@ -67,6 +67,13 @@ compatible output reference. References induce graph dependencies; compositions
 export checked child results. Selection is ordinary module configuration, not a
 second provider-discovery language.
 
+A handler also declares `phase = "installation"` or `"startup"` through its
+execution module. This is generic execution machinery, not a list of OS
+operations in the library. Startup effects and their dependent effects remain
+deferred during installation into an inactive runtime. Independent filesystem
+and configuration effects can execute immediately. The graph retains every
+enabled effect; a missing handler still rejects evaluation.
+
 The generated `aos.activation.graph` is a serialization boundary, never an
 operator-maintained catalog. An enabled effect without a handler, incompatible
 reference, conflicting definition, or invalid composition must fail before
@@ -86,7 +93,11 @@ mutation. Unused interface declarations remain valid without a handler.
    desired transaction and documentation without building or mutating the host.
 4. **Execution:** admit and retain required artifacts, validate the generated
    graph, prepare a durable generation, execute selected handlers in dependency
-   order, check results, and commit only after effect completion is durable.
+   order and check results. A complete activation commits after every effect
+   finishes. Installation into an inactive runtime publishes the package
+   generation with a durable receipt containing actual installation results
+   and the exact deferred startup effects. Installation is not evidence that
+   deferred services have started.
 5. **Reconfiguration:** evaluate new desired configuration and reconcile against
    retained state. Removal, interrupted work, rollback, and pruning use the same
    transaction and effect state machines.
@@ -100,6 +111,46 @@ Package, profile, container, and host scopes use the same machinery. OS boot is
 a consumer, not a separate whole-host interpreter. Alternative service managers
 and other platform implementations supply compatible contracts and handlers;
 any platform-specific process transport also needs a matching backend.
+
+## Container installation and init integration
+
+Every system image variation projects one default container through the existing
+image backend. The golden container contains package-managed runtime essentials,
+the package tools, and a shell. Users normally pull it and install packages with
+APM; a derived Dockerfile is optional. Provider artifacts are retained when
+selected by a graph rather than baked into the base through CLI dependencies.
+
+The same package envelope and native modules target machines and containers.
+Payload-only packages such as Vim need no invented installation ability.
+Configuration and directory handlers can be shared between targets. A daemon
+package may install its binary, configuration, and directories without managed
+service integration. Explicitly enabling a service without a compatible selected
+handler fails before activation; unsupported graph nodes are never silently
+dropped or given fabricated results.
+
+`initSystem.install` is a package-owned contract consumed by init implementations.
+Its input identifies the retained init executable and arguments; its results
+identify the prepared configuration. Machine boot and container startup provide
+handlers for that contract. An init package such as systemd provides service
+handlers to other packages; it does not require an external service manager to
+become init. Installed, selected, and running implementations are distinct.
+
+A Dockerfile `RUN apm install systemd` prepares the selected init configuration.
+Subsequent installations can compose against its service handlers while service
+effects remain pending. The stable AOS entrypoint initializes package state,
+reads the prepared init selection, and executes it when the container starts.
+Startup resumes the latest published desired graph after the selected manager
+is ready. Explicit workload arguments override the default init selection.
+Launch environment requirements belong to the declared container runtime and
+are verified at startup, not inferred from the Docker builder's PID 1.
+
+Consecutive installations may supersede startup work that has never executed.
+Their receipts retain the complete desired graph and required artifacts while
+recording only real outputs. Publication recovery and startup activation are
+separate: a second Dockerfile installation must not accidentally start services
+from the first. Teardown of startup-owned resources also waits for the runtime.
+Existing containers retain their installed state across restart; recreation
+requires explicit state persistence or a derived image containing that state.
 
 ## Identity and lifetime
 

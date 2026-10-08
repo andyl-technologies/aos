@@ -1,5 +1,11 @@
 # Package, image, and platform integration
 
+Container package installation follows the same native module evaluation as
+machine installation. The [target state](13-target-state.md#container-installation-and-init-integration)
+defines init integration, optional daemon integration, and installation/startup
+receipts. The [container guide](../../users/aos/containers.md) describes golden
+images, Dockerfile installation, and runtime startup.
+
 The package recipe builds payload outputs and optionally retains a module
 directory and explicit module dependencies. Native deployment and documentation
 companions are generated from this declaration. The

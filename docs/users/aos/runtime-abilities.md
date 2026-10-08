@@ -28,6 +28,12 @@ can declare operations for filesystem paths, kernel settings, networking,
 sandboxing, or another domain. Domain definitions belong to packages and system
 modules. The generic library supplies module types and graph construction.
 
+Installation into an inactive container separates file/configuration effects
+from startup effects. Missing enabled handlers still reject evaluation; delayed
+effects remain explicitly pending rather than being treated as successful.
+See [packages in containers](containers.md) for Dockerfile installation, init
+selection, optional daemon integration, and startup recovery.
+
 ## Read an ability declaration
 
 An ability groups named operations. Each operation declares its inputs and
