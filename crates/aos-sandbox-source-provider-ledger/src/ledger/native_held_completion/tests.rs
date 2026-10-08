@@ -340,14 +340,16 @@ fn independent_legacy_5_6_7_preimages_and_digests_remain_exact() {
     ] {
         let expected = independent_envelope(&original, version, &original_body(&original, magic));
         assert_eq!(format::encode_native_completion_v2(&original), expected);
-        assert_eq!(
+        let crate::ledger::model::DecodedRecordV1::NativeCompletion(decoded) =
             format::decode_record(
                 &native_completion::native_completion_key_v2(original.acquisition_id),
-                &expected
+                &expected,
             )
-            .unwrap(),
-            crate::ledger::model::DecodedRecordV1::NativeCompletion(original)
-        );
+            .unwrap()
+        else {
+            panic!("wrong record family");
+        };
+        assert_eq!(decoded, original);
     }
 }
 

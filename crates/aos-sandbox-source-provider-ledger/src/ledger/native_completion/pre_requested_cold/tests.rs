@@ -430,7 +430,7 @@ fn old_profiles_and_public_legacy_seals_refuse_cold_bytes() {
     assert!(crate::validate_prospective_records(views(&flight.closed)).is_err());
     assert!(crate::validate_prospective_transition(views(&flight.before), views(&flight.closed)).is_err());
 
-    let old_bytes = native_completion::encode_native_completion_v2(&flight.graph.native);
+    let old_bytes = format::encode_native_completion_v2(&flight.graph.native);
     assert!(Archive::from_canonical_bytes(&flight.native_key, &old_bytes).is_err());
 
     let requested = flight.graph.rows();
@@ -887,7 +887,7 @@ fn acknowledged_archive_cannot_replace_ack_or_reenter_a_hot_profile() {
     let mut hot = before.clone();
     hot.insert(
         flight.native_key.clone(),
-        native_completion::encode_native_completion_v2(&flight.graph.native),
+        format::encode_native_completion_v2(&flight.graph.native),
     );
     assert!(crate::validate_transition_structure(&before, &hot).is_err());
     assert!(crate::validate_transition_structure(&flight.graph.rows(), &before).is_err());
@@ -1013,7 +1013,7 @@ fn retained_cold_origin_coexists_with_later_legacy_or_held_native_owner() {
     assert!(Archive::from_canonical_bytes(&key, &held_bytes).is_err());
 
     for native_bytes in [
-        native_completion::encode_native_completion_v2(&later.native),
+        format::encode_native_completion_v2(&later.native),
         held_bytes,
     ] {
         let mut after = before.clone();
