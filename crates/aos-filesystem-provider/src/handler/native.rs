@@ -543,13 +543,26 @@ impl NativeFilesystem {
         let expected_identity = match fs::symlink_metadata(path) {
             Ok(metadata) => {
                 self.ensure_entry_kind(&metadata, claim)?;
-                rustix::fs::renameat_with(
+                let renamed = rustix::fs::renameat_with(
                     rustix::fs::CWD,
                     path,
                     rustix::fs::CWD,
                     &quarantine,
                     rustix::fs::RenameFlags::NOREPLACE,
-                )?;
+                );
+                if renamed == Err(rustix::io::Errno::XDEV) && claim.kind == "directory" {
+                    // OverlayFS may refuse to rename an inherited directory.
+                    // Keep the claim until descriptor-bound removal completes;
+                    // interrupted removal can resume at the same owned path.
+                    ensure!(
+                        matches!(fs::symlink_metadata(&quarantine), Err(error) if error.kind() == io::ErrorKind::NotFound),
+                        "filesystem release quarantine already exists"
+                    );
+                    remove_directory_guarded(path, (metadata.dev(), metadata.ino()))?;
+                    sync_parent(path)?;
+                    return Ok(());
+                }
+                renamed?;
                 sync_parent(path)?;
                 Some((metadata.dev(), metadata.ino()))
             }
@@ -570,11 +583,13 @@ impl NativeFilesystem {
                 } else {
                     fs::remove_file(&quarantine)?;
                 }
-                sync_parent(&quarantine)?;
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
         }
+        // An interrupted unlink may already have removed both paths. A retry
+        // must still make that removal durable before releasing the claim.
+        sync_parent(path)?;
         Ok(())
     }
 

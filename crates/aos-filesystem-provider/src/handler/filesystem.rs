@@ -369,6 +369,81 @@ pub(super) fn open_directory_nofollow(path: &Path) -> Result<OwnedFd> {
     Ok(directory)
 }
 
+/// Removes an owned tree without requiring a directory rename.
+///
+/// Relative operations stay bound to opened directories and never follow links.
+/// The caller retains its durable claim until removal and parent sync complete.
+///
+/// # Errors
+/// Returns an error for changed identities, a child on another filesystem,
+/// invalid parent paths, or failed directory enumeration and removal.
+pub(super) fn remove_directory_guarded(path: &Path, expected: (u64, u64)) -> Result<()> {
+    let parent = open_directory_nofollow(path.parent().context("directory has no parent")?)?;
+    let name = path.file_name().context("directory has no name")?;
+    let directory = openat(
+        &parent,
+        name,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?;
+    let metadata = fstat(&directory)?;
+    ensure!(
+        (metadata.st_dev, metadata.st_ino) == expected,
+        "directory changed before release"
+    );
+
+    remove_directory_contents(&directory)?;
+    unlink_open_directory(&parent, name, &directory)
+}
+
+fn remove_directory_contents(directory: &OwnedFd) -> Result<()> {
+    let mut entries = rustix::fs::Dir::read_from(directory)?;
+    while let Some(entry) = entries.read() {
+        let entry = entry?;
+        let name = entry.file_name();
+        if matches!(name.to_bytes(), b"." | b"..") {
+            continue;
+        }
+
+        match openat(
+            directory,
+            name,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        ) {
+            Ok(child) => {
+                ensure!(
+                    fstat(&child)?.st_dev == fstat(directory)?.st_dev,
+                    "refusing to release a child on another filesystem"
+                );
+                remove_directory_contents(&child)?;
+                unlink_open_directory(directory, name, &child)?;
+            }
+            Err(rustix::io::Errno::NOTDIR | rustix::io::Errno::LOOP) => {
+                rustix::fs::unlinkat(directory, name, rustix::fs::AtFlags::empty())?;
+            }
+            Err(rustix::io::Errno::NOENT) => {}
+            Err(error) => return Err(error).context("opening directory entry for release"),
+        }
+    }
+    Ok(())
+}
+
+fn unlink_open_directory(
+    parent: &OwnedFd,
+    name: impl rustix::path::Arg + Copy,
+    directory: &OwnedFd,
+) -> Result<()> {
+    let metadata = fstat(directory)?;
+    let current = rustix::fs::statat(parent, name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW)?;
+    ensure!(
+        (metadata.st_dev, metadata.st_ino) == (current.st_dev, current.st_ino),
+        "directory changed before release"
+    );
+    rustix::fs::unlinkat(parent, name, rustix::fs::AtFlags::REMOVEDIR)?;
+    Ok(())
+}
+
 pub(super) fn apply_metadata(
     descriptor: &impl std::os::fd::AsFd,
     mode: u32,
