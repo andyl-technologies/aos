@@ -759,18 +759,14 @@ pub enum NodeRequestBodyV1 {
 /// Evolution requires a negotiated version.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CanonicalNodeSemanticCodecV1 {
-    legacy_json: bool,
+    _private: (),
 }
 
 impl CanonicalNodeSemanticCodecV1 {
     /// Constructs the sole closed version-one semantic codec.
     #[must_use]
     pub const fn new() -> Self {
-        Self { legacy_json: false }
-    }
-
-    pub(in crate::local_inventory) const fn legacy_json() -> Self {
-        Self { legacy_json: true }
+        Self { _private: () }
     }
 
     fn verify_bounded_bytes(
@@ -790,21 +786,12 @@ impl CanonicalNodeSemanticCodecV1 {
         coordinator_unix_seconds: u64,
     ) -> Result<NodeRequestBodyV1, InvalidMultiNodeProtocol> {
         Self::verify_bounded_bytes(frame.body(), session.maximum_request_bytes())?;
-        let body = if self.legacy_json {
-            semantic_codec_v1::decode_request(
-                session,
-                frame.kind(),
-                frame.body(),
-                coordinator_unix_seconds,
-            )?
-        } else {
-            protobuf_codec_v1::decode_request(
-                session,
-                frame.kind(),
-                frame.body(),
-                coordinator_unix_seconds,
-            )?
-        };
+        let body = protobuf_codec_v1::decode_request(
+            session,
+            frame.kind(),
+            frame.body(),
+            coordinator_unix_seconds,
+        )?;
         if self.encode_request(&body)?.as_slice() != frame.body() {
             return Err(InvalidMultiNodeProtocol::NonCanonicalFrame);
         }
@@ -815,11 +802,7 @@ impl CanonicalNodeSemanticCodecV1 {
         &self,
         body: &NodeRequestBodyV1,
     ) -> Result<Vec<u8>, InvalidMultiNodeProtocol> {
-        let bytes = if self.legacy_json {
-            semantic_codec_v1::encode_request(body)?
-        } else {
-            protobuf_codec_v1::encode_request(body)?
-        };
+        let bytes = protobuf_codec_v1::encode_request(body)?;
         Self::verify_bounded_bytes(&bytes, MAX_NODE_REQUEST_BYTES)?;
         Ok(bytes)
     }
@@ -831,23 +814,13 @@ impl CanonicalNodeSemanticCodecV1 {
         authenticated_at_unix_seconds: u64,
     ) -> Result<NodeResponseBodyV1, InvalidMultiNodeProtocol> {
         Self::verify_bounded_bytes(frame.body(), MAX_NODE_RESPONSE_BYTES)?;
-        let body = if self.legacy_json {
-            semantic_codec_v1::decode_response(
-                context,
-                frame.kind(),
-                frame.body(),
-                authenticated_at_unix_seconds,
-                self,
-            )?
-        } else {
-            protobuf_codec_v1::decode_response(
-                context,
-                frame.kind(),
-                frame.body(),
-                authenticated_at_unix_seconds,
-                self,
-            )?
-        };
+        let body = protobuf_codec_v1::decode_response(
+            context,
+            frame.kind(),
+            frame.body(),
+            authenticated_at_unix_seconds,
+            self,
+        )?;
         if self.encode_response(&body)?.as_slice() != frame.body() {
             return Err(InvalidMultiNodeProtocol::NonCanonicalFrame);
         }
@@ -883,11 +856,7 @@ impl CanonicalNodeSemanticCodecV1 {
         &self,
         body: &NodeResponseBodyV1,
     ) -> Result<Vec<u8>, InvalidMultiNodeProtocol> {
-        let bytes = if self.legacy_json {
-            semantic_codec_v1::encode_response(body)?
-        } else {
-            protobuf_codec_v1::encode_response(body)?
-        };
+        let bytes = protobuf_codec_v1::encode_response(body)?;
         Self::verify_bounded_bytes(&bytes, MAX_NODE_RESPONSE_BYTES)?;
         Ok(bytes)
     }
@@ -896,11 +865,7 @@ impl CanonicalNodeSemanticCodecV1 {
         &self,
         body: &NodeWatchEventBodyV1,
     ) -> Result<Vec<u8>, InvalidMultiNodeProtocol> {
-        let bytes = if self.legacy_json {
-            semantic_codec_v1::encode_watch_event_body(body)?
-        } else {
-            protobuf_codec_v1::encode_watch_event_body(body)?
-        };
+        let bytes = protobuf_codec_v1::encode_watch_event_body(body)?;
         Self::verify_bounded_bytes(&bytes, MAX_NODE_RESPONSE_BYTES)?;
         Ok(bytes)
     }
@@ -911,11 +876,7 @@ impl CanonicalNodeSemanticCodecV1 {
         context: AuthenticatedEvidenceContextV1,
     ) -> Result<NodeWatchEventBodyV1, InvalidMultiNodeProtocol> {
         Self::verify_bounded_bytes(bytes, MAX_NODE_RESPONSE_BYTES)?;
-        let body = if self.legacy_json {
-            semantic_codec_v1::decode_watch_event_body(bytes, context)?
-        } else {
-            protobuf_codec_v1::decode_watch_event_body(bytes, context)?
-        };
+        let body = protobuf_codec_v1::decode_watch_event_body(bytes, context)?;
         if self.encode_watch_event_body(&body)?.as_slice() != bytes {
             return Err(InvalidMultiNodeProtocol::NonCanonicalFrame);
         }
@@ -926,11 +887,7 @@ impl CanonicalNodeSemanticCodecV1 {
         &self,
         inventory: &ResyncInventoryV1,
     ) -> Result<Vec<u8>, InvalidMultiNodeProtocol> {
-        let bytes = if self.legacy_json {
-            semantic_codec_v1::encode_watch_inventory(inventory)?
-        } else {
-            protobuf_codec_v1::encode_watch_inventory(inventory)?
-        };
+        let bytes = protobuf_codec_v1::encode_watch_inventory(inventory)?;
         Self::verify_bounded_bytes(&bytes, MAX_NODE_RESPONSE_BYTES)?;
         Ok(bytes)
     }
@@ -941,38 +898,11 @@ impl CanonicalNodeSemanticCodecV1 {
         context: AuthenticatedEvidenceContextV1,
     ) -> Result<ResyncInventoryV1, InvalidMultiNodeProtocol> {
         Self::verify_bounded_bytes(bytes, MAX_NODE_RESPONSE_BYTES)?;
-        let inventory = if self.legacy_json {
-            semantic_codec_v1::decode_watch_inventory(bytes, context, self)?
-        } else {
-            protobuf_codec_v1::decode_watch_inventory(bytes, context, self)?
-        };
+        let inventory = protobuf_codec_v1::decode_watch_inventory(bytes, context, self)?;
         if self.encode_watch_inventory(&inventory)?.as_slice() != bytes {
             return Err(InvalidMultiNodeProtocol::NonCanonicalFrame);
         }
         Ok(inventory)
-    }
-}
-
-const fn canonical_frame_kind_name_v1(kind: CanonicalNodeFrameKindV1) -> &'static str {
-    match kind {
-        CanonicalNodeFrameKindV1::GetCapabilitiesRequest => "get_capabilities_request",
-        CanonicalNodeFrameKindV1::GetCapabilitiesResponse => "get_capabilities_response",
-        CanonicalNodeFrameKindV1::ReconcileAssignmentRequest => "reconcile_assignment_request",
-        CanonicalNodeFrameKindV1::ReconcileAssignmentResponse => "reconcile_assignment_response",
-        CanonicalNodeFrameKindV1::RelistAssignmentsRequest => "relist_assignments_request",
-        CanonicalNodeFrameKindV1::RelistAssignmentsResponse => "relist_assignments_response",
-        CanonicalNodeFrameKindV1::ReconcileDrainRequest => "reconcile_drain_request",
-        CanonicalNodeFrameKindV1::ReconcileDrainResponse => "reconcile_drain_response",
-        CanonicalNodeFrameKindV1::BeginSnapshotTransferRequest => "begin_snapshot_transfer_request",
-        CanonicalNodeFrameKindV1::BeginSnapshotTransferResponse => {
-            "begin_snapshot_transfer_response"
-        }
-        CanonicalNodeFrameKindV1::SnapshotChunkRequest => "snapshot_chunk_request",
-        CanonicalNodeFrameKindV1::SnapshotChunkResponse => "snapshot_chunk_response",
-        CanonicalNodeFrameKindV1::SnapshotDependencyRequest => "snapshot_dependency_request",
-        CanonicalNodeFrameKindV1::SnapshotDependencyResponse => "snapshot_dependency_response",
-        CanonicalNodeFrameKindV1::WatchRequest => "watch_request",
-        CanonicalNodeFrameKindV1::WatchResponse => "watch_response",
     }
 }
 

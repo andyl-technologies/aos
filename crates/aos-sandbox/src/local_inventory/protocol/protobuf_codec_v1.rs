@@ -1,8 +1,8 @@
 //! Versioned protobuf ownership of coordinator/node method payloads.
 //!
 //! Current sessions use these generated oneofs as the authoritative semantic
-//! contract. The retired `AOSNODE1` plus JSON representation is implemented by
-//! a separate, explicitly negotiated legacy codec branch.
+//! contract. Local protected bootstrap framing uses these same protobuf
+//! semantics without a legacy JSON transport fallback.
 
 use aos_proto::aos::sandbox::coordinator::v1 as wire;
 use aos_sandbox_core::{ProtocolId, ProtocolVersion, supported_protocol_version};

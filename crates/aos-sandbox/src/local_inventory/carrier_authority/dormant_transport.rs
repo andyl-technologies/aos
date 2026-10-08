@@ -20,8 +20,6 @@ use crate::local_inventory::protocol::{
 pub enum DormantCoordinatorNodeEncodingV1 {
     /// Uses generated `CoordinatorNodeRequest` and `CoordinatorNodeResponse` carriers.
     Protobuf = 1,
-    /// Uses the retired `AOSNODE1` carrier around canonical JSON semantics.
-    LegacyJson = 2,
 }
 
 /// Describes one canonical carrier handshake awaiting detached authentication.
@@ -79,43 +77,6 @@ impl DormantTransportHandshakeV1 {
             maximum_response_bytes,
             replay_fence,
             DormantCoordinatorNodeEncodingV1::Protobuf,
-        )
-    }
-
-    /// Constructs an explicitly negotiated legacy JSON handshake.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`InvalidMultiNodeProtocol`] under the same validation as [`Self::new`].
-    #[allow(clippy::too_many_arguments)]
-    pub fn new_legacy_json(
-        node: NodeId,
-        lineage: NodeBootLineageV1,
-        channel_binding: [u8; 32],
-        audience_digest: ObjectDigest,
-        disclosure_domain_digest: ObjectDigest,
-        coordinator_epoch: u64,
-        authenticated_at_unix_seconds: u64,
-        valid_until_unix_seconds: u64,
-        version: ProtocolVersion,
-        maximum_request_bytes: u32,
-        maximum_response_bytes: u32,
-        replay_fence: ObjectDigest,
-    ) -> Result<Self, InvalidMultiNodeProtocol> {
-        Self::new_with_encoding(
-            node,
-            lineage,
-            channel_binding,
-            audience_digest,
-            disclosure_domain_digest,
-            coordinator_epoch,
-            authenticated_at_unix_seconds,
-            valid_until_unix_seconds,
-            version,
-            maximum_request_bytes,
-            maximum_response_bytes,
-            replay_fence,
-            DormantCoordinatorNodeEncodingV1::LegacyJson,
         )
     }
 
@@ -231,12 +192,7 @@ impl DormantTransportHandshakeV1 {
         .into_session_grant();
         Ok(DormantAuthenticatedCoordinatorNodeTransportV1 {
             session: AuthenticatedNodeSessionV1::from_authority_grant(session)?,
-            codec: match self.encoding {
-                DormantCoordinatorNodeEncodingV1::Protobuf => CanonicalNodeSemanticCodecV1::new(),
-                DormantCoordinatorNodeEncodingV1::LegacyJson => {
-                    CanonicalNodeSemanticCodecV1::legacy_json()
-                }
-            },
+            codec: CanonicalNodeSemanticCodecV1::new(),
             encoding: self.encoding,
             protected_trust_policy_digest: ObjectDigest::from_bytes(
                 Sha256::digest(canonical_trust_policy).into(),
@@ -283,65 +239,35 @@ impl DormantAuthenticatedCoordinatorNodeTransportV1 {
         if !self.session.is_current_at(coordinator_unix_seconds) {
             return Err(InvalidMultiNodeProtocol::SessionMismatch);
         }
-        match self.encoding {
-            DormantCoordinatorNodeEncodingV1::Protobuf => {
-                let semantic_bytes = self.codec.encode_request(body)?;
-                let semantic = wire::SemanticEnvelope::decode_from_slice(semantic_bytes.as_slice())
-                    .map_err(|_| InvalidMultiNodeProtocol::NonCanonicalFrame)?;
-                let generated = wire::CoordinatorNodeRequest {
-                    request_uid: request.as_bytes().to_vec(),
-                    session: Some(session_binding(&self.session, self.encoding)).into(),
-                    semantic: Some(semantic).into(),
-                    ..Default::default()
-                };
-                let bytes = generated.encode_to_vec();
-                if bytes.is_empty() || bytes.len() > self.session.maximum_request_bytes() as usize {
-                    return Err(InvalidMultiNodeProtocol::InvalidFrameLimits);
-                }
-                let (consumed, envelope) =
-                    self.consume_generated_request(&bytes, coordinator_unix_seconds)?;
-                if envelope.request() != request || envelope.body() != body {
-                    return Err(InvalidMultiNodeProtocol::NonCanonicalFrame);
-                }
-                Ok(DormantOutboundExchangeV1 {
-                    envelope,
-                    bytes,
-                    generated: Some(consumed),
-                })
-            }
-            DormantCoordinatorNodeEncodingV1::LegacyJson => {
-                let bytes = CanonicalNodeFrameV1::encode_request(
-                    body,
-                    self.session.version(),
-                    self.session.binding_digest(),
-                    self.session.audience_digest(),
-                    self.session.disclosure_domain_digest(),
-                    request,
-                    self.session.maximum_request_bytes(),
-                    &self.codec,
-                )?;
-                let frame =
-                    CanonicalNodeFrameV1::decode(&bytes, self.session.maximum_request_bytes())?;
-                let envelope = NodeRequestEnvelopeV1::from_canonical_frame(
-                    &self.session,
-                    &frame,
-                    coordinator_unix_seconds,
-                    &self.codec,
-                )?;
-                Ok(DormantOutboundExchangeV1 {
-                    envelope,
-                    bytes,
-                    generated: None,
-                })
-            }
+        let semantic_bytes = self.codec.encode_request(body)?;
+        let semantic = wire::SemanticEnvelope::decode_from_slice(semantic_bytes.as_slice())
+            .map_err(|_| InvalidMultiNodeProtocol::NonCanonicalFrame)?;
+        let generated = wire::CoordinatorNodeRequest {
+            request_uid: request.as_bytes().to_vec(),
+            session: Some(session_binding(&self.session, self.encoding)).into(),
+            semantic: Some(semantic).into(),
+            ..Default::default()
+        };
+        let bytes = generated.encode_to_vec();
+        if bytes.is_empty() || bytes.len() > self.session.maximum_request_bytes() as usize {
+            return Err(InvalidMultiNodeProtocol::InvalidFrameLimits);
         }
+        let (consumed, envelope) =
+            self.consume_generated_request(&bytes, coordinator_unix_seconds)?;
+        if envelope.request() != request || envelope.body() != body {
+            return Err(InvalidMultiNodeProtocol::NonCanonicalFrame);
+        }
+        Ok(DormantOutboundExchangeV1 {
+            envelope,
+            bytes,
+            generated: Some(consumed),
+        })
     }
 
     /// Authenticates and consumes one inbound request without registering a service.
     ///
-    /// The protobuf branch treats the exact generated `CoordinatorNodeRequest`
-    /// bytes as the request contract. The legacy branch is reachable only from
-    /// a session that explicitly negotiated the retired JSON carrier.
+    /// Treats the exact generated `CoordinatorNodeRequest` bytes as the
+    /// request contract.
     ///
     /// # Errors
     ///
@@ -369,23 +295,8 @@ impl DormantAuthenticatedCoordinatorNodeTransportV1 {
             verified_at_unix_seconds,
         )?;
 
-        match self.encoding {
-            DormantCoordinatorNodeEncodingV1::Protobuf => self
-                .consume_generated_request(request_bytes, verified_at_unix_seconds)
-                .map(|(_, envelope)| envelope),
-            DormantCoordinatorNodeEncodingV1::LegacyJson => {
-                let frame = CanonicalNodeFrameV1::decode(
-                    request_bytes,
-                    self.session.maximum_request_bytes(),
-                )?;
-                NodeRequestEnvelopeV1::from_canonical_frame(
-                    &self.session,
-                    &frame,
-                    verified_at_unix_seconds,
-                    &self.codec,
-                )
-            }
-        }
+        self.consume_generated_request(request_bytes, verified_at_unix_seconds)
+            .map(|(_, envelope)| envelope)
     }
 
     /// Builds one exact response for an authenticated inbound request.
@@ -398,7 +309,7 @@ impl DormantAuthenticatedCoordinatorNodeTransportV1 {
     ///
     /// Returns [`InvalidMultiNodeProtocol`] when the request does not belong to
     /// this current session, the response does not answer it, or the selected
-    /// generated or legacy carrier exceeds the negotiated response limit.
+    /// generated carrier exceeds the negotiated response limit.
     pub(in crate::local_inventory) fn prepare_response_at_protected_time(
         &self,
         request: &NodeRequestEnvelopeV1,
@@ -415,50 +326,28 @@ impl DormantAuthenticatedCoordinatorNodeTransportV1 {
         }
         validate_response_body(&self.session, request.body(), body)?;
 
-        match self.encoding {
-            DormantCoordinatorNodeEncodingV1::Protobuf => {
-                let semantic_bytes = self.codec.encode_response(body)?;
-                let semantic = wire::SemanticEnvelope::decode_from_slice(semantic_bytes.as_slice())
-                    .map_err(|_| InvalidMultiNodeProtocol::NonCanonicalFrame)?;
-                let generated = wire::CoordinatorNodeResponse {
-                    request_uid: request.request().as_bytes().to_vec(),
-                    session: Some(session_binding(&self.session, self.encoding)).into(),
-                    semantic: Some(semantic).into(),
-                    ..Default::default()
-                };
-                let bytes = generated.encode_to_vec();
-                if bytes.is_empty() || bytes.len() > self.session.maximum_response_bytes() as usize
-                {
-                    return Err(InvalidMultiNodeProtocol::InvalidFrameLimits);
-                }
-                let consumed = wire::CoordinatorNodeResponse::decode_from_slice(bytes.as_slice())
-                    .map_err(|_| InvalidMultiNodeProtocol::NonCanonicalFrame)?;
-                if consumed.encode_to_vec() != bytes || consumed != generated {
-                    return Err(InvalidMultiNodeProtocol::NonCanonicalFrame);
-                }
-                Ok(DormantOutboundResponseV1 {
-                    bytes,
-                    generated: Some(consumed),
-                })
-            }
-            DormantCoordinatorNodeEncodingV1::LegacyJson => {
-                let bytes = CanonicalNodeFrameV1::encode_response(
-                    body,
-                    self.session.version(),
-                    self.session.binding_digest(),
-                    self.session.audience_digest(),
-                    self.session.disclosure_domain_digest(),
-                    request.request(),
-                    self.session.maximum_response_bytes(),
-                    &self.codec,
-                )?;
-                CanonicalNodeFrameV1::decode(&bytes, self.session.maximum_response_bytes())?;
-                Ok(DormantOutboundResponseV1 {
-                    bytes,
-                    generated: None,
-                })
-            }
+        let semantic_bytes = self.codec.encode_response(body)?;
+        let semantic = wire::SemanticEnvelope::decode_from_slice(semantic_bytes.as_slice())
+            .map_err(|_| InvalidMultiNodeProtocol::NonCanonicalFrame)?;
+        let generated = wire::CoordinatorNodeResponse {
+            request_uid: request.request().as_bytes().to_vec(),
+            session: Some(session_binding(&self.session, self.encoding)).into(),
+            semantic: Some(semantic).into(),
+            ..Default::default()
+        };
+        let bytes = generated.encode_to_vec();
+        if bytes.is_empty() || bytes.len() > self.session.maximum_response_bytes() as usize {
+            return Err(InvalidMultiNodeProtocol::InvalidFrameLimits);
         }
+        let consumed = wire::CoordinatorNodeResponse::decode_from_slice(bytes.as_slice())
+            .map_err(|_| InvalidMultiNodeProtocol::NonCanonicalFrame)?;
+        if consumed.encode_to_vec() != bytes || consumed != generated {
+            return Err(InvalidMultiNodeProtocol::NonCanonicalFrame);
+        }
+        Ok(DormantOutboundResponseV1 {
+            bytes,
+            generated: Some(consumed),
+        })
     }
 
     /// Authenticates and decodes one response without opening a carrier.
@@ -491,78 +380,58 @@ impl DormantAuthenticatedCoordinatorNodeTransportV1 {
             public_key,
             verified_at_unix_seconds,
         )?;
-        match self.encoding {
-            DormantCoordinatorNodeEncodingV1::LegacyJson => {
-                let frame = CanonicalNodeFrameV1::decode(
-                    response_bytes,
-                    self.session.maximum_response_bytes(),
-                )?;
-                let grant = issue_response_once(self.session, &frame, verified_at_unix_seconds)?;
-                NodeResponseEnvelopeV1::from_authenticated_carrier(
-                    grant,
-                    &request.envelope,
-                    &frame,
-                    verified_at_unix_seconds,
-                    &self.codec,
-                )
-            }
-            DormantCoordinatorNodeEncodingV1::Protobuf => {
-                if response_bytes.is_empty()
-                    || response_bytes.len() > self.session.maximum_response_bytes() as usize
-                {
-                    return Err(InvalidMultiNodeProtocol::InvalidFrameLimits);
-                }
-                let response = wire::CoordinatorNodeResponse::decode_from_slice(response_bytes)
-                    .map_err(|_| InvalidMultiNodeProtocol::NonCanonicalFrame)?;
-                if response.encode_to_vec().as_slice() != response_bytes
-                    || response.request_uid.as_slice() != request.envelope.request().as_bytes()
-                    || response.session.as_option()
-                        != Some(&session_binding(&self.session, self.encoding))
-                {
-                    return Err(InvalidMultiNodeProtocol::SessionMismatch);
-                }
-                let semantic = response
-                    .semantic
-                    .into_option()
-                    .ok_or(InvalidMultiNodeProtocol::NonCanonicalFrame)?;
-                let semantic_bytes = semantic.encode_to_vec();
-                let kind = crate::local_inventory::protocol::protobuf_codec_v1::response_frame_kind(
-                    semantic.kind.to_i32(),
-                )?;
-                let carrier_bytes = u32::try_from(response_bytes.len())
-                    .map_err(|_| InvalidMultiNodeProtocol::InvalidFrameLimits)?;
-                let body_digest = ObjectDigest::from_bytes(Sha256::digest(&semantic_bytes).into());
-                let carrier_digest =
-                    ObjectDigest::from_bytes(Sha256::digest(response_bytes).into());
-                let grant = issue_generated_response_once(
-                    self.session,
-                    kind,
-                    body_digest,
-                    carrier_digest,
-                    carrier_bytes,
-                    verified_at_unix_seconds,
-                )?;
-                let body = crate::local_inventory::protocol::protobuf_codec_v1::decode_response(
-                    grant.context(),
-                    kind,
-                    &semantic_bytes,
-                    verified_at_unix_seconds,
-                    &self.codec,
-                )?;
-                if self.codec.encode_response(&body)? != semantic_bytes {
-                    return Err(InvalidMultiNodeProtocol::NonCanonicalFrame);
-                }
-                NodeResponseEnvelopeV1::from_authenticated_generated_carrier(
-                    grant,
-                    &request.envelope,
-                    body,
-                    body_digest,
-                    carrier_digest,
-                    carrier_bytes,
-                    verified_at_unix_seconds,
-                )
-            }
+        if response_bytes.is_empty()
+            || response_bytes.len() > self.session.maximum_response_bytes() as usize
+        {
+            return Err(InvalidMultiNodeProtocol::InvalidFrameLimits);
         }
+        let response = wire::CoordinatorNodeResponse::decode_from_slice(response_bytes)
+            .map_err(|_| InvalidMultiNodeProtocol::NonCanonicalFrame)?;
+        if response.encode_to_vec().as_slice() != response_bytes
+            || response.request_uid.as_slice() != request.envelope.request().as_bytes()
+            || response.session.as_option() != Some(&session_binding(&self.session, self.encoding))
+        {
+            return Err(InvalidMultiNodeProtocol::SessionMismatch);
+        }
+        let semantic = response
+            .semantic
+            .into_option()
+            .ok_or(InvalidMultiNodeProtocol::NonCanonicalFrame)?;
+        let semantic_bytes = semantic.encode_to_vec();
+        let kind = crate::local_inventory::protocol::protobuf_codec_v1::response_frame_kind(
+            semantic.kind.to_i32(),
+        )?;
+        let carrier_bytes = u32::try_from(response_bytes.len())
+            .map_err(|_| InvalidMultiNodeProtocol::InvalidFrameLimits)?;
+        let body_digest = ObjectDigest::from_bytes(Sha256::digest(&semantic_bytes).into());
+        let carrier_digest = ObjectDigest::from_bytes(Sha256::digest(response_bytes).into());
+        let grant = issue_generated_response_once(
+            self.session,
+            kind,
+            body_digest,
+            carrier_digest,
+            carrier_bytes,
+            verified_at_unix_seconds,
+        )?;
+        let body = crate::local_inventory::protocol::protobuf_codec_v1::decode_response(
+            grant.context(),
+            kind,
+            &semantic_bytes,
+            verified_at_unix_seconds,
+            &self.codec,
+        )?;
+        if self.codec.encode_response(&body)? != semantic_bytes {
+            return Err(InvalidMultiNodeProtocol::NonCanonicalFrame);
+        }
+        NodeResponseEnvelopeV1::from_authenticated_generated_carrier(
+            grant,
+            &request.envelope,
+            body,
+            body_digest,
+            carrier_digest,
+            carrier_bytes,
+            verified_at_unix_seconds,
+        )
     }
 
     fn consume_generated_request(
@@ -638,7 +507,7 @@ impl DormantOutboundResponseV1 {
         &self.bytes
     }
 
-    /// Returns the generated current-protocol response, or `None` for legacy JSON.
+    /// Returns the generated current-protocol response.
     #[must_use]
     pub const fn generated(&self) -> Option<&wire::CoordinatorNodeResponse> {
         self.generated.as_ref()
