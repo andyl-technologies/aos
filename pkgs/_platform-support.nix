@@ -993,6 +993,7 @@ let
     "security/_aos-normal-root-profile.nix" = "linux-only-build-helper";
     "security/_aos-nix-offline-startup-profile.nix" = "linux-only-build-helper";
     "security/_aos-nix-startup-profile.nix" = "linux-only-build-helper";
+    "security/_nix-cxx-library-inputs.nix" = "linux-only-build-helper";
     "security/_openssl-output-check.nix" = "cross-build-helper";
     "storage/_postgresql-cross.nix" = "cross-build-helper";
     "tools/_aos-git-helper-images.nix" = "linux-only-build-helper";
