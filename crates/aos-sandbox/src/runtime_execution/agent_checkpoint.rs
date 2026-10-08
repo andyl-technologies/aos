@@ -11,7 +11,10 @@
 //! canonical checkpoint bytes; protected-store authority stays in the concrete
 //! controller adapter.
 
-use aos_sandbox_core::{ExecutionId, ObjectDigest};
+use aos_sandbox_core::{
+    ExecutionId, ObjectDigest,
+    bounded_codec::{BoundedReader, ReadError},
+};
 use sha2::{Digest as _, Sha256};
 
 use aos_sandbox_agent::{
@@ -133,8 +136,8 @@ pub fn decode_checkpoint_v1(
     if claimed_digest != checkpoint_commitment.as_bytes() {
         return Err(AgentCheckpointError::Corrupt);
     }
-    let mut cursor = Cursor::new(prefix);
-    cursor.exact(MAGIC)?;
+    let mut cursor = Cursor::new(prefix, checkpoint_read_error);
+    read_magic(&mut cursor, MAGIC)?;
     let sequence = cursor.u64()?;
     if sequence == 0 {
         return Err(AgentCheckpointError::Corrupt);
@@ -301,7 +304,7 @@ fn decode_session(cursor: &mut Cursor<'_>) -> Result<SessionCheckpointState, Age
                 2 => AgentReservationDispositionV1::ExactReplay,
                 _ => return Err(AgentCheckpointError::Corrupt),
             };
-            let AgentFrameV1::OperationRequest(request) = cursor.frame()? else {
+            let AgentFrameV1::OperationRequest(request) = read_frame(cursor)? else {
                 return Err(AgentCheckpointError::Corrupt);
             };
             let reservation = AgentOperationReservationV1::new(
@@ -331,7 +334,7 @@ fn decode_session(cursor: &mut Cursor<'_>) -> Result<SessionCheckpointState, Age
             let store_commitment = ObjectDigest::from_bytes(cursor.array()?);
             let predecessor_commitment = ObjectDigest::from_bytes(cursor.array()?);
             let recovery_binding = ObjectDigest::from_bytes(cursor.array()?);
-            let AgentFrameV1::OperationRequest(request) = cursor.frame()? else {
+            let AgentFrameV1::OperationRequest(request) = read_frame(cursor)? else {
                 return Err(AgentCheckpointError::Corrupt);
             };
             let token = AgentReservationRecoveryTokenV1::from_store_ambiguity(
@@ -365,7 +368,7 @@ fn decode_session(cursor: &mut Cursor<'_>) -> Result<SessionCheckpointState, Age
         .map_err(|_| AgentCheckpointError::Bounds)?;
     let mut previous = None;
     for _ in 0..history_count {
-        let AgentFrameV1::OperationOutcome(outcome) = cursor.frame()? else {
+        let AgentFrameV1::OperationOutcome(outcome) = read_frame(cursor)? else {
             return Err(AgentCheckpointError::Corrupt);
         };
         if outcome.session() != binding
@@ -479,73 +482,28 @@ pub(crate) enum OutstandingCheckpointState {
     },
 }
 
-struct Cursor<'bytes> {
-    bytes: &'bytes [u8],
-    offset: usize,
+type Cursor<'bytes> = BoundedReader<'bytes, AgentCheckpointError>;
+
+fn checkpoint_read_error(error: ReadError) -> AgentCheckpointError {
+    match error {
+        ReadError::LengthOverflow => AgentCheckpointError::Bounds,
+        ReadError::Truncated => AgentCheckpointError::Truncated,
+        ReadError::NonzeroReserved | ReadError::TrailingBytes => AgentCheckpointError::Corrupt,
+    }
 }
 
-impl<'bytes> Cursor<'bytes> {
-    fn new(bytes: &'bytes [u8]) -> Self {
-        Self { bytes, offset: 0 }
+/// Checks the checkpoint-owned magic after the bounded prefix read.
+fn read_magic(cursor: &mut Cursor<'_>, expected: &[u8]) -> Result<(), AgentCheckpointError> {
+    if cursor.bytes(expected.len())? != expected {
+        return Err(AgentCheckpointError::Corrupt);
     }
+    Ok(())
+}
 
-    fn exact(&mut self, expected: &[u8]) -> Result<(), AgentCheckpointError> {
-        if self.take(expected.len())? != expected {
-            return Err(AgentCheckpointError::Corrupt);
-        }
-        Ok(())
-    }
-
-    fn u8(&mut self) -> Result<u8, AgentCheckpointError> {
-        self.take(1)?
-            .first()
-            .copied()
-            .ok_or(AgentCheckpointError::Truncated)
-    }
-
-    fn u16(&mut self) -> Result<u16, AgentCheckpointError> {
-        Ok(u16::from_be_bytes(self.array()?))
-    }
-
-    fn u32(&mut self) -> Result<u32, AgentCheckpointError> {
-        Ok(u32::from_be_bytes(self.array()?))
-    }
-
-    fn u64(&mut self) -> Result<u64, AgentCheckpointError> {
-        Ok(u64::from_be_bytes(self.array()?))
-    }
-
-    fn array<const N: usize>(&mut self) -> Result<[u8; N], AgentCheckpointError> {
-        self.take(N)?
-            .try_into()
-            .map_err(|_| AgentCheckpointError::Truncated)
-    }
-
-    fn frame(&mut self) -> Result<AgentFrameV1, AgentCheckpointError> {
-        let length = usize::try_from(self.u32()?).map_err(|_| AgentCheckpointError::Bounds)?;
-        decode_frame_v1(self.take(length)?).map_err(Into::into)
-    }
-
-    fn take(&mut self, length: usize) -> Result<&'bytes [u8], AgentCheckpointError> {
-        let end = self
-            .offset
-            .checked_add(length)
-            .ok_or(AgentCheckpointError::Bounds)?;
-        let value = self
-            .bytes
-            .get(self.offset..end)
-            .ok_or(AgentCheckpointError::Truncated)?;
-        self.offset = end;
-        Ok(value)
-    }
-
-    fn finish(self) -> Result<(), AgentCheckpointError> {
-        if self.offset == self.bytes.len() {
-            Ok(())
-        } else {
-            Err(AgentCheckpointError::Corrupt)
-        }
-    }
+/// Decodes the unchanged length-prefixed agent protocol frame.
+fn read_frame(cursor: &mut Cursor<'_>) -> Result<AgentFrameV1, AgentCheckpointError> {
+    let length = usize::try_from(cursor.u32()?).map_err(|_| AgentCheckpointError::Bounds)?;
+    decode_frame_v1(cursor.bytes(length)?).map_err(Into::into)
 }
 
 /// Reports durable agent checkpoint rejection.

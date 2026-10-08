@@ -18,7 +18,7 @@
 //! verify signed Controller currentness while that lock remains held. A
 //! structural cold replay never revives a held lock, signer, or CAS permit.
 
-use aos_sandbox_core::{ExecutionId, ObjectDigest, OperationId};
+use aos_sandbox_core::{ExecutionId, ObjectDigest, OperationId, bounded_codec::BoundedReader};
 use aos_sandbox_protocol::host_execution_no_apply::{
     HostExecutionNoApplyRecordV1, validate_host_no_apply_settlement_record_envelope_v1,
 };
@@ -310,21 +310,23 @@ impl HostSettlementRecordV1 {
         let stage = validate_host_no_apply_settlement_record_envelope_v1(bytes)
             .map_err(|_| HostSettlementRecordErrorV1)
             .and_then(HostSettlementStageV1::from_byte)?;
-        let mut reader = Reader { bytes, offset: 12 };
-        let execution = ExecutionId::from_bytes(reader.take::<16>()?);
-        let operation = OperationId::from_bytes(reader.take::<16>()?);
-        let marker_digest = reader.digest()?;
-        let handoff_digest = reader.digest()?;
-        let archives =
-            ControllerAssertedSettlementArchivesV1::new(reader.digest()?, reader.digest()?)?;
-        let epoch = u64::from_be_bytes(reader.take::<8>()?);
-        let pre_lease_cut = reader.digest()?;
-        let session_binding = reader.take::<32>()?;
-        let challenge = reader.take::<16>()?;
-        let commit_sequence = u64::from_be_bytes(reader.take::<8>()?);
-        let predecessor = reader.optional_digest()?;
-        let controller_floor = reader.optional_digest()?;
-        let controller_cas = reader.optional_digest()?;
+        let mut reader = Reader::new(&bytes[12..], |_| HostSettlementRecordErrorV1);
+        let execution = ExecutionId::from_bytes(reader.array::<16>()?);
+        let operation = OperationId::from_bytes(reader.array::<16>()?);
+        let marker_digest = read_nonzero_digest(&mut reader)?;
+        let handoff_digest = read_nonzero_digest(&mut reader)?;
+        let archives = ControllerAssertedSettlementArchivesV1::new(
+            read_nonzero_digest(&mut reader)?,
+            read_nonzero_digest(&mut reader)?,
+        )?;
+        let epoch = reader.u64()?;
+        let pre_lease_cut = read_nonzero_digest(&mut reader)?;
+        let session_binding = reader.array::<32>()?;
+        let challenge = reader.array::<16>()?;
+        let commit_sequence = reader.u64()?;
+        let predecessor = read_optional_digest(&mut reader)?;
+        let controller_floor = read_optional_digest(&mut reader)?;
+        let controller_cas = read_optional_digest(&mut reader)?;
         let record = Self {
             stage,
             execution,
@@ -341,7 +343,7 @@ impl HostSettlementRecordV1 {
             controller_floor,
             controller_cas,
         };
-        if reader.offset != RECORD_BYTES - 32 || !record.valid() {
+        if reader.remaining() != 32 || !record.valid() {
             return Err(HostSettlementRecordErrorV1);
         }
         Ok(record)
@@ -407,39 +409,23 @@ fn preliminary_sequence_matches_epoch(epoch: u64, commit_sequence: u64) -> bool 
     epoch.checked_add(2) == Some(commit_sequence)
 }
 
-struct Reader<'a> {
-    bytes: &'a [u8],
-    offset: usize,
+type Reader<'a> = BoundedReader<'a, HostSettlementRecordErrorV1>;
+
+/// Retains the Host format's required digest rule above byte mechanics.
+fn read_nonzero_digest(reader: &mut Reader<'_>) -> Result<ObjectDigest, HostSettlementRecordErrorV1> {
+    let bytes = reader.array::<32>()?;
+    if bytes == [0; 32] {
+        return Err(HostSettlementRecordErrorV1);
+    }
+    Ok(ObjectDigest::from_bytes(bytes))
 }
 
-impl Reader<'_> {
-    fn take<const N: usize>(&mut self) -> Result<[u8; N], HostSettlementRecordErrorV1> {
-        let end = self
-            .offset
-            .checked_add(N)
-            .ok_or(HostSettlementRecordErrorV1)?;
-        let value = self
-            .bytes
-            .get(self.offset..end)
-            .ok_or(HostSettlementRecordErrorV1)?
-            .try_into()
-            .map_err(|_| HostSettlementRecordErrorV1)?;
-        self.offset = end;
-        Ok(value)
-    }
-
-    fn digest(&mut self) -> Result<ObjectDigest, HostSettlementRecordErrorV1> {
-        let bytes = self.take::<32>()?;
-        if bytes == [0; 32] {
-            return Err(HostSettlementRecordErrorV1);
-        }
-        Ok(ObjectDigest::from_bytes(bytes))
-    }
-
-    fn optional_digest(&mut self) -> Result<Option<ObjectDigest>, HostSettlementRecordErrorV1> {
-        let bytes = self.take::<32>()?;
-        Ok((bytes != [0; 32]).then_some(ObjectDigest::from_bytes(bytes)))
-    }
+/// Preserves the Host format's all-zero absent digest representation.
+fn read_optional_digest(
+    reader: &mut Reader<'_>,
+) -> Result<Option<ObjectDigest>, HostSettlementRecordErrorV1> {
+    let bytes = reader.array::<32>()?;
+    Ok((bytes != [0; 32]).then_some(ObjectDigest::from_bytes(bytes)))
 }
 
 pub(crate) fn lease_key(execution: ExecutionId, stage: HostSettlementStageV1) -> Vec<u8> {

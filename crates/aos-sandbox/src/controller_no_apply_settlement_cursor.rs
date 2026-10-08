@@ -21,7 +21,7 @@ use aos_proto::aos::sandbox::local::v1::{
     QueryHostExecutionNoApplySettlementRequestV2, SettleHostExecutionNoApplyRequestV2,
     SettleHostExecutionNoApplyResponseV2,
 };
-use aos_sandbox_core::{ExecutionId, ObjectDigest, OperationId};
+use aos_sandbox_core::{ExecutionId, ObjectDigest, OperationId, bounded_codec::BoundedReader};
 use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodOutcomeV1, AuthenticatedBrokerMethodRequestV1,
     AuthenticatedBrokerMethodResultV1, AuthenticatedBrokerOutcomeDirectionV1,
@@ -336,22 +336,24 @@ impl ControllerNoApplySettlementCursorV1 {
         {
             return Err(ControllerNoApplySettlementCursorErrorV1::NotCurrent);
         }
-        let mut reader = Reader { bytes, offset: 12 };
-        let execution = ExecutionId::from_bytes(reader.take()?);
-        let operation = OperationId::from_bytes(reader.take()?);
-        let source_digest = reader.digest()?;
-        let marker = HostExecutionNoApplyRecordV1::decode_canonical(&reader.take::<384>()?)
+        let mut reader = Reader::new(&bytes[12..], |_| {
+            ControllerNoApplySettlementCursorErrorV1::NotCurrent
+        });
+        let execution = ExecutionId::from_bytes(reader.array()?);
+        let operation = OperationId::from_bytes(reader.array()?);
+        let source_digest = read_nonzero_digest(&mut reader)?;
+        let marker = HostExecutionNoApplyRecordV1::decode_canonical(&reader.array::<384>()?)
             .map_err(|_| ControllerNoApplySettlementCursorErrorV1::NotCurrent)?;
-        let archive_head = reader.digest()?;
-        let signed_terminal_outcome = reader.digest()?;
-        let request_id = reader.take()?;
-        let session_binding = reader.take()?;
-        let signed_request_digest = reader.take()?;
-        let request_body_digest = reader.digest()?;
-        let controller_preparation_sequence = u64::from_be_bytes(reader.take()?);
-        let observation_method = reader.take::<1>()?[0];
-        let stage = reader.take::<RECORD_BYTES>()?;
-        let signed_observation = reader.take::<32>()?;
+        let archive_head = read_nonzero_digest(&mut reader)?;
+        let signed_terminal_outcome = read_nonzero_digest(&mut reader)?;
+        let request_id = reader.array()?;
+        let session_binding = reader.array()?;
+        let signed_request_digest = reader.array()?;
+        let request_body_digest = read_nonzero_digest(&mut reader)?;
+        let controller_preparation_sequence = reader.u64()?;
+        let observation_method = reader.u8()?;
+        let stage = reader.array::<RECORD_BYTES>()?;
+        let signed_observation = reader.array::<32>()?;
         let (preliminary, signed_observation_digest) = match bytes[10] {
             1 if observation_method == 0
                 && stage == [0; RECORD_BYTES]
@@ -381,7 +383,7 @@ impl ControllerNoApplySettlementCursorV1 {
             preliminary,
             signed_observation_digest,
         };
-        if reader.offset != BYTES - 32
+        if reader.remaining() != 32
             || execution.as_bytes() != key
             || marker.fields().execution_id != *execution.as_bytes()
             || marker.fields().create_operation_id != *operation.as_bytes()
@@ -687,36 +689,17 @@ fn digest_body(body: &[u8]) -> ObjectDigest {
     ObjectDigest::from_bytes(Sha256::digest(body).into())
 }
 
-struct Reader<'a> {
-    bytes: &'a [u8],
-    offset: usize,
-}
+type Reader<'a> = BoundedReader<'a, ControllerNoApplySettlementCursorErrorV1>;
 
-impl Reader<'_> {
-    fn take<const N: usize>(
-        &mut self,
-    ) -> Result<[u8; N], ControllerNoApplySettlementCursorErrorV1> {
-        let end = self
-            .offset
-            .checked_add(N)
-            .ok_or(ControllerNoApplySettlementCursorErrorV1::NotCurrent)?;
-        let value = self
-            .bytes
-            .get(self.offset..end)
-            .ok_or(ControllerNoApplySettlementCursorErrorV1::NotCurrent)?
-            .try_into()
-            .map_err(|_| ControllerNoApplySettlementCursorErrorV1::NotCurrent)?;
-        self.offset = end;
-        Ok(value)
+/// Retains the cursor format's nonzero digest rule above byte mechanics.
+fn read_nonzero_digest(
+    reader: &mut Reader<'_>,
+) -> Result<ObjectDigest, ControllerNoApplySettlementCursorErrorV1> {
+    let bytes = reader.array::<32>()?;
+    if bytes == [0; 32] {
+        return Err(ControllerNoApplySettlementCursorErrorV1::NotCurrent);
     }
-
-    fn digest(&mut self) -> Result<ObjectDigest, ControllerNoApplySettlementCursorErrorV1> {
-        let bytes = self.take::<32>()?;
-        if bytes == [0; 32] {
-            return Err(ControllerNoApplySettlementCursorErrorV1::NotCurrent);
-        }
-        Ok(ObjectDigest::from_bytes(bytes))
-    }
+    Ok(ObjectDigest::from_bytes(bytes))
 }
 
 #[cfg(test)]
