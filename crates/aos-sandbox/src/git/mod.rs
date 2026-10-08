@@ -125,8 +125,8 @@ pub use smart_owner::{
 };
 pub use smart_transport::{
     CHEAP_SANITIZED_GIT_FORK_FEATURE_MAJOR_V1, CHEAP_SANITIZED_GIT_FORK_FEATURE_MINOR_V1,
-    CHEAP_SANITIZED_GIT_FORK_FEATURE_NAMESPACE_V1, CHEAP_SANITIZED_GIT_FORK_FIXTURE_V1,
-    CHEAP_SANITIZED_GIT_FORK_UNQUALIFIED_REASON_V1, DormantGitSmartEffectV1,
+    CHEAP_SANITIZED_GIT_FORK_FIXTURE_V1, CHEAP_SANITIZED_GIT_FORK_UNQUALIFIED_REASON_V1,
+    DormantGitSmartEffectV1,
     GitCheapForkCapabilityAdvertisementV1, GitSmartAuthorityFenceV1, GitSmartDispatchPhaseV1,
     GitSmartDispatchStateV1, GitSmartEffectHandoffV1, GitSmartEffectOutcomeV1, GitSmartEndpointV1,
     GitSmartPrepareOutcomeV1, GitSmartPrepareRecoveryV1, GitSmartRequestV1,

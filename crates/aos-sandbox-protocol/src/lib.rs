@@ -17,6 +17,8 @@
 //! carrier reserved for a future Controller-to-Host argument observation grant.
 //! [`source_project_authorization`] decodes canonical unverified Source
 //! project-authorization DATA without importing Publisher state or signers.
+//! [`public_api`] owns pure terminal-result projections and shared public
+//! feature identifiers without adopting requests or authorizing effects.
 
 pub mod authenticated_session;
 pub mod fencing;
@@ -55,6 +57,7 @@ pub mod operator_storage_repair_transport_v2;
 pub mod operator_storage_repair_transport_v3;
 pub mod operator_storage_repair_terminal_v4;
 pub mod payload_scope;
+pub mod public_api;
 pub mod runtime_deployment;
 pub mod semantics;
 pub mod session;

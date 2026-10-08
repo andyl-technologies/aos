@@ -8,6 +8,8 @@ use aos_proto::aos::sandbox::v1::{
     FilesystemView, NodeCapabilities, OpenSshAccessEndpoint, Snapshot, SnapshotAvailability,
     SnapshotPhase, ViewMutation, ViewPhase,
 };
+use aos_sandbox_protocol::public_api::execution_result::ExecutionTerminalOutcomeV1;
+use aos_sandbox_protocol::public_api::registry::CHEAP_SANITIZED_GIT_FORK_FEATURE_NAMESPACE_V1;
 use buffa::Message as _;
 
 use super::model::{ClientStateItem, OpaqueResponseBytesV1, OpaqueResponseKindV1};
@@ -140,11 +142,11 @@ impl TryFrom<Execution> for CheckedExecutionResourceV1 {
             )?;
             // The terminal codec owns both legacy classification and exact
             // v2 Linux status. MetadataRead cannot invent a missing signal.
-            let terminal = crate::cli_model::ExecutionTerminalOutcomeV1::try_from_proto(result)
+            let terminal = ExecutionTerminalOutcomeV1::try_from_proto(result)
                 .map_err(|_| InvalidPublicResource::InvalidOperationState)?;
             if matches!(
                 terminal,
-                crate::cli_model::ExecutionTerminalOutcomeV1::OriginalLinux { canceled: true, .. }
+                ExecutionTerminalOutcomeV1::OriginalLinux { canceled: true, .. }
             ) && phase != ExecutionPhase::EXECUTION_PHASE_CANCELED
             {
                 return Err(InvalidPublicResource::InvalidOperationState);
@@ -475,7 +477,7 @@ impl TryFrom<NodeCapabilities> for CheckedNodeCapabilitiesV1 {
                 .as_option()
                 .ok_or(InvalidPublicResource::Unspecified)?;
             validate_features(std::slice::from_ref(feature))?;
-            if feature.namespace == crate::git::CHEAP_SANITIZED_GIT_FORK_FEATURE_NAMESPACE_V1
+            if feature.namespace == CHEAP_SANITIZED_GIT_FORK_FEATURE_NAMESPACE_V1
                 || capability.conformance_fixture_digest
                     != super::registry::feature_conformance_digest_v1(feature)
                         .ok_or(InvalidPublicResource::InvalidCode)?

@@ -13,6 +13,7 @@
 
 use aos_proto::aos::sandbox::v1::{Feature, SemanticCapability};
 use aos_sandbox_core::{ObjectDigest, PrincipalId, ProjectId, ResourceId, Revision};
+use aos_sandbox_protocol::public_api::registry::CHEAP_SANITIZED_GIT_FORK_FEATURE_NAMESPACE_V1;
 use sha2::{Digest as _, Sha256};
 
 use super::protected_journal::{
@@ -23,9 +24,6 @@ use super::{
     decode_git_exchange_plan_v1, encode_git_exchange_plan_v1,
 };
 
-/// Ownership-namespaced feature used for immutable-pack fork acceleration.
-pub const CHEAP_SANITIZED_GIT_FORK_FEATURE_NAMESPACE_V1: &str =
-    "aos.sandbox.git.cheap-sanitized-git-fork";
 /// Major version of the cheap sanitized Git fork contract.
 pub const CHEAP_SANITIZED_GIT_FORK_FEATURE_MAJOR_V1: u32 = 1;
 /// Minor version of the cheap sanitized Git fork contract.

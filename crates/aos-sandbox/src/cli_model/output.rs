@@ -2,7 +2,7 @@
 
 use std::fmt::Write as _;
 
-use super::execution::ExecutionTerminalOutcomeV1;
+use aos_sandbox_protocol::public_api::execution_result::ExecutionTerminalOutcomeV1;
 use super::grammar::{
     CacheCommandV1, CapabilitiesCommandV1, CliResourceKindV1, CliWaitV1, CreateCommandV1,
     CreateModeV1, SandboxCommandV1, ViewCommandV1,

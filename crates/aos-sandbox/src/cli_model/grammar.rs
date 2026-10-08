@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+use aos_sandbox_protocol::public_api::grammar_error::InvalidCliGrammar;
+
 use super::execution::{
     CliIdentityV1, EndpointProofV1, ExecutionEnvironmentV1, ExecutionIoContractV1,
     ExecutionProgramV1,
@@ -36,26 +38,6 @@ pub const MAXIMUM_CLI_FILTERS: usize = 64;
 pub const MAXIMUM_CLI_EVENTS: u32 = 65_536;
 /// Maximum client-side wait duration in nanoseconds.
 pub const MAXIMUM_CLI_WAIT_NANOSECONDS: u64 = 7 * 24 * 60 * 60 * 1_000_000_000;
-
-/// Reports invalid bounded CLI grammar.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-pub enum InvalidCliGrammar {
-    /// A selector is empty, oversized, or contains control text.
-    #[error("CLI selector is invalid")]
-    InvalidSelector,
-    /// A relative path is absolute, ambiguous, or oversized.
-    #[error("CLI relative path is invalid")]
-    InvalidRelativePath,
-    /// An opaque value or idempotency key is empty or oversized.
-    #[error("CLI opaque value is invalid")]
-    InvalidOpaqueValue,
-    /// A page, depth, or wait bound is zero or excessive.
-    #[error("CLI bound is invalid")]
-    InvalidBound,
-    /// An execution argument vector is empty or exceeds a byte/count bound.
-    #[error("CLI execution argument vector is invalid")]
-    InvalidArguments,
-}
 
 /// Stores a bounded non-control UTF-8 CLI selector.
 #[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]

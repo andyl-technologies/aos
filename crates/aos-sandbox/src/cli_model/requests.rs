@@ -3,15 +3,15 @@
 use std::fmt;
 
 use aos_proto::aos::sandbox::v1::{self as wire, ObjectDescriptor};
+use aos_sandbox_protocol::public_api::execution_result::ExecutionSignalV1;
+use aos_sandbox_protocol::public_api::grammar_error::InvalidCliGrammar;
 use sha2::{Digest as _, Sha256};
 
 use super::execution::{
     CliIdentityV1, CreateExecutionCommandV1, ExecutionControlCommandV1, ExecutionIoContractV1,
     ExecutionProgramV1,
 };
-use super::grammar::{
-    CliIdempotencyKeyV1, CliResourceVersionV1, CliWaitDurationV1, CliWaitV1, InvalidCliGrammar,
-};
+use super::grammar::{CliIdempotencyKeyV1, CliResourceVersionV1, CliWaitDurationV1, CliWaitV1};
 use crate::controller_query::portable::{
     CheckedFeatureSetV1, CheckedFilesystemViewDescriptorV1, CheckedObjectDescriptorV1,
     CheckedPolicyDescriptorV1, CheckedSandboxSpecificationV1,
@@ -1860,8 +1860,8 @@ fn parent_proto(value: &OptionalParentFenceV1) -> (Vec<u8>, Vec<u8>) {
     }
 }
 
-fn execution_signal_proto(value: super::execution::ExecutionSignalV1) -> i32 {
-    use super::execution::ExecutionSignalV1 as Signal;
+fn execution_signal_proto(value: ExecutionSignalV1) -> i32 {
+    use aos_sandbox_protocol::public_api::execution_result::ExecutionSignalV1 as Signal;
     match value {
         Signal::Hangup => 1,
         Signal::Interrupt => 2,
