@@ -1557,10 +1557,25 @@ physical holder and final current checks. Its native SDK build, strict library
 and all-target Clippy pass. The exact mandatory local-head/foreign-used-view
 cold-fork case passes in 45.092 seconds with unchanged deadlines. Independent
 review matches all 6,061 tracked inputs before and after each of these four
-original invocations to the sealed commit. Its separate owning Nix request is
-compiling the immutable image; all four prerequisites and twelve owning cases
-remain required actual executions. This local regression pass does not qualify
-the owning gate, complete native suite or T1.
+original invocations to the sealed commit. This local regression pass does not
+qualify the owning gate, complete native suite or T1.
+
+The separate owning Nix request on that same `1ff700431a` source now completes
+with a failed mandatory prerequisite. The shared image compiles, survives AOS
+fixup and discovers 750 cases with none ignored. All thirteen cold-source,
+the imported-source and all nine source-preservation cases pass. Requalification
+passes eleven cases, then its required-index case fails in 7.61 seconds: the
+actual result is `Unavailable`, but lacks the expected owning index error and
+primary Node identity. The fixture blocks an entire pack after observing the
+primary; isolation from source Commit and namespace metadata needs verification.
+The relationship-completion error mapper also drops the index wrapper for store
+failures. Neither finding permits weakening the owning-index assertion or
+changing truthful storage-unavailable reporting. The twelve owning cases remain
+unexecuted because their prerequisite fails. Independent review matches all
+6,061 clean tracked inputs before and after this invocation, all 5,007 actual
+Nix source files and 877 directories, and all 3,060 image-bound crate hashes.
+All six derivations bind that same immutable source. Only the image and three
+passing prerequisite outputs are valid; no task, milestone or freeze advances.
 
 Deployable as: a local tool that initializes a store under a `file://`
 root, commits a directory, forks and merges branches, and checks a commit
