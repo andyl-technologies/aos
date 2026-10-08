@@ -26,4 +26,7 @@ in
   assert disabled.config.aos.abilities.serviceManagement.operations.realize.effects ? dbus;
   assert disabled.config.aos.abilities.serviceManagement.operations.realize.effects.dbus.input.bootstrap;
   assert disabled.config.aos.abilities.serviceManagement.operations.realize.handler.program.outPath == pkgs.systemd.handlers.outPath;
-    builtins.all (value: value) (builtins.attrValues (import ../../pkgs/networking/_nginx/native-tests.nix {inherit lib disabled cleartext tls;}))
+    builtins.all (value: value) (builtins.attrValues (import ../../pkgs/networking/_nginx/native-tests.nix {
+      inherit lib evaluate disabled cleartext tls;
+      self = pkgs.nginx;
+    }))
