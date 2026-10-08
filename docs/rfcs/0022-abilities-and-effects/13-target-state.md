@@ -121,7 +121,7 @@ APM; a derived Dockerfile is optional. Provider artifacts are retained when
 selected by a graph rather than baked into the base through CLI dependencies.
 
 The same package envelope and native modules target machines and containers.
-Payload-only packages such as Vim need no invented installation ability.
+Payload-only packages need no invented installation ability.
 Configuration and directory handlers can be shared between targets. A daemon
 package may install its binary, configuration, and directories without managed
 service integration. Explicitly enabling a service without a compatible selected
@@ -131,11 +131,12 @@ dropped or given fabricated results.
 `initSystem.install` is a package-owned contract consumed by init implementations.
 Its input identifies the retained init executable and arguments; its results
 identify the prepared configuration. Machine boot and container startup provide
-handlers for that contract. An init package such as systemd provides service
-handlers to other packages; it does not require an external service manager to
+handlers for that contract. An init package can provide service handlers to
+other packages; it does not require an external service manager to
 become init. Installed, selected, and running implementations are distinct.
 
-A Dockerfile `RUN apm install systemd` prepares the selected init configuration.
+Installing an init package during a Dockerfile build prepares its selected
+configuration.
 Subsequent installations can compose against its service handlers while service
 effects remain pending. The stable AOS entrypoint initializes package state,
 reads the prepared init selection, and executes it when the container starts.

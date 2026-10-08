@@ -344,6 +344,33 @@ Journals use the existing framing, exclusive locking, checksums, and configured
 size limits. They stop at their capacity limits; pruning releases store roots but
 does not compact journal bytes. Automatic journal compaction is not implemented.
 
+## Container manager bootstrap
+
+Container preparation and startup consume the same committed package profiles
+and native effect journals. Preparation uses the installation policy; startup
+uses the complete policy only after validating the selected init command and
+current PID-1 lifetime. The [container guide](../../users/aos/containers.md)
+describes the operator workflow.
+
+The systemd package declares the installation-phase
+`systemdBootstrap.prepare` operation in
+`pkgs/system/_systemd-abilities/container-bootstrap.nix`. Its service and
+resource-group input types reuse the corresponding `serviceManagement` input
+submodules. The handler in `bootstrap-provider.py` reuses the ordinary canonical
+renderers and imports the unit tree into the selected local Nix store as a
+recursive content-addressed artifact. Its checked results identify the owned
+resource, store path, and NAR digest. This prepares early manager topology
+without contacting a running manager or fabricating startup results.
+
+Before changing unit aliases, the handler pins the immutable tree and durably
+records preparation custody, including the exact native recipient identities.
+Normal service and group handlers adopt the exact prepared seed through their
+own durable custody records, then reconcile their resources normally. Replaced
+or foreign definitions fail closed. Bootstrap retirement removes only its
+unadopted aliases and retains the imported roots while a recipient's pending
+custody still needs an immutable seed. This handoff does not establish that a
+particular container launch environment can run the selected manager.
+
 ## Focused verification
 
 `checks.effects` evaluates recursive contracts, merging, composition, deferred
