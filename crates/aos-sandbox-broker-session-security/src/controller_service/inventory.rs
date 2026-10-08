@@ -51,18 +51,18 @@ use aos_sandbox_protocol::{
 use buffa::Message as _;
 
 use crate::controller_service::authority_effect::ControllerAuthorityEffectExchangeV1;
+use crate::inventory_transport::{
+    InventoryTransportErrorV1, InventoryTransportProgressV1,
+    InventoryTransportStageV1 as DormantLifecycleInventoryQueryStageV1,
+};
 use crate::recovery::{
     ProtectedPriorAtomicStorageHistoryV1, ProtectedVerifiedAtomicStorageHistoryV1,
 };
 use crate::{
     AuthenticatedStorageCreatePreparationV1, BrokerSessionSecurityError,
     DormantAuthenticatedBrokerSessionV1, DormantBrokerRequestCoordinatesV1,
-    DormantBrokerRequestPreparationV1, DormantBrokerRequestSendProgressV1,
-    DormantBrokerResponseProgressV1, DormantOutstandingBrokerRequestV1,
-    DormantPreparedBrokerRequestV1, DormantUnconfirmedBrokerRequestV1,
-    ProtectedBrokerOutcomeCommitRecoveryV1, ProtectedBrokerOutcomeCommitResultV1,
-    ProtectedBrokerOutcomeCurrentnessOwnerV1, ProtectedBrokerRequestCommitRecoveryV1,
-    ProtectedBrokerSessionInitializationRecoveryV1,
+    DormantBrokerRequestPreparationV1, DormantPreparedBrokerRequestV1,
+    ProtectedBrokerOutcomeCurrentnessOwnerV1,
 };
 
 #[derive(Clone, Copy)]
@@ -480,20 +480,6 @@ impl DormantNetworkLifecycleInventoryOwnerV1 {
 pub struct DormantLifecycleInventoryQueryRecoveryV1 {
     method: BrokerMethod,
     stage: DormantLifecycleInventoryQueryStageV1,
-}
-
-enum DormantLifecycleInventoryQueryStageV1 {
-    Initialization {
-        recovery: ProtectedBrokerSessionInitializationRecoveryV1,
-        request: DormantUnconfirmedBrokerRequestV1,
-    },
-    Successor {
-        recovery: ProtectedBrokerRequestCommitRecoveryV1,
-        request: DormantUnconfirmedBrokerRequestV1,
-    },
-    Send(DormantPreparedBrokerRequestV1),
-    Receive(DormantOutstandingBrokerRequestV1),
-    Commit(ProtectedBrokerOutcomeCommitRecoveryV1),
 }
 
 /// Reports completion or exact resumable custody for one inventory exchange.
@@ -1033,56 +1019,40 @@ impl DormantLifecycleInventorySessionV1 {
         method: BrokerMethod,
         prepared: DormantPreparedBrokerRequestV1,
     ) -> Result<DormantLifecycleInventoryQueryProgressV1, LifecyclePhase6ErrorV1> {
-        match self
-            .session
-            .send_authenticated_request(prepared)
-            .map_err(|cause| self.query_readiness_failure(cause))?
-        {
-            DormantBrokerRequestSendProgressV1::Pending(prepared) => {
-                Ok(DormantLifecycleInventoryQueryProgressV1::RecoveryRequired(
-                    DormantLifecycleInventoryQueryRecoveryV1 {
-                        method,
-                        stage: DormantLifecycleInventoryQueryStageV1::Send(prepared),
-                    },
-                ))
-            }
-            DormantBrokerRequestSendProgressV1::Sent(outstanding) => {
-                self.receive_query(method, outstanding)
-            }
-        }
+        self.advance_query(method, DormantLifecycleInventoryQueryStageV1::Send(prepared))
     }
 
-    fn receive_query(
+    fn advance_query(
         &mut self,
         method: BrokerMethod,
-        outstanding: DormantOutstandingBrokerRequestV1,
+        stage: DormantLifecycleInventoryQueryStageV1,
     ) -> Result<DormantLifecycleInventoryQueryProgressV1, LifecyclePhase6ErrorV1> {
-        match self
-            .session
-            .receive_authenticated_response(outstanding)
-            .map_err(|cause| self.query_readiness_failure(cause))?
-        {
-            DormantBrokerResponseProgressV1::Pending(outstanding) => {
-                Ok(DormantLifecycleInventoryQueryProgressV1::RecoveryRequired(
-                    DormantLifecycleInventoryQueryRecoveryV1 {
-                        method,
-                        stage: DormantLifecycleInventoryQueryStageV1::Receive(outstanding),
-                    },
-                ))
+        let progress = match stage.advance(&mut self.session) {
+            Ok(progress) => progress,
+            Err(InventoryTransportErrorV1::Readiness(cause)) => {
+                return Err(self.query_readiness_failure(cause));
             }
-            DormantBrokerResponseProgressV1::Committed(
-                ProtectedBrokerOutcomeCommitResultV1::Committed(committed),
-            ) => {
-                let (outcome, currentness) = committed.into_outcome_and_currentness();
+            Err(InventoryTransportErrorV1::Refused) => {
+                return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+            }
+        };
+
+        match progress {
+            InventoryTransportProgressV1::Complete { outcome, currentness } => {
                 Ok(DormantLifecycleInventoryQueryProgressV1::Complete {
                     outcome,
                     currentness,
                 })
             }
-            DormantBrokerResponseProgressV1::Committed(
-                ProtectedBrokerOutcomeCommitResultV1::RecoveryRequired { error, recovery },
-            ) => {
+            InventoryTransportProgressV1::RecoveryRequired(stage) => {
+                Ok(DormantLifecycleInventoryQueryProgressV1::RecoveryRequired(
+                    DormantLifecycleInventoryQueryRecoveryV1 { method, stage },
+                ))
+            }
+            InventoryTransportProgressV1::ReceiveCommitRecovery { error, recovery } => {
+                // Park the native cause before wrapping or retaining its recovery.
                 self.query_protected_failure(error);
+
                 Ok(DormantLifecycleInventoryQueryProgressV1::RecoveryRequired(
                     DormantLifecycleInventoryQueryRecoveryV1 {
                         method,
@@ -1102,83 +1072,8 @@ impl DormantLifecycleInventorySessionV1 {
         if self.has_pending_output_registration() {
             return Err(LifecyclePhase6ErrorV1::StaleAuthority);
         }
-        let method = recovery.method;
-        match recovery.stage {
-            DormantLifecycleInventoryQueryStageV1::Initialization { recovery, request } => {
-                match self
-                    .session
-                    .recover_prepared_initialization(recovery, request)
-                {
-                    DormantBrokerRequestPreparationV1::Prepared(prepared) => {
-                        self.send_query(method, prepared)
-                    }
-                    DormantBrokerRequestPreparationV1::InitializationRecoveryRequired {
-                        recovery,
-                        request,
-                        ..
-                    } => Ok(DormantLifecycleInventoryQueryProgressV1::RecoveryRequired(
-                        DormantLifecycleInventoryQueryRecoveryV1 {
-                            method,
-                            stage: DormantLifecycleInventoryQueryStageV1::Initialization {
-                                recovery,
-                                request,
-                            },
-                        },
-                    )),
-                    DormantBrokerRequestPreparationV1::SuccessorRecoveryRequired { .. } => {
-                        Err(LifecyclePhase6ErrorV1::StaleAuthority)
-                    }
-                }
-            }
-            DormantLifecycleInventoryQueryStageV1::Successor { recovery, request } => {
-                match self.session.recover_prepared_successor(recovery, request) {
-                    DormantBrokerRequestPreparationV1::Prepared(prepared) => {
-                        self.send_query(method, prepared)
-                    }
-                    DormantBrokerRequestPreparationV1::SuccessorRecoveryRequired {
-                        recovery,
-                        request,
-                        ..
-                    } => Ok(DormantLifecycleInventoryQueryProgressV1::RecoveryRequired(
-                        DormantLifecycleInventoryQueryRecoveryV1 {
-                            method,
-                            stage: DormantLifecycleInventoryQueryStageV1::Successor {
-                                recovery,
-                                request,
-                            },
-                        },
-                    )),
-                    DormantBrokerRequestPreparationV1::InitializationRecoveryRequired {
-                        ..
-                    } => Err(LifecyclePhase6ErrorV1::StaleAuthority),
-                }
-            }
-            DormantLifecycleInventoryQueryStageV1::Send(prepared) => {
-                self.send_query(method, prepared)
-            }
-            DormantLifecycleInventoryQueryStageV1::Receive(outstanding) => {
-                self.receive_query(method, outstanding)
-            }
-            DormantLifecycleInventoryQueryStageV1::Commit(recovery) => {
-                match self.session.recover_broker_outcome_commit(recovery) {
-                    ProtectedBrokerOutcomeCommitResultV1::Committed(committed) => {
-                        let (outcome, currentness) = committed.into_outcome_and_currentness();
-                        Ok(DormantLifecycleInventoryQueryProgressV1::Complete {
-                            outcome,
-                            currentness,
-                        })
-                    }
-                    ProtectedBrokerOutcomeCommitResultV1::RecoveryRequired { recovery, .. } => {
-                        Ok(DormantLifecycleInventoryQueryProgressV1::RecoveryRequired(
-                            DormantLifecycleInventoryQueryRecoveryV1 {
-                                method,
-                                stage: DormantLifecycleInventoryQueryStageV1::Commit(recovery),
-                            },
-                        ))
-                    }
-                }
-            }
-        }
+
+        self.advance_query(recovery.method, recovery.stage)
     }
 
     fn recheck(

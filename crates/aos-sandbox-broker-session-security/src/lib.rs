@@ -72,6 +72,7 @@ mod host_consumer_cgroup_transfer;
 mod host_execution_handoff;
 mod host_mount_scope_identity_transfer;
 mod immutable_image;
+mod inventory_transport;
 mod lifecycle_domain_effect;
 pub mod manifest;
 pub mod ownership_authority_client;
