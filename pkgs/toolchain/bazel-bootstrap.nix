@@ -464,6 +464,12 @@ in
               scripts/bootstrap/compile.sh
           ''}
 
+          # The installed bootstrap archive generates executable Python wrappers.
+          if test -f tools/python/pywrapper_template.txt; then
+            sed -i '1s|^#!/bin/sh$|#!${bash}/bin/bash|' \
+              tools/python/pywrapper_template.txt
+          fi
+
           # Upstream's bootstrap scripts use unset variables as empty strings.
           set +u
           source scripts/bootstrap/buildenv.sh
