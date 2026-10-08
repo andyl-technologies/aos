@@ -339,6 +339,34 @@ A separate test-only bucket namespace is reserved for verified metadata pack
 paths, preserving the payload-only production placement interface. No task
 checkbox, milestone exit or freeze advances.
 
+The private CLI composition on `77358a847b` passes all three owning Nix
+workflow cases, including fixed historical checkout; independent comparison
+matches all 4,996 actual source files. Its separate Nextest run passes two
+cases and times out during merged checkout at the unchanged 120-second limit.
+The owning feature matrix passes both 628-case Core configurations, then stops
+with 18 native-only import errors without `std`; its native phase is not reached.
+The shared indexed-read module and re-export now require `std` under CRATE-7
+and CRATE-29. The trunk `runtime-agnostic` gate passes all seven exact tests and
+its compile configurations on `43c3a299e2`; all 4,614 actual source files match.
+The required all-application test-target compilation on that commit is still
+running; its captured source also matches all 4,614 files. Both format checks
+pass, and the private CLI rebase preserves every other byte of its prior tree.
+These scoped results do not qualify the combined feature matrix or CLI task.
+
+The corrected metadata-loss recovery fixture on `95126ca0ee` passes the
+read-only case, then fails the loss/rebuild case with `Advance(Expired)`; the
+final producer/current/ACK case is not reached. All 4,996 actual Nix source files
+match. The whole-case duration does not identify which publication expired.
+The native DRV-12 limit witness on `50dac2a8a2` passes its exact 4,096/4,097-byte
+boundary, typed refusal and unchanged-publication assertions. The shared gate
+now requires that exact test, bringing its inventory to 108; the explicit
+DRV-29 qualification failure remains. Its first 1,024-entry batching witness
+times out during initial source admission before baseline publication or the
+measured maintenance operation. Solo qualification remains pending; it must
+retain the same source and deadlines to distinguish concurrent host pressure
+from fixture or runtime costs.
+No owning task checkbox, milestone exit or freeze advances.
+
 An isolated instrumented run of the fourth private backfill case on
 `faf2f0adfa` still fails with `Expired`. It reaches both catalog ACKs and
 durable reflog staging, then observes 30.803 seconds against the unchanged

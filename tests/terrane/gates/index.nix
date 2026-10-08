@@ -119,11 +119,11 @@
     "ref_advance::active_completion_tests::native_active_metadata_admits_index_roles_but_not_namespace_use"
     "ref_advance::active_completion_tests::native_active_completion_divergent_primary_never_promotes"
     "ref_advance::disclosure_tests::disclosure_projection_safe_index_rebuild_requires_current_attribute_producers"
+    "guard::index_contract_tests::native_index_key_limit_refuses_before_publication_effects"
   ];
 
   # These gaps need decisive native witnesses before this gate can turn green.
   qualificationBlockers = [
-    "DRV-12: exact oversized indexed-value refusal before native publication/effects"
     "DRV-29: native growing-population batched edits and independently bounded canonical resynchronization"
   ];
 
