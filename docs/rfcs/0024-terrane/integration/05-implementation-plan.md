@@ -2235,19 +2235,33 @@ Clippy. Both genuine principal tests and the portable graft-interpretation
 test are discovered before exact execution and each passes without ignored
 cases on the same compiled executable. The following strict `std` all-target
 check stops on three unused test helpers/imports; later profiles and private
-rustdoc remain unrun. The reviewed correction `a5efcc7ceb` adjusts only their
-existing consumer feature boundaries; its new-source checks remain pending.
-Original failures, source seals and the portable test executable are retained,
-without lint exceptions or unchanged-source retries. A CRATE-29 source audit
+rustdoc remain unrun on that source. The reviewed correction `a5efcc7ceb`
+adjusts only their existing consumer feature boundaries. Rebasing it onto the
+shared gate correction preserves every owned Rust file and produces
+`ebf6894409`. Strict no-default library and all-target Clippy pass. The test
+launcher then omits required Cargo arguments and fails before running tests;
+the original failure is retained and the two passing checks are not repeated.
+The corrected continuation passes both genuine principal tests and the portable
+graft-interpretation test, each discovered and executed exactly with one pass
+and no ignored cases. Strict all-target Clippy passes for `std`, `std,send`,
+`std,wasm` on the native target, and `tokio,surface-sdk`; strict native private
+rustdoc also passes. Independent review verifies every command, log hash,
+preserved test executable and unchanged 6,098-entry source manifest. These are
+direct checks; the owning feature-matrix and combined-source checks remain
+required. Original failures and source seals are retained without lint
+exceptions. A CRATE-29 source audit
 also finds `surface-sdk` absent from both compatible feature-matrix aggregates.
 The shared gate now selects it in the native and native-target WASM-binding
 profiles and rejects declared-feature inventory drift; its full execution on
 composed source remains required. Test-only native-check instrumentation
 on `772cf43ea7` passes source review: removing the reviewed diagnostic insertions
-restores both production files' exact original bytes. Its physical refusal,
-clock-sample and effect parity tests remain unrun. These local commits remain
-unpushed pending qualification; no deadline improvement or task acceptance is
-claimed.
+restores both production files' exact original bytes. Its rebase `acbc592b0b`
+preserves all six owned files and changes only the shared gate and progress
+record. The private merge `f9c938d25a` combines it with qualified `ebf6894409`:
+all twelve portable file images match that source, all six diagnostic images
+remain unchanged, and the worktree is clean. Its physical refusal, clock-sample
+and effect parity tests remain unrun pending combined qualification. These local
+commits remain unpushed; no deadline improvement or task acceptance is claimed.
 
 The sealed current floor contains 89 aggregate gates, including all 69 T0/T1
 plan-required names and twenty implemented supporting checks. Read-only evaluation
