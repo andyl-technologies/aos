@@ -9,7 +9,10 @@ let
   evaluateWithHostPolicy = includeHostPolicy: overrides:
     lib.evalModules {
       inherit lib;
-      specialArgs = {inherit package;};
+      specialArgs = {
+        inherit package;
+        dependencies.coreutils = package;
+      };
       modules =
         [
           ../../lib/effects/module.nix
@@ -19,6 +22,7 @@ let
           ../../pkgs/tools/_aos-kernel-tunable-provider/module.nix
           ../../pkgs/system/_aos-host-policy/kernel.nix
           ../../pkgs/system/_aos-host-policy/hardening.nix
+          ../../pkgs/system/_systemd-abilities/crash-dump-policy.nix
           ../../pkgs/system/_aos-host-policy/networking.nix
           ../../pkgs/networking/_nftables/module.nix
           ../../pkgs/security/_audit/module.nix
@@ -59,6 +63,10 @@ let
     };
     aos.networkPolicy.enable = true;
   };
+  containerCollector = evaluate {
+    aos.initSystem.container = true;
+    aos.security.hardening.coreDump.enable = true;
+  };
   links = evaluated: evaluated.config.aos.abilities.network.operations.configure.effects.host.input.links;
   defaultLink = builtins.head (links defaults);
   explicitLink = builtins.head (links explicit);
@@ -86,7 +94,8 @@ in {
     defaults.config.aos.kernel.bbr
     && defaults.config.aos.kernel.sysctl."fs.inotify.max_user_instances" == "8192"
     && defaults.config.aos.kernel.sysctl."kernel.kptr_restrict" == "2"
-    && defaults.config.aos.kernel.sysctl."kernel.hostname" == "aos";
+    && defaults.config.aos.kernel.sysctl."kernel.hostname" == "aos"
+    && defaults.config.aos.kernel.sysctl."kernel.core_pattern" == "|${package}/bin/false";
   containerKernelDefaultsAreInert =
     !container.config.aos.kernel.bbr
     && container.config.aos.kernel.sysctl == {}
@@ -100,7 +109,9 @@ in {
     && !container.config.aos.networkPolicy.enable;
   containerUserspaceHardeningRemains =
     container.config.aos.security.hardening.enable
-    && container.config.aos.abilities.configuration.operations.file.effects.hardening-limits.enable;
+    && container.config.aos.abilities.configuration.operations.file.effects.hardening-limits.enable
+    && container.config.aos.abilities.configuration.operations.file.effects.coredump-policy.enable
+    && builtins.match ".*Storage=none.*" container.config.aos.security.hardening.crashFiles."systemd/coredump.conf".text != null;
   explicitContainerKernelPolicyIsRetained =
     explicitContainer.config.aos.kernel.bbr
     && explicitContainer.config.aos.kernel.sysctl."vm.swappiness" == "25"
@@ -114,6 +125,10 @@ in {
     == ["192.0.2.6/24"]
     && explicitContainer.config.aos.networkPolicy.enable
     && explicitContainer.config.aos.abilities.networkPolicy.operations.ruleset.effects.host.enable;
+  explicitContainerCollectorIsRetained =
+    containerCollector.config.aos.kernel.sysctl."kernel.core_pattern"
+    == "|${package}/lib/systemd/systemd-coredump %P %u %g %s %t %c %h %e"
+    && containerCollector.config.aos.abilities.kernelTunables.operations.ensure.effects.settings.enable;
   defaultGraphChecked = builtins.deepSeq graph true;
   containerGraphsChecked = builtins.deepSeq container.config.aos.activation.graph (builtins.deepSeq explicitContainer.config.aos.activation.graph true);
 }

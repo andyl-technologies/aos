@@ -7,6 +7,7 @@
   ...
 }: let
   cfg = config.aos.security.hardening;
+  containerTarget = config.aos.initSystem.container or false;
   rendered = import ./platform/_crash-dump-configuration.nix {
     systemd = package;
     coreutils = dependencies.coreutils;
@@ -15,7 +16,10 @@
 in {
   config = lib.mkIf cfg.enable {
     aos.security.hardening.crashFiles = rendered.etc;
-    aos.kernel.sysctl."kernel.core_pattern" = rendered.corePattern;
+    # The runtime owns host-wide crash routing unless a collector is requested.
+    aos.kernel.sysctl = lib.mkIf (!containerTarget || cfg.coreDump.enable) {
+      "kernel.core_pattern" = rendered.corePattern;
+    };
     aos.abilities.configuration.operations.file.effects.coredump-policy.input = {
       path = "/etc/systemd/coredump.conf";
       content = rendered.etc."systemd/coredump.conf".text;

@@ -9,7 +9,7 @@
     then "|${systemd}/lib/systemd/systemd-coredump %P %u %g %s %t %c %h %e"
     else "|${coreutils}/bin/false";
   etc."systemd/coredump.conf".text = ''
-    # Generated from the selected crash-dump-policy ability request.
+    # Generated from the selected crash-dump policy.
     [Coredump]
     ${
       if policy.enabled
