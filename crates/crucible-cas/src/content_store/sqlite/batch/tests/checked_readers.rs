@@ -13,6 +13,7 @@ fn catalog(root: &Path, guard: &Arc<Quota>) -> Arc<dyn ImmutableBlobBackend> {
         guard.clone(),
         8 * 1024 * 1024,
         Arc::new(Supervisor(guard.clone())),
+        &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
     )
     .expect("finite component catalog")
 }
@@ -293,8 +294,13 @@ fn foreign_sql_lock_refuses_metadata_and_chunks_and_restores_timeout() {
     let source = backend
         .read_with_boundary(&account, id, None, &mut || Ok(()))
         .expect("metadata");
-    let foreign =
-        Connection::open(root.path().join(DATABASE_FILE)).expect("independent SQL holder");
+    let foreign = crate::content_store::fixture_sqlite_heap()
+        .expect("authored SQLite fixture process")
+        .open_connection(
+            root.path().join(DATABASE_FILE),
+            rusqlite::OpenFlags::default(),
+        )
+        .expect("independent SQL holder");
     foreign
         .execute_batch("BEGIN EXCLUSIVE")
         .expect("real foreign SQL lock");

@@ -81,17 +81,12 @@ impl AuthenticatingSqliteReader {
         let mut connection = loop {
             busy::healthy(&self.quarantined)?;
             boundary()?;
-            match self.connection.try_lock() {
-                Ok(connection) => {
+            match self.connection.try_lock_for("lock-sqlite-blob-reader")? {
+                Some(connection) => {
                     busy::healthy(&self.quarantined)?;
                     break connection;
                 }
-                Err(TryLockError::WouldBlock) => std::thread::yield_now(),
-                Err(TryLockError::Poisoned(_)) => {
-                    return Err(StoreError::Poisoned {
-                        operation: "lock-sqlite-blob-reader",
-                    });
-                }
+                None => std::thread::yield_now(),
             }
         };
         boundary()?;

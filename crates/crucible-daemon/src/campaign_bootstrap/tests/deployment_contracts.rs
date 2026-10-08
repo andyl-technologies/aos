@@ -29,10 +29,18 @@ fn external_store_rejects_a_nondurable_ref_backend() {
 #[test]
 fn prepared_owner_imports_verified_artifacts_before_socket_bind() {
     let (_directory, config) = fixture();
-    let prepared = config.prepare().expect("prepare local service");
+    let prepared = config
+        .prepare(
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process"),
+        )
+        .expect("prepare local service");
     assert!(!config.endpoint().path().exists());
     assert!(matches!(
-        config.open(),
+        config.open(
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process")
+        ),
         Err(CampaignLocalServiceError::StateInUse)
     ));
 
@@ -66,7 +74,12 @@ fn default_sqlite_store_reopens() {
         .expect("happy-path scenario")
         .scenario;
     let configuration = {
-        let prepared = config.prepare().expect("SQLite-backed campaign owner");
+        let prepared = config
+            .prepare(
+                &crucible_cas::content_store::fixture_sqlite_heap()
+                    .expect("authored SQLite fixture process"),
+            )
+            .expect("SQLite-backed campaign owner");
         prepared
             .import_configuration(&scenario, &crucible::Schedule::empty())
             .expect("durable configuration")
@@ -79,7 +92,12 @@ fn default_sqlite_store_reopens() {
             .is_file()
     );
 
-    let reopened = config.prepare().expect("restarted SQLite-backed owner");
+    let reopened = config
+        .prepare(
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process"),
+        )
+        .expect("restarted SQLite-backed owner");
     assert_eq!(
         reopened
             .import_configuration(&scenario, &crucible::Schedule::empty())
@@ -102,7 +120,12 @@ fn component_authorities_are_authenticated_before_repository_open() {
         Some(authority_path.as_path())
     );
 
-    let prepared = configured.prepare().expect("prepare with authorities");
+    let prepared = configured
+        .prepare(
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process"),
+        )
+        .expect("prepare with authorities");
     assert!(!configured.endpoint().path().exists());
     let service = prepared.bind().expect("bind authority-backed service");
     service.shutdown_handle().shutdown();
@@ -119,7 +142,10 @@ fn malformed_component_authorities_fail_before_repository_or_socket_mutation() {
         .with_component_authority_path(&authority_path)
         .expect("component-authority path");
     assert!(matches!(
-        configured.prepare(),
+        configured.prepare(
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process")
+        ),
         Err(CampaignLocalServiceError::InvalidComponentAuthorityFile)
     ));
     assert!(!config.state_directory().join(OBJECT_DIRECTORY).exists());
@@ -128,7 +154,10 @@ fn malformed_component_authorities_fail_before_repository_or_socket_mutation() {
 
     write_component_authorities(&authority_path, [0; 32], [0x73; 32]);
     assert!(matches!(
-        configured.prepare(),
+        configured.prepare(
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process")
+        ),
         Err(CampaignLocalServiceError::InvalidComponentAuthorityFile)
     ));
     assert!(!config.state_directory().join(OBJECT_DIRECTORY).exists());
@@ -139,7 +168,10 @@ fn malformed_component_authorities_fail_before_repository_or_socket_mutation() {
     fs::set_permissions(&authority_path, Permissions::from_mode(0o640))
         .expect("expose authority file");
     assert!(matches!(
-        configured.prepare(),
+        configured.prepare(
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process")
+        ),
         Err(CampaignLocalServiceError::InvalidComponentAuthorityFile)
     ));
     assert!(!config.state_directory().join(OBJECT_DIRECTORY).exists());
@@ -152,7 +184,10 @@ fn malformed_component_authorities_fail_before_repository_or_socket_mutation() {
     fs::rename(&authority_path, &target).expect("move authority target");
     symlink(&target, &authority_path).expect("component-authority symlink");
     assert!(matches!(
-        configured.prepare(),
+        configured.prepare(
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process")
+        ),
         Err(CampaignLocalServiceError::InvalidComponentAuthorityFile)
     ));
     assert!(!config.state_directory().join(OBJECT_DIRECTORY).exists());
@@ -180,7 +215,12 @@ fn prepared_read_only_owner_rejects_artifact_import() {
         config.server(),
     )
     .expect("read-only config");
-    let prepared = read_only.prepare().expect("prepare read-only service");
+    let prepared = read_only
+        .prepare(
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process"),
+        )
+        .expect("prepare read-only service");
     let generator = CandidateGeneratorSpec::new(
         crucible_campaign::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
         CandidateGeneratorAlgorithm::All,
@@ -205,7 +245,10 @@ fn policy_and_state_ownership_fail_before_socket_bind() {
     fs::set_permissions(config.policy_path(), Permissions::from_mode(0o620))
         .expect("writable policy");
     assert!(matches!(
-        config.open(),
+        config.open(
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process")
+        ),
         Err(CampaignLocalServiceError::InvalidPolicyFile)
     ));
     assert!(!config.endpoint().path().exists());
@@ -215,7 +258,10 @@ fn policy_and_state_ownership_fail_before_socket_bind() {
     fs::set_permissions(config.state_directory(), Permissions::from_mode(0o770))
         .expect("writable state");
     assert!(matches!(
-        config.open(),
+        config.open(
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process")
+        ),
         Err(CampaignLocalServiceError::InvalidStateDirectory)
     ));
     assert!(!config.endpoint().path().exists());
@@ -227,7 +273,10 @@ fn policy_and_state_ownership_fail_before_socket_bind() {
     fs::set_permissions(&objects, Permissions::from_mode(0o750))
         .expect("exposed objects directory");
     assert!(matches!(
-        config.open(),
+        config.open(
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process")
+        ),
         Err(CampaignLocalServiceError::InvalidStateSubdirectory)
     ));
     assert!(!config.endpoint().path().exists());
@@ -246,7 +295,10 @@ fn policy_and_state_ownership_fail_before_socket_bind() {
     )
     .expect("symlink config");
     assert!(matches!(
-        symlink_config.open(),
+        symlink_config.open(
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process")
+        ),
         Err(CampaignLocalServiceError::InvalidPolicyFile)
     ));
     assert!(!config.endpoint().path().exists());
@@ -257,7 +309,10 @@ fn malformed_or_oversized_policy_is_read_only_failure() {
     let (_directory, config) = fixture();
     fs::write(config.policy_path(), b"schema = [").expect("malformed policy");
     assert!(matches!(
-        config.open(),
+        config.open(
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process")
+        ),
         Err(CampaignLocalServiceError::Policy(
             UnixPeerCampaignPolicyLoadError::Toml { .. }
         ))
@@ -272,7 +327,10 @@ fn malformed_or_oversized_policy_is_read_only_failure() {
     )
     .expect("oversized policy");
     assert!(matches!(
-        config.open(),
+        config.open(
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process")
+        ),
         Err(CampaignLocalServiceError::Policy(
             UnixPeerCampaignPolicyLoadError::TooLarge
         ))

@@ -604,6 +604,9 @@ pub(super) async fn run_local_double_workflow_stdin_async(
     run_control_client_workflow_stdin_async(&client, run_plan, false, false).await
 }
 
+#[path = "verify_serve/process_bootstrap.rs"]
+mod process_bootstrap;
+
 #[path = "verify_serve/service.rs"]
 mod service;
 pub(crate) use service::*;

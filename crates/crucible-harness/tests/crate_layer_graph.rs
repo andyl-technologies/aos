@@ -81,6 +81,11 @@ const RUNTIME_SPECS: &[LayerSpec] = &[
         in_vm: false,
     },
     LayerSpec {
+        package: "crucible-sqlite-heap",
+        layer: 2,
+        in_vm: false,
+    },
+    LayerSpec {
         package: "crucible",
         layer: 3,
         in_vm: false,
@@ -286,6 +291,7 @@ fn host_ram_error_edge_does_not_allow_other_hosts_in_vm_edges_or_cycles() {
         "crucible-qemu-plugin",
         "crucible-guest",
         "crucible-linux-resource",
+        "crucible-sqlite-heap",
     ] {
         let graph = BTreeMap::from([(
             package.to_string(),

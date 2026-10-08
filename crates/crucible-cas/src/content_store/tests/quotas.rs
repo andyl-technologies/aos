@@ -604,7 +604,13 @@ fn sqlite_physical_quota_binds_the_database_and_wal_root() {
         &StoreGraphObjectProfilers::new(),
         &binders,
         &StoreGraphS3Clients::new(),
-        None,
+        crate::content_store::StoreGraphOriginalResources {
+            memory_namespaces: None,
+            sqlite_heap: Some(
+                &crate::content_store::fixture_sqlite_heap()
+                    .expect("authored SQLite fixture process"),
+            ),
+        },
     )
     .expect("quota-owned SQLite graph");
     assert_eq!(admin.physical().len(), 1);

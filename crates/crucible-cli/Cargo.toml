@@ -35,11 +35,13 @@ clap = { workspace = true }
 clap_complete = { workspace = true }
 crucible-api = { path = "../crucible-api" }
 crucible-campaign = { path = "../crucible-campaign" }
+crucible-cas = { workspace = true }
+crucible-linux-resource = { workspace = true }
 crucible-daemon = { path = "../crucible-daemon" }
 crucible-session = { path = "../crucible-session" }
 hex = { workspace = true }
 rcgen = { workspace = true }
-rustix = { workspace = true, features = ["process", "termios"] }
+rustix = { workspace = true, features = ["process", "termios", "time"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
@@ -48,9 +50,10 @@ toml = { workspace = true }
 tempfile = { workspace = true }
 url = { workspace = true }
 zeroize = { workspace = true }
+zbus = { workspace = true }
 
 [dev-dependencies]
-crucible-cas = { workspace = true }
+crucible-cas = { workspace = true, features = ["test-support"] }
 crucible-api = { path = "../crucible-api", features = ["test-support"] }
 crucible-core = { package = "crucible", path = "../crucible", features = ["test-support"] }
 crucible-daemon = { path = "../crucible-daemon", features = ["test-support"] }

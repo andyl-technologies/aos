@@ -464,9 +464,17 @@ fn prepared_name_and_resource_refusal_precedes_the_actual_child() {
     drop(error);
     drop(blocker);
     assert_eq!(origin.0.used.load(Ordering::SeqCst), baseline);
-    let connection = Connection::open(root.path().join(DATABASE_FILE)).expect("actual database");
+    let connection = crate::content_store::fixture_sqlite_heap()
+        .expect("authored SQLite fixture process")
+        .open_connection(
+            root.path().join(DATABASE_FILE),
+            rusqlite::OpenFlags::default(),
+        )
+        .expect("actual database");
     assert_eq!(
-        load_metadata(&connection).expect("unchanged generation").1,
+        load_metadata(&connection.lock().expect("managed metadata connection"))
+            .expect("unchanged generation")
+            .1,
         1
     );
     assert_eq!(

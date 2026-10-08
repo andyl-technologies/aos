@@ -26,6 +26,8 @@ fn checked_graph_adapters_capture_and_reopen_actual_ram_on_directory_and_sqlite(
                 quota.clone(),
                 8 * 1024 * 1024,
                 Arc::new(FixtureCatalogSupervisor(quota.clone())),
+                &crate::content_store::fixture_sqlite_heap()
+                    .expect("authored SQLite fixture process"),
             )
             .unwrap()
         };

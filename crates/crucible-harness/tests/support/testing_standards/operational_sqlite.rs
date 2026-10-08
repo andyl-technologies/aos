@@ -118,10 +118,37 @@ const BUSY_COMPANION: Companion = Companion {
     ],
 };
 
-const BUSY_COMPANIONS: &[Companion] = &[BUSY_COMPANION];
+const MANAGED_CONNECTION_COMPANION: Companion = Companion {
+    path: "crates/crucible-cas/src/content_store/sqlite/process_heap/connection.rs",
+    required: &[r#"    pub(in crate::content_store::sqlite) fn try_lock_for(
+        &self,
+        operation: &'static str,
+    ) -> Result<Option<SqliteConnectionGuard<'_>>, StoreError> {
+        self.heap.verify_live()?;
+        let owner = self
+            .connection
+            .as_ref()
+            .ok_or_else(|| refusal("SQLite connection handle has closed"))?;
+        match owner.connection.try_lock() {
+            Ok(guard) => {
+                self.heap.verify_live()?;
+                if guard.is_none() {
+                    return Err(refusal("SQLite native connection has closed").into());
+                }
+                Ok(Some(SqliteConnectionGuard { guard }))
+            }
+            Err(TryLockError::WouldBlock) => Ok(None),
+            Err(TryLockError::Poisoned(_)) => Err(StoreError::Poisoned { operation }),
+        }
+    }"#],
+    counts: &[("fn try_lock_for(", 1)],
+};
+
+const BUSY_COMPANIONS: &[Companion] = &[BUSY_COMPANION, MANAGED_CONNECTION_COMPANION];
 
 const CHECKED_READER_COMPANIONS: &[Companion] = &[
     BUSY_COMPANION,
+    MANAGED_CONNECTION_COMPANION,
     Companion {
         path: "crates/crucible-cas/src/content_store/checked_reader.rs",
         required: &[r#"fn check(
@@ -265,7 +292,13 @@ pub(super) const CONTRACTS: &[Contract] = &[
     }
     let (root, guard, backend, account) = backend();
     let _scope = account.enter();
-    let foreign = Connection::open(root.path().join(DATABASE_FILE)).expect("foreign reader");
+    let foreign = crate::content_store::fixture_sqlite_heap()
+        .expect("authored SQLite fixture process")
+        .open_connection(
+            root.path().join(DATABASE_FILE),
+            rusqlite::OpenFlags::default(),
+        )
+        .expect("foreign reader");
     foreign
         .execute_batch("BEGIN; SELECT * FROM objects;")
         .expect("retained SHARED read lock");
@@ -321,7 +354,13 @@ pub(super) const CONTRACTS: &[Contract] = &[
     }
     let (root, guard, backend, account) = backend();
     let _scope = account.enter();
-    let foreign = Connection::open(root.path().join(DATABASE_FILE)).expect("foreign writer");
+    let foreign = crate::content_store::fixture_sqlite_heap()
+        .expect("authored SQLite fixture process")
+        .open_connection(
+            root.path().join(DATABASE_FILE),
+            rusqlite::OpenFlags::default(),
+        )
+        .expect("foreign writer");
     foreign
         .execute_batch("BEGIN IMMEDIATE")
         .expect("held actual writer lock");
@@ -541,17 +580,12 @@ pub(super) const CONTRACTS: &[Contract] = &[
         let mut connection = loop {
             busy::healthy(&self.quarantined)?;
             boundary()?;
-            match self.connection.try_lock() {
-                Ok(connection) => {
+            match self.connection.try_lock_for("lock-sqlite-blob-reader")? {
+                Some(connection) => {
                     busy::healthy(&self.quarantined)?;
                     break connection;
                 }
-                Err(TryLockError::WouldBlock) => std::thread::yield_now(),
-                Err(TryLockError::Poisoned(_)) => {
-                    return Err(StoreError::Poisoned {
-                        operation: "lock-sqlite-blob-reader",
-                    });
-                }
+                None => std::thread::yield_now(),
             }
         };
         boundary()?;
@@ -796,14 +830,12 @@ pub(super) const CONTRACTS: &[Contract] = &[
         let _staging = catalog::read_gate_with_boundary(&mut check)?;
         let mut connection = loop {
             check()?;
-            match backend.read_connection.try_lock() {
-                Ok(connection) => break connection,
-                Err(std::sync::TryLockError::WouldBlock) => std::thread::yield_now(),
-                Err(std::sync::TryLockError::Poisoned(_)) => {
-                    return Err(StoreError::Poisoned {
-                        operation: "lock-checked-sqlite-length",
-                    });
-                }
+            match backend
+                .read_connection
+                .try_lock_for("lock-checked-sqlite-length")?
+            {
+                Some(connection) => break connection,
+                None => std::thread::yield_now(),
             }
         };
         let accepted = busy::with_zero(

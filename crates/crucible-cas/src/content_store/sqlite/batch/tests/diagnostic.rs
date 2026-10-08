@@ -11,7 +11,12 @@ fn isolated(name: &str) -> bool {
 #[test]
 fn uncapped_checked_routes_refuse_without_changing_generic_routes() {
     let root = tempfile::tempdir().expect("ordinary catalog");
-    let backend = SqliteBlobBackend::open("ordinary", root.path()).expect("generic catalog");
+    let backend = SqliteBlobBackend::open(
+        "ordinary",
+        root.path(),
+        &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
+    )
+    .expect("generic catalog");
     let inputs = objects();
     let account = DecodeBudget::for_store(original_quota()).expect("original component account");
     let _scope = account.enter();

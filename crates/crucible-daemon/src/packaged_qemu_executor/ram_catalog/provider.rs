@@ -32,6 +32,7 @@ mod directory_storage;
 mod retirement_tests;
 #[cfg(test)]
 mod spool;
+mod sqlite_heap;
 
 pub(in crate::packaged_qemu_executor) use directory_storage::GuardedCampaignStorage;
 #[cfg(test)]
@@ -189,7 +190,7 @@ struct CatalogAuthority {
     diagnostic_occupied: AtomicBool,
     _root_resources: HostServiceLease,
     _sql_staging_resources: HostServiceLease,
-    _sqlite_heap_resources: HostServiceLease,
+    sqlite_heap: crucible_cas::content_store::SqliteProcessHeap,
     _metadata_resources: crucible_cas::owned_decode::ResourceLoan,
     // The original actor remains pinned through final constructor credit release.
     _custody: Arc<dyn Send + Sync>,
@@ -226,11 +227,30 @@ impl CatalogService {
     ///
     /// # Errors
     /// Refuses insufficient independently authored descriptor or staging capacity.
+    #[cfg(test)]
     pub(super) fn new(
         policy: PackagedRamCatalogConfig,
         custody: Arc<dyn Send + Sync>,
         supervisor: HostOperationSupervisor,
     ) -> Result<Self, ProviderServiceAdmissionError> {
+        Self::new_with_heap(policy, custody, supervisor, None)
+    }
+
+    pub(super) fn new_with_heap(
+        policy: PackagedRamCatalogConfig,
+        custody: Arc<dyn Send + Sync>,
+        supervisor: HostOperationSupervisor,
+        borrowed_heap: Option<&crucible_cas::content_store::SqliteProcessHeap>,
+    ) -> Result<Self, ProviderServiceAdmissionError> {
+        supervisor
+            .verify_original_live()
+            .map_err(sqlite_supervision_error)?;
+        if let Some(heap) = borrowed_heap {
+            heap.verify_live()?;
+            if heap.maximum_heap_bytes() > policy.maximum_sqlite_heap_bytes() {
+                return Err(StoreError::Quota.into());
+            }
+        }
         let resources = policy.resources();
         let audit = LinuxProjectQuotaBinding::maximum_audit_file_descriptors();
         if resources.file_descriptors < minimum_file_descriptors()
@@ -262,8 +282,9 @@ impl CatalogService {
             metadata_allocator.reserve_paired_bytes(&allocator, constructor_bytes)?;
         let metadata_resources =
             crucible_cas::owned_decode::ResourceLoan::new(CatalogMetadataCredit {
-                _resident: resident,
-                _metadata: metadata,
+                _leases: crucible_linux_resource::host_services::HostServiceLeasePair::new(
+                    resident, metadata,
+                ),
             });
         let root_resources = allocator
             .reserve_resources(
@@ -279,9 +300,17 @@ impl CatalogService {
                 crucible_cas::content_store::minimum_sqlite_catalog_staging_bytes(),
             )
             .map_err(ProviderServiceAdmissionError::from)?;
-        let sqlite_heap_resources = allocator
-            .reserve_resources(0, 0, policy.maximum_sqlite_heap_bytes())
-            .map_err(ProviderServiceAdmissionError::from)?;
+        let sqlite_heap = match borrowed_heap {
+            Some(heap) => heap.clone(),
+            None => sqlite_heap::install(
+                &allocator,
+                &metadata_allocator,
+                &supervisor,
+                custody.clone(),
+                policy.maximum_sqlite_heap_bytes(),
+                slots.checked_mul(2).ok_or(StoreError::Quota)?,
+            )?,
+        };
         let entries = std::iter::repeat_with(|| None)
             .take(slots)
             .collect::<Vec<_>>()
@@ -303,7 +332,7 @@ impl CatalogService {
                 diagnostic_occupied: AtomicBool::new(false),
                 _root_resources: root_resources,
                 _sql_staging_resources: sql_staging_resources,
-                _sqlite_heap_resources: sqlite_heap_resources,
+                sqlite_heap,
                 _custody: custody,
                 _metadata_resources: metadata_resources,
             }),
@@ -591,6 +620,7 @@ impl ProductionRamCatalogProvider for CatalogService {
             quota.clone(),
             self.maximum_sqlite_heap_bytes(),
             Arc::new(CatalogSqliteSupervisor(self.authority.clone())),
+            &self.authority.sqlite_heap,
         )?;
         let storage = ProductionRamCatalogStorage {
             backend,
@@ -713,8 +743,7 @@ impl ProductionRamCatalogProvider for CatalogService {
 }
 
 struct CatalogMetadataCredit {
-    _resident: HostServiceLease,
-    _metadata: HostServiceLease,
+    _leases: crucible_linux_resource::host_services::HostServiceLeasePair,
 }
 
 struct CatalogResourceCredit {
@@ -786,12 +815,12 @@ fn reserve_metadata_credit_raw(
         .checked_add(std::mem::size_of::<CatalogMetadataCredit>() as u64)
         .and_then(|bytes| bytes.checked_add((2 * std::mem::size_of::<usize>()) as u64))
         .ok_or(HostServiceError::CapacityExhausted)?;
-    let metadata = metadata.reserve_resources(0, 0, charged)?;
-    let resident = resident.reserve_resources(0, 0, charged)?;
+    let (metadata, resident) = metadata.reserve_paired_bytes(resident, charged)?;
     Ok(crucible_cas::owned_decode::ResourceLoan::new(
         CatalogMetadataCredit {
-            _resident: resident,
-            _metadata: metadata,
+            _leases: crucible_linux_resource::host_services::HostServiceLeasePair::new(
+                resident, metadata,
+            ),
         },
     ))
 }
@@ -1079,8 +1108,16 @@ mod tests {
             Some(std::time::Duration::from_secs(60)),
         )
         .expect("same original finite roster");
-        let service = CatalogService::new(policy, Arc::new(()), supervisor.clone())
-            .expect("actual service diagnostic preadmission");
+        let service = CatalogService::new_with_heap(
+            policy,
+            Arc::new(()),
+            supervisor.clone(),
+            Some(
+                &crucible_cas::content_store::fixture_sqlite_heap()
+                    .expect("authored SQLite fixture process"),
+            ),
+        )
+        .expect("actual service diagnostic preadmission");
         let namespace_credit = reserve_metadata_credit_raw(
             &service.authority.allocator,
             &service.authority.metadata_allocator,

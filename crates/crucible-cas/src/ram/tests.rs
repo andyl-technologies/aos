@@ -134,6 +134,7 @@ fn admitted_store(
         quota.clone(),
         8 * 1024 * 1024,
         Arc::new(FixtureCatalogSupervisor(quota.clone())),
+        &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
     )
     .unwrap();
     RamStore::new(
@@ -218,7 +219,15 @@ fn admitted_root_refuses_missing_authority_and_discovery_retains_its_credit() {
         .unwrap();
     let bare_directory = tempfile::tempdir().unwrap();
     let bare = RamStore::new(
-        Arc::new(SqliteBlobBackend::open("bare", bare_directory.path()).unwrap()),
+        Arc::new(
+            SqliteBlobBackend::open(
+                "bare",
+                bare_directory.path(),
+                &crate::content_store::fixture_sqlite_heap()
+                    .expect("authored SQLite fixture process"),
+            )
+            .unwrap(),
+        ),
         DurabilityRequirement::new(1, false).unwrap(),
         RamStoreLimits::default(),
     )
@@ -1423,8 +1432,14 @@ fn oversized_ram_objects_are_rejected_before_opening_the_stream() {
     ));
     let decoding = crate::owned_decode::DecodeBudget::for_store(quota).unwrap();
     let _scope = decoding.enter();
-    let backend: Arc<dyn ImmutableBlobBackend> =
-        Arc::new(SqliteBlobBackend::open("oversized-test", directory.path()).unwrap());
+    let backend: Arc<dyn ImmutableBlobBackend> = Arc::new(
+        SqliteBlobBackend::open(
+            "oversized-test",
+            directory.path(),
+            &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
+        )
+        .unwrap(),
+    );
     for (kind, maximum_bytes) in [
         (ObjectKind::RamTree, 4096),
         (ObjectKind::RamExtent, 8192),

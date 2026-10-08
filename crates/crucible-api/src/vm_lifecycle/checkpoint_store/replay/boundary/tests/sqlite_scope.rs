@@ -132,6 +132,8 @@ fn exercise(committed: bool) {
                 committed,
                 &mut || ram_boundary().map_err(|_| StoreError::Unavailable),
                 &mut || started.set(true),
+                &crucible_cas::content_store::fixture_sqlite_heap()
+                    .expect("authored SQLite fixture process"),
             )
             .map_err(RamStoreError::from)?;
             observed.set(Some((

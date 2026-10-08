@@ -1178,6 +1178,28 @@ pub struct StoreGraph {
     _gc_mark_resources: crate::owned_decode::ResourceLoanSlot,
 }
 
+/// Borrows the original in-memory and process-native resource issuers.
+///
+/// These operational owners do not enter canonical graph identity. SQLite
+/// leaves require an explicit process heap; a missing owner never opens a raw
+/// native connection. Memory leaves retain their existing admission behavior.
+#[derive(Clone, Copy, Default)]
+pub struct StoreGraphOriginalResources<'a> {
+    /// The original issuer for fixed Memory namespace node envelopes.
+    pub memory_namespaces: Option<&'a StorePhysicalQuotaBinderHandle>,
+    /// The same nominal process heap borrowed by every SQLite leaf.
+    pub sqlite_heap: Option<&'a SqliteProcessHeap>,
+}
+
+impl<'a> From<Option<&'a StorePhysicalQuotaBinderHandle>> for StoreGraphOriginalResources<'a> {
+    fn from(memory_namespaces: Option<&'a StorePhysicalQuotaBinderHandle>) -> Self {
+        Self {
+            memory_namespaces,
+            sqlite_heap: None,
+        }
+    }
+}
+
 impl StoreGraph {
     /// Validates and constructs a closed graph.
     ///
@@ -1190,6 +1212,20 @@ impl StoreGraph {
     /// Returns [`StoreError::InvalidGraph`] or [`StoreError::InvalidComposition`]
     /// when the declarative graph cannot safely implement the logical store.
     pub fn build(config: StoreGraphConfig) -> Result<Self, StoreError> {
+        Self::build_with_original_resources(config, StoreGraphOriginalResources::default())
+    }
+
+    /// Constructs a graph with explicitly borrowed original resource owners.
+    ///
+    /// SQLite leaves require the supplied nominal process heap. Memory leaves
+    /// retain their independently supplied namespace admission capability.
+    ///
+    /// # Errors
+    /// Refuses missing original ownership or ordinary graph admission failures.
+    pub fn build_with_original_resources(
+        config: StoreGraphConfig,
+        original_resources: StoreGraphOriginalResources<'_>,
+    ) -> Result<Self, StoreError> {
         let keys = StoreGraphKeyring::new();
         let authorizers = StoreGraphNamespaceAuthorizers::new();
         let profilers = StoreGraphObjectProfilers::new();
@@ -1202,7 +1238,7 @@ impl StoreGraph {
             &profilers,
             &physical_quotas,
             &s3_clients,
-            None,
+            original_resources,
         )?;
         Ok(graph)
     }
@@ -1280,14 +1316,14 @@ impl StoreGraph {
     ///
     /// Returns [`StoreError::Unauthorized`] when a required capability is
     /// unavailable, or a graph/composition error when admission fails.
-    pub fn build_with_all_capabilities(
+    pub fn build_with_all_capabilities<'a>(
         config: StoreGraphConfig,
         keys: &StoreGraphKeyring,
         authorizers: &StoreGraphNamespaceAuthorizers,
         profilers: &StoreGraphObjectProfilers,
         physical_quotas: &StoreGraphPhysicalQuotaBinders,
         s3_clients: &StoreGraphS3Clients,
-        memory_namespaces: Option<&StorePhysicalQuotaBinderHandle>,
+        original_resources: impl Into<StoreGraphOriginalResources<'a>>,
     ) -> Result<Self, StoreError> {
         let (graph, _admin) = Self::build_with_admin_and_all_capabilities(
             config,
@@ -1296,7 +1332,7 @@ impl StoreGraph {
             profilers,
             physical_quotas,
             s3_clients,
-            memory_namespaces,
+            original_resources,
         )?;
         Ok(graph)
     }
@@ -1316,6 +1352,20 @@ impl StoreGraph {
     pub fn build_with_admin(
         config: StoreGraphConfig,
     ) -> Result<(Self, StoreGraphAdmin), StoreError> {
+        Self::build_with_admin_and_original_resources(
+            config,
+            StoreGraphOriginalResources::default(),
+        )
+    }
+
+    /// Constructs a graph and its maintenance view under original resource owners.
+    ///
+    /// # Errors
+    /// Refuses missing original ownership or ordinary graph admission failures.
+    pub fn build_with_admin_and_original_resources(
+        config: StoreGraphConfig,
+        original_resources: StoreGraphOriginalResources<'_>,
+    ) -> Result<(Self, StoreGraphAdmin), StoreError> {
         let keys = StoreGraphKeyring::new();
         let authorizers = StoreGraphNamespaceAuthorizers::new();
         let profilers = StoreGraphObjectProfilers::new();
@@ -1328,7 +1378,7 @@ impl StoreGraph {
             &profilers,
             &physical_quotas,
             &s3_clients,
-            None,
+            original_resources,
         )
     }
 
@@ -1369,25 +1419,39 @@ impl StoreGraph {
     /// unfinished-upload cleanup. A separately supplied strong S3
     /// administration capability additionally contributes committed-object
     /// inventory/delete authority to the returned administration value.
-    /// `memory_namespaces` retains the existing genuine issuer for fixed Memory
-    /// node grants. `None` constructs ordinary bounded models without checked
-    /// RAM authority; it never enables a raw RAM fallback.
+    /// `original_resources` retains the genuine issuers for fixed Memory node
+    /// grants and the process-wide SQLite heap. The existing Memory-only option
+    /// remains accepted; a graph containing SQLite requires the full resource
+    /// value with its explicit heap before any leaf effects.
     ///
     /// # Errors
     ///
     /// Returns [`StoreError::Unauthorized`] when a required capability is
     /// unavailable, or a graph/composition error when admission fails.
-    pub fn build_with_admin_and_all_capabilities(
+    pub fn build_with_admin_and_all_capabilities<'a>(
         mut config: StoreGraphConfig,
         keys: &StoreGraphKeyring,
         authorizers: &StoreGraphNamespaceAuthorizers,
         profilers: &StoreGraphObjectProfilers,
         physical_quotas: &StoreGraphPhysicalQuotaBinders,
         s3_clients: &StoreGraphS3Clients,
-        memory_namespaces: Option<&StorePhysicalQuotaBinderHandle>,
+        original_resources: impl Into<StoreGraphOriginalResources<'a>>,
     ) -> Result<(Self, StoreGraphAdmin), StoreError> {
         validate_structure(&config)?;
         validate_demands(&config)?;
+        let original_resources = original_resources.into();
+        if config
+            .nodes
+            .values()
+            .any(|node| matches!(node, StoreNodeSpec::Sqlite { .. }))
+        {
+            original_resources
+                .sqlite_heap
+                .ok_or(StoreError::InvalidComposition {
+                    reason: "SQLite graph leaves require their original process heap",
+                })?
+                .verify_live()?;
+        }
         let physical_retention = derive_physical_retention(&config)?;
         let configuration = StoreGraphConfigurationId::for_config(&config)?;
         let namespace_authorizer = config
@@ -1411,7 +1475,8 @@ impl StoreGraph {
             profilers,
             physical_quotas,
             s3_clients,
-            memory_namespaces,
+            memory_namespaces: original_resources.memory_namespaces,
+            sqlite_heap: original_resources.sqlite_heap,
         };
         // Admit every Memory namespace before instantiating any disk leaf or
         // wrapper. The existing registries retain the same concrete leaf; no
@@ -2320,6 +2385,7 @@ struct GraphBuildCapabilities<'a> {
     physical_quotas: &'a StoreGraphPhysicalQuotaBinders,
     s3_clients: &'a StoreGraphS3Clients,
     memory_namespaces: Option<&'a StorePhysicalQuotaBinderHandle>,
+    sqlite_heap: Option<&'a SqliteProcessHeap>,
 }
 
 fn instantiate(
@@ -2354,7 +2420,12 @@ fn instantiate(
             leaf
         }
         StoreNodeSpec::Sqlite { root } => {
-            let leaf = Arc::new(SqliteBlobBackend::open(id.as_str(), root.clone())?);
+            let heap = capabilities
+                .sqlite_heap
+                .ok_or(StoreError::InvalidComposition {
+                    reason: "SQLite graph leaf lost its original process heap",
+                })?;
+            let leaf = Arc::new(SqliteBlobBackend::open(id.as_str(), root.clone(), heap)?);
             state.physical.insert(id.clone(), leaf.clone());
             leaf
         }
@@ -2486,7 +2557,7 @@ fn instantiate(
                         promote_reads: tier.promote_reads,
                     })
                 })
-                .collect::<Result<Vec<_>, _>>()?;
+                .collect::<Result<Vec<_>, StoreError>>()?;
             Arc::new(TieredStore::new(id.as_str(), tiers)?)
         }
         StoreNodeSpec::ReadThrough { cache, source } => Arc::new(ReadThroughStore::new(

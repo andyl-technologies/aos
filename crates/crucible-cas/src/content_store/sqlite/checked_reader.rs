@@ -28,14 +28,12 @@ pub(super) fn lookup(
         let _staging = catalog::read_gate_with_boundary(&mut check)?;
         let mut connection = loop {
             check()?;
-            match backend.read_connection.try_lock() {
-                Ok(connection) => break connection,
-                Err(std::sync::TryLockError::WouldBlock) => std::thread::yield_now(),
-                Err(std::sync::TryLockError::Poisoned(_)) => {
-                    return Err(StoreError::Poisoned {
-                        operation: "lock-checked-sqlite-length",
-                    });
-                }
+            match backend
+                .read_connection
+                .try_lock_for("lock-checked-sqlite-length")?
+            {
+                Some(connection) => break connection,
+                None => std::thread::yield_now(),
             }
         };
         let accepted = busy::with_zero(

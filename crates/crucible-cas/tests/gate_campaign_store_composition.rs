@@ -87,7 +87,17 @@ fn sqlite_leaf_preserves_authenticated_objects_and_physical_gc_after_restart() {
     let bytes = b"durable campaign fact";
     let id = crucible_cas::content_store::ContentId::for_bytes(ObjectKind::CampaignFact, 1, bytes);
 
-    let (graph, admin) = StoreGraph::build_with_admin(config.clone()).expect("SQLite graph");
+    let (graph, admin) = StoreGraph::build_with_admin_and_original_resources(
+        config.clone(),
+        crucible_cas::content_store::StoreGraphOriginalResources {
+            memory_namespaces: None,
+            sqlite_heap: Some(
+                &crucible_cas::content_store::fixture_sqlite_heap()
+                    .expect("authored SQLite fixture process"),
+            ),
+        },
+    )
+    .expect("SQLite graph");
     let sqlite_configuration = graph.configuration_id();
     let directory = StoreGraph::build(StoreGraphConfig {
         gc_mark_root: None,
@@ -114,7 +124,17 @@ fn sqlite_leaf_preserves_authenticated_objects_and_physical_gc_after_restart() {
     drop(admin);
     drop(graph);
 
-    let (restarted, admin) = StoreGraph::build_with_admin(config.clone()).expect("restarted graph");
+    let (restarted, admin) = StoreGraph::build_with_admin_and_original_resources(
+        config.clone(),
+        crucible_cas::content_store::StoreGraphOriginalResources {
+            memory_namespaces: None,
+            sqlite_heap: Some(
+                &crucible_cas::content_store::fixture_sqlite_heap()
+                    .expect("authored SQLite fixture process"),
+            ),
+        },
+    )
+    .expect("restarted graph");
     assert_eq!(restarted.configuration_id(), sqlite_configuration);
     assert_eq!(read_all(&restarted, id), bytes);
     let physical = admin.physical();
@@ -138,7 +158,17 @@ fn sqlite_leaf_preserves_authenticated_objects_and_physical_gc_after_restart() {
     drop(admin);
     drop(restarted);
 
-    let (reopened, admin) = StoreGraph::build_with_admin(config).expect("reopen after GC");
+    let (reopened, admin) = StoreGraph::build_with_admin_and_original_resources(
+        config,
+        crucible_cas::content_store::StoreGraphOriginalResources {
+            memory_namespaces: None,
+            sqlite_heap: Some(
+                &crucible_cas::content_store::fixture_sqlite_heap()
+                    .expect("authored SQLite fixture process"),
+            ),
+        },
+    )
+    .expect("reopen after GC");
     assert!(
         !reopened
             .contains(id)
@@ -160,7 +190,17 @@ fn sqlite_leaf_preserves_authenticated_objects_and_physical_gc_after_restart() {
 
 fn assert_composition(root: std::path::PathBuf, order: [TransparentLayer; 3]) {
     let config = graph_config(&root, order);
-    let (graph, admin) = StoreGraph::build_with_admin(config.clone()).expect("admitted graph");
+    let (graph, admin) = StoreGraph::build_with_admin_and_original_resources(
+        config.clone(),
+        crucible_cas::content_store::StoreGraphOriginalResources {
+            memory_namespaces: None,
+            sqlite_heap: Some(
+                &crucible_cas::content_store::fixture_sqlite_heap()
+                    .expect("authored SQLite fixture process"),
+            ),
+        },
+    )
+    .expect("admitted graph");
     let fact_bytes = b"campaign-store composition fact";
     let fact =
         crucible_cas::content_store::ContentId::for_bytes(ObjectKind::CampaignFact, 1, fact_bytes);
@@ -311,8 +351,17 @@ fn assert_composition(root: std::path::PathBuf, order: [TransparentLayer; 3]) {
     assert_eq!(read_all(&packed, fact), fact_bytes);
     drop(packed);
 
-    let (restarted, restarted_admin) =
-        StoreGraph::build_with_admin(config.clone()).expect("restart admitted graph");
+    let (restarted, restarted_admin) = StoreGraph::build_with_admin_and_original_resources(
+        config.clone(),
+        crucible_cas::content_store::StoreGraphOriginalResources {
+            memory_namespaces: None,
+            sqlite_heap: Some(
+                &crucible_cas::content_store::fixture_sqlite_heap()
+                    .expect("authored SQLite fixture process"),
+            ),
+        },
+    )
+    .expect("restart admitted graph");
     assert_eq!(read_all(&restarted, fact), fact_bytes);
     assert_eq!(read_all(&restarted, ram), ram_bytes);
     assert_eq!(read_all(&restarted, finding), finding_bytes);
@@ -370,8 +419,17 @@ fn assert_composition(root: std::path::PathBuf, order: [TransparentLayer; 3]) {
     drop(restarted_admin);
     drop(restarted);
 
-    let (reopened, reopened_admin) =
-        StoreGraph::build_with_admin(config).expect("reopen repacked graph");
+    let (reopened, reopened_admin) = StoreGraph::build_with_admin_and_original_resources(
+        config,
+        crucible_cas::content_store::StoreGraphOriginalResources {
+            memory_namespaces: None,
+            sqlite_heap: Some(
+                &crucible_cas::content_store::fixture_sqlite_heap()
+                    .expect("authored SQLite fixture process"),
+            ),
+        },
+    )
+    .expect("reopen repacked graph");
     assert_eq!(read_all(&reopened, fact), fact_bytes);
     assert_eq!(read_all(&reopened, ram), ram_bytes);
     assert_eq!(read_all(&reopened, finding), finding_bytes);

@@ -139,6 +139,17 @@ const FENCE_SPECS: &[FenceSpec] = &[
         ],
     },
     FenceSpec {
+        package: "crucible-sqlite-heap",
+        root: "src/lib.rs",
+        unsafe_boundary: true,
+        safe_wrapper_contract: &[
+            "Unsafe boundary discipline:",
+            "safe integer-only controls",
+            "validate positive representable limits",
+            "no pointers, callbacks, configuration or shutdown",
+        ],
+    },
+    FenceSpec {
         package: "crucible-s3-store",
         root: "src/lib.rs",
         unsafe_boundary: false,

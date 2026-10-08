@@ -557,6 +557,23 @@ impl PackagedQemuExecutorConfig {
         Ok(self)
     }
 
+    /// Binds all catalog opens to the existing original process heap.
+    ///
+    /// # Errors
+    /// Refuses an absent catalog, closed process owner or incompatible catalog
+    /// heap maximum before service or namespace effects.
+    pub fn with_sqlite_process_heap(
+        mut self,
+        heap: &crucible_cas::content_store::SqliteProcessHeap,
+    ) -> Result<Self, crucible_cas::content_store::StoreError> {
+        let catalog = self
+            .ram_catalog
+            .take()
+            .ok_or(crucible_cas::content_store::StoreError::Quota)?;
+        self.ram_catalog = Some(catalog.with_sqlite_process_heap(heap)?);
+        Ok(self)
+    }
+
     /// Returns the independently authored physical RAM catalog contract.
     #[must_use]
     pub fn ram_catalog(&self) -> Option<&PackagedRamCatalogConfig> {

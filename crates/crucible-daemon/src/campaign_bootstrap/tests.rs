@@ -632,7 +632,10 @@ impl ExecutorCapabilityService for BlockingDescribeExecutorService {
 fn runtime_attachment_requires_writable_component_authority_before_executor_io() {
     let (_directory, config) = fixture();
     let prepared = config
-        .prepare()
+        .prepare(
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process"),
+        )
         .expect("prepare service without authorities");
     let (executor, mut peer) = UnixStream::pair().expect("executor stream pair");
     assert!(matches!(
@@ -652,7 +655,12 @@ fn runtime_attachment_requires_writable_component_authority_before_executor_io()
         config.server(),
     )
     .expect("read-only service configuration");
-    let prepared = read_only.prepare().expect("prepare read-only service");
+    let prepared = read_only
+        .prepare(
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process"),
+        )
+        .expect("prepare read-only service");
     let (executor, mut peer) = UnixStream::pair().expect("executor stream pair");
     assert!(matches!(
         prepared.prepare_runtime(executor, &runtime_config()),
@@ -666,7 +674,12 @@ fn runtime_attachment_requires_writable_component_authority_before_executor_io()
 fn multi_runtime_bind_rejects_an_empty_set_before_endpoint_mutation() {
     let (_directory, config) = fixture();
     let socket = config.endpoint().path().to_owned();
-    let prepared = config.prepare().expect("prepare service");
+    let prepared = config
+        .prepare(
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process"),
+        )
+        .expect("prepare service");
 
     assert!(matches!(
         prepared.bind_with_runtimes(Vec::new()),
@@ -684,7 +697,12 @@ fn multi_runtime_bind_sorts_unique_campaigns_and_joins_every_runtime() {
         .with_component_authority_path(&authority)
         .expect("component authority path");
     let socket = config.endpoint().path().to_owned();
-    let prepared = config.prepare().expect("prepare service");
+    let prepared = config
+        .prepare(
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process"),
+        )
+        .expect("prepare service");
     let lineage = create_runtime_campaign(&prepared.repository, "alpha");
     assert_eq!(
         create_runtime_campaign(&prepared.repository, "beta"),
@@ -723,7 +741,12 @@ fn multi_runtime_bind_sorts_unique_campaigns_and_joins_every_runtime() {
 #[test]
 fn packaged_runtime_discovery_authenticates_and_orders_the_complete_catalog() {
     let (_directory, config) = fixture();
-    let prepared = config.prepare().expect("prepare service");
+    let prepared = config
+        .prepare(
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process"),
+        )
+        .expect("prepare service");
     assert!(matches!(
         prepared.discover_packaged_campaigns(),
         Err(CampaignLocalServiceError::InvalidRuntimeCount)
@@ -751,7 +774,12 @@ fn packaged_executor_pool_serves_and_joins_two_campaign_runtimes() {
         .with_component_authority_path(&authority)
         .expect("component authority path");
     let campaign_socket = config.endpoint().path().to_owned();
-    let prepared = config.prepare().expect("prepare service");
+    let prepared = config
+        .prepare(
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process"),
+        )
+        .expect("prepare service");
     let alpha_lineage = create_runtime_campaign_for_scenario(
         &prepared.repository,
         "alpha",
@@ -925,7 +953,12 @@ fn multi_runtime_bind_rejects_duplicate_campaigns_before_endpoint_mutation() {
         .with_component_authority_path(&authority)
         .expect("component authority path");
     let socket = config.endpoint().path().to_owned();
-    let prepared = config.prepare().expect("prepare service");
+    let prepared = config
+        .prepare(
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process"),
+        )
+        .expect("prepare service");
     let lineage = create_runtime_campaign(&prepared.repository, "attached");
 
     let (first_executor, first_server) = executor_pair(&lineage);
@@ -955,7 +988,12 @@ fn authenticated_post_bind_attachment_replays_without_executor_io() {
         .with_component_authority_path(&authority)
         .expect("component authority path");
     let socket = config.endpoint().path().to_owned();
-    let prepared = config.prepare().expect("prepare service");
+    let prepared = config
+        .prepare(
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process"),
+        )
+        .expect("prepare service");
     let lineage = create_runtime_campaign(&prepared.repository, "dynamic");
     let prepared = prepared
         .with_runtime_control(named_runtime_config("dynamic").planner_process().clone())
@@ -1046,7 +1084,12 @@ fn service_shutdown_waits_for_reserved_attachment_and_rejects_its_late_install()
     let config = config
         .with_component_authority_path(&authority)
         .expect("component authority path");
-    let prepared = config.prepare().expect("prepare service");
+    let prepared = config
+        .prepare(
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process"),
+        )
+        .expect("prepare service");
     let lineage = create_runtime_campaign(&prepared.repository, "closing");
     let service = prepared.bind().expect("bind service without runtimes");
     let attachments = service.runtime_attachment_handle();
@@ -1212,7 +1255,12 @@ fn finding_export_authorizer_admits_only_ledger_reads() {
 #[test]
 fn stopped_owner_finding_read_rejects_an_ungranted_operation() {
     let (_directory, config) = fixture();
-    let prepared = config.prepare().expect("prepare service");
+    let prepared = config
+        .prepare(
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process"),
+        )
+        .expect("prepare service");
     let principal = prepared
         .campaign_export_principal()
         .expect("resolve effective Unix identity");
@@ -1255,7 +1303,12 @@ campaign = "*"
     );
     fs::write(config.policy_path(), policy).expect("grant finding query");
 
-    let prepared = config.prepare().expect("prepare service");
+    let prepared = config
+        .prepare(
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process"),
+        )
+        .expect("prepare service");
     let principal = prepared
         .campaign_export_principal()
         .expect("resolve effective Unix identity");
@@ -1288,7 +1341,12 @@ fn absent_finding_snapshot_id() -> CampaignSnapshotId {
 #[test]
 fn durable_service_bootstrap_authenticates_policy_and_restarts_cleanly() {
     let (_directory, config) = fixture();
-    let service = config.open().expect("open local service");
+    let service = config
+        .open(
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process"),
+        )
+        .expect("open local service");
     let shutdown = service.shutdown_handle();
     let socket = config.endpoint().path().to_owned();
     let server = thread::spawn(move || service.serve().expect("serve local campaign service"));
@@ -1313,7 +1371,12 @@ fn durable_service_bootstrap_authenticates_policy_and_restarts_cleanly() {
     assert_eq!(report.listener().accepted_connections(), 1);
     assert!(!socket.exists());
 
-    let restarted = config.open().expect("restart local service");
+    let restarted = config
+        .open(
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process"),
+        )
+        .expect("restart local service");
     restarted.shutdown_handle().shutdown();
     restarted.serve().expect("serve pre-stopped restart");
 }
@@ -1329,7 +1392,12 @@ fn repository_lock_excludes_a_second_socket_incarnation() {
     fs::set_permissions(&inventory_path, fs::Permissions::from_mode(0o600))
         .expect("secure debug-session inventory");
 
-    let first = config.open().expect("first local service");
+    let first = config
+        .open(
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process"),
+        )
+        .expect("first local service");
     let metadata = fs::metadata(directory.path()).expect("directory metadata");
     let second_endpoint = CampaignLoopbackEndpointConfig::new(
         directory.path().join("campaign-second.sock"),
@@ -1347,7 +1415,10 @@ fn repository_lock_excludes_a_second_socket_incarnation() {
     )
     .expect("second config");
     assert!(matches!(
-        second.open(),
+        second.open(
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process")
+        ),
         Err(CampaignLocalServiceError::StateInUse)
     ));
     assert!(!second.endpoint().path().exists());
@@ -1638,9 +1709,17 @@ fn prepared_store_gc_automatically_inventories_registered_transfer_journal() {
 
     let (_source_directory, source_config) = fixture();
     let (_destination_directory, destination_config) = fixture();
-    let mut source = source_config.prepare().expect("prepare source service");
+    let mut source = source_config
+        .prepare(
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process"),
+        )
+        .expect("prepare source service");
     let mut destination = destination_config
-        .prepare()
+        .prepare(
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process"),
+        )
         .expect("prepare destination service");
     create_runtime_campaign(&source.repository, "source");
     let source_head = source.repository.head("source").expect("source head");

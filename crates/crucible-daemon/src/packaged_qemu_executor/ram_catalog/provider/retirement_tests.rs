@@ -102,10 +102,15 @@ struct Fixture {
 }
 
 fn fixture() -> Fixture {
-    fixture_with_heap(64 * 1024 * 1024)
+    let heap = crucible_cas::content_store::fixture_sqlite_heap()
+        .expect("authored SQLite fixture process");
+    fixture_with_heap(64 * 1024 * 1024, &heap)
 }
 
-fn fixture_with_heap(sqlite_heap_bytes: u64) -> Fixture {
+fn fixture_with_heap(
+    sqlite_heap_bytes: u64,
+    heap: &crucible_cas::content_store::SqliteProcessHeap,
+) -> Fixture {
     let root = tempfile::tempdir().expect("component catalog directory");
     let directory = root.path().to_path_buf();
     let allocator = HostServiceAllocator::new(1, 16, RESIDENT_BYTES)
@@ -129,6 +134,7 @@ fn fixture_with_heap(sqlite_heap_bytes: u64) -> Fixture {
         quota.clone(),
         sqlite_heap_bytes,
         Arc::new(ComponentSupervisor(allocator.clone())),
+        heap,
     )
     .expect("real SQLite facade and intrinsic resource loan");
     let fence = File::create(directory.join("retention.lock")).expect("component retained fence");
@@ -370,8 +376,8 @@ fn actual_lazy_source_keeps_each_page_account_independent_and_response_owned() {
     use crucible_qemu::ram_source::{QemuRamBacking, QemuRamReadBoundaryError};
     use crucible_ram::{Limits, RegionClass, RegionDescriptor, Scope, Topology};
 
-    // SQLite cannot raise its process-wide hard limit after lowering it. Keep
-    // this small-heap, same-bank read profile private to the exact test process.
+    // The fixed 512 KiB process purpose is incompatible with the ordinary 8 MiB
+    // fixture scope. Preserve this exact child process and its original cap.
     const ISOLATED: &str = "CRUCIBLE_NAMESPACE_SOURCE_ISOLATED";
     if std::env::var_os(ISOLATED).is_none() {
         let status = std::process::Command::new(
@@ -389,7 +395,9 @@ fn actual_lazy_source_keeps_each_page_account_independent_and_response_owned() {
         return;
     }
 
-    let mut fixture = fixture_with_heap(512 * 1024);
+    let heap = crucible_cas::content_store::isolated_small_fixture_sqlite_heap()
+        .expect("authored isolated 512 KiB SQLite process");
+    let mut fixture = fixture_with_heap(512 * 1024, &heap);
     let storage = fixture
         .cache
         .cached_open(&fixture.directory)

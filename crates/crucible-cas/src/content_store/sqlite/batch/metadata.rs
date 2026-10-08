@@ -172,7 +172,12 @@ mod tests {
     #[test]
     fn original_boundary_cancels_after_metadata_read_before_update() {
         let root = tempfile::tempdir().expect("component metadata");
-        let backend = SqliteBlobBackend::open("component", root.path()).expect("component catalog");
+        let backend = SqliteBlobBackend::open(
+            "component",
+            root.path(),
+            &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
+        )
+        .expect("component catalog");
         let guard = super::super::tests::original_quota();
         let account = DecodeBudget::for_store(guard.clone()).expect("original authority");
         let _scope = account.enter();

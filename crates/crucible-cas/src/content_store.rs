@@ -73,13 +73,14 @@ pub use encrypted_directory::{
 };
 pub use graph::{
     MAX_STORE_GRAPH_VERIFY_LOGICAL_BYTES, MAX_STORE_GRAPH_VERIFY_PLACEMENTS, StoreGraph,
-    StoreGraphAdmin, StoreGraphConfig, StoreGraphConfigurationId, StoreGraphPackedRepackAdmin,
-    StoreGraphPhysicalAdmin, StoreGraphPhysicalRepairDisposition, StoreGraphPhysicalRetention,
-    StoreGraphPhysicalVerification, StoreGraphS3MultipartCleanupAdmin, StoreGraphVerificationError,
-    StoreGraphVerificationLimit, StoreGraphVerificationLimits, StoreGraphVerificationLimitsError,
-    StoreGraphVerificationReport, StoreNodeDescription, StoreNodeId, StoreNodeKind,
-    StoreNodeMetrics, StoreNodeMetricsDescription, StoreNodeSpec, StorePhysicalRepairDisposition,
-    StorePhysicalRepairReceipt, StoreTierPolicy, StoreWriteBackFlushSummary,
+    StoreGraphAdmin, StoreGraphConfig, StoreGraphConfigurationId, StoreGraphOriginalResources,
+    StoreGraphPackedRepackAdmin, StoreGraphPhysicalAdmin, StoreGraphPhysicalRepairDisposition,
+    StoreGraphPhysicalRetention, StoreGraphPhysicalVerification, StoreGraphS3MultipartCleanupAdmin,
+    StoreGraphVerificationError, StoreGraphVerificationLimit, StoreGraphVerificationLimits,
+    StoreGraphVerificationLimitsError, StoreGraphVerificationReport, StoreNodeDescription,
+    StoreNodeId, StoreNodeKind, StoreNodeMetrics, StoreNodeMetricsDescription, StoreNodeSpec,
+    StorePhysicalRepairDisposition, StorePhysicalRepairReceipt, StoreTierPolicy,
+    StoreWriteBackFlushSummary,
 };
 pub use memory::{MemoryBlobBackend, MemoryPublicationOutcome, MemoryRefBackend, MemoryScopeError};
 pub use namespace::{
@@ -120,16 +121,24 @@ pub use s3_ref::{
 pub use sqlite::SqliteScopeFaultObservation;
 pub use sqlite::{
     SqliteBlobAuthorities, SqliteBlobBackend, SqliteCatalogOperation, SqliteCatalogOperationKind,
-    SqliteCatalogSupervisor, SqliteCommitOutcome, SqliteDiagnosticError, SqliteScopeError,
-    minimum_sqlite_catalog_resident_bytes, minimum_sqlite_catalog_staging_bytes,
+    SqliteCatalogSupervisor, SqliteCommitOutcome, SqliteConnection, SqliteDiagnosticError,
+    SqliteHeapAuthority, SqliteHeapError, SqliteHeapIssuer, SqliteProcessBootstrapAuthority,
+    SqliteProcessHeap, SqliteScopeError, minimum_sqlite_catalog_resident_bytes,
+    minimum_sqlite_catalog_staging_bytes,
 };
 pub use write_back::{
     WriteBackRetentionAdmin, WriteBackRetentionFence, WriteBackRetentionGeneration,
     WriteBackRetentionRoot, WriteBackRetentionSummary,
 };
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) mod test_resources;
+
+#[cfg(any(test, feature = "test-support"))]
+mod sqlite_fixture;
+
+#[cfg(any(test, feature = "test-support"))]
+pub use sqlite_fixture::{fixture_sqlite_heap, isolated_small_fixture_sqlite_heap};
 #[cfg(test)]
 mod tests;
 
@@ -1251,6 +1260,13 @@ pub enum StoreError {
         source: std::collections::TryReserveError,
         /// Existing account custody for the failed allocation.
         custody: Option<crate::owned_decode::DecodeCustody>,
+    },
+    /// A process-native heap retains its original lifecycle refusal.
+    #[error("{source}")]
+    SqliteHeap {
+        /// Same-scope native failure and retained original heap ownership.
+        #[from]
+        source: SqliteHeapError,
     },
     /// A checked SQLite scope preserves work, cleanup and durable outcome.
     #[error("{source}")]

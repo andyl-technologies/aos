@@ -50,7 +50,12 @@ pub(super) fn admit_catalog_service(
             .assignment_resources()
             .ok_or(HostOperationalError::Unavailable)?,
     )?;
-    let service = match provider::CatalogService::new(catalog.clone(), custody, supervisor) {
+    let service = match provider::CatalogService::new_with_heap(
+        catalog.clone(),
+        custody,
+        supervisor,
+        catalog.process_heap.as_ref(),
+    ) {
         Ok(service) => Arc::new(service),
         Err(error) => {
             // The provider has not opened any namespace descriptor or backend.
@@ -78,6 +83,7 @@ pub struct PackagedRamCatalogConfig {
     resources: HostResourceVector,
     maximum_sqlite_heap_bytes: u64,
     provider: Arc<AdmittedCatalogProvider>,
+    process_heap: Option<crucible_cas::content_store::SqliteProcessHeap>,
 }
 
 /// Refusal of an invalid catalog resource or physical containment contract.
@@ -144,11 +150,31 @@ impl PackagedRamCatalogConfig {
             maximum_inodes,
             resources,
             maximum_sqlite_heap_bytes,
+            process_heap: None,
             provider: Arc::new(AdmittedCatalogProvider {
                 maximum_sqlite_heap_bytes,
                 admitted: OnceLock::new(),
             }),
         })
+    }
+
+    /// Borrows the original process heap without issuing another native allowance.
+    ///
+    /// # Errors
+    /// Refuses closed ownership, an already admitted provider or a process heap
+    /// exceeding this catalog's existing native maximum.
+    pub fn with_sqlite_process_heap(
+        mut self,
+        heap: &crucible_cas::content_store::SqliteProcessHeap,
+    ) -> Result<Self, StoreError> {
+        heap.verify_live()?;
+        if self.provider.admitted.get().is_some()
+            || heap.maximum_heap_bytes() > self.maximum_sqlite_heap_bytes
+        {
+            return Err(StoreError::Quota);
+        }
+        self.process_heap = Some(heap.clone());
+        Ok(self)
     }
 
     /// Returns the operator-installed inherited project-quota root.

@@ -62,6 +62,8 @@ impl ComponentGcOperation {
             Arc::clone(&resources),
             8 * 1024 * 1024,
             sqlite,
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process"),
         )
         .unwrap_or_else(|error| panic!("admitted component GC mark catalog: {error}"));
 

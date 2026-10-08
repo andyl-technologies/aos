@@ -245,10 +245,13 @@ impl PagedRamCatalog {
             .iter()
             .position(|region| region.id() == region_id)
             .ok_or_else(|| store_error("test RAM region ordinal disappeared"))?;
-        let connection = rusqlite::Connection::open(
-            self.retention.directory.join("objects.sqlite3"),
-        )
-        .map_err(|error| store_error(format!("open test RAM corruption database: {error}")))?;
+        let connection = crucible_cas::content_store::fixture_sqlite_heap()
+            .expect("authored SQLite fixture process")
+            .open_connection(
+                self.retention.directory.join("objects.sqlite3"),
+                rusqlite::OpenFlags::default(),
+            )
+            .map_err(|error| store_error(format!("open test RAM corruption database: {error}")))?;
         let read = |identity: ContentId| -> Result<crucible_cas::content_envelope::ContentEnvelope, SchedulerError> {
             let bytes: Vec<u8> = connection.query_row(
                 "SELECT body FROM objects WHERE id = ?1", [identity.encode()], |row| row.get(0),
@@ -309,10 +312,13 @@ impl PagedRamCatalog {
         if !identity.authenticates(original) {
             return Err(store_error("test restore bytes do not authenticate"));
         }
-        let connection = rusqlite::Connection::open(
-            self.retention.directory.join("objects.sqlite3"),
-        )
-        .map_err(|error| store_error(format!("open test RAM restoration database: {error}")))?;
+        let connection = crucible_cas::content_store::fixture_sqlite_heap()
+            .expect("authored SQLite fixture process")
+            .open_connection(
+                self.retention.directory.join("objects.sqlite3"),
+                rusqlite::OpenFlags::default(),
+            )
+            .map_err(|error| store_error(format!("open test RAM restoration database: {error}")))?;
         connection
             .execute(
                 "UPDATE objects SET body = ?1 WHERE id = ?2",

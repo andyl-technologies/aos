@@ -164,6 +164,7 @@ pub(super) fn store_service_failure(error: &StoreError) -> CampaignServiceFailur
         | StoreError::PackedScope { .. }
         | StoreError::MemoryScope { .. }
         | StoreError::CompositeScope { .. }
+        | StoreError::SqliteHeap { .. }
         | StoreError::SqliteScope { .. } => CampaignServiceFailure::Unavailable,
         StoreError::Corrupt { .. }
         | StoreError::InvalidId

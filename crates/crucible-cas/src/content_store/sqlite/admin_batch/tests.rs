@@ -94,6 +94,7 @@ fn pair(root: &Path, guard: &Arc<Quota>) -> SqliteBlobAuthorities {
         guard.clone(),
         8 * 1024 * 1024,
         Arc::new(Supervisor(guard.clone())),
+        &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
     )
     .expect("one admitted component catalog")
 }
@@ -179,8 +180,12 @@ fn paired_views_and_outputs_hold_one_actual_original_owner() {
     assert_eq!(guard.peak_descriptors.load(Ordering::SeqCst), 1);
     assert!(guard.peak_bytes.load(Ordering::SeqCst) >= 48 * 1024 * 1024);
     assert!(guard.peak_bytes.load(Ordering::SeqCst) <= 64 * 1024 * 1024);
-    let reopened =
-        SqliteBlobBackend::open("reopened", root.path()).expect("independent durable reopen");
+    let reopened = SqliteBlobBackend::open(
+        "reopened",
+        root.path(),
+        &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
+    )
+    .expect("independent durable reopen");
     assert!(!reopened.contains(ids[0]).expect("removed"));
     assert!(!reopened.contains(ids[1]).expect("removed"));
     assert!(reopened.contains(ids[2]).expect("retained"));
@@ -306,8 +311,13 @@ fn corrupt_metadata_refuses_before_inventory_or_mutation_and_retains_error_bank(
         let guard = Quota::new();
         let (backend, admin) = pair(root.path(), &guard);
         let ids = seeded(backend.as_ref(), 1);
-        let foreign =
-            Connection::open(root.path().join(DATABASE_FILE)).expect("external corruption fixture");
+        let foreign = crate::content_store::fixture_sqlite_heap()
+            .expect("authored SQLite fixture process")
+            .open_connection(
+                root.path().join(DATABASE_FILE),
+                rusqlite::OpenFlags::default(),
+            )
+            .expect("external corruption fixture");
         foreign
             .execute_batch(malformed)
             .expect("actual malformed row");
@@ -325,6 +335,8 @@ fn corrupt_metadata_refuses_before_inventory_or_mutation_and_retains_error_bank(
         );
         let present: bool = with_id_text(ids[0], |encoded| {
             foreign
+                .lock()
+                .expect("managed external presence reader")
                 .query_row(diagnostic::PRESENCE_SQL, [encoded], |row| row.get(0))
                 .map_err(|source| database_error("external-object-presence", source))
         })
@@ -349,9 +361,15 @@ fn generation_overflow_preflights_all_removals_without_partial_delete() {
     let guard = Quota::new();
     let (backend, admin) = pair(root.path(), &guard);
     let ids = seeded(backend.as_ref(), 2);
-    let foreign =
-        Connection::open(root.path().join(DATABASE_FILE)).expect("foreign metadata fixture");
-    let (instance, _) = load_metadata(&foreign).expect("instance");
+    let foreign = crate::content_store::fixture_sqlite_heap()
+        .expect("authored SQLite fixture process")
+        .open_connection(
+            root.path().join(DATABASE_FILE),
+            rusqlite::OpenFlags::default(),
+        )
+        .expect("foreign metadata fixture");
+    let (instance, _) =
+        load_metadata(&foreign.lock().expect("managed metadata connection")).expect("instance");
     let generation = i64::MAX as u64 - 1;
     foreign
         .execute(
@@ -380,7 +398,12 @@ fn generation_overflow_preflights_all_removals_without_partial_delete() {
         "overflow must precede the first journaled mutation"
     );
     assert!(matches!(error.original_failure(), StoreError::Quota));
-    assert_eq!(load_metadata(&foreign).expect("no advance").1, generation);
+    assert_eq!(
+        load_metadata(&foreign.lock().expect("managed metadata connection"))
+            .expect("no advance")
+            .1,
+        generation
+    );
     for id in ids {
         assert!(backend.contains(id).expect("all original objects retained"));
     }
@@ -405,7 +428,13 @@ fn actual_foreign_sqlite_lock_polls_original_cancellation_without_native_busy_wa
     let root = tempfile::tempdir().expect("catalog");
     let guard = Quota::new();
     let (_, admin) = pair(root.path(), &guard);
-    let foreign = Connection::open(root.path().join(DATABASE_FILE)).expect("foreign writer");
+    let foreign = crate::content_store::fixture_sqlite_heap()
+        .expect("authored SQLite fixture process")
+        .open_connection(
+            root.path().join(DATABASE_FILE),
+            rusqlite::OpenFlags::default(),
+        )
+        .expect("foreign writer");
     foreign
         .execute_batch("BEGIN EXCLUSIVE")
         .expect("actual SQLite exclusive lock");
@@ -493,6 +522,7 @@ fn late_actual_commit_failure_preserves_cached_generation_and_last_error_credit(
         root.path().into(),
         Some(8 * 1024 * 1024),
         Some(Arc::new(Supervisor(guard.clone()))),
+        &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
     )
     .expect("private capped component leaf");
     backend.resident_lease = guard
@@ -503,8 +533,13 @@ fn late_actual_commit_failure_preserves_cached_generation_and_last_error_credit(
         .expect("actual original lease")
         .into();
     let ids = seeded(&backend, 1);
-    let foreign =
-        Connection::open(root.path().join(DATABASE_FILE)).expect("independent durable observer");
+    let foreign = crate::content_store::fixture_sqlite_heap()
+        .expect("authored SQLite fixture process")
+        .open_connection(
+            root.path().join(DATABASE_FILE),
+            rusqlite::OpenFlags::default(),
+        )
+        .expect("independent durable observer");
     let account = DecodeBudget::for_store(guard.clone()).expect("original account");
     let _scope = account.enter();
     let baseline = guard.resources.usage().expect("baseline");
@@ -525,7 +560,9 @@ fn late_actual_commit_failure_preserves_cached_generation_and_last_error_credit(
         .expect_err("first actual post-COMMIT poll refuses");
     assert_eq!(fence.inner.generation, before + 1);
     assert_eq!(
-        load_metadata(&foreign).expect("committed metadata").1,
+        load_metadata(&foreign.lock().expect("managed metadata connection"))
+            .expect("committed metadata")
+            .1,
         before + 1
     );
     let StoreError::SqliteDiagnostic { source } = &error else {
@@ -564,7 +601,13 @@ fn actual_commit_busy_keeps_one_original_scope_until_reader_releases() {
     let guard = Quota::new();
     let (backend, admin) = pair(root.path(), &guard);
     let ids = seeded(backend.as_ref(), 1);
-    let foreign = Connection::open(root.path().join(DATABASE_FILE)).expect("foreign reader");
+    let foreign = crate::content_store::fixture_sqlite_heap()
+        .expect("authored SQLite fixture process")
+        .open_connection(
+            root.path().join(DATABASE_FILE),
+            rusqlite::OpenFlags::default(),
+        )
+        .expect("foreign reader");
     foreign
         .execute_batch("BEGIN DEFERRED")
         .expect("read transaction");
@@ -619,6 +662,7 @@ fn unwind_after_actual_delete_quarantines_every_alias_without_hidden_cleanup() {
         root.path().into(),
         Some(8 * 1024 * 1024),
         Some(Arc::new(Supervisor(guard.clone()))),
+        &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
     )
     .expect("private capped leaf");
     let ids = seeded(&backend, 1);
@@ -651,8 +695,12 @@ fn unwind_after_actual_delete_quarantines_every_alias_without_hidden_cleanup() {
     ));
     drop(fence);
     drop(backend);
-    let reopened = SqliteBlobBackend::open("reopened", root.path())
-        .expect("connection drop recovers actual uncommitted transaction");
+    let reopened = SqliteBlobBackend::open(
+        "reopened",
+        root.path(),
+        &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
+    )
+    .expect("connection drop recovers actual uncommitted transaction");
     assert!(
         reopened
             .contains(ids[0])
@@ -671,8 +719,13 @@ fn late_physical_facade_refusal_keeps_committed_outcome_and_consumes_same_bank()
     let guard = Quota::new();
     let (backend, admin) = pair(root.path(), &guard);
     let ids = seeded(backend.as_ref(), 1);
-    let foreign =
-        Connection::open(root.path().join(DATABASE_FILE)).expect("independent durable observer");
+    let foreign = crate::content_store::fixture_sqlite_heap()
+        .expect("authored SQLite fixture process")
+        .open_connection(
+            root.path().join(DATABASE_FILE),
+            rusqlite::OpenFlags::default(),
+        )
+        .expect("independent durable observer");
     let account = DecodeBudget::for_store(guard.clone()).expect("original account");
     let _scope = account.enter();
     let baseline = guard.resources.usage().expect("baseline");
@@ -705,7 +758,12 @@ fn late_physical_facade_refusal_keeps_committed_outcome_and_consumes_same_bank()
     };
     assert_eq!(source.outcome(), busy::SqliteCommitOutcome::Committed);
     assert!(source.rollback_failure().is_none());
-    assert_eq!(load_metadata(&foreign).expect("durable generation").1, 3);
+    assert_eq!(
+        load_metadata(&foreign.lock().expect("managed metadata connection"))
+            .expect("durable generation")
+            .1,
+        3
+    );
     assert!(matches!(
         fence
             .delete_candidates_with_boundary(&[], &mut || guard.verify())
@@ -743,7 +801,13 @@ fn late_facade_callback_cannot_hide_original_account_refusal() {
     let guard = Quota::new();
     let (backend, admin) = pair(root.path(), &guard);
     let ids = seeded(backend.as_ref(), 1);
-    let foreign = Connection::open(root.path().join(DATABASE_FILE)).expect("durable observer");
+    let foreign = crate::content_store::fixture_sqlite_heap()
+        .expect("authored SQLite fixture process")
+        .open_connection(
+            root.path().join(DATABASE_FILE),
+            rusqlite::OpenFlags::default(),
+        )
+        .expect("durable observer");
     let account = DecodeBudget::for_store(guard.clone()).expect("original account");
     let _scope = account.enter();
     let baseline = guard.resources.usage().expect("baseline");
@@ -784,7 +848,12 @@ fn late_facade_callback_cannot_hide_original_account_refusal() {
         panic!("final acceptance keeps the actual commit outcome");
     };
     assert_eq!(source.outcome(), busy::SqliteCommitOutcome::Committed);
-    assert_eq!(load_metadata(&foreign).expect("durable generation").1, 3);
+    assert_eq!(
+        load_metadata(&foreign.lock().expect("managed metadata connection"))
+            .expect("durable generation")
+            .1,
+        3
+    );
 
     drop(fence);
     assert!(guard.resources.usage().expect("retained bank").1 >= baseline.1 + 48 * 1024 * 1024);
@@ -878,6 +947,7 @@ fn cancellation_after_actual_delete_rolls_back_before_exact_timeout_restoration(
         root.path().into(),
         Some(8 * 1024 * 1024),
         Some(Arc::new(Supervisor(guard.clone()))),
+        &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
     )
     .expect("private capped leaf");
     let ids = seeded(&backend, 2);

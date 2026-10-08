@@ -71,6 +71,18 @@ impl FixtureResourceBudget {
         let usage = self.usage.lock().map_err(|_| StoreError::Quota)?;
         Ok((usage.descriptors, usage.resident_bytes))
     }
+
+    /// Reserves an explicit model purpose including its own loan allocation.
+    pub(crate) fn reserve_with_control(
+        &self,
+        resident_bytes: u64,
+    ) -> Result<crate::owned_decode::ResourceLoan, StoreError> {
+        let control = crate::owned_decode::ResourceLoan::allocation_bytes::<FixtureResourceLoan>();
+        let charged = resident_bytes
+            .checked_add(control)
+            .ok_or(StoreError::Quota)?;
+        self.reserve(0, charged)
+    }
 }
 
 struct FixtureResourceLoan {

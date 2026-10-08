@@ -142,6 +142,8 @@ impl Reachability {
             Arc::new(crucible_cas::content_store::SqliteBlobBackend::open(
                 "component-gc-marks",
                 directory.path(),
+                &crucible_cas::content_store::fixture_sqlite_heap()
+                    .expect("authored SQLite fixture process"),
             )?),
             resources,
         );
@@ -276,7 +278,10 @@ mod tests {
             .expect("component directory")
             .path()
             .join("objects.sqlite3");
-        let connection = rusqlite::Connection::open(path).expect("mutation connection");
+        let connection = crucible_cas::content_store::fixture_sqlite_heap()
+            .expect("authored SQLite fixture process")
+            .open_connection(path, rusqlite::OpenFlags::default())
+            .expect("mutation connection");
         connection
             .execute("DELETE FROM objects", [])
             .expect("simulate storage loss");

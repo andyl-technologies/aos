@@ -667,6 +667,7 @@ fn real_sql_commit_survives_directory_uncertainty_and_independent_cleanup_failur
         quota.clone(),
         8 * 1024 * 1024,
         Arc::new(Supervisor(quota.clone())),
+        &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
     )
     .unwrap();
     let directory = Arc::new(DirectoryBlobBackend::new(

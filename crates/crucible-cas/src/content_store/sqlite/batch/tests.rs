@@ -144,6 +144,7 @@ fn repeated_batches_release_staging_but_retain_each_live_result() {
         guard.clone(),
         8 * 1024 * 1024,
         Arc::new(Supervisor(Arc::clone(&guard))),
+        &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
     )
     .expect("same-quota catalog");
     let inputs = objects();
@@ -358,6 +359,7 @@ pub(super) fn bounded_leaf(name: &str, root: &Path, guard: &Arc<Quota>) -> Sqlit
         root.to_owned(),
         Some(8 * 1024 * 1024),
         Some(supervisor),
+        &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
     )
     .expect("actual capped private connection");
     backend.resident_lease = lease.into();
@@ -442,6 +444,7 @@ fn same_quota_arc_forwards_one_transaction_and_retains_last_receipt_owner() {
         guard.clone(),
         8 * 1024 * 1024,
         Arc::new(Supervisor(Arc::clone(&guard))),
+        &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
     )
     .expect("admitted component catalog");
     let selected: Arc<dyn StorePhysicalQuotaGuard> = guard.clone();
@@ -452,9 +455,16 @@ fn same_quota_arc_forwards_one_transaction_and_retains_last_receipt_owner() {
     let account = DecodeBudget::for_store(selected).expect("original metadata bank");
     let scope = account.enter();
     let before = {
-        let connection = Connection::open(root.path().join(DATABASE_FILE))
+        let connection = crate::content_store::fixture_sqlite_heap()
+            .expect("authored SQLite fixture process")
+            .open_connection(
+                root.path().join(DATABASE_FILE),
+                rusqlite::OpenFlags::default(),
+            )
             .expect("inspect component generation");
-        load_metadata(&connection).expect("generation").1
+        load_metadata(&connection.lock().expect("managed metadata connection"))
+            .expect("generation")
+            .1
     };
     let inputs = objects();
     let starts = guard.0.starts.load(Ordering::SeqCst);
@@ -478,10 +488,17 @@ fn same_quota_arc_forwards_one_transaction_and_retains_last_receipt_owner() {
     assert!(receipts.iter().all(|receipt| receipt.placements.len() == 1
         && receipt.placements[0].backend == "original-quota"
         && receipt.is_durable()));
-    let connection = Connection::open(root.path().join(DATABASE_FILE))
+    let connection = crate::content_store::fixture_sqlite_heap()
+        .expect("authored SQLite fixture process")
+        .open_connection(
+            root.path().join(DATABASE_FILE),
+            rusqlite::OpenFlags::default(),
+        )
         .expect("inspect committed component database");
     assert_eq!(
-        load_metadata(&connection).expect("committed generation").1,
+        load_metadata(&connection.lock().expect("managed metadata connection"))
+            .expect("committed generation")
+            .1,
         before + 1
     );
     assert_eq!(
@@ -598,7 +615,12 @@ fn original_boundary_refusal_rolls_back_staged_rows_and_generation() {
     let mut inside_checks = 0;
     let error = backend
         .put_many_if_absent_with_boundary(&account, &objects(), &mut || {
-            if matches!(backend.connection.try_lock(), Err(TryLockError::WouldBlock)) {
+            if backend
+                .connection
+                .try_lock_for("test-original-lock")
+                .expect("healthy original lock")
+                .is_none()
+            {
                 inside_checks += 1;
             }
             if inside_checks == 7 {
@@ -708,6 +730,7 @@ fn quota_source_batch_uses_original_write_scope_without_per_chunk_restarts() {
         guard.clone(),
         8 * 1024 * 1024,
         Arc::new(Supervisor(Arc::clone(&guard))),
+        &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
     )
     .expect("actual quota facade and private SQLite child");
     let bytes = vec![0xa5; 130 * 1024];
@@ -781,8 +804,14 @@ fn opaque_checked_dispatch_refuses_without_changing_singleton_metrics() {
         }
     }
 
-    let backend =
-        Arc::new(SqliteBlobBackend::open("component", root.path()).expect("component database"));
+    let backend = Arc::new(
+        SqliteBlobBackend::open(
+            "component",
+            root.path(),
+            &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
+        )
+        .expect("component database"),
+    );
     let (metrics, state) = MetricsStore::new("metrics", Arc::new(OpaqueBackend(backend)));
     let input = objects();
     let account =

@@ -350,6 +350,7 @@ mod tests {
             )),
             i64::MAX as u64,
             Arc::new(BoundedSupervisor(budget.clone())),
+            &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
         )
         .unwrap_or_else(|error| panic!("resident catalog open: {error}"));
         let cached = budget.used.load(Ordering::Acquire);

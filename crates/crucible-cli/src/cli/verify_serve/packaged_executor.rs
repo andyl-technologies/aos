@@ -367,6 +367,7 @@ pub(super) fn prepare_cli_packaged_executor(
     executor_socket: &Path,
     deployment_path: &Path,
     lifecycle: crucible_api::ProductionVmLifecycleConfig,
+    process_heap: &crucible_cas::content_store::SqliteProcessHeap,
 ) -> Result<PreparedCliPackagedExecutor, CliError> {
     let deployment = load_validated_deployment(deployment_path)?;
     let operations = deployment_operations(&deployment)?;
@@ -411,6 +412,9 @@ pub(super) fn prepare_cli_packaged_executor(
             assignment_limits: deployment.assignment_limits.limits()?,
         },
     )?;
+    let config = config
+        .with_sqlite_process_heap(process_heap)
+        .map_err(|error| serve_error(format!("campaign process heap binding: {error}")))?;
     let executor = prepared
         .prepare_packaged_executor(config)
         .map_err(|error| {

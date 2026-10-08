@@ -31,6 +31,7 @@ members = [
     "aos-profile",
     "aos-systemd",
     "crucible-cas",
+    "crucible-sqlite-heap",
     "crucible-linux-resource",
     "crucible-s3-store",
     "crucible-campaign",

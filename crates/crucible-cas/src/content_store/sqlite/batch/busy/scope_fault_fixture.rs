@@ -24,7 +24,8 @@ impl SqliteBlobBackend {
     /// and original catalog supervisor. A committed case executes real COMMIT;
     /// the other injects static rollback and restoration errors after real BEGIN.
     /// The supplied hook runs after the transaction starts, before repeated
-    /// caller boundary checks. Callers isolate the process-global 8 MiB heap cap.
+    /// caller boundary checks. The supplied original process heap has the
+    /// fixture's authored 8 MiB ceiling.
     ///
     /// # Errors
     /// Returns original preparation, credit, SQLite, or observation failures, or
@@ -36,6 +37,7 @@ impl SqliteBlobBackend {
         committed: bool,
         boundary: &mut dyn FnMut() -> Result<(), StoreError>,
         started: &mut dyn FnMut(),
+        heap: &crate::content_store::SqliteProcessHeap,
     ) -> Result<SqliteScopeFaultObservation, StoreError> {
         original
             .verify_live()
@@ -50,6 +52,7 @@ impl SqliteBlobBackend {
             root.to_owned(),
             Some(8 * 1024 * 1024),
             Some(supervisor),
+            heap,
         )?;
         backend.resident_lease = lease.into();
         operation.complete()?;

@@ -2,8 +2,6 @@
 
 use crate::content_store::batch::{admission_under, allocation_under};
 
-use std::sync::TryLockError;
-
 use super::*;
 use crate::content_store::batch::{admit_receipts, read_source, with_id_text};
 
@@ -210,22 +208,20 @@ impl SqliteBlobBackend {
     pub(super) fn connection_with_boundary(
         &self,
         boundary: &mut dyn FnMut() -> Result<(), StoreError>,
-    ) -> Result<MutexGuard<'_, Connection>, StoreError> {
+    ) -> Result<process_heap::SqliteConnectionGuard<'_>, StoreError> {
         loop {
             busy::healthy(&self.quarantined)?;
             boundary()?;
-            match self.connection.try_lock() {
-                Ok(connection) => {
+            match self
+                .connection
+                .try_lock_for("lock-sqlite-blob-connection")?
+            {
+                Some(connection) => {
                     busy::healthy(&self.quarantined)?;
                     boundary()?;
                     return Ok(connection);
                 }
-                Err(TryLockError::WouldBlock) => std::thread::yield_now(),
-                Err(TryLockError::Poisoned(_)) => {
-                    return Err(StoreError::Poisoned {
-                        operation: "lock-sqlite-blob-connection",
-                    });
-                }
+                None => std::thread::yield_now(),
             }
         }
     }

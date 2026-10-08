@@ -51,7 +51,13 @@ fn foreign_write_lock_polls_original_callback_and_restores_exact_timeout() {
         .expect("original connection")
         .busy_timeout(Duration::from_millis(1234))
         .expect("authored prior timeout");
-    let foreign = Connection::open(root.path().join(DATABASE_FILE)).expect("foreign connection");
+    let foreign = crate::content_store::fixture_sqlite_heap()
+        .expect("authored SQLite fixture process")
+        .open_connection(
+            root.path().join(DATABASE_FILE),
+            rusqlite::OpenFlags::default(),
+        )
+        .expect("foreign connection");
     foreign
         .execute_batch("BEGIN IMMEDIATE")
         .expect("actual foreign write lock");
@@ -105,7 +111,13 @@ fn actual_commit_busy_cancellation_rolls_back_and_restores_without_new_work() {
     }
     let (root, guard, backend, account) = backend();
     let _scope = account.enter();
-    let foreign = Connection::open(root.path().join(DATABASE_FILE)).expect("foreign reader");
+    let foreign = crate::content_store::fixture_sqlite_heap()
+        .expect("authored SQLite fixture process")
+        .open_connection(
+            root.path().join(DATABASE_FILE),
+            rusqlite::OpenFlags::default(),
+        )
+        .expect("foreign reader");
     foreign
         .execute_batch("BEGIN; SELECT * FROM objects;")
         .expect("retained SHARED read lock");
@@ -499,7 +511,13 @@ fn checked_source_foreign_exclusive_lock_uses_original_callback_and_timeout() {
         .expect("actual read connection")
         .busy_timeout(Duration::from_millis(777))
         .expect("authored original timeout");
-    let foreign = Connection::open(root.path().join(DATABASE_FILE)).expect("foreign connection");
+    let foreign = crate::content_store::fixture_sqlite_heap()
+        .expect("authored SQLite fixture process")
+        .open_connection(
+            root.path().join(DATABASE_FILE),
+            rusqlite::OpenFlags::default(),
+        )
+        .expect("foreign connection");
     foreign
         .execute_batch("BEGIN EXCLUSIVE")
         .expect("actual exclusive database lock");
@@ -546,7 +564,13 @@ fn actual_base_busy_retry_keeps_transaction_and_commits_once_after_release() {
     }
     let (root, guard, backend, account) = backend();
     let _scope = account.enter();
-    let foreign = Connection::open(root.path().join(DATABASE_FILE)).expect("foreign writer");
+    let foreign = crate::content_store::fixture_sqlite_heap()
+        .expect("authored SQLite fixture process")
+        .open_connection(
+            root.path().join(DATABASE_FILE),
+            rusqlite::OpenFlags::default(),
+        )
+        .expect("foreign writer");
     foreign
         .execute_batch("BEGIN IMMEDIATE")
         .expect("held actual writer lock");

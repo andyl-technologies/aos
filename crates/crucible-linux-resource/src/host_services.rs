@@ -341,6 +341,40 @@ impl Drop for HostServiceLease {
     }
 }
 
+/// Retains a private pair of original leases through both control closes.
+///
+/// The provider consumes both freshly admitted halves without retaining
+/// independent aliases. Sharing its enclosing owner preserves the pair;
+/// this type exposes neither half and creates no resource credit or control.
+/// For a complete unaliased pair, both existing controls close before either
+/// extracted charge is refunded.
+#[must_use = "the original pair must outlive every allocation it funds"]
+#[derive(Debug)]
+pub struct HostServiceLeasePair {
+    first: HostServiceLease,
+    second: HostServiceLease,
+}
+
+impl HostServiceLeasePair {
+    /// Consumes the original leases without cloning or allocating.
+    ///
+    /// Joint custody requires both halves to remain private to this pair.
+    /// Independently retained aliases still own their individual charges;
+    /// this constructor cannot establish joint custody for those aliases.
+    pub const fn new(first: HostServiceLease, second: HostServiceLease) -> Self {
+        Self { first, second }
+    }
+}
+
+impl Drop for HostServiceLeasePair {
+    fn drop(&mut self) {
+        let first = self.first.reservation.take().and_then(Arc::into_inner);
+        let second = self.second.reservation.take().and_then(Arc::into_inner);
+        // Both deallocations precede either ServiceReservation destructor.
+        drop((first, second));
+    }
+}
+
 impl HostServiceLease {
     /// Closes both supplied controls before refunding either extracted charge.
     ///
@@ -348,11 +382,8 @@ impl HostServiceLease {
     /// escape or acquire independent aliases. Sharing that complete enclosing
     /// owner preserves the pair. Independently cloned halves do not establish
     /// joint custody: their remaining aliases still own their own charges.
-    pub fn close_pair(mut first: Self, mut second: Self) {
-        let first = first.reservation.take().and_then(Arc::into_inner);
-        let second = second.reservation.take().and_then(Arc::into_inner);
-        // Both deallocations precede either ServiceReservation destructor.
-        drop((first, second));
+    pub fn close_pair(first: Self, second: Self) {
+        drop(HostServiceLeasePair::new(first, second));
     }
 
     fn reservation(&self) -> &ServiceReservation {

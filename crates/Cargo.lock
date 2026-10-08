@@ -2305,9 +2305,11 @@ version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "blake3",
+ "crucible-cas",
  "crucible-linux-resource",
  "crucible-protocol",
  "crucible-ram",
+ "crucible-sqlite-heap",
  "rusqlite",
  "rustix 1.1.4",
  "tempfile",
@@ -2349,6 +2351,7 @@ dependencies = [
  "tokio-rustls",
  "toml 0.8.23",
  "url",
+ "zbus",
  "zeroize",
 ]
 
@@ -2542,6 +2545,14 @@ dependencies = [
 name = "crucible-sim"
 version = "0.1.0"
 dependencies = [
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "crucible-sqlite-heap"
+version = "0.1.0"
+dependencies = [
+ "libsqlite3-sys",
  "thiserror 2.0.18",
 ]
 

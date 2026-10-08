@@ -258,6 +258,10 @@ impl ProductionRamCatalogProvider for FixtureRamCatalogProvider {
             operation: "retain modeled fixture catalog",
             source: error.into(),
         })?;
+        let heap = match crucible_cas::content_store::fixture_sqlite_heap() {
+            Ok(heap) => heap,
+            Err(error) => panic!("authored SQLite fixture process: {error}"),
+        };
         let backend = SqliteBlobBackend::open_with_physical_quota(
             "fixture-checkpoint-ram",
             directory,
@@ -266,6 +270,7 @@ impl ProductionRamCatalogProvider for FixtureRamCatalogProvider {
             Arc::new(FixtureCatalogSupervisor(Arc::new(
                 FixtureResourceBudget::default(),
             ))),
+            &heap,
         )?;
         let storage = ProductionRamCatalogStorage {
             backend,

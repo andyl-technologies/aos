@@ -20,7 +20,11 @@ pub(crate) fn run_serve_invocation(cli: &Cli, args: &ServeArgs) -> Result<(), Cl
         ));
     }
     validate_serve_invocation(args)?;
+    let process = process_bootstrap::CampaignProcessOwner::admit()?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(process.policy.worker_threads)
+        .max_blocking_threads(process.policy.blocking_threads)
+        .thread_stack_size(process.policy.thread_stack_bytes)
         .enable_all()
         .build()
         .map_err(|error| serve_error(format!("serve runtime error: {error}")))?;
@@ -30,11 +34,16 @@ pub(crate) fn run_serve_invocation(cli: &Cli, args: &ServeArgs) -> Result<(), Cl
         serve_shutdown_signal()?
     };
     if args.production_qemu {
-        runtime.block_on(run_serve_invocation_until_shutdown(cli, args, shutdown))
+        runtime.block_on(run_serve_with_process_heap_until_shutdown(
+            cli,
+            args,
+            shutdown,
+            &process.heap,
+        ))
     } else {
         let decoding = crate::cli_input_resources::original_budget()?;
         let admitted = crucible_api::admit_future(
-            run_serve_invocation_until_shutdown(cli, args, shutdown),
+            run_serve_with_process_heap_until_shutdown(cli, args, shutdown, &process.heap),
             decoding,
         )
         .map_err(|source| CliError::LifecycleAdmission(Box::new(source)))?;
@@ -42,10 +51,11 @@ pub(crate) fn run_serve_invocation(cli: &Cli, args: &ServeArgs) -> Result<(), Cl
     }
 }
 
-pub(crate) async fn run_serve_invocation_until_shutdown<S>(
+async fn run_serve_with_process_heap_until_shutdown<S>(
     cli: &Cli,
     args: &ServeArgs,
     shutdown: S,
+    process_heap: &crucible_cas::content_store::SqliteProcessHeap,
 ) -> Result<(), CliError>
 where
     S: Future<Output = Result<(), CliError>> + Send + 'static,
@@ -157,11 +167,12 @@ where
                 lifecycle,
                 runtime: tokio::runtime::Handle::current(),
             });
-        let campaign_service = open_local_campaign_service(
+        let campaign_service = open_local_campaign_service_with_heap(
             args,
             Some(packaged_campaign_config),
             Some(campaign_debug_lifecycle),
             None,
+            Some(process_heap),
         )?;
         if let Some((owner, verify_findings)) = campaign_service
             .as_ref()
@@ -210,7 +221,8 @@ where
         control_plane = control_plane.with_max_sessions(max_sessions);
     }
     let control_plane = Arc::new(tokio::sync::Mutex::new(control_plane));
-    let campaign_service = open_local_campaign_service(args, None, None, None)?;
+    let campaign_service =
+        open_local_campaign_service_with_heap(args, None, None, None, Some(process_heap))?;
     announce_campaign_service(cli, campaign_service.as_ref());
     run_bound_daemon_services(
         listener,
@@ -289,11 +301,12 @@ impl PreparedLocalCampaignService {
     }
 }
 
-pub(crate) fn open_local_campaign_service(
+fn open_local_campaign_service_with_heap(
     args: &ServeArgs,
     production_qemu: Option<crucible_api::ProductionVmLifecycleConfig>,
     campaign_debug_lifecycle: Option<Arc<dyn crucible_daemon::CampaignDebugLifecycleAdmission>>,
     private_target_attempt: Option<crucible_campaign::AttemptId>,
+    process_heap: Option<&crucible_cas::content_store::SqliteProcessHeap>,
 ) -> Result<Option<PreparedLocalCampaignService>, CliError> {
     validate_campaign_runtime_attachments(args)?;
     let (Some(socket), Some(state), Some(policy)) = (
@@ -331,7 +344,9 @@ pub(crate) fn open_local_campaign_service(
     }
     let mut prepared = match args.campaign_store.as_deref() {
         Some(path) => config.prepare_with_store(load_campaign_repository_store(path)?),
-        None => config.prepare(),
+        None => config.prepare(process_heap.ok_or_else(|| {
+            serve_error("builtin campaign storage requires the original process heap")
+        })?),
     }
     .map_err(|error| serve_error(format!("campaign service bootstrap error: {error}")))?;
     if let Some(maintenance) = campaign_store_maintenance_config(args)? {
@@ -384,6 +399,9 @@ pub(crate) fn open_local_campaign_service(
                 deployment,
                 production_qemu.ok_or_else(|| {
                     serve_error("--campaign-packaged-executor requires --production-qemu")
+                })?,
+                process_heap.ok_or_else(|| {
+                    serve_error("packaged catalog requires the original process heap")
                 })?,
             )?)
         }
@@ -1051,4 +1069,36 @@ pub(crate) fn debug_authorization_policy(
             .map_err(|error| usage_error(error.to_string()))?;
     }
     Ok(policy)
+}
+
+#[cfg(test)]
+pub(crate) async fn run_serve_invocation_until_shutdown<S>(
+    cli: &Cli,
+    args: &ServeArgs,
+    shutdown: S,
+) -> Result<(), CliError>
+where
+    S: Future<Output = Result<(), CliError>> + Send + 'static,
+{
+    let heap = crucible_cas::content_store::fixture_sqlite_heap()
+        .map_err(|error| serve_error(format!("test process heap: {error}")))?;
+    run_serve_with_process_heap_until_shutdown(cli, args, shutdown, &heap).await
+}
+
+#[cfg(test)]
+pub(crate) fn open_local_campaign_service(
+    args: &ServeArgs,
+    production_qemu: Option<crucible_api::ProductionVmLifecycleConfig>,
+    campaign_debug_lifecycle: Option<Arc<dyn crucible_daemon::CampaignDebugLifecycleAdmission>>,
+    private_target_attempt: Option<crucible_campaign::AttemptId>,
+) -> Result<Option<PreparedLocalCampaignService>, CliError> {
+    let heap = crucible_cas::content_store::fixture_sqlite_heap()
+        .map_err(|error| serve_error(format!("test process heap: {error}")))?;
+    open_local_campaign_service_with_heap(
+        args,
+        production_qemu,
+        campaign_debug_lifecycle,
+        private_target_attempt,
+        Some(&heap),
+    )
 }

@@ -15,7 +15,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
 
 use rusqlite::blob::ZeroBlob;
 use rusqlite::{Connection, DatabaseName, OpenFlags, OptionalExtension, params};
@@ -30,7 +30,12 @@ use super::*;
 mod admin_batch;
 mod batch;
 mod checked_reader;
+mod process_heap;
 pub(super) use batch::busy::Accepted;
+pub use process_heap::{
+    SqliteConnection, SqliteHeapAuthority, SqliteHeapError, SqliteHeapIssuer, SqliteProcessBootstrapAuthority,
+    SqliteProcessHeap,
+};
 mod catalog;
 #[cfg(feature = "test-support")]
 pub use batch::busy::SqliteScopeFaultObservation;
@@ -48,31 +53,6 @@ const MAX_CHUNK_BYTES: usize = 64 * 1024;
 const MAX_BATCH_OBJECTS: usize = 64;
 const MAX_BATCH_BYTES: u64 = 4 * 1024 * 1024;
 const READ_STATEMENT_CACHE_CAPACITY: usize = 2;
-
-// The allocator limit is global. PRAGMA deliberately cannot raise an existing
-// hard limit, so concurrent catalogs cannot grant each other extra memory.
-fn configure_bounded_sqlite_memory(
-    connection: &Connection,
-    maximum_heap_bytes: u64,
-) -> Result<(), StoreError> {
-    let limit = i64::try_from(maximum_heap_bytes)
-        .ok()
-        .filter(|limit| *limit > 0)
-        .ok_or(StoreError::InvalidComposition {
-            reason: "quota-bound SQLite requires a positive representable heap limit",
-        })?;
-    let actual: i64 = connection
-        .query_row(&format!("PRAGMA hard_heap_limit={limit}"), [], |row| {
-            row.get(0)
-        })
-        .map_err(|source| database_error("bound-sqlite-allocator", source))?;
-    if actual <= 0 || actual > limit {
-        return Err(StoreError::InvalidComposition {
-            reason: "SQLite hard heap limit is unavailable or exceeds the entitlement",
-        });
-    }
-    Ok(())
-}
 
 // Every SQLite leaf contains temporary work in memory, including graph leaves
 // wrapped by a physical disk quota. Connection caches never mmap blob files.
@@ -113,8 +93,8 @@ pub type SqliteBlobAuthorities = (Arc<dyn ImmutableBlobBackend>, Arc<dyn BlobSto
 pub struct SqliteBlobBackend {
     name: String,
     root: PathBuf,
-    connection: Arc<Mutex<Connection>>,
-    read_connection: Arc<Mutex<Connection>>,
+    connection: SqliteConnection,
+    read_connection: SqliteConnection,
     catalog_supervisor: Option<Arc<dyn SqliteCatalogSupervisor>>,
     quarantined: Arc<std::sync::atomic::AtomicBool>,
     resident_lease: crate::owned_decode::ResourceLoanSlot,
@@ -136,7 +116,6 @@ pub fn minimum_sqlite_catalog_resident_bytes(name: &str, root: &Path) -> Result<
     }
     let fixed = std::mem::size_of::<SqliteBlobBackend>()
         + 2 * std::mem::size_of::<usize>()
-        + 2 * (std::mem::size_of::<Mutex<Connection>>() + 2 * std::mem::size_of::<usize>())
         + std::mem::size_of::<(usize, usize, std::sync::atomic::AtomicBool)>()
         + super::physical_quota::facade_metadata_bytes()
         + 2 * catalog::MAX_BACKEND_NAME_BYTES;
@@ -152,8 +131,12 @@ impl SqliteBlobBackend {
     ///
     /// Returns an I/O, SQLite, or metadata error if the database cannot be
     /// initialized or its persisted inventory identity is malformed.
-    pub fn open(name: impl Into<String>, root: impl Into<PathBuf>) -> Result<Self, StoreError> {
-        Self::open_inner(name.into(), root.into(), None, None)
+    pub fn open(
+        name: impl Into<String>,
+        root: impl Into<PathBuf>,
+        heap: &SqliteProcessHeap,
+    ) -> Result<Self, StoreError> {
+        Self::open_inner(name.into(), root.into(), None, None, heap)
     }
 
     /// Opens a physically quota-bound catalog with a hard SQLite heap ceiling.
@@ -161,8 +144,8 @@ impl SqliteBlobBackend {
     /// The guard must be bound before this call and cover `root` and every
     /// database sidecar. All backend operations retain and revalidate it.
     /// SQLite temporary work stays in its capped allocator rather than an
-    /// uncharged temporary directory. The heap ceiling applies process-wide
-    /// and only decreases; it is not a per-connection cache target. Private
+    /// uncharged temporary directory. Every connection borrows the same original
+    /// process heap, which must fit this catalog's upper bound. Private
     /// catalogs use verified DELETE journals to avoid WAL-index mappings and
     /// refuse WAL/SHM predecessors before SQLite opens them. Sources are bounded
     /// by 4 MiB and authenticated before a write transaction; staging waits retain
@@ -177,6 +160,7 @@ impl SqliteBlobBackend {
         guard: Arc<dyn StorePhysicalQuotaGuard>,
         maximum_sqlite_heap_bytes: u64,
         supervisor: Arc<dyn SqliteCatalogSupervisor>,
+        heap: &SqliteProcessHeap,
     ) -> Result<Arc<dyn ImmutableBlobBackend>, StoreError> {
         let (backend, _) = Self::open_with_physical_quota_and_admin(
             name,
@@ -184,6 +168,7 @@ impl SqliteBlobBackend {
             guard,
             maximum_sqlite_heap_bytes,
             supervisor,
+            heap,
         )?;
         Ok(backend)
     }
@@ -203,6 +188,7 @@ impl SqliteBlobBackend {
         guard: Arc<dyn StorePhysicalQuotaGuard>,
         maximum_sqlite_heap_bytes: u64,
         supervisor: Arc<dyn SqliteCatalogSupervisor>,
+        heap: &SqliteProcessHeap,
     ) -> Result<SqliteBlobAuthorities, StoreError> {
         guard.verify()?;
         let name = name.into();
@@ -223,6 +209,7 @@ impl SqliteBlobBackend {
             root,
             Some(maximum_sqlite_heap_bytes),
             Some(supervisor),
+            heap,
         )?;
         backend.resident_lease = resident_lease.into();
         let backend = Arc::new(backend);
@@ -238,7 +225,17 @@ impl SqliteBlobBackend {
         root: PathBuf,
         maximum_sqlite_heap_bytes: Option<u64>,
         catalog_supervisor: Option<Arc<dyn SqliteCatalogSupervisor>>,
+        heap: &SqliteProcessHeap,
     ) -> Result<Self, StoreError> {
+        heap.verify_live()?;
+        if let Some(maximum) = maximum_sqlite_heap_bytes {
+            let representable = i64::try_from(maximum).ok().filter(|limit| *limit > 0);
+            if representable.is_none() || heap.maximum_heap_bytes() > maximum {
+                return Err(StoreError::InvalidComposition {
+                    reason: "SQLite process heap exceeds this catalog entitlement",
+                });
+            }
+        }
         super::directory::create_dir_all_durable(&root)?;
 
         let database_path = root.join(DATABASE_FILE);
@@ -278,14 +275,12 @@ impl SqliteBlobBackend {
         if catalog_supervisor.is_some() {
             reject_wal_database_header(&database_path)?;
         }
-        let connection = Connection::open_with_flags(
+        let managed_connection = heap.open_connection_for(
             &database_path,
             OpenFlags::default() | OpenFlags::SQLITE_OPEN_NOFOLLOW,
-        )
-        .map_err(|source| database_error("open-sqlite-blob-database", source))?;
-        if let Some(limit) = maximum_sqlite_heap_bytes {
-            configure_bounded_sqlite_memory(&connection, limit)?;
-        }
+            "open-sqlite-blob-database",
+        )?;
+        let connection = managed_connection.lock()?;
         configure_sqlite_temporary_storage(&connection)?;
         connection
             .execute_batch("PRAGMA auto_vacuum=FULL;")
@@ -365,14 +360,12 @@ impl SqliteBlobBackend {
         // A source handle may be read while the writer holds its connection
         // through a conditional put or fenced repair. WAL readers need a
         // separate connection so that same-store publication cannot deadlock.
-        let read_connection = Connection::open_with_flags(
+        let managed_read_connection = heap.open_connection_for(
             &database_path,
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
-        )
-        .map_err(|source| database_error("open-sqlite-blob-reader", source))?;
-        if let Some(limit) = maximum_sqlite_heap_bytes {
-            configure_bounded_sqlite_memory(&read_connection, limit)?;
-        }
+            "open-sqlite-blob-reader",
+        )?;
+        let read_connection = managed_read_connection.lock()?;
         configure_sqlite_temporary_storage(&read_connection)?;
         // Retain only the two read query plans. Every execution still reads
         // current rows and authenticates their bytes; no object data is cached.
@@ -382,11 +375,14 @@ impl SqliteBlobBackend {
             READ_STATEMENT_CACHE_CAPACITY
         });
 
+        drop(read_connection);
+        drop(connection);
+
         Ok(Self {
             name,
             root,
-            connection: Arc::new(Mutex::new(connection)),
-            read_connection: Arc::new(Mutex::new(read_connection)),
+            connection: managed_connection,
+            read_connection: managed_read_connection,
             catalog_supervisor,
             resident_lease: Default::default(),
             maximum_sqlite_heap_bytes,
@@ -400,11 +396,9 @@ impl SqliteBlobBackend {
         &self.root
     }
 
-    fn lock_connection(&self) -> Result<MutexGuard<'_, Connection>, StoreError> {
+    fn lock_connection(&self) -> Result<process_heap::SqliteConnectionGuard<'_>, StoreError> {
         batch::busy::healthy(&self.quarantined)?;
-        let connection = self.connection.lock().map_err(|_| StoreError::Poisoned {
-            operation: "lock-sqlite-blob-connection",
-        })?;
+        let connection = self.connection.lock_for("lock-sqlite-blob-connection")?;
         batch::busy::healthy(&self.quarantined)?;
         Ok(connection)
     }
@@ -849,7 +843,7 @@ struct SqliteInventoryFence<'a> {
     backend: &'a SqliteBlobBackend,
     operation: Option<Box<dyn SqliteCatalogOperation>>,
     _staging: Option<catalog::WriteStagingGuard>,
-    connection: MutexGuard<'a, Connection>,
+    connection: process_heap::SqliteConnectionGuard<'a>,
     _lock: File,
     instance: [u8; 32],
     generation: u64,
@@ -1000,7 +994,7 @@ impl BlobInventoryFence for SqliteInventoryFence<'_> {
 }
 
 struct SqliteBlobSource {
-    connection: Arc<Mutex<Connection>>,
+    connection: SqliteConnection,
     id: ContentId,
     logical_length: u64,
     range: ByteRange,
@@ -1071,7 +1065,7 @@ impl SqliteBlobSource {
 }
 
 struct AuthenticatingSqliteReader {
-    connection: Arc<Mutex<Connection>>,
+    connection: SqliteConnection,
     id: ContentId,
     logical_length: u64,
     range: ByteRange,
@@ -1091,10 +1085,7 @@ impl AuthenticatingSqliteReader {
             .ok()
             .and_then(|value| value.checked_add(1))
             .ok_or_else(invalid_object_data)?;
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| io::Error::other("SQLite blob connection lock poisoned"))?;
+        let connection = self.connection.lock().map_err(io::Error::other)?;
         batch::busy::healthy(&self.quarantined).map_err(io::Error::other)?;
         let mut statement = connection
             .prepare_cached("SELECT substr(body, ?2, ?3) FROM objects WHERE id = ?1")
@@ -1484,6 +1475,8 @@ mod tests {
                 guard.clone(),
                 128 << 20,
                 Arc::new(TestCatalogSupervisor),
+                &crate::content_store::fixture_sqlite_heap()
+                    .expect("authored SQLite fixture process")
             ),
             Err(StoreError::Quota)
         ));
@@ -1498,6 +1491,7 @@ mod tests {
             guard.clone(),
             128 << 20,
             Arc::new(TestCatalogSupervisor),
+            &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
         )
         .expect("quota-bound catalog");
         assert!(!root.path().join("objects.sqlite3-wal").exists());
@@ -1521,7 +1515,12 @@ mod tests {
     #[test]
     fn private_catalog_refuses_clean_wal_header_before_sqlite_opens() {
         let root = tempfile::tempdir().expect("clean WAL predecessor root");
-        let generic = SqliteBlobBackend::open("generic", root.path()).expect("generic WAL leaf");
+        let generic = SqliteBlobBackend::open(
+            "generic",
+            root.path(),
+            &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
+        )
+        .expect("generic WAL leaf");
         drop(generic);
         let database = root.path().join(DATABASE_FILE);
         let before = fs::read(&database).expect("persisted WAL database");
@@ -1535,6 +1534,7 @@ mod tests {
             Arc::new(TestQuotaGuard::default()),
             i64::MAX as u64,
             Arc::new(TestCatalogSupervisor),
+            &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
         );
 
         assert!(matches!(result, Err(StoreError::InvalidComposition { .. })));
@@ -1561,6 +1561,7 @@ mod tests {
             root.path().into(),
             Some(128 << 20),
             Some(Arc::new(TestCatalogSupervisor)),
+            &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
         )
         .expect("private DELETE catalog");
         backend
@@ -1610,7 +1611,9 @@ mod tests {
                 "refused".into(),
                 legacy.clone(),
                 Some(128 << 20),
-                Some(Arc::new(TestCatalogSupervisor))
+                Some(Arc::new(TestCatalogSupervisor)),
+                &crate::content_store::fixture_sqlite_heap()
+                    .expect("authored SQLite fixture process")
             ),
             Err(StoreError::InvalidComposition { .. })
         ));
@@ -1642,6 +1645,7 @@ mod tests {
             root.path().into(),
             Some(8 << 20),
             Some(Arc::new(TestCatalogSupervisor)),
+            &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
         )
         .expect("bounded catalog");
         let connection = backend.lock_connection().expect("writer");
@@ -1686,7 +1690,12 @@ mod tests {
         let root = tempfile::tempdir().expect("temporary database root");
         let bytes = b"authenticated SQLite campaign object";
         let id = ContentId::for_bytes(ObjectKind::CampaignFact, 1, bytes);
-        let backend = SqliteBlobBackend::open("sqlite-test", root.path()).expect("open database");
+        let backend = SqliteBlobBackend::open(
+            "sqlite-test",
+            root.path(),
+            &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
+        )
+        .expect("open database");
         assert!(backend.capabilities().repair_inventory);
         assert!(backend.capabilities().planned_delete);
 
@@ -1702,7 +1711,12 @@ mod tests {
         drop(fence);
         drop(backend);
 
-        let reopened = SqliteBlobBackend::open("sqlite-test", root.path()).expect("cold reopen");
+        let reopened = SqliteBlobBackend::open(
+            "sqlite-test",
+            root.path(),
+            &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
+        )
+        .expect("cold reopen");
         assert_eq!(
             reopened
                 .read(id, None)
@@ -1752,7 +1766,12 @@ mod tests {
         let original = ContentId::for_bytes(ObjectKind::CampaignFact, 1, bytes);
         let republished = ContentId::for_bytes(ObjectKind::CampaignFact, 2, bytes);
         let repaired = ContentId::for_bytes(ObjectKind::CampaignFact, 3, bytes);
-        let backend = SqliteBlobBackend::open("sqlite-test", root.path()).expect("open database");
+        let backend = SqliteBlobBackend::open(
+            "sqlite-test",
+            root.path(),
+            &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
+        )
+        .expect("open database");
         backend
             .put_if_absent(original, &BlobHandle::from_bytes(bytes))
             .expect("publish source object");
@@ -1782,7 +1801,12 @@ mod tests {
     #[test]
     fn batch_rekeys_same_backend_source_and_reopens_atomically() {
         let root = tempfile::tempdir().expect("temporary database root");
-        let backend = SqliteBlobBackend::open("sqlite-batch", root.path()).expect("open database");
+        let backend = SqliteBlobBackend::open(
+            "sqlite-batch",
+            root.path(),
+            &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
+        )
+        .expect("open database");
         let first_bytes = b"first committed source";
         let first = ContentId::for_bytes(ObjectKind::CampaignFact, 1, first_bytes);
         backend
@@ -1822,7 +1846,12 @@ mod tests {
         assert!(!backend.contains(rejected[0].0).expect("no partial batch"));
         drop(backend);
 
-        let reopened = SqliteBlobBackend::open("sqlite-batch", root.path()).expect("cold reopen");
+        let reopened = SqliteBlobBackend::open(
+            "sqlite-batch",
+            root.path(),
+            &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
+        )
+        .expect("cold reopen");
         for (id, expected) in [
             (rekeyed, first_bytes.as_slice()),
             (second, second_bytes.as_slice()),
@@ -1843,17 +1872,26 @@ mod tests {
         let root = tempfile::tempdir().expect("temporary graph root");
         let leaf = StoreNodeId::new("sqlite-batch-leaf").expect("leaf ID");
         let database_root = root.path().join("blobs");
-        let (graph, _) = StoreGraph::build_with_admin(StoreGraphConfig {
-            gc_mark_root: None,
-            root: leaf.clone(),
-            admitted_kinds: BTreeSet::from([ObjectKind::CampaignFact]),
-            nodes: BTreeMap::from([(
-                leaf,
-                StoreNodeSpec::Sqlite {
-                    root: database_root.clone(),
-                },
-            )]),
-        })
+        let (graph, _) = StoreGraph::build_with_admin_and_original_resources(
+            StoreGraphConfig {
+                gc_mark_root: None,
+                root: leaf.clone(),
+                admitted_kinds: BTreeSet::from([ObjectKind::CampaignFact]),
+                nodes: BTreeMap::from([(
+                    leaf,
+                    StoreNodeSpec::Sqlite {
+                        root: database_root.clone(),
+                    },
+                )]),
+            },
+            crate::content_store::StoreGraphOriginalResources {
+                memory_namespaces: None,
+                sqlite_heap: Some(
+                    &crate::content_store::fixture_sqlite_heap()
+                        .expect("authored SQLite fixture process"),
+                ),
+            },
+        )
         .expect("build SQLite graph");
         let first_bytes = b"first graph object";
         let second_bytes = b"second graph object";
@@ -1880,9 +1918,16 @@ mod tests {
         );
 
         let before = {
-            let connection = Connection::open(database_root.join(DATABASE_FILE))
+            let connection = crate::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process")
+                .open_connection(
+                    database_root.join(DATABASE_FILE),
+                    rusqlite::OpenFlags::default(),
+                )
                 .expect("inspect database generation");
-            load_metadata(&connection).expect("valid metadata").1
+            load_metadata(&connection.lock().expect("managed metadata connection"))
+                .expect("valid metadata")
+                .1
         };
         let receipts = graph
             .put_many_if_absent(&objects)
@@ -1890,17 +1935,26 @@ mod tests {
         assert_eq!(receipts.len(), objects.len());
         assert!(receipts.iter().all(PutReceipt::is_durable));
         let after = {
-            let connection = Connection::open(database_root.join(DATABASE_FILE))
+            let connection = crate::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process")
+                .open_connection(
+                    database_root.join(DATABASE_FILE),
+                    rusqlite::OpenFlags::default(),
+                )
                 .expect("inspect committed generation");
-            load_metadata(&connection)
+            load_metadata(&connection.lock().expect("managed metadata connection"))
                 .expect("valid committed metadata")
                 .1
         };
         assert_eq!(after, before + 1);
 
         drop(graph);
-        let reopened = SqliteBlobBackend::open("sqlite-batch-leaf", &database_root)
-            .expect("cold reopen batch");
+        let reopened = SqliteBlobBackend::open(
+            "sqlite-batch-leaf",
+            &database_root,
+            &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
+        )
+        .expect("cold reopen batch");
         for (id, expected) in [
             (first, first_bytes.as_slice()),
             (second, second_bytes.as_slice()),
@@ -1919,7 +1973,12 @@ mod tests {
     #[test]
     fn duplicate_id_within_one_batch_has_one_durable_placement() {
         let root = tempfile::tempdir().expect("temporary database root");
-        let backend = SqliteBlobBackend::open("sqlite-batch", root.path()).expect("open database");
+        let backend = SqliteBlobBackend::open(
+            "sqlite-batch",
+            root.path(),
+            &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
+        )
+        .expect("open database");
         let bytes = b"one object listed twice";
         let id = ContentId::for_bytes(ObjectKind::Trace, 1, bytes);
         let source = BlobHandle::from_bytes(bytes);
@@ -1943,8 +2002,19 @@ mod tests {
     #[test]
     fn failed_batch_commit_rolls_back_every_staged_object() {
         let root = tempfile::tempdir().expect("temporary database root");
-        let backend = SqliteBlobBackend::open("sqlite-batch", root.path()).expect("open database");
-        let fault = Connection::open(root.path().join(DATABASE_FILE)).expect("open fault writer");
+        let backend = SqliteBlobBackend::open(
+            "sqlite-batch",
+            root.path(),
+            &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
+        )
+        .expect("open database");
+        let fault = crate::content_store::fixture_sqlite_heap()
+            .expect("authored SQLite fixture process")
+            .open_connection(
+                root.path().join(DATABASE_FILE),
+                rusqlite::OpenFlags::default(),
+            )
+            .expect("open fault writer");
         fault
             .execute_batch(
                 "CREATE TABLE required_parent (id INTEGER PRIMARY KEY);
@@ -1980,7 +2050,12 @@ mod tests {
         }
         drop(backend);
 
-        let reopened = SqliteBlobBackend::open("sqlite-batch", root.path()).expect("cold reopen");
+        let reopened = SqliteBlobBackend::open(
+            "sqlite-batch",
+            root.path(),
+            &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
+        )
+        .expect("cold reopen");
         for (id, _) in &objects {
             assert!(!reopened.contains(*id).expect("failed commit stayed absent"));
         }
@@ -1989,12 +2064,19 @@ mod tests {
     #[test]
     fn concurrent_reader_sees_entire_batch_or_none() {
         let root = tempfile::tempdir().expect("temporary database root");
-        let backend = SqliteBlobBackend::open("sqlite-batch", root.path()).expect("open database");
-        let reader = Connection::open_with_flags(
-            root.path().join(DATABASE_FILE),
-            OpenFlags::SQLITE_OPEN_READ_ONLY,
+        let backend = SqliteBlobBackend::open(
+            "sqlite-batch",
+            root.path(),
+            &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
         )
-        .expect("open independent reader");
+        .expect("open database");
+        let reader = crate::content_store::fixture_sqlite_heap()
+            .expect("authored SQLite fixture process")
+            .open_connection(
+                root.path().join(DATABASE_FILE),
+                OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+            .expect("open independent reader");
         let objects = (0..MAX_BATCH_OBJECTS)
             .map(|index| {
                 let bytes = vec![index as u8; MAX_CHUNK_BYTES];
@@ -2033,14 +2115,25 @@ mod tests {
     #[test]
     fn batch_rolls_back_new_objects_when_an_existing_id_is_corrupt() {
         let root = tempfile::tempdir().expect("temporary database root");
-        let backend = SqliteBlobBackend::open("sqlite-batch", root.path()).expect("open database");
+        let backend = SqliteBlobBackend::open(
+            "sqlite-batch",
+            root.path(),
+            &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
+        )
+        .expect("open database");
         let existing_bytes = b"existing immutable object";
         let existing = ContentId::for_bytes(ObjectKind::Trace, 1, existing_bytes);
         backend
             .put_if_absent(existing, &BlobHandle::from_bytes(existing_bytes))
             .expect("publish existing object");
 
-        let fault = Connection::open(root.path().join(DATABASE_FILE)).expect("open for fault");
+        let fault = crate::content_store::fixture_sqlite_heap()
+            .expect("authored SQLite fixture process")
+            .open_connection(
+                root.path().join(DATABASE_FILE),
+                rusqlite::OpenFlags::default(),
+            )
+            .expect("open for fault");
         fault
             .execute(
                 "UPDATE objects SET body = ?1 WHERE id = ?2",
@@ -2062,7 +2155,12 @@ mod tests {
         assert!(!backend.contains(new).expect("first insert rolled back"));
         drop(backend);
 
-        let reopened = SqliteBlobBackend::open("sqlite-batch", root.path()).expect("cold reopen");
+        let reopened = SqliteBlobBackend::open(
+            "sqlite-batch",
+            root.path(),
+            &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
+        )
+        .expect("cold reopen");
         assert!(!reopened.contains(new).expect("rollback remains durable"));
     }
 
@@ -2071,7 +2169,12 @@ mod tests {
         let root = tempfile::tempdir().expect("temporary database root");
         let bytes = b"immutable campaign object";
         let id = ContentId::for_bytes(ObjectKind::CampaignFact, 1, bytes);
-        let backend = SqliteBlobBackend::open("sqlite-test", root.path()).expect("open database");
+        let backend = SqliteBlobBackend::open(
+            "sqlite-test",
+            root.path(),
+            &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
+        )
+        .expect("open database");
         backend
             .put_if_absent(id, &BlobHandle::from_bytes(bytes))
             .expect("durable put");
@@ -2079,7 +2182,13 @@ mod tests {
 
         // A separate writer changes the same-length body after both cached
         // statements have run. Cached query plans must never cache row data.
-        let connection = Connection::open(root.path().join(DATABASE_FILE)).expect("open for fault");
+        let connection = crate::content_store::fixture_sqlite_heap()
+            .expect("authored SQLite fixture process")
+            .open_connection(
+                root.path().join(DATABASE_FILE),
+                rusqlite::OpenFlags::default(),
+            )
+            .expect("open for fault");
         connection
             .execute(
                 "UPDATE objects SET body = ?1 WHERE id = ?2",
@@ -2121,13 +2230,24 @@ mod tests {
         let root = tempfile::tempdir().expect("temporary database root");
         let bytes = b"immutable campaign object";
         let id = ContentId::for_bytes(ObjectKind::CampaignFact, 1, bytes);
-        let backend = SqliteBlobBackend::open("sqlite-test", root.path()).expect("open database");
+        let backend = SqliteBlobBackend::open(
+            "sqlite-test",
+            root.path(),
+            &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
+        )
+        .expect("open database");
         backend
             .put_if_absent(id, &BlobHandle::from_bytes(bytes))
             .expect("durable put");
         drop(backend);
 
-        let connection = Connection::open(root.path().join(DATABASE_FILE)).expect("open for fault");
+        let connection = crate::content_store::fixture_sqlite_heap()
+            .expect("authored SQLite fixture process")
+            .open_connection(
+                root.path().join(DATABASE_FILE),
+                rusqlite::OpenFlags::default(),
+            )
+            .expect("open for fault");
         connection
             .execute(
                 "UPDATE objects SET body = ?1 WHERE id = ?2",
@@ -2136,7 +2256,12 @@ mod tests {
             .expect("inject corrupt object");
         drop(connection);
 
-        let reopened = SqliteBlobBackend::open("sqlite-test", root.path()).expect("cold reopen");
+        let reopened = SqliteBlobBackend::open(
+            "sqlite-test",
+            root.path(),
+            &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
+        )
+        .expect("cold reopen");
         assert!(matches!(
             reopened.contains(id),
             Err(StoreError::Corrupt { .. })
@@ -2181,8 +2306,12 @@ mod tests {
         assert!(reopened.contains(id).expect("repair authenticates"));
         drop(reopened);
 
-        let reopened = SqliteBlobBackend::open("sqlite-test", root.path())
-            .expect("reopen after fenced repair");
+        let reopened = SqliteBlobBackend::open(
+            "sqlite-test",
+            root.path(),
+            &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
+        )
+        .expect("reopen after fenced repair");
         let mut fence = reopened
             .acquire_inventory_fence()
             .expect("repaired inventory fence");
@@ -2205,8 +2334,12 @@ mod tests {
         drop(fence);
         drop(reopened);
 
-        let final_backend =
-            SqliteBlobBackend::open("sqlite-test", root.path()).expect("reopen after delete");
+        let final_backend = SqliteBlobBackend::open(
+            "sqlite-test",
+            root.path(),
+            &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
+        )
+        .expect("reopen after delete");
         assert!(!final_backend.contains(id).expect("candidate absent"));
         let mut fence = final_backend
             .acquire_inventory_fence()
@@ -2223,12 +2356,23 @@ mod tests {
         let root = tempfile::tempdir().expect("temporary database root");
         let bytes = b"uncommitted campaign object";
         let id = ContentId::for_bytes(ObjectKind::CampaignFact, 1, bytes);
-        let backend = SqliteBlobBackend::open("sqlite-test", root.path()).expect("open database");
+        let backend = SqliteBlobBackend::open(
+            "sqlite-test",
+            root.path(),
+            &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
+        )
+        .expect("open database");
         drop(backend);
 
-        let mut connection =
-            Connection::open(root.path().join(DATABASE_FILE)).expect("open writer");
-        let transaction = connection.transaction().expect("begin interrupted write");
+        let connection = crate::content_store::fixture_sqlite_heap()
+            .expect("authored SQLite fixture process")
+            .open_connection(
+                root.path().join(DATABASE_FILE),
+                rusqlite::OpenFlags::default(),
+            )
+            .expect("open writer");
+        let mut native = connection.lock().expect("managed interrupted writer");
+        let transaction = native.transaction().expect("begin interrupted write");
         transaction
             .execute(
                 "INSERT INTO objects (id, body) VALUES (?1, ?2)",
@@ -2236,26 +2380,48 @@ mod tests {
             )
             .expect("stage uncommitted object");
         drop(transaction);
+        drop(native);
         drop(connection);
 
-        let reopened = SqliteBlobBackend::open("sqlite-test", root.path()).expect("cold reopen");
+        let reopened = SqliteBlobBackend::open(
+            "sqlite-test",
+            root.path(),
+            &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
+        )
+        .expect("cold reopen");
         assert!(!reopened.contains(id).expect("uncommitted object absent"));
     }
 
     #[test]
     fn corrupt_inventory_generation_fails_closed_on_cold_reopen() {
         let root = tempfile::tempdir().expect("temporary database root");
-        let backend = SqliteBlobBackend::open("sqlite-test", root.path()).expect("open database");
+        let backend = SqliteBlobBackend::open(
+            "sqlite-test",
+            root.path(),
+            &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
+        )
+        .expect("open database");
         drop(backend);
 
-        let connection = Connection::open(root.path().join(DATABASE_FILE)).expect("open for fault");
+        let connection = crate::content_store::fixture_sqlite_heap()
+            .expect("authored SQLite fixture process")
+            .open_connection(
+                root.path().join(DATABASE_FILE),
+                rusqlite::OpenFlags::default(),
+            )
+            .expect("open for fault");
         connection
             .execute("UPDATE metadata SET generation = generation + 1", [])
             .expect("inject metadata corruption");
         drop(connection);
 
         assert!(matches!(
-            SqliteBlobBackend::open("sqlite-test", root.path()),
+            SqliteBlobBackend::open(
+                "sqlite-test",
+                root.path(),
+                &crate::content_store::fixture_sqlite_heap()
+                    .expect("authored SQLite fixture process")
+            ),
             Err(StoreError::InvalidComposition { .. })
         ));
     }
@@ -2263,7 +2429,12 @@ mod tests {
     #[test]
     fn non_reclaiming_database_layout_fails_closed_on_reopen() {
         let root = tempfile::tempdir().expect("temporary database root");
-        let connection = Connection::open(root.path().join(DATABASE_FILE))
+        let connection = crate::content_store::fixture_sqlite_heap()
+            .expect("authored SQLite fixture process")
+            .open_connection(
+                root.path().join(DATABASE_FILE),
+                rusqlite::OpenFlags::default(),
+            )
             .expect("create non-reclaiming database");
         connection
             .execute_batch("PRAGMA auto_vacuum=NONE; CREATE TABLE legacy (id INTEGER);")
@@ -2271,7 +2442,12 @@ mod tests {
         drop(connection);
 
         assert!(matches!(
-            SqliteBlobBackend::open("sqlite-test", root.path()),
+            SqliteBlobBackend::open(
+                "sqlite-test",
+                root.path(),
+                &crate::content_store::fixture_sqlite_heap()
+                    .expect("authored SQLite fixture process")
+            ),
             Err(StoreError::InvalidComposition { .. })
         ));
     }
@@ -2285,28 +2461,65 @@ mod tests {
 
         let database = root.path().join(DATABASE_FILE);
         symlink(&sentinel, &database).expect("symlink database");
-        assert!(SqliteBlobBackend::open("sqlite-test", root.path()).is_err());
+        assert!(
+            SqliteBlobBackend::open(
+                "sqlite-test",
+                root.path(),
+                &crate::content_store::fixture_sqlite_heap()
+                    .expect("authored SQLite fixture process")
+            )
+            .is_err()
+        );
         std::fs::remove_file(&database).expect("remove database symlink");
 
         for suffix in ["-wal", "-shm", "-journal"] {
             let sidecar = root.path().join(format!("{DATABASE_FILE}{suffix}"));
             symlink(&sentinel, &sidecar).expect("symlink sidecar");
-            assert!(SqliteBlobBackend::open("sqlite-test", root.path()).is_err());
+            assert!(
+                SqliteBlobBackend::open(
+                    "sqlite-test",
+                    root.path(),
+                    &crate::content_store::fixture_sqlite_heap()
+                        .expect("authored SQLite fixture process")
+                )
+                .is_err()
+            );
             std::fs::remove_file(sidecar).expect("remove sidecar symlink");
         }
 
-        let backend = SqliteBlobBackend::open("sqlite-test", root.path()).expect("open database");
+        let backend = SqliteBlobBackend::open(
+            "sqlite-test",
+            root.path(),
+            &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
+        )
+        .expect("open database");
         let lock = root.path().join(LOCK_FILE);
         std::fs::remove_file(&lock).expect("remove inventory lock");
         symlink(&sentinel, &lock).expect("symlink inventory lock");
         assert!(backend.acquire_inventory_fence().is_err());
-        assert!(SqliteBlobBackend::open("sqlite-test", root.path()).is_err());
+        assert!(
+            SqliteBlobBackend::open(
+                "sqlite-test",
+                root.path(),
+                &crate::content_store::fixture_sqlite_heap()
+                    .expect("authored SQLite fixture process")
+            )
+            .is_err()
+        );
         drop(backend);
         std::fs::remove_file(&lock).expect("remove inventory lock symlink");
 
         let alias = external.path().join("aliased-root");
         symlink(root.path(), &alias).expect("symlink database root");
-        assert!(SqliteBlobBackend::open("sqlite-test", &alias).is_err());
+        assert!(
+            SqliteBlobBackend::open(
+                "sqlite-test",
+                &alias,
+                &crate::content_store::fixture_sqlite_heap()
+                    .expect("authored SQLite fixture process")
+            )
+            .is_err()
+        );
         assert_eq!(
             std::fs::read(sentinel).expect("read sentinel"),
             b"unchanged"
@@ -2316,7 +2529,12 @@ mod tests {
     #[test]
     fn planned_deletes_reclaim_database_pages_after_cold_reopen() {
         let root = tempfile::tempdir().expect("temporary database root");
-        let backend = SqliteBlobBackend::open("sqlite-test", root.path()).expect("open database");
+        let backend = SqliteBlobBackend::open(
+            "sqlite-test",
+            root.path(),
+            &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
+        )
+        .expect("open database");
         let mut ids = Vec::new();
         for ordinal in 0_u64..128 {
             let mut bytes = vec![0_u8; 64 * 1024];
@@ -2335,8 +2553,12 @@ mod tests {
             .len();
         let (seeded_cold_blocks, seeded_cold_conservative) = sqlite_file_census(root.path());
 
-        let reopened =
-            SqliteBlobBackend::open("sqlite-test", root.path()).expect("reopen seeded database");
+        let reopened = SqliteBlobBackend::open(
+            "sqlite-test",
+            root.path(),
+            &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
+        )
+        .expect("reopen seeded database");
         let (before_live_blocks, before_live_conservative) = sqlite_file_census(root.path());
         let mut fence = reopened.acquire_inventory_fence().expect("delete fence");
         for id in ids {

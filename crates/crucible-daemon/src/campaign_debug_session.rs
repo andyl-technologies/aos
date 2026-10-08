@@ -792,6 +792,7 @@ fn checkpoint_store_selection_failure(
         | StoreError::PackedScope { .. }
         | StoreError::MemoryScope { .. }
         | StoreError::CompositeScope { .. }
+        | StoreError::SqliteHeap { .. }
         | StoreError::SqliteScope { .. }
         | StoreError::Unauthorized
         | StoreError::InvalidComposition { .. }

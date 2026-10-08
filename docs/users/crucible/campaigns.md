@@ -513,6 +513,15 @@ record ID and must already occur in the daemon's verified import closure.
 
 ## Start the single-host owner
 
+Production `serve` starts through the generated `crucible-campaign.service`
+with an explicit original process resource contract. The service installs its
+limits before exec and lends the same native SQLite heap to every campaign
+store. Configure and qualify the
+[campaign process partitions](../../maintainers/crucible-campaign-process-resources.md)
+before enabling it. A direct shell launch without that authenticated service
+birth is refused before the runtime or listener starts. The launch arguments
+shown below belong in the managed service invocation.
+
 The campaign endpoint is a managed Unix socket. Its state directory, peer
 policy, optional component authority keys, and any initial imports must be fixed
 before the socket becomes visible. Without `--campaign-store`, the owner keeps

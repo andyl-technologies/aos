@@ -1,6 +1,7 @@
 [
   "crucible-campaign"
   "crucible-cas"
+  "crucible-sqlite-heap"
   "crucible-linux-resource"
   "crucible-s3-store"
   "crucible-sim"

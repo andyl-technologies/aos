@@ -582,7 +582,7 @@ impl BlobInventoryFence for DirectoryBlobInventoryFence<'_> {
         }
 
         let (staging_path, mut staging) = self.backend.create_staging(directory)?;
-        let publish_result = (|| {
+        let publish_result: Result<u64, StoreError> = (|| {
             let authenticated_length = copy_source(id, source, &mut staging)?;
             staging.sync_all().map_err(|source| StoreError::Io {
                 operation: "sync-repair-object-staging",

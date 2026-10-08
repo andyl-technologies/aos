@@ -584,6 +584,7 @@ fn store_executor_rejection(error: &StoreError) -> ExecutorRejection {
         | StoreError::MemoryScope { .. }
         | StoreError::CompositeScope { .. }
         | StoreError::ProviderDiagnostic { .. }
+        | StoreError::SqliteHeap { .. }
         | StoreError::SqliteScope { .. } => ExecutorRejection::UnavailableInput,
         StoreError::Unauthorized => ExecutorRejection::Unauthorized,
         StoreError::Corrupt { .. }

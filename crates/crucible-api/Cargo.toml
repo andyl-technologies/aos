@@ -7,7 +7,7 @@ publish = false
 
 [features]
 default = []
-test-support = ["crucible/test-support", "crucible-qemu/test-support"]
+test-support = ["crucible/test-support", "crucible-qemu/test-support", "crucible-cas/test-support"]
 
 [lints]
 workspace = true

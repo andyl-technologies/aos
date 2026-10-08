@@ -99,7 +99,13 @@ fn failed_batched_trie_publication_never_advances_ref_and_retries_after_reopen()
     let ref_root = storage.path().join("refs");
     let backend = Arc::new(FailOneBatchBackend {
         inner: Arc::new(
-            SqliteBlobBackend::open("failed-batch-ref-test", &blob_root).expect("blobs"),
+            SqliteBlobBackend::open(
+                "failed-batch-ref-test",
+                &blob_root,
+                &crucible_cas::content_store::fixture_sqlite_heap()
+                    .expect("authored SQLite fixture process"),
+            )
+            .expect("blobs"),
         ),
         fail_next_batch: AtomicBool::new(false),
         target_id: Mutex::new(None),
@@ -129,7 +135,13 @@ fn failed_batched_trie_publication_never_advances_ref_and_retries_after_reopen()
     drop(backend);
     drop(refs);
     let reopened_blobs = Arc::new(
-        SqliteBlobBackend::open("failed-batch-ref-test", &blob_root).expect("reopen blobs"),
+        SqliteBlobBackend::open(
+            "failed-batch-ref-test",
+            &blob_root,
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process"),
+        )
+        .expect("reopen blobs"),
     );
     let reopened_refs = Arc::new(DirectoryRefBackend::new(&ref_root));
     let reopened = CampaignRepository::new(
@@ -148,7 +160,15 @@ fn failed_batched_trie_publication_never_advances_ref_and_retries_after_reopen()
     drop(reopened_blobs);
     drop(reopened_refs);
     let cold = CampaignRepository::new(
-        Arc::new(SqliteBlobBackend::open("failed-batch-ref-test", &blob_root).expect("cold blobs")),
+        Arc::new(
+            SqliteBlobBackend::open(
+                "failed-batch-ref-test",
+                &blob_root,
+                &crucible_cas::content_store::fixture_sqlite_heap()
+                    .expect("authored SQLite fixture process"),
+            )
+            .expect("cold blobs"),
+        ),
         Arc::new(DirectoryRefBackend::new(&ref_root)),
         crate::CampaignRamAdmission::Unavailable,
     );
@@ -167,7 +187,13 @@ fn failed_request_spending_batch_retries_after_cold_reopen() {
     let ref_root = storage.path().join("refs");
     let backend = Arc::new(FailOneBatchBackend {
         inner: Arc::new(
-            SqliteBlobBackend::open("request-index-batch-test", &blob_root).expect("blobs"),
+            SqliteBlobBackend::open(
+                "request-index-batch-test",
+                &blob_root,
+                &crucible_cas::content_store::fixture_sqlite_heap()
+                    .expect("authored SQLite fixture process"),
+            )
+            .expect("blobs"),
         ),
         fail_next_batch: AtomicBool::new(true),
         target_id: Mutex::new(None),
@@ -211,7 +237,13 @@ fn failed_request_spending_batch_retries_after_cold_reopen() {
 
     let reopened = CampaignRepository::new(
         Arc::new(
-            SqliteBlobBackend::open("request-index-batch-test", &blob_root).expect("reopen blobs"),
+            SqliteBlobBackend::open(
+                "request-index-batch-test",
+                &blob_root,
+                &crucible_cas::content_store::fixture_sqlite_heap()
+                    .expect("authored SQLite fixture process"),
+            )
+            .expect("reopen blobs"),
         ),
         Arc::new(DirectoryRefBackend::new(&ref_root)),
         crate::CampaignRamAdmission::Unavailable,
@@ -224,8 +256,13 @@ fn failed_request_spending_batch_retries_after_cold_reopen() {
 
     let cold = CampaignRepository::new(
         Arc::new(
-            SqliteBlobBackend::open("request-index-batch-test", &blob_root)
-                .expect("cold committed blobs"),
+            SqliteBlobBackend::open(
+                "request-index-batch-test",
+                &blob_root,
+                &crucible_cas::content_store::fixture_sqlite_heap()
+                    .expect("authored SQLite fixture process"),
+            )
+            .expect("cold committed blobs"),
         ),
         Arc::new(DirectoryRefBackend::new(&ref_root)),
         crate::CampaignRamAdmission::Unavailable,
@@ -245,7 +282,13 @@ fn failed_planner_issue_record_batch_keeps_prior_head_and_retries_after_reopen()
     let ref_root = storage.path().join("refs");
     let backend = Arc::new(FailOneBatchBackend {
         inner: Arc::new(
-            SqliteBlobBackend::open("planner-issue-batch-test", &blob_root).expect("blobs"),
+            SqliteBlobBackend::open(
+                "planner-issue-batch-test",
+                &blob_root,
+                &crucible_cas::content_store::fixture_sqlite_heap()
+                    .expect("authored SQLite fixture process"),
+            )
+            .expect("blobs"),
         ),
         fail_next_batch: AtomicBool::new(false),
         target_id: Mutex::new(None),
@@ -354,7 +397,13 @@ fn failed_planner_issue_record_batch_keeps_prior_head_and_retries_after_reopen()
     drop(backend);
     drop(refs);
     let reopened_blobs = Arc::new(
-        SqliteBlobBackend::open("planner-issue-batch-test", &blob_root).expect("reopen blobs"),
+        SqliteBlobBackend::open(
+            "planner-issue-batch-test",
+            &blob_root,
+            &crucible_cas::content_store::fixture_sqlite_heap()
+                .expect("authored SQLite fixture process"),
+        )
+        .expect("reopen blobs"),
     );
     let reopened_refs = Arc::new(DirectoryRefBackend::new(&ref_root));
     let reopened = CampaignRepository::new(
@@ -374,7 +423,13 @@ fn failed_planner_issue_record_batch_keeps_prior_head_and_retries_after_reopen()
     drop(reopened_refs);
     let cold = CampaignRepository::new(
         Arc::new(
-            SqliteBlobBackend::open("planner-issue-batch-test", &blob_root).expect("cold blobs"),
+            SqliteBlobBackend::open(
+                "planner-issue-batch-test",
+                &blob_root,
+                &crucible_cas::content_store::fixture_sqlite_heap()
+                    .expect("authored SQLite fixture process"),
+            )
+            .expect("cold blobs"),
         ),
         Arc::new(DirectoryRefBackend::new(&ref_root)),
         crate::CampaignRamAdmission::Unavailable,

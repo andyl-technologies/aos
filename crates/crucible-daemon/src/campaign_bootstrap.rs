@@ -401,7 +401,12 @@ impl CampaignLocalServiceConfig {
     /// Returns [`CampaignLocalServiceError`] when the policy, state namespace,
     /// durable subdirectories, or repository lock cannot be authenticated and
     /// acquired exactly.
-    pub fn prepare(&self) -> Result<PreparedCampaignLocalService, CampaignLocalServiceError> {
+    pub fn prepare(
+        &self,
+        heap: &crucible_cas::content_store::SqliteProcessHeap,
+    ) -> Result<PreparedCampaignLocalService, CampaignLocalServiceError> {
+        heap.verify_live()
+            .map_err(|_| CampaignLocalServiceError::InvalidRepositoryStore)?;
         let (policy, component_authorities) = self.authenticate_deployment()?;
         let state = CampaignStateOwner::open(
             &self.state_directory,
@@ -412,12 +417,18 @@ impl CampaignLocalServiceConfig {
         let object_root = self.state_directory.join(OBJECT_DIRECTORY);
         let root = StoreNodeId::new("campaign-primary")
             .map_err(|_| CampaignLocalServiceError::InvalidRepositoryStore)?;
-        let (graph, maintenance) = StoreGraph::build_with_admin(StoreGraphConfig {
-            gc_mark_root: None,
-            root: root.clone(),
-            admitted_kinds: BTreeSet::from(CAMPAIGN_REPOSITORY_OBJECT_KINDS),
-            nodes: BTreeMap::from([(root, StoreNodeSpec::Sqlite { root: object_root })]),
-        })
+        let (graph, maintenance) = StoreGraph::build_with_admin_and_original_resources(
+            StoreGraphConfig {
+                gc_mark_root: None,
+                root: root.clone(),
+                admitted_kinds: BTreeSet::from(CAMPAIGN_REPOSITORY_OBJECT_KINDS),
+                nodes: BTreeMap::from([(root, StoreNodeSpec::Sqlite { root: object_root })]),
+            },
+            crucible_cas::content_store::StoreGraphOriginalResources {
+                memory_namespaces: None,
+                sqlite_heap: Some(heap),
+            },
+        )
         .map_err(|_| CampaignLocalServiceError::InvalidRepositoryStore)?;
         let store = CampaignLocalRepositoryStore::new_with_maintenance(
             Arc::new(graph),
@@ -543,8 +554,11 @@ impl CampaignLocalServiceConfig {
     ///
     /// Returns [`CampaignLocalServiceError`] when preparation or managed
     /// endpoint binding fails.
-    pub fn open(&self) -> Result<CampaignLocalService, CampaignLocalServiceError> {
-        self.prepare()?.bind()
+    pub fn open(
+        &self,
+        heap: &crucible_cas::content_store::SqliteProcessHeap,
+    ) -> Result<CampaignLocalService, CampaignLocalServiceError> {
+        self.prepare(heap)?.bind()
     }
 }
 

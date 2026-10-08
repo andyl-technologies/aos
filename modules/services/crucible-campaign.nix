@@ -38,9 +38,57 @@
     "/var/lib/crucible-campaign(/[A-Za-z0-9][A-Za-z0-9._-]*)*"
     cfg.stateDirectory
     != null;
+  process = cfg.processResources;
+  partitionsFit =
+    if process == null
+    then false
+    else
+      process.baselineResidentBytes
+      <= process.memoryMaxBytes
+      && process.metadataBytes <= process.memoryMaxBytes - process.baselineResidentBytes
+      && process.sqliteBootstrapBytes <= process.memoryMaxBytes - process.baselineResidentBytes - process.metadataBytes
+      && process.sqliteHeapBytes <= process.memoryMaxBytes - process.baselineResidentBytes - process.metadataBytes - process.sqliteBootstrapBytes;
+  runtimeFits =
+    if process == null
+    then false
+    else
+      process.workerThreads
+      < process.tasksMax
+      && process.blockingThreads <= process.tasksMax - 1 - process.workerThreads
+      && process.threadStackBytes >= 16384
+      && process.mainThreadStackBytes >= 16384
+      && process.mainThreadStackBytes < process.baselineResidentBytes
+      && process.threadStackBytes <= builtins.div (process.baselineResidentBytes - process.mainThreadStackBytes) (process.workerThreads + process.blockingThreads)
+      && process.sqliteConnections <= builtins.div process.fileDescriptors 2
+      && process.runtimeSeconds <= 9223372036854
+      && process.startupTimeoutSeconds <= 9223372036854
+      && process.cpuQuotaPercent <= 922337203685477;
+  processPolicy =
+    if process == null
+    then ""
+    else ''
+      schema = "crucible.campaign-process.v1"
+      unit = "crucible-campaign.service"
+      executable = "${pkgs.crucible}/bin/crucible"
+      memory_max_bytes = ${toString process.memoryMaxBytes}
+      tasks_max = ${toString process.tasksMax}
+      file_descriptors = ${toString process.fileDescriptors}
+      runtime_seconds = ${toString process.runtimeSeconds}
+      startup_timeout_seconds = ${toString process.startupTimeoutSeconds}
+      main_thread_stack_bytes = ${toString process.mainThreadStackBytes}
+      cpu_quota_percent = ${toString process.cpuQuotaPercent}
+      baseline_resident_bytes = ${toString process.baselineResidentBytes}
+      metadata_bytes = ${toString process.metadataBytes}
+      sqlite_bootstrap_bytes = ${toString process.sqliteBootstrapBytes}
+      sqlite_heap_bytes = ${toString process.sqliteHeapBytes}
+      sqlite_connections = ${toString process.sqliteConnections}
+      worker_threads = ${toString process.workerThreads}
+      blocking_threads = ${toString process.blockingThreads}
+      thread_stack_bytes = ${toString process.threadStackBytes}
+    '';
   runtimeIdentity = builtins.hashString "sha256" (builtins.toJSON {
     schema = "aos.crucible.campaign-runtime.v1";
-    inherit (cfg) enable listenAddress socketPath stateDirectory;
+    inherit (cfg) enable listenAddress socketPath stateDirectory processResources;
   });
 in {
   options.aos.services.crucibleCampaign = {
@@ -66,6 +114,34 @@ in {
       type = lib.types.str;
       default = "/var/lib/crucible-campaign";
       description = "Durable local campaign object and reference store.";
+    };
+
+    processResources = lib.mkOption {
+      default = null;
+      description = "Original finite process partitions installed before campaign service exec.";
+      type = lib.types.nullOr (lib.types.submodule {
+        options = builtins.mapAttrs (_: description:
+          lib.mkOption {
+            type = lib.types.addCheck lib.types.int (value: value > 0);
+            inherit description;
+          }) {
+          memoryMaxBytes = "Prebirth memory ceiling of the complete service cgroup.";
+          tasksMax = "Prebirth task ceiling including service helpers and runtime threads.";
+          fileDescriptors = "Original soft and hard descriptor limit.";
+          runtimeSeconds = "Original main invocation runtime ceiling in seconds.";
+          startupTimeoutSeconds = "Finite service startup timeout, including preStart.";
+          mainThreadStackBytes = "Installed original main-thread soft and hard stack bound.";
+          cpuQuotaPercent = "Original cgroup CPU quota in percent of one CPU.";
+          baselineResidentBytes = "Independent loader, parsing, service runtime and thread stack purpose.";
+          metadataBytes = "Original resident partition for process and SQLite ownership controls.";
+          sqliteBootstrapBytes = "Qualified permanent linked-native globals and initialization purpose.";
+          sqliteHeapBytes = "One original process-native SQLite heap ceiling.";
+          sqliteConnections = "Fixed managed connection roster from the original descriptor contract.";
+          workerThreads = "Fixed Tokio worker count.";
+          blockingThreads = "Fixed maximum Tokio blocking worker count.";
+          threadStackBytes = "Authored stack extent of each runtime thread.";
+        };
+      });
     };
 
     _runtimeIdentity = lib.mkOption {
@@ -116,7 +192,18 @@ in {
       '';
     }
     (lib.mkIf cfg.enable {
+      assertions = [
+        {
+          assertion = process != null;
+          message = "An enabled Crucible campaign service requires explicit processResources partitions";
+        }
+        {
+          assertion = partitionsFit && runtimeFits;
+          message = "Campaign process partitions and runtime threads must fit the original prebirth limits";
+        }
+      ];
       environment.systemPackages = [pkgs.crucible];
+      environment.etc."crucible/campaign-process.toml".text = processPolicy;
       environment.etc."crucible/campaign-policy.toml".text = ''
         schema = "crucible.campaign-local-policy"
         version = 1
@@ -151,11 +238,22 @@ in {
         description = "Crucible campaign and lifecycle service";
         wantedBy = ["multi-user.target"];
         after = ["local-fs.target"];
-        serviceConfig = {
-          Type = "simple";
-          Restart = "on-failure";
-          RestartSec = 1;
-        };
+        serviceConfig =
+          lib.optionalAttrs (process != null) {
+            MemoryMax = process.memoryMaxBytes;
+            TasksMax = process.tasksMax;
+            LimitNOFILE = "${toString process.fileDescriptors}:${toString process.fileDescriptors}";
+            RuntimeMaxSec = process.runtimeSeconds;
+            TimeoutStartSec = process.startupTimeoutSeconds;
+            LimitSTACK = "${toString process.mainThreadStackBytes}:${toString process.mainThreadStackBytes}";
+            CPUQuota = "${toString process.cpuQuotaPercent}%";
+            CPUQuotaPeriodSec = "100ms";
+          }
+          // {
+            Type = "simple";
+            Restart = "on-failure";
+            RestartSec = 1;
+          };
         preStart = ''
           ${pkgs.coreutils}/bin/mkdir -p \
             ${lib.escapeShellArg cfg.stateDirectory} \
