@@ -119,31 +119,64 @@ in ''
     return 1
   }
 
-  reconcile_baked_roots() {
-    live="$gcroots_dir/aos-container-baked"
-    # A killed initializer can leave a partially populated temporary set. The
-    # held init lock proves none is live, and removing it avoids accidental
-    # permanent roots during later garbage collections.
-    find "$gcroots_dir" -mindepth 1 -maxdepth 1 -type d \
-      -name '.aos-container-baked.fresh.*' -exec rm -rf -- {} +
-    fresh=$(mktemp -d "$gcroots_dir/.aos-container-baked.fresh.XXXXXXXXXX") \
-      || fail "could not allocate a fresh baked GC-root set"
-
+  baked_roots_match() {
+    [ -d "$live" ] && [ ! -L "$live" ] || return 1
     while IFS= read -r baked_root || [ -n "$baked_root" ]; do
       root_name="''${baked_root##*/}"
-      ln -s "$baked_root" "$fresh/$root_name"
+      [ -L "$live/$root_name" ] \
+        && [ "$(readlink -- "$live/$root_name")" = "$baked_root" ] || return 1
     done < "$baked_roots"
+    entry_count=$(find "$live" -mindepth 1 -maxdepth 1 -printf x | wc -c)
+    [ "$entry_count" -eq "$root_count" ]
+  }
 
-    if [ -e "$live" ] || [ -L "$live" ]; then
-      mv --exchange --no-copy -T "$fresh" "$live" \
-        || fail "could not atomically exchange baked GC roots"
-      # After the exchange this path names the old complete root set. Both the
-      # old and fresh sets stayed below gcroots throughout the transaction.
-      rm -rf -- "$fresh"
-    else
-      mv --no-copy -T "$fresh" "$live" \
-        || fail "could not atomically publish baked GC roots"
+  reconcile_baked_roots() {
+    live="$gcroots_dir/aos-container-baked"
+    if ! baked_roots_match; then
+      fresh=$(mktemp -d "$gcroots_dir/.aos-container-baked.fresh.XXXXXXXXXX") \
+        || fail "could not allocate a fresh baked GC-root set"
+      while IFS= read -r baked_root || [ -n "$baked_root" ]; do
+        root_name="''${baked_root##*/}"
+        ln -s "$baked_root" "$fresh/$root_name"
+      done < "$baked_roots"
+
+      # Docker layers cannot exchange or rename an inherited lower directory.
+      # Keep a complete fresh set rooted while repairing its individual leaves.
+      if [ -d "$live" ] && [ ! -L "$live" ]; then
+        while IFS= read -r baked_root || [ -n "$baked_root" ]; do
+          root_name="''${baked_root##*/}"
+          replacement="$fresh/.replacement-$root_name"
+          ln -s "$baked_root" "$replacement"
+          if [ -d "$live/$root_name" ] && [ ! -L "$live/$root_name" ]; then
+            rm -rf -- "$live/$root_name"
+          fi
+          mv --no-copy -T "$replacement" "$live/$root_name" \
+            || fail "could not publish baked GC root: $baked_root"
+        done < "$baked_roots"
+        while IFS= read -r -d "" entry; do
+          root_name="''${entry##*/}"
+          if ! grep -Fx "/nix/store/$root_name" "$baked_roots" >/dev/null; then
+            rm -rf -- "$entry"
+          fi
+        done < <(find "$live" -mindepth 1 -maxdepth 1 -print0)
+      else
+        # Move a foreign leaf aside without following a directory symlink.
+        # The complete fresh set protects every baked path during publication.
+        if [ -e "$live" ] || [ -L "$live" ]; then
+          mv --no-copy -T "$live" "$fresh/.previous" \
+            || fail "could not displace the invalid baked GC-root leaf"
+          rm -rf -- "$fresh/.previous"
+        fi
+        mv --no-copy -T "$fresh" "$live" \
+          || fail "could not atomically publish baked GC roots"
+      fi
+      baked_roots_match || fail "published baked GC roots do not match the image inventory"
     fi
+
+    # An interrupted repair may leave its only complete pins here. Clean these
+    # sets only after the live directory retains the entire verified inventory.
+    find "$gcroots_dir" -mindepth 1 -maxdepth 1 -type d \
+      -name '.aos-container-baked.fresh.*' -exec rm -rf -- {} +
   }
 
   validate_embedded_inventory
