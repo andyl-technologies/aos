@@ -97,14 +97,12 @@ pub(crate) async fn execute_external_storage_work(
         _ => false,
     };
     if probe {
-        return crate::external_object::execute_probe_plan(
-            env,
-            plan,
-            publication,
-            Some(signal.clone()),
-        )
-        .await
-        .map(Some);
+        if let Some(result) =
+            crate::external_object::execute_probe_plan(env, plan, publication, Some(signal.clone()))
+                .await?
+        {
+            return Ok(Some(result));
+        }
     }
     if let Some(result) =
         crate::external_object::execute_inspection(env, plan, publication, signal).await?

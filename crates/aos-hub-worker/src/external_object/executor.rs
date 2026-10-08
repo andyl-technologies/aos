@@ -246,6 +246,10 @@ pub(crate) async fn lookup_delete_plan(
 
 /// Executes only bounded service-owned delete capability probes.
 ///
+/// Returns `None` for bindings outside the installed guarded configuration,
+/// allowing the caller to use its existing signed S3 probe implementation.
+/// Managed bindings retain their guard even when their cohort is unavailable.
+///
 /// # Errors
 /// Returns an error for another key/operation, unavailable configured cohorts,
 /// expiry, provider refusal, or held uncertainty. No object body is returned.
@@ -254,7 +258,7 @@ pub(crate) async fn execute_probe_plan(
     plan: &StorageWorkPlan,
     publication: &StorageBindingPublication,
     client_signal: Option<worker::web_sys::AbortSignal>,
-) -> Result<StorageWorkResult> {
+) -> Result<Option<StorageWorkResult>> {
     let (path, purpose) = match &plan.operation {
         StorageWorkOperation::PutProbe { path, .. } => (path, "write"),
         StorageWorkOperation::Head { path } | StorageWorkOperation::InspectSha256 { path, .. } => {
@@ -266,8 +270,12 @@ pub(crate) async fn execute_probe_plan(
         aos_hub_core::storage_work::admitted_probe_path(path),
         "probe key outside reserved namespace"
     );
-    let config =
-        configured(env)?.ok_or_else(|| anyhow::anyhow!("external object consumer disabled"))?;
+    let Some(config) = configured(env)? else {
+        return Ok(None);
+    };
+    if !config.manages(&publication.snapshot)? {
+        return Ok(None);
+    }
     let mut cohorts = config.cohorts.iter().filter(|cohort| {
         cohort.association.binding_id.get() == plan.binding_id
             && cohort.association.binding_resource_version.get() == plan.binding_resource_version
@@ -367,11 +375,11 @@ pub(crate) async fn execute_probe_plan(
         }
         _ => anyhow::bail!("probe returned another effect"),
     };
-    Ok(crate::surface::storage_work_result(
+    Ok(Some(crate::surface::storage_work_result(
         plan,
         outcome,
         source_bytes,
-    ))
+    )))
 }
 
 async fn execute_authorized(
