@@ -15,7 +15,6 @@ use crate::deployment::retention::ArtifactAdmission as _;
 use crate::deployment::source_views::SourceViews;
 use crate::native_deployment::ImportControl;
 use crate::profile::Profile;
-use crate::types::ProfileScope;
 
 /// Keeps a fully copied authoring tree private until publication or snapshotting.
 pub(crate) struct StagedRuntime {
@@ -71,7 +70,7 @@ pub(crate) fn restore(worktree: &Path) -> Result<Option<PathBuf>> {
     let parent = worktree
         .parent()
         .context("authoring worktree has no parent")?;
-    let profile = Profile::open_readonly(ProfileScope::System);
+    let profile = Profile::open_readonly(crate::runtime_boundary::configuration_scope());
     let generation = crate::profile::deployment::current_committed_generation(&profile.path)?
         .context("no active native profile generation")?;
     let staged = stage_generation(parent, &profile, Some(generation))?;
@@ -105,7 +104,7 @@ fn publish(source: &Path, destination: &Path) -> Result<()> {
 /// Returns an error for invalid publication or source admission, multiple source
 /// roots, unsafe source objects, exceeded snapshot bounds, or transport failure.
 pub(crate) fn stage_current(parent: &Path) -> Result<StagedRuntime> {
-    let profile = Profile::open_readonly(ProfileScope::System);
+    let profile = Profile::open_readonly(crate::runtime_boundary::configuration_scope());
     let generation = crate::profile::deployment::current_committed_generation(&profile.path)?;
     stage_generation(parent, &profile, generation)
 }

@@ -344,10 +344,13 @@ in
             ${productionReferenceGraph}/store-paths \
             || fail "embedded production store inventory differs from the authoritative graph"
           printf '%s\n' ${lib.concatMapStringsSep " " lib.escapeShellArg (map builtins.toString bakedRoots)} \
-            > expected-production-baked-roots
+            > expected-production-package-roots
+          cp expected-production-package-roots expected-production-baked-roots
+          printf '%s\n' ${lib.escapeShellArg (builtins.toString containerImage.deploymentArtifact.artifact)} \
+            >> expected-production-baked-roots
           cmp expected-production-baked-roots \
             production-metadata/usr/lib/aos-container/baked-roots \
-            || fail "embedded baked roots differ from the selected container package list"
+            || fail "embedded baked roots differ from the selected packages and native deployment artifact"
           test "$(readlink production-metadata/var/lib/profiles)" \
             = /nix/var/nix/gcroots/aos-profiles \
             || fail "APM profiles are not rooted inside Nix gcroots"
@@ -375,7 +378,7 @@ in
           test ! -e production-facade/usr/bin/.apm-unwrapped
           test ! -e production-facade/usr/bin/.apr-unwrapped
           jq -r '.packageRoots[]' ${productionFacade}/facade.json > facade-baked-roots
-          cmp expected-production-baked-roots facade-baked-roots \
+          cmp expected-production-package-roots facade-baked-roots \
             || fail "production facade uses different package roots"
           jq -e '
               .expectedCollisions == []

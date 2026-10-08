@@ -51,6 +51,7 @@ pub mod config;
 pub mod config_eval;
 pub mod config_trust;
 mod container_environment;
+mod container_runtime;
 pub(crate) mod credential;
 pub mod deployment;
 pub mod deps;
@@ -71,7 +72,6 @@ pub mod images;
 pub mod install;
 pub mod native_artifact;
 pub mod native_deployment;
-mod container_runtime;
 mod native_registry;
 pub(crate) mod package_attestation;
 pub use package_attestation::PackageQuoteArtifacts;
@@ -2535,8 +2535,6 @@ fn parse_system_transition_mode(reboot: bool) -> SystemTransitionMode {
     }
 }
 
-const DEFAULT_SYSTEM_GENERATION_PROFILE: &str = "/var/lib/profiles/system";
-
 fn acquire_runtime_config_lock(worktree: &Path) -> Result<std::fs::File> {
     let parent = worktree
         .parent()
@@ -2600,8 +2598,9 @@ async fn run_runtime_config_command(
 ) -> Result<()> {
     match command {
         RuntimeConfigCommand::Status { worktree } => {
-            let descriptor =
-                Path::new(DEFAULT_SYSTEM_GENERATION_PROFILE).join("current/evaluation.json");
+            let descriptor = runtime_boundary::configuration_scope()
+                .profile_path()
+                .join("current/evaluation.json");
             if descriptor.is_file() {
                 let inputs = native_deployment::EvaluationInputs::read(&descriptor)?;
                 printer.plain(&format!(
@@ -2766,7 +2765,7 @@ async fn apply_runtime_worktree(
     } else {
         Some(acquire_runtime_config_lock(worktree)?)
     };
-    let config = config::ApmConfig::load(types::ProfileScope::System)?;
+    let config = config::ApmConfig::load(runtime_boundary::configuration_scope())?;
     let profile = profile::Profile::open_readonly(config.scope);
     if !dry_run {
         install::native::recover(&profile)?;
@@ -3028,7 +3027,8 @@ pub async fn run(
                     );
                 }
                 desired::reconcile_from_file(&config, path, dry_run, yes, printer).await
-            } else if (*install_system && !runtime_boundary::is_container()) || image_fmt.is_some() {
+            } else if (*install_system && !runtime_boundary::is_container()) || image_fmt.is_some()
+            {
                 let transition_mode = parse_system_transition_mode(*reboot);
                 sysroot::install_system(
                     &config,
