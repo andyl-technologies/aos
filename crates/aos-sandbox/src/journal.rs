@@ -38,12 +38,12 @@ use sha2::{Digest, Sha256};
 use aos_sandbox_journal::framing::CHECKSUM_OFFSET;
 use aos_sandbox_journal::framing::{
     COMMIT_PAYLOAD_BYTES, EncodedFrameLayout, Frame, FrameError, FrameKind, HEADER_BYTES,
-    ReadOnlyFrameScratchV1, append_and_sync, encode_frame,
-    read_frame_retained, transaction_hasher,
+    ReadOnlyFrameScratchV1, append_and_sync, read_frame_retained,
 };
 use aos_sandbox_journal::geometry::{EncodedRecordLayout, NativeGeometryBounds, RecordShape};
 use aos_sandbox_journal::materialized::{self, RecordMutationRef};
 use aos_sandbox_journal::record::{self, RecordError, RecordHeader};
+use aos_sandbox_journal::transaction::{self, NativePendingTransaction, NativeRecordRef};
 
 pub mod canonical_map;
 mod delete_batch;
@@ -768,12 +768,8 @@ struct IdempotencyDecision {
 }
 
 struct PendingTransaction {
-    id: [u8; 16],
-    expected_records: usize,
     records: Vec<JournalRecord>,
-    digest: Sha256,
-    begin_sequence: u64,
-    begin_offset: u64,
+    native: NativePendingTransaction,
 }
 
 /// Owns one exclusively locked, append-only journal and its replayed indexes.
@@ -8727,33 +8723,19 @@ fn replay_original_retained<R: Read + Seek + Borrow<File>>(
                         if pending.is_some() {
                             return Err(JournalError::MalformedTransaction("nested begin frame"));
                         }
-                        let count = decode_count(&frame.payload)?;
-                        if count == 0 || count > limits.maximum_records_per_transaction {
-                            return Err(JournalError::LimitExceeded("records per transaction"));
-                        }
+                        let count = transaction::decode_begin_count(
+                            &frame.payload, limits.maximum_records_per_transaction,
+                        )?;
                         pending = Some(PendingTransaction {
-                            id: frame.transaction_id,
-                            expected_records: count,
                             records: Vec::with_capacity(count),
-                            digest: transaction_hasher(),
-                            begin_sequence: frame.sequence,
-                            begin_offset: offset.checked_sub(bytes_read)
-                                .ok_or(JournalError::JournalTooLarge)?,
+                            native: NativePendingTransaction::begin(&frame, count, offset, bytes_read)?,
                         });
                     }
                     FrameKind::Record => {
                         let transaction = pending.as_mut().ok_or(JournalError::MalformedTransaction(
                             "record outside transaction",
                         ))?;
-                        if transaction.id != frame.transaction_id {
-                            return Err(JournalError::MalformedTransaction(
-                                "record transaction identity mismatch",
-                            ));
-                        }
-                        if transaction.records.len() >= transaction.expected_records {
-                            return Err(JournalError::MalformedTransaction("too many record frames"));
-                        }
-                        transaction.digest.update(&frame.payload);
+                        transaction.native.observe_record(&frame, transaction.records.len())?;
                         transaction
                             .records
                             .push(decode_record(&frame.payload, limits)?);
@@ -8763,18 +8745,10 @@ fn replay_original_retained<R: Read + Seek + Borrow<File>>(
                         let transaction = reached_pending.as_ref().ok_or(JournalError::MalformedTransaction(
                             "commit outside transaction",
                         ))?;
-                        if transaction.id != frame.transaction_id
-                            || transaction.records.len() != transaction.expected_records
-                        {
-                            return Err(JournalError::MalformedTransaction(
-                                "commit transaction identity or record count mismatch",
-                            ));
-                        }
-                        validate_commit(&frame.payload, &transaction)?;
-                        let begin_sequence = transaction.begin_sequence;
-                        let begin_offset = transaction.begin_offset;
+                        transaction.native.validate_commit(&frame, transaction.records.len())?;
+                        let (begin_sequence, begin_offset) = transaction.native.begin_position();
                         reached_transaction = Some(JournalTransaction {
-                            id: transaction.id,
+                            id: transaction.native.transaction_id(),
                             records: std::mem::take(&mut reached_pending.as_mut()
                                 .ok_or(JournalError::ProtectedBoundary)?.records),
                         });
@@ -9334,45 +9308,16 @@ fn encode_transaction(
     transaction: &JournalTransaction,
     first_sequence: u64,
 ) -> Result<Vec<Vec<u8>>, JournalError> {
-    let record_count = u32::try_from(transaction.records.len())
-        .map_err(|_| JournalError::LimitExceeded("records per transaction"))?;
-    let mut sequence = first_sequence;
-    let mut frames = Vec::with_capacity(transaction.records.len() + 2);
-    frames.push(encode_frame(
-        FrameKind::Begin,
-        sequence,
+    transaction::encode_transaction(
         transaction.id,
-        &record_count.to_le_bytes(),
-    )?);
-    sequence = sequence
-        .checked_add(1)
-        .ok_or(JournalError::SequenceExhausted)?;
-
-    let mut transaction_digest = transaction_hasher();
-    for record in &transaction.records {
-        let payload = encode_record(record)?;
-        transaction_digest.update(&payload);
-        frames.push(encode_frame(
-            FrameKind::Record,
-            sequence,
-            transaction.id,
-            &payload,
-        )?);
-        sequence = sequence
-            .checked_add(1)
-            .ok_or(JournalError::SequenceExhausted)?;
-    }
-
-    let mut commit = Vec::with_capacity(COMMIT_PAYLOAD_BYTES);
-    commit.extend_from_slice(&record_count.to_le_bytes());
-    commit.extend_from_slice(&transaction_digest.finalize());
-    frames.push(encode_frame(
-        FrameKind::Commit,
-        sequence,
-        transaction.id,
-        &commit,
-    )?);
-    Ok(frames)
+        first_sequence,
+        transaction.records.iter().map(|record| NativeRecordRef {
+            namespace_byte: record.namespace as u8,
+            key: &record.key,
+            value: record.value.as_deref(),
+        }),
+    )
+    .map_err(JournalError::from)
 }
 
 /// Carries only one fixed selected sizing extent, never record bytes or a key.
@@ -9445,45 +9390,6 @@ fn decode_record(payload: &[u8], limits: JournalLimits) -> Result<JournalRecord,
         key,
         value,
     })
-}
-
-fn decode_count(payload: &[u8]) -> Result<usize, JournalError> {
-    if payload.len() != 4 {
-        return Err(JournalError::MalformedTransaction(
-            "invalid begin record count",
-        ));
-    }
-    Ok(u32::from_le_bytes(
-        payload
-            .try_into()
-            .map_err(|_| JournalError::MalformedTransaction("invalid begin payload"))?,
-    ) as usize)
-}
-
-fn validate_commit(payload: &[u8], transaction: &PendingTransaction) -> Result<(), JournalError> {
-    if payload.len() != 36 {
-        return Err(JournalError::MalformedTransaction("invalid commit payload"));
-    }
-    let count = u32::from_le_bytes(
-        payload[..4]
-            .try_into()
-            .map_err(|_| JournalError::MalformedTransaction("invalid commit count"))?,
-    ) as usize;
-    if count != transaction.expected_records {
-        return Err(JournalError::MalformedTransaction(
-            "commit record count mismatch",
-        ));
-    }
-    let expected: [u8; 32] = payload[4..]
-        .try_into()
-        .map_err(|_| JournalError::MalformedTransaction("invalid commit digest"))?;
-    let actual: [u8; 32] = transaction.digest.clone().finalize().into();
-    if expected != actual {
-        return Err(JournalError::MalformedTransaction(
-            "transaction digest mismatch",
-        ));
-    }
-    Ok(())
 }
 
 fn apply_record(
@@ -10201,6 +10107,82 @@ mod tests {
             super::decode_record(&[1, 1, 0, 0, 0, 0, 0], limits),
             Err(JournalError::MalformedRecord("record length mismatch")),
         ));
+    }
+
+    #[test]
+    fn replay_rejects_unknown_namespace_before_attempting_later_frame_io() {
+        use std::borrow::Borrow;
+        use std::io::{self, Read, Seek};
+
+        struct FailAfterPrefix {
+            file: File,
+            prefix_bytes: usize,
+            read_bytes: usize,
+            attempted_later_read: bool,
+        }
+
+        impl Read for FailAfterPrefix {
+            fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+                if self.read_bytes >= self.prefix_bytes {
+                    self.attempted_later_read = true;
+                    return Err(io::Error::other("later frame read must not occur"));
+                }
+                let read = self.file.read(bytes)?;
+                self.read_bytes += read;
+                Ok(read)
+            }
+        }
+
+        impl Seek for FailAfterPrefix {
+            fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+                let position = self.file.seek(position)?;
+                self.read_bytes = usize::try_from(position).map_err(io::Error::other)?;
+                Ok(position)
+            }
+        }
+
+        impl Borrow<File> for FailAfterPrefix {
+            fn borrow(&self) -> &File {
+                &self.file
+            }
+        }
+
+        let frames = aos_sandbox_journal::transaction::encode_transaction(
+            [7; 16],
+            1,
+            [aos_sandbox_journal::transaction::NativeRecordRef {
+                namespace_byte: 255,
+                key: b"key",
+                value: None,
+            }]
+            .into_iter(),
+        )
+        .unwrap();
+        let prefix = [&frames[0][..], &frames[1][..]].concat();
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(&prefix).unwrap();
+        let mut reader = FailAfterPrefix {
+            file,
+            prefix_bytes: prefix.len(),
+            read_bytes: 0,
+            attempted_later_read: false,
+        };
+
+        let outcome = super::replay_original_retained(
+            &mut reader,
+            JournalLimits::default(),
+            None,
+            #[cfg(target_os = "linux")]
+            None,
+            None,
+        );
+
+        assert!(matches!(
+            outcome,
+            Err(JournalError::MalformedRecord("unknown record namespace")),
+        ));
+        assert_eq!(reader.read_bytes, prefix.len());
+        assert!(!reader.attempted_later_read);
     }
 
     #[test]
