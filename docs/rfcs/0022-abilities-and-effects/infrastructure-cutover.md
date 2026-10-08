@@ -362,14 +362,17 @@ recursive content-addressed artifact. Its checked results identify the owned
 resource, store path, and NAR digest. This prepares early manager topology
 without contacting a running manager or fabricating startup results.
 
-Before changing unit aliases, the handler pins the immutable tree and durably
-records preparation custody, including the exact native recipient identities.
-Normal service and group handlers adopt the exact prepared seed through their
-own durable custody records, then reconcile their resources normally. Replaced
-or foreign definitions fail closed. Bootstrap retirement removes only its
-unadopted aliases and retains the imported roots while a recipient's pending
-custody still needs an immutable seed. This handoff does not establish that a
-particular container launch environment can run the selected manager.
+Before pinning or importing the content-addressed unit tree, the handler durably
+records the predicted store-root intent so failed imports remain recoverable.
+It records preparation custody, including exact native recipient identities,
+before changing unit aliases. Normal service and group handlers adopt the exact
+prepared seed through their own durable custody records, then reconcile their
+resources normally. Replaced or foreign definitions fail closed. Bootstrap
+retirement refuses removal while any current or historical seed remains in exact
+pending recipient custody; typed dependencies retire consumers before their
+bootstrap producer. Once custody is released, removal deletes only unadopted
+aliases and owned store roots. This handoff does not establish that a particular
+container launch environment can run the selected manager.
 
 ## Focused verification
 

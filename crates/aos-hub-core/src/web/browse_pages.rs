@@ -3392,6 +3392,8 @@ mod tests {
             &release_context("2026.08"),
             None,
             false,
+            None,
+            false,
             Instant::now(),
             &anon(),
         );
