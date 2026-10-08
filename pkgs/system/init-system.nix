@@ -17,4 +17,5 @@ mkDerivation {
     }
   ];
   meta.description = "Typed initial process installation contract";
+  meta.license = "Apache-2.0";
 }

@@ -22,4 +22,5 @@ mkDerivation {
     }
   ];
   meta.description = "Initial process configuration prepared without mutating a live process";
+  meta.license = "Apache-2.0";
 }
