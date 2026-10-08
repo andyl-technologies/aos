@@ -3,6 +3,7 @@
 use aos_sandbox_core::{
     CacheDomainId, MediaType, ObjectDescriptor, ObjectDigest, OperationId, PrincipalId, ProjectId,
     PublicationReservationId, PublisherChallengeV1, PublisherInstanceId, ResourceId,
+    bounded_codec::{BoundedReader, ReadError},
     format::{
         decode_publisher_admission_request_v1, decode_publisher_domain_plan,
         encode_publisher_admission_request_v1, encode_publisher_domain_plan,
@@ -61,13 +62,13 @@ pub enum DecodedPublisherPayloadV1 {
 pub(super) fn decode_preparation_intent(
     bytes: &[u8],
 ) -> Result<ArtifactPreparationIntentV1, ProtectedRecordCodecError> {
-    let mut cursor = Cursor::new(bytes);
+    let mut cursor = BoundedReader::new(bytes, payload_read_error);
     let operation = OperationId::from_bytes(cursor.array()?);
     let publisher_instance = PublisherInstanceId::from_bytes(cursor.array()?);
     let decision_digest = cursor.digest()?;
     let root_record_digest = cursor.digest()?;
     let root_generation = cursor.u64()?;
-    let content = cursor.object_until_nul()?;
+    let content = read_object_until_nul(&mut cursor)?;
     let private_name_digest = cursor.digest()?;
     let final_name_digest = cursor.digest()?;
     let maximum_allocated_bytes = cursor.u64()?;
@@ -110,13 +111,13 @@ pub(super) fn decode_preparation_intent(
 }
 
 pub(super) fn decode_source(bytes: &[u8]) -> Result<SourceReleaseV1, ProtectedRecordCodecError> {
-    let mut cursor = Cursor::new(bytes);
+    let mut cursor = BoundedReader::new(bytes, payload_read_error);
     let release_digest = cursor.digest()?;
     let holder = PrincipalId::from_bytes(cursor.array()?);
     let project = ProjectId::from_bytes(cursor.array()?);
     let cache_resource = ResourceId::from_bytes(cursor.array()?);
-    let cache_domain = cursor.domain()?;
-    let content = cursor.object_until_nul()?;
+    let cache_domain = read_domain(&mut cursor)?;
+    let content = read_object_until_nul(&mut cursor)?;
     let producer_evidence = cursor.digest()?;
     let release_policy = cursor.digest()?;
     let not_before_seconds = cursor.i64()?;
@@ -165,7 +166,7 @@ pub(super) fn decode_challenge(
 pub(super) fn decode_decision(
     bytes: &[u8],
 ) -> Result<AdmissionDecisionV1, ProtectedRecordCodecError> {
-    let mut cursor = Cursor::new(bytes);
+    let mut cursor = BoundedReader::new(bytes, payload_read_error);
     let operation = OperationId::from_bytes(cursor.array()?);
     let reservation = PublicationReservationId::from_bytes(cursor.array()?);
     let publisher_instance = PublisherInstanceId::from_bytes(cursor.array()?);
@@ -179,8 +180,8 @@ pub(super) fn decode_decision(
         .map_err(|_| ProtectedRecordCodecError::Malformed)?;
     let state = decision_state(cursor.u8()?)?;
     let decision_digest = cursor.digest()?;
-    let canonical_request = cursor.length_prefixed()?;
-    let canonical_plan = cursor.length_prefixed()?;
+    let canonical_request = read_length_prefixed(&mut cursor)?;
+    let canonical_plan = read_length_prefixed(&mut cursor)?;
     cursor.finish()?;
     let request = decode_publisher_admission_request_v1(&canonical_request, Default::default())
         .map_err(|_| ProtectedRecordCodecError::Malformed)?;
@@ -231,13 +232,13 @@ pub(super) fn decode_decision(
 }
 
 pub(super) fn decode_account(bytes: &[u8]) -> Result<CapacityAccountV1, ProtectedRecordCodecError> {
-    let mut cursor = Cursor::new(bytes);
+    let mut cursor = BoundedReader::new(bytes, payload_read_error);
     let reservation = PublicationReservationId::from_bytes(cursor.array()?);
     let authority_epoch = PublicationAuthorityEpoch::new(cursor.u64()?)
         .map_err(|_| ProtectedRecordCodecError::Malformed)?;
     let resource = ResourceId::from_bytes(cursor.array()?);
     let project = ProjectId::from_bytes(cursor.array()?);
-    let domain = cursor.domain()?;
+    let domain = read_domain(&mut cursor)?;
     let state = match cursor.u8()? {
         1 => ReservationStateV1::Reserved,
         2 => ReservationStateV1::Uncertain,
@@ -270,13 +271,13 @@ pub(super) fn decode_account(bytes: &[u8]) -> Result<CapacityAccountV1, Protecte
 pub(super) fn decode_artifact(
     bytes: &[u8],
 ) -> Result<ArtifactCommitmentV1, ProtectedRecordCodecError> {
-    let mut cursor = Cursor::new(bytes);
+    let mut cursor = BoundedReader::new(bytes, payload_read_error);
     let operation = OperationId::from_bytes(cursor.array()?);
     let publisher_instance = PublisherInstanceId::from_bytes(cursor.array()?);
     let decision_digest = cursor.digest()?;
     let preparation_intent_digest = cursor.digest()?;
     let root_generation = cursor.u64()?;
-    let content = cursor.object_until_nul()?;
+    let content = read_object_until_nul(&mut cursor)?;
     let verity_sha256 = cursor.array()?;
     let private_name_digest = cursor.digest()?;
     let final_name_digest = cursor.digest()?;
@@ -322,7 +323,7 @@ pub(super) fn decode_artifact(
 }
 
 pub(super) fn decode_permit(bytes: &[u8]) -> Result<CompletionPermitV1, ProtectedRecordCodecError> {
-    let mut cursor = Cursor::new(bytes);
+    let mut cursor = BoundedReader::new(bytes, payload_read_error);
     let permit = PublicationPermitId::from_bytes(cursor.array()?)
         .map_err(|_| ProtectedRecordCodecError::Malformed)?;
     let operation = OperationId::from_bytes(cursor.array()?);
@@ -375,7 +376,7 @@ pub(super) fn decode_permit(bytes: &[u8]) -> Result<CompletionPermitV1, Protecte
 pub(super) fn decode_receipt(
     bytes: &[u8],
 ) -> Result<CompletionReceiptV1, ProtectedRecordCodecError> {
-    let mut cursor = Cursor::new(bytes);
+    let mut cursor = BoundedReader::new(bytes, payload_read_error);
     let permit = PublicationPermitId::from_bytes(cursor.array()?)
         .map_err(|_| ProtectedRecordCodecError::Malformed)?;
     let operation = OperationId::from_bytes(cursor.array()?);
@@ -384,7 +385,7 @@ pub(super) fn decode_receipt(
     let catalog_entry_digest = cursor.digest()?;
     let resident_bytes = cursor.u64()?;
     let catalog_entry =
-        super::read_authority::decode_committed_read_entry_v1(&cursor.length_prefixed()?)
+        super::read_authority::decode_committed_read_entry_v1(&read_length_prefixed(&mut cursor)?)
             .map_err(|_| ProtectedRecordCodecError::Malformed)?;
     let receipt_digest = cursor.digest()?;
     cursor.finish()?;
@@ -420,7 +421,7 @@ pub(super) fn decode_receipt(
 pub(super) fn decode_checkpoint(
     bytes: &[u8],
 ) -> Result<AuthorityCheckpointV1, ProtectedRecordCodecError> {
-    let mut cursor = Cursor::new(bytes);
+    let mut cursor = BoundedReader::new(bytes, payload_read_error);
     let epoch = PublicationAuthorityEpoch::new(cursor.u64()?)
         .map_err(|_| ProtectedRecordCodecError::Malformed)?;
     let sequence = cursor.u64()?;
@@ -446,7 +447,7 @@ pub(super) fn decode_checkpoint(
 pub(super) fn decode_eviction(
     bytes: &[u8],
 ) -> Result<CatalogEvictionReceiptV1, ProtectedRecordCodecError> {
-    let mut cursor = Cursor::new(bytes);
+    let mut cursor = BoundedReader::new(bytes, payload_read_error);
     let operation = OperationId::from_bytes(cursor.array()?);
     let catalog_entry_digest = cursor.digest()?;
     let prior_catalog_generation = cursor.u64()?;
@@ -483,7 +484,7 @@ pub(super) fn decode_eviction(
 pub(super) fn decode_recovery_observation(
     bytes: &[u8],
 ) -> Result<RecoveryObservationReceiptV1, ProtectedRecordCodecError> {
-    let mut cursor = Cursor::new(bytes);
+    let mut cursor = BoundedReader::new(bytes, payload_read_error);
     let operation = OperationId::from_bytes(cursor.array()?);
     let outcome = match cursor.u8()? {
         1 => RecoveryObservationKindCodeV1::NoEffect,
@@ -598,94 +599,179 @@ fn decision_state(code: u8) -> Result<AdmissionDecisionStateV1, ProtectedRecordC
     })
 }
 
-struct Cursor<'a> {
-    bytes: &'a [u8],
-    offset: usize,
+fn payload_read_error(error: ReadError) -> ProtectedRecordCodecError {
+    match error {
+        ReadError::LengthOverflow => ProtectedRecordCodecError::LimitExceeded,
+        _ => ProtectedRecordCodecError::Malformed,
+    }
 }
 
-impl<'a> Cursor<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, offset: 0 }
+fn read_domain(
+    cursor: &mut BoundedReader<'_, ProtectedRecordCodecError>,
+) -> Result<CacheDomain, ProtectedRecordCodecError> {
+    let kind = match cursor.u8()? {
+        1 => CacheDomainKind::Private,
+        2 => CacheDomainKind::Project,
+        3 => CacheDomainKind::TrustDomain,
+        4 => CacheDomainKind::Public,
+        _ => return Err(ProtectedRecordCodecError::Malformed),
+    };
+    Ok(CacheDomain::new(
+        kind,
+        CacheDomainId::from_bytes(cursor.array()?),
+    ))
+}
+
+fn read_object_until_nul(
+    cursor: &mut BoundedReader<'_, ProtectedRecordCodecError>,
+) -> Result<ObjectDescriptor, ProtectedRecordCodecError> {
+    let tail = cursor.remaining_bytes();
+    let length = tail
+        .iter()
+        .position(|byte| *byte == 0)
+        .ok_or(ProtectedRecordCodecError::Malformed)?;
+    let media = std::str::from_utf8(cursor.bytes(length)?)
+        .map_err(|_| ProtectedRecordCodecError::Malformed)?;
+    let media =
+        MediaType::new(media.to_owned()).map_err(|_| ProtectedRecordCodecError::Malformed)?;
+    if cursor.u8()? != 0 {
+        return Err(ProtectedRecordCodecError::Malformed);
     }
-    fn take(&mut self, count: usize) -> Result<&'a [u8], ProtectedRecordCodecError> {
-        let end = self
-            .offset
-            .checked_add(count)
-            .ok_or(ProtectedRecordCodecError::LimitExceeded)?;
-        let part = self
-            .bytes
-            .get(self.offset..end)
-            .ok_or(ProtectedRecordCodecError::Malformed)?;
-        self.offset = end;
-        Ok(part)
-    }
-    fn array<const N: usize>(&mut self) -> Result<[u8; N], ProtectedRecordCodecError> {
-        exact(self.take(N)?)
-    }
-    fn u8(&mut self) -> Result<u8, ProtectedRecordCodecError> {
-        Ok(self.array::<1>()?[0])
-    }
-    fn u64(&mut self) -> Result<u64, ProtectedRecordCodecError> {
-        Ok(u64::from_be_bytes(self.array()?))
-    }
-    fn i64(&mut self) -> Result<i64, ProtectedRecordCodecError> {
-        Ok(i64::from_be_bytes(self.array()?))
-    }
-    fn digest(&mut self) -> Result<ObjectDigest, ProtectedRecordCodecError> {
-        Ok(ObjectDigest::from_bytes(self.array()?))
-    }
-    fn domain(&mut self) -> Result<CacheDomain, ProtectedRecordCodecError> {
-        let kind = match self.u8()? {
-            1 => CacheDomainKind::Private,
-            2 => CacheDomainKind::Project,
-            3 => CacheDomainKind::TrustDomain,
-            4 => CacheDomainKind::Public,
-            _ => return Err(ProtectedRecordCodecError::Malformed),
-        };
-        Ok(CacheDomain::new(
-            kind,
-            CacheDomainId::from_bytes(self.array()?),
-        ))
-    }
-    fn object_until_nul(&mut self) -> Result<ObjectDescriptor, ProtectedRecordCodecError> {
-        let tail = &self.bytes[self.offset..];
-        let length = tail
-            .iter()
-            .position(|byte| *byte == 0)
-            .ok_or(ProtectedRecordCodecError::Malformed)?;
-        let media = std::str::from_utf8(self.take(length)?)
-            .map_err(|_| ProtectedRecordCodecError::Malformed)?;
-        let media =
-            MediaType::new(media.to_owned()).map_err(|_| ProtectedRecordCodecError::Malformed)?;
-        if self.u8()? != 0 {
-            return Err(ProtectedRecordCodecError::Malformed);
-        }
-        let digest = self.digest()?;
-        let size = self.u64()?;
-        Ok(ObjectDescriptor::new(media, digest, size))
-    }
-    fn length_prefixed(&mut self) -> Result<Vec<u8>, ProtectedRecordCodecError> {
-        let length = usize::try_from(u32::from_be_bytes(self.array()?))
-            .map_err(|_| ProtectedRecordCodecError::LimitExceeded)?;
-        let value = self.take(length)?;
-        let mut owned = Vec::new();
-        owned
-            .try_reserve_exact(length)
-            .map_err(|_| ProtectedRecordCodecError::Allocation)?;
-        owned.extend_from_slice(value);
-        Ok(owned)
-    }
-    fn finish(self) -> Result<(), ProtectedRecordCodecError> {
-        if self.offset == self.bytes.len() {
-            Ok(())
-        } else {
-            Err(ProtectedRecordCodecError::Malformed)
-        }
-    }
+    let digest = cursor.digest()?;
+    let size = cursor.u64()?;
+    Ok(ObjectDescriptor::new(media, digest, size))
+}
+
+fn read_length_prefixed(
+    cursor: &mut BoundedReader<'_, ProtectedRecordCodecError>,
+) -> Result<Vec<u8>, ProtectedRecordCodecError> {
+    let length = usize::try_from(u32::from_be_bytes(cursor.array()?))
+        .map_err(|_| ProtectedRecordCodecError::LimitExceeded)?;
+    let value = cursor.bytes(length)?;
+    let mut owned = Vec::new();
+    owned
+        .try_reserve_exact(length)
+        .map_err(|_| ProtectedRecordCodecError::Allocation)?;
+    owned.extend_from_slice(value);
+    Ok(owned)
 }
 
 fn exact<const N: usize>(bytes: &[u8]) -> Result<[u8; N], ProtectedRecordCodecError> {
     bytes
         .try_into()
         .map_err(|_| ProtectedRecordCodecError::Malformed)
+}
+
+#[cfg(test)]
+mod tests {
+    use aos_sandbox_core::PortableMediaType;
+
+    use super::*;
+
+    fn canonical_source_payload() -> (SourceReleaseV1, Vec<u8>) {
+        let release = SourceReleaseV1::active(
+            PrincipalId::from_bytes([1; 16]),
+            ProjectId::from_bytes([2; 16]),
+            ResourceId::from_bytes([3; 16]),
+            CacheDomain::new(CacheDomainKind::Project, CacheDomainId::from_bytes([4; 16])),
+            ObjectDescriptor::new(
+                MediaType::new(PortableMediaType::Content.as_str()).unwrap(),
+                ObjectDigest::from_bytes([7; 32]),
+                3,
+            ),
+            ObjectDigest::from_bytes([5; 32]),
+            ObjectDigest::from_bytes([6; 32]),
+            10,
+            20,
+        )
+        .unwrap();
+        let bytes = super::super::payload::source_release_payload(&release);
+        (release, bytes)
+    }
+
+    #[test]
+    fn canonical_source_payload_rejects_every_short_prefix_and_trailing_bytes() {
+        let (release, bytes) = canonical_source_payload();
+        assert_eq!(decode_source(&bytes).unwrap(), release);
+
+        for length in 0..bytes.len() {
+            assert!(
+                matches!(
+                    decode_source(&bytes[..length]),
+                    Err(ProtectedRecordCodecError::Malformed)
+                ),
+                "short source payload {length}"
+            );
+        }
+
+        let mut trailing = bytes;
+        trailing.push(0);
+        assert!(matches!(
+            decode_source(&trailing),
+            Err(ProtectedRecordCodecError::Malformed)
+        ));
+    }
+
+    #[test]
+    fn source_payload_preserves_closed_domain_state_and_first_nul_media() {
+        let (release, bytes) = canonical_source_payload();
+        let domain_offset = 32 + 3 * 16;
+        let media_offset = domain_offset + 1 + 16;
+        let delimiter = media_offset + release.content.media_type().as_str().len();
+        assert_eq!(bytes[delimiter], 0);
+
+        for domain in [0, 5] {
+            let mut malformed = bytes.clone();
+            malformed[domain_offset] = domain;
+            assert!(matches!(
+                decode_source(&malformed),
+                Err(ProtectedRecordCodecError::Malformed)
+            ));
+        }
+
+        let mut unknown_state = bytes.clone();
+        *unknown_state.last_mut().unwrap() = 3;
+        assert!(matches!(
+            decode_source(&unknown_state),
+            Err(ProtectedRecordCodecError::Malformed)
+        ));
+
+        let mut missing_nul = bytes.clone();
+        missing_nul[media_offset..].fill(1);
+        assert!(matches!(
+            decode_source(&missing_nul),
+            Err(ProtectedRecordCodecError::Malformed)
+        ));
+
+        let mut earlier_nul = bytes;
+        earlier_nul[media_offset] = 0;
+        assert!(matches!(
+            decode_source(&earlier_nul),
+            Err(ProtectedRecordCodecError::Malformed)
+        ));
+    }
+
+    #[test]
+    fn checkpoint_payload_keeps_the_boolean_discriminator_closed() {
+        let mut checkpoint = AuthorityCheckpointV1 {
+            epoch: PublicationAuthorityEpoch::new(1).unwrap(),
+            sequence: 1,
+            state_digest: ObjectDigest::from_bytes([1; 32]),
+            outstanding_digest: ObjectDigest::from_bytes([2; 32]),
+            outstanding_count: 0,
+            poisoned: false,
+        };
+        for poisoned in [false, true] {
+            checkpoint.poisoned = poisoned;
+            let bytes = super::super::payload::checkpoint_payload(&checkpoint);
+            assert_eq!(decode_checkpoint(&bytes).unwrap(), checkpoint);
+        }
+
+        let mut bytes = super::super::payload::checkpoint_payload(&checkpoint);
+        *bytes.last_mut().unwrap() = 2;
+        assert!(matches!(
+            decode_checkpoint(&bytes),
+            Err(ProtectedRecordCodecError::Malformed)
+        ));
+    }
 }

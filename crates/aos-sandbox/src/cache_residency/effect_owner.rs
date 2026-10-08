@@ -16,6 +16,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use aos_sandbox_core::{
     MediaType, ObjectDescriptor, ObjectDigest, format::ObjectDescriptorVerifier,
+    bounded_codec::{BoundedReader, ReadError},
 };
 use aos_sandbox_linux::immutable_file::{
     FsVerityDigest, FsVerityMapping, FsVerityPublicationRoot, MaterializationCallbacks,
@@ -3215,8 +3216,8 @@ fn decode_manifest(
     if Sha256::digest(payload).as_slice() != checksum {
         return Err(CacheOwnerErrorV1::InvalidManifest);
     }
-    let mut cursor = Cursor::new(payload);
-    if cursor.take(8)? != MANIFEST_MAGIC || cursor.u32()? != MANIFEST_VERSION {
+    let mut cursor = BoundedReader::new(payload, manifest_read_error);
+    if cursor.bytes(8)? != MANIFEST_MAGIC || cursor.u32()? != MANIFEST_VERSION {
         return Err(CacheOwnerErrorV1::InvalidManifest);
     }
     let generation = cursor.u64()?;
@@ -3231,18 +3232,18 @@ fn decode_manifest(
     for _ in 0..count {
         let key = ObjectKey {
             partition: ObjectDigest::from_bytes(cursor.array()?),
-            descriptor: cursor.descriptor()?,
+            descriptor: read_manifest_descriptor(&mut cursor)?,
         };
-        let file_name = cursor.string()?;
+        let file_name = read_manifest_string(&mut cursor)?;
         validate_basename(&file_name)?;
-        let staging_name = match cursor.string()? {
+        let staging_name = match read_manifest_string(&mut cursor)? {
             name if name.is_empty() => None,
             name => {
                 validate_basename(&name)?;
                 Some(name)
             }
         };
-        let deleting_name = match cursor.string()? {
+        let deleting_name = match read_manifest_string(&mut cursor)? {
             name if name.is_empty() => None,
             name => {
                 validate_basename(&name)?;
@@ -3316,9 +3317,7 @@ fn decode_manifest(
             return Err(CacheOwnerErrorV1::InvalidManifest);
         }
     }
-    if !cursor.remaining().is_empty() {
-        return Err(CacheOwnerErrorV1::InvalidManifest);
-    }
+    cursor.finish()?;
     Ok((generation, disk, negatives))
 }
 
@@ -3750,53 +3749,29 @@ impl MaterializationCallbacks for DescriptorVerifier {
     }
 }
 
-struct Cursor<'a> {
-    remaining: &'a [u8],
+fn manifest_read_error(_: ReadError) -> CacheOwnerErrorV1 {
+    CacheOwnerErrorV1::InvalidManifest
 }
-impl<'a> Cursor<'a> {
-    fn new(bytes: &'a [u8]) -> Self {
-        Self { remaining: bytes }
-    }
-    fn remaining(&self) -> &'a [u8] {
-        self.remaining
-    }
-    fn take(&mut self, length: usize) -> Result<&'a [u8], CacheOwnerErrorV1> {
-        let (head, tail) = self
-            .remaining
-            .split_at_checked(length)
-            .ok_or(CacheOwnerErrorV1::InvalidManifest)?;
-        self.remaining = tail;
-        Ok(head)
-    }
-    fn array<const N: usize>(&mut self) -> Result<[u8; N], CacheOwnerErrorV1> {
-        self.take(N)?
-            .try_into()
-            .map_err(|_| CacheOwnerErrorV1::InvalidManifest)
-    }
-    fn u16(&mut self) -> Result<u16, CacheOwnerErrorV1> {
-        Ok(u16::from_be_bytes(self.array()?))
-    }
-    fn u32(&mut self) -> Result<u32, CacheOwnerErrorV1> {
-        Ok(u32::from_be_bytes(self.array()?))
-    }
-    fn u64(&mut self) -> Result<u64, CacheOwnerErrorV1> {
-        Ok(u64::from_be_bytes(self.array()?))
-    }
-    fn string(&mut self) -> Result<String, CacheOwnerErrorV1> {
-        let length = self.u16()? as usize;
-        let value = std::str::from_utf8(self.take(length)?)
-            .map_err(|_| CacheOwnerErrorV1::InvalidManifest)?;
-        Ok(value.to_owned())
-    }
-    fn descriptor(&mut self) -> Result<ObjectDescriptor, CacheOwnerErrorV1> {
-        let media =
-            MediaType::new(self.string()?).map_err(|_| CacheOwnerErrorV1::InvalidManifest)?;
-        Ok(ObjectDescriptor::new(
-            media,
-            ObjectDigest::from_bytes(self.array()?),
-            self.u64()?,
-        ))
-    }
+
+fn read_manifest_string(
+    cursor: &mut BoundedReader<'_, CacheOwnerErrorV1>,
+) -> Result<String, CacheOwnerErrorV1> {
+    let length = cursor.u16()? as usize;
+    let value = std::str::from_utf8(cursor.bytes(length)?)
+        .map_err(|_| CacheOwnerErrorV1::InvalidManifest)?;
+    Ok(value.to_owned())
+}
+
+fn read_manifest_descriptor(
+    cursor: &mut BoundedReader<'_, CacheOwnerErrorV1>,
+) -> Result<ObjectDescriptor, CacheOwnerErrorV1> {
+    let media = MediaType::new(read_manifest_string(cursor)?)
+        .map_err(|_| CacheOwnerErrorV1::InvalidManifest)?;
+    Ok(ObjectDescriptor::new(
+        media,
+        ObjectDigest::from_bytes(cursor.array()?),
+        cursor.u64()?,
+    ))
 }
 
 /// Reports bounded cache ownership, durability, or integrity failure.
@@ -3932,6 +3907,93 @@ mod tests {
             maximum_pins: 4,
             maximum_pinned_bytes: 1024,
         }
+    }
+
+    #[test]
+    fn canonical_manifest_rejects_short_records_and_authenticated_tail() {
+        let descriptor = aos_sandbox_core::ObjectDescriptor::new(
+            aos_sandbox_core::MediaType::new(aos_sandbox_core::PortableMediaType::Content.as_str())
+                .unwrap(),
+            ObjectDigest::from_bytes([1; 32]),
+            3,
+        );
+        let key = super::ObjectKey {
+            partition: ObjectDigest::from_bytes([2; 32]),
+            descriptor,
+        };
+        let entry = super::DiskEntry {
+            file_name: "object".to_owned(),
+            staging_name: None,
+            deleting_name: None,
+            bytes: 3,
+            device: 1,
+            inode: 2,
+            verity: [3; 32],
+            canonical_name: ObjectDigest::from_bytes([4; 32]),
+            root_custody: ObjectDigest::from_bytes([5; 32]),
+            last_used: 1,
+            pins: std::collections::BTreeSet::new(),
+        };
+        let bytes = encode_manifest(1, &BTreeMap::from([(key, entry)]), &BTreeMap::new()).unwrap();
+        let (generation, disk, negatives) =
+            super::decode_manifest(&bytes, fixture_limits()).unwrap();
+        assert_eq!(generation, 1);
+        assert_eq!(disk.len(), 1);
+        assert!(negatives.is_empty());
+
+        for length in 0..bytes.len() {
+            assert!(
+                matches!(
+                    super::decode_manifest(&bytes[..length], fixture_limits()),
+                    Err(CacheOwnerErrorV1::InvalidManifest)
+                ),
+                "short manifest {length}"
+            );
+        }
+
+        let payload = &bytes[..bytes.len() - 32];
+        for length in 0..payload.len() {
+            let mut prefix = payload[..length].to_vec();
+            let checksum: [u8; 32] = <sha2::Sha256 as sha2::Digest>::digest(&prefix).into();
+            prefix.extend_from_slice(&checksum);
+            assert!(
+                matches!(
+                    super::decode_manifest(&prefix, fixture_limits()),
+                    Err(CacheOwnerErrorV1::InvalidManifest)
+                ),
+                "authenticated short manifest payload {length}"
+            );
+        }
+
+        // Recompute the checksum so rejection comes from the parser's tail
+        // frontier, not the earlier integrity guard.
+        let mut trailing = payload.to_vec();
+        trailing.push(0);
+        let checksum: [u8; 32] = <sha2::Sha256 as sha2::Digest>::digest(&trailing).into();
+        trailing.extend_from_slice(&checksum);
+        assert!(matches!(
+            super::decode_manifest(&trailing, fixture_limits()),
+            Err(CacheOwnerErrorV1::InvalidManifest)
+        ));
+
+        let mut invalid_utf8 = payload.to_vec();
+        let media_offset = 8 + 4 + 8 + 4 + 32 + 2;
+        invalid_utf8[media_offset] = 0xff;
+        let checksum: [u8; 32] = <sha2::Sha256 as sha2::Digest>::digest(&invalid_utf8).into();
+        invalid_utf8.extend_from_slice(&checksum);
+        assert!(matches!(
+            super::decode_manifest(&invalid_utf8, fixture_limits()),
+            Err(CacheOwnerErrorV1::InvalidManifest)
+        ));
+
+        let mut excessive_count = payload.to_vec();
+        excessive_count[20..24].copy_from_slice(&5_u32.to_be_bytes());
+        let checksum: [u8; 32] = <sha2::Sha256 as sha2::Digest>::digest(&excessive_count).into();
+        excessive_count.extend_from_slice(&checksum);
+        assert!(matches!(
+            super::decode_manifest(&excessive_count, fixture_limits()),
+            Err(CacheOwnerErrorV1::CapacityExhausted)
+        ));
     }
 
     #[test]

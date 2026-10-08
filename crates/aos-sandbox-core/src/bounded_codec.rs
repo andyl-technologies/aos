@@ -53,6 +53,14 @@ impl<'a, E> BoundedReader<'a, E> {
         self.bytes.len() - self.offset
     }
 
+    /// Borrows the original unconsumed bytes without advancing the reader.
+    ///
+    /// The immutable view retains the original input lifetime and performs no
+    /// format, signature, or authority validation.
+    pub fn remaining_bytes(&self) -> &'a [u8] {
+        &self.bytes[self.offset..]
+    }
+
     /// Reports whether every byte has been consumed.
     pub const fn is_empty(&self) -> bool {
         self.remaining() == 0
@@ -155,5 +163,23 @@ mod tests {
         assert_eq!(reader.remaining(), 2);
         assert_eq!(reader.zeros(1), Err(ReadError::NonzeroReserved));
         assert_eq!(reader.finish(), Err(ReadError::TrailingBytes));
+    }
+
+    #[test]
+    fn remaining_bytes_borrows_original_input_without_advancing_or_losing_failed_ranges() {
+        let bytes = [1, 2, 3];
+        let mut reader = BoundedReader::new(&bytes, core::convert::identity);
+        let original_tail = reader.remaining_bytes();
+        assert_eq!(original_tail, &bytes);
+        assert_eq!(reader.remaining(), 3);
+
+        assert_eq!(reader.u8(), Ok(1));
+        assert_eq!(original_tail, &bytes);
+        assert_eq!(reader.remaining_bytes(), &bytes[1..]);
+
+        assert_eq!(reader.bytes(usize::MAX), Err(ReadError::LengthOverflow));
+        assert_eq!(reader.remaining_bytes(), &bytes[1..]);
+        assert_eq!(reader.bytes(3), Err(ReadError::Truncated));
+        assert_eq!(reader.remaining_bytes(), &bytes[1..]);
     }
 }
