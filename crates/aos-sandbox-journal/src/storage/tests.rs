@@ -2,8 +2,12 @@
 
 #![allow(clippy::unwrap_used)]
 
-use std::fs::{self, OpenOptions};
-use std::io::{Seek as _, SeekFrom, Write as _};
+#[cfg(unix)]
+use std::borrow::Borrow;
+use std::fs::{self, File, OpenOptions};
+#[cfg(unix)]
+use std::io::Read as _;
+use std::io::{self, Seek as _, SeekFrom, Write as _};
 #[cfg(unix)]
 use std::os::fd::AsRawFd as _;
 #[cfg(unix)]
@@ -11,7 +15,10 @@ use std::os::unix::fs::MetadataExt as _;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use super::*;
+#[cfg(unix)]
+use super::CapturedFileCursor;
+use super::NativeJournalStorage;
+use crate::framing::FrameError;
 
 static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
 
