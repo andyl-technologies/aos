@@ -143,6 +143,16 @@ current names: leases and inventory used for local recovery move below the
 coordinator boundary; remote transfer planning does not. An ownership crate
 does not acquire all domain inventories simply because they share a journal.
 Resource-specific inventory authority remains with its physical owner.
+
+The historical lease state machine now resides in `aos-sandbox-ownership`:
+canonical durable records, authenticated historical recovery, successor/CAS
+validation, and borrow-bound preparation/publication of its resident maps.
+Prepared records are inert transaction DATA, not proof of a durable commit.
+The domain adapter retains the original issuer, protected clock and native
+journal, and publishes only after their existing commit succeeds. This is a
+partial extraction, not a completed protected local-owner boundary: fixed
+bootstrap, lease issuance, rollback floors, and local inventory remain with
+their existing owners until their concrete custody boundaries can move intact.
 The existing broker facade becomes the owner of its common authority engine,
 not a reexport of Controller implementation. Physical role/namespace admission
 and semantic commit remain with the respective domain owner.
