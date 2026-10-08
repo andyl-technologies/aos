@@ -5,6 +5,9 @@
 
 use super::{compact_code, mask_expression};
 
+#[path = "operational_packed.rs"]
+mod operational_packed;
+
 #[path = "operational_sqlite.rs"]
 mod operational_sqlite;
 
@@ -122,6 +125,7 @@ pub(super) fn mask(package: &str, target: &str, code: &str) -> String {
     let Some(contract) = CONTRACTS
         .iter()
         .chain(operational_sqlite::CONTRACTS)
+        .chain(operational_packed::CONTRACTS)
         .find(|contract| contract.package == package && contract.target == target)
     else {
         return code.to_owned();

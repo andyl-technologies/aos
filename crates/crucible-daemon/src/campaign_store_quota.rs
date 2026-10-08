@@ -161,6 +161,13 @@ impl QuotaMetadataCredit {
             pair: Some((resident, metadata)),
         }
     }
+
+    fn complete(self, operation: &HostOperationGuard) -> Result<Self, StoreError> {
+        // Install joint custody before the final fallible operation check. A
+        // refusal must close both controls before either original bank refunds.
+        operation.complete().map_err(supervision_error)?;
+        Ok(self)
+    }
 }
 
 impl Drop for QuotaMetadataCredit {
@@ -169,6 +176,13 @@ impl Drop for QuotaMetadataCredit {
             HostServiceLease::close_pair(resident, metadata);
         }
     }
+}
+
+// Stack custody during binding keeps the descriptor control covered through
+// every refusal and unwind. This owner creates no additional heap control.
+struct QuotaDescriptorCredit {
+    descriptors: HostServiceLease,
+    metadata: QuotaMetadataCredit,
 }
 
 struct QuotaResourceCredit {
@@ -619,15 +633,6 @@ impl LinuxProjectQuotaBinder {
             .serial
             .try_lock()
             .map_err(|_| StoreError::Unauthorized)?;
-        let descriptors = self
-            .service
-            .resources
-            .reserve_resources(
-                0,
-                LinuxProjectQuotaBinding::maximum_audit_file_descriptors(),
-                0,
-            )
-            .map_err(supervision_error)?;
         let metadata_bytes = root
             .as_os_str()
             .len()
@@ -638,11 +643,9 @@ impl LinuxProjectQuotaBinder {
             .and_then(|bytes| bytes.checked_add(std::mem::size_of::<BoundLinuxProjectQuota>()))
             .and_then(|bytes| bytes.checked_add(4 * std::mem::size_of::<usize>()))
             .ok_or(StoreError::Quota)?;
-        let metadata = self.service.reserve_metadata(
-            u64::try_from(metadata_bytes)
-                .map_err(|_| StoreError::Quota)?
-                .checked_add(HostServiceLease::metadata_bytes())
-                .ok_or(StoreError::Quota)?,
+        let resources = self.service.reserve_descriptor_metadata(
+            LinuxProjectQuotaBinding::maximum_audit_file_descriptors(),
+            u64::try_from(metadata_bytes).map_err(|_| StoreError::Quota)?,
         )?;
         let mut admitted = false;
         let binding = LinuxProjectQuotaBinding::bind_existing_admitted(
@@ -673,11 +676,15 @@ impl LinuxProjectQuotaBinder {
                     // The lower binder may have created a lease or retained a
                     // pin. Preserve exactly the receipts admitted before that
                     // effect; a failed return is not namespace deletion proof.
-                    std::mem::forget((descriptors, metadata, self.service.clone()));
+                    std::mem::forget((resources, self.service.clone()));
                 }
                 return Err(store_error(error));
             }
         };
+        let QuotaDescriptorCredit {
+            descriptors,
+            metadata,
+        } = resources;
         let authority = Arc::new(QuotaAuthority {
             binding,
             root: root.to_path_buf(),
@@ -825,26 +832,23 @@ impl StorePhysicalQuotaGuard for BoundLinuxProjectQuota {
                 })
             })
             .ok_or(StoreError::Quota)?;
-        let descriptors = if descriptors == 0 {
-            None
-        } else {
-            Some(
+        let metadata = service.reserve_metadata(charged)?;
+        let mut credit = QuotaResourceCredit {
+            _authority: self.authority.clone(),
+            _descriptors: None,
+            _metadata: metadata,
+        };
+        if descriptors != 0 {
+            credit._descriptors = Some(
                 service
                     .resources
                     .reserve_resources(0, descriptors, 0)
                     .map_err(supervision_error)?,
-            )
-        };
-        let metadata = service.reserve_metadata(charged)?;
+            );
+        }
         self.verify()?;
         operation.complete().map_err(supervision_error)?;
-        Ok(crucible_cas::owned_decode::ResourceLoan::new(
-            QuotaResourceCredit {
-                _authority: self.authority.clone(),
-                _descriptors: descriptors,
-                _metadata: metadata,
-            },
-        ))
+        Ok(crucible_cas::owned_decode::ResourceLoan::new(credit))
     }
 }
 
@@ -856,6 +860,28 @@ impl QuotaService {
         Ok(())
     }
 
+    fn reserve_descriptor_metadata(
+        &self,
+        descriptors: u64,
+        bytes: u64,
+    ) -> Result<QuotaDescriptorCredit, StoreError> {
+        // Pay the descriptor control before creating it. The returned field
+        // order keeps that payment through all subsequent binding failures.
+        let metadata = self.reserve_metadata(
+            bytes
+                .checked_add(HostServiceLease::metadata_bytes())
+                .ok_or(StoreError::Quota)?,
+        )?;
+        let descriptors = self
+            .resources
+            .reserve_resources(0, descriptors, 0)
+            .map_err(supervision_error)?;
+        Ok(QuotaDescriptorCredit {
+            descriptors,
+            metadata,
+        })
+    }
+
     fn reserve_metadata(&self, bytes: u64) -> Result<QuotaMetadataCredit, StoreError> {
         let operation = self
             .supervisor
@@ -864,16 +890,13 @@ impl QuotaService {
         let charged = bytes
             .checked_add(2 * HostServiceLease::metadata_bytes())
             .ok_or(StoreError::Quota)?;
-        let metadata = self
+        // Metadata admission takes precedence when both original subsets
+        // refuse. Both stack grants exist before either lease control does.
+        let (metadata, resident) = self
             .metadata
-            .reserve_resources(0, 0, charged)
+            .reserve_paired_bytes(&self.resources, charged)
             .map_err(supervision_error)?;
-        let resident = self
-            .resources
-            .reserve_resources(0, 0, charged)
-            .map_err(supervision_error)?;
-        operation.complete().map_err(supervision_error)?;
-        Ok(QuotaMetadataCredit::new(resident, metadata))
+        QuotaMetadataCredit::new(resident, metadata).complete(&operation)
     }
 }
 
@@ -912,6 +935,7 @@ mod tests {
 
     mod archive_original;
     mod memory_namespace;
+    mod resource_credit;
     mod terminal_control;
 
     struct Config {
