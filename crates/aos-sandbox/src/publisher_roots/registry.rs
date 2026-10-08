@@ -365,10 +365,6 @@ impl PublicationRootRegistry {
             .map(|record| record.record_digest)
     }
 
-    pub(crate) fn has_live_custody(&self, root_id: PublicationRootId) -> bool {
-        self.live_custody.contains_key(root_id.as_bytes())
-    }
-
     pub(crate) fn poison(&mut self) {
         self.poisoned = true;
     }
