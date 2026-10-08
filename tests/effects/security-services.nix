@@ -127,7 +127,7 @@
   };
   sshServerProjection = lib.evalPackageModules {
     scope = ["profile" "system"];
-    packages = [pkgs.openssh.server pkgs.systemd pkgs.aos-network-ruleset-provider];
+    packages = [pkgs.openssh.server pkgs.systemd pkgs.aos-network-ruleset-provider pkgs.aos-init-provider];
     packageImportRoots.${builtins.unsafeDiscardStringContext (toString pkgs.openssh.module)} = toString ../../pkgs/networking/_openssh;
     operatorModules = [{aos.services.ssh.enable = true;}];
   };

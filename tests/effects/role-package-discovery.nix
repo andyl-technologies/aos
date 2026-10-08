@@ -4,7 +4,7 @@
   pkgs,
 }: let
   policy = pkgs.aos-host-policy;
-  baselinePackages = [policy pkgs.aos-ebpf-lsm-policy pkgs.systemd pkgs.audit pkgs.nftables pkgs.aos-network-ruleset-provider];
+  baselinePackages = [policy pkgs.aos-ebpf-lsm-policy pkgs.systemd pkgs.aos-init-provider pkgs.audit pkgs.nftables pkgs.aos-network-ruleset-provider];
   configuration = {
     aos.roles.server.enable = true;
     # This package-owned option is unavailable until OpenSSH is acquired.

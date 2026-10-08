@@ -17,7 +17,7 @@
   evaluate = extra:
     aos.lib.evalPackageModules {
       scope = ["test" "domain-dependencies"];
-      packages = [filesystem configuration firewall markers];
+      packages = [filesystem configuration firewall markers pkgs.aos-init-provider];
       operatorModules = [
         (root + /tests/fleet/_native-reference-filesystem-configuration.nix)
         (root + /tests/fleet/_native-reference-firewall-interception.nix)
