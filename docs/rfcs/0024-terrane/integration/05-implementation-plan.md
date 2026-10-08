@@ -2173,11 +2173,28 @@ reporting omits individual successful names, so full-run coverage depends on
 the unfiltered command, compiled inventory and zero-skipped summary.
 The subsequent test-only cleanup on `f5f1f3a57d` documents reachable panics and
 removes one newly duplicated assertion; both mandatory formats pass. Its owning
-graft and diff Nix checks pass 25 and five exact cases. The owning merge check
-is still running; historical Core results do not qualify its complete native
-body or the full trunk floor. This work changes no production behavior or format.
+graft, diff and merge Nix checks pass 25, five and 38 exact cases respectively,
+including the merge gate's native SDK cases. All 68 executions pass without
+failed or ignored cases. Independent review checks the actual ordered gate
+selectors and successful names, all 5,922 immutable source entries, 5,038
+included tracked-file bindings, and the seven new helpers' registered callers.
+These owning checks do not qualify the full trunk floor. This work changes no
+production behavior or format.
 The `perf-merge-delta` reporting gate
 remains T6 work under T-PERF-1, independently of these current T1 test obligations.
+
+The next ordinary-read refinement is committed locally before T1's freeze:
+it combines the three ordinary leaf dispatches after unchanged ordered parent
+validation, retaining nofollow whole-body reads, named incarnation checks and
+existing absence/error mapping. Native SDK, standard/send, standard/WASM and
+no-default builds pass; the new portable import and unreachable-expression
+warnings found during qualification are corrected without lint exceptions.
+Both mandatory formats pass. Strict native all-target Clippy still rejects
+the trunk's existing unused code and test lints; no clean trunk result is
+claimed. Fourteen exact recipe and consumer witnesses are registered in the
+owning runtime and bucket-layout gates, and their implementation is pending
+in the isolated composition. These local commits remain unpushed pending
+qualification, and no deadline improvement or task acceptance is claimed.
 
 The sealed current floor contains 89 aggregate gates, including all 69 T0/T1
 plan-required names and twenty implemented supporting checks. Read-only evaluation
