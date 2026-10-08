@@ -185,7 +185,8 @@ impl LiveDispatch {
         validate_target(&self.slot, &self.target)?;
         self.target.verify_mount_plan_version(
             journal,
-            self.template.signed_plan(),
+            self.template.signed_plan().canonical_plan(),
+            self.template.signed_plan().canonical_signature(),
             CARRIER_VERSION,
             clock,
         )?;

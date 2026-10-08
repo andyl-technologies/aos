@@ -439,7 +439,7 @@ fn current_controller_signing_authority(key: &SigningKey) -> SigningAuthority {
 }
 
 #[cfg(feature = "kernel-tests")]
-fn hostile_mount_version(valid: &SignedBrokerPlan, version: ProtocolVersion) -> SignedBrokerPlan {
+fn hostile_mount_version(valid: &SignedBrokerPlan, version: ProtocolVersion) -> (Vec<u8>, Vec<u8>) {
     let key = SigningKey::from_bytes(&[40; 32]);
     let signer = key_reference("controller", KeyUsage::BrokerAuthorization, &key);
     let scope = TrustScopeId::from_bytes([20; 16]);
@@ -470,11 +470,7 @@ fn hostile_mount_version(valid: &SignedBrokerPlan, version: ProtocolVersion) -> 
     )
     .unwrap();
     let signature = encode_signature(&sign_statement(statement, &key).unwrap());
-    SignedBrokerPlan::from_hostile_canonical_bytes_for_test(
-        valid.plan().clone(),
-        canonical_plan,
-        signature,
-    )
+    (canonical_plan, signature)
 }
 
 #[cfg(feature = "kernel-tests")]
@@ -648,14 +644,16 @@ fn exact_mount_two_zero_apply_and_release_bind_admit_and_resume() {
         )
         .unwrap();
         let valid = current_mount_plan(assignment, node, prepared.semantics());
+        let (canonical_plan, canonical_signature) = hostile_mount_version(&valid, rejected);
+        let binding = prepared.check_plan_wire_before_dispatch(
+            fixture.journal_mut(),
+            &canonical_plan,
+            &canonical_signature,
+            &mut clock,
+        );
+        drop(prepared);
         assert!(
-            bind_signed_mount_plan(
-                fixture.journal_mut(),
-                prepared,
-                hostile_mount_version(&valid, rejected),
-                &mut clock,
-            )
-            .is_err(),
+            binding.is_err(),
             "Apply binding accepted Mount {rejected:?}"
         );
 
@@ -668,14 +666,16 @@ fn exact_mount_two_zero_apply_and_release_bind_admit_and_resume() {
         )
         .unwrap();
         let valid = current_mount_plan(assignment, node, prepared.semantics());
+        let (canonical_plan, canonical_signature) = hostile_mount_version(&valid, rejected);
+        let binding = prepared.check_plan_wire_before_dispatch(
+            fixture.journal_mut(),
+            &canonical_plan,
+            &canonical_signature,
+            &mut clock,
+        );
+        drop(prepared);
         assert!(
-            bind_signed_mount_release_plan(
-                fixture.journal_mut(),
-                prepared,
-                hostile_mount_version(&valid, rejected),
-                &mut clock,
-            )
-            .is_err(),
+            binding.is_err(),
             "Release binding accepted Mount {rejected:?}"
         );
     }

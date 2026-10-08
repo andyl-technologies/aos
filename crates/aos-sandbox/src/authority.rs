@@ -268,29 +268,6 @@ pub struct SignedBrokerPlan {
 }
 
 impl SignedBrokerPlan {
-    #[cfg(test)]
-    pub(crate) fn from_hostile_canonical_bytes_for_test(
-        plan: BrokerAuthorizationPlan,
-        canonical_plan: Vec<u8>,
-        canonical_signature: Vec<u8>,
-    ) -> Self {
-        let descriptor = descriptor_for_bytes(
-            MediaType::new(
-                PortableMediaType::BrokerAuthorizationPlan
-                    .as_str()
-                    .to_owned(),
-            )
-            .unwrap_or_else(|error| panic!("test media type is registered: {error}")),
-            &canonical_plan,
-        );
-        Self {
-            plan,
-            digest: descriptor.digest(),
-            canonical_plan,
-            canonical_signature,
-        }
-    }
-
     /// Returns the decoded immutable plan semantics.
     #[must_use]
     pub const fn plan(&self) -> &BrokerAuthorizationPlan {

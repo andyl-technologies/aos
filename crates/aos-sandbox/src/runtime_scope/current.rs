@@ -476,7 +476,8 @@ impl CurrentRuntimeScope {
     pub(crate) fn verify_mount_plan_version<T>(
         &self,
         journal: &mut Journal,
-        signed: &SignedBrokerPlan,
+        canonical_plan: &[u8],
+        canonical_signature: &[u8],
         protocol_version: aos_sandbox_core::ProtocolVersion,
         clock: &mut T,
     ) -> Result<(), CurrentRuntimeScopeError>
@@ -486,7 +487,8 @@ impl CurrentRuntimeScope {
         self.recheck(journal, clock)?;
         self.verified_mount_lease(
             journal,
-            signed,
+            canonical_plan,
+            canonical_signature,
             protocol_version,
             read_clock(&self.policy, clock)?,
         )?;
@@ -508,8 +510,13 @@ impl CurrentRuntimeScope {
         self.recheck(journal, clock)?;
 
         let fresh = read_clock(&self.policy, clock)?;
-        let lease =
-            self.verified_mount_lease(journal, template.signed_plan(), protocol_version, fresh)?;
+        let lease = self.verified_mount_lease(
+            journal,
+            template.signed_plan().canonical_plan(),
+            template.signed_plan().canonical_signature(),
+            protocol_version,
+            fresh,
+        )?;
         let attempt = crate::BrokerDispatchAttemptV1::new(
             template,
             &lease,
@@ -524,17 +531,18 @@ impl CurrentRuntimeScope {
     fn verified_mount_lease(
         &self,
         journal: &mut Journal,
-        signed: &SignedBrokerPlan,
+        canonical_plan: &[u8],
+        canonical_signature: &[u8],
         protocol_version: aos_sandbox_core::ProtocolVersion,
         fresh: RawPairedClockSample,
     ) -> Result<SignedOwnershipLease, CurrentRuntimeScopeError> {
         let publication =
             select_exact_current(journal, self.selection, &self.policy, &self.binding)?;
         let lease = verify_lease(journal, &self.binding, &publication, &self.policy, fresh)?;
-        let signature = decode_signature(signed.canonical_signature(), DecodeLimits::default())
+        let signature = decode_signature(canonical_signature, DecodeLimits::default())
             .map_err(aos_sandbox_core::BrokerPlanVerificationError::from)?;
         let verified = verify_broker_plan(
-            signed.canonical_plan(),
+            canonical_plan,
             &signature,
             &self.policy.mount_broker_anchor,
             BrokerPlanExpectation {
@@ -666,7 +674,8 @@ impl CurrentAssignmentTarget {
     pub(crate) fn verify_mount_plan_version<T>(
         &self,
         journal: &mut Journal,
-        signed: &SignedBrokerPlan,
+        canonical_plan: &[u8],
+        canonical_signature: &[u8],
         protocol_version: aos_sandbox_core::ProtocolVersion,
         clock: &mut T,
     ) -> Result<(), CurrentRuntimeScopeError>
@@ -676,7 +685,8 @@ impl CurrentAssignmentTarget {
         self.recheck(journal, clock)?;
         self.verified_mount_lease(
             journal,
-            signed,
+            canonical_plan,
+            canonical_signature,
             protocol_version,
             read_clock(&self.policy, clock)?,
         )?;
@@ -696,8 +706,13 @@ impl CurrentAssignmentTarget {
     {
         self.recheck(journal, clock)?;
         let fresh = read_clock(&self.policy, clock)?;
-        let lease =
-            self.verified_mount_lease(journal, template.signed_plan(), protocol_version, fresh)?;
+        let lease = self.verified_mount_lease(
+            journal,
+            template.signed_plan().canonical_plan(),
+            template.signed_plan().canonical_signature(),
+            protocol_version,
+            fresh,
+        )?;
         let attempt = crate::BrokerDispatchAttemptV1::new(
             template,
             &lease,
@@ -711,7 +726,8 @@ impl CurrentAssignmentTarget {
     fn verified_mount_lease(
         &self,
         journal: &mut Journal,
-        signed: &SignedBrokerPlan,
+        canonical_plan: &[u8],
+        canonical_signature: &[u8],
         protocol_version: aos_sandbox_core::ProtocolVersion,
         fresh: RawPairedClockSample,
     ) -> Result<SignedOwnershipLease, CurrentRuntimeScopeError> {
@@ -719,10 +735,10 @@ impl CurrentAssignmentTarget {
         RuntimeAuthorityStore::load(journal, self.policy.runtime_limits)?
             .validate_continuity(&self.binding, &current)?;
         let lease = verify_lease(journal, &current, &publication, &self.policy, fresh)?;
-        let signature = decode_signature(signed.canonical_signature(), DecodeLimits::default())
+        let signature = decode_signature(canonical_signature, DecodeLimits::default())
             .map_err(aos_sandbox_core::BrokerPlanVerificationError::from)?;
         let verified = verify_broker_plan(
-            signed.canonical_plan(),
+            canonical_plan,
             &signature,
             &self.policy.mount_broker_anchor,
             BrokerPlanExpectation {

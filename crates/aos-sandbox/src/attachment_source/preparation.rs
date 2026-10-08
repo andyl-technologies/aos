@@ -235,7 +235,8 @@ impl PreparedSourceRequestV1 {
             .scope()
             .verify_mount_plan_version(
                 journal,
-                &signed_plan,
+                signed_plan.canonical_plan(),
+                signed_plan.canonical_signature(),
                 aos_sandbox_core::ProtocolVersion::new(2, 0),
                 clock,
             )?;
@@ -549,7 +550,8 @@ impl PreparedCurrentAttachmentSourceResumeV1 {
         let scope = self.plan.target.runtime_generation().scope();
         scope.verify_mount_plan_version(
             journal,
-            &signed_plan,
+            signed_plan.canonical_plan(),
+            signed_plan.canonical_signature(),
             aos_sandbox_core::ProtocolVersion::new(2, 0),
             clock,
         )?;

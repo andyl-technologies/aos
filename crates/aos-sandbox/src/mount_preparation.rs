@@ -435,6 +435,31 @@ impl PreparedCurrentMountDispatchV1 {
 }
 
 impl PreparedCurrentMountCatalogV1 {
+    /// Checks the signed wire bytes at the fixed pre-dispatch binding phase.
+    pub(crate) fn check_plan_wire_before_dispatch<T>(
+        &self,
+        journal: &mut Journal,
+        canonical_plan: &[u8],
+        canonical_signature: &[u8],
+        clock: &mut T,
+    ) -> Result<(), MountCatalogPreparationError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        self.recheck(journal, clock)?;
+        self.target
+            .runtime_generation()
+            .scope()
+            .verify_mount_plan_version(
+                journal,
+                canonical_plan,
+                canonical_signature,
+                MOUNT_VERSION,
+                clock,
+            )?;
+        Ok(())
+    }
+
     /// Borrows the current namespace target retained by this preparation.
     #[must_use]
     pub const fn target(&self) -> &CurrentNamespaceTarget {
@@ -500,6 +525,31 @@ impl PreparedCurrentMountReleaseDispatchV1 {
 }
 
 impl PreparedCurrentMountReleaseV1 {
+    /// Checks the signed wire bytes at the fixed pre-dispatch binding phase.
+    pub(crate) fn check_plan_wire_before_dispatch<T>(
+        &self,
+        journal: &mut Journal,
+        canonical_plan: &[u8],
+        canonical_signature: &[u8],
+        clock: &mut T,
+    ) -> Result<(), MountCatalogPreparationError>
+    where
+        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
+    {
+        self.recheck(journal, clock)?;
+        self.target
+            .runtime_generation()
+            .scope()
+            .verify_mount_plan_version(
+                journal,
+                canonical_plan,
+                canonical_signature,
+                MOUNT_VERSION,
+                clock,
+            )?;
+        Ok(())
+    }
+
     pub(crate) const fn target(&self) -> &CurrentNamespaceTarget {
         &self.target
     }
@@ -1027,12 +1077,12 @@ pub(crate) fn bind_signed_mount_plan<T>(
 where
     T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
 {
-    catalog.recheck(journal, clock)?;
-    catalog
-        .target
-        .runtime_generation()
-        .scope()
-        .verify_mount_plan_version(journal, &signed_plan, MOUNT_VERSION, clock)?;
+    catalog.check_plan_wire_before_dispatch(
+        journal,
+        signed_plan.canonical_plan(),
+        signed_plan.canonical_signature(),
+        clock,
+    )?;
     let template = BrokerDispatchTemplateV1::new(
         signed_plan,
         BrokerMethod::BROKER_METHOD_MOUNT_APPLY,
@@ -1055,12 +1105,12 @@ pub(crate) fn bind_signed_mount_release_plan<T>(
 where
     T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
 {
-    release.recheck(journal, clock)?;
-    release
-        .target
-        .runtime_generation()
-        .scope()
-        .verify_mount_plan_version(journal, &signed_plan, MOUNT_VERSION, clock)?;
+    release.check_plan_wire_before_dispatch(
+        journal,
+        signed_plan.canonical_plan(),
+        signed_plan.canonical_signature(),
+        clock,
+    )?;
     let template = BrokerDispatchTemplateV1::new(
         signed_plan,
         BrokerMethod::BROKER_METHOD_MOUNT_APPLY,

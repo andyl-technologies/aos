@@ -770,7 +770,13 @@ where
 {
     operation
         .target
-        .verify_mount_plan_version(journal, &signed_plan, CARRIER_VERSION, clock)?;
+        .verify_mount_plan_version(
+            journal,
+            signed_plan.canonical_plan(),
+            signed_plan.canonical_signature(),
+            CARRIER_VERSION,
+            clock,
+        )?;
     Ok(BrokerDispatchTemplateV1::new(
         signed_plan,
         METHOD,
@@ -798,7 +804,8 @@ where
     }
     operation.target.verify_mount_plan_version(
         journal,
-        template.signed_plan(),
+        template.signed_plan().canonical_plan(),
+        template.signed_plan().canonical_signature(),
         CARRIER_VERSION,
         clock,
     )?;
