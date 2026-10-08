@@ -1,9 +1,11 @@
-//! Generic native journal framing, append durability, and checked geometry.
+//! Generic native journal framing, durability, geometry, and map mechanics.
 //!
 //! [`framing`] owns native frame bytes, checksums, retained partial reads, and
 //! write/flush/sync mechanics. [`geometry`] owns record and transaction widths
-//! and generic native configuration bounds. The Controller, Storage, and
-//! session-security owners use these same mechanics without sharing authority.
+//! and generic native configuration bounds. [`materialized`] owns ordered
+//! DATA-map projection and mutation without domain-specific indexes or admission.
+//! Controller, Storage, and session-security owners use these same mechanics
+//! without sharing authority.
 //!
 //! This crate does not open protected storage, decode domain namespaces, issue
 //! authority, sign records, apply semantic transitions, or own replay visibility.
@@ -12,3 +14,4 @@
 
 pub mod framing;
 pub mod geometry;
+pub mod materialized;

@@ -42,6 +42,7 @@ use aos_sandbox_journal::framing::{
     read_frame_retained, transaction_hasher,
 };
 use aos_sandbox_journal::geometry::{EncodedRecordLayout, NativeGeometryBounds, RecordShape};
+use aos_sandbox_journal::materialized::{self, RecordMutationRef};
 
 pub mod canonical_map;
 mod delete_batch;
@@ -9365,20 +9366,18 @@ fn projected_materialized_record_count(
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
     records: &[JournalRecord],
 ) -> Result<usize, JournalError> {
-    let mut entries = state.len();
-    for record in records {
-        let key = (record.namespace(), record.key().to_vec());
-        match (state.contains_key(&key), record.value().is_some()) {
-            (false, true) => {
-                entries = entries
-                    .checked_add(1)
-                    .ok_or(JournalError::LimitExceeded("materialized record count"))?;
-            }
-            (true, false) => entries = entries.saturating_sub(1),
-            _ => {}
+    materialized::projected_record_count(state, records.iter().map(RecordMutationRef::from))
+        .map_err(JournalError::from)
+}
+
+impl<'a> From<&'a JournalRecord> for RecordMutationRef<'a, RecordNamespace> {
+    fn from(record: &'a JournalRecord) -> Self {
+        Self {
+            namespace: record.namespace(),
+            key: record.key(),
+            value: record.value(),
         }
     }
-    Ok(entries)
 }
 
 fn validate_limits(limits: JournalLimits) -> Result<(), JournalError> {
@@ -9392,37 +9391,14 @@ fn validate_materialized_change(
     records: &[JournalRecord],
     limits: JournalLimits,
 ) -> Result<usize, JournalError> {
-    let mut bytes = current_bytes;
-    let mut entries = state.len();
-    for record in records {
-        let key = (record.namespace, record.key.clone());
-        let existing = state.get(&key);
-        if let Some(value) = existing {
-            bytes = bytes.saturating_sub(record.key.len().saturating_add(value.len()));
-        }
-        match &record.value {
-            Some(value) => {
-                if existing.is_none() {
-                    entries = entries
-                        .checked_add(1)
-                        .ok_or(JournalError::LimitExceeded("materialized record count"))?;
-                }
-                bytes = bytes
-                    .checked_add(record.key.len())
-                    .and_then(|size| size.checked_add(value.len()))
-                    .ok_or(JournalError::LimitExceeded("materialized state bytes"))?;
-            }
-            None if existing.is_some() => entries -= 1,
-            None => {}
-        }
-    }
-    if bytes > limits.maximum_materialized_bytes {
-        return Err(JournalError::LimitExceeded("materialized state bytes"));
-    }
-    if entries > limits.maximum_materialized_records {
-        return Err(JournalError::LimitExceeded("materialized record count"));
-    }
-    Ok(bytes)
+    materialized::validate_change(
+        state,
+        current_bytes,
+        records.iter().map(RecordMutationRef::from),
+        limits.maximum_materialized_bytes,
+        limits.maximum_materialized_records,
+    )
+    .map_err(JournalError::from)
 }
 
 fn validate_idempotency_changes(
@@ -9650,15 +9626,7 @@ fn apply_record(
     idempotency: &mut BTreeMap<Vec<u8>, IdempotencyDecision>,
     record: &JournalRecord,
 ) -> Result<(), JournalError> {
-    let composite_key = (record.namespace, record.key.clone());
-    match &record.value {
-        Some(value) => {
-            state.insert(composite_key, value.clone());
-        }
-        None => {
-            state.remove(&composite_key);
-        }
-    }
+    materialized::apply_mutation(state, RecordMutationRef::from(record));
 
     if record.namespace == RecordNamespace::Idempotency {
         let value = record.value.as_ref().ok_or(JournalError::MalformedRecord(
@@ -10332,6 +10300,40 @@ mod tests {
         open_protected_file, protected_open_error,
         require_opened_directory_identity, traverse_protected_directory,
     };
+
+    #[test]
+    fn materialized_mutation_view_borrows_the_original_record_bytes() {
+        let record = JournalRecord::put(
+            RecordNamespace::DesiredState,
+            b"key".to_vec(),
+            b"value".to_vec(),
+        );
+
+        let view = super::RecordMutationRef::from(&record);
+
+        assert_eq!(view.namespace, record.namespace());
+        assert!(std::ptr::eq(view.key, record.key()));
+        assert!(std::ptr::eq(view.value.unwrap(), record.value().unwrap()));
+    }
+
+    #[test]
+    fn idempotency_refusal_still_follows_materialized_map_mutation() {
+        let key = b"decision".to_vec();
+        let mut state = std::collections::BTreeMap::from([
+            ((RecordNamespace::Idempotency, key.clone()), vec![0; 48]),
+        ]);
+        let mut idempotency = std::collections::BTreeMap::new();
+        let record = JournalRecord::delete(RecordNamespace::Idempotency, key.clone());
+
+        let result = super::apply_record(&mut state, &mut idempotency, &record);
+
+        assert!(matches!(
+            result,
+            Err(JournalError::MalformedRecord("idempotency records cannot be deleted")),
+        ));
+        assert!(!state.contains_key(&(RecordNamespace::Idempotency, key)));
+        assert!(idempotency.is_empty());
+    }
 
     #[test]
     fn native_geometry_view_preserves_all_eight_typed_limit_fields() {

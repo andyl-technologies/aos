@@ -170,19 +170,13 @@ fn apply_owners(state: &State, owners: &JournalTransaction) -> Result<State, Jou
 
 /// Projects DATA rows for a separately validated coupled owner transaction.
 pub(crate) fn materialize(state: &State, transaction: &JournalTransaction) -> State {
-    let mut after = state.clone();
-    for record in transaction.records() {
-        let key = (record.namespace(), record.key().to_vec());
-        match record.value() {
-            Some(bytes) => {
-                after.insert(key, bytes.to_vec());
-            }
-            None => {
-                after.remove(&key);
-            }
-        }
-    }
-    after
+    aos_sandbox_journal::materialized::materialize_copy(
+        state,
+        transaction
+            .records()
+            .iter()
+            .map(super::RecordMutationRef::from),
+    )
 }
 
 struct DerivedAppend {
