@@ -226,6 +226,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
 
   packageVersions = import ../lib/packages/version.nix;
   artifactLib = import ../lib/packages/artifacts.nix {};
+  runtimeDependencySupport = import ../lib/packages/runtime-dependencies.nix;
   nativeArtifactsFor = package: let
     deploymentLib = import ../lib {system = stdenv.hostPlatform.system;};
     compatibility = import ../lib/packages/release-compatibility.nix {lib = deploymentLib;};
@@ -451,6 +452,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
   # store paths out of the output (matches nixpkgs nuke-refs idiom).
   mkDerivation = args: let
     release = packageVersions.normalize (args.version or "0");
+    publicRuntimeDeps = runtimeDependencySupport.packages (args.runtimeDeps or []);
     packageName =
       args.catalogName
       or args.pname
@@ -482,13 +484,13 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
             qualification = checkedQualification;
             inherit moduleDeps;
             buildDeps = args.buildDeps or [];
-            runtimeDeps = artifactLib.dependencyValues (args.runtimeDeps or []);
+            runtimeDeps = runtimeDependencySupport.inputs (args.runtimeDeps or []);
             propagatedDeps = args.propagatedDeps or [];
           });
     nativeArtifacts =
       if args ? abilities || args ? configModule
       then throw "Package '${packageName}' must migrate to module/moduleDeps."
-      else nativeArtifactsFor (result // {runtimeDeps = args.runtimeDeps or [];});
+      else nativeArtifactsFor (result // {runtimeDeps = publicRuntimeDeps;});
     crossFixupPhase =
       if stdenv.hostPlatform.objectFormat == "macho"
       then phases.darwinCrossFixupPhase
@@ -521,7 +523,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       roots =
         [stdenv.cc]
         ++ builtins.map spliceBuildDependency (args.buildDeps or [])
-        ++ artifactLib.dependencyValues (args.runtimeDeps or [])
+        ++ runtimeDependencySupport.inputs (args.runtimeDeps or [])
         ++ (args.propagatedDeps or []);
       cacheDir = sharedAccacheDir;
       stateDir = sharedAccacheStateDir;
@@ -542,7 +544,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
         buildDeps =
           builtins.map spliceBuildDependency (args.buildDeps or [])
           ++ [resolvedBuildPackages.nuke-references];
-        runtimeDeps = artifactLib.dependencyValues (args.runtimeDeps or []);
+        runtimeDeps = runtimeDependencySupport.inputs (args.runtimeDeps or []);
         passthru = args.passthru or {};
       }
       // lib.optionalAttrs (
@@ -559,6 +561,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     deploymentAttrs =
       {
         catalogName = packageName;
+        runtimeDeps = artifactLib.dependencyValues publicRuntimeDeps;
         inherit (release) versionRequirement;
         inherit moduleDeps;
         inherit (nativeArtifacts) deployment documentation deploymentArtifact documentationArtifact;
@@ -594,7 +597,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
               // platformAttrs
               // secondaryOutputAttrs
               // {${drv.outputName} = result;}
-              // nativeArtifactsFor (selected // {runtimeDeps = args.runtimeDeps or [];})
+              // nativeArtifactsFor (selected // {runtimeDeps = publicRuntimeDeps;})
             );
         in
           selected;
@@ -933,7 +936,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
           (dep: builtins.unsafeDiscardStringContext (toString dep))
           (
             builtins.map spliceBuildDependency (args.buildDeps or [])
-            ++ artifactLib.dependencyValues (args.runtimeDeps or [])
+            ++ runtimeDependencySupport.inputs (args.runtimeDeps or [])
           );
       }
       // (args.cargoArtifactContract or {});
@@ -995,7 +998,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       roots =
         [cargoBuildTool]
         ++ builtins.map spliceBuildDependency (args.buildDeps or [])
-        ++ artifactLib.dependencyValues (args.runtimeDeps or []);
+        ++ runtimeDependencySupport.inputs (args.runtimeDeps or []);
       cacheDir = sharedAccacheDir;
       stateDir = sharedAccacheStateDir;
       llvmOptions = args.accacheLlvmOptions or {};

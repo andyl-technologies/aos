@@ -267,7 +267,10 @@ in
         openssl
       ];
       runtimeDeps = [
-        compilerBash
+        {
+          package = compilerBash;
+          closureOnly = true;
+        }
         curl
         zlib
         openssl

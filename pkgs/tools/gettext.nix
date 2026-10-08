@@ -139,7 +139,14 @@ in
       else [
         ncurses
         libxcrypt
-        scriptBash
+        (
+          if stdenv.isCross
+          then scriptBash
+          else {
+            package = scriptBash;
+            closureOnly = true;
+          }
+        )
         python3
       ];
     propagatedDeps = [];
