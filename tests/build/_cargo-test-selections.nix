@@ -110,18 +110,12 @@ let
     independentRoles = commands:
       lib.all (command: lib.length (selectedRoles command) == 1) commands
       && lib.all (role: lib.length (lib.filter (command: builtins.elem role (selectedRoles command)) commands) == 1) roles;
-    cacheSignerTestsRetained = commands: let
-      selected = lib.filter (command: builtins.elem "cache-signer" (selectedRoles command)) commands;
+    signerTestsRetained = role: packageName: commands: let
+      selected = lib.filter (command: builtins.elem role (selectedRoles command)) commands;
     in
       lib.length selected
       == 1
-      && lib.all (lib.hasInfix "-p aos-sandbox-cache-signer") selected;
-    sourceSignerTestsRetained = commands: let
-      selected = lib.filter (command: builtins.elem "source-signer" (selectedRoles command)) commands;
-    in
-      lib.length selected
-      == 1
-      && lib.all (lib.hasInfix "-p aos-sandbox-source-signer") selected;
+      && lib.all (lib.hasInfix "-p ${packageName}") selected;
     artifactCommands = package.cargoArtifacts.cargoBuildCommands;
     artifactBuilds = lib.filter (lib.hasPrefix "build ") artifactCommands;
     artifactTests = lib.filter (lib.hasPrefix "test --no-run ") artifactCommands;
@@ -134,12 +128,12 @@ let
     && independentRoles package.cargoBuildCommands
     && artifactBuilds == package.cargoBuildCommands
     && independentRoles roleArtifactTests
-    && cacheSignerTestsRetained roleArtifactTests
-    && sourceSignerTestsRetained roleArtifactTests
+    && signerTestsRetained "cache-signer" "aos-sandbox-cache-signer" roleArtifactTests
+    && signerTestsRetained "source-signer" "aos-sandbox-source-signer" roleArtifactTests
     && lib.length coreArtifactTests == 1
     && independentRoles package.cargoTestFlagSets
-    && cacheSignerTestsRetained package.cargoTestFlagSets
-    && sourceSignerTestsRetained package.cargoTestFlagSets
+    && signerTestsRetained "cache-signer" "aos-sandbox-cache-signer" package.cargoTestFlagSets
+    && signerTestsRetained "source-signer" "aos-sandbox-source-signer" package.cargoTestFlagSets
     && lib.any (lib.hasInfix "-p aos-sandbox-services -p aos-sandbox -p aos-sandbox-broker-session-security") package.cargoTestFlagSets
     && package.doCheck
     && package.cargoNextest;
