@@ -11,6 +11,7 @@
     pkgs.grep
     pkgs.sed
     pkgs.gawk
+    pkgs.fzf
   ];
 in {
   imports = [./_ability-providers.nix];
@@ -52,5 +53,5 @@ in {
   # Optional daemons and workload tools are selected by host policy or APM.
   # APM, the kernel, system manager and boot storage add their own core roots.
   environment.systemPackages = portableShellPackages ++ [pkgs.glibc-tools pkgs.util-linux pkgs.kmod pkgs.e2fsprogs pkgs.less];
-  aos.containers.systemPackageSlice = [pkgs.bash pkgs.coreutils pkgs.findutils pkgs.grep];
+  aos.containers.systemPackageSlice = [pkgs.bash pkgs.coreutils pkgs.findutils pkgs.grep pkgs.gawk pkgs.fzf];
 }

@@ -1,6 +1,7 @@
 ##! Renders shared interactive Bash defaults for host and container profiles.
 {
   lib,
+  fzf ? null,
   completionFiles ? [],
 }: ''
   # Login profiles and user rc files load these defaults before customization.
@@ -19,6 +20,12 @@
   HISTSIZE=10000
   HISTFILESIZE=20000
   shopt -s histappend checkwinsize cmdhist
+
+  # Readline and foreground commands share the tty's signal-character echo.
+  # Keep interrupts enabled while avoiding a literal ^C in the prompt.
+  if [ -t 0 ]; then
+    stty -echoctl 2>/dev/null || :
+  fi
 
   # Append before importing other sessions, keeping concurrent shells' history.
   __aos_sync_history() {
@@ -42,6 +49,21 @@
 
   # Bash supplies command/file completion itself; cd must only offer directories.
   complete -o nospace -o filenames -d cd pushd rmdir
+
+  ${lib.optionalString (fzf != null) ''
+    # Load upstream history search only where its terminal UI can run. Explicit
+    # FZF settings remain authoritative; file and directory widgets are opt-in.
+    case "''${TERM:-dumb}" in
+      dumb|"") ;;
+      *)
+        if [ -t 0 ]; then
+          FZF_CTRL_T_COMMAND="''${FZF_CTRL_T_COMMAND-}" \
+          FZF_ALT_C_COMMAND="''${FZF_ALT_C_COMMAND-}" \
+            . ${lib.escapeShellArg "${fzf}/share/fzf/key-bindings.bash"}
+        fi
+        ;;
+    esac
+  ''}
 
   # Static parser-generated scripts need no completion framework or subprocess.
   ${lib.concatMapStringsSep "\n" (file: ''

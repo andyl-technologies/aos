@@ -5,8 +5,6 @@
   m4,
   flex,
   bison,
-  autoconf,
-  automake,
   texinfo,
   gnumake,
   ncurses,
@@ -41,8 +39,24 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -102,11 +116,13 @@ in
       hash = "1fii1xaxbng9x0klxmxkm0xhmycngfz72jsgyrna4sgqcmlxhp0d";
     };
 
-    buildDeps = [m4 flex bison autoconf automake texinfo gnumake];
-    runtimeDeps =
-      if stdenv.hostPlatform.isDarwin
-      then [ncurses]
-      else [];
+    # Release tarballs include configure and Makefile.in. Using Autoconf or
+    # Automake here would recurse through their interactive Bash dependency.
+    buildDeps = [m4 flex bison texinfo gnumake];
+    # Readline needs real terminal capabilities for redraw and screen clearing.
+    # Ncurses retains its own terminfo database; the bundled termcap fallback
+    # otherwise expects an /etc/termcap file that AOS images do not provide.
+    runtimeDeps = [ncurses];
     postPatch =
       ''
         # GNU Bash's official patches are authored for -p0 from the unpacked
@@ -146,13 +162,7 @@ in
         export CC_FOR_BUILD="$PWD/.aos-build-tools/cc"
       ''
       else "";
-    configureFlags =
-      "--without-bash-malloc --disable-nls"
-      + (
-        if stdenv.hostPlatform.isDarwin
-        then " --with-curses"
-        else ""
-      );
+    configureFlags = "--without-bash-malloc --disable-nls --with-curses";
     # Bash's makefiles invoke helper scripts through $(SHELL).
     makeFlags = "SHELL=${stdenv.shell}";
     postInstall = ''

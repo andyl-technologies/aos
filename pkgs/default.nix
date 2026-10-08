@@ -1918,7 +1918,10 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
         } (import ../lib/build-support/nuke-references {
           mkDerivation = args:
             withDefaultMaintainers (rawMkDerivation args);
-          inherit (self) bash coreutils grep sed;
+          # Build-time scrubbing must not depend on the interactive Bash it
+          # scrubs. The completed bootstrap shell remains the builder shell.
+          inherit (stdenv) bash;
+          inherit (self) coreutils grep sed;
         });
     }
     // discoveredPackages
@@ -2900,11 +2903,9 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       # Native package sets retain the final stdenv tools. Cross package roots
       # must be actual target builds; scheduler-native tools remain available
       # only through buildPackages and build-dependency splicing.
-      bash = withPlatformSupport discoveredPackages.bash (withDefaultMaintainers (
-        if stdenv.isCross
-        then discoveredPackages.bash
-        else withBootstrapPublication "bash"
-      ));
+      # The bootstrap shell serves builders; interactive shells use the public
+      # recipe with ncurses terminal support on both native and cross targets.
+      bash = withDefaultMaintainers discoveredPackages.bash;
       coreutils = withPlatformSupport discoveredPackages.coreutils (withDefaultMaintainers (
         if stdenv.isCross
         then discoveredPackages.coreutils

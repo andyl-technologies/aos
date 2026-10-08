@@ -11,7 +11,7 @@
   platform,
 }: let
   coreRoots = [pkgs.glibc pkgs.gcc-libs pkgs.ca-certificates];
-  shellRoots = [pkgs.bash pkgs.coreutils pkgs.findutils pkgs.grep];
+  shellRoots = [pkgs.bash pkgs.coreutils pkgs.findutils pkgs.grep pkgs.gawk pkgs.fzf];
   # APM and its startup runtime are independently installable outputs of the
   # CLI source build. Retain only the commands needed by a fresh container.
   cliRoots = [pkgs.apm pkgs.aos-package-runtime];
@@ -66,6 +66,7 @@ in {
           mode = "0644";
           text = import (pkgs.aos-host-policy.module + "/bashrc-text.nix") {
             inherit lib;
+            fzf = pkgs.fzf;
             completionFiles = ["${pkgs.apm}/share/bash-completion/completions/apm"];
           };
         }

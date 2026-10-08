@@ -570,7 +570,10 @@ in {
         path = config.system.build.systemPath;
       };
 
-      environment.etc."bashrc".text = import ../../pkgs/system/_aos-host-policy/bashrc-text.nix {inherit lib;};
+      environment.etc."bashrc".text = import ../../pkgs/system/_aos-host-policy/bashrc-text.nix {
+        inherit lib;
+        fzf = pkgs.fzf;
+      };
       environment.etc."inputrc".text = import ../../pkgs/system/_aos-host-policy/inputrc-text.nix;
 
       # The exactly selected manager package contributes `system.build.initrd`.
