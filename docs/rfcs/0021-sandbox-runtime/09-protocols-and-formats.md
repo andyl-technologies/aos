@@ -1259,25 +1259,18 @@ AOSMSP01 retain their exact wire and durable formats.
 ### SourceProvider ledger and Mount-manager startup state (source-only, inert)
 
 Namespace 41's current canonical SourceProvider owner format is `AOSSPL01`,
-version 4. It has exactly seven closed bodies: authority head, catalog head,
+version 5. It has exactly seven closed bodies: authority head, catalog head,
 current holder-session head, immutable session history, provider attempt,
 provider acquisition, and release lineage. Fixed per-artifact ceilings, a
 bounded record count, and a 512-MiB aggregate recovered-graph ceiling apply
-before graph allocation. Version 4 durably binds the protected response
+before graph allocation. Version 5 durably binds the protected response
 completion time into terminal attempts. A normal open rejects older records
 before materializing the graph; they are not alternate accepted wire shapes.
 
-The separate pure legacy migration planner first validates the complete,
-sorted canonical version-2 graph and requires externally authenticated
-supplemental projections for every identity, sequence, trust-history, and floor
-fact that version 2 omitted, plus a complete canonical current-format
-replacement graph. The security layer authenticates the fixed
-`AOSSPMG1` manifest against the exact current namespace-41 snapshot plus current
-trust, revocation, catalog, and protected-configuration heads. The provider
-layer then applies the whole replacement under one snapshot/CAS boundary and
-returns an opaque recovery token if append durability is ambiguous. This is an
-offline migration path, not an in-place upgrade, listener, provider backend, or
-advertised production feature.
+Version-2 `AOSSPL01` records and their former `AOSSPMG1` migration
+manifests are unsupported. The earlier, undeployed PR format has no migration
+API. Retained unsupported state fails closed; it is neither discarded nor
+reinterpreted as the current canonical format.
 
 Namespace 45 stores one monotone `AOSMMSTA1` Mount-manager startup-policy head
 and immutable `AOSMMCAP1` per-execution captures. Its purpose-limited protected

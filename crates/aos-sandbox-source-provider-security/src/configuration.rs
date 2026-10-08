@@ -231,16 +231,6 @@ impl RevalidatedProviderConfigurationV1 {
         &self.data
     }
 
-    /// Returns the exact non-secret configuration commitment used by migration custody.
-    ///
-    /// The commitment binds provider, trust, revocation, route, namespace,
-    /// validity, capability, and current provider signer facts. It carries no
-    /// signing or journal authority.
-    #[must_use]
-    pub fn migration_configuration_commitment_v1(&self) -> ObjectDigest {
-        crate::migration::migration_configuration_commitment(self)
-    }
-
     pub(crate) fn capture(
         custody: &mut ProtectedProviderCustodyV1,
         now_seconds: i64,

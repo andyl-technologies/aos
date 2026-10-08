@@ -6,10 +6,10 @@
 //! record_digest[32] | body[body_len]
 //! ```
 //!
-//! Version 5 is the accepted baseline family member. Older versions are not decoded or
-//! upgraded in place: opening a namespace containing them fails before graph
-//! allocation with an explicit offline-migration error. This prevents an
-//! ambiguous dual interpretation of records without protected completion time.
+//! Version 5 is the accepted baseline family member. Older versions are not
+//! decoded or upgraded in place: their envelopes fail before body decoding.
+//! There is no migration API for the earlier undeployed formats. This prevents
+//! an ambiguous dual interpretation of records without protected completion time.
 //! Digest-only native completion uses a version-5 envelope and version-2 body.
 //! Exact native request retention uses a version-6 envelope and version-3 body.
 //! Original paired-clock retention uses a version-7 envelope and version-4 body;
@@ -711,7 +711,7 @@ pub(super) fn decode_envelope_version<'a>(
     let encoded_version = u16::from_be_bytes(read_array(bytes, 8)?);
     if encoded_version == 2 {
         return Err(LedgerFormatErrorV1::Corrupt(
-            "AOSSPL v2 requires explicit offline migration",
+            "unsupported AOSSPL v2 format",
         ));
     }
     let kind = RecordKind::decode(bytes[10])?;
@@ -1596,6 +1596,45 @@ fn decode_acquisition_body(
         }
     }
     Ok(value)
+}
+
+#[cfg(test)]
+mod unsupported_legacy_tests {
+    use super::*;
+
+    // A shape-only old envelope is enough to pin refusal before body decoding.
+    fn legacy_v2_envelope(kind: u8) -> [u8; ENVELOPE_BYTES] {
+        let mut bytes = [0; ENVELOPE_BYTES];
+        bytes[..8].copy_from_slice(MAGIC);
+        bytes[8..10].copy_from_slice(&2_u16.to_be_bytes());
+        bytes[10] = kind;
+        bytes
+    }
+
+    #[test]
+    fn legacy_v2_is_rejected_before_kind_or_body_decoding() {
+        let key = authority_key([1; 16]);
+
+        for kind in [RecordKind::AuthorityHead as u8, u8::MAX] {
+            let bytes = legacy_v2_envelope(kind);
+
+            assert!(matches!(
+                decode_record(&key, &bytes),
+                Err(LedgerFormatErrorV1::Corrupt("unsupported AOSSPL v2 format"))
+            ));
+        }
+    }
+
+    #[test]
+    fn prospective_validation_does_not_discard_unsupported_v2_rows() {
+        let key = authority_key([1; 16]);
+        let bytes = legacy_v2_envelope(RecordKind::AuthorityHead as u8);
+
+        assert!(matches!(
+            crate::validate_prospective_records([(key.as_slice(), bytes.as_slice())]),
+            Err(LedgerFormatErrorV1::Corrupt("unsupported AOSSPL v2 format"))
+        ));
+    }
 }
 
 #[cfg(test)]

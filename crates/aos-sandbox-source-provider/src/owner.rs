@@ -48,15 +48,6 @@ enum FixedProviderOwnerStateV1 {
         security: ProviderSourceProviderOwnerV1,
         canonical_catalog_publication: Vec<u8>,
     },
-    MigrationRequired {
-        session: aos_sandbox_source_provider_security::CurrentProviderIngressSessionV1,
-        canonical_catalog_publication: Vec<u8>,
-    },
-    MigrationRecovery {
-        session: aos_sandbox_source_provider_security::CurrentProviderIngressSessionV1,
-        canonical_catalog_publication: Vec<u8>,
-        recovery: crate::migration::AossplMigrationRecoveryV1,
-    },
     Ready(DetachedProviderLedgerV1),
     HeldReadOnly(Box<held_readonly::HeldReadOnlyV1>),
 }
@@ -294,10 +285,6 @@ impl ProtectedProviderMountRetryAuthorityV1 {
 pub enum FixedProviderOwnerStatusV1 {
     /// The nonblocking authenticated hello exchange remains pending.
     HandshakePending,
-    /// The exact legacy graph requires authenticated supplemental provenance.
-    MigrationRequired,
-    /// An ambiguous migration append is retained for fixed-owner readback.
-    MigrationRecoveryRequired,
     /// The fixed journal, configuration, and live session are current.
     Ready,
     /// A mixed held snapshot is retained for structural observations only.
@@ -445,28 +432,6 @@ impl FixedProviderOwnerV1 {
                 security,
                 canonical_catalog_publication,
             } => (security, canonical_catalog_publication),
-            FixedProviderOwnerStateV1::MigrationRequired {
-                session,
-                canonical_catalog_publication,
-            } => {
-                self.state = Some(FixedProviderOwnerStateV1::MigrationRequired {
-                    session,
-                    canonical_catalog_publication,
-                });
-                return Ok(FixedProviderOwnerStatusV1::MigrationRequired);
-            }
-            FixedProviderOwnerStateV1::MigrationRecovery {
-                session,
-                canonical_catalog_publication,
-                recovery,
-            } => {
-                self.state = Some(FixedProviderOwnerStateV1::MigrationRecovery {
-                    session,
-                    canonical_catalog_publication,
-                    recovery,
-                });
-                return Ok(FixedProviderOwnerStatusV1::MigrationRecoveryRequired);
-            }
             FixedProviderOwnerStateV1::Ready(detached) => {
                 self.state = Some(FixedProviderOwnerStateV1::Ready(detached));
                 return Ok(FixedProviderOwnerStatusV1::Ready);
@@ -580,14 +545,6 @@ impl FixedProviderOwnerV1 {
                                 ) {
                                     Ok(Some(ledger)) => ledger,
                                     Ok(None) => return Err(error),
-                                    Err(ProviderLedgerError::MigrationNeedsProvenance(_)) => {
-                                        self.state =
-                                            Some(FixedProviderOwnerStateV1::MigrationRequired {
-                                                session,
-                                                canonical_catalog_publication,
-                                            });
-                                        return Ok(FixedProviderOwnerStatusV1::MigrationRequired);
-                                    }
                                     Err(recovery_error) => return Err(recovery_error),
                                 }
                             }
@@ -642,13 +599,6 @@ impl FixedProviderOwnerV1 {
                 self.state = Some(FixedProviderOwnerStateV1::HeldReadOnly(held));
                 return Err(ProviderLedgerError::InvalidTransition(
                     "held profile is observation-only",
-                ));
-            }
-            state @ (FixedProviderOwnerStateV1::MigrationRequired { .. }
-            | FixedProviderOwnerStateV1::MigrationRecovery { .. }) => {
-                self.state = Some(state);
-                return Err(ProviderLedgerError::InvalidTransition(
-                    "fixed provider migration is not complete",
                 ));
             }
             FixedProviderOwnerStateV1::Handshake {
@@ -1268,201 +1218,6 @@ impl FixedProviderOwnerV1 {
         Ok(())
     }
 
-    /// Authenticates and installs the exact retained legacy provider ledger.
-    ///
-    /// This operation is available only after fixed-owner replay classified
-    /// the current namespace as canonical version 2. The live session verifies
-    /// the signed provenance manifest, and this owner performs the whole-state
-    /// CAS without exposing custody or a raw journal authority.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ProviderLedgerError`] for a non-migration state, invalid or
-    /// stale provenance, a changed legacy snapshot, failed preflight, or a
-    /// definite journal failure. Ambiguous durability is retained in the owner
-    /// and reported as [`FixedProviderOwnerStatusV1::MigrationRecoveryRequired`].
-    pub fn install_aosspl_v2_to_v3_migration(
-        &mut self,
-        provenance: crate::SupplementalV2MigrationProvenanceV1,
-        canonical_manifest: &[u8],
-    ) -> Result<FixedProviderOwnerStatusV1, ProviderLedgerError> {
-        self.require_ordinary_owner()?;
-        self.require_original_ingress_idle()?;
-        let state = self
-            .state
-            .take()
-            .ok_or(ProviderLedgerError::RuntimePoisoned)?;
-        let (mut session, canonical_catalog_publication) = match state {
-            FixedProviderOwnerStateV1::MigrationRequired {
-                session,
-                canonical_catalog_publication,
-            } => (session, canonical_catalog_publication),
-            state => {
-                self.state = Some(state);
-                return Err(ProviderLedgerError::InvalidTransition(
-                    "fixed provider ledger does not require migration",
-                ));
-            }
-        };
-        let authority = match claim_fixed_provider_authority(self.journal.as_mut()) {
-            Ok(authority) => authority,
-            Err(error) => {
-                self.state = Some(FixedProviderOwnerStateV1::MigrationRequired {
-                    session,
-                    canonical_catalog_publication,
-                });
-                return Err(error.into());
-            }
-        };
-        let authorization: Result<
-            aos_sandbox_source_provider_security::AuthorizedV2MigrationPlanV1,
-            ProviderLedgerError,
-        > = (|| {
-            let snapshot = authority.snapshot()?;
-            let protected = session.revalidated_provider_configuration()?;
-            let catalog = aos_sandbox_source_provider_security::verify_catalog_publication(
-                &protected,
-                &canonical_catalog_publication,
-            )?;
-            session
-                .authorize_fixed_provider_ledger_migration_v1(
-                    &authority,
-                    snapshot,
-                    catalog,
-                    provenance,
-                    canonical_manifest,
-                )
-                .map_err(ProviderLedgerError::from)
-        })();
-        let authorization = match authorization {
-            Ok(authorization) => authorization,
-            Err(error) => {
-                self.state = Some(FixedProviderOwnerStateV1::MigrationRequired {
-                    session,
-                    canonical_catalog_publication,
-                });
-                return Err(error);
-            }
-        };
-        let outcome = ProviderLedgerV1::migrate_aosspl_v2_to_v3_from_fixed_session(
-            authority,
-            &mut session,
-            ProviderLedgerLimits::default(),
-            authorization,
-        );
-        let outcome = match outcome {
-            Ok(outcome) => outcome,
-            Err(error) => {
-                self.state = Some(FixedProviderOwnerStateV1::MigrationRequired {
-                    session,
-                    canonical_catalog_publication,
-                });
-                return Err(error);
-            }
-        };
-        match outcome {
-            crate::migration::ProtectedAossplMigrationOutcomeV1::Opened(mut ledger) => {
-                ledger.install_current_session(session)?;
-                self.state = Some(FixedProviderOwnerStateV1::Ready(ledger.detach()));
-                Ok(FixedProviderOwnerStatusV1::Ready)
-            }
-            crate::migration::ProtectedAossplMigrationOutcomeV1::RecoveryRequired(recovery) => {
-                self.state = Some(FixedProviderOwnerStateV1::MigrationRecovery {
-                    session,
-                    canonical_catalog_publication,
-                    recovery,
-                });
-                Ok(FixedProviderOwnerStatusV1::MigrationRecoveryRequired)
-            }
-        }
-    }
-
-    /// Resolves or retries one owner-retained ambiguous migration append.
-    ///
-    /// The fixed journal is reopened before classification. Exact installed
-    /// state is accepted without rewriting; exact legacy state retries the same
-    /// authenticated transaction, and every other state fails closed.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ProviderLedgerError`] unless the owner retains an ambiguous
-    /// migration and the reopened fixed journal is exactly old or exactly new.
-    pub fn recover_aosspl_v2_to_v3_migration(
-        &mut self,
-    ) -> Result<FixedProviderOwnerStatusV1, ProviderLedgerError> {
-        self.require_ordinary_owner()?;
-        self.require_original_ingress_idle()?;
-        let state = self
-            .state
-            .take()
-            .ok_or(ProviderLedgerError::RuntimePoisoned)?;
-        let (mut session, canonical_catalog_publication, recovery) = match state {
-            FixedProviderOwnerStateV1::MigrationRecovery {
-                session,
-                canonical_catalog_publication,
-                recovery,
-            } => (session, canonical_catalog_publication, recovery),
-            state => {
-                self.state = Some(state);
-                return Err(ProviderLedgerError::InvalidTransition(
-                    "fixed provider migration has no ambiguous append",
-                ));
-            }
-        };
-        if let Err(error) = self.reopen_fixed_journal() {
-            self.state = Some(FixedProviderOwnerStateV1::MigrationRecovery {
-                session,
-                canonical_catalog_publication,
-                recovery,
-            });
-            return Err(error);
-        }
-        let authority = match claim_fixed_provider_authority(self.journal.as_mut()) {
-            Ok(authority) => authority,
-            Err(error) => {
-                self.state = Some(FixedProviderOwnerStateV1::MigrationRecovery {
-                    session,
-                    canonical_catalog_publication,
-                    recovery,
-                });
-                return Err(error.into());
-            }
-        };
-        let outcome = ProviderLedgerV1::recover_aosspl_v2_to_v3_migration(
-            authority,
-            &mut session,
-            &canonical_catalog_publication,
-            ProviderLedgerLimits::default(),
-            &recovery,
-        );
-        let outcome = match outcome {
-            Ok(outcome) => outcome,
-            Err(error) => {
-                self.state = Some(FixedProviderOwnerStateV1::MigrationRecovery {
-                    session,
-                    canonical_catalog_publication,
-                    recovery,
-                });
-                return Err(error);
-            }
-        };
-        match outcome {
-            crate::migration::ProtectedAossplMigrationOutcomeV1::Opened(mut ledger) => {
-                ledger.install_current_session(session)?;
-                self.state = Some(FixedProviderOwnerStateV1::Ready(ledger.detach()));
-                Ok(FixedProviderOwnerStatusV1::Ready)
-            }
-            crate::migration::ProtectedAossplMigrationOutcomeV1::RecoveryRequired(recovery) => {
-                self.state = Some(FixedProviderOwnerStateV1::MigrationRecovery {
-                    session,
-                    canonical_catalog_publication,
-                    recovery,
-                });
-                Ok(FixedProviderOwnerStatusV1::MigrationRecoveryRequired)
-            }
-        }
-    }
-
     /// Sends one durable reply through its exact fixed-owner live session.
     ///
     /// The owner resolves the response's signed session binding internally,
@@ -1489,13 +1244,6 @@ impl FixedProviderOwnerV1 {
                 self.state = Some(FixedProviderOwnerStateV1::HeldReadOnly(held));
                 return Err(ProviderLedgerError::InvalidTransition(
                     "held profile is observation-only",
-                ));
-            }
-            state @ (FixedProviderOwnerStateV1::MigrationRequired { .. }
-            | FixedProviderOwnerStateV1::MigrationRecovery { .. }) => {
-                self.state = Some(state);
-                return Err(ProviderLedgerError::InvalidTransition(
-                    "fixed provider migration is not complete",
                 ));
             }
             FixedProviderOwnerStateV1::Handshake {

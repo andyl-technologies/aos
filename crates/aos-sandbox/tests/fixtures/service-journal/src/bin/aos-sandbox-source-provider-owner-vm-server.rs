@@ -79,10 +79,6 @@ fn run() -> Result<(), Box<dyn Error>> {
             FixedProviderOwnerStatusV1::HeldReadOnly => {
                 return Err("held Provider profile is observation-only".into());
             }
-            FixedProviderOwnerStatusV1::MigrationRequired
-            | FixedProviderOwnerStatusV1::MigrationRecoveryRequired => {
-                return Err("fixed Provider journal requires migration".into());
-            }
         }
     }
     write_marker(ready)?;

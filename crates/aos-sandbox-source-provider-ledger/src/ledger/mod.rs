@@ -25,8 +25,6 @@ pub enum LedgerFormatErrorV1 {
     Corrupt(&'static str),
     /// A bounded pure value exceeds its hard ceiling.
     LimitExceeded(&'static str),
-    /// A legacy migration lacks authenticated facts absent from its source format.
-    NeedsProvenance(&'static str),
 }
 
 impl core::fmt::Display for LedgerFormatErrorV1 {
@@ -40,12 +38,6 @@ impl core::fmt::Display for LedgerFormatErrorV1 {
             }
             Self::LimitExceeded(message) => {
                 write!(formatter, "SourceProvider ledger limit exceeded: {message}")
-            }
-            Self::NeedsProvenance(message) => {
-                write!(
-                    formatter,
-                    "SourceProvider ledger migration needs provenance: {message}"
-                )
             }
         }
     }

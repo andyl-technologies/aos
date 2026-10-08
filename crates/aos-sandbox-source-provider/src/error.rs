@@ -18,9 +18,6 @@ pub enum ProviderLedgerError {
     /// A bounded ledger resource would exceed its configured ceiling.
     #[error("SourceProvider ledger limit exceeded: {0}")]
     LimitExceeded(&'static str),
-    /// A legacy ledger requires separately authenticated migration provenance.
-    #[error("SourceProvider ledger migration needs provenance: {0}")]
-    MigrationNeedsProvenance(&'static str),
     /// Protected current configuration differs from the recovered durable head.
     #[error("SourceProvider protected configuration does not match durable state")]
     ConfigurationMismatch,
@@ -59,9 +56,6 @@ impl From<crate::ledger::LedgerFormatErrorV1> for ProviderLedgerError {
             crate::ledger::LedgerFormatErrorV1::Corrupt(message) => Self::Corrupt(message),
             crate::ledger::LedgerFormatErrorV1::LimitExceeded(message) => {
                 Self::LimitExceeded(message)
-            }
-            crate::ledger::LedgerFormatErrorV1::NeedsProvenance(message) => {
-                Self::MigrationNeedsProvenance(message)
             }
         }
     }

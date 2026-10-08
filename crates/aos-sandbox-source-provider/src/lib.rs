@@ -29,7 +29,6 @@ mod error;
 mod held_snapshot_selection;
 mod inventory;
 mod limits;
-mod migration;
 mod native_completion;
 mod native_no_dispatch_capacity;
 mod native_no_dispatch_recovery;
@@ -52,9 +51,6 @@ pub(crate) use ledger::{format, model};
 pub use admission::{
     DurableAcquireRebindPermitV1, DurableAcquireReplayV1, DurableCachedResponseV1,
     ProviderAdmissionDispositionV1,
-};
-pub use aos_sandbox_source_provider_ledger::migration::{
-    LegacyRecordExpectationV1, MigrationReplacementRecordV1, SupplementalV2MigrationProvenanceV1,
 };
 pub use aos_sandbox_source_provider_protocol::{
     MAXIMUM_NORMALIZED_ACQUISITION_INTENT_BYTES, NormalizedAcquisitionIntentV1,

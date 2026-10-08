@@ -200,9 +200,6 @@ pub(crate) fn map_pure_ledger_error(
         aos_sandbox_source_provider_ledger::LedgerFormatErrorV1::LimitExceeded(message) => {
             ProviderLedgerError::LimitExceeded(message)
         }
-        aos_sandbox_source_provider_ledger::LedgerFormatErrorV1::NeedsProvenance(message) => {
-            ProviderLedgerError::MigrationNeedsProvenance(message)
-        }
     }
 }
 
@@ -1707,9 +1704,6 @@ fn prepare_mutations_from_owner(
         }
         aos_sandbox_source_provider_ledger::LedgerFormatErrorV1::LimitExceeded(message) => {
             ProviderLedgerError::LimitExceeded(message)
-        }
-        aos_sandbox_source_provider_ledger::LedgerFormatErrorV1::NeedsProvenance(message) => {
-            ProviderLedgerError::MigrationNeedsProvenance(message)
         }
     })?;
     let prospective_recovered = source.recover_prospective(&prospective, validation_configuration)?;

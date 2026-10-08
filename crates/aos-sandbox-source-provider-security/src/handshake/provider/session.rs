@@ -528,49 +528,6 @@ impl CurrentProviderIngressSessionV1 {
         self.session.binding()
     }
 
-    /// Authenticates one legacy provider-ledger migration under this live owner.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SourceProviderSecurityError`] unless the carrier, protected
-    /// custody, fixed namespace-41 snapshot, catalog, provenance, and signed
-    /// migration manifest are all exact and current.
-    #[doc(hidden)]
-    pub fn authorize_fixed_provider_ledger_migration_v1(
-        &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
-        journal_snapshot: aos_sandbox::ProtectedJournalSnapshot,
-        catalog_publication: crate::VerifiedCatalogPublicationV1,
-        provenance: aos_sandbox_source_provider_ledger::migration::SupplementalV2MigrationProvenanceV1,
-        canonical_manifest: &[u8],
-    ) -> Result<crate::AuthorizedV2MigrationPlanV1, SourceProviderSecurityError> {
-        self.revalidate()?;
-        crate::migration::authorize_v2_migration_plan_v1(
-            &mut self.custody,
-            journal,
-            journal_snapshot,
-            catalog_publication,
-            provenance,
-            canonical_manifest,
-        )
-    }
-
-    /// Consumes one authenticated migration plan at the same live owner.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SourceProviderSecurityError`] after expiry or any custody,
-    /// catalog, journal-instance, snapshot, or configuration drift.
-    #[doc(hidden)]
-    pub fn consume_fixed_provider_ledger_migration_v1(
-        &mut self,
-        authorization: crate::AuthorizedV2MigrationPlanV1,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
-    ) -> Result<crate::AuthorizedV2MigrationInstallPartsV1, SourceProviderSecurityError> {
-        self.revalidate()?;
-        authorization.consume_for_install(&mut self.custody, journal)
-    }
-
     /// Seals the exact current catalog head under this fixed live owner.
     ///
     /// # Errors

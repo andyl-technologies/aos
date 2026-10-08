@@ -24,8 +24,6 @@ pub mod identity;
 pub mod ledger;
 /// Defines format-level AOSSPL hard ceilings without runtime configuration.
 pub mod limits;
-/// Defines a dormant, nonauthorizing AOSSPL v2-to-v3 migration planner.
-pub mod migration;
 
 pub use ledger::LedgerFormatErrorV1;
 pub use ledger::completion::{

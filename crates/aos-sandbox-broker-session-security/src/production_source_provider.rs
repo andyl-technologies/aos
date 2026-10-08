@@ -232,9 +232,6 @@ pub enum ProductionSourceProviderIngressErrorV1 {
     /// Fixed custody, verifier, or journal admission failed.
     #[error("SourceProvider owner admission failed: {0}")]
     Owner(#[from] ProviderLedgerError),
-    /// The fixed owner requires migration provenance before serving requests.
-    #[error("SourceProvider migration requires authenticated external provenance")]
-    MigrationRequired,
 }
 
 /// Owns the exact source-provider listener after single-threaded FD adoption.
@@ -534,12 +531,12 @@ impl ProductionSourceProviderIngressV1 {
     ///
     /// The security owner keeps the carrier private. A bounded pause between
     /// nonblocking handshake steps avoids exporting a raw socket descriptor to
-    /// a poller. A legacy graph requiring migration provenance remains closed.
+    /// a poller. Unsupported legacy graphs remain closed.
     ///
     /// # Errors
     ///
     /// Returns an error on deadline expiry, peer or custody failure, catalog
-    /// mismatch, journal failure, or migration requiring external provenance.
+    /// mismatch, journal failure, or unsupported legacy state.
     pub fn accept_authenticated_owner(
         &mut self,
         deadline_boottime_nanoseconds: u64,
@@ -560,10 +557,6 @@ impl ProductionSourceProviderIngressV1 {
                         "held profile cannot serve authenticated effects",
                     )
                     .into());
-                }
-                FixedProviderOwnerStatusV1::MigrationRequired
-                | FixedProviderOwnerStatusV1::MigrationRecoveryRequired => {
-                    return Err(ProductionSourceProviderIngressErrorV1::MigrationRequired);
                 }
             }
         }
