@@ -794,7 +794,7 @@ mod tests {
             panic!("test intent was not prepared");
         };
 
-        *transaction.id()
+        transaction.into_parts().0
     }
 
     fn completion_transaction_id(request_id: [u8; 16]) -> [u8; 16] {
@@ -822,7 +822,7 @@ mod tests {
         let response = issuer.acquire(&claim).unwrap();
         let (_prepared, transaction) = pending.authenticate(response, &test_clock(150)).unwrap();
 
-        *transaction.id()
+        transaction.into_parts().0
     }
 
     fn open_test_store(
@@ -1546,12 +1546,13 @@ mod tests {
         else {
             panic!("test intent was not prepared");
         };
-        let record = &transaction.records()[0];
-        let entry_record_bytes = 7 + record.key().len() + MAXIMUM_DURABLE_ENTRY_BYTES;
+        let (_, records) = transaction.into_parts();
+        let (_, key, value) = records.into_iter().next().unwrap().into_parts();
+        let entry_record_bytes = 7 + key.len() + MAXIMUM_DURABLE_ENTRY_BYTES;
         let current_record_bytes = 7 + MAXIMUM_DURABLE_KEY_BYTES + MAXIMUM_DURABLE_CURRENT_BYTES;
         assert!(entry_record_bytes <= limits.maximum_record_bytes);
         assert!(entry_record_bytes + current_record_bytes <= limits.maximum_transaction_bytes);
-        assert!(record.value().len() <= MAXIMUM_DURABLE_INTENT_BYTES);
+        assert!(value.len() <= MAXIMUM_DURABLE_INTENT_BYTES);
         drop(intent);
 
         let directory = TestDirectory::new("epoch-capacity");

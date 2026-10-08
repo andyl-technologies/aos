@@ -108,28 +108,10 @@ pub struct OwnershipHistoryRecord {
 }
 
 impl OwnershipHistoryRecord {
-    /// Returns the record's semantic namespace.
-    #[must_use]
-    pub const fn kind(&self) -> OwnershipHistoryRecordKind {
-        self.kind
-    }
-
-    /// Returns the canonical materialized key.
-    #[must_use]
-    pub fn key(&self) -> &[u8] {
-        &self.key
-    }
-
     /// Transfers the inert namespace and canonical byte buffers without copying.
     #[must_use]
     pub fn into_parts(self) -> (OwnershipHistoryRecordKind, Vec<u8>, Vec<u8>) {
         (self.kind, self.key, self.value)
-    }
-
-    /// Returns the canonical materialized value.
-    #[must_use]
-    pub fn value(&self) -> &[u8] {
-        &self.value
     }
 }
 
@@ -144,22 +126,10 @@ pub struct OwnershipHistoryTransaction {
 }
 
 impl OwnershipHistoryTransaction {
-    /// Returns the domain-separated transaction identity.
-    #[must_use]
-    pub const fn id(&self) -> &[u8; 16] {
-        &self.id
-    }
-
     /// Transfers the inert transaction identity and ordered records without copying.
     #[must_use]
     pub fn into_parts(self) -> ([u8; 16], Vec<OwnershipHistoryRecord>) {
         (self.id, self.records)
-    }
-
-    /// Returns canonical records in their original commit order.
-    #[must_use]
-    pub fn records(&self) -> &[OwnershipHistoryRecord] {
-        &self.records
     }
 }
 
@@ -458,7 +428,7 @@ impl<'a> PendingOwnershipCompletion<'a> {
         let request_id = *self.claim.request_id();
         let recovered = lease.into_recovered();
         let completed = DurableOwnershipEntry {
-            claim: self.claim.clone(),
+            claim: self.claim,
             state: DurableEntryState::Completed {
                 accepted_wall_seconds: clock.wall_seconds(),
                 lease: Box::new(recovered.clone()),
@@ -488,7 +458,6 @@ impl<'a> PendingOwnershipCompletion<'a> {
                 completed,
                 recovered,
                 exact_response,
-                claim: self.claim,
             },
             transaction,
         ))
@@ -501,7 +470,6 @@ pub struct PreparedOwnershipCompletion<'a> {
     completed: DurableOwnershipEntry,
     recovered: RecoveredOwnershipLease,
     exact_response: UnverifiedOwnershipLeaseResponse,
-    claim: OwnershipClaimV1,
 }
 
 impl PreparedOwnershipCompletion<'_> {
@@ -515,7 +483,7 @@ impl PreparedOwnershipCompletion<'_> {
     pub fn publish(self) -> UnverifiedOwnershipLeaseResponse {
         self.history
             .entries
-            .insert(*self.claim.request_id(), self.completed);
+            .insert(*self.completed.claim.request_id(), self.completed);
         self.history
             .current
             .insert(self.recovered.assignment().sandbox(), self.recovered);

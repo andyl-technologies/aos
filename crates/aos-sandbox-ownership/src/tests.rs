@@ -8,9 +8,6 @@
 
 mod advance;
 
-use std::cell::Cell;
-use std::rc::Rc;
-
 use aos_sandbox_core::format::{encode_ownership_lease, encode_signature, encode_trust_policy};
 use aos_sandbox_core::model::{
     KeyUsage, SignaturePurpose, SignatureStatement, StableKeyId, TrustPolicy,
@@ -21,64 +18,37 @@ use aos_sandbox_core::{
     TrustScopeId, descriptor_for_bytes, sign_statement,
 };
 use aos_sandbox_ownership_protocol::{
-    ExpectedOwnershipLease, OwnershipAuthority, OwnershipAuthorityError,
-    OwnershipTransactionReceiptV1, SignedOwnershipLease,
+    ExpectedOwnershipLease, OwnershipTransactionReceiptV1, SignedOwnershipLease,
 };
 use ed25519_dalek::SigningKey;
 
 use super::*;
 
-struct TestAuthority {
+// Produces signed test DATA, not an issuer or a replay/CAS authority.
+struct Fixture {
     signing_key: SigningKey,
     authority: KeyReference,
     scope: TrustScopeId,
     policy_descriptor: aos_sandbox_core::ObjectDescriptor,
-    requests: BTreeMap<[u8; 16], (ObjectDigest, UnverifiedOwnershipLeaseResponse)>,
-    current: Option<(
-        LeaseAssignment,
-        NodeId,
-        u64,
-        ObjectDigest,
-        DesiredGeneration,
-    )>,
-    now_seconds: i64,
-    duration_seconds: i64,
-    generation_increment: u64,
-    override_assignment: Option<LeaseAssignment>,
-    override_node: Option<NodeId>,
-    calls: Rc<Cell<usize>>,
+    verifier: OwnershipAuthorityVerifier,
 }
 
-impl TestAuthority {
-    fn issue(
-        &mut self,
+impl Fixture {
+    fn response(
+        &self,
         claim: &OwnershipClaimV1,
         generation: u64,
-    ) -> Result<UnverifiedOwnershipLeaseResponse, OwnershipAuthorityError> {
-        if let Some((digest, response)) = self.requests.get(claim.request_id()) {
-            return if *digest == claim.digest() {
-                Ok(response.clone())
-            } else {
-                Err(OwnershipAuthorityError::IdempotencyConflict)
-            };
-        }
-        let assignment = self.override_assignment.unwrap_or(claim.assignment());
-        let node = self.override_node.unwrap_or(claim.node());
+    ) -> UnverifiedOwnershipLeaseResponse {
+        let assignment = claim.assignment();
+        let node = claim.node();
         let nonce_byte = claim.request_id()[0].wrapping_add(generation as u8).max(1);
-        let lease = OwnershipLease::new(
-            assignment,
-            node,
-            generation,
-            self.now_seconds - 10,
-            self.now_seconds - 10 + self.duration_seconds,
-            5,
-            [nonce_byte; 16],
-        )
-        .map_err(|_| OwnershipAuthorityError::Internal)?;
+        let lease =
+            OwnershipLease::new(assignment, node, generation, 140, 180, 5, [nonce_byte; 16])
+                .unwrap();
+
         let lease_bytes = encode_ownership_lease(&lease);
         let descriptor = descriptor_for_bytes(
-            MediaType::new(PortableMediaType::OwnershipLease.as_str().to_owned())
-                .map_err(|_| OwnershipAuthorityError::Internal)?,
+            MediaType::new(PortableMediaType::OwnershipLease.as_str().to_owned()).unwrap(),
             &lease_bytes,
         );
         let statement = SignatureStatement::new(
@@ -90,19 +60,19 @@ impl TestAuthority {
             Some(lease.authority_expires_seconds()),
             self.policy_descriptor.clone(),
         )
-        .map_err(|_| OwnershipAuthorityError::Internal)?;
-        let signature = sign_statement(statement, &self.signing_key)
-            .map_err(|_| OwnershipAuthorityError::Internal)?;
+        .unwrap();
+        let signature = sign_statement(statement, &self.signing_key).unwrap();
+
         let receipt =
             OwnershipTransactionReceiptV1::new(self.authority.clone(), claim, &lease_bytes)
-                .map_err(|_| OwnershipAuthorityError::Internal)?;
+                .unwrap();
         let receipt_descriptor = descriptor_for_bytes(
             MediaType::new(
                 PortableMediaType::OwnershipTransactionReceipt
                     .as_str()
                     .to_owned(),
             )
-            .map_err(|_| OwnershipAuthorityError::Internal)?,
+            .unwrap(),
             receipt.canonical_bytes(),
         );
         let receipt_statement = SignatureStatement::new(
@@ -114,132 +84,17 @@ impl TestAuthority {
             Some(lease.authority_expires_seconds()),
             self.policy_descriptor.clone(),
         )
-        .map_err(|_| OwnershipAuthorityError::Internal)?;
-        let receipt_signature = sign_statement(receipt_statement, &self.signing_key)
-            .map_err(|_| OwnershipAuthorityError::Internal)?;
-        let response = UnverifiedOwnershipLeaseResponse::from_transport(
+        .unwrap();
+        let receipt_signature = sign_statement(receipt_statement, &self.signing_key).unwrap();
+
+        UnverifiedOwnershipLeaseResponse::from_transport(
             lease_bytes,
             encode_signature(&signature),
             receipt.canonical_bytes().to_vec(),
             encode_signature(&receipt_signature),
         )
-        .map_err(|_| OwnershipAuthorityError::Internal)?;
-        self.requests
-            .insert(*claim.request_id(), (claim.digest(), response.clone()));
-        self.current = Some((
-            assignment,
-            node,
-            generation,
-            descriptor.digest(),
-            claim.desired_generation(),
-        ));
-        Ok(response)
+        .unwrap()
     }
-}
-
-impl OwnershipAuthority for TestAuthority {
-    fn acquire(
-        &mut self,
-        claim: &OwnershipClaimV1,
-    ) -> Result<UnverifiedOwnershipLeaseResponse, OwnershipAuthorityError> {
-        self.calls.set(self.calls.get() + 1);
-        if claim.action() != OwnershipClaimAction::Acquire {
-            return Err(OwnershipAuthorityError::Internal);
-        }
-        if let Some((digest, response)) = self.requests.get(claim.request_id()) {
-            return if *digest == claim.digest() {
-                Ok(response.clone())
-            } else {
-                Err(OwnershipAuthorityError::IdempotencyConflict)
-            };
-        }
-        if self.current.is_some() {
-            return Err(OwnershipAuthorityError::AlreadyOwned);
-        }
-        self.issue(claim, 7)
-    }
-
-    fn renew(
-        &mut self,
-        claim: &OwnershipClaimV1,
-    ) -> Result<UnverifiedOwnershipLeaseResponse, OwnershipAuthorityError> {
-        self.calls.set(self.calls.get() + 1);
-        if claim.action() != OwnershipClaimAction::Renew {
-            return Err(OwnershipAuthorityError::Internal);
-        }
-        if let Some((digest, response)) = self.requests.get(claim.request_id()) {
-            return if *digest == claim.digest() {
-                Ok(response.clone())
-            } else {
-                Err(OwnershipAuthorityError::IdempotencyConflict)
-            };
-        }
-        let Some((assignment, node, generation, digest, desired_generation)) = self.current else {
-            return Err(OwnershipAuthorityError::StaleExpectedPrior);
-        };
-        if assignment != claim.assignment()
-            || node != claim.node()
-            || desired_generation != claim.desired_generation()
-            || claim.expected_prior()
-                != Some(
-                    ExpectedOwnershipLease::new(generation, digest)
-                        .map_err(|_| OwnershipAuthorityError::Internal)?,
-                )
-        {
-            return Err(OwnershipAuthorityError::StaleExpectedPrior);
-        }
-        let next = generation
-            .checked_add(self.generation_increment)
-            .ok_or(OwnershipAuthorityError::Internal)?;
-        self.issue(claim, next)
-    }
-
-    fn advance(
-        &mut self,
-        claim: &OwnershipClaimV1,
-    ) -> Result<UnverifiedOwnershipLeaseResponse, OwnershipAuthorityError> {
-        self.calls.set(self.calls.get() + 1);
-        if claim.action() != OwnershipClaimAction::Advance {
-            return Err(OwnershipAuthorityError::Internal);
-        }
-        if let Some((digest, response)) = self.requests.get(claim.request_id()) {
-            return if *digest == claim.digest() {
-                Ok(response.clone())
-            } else {
-                Err(OwnershipAuthorityError::IdempotencyConflict)
-            };
-        }
-        let Some((assignment, node, generation, digest, desired)) = self.current else {
-            return Err(OwnershipAuthorityError::StaleExpectedPrior);
-        };
-        let proposed = claim.assignment();
-        if assignment.sandbox() != proposed.sandbox()
-            || assignment.incarnation() != proposed.incarnation()
-            || assignment.epoch() != proposed.epoch()
-            || assignment.digest() == proposed.digest()
-            || node != claim.node()
-            || desired >= claim.desired_generation()
-            || claim.expected_prior()
-                != Some(
-                    ExpectedOwnershipLease::new(generation, digest)
-                        .map_err(|_| OwnershipAuthorityError::Internal)?,
-                )
-        {
-            return Err(OwnershipAuthorityError::StaleExpectedPrior);
-        }
-        self.issue(
-            claim,
-            generation
-                .checked_add(self.generation_increment)
-                .ok_or(OwnershipAuthorityError::Internal)?,
-        )
-    }
-}
-
-struct Fixture {
-    authority: TestAuthority,
-    verifier: OwnershipAuthorityVerifier,
-    clock: RawPairedClockSample,
 }
 
 fn fixture(key_byte: u8) -> Fixture {
@@ -275,24 +130,12 @@ fn fixture(key_byte: u8) -> Fixture {
         DecodeLimits::default(),
     )
     .unwrap_or_else(|error| panic!("test anchor failed: {error}"));
-    let clock = test_clock(150);
     Fixture {
-        authority: TestAuthority {
-            signing_key,
-            authority: authority.clone(),
-            scope,
-            policy_descriptor,
-            requests: BTreeMap::new(),
-            current: None,
-            now_seconds: 150,
-            duration_seconds: 40,
-            generation_increment: 2,
-            override_assignment: None,
-            override_node: None,
-            calls: Rc::new(Cell::new(0)),
-        },
+        signing_key,
+        authority: authority.clone(),
+        scope,
+        policy_descriptor,
         verifier: OwnershipAuthorityVerifier::new(anchor, authority),
-        clock,
     }
 }
 
@@ -403,14 +246,17 @@ struct Records {
 }
 
 impl Records {
-    fn materialize(&mut self, transaction: &OwnershipHistoryTransaction) {
-        for record in transaction.records() {
-            let map = match record.kind() {
+    fn materialize(&mut self, transaction: OwnershipHistoryTransaction) {
+        let (_, records) = transaction.into_parts();
+
+        for record in records {
+            let (kind, key, value) = record.into_parts();
+            let map = match kind {
                 OwnershipHistoryRecordKind::Entry => &mut self.entries,
                 OwnershipHistoryRecordKind::Current => &mut self.currents,
             };
 
-            map.insert(record.key().to_vec(), record.value().to_vec());
+            map.insert(key, value);
         }
     }
 
@@ -447,14 +293,14 @@ fn publish_intent(history: &mut OwnershipHistory, records: &mut Records, claim: 
         panic!("test intent was not prepared");
     };
 
-    records.materialize(&transaction);
+    records.materialize(transaction);
     prepared.publish();
 }
 
 fn publish_completion(
     history: &mut OwnershipHistory,
     records: &mut Records,
-    issuer: &mut TestAuthority,
+    data: &Fixture,
     claim: &OwnershipClaimV1,
 ) -> UnverifiedOwnershipLeaseResponse {
     let OwnershipHistoryCompletion::Pending(pending) =
@@ -462,38 +308,29 @@ fn publish_completion(
     else {
         panic!("test completion was not pending");
     };
-    let response = match claim.action() {
-        OwnershipClaimAction::Acquire => issuer.acquire(claim),
-        OwnershipClaimAction::Renew => issuer.renew(claim),
-        OwnershipClaimAction::Advance => issuer.advance(claim),
-    }
-    .unwrap();
+    let generation = claim
+        .expected_prior()
+        .map_or(7, |prior| prior.generation() + 2);
+    let response = data.response(claim, generation);
     let (prepared, transaction) = pending.authenticate(response, &test_clock(150)).unwrap();
 
-    records.materialize(&transaction);
+    records.materialize(transaction);
     prepared.publish()
 }
 
-fn acquired_history(
-    key_byte: u8,
-) -> (
-    OwnershipHistory,
-    Records,
-    TestAuthority,
-    RecoveredOwnershipLease,
-) {
+fn acquired_history(key_byte: u8) -> (OwnershipHistory, Records, Fixture, RecoveredOwnershipLease) {
     let mut records = Records::default();
     let mut history = empty_history(key_byte);
-    let mut issuer = fixture(key_byte).authority;
+    let data = fixture(key_byte);
     let claim = acquire_claim(5);
     publish_intent(&mut history, &mut records, &claim);
-    publish_completion(&mut history, &mut records, &mut issuer, &claim);
+    publish_completion(&mut history, &mut records, &data, &claim);
     let prior = history
         .current(claim.assignment().sandbox())
         .unwrap()
         .clone();
 
-    (history, records, issuer, prior)
+    (history, records, data, prior)
 }
 
 #[test]
@@ -502,8 +339,7 @@ fn cross_sandbox_current_pointer_substitution_fails_recovery_closed() {
         let key_byte = 46 + attack;
         let mut history = empty_history(key_byte);
         let mut records = Records::default();
-        let mut issuer_a = fixture(key_byte).authority;
-        let mut issuer_b = fixture(key_byte).authority;
+        let data = fixture(key_byte);
         let claim_a = OwnershipClaimV1::acquire(
             [10; 16],
             assignment(10),
@@ -522,13 +358,13 @@ fn cross_sandbox_current_pointer_substitution_fails_recovery_closed() {
         .unwrap();
 
         publish_intent(&mut history, &mut records, &claim_a);
-        publish_completion(&mut history, &mut records, &mut issuer_a, &claim_a);
+        publish_completion(&mut history, &mut records, &data, &claim_a);
         let lease_a = history
             .current(claim_a.assignment().sandbox())
             .unwrap()
             .clone();
         publish_intent(&mut history, &mut records, &claim_b);
-        publish_completion(&mut history, &mut records, &mut issuer_b, &claim_b);
+        publish_completion(&mut history, &mut records, &data, &claim_b);
         let lease_b = history
             .current(claim_b.assignment().sandbox())
             .unwrap()
@@ -569,11 +405,15 @@ fn cross_sandbox_current_pointer_substitution_fails_recovery_closed() {
 #[test]
 fn durable_recovery_rejects_duplicate_roots_and_forks() {
     let (_, mut records, _, _) = acquired_history(33);
-    let mut second = fixture(33);
+    let second = fixture(33);
     let second_claim = acquire_claim(6);
     let second_lease = second
         .verifier
-        .acquire(&mut second.authority, &second_claim, &second.clock)
+        .verify_response(
+            &second_claim,
+            second.response(&second_claim, 7),
+            &test_clock(150),
+        )
         .unwrap();
     let entry = completed_entry(second_claim, second_lease, 150);
 
@@ -585,18 +425,15 @@ fn durable_recovery_rejects_duplicate_roots_and_forks() {
 
     let (_, mut records, _, root) = acquired_history(34);
     for request in [7, 8] {
-        let mut branch = fixture(34);
-        branch.authority.current = Some((
-            root.assignment(),
-            root.node(),
-            root.generation(),
-            root.digest(),
-            root.desired_generation(),
-        ));
+        let branch = fixture(34);
         let claim = renewal_claim(request, &root);
         let lease = branch
             .verifier
-            .renew(&mut branch.authority, &claim, &branch.clock)
+            .verify_response(
+                &claim,
+                branch.response(&claim, root.generation() + 2),
+                &test_clock(150),
+            )
             .unwrap();
         let entry = completed_entry(claim, lease, 150);
         records.insert_completed(&entry, branch.verifier.authority());
@@ -613,18 +450,15 @@ fn durable_recovery_rejects_broken_predecessor_rollback_and_tamper() {
     for attack in 0..4 {
         let key_byte = 35 + attack;
         let (_, mut records, _, root) = acquired_history(key_byte);
-        let mut branch = fixture(key_byte);
+        let branch = fixture(key_byte);
         let claim = renewal_claim(7, &root);
-        let raw = branch
-            .authority
-            .issue(&claim, root.generation() + 2)
-            .unwrap();
+        let raw = branch.response(&claim, root.generation() + 2);
         let signed = branch
             .verifier
-            .verify_response(&claim, raw.clone(), &branch.clock)
+            .verify_response(&claim, raw.clone(), &test_clock(150))
             .unwrap();
         let entry = completed_entry(claim.clone(), signed, 150);
-        let mut encoded = encode_durable_entry(&entry, &branch.authority.authority);
+        let mut encoded = encode_durable_entry(&entry, &branch.authority);
 
         match attack {
             0 => flip_embedded_artifact(&mut encoded, claim.canonical_bytes()),
@@ -689,10 +523,9 @@ fn dropping_prepared_scopes_preserves_intent_and_head_frontiers() {
     else {
         panic!("test completion was not pending");
     };
-    let mut issuer = fixture(50).authority;
-    let response = issuer.acquire(&claim).unwrap();
+    let response = fixture(50).response(&claim, 7);
     let (prepared, transaction) = pending.authenticate(response, &test_clock(150)).unwrap();
-    assert_eq!(transaction.records().len(), 2);
+    assert_eq!(transaction.into_parts().1.len(), 2);
     drop(prepared);
 
     assert!(history.is_pending(claim.request_id()));

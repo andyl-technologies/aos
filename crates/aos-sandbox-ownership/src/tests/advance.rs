@@ -145,10 +145,10 @@ fn invalid_successors(prior: &RecoveredOwnershipLease) -> Vec<(&'static str, Own
 fn signed_but_invalid_historical_advances_cannot_become_a_recovered_head() {
     let (_, _, _, prior) = acquired_history(42);
     for (name, claim) in invalid_successors(&prior) {
-        let (_, mut records, mut issuer, prior) = acquired_history(42);
+        let (_, mut records, data, prior) = acquired_history(42);
         // Correctly signed malicious artifacts and internally consistent pointers
         // must still fail the historical successor relation.
-        let response = issuer.issue(&claim, prior.generation() + 1).unwrap();
+        let response = data.response(&claim, prior.generation() + 1);
         let verified = fixture(42)
             .verifier
             .verify_response(&claim, response, &test_clock(150))
@@ -156,7 +156,7 @@ fn signed_but_invalid_historical_advances_cannot_become_a_recovered_head() {
         let recovered = verified.clone().into_recovered();
         let entry = completed_entry(claim.clone(), verified, 150);
 
-        records.insert_completed(&entry, &issuer.authority);
+        records.insert_completed(&entry, &data.authority);
         records.currents.insert(
             durable_current_key(claim.assignment().sandbox()),
             encode_current_pointer(*claim.request_id(), &recovered),
@@ -174,10 +174,10 @@ fn signed_but_invalid_historical_advances_cannot_become_a_recovered_head() {
 
 #[test]
 fn valid_advance_then_renewal_reconstructs_the_same_expired_historical_head() {
-    let (mut history, mut records, mut issuer, prior) = acquired_history(42);
+    let (mut history, mut records, data, prior) = acquired_history(42);
     let advance = advance_claim(7, &prior);
     publish_intent(&mut history, &mut records, &advance);
-    publish_completion(&mut history, &mut records, &mut issuer, &advance);
+    publish_completion(&mut history, &mut records, &data, &advance);
     let advanced = history
         .current(prior.assignment().sandbox())
         .unwrap()
@@ -193,7 +193,7 @@ fn valid_advance_then_renewal_reconstructs_the_same_expired_historical_head() {
     .unwrap();
 
     publish_intent(&mut history, &mut records, &renewal);
-    let response = publish_completion(&mut history, &mut records, &mut issuer, &renewal);
+    let response = publish_completion(&mut history, &mut records, &data, &renewal);
     let head = history
         .current(prior.assignment().sandbox())
         .unwrap()
