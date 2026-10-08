@@ -1249,36 +1249,39 @@ impl GitDelegatedClientV1 {
                 socket.peer().require_peer_filesystem_path(socket.as_fd().map_err(CauseV1::Transport)?, Path::new(ENDPOINT))
                     .map_err(CauseV1::Transport)?;
 
-                let exchanged = async {
-                    operation.channel.check_role().await?;
-                    operation.channel.send(request.as_ref().ok_or(CauseV1::Closed)?).await?;
-                    operation.channel.receive(false, RESULT_BYTES).await?;
-                    let bytes = operation.channel.first.payload.as_ref().ok_or(CauseV1::Closed)?;
-                    header(bytes, b"AOSGDR01", RESULT_BYTES)?;
-                    let original = request.as_ref().ok_or(CauseV1::Closed)?;
-                    if bytes[10] != 1 || !matches!(bytes[11], 1 | 2 | 3)
-                        || bytes[192..].iter().any(|byte| *byte != 0)
-                        || bytes[24..48] != original[24..48]
-                        || array::<32>(bytes, 48)? != <[u8; 32]>::from(Sha256::digest(original))
-                        || bytes[80..128] != original[48..96]
-                        || (bytes[11] != 1 && bytes[128..192].iter().any(|byte| *byte != 0))
-                    { return Err(CauseV1::Closed); }
-                    let status = if bytes[11] == 2 { NegativeGitResponseV1::Forbidden } else { NegativeGitResponseV1::Unavailable };
-                    let mut received = new_header::<RECEIPT_BYTES>(b"AOSGDA01");
-                    received[10] = 1;
-                    received[24..56].copy_from_slice(&Sha256::digest(bytes));
-                    *receipt = Some(received);
-                    operation.channel.send(receipt.as_ref().ok_or(CauseV1::Closed)?).await?;
-                    operation.channel.check_role().await?;
-                    operation.channel.check_record_role(false).await?;
-                    Ok(status)
+                // The pinned exchange itself must leave scope before the
+                // channel bookends borrow its retained custody again.
+                let status = {
+                    let exchanged = async {
+                        operation.channel.check_role().await?;
+                        operation.channel.send(request.as_ref().ok_or(CauseV1::Closed)?).await?;
+                        operation.channel.receive(false, RESULT_BYTES).await?;
+                        let bytes = operation.channel.first.payload.as_ref().ok_or(CauseV1::Closed)?;
+                        header(bytes, b"AOSGDR01", RESULT_BYTES)?;
+                        let original = request.as_ref().ok_or(CauseV1::Closed)?;
+                        if bytes[10] != 1 || !matches!(bytes[11], 1 | 2 | 3)
+                            || bytes[192..].iter().any(|byte| *byte != 0)
+                            || bytes[24..48] != original[24..48]
+                            || array::<32>(bytes, 48)? != <[u8; 32]>::from(Sha256::digest(original))
+                            || bytes[80..128] != original[48..96]
+                            || (bytes[11] != 1 && bytes[128..192].iter().any(|byte| *byte != 0))
+                        { return Err(CauseV1::Closed); }
+                        let status = if bytes[11] == 2 { NegativeGitResponseV1::Forbidden } else { NegativeGitResponseV1::Unavailable };
+                        let mut received = new_header::<RECEIPT_BYTES>(b"AOSGDA01");
+                        received[10] = 1;
+                        received[24..56].copy_from_slice(&Sha256::digest(bytes));
+                        *receipt = Some(received);
+                        operation.channel.send(receipt.as_ref().ok_or(CauseV1::Closed)?).await?;
+                        operation.channel.check_role().await?;
+                        operation.channel.check_record_role(false).await?;
+                        Ok(status)
+                    };
+                    tokio::pin!(exchanged);
+                    tokio::select! {
+                        result = &mut exchanged => result?,
+                        _failed = poll_fn(|context| ready.poll_while_child_parked(context)) => return Err(CauseV1::Closed),
+                    }
                 };
-                tokio::pin!(exchanged);
-                let status = tokio::select! {
-                    result = &mut exchanged => result?,
-                    _failed = poll_fn(|context| ready.poll_while_child_parked(context)) => return Err(CauseV1::Closed),
-                };
-                drop(exchanged);
                 ready.recheck().await.map_err(|_| CauseV1::Closed)?;
                 let remaining = operation.channel.remaining()?;
                 tokio::time::timeout(remaining, admission.recheck()).await
