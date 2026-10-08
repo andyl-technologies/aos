@@ -312,6 +312,13 @@ preserving real signing, Original checks, full previous-record matching, append
 and CAS. Recovery qualification remains pending; no production factory change,
 task acceptance, milestone exit or freeze follows from this diagnostic.
 
+The shared `index-tree-maintenance` gate now names 107 exact contracts across
+Core, native `std` and native Tokio inventories, including actual lookup,
+publication, backfill, recovery, locality and safe-index disclosure. It retains
+explicit failing qualification guards for the native DRV-12 indexed-value limit
+refusal and DRV-29 multi-edit batching/resynchronization witnesses. Registration
+and successful evaluation do not qualify this gate or any owning task.
+
 An isolated instrumented run of the fourth private backfill case on
 `faf2f0adfa` still fails with `Expired`. It reaches both catalog ACKs and
 durable reflog staging, then observes 30.803 seconds against the unchanged
