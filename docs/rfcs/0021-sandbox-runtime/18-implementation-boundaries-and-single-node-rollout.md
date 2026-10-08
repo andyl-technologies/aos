@@ -244,12 +244,17 @@ completed artifacts belong to Protocol's `authorization_artifact` module.
 Signing keys and protected currentness recipes remain with their original owners;
 this artifact ownership cut does not remove SessionSecurity's domain dependencies.
 
-The pure compiler and its bounded candidate model now belong to
-`aos-sandbox-policy`, depending only on Core and serialization/hash/error
-libraries. Its public computations return nonauthorizing DATA. Protected
-current-Create source joins, Root binding, journal admission, held-cut decisions,
-publication, and recovery remain in the domain integration and still require
-the larger Policy ownership extraction.
+The pure compiler, its bounded candidate model, and public Policy verifier
+credentials belong to `aos-sandbox-policy`, depending only on Core and
+serialization, hashing, cryptography and error libraries. Their computations
+return nonauthorizing DATA; credential decoding delegates to Core's canonical
+format and does not establish protected custody or currentness. The existing
+offline key-pin helper remains in Services, with an independent build/test
+selection rather than the Policy daemon's security and effect dependency graph.
+Its installed CLI is unchanged; the daemon and aggregate package retain their
+existing dependencies. Protected current-Create source joins, Root binding,
+journal admission, held-cut decisions, publication, and recovery remain in the
+domain integration and still require the larger Policy ownership extraction.
 
 ### Effects, views, and application assembly
 
