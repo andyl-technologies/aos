@@ -3,6 +3,7 @@
 //! This module constructs authenticated sessions and exact request/response
 //! exchanges, but owns no socket, listener, retry loop, service registration,
 //! or readiness advertisement. Callers must provide and move response bytes.
+//! Handshake bytes and live session comparisons share one protobuf field map.
 
 use aos_proto::aos::sandbox::coordinator::v1 as wire;
 use aos_sandbox_core::{NodeId, ObjectDigest, OperationId, ProtocolVersion};
@@ -63,40 +64,8 @@ impl DormantTransportHandshakeV1 {
         maximum_response_bytes: u32,
         replay_fence: ObjectDigest,
     ) -> Result<Self, InvalidMultiNodeProtocol> {
-        Self::new_with_encoding(
-            node,
-            lineage,
-            channel_binding,
-            audience_digest,
-            disclosure_domain_digest,
-            coordinator_epoch,
-            authenticated_at_unix_seconds,
-            valid_until_unix_seconds,
-            version,
-            maximum_request_bytes,
-            maximum_response_bytes,
-            replay_fence,
-            DormantCoordinatorNodeEncodingV1::Protobuf,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn new_with_encoding(
-        node: NodeId,
-        lineage: NodeBootLineageV1,
-        channel_binding: [u8; 32],
-        audience_digest: ObjectDigest,
-        disclosure_domain_digest: ObjectDigest,
-        coordinator_epoch: u64,
-        authenticated_at_unix_seconds: u64,
-        valid_until_unix_seconds: u64,
-        version: ProtocolVersion,
-        maximum_request_bytes: u32,
-        maximum_response_bytes: u32,
-        replay_fence: ObjectDigest,
-        encoding: DormantCoordinatorNodeEncodingV1,
-    ) -> Result<Self, InvalidMultiNodeProtocol> {
-        let canonical_bytes = handshake_bytes(
+        let encoding = DormantCoordinatorNodeEncodingV1::Protobuf;
+        let canonical_bytes = session_binding_from_fields(
             node,
             lineage,
             channel_binding,
@@ -110,7 +79,8 @@ impl DormantTransportHandshakeV1 {
             maximum_response_bytes,
             replay_fence,
             encoding,
-        );
+        )
+        .encode_to_vec();
         CarrierVerifierSessionV1::from_verified_transport(
             node,
             lineage,
@@ -539,39 +509,27 @@ fn session_binding(
     encoding: DormantCoordinatorNodeEncodingV1,
 ) -> wire::AuthenticatedSessionBinding {
     let lineage = session.lineage();
-    wire::AuthenticatedSessionBinding {
-        node_uid: session.node().as_bytes().to_vec(),
-        node_boot_uid: lineage.boot().as_bytes().to_vec(),
-        node_boot_generation: lineage.generation(),
-        channel_binding_sha256: session.binding().to_vec(),
-        audience_sha256: session.audience_digest().as_bytes().to_vec(),
-        disclosure_domain_sha256: session.disclosure_domain_digest().as_bytes().to_vec(),
-        coordinator_epoch: session.coordinator_epoch(),
-        authenticated_at_unix_seconds: session.authenticated_at_unix_seconds(),
-        valid_until_unix_seconds: session.valid_until_unix_seconds(),
-        protocol: Some(wire::ProtocolVersion {
-            major: u32::from(session.version().major()),
-            minor: u32::from(session.version().minor()),
-            ..Default::default()
-        })
-        .into(),
-        maximum_request_bytes: session.maximum_request_bytes(),
-        maximum_response_bytes: session.maximum_response_bytes(),
-        replay_fence_sha256: session.replay_fence().as_bytes().to_vec(),
-        lineage_sha256: lineage.digest().as_bytes().to_vec(),
-        predecessor_boot_uid: lineage
-            .predecessor_boot()
-            .map_or_else(Vec::new, |boot| boot.as_bytes().to_vec()),
-        predecessor_lineage_sha256: lineage
-            .predecessor_digest()
-            .map_or_else(Vec::new, |digest| digest.as_bytes().to_vec()),
-        semantic_encoding: (encoding as i32).into(),
-        ..Default::default()
-    }
+
+    session_binding_from_fields(
+        session.node(),
+        lineage,
+        session.binding(),
+        session.audience_digest(),
+        session.disclosure_domain_digest(),
+        session.coordinator_epoch(),
+        session.authenticated_at_unix_seconds(),
+        session.valid_until_unix_seconds(),
+        session.version(),
+        session.maximum_request_bytes(),
+        session.maximum_response_bytes(),
+        session.replay_fence(),
+        encoding,
+    )
 }
 
+/// Maps handshake DATA and authenticated sessions to the same canonical fields.
 #[allow(clippy::too_many_arguments)]
-fn handshake_bytes(
+fn session_binding_from_fields(
     node: NodeId,
     lineage: NodeBootLineageV1,
     channel_binding: [u8; 32],
@@ -585,7 +543,7 @@ fn handshake_bytes(
     maximum_response_bytes: u32,
     replay_fence: ObjectDigest,
     encoding: DormantCoordinatorNodeEncodingV1,
-) -> Vec<u8> {
+) -> wire::AuthenticatedSessionBinding {
     wire::AuthenticatedSessionBinding {
         node_uid: node.as_bytes().to_vec(),
         node_boot_uid: lineage.boot().as_bytes().to_vec(),
@@ -615,5 +573,4 @@ fn handshake_bytes(
         semantic_encoding: (encoding as i32).into(),
         ..Default::default()
     }
-    .encode_to_vec()
 }
