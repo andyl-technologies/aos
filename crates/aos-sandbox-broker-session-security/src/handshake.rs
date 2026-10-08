@@ -43,6 +43,28 @@ use crate::{
     ProtectedBrokerSessionFixedCustodyV1,
 };
 
+/// Requires a live record subject matching the receiving socket's pinned peer.
+fn require_connection_record_subject(
+    subject: &KernelAuthorizedRecordSubject,
+    peer: &ConnectionPeerIdentity,
+) -> Result<(), DormantBrokerSessionHandshakeErrorV1> {
+    let credentials = subject.credentials();
+    let peer_credentials = peer.credentials();
+
+    if !subject
+        .is_alive()
+        .map_err(|_| DormantBrokerSessionHandshakeErrorV1::KernelEvidence)?
+        || credentials.pid() != peer_credentials.pid()
+        || credentials.uid() != peer_credentials.uid()
+        || credentials.gid() != peer_credentials.gid()
+        || subject.initial_info() != peer.initial_info()
+    {
+        return Err(DormantBrokerSessionHandshakeErrorV1::KernelEvidence);
+    }
+
+    Ok(())
+}
+
 struct HandshakeCarrier {
     transport: HandshakeTransport,
     peer: ProcessEvidence,
@@ -3447,8 +3469,6 @@ impl DormantAuthenticatedBrokerSessionV1 {
             .socket
             .bind_received(record)
             .map_err(|_| DormantBrokerSessionHandshakeErrorV1::KernelEvidence)?;
-        let credentials = bound.subject().credentials();
-        let peer_credentials = bound.peer().credentials();
         if retained_client {
             if !bound.subject().is_alive()
                 .map_err(|_| DormantBrokerSessionHandshakeErrorV1::KernelEvidence)?
@@ -3463,17 +3483,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
                 return Err(DormantBrokerSessionHandshakeErrorV1::KernelEvidence);
             }
         } else {
-            if !bound
-                .subject()
-                .is_alive()
-                .map_err(|_| DormantBrokerSessionHandshakeErrorV1::KernelEvidence)?
-                || credentials.pid() != peer_credentials.pid()
-                || credentials.uid() != peer_credentials.uid()
-                || credentials.gid() != peer_credentials.gid()
-                || bound.subject().initial_info() != bound.peer().initial_info()
-            {
-                return Err(DormantBrokerSessionHandshakeErrorV1::KernelEvidence);
-            }
+            require_connection_record_subject(bound.subject(), bound.peer())?;
         }
         let packet = bound.payload().to_vec();
         drop(bound);
@@ -3511,19 +3521,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
             .socket
             .bind_received_descriptors(record)
             .map_err(|_| DormantBrokerSessionHandshakeErrorV1::KernelEvidence)?;
-        let credentials = bound.subject().credentials();
-        let peer_credentials = bound.peer().credentials();
-        if !bound
-            .subject()
-            .is_alive()
-            .map_err(|_| DormantBrokerSessionHandshakeErrorV1::KernelEvidence)?
-            || credentials.pid() != peer_credentials.pid()
-            || credentials.uid() != peer_credentials.uid()
-            || credentials.gid() != peer_credentials.gid()
-            || bound.subject().initial_info() != bound.peer().initial_info()
-        {
-            return Err(DormantBrokerSessionHandshakeErrorV1::KernelEvidence);
-        }
+        require_connection_record_subject(bound.subject(), bound.peer())?;
         let (packet, _, descriptors, _) = bound.into_parts();
         self.owner
             .revalidate_transport(&self.transcript, self.socket.peer())?;
@@ -3614,19 +3612,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
             .socket
             .bind_received(record)
             .map_err(|_| DormantBrokerSessionHandshakeErrorV1::KernelEvidence)?;
-        let credentials = bound.subject().credentials();
-        let peer_credentials = bound.peer().credentials();
-        if !bound
-            .subject()
-            .is_alive()
-            .map_err(|_| DormantBrokerSessionHandshakeErrorV1::KernelEvidence)?
-            || credentials.pid() != peer_credentials.pid()
-            || credentials.uid() != peer_credentials.uid()
-            || credentials.gid() != peer_credentials.gid()
-            || bound.subject().initial_info() != bound.peer().initial_info()
-        {
-            return Err(DormantBrokerSessionHandshakeErrorV1::KernelEvidence);
-        }
+        require_connection_record_subject(bound.subject(), bound.peer())?;
         let now = protected_boottime_nanoseconds()
             .map_err(|_| DormantBrokerSessionHandshakeErrorV1::KernelEvidence)?;
         let packet = bound.payload().to_vec();
@@ -3646,49 +3632,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
         ),
         DormantBrokerSessionHandshakeErrorV1,
     > {
-        let maximum = aos_sandbox_broker_session_protocol::maximum_broker_session_request_bytes_v1(
-            self.transcript.protocol(),
-        );
-        let record = self
-            .socket
-            .receive_with_descriptors(maximum, expected_descriptors)
-            .map_err(|error| match error {
-                SeqpacketError::WouldBlock | SeqpacketError::Interrupted => {
-                    DormantBrokerSessionHandshakeErrorV1::Transport
-                }
-                _ => DormantBrokerSessionHandshakeErrorV1::RemoteInvalid,
-            })?;
-        let bound = self
-            .socket
-            .bind_received_descriptors(record)
-            .map_err(|_| DormantBrokerSessionHandshakeErrorV1::KernelEvidence)?;
-        let credentials = bound.subject().credentials();
-        let peer_credentials = bound.peer().credentials();
-        if !bound
-            .subject()
-            .is_alive()
-            .map_err(|_| DormantBrokerSessionHandshakeErrorV1::KernelEvidence)?
-            || credentials.pid() != peer_credentials.pid()
-            || credentials.uid() != peer_credentials.uid()
-            || credentials.gid() != peer_credentials.gid()
-            || bound.subject().initial_info() != bound.peer().initial_info()
-        {
-            return Err(DormantBrokerSessionHandshakeErrorV1::KernelEvidence);
-        }
-        let now = protected_boottime_nanoseconds()
-            .map_err(|_| DormantBrokerSessionHandshakeErrorV1::KernelEvidence)?;
-        let (packet, _, descriptors, _) = bound.into_parts();
-        let admission = self
-            .owner
-            .admit_received_request(
-                &packet,
-                descriptors.len(),
-                &self.transcript,
-                self.socket.peer(),
-                now,
-            )
-            .map_err(DormantBrokerSessionHandshakeErrorV1::Protected)?;
-        Ok((admission, descriptors))
+        self.receive_authenticated_descriptor_request_inner(Some(expected_descriptors))
     }
 
     pub(super) fn receive_authenticated_optional_descriptor_request(
@@ -3700,35 +3644,40 @@ impl DormantAuthenticatedBrokerSessionV1 {
         ),
         DormantBrokerSessionHandshakeErrorV1,
     > {
+        self.receive_authenticated_descriptor_request_inner(None)
+    }
+
+    /// Uses the original native descriptor geometry before shared admission.
+    fn receive_authenticated_descriptor_request_inner(
+        &mut self,
+        expected_descriptors: Option<usize>,
+    ) -> Result<
+        (
+            crate::recovery::ProtectedBrokerReceivedRequestAdmissionV1,
+            Vec<OwnedFd>,
+        ),
+        DormantBrokerSessionHandshakeErrorV1,
+    > {
         let maximum = aos_sandbox_broker_session_protocol::maximum_broker_session_request_bytes_v1(
             self.transcript.protocol(),
         );
-        let record = self
-            .socket
-            .receive_with_optional_descriptor(maximum)
-            .map_err(|error| match error {
-                SeqpacketError::WouldBlock | SeqpacketError::Interrupted => {
-                    DormantBrokerSessionHandshakeErrorV1::Transport
-                }
-                _ => DormantBrokerSessionHandshakeErrorV1::RemoteInvalid,
-            })?;
+        let record = match expected_descriptors {
+            Some(expected_descriptors) => self
+                .socket
+                .receive_with_descriptors(maximum, expected_descriptors),
+            None => self.socket.receive_with_optional_descriptor(maximum),
+        }
+        .map_err(|error| match error {
+            SeqpacketError::WouldBlock | SeqpacketError::Interrupted => {
+                DormantBrokerSessionHandshakeErrorV1::Transport
+            }
+            _ => DormantBrokerSessionHandshakeErrorV1::RemoteInvalid,
+        })?;
         let bound = self
             .socket
             .bind_received_descriptors(record)
             .map_err(|_| DormantBrokerSessionHandshakeErrorV1::KernelEvidence)?;
-        let credentials = bound.subject().credentials();
-        let peer_credentials = bound.peer().credentials();
-        if !bound
-            .subject()
-            .is_alive()
-            .map_err(|_| DormantBrokerSessionHandshakeErrorV1::KernelEvidence)?
-            || credentials.pid() != peer_credentials.pid()
-            || credentials.uid() != peer_credentials.uid()
-            || credentials.gid() != peer_credentials.gid()
-            || bound.subject().initial_info() != bound.peer().initial_info()
-        {
-            return Err(DormantBrokerSessionHandshakeErrorV1::KernelEvidence);
-        }
+        require_connection_record_subject(bound.subject(), bound.peer())?;
         let now = protected_boottime_nanoseconds()
             .map_err(|_| DormantBrokerSessionHandshakeErrorV1::KernelEvidence)?;
         let (packet, _, descriptors, _) = bound.into_parts();
