@@ -13,6 +13,8 @@ slow-timeout = { period = "60s", terminate-after = 2 }
 # durable fault/recovery prefixes. Their owning Nix run measured 100-210 seconds
 # per case. Reserve all test slots and bound each runner process to five minutes;
 # collector, lease, token and publication deadlines remain the actual clocks.
+# The integrated missing-Trash witness repeats fresh recovery and retirement
+# before its new full deletion wait; it shares this process scheduling bound.
 [[profile.default.overrides]]
 filter = '''
 package(terrane) & (
@@ -25,7 +27,8 @@ package(terrane) & (
   test(=gc::runner::tests::local_deletion::faults::unit_success_or_swallowed_sync_failure_never_acknowledges_progress) |
   test(=gc::runner::tests::local_deletion::recovery::cancelled_waiter_retains_exclusion_until_worker_then_fresh_collector_finishes) |
   test(=gc::runner::tests::local_deletion::recovery::changed_current_fence_reconciles_retained_index_after_container_absence) |
-  test(=gc::runner::tests::local_deletion::recovery::restore_durably_cancels_exact_local_owner_before_clearing_exclusion)
+  test(=gc::runner::tests::local_deletion::recovery::restore_durably_cancels_exact_local_owner_before_clearing_exclusion) |
+  test(=gc::runner::tests::local_deletion::recovery::missing_trash_crash_requires_fresh_retirement_and_full_d_before_done)
 )
 '''
 threads-required = "num-test-threads"

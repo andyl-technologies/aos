@@ -1678,6 +1678,25 @@ helper and explicit outcome matching. Assertions and production bytes remain
 unchanged. No runtime test or deadline witness has yet qualified this candidate;
 the original failures and cached versus fresh library results remain distinct.
 
+Corrected `c1510ba1ed` passes fresh strict all-target Clippy and all 31 selected
+regressions: six frontier, thirteen actual Raw durability, eight loader and four
+producer cases. The compiled inventory contains 773 tests. Its unchanged
+1,024-entry ordinary witness fails in 66.533 seconds with `Advance(Expired)`;
+the original deadline reports 41.813943019 seconds against 30 seconds. Durable
+staging takes 27.640839966 seconds and complete history takes 13.816172718
+seconds. The 609 genuine held GETs reach eight-way overlap; their cumulative
+56.393249669 seconds are overlapping child spans, not wall-clock history time.
+All 6,066 captured inputs and the executable remain unchanged. Baseline output,
+maintenance and independent oracles are unreached; no broader population is run.
+
+Private test-only `600fd7fd06` adds the integrated GC-29 missing-Trash recovery
+witness using the real Pending directory-sync failure, qualified restoration,
+fresh mark/backend age, a new incarnation and full new deletion wait before
+actual native unlink and Done. Review preserves every existing test body and
+changes no production code. Its exact selector joins the existing exclusive
+five-minute local-deletion process scheduling class; C/G/D/H, lease and writer
+deadlines remain unchanged. Compilation and runtime qualification are pending.
+
 The sealed current floor contains 89 aggregate gates, including all 69 T0/T1
 plan-required names and twenty implemented supporting checks. Read-only evaluation
 finds `gc-two-phase-delete` explicitly pending. Output validity establishes no
