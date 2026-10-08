@@ -2,8 +2,8 @@
 //!
 //! The L0-L4 crate map is a dependency-ordering contract: a
 //! runtime crate may depend only on crates in its own layer or lower layers,
-//! except for the host-side QEMU adapter edge into the engine crate. The two
-//! in-VM L2 crates may depend directly only on L1 crates.
+//! except for the host-side QEMU adapter's engine and checked RAM error-carrier
+//! edges. The two in-VM L2 crates may depend directly only on L1 crates.
 
 #![forbid(unsafe_code)]
 
@@ -11,6 +11,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+
+#[path = "support/host_driver_cas_boundary.rs"]
+mod host_driver_cas_boundary;
+#[path = "support/source_sections.rs"]
+mod source_sections;
 
 #[derive(Clone, Copy)]
 struct LayerSpec {
@@ -119,6 +124,9 @@ const RUNTIME_SPECS: &[LayerSpec] = &[
 
 const HARNESS_PACKAGE: &str = "crucible-harness";
 const HOST_DRIVER_ENGINE_EDGE_EXCEPTIONS: &[(&str, &str)] = &[("crucible-qemu", "crucible")];
+// The Apache host driver retains a complete typed storage failure inline. It
+// performs no CAS operations; the source-use check below enforces that boundary.
+const HOST_DRIVER_RAM_ERROR_EDGE: (&str, &str) = ("crucible-qemu", "crucible-cas");
 
 #[test]
 fn crucible_runtime_dependencies_follow_layer_graph() -> Result<(), Box<dyn std::error::Error>> {
@@ -177,6 +185,7 @@ fn crucible_runtime_dependencies_follow_layer_graph() -> Result<(), Box<dyn std:
     }
 
     failures.extend(cycle_failures(&graph, &spec_by_package));
+    failures.extend(host_driver_cas_boundary::source_use_failures(&crates_dir)?);
 
     assert!(
         failures.is_empty(),
@@ -262,6 +271,49 @@ fn layer_graph_rules_reject_upward_edges_in_vm_l0_edges_and_cycles() {
     assert!(
         allowed_failures.is_empty(),
         "host-side QEMU adapter edge into the engine should be allowed: {allowed_failures:?}"
+    );
+}
+
+#[test]
+fn host_ram_error_edge_does_not_allow_other_hosts_in_vm_edges_or_cycles() {
+    let allowed = BTreeMap::from([(
+        "crucible-qemu".to_string(),
+        BTreeSet::from(["crucible-cas".to_string()]),
+    )]);
+    assert!(graph_rule_failures(&allowed).is_empty());
+
+    for package in [
+        "crucible-qemu-plugin",
+        "crucible-guest",
+        "crucible-linux-resource",
+    ] {
+        let graph = BTreeMap::from([(
+            package.to_string(),
+            BTreeSet::from(["crucible-cas".to_string()]),
+        )]);
+        assert!(!graph_rule_failures(&graph).is_empty(), "{package}");
+    }
+
+    let other_edge = BTreeMap::from([(
+        "crucible-qemu".to_string(),
+        BTreeSet::from(["crucible-campaign".to_string()]),
+    )]);
+    assert!(!graph_rule_failures(&other_edge).is_empty());
+
+    let cycle = BTreeMap::from([
+        (
+            "crucible-qemu".to_string(),
+            BTreeSet::from(["crucible-cas".to_string()]),
+        ),
+        (
+            "crucible-cas".to_string(),
+            BTreeSet::from(["crucible-qemu".to_string()]),
+        ),
+    ]);
+    assert!(
+        graph_rule_failures(&cycle)
+            .iter()
+            .any(|failure| failure.contains("dependency cycle"))
     );
 }
 
@@ -376,11 +428,12 @@ fn graph_rule_failures(graph: &BTreeMap<String, BTreeSet<String>>) -> Vec<String
 }
 
 fn allows_host_driver_engine_edge(package: &str, dependency: &str) -> bool {
-    HOST_DRIVER_ENGINE_EDGE_EXCEPTIONS
-        .iter()
-        .any(|(allowed_package, allowed_dependency)| {
-            package == *allowed_package && dependency == *allowed_dependency
-        })
+    (package, dependency) == HOST_DRIVER_RAM_ERROR_EDGE
+        || HOST_DRIVER_ENGINE_EDGE_EXCEPTIONS
+            .iter()
+            .any(|(allowed_package, allowed_dependency)| {
+                package == *allowed_package && dependency == *allowed_dependency
+            })
 }
 
 fn cycle_failures(

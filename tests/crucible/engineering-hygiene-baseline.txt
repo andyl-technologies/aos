@@ -123,7 +123,7 @@ shape-review|crates/crucible-daemon/src/qemu_hot_fork_world_factory.rs|sha256:95
 shape-review|crates/crucible-daemon/src/qemu_hot_fork_world_factory/tests.rs|sha256:79239281e5d1a7a99ba98fe7235ebdcf23f2c6836f4fab3b2a29e71ba332ca5c|tests|1534|Whole-world source identity, child adoption, retained owner custody, rollback, publication and fallback component regressions.|The shared scripted backend checks one atomic factory transaction with finite component metadata authority, typed material failures and exact cleanup ordering. Genuine accepted-worker process, paging, descendant and strict-placement qualification lives in separate native drivers; scripted assembly does not confer those capabilities.
 shape-review|crates/crucible-harness/src/phase_plan.rs|sha256:239b624f2cbd6d0b30aacd348637bf8315f7db166c26094e58b5a21555836209|implementation|1445|Phase-gate ordering for RFC-0010.|threshold-not-reached
 shape-review|crates/crucible-harness/tests/campaign_gate_traceability.rs|sha256:1234a1ace9cfa8c7259552352c027b23e3a3d21e2b378f3dc729b2ed3cece240|tests|1106|RFC-0020 requirement-to-target, exact-selector, Nix, and automated-evidence contract validation.|threshold-not-reached
-shape-review|crates/crucible-harness/tests/engineering_hygiene.rs|sha256:13fa04b3ccc2734e2aa348738b5297c0a4f5d88271cd915fc61fa9923e65f0a3|tests|1051|Checks content-bound source roles, module headers, native dependency confinement and commit-hygiene policy with paired classification regressions.|threshold-not-reached
+shape-review|crates/crucible-harness/tests/engineering_hygiene.rs|sha256:3567b8702d546120591620320a724c353738da05b338fc2ce80ca4275b2a33e5|tests|1110|Checks content-bound source roles, module headers, native dependency confinement and commit-hygiene policy with paired classification regressions.|threshold-not-reached
 shape-review|crates/crucible-protocol/src/selectable_catalog_plan.rs|sha256:c89f8c464226801be78c0e530412519063f7340daa3912048e78047e79dfa187|implementation|1480|Canonical guest-selectable catalog continuation encoding, current decoding, and invariant validation.|threshold-not-reached
 shape-review|crates/crucible-qemu-plugin/src/fault_command_test.rs|sha256:16cbb0d56ffbf3eff671258a9b521972c3fb73047f2a5a9320bdb3f756296cc4|tests|1333|Fault-command bridge codec, translation, and hostile-input tests.|threshold-not-reached
 shape-review|crates/crucible-qemu-plugin/src/runtime.rs|sha256:f7b8b8c42e4613645cbbfbf79c0e3dfb4c1c6e9a9506721d6889f85f5e408af9|implementation|2869|Live QEMU plugin installation and process-lifetime runtime ownership.|Capability preflight, callback registration, endpoint identity, control service and teardown share one atomic runtime order. Actual worker identities and epochs live in the worker coordinator; the original Setup guard waits for registration and parking before native inventory, while failure cleanup retains process-lifetime ownership.
@@ -710,6 +710,11 @@ qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/assets.rs|Qemu
 qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/checkpoint_store/authenticated_restore.rs|Qemu
 qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/checkpoint_store/replay.rs|qemu
 qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/checkpoint_store/replay.rs|crucible_qemu
+qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/checkpoint_store/replay/boundary.rs|qemu
+qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/checkpoint_store/replay/boundary.rs|Qemu
+qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/checkpoint_store/replay/boundary.rs|crucible_qemu
+qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/checkpoint_store/replay/boundary/tests.rs|Qemu
+qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/checkpoint_store/replay/boundary/tests/sqlite_scope.rs|Qemu
 qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/checkpoint_store/test_support.rs|qmp
 qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/checkpoint_store/test_support.rs|Qmp
 qemu-token|crucible-api|crates/crucible-api/src/vm_lifecycle/checkpoint_store/tests.rs|qmp

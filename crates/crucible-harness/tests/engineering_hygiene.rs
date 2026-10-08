@@ -410,6 +410,65 @@ fn engineering_hygiene_rules_reject_shape_and_boundary_drift() {
     );
 }
 
+#[test]
+fn extracted_host_replay_bridge_exceptions_remain_path_package_and_token_specific()
+-> Result<(), Box<dyn Error>> {
+    let root = repo_root();
+    let baseline = HygieneBaseline::load(&root)?;
+    let paths = [
+        (
+            "crates/crucible-api/src/vm_lifecycle/checkpoint_store/replay/boundary.rs",
+            &["qemu", "Qemu", "crucible_qemu"][..],
+        ),
+        (
+            "crates/crucible-api/src/vm_lifecycle/checkpoint_store/replay/boundary/tests.rs",
+            &["Qemu"][..],
+        ),
+        (
+            "crates/crucible-api/src/vm_lifecycle/checkpoint_store/replay/boundary/tests/sqlite_scope.rs",
+            &["Qemu"][..],
+        ),
+    ];
+
+    for (relative, tokens) in paths {
+        let path = root.join(relative);
+        let content = fs::read_to_string(&path)?;
+        let findings = qemu_specific_boundary_failures("crucible-api", &path, &content);
+        assert_eq!(findings.len(), tokens.len(), "{relative}: {findings:?}");
+        assert!(findings.iter().all(|finding| baseline.allows_qemu_token(
+            "crucible-api",
+            &path,
+            finding
+        )));
+
+        for token in tokens {
+            let finding = format!("QEMU-specific token `{token}`");
+            assert!(baseline.allows_qemu_token("crucible-api", &path, &finding));
+            assert!(!baseline.allows_qemu_token("crucible", &path, &finding));
+            assert!(!baseline.allows_qemu_token(
+                "crucible-api",
+                &root.join("crates/crucible-api/src/other.rs"),
+                &finding
+            ));
+        }
+
+        for token in ["QEMU", "qmp", "Qmp", "savevm", "loadvm"] {
+            let changed = format!("{content}\nfn unreviewed() {{ let _ = {token}; }}");
+            let findings = qemu_specific_boundary_failures("crucible-api", &path, &changed);
+            assert!(
+                findings.iter().any(|finding| !baseline.allows_qemu_token(
+                    "crucible-api",
+                    &path,
+                    finding
+                )),
+                "{relative}: {token}"
+            );
+        }
+    }
+
+    Ok(())
+}
+
 impl HygieneBaseline {
     fn load(root: &Path) -> Result<Self, Box<dyn Error>> {
         let content =
