@@ -207,18 +207,25 @@ merge contracts alongside the three native contracts, exist in that inventory.
 Discovery executes no tests. Strict warnings, later fixes, native runtime and
 the complete trunk gate set remain unqualified; no task or milestone advances.
 
-The frozen combined candidate `9c59d60735` starts the full native suite of
-709 cases after reviewed warning cleanup. Its original run remains active,
-with six failures observed: upload read accounting, three portable-copy source
-publications returning `Expired`, one current-pair timeout, and a restore
-refusal returning publication corruption instead of `Unsupported`. These are
-interim observations, not a terminal suite result. Independent review accepts
-an upload baseline correction that measures the required physical validation
-and final placement recheck while retaining exact read and effect assertions;
-its runtime qualification is pending. The corrected retention composition
-`353006757eea`, already qualified separately below, is absent from this frozen
-candidate and still needs integration and combined qualification. No task,
-milestone exit or freeze advances.
+The frozen combined candidate `9c59d60735` completes the full native suite:
+709 tests run, 594 pass, 108 fail, seven time out and none are skipped. The
+original run exits 100 in 2,178.243 seconds. Independent review verifies its
+terminal log and all 6,025 bound source contents, resolving the `CLAUDE.md`
+symlink to its tracked target. The failure inventory includes publication
+expiry, denied admission, malformed inputs, missing index bindings and test
+timeouts. Two isolated same-source portable-copy diagnostics pass; these
+focused results do not replace the failing full suite or establish its cause.
+The reviewed upload baseline correction measures required physical validation
+and final placement rechecks, preserving exact read and effect assertions.
+All four selected upload cases pass on `daf085bc11`; the successful case
+requires all 109 reads and reduces selected reads from 72 to 54. Its owning
+Nix gates remain pending. The existing qualified retention/imported-source
+dependency `9d5cd28c33ae`, absent from the original run, is normally merged
+into the private composition at `09a21494ad`. A separately reviewed synthetic
+restore assertion now requires exact missing-protected-intent corruption;
+copied-burn refusal and unchanged-state assertions remain intact. These
+changes and the active-index/ordinary-merge corrections still need combined
+qualification. No task, milestone exit or freeze advances.
 
 An isolated instrumented run of the fourth private backfill case on
 `faf2f0adfa` still fails with `Expired`. It reaches both catalog ACKs and
