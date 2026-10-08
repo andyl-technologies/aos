@@ -28,7 +28,7 @@ use crate::registry_ops::signing::{
     ResolvedSigningKey, registry_config_by_name, resolve_producer_signing_key,
     resolve_signing_key_source,
 };
-use crate::registry_ops::store_paths::{introspect_store_path, validate_store_path_release_policy};
+use crate::registry_ops::store_paths::{StoreQueries, validate_store_path_release_policy};
 use crate::registry_ops::tags::release_commit;
 use crate::registry_ops::trust::derive_trust_key;
 use crate::security::{key_fingerprint, parse_signing_key};
@@ -356,8 +356,9 @@ pub async fn release(
         _ => None,
     };
     if let Some(store_path) = store_path {
-        let info = introspect_store_path(store_path)?;
-        validate_store_path_release_policy(&info)?;
+        let store = StoreQueries::new();
+        let info = store.introspect(store_path)?;
+        validate_store_path_release_policy(&store, &info)?;
     }
     let registry_name = resolve_registry_name(config, registry)?;
     let dir = config.scope.registries_path().join(&registry_name);
@@ -881,6 +882,7 @@ async fn publish_release_store_path(
         key,
         key_id,
         None,
+        &StoreQueries::new(),
         printer,
     )
     .await

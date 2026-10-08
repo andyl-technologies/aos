@@ -11,8 +11,8 @@ use crate::registry_ops::signing::{
     ResolvedSigningKey, registry_config_by_name, resolve_producer_signing_key,
 };
 use crate::registry_ops::store_paths::{
-    StoreWriteReport, collect_package_store_paths, extract_hash, introspect_closure_nars,
-    write_store_files,
+    StoreQueries, StoreWriteReport, collect_package_store_paths, extract_hash,
+    introspect_closure_nars, write_store_files,
 };
 use crate::registry_ops::trust::load_committed_roster;
 use anyhow::{Context, Result, bail};
@@ -84,8 +84,10 @@ pub async fn run_store(
             let _publish_lock = RegistryPublishLock::acquire(&dir)?;
 
             // Bless the whole closure of the path (records every member).
-            let report = write_store_files(&dir, store_path, content_addressed, true, printer)
-                .with_context(|| format!("writing store/ records for {store_path}"))?;
+            let store = StoreQueries::new();
+            let report =
+                write_store_files(&store, &dir, store_path, content_addressed, true, printer)
+                    .with_context(|| format!("writing store/ records for {store_path}"))?;
 
             printer.kv("Store graph", &report.summary());
             let changed = report.created + report.blessed > 0;
@@ -225,11 +227,13 @@ pub async fn run_store(
 
             let _publish_lock = RegistryPublishLock::acquire(&dir)?;
 
+            // Closures of published roots overlap; share their metadata.
+            let store = StoreQueries::new();
             let mut report = StoreWriteReport::default();
             for root in &roots {
                 printer.info(&format!("Recording closure of {root}"));
                 report.merge(
-                    write_store_files(&dir, root, content_addressed, *bless, printer)
+                    write_store_files(&store, &dir, root, content_addressed, *bless, printer)
                         .with_context(|| format!("writing store/ records for {root}"))?,
                 );
             }

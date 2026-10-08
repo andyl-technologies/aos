@@ -33,7 +33,7 @@ use crate::registry_ops::provenance::{
 };
 use crate::registry_ops::signing::resolve_producer_signing_key;
 use crate::registry_ops::store_paths::{
-    first_letter, introspect_deriver, introspect_store_path, parse_store_path,
+    StoreQueries, first_letter, introspect_deriver, local_deriver, parse_store_path,
     resolve_publish_platform, validate_store_path_release_policy, write_store_files,
 };
 use crate::registry_ops::uki::sb_db_cert_path;
@@ -41,6 +41,7 @@ use crate::registry_ops::workflow::{current_git_branch, git_branch_entries};
 use crate::types::{validate_package_name, validate_registry_name};
 use anyhow::{Context, Result, bail};
 use aos_core::output::{OutputMode, Printer};
+use std::collections::BTreeSet;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write as _;
@@ -164,6 +165,7 @@ pub async fn publish(
         key,
         key_id,
         None,
+        &StoreQueries::new(),
         printer,
     )
     .await
@@ -174,7 +176,8 @@ pub async fn publish(
 /// This is the package-materialization primitive used by an isolated release
 /// transaction. The ordinary CLI resolves its configured authoring clone
 /// before entering this function; release orchestration instead supplies its
-/// private clone. Callers must hold the appropriate outer transaction lock.
+/// private clone and a [`StoreQueries`] shared by every entry of the release.
+/// Callers must hold the appropriate outer transaction lock.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn publish_to_registry_directory(
     config: &ApmConfig,
@@ -208,6 +211,7 @@ pub(crate) async fn publish_to_registry_directory(
     key: Option<&str>,
     key_id: Option<&str>,
     external_provenance_signer: Option<&mut dyn ProvenanceSigner>,
+    store: &StoreQueries,
     printer: &Printer,
 ) -> Result<()> {
     let description = required_publish_metadata(description, "--description", "No description")?;
@@ -255,15 +259,16 @@ pub(crate) async fn publish_to_registry_directory(
     }
 
     printer.step(1, 4, "Introspecting store path...");
-    let info = introspect_store_path(store_path)?;
-    validate_store_path_release_policy(&info)?;
+    let info = store.introspect(store_path)?;
+    validate_store_path_release_policy(store, &info)?;
     let source_info = if let Some(source_drv) = source_drv {
         Some(
-            introspect_store_path(source_drv)
+            store
+                .introspect(source_drv)
                 .with_context(|| format!("introspecting source derivation {source_drv}"))?,
         )
     } else {
-        introspect_deriver(&info.path)?
+        introspect_deriver(store, &info.path)?
     };
 
     let (parsed_name, parsed_version) = parse_store_path(&info.path);
@@ -272,15 +277,15 @@ pub(crate) async fn publish_to_registry_directory(
     validate_package_name(pkg_name)?;
     let platform = resolve_publish_platform(&info.path, platform_override)?;
     let config_module_info = config_module_path
-        .map(introspect_store_path)
+        .map(|path| store.introspect(path))
         .transpose()
         .context("introspecting config-module store path")?;
     let config_base_lib_info = config_base_lib_path
-        .map(introspect_store_path)
+        .map(|path| store.introspect(path))
         .transpose()
         .context("introspecting config base-lib")?;
     let documentation_base_lib_info = documentation_base_lib_path
-        .map(introspect_store_path)
+        .map(|path| store.introspect(path))
         .transpose()
         .context("introspecting documentation base-lib")?;
     let config_dependency_outputs = parse_config_dependency_outputs(config_dependencies, &info)?;
@@ -312,9 +317,9 @@ pub(crate) async fn publish_to_registry_directory(
         .zip(image_formats.iter())
         .zip(image_uki_paths.iter())
     {
-        let payload_info = introspect_store_path(payload_path)?;
-        let disk_info = introspect_store_path(disk_path)?;
-        let metadata_info = introspect_store_path(info_path)?;
+        let payload_info = store.introspect(payload_path)?;
+        let disk_info = store.introspect(disk_path)?;
+        let metadata_info = store.introspect(info_path)?;
         image_infos.push(inspect_published_image(
             img_fmt,
             payload_info,
@@ -355,6 +360,7 @@ pub(crate) async fn publish_to_registry_directory(
         )
         .collect::<Vec<_>>();
     let documentation = publish_package_documentation(
+        store,
         pkg_name,
         pkg_version,
         &platform,
@@ -539,47 +545,62 @@ pub(crate) async fn publish_to_registry_directory(
 
     printer.step(3, 4, "Computing realisation graph...");
     let content_addressed = registry_content_addressed(&dir) && !no_ca;
-    let store_report = write_store_files(&dir, &info.path, content_addressed, bless, printer)
-        .with_context(|| format!("writing store/ realisation graph for {}", info.path))?;
+    let store_report =
+        write_store_files(store, &dir, &info.path, content_addressed, bless, printer)
+            .with_context(|| format!("writing store/ realisation graph for {}", info.path))?;
     let mut image_store_reports = Vec::with_capacity(image_infos.len() * 3);
     for image in &image_infos {
         for artifact in [&image.payload, &image.store, &image.info_store] {
             image_store_reports.push(
-                write_store_files(&dir, &artifact.path, content_addressed, bless, printer)
-                    .with_context(|| {
-                        format!("writing store/ realisation graph for {}", artifact.path)
-                    })?,
+                write_store_files(
+                    store,
+                    &dir,
+                    &artifact.path,
+                    content_addressed,
+                    bless,
+                    printer,
+                )
+                .with_context(|| {
+                    format!("writing store/ realisation graph for {}", artifact.path)
+                })?,
             );
         }
     }
     let expose_store_report = if let Some(artifact) = &expose_artifact_info {
         Some(
-            write_store_files(&dir, &artifact.path, content_addressed, bless, printer)
-                .with_context(|| {
-                    format!(
-                        "writing store/ realisation graph for expose artifact {}",
-                        artifact.path
-                    )
-                })?,
+            write_store_files(
+                store,
+                &dir,
+                &artifact.path,
+                content_addressed,
+                bless,
+                printer,
+            )
+            .with_context(|| {
+                format!(
+                    "writing store/ realisation graph for expose artifact {}",
+                    artifact.path
+                )
+            })?,
         )
     } else {
         None
     };
     let config_store_report = if let Some(output) = &config_module_info {
         Some(
-            write_store_files(&dir, &output.path, content_addressed, bless, printer).with_context(
-                || {
+            write_store_files(store, &dir, &output.path, content_addressed, bless, printer)
+                .with_context(|| {
                     format!(
                         "writing store/ realisation graph for config module {}",
                         output.path
                     )
-                },
-            )?,
+                })?,
         )
     } else {
         None
     };
     let documentation_store_report = write_store_files(
+        store,
         &dir,
         &documentation.info.path,
         content_addressed,
@@ -807,6 +828,7 @@ pub(crate) async fn publish_canonical_release_entry(
     maintainer: &str,
     configuration: Option<&crate::registry::release::RegistryReleaseConfiguration>,
     provenance_signer: &mut dyn ProvenanceSigner,
+    store: &StoreQueries,
     printer: &Printer,
 ) -> Result<()> {
     let config_dependencies = configuration
@@ -850,9 +872,81 @@ pub(crate) async fn publish_canonical_release_entry(
         None,
         None,
         Some(provenance_signer),
+        store,
         printer,
     )
     .await
+}
+
+/// Loads the store metadata that authoring a release's entries will query.
+///
+/// Release entries share most of their closures. Loading every runtime root,
+/// source derivation, and content-address rewrite here, in a few batched and
+/// concurrent store invocations, lets each entry answer those questions from
+/// `store` instead of starting store subprocesses for its whole closure.
+///
+/// This only warms `store`: it writes nothing to `dir`, and every entry still
+/// performs all of its own publication checks. Paths authoring never asks
+/// about are not loaded.
+///
+/// # Errors
+///
+/// Returns an error when an entry's store path, configuration input, or local
+/// source derivation cannot be introspected, or when content-address batches
+/// disagree. A failed content-address batch only warns; affected entries
+/// retry it individually while authoring.
+pub(crate) fn preload_canonical_release_entries(
+    store: &StoreQueries,
+    dir: &Path,
+    entries: &[crate::registry::release::RegistryReleaseEntry],
+    printer: &Printer,
+) -> Result<()> {
+    // Every path authoring introspects, and the subset whose realisation
+    // graph it writes (runtime outputs and configuration modules).
+    let mut introspected = BTreeSet::new();
+    let mut graphed = BTreeSet::new();
+    for entry in entries {
+        introspected.insert(entry.store_path.as_str());
+        graphed.insert(entry.store_path.as_str());
+        if let Some(configuration) = &entry.configuration {
+            introspected.insert(configuration.module_store_path.as_str());
+            introspected.insert(configuration.evaluation_base_store_path.as_str());
+            graphed.insert(configuration.module_store_path.as_str());
+        }
+    }
+    let introspected = introspected.into_iter().collect::<Vec<_>>();
+    let graphed = graphed.into_iter().collect::<Vec<_>>();
+
+    printer.info(&format!(
+        "Loading store metadata for {} release root(s)...",
+        introspected.len()
+    ));
+    store
+        .load_closures(&introspected)
+        .context("loading store metadata for release entries")?;
+
+    // Primary outputs record their source derivation's closure size.
+    let mut derivers = BTreeSet::new();
+    for entry in entries.iter().filter(|entry| entry.output == "out") {
+        if let Some(deriver) = local_deriver(store, &entry.store_path)? {
+            derivers.insert(deriver);
+        }
+    }
+    let derivers = derivers.iter().map(String::as_str).collect::<Vec<_>>();
+    store
+        .load_closures(&derivers)
+        .context("loading store metadata for release source derivations")?;
+
+    if registry_content_addressed(dir) {
+        printer.info(&format!(
+            "Content-addressing the closures of {} release root(s)...",
+            graphed.len()
+        ));
+        store
+            .load_content_addresses(&graphed, printer)
+            .context("content-addressing release closures")?;
+    }
+    Ok(())
 }
 
 /// Retains one supplemental output for an already-authored canonical entry.
@@ -875,14 +969,15 @@ pub(crate) fn publish_canonical_named_output(
     version: &str,
     platform: &str,
     output: &str,
+    store: &StoreQueries,
     printer: &Printer,
 ) -> Result<()> {
     validate_registry_name(registry)?;
     validate_package_name(package)?;
     ensure_writable_registry_clone(registry, dir)?;
 
-    let info = introspect_store_path(store_path)?;
-    validate_store_path_release_policy(&info)?;
+    let info = store.introspect(store_path)?;
+    validate_store_path_release_policy(store, &info)?;
     resolve_publish_platform(&info.path, Some(platform))?;
 
     let _publish_lock = RegistryPublishLock::acquire(dir)?;
@@ -909,9 +1004,9 @@ pub(crate) fn publish_canonical_named_output(
         .with_context(|| format!("writing supplemental output to {}", toml_path.display()))?;
 
     let content_addressed = registry_content_addressed(dir);
-    write_store_files(dir, &info.path, content_addressed, false, printer).with_context(|| {
-        format!("writing store/ realisation graph for named output {store_path}")
-    })?;
+    write_store_files(store, dir, &info.path, content_addressed, false, printer).with_context(
+        || format!("writing store/ realisation graph for named output {store_path}"),
+    )?;
     Ok(())
 }
 
