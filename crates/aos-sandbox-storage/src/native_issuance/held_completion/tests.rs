@@ -7,7 +7,9 @@ use aos_sandbox_source_provider_protocol::native_held_completion::frame::*;
 use aos_sandbox_source_provider_protocol::native_held_completion::native_held_flight_digest_v1;
 use aos_sandbox_source_provider_protocol::native_held_completion::recovery::*;
 use aos_sandbox_source_provider_protocol::native_held_completion::witness::*;
-use aos_sandbox_source_provider_protocol::{SourceProviderAuthorityV1, StorageZfsHoldSignerV1};
+use aos_sandbox_source_provider_protocol::{
+    SourceProviderAuthorityV1, SourceProviderMethod, StorageZfsHoldSignerV1,
+};
 use sha2::{Digest as _, Sha256};
 
 use super::*;
@@ -37,6 +39,9 @@ fn witness(family: NativeHeldRecordFamilyV1) -> NativeHeldByteWitnessV1 {
     };
     let mut key = prefix.to_vec();
     key.resize(family.key_bytes(), 1);
+    if family == NativeHeldRecordFamilyV1::ProviderAttempt {
+        key[prefix.len() + 48] = SourceProviderMethod::Acquire as u8;
+    }
     NativeHeldByteWitnessV1::new(family, key, d(1)).unwrap()
 }
 
