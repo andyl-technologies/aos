@@ -557,31 +557,46 @@ impl CacheAccountingV1 {
     }
 
     fn validate_totals(&self) -> Result<(), AccountingError> {
-        if self.node_usage.physical_charged_bytes()? > self.node_quota.maximum_physical_bytes
-            || self.node_usage.resident_objects > self.node_quota.maximum_resident_objects
-            || self.node_usage.logical_pins > self.node_quota.maximum_logical_pins
-            || self.node_usage.source_retentions > self.node_quota.maximum_source_retentions
-            || self.node_usage.kernel_references > self.node_quota.maximum_kernel_references
-            || self.node_usage.backing_registrations > self.node_quota.maximum_backing_registrations
-        {
-            return Err(AccountingError::NodeQuotaExceeded);
-        }
-        for (project, usage) in &self.project_usage {
-            let quota = self
-                .project_quotas
-                .get(project)
-                .ok_or(AccountingError::UnknownProjectQuota)?;
-            if usage.physical_charged_bytes()? > quota.maximum_charged_bytes
-                || usage.logical_pins > quota.maximum_logical_pins
-                || usage.source_retentions > quota.maximum_source_retentions
-                || usage.kernel_references > quota.maximum_kernel_references
-                || usage.backing_registrations > quota.maximum_backing_registrations
-            {
-                return Err(AccountingError::ProjectQuotaExceeded);
-            }
-        }
-        Ok(())
+        validate_quota_totals_v1(
+            self.node_quota,
+            &self.project_quotas,
+            self.node_usage,
+            &self.project_usage,
+        )
     }
+}
+
+// Live recomputation and incremental recovery share quota semantics, not state.
+// Keep physical overflow and node refusal before sorted project validation.
+pub(in crate::cache_residency) fn validate_quota_totals_v1(
+    node_quota: NodeCacheQuotaV1,
+    project_quotas: &BTreeMap<[u8; 16], ProjectCacheQuotaV1>,
+    node_usage: CacheUsageV1,
+    project_usage: &BTreeMap<[u8; 16], CacheUsageV1>,
+) -> Result<(), AccountingError> {
+    if node_usage.physical_charged_bytes()? > node_quota.maximum_physical_bytes
+        || node_usage.resident_objects > node_quota.maximum_resident_objects
+        || node_usage.logical_pins > node_quota.maximum_logical_pins
+        || node_usage.source_retentions > node_quota.maximum_source_retentions
+        || node_usage.kernel_references > node_quota.maximum_kernel_references
+        || node_usage.backing_registrations > node_quota.maximum_backing_registrations
+    {
+        return Err(AccountingError::NodeQuotaExceeded);
+    }
+    for (project, usage) in project_usage {
+        let quota = project_quotas
+            .get(project)
+            .ok_or(AccountingError::UnknownProjectQuota)?;
+        if usage.physical_charged_bytes()? > quota.maximum_charged_bytes
+            || usage.logical_pins > quota.maximum_logical_pins
+            || usage.source_retentions > quota.maximum_source_retentions
+            || usage.kernel_references > quota.maximum_kernel_references
+            || usage.backing_registrations > quota.maximum_backing_registrations
+        {
+            return Err(AccountingError::ProjectQuotaExceeded);
+        }
+    }
+    Ok(())
 }
 
 /// Reports protected accounting failures.

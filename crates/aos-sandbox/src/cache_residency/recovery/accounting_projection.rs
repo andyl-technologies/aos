@@ -182,37 +182,13 @@ impl RecoveredAccountingProjection {
     }
 
     pub(super) fn validate(&self) -> Result<(), RecoveryError> {
-        if self
-            .node_usage
-            .physical_charged_bytes()
-            .map_err(|_| RecoveryError::PayloadMismatch)?
-            > self.node_quota.maximum_physical_bytes
-            || self.node_usage.resident_objects > self.node_quota.maximum_resident_objects
-            || self.node_usage.logical_pins > self.node_quota.maximum_logical_pins
-            || self.node_usage.source_retentions > self.node_quota.maximum_source_retentions
-            || self.node_usage.kernel_references > self.node_quota.maximum_kernel_references
-            || self.node_usage.backing_registrations > self.node_quota.maximum_backing_registrations
-        {
-            return Err(RecoveryError::PayloadMismatch);
-        }
-        for (project, usage) in &self.project_usage {
-            let quota = self
-                .project_quotas
-                .get(project)
-                .ok_or(RecoveryError::PayloadMismatch)?;
-            if usage
-                .physical_charged_bytes()
-                .map_err(|_| RecoveryError::PayloadMismatch)?
-                > quota.maximum_charged_bytes
-                || usage.logical_pins > quota.maximum_logical_pins
-                || usage.source_retentions > quota.maximum_source_retentions
-                || usage.kernel_references > quota.maximum_kernel_references
-                || usage.backing_registrations > quota.maximum_backing_registrations
-            {
-                return Err(RecoveryError::PayloadMismatch);
-            }
-        }
-        Ok(())
+        super::super::accounting::validate_quota_totals_v1(
+            self.node_quota,
+            &self.project_quotas,
+            self.node_usage,
+            &self.project_usage,
+        )
+        .map_err(|_| RecoveryError::PayloadMismatch)
     }
 }
 
@@ -600,4 +576,165 @@ pub(super) fn validate_watermark_gate(
         return Err(RecoveryError::PayloadMismatch);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cache_residency::accounting::{AccountingError, validate_quota_totals_v1};
+    use crate::cache_residency::domain::{CacheNodeIdV1, ProtectedBackingIdentityV1};
+    use aos_sandbox_core::{
+        CacheDomainId,
+        model::{CacheDomain, CacheDomainKind},
+    };
+
+    fn projection() -> RecoveredAccountingProjection {
+        let project = ProjectId::from_bytes([2; 16]);
+        let partition = PhysicalPartitionId::derive(
+            CacheNodeIdV1::from_bytes([1; 16]).expect("node DATA"),
+            ProtectedBackingIdentityV1::new(
+                ObjectDigest::from_bytes([3; 32]),
+                ObjectDigest::from_bytes([4; 32]),
+                ObjectDigest::from_bytes([5; 32]),
+                ObjectDigest::from_bytes([6; 32]),
+            )
+            .expect("backing DATA"),
+            CacheDomain::new(CacheDomainKind::Project, CacheDomainId::from_bytes([2; 16])),
+            ObjectDigest::from_bytes([7; 32]),
+        )
+        .expect("partition DATA");
+        let node_quota = NodeCacheQuotaV1 {
+            partition,
+            maximum_physical_bytes: 1,
+            maximum_resident_objects: 1,
+            maximum_logical_pins: 1,
+            maximum_source_retentions: 1,
+            maximum_kernel_references: 1,
+            maximum_backing_registrations: 1,
+            recovery_reserve_bytes: 0,
+            high_water_bytes: 1,
+            low_water_bytes: 0,
+        }
+        .validate()
+        .expect("node quota DATA");
+        let quota = ProjectCacheQuotaV1 {
+            project,
+            partition,
+            maximum_charged_bytes: 1,
+            maximum_logical_pins: 1,
+            maximum_source_retentions: 1,
+            maximum_kernel_references: 1,
+            maximum_backing_registrations: 1,
+        }
+        .validate()
+        .expect("project quota DATA");
+
+        RecoveredAccountingProjection {
+            node_quota,
+            project_quotas: BTreeMap::from([(*project.as_bytes(), quota)]),
+            node_usage: CacheUsageV1::default(),
+            project_usage: BTreeMap::new(),
+            reservation_projects: BTreeMap::new(),
+        }
+    }
+
+    fn usage(dimension: usize, value: u64) -> CacheUsageV1 {
+        let mut usage = CacheUsageV1::default();
+        match dimension {
+            0 => usage.reservation_bytes = value,
+            1 => usage.residency_bytes = value,
+            2 => usage.resident_objects = value,
+            3 => usage.logical_pins = value,
+            4 => usage.source_retentions = value,
+            5 => usage.kernel_references = value,
+            6 => usage.backing_registrations = value,
+            _ => panic!("unknown usage dimension"),
+        }
+        usage
+    }
+
+    fn assert_validation(
+        projection: &RecoveredAccountingProjection,
+        expected: Result<(), AccountingError>,
+    ) {
+        let accounting = validate_quota_totals_v1(
+            projection.node_quota,
+            &projection.project_quotas,
+            projection.node_usage,
+            &projection.project_usage,
+        );
+        assert_eq!(accounting, expected);
+        let recovery = projection.validate();
+        match expected {
+            Ok(()) => assert!(recovery.is_ok()),
+            Err(_) => assert!(matches!(recovery, Err(RecoveryError::PayloadMismatch))),
+        }
+    }
+
+    #[test]
+    fn quota_dimensions_keep_boundaries_and_recovery_projection() {
+        for dimension in 0..7 {
+            let mut projection = projection();
+            projection.node_usage = usage(dimension, 1);
+            assert_validation(&projection, Ok(()));
+
+            projection.node_usage = usage(dimension, 2);
+            assert_validation(&projection, Err(AccountingError::NodeQuotaExceeded));
+
+            projection.node_usage = CacheUsageV1::default();
+            projection
+                .project_usage
+                .insert([2; 16], usage(dimension, 1));
+            assert_validation(&projection, Ok(()));
+
+            // Project quotas have no separate resident-object ceiling.
+            projection
+                .project_usage
+                .insert([2; 16], usage(dimension, 2));
+            let expected = if dimension == 2 {
+                Ok(())
+            } else {
+                Err(AccountingError::ProjectQuotaExceeded)
+            };
+            assert_validation(&projection, expected);
+        }
+    }
+
+    #[test]
+    fn overflow_and_sorted_zero_usage_projects_keep_refusal_order() {
+        let mut projection = projection();
+        projection
+            .project_usage
+            .insert([1; 16], CacheUsageV1::default());
+        projection.node_usage = CacheUsageV1 {
+            reservation_bytes: u64::MAX,
+            residency_bytes: 1,
+            resident_objects: 2,
+            ..CacheUsageV1::default()
+        };
+        assert_validation(&projection, Err(AccountingError::Overflow));
+
+        projection.node_usage = usage(2, 2);
+        assert_validation(&projection, Err(AccountingError::NodeQuotaExceeded));
+        projection.node_usage = CacheUsageV1::default();
+        projection.project_usage.insert([2; 16], usage(0, 2));
+        assert_validation(&projection, Err(AccountingError::UnknownProjectQuota));
+
+        let quota = projection
+            .project_quotas
+            .remove(&[2; 16])
+            .expect("known quota");
+        projection.project_quotas.insert(
+            [1; 16],
+            ProjectCacheQuotaV1 {
+                project: ProjectId::from_bytes([1; 16]),
+                ..quota
+            },
+        );
+        projection.project_usage.insert([1; 16], usage(0, 2));
+        projection
+            .project_usage
+            .insert([2; 16], CacheUsageV1::default());
+        assert_validation(&projection, Err(AccountingError::ProjectQuotaExceeded));
+    }
 }
