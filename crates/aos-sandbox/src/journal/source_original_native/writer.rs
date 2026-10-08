@@ -1224,7 +1224,7 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
             return Err(invalid("original status exact capacity changed"));
         }
         self.validate_readback(readback)?;
-        Ok((readback.snapshot.clone(), capacity))
+        Ok((readback.snapshot.duplicate_provenance(), capacity))
     }
 
     /// Compares the same original status snapshot without exporting an authority.

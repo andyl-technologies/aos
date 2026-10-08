@@ -1659,6 +1659,17 @@ pub struct ProtectedJournalSnapshot {
 }
 
 impl ProtectedJournalSnapshot {
+    // Journal descendants may retain the same observation, never refresh it.
+    // Every duplicate still needs validation at its own effect boundary.
+    fn duplicate_provenance(&self) -> Self {
+        Self {
+            instance: Arc::clone(&self.instance),
+            namespace: self.namespace,
+            sequence: self.sequence,
+            scope: self.scope,
+        }
+    }
+
     /// Returns the exact protected journal sequence captured by this token.
     ///
     /// The number is diagnostic without the opaque token. Callers must still
@@ -11780,6 +11791,83 @@ mod tests {
             JournalLimits::default(),
             uid,
         )
+    }
+
+    #[test]
+    fn duplicated_snapshot_preserves_exact_provenance() {
+        let directory = TestDirectory::new("snapshot-duplicate-identity");
+        let (mut journal, _) = protected_open(&directory.0).unwrap();
+        let authority = journal
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .unwrap();
+        let original = authority.snapshot().unwrap();
+
+        let duplicate = original.duplicate_provenance();
+
+        assert!(std::sync::Arc::ptr_eq(&original.instance, &duplicate.instance));
+        assert_eq!(original.namespace, duplicate.namespace);
+        assert_eq!(original.sequence, duplicate.sequence);
+        assert_eq!(original.scope, duplicate.scope);
+        authority.validate_snapshot_for_effect(&duplicate).unwrap();
+
+        let mut foreign_namespace = original.duplicate_provenance();
+        foreign_namespace.namespace = RecordNamespace::Effect;
+        assert!(matches!(
+            authority.validate_snapshot_for_effect(&foreign_namespace),
+            Err(JournalError::StaleAuthoritySnapshot),
+        ));
+
+        let mut foreign_scope = original.duplicate_provenance();
+        foreign_scope.scope = ProtectedAuthorityScope::FixedMountSourceAcquisition;
+        assert!(matches!(
+            authority.validate_snapshot_for_effect(&foreign_scope),
+            Err(JournalError::StaleAuthoritySnapshot),
+        ));
+    }
+
+    #[test]
+    fn duplicated_snapshot_remains_foreign_and_stale() {
+        let directory = TestDirectory::new("snapshot-duplicate-current");
+        let foreign_directory = TestDirectory::new("snapshot-duplicate-foreign");
+        let (mut journal, _) = protected_open(&directory.0).unwrap();
+        let (mut foreign_journal, _) = protected_open(&foreign_directory.0).unwrap();
+        let mut authority = journal
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .unwrap();
+        let foreign_authority = foreign_journal
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .unwrap();
+        let original = authority.snapshot().unwrap();
+        let duplicate = original.duplicate_provenance();
+        let foreign = foreign_authority.snapshot().unwrap().duplicate_provenance();
+
+        assert_eq!(original.namespace, foreign.namespace);
+        assert_eq!(original.sequence, foreign.sequence);
+        assert_eq!(original.scope, foreign.scope);
+        assert!(matches!(
+            authority.validate_snapshot_for_effect(&foreign),
+            Err(JournalError::StaleAuthoritySnapshot),
+        ));
+
+        authority
+            .commit(&transaction(
+                1,
+                vec![JournalRecord::put(
+                    RecordNamespace::DesiredState,
+                    b"advance".to_vec(),
+                    vec![1],
+                )],
+            ))
+            .unwrap();
+
+        assert!(matches!(
+            authority.validate_snapshot_for_effect(&duplicate),
+            Err(JournalError::StaleAuthoritySnapshot),
+        ));
+        assert!(matches!(
+            authority.validate_snapshot_for_effect(&original.duplicate_provenance()),
+            Err(JournalError::StaleAuthoritySnapshot),
+        ));
     }
 
     fn read_only_test_open(

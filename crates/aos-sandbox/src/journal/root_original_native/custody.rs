@@ -374,7 +374,7 @@ impl MountOriginalNativeJournalAuthorityV5<'_> {
             return Err(invalid());
         }
         actual.complete = Some(OriginalRootProtectedReadbackV5 {
-            snapshot: actual.snapshot.clone(),
+            snapshot: actual.snapshot.duplicate_provenance(),
             graph: checked,
             floor: (*input.floor).clone(),
             attempt: input.attempt,

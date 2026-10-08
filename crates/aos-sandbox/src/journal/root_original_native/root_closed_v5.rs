@@ -46,7 +46,7 @@ impl MountOriginalNativeJournalAuthorityV5<'_> {
             )?;
             *slot = Some(PreparedOriginalRootAppendV5 {
                 transaction,
-                snapshot: phase10.snapshot.clone(),
+                snapshot: phase10.snapshot.duplicate_provenance(),
                 attempt: phase10.attempt(),
                 digest: [0; 32],
                 floor: next,
