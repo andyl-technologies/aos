@@ -53,15 +53,16 @@ pub use assignment::{
     SnapshotTransferChunkRequestV1, SnapshotTransferChunkV1, SnapshotTransferCompletionV1,
     SnapshotTransferIdentityV1,
     SnapshotTransferManifestV1, SnapshotTransferResumeV1,
-    SnapshotTransferVersionV1, VerifiedAssignmentAcceptanceV1, VerifiedAssignmentAuthorityV1,
-    VerifiedGuardianStateV1, VerifiedRestoreAuthorizationV1, VerifiedSnapshotDependencySetV1,
-    VerifiedSnapshotDependencyV1, VerifiedStagedSnapshotV1,
+    SnapshotTransferVersionV1, VerifiedAssignmentAuthorityV1, VerifiedGuardianStateV1,
+    VerifiedRestoreAuthorizationV1, VerifiedSnapshotDependencySetV1, VerifiedSnapshotDependencyV1,
+    VerifiedStagedSnapshotV1,
 };
 
 #[cfg(feature = "multi-node")]
 pub use assignment::{
     AssignmentObservationApplyOutcomeV1, AssignmentObservationReducerV1,
     SnapshotDependencyReducerV1, SnapshotTransferApplyOutcomeV1, SnapshotTransferReducerV1,
+    VerifiedAssignmentAcceptanceV1,
 };
 
 pub use capability::{
