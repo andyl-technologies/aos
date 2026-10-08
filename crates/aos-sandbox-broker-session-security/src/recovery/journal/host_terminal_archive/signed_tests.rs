@@ -890,6 +890,8 @@ fn open_test_journal(
         Journal::open_protected_at_uid(directory, "session.journal", limits, uid).unwrap();
     let mut owner = ProtectedBrokerSessionJournalV1 {
         floor: super::super::tpm_floor::runtime::BrokerFloorV1::test_not_scoped(),
+        #[cfg(feature = "online-nix")]
+        online_schema: None,
         journal: Some(journal),
         directory: directory.to_path_buf(),
         name: "session.journal".to_owned(),
