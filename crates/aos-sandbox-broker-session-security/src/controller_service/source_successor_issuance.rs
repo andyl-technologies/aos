@@ -175,7 +175,7 @@ impl Drop for ResidentInvocationV2<'_> {
 
 pub(super) fn run(
     configuration: &RuntimeConfiguration,
-    startup: &mut crate::production_startup::ControllerStartupContinuationV1,
+    startup: &mut super::startup::ControllerRuntimeStartupV1,
 ) -> Result<(), ControllerRuntimeError> {
     // Optional publisher/Nix roles are already forbidden by mode parsing and
     // the complete capture validator. No later descriptor or profile is read.

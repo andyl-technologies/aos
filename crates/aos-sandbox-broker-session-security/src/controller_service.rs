@@ -173,6 +173,7 @@ mod original_attach;
 mod operator_repair;
 mod create_q04;
 pub mod assembly;
+mod startup;
 
 use assembly::{ControllerServerAssembly, ControllerServerTerminal};
 mod public_attach;
@@ -412,7 +413,7 @@ where
 pub fn run_from_environment<A: ControllerServerAssembly>() -> Result<(), ControllerRuntimeError> {
     let configuration = RuntimeConfiguration::from_process()?;
     configuration.validate_process_identity()?;
-    let mut startup = crate::production_startup::ControllerStartupContinuationV1::new(
+    let mut startup = startup::ControllerRuntimeStartupV1::new(
         configuration.publisher_ingress,
         configuration.nix_start_admission,
         configuration.issue_source_successor,
@@ -432,7 +433,7 @@ pub fn run_from_environment<A: ControllerServerAssembly>() -> Result<(), Control
 
 fn run_ordinary_controller<A: ControllerServerAssembly>(
     configuration: RuntimeConfiguration,
-    startup: &mut crate::production_startup::ControllerStartupContinuationV1,
+    startup: &mut startup::ControllerRuntimeStartupV1,
 ) -> Result<(), ControllerRuntimeError> {
     // This independently selected profile is retained before opening any
     // journal. Root's concurrent startup is joined only on the original flight.
@@ -646,7 +647,7 @@ fn run_ordinary_controller<A: ControllerServerAssembly>(
 
 fn run_retained_controller<A: ControllerServerAssembly>(
     configuration: RuntimeConfiguration,
-    startup: &mut crate::production_startup::ControllerStartupContinuationV1,
+    startup: &mut startup::ControllerRuntimeStartupV1,
     profile: Option<Arc<aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1>>,
     launch: Option<crate::production_startup::Pid1LaunchImageV1>,
 ) -> ! {

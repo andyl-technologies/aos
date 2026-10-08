@@ -1043,7 +1043,7 @@ enum ControllerContinuationFailure {
     Selector,
     Binding(ControllerBindingFailure),
     Delivery(aos_sandbox::normal_root::SourceSuccessorCredentialErrorV2),
-    Runtime(crate::controller_service::ControllerRuntimeError),
+    RuntimeRefused,
     Closed,
 }
 
@@ -1055,7 +1055,7 @@ enum ControllerContinuationFailureRef<'attempt> {
     Selector(aos_sandbox::production_operation_compiler::ControllerNixSelectorFailureRefV2<'attempt>),
     Binding(&'attempt ControllerBindingFailure),
     Delivery(&'attempt aos_sandbox::normal_root::SourceSuccessorCredentialErrorV2),
-    Runtime(&'attempt crate::controller_service::ControllerRuntimeError),
+    RuntimeRefused,
     Closed,
 }
 
@@ -1067,7 +1067,7 @@ impl std::fmt::Debug for ControllerContinuationFailureRef<'_> {
             Self::Selector(_) => "original Nix selector refused",
             Self::Binding(_) => "original launch binding refused",
             Self::Delivery(_) => "issue-only delivery refused",
-            Self::Runtime(_) => "resident runtime continuation refused",
+            Self::RuntimeRefused => "resident runtime continuation refused",
             Self::Closed => "original continuation closed",
         })
     }
@@ -1305,8 +1305,13 @@ impl ControllerStartupContinuationV1 {
         self.armed || self.profile.is_some() || self.selector.is_some() || self.image.is_some()
     }
 
-    pub(crate) fn fail_runtime(&mut self, cause: crate::controller_service::ControllerRuntimeError) -> ! {
-        self.first_failure.get_or_insert(ControllerContinuationFailure::Runtime(cause));
+    /// Refuses runtime continuation without accepting or owning its upper cause.
+    ///
+    /// The application parks its actual typed failure before this call. Earlier
+    /// capture/admission failures keep precedence and all resident custody stays
+    /// armed through the unchanged process exit.
+    pub(crate) fn terminate_runtime_refusal(&mut self) -> ! {
+        self.first_failure.get_or_insert(ControllerContinuationFailure::RuntimeRefused);
         self.terminate_failed()
     }
 
@@ -1339,8 +1344,8 @@ impl ControllerStartupContinuationV1 {
             Some(ControllerContinuationFailure::Delivery(cause)) => {
                 ControllerContinuationFailureRef::Delivery(cause)
             }
-            Some(ControllerContinuationFailure::Runtime(cause)) => {
-                ControllerContinuationFailureRef::Runtime(cause)
+            Some(ControllerContinuationFailure::RuntimeRefused) => {
+                ControllerContinuationFailureRef::RuntimeRefused
             }
             Some(ControllerContinuationFailure::Closed) | None => {
                 ControllerContinuationFailureRef::Closed
@@ -1366,12 +1371,9 @@ mod retained_destination_tests {
     use super::*;
 
     #[test]
-    fn runtime_failure_view_borrows_the_original_without_diagnostic_detail() {
-        let cause = crate::controller_service::ControllerRuntimeError::InvalidCredential;
-        let view = ControllerContinuationFailureRef::Runtime(&cause);
+    fn runtime_refusal_marker_preserves_the_fixed_diagnostic() {
+        let view = ControllerContinuationFailureRef::RuntimeRefused;
 
-        assert!(matches!(view, ControllerContinuationFailureRef::Runtime(retained)
-            if std::ptr::eq(retained, &cause)));
         assert_eq!(format!("{view:?}"), "resident runtime continuation refused");
     }
 
