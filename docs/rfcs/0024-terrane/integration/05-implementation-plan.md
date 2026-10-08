@@ -2274,13 +2274,37 @@ ordering limitation rather than a claim of completed preflight. Later batches
 await successful preflight completion and record individual results. The owning
 `native-profile-quality` Nix gate passes on the same source, independently bound
 to all 5,046 included tracked files with 1,054 exclusions retained. The owning
-`native-checked-mutation-publication` gate also passes all six exact cases on
-that source. The written-sync gate, application-target compilation and the
-combined mandatory formatter pair remain pending. Read-only audits also verify
-that all 304 Core file images match
+`native-checked-mutation-publication` and `native-written-mutation-sync` gates
+also pass their respective six exact cases on that source. The written-sync
+gate prints each case twice, which represents six executions rather than twelve.
+The required application-target gate compiles the configured 29 packages' unit
+and integration targets without running them; both exact format commands pass.
+All nineteen reviewed qualification stages are terminal and green, with the
+original failed inventory invocation retained. Independent review confirms the
+actual commands, environments, log hashes and unchanged 6,100-file source images
+and modes. One instrumented 1,024-record deadline diagnosis is authorized only
+after fresh exact discovery and completed source/executable preflight; no other
+population or unchanged retry is authorized. Read-only audits also verify that
+all 304 Core file images match
 the qualified algebra snapshot and the existing GC fixture corrections are
 already present; no further source transplant is needed. These local commits
 remain unpushed; no deadline improvement or task acceptance is claimed.
+
+That single instrumented diagnosis fails with writer `Expired` at
+39.181033078 seconds against thirty seconds; the original test takes 68.693
+seconds within the unchanged 120-second process bound. Fresh discovery and
+source/executable preflight complete before launch, and all 6,100 source images
+and the compiled executable remain unchanged afterward. The complete first
+transcript contains 67 cohort, twenty Raw durability and 613 held-content scopes,
+with no missing or duplicate boundaries; repeated final failure output is
+excluded from analysis and retained in the original log. Fresh parent checks and
+opens dominate the observed native validation interiors, while the enclosing
+rename spans mostly measure retained checks. These overlapping measurements do
+not establish a speedup. Capacity-only reuse of parent-path scratch is being
+implemented on a separate task branch, preserving every fresh observation and
+the original refusal order. A proposed direct syscall substitution is deferred
+because the pinned standard library's flags, retries and stat fallback behavior
+are not equivalent to that proposal. No retry or other indexing population runs.
 
 The sealed current floor contains 89 aggregate gates, including all 69 T0/T1
 plan-required names and twenty implemented supporting checks. Read-only evaluation
