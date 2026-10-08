@@ -238,7 +238,10 @@ impl OriginalNativeAcquireFlightV5 {
                 self.positive.stage = PositiveStage::PrepareComplete;
             }
             PositiveStage::PrepareComplete => {
-                let phase2 = self.positive.appends[0].as_ref()
+                // The predecessor stays borrowed through the postprepare check
+                // while the distinct resident successor receives its append.
+                let [held_append, complete_append, _, _] = &mut self.positive.appends;
+                let phase2 = held_append.as_ref()
                     .ok_or_else(|| state_error("original Held readback absent"))?.readback()?;
                 session.revalidate_original_positive_v5(writer, phase2, authorization, received)
                     .map_err(|_| state_error("original Complete pre-CAS currentness"))?;
@@ -270,7 +273,7 @@ impl OriginalNativeAcquireFlightV5 {
                     self.positive.owners[1].as_ref()
                         .ok_or_else(|| state_error("Complete proposal absent"))?,
                     attempt,
-                    &mut self.positive.appends[1],
+                    complete_append,
                 )?;
                 session.revalidate_original_positive_v5(writer, phase2, authorization, received)
                     .map_err(|_| state_error("original Complete postprepare currentness"))?;
@@ -314,7 +317,8 @@ impl OriginalNativeAcquireFlightV5 {
                 self.positive.stage = PositiveStage::PrepareAcceptedAppend;
             }
             PositiveStage::PrepareAcceptedAppend => {
-                let phase3 = self.positive.appends[1].as_ref()
+                let [_, complete_append, accepted_append, _] = &mut self.positive.appends;
+                let phase3 = complete_append.as_ref()
                     .ok_or_else(|| state_error("original Complete readback absent"))?.readback()?;
                 session.revalidate_original_positive_v5(writer, phase3, authorization, received)
                     .map_err(|_| state_error("original RootAccepted preappend currentness"))?;
@@ -327,7 +331,7 @@ impl OriginalNativeAcquireFlightV5 {
                     self.positive.owners[2].as_ref()
                         .ok_or_else(|| state_error("RootAccepted proposal absent"))?,
                     attempt,
-                    &mut self.positive.appends[2],
+                    accepted_append,
                 )?;
                 session.revalidate_original_positive_v5(writer, phase3, authorization, received)
                     .map_err(|_| state_error("original RootAccepted postprepare currentness"))?;
@@ -359,7 +363,8 @@ impl OriginalNativeAcquireFlightV5 {
                 self.positive.stage = PositiveStage::PrepareSigned;
             }
             PositiveStage::PrepareSigned => {
-                let phase4 = self.positive.appends[2].as_ref()
+                let [_, _, accepted_append, signed_append] = &mut self.positive.appends;
+                let phase4 = accepted_append.as_ref()
                     .ok_or_else(|| state_error("original RootAccepted readback absent"))?.readback()?;
                 session.revalidate_original_positive_v5(writer, phase4, authorization, received)
                     .map_err(|_| state_error("signed RootAccepted preappend currentness"))?;
@@ -372,7 +377,7 @@ impl OriginalNativeAcquireFlightV5 {
                     self.positive.owners[3].as_ref()
                         .ok_or_else(|| state_error("signed RootAccepted proposal absent"))?,
                     attempt,
-                    &mut self.positive.appends[3],
+                    signed_append,
                 )?;
                 session.revalidate_original_positive_v5(writer, phase4, authorization, received)
                     .map_err(|_| state_error("signed RootAccepted postprepare currentness"))?;
