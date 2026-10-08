@@ -22,8 +22,6 @@
   atomicPatchRepository = import ./_qemu-atomic-patch-repository.nix {
     inherit pkgs qemuPackage;
   };
-  qemuQueuedInvalidation = import ./phase2-qemu-queued-invalidation.nix {inherit pkgs lib qemuPackage;};
-  qemuRuntimeSemantics = import ./phase2-qemu-runtime-semantics.nix {inherit pkgs lib qemuPackage;};
   qemuPatchRegeneration = import ./phase2-qemu-patch-regeneration.nix {
     inherit pkgs lib qemuPackage atomicPatchRepository;
   };
