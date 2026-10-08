@@ -15,6 +15,14 @@
       type = lib.types.attrsOf lib.types.anything;
       default = {};
     };
+    options.aos.security.selinux.enable = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+    };
+    options.aos.security.selinux.bootMode = lib.mkOption {
+      type = lib.types.enum ["legacy" "immutable-stage0"];
+      default = "legacy";
+    };
   };
 
   evaluation = lib.evalModules {
@@ -25,6 +33,11 @@
         options.aos.sandbox.controller.uid = lib.mkOption {type = lib.types.int;};
         options.aos.sandbox.controller.gid = lib.mkOption {type = lib.types.int;};
 
+        # Recovery custody is checked without selecting the confined normal role.
+        config.aos.security.selinux = {
+          enable = false;
+          bootMode = "legacy";
+        };
         config.aos.sandbox = {
           controller = {
             uid = 811;
