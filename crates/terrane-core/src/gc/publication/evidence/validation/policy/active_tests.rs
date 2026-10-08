@@ -1,5 +1,7 @@
 //! Checks registered execution profiles without claiming any native authority.
 
+use alloc::borrow::ToOwned;
+
 use super::*;
 
 fn registered(property: u64, attribute: u64) -> ConfiguredRegistryInputs {
