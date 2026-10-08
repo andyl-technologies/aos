@@ -16,6 +16,9 @@
 }: let
   bank = config.aos.sandbox.resourceBank;
   cfg = bank.parentEnclosure;
+  # Provenance traversal inspects inactive payloads; the outer mkIf still
+  # discards these definitions. Selected profiles retain their exact values.
+  selectedValue = value: if cfg == null then null else value;
   dimensions = bank._dimensionOrder;
   unsigned = lib.types.addCheck lib.types.int (value: value >= 0);
   positive = lib.types.addCheck lib.types.int (value: value > 0);
@@ -287,10 +290,10 @@ in {
       sliceConfig = {
         CPUAccounting = true;
         CPUQuotaPeriodSec = "100ms";
-        CPUQuota = "${toString (cfg.fixedServices.cpu-micros-per-period / 1000)}%";
-        MemoryMax = cfg.fixedServices.memory-bytes;
+        CPUQuota = selectedValue "${toString (cfg.fixedServices.cpu-micros-per-period / 1000)}%";
+        MemoryMax = selectedValue cfg.fixedServices.memory-bytes;
         MemorySwapMax = 0;
-        TasksMax = cfg.fixedServices.pids;
+        TasksMax = selectedValue cfg.fixedServices.pids;
       };
     };
     systemd.services = lib.genAttrs serviceNames (_: {
@@ -298,19 +301,19 @@ in {
         Slice = lib.mkForce "aoscomponents.slice";
         CPUAccounting = true;
         CPUQuotaPeriodSec = lib.mkForce "100ms";
-        CPUQuota = lib.mkForce "${toString (cfg.fixedServices.cpu-micros-per-period / 1000)}%";
-        MemoryMax = lib.mkForce cfg.fixedServices.memory-bytes;
+        CPUQuota = lib.mkForce (selectedValue "${toString (cfg.fixedServices.cpu-micros-per-period / 1000)}%");
+        MemoryMax = lib.mkForce (selectedValue cfg.fixedServices.memory-bytes);
         MemorySwapMax = lib.mkForce 0;
-        TasksMax = lib.mkForce cfg.fixedServices.pids;
-        LimitNOFILE = lib.mkForce cfg.fixedOpenFilesPerProcess;
+        TasksMax = lib.mkForce (selectedValue cfg.fixedServices.pids);
+        LimitNOFILE = lib.mkForce (selectedValue cfg.fixedOpenFilesPerProcess);
       };
     });
 
     aos.journald = {
-      maxUse = lib.mkForce (toString cfg.journal.systemMaxUse);
-      systemMaxFileSize = lib.mkForce (toString cfg.journal.systemMaxFileSize);
-      runtimeMaxUse = lib.mkForce cfg.journal.runtimeMaxUse;
-      runtimeMaxFileSize = lib.mkForce cfg.journal.runtimeMaxFileSize;
+      maxUse = lib.mkForce (selectedValue (toString cfg.journal.systemMaxUse));
+      systemMaxFileSize = lib.mkForce (selectedValue (toString cfg.journal.systemMaxFileSize));
+      runtimeMaxUse = lib.mkForce (selectedValue cfg.journal.runtimeMaxUse);
+      runtimeMaxFileSize = lib.mkForce (selectedValue cfg.journal.runtimeMaxFileSize);
     };
     # Definition collection inspects this leaf before filtering the outer mkIf.
     aos.security.audit.bounds = if cfg == null then null else cfg.audit;
