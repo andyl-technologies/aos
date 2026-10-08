@@ -4,6 +4,7 @@
   lib,
   ...
 }: let
+  containerTarget = config.aos.initSystem.container or false;
   literalText = import ./literal-text.nix;
   effects = config.aos.abilities.configuration.operations.file.effects;
   declarations = lib.filterAttrs (_: effect:
@@ -35,7 +36,7 @@
 in {
   # Only literal inputs enter the baseline. References to secrets or other
   # effect results remain live file operations after the overlay is mounted.
-  config = lib.mkIf ((config.aos.boot.stage or "host") == "host") {
+  config = lib.mkIf ((config.aos.boot.stage or "host") == "host" && !containerTarget) {
     aos.configurationLower = {
       files = builtins.listToAttrs (map (entry: lib.nameValuePair entry.path entry.value) uniqueEntries);
       ownership.files = builtins.listToAttrs (map (entry: lib.nameValuePair entry.path entry.owner) uniqueEntries);

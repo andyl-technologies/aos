@@ -6,6 +6,7 @@
   provenance,
   ...
 }: let
+  containerTarget = config.aos.initSystem.container or false;
   option = type: description: lib.mkOption {inherit type description;};
   defaulted = type: default: description: lib.mkOption {inherit type default description;};
   text = lib.types.str;
@@ -106,7 +107,7 @@ in {
     mount = {
       input.options = lib.mapAttrs (_: value: value // {type = lib.types.deferred text;}) result;
       result.options.path = option text "Mounted OS configuration directory.";
-      handler.program = selected;
+      handler.program = lib.mkIf (!containerTarget) selected;
     };
     install = {
       input.options = inputs;

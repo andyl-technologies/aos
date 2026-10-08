@@ -8,6 +8,7 @@
   ...
 }: let
   cfg = config.aos.security.pki;
+  containerTarget = config.aos.initSystem.container or false;
   bundlePath = "/etc/ssl/certs/ca-certificates.crt";
   mozilla = "${dependencies.ca-certificates or pkgs.ca-certificates}/etc/ssl/certs/ca-certificates.crt";
   fileSource = source: let
@@ -74,11 +75,12 @@ in {
     ## Install the system CA trust store to /etc/ssl.
     enable = lib.mkOption {
       type = lib.types.bool;
-      default = true;
+      default = !containerTarget || cfg.certificateFiles != [] || cfg.certificates != [];
       description = ''
         Install the system-wide CA trust store under /etc/ssl. Enabled by
         default so TLS clients can verify server certificates out of the
-        box; without it gnutls/OpenSSL/curl have no trust roots.
+        box. Containers retain the image trust roots by default; additional
+        certificates request a rebuilt native trust bundle.
       '';
     };
 

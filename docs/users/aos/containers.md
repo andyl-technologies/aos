@@ -16,6 +16,8 @@ Container policy preserves the runtime's hostname and networking by default
 and leaves host-kernel tuning to the host. Installing an init implementation
 does not enable those host defaults. Explicit kernel or network configuration
 still declares effects that must have suitable handlers and runtime support.
+Configuration files are reconciled directly in the writable layer;
+image-overlay declarations require a handler supplied by the target.
 
 ## Installing while building an image
 
