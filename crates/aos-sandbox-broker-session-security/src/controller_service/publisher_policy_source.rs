@@ -25,7 +25,7 @@ use aos_sandbox_core::{GitUploadCapacityV1, RawPairedClockSample};
 use aos_sandbox::ownership_resume::OwnershipClockObservationError;
 use super::ProductionController;
 use super::publisher_credential::read_required_credential;
-use crate::controller_ownership::sample_ownership_clock;
+use crate::controller_service::ownership::sample_ownership_clock;
 
 const PACKET_NAME: &str = "publisher-policy-source-v1";
 const POLICY_NAME: &str = "publisher-policy-v1.cbor";

@@ -148,7 +148,7 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
         // Completion is sampled after the serial observations, not before
         // Repair's physical work. It never changes the original effect grant
         // or deadline; Core retains this timestamp with the first hold request.
-        let completion = crate::controller_ownership::sample_ownership_clock()
+        let completion = crate::controller_service::ownership::sample_ownership_clock()
             .map_err(|_| {
                 EffectFailure::Retryable("Repair completion clock is unavailable".to_owned())
             })?;

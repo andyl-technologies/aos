@@ -143,6 +143,28 @@ Private signing recipes remain private to this concrete owner rather than
 becoming generic signing callbacks. Unconsumed speculative issuance recipes
 are removed instead of gaining new public ports merely to permit relocation.
 
+The current Controller integration is privately co-located under session
+security's `controller_service` module. Its inventory owner retains the actual
+capture-candidate fence, authenticated session, pending exchange, authority
+effect, output-registration attempt, optional Nix attempt, and Git coverage
+custody in their original drop order. Their private exchange and signing
+recipes belong to this concrete integration group, not generic transport.
+The existing selected service entry and named inventory exports remain the
+application-facing ports; this source grouping does not establish the target
+`aos-sandbox-controller-runtime` crate boundary or reduce the dependency graph.
+
+The remaining backedges include lower session clock sampling through the
+Controller ownership module and the policy barrier's fixed Controller hold
+credential recipe. Inventory/history attestation also remains privately
+co-located with protected session recovery. In the current live inventory
+recipe, terminal revalidation drops its journal-and-peer loan before deriving
+the canonical challenge packet and signing. That freshness gap remains an
+implementation obligation, not a new public signing port authorized by this
+refactor. A later boundary must retain the genuine loan through signing and
+keep historical predecessor, request, session, checkpoint, catalog, and cold
+terminal joins inside their protected owner; detached outcomes or digests
+cannot substitute for that custody.
+
 ### Effects, views, and application assembly
 
 Host, Storage, Mount, and Network retain their existing implementation crates

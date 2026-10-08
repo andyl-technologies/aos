@@ -51,7 +51,7 @@ use aos_sandbox_core::{ObjectDigest, OperationId, SandboxId};
 use ed25519_dalek::VerifyingKey;
 
 use crate::cache_signer_exchange::request_controller_q04_cache_signer_readback_v3;
-use crate::controller_hold_credential::with_process_controller_hold_signer_v1;
+use crate::controller_service::hold_credential::with_process_controller_hold_signer_v1;
 use crate::policy_authority_client::{
     ClosedPolicyBindingClientObservationV4, ClosedPolicyBindingPreviewV4,
     ClosedPolicyBindingSignerFlightV4, ClosedPolicyHeldCasCompletionV8,

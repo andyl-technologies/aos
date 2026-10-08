@@ -52,7 +52,7 @@ use aos_sandbox::reconciler::{
 use aos_sandbox::{ControllerRequestScopeV1, EffectPlan, Journal};
 use aos_sandbox_core::ObjectDigest;
 
-use crate::controller_hold_credential::with_process_controller_hold_signer_v1;
+use crate::controller_service::hold_credential::with_process_controller_hold_signer_v1;
 
 /// Reports whether the exact accepted Create has acquired its V2 Root source.
 pub(crate) enum ProjectAdmissionProgressV1 {

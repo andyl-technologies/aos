@@ -35,7 +35,7 @@ use rustix::fs::{Mode, OFlags, open};
 
 use super::ProductionController;
 use super::publisher_credential::read_required_credential;
-use crate::controller_ownership::{CLOCK_PROVENANCE, sample_ownership_clock};
+use crate::controller_service::ownership::{CLOCK_PROVENANCE, sample_ownership_clock};
 
 const CREDENTIAL: &str = "publisher-service-scope-v1";
 const MAGIC: &[u8; 8] = b"AOSPMS01";

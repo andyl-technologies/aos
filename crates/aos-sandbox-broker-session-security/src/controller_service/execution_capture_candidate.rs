@@ -28,7 +28,7 @@ use aos_sandbox_protocol::storage_capture_grant::ControllerOutputSettlementPreim
 use buffa::Message as _;
 
 use crate::DormantBrokerRequestCoordinatesV1;
-use crate::controller_plan_signer::ControllerBrokerPlanSignerV1;
+use crate::controller_service::plan_signer::ControllerBrokerPlanSignerV1;
 use crate::dormant_handshake::ProtectedStorageSessionBindingV1;
 
 /// Retains the exact signed method-41 query and its protected source locator.

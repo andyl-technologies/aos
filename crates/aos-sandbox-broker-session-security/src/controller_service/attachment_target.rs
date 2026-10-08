@@ -32,11 +32,11 @@ use rustix::fs::{Mode, OFlags, open};
 
 use super::EffectFailure;
 use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1;
-use crate::controller_ownership::{
+use crate::controller_service::ownership::{
     CLOCK_PROVENANCE, ControllerOwnershipConfigurationV1, ControllerOwnershipCredentialErrorV1,
     sample_ownership_clock,
 };
-use crate::controller_plan_signer::{
+use crate::controller_service::plan_signer::{
     ControllerBrokerPlanSignerError, ControllerBrokerPlanSignerV1,
 };
 

@@ -50,7 +50,7 @@ use aos_sandbox_protocol::{
 };
 use buffa::Message as _;
 
-use crate::controller_authority_effect::ControllerAuthorityEffectExchangeV1;
+use crate::controller_service::authority_effect::ControllerAuthorityEffectExchangeV1;
 use crate::recovery::{
     ProtectedPriorAtomicStorageHistoryV1, ProtectedVerifiedAtomicStorageHistoryV1,
 };
@@ -510,7 +510,7 @@ pub enum DormantLifecycleInventoryQueryProgressV1 {
 
 struct DormantLifecycleInventorySessionV1 {
     // The selected original's fence must run before the actual Session drops.
-    capture_candidate: Option<crate::controller_capture_candidate_exchange::ControllerStorageCaptureCandidateExchangeV1>,
+    capture_candidate: Option<crate::controller_service::capture_candidate_exchange::ControllerStorageCaptureCandidateExchangeV1>,
     session: DormantAuthenticatedBrokerSessionV1,
     pending: Option<DormantLifecycleInventoryQueryRecoveryV1>,
     authority_effects: ControllerAuthorityEffectExchangeV1,
@@ -2124,7 +2124,7 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
         &mut self,
     ) -> Result<(
         &crate::controller_service::execution_output_storage_registration::OriginalControllerOutputRegistrationV1,
-        &mut Option<crate::controller_capture_candidate_exchange::ControllerStorageCaptureCandidateExchangeV1>,
+        &mut Option<crate::controller_service::capture_candidate_exchange::ControllerStorageCaptureCandidateExchangeV1>,
         &mut DormantAuthenticatedBrokerSessionV1,
     ), EffectFailure> {
         if self.0.pending.is_some() || self.0.authority_effects.has_pending()

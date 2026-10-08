@@ -36,7 +36,7 @@ use aos_sandbox_protocol::host_execution_no_apply::{
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
 
-use crate::controller_retained_exchange::{RetainedBrokerExchangeV1, RetainedExchangeErrorsV1};
+use crate::controller_service::retained_exchange::{RetainedBrokerExchangeV1, RetainedExchangeErrorsV1};
 use crate::recovery::AuthenticatedOriginalHostNoApplyJoinV1;
 use crate::{
     BrokerSessionSecurityError, DormantAuthenticatedBrokerSessionV1,

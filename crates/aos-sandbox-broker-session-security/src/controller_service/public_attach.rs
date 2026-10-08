@@ -23,10 +23,10 @@ use aos_sandbox_protocol::{
     decode_host_attach_route_evidence_v1, decode_host_attach_route_query_v1,
 };
 
-use crate::controller_attach_credentials::ControllerAttachCredentialsV1;
-use crate::controller_ownership::sample_ownership_clock;
-use crate::controller_plan_signer::ControllerBrokerPlanSignerV1;
-use crate::controller_publication::ControllerHostPublication;
+use crate::controller_service::attach_credentials::ControllerAttachCredentialsV1;
+use crate::controller_service::ownership::sample_ownership_clock;
+use crate::controller_service::plan_signer::ControllerBrokerPlanSignerV1;
+use crate::controller_service::publication::ControllerHostPublication;
 
 use super::{AdmittedPublicAttachV1, ControllerCommandFailure, ProductionController};
 

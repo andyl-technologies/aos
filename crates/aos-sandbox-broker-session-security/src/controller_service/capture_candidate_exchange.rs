@@ -34,7 +34,7 @@ use aos_sandbox_protocol::storage_capture_candidate::{
 };
 use buffa::Message as _;
 
-use crate::controller_plan_signer::ControllerBrokerPlanSignerV1;
+use crate::controller_service::plan_signer::ControllerBrokerPlanSignerV1;
 use crate::controller_service::execution_capture_candidate::{
     AcceptedCaptureLimitsV1, SignedStorageCaptureCandidateQueryV1,
     sign_current_storage_capture_candidate_query_v1,

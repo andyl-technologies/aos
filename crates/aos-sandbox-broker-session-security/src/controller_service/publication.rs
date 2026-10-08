@@ -29,18 +29,18 @@ use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBroke
 use aos_sandbox_protocol::host_catalog::HOST_CATALOG_PUBLICATION_DESCRIPTOR_ROLES;
 use buffa::Message as _;
 
-use crate::controller_argument_exchange::{
+use crate::controller_service::argument_exchange::{
     ControllerHostArgumentExchangeV1, ControllerHostArgumentOutcomeV1,
 };
-use crate::controller_attach_exchange::ControllerHostAttachGateExchangeV1;
-use crate::controller_authority_effect::ControllerAuthorityEffectExchangeV1;
-use crate::controller_no_apply_exchange::{
+use crate::controller_service::attach_exchange::ControllerHostAttachGateExchangeV1;
+use crate::controller_service::authority_effect::ControllerAuthorityEffectExchangeV1;
+use crate::controller_service::no_apply_exchange::{
     ControllerHostNoApplyExchangeV2, ControllerHostNoApplyObservationV2,
 };
-use crate::controller_output_exchange::{
+use crate::controller_service::output_exchange::{
     ControllerHostOutputExchangeV1, ControllerHostOutputObservationV1,
 };
-use crate::controller_plan_signer::ControllerBrokerPlanSignerV1;
+use crate::controller_service::plan_signer::ControllerBrokerPlanSignerV1;
 use crate::controller_service::execution::{
     ControllerExecutionCompletionV1, ControllerExecutionExchangeV1, ControllerExecutionIntentV1,
     ControllerExecutionObservationV1,

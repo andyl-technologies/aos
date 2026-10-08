@@ -31,7 +31,7 @@ use aos_sandbox_protocol::semantics::{
 use buffa::Message as _;
 
 use crate::DormantBrokerRequestCoordinatesV1;
-use crate::controller_plan_signer::ControllerBrokerPlanSignerV1;
+use crate::controller_service::plan_signer::ControllerBrokerPlanSignerV1;
 
 /// Retains the exact signed plan, source, and original method-37 request body.
 pub(crate) struct SignedExecutionArgumentObserveV1 {

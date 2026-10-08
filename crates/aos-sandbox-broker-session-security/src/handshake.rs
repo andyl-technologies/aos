@@ -2601,7 +2601,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
         checked: &aos_sandbox_protocol::nix_build::ValidatedNixBuildRequestV2,
     ) -> Result<(), OnlineTransportFailureV1> {
         self.require_online_transport(request)?;
-        let sample = crate::controller_ownership::sample_ownership_clock()?;
+        let sample = crate::controller_service::ownership::sample_ownership_clock()?;
         self.owner.retain_online_resolve_admission(
             request, checked, &sample, &self.transcript, self.socket.peer(),
         )?;

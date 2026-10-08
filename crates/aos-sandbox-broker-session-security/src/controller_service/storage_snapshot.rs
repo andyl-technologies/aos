@@ -231,7 +231,7 @@ impl ProductionEffectExecutor {
                                     request_id,
                                     *request_packet.as_bytes(),
                                 )? {
-                                    crate::lifecycle_host_inventory::DormantAtomicStorageInventoryColdRecoveryV1::OriginalTerminal(successor) => (
+                                    crate::controller_service::inventory::DormantAtomicStorageInventoryColdRecoveryV1::OriginalTerminal(successor) => (
                                         storage.attest_original_atomic_snapshot_terminal(
                                             predecessor,
                                             group,
@@ -242,14 +242,14 @@ impl ProductionEffectExecutor {
                                         )?,
                                         false,
                                     ),
-                                    crate::lifecycle_host_inventory::DormantAtomicStorageInventoryColdRecoveryV1::NoOriginalRequest
-                                    | crate::lifecycle_host_inventory::DormantAtomicStorageInventoryColdRecoveryV1::AbandonedReadOnly => {
+                                    crate::controller_service::inventory::DormantAtomicStorageInventoryColdRecoveryV1::NoOriginalRequest
+                                    | crate::controller_service::inventory::DormantAtomicStorageInventoryColdRecoveryV1::AbandonedReadOnly => {
                                         let fresh = storage.recover_fresh_atomic_snapshot_inventory(
                                             request_id,
                                             *request_packet.as_bytes(),
                                         )?;
                                         let completion = match fresh {
-                                            crate::lifecycle_host_inventory::DormantAtomicStorageInventoryColdRecoveryV1::OriginalTerminal(successor) =>
+                                            crate::controller_service::inventory::DormantAtomicStorageInventoryColdRecoveryV1::OriginalTerminal(successor) =>
                                                 storage.attest_fresh_atomic_snapshot_terminal(
                                                     predecessor,
                                                     group,
@@ -258,8 +258,8 @@ impl ProductionEffectExecutor {
                                                     &current,
                                                     &plan,
                                                 )?,
-                                            crate::lifecycle_host_inventory::DormantAtomicStorageInventoryColdRecoveryV1::NoOriginalRequest
-                                            | crate::lifecycle_host_inventory::DormantAtomicStorageInventoryColdRecoveryV1::AbandonedReadOnly =>
+                                            crate::controller_service::inventory::DormantAtomicStorageInventoryColdRecoveryV1::NoOriginalRequest
+                                            | crate::controller_service::inventory::DormantAtomicStorageInventoryColdRecoveryV1::AbandonedReadOnly =>
                                                 storage.recover_verified_atomic_snapshot_status(
                                                     predecessor,
                                                     group,

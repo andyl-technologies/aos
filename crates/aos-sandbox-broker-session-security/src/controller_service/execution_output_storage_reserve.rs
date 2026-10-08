@@ -38,7 +38,7 @@ use aos_sandbox_protocol::storage_output_reserve::{
 use buffa::Message as _;
 
 use crate::DormantBrokerRequestCoordinatesV1;
-use crate::controller_plan_signer::{ControllerBrokerPlanSignerError, ControllerBrokerPlanSignerV1};
+use crate::controller_service::plan_signer::{ControllerBrokerPlanSignerError, ControllerBrokerPlanSignerV1};
 
 /// Keeps one exact signed Storage request separate from effect admission.
 pub(crate) struct SignedStorageOutputReserveV1 {

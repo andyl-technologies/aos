@@ -25,7 +25,7 @@ use super::execution_output_storage_reserve::{
     OriginalHostOutputIssuerV1, OriginalStorageOutputIssuerV1,
 };
 use super::SharedControllerBrokerSessions;
-use crate::controller_plan_signer::ControllerBrokerPlanSignerV1;
+use crate::controller_service::plan_signer::ControllerBrokerPlanSignerV1;
 use crate::handshake::output_registration_continuation::{
     OriginalOutputClientFlightV1, OutputPreparationCustodyV1,
 };
@@ -275,7 +275,7 @@ where T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
     let (registration, candidate, session) = storage.capture_candidate_loan()?;
     if !registration.coordinated_terminal { return Err(closed()); }
     if candidate.is_none() {
-        *candidate = Some(crate::controller_capture_candidate_exchange::ControllerStorageCaptureCandidateExchangeV1::begin(
+        *candidate = Some(crate::controller_service::capture_candidate_exchange::ControllerStorageCaptureCandidateExchangeV1::begin(
             registration.operation, registration.execution,
         ));
     }

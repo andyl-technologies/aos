@@ -18,7 +18,7 @@ use aos_sandbox_core::format::git_upload_enrollment::{
     GitCoverageRequestCoordinatesV1,
 };
 
-use crate::lifecycle_host_inventory::DormantGitCoverageQueryOwnerV1;
+use crate::controller_service::inventory::DormantGitCoverageQueryOwnerV1;
 use crate::{
     BrokerSessionSecurityError, DormantBrokerSessionHandshakeErrorV1,
     DormantMountLifecycleInventoryOwnerV1, DormantStorageLifecycleInventoryOwnerV1,

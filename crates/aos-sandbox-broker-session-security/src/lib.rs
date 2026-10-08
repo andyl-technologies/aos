@@ -56,20 +56,6 @@ mod cache_public_pin;
 mod cache_signer_credential;
 pub mod cache_signer_exchange;
 mod cache_source_membership;
-mod controller_argument_exchange;
-mod controller_attach_credentials;
-mod controller_attach_exchange;
-mod controller_authority_effect;
-mod controller_cache_readback_credential;
-mod controller_capture_candidate_exchange;
-mod controller_guest_root_credentials;
-mod controller_hold_credential;
-mod controller_no_apply_exchange;
-mod controller_output_exchange;
-mod controller_ownership;
-mod controller_plan_signer;
-mod controller_publication;
-mod controller_retained_exchange;
 pub mod controller_service;
 mod dormant_handshake;
 mod endpoint;
@@ -88,7 +74,6 @@ mod host_execution_handoff;
 mod host_mount_scope_identity_transfer;
 mod immutable_image;
 mod lifecycle_domain_effect;
-mod lifecycle_host_inventory;
 pub mod manifest;
 pub mod ownership_authority_client;
 pub mod ownership_authority_runtime;
@@ -110,7 +95,6 @@ mod production_source_provider;
 mod production_source_provider_catalog;
 mod production_source_provider_storage;
 mod production_startup;
-mod project_admission_coordinator;
 #[allow(
     dead_code,
     reason = "sealed handshake context access stays unreachable until P0-10"
@@ -211,7 +195,7 @@ pub use lifecycle_domain_effect::{
     DormantLifecycleDomainEffectOwnerV1, DormantLifecycleDomainEffectProgressV1,
     DormantLifecycleDomainEffectRecoveryV1,
 };
-pub use lifecycle_host_inventory::{
+pub use controller_service::inventory::{
     DormantAtomicStorageInventoryCompletionV1, DormantAtomicStorageInventoryFinishProgressV1,
     DormantAtomicStorageInventoryFinishRecoveryV1, DormantAtomicStorageInventoryPredecessorV1,
     DormantHostRuntimeInventoryOwnerV1, DormantLifecycleInventoryQueryProgressV1,

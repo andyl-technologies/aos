@@ -20,8 +20,8 @@ use aos_sandbox_core::OperationId;
 
 use super::nix_inputs::{NixLocalInputCutV2, NixLocalInputErrorV2};
 use super::{ControllerResidentCauseV1, ControllerWorkerCustodyV1, ProductionEffectExecutor};
-use crate::controller_authority_effect::ControllerStorageGenerationExchangeV1;
-use crate::controller_plan_signer::ControllerBrokerPlanSignerError;
+use crate::controller_service::authority_effect::ControllerStorageGenerationExchangeV1;
+use crate::controller_service::plan_signer::ControllerBrokerPlanSignerError;
 
 #[derive(Debug, thiserror::Error)]
 enum GenerationFailureV1 {

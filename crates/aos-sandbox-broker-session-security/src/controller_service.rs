@@ -71,15 +71,15 @@ use rustix::net::{
 };
 use sha2::{Digest as _, Sha256};
 
-use crate::controller_attach_credentials::ControllerAttachCredentialsV1;
-use crate::controller_cache_readback_credential::validate_process_cache_readback_credentials_v1;
-use crate::controller_guest_root_credentials::load_guest_root_template_pins_optional;
-use crate::controller_hold_credential::{
+use crate::controller_service::attach_credentials::ControllerAttachCredentialsV1;
+use crate::controller_service::cache_readback_credential::validate_process_cache_readback_credentials_v1;
+use crate::controller_service::guest_root_credentials::load_guest_root_template_pins_optional;
+use crate::controller_service::hold_credential::{
     validate_process_controller_hold_credentials_v1, with_process_controller_hold_signer_v1,
 };
-use crate::controller_ownership::{ControllerOwnershipConfigurationV1, sample_ownership_clock};
-use crate::controller_plan_signer::ControllerBrokerPlanSignerV1;
-use crate::controller_publication::{ControllerHostPublication, ControllerHostPublicationError};
+use crate::controller_service::ownership::{ControllerOwnershipConfigurationV1, sample_ownership_clock};
+use crate::controller_service::plan_signer::ControllerBrokerPlanSignerV1;
+use crate::controller_service::publication::{ControllerHostPublication, ControllerHostPublicationError};
 use crate::fixed_role_credential::{
     CredentialOwnerPolicyV1, read_optional_bounded_role_credential_v1,
 };
@@ -133,6 +133,23 @@ use aos_sandbox::{
     activated_ownership_gate_digest_from_journal_v1, prepare_runtime_lifecycle_authority_effect_v1,
     public_operation_resource_from_journal_v1,
 };
+
+mod argument_exchange;
+mod attach_credentials;
+mod attach_exchange;
+mod authority_effect;
+mod cache_readback_credential;
+mod capture_candidate_exchange;
+mod guest_root_credentials;
+pub(crate) mod hold_credential;
+pub(crate) mod inventory;
+mod no_apply_exchange;
+mod output_exchange;
+pub(crate) mod ownership;
+mod plan_signer;
+mod project_admission;
+mod publication;
+mod retained_exchange;
 
 mod attachment_desired;
 mod attachment_physical;
@@ -917,7 +934,7 @@ fn run_retained_controller<A: ControllerServerAssembly>(
                 }
                 let journal = parent.controller_journal.journal_mut()
                     .ok_or(ControllerRuntimeError::Journal(JournalError::ProtectedBoundary))?;
-                parent.project_recovery = Some(crate::project_admission_coordinator::recover_source_project_admission_v1(
+                parent.project_recovery = Some(crate::controller_service::project_admission::recover_source_project_admission_v1(
                     journal, source, scope,
                 ));
                 if !matches!(parent.project_recovery, Some(Ok(()))) {
@@ -4011,7 +4028,7 @@ impl ProductionEffectExecutor {
             ProtectedSourceDomainJournalOwnerV1::open_fixed_protected_for_uid(controller_uid)?;
         aos_sandbox::lifecycle::LifecycleProtectedJournalOwnerV1::claim(&mut source_domains)?
             .replay()?;
-        crate::project_admission_coordinator::recover_source_project_admission_v1(
+        crate::controller_service::project_admission::recover_source_project_admission_v1(
             journal,
             &mut source_domains,
             request_scope,
@@ -6568,7 +6585,7 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         {
             let source = self.require_current_create_effect(operation_id, plan, journal)?;
             let progress =
-                crate::project_admission_coordinator::advance_create_project_admission_v1(
+                crate::controller_service::project_admission::advance_create_project_admission_v1(
                     journal,
                     &mut self.source_domains,
                     &source,
@@ -6582,7 +6599,7 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
                 })?;
             if matches!(
                 progress,
-                crate::project_admission_coordinator::ProjectAdmissionProgressV1::RetiredPrior
+                crate::controller_service::project_admission::ProjectAdmissionProgressV1::RetiredPrior
             ) {
                 return Err(EffectFailure::Retryable(
                     "prior project admission was retired; retry exact Create".to_owned(),

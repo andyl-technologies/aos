@@ -26,7 +26,7 @@ use aos_sandbox_protocol::nix_build::ValidatedNixBuildRequestV2;
 
 use super::nix_inputs::{NixLocalInputCutV2, NixLocalInputErrorV2};
 use super::{ControllerResidentCauseV1, ControllerWorkerCustodyV1, ProductionEffectExecutor};
-use crate::controller_plan_signer::{ControllerBrokerPlanSignerError, ControllerBrokerPlanSignerV1};
+use crate::controller_service::plan_signer::{ControllerBrokerPlanSignerError, ControllerBrokerPlanSignerV1};
 use crate::handshake::{
     ColdClientHandshakeProgressV1, DormantAuthenticatedBrokerSessionV1,
     DormantControllerClientHandshakeV1, OnlineRequestNativeResultV1, OnlineTransportFailureV1,
