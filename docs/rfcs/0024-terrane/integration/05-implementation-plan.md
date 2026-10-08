@@ -1447,10 +1447,17 @@ unchanged. The original rejecting deadline predicate now explicitly reports
 the final current refresh after syncing an actual Original bootstrap record,
 inside Raw output synchronization; public STORE-30 reporting remains `Denied`
 with no exposed source. Baseline output, measured maintenance and independent
-oracles remain unreached. The isolated `e43bf27e90` allocates the bounded whole-read
-buffer once before the same fresh read, preserving every physical/current check
-and proper allocation failure. Its unchanged owning witness is running;
-no throughput or DRV-29 success is established. The separate `4b5d80d0dd` quality
+oracles remain unreached. The isolated `e43bf27e90` reserves each whole-read
+buffer's bounded capacity before the same fresh read, preserving every
+physical/current check and proper allocation failure. Its unchanged case fails
+in 73.086 seconds, with all 3,252 inputs unchanged. The final Raw acknowledgment
+now completes at 23.814052259 seconds within its Raw scope. Later, genuine
+candidate-history validation takes 20.794290381 seconds after durable staging;
+the original ref deadline explicitly rejects 47.685825172 seconds against the
+same 30-second bound. Baseline output, measured maintenance and independent
+oracles remain unreached. Its original 80-case native regression selection is
+running. This scoped progress establishes no throughput or DRV-29 success.
+The separate `4b5d80d0dd` quality
 composition groups admission's owned inputs, shares the genuine existing
 backfill fixture through a test-only import, and preserves the source oracle's
 short-circuit order in an equivalent let-chain. Independent review verifies
