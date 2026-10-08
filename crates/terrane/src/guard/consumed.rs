@@ -4,7 +4,10 @@
 //! never accepts a caller dependency list, and does not mint publication authority.
 //! Selected Guard/revision and physical checks still belong to the held factory.
 
+mod snapshot_disclosure;
 mod view_interpretation;
+
+pub(crate) use snapshot_disclosure::SnapshotDisclosureInputs;
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -41,6 +44,23 @@ impl ConsumedResolver {
     pub(crate) fn new<S, C>(
         guard: &Guard<S, C>,
         authority: &OriginalAuthority,
+    ) -> Result<Self, StoreFailure> {
+        let disclosures = SnapshotDisclosureInputs::from_rows(Vec::new())?;
+        Self::new_with_snapshot_disclosures(guard, authority, &disclosures)
+    }
+
+    /// Reconstructs configuration with separately captured ordinary disclosure inputs.
+    ///
+    /// The private producer retains actual native controls and independently
+    /// rechecks source, Original and current request authority. These rows never
+    /// initialize any of those capabilities or select historical semantics.
+    ///
+    /// # Errors
+    /// Rejects malformed complete configuration or snapshot encodings.
+    pub(crate) fn new_with_snapshot_disclosures<S, C>(
+        guard: &Guard<S, C>,
+        authority: &OriginalAuthority,
+        disclosures: &SnapshotDisclosureInputs,
     ) -> Result<Self, StoreFailure> {
         let config = guard.config();
         let profile = &config.chunk_profile;
@@ -86,7 +106,7 @@ impl ConsumedResolver {
         let snapshot = GuardSnapshot {
             registration: registration(authority),
             issuers,
-            disclosures: Vec::new(),
+            disclosures: disclosures.rows().to_vec(),
             configuration,
             registries,
         };
