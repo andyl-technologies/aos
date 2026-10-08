@@ -297,6 +297,8 @@ pub struct CanonicalRegistryEntryAuthor<'a> {
     publications: &'a BTreeMap<String, RegistryPackagePublication>,
     signer: &'a mut dyn ProvenanceSigner,
     printer: &'a aos_core::output::Printer,
+    /// Store metadata shared by every entry, whose closures overlap heavily.
+    store: crate::registry_ops::StoreQueries,
 }
 
 impl<'a> CanonicalRegistryEntryAuthor<'a> {
@@ -315,12 +317,26 @@ impl<'a> CanonicalRegistryEntryAuthor<'a> {
             publications,
             signer,
             printer,
+            store: crate::registry_ops::StoreQueries::new(),
         }
     }
 }
 
 #[async_trait]
 impl RegistryEntryAuthor for CanonicalRegistryEntryAuthor<'_> {
+    fn prepare_entries(
+        &mut self,
+        isolated_registry: &Path,
+        entries: &[RegistryReleaseEntry],
+    ) -> Result<()> {
+        crate::registry_ops::preload_canonical_release_entries(
+            &self.store,
+            isolated_registry,
+            entries,
+            self.printer,
+        )
+    }
+
     async fn author_entry(
         &mut self,
         isolated_registry: &Path,
@@ -335,6 +351,7 @@ impl RegistryEntryAuthor for CanonicalRegistryEntryAuthor<'_> {
                 &entry.version,
                 &entry.platform,
                 &entry.output,
+                &self.store,
                 self.printer,
             )
             .with_context(|| format!("authoring release entry '{}'", entry.id));
@@ -359,6 +376,7 @@ impl RegistryEntryAuthor for CanonicalRegistryEntryAuthor<'_> {
             &maintainer,
             entry.configuration.as_ref(),
             self.signer,
+            &self.store,
             self.printer,
         )
         .await
@@ -608,6 +626,24 @@ pub struct RegistryStaticSurfaceFile {
 /// Materializes one planned entry without committing or moving a ref.
 #[async_trait]
 pub trait RegistryEntryAuthor {
+    /// Prepares to author `entries`, which follow in a deterministic order.
+    ///
+    /// Implementations may load shared, read-only state such as store
+    /// metadata, but must not write to `isolated_registry`. The default does
+    /// nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when shared state that every entry requires cannot be
+    /// prepared.
+    fn prepare_entries(
+        &mut self,
+        _isolated_registry: &Path,
+        _entries: &[RegistryReleaseEntry],
+    ) -> Result<()> {
+        Ok(())
+    }
+
     /// Writes exactly one entry into `isolated_registry`.
     ///
     /// Implementations may update package, store, documentation, provenance,
@@ -978,6 +1014,12 @@ async fn prepare_registry(
     if expected_predecessor.is_some_and(|expected| expected != &predecessor_commit) {
         bail!("published predecessor differs from the reviewed transaction");
     }
+
+    author
+        .prepare_entries(&isolated, &intent.entries)
+        .context("preparing release entry authoring")?;
+    require_head(&isolated, &intent.base_commit)
+        .context("entry preparation moved the isolated registry ref")?;
 
     let mut entry_groups = BTreeMap::<(String, String, String), Vec<RegistryReleaseEntry>>::new();
     for entry in &intent.entries {
