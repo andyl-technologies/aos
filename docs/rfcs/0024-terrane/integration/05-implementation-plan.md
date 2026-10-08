@@ -1872,6 +1872,17 @@ mapping now describes 79 codec groups and all 58 declared cases, preserving the
 previous groups and separately identifying unimplemented formats. Compilation,
 actual inventory, execution and source-bound Nix qualification remain pending;
 source declarations and rejecting token inputs alone do not observe allocation.
+The composition `05f4a41a5e` passes SDK compilation and strict Core library
+Clippy, then stops at strict all-target Clippy with nine diagnostics from one
+missing explicit import in the new reconciliation property. That type resides
+in the public `publication::reconciliation` module, not the parent wildcard
+import. All 6,072 source inputs remain unchanged through the original calls;
+compiled discovery and runtime stages are unexecuted. The shared API mapping
+uses the correct nested path; a test-only import correction must pass fresh
+qualification before the 58-case corpus is claimed.
+Reviewed test-only `c7692f308e` adds exactly the missing nested import and passes
+both mandatory format checks. Existing test bodies and production bytes remain
+unchanged; compiler and runtime replacement qualification remain pending.
 
 The sealed current floor contains 89 aggregate gates, including all 69 T0/T1
 plan-required names and twenty implemented supporting checks. Read-only evaluation

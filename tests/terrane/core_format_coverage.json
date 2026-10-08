@@ -1752,7 +1752,7 @@
     {
       "codec": "LocalGcReconciliation",
       "public_api": [
-        "gc::publication::LocalGcReconciliation::{encode,decode}"
+        "gc::publication::reconciliation::LocalGcReconciliation::{encode,decode}"
       ],
       "tests": [
         "publication::local_gc_reconciliation_models_preserve_registered_fences_and_full_fields"
