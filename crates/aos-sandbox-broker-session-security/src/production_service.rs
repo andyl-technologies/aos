@@ -75,14 +75,10 @@ pub struct ProductionMountBrokerOwnersV1<'owners> {
 /// fixed Conflict and the two current inventory responses on the same Session.
 /// The selected installed caller supplies the genuine
 /// exclusive table/PID1-image owner, which is bookended at protected crossings.
-/// The compatibility constructor supplies no such owner. Source's independent
-/// initial entry chain, lower unreturned prefixes and allocation funding remain
-/// separate functional bounds.
+/// Source's independent initial entry chain, lower unreturned prefixes and
+/// allocation funding remain separate functional bounds.
 pub struct ProductionOriginalMountCycleV1 {
     startup: Option<aos_sandbox::mount_manager_startup::SelectedMountStartupV2>,
-    image_attempt: Option<aos_systemd::OwnUnitPid1ImageAttemptV1>,
-    image: Option<aos_systemd::CompletedOwnUnitPid1ImageV1>,
-    image_runtime: Option<std::io::Result<tokio::runtime::Runtime>>,
     receipt: crate::ProductionOriginalMountReceiptV1,
     root: crate::ProductionSelectedRootMountSourceProviderV1,
     publication: Option<Vec<u8>>,
@@ -102,8 +98,6 @@ pub struct ProductionOriginalMountCycleV1 {
 #[derive(Clone, Copy)]
 enum OriginalMountCycleStageV1 {
     Startup,
-    Image,
-    Runtime,
     Root,
     Receipt,
     Mount,
@@ -120,10 +114,6 @@ impl std::fmt::Debug for ProductionOriginalMountCycleV1 {
 pub enum ProductionOriginalMountCycleFailureV1<'owner> {
     /// The same admitted startup owner retains the genuine kernel/image cause.
     Startup(aos_sandbox::mount_manager_startup::SelectedMountStartupFailureRefV2<'owner>),
-    /// The genuine same-unit observer retains both raw image-message prefixes.
-    Image(&'owner aos_systemd::OwnUnitPid1ImageAttemptV1),
-    /// Constructing the selected observation runtime returned this native error.
-    Runtime(&'owner std::io::Error),
     /// The fixed Root opening, Session or delivered catalog failed.
     Root(crate::ProductionSelectedRootMountSourceProviderFailureV1<'owner>),
     /// The original Mount receipt or signed-domain admission failed.
@@ -140,8 +130,6 @@ impl std::fmt::Debug for ProductionOriginalMountCycleFailureV1<'_> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(match self {
             Self::Startup(_) => "ProductionOriginalMountCycleFailureV1::Startup",
-            Self::Image(_) => "ProductionOriginalMountCycleFailureV1::Image",
-            Self::Runtime(_) => "ProductionOriginalMountCycleFailureV1::Runtime",
             Self::Root(_) => "ProductionOriginalMountCycleFailureV1::Root",
             Self::Receipt(_) => "ProductionOriginalMountCycleFailureV1::Receipt",
             Self::Mount(_) => "ProductionOriginalMountCycleFailureV1::Mount",
@@ -165,12 +153,6 @@ impl Drop for OriginalMountCycleBoundaryV1<'_> {
 }
 
 impl ProductionOriginalMountCycleV1 {
-    /// Parks the genuine session and original deadline without I/O.
-    #[must_use]
-    pub fn new(session: DormantAuthenticatedBrokerSessionV1, deadline: u64) -> Self {
-        Self::new_inner(session, deadline, None)
-    }
-
     /// Parks the completed selected startup beside the same original request.
     ///
     /// This accepts only the actual move-only Core owner. It does not complete
@@ -181,19 +163,8 @@ impl ProductionOriginalMountCycleV1 {
         deadline: u64,
         startup: aos_sandbox::mount_manager_startup::SelectedMountStartupV2,
     ) -> Self {
-        Self::new_inner(session, deadline, Some(startup))
-    }
-
-    fn new_inner(
-        session: DormantAuthenticatedBrokerSessionV1,
-        deadline: u64,
-        startup: Option<aos_sandbox::mount_manager_startup::SelectedMountStartupV2>,
-    ) -> Self {
         Self {
-            startup,
-            image_attempt: None,
-            image: None,
-            image_runtime: None,
+            startup: Some(startup),
             receipt: session.retain_original_mount_receipt(deadline),
             root: crate::ProductionSelectedRootMountSourceProviderV1::new(deadline),
             publication: None,
@@ -564,9 +535,6 @@ impl ProductionOriginalMountCycleV1 {
         &mut self,
         broker: &mut aos_sandbox_mount::broker::MountBroker<W>,
     ) -> bool {
-        if self.startup.is_none() {
-            return true;
-        }
         if !self.check_deadline() {
             return false;
         }
@@ -599,53 +567,6 @@ impl ProductionOriginalMountCycleV1 {
         self.startup_bookend(broker)
     }
 
-    fn capture_launcher_image<W: aos_sandbox_mount::worker::MountWorker>(
-        &mut self,
-        broker: &mut aos_sandbox_mount::broker::MountBroker<W>,
-    ) -> bool {
-        if self.startup.is_some() {
-            // The actual Core producer already owns both original image
-            // Messages. Reuse it rather than accumulate a second image pair.
-            return self.startup_bookend(broker);
-        }
-        // The installed caller has already completed exclusive initial-table
-        // handling before entering this cycle. This observer cannot complete
-        // that table or construct the missing Core executed-image bridge.
-        if self.image_attempt.is_some() || self.image.is_some() || self.image_runtime.is_some() {
-            return false;
-        }
-        self.image_attempt = Some(aos_systemd::OwnUnitPid1ImageAttemptV1::mount());
-        self.image_runtime = Some(tokio::runtime::Builder::new_current_thread().enable_all().build());
-        let Some(Ok(runtime)) = self.image_runtime.as_ref() else {
-            self.note_failure(OriginalMountCycleStageV1::Runtime);
-            return false;
-        };
-        let Some(attempt) = self.image_attempt.as_mut() else {
-            return false;
-        };
-        if runtime.block_on(attempt.capture_once()).is_err() {
-            self.note_failure(OriginalMountCycleStageV1::Image);
-            return false;
-        }
-        if self.image.is_some() {
-            return false;
-        }
-        match self.image_attempt.take() {
-            Some(attempt) => match attempt.into_completed() {
-                Ok(image) => self.image = Some(image),
-                Err(attempt) => {
-                    self.image_attempt = Some(attempt);
-                    self.note_failure(OriginalMountCycleStageV1::Image);
-                    return false;
-                }
-            },
-            None => return false,
-        }
-        // Both original Messages and their exact FDs remain resident. Their
-        // existence alone is no image/currentness/Root authority conversion.
-        true
-    }
-
     fn run_inner<W: aos_sandbox_mount::worker::MountWorker>(
         &mut self,
         broker: &mut aos_sandbox_mount::broker::MountBroker<W>,
@@ -663,7 +584,7 @@ impl ProductionOriginalMountCycleV1 {
         if !self.check_deadline() {
             return false;
         }
-        if !self.capture_launcher_image(broker) || !self.check_deadline() {
+        if !self.startup_bookend(broker) || !self.check_deadline() {
             return false;
         }
         if !self.startup_bookend(broker) {
@@ -762,8 +683,6 @@ impl ProductionOriginalMountCycleV1 {
         let failure = match self.first_stage {
             Some(OriginalMountCycleStageV1::Startup) => self.startup.as_ref()
                 .and_then(|startup| startup.failure()).map(ProductionOriginalMountCycleFailureV1::Startup),
-            Some(OriginalMountCycleStageV1::Image) => self.image_attempt.as_ref().map(ProductionOriginalMountCycleFailureV1::Image),
-            Some(OriginalMountCycleStageV1::Runtime) => self.image_runtime.as_ref().and_then(|result| result.as_ref().err()).map(ProductionOriginalMountCycleFailureV1::Runtime),
             Some(OriginalMountCycleStageV1::Root) => self.root.failure().map(ProductionOriginalMountCycleFailureV1::Root),
             Some(OriginalMountCycleStageV1::Receipt) => self.receipt.failure().map(ProductionOriginalMountCycleFailureV1::Receipt),
             Some(OriginalMountCycleStageV1::Mount) => {
@@ -800,12 +719,6 @@ impl ProductionOriginalMountCycleV1 {
         self.ended = true;
         if let Some(startup) = self.startup.as_mut() {
             startup.end();
-        }
-        if let Some(image) = self.image.as_ref() {
-            image.end();
-        }
-        if let Some(attempt) = self.image_attempt.as_ref() {
-            attempt.end();
         }
         self.root.end();
         self.receipt.end();

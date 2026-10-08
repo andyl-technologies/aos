@@ -227,18 +227,8 @@ fn run() -> Result<(), MountDaemonErrorV1> {
         MAXIMUM_RETAINED_MOUNTS,
     )?);
 
-    let selected_mount_source = matches!(arguments.as_slice(), [_, _, source, selected]
-        if source == "--source-provider" && selected == "--selected-mount-source");
-    let (helper_executable, source_provider_enabled, git_coverage_selected) = if selected_mount_source {
-        let [_, helper, _, _] = arguments.as_slice() else {
-            return Err(MountDaemonErrorV1::Arguments);
-        };
-        if helper.starts_with('-') { return Err(MountDaemonErrorV1::Arguments); }
-        (helper.clone(), true, false)
-    } else {
-        let (helper, source, selected) = parse_selected_arguments(arguments)?;
-        (helper, source, selected)
-    };
+    let (helper_executable, source_provider_enabled, git_coverage_selected) =
+        parse_selected_arguments(arguments)?;
     let mut coverage = git_coverage_selected.then(SelectedMountGitCoverageCustodyV1::new);
     if let Some(inputs) = coverage.as_mut().and_then(|owner| owner.inputs.as_mut()) {
         if let Err(cause) = inputs.capture() {
@@ -357,10 +347,6 @@ fn run() -> Result<(), MountDaemonErrorV1> {
         (None, Some(broker)) => (broker, None, None),
         _ => return Err(MountError::Fence("Mount broker is absent").into()),
     };
-    if selected_mount_source {
-        run_selected_original_mount(&mut activation, broker, None)?;
-        return Ok(());
-    }
     // A disabled connector cannot recover a cold request. Enabled startup
     // selects the validated cold graph before constructing the source runtime;
     // pending replacement still requires proven death and genuine funding.
@@ -459,39 +445,6 @@ fn run() -> Result<(), MountDaemonErrorV1> {
             }
         }
     }
-}
-
-fn run_selected_original_mount<W: aos_sandbox_mount::worker::MountWorker>(
-    activation: &mut ProductionBrokerSessionActivationV1,
-    broker: &mut MountBroker<W>,
-    startup: Option<SelectedMountStartupV2>,
-) -> Result<(), MountDaemonErrorV1> {
-    let accept_deadline = production_deadline_after(ACCEPT_TIMEOUT)?;
-    // Derive the fixed cycle deadline before accepting an original. No
-    // fallible clock operation may stand between receipt and resident custody;
-    // time spent accepting is charged to this same deadline, never renewed.
-    let request_deadline = production_deadline_after(REQUEST_TIMEOUT)?;
-    let session = activation.accept_authenticated(accept_deadline)?;
-    let selected_startup = startup.is_some();
-    let mut original = match startup {
-        Some(startup) => ProductionOriginalMountCycleV1::with_selected_startup(
-            session, request_deadline, startup,
-        ),
-        None => ProductionOriginalMountCycleV1::new(session, request_deadline),
-    };
-    let locally_sent = original.run_once(broker).is_ok();
-    if locally_sent && selected_startup {
-        retain_selected_original_response(&mut original, broker);
-    }
-    if locally_sent {
-        eprintln!("aos-sandbox-mountd: original Root1 sent; terminal continuation remains unavailable");
-    } else {
-        eprintln!("aos-sandbox-mountd: selected original Mount cycle refused; original invocation retained");
-    }
-    // Keep the cycle, activation and sole broker runtime resident through the
-    // intentional failed invocation. OS death releases them; this is not Drop,
-    // queue settlement, terminal drain, BSA completion or public Acquire success.
-    std::process::exit(1)
 }
 
 fn terminate_selected_startup(startup: &mut SelectedMountStartupV2) -> ! {
