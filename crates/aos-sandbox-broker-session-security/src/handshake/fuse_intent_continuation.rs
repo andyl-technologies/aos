@@ -20,9 +20,7 @@
 //! reservation, Controller writer and original Host/kernel custody held.
 
 use aos_proto::aos::sandbox::local::v1::{Audience, BrokerMethod};
-use aos_sandbox::attachment_effect_owner::CurrentControllerFuseIntentDispatchV1;
-use aos_sandbox::ownership_authority::ProtectedOwnershipClockError;
-use aos_sandbox_core::{ProtocolId, RawPairedClockSample};
+use aos_sandbox_core::ProtocolId;
 use aos_sandbox_linux::cgroup::CgroupV2Root;
 use aos_sandbox_mount::host_scope::{HostMountScopeClient, ObservedMountScope};
 use aos_sandbox_protocol::authenticated_session::all_methods::{
@@ -110,44 +108,6 @@ pub(crate) struct HeldFuseIntentTransportV1<'session> {
 }
 
 impl<'session> HeldFuseIntentTransportV1<'session> {
-    /// Completes the original client challenge/query without releasing owners.
-    pub(crate) fn complete_original_host_query<T>(
-        &mut self,
-        controller: &mut CurrentControllerFuseIntentDispatchV1<'_>,
-        clock: &mut T,
-    ) -> Result<(), DormantBrokerSessionHandshakeErrorV1>
-    where
-        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
-    {
-        loop {
-            match self.receive_preparation_control() {
-                Ok(()) => break,
-                Err(DormantBrokerSessionHandshakeErrorV1::Transport) => {
-                    self.wait_original_socket(false)?;
-                }
-                Err(error) => return Err(error),
-            }
-        }
-        loop {
-            match self.send_preparation_control() {
-                Ok(()) => break,
-                Err(DormantBrokerSessionHandshakeErrorV1::Transport) => {
-                    self.wait_original_socket(true)?;
-                }
-                Err(error) => return Err(error),
-            }
-        }
-        loop {
-            match self.send_original_host_scope_query(controller, clock) {
-                Ok(()) => return Ok(()),
-                Err(DormantBrokerSessionHandshakeErrorV1::Transport) => {
-                    self.wait_original_socket(true)?;
-                }
-                Err(error) => return Err(error),
-            }
-        }
-    }
-
     /// Holds actual Host and Mount preparation beneath the original broker flight.
     ///
     /// This does not complete the request or release its reservation. The
@@ -317,54 +277,6 @@ impl<'session> HeldFuseIntentTransportV1<'session> {
             Ok(())
         })();
         if result.is_err() {
-            self.stage = Stage::ReconciliationRequired;
-        }
-        result
-    }
-
-    /// Sends only the query produced by this genuine held Controller cut.
-    ///
-    /// The packet carries an existing signed Host grant. It does not authorize
-    /// Mount preparation until the broker independently obtains the actual
-    /// Host response and retains its original payload descriptors.
-    pub(crate) fn send_original_host_scope_query<T>(
-        &mut self,
-        controller: &mut CurrentControllerFuseIntentDispatchV1<'_>,
-        clock: &mut T,
-    ) -> Result<(), DormantBrokerSessionHandshakeErrorV1>
-    where
-        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
-    {
-        let result = (|| {
-            self.recheck()?;
-            if self.stage != Stage::ClientHostQuery
-                || controller.request_body() != self.request.exact_body()
-                || *controller.semantics().commitment().digest().as_bytes()
-                    != self.binding.semantics
-            {
-                return Err(DormantBrokerSessionHandshakeErrorV1::RemoteInvalid);
-            }
-            let packet = controller
-                .original_host_scope_packet_at(clock)
-                .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
-            self.validate_host_scope_packet(&packet)?;
-            let framed = encode_host_query(self.binding, &packet)?;
-            self.session.send_request_packet(&framed)?;
-            self.stage = Stage::ClientReservation;
-            controller
-                .recheck(clock)
-                .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
-            self.recheck()?;
-            Ok(())
-        })();
-        if result.is_err()
-            && !matches!(
-                &result,
-                Err(DormantBrokerSessionHandshakeErrorV1::Transport)
-            )
-        {
-            // Keep the signed pending flight: the query may already have
-            // crossed the socket when local currentness or delivery fails.
             self.stage = Stage::ReconciliationRequired;
         }
         result

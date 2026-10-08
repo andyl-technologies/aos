@@ -62,7 +62,6 @@ mod controller_attach_exchange;
 mod controller_authority_effect;
 mod controller_cache_readback_credential;
 mod controller_capture_candidate_exchange;
-mod controller_fuse_intent_dispatch;
 mod controller_guest_root_credentials;
 mod controller_hold_credential;
 mod controller_no_apply_exchange;

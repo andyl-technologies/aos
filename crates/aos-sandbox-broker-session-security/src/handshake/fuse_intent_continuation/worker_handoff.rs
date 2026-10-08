@@ -1,4 +1,4 @@
-//! Original-flight sealed-plan issuance and genuine four-owner Host dispatch.
+//! Original-flight Mount-to-Host dispatch through the genuine four-owner handoff.
 //!
 //! ```text
 //! AOSFWH02 | original FUSE binding header(version=2) | method=49/purpose=56 |
@@ -9,7 +9,10 @@
 //!
 //! Old AOSFWH01 worker HELLO and presentation-plan reservation ACK are unchanged.
 //! These control bytes do not mint Mount/Root read authority or prove copy
-//! closure. Both local producers remain borrowed throughout signing and send.
+//! closure. The Mount handoff and original Host session remain borrowed
+//! throughout dispatch.
+//! The Controller-side issuance recipe has no selected caller and is omitted;
+//! these retained broker controls do not establish connected FUSE admission.
 
 use aos_proto::aos::sandbox::local::v1::{
     AssignmentFence, BrokerRequestEnvelope, PrepareHostFuseWorkerSessionRequestV1,
@@ -21,7 +24,6 @@ use aos_sandbox_protocol::fuse_worker_preparation::{
 use buffa::Message as _;
 
 use super::*;
-use crate::controller_plan_signer::ControllerBrokerPlanSignerV1;
 use crate::dormant_handshake::{
     DormantAuthenticatedBrokerSessionV1 as HostSession,
     DormantBrokerDescriptorRequestPreparationV1, DormantBrokerDescriptorRequestSendProgressV1,
@@ -38,82 +40,6 @@ pub(crate) enum OriginalMountHostWorkerDispatchV1 {
 }
 
 impl HeldFuseIntentTransportV1<'_> {
-    /// Signs once from the same live Controller and original per-record Mount flight.
-    pub(crate) fn issue_original_host_worker<T>(
-        &mut self,
-        controller: &mut CurrentControllerFuseIntentDispatchV1<'_>,
-        signer: &ControllerBrokerPlanSignerV1,
-        clock: &mut T,
-    ) -> Result<(), DormantBrokerSessionHandshakeErrorV1>
-    where
-        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
-    {
-        // A signed RootMount role and a live transcript do not select the
-        // fixed service. Retain its actual verifier before accepting any
-        // reservation/proposal; every later retry and wait rechecks it.
-        self.retain_controller_worker_mount_peer()?;
-        self.require_worker_feature()?;
-        // This is the actual original reservation/ACK, not adoption of a row.
-        self.receive_worker_reservation(controller, clock)?;
-        let coordinates = self.prepared_coordinates()?;
-        self.stage = Stage::WorkerIssuance(coordinates);
-        let payload = self.receive_worker_frame(1)?;
-        let (body, plan) = decode_worker_proposal(&payload)?;
-        if plan.worker_instance != coordinates.worker_locator
-            || plan.mount_reservation != coordinates.reservation_digest
-            || plan.controller_request != self.request.signed_request_digest()
-            || plan.preparation_deadline_boottime_ns != self.binding.deadline
-        {
-            self.stage = Stage::ReconciliationRequired;
-            return Err(DormantBrokerSessionHandshakeErrorV1::RemoteInvalid);
-        }
-        let envelope = signer
-            .sign_original_host_worker(controller, self, body, &plan, clock)
-            .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
-        self.recheck()?;
-        self.send_worker_frame(2, &envelope.encode_to_vec())?;
-        self.stage = Stage::WorkerDispatched(coordinates);
-        controller
-            .recheck(clock)
-            .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
-        self.recheck()?;
-        Ok(())
-    }
-
-    fn receive_worker_reservation<T>(
-        &mut self,
-        controller: &mut CurrentControllerFuseIntentDispatchV1<'_>,
-        clock: &mut T,
-    ) -> Result<(), DormantBrokerSessionHandshakeErrorV1>
-    where
-        T: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
-    {
-        loop {
-            controller
-                .recheck(clock)
-                .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
-            match self.receive_preparation_control() {
-                Ok(()) => break,
-                Err(DormantBrokerSessionHandshakeErrorV1::Transport) => {
-                    self.wait_original_socket(false)?
-                }
-                Err(error) => return Err(error),
-            }
-        }
-        loop {
-            controller
-                .recheck(clock)
-                .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
-            match self.send_preparation_control() {
-                Ok(()) => return Ok(()),
-                Err(DormantBrokerSessionHandshakeErrorV1::Transport) => {
-                    self.wait_original_socket(true)?
-                }
-                Err(error) => return Err(error),
-            }
-        }
-    }
-
     /// Sends only internally created roles while retaining the actual Mount owner.
     pub(crate) fn dispatch_original_host_worker<W: aos_sandbox_mount::worker::MountWorker>(
         &mut self,
@@ -257,61 +183,6 @@ impl HeldFuseIntentTransportV1<'_> {
         Ok(())
     }
 
-    /// Borrows only the actual Controller-side issuance phase, never a decoded row.
-    pub(crate) fn recheck_worker_issuance(
-        &mut self,
-        worker: &WorkerPreparationPlanV1,
-    ) -> Result<(), BrokerSessionSecurityError> {
-        if self.worker_mount_verifier.is_none() {
-            return Err(BrokerSessionSecurityError::Currentness);
-        }
-        self.recheck()?;
-        let Stage::WorkerIssuance(coordinates) = self.stage else {
-            return Err(BrokerSessionSecurityError::Currentness);
-        };
-        let authorization = self
-            .request
-            .authorization()
-            .ok_or(BrokerSessionSecurityError::Currentness)?;
-        let presentation_type = aos_sandbox_core::MediaType::new(
-            aos_sandbox_core::PortableMediaType::BrokerAuthorizationPlan
-                .as_str()
-                .to_owned(),
-        )
-        .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-        let presentation =
-            aos_sandbox_core::descriptor_for_bytes(presentation_type, authorization.broker_plan());
-        if self.request.direction() != AuthenticatedBrokerRequestDirectionV1::ClientSend
-            || coordinates.presentation_plan_digest != *presentation.digest().as_bytes()
-            || worker.worker_instance != coordinates.worker_locator
-            || worker.mount_reservation != coordinates.reservation_digest
-            || worker.controller_request != self.request.signed_request_digest()
-            || worker.preparation_deadline_boottime_ns != self.binding.deadline
-        {
-            return Err(BrokerSessionSecurityError::Currentness);
-        }
-        Ok(())
-    }
-
-    fn retain_controller_worker_mount_peer(
-        &mut self,
-    ) -> Result<(), DormantBrokerSessionHandshakeErrorV1> {
-        let result = (|| {
-            if self.request.direction() != AuthenticatedBrokerRequestDirectionV1::ClientSend
-                || self.worker_mount_verifier.is_some()
-            {
-                return Err(DormantBrokerSessionHandshakeErrorV1::RemoteInvalid);
-            }
-            self.worker_mount_verifier =
-                Some(controller_worker_mount_verifier(&self.session.socket)?);
-            self.recheck()?;
-            Ok(())
-        })();
-        if result.is_err() {
-            self.stage = Stage::ReconciliationRequired;
-        }
-        result
-    }
 }
 
 // Takes only the retained original socket, never RootMount claims in a body.
