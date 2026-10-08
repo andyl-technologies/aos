@@ -8,12 +8,16 @@
 
 use std::collections::BTreeSet;
 
-use crate::controller_query::observation::{
-    CheckedConditionObservationV1, CheckedOperationObservationV1,
+use crate::public_api::observation::{
+    CheckedConditionObservationV1,
+    CheckedOperationObservationV1,
 };
-use crate::controller_query::resource::{
-    CheckedOperationPhaseV1, CheckedOperationResourceV1, CheckedResourceReferenceV1,
-    operation_phase_can_follow, operation_progress_stage,
+use crate::public_api::resource::{
+    CheckedOperationPhaseV1,
+    CheckedOperationResourceV1,
+    CheckedResourceReferenceV1,
+    operation_phase_can_follow,
+    operation_progress_stage,
 };
 
 /// Maximum operation observations in one wait.

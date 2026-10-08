@@ -4,8 +4,8 @@ use aos_sandbox_core::ObjectDigest;
 use sha2::{Digest as _, Sha256};
 
 use super::watch::WatchResumePointV1;
-use crate::controller_query::event::{BoundWatchCursorV1, InvalidWatchEvent};
-use crate::controller_query::model::QueryBindingV1;
+use crate::public_api::event::{BoundWatchCursorV1, InvalidWatchEvent};
+use crate::public_api::model::QueryBindingV1;
 
 const CHECKPOINT_MAGIC: &[u8; 8] = b"AOSWCP01";
 const CHECKPOINT_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.watch-checkpoint.v1\0";

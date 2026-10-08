@@ -5,23 +5,19 @@
 //! selecting a global recorder, exporter, endpoint, or production worker.
 
 use aos_sandbox_core::ObjectDigest;
+use aos_sandbox_protocol::public_api::audit_event::CheckedAuditWatchEventV1;
+use aos_sandbox_protocol::public_api::model::{MAXIMUM_OPAQUE_RESPONSE_BYTES, QueryBindingV1};
+use aos_sandbox_protocol::public_api::resource::PublicResourceTypeV1;
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
 
 use crate::{Journal, JournalRecord, JournalTransaction, RecordNamespace};
 
-use super::audit_event::CheckedAuditWatchEventV1;
 use super::metrics::{
     MAXIMUM_LABELS_PER_OBSERVATION, MAXIMUM_METRIC_OBSERVATIONS, MetricBackendV1,
     MetricCapabilityProfileV1, MetricLabelValueV1, MetricStatusClassV1, MetricValueV1,
     PortableMetricBatchV1, PortableMetricObservationV1, SandboxMetricNameV1,
 };
-use super::model::{
-    AuthorizationRevisionDigestV1, MAXIMUM_OPAQUE_RESPONSE_BYTES, NormalizedQueryDigestV1,
-    ObservationSchemaDigestV1, QueryBindingV1, QueryFilterDigestV1, QueryPrincipalDigestV1,
-    QuerySortDigestV1, QueryVisibilityDigestV1,
-};
-use super::resource::PublicResourceTypeV1;
 
 /// Maximum audit rows handed to one dormant observability effect.
 pub const MAXIMUM_DORMANT_AUDIT_ROWS_V1: usize = 4_096;
@@ -1381,7 +1377,7 @@ fn encode_observability_effect_content(
         encode_query_binding(&mut encoded, observation.event().cursor().binding());
         push_length_prefixed(
             &mut encoded,
-            &observation.event().full_proto().encode_to_vec(),
+            &observation.as_proto().encode_to_vec(),
         )?;
     }
     push_u32(&mut encoded, metrics.as_slice().len())?;
@@ -1457,7 +1453,7 @@ fn audit_observation_matches_context(
     observation: &CheckedAuditWatchEventV1,
     context: &DormantObservabilityEffectContextV1,
 ) -> bool {
-    let wire = observation.event().full_proto();
+    let wire = observation.as_proto();
     let Some(resource) = wire.resource.as_option() else {
         return false;
     };
@@ -1573,15 +1569,13 @@ fn encode_query_binding(encoded: &mut Vec<u8>, binding: QueryBindingV1) {
 fn decode_query_binding(
     reader: &mut CanonicalReaderV1<'_>,
 ) -> Result<QueryBindingV1, DormantObservabilityErrorV1> {
-    Ok(QueryBindingV1::new(
-        NormalizedQueryDigestV1::from_digest(reader.digest()?),
-        QueryFilterDigestV1::from_digest(reader.digest()?),
-        QuerySortDigestV1::from_digest(reader.digest()?),
-        QueryPrincipalDigestV1::from_digest(reader.digest()?),
-        QueryVisibilityDigestV1::from_digest(reader.digest()?),
-        AuthorizationRevisionDigestV1::from_digest(reader.digest()?),
-        ObservationSchemaDigestV1::from_digest(reader.digest()?),
-    ))
+    let mut encoded = [0; aos_sandbox_protocol::public_api::QUERY_BINDING_TRANSPORT_BYTES];
+    for component in encoded.chunks_exact_mut(32) {
+        component.copy_from_slice(reader.digest()?.as_bytes());
+    }
+
+    QueryBindingV1::from_transport_bytes(&encoded)
+        .map_err(|_| DormantObservabilityErrorV1::NotCanonical)
 }
 
 fn encode_metric_observation(

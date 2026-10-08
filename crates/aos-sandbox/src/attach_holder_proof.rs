@@ -180,9 +180,9 @@ fn proof_statement(request: &ExecutionControlRequest) -> Result<Vec<u8>, AttachH
             .required_features
             .iter()
             .any(|feature| !feature.__buffa_unknown_fields.is_empty())
-        || !crate::controller_query::contains_semantic_features_v1(
+        || !aos_sandbox_protocol::public_api::contains_semantic_features_v1(
             &mutation.required_features,
-            &[crate::controller_query::EXECUTION_ATTACH_HOLDER_PROOF_FEATURE_V1],
+            &[aos_sandbox_protocol::public_api::EXECUTION_ATTACH_HOLDER_PROOF_FEATURE_V1],
         )
     {
         return Err(AttachHolderProofErrorV1::InvalidRequest);

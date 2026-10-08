@@ -5982,7 +5982,7 @@ const fn is_lifecycle_mutation(request: &DormantSandboxRequestKindV1) -> bool {
 
 fn reject_unqualified_delete_effect(plan: &EffectPlan) -> Result<(), EffectFailure> {
     if plan.public_mutation_method()
-        == Some(aos_sandbox::controller_query::PublicOperationMethodV1::DeleteSandbox)
+        == Some(aos_sandbox_protocol::public_api::PublicOperationMethodV1::DeleteSandbox)
     {
         // Retained operations cannot run until the protected dependency plan exists.
         return Err(EffectFailure::Permanent(
@@ -6398,7 +6398,7 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         }
 
         if plan.public_mutation_method()
-            == Some(aos_sandbox::controller_query::PublicOperationMethodV1::CreateSandbox)
+            == Some(aos_sandbox_protocol::public_api::PublicOperationMethodV1::CreateSandbox)
         {
             self.require_current_create_effect(operation_id, plan, journal)?;
             return Ok(EffectObservation::Absent);
@@ -6409,7 +6409,7 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         }
         let context = self.public_mutation_context(plan)?;
         if plan.public_mutation_method()
-            == Some(aos_sandbox::controller_query::PublicOperationMethodV1::CreateExecution)
+            == Some(aos_sandbox_protocol::public_api::PublicOperationMethodV1::CreateExecution)
         {
             execution_output_effect::observe(self, operation_id, &context, journal)?;
             return Ok(EffectObservation::Absent);
@@ -6417,8 +6417,8 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         if matches!(
             plan.public_mutation_method(),
             Some(
-                aos_sandbox::controller_query::PublicOperationMethodV1::ControlExecution
-                    | aos_sandbox::controller_query::PublicOperationMethodV1::CancelExecution
+                aos_sandbox_protocol::public_api::PublicOperationMethodV1::ControlExecution
+                    | aos_sandbox_protocol::public_api::PublicOperationMethodV1::CancelExecution
             )
         ) {
             let intent = execution::ControllerExecutionIntentV1::from_request(
@@ -6455,7 +6455,7 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
             };
         }
         if plan.public_mutation_method()
-            == Some(aos_sandbox::controller_query::PublicOperationMethodV1::OperatorRecover)
+            == Some(aos_sandbox_protocol::public_api::PublicOperationMethodV1::OperatorRecover)
         {
             return Self::ownership_recovery_receipt(operation_id, &context, journal).map(
                 |receipt| receipt.map_or(EffectObservation::Absent, EffectObservation::Applied),
@@ -6464,16 +6464,16 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         if matches!(
             plan.public_mutation_method(),
             Some(
-                aos_sandbox::controller_query::PublicOperationMethodV1::AttachView
-                    | aos_sandbox::controller_query::PublicOperationMethodV1::ReplaceAttachment
-                    | aos_sandbox::controller_query::PublicOperationMethodV1::DetachView
+                aos_sandbox_protocol::public_api::PublicOperationMethodV1::AttachView
+                    | aos_sandbox_protocol::public_api::PublicOperationMethodV1::ReplaceAttachment
+                    | aos_sandbox_protocol::public_api::PublicOperationMethodV1::DetachView
             )
         ) {
             // Generic lifecycle receipts do not prove an attachment or Mount effect.
             return Ok(EffectObservation::Absent);
         }
         if plan.public_mutation_method()
-            != Some(aos_sandbox::controller_query::PublicOperationMethodV1::CancelOperation)
+            != Some(aos_sandbox_protocol::public_api::PublicOperationMethodV1::CancelOperation)
         {
             let owner = aos_sandbox::lifecycle::LifecycleProtectedJournalOwnerV1::claim(
                 &mut self.source_domains,
@@ -6497,7 +6497,7 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
             }
         }
         if plan.public_mutation_method()
-            == Some(aos_sandbox::controller_query::PublicOperationMethodV1::CancelOperation)
+            == Some(aos_sandbox_protocol::public_api::PublicOperationMethodV1::CancelOperation)
         {
             let cancellation = Self::cancellation_request(&context)?;
             let owner = aos_sandbox::lifecycle::LifecycleProtectedJournalOwnerV1::claim(
@@ -6563,7 +6563,7 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         }
 
         if plan.public_mutation_method()
-            == Some(aos_sandbox::controller_query::PublicOperationMethodV1::CreateSandbox)
+            == Some(aos_sandbox_protocol::public_api::PublicOperationMethodV1::CreateSandbox)
         {
             let source = self.require_current_create_effect(operation_id, plan, journal)?;
             let progress =
@@ -6612,7 +6612,7 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         }
         let context = self.public_mutation_context(plan)?;
         if plan.public_mutation_method()
-            == Some(aos_sandbox::controller_query::PublicOperationMethodV1::CreateExecution)
+            == Some(aos_sandbox_protocol::public_api::PublicOperationMethodV1::CreateExecution)
         {
             execution_output_effect::apply(self, operation_id, &context, journal)?;
             return Err(EffectFailure::Retryable(
@@ -6622,8 +6622,8 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         if matches!(
             plan.public_mutation_method(),
             Some(
-                aos_sandbox::controller_query::PublicOperationMethodV1::ControlExecution
-                    | aos_sandbox::controller_query::PublicOperationMethodV1::CancelExecution
+                aos_sandbox_protocol::public_api::PublicOperationMethodV1::ControlExecution
+                    | aos_sandbox_protocol::public_api::PublicOperationMethodV1::CancelExecution
             )
         ) {
             let intent = execution::ControllerExecutionIntentV1::from_request(
@@ -6653,7 +6653,7 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
             return Ok(completion.receipt);
         }
         if plan.public_mutation_method()
-            == Some(aos_sandbox::controller_query::PublicOperationMethodV1::OperatorRecover)
+            == Some(aos_sandbox_protocol::public_api::PublicOperationMethodV1::OperatorRecover)
         {
             return Self::ownership_recovery_receipt(operation_id, &context, journal)?.ok_or_else(
                 || {
@@ -6664,7 +6664,7 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
             );
         }
         if plan.public_mutation_method()
-            == Some(aos_sandbox::controller_query::PublicOperationMethodV1::CancelOperation)
+            == Some(aos_sandbox_protocol::public_api::PublicOperationMethodV1::CancelOperation)
         {
             let cancellation = Self::cancellation_request(&context)?;
             let admission = {
@@ -7266,7 +7266,7 @@ impl DiscoveryService for CapabilityService {
         _request: ServiceRequest<'_, GetPublicFeatureRegistryRequest>,
     ) -> ServiceResult<impl Encodable<GetPublicFeatureRegistryResponse> + Send + use<'a>> {
         Response::ok(GetPublicFeatureRegistryResponse {
-            registry: Some(aos_sandbox::controller_query::public_feature_registry_v1()).into(),
+            registry: Some(aos_sandbox_protocol::public_api::public_feature_registry_v1()).into(),
             ..Default::default()
         })
     }
@@ -8505,7 +8505,7 @@ mod tests {
         .unwrap()
         .encode();
         let effect = EffectPlan::authorized_public_mutation(
-            aos_sandbox::controller_query::PublicOperationMethodV1::DeleteSandbox,
+            aos_sandbox_protocol::public_api::PublicOperationMethodV1::DeleteSandbox,
             PublicMutationEffectV1::new(
                 aos_sandbox_core::PrincipalId::from_bytes([0x55; 16]),
                 aos_sandbox_core::ProjectId::from_bytes([0x66; 16]),
@@ -8690,7 +8690,7 @@ mod tests {
                 .as_ref(),
         )
         .unwrap();
-        let expected_registry = aos_sandbox::controller_query::public_feature_registry_v1();
+        let expected_registry = aos_sandbox_protocol::public_api::public_feature_registry_v1();
         assert_eq!(
             registry_response.registry.as_option(),
             Some(&expected_registry)

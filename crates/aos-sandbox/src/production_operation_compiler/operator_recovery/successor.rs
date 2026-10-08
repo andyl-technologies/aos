@@ -8,7 +8,7 @@ use aos_proto::aos::sandbox::v1::Sandbox;
 use aos_sandbox_core::{OperationId, ProjectId};
 
 use crate::OperationCompilationError;
-use crate::controller_query::{CheckedSandboxResourceV1, PublicOperationMethodV1};
+use aos_sandbox_protocol::public_api::{CheckedSandboxResourceV1, PublicOperationMethodV1};
 use crate::controller_service::public_projection::{
     PublicProjectionPlanV1, PublicProjectionResourceV1,
 };

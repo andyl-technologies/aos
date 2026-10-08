@@ -976,7 +976,7 @@ impl SandboxSubcommand {
                 idempotency_key: a.idempotency_key.clone(),
                 required_features: features_with_semantics(
                     &a.required_features,
-                    &[aos_sandbox::controller_query::SNAPSHOT_PROJECT_VERSION_FENCE_FEATURE_V1],
+                    &[aos_sandbox_protocol::public_api::SNAPSHOT_PROJECT_VERSION_FENCE_FEATURE_V1],
                 ),
                 expected_project_resource_version: a.expected_project_resource_version.clone(),
                 operation_timeout: duration(a.operation_timeout_ns).into(),
@@ -989,7 +989,7 @@ impl SandboxSubcommand {
                 mutation: a
                     .mutation
                     .proto_with_semantic_features(if a.force {
-                        &[aos_sandbox::controller_query::FORCE_DELETE_FEATURE_V1]
+                        &[aos_sandbox_protocol::public_api::FORCE_DELETE_FEATURE_V1]
                     } else {
                         &[]
                     })
@@ -1141,7 +1141,7 @@ impl ViewSubcommand {
                 mutation: a
                     .mutation
                     .proto_with_semantic_features(if a.noexec {
-                        &[aos_sandbox::controller_query::ATTACHMENT_NOEXEC_FEATURE_V1]
+                        &[aos_sandbox_protocol::public_api::ATTACHMENT_NOEXEC_FEATURE_V1]
                     } else {
                         &[]
                     })
@@ -1190,7 +1190,7 @@ impl CacheSubcommand {
                 mutation: a
                     .mutation
                     .proto_with_semantic_features(&[
-                        aos_sandbox::controller_query::CACHE_CONSUMER_PIN_FEATURE_V1,
+                        aos_sandbox_protocol::public_api::CACHE_CONSUMER_PIN_FEATURE_V1,
                     ])
                     .into(),
                 view_id: a.view_id.clone(),
@@ -1202,7 +1202,7 @@ impl CacheSubcommand {
                 mutation: a
                     .mutation
                     .proto_with_semantic_features(&[
-                        aos_sandbox::controller_query::CACHE_CONSUMER_PIN_FEATURE_V1,
+                        aos_sandbox_protocol::public_api::CACHE_CONSUMER_PIN_FEATURE_V1,
                     ])
                     .into(),
                 view_id: a.view_id.clone(),
@@ -1339,7 +1339,7 @@ fn execution_control(a: &ExecutionIdArgs, action: i32) -> wire::ExecutionControl
         mutation: a
             .mutation
             .proto_with_semantic_features(&[
-                aos_sandbox::controller_query::EXECUTION_ATTACH_HOLDER_PROOF_FEATURE_V1,
+                aos_sandbox_protocol::public_api::EXECUTION_ATTACH_HOLDER_PROOF_FEATURE_V1,
             ])
             .into(),
         ..Default::default()
@@ -1385,7 +1385,7 @@ fn exec(a: &ExecArgs) -> Result<wire::CreateExecutionRequest> {
                 0,
                 None,
                 None,
-                aos_sandbox::controller_query::EXECUTION_STREAM_FEATURE_V1,
+                aos_sandbox_protocol::public_api::EXECUTION_STREAM_FEATURE_V1,
             )
         }
         IoMode::Pty => {
@@ -1412,7 +1412,7 @@ fn exec(a: &ExecArgs) -> Result<wire::CreateExecutionRequest> {
                 0,
                 None,
                 None,
-                aos_sandbox::controller_query::EXECUTION_PTY_FEATURE_V1,
+                aos_sandbox_protocol::public_api::EXECUTION_PTY_FEATURE_V1,
             )
         }
         IoMode::Detached => {
@@ -1442,7 +1442,7 @@ fn exec(a: &ExecArgs) -> Result<wire::CreateExecutionRequest> {
                 capture,
                 Some(stdout),
                 Some(stderr),
-                aos_sandbox::controller_query::EXECUTION_DETACHED_CAPTURE_FEATURE_V1,
+                aos_sandbox_protocol::public_api::EXECUTION_DETACHED_CAPTURE_FEATURE_V1,
             )
         }
     };
@@ -1463,17 +1463,17 @@ fn exec(a: &ExecArgs) -> Result<wire::CreateExecutionRequest> {
         bail!("execution environment names must be unique");
     }
     let mut semantic_features = vec![
-        aos_sandbox::controller_query::EXECUTION_CREATE_HOLDER_PROOF_FEATURE_V1,
-        aos_sandbox::controller_query::EXECUTION_TIMEOUT_FEATURE_V1,
+        aos_sandbox_protocol::public_api::EXECUTION_CREATE_HOLDER_PROOF_FEATURE_V1,
+        aos_sandbox_protocol::public_api::EXECUTION_TIMEOUT_FEATURE_V1,
         io_feature,
     ];
     if !sandbox_shell.is_empty() {
-        semantic_features.push(aos_sandbox::controller_query::EXECUTION_SANDBOX_SHELL_FEATURE_V1);
+        semantic_features.push(aos_sandbox_protocol::public_api::EXECUTION_SANDBOX_SHELL_FEATURE_V1);
     }
     let mut stream_semantic_features = vec![io_feature];
     if io_mode == 3 {
         let ceiling_feature =
-            aos_sandbox::controller_query::EXECUTION_DETACHED_CAPTURE_STREAM_CEILINGS_FEATURE_V1;
+            aos_sandbox_protocol::public_api::EXECUTION_DETACHED_CAPTURE_STREAM_CEILINGS_FEATURE_V1;
         semantic_features.push(ceiling_feature);
         stream_semantic_features.push(ceiling_feature);
     }

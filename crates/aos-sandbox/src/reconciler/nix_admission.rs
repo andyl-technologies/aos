@@ -4,7 +4,7 @@
 //! not reconstruct a startup, lease verifier, session or physical floor owner.
 
 use super::*;
-use crate::controller_query::PublicOperationMethodV1;
+use aos_sandbox_protocol::public_api::PublicOperationMethodV1;
 use crate::production_operation_compiler::NixStartAdmissionCarrierV2;
 
 mod continuation;

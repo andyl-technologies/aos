@@ -22,7 +22,7 @@ use aos_sandbox_core::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use crate::controller_query::PublicOperationMethodV1;
+use aos_sandbox_protocol::public_api::PublicOperationMethodV1;
 use crate::controller_service::public_projection::{
     PublicProjectionKindV1, PublicProjectionPlanV1, PublicProjectionResourceV1,
     PublicProjectionStoreV1, public_projection_deletion_record_v1,

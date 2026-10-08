@@ -13,12 +13,21 @@ use aos_proto::aos::sandbox::v1::{
     GetViewResponse, Operation, Sandbox, Snapshot,
 };
 
-use crate::controller_query::{
-    AuthenticatedWatchReadBatchV1, AuthenticatedWatchReadRequestV1, CheckedAttachmentResourceV1,
-    CheckedExecutionResourceV1, CheckedFilesystemViewResourceV1, CheckedOperationObservationV1,
-    CheckedSandboxObservationV1, CheckedSnapshotResourceV1, CheckedWatchRequestV1,
-    InvalidObservationMetadata, InvalidPublicResource, ObservationWatchAdvanceV1,
-    ObservationWatchContinuationV1, ObservationWatchError,
+use aos_sandbox_protocol::public_api::{
+    AuthenticatedWatchReadBatchV1,
+    AuthenticatedWatchReadRequestV1,
+    CheckedAttachmentResourceV1,
+    CheckedExecutionResourceV1,
+    CheckedFilesystemViewResourceV1,
+    CheckedOperationObservationV1,
+    CheckedSandboxObservationV1,
+    CheckedSnapshotResourceV1,
+    CheckedWatchRequestV1,
+    InvalidObservationMetadata,
+    InvalidPublicResource,
+    ObservationWatchAdvanceV1,
+    ObservationWatchContinuationV1,
+    ObservationWatchError,
 };
 
 /// Supplies portable sandbox wire resources without granting effect authority.

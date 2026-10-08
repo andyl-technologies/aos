@@ -31,10 +31,14 @@ use aos_sandbox::cli_model::MAXIMUM_CLI_PAGE_SIZE;
 use aos_sandbox::cli_model::{
     AuditAuthorizationV1, PublicApiAuditMethodV1, PublicMutationRequestV1,
 };
-use aos_sandbox::client_state::MAXIMUM_PAGE_BYTES;
-use aos_sandbox::controller_query::{
-    NormalizedQueryDigestV1, QUERY_BINDING_TRANSPORT_BYTES, QueryBindingV1, QueryFilterDigestV1,
-    QuerySortDigestV1, QueryVisibilityDigestV1,
+use aos_sandbox_protocol::public_api::client_state::MAXIMUM_PAGE_BYTES;
+use aos_sandbox_protocol::public_api::{
+    NormalizedQueryDigestV1,
+    QUERY_BINDING_TRANSPORT_BYTES,
+    QueryBindingV1,
+    QueryFilterDigestV1,
+    QuerySortDigestV1,
+    QueryVisibilityDigestV1,
 };
 use aos_sandbox::controller_service::public_projection::{
     PublicProjectionKindV1, PublicProjectionQueryV1, PublicProjectionRecordV1,

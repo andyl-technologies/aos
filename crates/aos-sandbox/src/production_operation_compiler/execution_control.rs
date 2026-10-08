@@ -38,9 +38,9 @@ pub fn lower_public_execution_control_v1(
     let no_endpoint_proof =
         request.client_public_key.is_empty() && request.proof_of_possession.is_empty();
     let attach_feature = request.mutation.as_option().is_some_and(|mutation| {
-        crate::controller_query::contains_semantic_features_v1(
+        aos_sandbox_protocol::public_api::contains_semantic_features_v1(
             &mutation.required_features,
-            &[crate::controller_query::EXECUTION_ATTACH_HOLDER_PROOF_FEATURE_V1],
+            &[aos_sandbox_protocol::public_api::EXECUTION_ATTACH_HOLDER_PROOF_FEATURE_V1],
         )
     });
     match request.action.as_known() {

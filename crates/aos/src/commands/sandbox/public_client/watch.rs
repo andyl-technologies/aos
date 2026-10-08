@@ -6,11 +6,16 @@ use aos_sandbox::cli_model::{
     DormantSandboxOutputV1, DormantSandboxRequestKindV1, DormantSandboxRequestV1,
     DormantWatchContinuationV1,
 };
-use aos_sandbox::client_state::{WatchApplyOutcomeV1, WatchResumePointV1};
-use aos_sandbox::controller_query::{
-    AuthenticatedWatchReadBatchV1, CheckedAuditWatchEventV1, CheckedObservationWatchInputV1,
-    CheckedWatchEventV1, CheckedWatchRequestV1, ObservationWatchAdvanceV1,
-    ObservationWatchContinuationV1, checked_watch_request_commitment_v1,
+use aos_sandbox_protocol::public_api::client_state::{WatchApplyOutcomeV1, WatchResumePointV1};
+use aos_sandbox_protocol::public_api::{
+    AuthenticatedWatchReadBatchV1,
+    CheckedAuditWatchEventV1,
+    CheckedObservationWatchInputV1,
+    CheckedWatchEventV1,
+    CheckedWatchRequestV1,
+    ObservationWatchAdvanceV1,
+    ObservationWatchContinuationV1,
+    checked_watch_request_commitment_v1,
 };
 use aos_sandbox_core::CapabilityId;
 

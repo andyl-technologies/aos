@@ -83,7 +83,7 @@ impl Fixture {
                 resource_version:
                     crate::production_operation_compiler::admitted_public_resource_version_v1(
                         operation,
-                        crate::controller_query::PublicOperationMethodV1::CreateSandbox,
+                        aos_sandbox_protocol::public_api::PublicOperationMethodV1::CreateSandbox,
                         1,
                         admission.request_digest(),
                     ),

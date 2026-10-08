@@ -3,15 +3,24 @@
 //! This module adds public/audit projection selection and read-model response
 //! authentication. Bootstrap chunking, watermark `W`, monotone resume,
 //! deduplication, capacity stops, and resynchronization remain owned by
-//! [`crate::client_state::watch`].
+//! [`crate::public_api::client_state::watch`].
 
 use aos_proto::aos::sandbox::v1::{EventKind, WatchCursor, WatchRequest};
 
-use crate::client_state::{
-    MAXIMUM_RETAINED_WATCH_BYTES, MAXIMUM_RETAINED_WATCH_EVENTS, MAXIMUM_WATCH_BOOTSTRAP_BYTES,
-    MAXIMUM_WATCH_BOOTSTRAP_ITEMS, ServerResyncReasonV1, StreamSequenceContractV1,
-    WatchApplyOutcomeV1, WatchError, WatchInputV1, WatchReducerV1, WatchResumePointV1,
-    WatchSnapshotChunkV1, WatchTerminationV1,
+use crate::public_api::client_state::{
+    MAXIMUM_RETAINED_WATCH_BYTES,
+    MAXIMUM_RETAINED_WATCH_EVENTS,
+    MAXIMUM_WATCH_BOOTSTRAP_BYTES,
+    MAXIMUM_WATCH_BOOTSTRAP_ITEMS,
+    ServerResyncReasonV1,
+    StreamSequenceContractV1,
+    WatchApplyOutcomeV1,
+    WatchError,
+    WatchInputV1,
+    WatchReducerV1,
+    WatchResumePointV1,
+    WatchSnapshotChunkV1,
+    WatchTerminationV1,
 };
 
 use super::audit_event::CheckedAuditWatchEventV1;

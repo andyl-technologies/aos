@@ -11,7 +11,7 @@ use aos_proto::aos::sandbox::v1::{
 use aos_sandbox_core::{OperationId, ProjectId, ResourceKind, Selector};
 use sha2::{Digest as _, Sha256};
 
-use crate::controller_query::PublicOperationMethodV1;
+use aos_sandbox_protocol::public_api::PublicOperationMethodV1;
 
 use super::{OperationState, ReconcilerError};
 
@@ -27,6 +27,45 @@ const MAXIMUM_AUTHORIZATION_SELECTOR_BYTES: usize = 64 * 1024;
 const NO_COMPLETION_TIMESTAMP: i64 = i64::MIN;
 const MINIMUM_PROTO_SECONDS: i64 = -62_135_596_800;
 const MAXIMUM_PROTO_SECONDS: i64 = 253_402_300_799;
+
+// These discriminants belong to the native durable record, not the public wire registry.
+pub(crate) const fn public_operation_method_from_record_code_v1(
+    value: u8,
+) -> Option<PublicOperationMethodV1> {
+    match value {
+        0 => Some(PublicOperationMethodV1::CreateSandbox),
+        1 => Some(PublicOperationMethodV1::UpdatePolicy),
+        2 => Some(PublicOperationMethodV1::StartSandbox),
+        3 => Some(PublicOperationMethodV1::StopSandbox),
+        4 => Some(PublicOperationMethodV1::SuspendSandbox),
+        5 => Some(PublicOperationMethodV1::ResumeSandbox),
+        6 => Some(PublicOperationMethodV1::DeleteSandbox),
+        7 => Some(PublicOperationMethodV1::CreateExecution),
+        8 => Some(PublicOperationMethodV1::CancelExecution),
+        9 => Some(PublicOperationMethodV1::CreateView),
+        10 => Some(PublicOperationMethodV1::AttachView),
+        11 => Some(PublicOperationMethodV1::ReplaceAttachment),
+        12 => Some(PublicOperationMethodV1::DetachView),
+        13 => Some(PublicOperationMethodV1::ReleaseView),
+        14 => Some(PublicOperationMethodV1::CreateSnapshot),
+        15 => Some(PublicOperationMethodV1::RestoreSnapshot),
+        16 => Some(PublicOperationMethodV1::ForkSnapshot),
+        17 => Some(PublicOperationMethodV1::DeleteSnapshot),
+        18 => Some(PublicOperationMethodV1::RenewCapability),
+        19 => Some(PublicOperationMethodV1::RevokeCapability),
+        20 => Some(PublicOperationMethodV1::CancelOperation),
+        21 => Some(PublicOperationMethodV1::ControlExecution),
+        22 => Some(PublicOperationMethodV1::AttenuateCapability),
+        23 => Some(PublicOperationMethodV1::PinCacheObject),
+        24 => Some(PublicOperationMethodV1::UnpinCacheObject),
+        25 => Some(PublicOperationMethodV1::OperatorRecover),
+        _ => None,
+    }
+}
+
+pub(crate) const fn public_operation_method_record_code_v1(method: PublicOperationMethodV1) -> u8 {
+    method as u8
+}
 
 /// Supplies immutable public fields when admitting an operation.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -323,7 +362,7 @@ impl DurablePublicOperationV1 {
     }
 
     pub(super) fn encode(self, bytes: &mut Vec<u8>) {
-        bytes.push(self.method.record_code());
+        bytes.push(public_operation_method_record_code_v1(self.method));
         bytes.extend_from_slice(&[0; 7]);
         bytes.extend_from_slice(&self.accepted_generation.to_le_bytes());
         bytes.extend_from_slice(&self.observation_sequence.to_le_bytes());
@@ -342,7 +381,7 @@ impl DurablePublicOperationV1 {
         let bytes: &[u8; PUBLIC_OPERATION_RECORD_BYTES] = bytes.try_into().map_err(|_| {
             ReconcilerError::CorruptLedger("invalid public operation metadata length")
         })?;
-        let method = PublicOperationMethodV1::from_record_code(bytes[0]).ok_or(
+        let method = public_operation_method_from_record_code_v1(bytes[0]).ok_or(
             ReconcilerError::CorruptLedger("unknown public operation method"),
         )?;
         if bytes[1..8] != [0; 7] {
@@ -576,6 +615,50 @@ const fn resource_kind_from_code(value: u8) -> Option<ResourceKind> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn public_operation_method_record_registry_round_trips() {
+        let methods = [
+            PublicOperationMethodV1::CreateSandbox,
+            PublicOperationMethodV1::UpdatePolicy,
+            PublicOperationMethodV1::StartSandbox,
+            PublicOperationMethodV1::StopSandbox,
+            PublicOperationMethodV1::SuspendSandbox,
+            PublicOperationMethodV1::ResumeSandbox,
+            PublicOperationMethodV1::DeleteSandbox,
+            PublicOperationMethodV1::CreateExecution,
+            PublicOperationMethodV1::CancelExecution,
+            PublicOperationMethodV1::CreateView,
+            PublicOperationMethodV1::AttachView,
+            PublicOperationMethodV1::ReplaceAttachment,
+            PublicOperationMethodV1::DetachView,
+            PublicOperationMethodV1::ReleaseView,
+            PublicOperationMethodV1::CreateSnapshot,
+            PublicOperationMethodV1::RestoreSnapshot,
+            PublicOperationMethodV1::ForkSnapshot,
+            PublicOperationMethodV1::DeleteSnapshot,
+            PublicOperationMethodV1::RenewCapability,
+            PublicOperationMethodV1::RevokeCapability,
+            PublicOperationMethodV1::CancelOperation,
+            PublicOperationMethodV1::ControlExecution,
+            PublicOperationMethodV1::AttenuateCapability,
+            PublicOperationMethodV1::PinCacheObject,
+            PublicOperationMethodV1::UnpinCacheObject,
+            PublicOperationMethodV1::OperatorRecover,
+        ];
+
+        for (code, method) in methods.into_iter().enumerate() {
+            assert_eq!(public_operation_method_record_code_v1(method) as usize, code);
+            assert_eq!(
+                public_operation_method_from_record_code_v1(
+                    public_operation_method_record_code_v1(method),
+                ),
+                Some(method),
+            );
+        }
+
+        assert_eq!(public_operation_method_from_record_code_v1(26), None);
+    }
 
     #[test]
     fn completed_abandon_projects_an_acknowledgment_milestone() {

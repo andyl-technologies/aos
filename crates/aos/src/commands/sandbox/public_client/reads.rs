@@ -13,13 +13,20 @@ use aos_sandbox::cli_model::{
     DormantListContinuationV1, DormantSandboxOutputV1, DormantSandboxRequestKindV1,
     DormantSandboxRequestV1, DormantSandboxTreePageConsumerV1,
 };
-use aos_sandbox::client_state::{
-    ImmutableListPageV1, MAXIMUM_COLLECTED_BYTES, MAXIMUM_COLLECTED_ITEMS, PageApplyOutcomeV1,
+use aos_sandbox_protocol::public_api::client_state::{
+    ImmutableListPageV1,
+    MAXIMUM_COLLECTED_BYTES,
+    MAXIMUM_COLLECTED_ITEMS,
+    PageApplyOutcomeV1,
     PaginationReducerV1,
 };
-use aos_sandbox::controller_query::{
-    CheckedAttachmentResourceV1, CheckedCapabilityResourceV1, CheckedExecutionResourceV1,
-    CheckedFilesystemViewResourceV1, CheckedSandboxResourceV1, CheckedSnapshotResourceV1,
+use aos_sandbox_protocol::public_api::{
+    CheckedAttachmentResourceV1,
+    CheckedCapabilityResourceV1,
+    CheckedExecutionResourceV1,
+    CheckedFilesystemViewResourceV1,
+    CheckedSandboxResourceV1,
+    CheckedSnapshotResourceV1,
 };
 use aos_sandbox_core::CapabilityId;
 use connectrpc::client::SharedHttp2Connection;

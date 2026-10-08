@@ -6,9 +6,14 @@ use aos_sandbox_core::ObjectDigest;
 use sha2::{Digest as _, Sha256};
 
 use super::requests::ResolvedPublicMutationV1;
-use crate::controller_query::model::{
-    AuthorizationRevisionDigestV1, NormalizedQueryDigestV1, ObservationSchemaDigestV1,
-    QueryBindingV1, QueryFilterDigestV1, QueryPrincipalDigestV1, QuerySortDigestV1,
+use aos_sandbox_protocol::public_api::model::{
+    AuthorizationRevisionDigestV1,
+    NormalizedQueryDigestV1,
+    ObservationSchemaDigestV1,
+    QueryBindingV1,
+    QueryFilterDigestV1,
+    QueryPrincipalDigestV1,
+    QuerySortDigestV1,
     QueryVisibilityDigestV1,
 };
 

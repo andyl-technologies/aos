@@ -21,10 +21,15 @@ use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
 
 use crate::cli_model::{AuditAuthorizationV1, CheckedCacheStatusV1};
-use crate::controller_query::{
-    CheckedAttachmentResourceV1, CheckedCapabilityResourceV1, CheckedExecutionResourceV1,
-    CheckedFilesystemViewResourceV1, CheckedSandboxResourceV1, CheckedSnapshotResourceV1,
-    InvalidPublicResource, MAXIMUM_PUBLIC_RESOURCE_BYTES,
+use aos_sandbox_protocol::public_api::{
+    CheckedAttachmentResourceV1,
+    CheckedCapabilityResourceV1,
+    CheckedExecutionResourceV1,
+    CheckedFilesystemViewResourceV1,
+    CheckedSandboxResourceV1,
+    CheckedSnapshotResourceV1,
+    InvalidPublicResource,
+    MAXIMUM_PUBLIC_RESOURCE_BYTES,
 };
 use crate::{Journal, JournalRecord, RecordNamespace};
 

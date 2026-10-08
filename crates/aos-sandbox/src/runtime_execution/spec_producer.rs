@@ -608,17 +608,17 @@ fn execution_io(
         .ok_or(ProtectedExecutionSpecProducerErrorV1::UnsupportedCommand)?;
     let represented_features: &[&str] = match mode {
         ExecutionIoMode::EXECUTION_IO_MODE_STREAM => &[
-            crate::controller_query::EXECUTION_STREAM_FEATURE_V1,
-            crate::controller_query::EXECUTION_TIMEOUT_FEATURE_V1,
+            aos_sandbox_protocol::public_api::EXECUTION_STREAM_FEATURE_V1,
+            aos_sandbox_protocol::public_api::EXECUTION_TIMEOUT_FEATURE_V1,
         ],
         ExecutionIoMode::EXECUTION_IO_MODE_PTY => &[
-            crate::controller_query::EXECUTION_PTY_FEATURE_V1,
-            crate::controller_query::EXECUTION_TIMEOUT_FEATURE_V1,
+            aos_sandbox_protocol::public_api::EXECUTION_PTY_FEATURE_V1,
+            aos_sandbox_protocol::public_api::EXECUTION_TIMEOUT_FEATURE_V1,
         ],
         ExecutionIoMode::EXECUTION_IO_MODE_DETACHED_CAPTURE => &[
-            crate::controller_query::EXECUTION_DETACHED_CAPTURE_FEATURE_V1,
-            crate::controller_query::EXECUTION_DETACHED_CAPTURE_STREAM_CEILINGS_FEATURE_V1,
-            crate::controller_query::EXECUTION_TIMEOUT_FEATURE_V1,
+            aos_sandbox_protocol::public_api::EXECUTION_DETACHED_CAPTURE_FEATURE_V1,
+            aos_sandbox_protocol::public_api::EXECUTION_DETACHED_CAPTURE_STREAM_CEILINGS_FEATURE_V1,
+            aos_sandbox_protocol::public_api::EXECUTION_TIMEOUT_FEATURE_V1,
         ],
         _ => return Err(ProtectedExecutionSpecProducerErrorV1::UnsupportedCommand),
     };
@@ -631,7 +631,7 @@ fn execution_io(
     }
     if mode == ExecutionIoMode::EXECUTION_IO_MODE_DETACHED_CAPTURE {
         let aggregate =
-            crate::controller_query::portable_resource::checked_detached_capture_bytes(public)
+            aos_sandbox_protocol::public_api::portable_resource::checked_detached_capture_bytes(public)
                 .ok_or(ProtectedExecutionSpecProducerErrorV1::UnsupportedCommand)?;
         let stdout = public
             .maximum_stdout_bytes

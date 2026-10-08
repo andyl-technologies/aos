@@ -14,8 +14,8 @@ use aos_sandbox::cli_model::{
     DormantSandboxCommandExecutorV1, DormantSandboxOutputV1, DormantSandboxRequestKindV1,
     DormantSandboxRoutingErrorV1, DormantValidatedRequestSinkV1, EstablishedProtoJson,
 };
-use aos_sandbox::controller_query::CheckedNodeCapabilitiesV1;
-use aos_sandbox::controller_query::CheckedOperationObservationV1;
+use aos_sandbox_protocol::public_api::CheckedNodeCapabilitiesV1;
+use aos_sandbox_protocol::public_api::CheckedOperationObservationV1;
 use clap_complete::Shell;
 use connectrpc::Protocol;
 use connectrpc::client::{ClientConfig, Http2Connection, SharedHttp2Connection};

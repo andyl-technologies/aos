@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::controller_fuse_admission::ControllerFuseAdmissionCarrierV1;
-use crate::controller_query::PublicOperationMethodV1;
+use aos_sandbox_protocol::public_api::PublicOperationMethodV1;
 
 /// Rejoins exact historical admission bytes to the protected operation ledger.
 ///

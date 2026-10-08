@@ -15,15 +15,26 @@ use aos_sandbox::cli_model::{
     CheckedExecutionControlResultV1, DormantSandboxOutputV1, DormantSandboxRequestKindV1,
     DormantSandboxRequestV1,
 };
-use aos_sandbox::client_state::{
-    MAXIMUM_WAIT_OBSERVATIONS, OperationWaitApplyOutcomeV1, OperationWaitPolicyV1,
-    OperationWaitReducerV1, OperationWaitTerminationV1,
+use aos_sandbox_protocol::public_api::client_state::{
+    MAXIMUM_WAIT_OBSERVATIONS,
+    OperationWaitApplyOutcomeV1,
+    OperationWaitPolicyV1,
+    OperationWaitReducerV1,
+    OperationWaitTerminationV1,
 };
-use aos_sandbox::controller_query::{
-    CheckedAttachmentResourceV1, CheckedCapabilityResourceV1, CheckedExecutionResourceV1,
-    CheckedFilesystemViewResourceV1, CheckedOperationObservationV1, CheckedOperationPhaseV1,
-    CheckedOperationResourceV1, CheckedSandboxResourceV1, CheckedSnapshotResourceV1,
-    PublicOperationMethodV1, QUERY_BINDING_TRANSPORT_BYTES, QueryBindingV1,
+use aos_sandbox_protocol::public_api::{
+    CheckedAttachmentResourceV1,
+    CheckedCapabilityResourceV1,
+    CheckedExecutionResourceV1,
+    CheckedFilesystemViewResourceV1,
+    CheckedOperationObservationV1,
+    CheckedOperationPhaseV1,
+    CheckedOperationResourceV1,
+    CheckedSandboxResourceV1,
+    CheckedSnapshotResourceV1,
+    PublicOperationMethodV1,
+    QUERY_BINDING_TRANSPORT_BYTES,
+    QueryBindingV1,
 };
 use aos_sandbox_core::CapabilityId;
 use connectrpc::client::{ClientConfig, SharedHttp2Connection};

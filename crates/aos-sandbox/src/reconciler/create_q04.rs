@@ -742,7 +742,7 @@ impl OriginalQ04ControllerLedgerV1 {
 
         let specification = create.specification.as_option()
             .ok_or(CreateQ04ErrorV1::ChangedCut)?;
-        crate::controller_query::registry::validate_descriptor_media(
+        aos_sandbox_protocol::public_api::registry::validate_descriptor_media(
             specification, "application/vnd.aos.sandbox.spec.v1+cbor",
         ).map_err(|_| CreateQ04ErrorV1::ChangedCut)?;
         let specification = aos_sandbox_core::ObjectDescriptor::new(
@@ -1024,7 +1024,7 @@ pub(crate) fn read_original_q04_rows_v1(
         || operation.ownership_gated
         || operation.runtime_intent_digest.is_some()
         || !operation.public_operation.is_some_and(|public| {
-            public.method() == crate::controller_query::PublicOperationMethodV1::CreateSandbox
+            public.method() == aos_sandbox_protocol::public_api::PublicOperationMethodV1::CreateSandbox
                 && public.accepted_generation() == binding.accepted_generation
         })
         || encode_operation_record(operation).as_slice() != operation_bytes
@@ -1039,7 +1039,7 @@ pub(crate) fn read_original_q04_rows_v1(
         || effect.plan.authority().is_some()
         || effect.project_admission.is_some()
         || effect.plan.public_mutation_method()
-            != Some(crate::controller_query::PublicOperationMethodV1::CreateSandbox)
+            != Some(aos_sandbox_protocol::public_api::PublicOperationMethodV1::CreateSandbox)
         || encode_effect(&effect)?.as_slice() != effect_bytes
     {
         return Err(ReconcilerError::CorruptLedger("Q04 Claim original Effect changed").into());
@@ -1123,7 +1123,7 @@ pub(crate) fn require_original_pending(journal: &Journal) -> Result<bool, Reconc
     if !matches!(effect.state, EffectState::Applying { .. })
         || effect.dispatch.is_some()
         || effect.plan.public_mutation_method()
-            != Some(crate::controller_query::PublicOperationMethodV1::CreateSandbox)
+            != Some(aos_sandbox_protocol::public_api::PublicOperationMethodV1::CreateSandbox)
     {
         return Err(ReconcilerError::CorruptLedger("Q04 Effect is not Applying Create"));
     }

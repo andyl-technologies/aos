@@ -14,8 +14,10 @@
 use aos_sandbox_core::ObjectDigest;
 use sha2::{Digest as _, Sha256};
 
-use crate::controller_query::{
-    CheckedWatchEventV1, MAXIMUM_OPAQUE_RESPONSE_BYTES, QUERY_BINDING_TRANSPORT_BYTES,
+use aos_sandbox_protocol::public_api::{
+    CheckedWatchEventV1,
+    MAXIMUM_OPAQUE_RESPONSE_BYTES,
+    QUERY_BINDING_TRANSPORT_BYTES,
     QueryBindingV1,
 };
 
@@ -326,9 +328,14 @@ fn watch_continuation_digest(encoded: &[u8]) -> ObjectDigest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::controller_query::{
-        AuthorizationRevisionDigestV1, NormalizedQueryDigestV1, ObservationSchemaDigestV1,
-        QueryFilterDigestV1, QueryPrincipalDigestV1, QuerySortDigestV1, QueryVisibilityDigestV1,
+    use aos_sandbox_protocol::public_api::{
+        AuthorizationRevisionDigestV1,
+        NormalizedQueryDigestV1,
+        ObservationSchemaDigestV1,
+        QueryFilterDigestV1,
+        QueryPrincipalDigestV1,
+        QuerySortDigestV1,
+        QueryVisibilityDigestV1,
     };
 
     fn binding() -> QueryBindingV1 {

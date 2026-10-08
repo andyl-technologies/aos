@@ -13,8 +13,10 @@ use crate::cli_model::{
     DormantSandboxRequestKindV1, OperatorRecoveryRequestV1, PublicApiAuditMethodV1,
     PublicMutationRequestV1,
 };
-use crate::controller_query::{
-    CheckedOperationPhaseV1, CheckedOperationResourceV1, CheckedSandboxResourceV1,
+use aos_sandbox_protocol::public_api::{
+    CheckedOperationPhaseV1,
+    CheckedOperationResourceV1,
+    CheckedSandboxResourceV1,
     PublicOperationMethodV1,
 };
 use crate::controller_service::public_projection::{

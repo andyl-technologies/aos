@@ -22,7 +22,7 @@ use super::super::{CURRENT_HEAD_DOMAIN_V2, OperatorRecoveryIssuanceErrorV1,
     ProtectedOperatorRecoverySignerV1, EVIDENCE_DOMAIN, VERSION_DOMAIN, hash, take_array};
 use super::successor_commit::{RepairSuccessorCommitOutcomeV1, exact_transaction_digest};
 use crate::controller::{decode_recovery_current, recovery_current_key};
-use crate::controller_query::CheckedSandboxResourceV1;
+use aos_sandbox_protocol::public_api::CheckedSandboxResourceV1;
 use crate::controller_service::public_projection::{
     PublicProjectionKindV1, PublicProjectionRecordV1, PublicProjectionResourceV1, projection_key,
 };

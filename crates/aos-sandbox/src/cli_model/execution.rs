@@ -9,7 +9,7 @@ use super::grammar::{
     CliIdempotencyKeyV1, CliRelativePathV1, CliResourceVersionV1, CliWaitDurationV1, CliWaitV1,
     ExecutionArgumentsV1,
 };
-use crate::controller_query::portable::CheckedFeatureSetV1;
+use aos_sandbox_protocol::public_api::portable::CheckedFeatureSetV1;
 
 /// Maximum environment rows supplied to one execution.
 pub const MAXIMUM_EXEC_ENVIRONMENT: usize = aos_sandbox_core::MAX_EXECUTION_ENVIRONMENT_ENTRIES;

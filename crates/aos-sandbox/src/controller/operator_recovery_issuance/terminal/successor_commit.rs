@@ -21,7 +21,7 @@ use super::ledger_receipt::BoundRepairLedgerReceiptV1;
 use super::held_receipt::{HeldRepairLedgerReceiptV2, exact_predecessor_archive};
 use super::super::transport::HeldStorageTerminalV4;
 use crate::controller::{operator_repair_successor_current_v1, recovery_current_key};
-use crate::controller_query::CheckedSandboxResourceV1;
+use aos_sandbox_protocol::public_api::CheckedSandboxResourceV1;
 use crate::controller_service::public_projection::{
     PublicProjectionKindV1, PublicProjectionResourceV1, PublicProjectionStoreV1, PublicProjectionRecordV1,
 };

@@ -372,12 +372,12 @@ pub(super) fn validate_recovery_replay(
 }
 
 pub(super) fn latest_recovery_transition(
-    conditions: &[crate::controller_query::CheckedConditionV1],
+    conditions: &[aos_sandbox_protocol::public_api::CheckedConditionV1],
     fallback: Option<(i64, u32)>,
 ) -> Result<(i64, u32), InvalidObservationClientAdapter> {
     conditions
         .iter()
-        .map(crate::controller_query::CheckedConditionV1::transition)
+        .map(aos_sandbox_protocol::public_api::CheckedConditionV1::transition)
         .chain(fallback)
         .max()
         .ok_or(InvalidObservationClientAdapter::InvalidOperatorRecovery)

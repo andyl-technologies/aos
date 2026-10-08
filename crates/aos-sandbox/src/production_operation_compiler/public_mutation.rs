@@ -21,7 +21,7 @@ use aos_sandbox_core::{
 use sha2::{Digest as _, Sha256};
 
 use crate::cli_model::DormantSandboxRequestKindV1 as Request;
-use crate::controller_query::PublicOperationMethodV1;
+use aos_sandbox_protocol::public_api::PublicOperationMethodV1;
 use crate::controller_service::public_projection::{
     PublicProjectionKindV1, PublicProjectionPlanV1, PublicProjectionResourceV1,
     PublicProjectionStoreV1,
@@ -1105,9 +1105,9 @@ fn create_execution_projection(
         .as_option()
         .ok_or(OperationCompilationError::Malformed)?
         .clone();
-    crate::controller_query::portable_resource::validate_command(&command)
+    aos_sandbox_protocol::public_api::portable_resource::validate_command(&command)
         .map_err(|_| OperationCompilationError::Rejected)?;
-    if !crate::cli_model::routing::execution_required_features_present(
+    if !aos_sandbox_protocol::public_api::registry::execution_required_features_present(
         &command,
         &mutation.required_features,
     ) {
@@ -2117,9 +2117,9 @@ fn validate_cache_consumer_projection(
     mutation_kind: CacheConsumerMutationV1,
 ) -> Result<Option<RecheckedCacheAcquisitionFenceV1>, OperationCompilationError> {
     if !mutation.is_some_and(|mutation| {
-        crate::controller_query::contains_semantic_features_v1(
+        aos_sandbox_protocol::public_api::contains_semantic_features_v1(
             &mutation.required_features,
-            &[crate::controller_query::CACHE_CONSUMER_PIN_FEATURE_V1],
+            &[aos_sandbox_protocol::public_api::CACHE_CONSUMER_PIN_FEATURE_V1],
         )
     }) {
         return Err(OperationCompilationError::Malformed);
@@ -2250,7 +2250,8 @@ pub(super) fn mutation_intent(
     let mut value = Vec::with_capacity(8 + 2 + 1 + 5 + 16 + 4 + canonical_request.len() + 32);
     value.extend_from_slice(PUBLIC_MUTATION_INTENT_MAGIC);
     value.extend_from_slice(&1_u16.to_be_bytes());
-    value.push(method.record_code());
+    let method_code = crate::reconciler::public_operation_method_record_code_v1(method);
+    value.push(method_code);
     value.extend_from_slice(&[0; 5]);
     value.extend_from_slice(operation.as_bytes());
     value.extend_from_slice(&(canonical_request.len() as u32).to_be_bytes());
@@ -2268,7 +2269,7 @@ pub(crate) fn resource_version(
     Sha256::new()
         .chain_update(PUBLIC_RESOURCE_VERSION_DOMAIN)
         .chain_update(operation.as_bytes())
-        .chain_update([method.record_code()])
+        .chain_update([crate::reconciler::public_operation_method_record_code_v1(method)])
         .chain_update(generation.to_be_bytes())
         .chain_update(request_digest)
         .finalize()
@@ -2336,7 +2337,7 @@ mod tests {
         ] {
             let required_features = if force {
                 vec![Feature {
-                    namespace: crate::controller_query::FORCE_DELETE_FEATURE_V1.to_owned(),
+                    namespace: aos_sandbox_protocol::public_api::FORCE_DELETE_FEATURE_V1.to_owned(),
                     major: 1,
                     minor: 0,
                     ..Default::default()

@@ -27,7 +27,7 @@ use super::{
 };
 use crate::cli_model::{PublicApiAuditMethodV1, PublicMutationRequestV1};
 use crate::controller::ControllerRequestScopeV1;
-use crate::controller_query::PublicOperationMethodV1;
+use aos_sandbox_protocol::public_api::PublicOperationMethodV1;
 use crate::controller_service::public_projection::{
     PublicProjectionPlanV1, PublicProjectionResourceV1,
 };

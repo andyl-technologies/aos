@@ -26,7 +26,7 @@ use crate::cache_residency::{
 #[cfg(target_os = "linux")]
 use crate::cache_residency::{CacheResidencyWriterReadbackV2, DormantCacheOwnerV1};
 use crate::controller::ControllerRequestScopeV1;
-use crate::controller_query::PublicOperationMethodV1;
+use aos_sandbox_protocol::public_api::PublicOperationMethodV1;
 #[cfg(target_os = "linux")]
 use crate::controller_service::journal::production_journal_limits;
 use crate::controller_service::public_projection::{

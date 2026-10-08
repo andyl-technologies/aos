@@ -16,7 +16,7 @@ use aos_proto::aos::sandbox::v1::{
 };
 use aos_sandbox::attach_holder_proof::verify_attach_holder_private_key_v1;
 use aos_sandbox::cli_model::CheckedExecutionControlResultV1;
-use aos_sandbox::controller_query::{CheckedExecutionResourceV1, PublicOperationMethodV1};
+use aos_sandbox_protocol::public_api::{CheckedExecutionResourceV1, PublicOperationMethodV1};
 use zeroize::Zeroizing;
 
 use crate::cli::sandbox::SandboxArgs;

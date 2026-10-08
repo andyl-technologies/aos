@@ -20,8 +20,10 @@ use super::provenance::{
     CanonicalRequestDigestV1, InvalidRequestProvenance, RequestProvenanceV1,
 };
 use super::requests::ResolvedPublicMutationV1;
-use crate::controller_query::model::{
-    AuthorizationRevisionDigestV1, ObservationSchemaDigestV1, QueryPrincipalDigestV1,
+use aos_sandbox_protocol::public_api::model::{
+    AuthorizationRevisionDigestV1,
+    ObservationSchemaDigestV1,
+    QueryPrincipalDigestV1,
 };
 use crate::publisher_authority::{PublisherAuthorityLimits, PublisherCapabilityRegistry};
 use crate::publisher_policy::{PublisherPolicyLimits, PublisherPolicyStore};

@@ -89,7 +89,7 @@ pub(super) fn reconcile(
         || dispatch.is_some()
         || authority_gate.is_some()
         || plan.public_mutation_method()
-            != Some(aos_sandbox::controller_query::PublicOperationMethodV1::CreateSandbox)
+            != Some(aos_sandbox_protocol::public_api::PublicOperationMethodV1::CreateSandbox)
     {
         std::process::exit(1);
     }

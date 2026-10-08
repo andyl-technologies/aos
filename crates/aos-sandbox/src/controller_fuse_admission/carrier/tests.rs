@@ -22,7 +22,7 @@ use buffa::Message as _;
 use super::*;
 use crate::cli_model::{PublicApiAuditMethodV1, PublicMutationRequestV1};
 use crate::controller_fuse_admission::AcceptedControllerFuseAdmissionV1;
-use crate::controller_query::PublicOperationMethodV1;
+use aos_sandbox_protocol::public_api::PublicOperationMethodV1;
 use crate::{
     EffectFailure, EffectObservation, EffectPlan, EffectReceipt, IdempotencyKey, JournalLimits,
     JournalRecord, JournalTransaction, OperationPlan, PublicOperationAdmissionV1,

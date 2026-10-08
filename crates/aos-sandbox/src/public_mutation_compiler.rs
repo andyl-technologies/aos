@@ -15,7 +15,7 @@ use crate::cli_model::{
     DormantSandboxRequestKindV1, PublicApiAuditMethodV1, PublicMutationRequestError,
     PublicMutationRequestV1,
 };
-use crate::controller_query::PublicOperationMethodV1;
+use aos_sandbox_protocol::public_api::PublicOperationMethodV1;
 use crate::public_api_session::PublicApiPeer;
 use crate::{IdempotencyKey, Journal, JournalError};
 
@@ -190,8 +190,10 @@ impl AuthorizedPublicMutationRequestV1 {
         use crate::cli_model::{
             AuthenticatedRequestSemanticsDigestV1, CanonicalRequestDigestV1, RequestProvenanceV1,
         };
-        use crate::controller_query::{
-            AuthorizationRevisionDigestV1, ObservationSchemaDigestV1, QueryPrincipalDigestV1,
+        use aos_sandbox_protocol::public_api::{
+            AuthorizationRevisionDigestV1,
+            ObservationSchemaDigestV1,
+            QueryPrincipalDigestV1,
         };
 
         let request = ResolvedPublicMutationRequestV1::decode_with_capability_id(

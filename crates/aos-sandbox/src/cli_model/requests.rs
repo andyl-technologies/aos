@@ -12,9 +12,12 @@ use super::execution::{
     ExecutionProgramV1,
 };
 use super::grammar::{CliIdempotencyKeyV1, CliResourceVersionV1, CliWaitDurationV1, CliWaitV1};
-use crate::controller_query::portable::{
-    CheckedFeatureSetV1, CheckedFilesystemViewDescriptorV1, CheckedObjectDescriptorV1,
-    CheckedPolicyDescriptorV1, CheckedSandboxSpecificationV1,
+use aos_sandbox_protocol::public_api::portable::{
+    CheckedFeatureSetV1,
+    CheckedFilesystemViewDescriptorV1,
+    CheckedObjectDescriptorV1,
+    CheckedPolicyDescriptorV1,
+    CheckedSandboxSpecificationV1,
 };
 
 /// States fields that must enter the public request proto before CLI activation.
@@ -765,7 +768,7 @@ impl ResolvedPublicMutationV1 {
                 let mut mutation = execution_mutation_context_proto(&value.mutation);
                 if matches!(value.io, ExecutionIoContractV1::Detached(_)) {
                     let ceiling_feature = wire::Feature {
-                        namespace: crate::controller_query::EXECUTION_DETACHED_CAPTURE_STREAM_CEILINGS_FEATURE_V1.to_owned(),
+                        namespace: aos_sandbox_protocol::public_api::EXECUTION_DETACHED_CAPTURE_STREAM_CEILINGS_FEATURE_V1.to_owned(),
                         major: 1,
                         minor: 0,
                         ..Default::default()
@@ -775,7 +778,7 @@ impl ResolvedPublicMutationV1 {
                     stream_features.dedup_by(|left, right| left.namespace == right.namespace);
                     mutation = with_required_semantic_feature(
                         mutation,
-                        crate::controller_query::EXECUTION_DETACHED_CAPTURE_STREAM_CEILINGS_FEATURE_V1,
+                        aos_sandbox_protocol::public_api::EXECUTION_DETACHED_CAPTURE_STREAM_CEILINGS_FEATURE_V1,
                     );
                 }
                 ResolvedPublicMutationProtoV1::CreateExecution(wire::CreateExecutionRequest {
@@ -813,7 +816,7 @@ impl ResolvedPublicMutationV1 {
                     proof_of_possession: value.endpoint_proof.proof().to_vec(),
                     mutation: with_required_semantic_feature(
                         mutation,
-                        crate::controller_query::EXECUTION_CREATE_HOLDER_PROOF_FEATURE_V1,
+                        aos_sandbox_protocol::public_api::EXECUTION_CREATE_HOLDER_PROOF_FEATURE_V1,
                     )
                     .into(),
                     ..Default::default()
@@ -832,7 +835,7 @@ impl ResolvedPublicMutationV1 {
                         proof_of_possession: endpoint_proof.proof().to_vec(),
                         mutation: with_required_semantic_feature(
                             execution_mutation_context_proto(mutation),
-                            crate::controller_query::EXECUTION_ATTACH_HOLDER_PROOF_FEATURE_V1,
+                            aos_sandbox_protocol::public_api::EXECUTION_ATTACH_HOLDER_PROOF_FEATURE_V1,
                         )
                         .into(),
                         ..Default::default()
@@ -1020,7 +1023,7 @@ impl ResolvedPublicMutationV1 {
                 object: object.as_proto().clone().into(),
                 mutation: with_required_semantic_feature(
                     mutation_context_proto(mutation),
-                    crate::controller_query::CACHE_CONSUMER_PIN_FEATURE_V1,
+                    aos_sandbox_protocol::public_api::CACHE_CONSUMER_PIN_FEATURE_V1,
                 )
                 .into(),
                 view_id: view.as_bytes().to_vec(),
@@ -1038,7 +1041,7 @@ impl ResolvedPublicMutationV1 {
                 object: object.as_proto().clone().into(),
                 mutation: with_required_semantic_feature(
                     mutation_context_proto(mutation),
-                    crate::controller_query::CACHE_CONSUMER_PIN_FEATURE_V1,
+                    aos_sandbox_protocol::public_api::CACHE_CONSUMER_PIN_FEATURE_V1,
                 )
                 .into(),
                 view_id: view.as_bytes().to_vec(),
@@ -1620,39 +1623,39 @@ impl ResolvedPublicMutationV1 {
             | Self::Capability(CapabilityCommandV1::Inspect(_)) => true,
             Self::ForkSnapshot {
                 required_features, ..
-            } => crate::controller_query::contains_semantic_features_v1(
+            } => aos_sandbox_protocol::public_api::contains_semantic_features_v1(
                 required_features.as_slice(),
-                &[crate::controller_query::SNAPSHOT_PROJECT_VERSION_FENCE_FEATURE_V1],
+                &[aos_sandbox_protocol::public_api::SNAPSHOT_PROJECT_VERSION_FENCE_FEATURE_V1],
             ),
             Self::CreateExecution(execution) => {
                 let io_feature = match execution.io {
                     ExecutionIoContractV1::Stream => {
-                        crate::controller_query::EXECUTION_STREAM_FEATURE_V1
+                        aos_sandbox_protocol::public_api::EXECUTION_STREAM_FEATURE_V1
                     }
                     ExecutionIoContractV1::Pty { .. } => {
-                        crate::controller_query::EXECUTION_PTY_FEATURE_V1
+                        aos_sandbox_protocol::public_api::EXECUTION_PTY_FEATURE_V1
                     }
                     ExecutionIoContractV1::Detached(_) => {
-                        crate::controller_query::EXECUTION_DETACHED_CAPTURE_FEATURE_V1
+                        aos_sandbox_protocol::public_api::EXECUTION_DETACHED_CAPTURE_FEATURE_V1
                     }
                 };
                 let mut required = vec![
-                    crate::controller_query::EXECUTION_TIMEOUT_FEATURE_V1,
+                    aos_sandbox_protocol::public_api::EXECUTION_TIMEOUT_FEATURE_V1,
                     io_feature,
                 ];
                 let mut stream_required = vec![io_feature];
                 if matches!(execution.io, ExecutionIoContractV1::Detached(_)) {
-                    let ceiling_feature = crate::controller_query::EXECUTION_DETACHED_CAPTURE_STREAM_CEILINGS_FEATURE_V1;
+                    let ceiling_feature = aos_sandbox_protocol::public_api::EXECUTION_DETACHED_CAPTURE_STREAM_CEILINGS_FEATURE_V1;
                     required.push(ceiling_feature);
                     stream_required.push(ceiling_feature);
                 }
                 if matches!(&execution.program, ExecutionProgramV1::SandboxShell(_)) {
-                    required.push(crate::controller_query::EXECUTION_SANDBOX_SHELL_FEATURE_V1);
+                    required.push(aos_sandbox_protocol::public_api::EXECUTION_SANDBOX_SHELL_FEATURE_V1);
                 }
-                crate::controller_query::contains_semantic_features_v1(
+                aos_sandbox_protocol::public_api::contains_semantic_features_v1(
                     execution.mutation.required_features().as_slice(),
                     &required,
-                ) && crate::controller_query::contains_semantic_features_v1(
+                ) && aos_sandbox_protocol::public_api::contains_semantic_features_v1(
                     execution.stream_features.as_slice(),
                     &stream_required,
                 )
@@ -1687,9 +1690,9 @@ impl ResolvedPublicMutationV1 {
             } => {
                 mutation.meets(R::Plan(scope.expected_plan()))
                     && (!*force
-                        || crate::controller_query::contains_semantic_features_v1(
+                        || aos_sandbox_protocol::public_api::contains_semantic_features_v1(
                             mutation.required_features().as_slice(),
-                            &[crate::controller_query::FORCE_DELETE_FEATURE_V1],
+                            &[aos_sandbox_protocol::public_api::FORCE_DELETE_FEATURE_V1],
                         ))
             }
             Self::AttachView {
@@ -1697,9 +1700,9 @@ impl ResolvedPublicMutationV1 {
             } => {
                 mutation.meets(R::Incarnation)
                     && (!*noexec
-                        || crate::controller_query::contains_semantic_features_v1(
+                        || aos_sandbox_protocol::public_api::contains_semantic_features_v1(
                             mutation.required_features().as_slice(),
-                            &[crate::controller_query::ATTACHMENT_NOEXEC_FEATURE_V1],
+                            &[aos_sandbox_protocol::public_api::ATTACHMENT_NOEXEC_FEATURE_V1],
                         ))
             }
             Self::CreateSnapshot { mutation, .. } => mutation.meets(R::Incarnation),
@@ -1818,7 +1821,7 @@ fn with_required_semantic_feature(
 
 fn fork_snapshot_features(required: &CheckedFeatureSetV1) -> Vec<wire::Feature> {
     let mut features = required.as_slice().to_vec();
-    let namespace = crate::controller_query::SNAPSHOT_PROJECT_VERSION_FENCE_FEATURE_V1;
+    let namespace = aos_sandbox_protocol::public_api::SNAPSHOT_PROJECT_VERSION_FENCE_FEATURE_V1;
     if features
         .binary_search_by(|feature| feature.namespace.as_str().cmp(namespace))
         .is_err()

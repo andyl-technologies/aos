@@ -8,12 +8,14 @@ use aos_proto::aos::sandbox::v1::{
     FilesystemView, NodeCapabilities, OpenSshAccessEndpoint, Snapshot, SnapshotAvailability,
     SnapshotPhase, ViewMutation, ViewPhase,
 };
-use aos_sandbox_protocol::public_api::execution_result::ExecutionTerminalOutcomeV1;
-use aos_sandbox_protocol::public_api::registry::CHEAP_SANITIZED_GIT_FORK_FEATURE_NAMESPACE_V1;
 use buffa::Message as _;
 
+use super::execution_result::ExecutionTerminalOutcomeV1;
 use super::model::{ClientStateItem, OpaqueResponseBytesV1, OpaqueResponseKindV1};
-use super::registry::{checked_timestamp, validate_descriptor_media, validate_features};
+use super::registry::{
+    CHEAP_SANITIZED_GIT_FORK_FEATURE_NAMESPACE_V1, checked_timestamp,
+    validate_descriptor_media, validate_features,
+};
 use super::resource::{
     InvalidPublicResource, MAXIMUM_SAFE_MESSAGE_BYTES, checked_conditions, exact_nonzero_id,
     validate_resource_size,
@@ -196,7 +198,7 @@ impl CheckedExecutionResourceV1 {
 /// # Errors
 ///
 /// Rejects malformed routing, credential, identity, expiry, or feature fields.
-pub(crate) fn validate_execution_access_endpoint_v1(
+pub fn validate_execution_access_endpoint_v1(
     access: &OpenSshAccessEndpoint,
     expected_execution: &[u8],
     expected_incarnation: Option<&[u8]>,
@@ -519,7 +521,9 @@ fn checked_version(value: &[u8]) -> Result<(), InvalidPublicResource> {
 }
 
 /// Returns the exact aggregate reservation when both stream ceilings are present.
-pub(crate) fn checked_detached_capture_bytes(command: &Command) -> Option<u64> {
+///
+/// This number neither validates other command fields nor reserves output capacity.
+pub fn checked_detached_capture_bytes(command: &Command) -> Option<u64> {
     let total = command
         .maximum_stdout_bytes?
         .checked_add(command.maximum_stderr_bytes?)?;
@@ -532,7 +536,7 @@ pub(crate) fn checked_detached_capture_bytes(command: &Command) -> Option<u64> {
 ///
 /// Returns [`InvalidPublicResource`] for malformed fields, unknown features,
 /// or capture ceilings that cannot be honored exactly.
-pub(crate) fn validate_command(
+pub fn validate_command(
     command: &aos_proto::aos::sandbox::v1::Command,
 ) -> Result<(), InvalidPublicResource> {
     let direct = command
@@ -735,7 +739,7 @@ mod capture_contract_tests {
         required_features.sort_by(|left, right| left.namespace.cmp(&right.namespace));
 
         assert!(
-            crate::cli_model::routing::execution_required_features_present(
+            crate::public_api::registry::execution_required_features_present(
                 &command,
                 &required_features,
             )
@@ -746,7 +750,7 @@ mod capture_contract_tests {
                 != super::super::registry::EXECUTION_DETACHED_CAPTURE_STREAM_CEILINGS_FEATURE_V1
         });
         assert!(
-            !crate::cli_model::routing::execution_required_features_present(
+            !crate::public_api::registry::execution_required_features_present(
                 &command,
                 &required_features,
             )

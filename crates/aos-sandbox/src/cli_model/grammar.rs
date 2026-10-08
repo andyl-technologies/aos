@@ -10,7 +10,7 @@ use super::execution::{
 };
 use super::provenance::{AuditAuthorizationV1, AuthorizedResolvedMutationV1};
 use super::requests::{CapabilityCommandV1, ViewMutationModeV1};
-use crate::controller_query::portable::CheckedFeatureSetV1;
+use aos_sandbox_protocol::public_api::portable::CheckedFeatureSetV1;
 
 /// Maximum UTF-8 bytes in a project, resource, or relative selector.
 pub const MAXIMUM_CLI_SELECTOR_BYTES: usize = 4 * 1024;

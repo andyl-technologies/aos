@@ -4,9 +4,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use aos_proto::aos::sandbox::v1::{Event, EventKind, Timestamp, WatchRequest};
 use aos_sandbox::cli_model::PublicApiAuditMethodV1;
-use aos_sandbox::controller_query::{
-    NormalizedQueryDigestV1, QueryBindingV1, QueryFilterDigestV1, QuerySortDigestV1,
-    QueryVisibilityDigestV1, checked_watch_request_commitment_v1,
+use aos_sandbox_protocol::public_api::{
+    NormalizedQueryDigestV1,
+    QueryBindingV1,
+    QueryFilterDigestV1,
+    QuerySortDigestV1,
+    QueryVisibilityDigestV1,
+    checked_watch_request_commitment_v1,
 };
 use aos_sandbox_core::{Operation, ResourceKind};
 use buffa::Message as _;
@@ -22,7 +26,7 @@ const WATCH_CURSOR_MAGIC: &[u8; 8] = b"AOSWCR01";
 const WATCH_WATERMARK_MAGIC: &[u8; 8] = b"AOSWWM01";
 const WATCH_SEQUENCE: u64 = 1;
 const WATCH_TOKEN_BYTES: usize =
-    8 + aos_sandbox::controller_query::QUERY_BINDING_TRANSPORT_BYTES + 16 + 8 + 32;
+    8 + aos_sandbox_protocol::public_api::QUERY_BINDING_TRANSPORT_BYTES + 16 + 8 + 32;
 
 impl CapabilityService {
     pub(super) async fn watch_response(
@@ -119,7 +123,7 @@ fn decode_watch_token(
 ) -> Result<u64, ConnectError> {
     let binding_start = magic.len();
     let project_start =
-        binding_start + aos_sandbox::controller_query::QUERY_BINDING_TRANSPORT_BYTES;
+        binding_start + aos_sandbox_protocol::public_api::QUERY_BINDING_TRANSPORT_BYTES;
     let sequence_start = project_start + project_id.len();
     let digest_start = sequence_start + 8;
     if token.len() != WATCH_TOKEN_BYTES

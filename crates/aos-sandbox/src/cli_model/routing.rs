@@ -6,6 +6,7 @@
 //! no effect.
 
 use aos_proto::aos::sandbox::v1 as wire;
+use aos_sandbox_protocol::public_api::registry::execution_required_features_present;
 
 use super::execution::MAXIMUM_ENDPOINT_PROOF_BYTES;
 use super::grammar::{MAXIMUM_CLI_EVENTS, MAXIMUM_CLI_PAGES, MAXIMUM_CLI_WAIT_NANOSECONDS};
@@ -643,9 +644,9 @@ impl DormantSandboxRequestV1 {
                     && nonempty(&r.proof_of_possession)
                     && mutation_with_incarnation(r.mutation.as_option())
                     && r.mutation.as_option().is_some_and(|mutation| {
-                        crate::controller_query::contains_semantic_features_v1(
+                        aos_sandbox_protocol::public_api::contains_semantic_features_v1(
                             &mutation.required_features,
-                            &[crate::controller_query::EXECUTION_CREATE_HOLDER_PROOF_FEATURE_V1],
+                            &[aos_sandbox_protocol::public_api::EXECUTION_CREATE_HOLDER_PROOF_FEATURE_V1],
                         )
                     })
                     && r.command.as_option().is_some_and(|command| {
@@ -671,9 +672,9 @@ impl DormantSandboxRequestV1 {
                                 && (1..=MAXIMUM_ENDPOINT_PROOF_BYTES)
                                     .contains(&r.proof_of_possession.len())
                                 && r.mutation.as_option().is_some_and(|mutation| {
-                                    crate::controller_query::contains_semantic_features_v1(
+                                    aos_sandbox_protocol::public_api::contains_semantic_features_v1(
                                         &mutation.required_features,
-                                        &[crate::controller_query::EXECUTION_ATTACH_HOLDER_PROOF_FEATURE_V1],
+                                        &[aos_sandbox_protocol::public_api::EXECUTION_ATTACH_HOLDER_PROOF_FEATURE_V1],
                                     )
                                 })
                         }
@@ -724,9 +725,9 @@ impl DormantSandboxRequestV1 {
                         (1..=MAXIMUM_CLI_WAIT_NANOSECONDS).contains(&timeout.nanoseconds)
                     })
                     && valid_features(&r.required_features)
-                    && crate::controller_query::contains_semantic_features_v1(
+                    && aos_sandbox_protocol::public_api::contains_semantic_features_v1(
                         &r.required_features,
-                        &[crate::controller_query::SNAPSHOT_PROJECT_VERSION_FENCE_FEATURE_V1],
+                        &[aos_sandbox_protocol::public_api::SNAPSHOT_PROJECT_VERSION_FENCE_FEATURE_V1],
                     )
                     && (r.parent_sandbox_id.is_empty()
                         == r.expected_parent_resource_version.is_empty())
@@ -737,9 +738,9 @@ impl DormantSandboxRequestV1 {
                     && mutation_resource_only(r.mutation.as_option())
                     && (!r.force
                         || r.mutation.as_option().is_some_and(|mutation| {
-                            crate::controller_query::contains_semantic_features_v1(
+                            aos_sandbox_protocol::public_api::contains_semantic_features_v1(
                                 &mutation.required_features,
-                                &[crate::controller_query::FORCE_DELETE_FEATURE_V1],
+                                &[aos_sandbox_protocol::public_api::FORCE_DELETE_FEATURE_V1],
                             )
                         }))
             }
@@ -773,9 +774,9 @@ impl DormantSandboxRequestV1 {
                     && mutation_with_incarnation(r.mutation.as_option())
                     && (!r.noexec
                         || r.mutation.as_option().is_some_and(|mutation| {
-                            crate::controller_query::contains_semantic_features_v1(
+                            aos_sandbox_protocol::public_api::contains_semantic_features_v1(
                                 &mutation.required_features,
-                                &[crate::controller_query::ATTACHMENT_NOEXEC_FEATURE_V1],
+                                &[aos_sandbox_protocol::public_api::ATTACHMENT_NOEXEC_FEATURE_V1],
                             )
                         }))
             }
@@ -802,9 +803,9 @@ impl DormantSandboxRequestV1 {
                     && valid_cache_consumer(&r.view_id, &r.attachment_id)
                     && mutation_resource_only(r.mutation.as_option())
                     && r.mutation.as_option().is_some_and(|mutation| {
-                        crate::controller_query::contains_semantic_features_v1(
+                        aos_sandbox_protocol::public_api::contains_semantic_features_v1(
                             &mutation.required_features,
-                            &[crate::controller_query::CACHE_CONSUMER_PIN_FEATURE_V1],
+                            &[aos_sandbox_protocol::public_api::CACHE_CONSUMER_PIN_FEATURE_V1],
                         )
                     })
             }
@@ -813,9 +814,9 @@ impl DormantSandboxRequestV1 {
                     && valid_cache_consumer(&r.view_id, &r.attachment_id)
                     && mutation_resource_only(r.mutation.as_option())
                     && r.mutation.as_option().is_some_and(|mutation| {
-                        crate::controller_query::contains_semantic_features_v1(
+                        aos_sandbox_protocol::public_api::contains_semantic_features_v1(
                             &mutation.required_features,
-                            &[crate::controller_query::CACHE_CONSUMER_PIN_FEATURE_V1],
+                            &[aos_sandbox_protocol::public_api::CACHE_CONSUMER_PIN_FEATURE_V1],
                         )
                     })
             }
@@ -1302,7 +1303,7 @@ fn valid_command(command: &wire::Command) -> bool {
             !command.allocate_terminal
                 && command.terminal_rows == 0
                 && command.terminal_columns == 0
-                && crate::controller_query::portable_resource::checked_detached_capture_bytes(
+                && aos_sandbox_protocol::public_api::portable_resource::checked_detached_capture_bytes(
                     command,
                 )
                 .is_some()
@@ -1329,43 +1330,8 @@ fn valid_command(command: &wire::Command) -> bool {
         && valid_relative_path(&command.working_directory)
 }
 
-/// Checks that execution semantics are required at both mutation and stream scope.
-pub(crate) fn execution_required_features_present(
-    command: &wire::Command,
-    required_features: &[wire::Feature],
-) -> bool {
-    let program_feature = if command.sandbox_shell.is_empty() {
-        None
-    } else {
-        Some(crate::controller_query::EXECUTION_SANDBOX_SHELL_FEATURE_V1)
-    };
-    let io_feature = match command.io_mode.to_i32() {
-        1 => crate::controller_query::EXECUTION_STREAM_FEATURE_V1,
-        2 => crate::controller_query::EXECUTION_PTY_FEATURE_V1,
-        3 => crate::controller_query::EXECUTION_DETACHED_CAPTURE_FEATURE_V1,
-        _ => return false,
-    };
-    let mut required = vec![
-        crate::controller_query::EXECUTION_TIMEOUT_FEATURE_V1,
-        io_feature,
-    ];
-    let mut stream_required = vec![io_feature];
-    required.extend(program_feature);
-    if command.io_mode.to_i32() == 3 {
-        let ceiling_feature =
-            crate::controller_query::EXECUTION_DETACHED_CAPTURE_STREAM_CEILINGS_FEATURE_V1;
-        required.push(ceiling_feature);
-        stream_required.push(ceiling_feature);
-    }
-    crate::controller_query::contains_semantic_features_v1(required_features, &required)
-        && crate::controller_query::contains_semantic_features_v1(
-            &command.stream_features,
-            &stream_required,
-        )
-}
-
 fn valid_features(features: &[wire::Feature]) -> bool {
-    crate::controller_query::portable::CheckedFeatureSetV1::try_from(features.to_vec()).is_ok()
+    aos_sandbox_protocol::public_api::portable::CheckedFeatureSetV1::try_from(features.to_vec()).is_ok()
 }
 
 fn valid_environment(environment: &[wire::EnvironmentVariable]) -> bool {

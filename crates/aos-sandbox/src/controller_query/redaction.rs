@@ -6,13 +6,15 @@
 //! serializer can accidentally flatten.
 
 use aos_proto::aos::sandbox::v1::{Operation, Sandbox, SandboxPhase};
-
-use super::observation::{
-    CheckedOperationObservationV1, CheckedSandboxObservationV1, GuardianEvidenceV1,
+use aos_sandbox_protocol::public_api::observation::{
+    CheckedOperationObservationV1,
+    CheckedSandboxObservationV1,
+    GuardianEvidenceV1,
     OwnershipEvidenceV1,
 };
+use aos_sandbox_protocol::public_api::resource::PublicConditionCodeV1;
+
 use super::operator::OperatorDiagnosticsV1;
-use super::resource::PublicConditionCodeV1;
 
 /// Reports a contradiction between public placement and controller authority.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]

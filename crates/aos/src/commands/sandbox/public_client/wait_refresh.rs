@@ -11,9 +11,13 @@ use aos_proto::aos::sandbox::v1::{
     GetViewRequest, InspectCapabilityRequest, SandboxServiceClient, SnapshotServiceClient,
 };
 use aos_sandbox::cli_model::EstablishedProtoJson;
-use aos_sandbox::controller_query::{
-    CheckedAttachmentResourceV1, CheckedCapabilityResourceV1, CheckedExecutionResourceV1,
-    CheckedFilesystemViewResourceV1, CheckedOperationResourceV1, CheckedSandboxResourceV1,
+use aos_sandbox_protocol::public_api::{
+    CheckedAttachmentResourceV1,
+    CheckedCapabilityResourceV1,
+    CheckedExecutionResourceV1,
+    CheckedFilesystemViewResourceV1,
+    CheckedOperationResourceV1,
+    CheckedSandboxResourceV1,
     CheckedSnapshotResourceV1,
 };
 

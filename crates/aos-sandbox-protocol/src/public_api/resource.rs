@@ -234,42 +234,6 @@ impl PublicOperationMethodV1 {
         }
     }
 
-    pub(crate) const fn from_record_code(value: u8) -> Option<Self> {
-        match value {
-            0 => Some(Self::CreateSandbox),
-            1 => Some(Self::UpdatePolicy),
-            2 => Some(Self::StartSandbox),
-            3 => Some(Self::StopSandbox),
-            4 => Some(Self::SuspendSandbox),
-            5 => Some(Self::ResumeSandbox),
-            6 => Some(Self::DeleteSandbox),
-            7 => Some(Self::CreateExecution),
-            8 => Some(Self::CancelExecution),
-            9 => Some(Self::CreateView),
-            10 => Some(Self::AttachView),
-            11 => Some(Self::ReplaceAttachment),
-            12 => Some(Self::DetachView),
-            13 => Some(Self::ReleaseView),
-            14 => Some(Self::CreateSnapshot),
-            15 => Some(Self::RestoreSnapshot),
-            16 => Some(Self::ForkSnapshot),
-            17 => Some(Self::DeleteSnapshot),
-            18 => Some(Self::RenewCapability),
-            19 => Some(Self::RevokeCapability),
-            20 => Some(Self::CancelOperation),
-            21 => Some(Self::ControlExecution),
-            22 => Some(Self::AttenuateCapability),
-            23 => Some(Self::PinCacheObject),
-            24 => Some(Self::UnpinCacheObject),
-            25 => Some(Self::OperatorRecover),
-            _ => None,
-        }
-    }
-
-    pub(crate) const fn record_code(self) -> u8 {
-        self as u8
-    }
-
     fn parse(value: &str) -> Option<Self> {
         Self::ALL
             .into_iter()
@@ -929,6 +893,15 @@ impl ClientStateItem for CheckedSandboxResourceV1 {
 
 impl super::client_state_sealed::Sealed for CheckedSandboxResourceV1 {}
 
+/// Validates public condition rows without exposing checked-model constructors.
+///
+/// # Errors
+///
+/// Returns [`InvalidPublicResource`] when a condition or its ordering is malformed.
+pub fn validate_public_conditions_v1(source: &[Condition]) -> Result<(), InvalidPublicResource> {
+    checked_conditions(source).map(|_| ())
+}
+
 pub(crate) fn checked_conditions(
     source: &[Condition],
 ) -> Result<Vec<CheckedConditionV1>, InvalidPublicResource> {
@@ -1138,22 +1111,13 @@ mod tests {
     use super::PublicOperationMethodV1;
 
     #[test]
-    fn public_operation_method_record_registry_round_trips() {
-        for (code, method) in PublicOperationMethodV1::ALL.into_iter().enumerate() {
-            assert_eq!(method.record_code() as usize, code);
-            assert_eq!(
-                PublicOperationMethodV1::from_record_code(method.record_code()),
-                Some(method)
-            );
+    fn public_operation_method_wire_registry_round_trips() {
+        for method in PublicOperationMethodV1::ALL {
             assert_eq!(
                 PublicOperationMethodV1::parse(method.as_str()),
                 Some(method)
             );
         }
-        assert_eq!(
-            PublicOperationMethodV1::from_record_code(PublicOperationMethodV1::ALL.len() as u8),
-            None
-        );
         assert_eq!(PublicOperationMethodV1::parse("sandbox.unknown"), None);
     }
 }

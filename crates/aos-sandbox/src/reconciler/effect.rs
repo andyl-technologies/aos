@@ -464,7 +464,7 @@ const fn broker_method_from_code(value: i32) -> Option<BrokerMethod> {
 pub struct EffectPlan {
     pub(super) domain: EffectDomain,
     pub(super) method: Option<BrokerMethod>,
-    pub(super) controller_method: Option<crate::controller_query::PublicOperationMethodV1>,
+    pub(super) controller_method: Option<aos_sandbox_protocol::public_api::PublicOperationMethodV1>,
     pub(super) request: Vec<u8>,
     pub(super) authority: Option<AuthorityEffectBindingV1>,
 }
@@ -499,7 +499,7 @@ impl EffectPlan {
     /// Returns [`ReconcilerError::InvalidPlan`] when the context cannot be
     /// encoded or its inner envelope does not select `method`.
     pub fn authorized_public_mutation(
-        method: crate::controller_query::PublicOperationMethodV1,
+        method: aos_sandbox_protocol::public_api::PublicOperationMethodV1,
         effect: PublicMutationEffectV1,
     ) -> Result<Self, ReconcilerError> {
         Self::public_mutation(method, effect.encode()?)
@@ -545,7 +545,7 @@ impl EffectPlan {
     /// Returns [`ReconcilerError::InvalidPlan`] when the envelope is malformed,
     /// names another public method, or exceeds the effect-request bound.
     pub fn public_mutation(
-        method: crate::controller_query::PublicOperationMethodV1,
+        method: aos_sandbox_protocol::public_api::PublicOperationMethodV1,
         request: Vec<u8>,
     ) -> Result<Self, ReconcilerError> {
         if request.is_empty() || request.len() > MAXIMUM_REQUEST_BYTES {
@@ -558,7 +558,7 @@ impl EffectPlan {
             request.as_slice(),
             PublicMutationEffectV1::canonical_request,
         );
-        if method == crate::controller_query::PublicOperationMethodV1::OperatorRecover {
+        if method == aos_sandbox_protocol::public_api::PublicOperationMethodV1::OperatorRecover {
             let envelope = crate::cli_model::PublicMutationRequestV1::decode(canonical_request)
                 .map_err(|_| ReconcilerError::InvalidPlan("invalid controller effect request"))?;
             let kind = envelope
@@ -612,7 +612,7 @@ impl EffectPlan {
     #[must_use]
     pub const fn public_mutation_method(
         &self,
-    ) -> Option<crate::controller_query::PublicOperationMethodV1> {
+    ) -> Option<aos_sandbox_protocol::public_api::PublicOperationMethodV1> {
         self.controller_method
     }
 
@@ -1358,7 +1358,7 @@ pub(super) fn encode_q04_effect(
 fn require_q04_effect_shape(record: &EffectLedgerRecord) -> Result<(), ReconcilerError> {
     if record.plan.domain != EffectDomain::Controller
         || record.plan.controller_method
-            != Some(crate::controller_query::PublicOperationMethodV1::CreateSandbox)
+            != Some(aos_sandbox_protocol::public_api::PublicOperationMethodV1::CreateSandbox)
         || record.plan.method.is_some()
         || record.plan.authority.is_some()
         || record.dispatch.is_some()
@@ -1492,7 +1492,8 @@ fn encode_effect_with_q04(
             .ok_or(ReconcilerError::InvalidPlan(
                 "controller effect has no method",
             ))?;
-        bytes.extend_from_slice(&i32::from(method.record_code()).to_be_bytes());
+        let method_code = super::public_operation_method_record_code_v1(method);
+        bytes.extend_from_slice(&i32::from(method_code).to_be_bytes());
     }
     if let Some(gate) = q04_gate {
         bytes.extend_from_slice(
@@ -1659,7 +1660,7 @@ fn decode_effect_with_extensions(
         let method_code = u8::try_from(method_code)
             .map_err(|_| ReconcilerError::CorruptLedger("unknown controller effect method"))?;
         Some(
-            crate::controller_query::PublicOperationMethodV1::from_record_code(method_code).ok_or(
+            super::public_operation_method_from_record_code_v1(method_code).ok_or(
                 ReconcilerError::CorruptLedger("unknown controller effect method"),
             )?,
         )
@@ -1992,7 +1993,7 @@ fn validate_project_metadata_shape(
     _metadata: &ProjectAdmissionMetadata,
 ) -> Result<(), ReconcilerError> {
     if plan.public_mutation_method()
-        != Some(crate::controller_query::PublicOperationMethodV1::CreateSandbox)
+        != Some(aos_sandbox_protocol::public_api::PublicOperationMethodV1::CreateSandbox)
         || plan.authority.is_some()
         || matches!(
             state,
@@ -2259,7 +2260,7 @@ mod tests {
         .unwrap();
 
         EffectPlan::public_mutation(
-            crate::controller_query::PublicOperationMethodV1::AttenuateCapability,
+            aos_sandbox_protocol::public_api::PublicOperationMethodV1::AttenuateCapability,
             request.encode(),
         )
         .unwrap();

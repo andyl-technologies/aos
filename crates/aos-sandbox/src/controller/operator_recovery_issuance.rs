@@ -45,7 +45,7 @@ use super::{
 use crate::cli_model::{
     DormantSandboxRequestKindV1, InvalidObservationClientAdapter, PublicMutationRequestV1,
 };
-use crate::controller_query::CheckedSandboxResourceV1;
+use aos_sandbox_protocol::public_api::CheckedSandboxResourceV1;
 use crate::controller_service::public_projection::{
     PublicProjectionKindV1, PublicProjectionResourceV1, PublicProjectionStoreV1,
 };

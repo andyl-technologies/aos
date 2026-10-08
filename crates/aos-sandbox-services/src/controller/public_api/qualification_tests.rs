@@ -32,7 +32,7 @@ impl aos_proto::aos::sandbox::v1::DiscoveryService for DiscoveryFixture {
         impl connectrpc::Encodable<GetPublicFeatureRegistryResponse> + Send + use<'a>,
     > {
         connectrpc::Response::ok(GetPublicFeatureRegistryResponse {
-            registry: Some(aos_sandbox::controller_query::public_feature_registry_v1()).into(),
+            registry: Some(aos_sandbox_protocol::public_api::public_feature_registry_v1()).into(),
             ..Default::default()
         })
     }
@@ -238,7 +238,7 @@ fn registered_public_listener_child() {
             let response = GetPublicFeatureRegistryResponse::decode(&mut body).unwrap();
             assert_eq!(
                 response.registry.as_option().unwrap(),
-                &aos_sandbox::controller_query::public_feature_registry_v1()
+                &aos_sandbox_protocol::public_api::public_feature_registry_v1()
             );
             let peer = client
                 .get("https://sandbox.test/peer")

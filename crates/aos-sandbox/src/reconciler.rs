@@ -115,6 +115,9 @@ pub use project_admission::{
     prepare_current_create_project_admission_v1, retained_controller_project_admission_v1,
 };
 use public_operation::{DurablePublicOperationV1, PUBLIC_OPERATION_RECORD_BYTES};
+pub(crate) use public_operation::{
+    public_operation_method_from_record_code_v1, public_operation_method_record_code_v1,
+};
 pub use public_operation::{PublicOperationAdmissionV1, PublicOperationAuthorizationV1};
 
 const RECORD_VERSION_V1: u8 = 1;
@@ -3180,7 +3183,7 @@ where
             }
         }
         #[cfg(target_os = "linux")]
-        if plan.public_mutation_method() == Some(crate::controller_query::PublicOperationMethodV1::CreateSandbox) {
+        if plan.public_mutation_method() == Some(aos_sandbox_protocol::public_api::PublicOperationMethodV1::CreateSandbox) {
             if let Some(result) = self.executor.reconcile_original_create_q04_policy_subgate_v1(
                 operation_id, step, effect_count, &plan, dispatch.as_ref(), authority_gate,
                 &mut self.journal,
@@ -3692,7 +3695,7 @@ pub(crate) fn recovered_public_operation_resource_v1(
                         || step != 0
                         || effect.plan.public_mutation_method()
                             != Some(
-                                crate::controller_query::PublicOperationMethodV1::CreateExecution,
+                                aos_sandbox_protocol::public_api::PublicOperationMethodV1::CreateExecution,
                             )
                     {
                         return Err(ReconcilerError::CorruptLedger(
@@ -3769,8 +3772,8 @@ pub(crate) fn recovered_public_operation_resource_v1(
             && controller_method.is_some_and(|method| {
                 !matches!(
                     method,
-                    crate::controller_query::PublicOperationMethodV1::CancelOperation
-                        | crate::controller_query::PublicOperationMethodV1::OperatorRecover
+                    aos_sandbox_protocol::public_api::PublicOperationMethodV1::CancelOperation
+                        | aos_sandbox_protocol::public_api::PublicOperationMethodV1::OperatorRecover
                 )
             }),
         operation_bytes,
@@ -3831,7 +3834,7 @@ fn retained_create_sandbox_admission_revision_v1(
     if operation.effect_count != 1
         || operation.ownership_gated
         || operation.runtime_intent_digest.is_some()
-        || public.method() != crate::controller_query::PublicOperationMethodV1::CreateSandbox
+        || public.method() != aos_sandbox_protocol::public_api::PublicOperationMethodV1::CreateSandbox
         || public.accepted_generation() != 1
         || (!allow_terminal_history
             && !matches!(
@@ -3868,7 +3871,7 @@ fn retained_create_sandbox_admission_revision_v1(
         );
     if (!matching_live_state && !matching_terminal_history)
         || effect.plan.public_mutation_method()
-            != Some(crate::controller_query::PublicOperationMethodV1::CreateSandbox)
+            != Some(aos_sandbox_protocol::public_api::PublicOperationMethodV1::CreateSandbox)
     {
         return Ok(None);
     }
@@ -3886,7 +3889,7 @@ fn retained_create_sandbox_admission_revision_v1(
         request.request(),
         crate::cli_model::DormantSandboxRequestKindV1::Create(_)
     ) || request.operation_method()
-        != crate::controller_query::PublicOperationMethodV1::CreateSandbox
+        != aos_sandbox_protocol::public_api::PublicOperationMethodV1::CreateSandbox
         || admission.project() != context.project()
         || admission.accepted_wall_seconds() != context.accepted_wall_seconds()
         || admission.authorization().resource_kind()
@@ -4165,10 +4168,10 @@ fn pending_operator_repair_from_exact_rows_v1(
             EffectState::Planned | EffectState::Applying { .. }
         )
         || effect.plan.public_mutation_method()
-            != Some(crate::controller_query::PublicOperationMethodV1::OperatorRecover)
+            != Some(aos_sandbox_protocol::public_api::PublicOperationMethodV1::OperatorRecover)
         || request.action() != OperatorRecoveryAction::OPERATOR_RECOVERY_ACTION_REPAIR as i32
         || request.resource_id() != sandbox_id
-        || public.method() != crate::controller_query::PublicOperationMethodV1::OperatorRecover
+        || public.method() != aos_sandbox_protocol::public_api::PublicOperationMethodV1::OperatorRecover
         || public.authorization().resource_kind() != ResourceKind::Sandbox
         || !selector_matches
         || public.project() != context.project()
@@ -4299,7 +4302,7 @@ pub(crate) fn accepted_create_execution_effect_from_journal_v1(
         ))?;
     let effect = decode_effect(effect_bytes)?;
     if effect.plan.public_mutation_method()
-        != Some(crate::controller_query::PublicOperationMethodV1::CreateExecution)
+        != Some(aos_sandbox_protocol::public_api::PublicOperationMethodV1::CreateExecution)
     {
         return Ok(None);
     }
@@ -4455,7 +4458,7 @@ fn increment_effect_count(count: &mut u32) -> Result<(), ReconcilerError> {
 }
 
 fn is_operator_storage_repair_effect_v1(plan: &EffectPlan) -> Result<bool, ReconcilerError> {
-    if plan.public_mutation_method() != Some(crate::controller_query::PublicOperationMethodV1::OperatorRecover) {
+    if plan.public_mutation_method() != Some(aos_sandbox_protocol::public_api::PublicOperationMethodV1::OperatorRecover) {
         return Ok(false);
     }
     let Some(context) = plan.public_mutation_context()? else { return Ok(false); };
@@ -4512,7 +4515,7 @@ pub(crate) fn validate_delete_batch_admission_records_v1(
     local_start: usize,
     effects_start: usize,
 ) -> Result<(), ReconcilerError> {
-    use crate::controller_query::PublicOperationMethodV1;
+    use aos_sandbox_protocol::public_api::PublicOperationMethodV1;
     let invalid = || ReconcilerError::CorruptLedger("invalid Delete batch admission metadata");
     let records = transaction.records();
     let expected_effects_start = local_start
@@ -5280,7 +5283,7 @@ mod tests {
 
     fn cancelable_controller_operation() -> OperationPlan {
         use crate::cli_model::{PublicApiAuditMethodV1, PublicMutationRequestV1};
-        use crate::controller_query::PublicOperationMethodV1;
+        use aos_sandbox_protocol::public_api::PublicOperationMethodV1;
         use aos_proto::aos::sandbox::v1::{MutationContext, SandboxLifecycleRequest};
 
         let request = SandboxLifecycleRequest {
@@ -5351,9 +5354,12 @@ mod tests {
         };
 
         use crate::cli_model::{PublicApiAuditMethodV1, PublicMutationRequestV1};
-        use crate::controller_query::{
-            EXECUTION_CREATE_HOLDER_PROOF_FEATURE_V1, EXECUTION_STREAM_FEATURE_V1,
-            EXECUTION_TIMEOUT_FEATURE_V1, PublicOperationMethodV1, semantic_feature_v1,
+        use aos_sandbox_protocol::public_api::{
+            EXECUTION_CREATE_HOLDER_PROOF_FEATURE_V1,
+            EXECUTION_STREAM_FEATURE_V1,
+            EXECUTION_TIMEOUT_FEATURE_V1,
+            PublicOperationMethodV1,
+            semantic_feature_v1,
         };
         use crate::controller_service::public_projection::{
             PublicProjectionPlanV1, PublicProjectionResourceV1,
@@ -5569,7 +5575,7 @@ mod tests {
     pub(super) fn live_create_sandbox_plan(descriptor_byte: u8) -> OperationPlan {
         use crate::cli_model::{PublicApiAuditMethodV1, PublicMutationRequestV1};
         use crate::controller::ControllerRequestScopeV1;
-        use crate::controller_query::PublicOperationMethodV1;
+        use aos_sandbox_protocol::public_api::PublicOperationMethodV1;
         use aos_proto::aos::sandbox::v1::{CreateSandboxRequest, Duration, ObjectDescriptor};
 
         let project = ProjectId::from_bytes([0x91; 16]);
@@ -6887,7 +6893,7 @@ mod tests {
         let plan = plan
             .with_public_operation(
                 PublicOperationAdmissionV1::new(
-                    crate::controller_query::PublicOperationMethodV1::StartSandbox,
+                    aos_sandbox_protocol::public_api::PublicOperationMethodV1::StartSandbox,
                     1,
                     [0x41; 16],
                     100,
@@ -6912,7 +6918,7 @@ mod tests {
                 .unwrap()
                 .unwrap();
         let checked =
-            crate::controller_query::CheckedOperationResourceV1::try_from(operation).unwrap();
+            aos_sandbox_protocol::public_api::CheckedOperationResourceV1::try_from(operation).unwrap();
         let recovery = crate::controller::prepare_operator_recovery_operation_current_v1(
             &reconciler.journal,
             &checked,
@@ -7955,8 +7961,10 @@ mod tests {
 
     #[test]
     fn public_operation_v2_survives_restart_and_tracks_atomic_progress() {
-        use crate::controller_query::{
-            CheckedOperationObservationV1, CheckedOperationPhaseV1, CheckedOperationResourceV1,
+        use aos_sandbox_protocol::public_api::{
+            CheckedOperationObservationV1,
+            CheckedOperationPhaseV1,
+            CheckedOperationResourceV1,
             PublicOperationMethodV1,
         };
 
@@ -8102,7 +8110,10 @@ mod tests {
 
     #[test]
     fn controller_cancellation_receipt_projects_canceled_terminal_state() {
-        use crate::controller_query::{CheckedOperationObservationV1, CheckedOperationPhaseV1};
+        use aos_sandbox_protocol::public_api::{
+            CheckedOperationObservationV1,
+            CheckedOperationPhaseV1,
+        };
 
         let directory = TestDirectory::new();
         let journal = protected_runtime_journal(&directory);
@@ -8909,7 +8920,7 @@ mod tests {
 
     #[test]
     fn public_operation_v2_rejects_corrupt_metadata_and_backward_time() {
-        use crate::controller_query::PublicOperationMethodV1;
+        use aos_sandbox_protocol::public_api::PublicOperationMethodV1;
 
         let metadata = PublicOperationAdmissionV1::new(
             PublicOperationMethodV1::CreateView,

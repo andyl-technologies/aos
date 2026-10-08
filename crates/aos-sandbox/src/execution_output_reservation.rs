@@ -271,7 +271,7 @@ fn requested_output_limits(
             Ok((0, 0, 0))
         }
         Some(ExecutionIoMode::EXECUTION_IO_MODE_DETACHED_CAPTURE)
-            if crate::controller_query::portable_resource::checked_detached_capture_bytes(
+            if aos_sandbox_protocol::public_api::portable_resource::checked_detached_capture_bytes(
                 command,
             )
             .is_some() =>

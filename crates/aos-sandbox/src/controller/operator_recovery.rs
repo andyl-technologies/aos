@@ -19,7 +19,7 @@ use super::{
 use crate::cli_model::{
     AuthorizedOperatorRecoveryV1, InvalidObservationClientAdapter, OperatorRecoveryRequestV1,
 };
-use crate::controller_query::{
+use aos_sandbox_protocol::public_api::{
     CheckedOperationPhaseV1, CheckedOperationResourceV1, CheckedRetryClassV1,
     CheckedSandboxResourceV1, PublicConditionCodeV1,
 };

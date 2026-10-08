@@ -9,7 +9,7 @@ use super::grammar::{
 };
 use super::proto_json::{CheckedProtoJsonV1, StructuredOutputSchemaV1};
 use super::requests::{CapabilityCommandV1, ResolvedPublicMutationV1};
-use crate::controller_query::resource::CheckedOperationPhaseV1;
+use aos_sandbox_protocol::public_api::resource::CheckedOperationPhaseV1;
 
 /// Maximum UTF-8 bytes in one rendered output record.
 pub const MAXIMUM_CLI_OUTPUT_RECORD_BYTES: usize = 16 * 1024 * 1024;

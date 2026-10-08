@@ -13,13 +13,23 @@ use aos_sandbox_core::ObjectDigest;
 use sha2::{Digest as _, Sha256};
 
 use super::provenance::RequestProvenanceV1;
-use crate::client_state::WatchResumePointV1;
-use crate::controller_query::{
-    BoundWatchCursorV1, CheckedAttachmentResourceV1, CheckedAuditWatchEventV1,
-    CheckedExecutionResourceV1, CheckedFilesystemViewResourceV1, CheckedOperationObservationV1,
-    CheckedSandboxObservationV1, CheckedSnapshotResourceV1, CheckedWatchRequestV1,
-    InvalidAuditWatchEvent, InvalidObservationMetadata, ObservationWatchContinuationV1,
-    ObservationWatchError, QueryBindingV1, WatchRequestCommitmentV1,
+use aos_sandbox_protocol::public_api::client_state::WatchResumePointV1;
+use aos_sandbox_protocol::public_api::{
+    BoundWatchCursorV1,
+    CheckedAttachmentResourceV1,
+    CheckedAuditWatchEventV1,
+    CheckedExecutionResourceV1,
+    CheckedFilesystemViewResourceV1,
+    CheckedOperationObservationV1,
+    CheckedSandboxObservationV1,
+    CheckedSnapshotResourceV1,
+    CheckedWatchRequestV1,
+    InvalidAuditWatchEvent,
+    InvalidObservationMetadata,
+    ObservationWatchContinuationV1,
+    ObservationWatchError,
+    QueryBindingV1,
+    WatchRequestCommitmentV1,
 };
 
 /// Reports a malformed observation client request or response.
@@ -86,7 +96,7 @@ impl TryFrom<OperatorRecoveryRequest> for OperatorRecoveryRequestV1 {
             .as_option()
             .ok_or(InvalidObservationClientAdapter::InvalidOperatorRecovery)?
             .clone();
-        crate::controller_query::portable::CheckedObjectDescriptorV1::try_from(evidence.clone())
+        aos_sandbox_protocol::public_api::portable::CheckedObjectDescriptorV1::try_from(evidence.clone())
             .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
         if resource_id == [0; 16]
             || value.expected_resource_version.is_empty()
@@ -542,7 +552,13 @@ impl SandboxObservationRequestV1 {
         {
             return Err(InvalidObservationClientAdapter::InvalidAuditCursor);
         }
-        let observed_cursor = observation.additive().audit_event_cursor();
+        let observed_cursor = observation
+            .resource()
+            .as_proto()
+            .observed
+            .as_option()
+            .map(|observed| observed.audit_event_cursor.as_slice())
+            .filter(|cursor| !cursor.is_empty());
         let authenticated_cursor = audit_request
             .resume_after
             .as_ref()
@@ -551,7 +567,7 @@ impl SandboxObservationRequestV1 {
             (None, None) => true,
             (Some(observed), Some(authenticated)) => {
                 authenticated.binding() == audit_request.binding
-                    && observed.as_bytes() == authenticated.as_bytes()
+                    && observed == authenticated.as_bytes()
             }
             (None, Some(_)) | (Some(_), None) => false,
         };

@@ -9,10 +9,13 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use aos_proto::aos::sandbox::v1::EventKind;
 
-use crate::controller_query::event::{
-    BoundWatchCursorV1, BoundWatchWatermarkV1, CheckedWatchEventV1, InvalidWatchEvent,
+use crate::public_api::event::{
+    BoundWatchCursorV1,
+    BoundWatchWatermarkV1,
+    CheckedWatchEventV1,
+    InvalidWatchEvent,
 };
-use crate::controller_query::model::{ClientStateItem, QueryBindingV1, checked_item_cost};
+use crate::public_api::model::{ClientStateItem, QueryBindingV1, checked_item_cost};
 
 /// Maximum resources in one bootstrap chunk.
 pub const MAXIMUM_WATCH_CHUNK_ITEMS: usize = 1_024;

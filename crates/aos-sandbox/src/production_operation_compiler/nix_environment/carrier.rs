@@ -191,7 +191,7 @@ impl NixStartAdmissionCarrierV2 {
         let next_generation = self.original_generation.checked_add(1)
             .ok_or(NixStartAdmissionErrorV2::Invalid)?;
         let expected_version = super::super::public_mutation::resource_version(
-            self.operation, crate::controller_query::PublicOperationMethodV1::StartSandbox,
+            self.operation, aos_sandbox_protocol::public_api::PublicOperationMethodV1::StartSandbox,
             next_generation, self.request_digest,
         );
         if mutation.expected_resource_version != self.original_resource_version
