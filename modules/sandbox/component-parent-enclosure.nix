@@ -312,6 +312,7 @@ in {
       runtimeMaxUse = lib.mkForce cfg.journal.runtimeMaxUse;
       runtimeMaxFileSize = lib.mkForce cfg.journal.runtimeMaxFileSize;
     };
-    aos.security.audit.bounds = cfg.audit;
+    # Definition collection inspects this leaf before filtering the outer mkIf.
+    aos.security.audit.bounds = if cfg == null then null else cfg.audit;
   };
 }
