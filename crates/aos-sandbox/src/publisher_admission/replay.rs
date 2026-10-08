@@ -2,7 +2,10 @@
 
 use std::collections::BTreeMap;
 
-use aos_sandbox_core::ObjectDigest;
+use aos_sandbox_core::{
+    ObjectDigest,
+    bounded_codec::{BoundedReader, ReadError},
+};
 
 use super::{
     AdmissionError, AdmissionLedger, AdmissionLimits, AuthorityCheckpointV1, CapacityAccountV1,
@@ -510,14 +513,14 @@ impl VerifiedHistoryFloorV1 {
         if stored_digest != digest_parts(FLOOR_DOMAIN, &[content]) {
             return Err(ProtectedRecordCodecError::DigestMismatch.into());
         }
-        let mut cursor = FloorCursor::new(content);
-        if cursor.take(8)? != FLOOR_MAGIC || cursor.u16()? != FLOOR_VERSION {
+        let mut cursor = BoundedReader::new(content, floor_read_error);
+        if cursor.bytes(8)? != FLOOR_MAGIC || cursor.u16()? != FLOOR_VERSION {
             return Err(ProtectedRecordCodecError::Malformed.into());
         }
         let prefix_head = ObjectDigest::from_bytes(cursor.array()?);
-        let checkpoint_bytes = cursor.length_prefixed_u32(limits.maximum_record_bytes)?;
+        let checkpoint_bytes = read_floor_field(&mut cursor, limits.maximum_record_bytes)?;
         let checkpoint = super::payload_decode::decode_checkpoint(checkpoint_bytes)?;
-        let record_count = cursor.u32_as_usize()?;
+        let record_count = read_floor_length(&mut cursor)?;
         if record_count == 0 || record_count > limits.maximum_records {
             return Err(AdmissionError::LimitExceeded("history floor records"));
         }
@@ -526,13 +529,10 @@ impl VerifiedHistoryFloorV1 {
             .try_reserve_exact(record_count)
             .map_err(|_| ProtectedRecordCodecError::Allocation)?;
         for _ in 0..record_count {
-            compacted_records.push(
-                cursor
-                    .length_prefixed_u32(limits.maximum_record_bytes)?
-                    .to_vec(),
-            );
+            compacted_records
+                .push(read_floor_field(&mut cursor, limits.maximum_record_bytes)?.to_vec());
         }
-        let index_count = cursor.u32_as_usize()?;
+        let index_count = read_floor_length(&mut cursor)?;
         if index_count == 0 || index_count > limits.maximum_records {
             return Err(AdmissionError::LimitExceeded("history floor index"));
         }
@@ -540,7 +540,7 @@ impl VerifiedHistoryFloorV1 {
         for _ in 0..index_count {
             let kind = cursor.u8()?;
             let key_length = usize::from(cursor.u16()?);
-            let key = cursor.take(key_length)?.to_vec();
+            let key = cursor.bytes(key_length)?.to_vec();
             let head = HistoryIndexHeadV1 {
                 sequence: cursor.u64()?,
                 record_digest: ObjectDigest::from_bytes(cursor.array()?),
@@ -616,66 +616,28 @@ fn history_index_key(record: &ReplayedPublisherRecordV1) -> (u8, Vec<u8>) {
     (record.envelope.kind as u8, key)
 }
 
-struct FloorCursor<'a> {
-    bytes: &'a [u8],
-    offset: usize,
+fn floor_read_error(error: ReadError) -> AdmissionError {
+    match error {
+        ReadError::LengthOverflow => AdmissionError::LimitExceeded("history floor"),
+        ReadError::Truncated | ReadError::NonzeroReserved | ReadError::TrailingBytes => {
+            ProtectedRecordCodecError::Malformed.into()
+        }
+    }
 }
 
-impl<'a> FloorCursor<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, offset: 0 }
-    }
+fn read_floor_length(cursor: &mut BoundedReader<'_, AdmissionError>) -> Result<usize, AdmissionError> {
+    usize::try_from(cursor.u32()?).map_err(|_| AdmissionError::LimitExceeded("history floor"))
+}
 
-    fn take(&mut self, count: usize) -> Result<&'a [u8], AdmissionError> {
-        let end = self
-            .offset
-            .checked_add(count)
-            .ok_or(AdmissionError::LimitExceeded("history floor"))?;
-        let value = self
-            .bytes
-            .get(self.offset..end)
-            .ok_or(ProtectedRecordCodecError::Malformed)?;
-        self.offset = end;
-        Ok(value)
+fn read_floor_field<'a>(
+    cursor: &mut BoundedReader<'a, AdmissionError>,
+    maximum: usize,
+) -> Result<&'a [u8], AdmissionError> {
+    let length = read_floor_length(cursor)?;
+    if length > maximum {
+        return Err(AdmissionError::LimitExceeded("history floor field"));
     }
-
-    fn array<const N: usize>(&mut self) -> Result<[u8; N], AdmissionError> {
-        self.take(N)?
-            .try_into()
-            .map_err(|_| ProtectedRecordCodecError::Malformed.into())
-    }
-
-    fn u8(&mut self) -> Result<u8, AdmissionError> {
-        Ok(self.take(1)?[0])
-    }
-
-    fn u16(&mut self) -> Result<u16, AdmissionError> {
-        Ok(u16::from_be_bytes(self.array()?))
-    }
-
-    fn u32_as_usize(&mut self) -> Result<usize, AdmissionError> {
-        usize::try_from(u32::from_be_bytes(self.array()?))
-            .map_err(|_| AdmissionError::LimitExceeded("history floor"))
-    }
-
-    fn u64(&mut self) -> Result<u64, AdmissionError> {
-        Ok(u64::from_be_bytes(self.array()?))
-    }
-
-    fn length_prefixed_u32(&mut self, maximum: usize) -> Result<&'a [u8], AdmissionError> {
-        let length = self.u32_as_usize()?;
-        if length > maximum {
-            return Err(AdmissionError::LimitExceeded("history floor field"));
-        }
-        self.take(length)
-    }
-
-    fn finish(self) -> Result<(), AdmissionError> {
-        if self.offset != self.bytes.len() {
-            return Err(ProtectedRecordCodecError::Malformed.into());
-        }
-        Ok(())
-    }
+    cursor.bytes(length)
 }
 
 #[derive(Clone, Default)]

@@ -23,6 +23,7 @@ use std::path::Path;
 
 use aos_sandbox_core::{
     CacheDomainId, ObjectDigest, OperationId, ProjectId, PublisherInstanceId, ResourceId,
+    bounded_codec::BoundedReader,
 };
 use aos_sandbox_linux::immutable_file::FsVerityPublicationRoot;
 
@@ -513,16 +514,18 @@ pub(super) fn decode_config(
     if bytes.len() != FIXED_BYTES || &bytes[..8] != CONFIG_MAGIC {
         return Err(PublisherFixedProtectedOwnerErrorV1::Configuration);
     }
-    let mut cursor = ConfigCursor { bytes, offset: 8 };
+    let mut cursor = BoundedReader::new(&bytes[8..], |_| {
+        PublisherFixedProtectedOwnerErrorV1::Configuration
+    });
     if cursor.u16()? != CONFIG_VERSION {
         return Err(PublisherFixedProtectedOwnerErrorV1::Configuration);
     }
     let admission_limits = AdmissionLimits {
-        maximum_records: cursor.usize()?,
-        maximum_record_bytes: cursor.usize()?,
-        maximum_materialized_bytes: cursor.usize()?,
-        maximum_outstanding_permits: cursor.usize()?,
-        maximum_protocol_bytes: cursor.usize()?,
+        maximum_records: read_config_usize(&mut cursor)?,
+        maximum_record_bytes: read_config_usize(&mut cursor)?,
+        maximum_materialized_bytes: read_config_usize(&mut cursor)?,
+        maximum_outstanding_permits: read_config_usize(&mut cursor)?,
+        maximum_protocol_bytes: read_config_usize(&mut cursor)?,
     }
     .validate()
     .map_err(|_| PublisherFixedProtectedOwnerErrorV1::Configuration)?;
@@ -548,9 +551,9 @@ pub(super) fn decode_config(
     .map_err(|_| PublisherFixedProtectedOwnerErrorV1::Configuration)?;
     let authority_epoch = PublicationAuthorityEpoch::new(cursor.u64()?)
         .map_err(|_| PublisherFixedProtectedOwnerErrorV1::Configuration)?;
-    let maximum_source_releases = cursor.usize()?;
-    let maximum_root_records = cursor.usize()?;
-    let maximum_catalog_entries = cursor.usize()?;
+    let maximum_source_releases = read_config_usize(&mut cursor)?;
+    let maximum_root_records = read_config_usize(&mut cursor)?;
+    let maximum_catalog_entries = read_config_usize(&mut cursor)?;
     let clock_provenance = cursor.array()?;
     let root_device = cursor.u64()?;
     let root_inode = cursor.u64()?;
@@ -694,51 +697,8 @@ const fn state_journal_limits() -> JournalLimits {
     }
 }
 
-struct ConfigCursor<'a> {
-    bytes: &'a [u8],
-    offset: usize,
-}
-
-impl ConfigCursor<'_> {
-    fn take<const N: usize>(&mut self) -> Result<[u8; N], PublisherFixedProtectedOwnerErrorV1> {
-        let end = self
-            .offset
-            .checked_add(N)
-            .ok_or(PublisherFixedProtectedOwnerErrorV1::Configuration)?;
-        let bytes = self
-            .bytes
-            .get(self.offset..end)
-            .ok_or(PublisherFixedProtectedOwnerErrorV1::Configuration)?;
-        self.offset = end;
-        bytes
-            .try_into()
-            .map_err(|_| PublisherFixedProtectedOwnerErrorV1::Configuration)
-    }
-
-    fn array<const N: usize>(&mut self) -> Result<[u8; N], PublisherFixedProtectedOwnerErrorV1> {
-        self.take()
-    }
-
-    fn u8(&mut self) -> Result<u8, PublisherFixedProtectedOwnerErrorV1> {
-        Ok(self.take::<1>()?[0])
-    }
-
-    fn u16(&mut self) -> Result<u16, PublisherFixedProtectedOwnerErrorV1> {
-        Ok(u16::from_be_bytes(self.take()?))
-    }
-
-    fn u64(&mut self) -> Result<u64, PublisherFixedProtectedOwnerErrorV1> {
-        Ok(u64::from_be_bytes(self.take()?))
-    }
-
-    fn usize(&mut self) -> Result<usize, PublisherFixedProtectedOwnerErrorV1> {
-        usize::try_from(self.u64()?).map_err(|_| PublisherFixedProtectedOwnerErrorV1::Configuration)
-    }
-
-    fn finish(self) -> Result<(), PublisherFixedProtectedOwnerErrorV1> {
-        if self.offset != self.bytes.len() {
-            return Err(PublisherFixedProtectedOwnerErrorV1::Configuration);
-        }
-        Ok(())
-    }
+fn read_config_usize(
+    cursor: &mut BoundedReader<'_, PublisherFixedProtectedOwnerErrorV1>,
+) -> Result<usize, PublisherFixedProtectedOwnerErrorV1> {
+    usize::try_from(cursor.u64()?).map_err(|_| PublisherFixedProtectedOwnerErrorV1::Configuration)
 }

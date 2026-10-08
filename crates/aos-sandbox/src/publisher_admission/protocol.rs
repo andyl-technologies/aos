@@ -17,6 +17,7 @@
 use aos_sandbox_core::{
     MediaType, ObjectDescriptor, ObjectDigest, OperationId, PrincipalId, ProjectId,
     PublisherChallengeV1, PublisherInstanceId,
+    bounded_codec::{BoundedReader, ReadError},
     format::{
         decode_publisher_admission_request_v1, decode_publisher_domain_plan,
         encode_publisher_admission_request_v1, encode_publisher_domain_plan,
@@ -681,8 +682,8 @@ fn decode_body(
     method: PublisherLocalMethodV1,
     bytes: &[u8],
 ) -> Result<PublisherLocalBodyV1, PublisherLocalProtocolError> {
-    let mut cursor = Cursor::new(bytes);
-    if cursor.take(8)? != BODY_MAGIC || cursor.u16()? != VERSION {
+    let mut cursor = BoundedReader::new(bytes, protocol_read_error);
+    if cursor.bytes(8)? != BODY_MAGIC || cursor.u16()? != VERSION {
         return Err(PublisherLocalProtocolError::Malformed);
     }
     let body = match method {
@@ -690,18 +691,18 @@ fn decode_body(
             publisher_instance: PublisherInstanceId::from_bytes(cursor.array()?),
             challenge: PublisherChallengeV1::from_bytes(cursor.array()?)
                 .map_err(|_| PublisherLocalProtocolError::Malformed)?,
-            canonical_request: cursor.length_prefixed()?,
+            canonical_request: read_length_prefixed(&mut cursor)?,
         },
         PublisherLocalMethodV1::AdmissionResult => PublisherLocalBodyV1::AdmissionResult {
             operation: OperationId::from_bytes(cursor.array()?),
             decision_digest: cursor.digest()?,
-            canonical_plan: cursor.length_prefixed()?,
-            signature: cursor.length_prefixed()?,
+            canonical_plan: read_length_prefixed(&mut cursor)?,
+            signature: read_length_prefixed(&mut cursor)?,
         },
         PublisherLocalMethodV1::PrepareArtifact => PublisherLocalBodyV1::PrepareArtifact {
             operation: OperationId::from_bytes(cursor.array()?),
             decision_digest: cursor.digest()?,
-            source: cursor.descriptor()?,
+            source: read_descriptor(&mut cursor)?,
         },
         PublisherLocalMethodV1::RequestCompletion => PublisherLocalBodyV1::RequestCompletion {
             operation: OperationId::from_bytes(cursor.array()?),
@@ -738,14 +739,14 @@ fn decode_body(
         PublisherLocalMethodV1::OpenForRead => PublisherLocalBodyV1::OpenForRead {
             holder: PrincipalId::from_bytes(cursor.array()?),
             project: ProjectId::from_bytes(cursor.array()?),
-            object: cursor.object()?,
+            object: read_object(&mut cursor)?,
             read_authority_digest: cursor.digest()?,
             catalog_generation: cursor.u64()?,
         },
         PublisherLocalMethodV1::OpenFound => PublisherLocalBodyV1::OpenFound {
-            object: cursor.object()?,
+            object: read_object(&mut cursor)?,
             catalog_entry_digest: cursor.digest()?,
-            backing: cursor.descriptor()?,
+            backing: read_descriptor(&mut cursor)?,
         },
         PublisherLocalMethodV1::OpenNotFoundOrConcealed => {
             PublisherLocalBodyV1::OpenNotFoundOrConcealed {
@@ -956,86 +957,59 @@ fn exact<const N: usize>(bytes: &[u8]) -> Result<[u8; N], PublisherLocalProtocol
         .map_err(|_| PublisherLocalProtocolError::Malformed)
 }
 
-struct Cursor<'a> {
-    bytes: &'a [u8],
-    offset: usize,
+fn protocol_read_error(error: ReadError) -> PublisherLocalProtocolError {
+    match error {
+        ReadError::LengthOverflow => PublisherLocalProtocolError::LimitExceeded,
+        ReadError::Truncated | ReadError::NonzeroReserved | ReadError::TrailingBytes => {
+            PublisherLocalProtocolError::Malformed
+        }
+    }
 }
 
-impl<'a> Cursor<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, offset: 0 }
+fn read_length_prefixed(
+    cursor: &mut BoundedReader<'_, PublisherLocalProtocolError>,
+) -> Result<Vec<u8>, PublisherLocalProtocolError> {
+    let length = usize::try_from(u32::from_be_bytes(cursor.array()?))
+        .map_err(|_| PublisherLocalProtocolError::LimitExceeded)?;
+    if length == 0 || length > MAXIMUM_BODY_BYTES {
+        return Err(PublisherLocalProtocolError::LimitExceeded);
     }
-    fn take(&mut self, count: usize) -> Result<&'a [u8], PublisherLocalProtocolError> {
-        let end = self
-            .offset
-            .checked_add(count)
-            .ok_or(PublisherLocalProtocolError::LimitExceeded)?;
-        let value = self
-            .bytes
-            .get(self.offset..end)
-            .ok_or(PublisherLocalProtocolError::Malformed)?;
-        self.offset = end;
-        Ok(value)
-    }
-    fn array<const N: usize>(&mut self) -> Result<[u8; N], PublisherLocalProtocolError> {
-        exact(self.take(N)?)
-    }
-    fn u8(&mut self) -> Result<u8, PublisherLocalProtocolError> {
-        Ok(self.array::<1>()?[0])
-    }
-    fn u16(&mut self) -> Result<u16, PublisherLocalProtocolError> {
-        Ok(u16::from_be_bytes(self.array()?))
-    }
-    fn u64(&mut self) -> Result<u64, PublisherLocalProtocolError> {
-        Ok(u64::from_be_bytes(self.array()?))
-    }
-    fn digest(&mut self) -> Result<ObjectDigest, PublisherLocalProtocolError> {
-        Ok(ObjectDigest::from_bytes(self.array()?))
-    }
-    fn length_prefixed(&mut self) -> Result<Vec<u8>, PublisherLocalProtocolError> {
-        let length = usize::try_from(u32::from_be_bytes(self.array()?))
-            .map_err(|_| PublisherLocalProtocolError::LimitExceeded)?;
-        if length == 0 || length > MAXIMUM_BODY_BYTES {
-            return Err(PublisherLocalProtocolError::LimitExceeded);
-        }
-        let value = self.take(length)?;
-        let mut owned = Vec::new();
-        owned
-            .try_reserve_exact(length)
-            .map_err(|_| PublisherLocalProtocolError::Allocation)?;
-        owned.extend_from_slice(value);
-        Ok(owned)
-    }
-    fn descriptor(&mut self) -> Result<DescriptorCommitmentV1, PublisherLocalProtocolError> {
-        let ordinal = self.u8()?;
-        let access = match self.u8()? {
-            1 => DescriptorAccessV1::ReadableSource,
-            2 => DescriptorAccessV1::ReadOnlyImmutableBacking,
-            _ => return Err(PublisherLocalProtocolError::Malformed),
-        };
-        Ok(DescriptorCommitmentV1 {
-            ordinal,
-            access,
-            identity_digest: self.digest()?,
-        })
-    }
-    fn object(&mut self) -> Result<ObjectDescriptor, PublisherLocalProtocolError> {
-        let length = usize::from(self.u8()?);
-        let media = std::str::from_utf8(self.take(length)?)
-            .map_err(|_| PublisherLocalProtocolError::Malformed)?;
-        let media =
-            MediaType::new(media.to_owned()).map_err(|_| PublisherLocalProtocolError::Malformed)?;
-        let digest = self.digest()?;
-        let size = self.u64()?;
-        Ok(ObjectDescriptor::new(media, digest, size))
-    }
-    fn finish(self) -> Result<(), PublisherLocalProtocolError> {
-        if self.offset == self.bytes.len() {
-            Ok(())
-        } else {
-            Err(PublisherLocalProtocolError::Malformed)
-        }
-    }
+    let value = cursor.bytes(length)?;
+    let mut owned = Vec::new();
+    owned
+        .try_reserve_exact(length)
+        .map_err(|_| PublisherLocalProtocolError::Allocation)?;
+    owned.extend_from_slice(value);
+    Ok(owned)
+}
+
+fn read_descriptor(
+    cursor: &mut BoundedReader<'_, PublisherLocalProtocolError>,
+) -> Result<DescriptorCommitmentV1, PublisherLocalProtocolError> {
+    let ordinal = cursor.u8()?;
+    let access = match cursor.u8()? {
+        1 => DescriptorAccessV1::ReadableSource,
+        2 => DescriptorAccessV1::ReadOnlyImmutableBacking,
+        _ => return Err(PublisherLocalProtocolError::Malformed),
+    };
+    Ok(DescriptorCommitmentV1 {
+        ordinal,
+        access,
+        identity_digest: cursor.digest()?,
+    })
+}
+
+fn read_object(
+    cursor: &mut BoundedReader<'_, PublisherLocalProtocolError>,
+) -> Result<ObjectDescriptor, PublisherLocalProtocolError> {
+    let length = usize::from(cursor.u8()?);
+    let media = std::str::from_utf8(cursor.bytes(length)?)
+        .map_err(|_| PublisherLocalProtocolError::Malformed)?;
+    let media =
+        MediaType::new(media.to_owned()).map_err(|_| PublisherLocalProtocolError::Malformed)?;
+    let digest = cursor.digest()?;
+    let size = cursor.u64()?;
+    Ok(ObjectDescriptor::new(media, digest, size))
 }
 
 /// Closed completion and concealment dispositions.
