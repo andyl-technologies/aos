@@ -37,11 +37,19 @@ fn dependency_boundary_keeps_crypto_and_application_ownership_explicit() {
 
 #[test]
 fn executable_and_http_registration_ownership_is_outside_security() {
-    let controller = include_str!("../../aos-sandbox-controller-runtime/src/controller_service.rs");
+    let controller_sources = [
+        include_str!("../../aos-sandbox-controller-runtime/src/controller_service.rs"),
+        include_str!("../../aos-sandbox-controller-runtime/src/controller_service/public_rpc.rs"),
+        include_str!(
+            "../../aos-sandbox-controller-runtime/src/controller_service/public_rpc/tests.rs"
+        ),
+    ];
     assert!(!CRATE_MANIFEST.contains("[[bin]]"));
     assert!(!CRATE_MANIFEST.contains("aos-sandbox-services"));
-    assert!(!controller.contains("axum::serve("));
-    assert!(!controller.contains("::register("));
+    for controller in controller_sources {
+        assert!(!controller.contains("axum::serve("));
+        assert!(!controller.contains("::register("));
+    }
 }
 
 #[test]
