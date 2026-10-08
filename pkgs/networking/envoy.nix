@@ -1082,6 +1082,10 @@
                 -e "s|/bin/true|${buildCoreutils}/bin/true|g" \
                 "$f" 2>/dev/null || true
             done
+
+          # Bazel executes this build-time generator directly.
+          sed -i '1s|^#!/bin/sh$|#!${buildBash}/bin/bash|' \
+            source/server/admin/html/generate_admin_html.sh
     '';
 in
   mkBazelPackage {
