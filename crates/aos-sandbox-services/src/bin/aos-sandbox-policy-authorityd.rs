@@ -183,7 +183,7 @@ use aos_sandbox_broker_session_security::source_genesis_flight::{
     RootProjectSuccessorAttemptV3,
     serve_root_source_genesis_flight_v1, serve_root_source_genesis_recovery_v1,
 };
-use aos_sandbox_broker_session_security::source_signer_exchange::{
+use aos_sandbox_source_signer::source_signer_exchange::{
     request_root_source_project_admission_readback_v1,
     request_root_source_project_reservation_readback_v1,
     request_root_source_project_retirement_readback_v1,
@@ -3095,7 +3095,7 @@ fn serve_project_history_retirement(
         )
     })?;
     let signer = PinnedSourceHoldReadbackSignerV1::decode(&source_pin)?;
-    let source_packet = aos_sandbox_broker_session_security::source_signer_exchange::request_root_source_project_completed_terminal_readback_v1(
+    let source_packet = aos_sandbox_source_signer::source_signer_exchange::request_root_source_project_completed_terminal_readback_v1(
         reservation, root_terminal, &signer, source_signer_uid, controller_gid)?;
     let floor =
         retire_fixed_root_project_history_v1(&controller_packet, &source_packet, controller_uid)?;

@@ -28,8 +28,8 @@ use aos_sandbox::policy_compiler::{
     decode_root_source_genesis_frame_v1, encode_root_source_genesis_frame_v1,
 };
 
-use crate::source_signer_exchange::request_root_source_tree_genesis_readback_v2;
-use crate::source_signer_exchange::request_root_source_first_successor_readback_v2;
+use aos_sandbox_source_signer::source_signer_exchange::request_root_source_tree_genesis_readback_v2;
+use aos_sandbox_source_signer::source_signer_exchange::request_root_source_first_successor_readback_v2;
 
 /// Selects the daemon's already installed current or historical entry route.
 ///
@@ -629,14 +629,14 @@ fn request_successor_source_with_recipe_v3(
     signer_uid: u32, socket_gid: u32,
 ) -> io::Result<SourceSuccessorObservationPacketV4> {
     if context.as_bytes().len() == 1424 {
-        return crate::source_signer_exchange::request_root_source_resource_successor_readback_v4(
+        return aos_sandbox_source_signer::source_signer_exchange::request_root_source_resource_successor_readback_v4(
             nonce, context, signer, signer_uid, socket_gid,
             matches!(recipe, RootSuccessorRecipeV3::MixedV3),
         ).map(SourceSuccessorObservationPacketV4::Resource);
     }
     match recipe {
         RootSuccessorRecipeV3::StrictV2 => request_root_source_first_successor_readback_v2(nonce, context, signer, signer_uid, socket_gid).map(SourceSuccessorObservationPacketV4::Legacy),
-        RootSuccessorRecipeV3::MixedV3 => crate::source_signer_exchange::request_root_source_project_continuation_readback_v3(nonce, context, signer, signer_uid, socket_gid).map(SourceSuccessorObservationPacketV4::Legacy),
+        RootSuccessorRecipeV3::MixedV3 => aos_sandbox_source_signer::source_signer_exchange::request_root_source_project_continuation_readback_v3(nonce, context, signer, signer_uid, socket_gid).map(SourceSuccessorObservationPacketV4::Legacy),
     }
 }
 
@@ -972,7 +972,7 @@ fn serve_project_genesis_v3(attempt: &mut RootProjectGenesisAttemptV3<'_, '_>) -
     let (challenge, context) = contexts[0].as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?;
     independent?;
     if matches!(route, RootFirstSourceSuccessorRouteV2::Historical) && challenge.intent().is_none() { return Err(SourceGenesisErrorV1::AdmissionClosed); }
-    source[0] = Some(crate::source_signer_exchange::request_root_source_project_genesis_readback_v4(*challenge, context, owner.source_readback_pin(), *source_signer_uid, *controller_gid));
+    source[0] = Some(aos_sandbox_source_signer::source_signer_exchange::request_root_source_project_genesis_readback_v4(*challenge, context, owner.source_readback_pin(), *source_signer_uid, *controller_gid));
     if source[0].as_ref().is_some_and(Result::is_err) { *first_failure = Some(RootProjectGenesisAttemptSiteV3::Source(0)); }
     let independent = project_genesis_bookend_v3(&held, stream, posts, clock_posts, first_failure);
     let packet = source[0].as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?;
@@ -1017,7 +1017,7 @@ fn serve_project_genesis_v3(attempt: &mut RootProjectGenesisAttemptV3<'_, '_>) -
         let independent = project_genesis_bookend_v3(&held, stream, posts, clock_posts, first_failure);
         let (challenge, context) = contexts[1].as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?;
         independent?;
-        source[1] = Some(crate::source_signer_exchange::request_root_source_project_genesis_readback_v4(*challenge, context, owner.source_readback_pin(), *source_signer_uid, *controller_gid));
+        source[1] = Some(aos_sandbox_source_signer::source_signer_exchange::request_root_source_project_genesis_readback_v4(*challenge, context, owner.source_readback_pin(), *source_signer_uid, *controller_gid));
         if source[1].as_ref().is_some_and(Result::is_err) { *first_failure = Some(RootProjectGenesisAttemptSiteV3::Source(1)); }
         let independent = project_genesis_bookend_v3(&held, stream, posts, clock_posts, first_failure);
         let packet = source[1].as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?;
@@ -1046,7 +1046,7 @@ fn serve_project_genesis_v3(attempt: &mut RootProjectGenesisAttemptV3<'_, '_>) -
     let independent = project_genesis_bookend_v3(&held, stream, posts, clock_posts, first_failure);
     let (challenge, context) = contexts[2].as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?;
     independent?;
-    source[2] = Some(crate::source_signer_exchange::request_root_source_project_genesis_readback_v4(*challenge, context, owner.source_readback_pin(), *source_signer_uid, *controller_gid));
+    source[2] = Some(aos_sandbox_source_signer::source_signer_exchange::request_root_source_project_genesis_readback_v4(*challenge, context, owner.source_readback_pin(), *source_signer_uid, *controller_gid));
     if source[2].as_ref().is_some_and(Result::is_err) { *first_failure = Some(RootProjectGenesisAttemptSiteV3::Source(2)); }
     let independent = project_genesis_bookend_v3(&held, stream, posts, clock_posts, first_failure);
     let packet = source[2].as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?;
@@ -1507,7 +1507,7 @@ fn serve_resource_global_genesis_v2(
         return Err(SourceGenesisErrorV1::AdmissionClosed);
     }
 
-    source[0] = Some(crate::source_signer_exchange::request_root_source_tree_genesis_readback_v3(
+    source[0] = Some(aos_sandbox_source_signer::source_signer_exchange::request_root_source_tree_genesis_readback_v3(
         *challenge,
         *project,
         context.as_ref(),
@@ -1659,7 +1659,7 @@ fn serve_resource_global_genesis_v2(
             .ok_or(SourceGenesisErrorV1::Stale)?;
         independent?;
 
-        source[1] = Some(crate::source_signer_exchange::request_root_source_tree_genesis_readback_v3(
+        source[1] = Some(aos_sandbox_source_signer::source_signer_exchange::request_root_source_tree_genesis_readback_v3(
             *challenge,
             *project,
             context.as_ref(),
@@ -1773,7 +1773,7 @@ fn serve_resource_global_genesis_v2(
         .ok_or(SourceGenesisErrorV1::Stale)?;
     independent?;
 
-    source[2] = Some(crate::source_signer_exchange::request_root_source_tree_genesis_readback_v3(
+    source[2] = Some(aos_sandbox_source_signer::source_signer_exchange::request_root_source_tree_genesis_readback_v3(
         *challenge,
         *project,
         context.as_ref(),
@@ -1984,7 +1984,7 @@ fn observe_root_create_q04_source(
     controller_gid: u32,
 ) -> Result<(), ()> {
     let (challenge, project, context, signer) = observation.request();
-    let returned = crate::source_signer_exchange::request_root_source_tree_genesis_readback_v3(
+    let returned = aos_sandbox_source_signer::source_signer_exchange::request_root_source_tree_genesis_readback_v3(
         challenge, Some(project), Some(context), signer, source_signer_uid, controller_gid,
     );
     observation.park_result_v2(returned)

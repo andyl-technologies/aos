@@ -4,7 +4,7 @@ use std::error::Error;
 use std::io;
 use std::process::ExitCode;
 
-use aos_sandbox_broker_session_security::source_signer_exchange::run_source_signer_service_v1;
+use aos_sandbox_source_signer::source_signer_exchange::run_source_signer_service_v1;
 
 fn main() -> ExitCode {
     match run() {

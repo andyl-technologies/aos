@@ -47,6 +47,7 @@ members = [
     "aos-sandbox-source-provider",
     "aos-sandbox-source-provider-protocol",
     "aos-sandbox-source-provider-security",
+    "aos-sandbox-source-signer",
     "aos-sandbox-broker-session-protocol",
     "aos-sandbox-broker-session-security",
     "aos-sandbox-cache-signer",
@@ -290,6 +291,7 @@ aos-sandbox-source-provider = { path = "aos-sandbox-source-provider" }
 aos-sandbox-source-provider-ledger = { path = "aos-sandbox-source-provider-ledger" }
 aos-sandbox-source-provider-protocol = { path = "aos-sandbox-source-provider-protocol" }
 aos-sandbox-source-provider-security = { path = "aos-sandbox-source-provider-security" }
+aos-sandbox-source-signer = { path = "aos-sandbox-source-signer" }
 aos-sandbox-broker-session-protocol = { path = "aos-sandbox-broker-session-protocol" }
 aos-sandbox-broker-session-security = { path = "aos-sandbox-broker-session-security" }
 aos-sandbox-cache-signer = { path = "aos-sandbox-cache-signer" }

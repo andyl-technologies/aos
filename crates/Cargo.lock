@@ -949,6 +949,7 @@ dependencies = [
  "aos-sandbox-source-provider",
  "aos-sandbox-source-provider-protocol",
  "aos-sandbox-source-provider-security",
+ "aos-sandbox-source-signer",
  "aos-sandbox-storage",
  "aos-systemd",
  "async-trait",
@@ -1284,6 +1285,7 @@ dependencies = [
  "aos-sandbox-protocol",
  "aos-sandbox-source-provider",
  "aos-sandbox-source-provider-security",
+ "aos-sandbox-source-signer",
  "aos-sandbox-storage",
  "aos-systemd",
  "axum",
@@ -1356,6 +1358,20 @@ dependencies = [
  "libc",
  "rustix 1.1.4",
  "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+ "zeroize",
+]
+
+[[package]]
+name = "aos-sandbox-source-signer"
+version = "0.1.0"
+dependencies = [
+ "aos-sandbox",
+ "aos-sandbox-core",
+ "aos-sandbox-linux",
+ "ed25519-dalek",
+ "rustix 1.1.4",
  "tempfile",
  "thiserror 2.0.18",
  "zeroize",

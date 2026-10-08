@@ -19,8 +19,6 @@
 //! listeners, and service registration live in `aos-sandbox-services`; its
 //! assembly port receives opaque handlers and negative-only terminal loans.
 //! Brokers and Controller retain separate identities, state, and confinement.
-//! [`source_signer_exchange`] owns the corresponding Source-only readback
-//! transport over the signer's private read-only journal view.
 //!
 //! Broker-side execution reserves the authenticated request durably before
 //! issuing a move-only domain handoff. Concrete Host, Storage, Mount, and
@@ -99,8 +97,6 @@ mod retained_exchange;
 )]
 mod self_execution;
 pub mod source_genesis_flight;
-mod source_signer_credential;
-pub mod source_signer_exchange;
 mod storage_create_preparation;
 mod storage_host_consumer_client;
 mod storage_host_output_readback;

@@ -60,7 +60,8 @@
   controllerRoleFlags = roleFlags "controller";
   roleTestPackages = role:
     "-p aos-sandbox-services"
-    + lib.optionalString (role == "cache-signer") " -p aos-sandbox-cache-signer";
+    + lib.optionalString (role == "cache-signer") " -p aos-sandbox-cache-signer"
+    + lib.optionalString (role == "source-signer") " -p aos-sandbox-source-signer";
 
   # Separate Cargo invocations prevent role features from unifying merely
   # because these independently confined executables share an output package.

@@ -210,6 +210,7 @@
     "aos-sandbox-source-provider-ledger"
     "aos-sandbox-source-provider-protocol"
     "aos-sandbox-source-provider-security"
+    "aos-sandbox-source-signer"
     "aos-sandbox-storage"
     "aos-sandbox"
     "aos-sandbox-linux"
