@@ -15,7 +15,8 @@ use aos_sandbox::production_operation_compiler::{
     NixGenerationOriginalErrorV1, NixStartContinuationErrorV2,
     StorageGenerationPreparationDraftV1,
 };
-use aos_sandbox::{EffectFailure, EffectObservation, EffectPlan, EffectReceipt, SignedBrokerPlan};
+use aos_sandbox::{EffectFailure, EffectObservation, EffectPlan, EffectReceipt};
+use aos_sandbox_protocol::authorization_artifact::SignedBrokerPlan;
 use aos_sandbox_core::OperationId;
 
 use super::nix_inputs::{NixLocalInputCutV2, NixLocalInputErrorV2};

@@ -23,9 +23,11 @@ use buffa::Message as _;
 use ed25519_dalek::SigningKey;
 
 use crate::{
-    BrokerDispatchSemanticIdentityV1, BrokerPlanPreparation, GuardianPlanRequestV1,
-    OwnershipAuthorityVerifier, OwnershipClaimV1, OwnershipTransactionReceiptV1, ReturnedSignature,
-    SignedBrokerPlan, SigningAuthority, UnverifiedOwnershipLeaseResponse,
+    BrokerDispatchSemanticIdentityV1, GuardianPlanRequestV1, OwnershipAuthorityVerifier,
+    OwnershipClaimV1, OwnershipTransactionReceiptV1, UnverifiedOwnershipLeaseResponse,
+};
+use aos_sandbox_protocol::authorization_artifact::{
+    BrokerPlanPreparation, ReturnedSignature, SignedBrokerPlan, SigningAuthority,
 };
 use aos_sandbox_ownership_protocol::ExpectedOwnershipLease;
 

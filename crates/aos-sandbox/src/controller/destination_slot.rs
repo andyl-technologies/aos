@@ -70,7 +70,7 @@ where
     pub(crate) fn bind_current_destination_slot_plan<T>(
         &mut self,
         prepared: crate::PreparedCurrentDestinationSlotV1,
-        signed_plan: crate::SignedBrokerPlan,
+        signed_plan: aos_sandbox_protocol::authorization_artifact::SignedBrokerPlan,
         clock: &mut T,
     ) -> Result<crate::PreparedCurrentDestinationSlotDispatchV1, crate::DestinationSlotEffectError>
     where
@@ -194,7 +194,7 @@ where
     pub(crate) fn bind_current_destination_slot_resume_plan<T>(
         &mut self,
         prepared: crate::PreparedCurrentDestinationSlotResumeV1,
-        signed_plan: crate::SignedBrokerPlan,
+        signed_plan: aos_sandbox_protocol::authorization_artifact::SignedBrokerPlan,
         clock: &mut T,
     ) -> Result<
         crate::PreparedCurrentDestinationSlotResumeDispatchV1,

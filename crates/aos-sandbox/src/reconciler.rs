@@ -30,7 +30,8 @@ use aos_sandbox_core::model::{KeyReference, KeyUsage, StableKeyId};
 use aos_sandbox_core::{ObjectDigest, OperationId, SandboxId};
 use aos_sandbox_ownership_protocol::{CLAIM_BYTES, OwnershipClaimV1};
 
-use crate::{GuardianPlanRequestV1, SignedBrokerPlan};
+use crate::GuardianPlanRequestV1;
+use aos_sandbox_protocol::authorization_artifact::SignedBrokerPlan;
 
 /// Lends a closed original Git read/issuance crossing to its installed executor.
 #[cfg(target_os = "linux")]

@@ -69,7 +69,8 @@ use crate::runtime_scope::{
     CurrentRuntimeScopeError, CurrentRuntimeScopePolicy, NamespaceTargetError,
     NamespaceTargetOutcome, RuntimeGenerationError, RuntimeScopeClient, RuntimeScopeHolder,
 };
-use crate::{Journal, JournalError, SignedBrokerPlan};
+use crate::{Journal, JournalError};
+use aos_sandbox_protocol::authorization_artifact::SignedBrokerPlan;
 use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1;
 
 mod consumer_read;

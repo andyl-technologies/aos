@@ -43,7 +43,7 @@ impl ControllerStorageGenerationExchangeV1 {
         &mut self,
         session: &mut DormantAuthenticatedBrokerSessionV1,
         draft: &aos_sandbox::production_operation_compiler::StorageGenerationPreparationDraftV1,
-        signed: &aos_sandbox::SignedBrokerPlan,
+        signed: &aos_sandbox_protocol::authorization_artifact::SignedBrokerPlan,
         request_id: [u8; 16],
         original_deadline: u64,
     ) {

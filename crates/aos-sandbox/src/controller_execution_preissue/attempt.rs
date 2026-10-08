@@ -20,9 +20,8 @@ use aos_sandbox_core::{
 use aos_sandbox_protocol::semantics::host_output_reserve_grant_v1;
 use sha2::{Digest as _, Sha256};
 
-use crate::{
-    Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace, SignedBrokerPlan,
-};
+use crate::{Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace};
+use aos_sandbox_protocol::authorization_artifact::SignedBrokerPlan;
 
 use super::{ControllerExecutionReserveSourceV1, EXECUTION_RESERVE_SOURCE_BYTES_V1};
 

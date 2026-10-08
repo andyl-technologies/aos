@@ -24,9 +24,10 @@ use crate::runtime_authority::{
 use crate::{
     AuthorityEffectAttemptTimingV1, AuthorityPublicationError, AuthorityPublicationProposalV1,
     AuthorityPublicationStore, BrokerDispatchSemanticIdentityV1, BrokerDispatchTemplateV1, Journal,
-    PreparedAuthorityEffectV1, PreparedAuthorityPublicationV1, ReconcilerError, SignedBrokerPlan,
+    PreparedAuthorityEffectV1, PreparedAuthorityPublicationV1, ReconcilerError,
     SignedOwnershipLease,
 };
+use aos_sandbox_protocol::authorization_artifact::SignedBrokerPlan;
 
 /// Owns an operation-specific Snapshot recipe, not dispatch or retention authority.
 ///
@@ -135,7 +136,7 @@ impl SnapshotDerivedStoragePreparationV3 {
     pub fn prepare_unsigned_original(
         &mut self,
         journal: &Journal,
-        preparation: &crate::BrokerPlanPreparation,
+        preparation: &aos_sandbox_protocol::authorization_artifact::BrokerPlanPreparation,
         predecessor_packet: &[u8],
     ) -> Result<(), ReconcilerError> {
         use aos_sandbox_core::format::{encode_broker_authorization_plan, encode_signature};

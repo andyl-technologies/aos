@@ -35,7 +35,8 @@ use super::planning::{
 use crate::Journal;
 use crate::mount_preparation::current_fence;
 use crate::ownership_authority::ProtectedOwnershipClockError;
-use crate::{BrokerDispatchSemanticIdentityV1, BrokerDispatchTemplateV1, SignedBrokerPlan};
+use crate::{BrokerDispatchSemanticIdentityV1, BrokerDispatchTemplateV1};
+use aos_sandbox_protocol::authorization_artifact::SignedBrokerPlan;
 
 const MOUNT_RESPONSE_BYTES: u32 = 16 * 1024;
 

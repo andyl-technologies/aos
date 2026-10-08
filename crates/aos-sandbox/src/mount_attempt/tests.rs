@@ -32,9 +32,11 @@ use buffa::Message as _;
 use ed25519_dalek::SigningKey;
 
 use crate::{
-    BrokerPlanPreparation, EffectFailure, EffectObservation, EffectPlan, EffectReceipt,
-    JournalLimits, Reconciler, ReturnedSignature, SignedBrokerPlan, SigningAuthority,
+    EffectFailure, EffectObservation, EffectPlan, EffectReceipt, JournalLimits, Reconciler,
     SingleNodeEffectExecutor,
+};
+use aos_sandbox_protocol::authorization_artifact::{
+    BrokerPlanPreparation, ReturnedSignature, SignedBrokerPlan, SigningAuthority,
 };
 
 use super::*;

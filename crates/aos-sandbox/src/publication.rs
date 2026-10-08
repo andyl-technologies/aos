@@ -33,9 +33,10 @@ use crate::{
     AuthorityBoundEffectPlanV1, BrokerDispatchAttemptError, BrokerDispatchAttemptV1,
     BrokerDispatchSemanticIdentityV1, BrokerDispatchTemplateV1, GuardianPlanRequestV1,
     IdempotencyKey, IdempotencyOutcome, Journal, JournalError, JournalRecord, JournalTransaction,
-    OwnershipTransactionReceiptV1, PreparedAuthorityEffectV1, RecordNamespace, SignedBrokerPlan,
+    OwnershipTransactionReceiptV1, PreparedAuthorityEffectV1, RecordNamespace,
     SignedOwnershipLease,
 };
+use aos_sandbox_protocol::authorization_artifact::SignedBrokerPlan;
 use aos_sandbox_ownership_protocol::{OwnershipClaimAction, OwnershipClaimV1};
 
 mod draft;

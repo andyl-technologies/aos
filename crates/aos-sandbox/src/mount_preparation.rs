@@ -59,7 +59,8 @@ use crate::ownership_authority::ProtectedOwnershipClockError;
 use crate::runtime_scope::{
     CurrentNamespaceTarget, CurrentRuntimeScopeError, NamespaceTargetError,
 };
-use crate::{BrokerDispatchTemplateError, BrokerDispatchTemplateV1, SignedBrokerPlan};
+use crate::{BrokerDispatchTemplateError, BrokerDispatchTemplateV1};
+use aos_sandbox_protocol::authorization_artifact::SignedBrokerPlan;
 
 pub(crate) mod transport;
 

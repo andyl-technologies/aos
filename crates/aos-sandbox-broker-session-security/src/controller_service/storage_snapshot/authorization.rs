@@ -10,8 +10,11 @@ use aos_sandbox::lifecycle::{
     LifecycleProtectedJournalKeyV1, LifecycleProtectedJournalOwnerV1,
     LifecycleSnapshotBarrierV1,
 };
-use aos_sandbox::{EffectFailure, Journal, PreparedAuthorityEffectV1, ReconcilerError,
-    SignedBrokerPlan, SnapshotDerivedStoragePreparationV3};
+use aos_sandbox::{
+    EffectFailure, Journal, PreparedAuthorityEffectV1, ReconcilerError,
+    SnapshotDerivedStoragePreparationV3,
+};
+use aos_sandbox_protocol::authorization_artifact::SignedBrokerPlan;
 use aos_sandbox_core::model::SignatureBytes;
 use aos_sandbox_core::{NodeId, ObjectDigest, OperationId, RawPairedClockSample};
 

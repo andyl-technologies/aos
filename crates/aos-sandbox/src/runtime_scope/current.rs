@@ -24,7 +24,7 @@ use rand::{TryRngCore as _, rngs::OsRng};
 
 use super::*;
 use crate::Journal;
-use crate::SignedBrokerPlan;
+use aos_sandbox_protocol::authorization_artifact::SignedBrokerPlan;
 use crate::ownership_authority::ProtectedOwnershipClockError;
 use crate::publication::{
     AuthorityPublicationStore, CurrentAuthorityPublicationV1, RecoveredBrokerDispatchTemplateV1,

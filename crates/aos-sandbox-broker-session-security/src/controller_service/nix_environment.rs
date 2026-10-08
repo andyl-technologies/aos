@@ -15,7 +15,8 @@ use aos_sandbox::production_operation_compiler::{
     ControllerNixStartRecipeSelectorV2, CurrentRetainedNixStartV2,
     NixResolveAuthorizationDraftV2, NixStartAdmissionErrorV2, NixStartContinuationErrorV2,
 };
-use aos_sandbox::{EffectFailure, EffectObservation, EffectPlan, EffectReceipt, SignedBrokerPlan};
+use aos_sandbox::{EffectFailure, EffectObservation, EffectPlan, EffectReceipt};
+use aos_sandbox_protocol::authorization_artifact::SignedBrokerPlan;
 use aos_sandbox_core::OperationId;
 use aos_sandbox_linux::seqpacket::{
     ReceivedRecord, RetainedSeqpacketAdmissionErrorV1, RetainedSeqpacketReceiveErrorV1,

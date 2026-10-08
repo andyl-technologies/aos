@@ -1805,7 +1805,7 @@ where
     pub(crate) fn bind_current_mount_plan<T>(
         &mut self,
         catalog: crate::mount_preparation::PreparedCurrentMountCatalogV1,
-        signed_plan: crate::SignedBrokerPlan,
+        signed_plan: aos_sandbox_protocol::authorization_artifact::SignedBrokerPlan,
         clock: &mut T,
     ) -> Result<
         crate::mount_preparation::PreparedCurrentMountDispatchV1,
@@ -2704,7 +2704,7 @@ where
     pub(crate) fn bind_current_attachment_mount_resume_plan<T>(
         &mut self,
         prepared: crate::PreparedCurrentAttachmentMountResumeV1,
-        signed_plan: crate::SignedBrokerPlan,
+        signed_plan: aos_sandbox_protocol::authorization_artifact::SignedBrokerPlan,
         clock: &mut T,
     ) -> Result<crate::PreparedCurrentAttachmentMountResumeDispatchV1, crate::AttachmentMountError>
     where
@@ -2835,7 +2835,7 @@ where
     pub(crate) fn bind_current_attachment_mount_plan<T>(
         &mut self,
         prepared: crate::PreparedCurrentAttachmentMountV1,
-        signed_plan: crate::SignedBrokerPlan,
+        signed_plan: aos_sandbox_protocol::authorization_artifact::SignedBrokerPlan,
         clock: &mut T,
     ) -> Result<crate::PreparedCurrentAttachmentMountDispatchV1, crate::AttachmentMountError>
     where

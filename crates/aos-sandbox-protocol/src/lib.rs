@@ -9,6 +9,8 @@
 //! [`fencing`], [`inventory`], and [`session`] own their respective validated
 //! protocol state and envelopes. [`authenticated_session`] composes the
 //! production-inert authenticated traffic model with complete method semantics.
+//! [`authorization_artifact`] prepares immutable canonical signed artifacts
+//! without signing keys, current-publication authority, or effect permits.
 //! [`mount_source_acquisition_state`] owns the pure canonical `AOSMSA02`
 //! storage codec and whole-snapshot validator shared by Mount and its security
 //! boundary. [`mount_source_consumption_state`] owns the pure persisted
@@ -21,6 +23,7 @@
 //! and bounded client-state reducers without adopting requests or authorizing effects.
 
 pub mod authenticated_session;
+pub mod authorization_artifact;
 pub mod fencing;
 pub mod fuse_worker_preparation;
 pub mod git_project_coverage;

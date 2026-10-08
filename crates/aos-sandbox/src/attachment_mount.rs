@@ -57,9 +57,8 @@ use crate::mount_preparation::{
 };
 use crate::ownership_authority::ProtectedOwnershipClockError;
 use crate::runtime_scope::{CurrentNamespaceTarget, CurrentRuntimeScope, CurrentRuntimeScopeError};
-use crate::{
-    BrokerDispatchSemanticIdentityV1, BrokerDispatchTemplateV1, Journal, SignedBrokerPlan,
-};
+use crate::{BrokerDispatchSemanticIdentityV1, BrokerDispatchTemplateV1, Journal};
+use aos_sandbox_protocol::authorization_artifact::SignedBrokerPlan;
 
 mod recovery;
 

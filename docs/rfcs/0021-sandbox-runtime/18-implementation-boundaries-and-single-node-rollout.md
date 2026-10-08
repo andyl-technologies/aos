@@ -180,6 +180,11 @@ keep historical predecessor, request, session, checkpoint, catalog, and cold
 terminal joins inside their protected owner; detached outcomes or digests
 cannot substitute for that custody.
 
+Canonical broker/lease and Publisher signing preparations and immutable
+completed artifacts belong to Protocol's `authorization_artifact` module.
+Signing keys and protected currentness recipes remain with their original owners;
+this artifact ownership cut does not remove SessionSecurity's domain dependencies.
+
 ### Effects, views, and application assembly
 
 Host, Storage, Mount, and Network retain their existing implementation crates

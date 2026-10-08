@@ -44,8 +44,11 @@ use crate::dispatch::{
     BrokerDispatchSemanticIdentityV1, semantic_identity_digest, template_digest_from_parts,
 };
 use crate::{
-    BrokerPlanPreparation, EffectFailure, EffectObservation, EffectPlan, EffectReceipt,
-    JournalLimits, Reconciler, ReturnedSignature, SigningAuthority, SingleNodeEffectExecutor,
+    EffectFailure, EffectObservation, EffectPlan, EffectReceipt, JournalLimits, Reconciler,
+    SingleNodeEffectExecutor,
+};
+use aos_sandbox_protocol::authorization_artifact::{
+    BrokerPlanPreparation, ReturnedSignature, SigningAuthority,
 };
 
 const SANDBOX_ID: [u8; 16] = [1; 16];

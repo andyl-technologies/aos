@@ -240,7 +240,7 @@ impl StorageGenerationPreparationDraftV1 {
     /// Rejects any altered plan, whole-wrapper commitment or byte bound.
     pub fn validate_signed_plan(
         &self,
-        signed: &crate::SignedBrokerPlan,
+        signed: &aos_sandbox_protocol::authorization_artifact::SignedBrokerPlan,
     ) -> Result<(), crate::BrokerDispatchTemplateError> {
         crate::dispatch::validate_nix_generation_plan_v1(signed, &self.plan, &self.request)
     }

@@ -46,7 +46,8 @@ use crate::publisher_roots::{
     PublicationRootRegistryError, RootObservationError,
 };
 use crate::publisher_sessions::AuthenticatedPublisherRecord;
-use crate::{ProtectedOwnershipClockError, SignedPublisherPlan};
+use crate::ProtectedOwnershipClockError;
+use aos_sandbox_protocol::authorization_artifact::SignedPublisherPlan;
 
 use super::linux_bridge::{
     PreparedLinuxPublisherArtifactV1, PublisherLinuxBridgeErrorV1, RecoveredLinuxPreparationV1,

@@ -5569,7 +5569,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
     pub(crate) fn prepare_nix_generation_request(
         &mut self,
         draft: &aos_sandbox::production_operation_compiler::StorageGenerationPreparationDraftV1,
-        signed: &aos_sandbox::SignedBrokerPlan,
+        signed: &aos_sandbox_protocol::authorization_artifact::SignedBrokerPlan,
         request_id: [u8; 16],
         original_deadline: u64,
     ) -> Result<DormantBrokerRequestPreparationV1, BrokerSessionSecurityError> {

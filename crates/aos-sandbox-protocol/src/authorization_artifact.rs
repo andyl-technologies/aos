@@ -261,7 +261,7 @@ impl BrokerPlanPreparation {
 /// Owns one verified, byte-exact controller-signed broker plan.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SignedBrokerPlan {
-    pub(crate) plan: BrokerAuthorizationPlan,
+    plan: BrokerAuthorizationPlan,
     digest: ObjectDigest,
     canonical_plan: Vec<u8>,
     canonical_signature: Vec<u8>,

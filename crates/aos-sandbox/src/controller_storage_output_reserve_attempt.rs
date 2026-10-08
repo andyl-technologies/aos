@@ -43,9 +43,8 @@ use aos_sandbox_protocol::storage_output_reserve::{
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
 
-use crate::{
-    Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace, SignedBrokerPlan,
-};
+use crate::{Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace};
+use aos_sandbox_protocol::authorization_artifact::SignedBrokerPlan;
 
 const MAGIC: &[u8; 8] = b"AOSCST01";
 const DOMAIN: &[u8] = b"aos.sandbox.controller-storage-output-attempt.v1\0";

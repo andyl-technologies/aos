@@ -9,7 +9,8 @@ use aos_proto::aos::sandbox::local::v1::{
     PopulateStorageGuestRootRequestV1, RequestHeader,
 };
 use aos_sandbox::guest_root_publication::GuestRootPublicationReservationV1;
-use aos_sandbox::{EffectFailure, SignedBrokerPlan};
+use aos_sandbox::EffectFailure;
+use aos_sandbox_protocol::authorization_artifact::SignedBrokerPlan;
 use aos_sandbox_agent::guest_root_publication::GuestRootPublicationProofV1;
 use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodOutcomeV1, AuthenticatedBrokerMethodResultV1,

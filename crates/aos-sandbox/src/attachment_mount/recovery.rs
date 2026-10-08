@@ -19,9 +19,8 @@ use crate::attachment_state::DurableAttachmentDesiredStateV1;
 use crate::mount_preparation::{self, PreparedCurrentMountCatalogQueryV1};
 use crate::ownership_authority::ProtectedOwnershipClockError;
 use crate::runtime_scope::CurrentNamespaceTarget;
-use crate::{
-    BrokerDispatchSemanticIdentityV1, BrokerDispatchTemplateV1, Journal, SignedBrokerPlan,
-};
+use crate::{BrokerDispatchSemanticIdentityV1, BrokerDispatchTemplateV1, Journal};
+use aos_sandbox_protocol::authorization_artifact::SignedBrokerPlan;
 
 /// Retains one exact pending attempt after reacquiring its live preparation.
 pub struct PreparedCurrentAttachmentMountResumeV1 {

@@ -43,7 +43,8 @@ use crate::dispatch::{BrokerDispatchSemanticIdentityV1, BrokerDispatchTemplateV1
 use crate::mount_preparation::{self, MountCatalogPreparationError};
 use crate::ownership_authority::ProtectedOwnershipClockError;
 use crate::runtime_scope::CurrentAssignmentTarget;
-use crate::{Journal, SignedBrokerPlan};
+use crate::Journal;
+use aos_sandbox_protocol::authorization_artifact::SignedBrokerPlan;
 
 mod attempt;
 mod completion;

@@ -19,9 +19,8 @@ use aos_sandbox_protocol::storage_output_reserve::authority_archive::{
 };
 use sha2::{Digest as _, Sha256};
 
-use crate::{
-    Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace, SignedBrokerPlan,
-};
+use crate::{Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace};
+use aos_sandbox_protocol::authorization_artifact::SignedBrokerPlan;
 
 use super::publication_chunks::HistoricalOutputPublicationChunkV1;
 use super::recovery::{

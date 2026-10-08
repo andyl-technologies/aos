@@ -50,7 +50,6 @@ pub mod attachment_source;
 pub mod attachment_state;
 #[cfg(target_os = "linux")]
 pub mod attachment_verification;
-pub mod authority;
 pub mod cache_residency;
 pub mod cli_model;
 pub mod controller;
@@ -242,12 +241,6 @@ pub use attachment_state::{
 #[cfg(target_os = "linux")]
 pub use attachment_verification::{
     AttachmentVerificationError, AttachmentVerificationOutcomeV1, DurableAttachmentVerificationV1,
-};
-pub use authority::{
-    AuthorizationArtifactQuartet, AuthorizationArtifacts, AuthorizationPreparation,
-    AuthorizationPreparationError, BrokerPlanPreparation, PreparedSigningRequest,
-    PublisherPlanPreparation, ReturnedSignature, SignedBrokerPlan, SignedPublisherPlan,
-    SigningAuthority,
 };
 pub use controller::{
     ActivatedOperationCompiler, ControllerQuantumReport, ControllerReconciliationStep,

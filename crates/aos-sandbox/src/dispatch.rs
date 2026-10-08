@@ -31,7 +31,8 @@ use aos_sandbox_protocol::{
 use sha2::{Digest as _, Sha256};
 
 use crate::publication::{RecoveredBrokerDispatchTemplateV1, RecoveredOwnershipLeaseV1};
-use crate::{SignedBrokerPlan, SignedOwnershipLease};
+use crate::SignedOwnershipLease;
+use aos_sandbox_protocol::authorization_artifact::SignedBrokerPlan;
 
 const TEMPLATE_DOMAIN: &[u8] = b"aos.sandbox.broker-dispatch-template.v1\0";
 const SEMANTIC_IDENTITY_DOMAIN: &[u8] = b"aos.sandbox.broker-semantic-identity.v1\0";
@@ -1469,9 +1470,11 @@ mod tests {
     use ed25519_dalek::SigningKey;
 
     use crate::{
-        BrokerPlanPreparation, OwnershipAuthorityVerifier, OwnershipClaimV1,
-        OwnershipTransactionReceiptV1, ReturnedSignature, SigningAuthority,
+        OwnershipAuthorityVerifier, OwnershipClaimV1, OwnershipTransactionReceiptV1,
         UnverifiedOwnershipLeaseResponse,
+    };
+    use aos_sandbox_protocol::authorization_artifact::{
+        BrokerPlanPreparation, ReturnedSignature, SigningAuthority,
     };
 
     use super::*;

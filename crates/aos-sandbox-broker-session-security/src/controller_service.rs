@@ -130,11 +130,11 @@ use aos_sandbox::{
     HostCatalogReconciliationError, HostCatalogReconciliationV1, Journal, JournalError,
     MountAttemptError, NodeController, NodeControllerLimits, OperationCompilationError,
     OwnershipGateStatusV1, OwnershipResumeOutcomeV1, PreparedAuthorityEffectV1,
-    PublicMutationEffectV1, Reconciler, ResourceInventoryError, SignedBrokerPlan,
-    SingleNodeEffectExecutor, ValidatedAuthorityEffectReceiptV1,
-    activated_ownership_gate_digest_from_journal_v1, prepare_runtime_lifecycle_authority_effect_v1,
-    public_operation_resource_from_journal_v1,
+    PublicMutationEffectV1, Reconciler, ResourceInventoryError, SingleNodeEffectExecutor,
+    ValidatedAuthorityEffectReceiptV1, activated_ownership_gate_digest_from_journal_v1,
+    prepare_runtime_lifecycle_authority_effect_v1, public_operation_resource_from_journal_v1,
 };
+use aos_sandbox_protocol::authorization_artifact::SignedBrokerPlan;
 
 use resident_custody::{
     AbortControllerCustodyUnwindV1, ControllerMonitorOutcomeV1, ControllerParentCustodyV1,

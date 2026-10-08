@@ -9,7 +9,9 @@ use std::io::Read as _;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::Path;
 
-use aos_sandbox::{BrokerPlanPreparation, ReturnedSignature, SignedBrokerPlan, SigningAuthority};
+use aos_sandbox_protocol::authorization_artifact::{
+    BrokerPlanPreparation, ReturnedSignature, SignedBrokerPlan, SigningAuthority,
+};
 use aos_sandbox_core::format::{decode_broker_authorization_plan, decode_trust_policy};
 use aos_sandbox_core::model::{KeyUsage, SignaturePurpose};
 use aos_sandbox_core::{
@@ -81,7 +83,7 @@ pub(crate) enum ControllerBrokerPlanSignerError {
     #[error("controller broker-plan signature failed policy verification")]
     Completion,
     #[error("Snapshot broker-plan completion failed: {0}")]
-    SnapshotCompletion(aos_sandbox::AuthorizationPreparationError),
+    SnapshotCompletion(aos_sandbox_protocol::authorization_artifact::AuthorizationPreparationError),
 }
 
 impl ControllerBrokerPlanSignerV1 {

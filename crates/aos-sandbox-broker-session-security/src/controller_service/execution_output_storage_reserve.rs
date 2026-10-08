@@ -26,7 +26,8 @@ use aos_sandbox::environment::EnvironmentProtectedJournalOwnerV1;
 use aos_sandbox::execution_parent_resource::ExecutionParentResourceSourceV1;
 use aos_sandbox::ownership_authority::ProtectedOwnershipClockError;
 use aos_sandbox::runtime_scope::CurrentAssignmentTarget;
-use aos_sandbox::{AuthorityPublicationStore, EffectFailure, Journal, SignedBrokerPlan};
+use aos_sandbox::{AuthorityPublicationStore, EffectFailure, Journal};
+use aos_sandbox_protocol::authorization_artifact::SignedBrokerPlan;
 use aos_sandbox_core::{
     BrokerAssignment, BrokerAudience, BrokerAuthorizationPlan, BrokerGrant,
     InvalidBrokerAuthorizationPlan, ProtocolId, ProtocolVersion, RawPairedClockSample,

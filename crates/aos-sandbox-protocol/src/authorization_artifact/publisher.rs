@@ -102,7 +102,7 @@ impl PublisherPlanPreparation {
 /// that converts it into a completion permit or filesystem effect authority.
 ///
 /// ```compile_fail
-/// use aos_sandbox::SignedPublisherPlan;
+/// use aos_sandbox_protocol::authorization_artifact::SignedPublisherPlan;
 ///
 /// fn duplicate(plan: &SignedPublisherPlan) -> SignedPublisherPlan {
 ///     plan.clone()
@@ -110,7 +110,7 @@ impl PublisherPlanPreparation {
 /// ```
 ///
 /// ```compile_fail
-/// use aos_sandbox::{SignedPublisherPlan};
+/// use aos_sandbox_protocol::authorization_artifact::SignedPublisherPlan;
 /// use aos_sandbox_core::{ObjectDescriptor, PublisherDomainPlan};
 ///
 /// fn forge(
@@ -162,7 +162,7 @@ mod tests {
     use sha2::{Digest as _, Sha256};
 
     use super::*;
-    use crate::ReturnedSignature;
+    use super::super::ReturnedSignature;
     use aos_sandbox_core::format::{decode_signature, encode_signature, encode_trust_policy};
     use aos_sandbox_core::model::{
         CacheDomain, CacheDomainKind, KeyReference, KeyUsage, Signature, SignatureBytes,

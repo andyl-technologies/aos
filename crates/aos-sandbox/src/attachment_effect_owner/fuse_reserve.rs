@@ -23,7 +23,8 @@ use super::{PreparedCurrentFuseReserveIntentV1, ProtectedAttachmentEffectOwnerV1
 use crate::attachment_state::{self, AttachmentDesiredStateError};
 use crate::ownership_authority::ProtectedOwnershipClockError;
 use crate::runtime_scope::{CurrentRuntimeScopeError, NamespaceTargetError};
-use crate::{Journal, JournalError, JournalLimits, SignedBrokerPlan};
+use crate::{Journal, JournalError, JournalLimits};
+use aos_sandbox_protocol::authorization_artifact::SignedBrokerPlan;
 
 const CONTROLLER_DIRECTORY: &str = "/var/lib/aos/sandboxd";
 const CONTROLLER_JOURNAL: &str = "controller.journal";
