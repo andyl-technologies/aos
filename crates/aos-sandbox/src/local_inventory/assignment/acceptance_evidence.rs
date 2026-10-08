@@ -1,7 +1,7 @@
 //! Optional authenticated node-acceptance evidence.
 //!
-//! The sealed acceptance owner retains its consumed verifier grant and complete
-//! intent, observation, capability, lease, Guardian, and protected-journal joins.
+//! The sealed acceptance factory consumes its original verifier grant and checks
+//! complete intent, observation, capability, lease, Guardian, and journal joins.
 //! Local assignment DATA and retained-history validation remain in the parent.
 
 use sha2::{Digest as _, Sha256};
