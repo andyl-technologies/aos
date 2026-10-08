@@ -1381,6 +1381,15 @@ and the separate cold-source, full requalification, source-preservation and
 imported-source-preservation checks. Registry completeness and both formatters
 pass; the owning runtime qualification remains pending. Gate Cargo jobs now
 follow `NIX_BUILD_CORES` so explicit build-core limits also bound compilation.
+The isolated `68766654c2` SDK build and actual compiled inventory pass with all
+twelve owning cases present and none ignored. Its first exact native execution
+passes ten cases and times out in the two new source-record/log-incarnation
+witnesses at their unchanged 120-second deadlines. Review identifies an
+observation adapter retaining its cloned namespace exclusion after the holder
+is dropped, blocking the subsequent fork. The separate `062c7b40e2` fixture
+correction drops that adapter before the holder; no production behavior,
+incarnation assertion or deadline changes. Its replacement execution and the
+owning Nix gate with all four prerequisites remain unqualified.
 No task checkbox, milestone exit or freeze advances.
 
 The isolated retained catalog cohort passes six focused real-worker tests in
