@@ -26,17 +26,17 @@ use super::{
     NodeWatchCursorV1, NodeWatchEventBodyV1, NodeWatchEventV1, ResyncInventoryV1,
     RollingVersionWindowV1, canonical_frame_kind_name_v1,
 };
-use crate::multi_node::assignment::{
+use crate::local_inventory::assignment::{
     AssignmentIntentV1, AssignmentObservationReasonV1, NodeAssignmentObservationV1,
     SelectedCapabilityBindingV1, SnapshotDependencyRangeV1, SnapshotTransferChunkRequestV1,
     SnapshotTransferChunkV1, SnapshotTransferIdentityV1, SnapshotTransferManifestV1,
     SnapshotTransferResumeV1, SnapshotTransferVersionV1,
 };
-use crate::multi_node::capability::{
+use crate::local_inventory::capability::{
     NodeAdmissionStateV1, NodeBootId, NodeBootLineageV1, NodeCapabilityFactV1,
     NodeCapabilitySnapshotV1, NodeProbeEvidenceV1, NodeProtocolOfferV1, NodeProtocolV1,
 };
-use crate::multi_node::draining::{
+use crate::local_inventory::draining::{
     DrainAssignmentObservationV1, DrainAssignmentPlanV1, DrainAssignmentProgressV1,
     DrainAssignmentStrategyV1, DrainBlockReasonV1, DrainDirectiveV1, DrainObservationV1,
     DrainPhaseV1, NodeDrainModeV1,
@@ -368,7 +368,7 @@ struct ProbeWire {
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(in crate::multi_node) struct CapabilityWire {
+pub(in crate::local_inventory) struct CapabilityWire {
     admission: AdmissionWire,
     allocatable: ResourceVector,
     facts: Vec<FactWire>,
@@ -381,7 +381,7 @@ pub(in crate::multi_node) struct CapabilityWire {
     sequence: ObservationSequence,
 }
 
-pub(in crate::multi_node) fn capability_wire(value: &NodeCapabilitySnapshotV1) -> CapabilityWire {
+pub(in crate::local_inventory) fn capability_wire(value: &NodeCapabilitySnapshotV1) -> CapabilityWire {
     let probe = value.probe_evidence();
     CapabilityWire {
         admission: match value.admission() {
@@ -414,7 +414,7 @@ pub(in crate::multi_node) fn capability_wire(value: &NodeCapabilitySnapshotV1) -
     }
 }
 
-pub(in crate::multi_node) fn capability_model(
+pub(in crate::local_inventory) fn capability_model(
     value: CapabilityWire,
 ) -> Result<NodeCapabilitySnapshotV1, InvalidMultiNodeProtocol> {
     let facts: Vec<_> = value.facts.into_iter().map(Into::into).collect();
@@ -518,19 +518,19 @@ impl BindingWire {
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(in crate::multi_node) struct IntentWire {
+pub(in crate::local_inventory) struct IntentWire {
     assignment: Vec<u8>,
     desired_lifecycle: DesiredSandboxState,
     selected_capability: BindingWire,
 }
-pub(in crate::multi_node) fn intent_wire(v: &AssignmentIntentV1) -> IntentWire {
+pub(in crate::local_inventory) fn intent_wire(v: &AssignmentIntentV1) -> IntentWire {
     IntentWire {
         assignment: v.assignment().canonical_bytes().to_vec(),
         desired_lifecycle: v.desired_lifecycle(),
         selected_capability: v.selected_capability_binding().into(),
     }
 }
-pub(in crate::multi_node) fn intent_model(
+pub(in crate::local_inventory) fn intent_model(
     v: IntentWire,
 ) -> Result<AssignmentIntentV1, InvalidMultiNodeProtocol> {
     let limits = DecodeLimits {
@@ -674,7 +674,7 @@ struct DrainPlanWire {
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(in crate::multi_node) struct DrainDirectiveWire {
+pub(in crate::local_inventory) struct DrainDirectiveWire {
     accepted_at_unix_seconds: u64,
     assignments: Vec<DrainPlanWire>,
     deadline_unix_seconds: Option<u64>,
@@ -699,7 +699,7 @@ fn strategy_model(v: StrategyWire) -> DrainAssignmentStrategyV1 {
         StrategyWire::LeaveStopped => DrainAssignmentStrategyV1::LeaveStopped,
     }
 }
-pub(in crate::multi_node) fn drain_directive_wire(v: &DrainDirectiveV1) -> DrainDirectiveWire {
+pub(in crate::local_inventory) fn drain_directive_wire(v: &DrainDirectiveV1) -> DrainDirectiveWire {
     DrainDirectiveWire {
         accepted_at_unix_seconds: v.accepted_at_unix_seconds(),
         assignments: v
@@ -725,7 +725,7 @@ pub(in crate::multi_node) fn drain_directive_wire(v: &DrainDirectiveV1) -> Drain
         operation: v.operation(),
     }
 }
-pub(in crate::multi_node) fn drain_directive_model(
+pub(in crate::local_inventory) fn drain_directive_model(
     v: DrainDirectiveWire,
 ) -> Result<DrainDirectiveV1, InvalidMultiNodeProtocol> {
     let assignments = v
@@ -1096,7 +1096,7 @@ impl ChunkWire {
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(in crate::multi_node) struct ManifestWire {
+pub(in crate::local_inventory) struct ManifestWire {
     chunks: Vec<ChunkWire>,
     dependencies: Vec<ObjectDescriptor>,
     identity: IdentityWire,
@@ -1104,7 +1104,7 @@ pub(in crate::multi_node) struct ManifestWire {
     root: ObjectDescriptor,
     version: VersionWire,
 }
-pub(in crate::multi_node) fn manifest_wire(v: &SnapshotTransferManifestV1) -> ManifestWire {
+pub(in crate::local_inventory) fn manifest_wire(v: &SnapshotTransferManifestV1) -> ManifestWire {
     ManifestWire {
         chunks: v.chunks().iter().copied().map(Into::into).collect(),
         dependencies: v.dependencies().to_vec(),
@@ -1117,7 +1117,7 @@ pub(in crate::multi_node) fn manifest_wire(v: &SnapshotTransferManifestV1) -> Ma
         },
     }
 }
-pub(in crate::multi_node) fn manifest_model(
+pub(in crate::local_inventory) fn manifest_model(
     v: ManifestWire,
 ) -> Result<SnapshotTransferManifestV1, InvalidMultiNodeProtocol> {
     let chunks = v
@@ -2083,9 +2083,9 @@ fn pb_capability(value: CapabilityWire) -> protobuf::CapabilitySnapshot {
 fn wire_capability(
     value: protobuf::CapabilitySnapshot,
 ) -> Result<CapabilityWire, InvalidMultiNodeProtocol> {
-    if value.facts.len() > crate::multi_node::MAX_NODE_CAPABILITY_FACTS
-        || value.features.len() > crate::multi_node::MAX_NODE_FEATURES
-        || value.protocols.len() > crate::multi_node::MAX_NODE_PROTOCOL_OFFERS
+    if value.facts.len() > crate::local_inventory::MAX_NODE_CAPABILITY_FACTS
+        || value.features.len() > crate::local_inventory::MAX_NODE_FEATURES
+        || value.protocols.len() > crate::local_inventory::MAX_NODE_PROTOCOL_OFFERS
     {
         return Err(invalid());
     }
@@ -2393,9 +2393,9 @@ fn pb_manifest(value: ManifestWire) -> protobuf::SnapshotManifest {
 fn wire_manifest(
     value: protobuf::SnapshotManifest,
 ) -> Result<ManifestWire, InvalidMultiNodeProtocol> {
-    if value.chunks.len() > crate::multi_node::MAX_SNAPSHOT_TRANSFER_CHUNKS
-        || value.dependencies.len() > crate::multi_node::MAX_SNAPSHOT_TRANSFER_DEPENDENCIES
-        || value.required_features.len() > crate::multi_node::MAX_NODE_FEATURES
+    if value.chunks.len() > crate::local_inventory::MAX_SNAPSHOT_TRANSFER_CHUNKS
+        || value.dependencies.len() > crate::local_inventory::MAX_SNAPSHOT_TRANSFER_DEPENDENCIES
+        || value.required_features.len() > crate::local_inventory::MAX_NODE_FEATURES
     {
         return Err(invalid());
     }
@@ -2470,7 +2470,7 @@ fn pb_drain_directive(value: DrainDirectiveWire) -> protobuf::DrainDirective {
 fn wire_drain_directive(
     value: protobuf::DrainDirective,
 ) -> Result<DrainDirectiveWire, InvalidMultiNodeProtocol> {
-    if value.assignments.len() > crate::multi_node::MAX_DRAIN_ASSIGNMENTS {
+    if value.assignments.len() > crate::local_inventory::MAX_DRAIN_ASSIGNMENTS {
         return Err(invalid());
     }
     Ok(DrainDirectiveWire {
@@ -2598,7 +2598,7 @@ fn pb_drain_observation(value: DrainObservationWire) -> protobuf::DrainObservati
 fn wire_drain_observation(
     value: protobuf::DrainObservation,
 ) -> Result<DrainObservationWire, InvalidMultiNodeProtocol> {
-    if value.assignments.len() > crate::multi_node::MAX_DRAIN_ASSIGNMENTS {
+    if value.assignments.len() > crate::local_inventory::MAX_DRAIN_ASSIGNMENTS {
         return Err(invalid());
     }
     Ok(DrainObservationWire {
@@ -2894,7 +2894,7 @@ pub(super) fn protobuf_request_model(
         (CanonicalNodeFrameKindV1::WatchRequest, Body::WatchRequest(value)) => {
             let maximum_events = u16::try_from(value.maximum_events).map_err(|_| invalid())?;
             if maximum_events == 0
-                || usize::from(maximum_events) > crate::multi_node::MAX_WATCH_EVENTS
+                || usize::from(maximum_events) > crate::local_inventory::MAX_WATCH_EVENTS
             {
                 return Err(invalid());
             }
@@ -3004,7 +3004,7 @@ pub(super) fn protobuf_response(
             index,
             bytes,
         } => {
-            if bytes.is_empty() || bytes.len() > crate::multi_node::MAX_NODE_RESPONSE_BYTES as usize
+            if bytes.is_empty() || bytes.len() > crate::local_inventory::MAX_NODE_RESPONSE_BYTES as usize
             {
                 return Err(invalid());
             }
@@ -3021,7 +3021,7 @@ pub(super) fn protobuf_response(
             offset,
             bytes,
         } => {
-            if bytes.is_empty() || bytes.len() > crate::multi_node::MAX_NODE_RESPONSE_BYTES as usize
+            if bytes.is_empty() || bytes.len() > crate::local_inventory::MAX_NODE_RESPONSE_BYTES as usize
             {
                 return Err(invalid());
             }
@@ -3034,7 +3034,7 @@ pub(super) fn protobuf_response(
             }))
         }
         NodeResponseBodyV1::WatchBatch { events, cursor_gap } => {
-            if events.len() > crate::multi_node::MAX_WATCH_EVENTS {
+            if events.len() > crate::local_inventory::MAX_WATCH_EVENTS {
                 return Err(invalid());
             }
             Body::WatchResponse(Box::new(protobuf::WatchResponse {
@@ -3066,7 +3066,7 @@ fn protobuf_inventory_model(
     value: protobuf::AssignmentInventory,
     context: AuthenticatedEvidenceContextV1,
 ) -> Result<ResyncInventoryV1, InvalidMultiNodeProtocol> {
-    if value.assignments.len() > crate::multi_node::MAX_RESYNC_ASSIGNMENTS {
+    if value.assignments.len() > crate::local_inventory::MAX_RESYNC_ASSIGNMENTS {
         return Err(invalid());
     }
     ResyncInventoryV1::new(
@@ -3124,7 +3124,7 @@ pub(super) fn protobuf_response_model(
         },
         (CanonicalNodeFrameKindV1::SnapshotChunkResponse, Body::SnapshotChunkResponse(value)) => {
             if value.data.is_empty()
-                || value.data.len() > crate::multi_node::MAX_NODE_RESPONSE_BYTES as usize
+                || value.data.len() > crate::local_inventory::MAX_NODE_RESPONSE_BYTES as usize
             {
                 return Err(invalid());
             }
@@ -3139,7 +3139,7 @@ pub(super) fn protobuf_response_model(
             Body::SnapshotDependencyResponse(value),
         ) => {
             if value.data.is_empty()
-                || value.data.len() > crate::multi_node::MAX_NODE_RESPONSE_BYTES as usize
+                || value.data.len() > crate::local_inventory::MAX_NODE_RESPONSE_BYTES as usize
             {
                 return Err(invalid());
             }
@@ -3151,7 +3151,7 @@ pub(super) fn protobuf_response_model(
             }
         }
         (CanonicalNodeFrameKindV1::WatchResponse, Body::WatchResponse(value)) => {
-            if value.events.len() > crate::multi_node::MAX_WATCH_EVENTS {
+            if value.events.len() > crate::local_inventory::MAX_WATCH_EVENTS {
                 return Err(invalid());
             }
             NodeResponseBodyV1::WatchBatch {
@@ -3204,28 +3204,28 @@ pub(super) fn protobuf_watch_event_body_model(
     })
 }
 
-pub(in crate::multi_node) fn protobuf_cursor(value: NodeWatchCursorV1) -> protobuf::WatchCursor {
+pub(in crate::local_inventory) fn protobuf_cursor(value: NodeWatchCursorV1) -> protobuf::WatchCursor {
     pb_cursor(value.into())
 }
-pub(in crate::multi_node) fn protobuf_cursor_model(
+pub(in crate::local_inventory) fn protobuf_cursor_model(
     value: protobuf::WatchCursor,
 ) -> Result<NodeWatchCursorV1, InvalidMultiNodeProtocol> {
     wire_cursor(value)?.model()
 }
-pub(in crate::multi_node) fn protobuf_binding(value: NodeWatchBindingV1) -> protobuf::WatchBinding {
+pub(in crate::local_inventory) fn protobuf_binding(value: NodeWatchBindingV1) -> protobuf::WatchBinding {
     pb_watch_binding(value.into())
 }
-pub(in crate::multi_node) fn protobuf_binding_model(
+pub(in crate::local_inventory) fn protobuf_binding_model(
     value: protobuf::WatchBinding,
 ) -> Result<NodeWatchBindingV1, InvalidMultiNodeProtocol> {
     wire_watch_binding(value)?.model()
 }
-pub(in crate::multi_node) fn protobuf_ordered_event(
+pub(in crate::local_inventory) fn protobuf_ordered_event(
     value: &NodeWatchEventV1,
 ) -> protobuf::WatchEvent {
     protobuf_event(value)
 }
-pub(in crate::multi_node) fn protobuf_ordered_event_model(
+pub(in crate::local_inventory) fn protobuf_ordered_event_model(
     value: protobuf::WatchEvent,
     context: AuthenticatedEvidenceContextV1,
     codec: &CanonicalNodeSemanticCodecV1,

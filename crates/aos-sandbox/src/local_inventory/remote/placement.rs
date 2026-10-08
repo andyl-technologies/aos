@@ -14,21 +14,21 @@ use aos_sandbox_core::{
     supported_protocol_version,
 };
 
-use super::assignment::{NodeAssignmentObservationV1, VerifiedGuardianStateV1};
-use super::capability::{
+use super::super::assignment::{NodeAssignmentObservationV1, VerifiedGuardianStateV1};
+use super::super::capability::{
     CarrierValidatedCapabilityObservationV1, NodeAdmissionStateV1, NodeBootId, NodeBootLineageV1,
     NodeCapabilitySnapshotV1, NodeProtocolV1,
 };
-use super::evidence_authority::VerifierEvidenceGrantV1;
-use super::journal::{JournalEffectStateV1, MultiNodeJournalDomainV1, ProtectedJournalRecordV1};
+use super::super::evidence_authority::VerifierEvidenceGrantV1;
+use super::super::journal::{JournalEffectStateV1, MultiNodeJournalDomainV1, ProtectedJournalRecordV1};
 
 /// Maximum candidate nodes considered by one placement decision.
 pub const MAX_PLACEMENT_CANDIDATES: usize = 4_096;
 /// Maximum complete affinity observations supplied to one placement decision.
-pub const MAX_AFFINITY_PLACEMENTS: usize = super::reducer_state::MAX_ASSIGNMENT_AFFINITIES;
+pub const MAX_AFFINITY_PLACEMENTS: usize = super::super::reducer_state::MAX_ASSIGNMENT_AFFINITIES;
 /// Maximum required features accepted from one semantic placement request.
 pub const MAX_PLACEMENT_REQUIRED_FEATURES: usize =
-    super::assignment::MAX_SNAPSHOT_TRANSFER_REQUIRED_FEATURES;
+    super::super::assignment::MAX_SNAPSHOT_TRANSFER_REQUIRED_FEATURES;
 
 /// Couples one node snapshot to its authenticated controller receipt time.
 ///
@@ -42,7 +42,7 @@ pub struct PlacementCandidateV1 {
 impl PlacementCandidateV1 {
     /// Constructs one candidate after authenticated snapshot receipt.
     #[must_use]
-    pub(super) fn from_authenticated_observation(
+    pub(in crate::local_inventory) fn from_authenticated_observation(
         observation: CarrierValidatedCapabilityObservationV1,
     ) -> Self {
         Self { observation }
@@ -83,7 +83,7 @@ impl AffinityPlacementV1 {
     /// Returns [`InvalidPlacementInput::AffinityNotLive`] unless the exact
     /// worker, assignment generation, armed Guardian, protected durability,
     /// carrier binding, and currentness all agree.
-    pub(super) fn from_liveness_verifier(
+    pub(in crate::local_inventory) fn from_liveness_verifier(
         grant: VerifierEvidenceGrantV1<(
             NodeAssignmentObservationV1,
             ObjectDigest,

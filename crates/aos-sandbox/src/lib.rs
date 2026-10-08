@@ -11,7 +11,7 @@
 //! client and observation projections. [`attach_holder_proof`] and
 //! [`create_holder_proof`] define the holder-key signature profiles. [`environment`],
 //! [`git`], [`hierarchy`],
-//! [`lifecycle`], [`multi_node`], [`policy_compiler`], and
+//! [`lifecycle`], [`local_inventory`], [`policy_compiler`], and
 //! [`publisher_admission`] own inert RFC-0021 domain models and
 //! protected-journal seams. [`publisher_roots`] owns
 //! the portable root registry and retains live root custody only on Linux,
@@ -120,7 +120,7 @@ pub mod mount_observation_state;
 pub mod mount_preparation;
 #[cfg(target_os = "linux")]
 pub mod mount_source_acquisition_inventory;
-pub mod multi_node;
+pub mod local_inventory;
 #[cfg(target_os = "linux")]
 pub mod normal_root;
 mod operator_abandon_ack;

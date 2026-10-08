@@ -1530,8 +1530,8 @@ impl CurrentLifecycleEffectV1<'_> {
     /// the Transfer owner for this exact lifecycle request and generation.
     pub fn observe_transfer_effect(
         self,
-        owner: &mut crate::multi_node::ProtectedMultiNodeAuthorityOwnerV1,
-        result: &crate::multi_node::ProtectedMultiNodeCurrentRecordV1,
+        owner: &mut crate::local_inventory::ProtectedMultiNodeAuthorityOwnerV1,
+        result: &crate::local_inventory::ProtectedMultiNodeCurrentRecordV1,
         inventory: &super::LifecycleAuthenticatedTransferInventoryV1,
     ) -> Result<LifecycleEffectObservationV1, LifecyclePhase6ErrorV1> {
         let record = result.record().record();
@@ -1547,11 +1547,11 @@ impl CurrentLifecycleEffectV1<'_> {
                 ))
         });
         if self.domain() != LifecycleEffectDomainV1::Transfer
-            || record.domain() != crate::multi_node::MultiNodeJournalDomainV1::SnapshotTransfer
+            || record.domain() != crate::local_inventory::MultiNodeJournalDomainV1::SnapshotTransfer
             || record.operation() != self.operation()
             || self.target() != *record.operation().as_bytes()
             || identity.operation() != self.operation()
-            || record.effect_state() != crate::multi_node::JournalEffectStateV1::Committed
+            || record.effect_state() != crate::local_inventory::JournalEffectStateV1::Committed
             || inventory_entry.is_none_or(|entry| entry.identity() != record.digest())
             || inventory.generation() == 0
             || inventory.source().as_bytes() == &[0; 32]

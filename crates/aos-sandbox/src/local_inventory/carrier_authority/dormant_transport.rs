@@ -10,7 +10,7 @@ use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
 
 use super::*;
-use crate::multi_node::protocol::{
+use crate::local_inventory::protocol::{
     CanonicalNodeSemanticCodecV1, NodeRequestBodyV1, NodeRequestEnvelopeV1, NodeResponseBodyV1,
     NodeResponseEnvelopeV1, validate_response_body,
 };
@@ -191,7 +191,7 @@ impl DormantTransportHandshakeV1 {
         &self.canonical_bytes
     }
 
-    pub(in crate::multi_node) fn authenticate_with_protected_owner(
+    pub(in crate::local_inventory) fn authenticate_with_protected_owner(
         self,
         canonical_signature: &[u8],
         canonical_trust_policy: &[u8],
@@ -254,7 +254,7 @@ pub struct DormantAuthenticatedCoordinatorNodeTransportV1 {
 }
 
 impl DormantAuthenticatedCoordinatorNodeTransportV1 {
-    pub(in crate::multi_node) fn validate_protected_owner(
+    pub(in crate::local_inventory) fn validate_protected_owner(
         &self,
         canonical_trust_policy: &[u8],
         public_key: &[u8; 32],
@@ -274,7 +274,7 @@ impl DormantAuthenticatedCoordinatorNodeTransportV1 {
     ///
     /// Returns [`InvalidMultiNodeProtocol`] for stale authentication, invalid
     /// request semantics, or a request exceeding the negotiated ceiling.
-    pub(in crate::multi_node) fn prepare_exchange_at_protected_time(
+    pub(in crate::local_inventory) fn prepare_exchange_at_protected_time(
         &self,
         request: OperationId,
         body: &NodeRequestBodyV1,
@@ -348,7 +348,7 @@ impl DormantAuthenticatedCoordinatorNodeTransportV1 {
     /// Returns [`InvalidMultiNodeProtocol`] unless the request signature,
     /// session binding, correlation identity, canonical encoding, and typed
     /// request semantics all match this authenticated session.
-    pub(in crate::multi_node) fn accept_request_with_protected_owner(
+    pub(in crate::local_inventory) fn accept_request_with_protected_owner(
         &self,
         request_bytes: &[u8],
         canonical_signature: &[u8],
@@ -399,7 +399,7 @@ impl DormantAuthenticatedCoordinatorNodeTransportV1 {
     /// Returns [`InvalidMultiNodeProtocol`] when the request does not belong to
     /// this current session, the response does not answer it, or the selected
     /// generated or legacy carrier exceeds the negotiated response limit.
-    pub(in crate::multi_node) fn prepare_response_at_protected_time(
+    pub(in crate::local_inventory) fn prepare_response_at_protected_time(
         &self,
         request: &NodeRequestEnvelopeV1,
         body: &NodeResponseBodyV1,
@@ -467,7 +467,7 @@ impl DormantAuthenticatedCoordinatorNodeTransportV1 {
     ///
     /// Returns [`InvalidMultiNodeProtocol`] for stale authentication, malformed
     /// protobuf/framing, replay mismatch, or response/request substitution.
-    pub(in crate::multi_node) fn accept_response_with_protected_owner(
+    pub(in crate::local_inventory) fn accept_response_with_protected_owner(
         self,
         request: &DormantOutboundExchangeV1,
         response_bytes: &[u8],
@@ -526,7 +526,7 @@ impl DormantAuthenticatedCoordinatorNodeTransportV1 {
                     .into_option()
                     .ok_or(InvalidMultiNodeProtocol::NonCanonicalFrame)?;
                 let semantic_bytes = semantic.encode_to_vec();
-                let kind = crate::multi_node::protocol::protobuf_codec_v1::response_frame_kind(
+                let kind = crate::local_inventory::protocol::protobuf_codec_v1::response_frame_kind(
                     semantic.kind.to_i32(),
                 )?;
                 let carrier_bytes = u32::try_from(response_bytes.len())
@@ -542,7 +542,7 @@ impl DormantAuthenticatedCoordinatorNodeTransportV1 {
                     carrier_bytes,
                     verified_at_unix_seconds,
                 )?;
-                let body = crate::multi_node::protocol::protobuf_codec_v1::decode_response(
+                let body = crate::local_inventory::protocol::protobuf_codec_v1::decode_response(
                     grant.context(),
                     kind,
                     &semantic_bytes,
@@ -594,10 +594,10 @@ impl DormantAuthenticatedCoordinatorNodeTransportV1 {
             .as_option()
             .ok_or(InvalidMultiNodeProtocol::NonCanonicalFrame)?;
         let semantic_bytes = semantic.encode_to_vec();
-        let kind = crate::multi_node::protocol::protobuf_codec_v1::request_frame_kind(
+        let kind = crate::local_inventory::protocol::protobuf_codec_v1::request_frame_kind(
             semantic.kind.to_i32(),
         )?;
-        let body = crate::multi_node::protocol::protobuf_codec_v1::decode_request(
+        let body = crate::local_inventory::protocol::protobuf_codec_v1::decode_request(
             &self.session,
             kind,
             &semantic_bytes,

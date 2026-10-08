@@ -13,7 +13,7 @@ use aos_sandbox_core::{
 use aos_sandbox_linux::boot::KernelBootId;
 use sha2::{Digest as _, Sha256};
 
-use crate::multi_node::{MultiNodeJournalDomainV1, ProtectedMultiNodeCurrentRecordV1};
+use crate::local_inventory::{MultiNodeJournalDomainV1, ProtectedMultiNodeCurrentRecordV1};
 use crate::{
     Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace, RecoveryReport,
 };

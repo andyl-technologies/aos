@@ -14,10 +14,10 @@ impl ProtectedCommittedLeaseV1 {
     ///
     /// # Errors
     ///
-    /// Returns [`super::InvalidMultiNodeProtocol::NonCanonicalFrame`] if the
+    /// Returns [`super::super::InvalidMultiNodeProtocol::NonCanonicalFrame`] if the
     /// protected canonical lease cannot be decoded exactly. This indicates
     /// corruption because the local authority verifies the lease before commit.
-    pub fn protobuf(&self) -> Result<wire::AssignmentLease, super::InvalidMultiNodeProtocol> {
+    pub fn protobuf(&self) -> Result<wire::AssignmentLease, super::super::InvalidMultiNodeProtocol> {
         let lease = decode_ownership_lease(
             self.lease(),
             DecodeLimits {
@@ -25,7 +25,7 @@ impl ProtectedCommittedLeaseV1 {
                 ..DecodeLimits::default()
             },
         )
-        .map_err(|_| super::InvalidMultiNodeProtocol::NonCanonicalFrame)?;
+        .map_err(|_| super::super::InvalidMultiNodeProtocol::NonCanonicalFrame)?;
         let assignment = lease.assignment();
 
         Ok(wire::AssignmentLease {

@@ -838,7 +838,7 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
         storage_inventory: &super::LifecycleAuthenticatedStorageInventoryBootstrapV1,
         network: &super::LifecycleAuthenticatedBrokerDomainInventoryBootstrapV1,
         cache: &mut crate::cache_residency::CacheResidencyProtectedOwnerV1,
-        transfer: &mut crate::multi_node::ProtectedMultiNodeAuthorityOwnerV1,
+        transfer: &mut crate::local_inventory::ProtectedMultiNodeAuthorityOwnerV1,
         transfer_inventory: &super::LifecycleAuthenticatedTransferInventoryV1,
         transaction_id: [u8; 16],
         atomic_join: ResourceId,

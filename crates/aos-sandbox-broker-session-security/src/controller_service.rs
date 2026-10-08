@@ -3948,7 +3948,7 @@ struct ProductionEffectExecutor {
     pending_cache_pin: Option<cache_pin::PendingControllerCachePinV1>,
     pending_cache_unpin: Option<cache_unpin::PendingControllerCacheUnpinV1>,
     controller_uid: u32,
-    transfer_inventory: Option<aos_sandbox::multi_node::ProtectedMultiNodeAuthorityOwnerV1>,
+    transfer_inventory: Option<aos_sandbox::local_inventory::ProtectedMultiNodeAuthorityOwnerV1>,
     node: NodeId,
     process_start: Option<([u8; 16], u64)>,
     pending_source_commit: Option<PendingSourceCommit>,
@@ -5354,21 +5354,21 @@ impl ProductionEffectExecutor {
 
         if self.transfer_inventory.is_none() {
             let (mut owner, _, initial) =
-                aos_sandbox::multi_node::ProtectedMultiNodeAuthorityOwnerV1::open_fixed_protected()
+                aos_sandbox::local_inventory::ProtectedMultiNodeAuthorityOwnerV1::open_fixed_protected()
                     .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
             if let Some(initial) = initial {
                 match initial {
-                    aos_sandbox::multi_node::ProtectedRecordCommitOutcomeV1::Committed(_) => {}
-                    aos_sandbox::multi_node::ProtectedRecordCommitOutcomeV1::RecoveryRequired(
+                    aos_sandbox::local_inventory::ProtectedRecordCommitOutcomeV1::Committed(_) => {}
+                    aos_sandbox::local_inventory::ProtectedRecordCommitOutcomeV1::RecoveryRequired(
                         recovery,
                     ) => match owner.resolve_store_write(recovery) {
-                        aos_sandbox::multi_node::ProtectedStoreRecoveryOutcomeV1::RecordCommitted(
+                        aos_sandbox::local_inventory::ProtectedStoreRecoveryOutcomeV1::RecordCommitted(
                             _,
                         ) => {}
-                        aos_sandbox::multi_node::ProtectedStoreRecoveryOutcomeV1::CheckpointCommitted(
+                        aos_sandbox::local_inventory::ProtectedStoreRecoveryOutcomeV1::CheckpointCommitted(
                             _,
                         )
-                        | aos_sandbox::multi_node::ProtectedStoreRecoveryOutcomeV1::RecoveryRequired {
+                        | aos_sandbox::local_inventory::ProtectedStoreRecoveryOutcomeV1::RecoveryRequired {
                             ..
                         } => {
                             return Err(EffectFailure::Permanent(

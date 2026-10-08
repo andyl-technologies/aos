@@ -54,7 +54,7 @@ use super::journal::{
     MultiNodeJournalReducerV1, ProtectedJournalCheckpointV1, ProtectedJournalRecordV1,
 };
 #[cfg(feature = "multi-node")]
-use super::placement::PlacementCandidateV1;
+use super::remote::placement::PlacementCandidateV1;
 use super::protected_artifact_store::{
     ProtectedArtifactKindV1, ProtectedArtifactRecoveryV1, ProtectedArtifactStoreOutcomeV1,
     ProtectedArtifactStoreV1, snapshot_chunk_effect, snapshot_dependency_effect,

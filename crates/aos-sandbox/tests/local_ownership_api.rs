@@ -16,27 +16,31 @@ fn local_lease_owner_is_a_protocol_handler_without_remote_selection() {
 
 #[test]
 fn protected_snapshot_inventory_remains_available_without_remote_selection() {
-    let _open = aos_sandbox::multi_node::ProtectedMultiNodeAuthorityOwnerV1::open_fixed_protected;
-    let _resolve = aos_sandbox::multi_node::ProtectedMultiNodeAuthorityOwnerV1::resolve_store_write;
+    let _open =
+        aos_sandbox::local_inventory::ProtectedMultiNodeAuthorityOwnerV1::open_fixed_protected;
+    let _resolve =
+        aos_sandbox::local_inventory::ProtectedMultiNodeAuthorityOwnerV1::resolve_store_write;
 }
 
 #[cfg(feature = "multi-node")]
 #[test]
 fn explicit_multi_node_selection_exposes_remote_adapters() {
+    use aos_sandbox::local_inventory::remote::{
+        DormantOrderedWatchServiceV1, place_deterministically,
+    };
     use aos_sandbox::local_ownership::ProtectedCommittedLeaseV1;
-    use aos_sandbox::multi_node::{DormantOrderedWatchServiceV1, place_deterministically};
 
     let _watch = DormantOrderedWatchServiceV1::new;
     let _placement = place_deterministically;
     let _lease_wire = ProtectedCommittedLeaseV1::protobuf;
     let _transport =
-        aos_sandbox::multi_node::ProtectedMultiNodeAuthorityOwnerV1::authenticate_dormant_transport;
+        aos_sandbox::local_inventory::ProtectedMultiNodeAuthorityOwnerV1::authenticate_dormant_transport;
 }
 
 #[cfg(feature = "multi-node")]
 #[test]
 fn explicitly_selected_placement_keeps_no_candidates_closed() {
-    use aos_sandbox::multi_node::{
+    use aos_sandbox::local_inventory::remote::{
         PlacementBlockReasonV1, PlacementDecisionV1, place_deterministically,
     };
     use aos_sandbox_core::model::PlacementRequest;

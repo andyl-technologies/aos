@@ -25,7 +25,7 @@ use super::evidence::AuthenticatedEvidenceContextV1;
 use super::evidence_authority::VerifierEvidenceGrantV1;
 use super::journal::{JournalEffectStateV1, MultiNodeJournalDomainV1, ProtectedJournalRecordV1};
 #[cfg(feature = "multi-node")]
-use super::placement::PlacementSelectionV1;
+use super::remote::placement::PlacementSelectionV1;
 
 /// Uses the core closed assignment transition vocabulary for node observations.
 pub type AssignmentObservationPhaseV1 = AssignmentPhase;

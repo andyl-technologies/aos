@@ -124,7 +124,7 @@ pub(super) fn encode_request(
     Ok(encode(kind, semantic_codec_v1::protobuf_request(body)?))
 }
 
-pub(in crate::multi_node) fn decode_request(
+pub(in crate::local_inventory) fn decode_request(
     session: &AuthenticatedNodeSessionV1,
     kind: CanonicalNodeFrameKindV1,
     bytes: &[u8],
@@ -142,7 +142,7 @@ pub(super) fn encode_response(
     Ok(encode(kind, semantic_codec_v1::protobuf_response(body)?))
 }
 
-pub(in crate::multi_node) fn decode_response(
+pub(in crate::local_inventory) fn decode_response(
     context: AuthenticatedEvidenceContextV1,
     kind: CanonicalNodeFrameKindV1,
     bytes: &[u8],
@@ -317,7 +317,7 @@ const fn response_kind(kind: CanonicalNodeFrameKindV1) -> i32 {
     }
 }
 
-pub(in crate::multi_node) const fn request_frame_kind(
+pub(in crate::local_inventory) const fn request_frame_kind(
     kind: i32,
 ) -> Result<CanonicalNodeFrameKindV1, InvalidMultiNodeProtocol> {
     Ok(match kind {
@@ -335,7 +335,7 @@ pub(in crate::multi_node) const fn request_frame_kind(
     })
 }
 
-pub(in crate::multi_node) const fn response_frame_kind(
+pub(in crate::local_inventory) const fn response_frame_kind(
     kind: i32,
 ) -> Result<CanonicalNodeFrameKindV1, InvalidMultiNodeProtocol> {
     Ok(match kind {

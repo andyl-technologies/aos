@@ -2788,7 +2788,7 @@ impl LifecycleAuthenticatedTransferInventoryV1 {
     pub(crate) fn from_protected_records(
         generation: u64,
         source: ObjectDigest,
-        records: &[crate::multi_node::ProtectedMultiNodeCurrentRecordV1],
+        records: &[crate::local_inventory::ProtectedMultiNodeCurrentRecordV1],
     ) -> Result<Self, LifecyclePhase6ErrorV1> {
         if generation == 0
             || source.as_bytes() == &[0; 32]
@@ -2802,7 +2802,7 @@ impl LifecycleAuthenticatedTransferInventoryV1 {
             .map_err(|_| LifecyclePhase6ErrorV1::Capacity)?;
         for protected in records {
             let record = protected.record().record();
-            if record.domain() != crate::multi_node::MultiNodeJournalDomainV1::SnapshotTransfer {
+            if record.domain() != crate::local_inventory::MultiNodeJournalDomainV1::SnapshotTransfer {
                 return Err(LifecyclePhase6ErrorV1::InvalidInput);
             }
             entries.push(LifecycleBootDomainEntryV1 {

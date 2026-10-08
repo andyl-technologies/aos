@@ -769,7 +769,7 @@ impl CanonicalNodeSemanticCodecV1 {
         Self { legacy_json: false }
     }
 
-    pub(in crate::multi_node) const fn legacy_json() -> Self {
+    pub(in crate::local_inventory) const fn legacy_json() -> Self {
         Self { legacy_json: true }
     }
 
@@ -811,7 +811,7 @@ impl CanonicalNodeSemanticCodecV1 {
         Ok(body)
     }
 
-    pub(in crate::multi_node) fn encode_request(
+    pub(in crate::local_inventory) fn encode_request(
         &self,
         body: &NodeRequestBodyV1,
     ) -> Result<Vec<u8>, InvalidMultiNodeProtocol> {
@@ -879,7 +879,7 @@ impl CanonicalNodeSemanticCodecV1 {
         }
     }
 
-    pub(in crate::multi_node) fn encode_response(
+    pub(in crate::local_inventory) fn encode_response(
         &self,
         body: &NodeResponseBodyV1,
     ) -> Result<Vec<u8>, InvalidMultiNodeProtocol> {
@@ -1115,7 +1115,7 @@ impl NodeRequestEnvelopeV1 {
         })
     }
 
-    pub(in crate::multi_node) fn from_generated_carrier(
+    pub(in crate::local_inventory) fn from_generated_carrier(
         session: &AuthenticatedNodeSessionV1,
         request: OperationId,
         body: NodeRequestBodyV1,
@@ -1530,7 +1530,7 @@ impl NodeResponseEnvelopeV1 {
         })
     }
 
-    pub(in crate::multi_node) fn from_authenticated_generated_carrier(
+    pub(in crate::local_inventory) fn from_authenticated_generated_carrier(
         grant: CarrierResponseGrantV1,
         request: &NodeRequestEnvelopeV1,
         body: NodeResponseBodyV1,
@@ -1808,7 +1808,7 @@ enum NodeMethodV1 {
     Watch,
 }
 
-pub(in crate::multi_node) fn validate_response_body(
+pub(in crate::local_inventory) fn validate_response_body(
     session: &AuthenticatedNodeSessionV1,
     request: &NodeRequestBodyV1,
     response: &NodeResponseBodyV1,
