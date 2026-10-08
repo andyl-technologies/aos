@@ -7436,8 +7436,14 @@ fn write_compacted(
     let mut chunk = Vec::new();
     let mut chunk_bytes = 0_usize;
     for ((namespace, key), value) in state {
-        let record = JournalRecord::put(*namespace, key.clone(), value.clone());
-        let record_bytes = encode_record(&record)?.len();
+        let record = RecordMutationRef {
+            namespace: *namespace,
+            key,
+            value: Some(value.as_slice()),
+        };
+        // Preserve lookahead representation refusal before flushing the prior chunk.
+        let record_bytes =
+            EncodedRecordLayout::new(key.len(), Some(value.len()))?.payload_bytes;
         if !chunk.is_empty()
             && (chunk.len() == limits.maximum_records_per_transaction
                 || chunk_bytes.saturating_add(record_bytes) > limits.maximum_transaction_bytes)
@@ -7475,7 +7481,7 @@ fn write_compacted(
 
 fn write_compaction_transaction(
     file: &mut File,
-    records: &[JournalRecord],
+    records: &[RecordMutationRef<'_, RecordNamespace>],
     transaction_index: u64,
     first_sequence: u64,
     limits: JournalLimits,
@@ -7483,7 +7489,15 @@ fn write_compaction_transaction(
     let mut id = [0_u8; 16];
     id[..8].copy_from_slice(&(transaction_index + 1).to_le_bytes());
     id[8..].copy_from_slice(b"compact1");
-    let transaction = JournalTransaction::new(id, records.to_vec())?;
+    let records = records
+        .iter()
+        .map(|record| JournalRecord {
+            namespace: record.namespace,
+            key: record.key.to_vec(),
+            value: record.value.map(<[u8]>::to_vec),
+        })
+        .collect();
+    let transaction = JournalTransaction::new(id, records)?;
     validate_transaction(&transaction, limits)?;
     let frames = encode_transaction(&transaction, first_sequence)?;
     for frame in &frames {
@@ -10042,6 +10056,154 @@ mod tests {
         assert_eq!(
             journal.check_idempotency(&key, [0x22; 32]),
             IdempotencyOutcome::Conflict
+        );
+    }
+
+    #[test]
+    fn compaction_batches_preserve_exact_native_bytes_and_literal_row_payloads() {
+        let state = std::collections::BTreeMap::from([
+            ((RecordNamespace::DesiredState, b"c".to_vec()), b"3".to_vec()),
+            ((RecordNamespace::DesiredState, b"a".to_vec()), b"1".to_vec()),
+            ((RecordNamespace::DesiredState, b"b".to_vec()), b"2".to_vec()),
+        ]);
+        let limits = JournalLimits {
+            maximum_records_per_transaction: 2,
+            maximum_transaction_bytes: 18,
+            ..JournalLimits::default()
+        };
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+
+        super::write_compacted(file.as_file_mut(), &state, limits).unwrap();
+
+        let first = JournalTransaction::new(
+            *b"\x01\0\0\0\0\0\0\0compact1",
+            vec![
+                JournalRecord::put(RecordNamespace::DesiredState, b"a".to_vec(), b"1".to_vec()),
+                JournalRecord::put(RecordNamespace::DesiredState, b"b".to_vec(), b"2".to_vec()),
+            ],
+        )
+        .unwrap();
+        let last = JournalTransaction::new(
+            *b"\x02\0\0\0\0\0\0\0compact1",
+            vec![JournalRecord::put(
+                RecordNamespace::DesiredState,
+                b"c".to_vec(),
+                b"3".to_vec(),
+            )],
+        )
+        .unwrap();
+        let expected = [
+            encode_transaction(&first, 1).unwrap(),
+            encode_transaction(&last, 5).unwrap(),
+        ]
+        .concat()
+        .concat();
+        let actual = std::fs::read(file.path()).unwrap();
+        assert_eq!(actual, expected);
+
+        // Literal native record payloads independently specify field widths,
+        // namespace byte, sorted row order, and the exact two chunk boundaries.
+        let mut reader = std::io::Cursor::new(actual);
+        let mut offset = 0;
+        let mut frames = Vec::new();
+        while let Some((frame, bytes)) =
+            super::read_frame_retained(&mut reader, offset, 1024, None).unwrap()
+        {
+            frames.push(frame);
+            offset += bytes;
+        }
+        assert_eq!(frames.len(), 7);
+        assert_eq!(frames[0].payload, [2, 0, 0, 0]);
+        assert_eq!(frames[1].payload, [1, 1, 0, 1, 0, 0, 0, b'a', b'1']);
+        assert_eq!(frames[2].payload, [1, 1, 0, 1, 0, 0, 0, b'b', b'2']);
+        assert_eq!(&frames[3].payload[..4], &[2, 0, 0, 0]);
+        assert_eq!(frames[4].payload, [1, 0, 0, 0]);
+        assert_eq!(frames[5].payload, [1, 1, 0, 1, 0, 0, 0, b'c', b'3']);
+        assert_eq!(&frames[6].payload[..4], &[1, 0, 0, 0]);
+        for (index, frame) in frames.iter().enumerate() {
+            assert_eq!(frame.sequence, index as u64 + 1);
+            assert_eq!(
+                frame.transaction_id,
+                if index < 4 { *first.id() } else { *last.id() },
+            );
+        }
+    }
+
+    #[test]
+    fn compaction_lookahead_representation_fails_before_previous_count_or_schema_and_write() {
+        let state = std::collections::BTreeMap::from([
+            ((RecordNamespace::Idempotency, b"a".to_vec()), vec![1; 47]),
+            (
+                (
+                    RecordNamespace::Idempotency,
+                    vec![b'z'; usize::from(u16::MAX) + 1],
+                ),
+                vec![1; 48],
+            ),
+        ]);
+        let limits = JournalLimits {
+            maximum_records_per_transaction: 1,
+            maximum_transactions: 0,
+            ..JournalLimits::default()
+        };
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+
+        assert!(matches!(
+            super::write_compacted(file.as_file_mut(), &state, limits),
+            Err(JournalError::LimitExceeded("record key bytes")),
+        ));
+        assert_eq!(file.as_file().metadata().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn compaction_previous_batch_keeps_typed_idempotency_refusal_before_any_write() {
+        let state = std::collections::BTreeMap::from([
+            ((RecordNamespace::Idempotency, b"a".to_vec()), vec![1; 47]),
+            ((RecordNamespace::Idempotency, b"b".to_vec()), vec![1; 48]),
+        ]);
+        let limits = JournalLimits {
+            maximum_records_per_transaction: 1,
+            ..JournalLimits::default()
+        };
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+
+        assert!(matches!(
+            super::write_compacted(file.as_file_mut(), &state, limits),
+            Err(JournalError::MalformedRecord("invalid idempotency decision")),
+        ));
+        assert_eq!(file.as_file().metadata().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn compaction_later_configured_key_refusal_retains_the_original_prior_native_chunk() {
+        let state = std::collections::BTreeMap::from([
+            ((RecordNamespace::DesiredState, b"a".to_vec()), b"1".to_vec()),
+            ((RecordNamespace::DesiredState, b"bb".to_vec()), b"2".to_vec()),
+        ]);
+        let limits = JournalLimits {
+            maximum_records_per_transaction: 1,
+            maximum_key_bytes: 1,
+            ..JournalLimits::default()
+        };
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+
+        assert!(matches!(
+            super::write_compacted(file.as_file_mut(), &state, limits),
+            Err(JournalError::LimitExceeded("record key bytes")),
+        ));
+
+        let first = JournalTransaction::new(
+            *b"\x01\0\0\0\0\0\0\0compact1",
+            vec![JournalRecord::put(
+                RecordNamespace::DesiredState,
+                b"a".to_vec(),
+                b"1".to_vec(),
+            )],
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read(file.path()).unwrap(),
+            encode_transaction(&first, 1).unwrap().concat(),
         );
     }
 
