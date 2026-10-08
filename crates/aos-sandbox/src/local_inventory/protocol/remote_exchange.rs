@@ -16,10 +16,124 @@ use super::super::carrier_authority::{AuthenticatedFrameSealV1, CarrierResponseG
 use super::super::evidence::AuthenticatedEvidenceContextV1;
 use super::{
     AuthenticatedNodeSessionV1, CanonicalNodeFrameV1, CanonicalNodeSemanticCodecV1,
-    CarrierValidatedResyncInventoryV1, InvalidMultiNodeProtocol, MAX_WATCH_EVENTS,
-    NodeRequestBodyV1, NodeResponseBodyV1, NodeWatchCursorV1, NodeWatchEventBodyV1,
-    NodeWatchEventV1, carrier_binding_digest,
+    InvalidMultiNodeProtocol, MAX_WATCH_EVENTS, NodeRequestBodyV1, NodeResponseBodyV1,
+    NodeWatchCursorV1, NodeWatchEventBodyV1, NodeWatchEventV1, ResyncInventoryV1,
+    carrier_binding_digest, stable_watch_bootstrap_uid,
 };
+
+/// Commits a complete bootstrap from which an exact watch may resume.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NodeWatchBootstrapV1 {
+    cursor: NodeWatchCursorV1,
+    inventory_digest: ObjectDigest,
+}
+
+impl NodeWatchBootstrapV1 {
+    /// Constructs one complete authenticated bootstrap commitment.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidMultiNodeProtocol::WatchBindingMismatch`] unless the
+    /// validated inventory cursor is exactly at its binding's bootstrap watermark.
+    pub fn from_validated_inventory(
+        inventory: &CarrierValidatedResyncInventoryV1,
+        coordinator_unix_seconds: u64,
+    ) -> Result<Self, InvalidMultiNodeProtocol> {
+        let cursor = inventory.inventory().cursor();
+        let inventory_digest = inventory.canonical_inventory_digest();
+        if !inventory.is_current_at(coordinator_unix_seconds)
+            || cursor.event_sequence() != cursor.binding().bootstrap_watermark()
+        {
+            return Err(InvalidMultiNodeProtocol::WatchBindingMismatch);
+        }
+        if cursor.last_event_uid()
+            != stable_watch_bootstrap_uid(cursor.binding(), cursor.lineage(), inventory_digest)
+        {
+            return Err(InvalidMultiNodeProtocol::WatchBindingMismatch);
+        }
+        Ok(Self {
+            cursor,
+            inventory_digest,
+        })
+    }
+
+    /// Returns the exact watch cursor established by the bootstrap.
+    #[must_use]
+    pub const fn cursor(self) -> NodeWatchCursorV1 {
+        self.cursor
+    }
+
+    /// Returns the canonical complete-inventory commitment.
+    #[must_use]
+    pub const fn inventory_digest(self) -> ObjectDigest {
+        self.inventory_digest
+    }
+}
+
+/// Marks a complete inventory whose exact carrier frame was authenticated.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CarrierValidatedResyncInventoryV1 {
+    inventory: ResyncInventoryV1,
+    audience_digest: ObjectDigest,
+    disclosure_domain_digest: ObjectDigest,
+    carrier_binding_digest: ObjectDigest,
+    canonical_inventory_digest: ObjectDigest,
+    canonical_frame_bytes: u32,
+    coordinator_epoch: u64,
+    authenticated_at_unix_seconds: u64,
+    valid_until_unix_seconds: u64,
+}
+
+impl CarrierValidatedResyncInventoryV1 {
+    /// Returns the complete validated inventory semantics.
+    #[must_use]
+    pub const fn inventory(&self) -> &ResyncInventoryV1 {
+        &self.inventory
+    }
+
+    /// Returns the authenticated carrier-binding commitment.
+    #[must_use]
+    pub const fn carrier_binding_digest(&self) -> ObjectDigest {
+        self.carrier_binding_digest
+    }
+
+    /// Returns the digest of exact canonical inventory bytes.
+    #[must_use]
+    pub const fn canonical_inventory_digest(&self) -> ObjectDigest {
+        self.canonical_inventory_digest
+    }
+
+    /// Returns the authenticated audience commitment.
+    #[must_use]
+    pub const fn audience_digest(&self) -> ObjectDigest {
+        self.audience_digest
+    }
+
+    /// Returns the authenticated disclosure-domain commitment.
+    #[must_use]
+    pub const fn disclosure_domain_digest(&self) -> ObjectDigest {
+        self.disclosure_domain_digest
+    }
+
+    /// Returns the exact canonical carrier-frame byte count.
+    #[must_use]
+    pub const fn canonical_frame_bytes(&self) -> u32 {
+        self.canonical_frame_bytes
+    }
+
+    /// Returns the durable coordinator epoch.
+    #[must_use]
+    pub const fn coordinator_epoch(&self) -> u64 {
+        self.coordinator_epoch
+    }
+
+    /// Reports whether this exact authenticated inventory remains current.
+    #[must_use]
+    pub fn is_current_at(&self, coordinator_unix_seconds: u64) -> bool {
+        coordinator_unix_seconds >= self.authenticated_at_unix_seconds
+            && coordinator_unix_seconds <= self.valid_until_unix_seconds
+    }
+}
 
 /// Carries one request bound to an authenticated session and correlation ID.
 #[cfg(feature = "multi-node")]

@@ -94,14 +94,16 @@ pub use journal::{
 pub use protocol::{
     AuthenticatedNodeSessionV1, BoundedFrameDecodeError, BoundedFrameDecoderV1,
     CanonicalNodeFrameKindV1, CanonicalNodeFrameV1, CanonicalNodeSemanticCodecV1,
-    CarrierValidatedResyncInventoryV1, InvalidMultiNodeProtocol, MAX_NODE_REQUEST_BYTES,
-    MAX_NODE_RESPONSE_BYTES, MAX_RESYNC_ASSIGNMENTS, MAX_WATCH_EVENTS, NodeResponseBodyV1,
-    NodeWatchBindingV1, NodeWatchBootstrapV1, NodeWatchCursorV1, NodeWatchEventBodyV1,
-    NodeWatchEventV1, ResyncInventoryV1, RollingVersionWindowV1, stable_watch_bootstrap_uid,
-    stable_watch_event_uid,
+    InvalidMultiNodeProtocol, MAX_NODE_REQUEST_BYTES, MAX_NODE_RESPONSE_BYTES,
+    MAX_RESYNC_ASSIGNMENTS, MAX_WATCH_EVENTS, NodeResponseBodyV1, NodeWatchBindingV1,
+    NodeWatchCursorV1, NodeWatchEventBodyV1, NodeWatchEventV1, ResyncInventoryV1,
+    RollingVersionWindowV1, stable_watch_bootstrap_uid, stable_watch_event_uid,
 };
 #[cfg(feature = "multi-node")]
-pub use protocol::{NodeRequestBodyV1, NodeRequestEnvelopeV1, NodeResponseEnvelopeV1};
+pub use protocol::{
+    CarrierValidatedResyncInventoryV1, NodeRequestBodyV1, NodeRequestEnvelopeV1,
+    NodeResponseEnvelopeV1, NodeWatchBootstrapV1,
+};
 
 pub use reducer_state::{
     AssignmentJournalStateV1, CapabilityJournalStateV1, DrainJournalStateV1,
