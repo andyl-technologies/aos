@@ -22,6 +22,7 @@ pub use companion::{
 pub use owner_cut::HistoricalControllerOutputOwnerCutV1;
 pub use trust_capsule::HistoricalControllerOutputPublicPinsV1;
 
+use aos_sandbox_core::bounded_codec::{BoundedReader, ReadError};
 use sha2::{Digest as _, Sha256};
 
 /// Reports malformed historical Output bytes or an unavailable carrier profile.
@@ -57,72 +58,26 @@ pub(super) fn nonzero(bytes: &[u8]) -> ArchiveResult<()> {
     Ok(())
 }
 
-/// Advances through already bounded format bytes using checked offsets.
-pub(super) struct Reader<'bytes> {
-    bytes: &'bytes [u8],
-    cursor: usize,
+fn archive_read_error(error: ReadError) -> HistoricalStorageOutputArchiveErrorV1 {
+    match error {
+        ReadError::LengthOverflow => HistoricalStorageOutputArchiveErrorV1::TooLarge,
+        ReadError::Truncated | ReadError::NonzeroReserved | ReadError::TrailingBytes => {
+            HistoricalStorageOutputArchiveErrorV1::Invalid
+        }
+    }
 }
 
-impl<'bytes> Reader<'bytes> {
-    pub(super) fn new(bytes: &'bytes [u8]) -> Self {
-        Self { bytes, cursor: 0 }
+// The declared field ceiling is checked before borrowing its payload bytes.
+fn read_field<'bytes>(
+    reader: &mut BoundedReader<'bytes, HistoricalStorageOutputArchiveErrorV1>,
+    maximum: usize,
+) -> ArchiveResult<&'bytes [u8]> {
+    let length = usize::try_from(reader.u32()?)
+        .map_err(|_| HistoricalStorageOutputArchiveErrorV1::TooLarge)?;
+    if length > maximum {
+        return Err(HistoricalStorageOutputArchiveErrorV1::TooLarge);
     }
-
-    pub(super) fn take(&mut self, length: usize) -> ArchiveResult<&'bytes [u8]> {
-        let end = self.cursor.checked_add(length)
-            .ok_or(HistoricalStorageOutputArchiveErrorV1::TooLarge)?;
-        let bytes = self.bytes.get(self.cursor..end)
-            .ok_or(HistoricalStorageOutputArchiveErrorV1::Invalid)?;
-        self.cursor = end;
-        Ok(bytes)
-    }
-
-    pub(super) fn array<const N: usize>(&mut self) -> ArchiveResult<[u8; N]> {
-        self.take(N)?.try_into().map_err(|_| HistoricalStorageOutputArchiveErrorV1::Invalid)
-    }
-
-    pub(super) fn u8(&mut self) -> ArchiveResult<u8> {
-        Ok(self.array::<1>()?[0])
-    }
-
-    pub(super) fn u16(&mut self) -> ArchiveResult<u16> {
-        Ok(u16::from_be_bytes(self.array()?))
-    }
-
-    pub(super) fn u32(&mut self) -> ArchiveResult<u32> {
-        Ok(u32::from_be_bytes(self.array()?))
-    }
-
-    pub(super) fn u64(&mut self) -> ArchiveResult<u64> {
-        Ok(u64::from_be_bytes(self.array()?))
-    }
-
-    pub(super) fn i64(&mut self) -> ArchiveResult<i64> {
-        Ok(i64::from_be_bytes(self.array()?))
-    }
-
-    pub(super) fn zero(&mut self, length: usize) -> ArchiveResult<()> {
-        if self.take(length)?.iter().any(|byte| *byte != 0) {
-            return Err(HistoricalStorageOutputArchiveErrorV1::Invalid);
-        }
-        Ok(())
-    }
-
-    pub(super) fn field(&mut self, maximum: usize) -> ArchiveResult<&'bytes [u8]> {
-        let length = usize::try_from(self.u32()?)
-            .map_err(|_| HistoricalStorageOutputArchiveErrorV1::TooLarge)?;
-        if length > maximum {
-            return Err(HistoricalStorageOutputArchiveErrorV1::TooLarge);
-        }
-        self.take(length)
-    }
-
-    pub(super) fn finish(self) -> ArchiveResult<()> {
-        if self.cursor != self.bytes.len() {
-            return Err(HistoricalStorageOutputArchiveErrorV1::Invalid);
-        }
-        Ok(())
-    }
+    reader.bytes(length)
 }
 
 #[cfg(test)]
@@ -335,5 +290,61 @@ mod tests {
         oversized[344..348].copy_from_slice(&1_048_577_u32.to_be_bytes());
         assert!(matches!(HistoricalStorageOutputAuthorityArchiveV1::decode(&oversized),
             Err(HistoricalStorageOutputArchiveErrorV1::TooLarge)));
+    }
+}
+
+#[cfg(test)]
+mod reader_tests {
+    use super::*;
+
+    #[test]
+    fn failed_ranges_preserve_position_and_distinguish_overflow_from_truncation() {
+        let bytes = [1, 2, 3];
+        let mut reader = BoundedReader::new(&bytes, archive_read_error);
+        assert_eq!(reader.u8().unwrap(), 1);
+
+        assert!(matches!(
+            reader.bytes(usize::MAX),
+            Err(HistoricalStorageOutputArchiveErrorV1::TooLarge)
+        ));
+        assert!(matches!(
+            reader.array::<3>(),
+            Err(HistoricalStorageOutputArchiveErrorV1::Invalid)
+        ));
+        assert_eq!(reader.remaining_bytes(), &bytes[1..]);
+    }
+
+    #[test]
+    fn failed_reserved_checks_consume_the_field_before_rejecting_the_tail() {
+        let mut reader = BoundedReader::new(&[0, 1, 0], archive_read_error);
+
+        assert!(matches!(
+            reader.zeros(2),
+            Err(HistoricalStorageOutputArchiveErrorV1::Invalid)
+        ));
+        assert_eq!(reader.remaining_bytes(), &[0]);
+        assert!(matches!(
+            reader.finish(),
+            Err(HistoricalStorageOutputArchiveErrorV1::Invalid)
+        ));
+    }
+
+    #[test]
+    fn field_ceiling_precedes_payload_read_and_failed_payload_leaves_its_bytes() {
+        let bytes = [0, 0, 0, 2, 7];
+        let mut reader = BoundedReader::new(&bytes, archive_read_error);
+
+        assert!(matches!(
+            read_field(&mut reader, 1),
+            Err(HistoricalStorageOutputArchiveErrorV1::TooLarge)
+        ));
+        assert_eq!(reader.remaining_bytes(), &bytes[4..]);
+
+        let mut reader = BoundedReader::new(&bytes, archive_read_error);
+        assert!(matches!(
+            read_field(&mut reader, 2),
+            Err(HistoricalStorageOutputArchiveErrorV1::Invalid)
+        ));
+        assert_eq!(reader.remaining_bytes(), &bytes[4..]);
     }
 }

@@ -9,6 +9,7 @@
 //! ```
 
 use aos_proto::aos::sandbox::local::v1::BrokerAuthorizationArtifactsV1;
+use aos_sandbox_core::bounded_codec::BoundedReader;
 use aos_sandbox_core::format::{
     decode_broker_authorization_plan, decode_ownership_lease, decode_signature,
     decode_trust_policy, encode_trust_policy,
@@ -19,7 +20,9 @@ use aos_sandbox_core::{
 };
 use sha2::Digest as _;
 
-use super::{ArchiveResult, HistoricalStorageOutputArchiveErrorV1, Reader, digest, nonzero};
+use super::{
+    ArchiveResult, HistoricalStorageOutputArchiveErrorV1, archive_read_error, digest, nonzero, read_field,
+};
 
 const DOMAIN: &[u8] = b"aos.sandbox.controller-storage-output-public-pins.v1\0";
 const MAXIMUM_POLICY_BYTES: usize = 65_536;
@@ -48,11 +51,11 @@ impl HistoricalControllerOutputPublicPinsV1 {
         if bytes.len() > MAXIMUM_BYTES {
             return Err(HistoricalStorageOutputArchiveErrorV1::TooLarge);
         }
-        let mut reader = Reader::new(bytes);
-        if reader.take(8)? != b"AOSCPN01" || reader.u16()? != 1 || reader.u8()? != 2 {
+        let mut reader = BoundedReader::new(bytes, archive_read_error);
+        if reader.bytes(8)? != b"AOSCPN01" || reader.u16()? != 1 || reader.u8()? != 2 {
             return Err(HistoricalStorageOutputArchiveErrorV1::Invalid);
         }
-        reader.zero(5)?;
+        reader.zeros(5)?;
         let (plan_policy, plan_public) =
             validate_policy(&mut reader, SignaturePurpose::BrokerAuthorization)?;
         let revocation_scope = reader.array()?;
@@ -189,10 +192,10 @@ fn bounded_limits(maximum_bytes: usize) -> DecodeLimits {
 }
 
 fn validate_policy(
-    reader: &mut Reader<'_>,
+    reader: &mut BoundedReader<'_, HistoricalStorageOutputArchiveErrorV1>,
     purpose: SignaturePurpose,
 ) -> ArchiveResult<(Vec<u8>, [u8; 32])> {
-    let bytes = reader.field(MAXIMUM_POLICY_BYTES)?;
+    let bytes = read_field(reader, MAXIMUM_POLICY_BYTES)?;
     let policy = decode_trust_policy(bytes, bounded_limits(MAXIMUM_POLICY_BYTES))
         .map_err(|_| HistoricalStorageOutputArchiveErrorV1::Invalid)?;
     let public_key = reader.array::<32>()?;

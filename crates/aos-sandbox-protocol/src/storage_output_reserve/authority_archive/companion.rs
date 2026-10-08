@@ -19,6 +19,7 @@ use aos_sandbox_broker_session_protocol::{
     CanonicalBrokerRequestEnvelopeV1, authenticated_broker_method_profile_v1,
     decode_canonical_request_v1,
 };
+use aos_sandbox_core::bounded_codec::BoundedReader;
 use aos_sandbox_core::{ExecutionId, ObjectDigest, OperationId};
 
 use crate::authenticated_session::historical_checkpoint::{
@@ -28,7 +29,7 @@ use crate::authenticated_session::historical_checkpoint::{
 use super::trust_capsule::MAXIMUM_BYTES as MAXIMUM_PUBLIC_PIN_BYTES;
 use super::{
     ArchiveResult, HistoricalControllerOutputOwnerCutV1, HistoricalControllerOutputPublicPinsV1,
-    HistoricalStorageOutputArchiveErrorV1, Reader, digest, nonzero,
+    HistoricalStorageOutputArchiveErrorV1, archive_read_error, digest, nonzero, read_field,
 };
 
 const DOMAIN: &[u8] = b"aos.sandbox.controller-storage-output-authority.v1\0";
@@ -130,8 +131,8 @@ impl HistoricalStorageOutputAuthorityArchiveV1 {
         if bytes.len() > MAXIMUM_BYTES {
             return Err(HistoricalStorageOutputArchiveErrorV1::TooLarge);
         }
-        let mut reader = Reader::new(bytes);
-        if reader.take(8)? != b"AOSCSA01" || reader.u16()? != 1 {
+        let mut reader = BoundedReader::new(bytes, archive_read_error);
+        if reader.bytes(8)? != b"AOSCSA01" || reader.u16()? != 1 {
             return Err(HistoricalStorageOutputArchiveErrorV1::Invalid);
         }
         let method = reader.u16()?;
@@ -142,7 +143,7 @@ impl HistoricalStorageOutputAuthorityArchiveV1 {
         if method != 46 || kind != 1 {
             return Err(HistoricalStorageOutputArchiveErrorV1::Invalid);
         }
-        reader.zero(3)?;
+        reader.zeros(3)?;
         let execution = reader.array()?;
         let create_operation = reader.array()?;
         let request_id = reader.array()?;
@@ -154,7 +155,7 @@ impl HistoricalStorageOutputAuthorityArchiveV1 {
         }
         let attempt_digest = reader.array()?;
         nonzero(&attempt_digest)?;
-        reader.zero(32)?;
+        reader.zeros(32)?;
         let publication_digest = reader.array()?;
         let owner_cut_digest = reader.array()?;
         let carrier_digest = reader.array()?;
@@ -173,31 +174,37 @@ impl HistoricalStorageOutputAuthorityArchiveV1 {
         {
             return Err(HistoricalStorageOutputArchiveErrorV1::Invalid);
         }
-        reader.zero(2)?;
+        reader.zeros(2)?;
         if usize::try_from(reader.u32()?).ok() != Some(bytes.len()) {
             return Err(HistoricalStorageOutputArchiveErrorV1::Invalid);
         }
 
-        let packet = reader.field(AUTHENTICATED_ORDINARY_REQUEST_MAXIMUM_BYTES)?;
+        let packet = read_field(&mut reader, AUTHENTICATED_ORDINARY_REQUEST_MAXIMUM_BYTES)?;
         if packet.is_empty() || carrier_digest != digest(CARRIER_DOMAIN, packet) {
             return Err(HistoricalStorageOutputArchiveErrorV1::Invalid);
         }
         let packet_range = HEADER_BYTES + 4..HEADER_BYTES + 4 + packet.len();
-        let manifest_bytes = reader.field(BROKER_SESSION_MANIFEST_BYTES)?;
+        let manifest_bytes = read_field(&mut reader, BROKER_SESSION_MANIFEST_BYTES)?;
         let manifest = BrokerSessionManifestV1::decode(manifest_bytes)
             .map_err(|_| HistoricalStorageOutputArchiveErrorV1::Invalid)?;
-        if !reader.field(0)?.is_empty() {
+        if !read_field(&mut reader, 0)?.is_empty() {
             return Err(HistoricalStorageOutputArchiveErrorV1::Invalid);
         }
-        let checkpoint = HistoricalSessionCheckpointV1::decode(reader.field(MAXIMUM_CHECKPOINT_BYTES)?)
+        let checkpoint = HistoricalSessionCheckpointV1::decode(read_field(
+            &mut reader,
+            MAXIMUM_CHECKPOINT_BYTES,
+        )?)
             .map_err(|_| HistoricalStorageOutputArchiveErrorV1::Invalid)?;
-        if !reader.field(0)?.is_empty() {
+        if !read_field(&mut reader, 0)?.is_empty() {
             return Err(HistoricalStorageOutputArchiveErrorV1::Invalid);
         }
-        let public_pins =
-            HistoricalControllerOutputPublicPinsV1::decode(reader.field(MAXIMUM_PUBLIC_PIN_BYTES)?)?;
-        let owner_cut = HistoricalControllerOutputOwnerCutV1::decode(reader.field(1_104)?)?;
-        if !reader.field(0)?.is_empty() {
+        let public_pins = HistoricalControllerOutputPublicPinsV1::decode(read_field(
+            &mut reader,
+            MAXIMUM_PUBLIC_PIN_BYTES,
+        )?)?;
+        let owner_cut =
+            HistoricalControllerOutputOwnerCutV1::decode(read_field(&mut reader, 1_104)?)?;
+        if !read_field(&mut reader, 0)?.is_empty() {
             return Err(HistoricalStorageOutputArchiveErrorV1::Invalid);
         }
         let recorded_digest = reader.array()?;

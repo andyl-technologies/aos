@@ -6,9 +6,12 @@
 //! six ordered entries:144 each | domain-sha256:32
 //! ```
 
+use aos_sandbox_core::bounded_codec::BoundedReader;
 use aos_sandbox_core::{ExecutionId, ObjectDigest, OperationId};
 
-use super::{ArchiveResult, HistoricalStorageOutputArchiveErrorV1, Reader, digest, nonzero};
+use super::{
+    ArchiveResult, HistoricalStorageOutputArchiveErrorV1, archive_read_error, digest, nonzero,
+};
 
 const DOMAIN: &[u8] = b"aos.sandbox.controller-storage-output-owner-cut.v1\0";
 const BYTES: usize = 1_104;
@@ -41,8 +44,8 @@ impl HistoricalControllerOutputOwnerCutV1 {
         if bytes.len() != BYTES {
             return Err(HistoricalStorageOutputArchiveErrorV1::Invalid);
         }
-        let mut reader = Reader::new(bytes);
-        if reader.take(8)? != b"AOSCOC01" || reader.u16()? != 1 {
+        let mut reader = BoundedReader::new(bytes, archive_read_error);
+        if reader.bytes(8)? != b"AOSCOC01" || reader.u16()? != 1 {
             return Err(HistoricalStorageOutputArchiveErrorV1::Invalid);
         }
         if reader.u8()? != 1 {
@@ -51,7 +54,7 @@ impl HistoricalControllerOutputOwnerCutV1 {
         if reader.u8()? != 6 {
             return Err(HistoricalStorageOutputArchiveErrorV1::Invalid);
         }
-        reader.zero(4)?;
+        reader.zeros(4)?;
         let execution = reader.array()?;
         let create_operation = reader.array()?;
         let request_id = reader.array()?;
@@ -64,9 +67,9 @@ impl HistoricalControllerOutputOwnerCutV1 {
         let not_after = reader.i64()?;
         let assignment = reader.array()?;
         nonzero(&assignment)?;
-        nonzero(reader.take(32)?)?;
+        nonzero(reader.bytes(32)?)?;
         let generations = [reader.u64()?, reader.u64()?, reader.u64()?];
-        reader.zero(16)?;
+        reader.zeros(16)?;
         if deadline == 0 || not_after <= not_before || generations.contains(&0) {
             return Err(HistoricalStorageOutputArchiveErrorV1::Invalid);
         }
@@ -167,16 +170,19 @@ impl HistoricalControllerOutputOwnerCutV1 {
     }
 }
 
-fn validate_entry(reader: &mut Reader<'_>, expected_code: u8) -> ArchiveResult<[u64; 3]> {
+fn validate_entry(
+    reader: &mut BoundedReader<'_, HistoricalStorageOutputArchiveErrorV1>,
+    expected_code: u8,
+) -> ArchiveResult<[u64; 3]> {
     if reader.u8()? != expected_code {
         return Err(HistoricalStorageOutputArchiveErrorV1::Invalid);
     }
     let flags = reader.u8()?;
-    reader.zero(6)?;
+    reader.zeros(6)?;
     let sequence = reader.u64()?;
     let generations = [reader.u64()?, reader.u64()?, reader.u64()?];
     for _ in 0..3 {
-        nonzero(reader.take(32)?)?;
+        nonzero(reader.bytes(32)?)?;
     }
     let valid_until = reader.u64()?;
     let valid = match expected_code {
@@ -223,11 +229,11 @@ mod tests {
         entry[1] = 1;
         entry[8..16].copy_from_slice(&1_u64.to_be_bytes());
         entry[40..136].fill(1);
-        assert!(validate_entry(&mut Reader::new(&entry), 1).is_err());
+        assert!(validate_entry(&mut BoundedReader::new(&entry, archive_read_error), 1).is_err());
 
         entry[0] = 4;
-        assert!(validate_entry(&mut Reader::new(&entry), 4).is_ok());
+        assert!(validate_entry(&mut BoundedReader::new(&entry, archive_read_error), 4).is_ok());
         entry[16..24].copy_from_slice(&1_u64.to_be_bytes());
-        assert!(validate_entry(&mut Reader::new(&entry), 4).is_err());
+        assert!(validate_entry(&mut BoundedReader::new(&entry, archive_read_error), 4).is_err());
     }
 }
