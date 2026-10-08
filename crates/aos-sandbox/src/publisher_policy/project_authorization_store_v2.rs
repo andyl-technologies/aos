@@ -1046,7 +1046,8 @@ fn assemble_current_source_genesis_pair_v1(
         authorization_head,
         |packet, expected| verify_controller_source_tree_seed_v1(packet, seed_issuer, expected),
     )?;
-    if current.packet_digest() != project_authorization_packet_digest(authorization)?
+    if current.packet_digest() != project_authorization_packet_digest(authorization)
+        .map_err(ProjectAuthorizationSourceErrorV2::from)?
         || seed_issuer.verifying_key() == authorization_issuer.verifying_key()
     {
         return Err(SourceGenesisErrorV1::Stale.into());
