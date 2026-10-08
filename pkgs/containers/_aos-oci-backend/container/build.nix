@@ -154,6 +154,11 @@
         path = "/nix/var/nix/profiles";
         mode = "0755";
       }
+      # Shared runtime sockets must remain reachable after services drop privileges.
+      {
+        path = "/run";
+        mode = "0755";
+      }
       {
         path = "/usr";
         mode = "0755";
