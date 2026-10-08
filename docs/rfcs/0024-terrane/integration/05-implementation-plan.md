@@ -1721,6 +1721,17 @@ seal is claimed. The executable's first-live and post-run captures match.
 This actual scoped pass does not qualify the owning Nix collector gate,
 post-deletion cold-source witnesses or the complete current trunk floor.
 
+Reviewed private `08d1123ab9` adds three test-only post-Done source witnesses:
+ordinary and imported used-view cold reuse, and consumed Original physical
+reincarnation refusal after genuine source qualification. Its real deletion
+path independently observes full-D elapsed time, durable Done, exact journals
+and actual container absence; reopen independently proves the complete
+capability-probe successor before preservation comparisons. Compilation and
+execution remain pending. Those three exact selectors join the existing
+exclusive five-minute deletion process bound, using the measured 100-210-second
+deletion cases and 45-second imported cold case as scheduling evidence.
+No production clock or collector gate status changes.
+
 Reviewed private `f1f178a8cb` adds opt-in, test-only aggregate timings for Raw
 installation, recapture and synchronization. Independent comparison preserves
 the ordered production tokens of all four instrumented files, and both complete
