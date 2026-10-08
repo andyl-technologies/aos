@@ -1458,8 +1458,14 @@ owner-reference revalidation and genuine history completion; their individual
 costs remain unmeasured. After that interval,
 the original ref deadline explicitly rejects 47.685825172 seconds against the
 same 30-second bound. Baseline output, measured maintenance and independent
-oracles remain unreached. Its original 80-case native regression selection is
-running. This scoped progress establishes no throughput or DRV-29 success.
+oracles remain unreached. Its original native regression selection finishes
+with 79 passed and one timed out out of 80 in 267.604 seconds; the same
+Original/current/producer/final-ACK recovery case reaches the unchanged
+120-second timeout. Strict library Clippy reports only the existing admission
+argument grouping; all-target Clippy additionally reports duplicate fixture
+inclusion and the independent source-oracle conditional. All 3,252 inputs remain
+unchanged through each original invocation. This scoped progress establishes
+no throughput or DRV-29 success.
 The separate `4b5d80d0dd` quality
 composition groups admission's owned inputs, shares the genuine existing
 backfill fixture through a test-only import, and preserves the source oracle's
