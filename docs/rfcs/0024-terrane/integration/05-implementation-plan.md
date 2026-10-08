@@ -268,6 +268,26 @@ positive and additionally requires the independent Raw-exclusion refusal in
 both `store-idempotent-put` and `index-generation-manifest`. A private gate
 using only the refusal does not execute or qualify the missing positive.
 
+The genuine stale-Live fixture on `a85b475297` now passes both owning Nix
+gates: four exact `store-idempotent-put` cases and fifteen exact
+`index-generation-manifest` cases, including the positive and independent Raw
+refusal in each. Independent review matches all 4,982 inputs of both actual Nix
+sources. Test-only whole-state corrections account for the real Raw loss fence
+and conditional fresh-open capability probe; prior failed runs remain separate.
+The fixture starts with empty lineage sources and does not prove clearing a
+nonempty lineage set. Its separate crate build passes; shared-target Tokio test
+compilation initially reuses a core artifact missing APIs present in the actual
+source, so that attempt executes neither selector. Fresh qualification is pending.
+
+A final-callback diagnostic on `4b47694659` isolates the Native input failure:
+registration, issuers, configuration and registries compare equal, while the
+adapter drops actual disclosure rows. The shared ordinary-row builder on
+`e606ef0a2d` passes its SDK build and two pure canonicalization cases. The
+no-std test import correction on `83cb88a5ef` passes mandatory compilation of
+all application test targets; all 4,611 actual Nix source inputs match that clean
+commit. Complete native projection, recovery composition and the current T1
+floor remain unqualified; no task, milestone exit or freeze advances.
+
 An isolated instrumented run of the fourth private backfill case on
 `faf2f0adfa` still fails with `Expired`. It reaches both catalog ACKs and
 durable reflog staging, then observes 30.803 seconds against the unchanged
