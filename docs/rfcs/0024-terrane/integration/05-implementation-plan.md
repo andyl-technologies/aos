@@ -1814,6 +1814,15 @@ completed history or publication authority. Every existing oracle, root, clock,
 window and trap remains unchanged. Independent review verifies the complete
 three-file diff, 6,074 tracked hashes, modes and symlink targets; both formats
 pass. Owning collector and auxiliary qualification remain pending.
+The same frozen source subsequently passes fresh SDK compilation, strict library
+and all-target Clippy, and discovery of 768 native cases. Both previously
+failing exact indexed cases execute once and pass under unchanged serial/default
+settings. The owning `gc-mark-reachability` Nix gate then passes all fourteen
+registered exact cases with zero failed or ignored. Independent review matches
+the actual successful names, log hash, result and derivation input/output bindings,
+and all 5,020 immutable source files with their executable bits against the
+frozen worktree. The broader local collector auxiliary is still running;
+its partial prerequisite results do not qualify its complete fourteen-case body.
 GC-15, GC-16 and GC-29 also require D-82 copied-retirement and permanent-owner
 recovery. The current source implements their codecs and portable-copy
 registration, but no genuine copied or permanent-owner collector path.
@@ -5354,6 +5363,19 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   Mandatory formatting passes. Its two inherited native dead-code warnings
   remain visible; this targeted check does not establish strict native Clippy
   or complete paired recovery, which remains on its task branch.
+  Reviewed private `0a08ab5811` adopts the existing local frontend and public
+  SDK witnesses onto the current trunk base in exactly eight owned files.
+  Every adopted byte matches `066d12c9f5`; Cargo dependencies, shared library
+  files, assertions and deadlines remain unchanged. The five local commands
+  call ordinary repository factories and verbs, and checkout uses registered
+  `realize` with pinned SDK presentation. Independent review reads the entire
+  eight-file diff and verifies all 5,682 tracked contents, Git blobs, modes and
+  symlink targets. The exact mandatory formatter pair passes without source
+  changes. Compiler and runtime checks remain unrun, and the newer shared
+  runtime must be composed and reviewed before qualification. Required evidence
+  remains the current feature matrix, five-case local SDK prerequisite,
+  three-case separate-process CLI prerequisite, required package tests and
+  genuine ext4 guest workflow; older candidate passes do not qualify this source.
   — satisfies CRATE-22 to CRATE-27;
   `checks.terrane.gates.feature-matrix`.
 
