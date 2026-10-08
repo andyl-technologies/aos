@@ -191,7 +191,7 @@ mappings require actual owning witnesses and retain native Fold context coverage
 No task merge, checkbox,
 milestone exit or freeze advances.
 
-The uncommitted runtime composition of Native `7d5aae71e2` and Core
+The runtime composition of Native `7d5aae71e2` and Core
 `06f87a86e4`, including Private `4f4bd8083f`, now builds with
 `std,send,tokio,surface-sdk`. Reviewed observation, field and configuration-adapter
 ports resolve its initial seventeen compiler errors and two subsequent lifetime
@@ -206,6 +206,19 @@ nineteen literal native gate selectors, including the three relocated ordinary
 merge contracts alongside the three native contracts, exist in that inventory.
 Discovery executes no tests. Strict warnings, later fixes, native runtime and
 the complete trunk gate set remain unqualified; no task or milestone advances.
+
+The frozen combined candidate `9c59d60735` starts the full native suite of
+709 cases after reviewed warning cleanup. Its original run remains active,
+with six failures observed: upload read accounting, three portable-copy source
+publications returning `Expired`, one current-pair timeout, and a restore
+refusal returning publication corruption instead of `Unsupported`. These are
+interim observations, not a terminal suite result. Independent review accepts
+an upload baseline correction that measures the required physical validation
+and final placement recheck while retaining exact read and effect assertions;
+its runtime qualification is pending. The corrected retention composition
+`353006757eea`, already qualified separately below, is absent from this frozen
+candidate and still needs integration and combined qualification. No task,
+milestone exit or freeze advances.
 
 An isolated instrumented run of the fourth private backfill case on
 `faf2f0adfa` still fails with `Expired`. It reaches both catalog ACKs and
