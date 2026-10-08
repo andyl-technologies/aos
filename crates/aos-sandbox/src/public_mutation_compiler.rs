@@ -482,7 +482,8 @@ fn endpoint_semantics(
                     &value.parent_sandbox_id,
                     &value.project_id,
                 )?)?),
-                idempotency_key: IdempotencyKey::new(value.idempotency_key.clone())?,
+                idempotency_key: IdempotencyKey::new(value.idempotency_key.clone())
+                    .map_err(JournalError::from)?,
                 target_project: Some(project),
             }
         }
@@ -532,7 +533,8 @@ fn endpoint_semantics(
                 resource_kind: ResourceKind::Tree,
                 operation: Operation::Create,
                 selector: Some(resource_selector(value.project_id.as_slice())?),
-                idempotency_key: IdempotencyKey::new(value.idempotency_key.clone())?,
+                idempotency_key: IdempotencyKey::new(value.idempotency_key.clone())
+                    .map_err(JournalError::from)?,
                 target_project: Some(project),
             }
         }
@@ -588,7 +590,8 @@ fn endpoint_semantics(
                     &value.parent_sandbox_id,
                     &value.target_project_id,
                 )?)?),
-                idempotency_key: IdempotencyKey::new(value.idempotency_key.clone())?,
+                idempotency_key: IdempotencyKey::new(value.idempotency_key.clone())
+                    .map_err(JournalError::from)?,
                 target_project: Some(project),
             }
         }
@@ -604,7 +607,8 @@ fn endpoint_semantics(
             resource_kind: ResourceKind::Capability,
             operation: Operation::Delegate,
             selector: capability_selector(&value.parent_capability_handle, capability_id)?,
-            idempotency_key: IdempotencyKey::new(value.idempotency_key.clone())?,
+            idempotency_key: IdempotencyKey::new(value.idempotency_key.clone())
+                .map_err(JournalError::from)?,
             target_project: None,
         },
         R::CapabilityRenew(value) => EndpointSemanticsV1 {
@@ -616,7 +620,7 @@ fn endpoint_semantics(
                 mutation(value.mutation.as_option())?
                     .idempotency_key
                     .clone(),
-            )?,
+            ).map_err(JournalError::from)?,
             target_project: None,
         },
         R::CapabilityRevoke(value) => resource_mutation(
@@ -682,7 +686,8 @@ fn resource_mutation(
         resource_kind,
         operation,
         selector: Some(resource_selector(resource_id)?),
-        idempotency_key: IdempotencyKey::new(mutation.idempotency_key.clone())?,
+        idempotency_key: IdempotencyKey::new(mutation.idempotency_key.clone())
+            .map_err(JournalError::from)?,
         target_project: None,
     })
 }
@@ -702,7 +707,8 @@ fn descriptor_mutation(
                 descriptor.ok_or(PublicMutationResolutionErrorV1::InvalidDescriptor)?,
             )?,
         }),
-        idempotency_key: IdempotencyKey::new(mutation.idempotency_key.clone())?,
+        idempotency_key: IdempotencyKey::new(mutation.idempotency_key.clone())
+            .map_err(JournalError::from)?,
         target_project: None,
     })
 }

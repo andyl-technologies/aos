@@ -821,7 +821,8 @@ impl CrossDomainJournalSuccessorV1 {
                     set_digest,
                     envelope,
                 )?;
-                Ok((Self::Hierarchy(member.envelope), member.encoded))
+                let (_, _, _, _, envelope, encoded) = member.into_parts();
+                Ok((Self::Hierarchy(envelope), encoded))
             }
             Self::Environment(envelope) => {
                 let member = encode_durable_member(
@@ -831,7 +832,8 @@ impl CrossDomainJournalSuccessorV1 {
                     set_digest,
                     envelope,
                 )?;
-                Ok((Self::Environment(member.envelope), member.encoded))
+                let (_, _, _, _, envelope, encoded) = member.into_parts();
+                Ok((Self::Environment(envelope), encoded))
             }
             Self::Git(envelope) => {
                 let member = encode_durable_member(
@@ -841,7 +843,8 @@ impl CrossDomainJournalSuccessorV1 {
                     set_digest,
                     envelope,
                 )?;
-                Ok((Self::Git(member.envelope), member.encoded))
+                let (_, _, _, _, envelope, encoded) = member.into_parts();
+                Ok((Self::Git(envelope), encoded))
             }
             Self::Lifecycle(envelope) => {
                 let member = encode_durable_member(
@@ -851,7 +854,8 @@ impl CrossDomainJournalSuccessorV1 {
                     set_digest,
                     envelope,
                 )?;
-                Ok((Self::Lifecycle(member.envelope), member.encoded))
+                let (_, _, _, _, envelope, encoded) = member.into_parts();
+                Ok((Self::Lifecycle(envelope), encoded))
             }
         }
     }
@@ -956,13 +960,17 @@ impl CrossDomainJournalSuccessorV1 {
         match self {
             Self::Hierarchy(envelope) => {
                 validate_successor(previous, envelope, &validators.hierarchy)
+                    .map_err(ProtectedDomainJournalErrorV1::from)
             }
             Self::Environment(envelope) => {
                 validate_successor(previous, envelope, &validators.environment)
+                    .map_err(ProtectedDomainJournalErrorV1::from)
             }
-            Self::Git(envelope) => validate_successor(previous, envelope, &validators.git),
+            Self::Git(envelope) => validate_successor(previous, envelope, &validators.git)
+                .map_err(ProtectedDomainJournalErrorV1::from),
             Self::Lifecycle(envelope) => {
                 validate_successor(previous, envelope, &validators.lifecycle)
+                    .map_err(ProtectedDomainJournalErrorV1::from)
             }
         }
     }
@@ -1781,14 +1789,16 @@ fn cross_member<S: ProtectedDomainSchemaV1>(
         super::protected_journal_adapter::ProtectedDomainEnvelopeV1<S>,
     ) -> CrossDomainJournalSuccessorV1,
 ) -> CrossDomainDurableMemberV1 {
+    let (transaction_id, member_index, member_count, set_digest, envelope, encoded) =
+        member.into_parts();
     CrossDomainDurableMemberV1 {
-        transaction_id: member.transaction_id,
-        member_index: member.member_index,
-        member_count: member.member_count,
-        set_digest: member.set_digest,
+        transaction_id,
+        member_index,
+        member_count,
+        set_digest,
         namespace,
-        successor: wrap(member.envelope),
-        encoded: member.encoded,
+        successor: wrap(envelope),
+        encoded,
     }
 }
 

@@ -184,7 +184,7 @@ pub fn prepare_project_history_vm_flight_v1(
         &JournalTransaction::new(
             transaction_id,
             vec![effect_record(operation, &effect)?, reservation_record],
-        )?,
+        ).map_err(JournalError::from)?,
     )?;
     validate_all(&journal)?;
     authorize_controller_project_admission_dispatch_v1(&mut journal, operation, scope, &plan)?;
@@ -397,7 +397,7 @@ fn admitted_create(
     let (desired_key, desired_value) = projection.clone().into_desired_state();
     let admission = OperationPlan::new(
         operation,
-        IdempotencyKey::new(key)?,
+        IdempotencyKey::new(key).map_err(JournalError::from)?,
         digest,
         desired_key,
         desired_value,

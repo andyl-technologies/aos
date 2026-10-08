@@ -496,7 +496,7 @@ impl ControllerExecutionIntentV1 {
                 key,
                 value,
             )],
-        )
+        ).map_err(aos_sandbox::JournalError::from)
         .map_err(retryable)?;
         *native_append = Some(journal.commit(&transaction));
         if let Some(Err(error)) = native_append.as_ref() {

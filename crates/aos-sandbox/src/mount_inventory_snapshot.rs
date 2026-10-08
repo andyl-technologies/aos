@@ -224,7 +224,7 @@ impl<Kind: InventorySnapshotKind> SnapshotRecord<Kind> {
                 self.key(),
                 self.encode(),
             )],
-        )?)
+        ).map_err(crate::journal::JournalError::from)?)
     }
 
     pub(crate) fn encoded_len(&self) -> usize {

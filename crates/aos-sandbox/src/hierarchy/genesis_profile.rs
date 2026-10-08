@@ -13,6 +13,8 @@
 //! AOSSGC02 retains the same seed and joins with exact AOSPSC03[400].
 //! ```
 
+use aos_sandbox_protocol::domain_ledger::JournalTransactionDataError;
+
 use aos_sandbox_core::{ObjectDigest, ProjectId, ResourceVector};
 use aos_sandbox_protocol::source_project_authorization::{
     ProjectAuthorizationSourceDataErrorV2, parse_unverified_project_authorization_claims_v2,
@@ -75,6 +77,12 @@ pub enum SourceGenesisErrorV1 {
     #[cfg(target_os = "linux")]
     #[error(transparent)]
     Subject(#[from] aos_sandbox_linux::seqpacket::SeqpacketError),
+}
+
+impl From<JournalTransactionDataError> for SourceGenesisErrorV1 {
+    fn from(error: JournalTransactionDataError) -> Self {
+        <Self as From<JournalError>>::from(JournalError::from(error))
+    }
 }
 
 impl From<ProjectAuthorizationSourceDataErrorV2> for SourceGenesisErrorV1 {

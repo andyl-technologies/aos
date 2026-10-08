@@ -420,7 +420,7 @@ fn transaction(
             key.to_vec(),
             value.to_vec(),
         )],
-    )?)
+    ).map_err(JournalError::from)?)
 }
 
 const fn journal_limits() -> JournalLimits {

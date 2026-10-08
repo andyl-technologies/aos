@@ -1432,7 +1432,7 @@ fn single_record_transaction(
             key.to_vec(),
             bytes.to_vec(),
         )],
-    )
+    ).map_err(JournalError::from)
 }
 
 fn transaction(hold: ControllerPolicyHoldV1) -> Result<JournalTransaction, JournalError> {
@@ -1489,7 +1489,7 @@ fn v8_root_receipt_capacity_transaction(
             V8_ROOT_RECEIPT_KEY.to_vec(),
             vec![0; V8_ROOT_RECEIPT_RECORD_BYTES],
         )],
-    )
+    ).map_err(JournalError::from)
 }
 
 fn v8_floor_transaction(
@@ -1516,7 +1516,7 @@ fn v8_floor_capacity_transaction(
             V8_FLOOR_KEY.to_vec(),
             vec![0; V8_FLOOR_RECORD_BYTES],
         )],
-    )
+    ).map_err(JournalError::from)
 }
 
 fn v8_settlement_transaction(
@@ -1547,7 +1547,7 @@ fn v8_settlement_transaction(
                 settlement_bytes.to_vec(),
             ),
         ],
-    )
+    ).map_err(JournalError::from)
 }
 
 fn v8_settlement_capacity_transaction(
@@ -1580,7 +1580,7 @@ fn v8_settlement_capacity_transaction(
                 vec![0; V8_SETTLEMENT_RECORD_BYTES],
             ),
         ],
-    )
+    ).map_err(JournalError::from)
 }
 
 fn ensure_controller(journal: &Journal) -> Result<(), JournalError> {

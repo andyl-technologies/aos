@@ -687,7 +687,7 @@ pub(super) fn settlement(
             RecordNamespace::GlobalCapacityReservation,
             floor.to_journal_record().key().to_vec(),
         )],
-    )
+    ).map_err(JournalError::from)
 }
 
 pub(super) fn validate_edge(

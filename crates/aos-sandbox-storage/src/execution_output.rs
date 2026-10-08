@@ -475,7 +475,7 @@ impl ExecutionOutputLedgerV1 {
                         CONFIG_KEY.to_vec(),
                         expected_config.to_vec(),
                     )],
-                )?)?;
+                ).map_err(aos_sandbox::JournalError::from)?)?;
             }
         }
 
@@ -816,7 +816,7 @@ impl ExecutionOutputLedgerV1 {
         self.journal.commit(&JournalTransaction::new(
             transaction_id(b"physical", &physical_key, verified.binding().as_bytes()),
             vec![JournalRecord::put(NAMESPACE, physical_key, bytes)],
-        )?)?;
+        ).map_err(aos_sandbox::JournalError::from)?)?;
         Ok(())
     }
 
@@ -964,7 +964,8 @@ impl ExecutionOutputLedgerV1 {
             records.push(JournalRecord::put(NAMESPACE, key, value.to_vec()));
         }
         self.journal
-            .commit(&JournalTransaction::new(transaction_id, records)?)?;
+            .commit(&JournalTransaction::new(transaction_id, records)
+                .map_err(aos_sandbox::JournalError::from)?)?;
         self.retained_bytes = next;
         Ok(())
     }

@@ -21,12 +21,15 @@
 //! project-authorization DATA without importing Publisher state or signers.
 //! [`canonical_map`] owns versioned catalog JSON envelopes, fixed-handle keys,
 //! and transaction-ID DATA without catalog admission or durable publication.
+//! [`domain_ledger`] owns typed journal transaction, legacy capacity, and schema-bound
+//! record/replay DATA; protected custody, currentness, and role admission stay upper.
 //! [`public_api`] owns checked public-message projections, feature registries,
 //! and bounded client-state reducers without adopting requests or authorizing effects.
 
 pub mod authenticated_session;
 pub mod authorization_artifact;
 pub mod canonical_map;
+pub mod domain_ledger;
 pub mod fencing;
 pub mod fuse_worker_preparation;
 pub mod git_project_coverage;

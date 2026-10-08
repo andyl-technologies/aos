@@ -664,6 +664,7 @@ impl<'origin, 'startup> HostSidecarStoreV1<'origin, 'startup> {
         let checkpoint_bytes = checkpoint.encode();
         let pending = prepared.map(|(intent, transaction)| {
             transaction.encode_prepared_v1(self.main_limits)
+                .map_err(aos_sandbox::JournalError::from)
                 .map(|bytes| (intent.encode(), bytes))
         }).transpose()?;
         let authority = self.custody.journal_mut()
@@ -817,7 +818,8 @@ mod tests {
         for limits in invalid {
             assert_eq!(sidecar_limits(limits), Err(FloorErrorV1::Encoding));
             assert!(matches!(
-                JournalTransaction::maximum_prepared_bytes_v1(limits),
+                JournalTransaction::maximum_prepared_bytes_v1(limits)
+                    .map_err(aos_sandbox::JournalError::from),
                 Err(aos_sandbox::JournalError::LimitExceeded("invalid journal configuration")),
             ));
         }

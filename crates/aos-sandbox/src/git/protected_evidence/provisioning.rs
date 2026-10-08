@@ -301,7 +301,7 @@ impl<'root> RootGitEvidenceProvisioningAttemptV1<'root> {
                 PROTECTED_GIT_EVIDENCE_KEY.to_vec(),
                 envelope.body.clone(),
             )],
-        )?);
+        ).map_err(JournalError::from)?);
 
         self.credential.recheck()?;
         let (journal, _) = Journal::open_protected_at(

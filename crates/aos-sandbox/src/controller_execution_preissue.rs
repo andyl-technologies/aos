@@ -658,7 +658,7 @@ fn persist_preissue(
             record.execution.as_bytes().to_vec(),
             record.encode(),
         )],
-    )?;
+    ).map_err(JournalError::from)?;
     controller
         .commit(&transaction)
         .map_err(|_| ControllerExecutionPreissueErrorV1::OutcomeUnknown)?;

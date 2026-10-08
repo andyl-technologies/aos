@@ -251,7 +251,7 @@ fn prepare_batch(
     let transaction_id = transaction_digest[..16].try_into()
         .map_err(|_| HistoricalStorageOutputRetentionErrorV1::Invalid)?;
     Ok(HistoricalPreparedStorageOutputArchiveV1 {
-        transaction: JournalTransaction::new(transaction_id, records)?,
+        transaction: JournalTransaction::new(transaction_id, records).map_err(JournalError::from)?,
         companion: companion.clone(),
     })
 }

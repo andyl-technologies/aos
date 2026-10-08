@@ -404,8 +404,9 @@ pub(super) fn prepare(
                 preview.record().key().to_vec(),
             ),
         ],
-    )?;
-    let bytes = crate::journal::encoded_transaction_append_bytes(&terminal)?;
+    ).map_err(JournalError::from)?;
+    let bytes = crate::journal::encoded_transaction_append_bytes(&terminal)
+        .map_err(JournalError::from)?;
     let capacity = authority.prepare_global_capacity_reservation_v1(
         capacity_request(request, source, bytes),
         transaction_id(1, request),
@@ -415,7 +416,7 @@ pub(super) fn prepare(
     let transaction = JournalTransaction::new(
         transaction_id(1, request),
         vec![record.put(), capacity.record().clone()],
-    )?;
+    ).map_err(JournalError::from)?;
     let preflight = authority.preflight_global_capacity_reservation_v1(&capacity, &transaction)?;
     Ok(Prepared::Append {
         record: DurableConsumerResourceAttemptV1 { record },
@@ -485,7 +486,7 @@ pub(super) fn quarantine(
     let transaction = JournalTransaction::new(
         transaction_id(2, original.request),
         vec![successor.put(), capacity.settlement_record()],
-    )?;
+    ).map_err(JournalError::from)?;
     let preflight = authority.preflight_reserved_terminal_v1(&capacity, &transaction)?;
     authority.commit_reserved_terminal_v1(&preflight, capacity, &transaction)?;
     let actual = load(journal)?

@@ -619,7 +619,7 @@ impl NetworkPreparationCatalogV1 {
                     allocation_bytes,
                 ),
             ],
-        )?;
+        ).map_err(aos_sandbox::JournalError::from)?;
         self.journal.commit(&transaction)?;
         self.records.insert(network_handle, record);
         self.plans.insert(network_handle, plan);
@@ -1398,7 +1398,7 @@ fn publish_head(
             HEAD_KEY.to_vec(),
             encode_head(&head)?,
         )],
-    )?;
+    ).map_err(aos_sandbox::JournalError::from)?;
     journal.commit(&transaction)?;
     Ok(())
 }

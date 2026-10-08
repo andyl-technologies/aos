@@ -9,6 +9,8 @@
 //! exposes ambiguous work only for re-observation; this module contains no API
 //! that returns or reissues mutation argv.
 
+use aos_sandbox_protocol::domain_ledger::JournalTransactionDataError;
+
 #[allow(
     dead_code,
     reason = "held Repair guard awaits live Storage session and worker quiescence"
@@ -172,6 +174,12 @@ pub enum StorageStateError {
     /// Authenticated authority state names different durable semantics.
     #[error("storage transaction authority cross-link does not match")]
     AuthorityLinkMismatch,
+}
+
+impl From<JournalTransactionDataError> for StorageStateError {
+    fn from(error: JournalTransactionDataError) -> Self {
+        <Self as From<aos_sandbox::JournalError>>::from(aos_sandbox::JournalError::from(error))
+    }
 }
 
 /// Holds the node-local secret used to authenticate storage records.
@@ -4276,7 +4284,7 @@ impl StorageTransactionStore {
         JournalTransaction::new(
             transaction_id(prepared.operation_id, DurableStoragePhase::Committed),
             completion_records,
-        )
+        ).map_err(JournalError::from)
         .map_err(Into::into)
     }
 
@@ -4640,7 +4648,7 @@ impl StorageTransactionStore {
                 self.key.key_id,
                 &self.key.secret,
             )?],
-        )
+        ).map_err(JournalError::from)
         .map_err(Into::into)
     }
 
@@ -4827,7 +4835,7 @@ fn atomic_snapshot_transaction(
             atomic_snapshot_record_key(operation),
             encode_atomic_snapshot_record(record, key)?,
         )],
-    )
+    ).map_err(JournalError::from)
     .map_err(Into::into)
 }
 

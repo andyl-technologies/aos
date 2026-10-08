@@ -445,7 +445,7 @@ impl HostArgumentAttemptJournalV1 {
                 key.clone(),
                 value.clone(),
             )],
-        )?;
+        ).map_err(JournalError::from)?;
         let committed = authority
             .commit(&transaction)
             .map_err(|_| HostArgumentAttemptErrorV1::OutcomeUnknown)?;
@@ -499,7 +499,7 @@ impl HostArgumentAttemptJournalV1 {
                 key.clone(),
                 value.clone(),
             )],
-        )?;
+        ).map_err(JournalError::from)?;
         let committed = authority
             .commit(&transaction)
             .map_err(|_| HostArgumentAttemptErrorV1::OutcomeUnknown)?;

@@ -228,7 +228,7 @@ fn transaction_with_recipe(
     identity.extend_from_slice(packet.digest().as_bytes());
     let id = take::<16>(hash(domain, &identity).as_bytes(), 0)
         .map_err(|_| JournalError::ProtectedBoundary)?;
-    JournalTransaction::new(id, records)
+    JournalTransaction::new(id, records).map_err(JournalError::from)
 }
 
 pub(super) fn require_no_mutation(

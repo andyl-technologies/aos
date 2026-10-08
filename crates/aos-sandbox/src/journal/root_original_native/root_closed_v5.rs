@@ -145,7 +145,7 @@ fn root_closed_owners(
             native_root_sidecar_key_v2(attempt).map_err(|_| invalid())?,
             stored.to_canonical_bytes().map_err(|_| invalid())?,
         )],
-    )
+    ).map_err(crate::journal::JournalError::from)
 }
 
 fn store_transaction_id(

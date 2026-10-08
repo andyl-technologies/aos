@@ -5,6 +5,8 @@
 //! current head in the same transaction, and releases reducer acknowledgement
 //! or completion-effect authority only after exact journal readback.
 
+use aos_sandbox_protocol::domain_ledger::DomainLedgerDataError;
+
 use std::{collections::BTreeSet, marker::PhantomData};
 
 use aos_sandbox_core::{ObjectDigest, OperationId};
@@ -261,6 +263,12 @@ pub enum PublisherAdmissionJournalErrorV1 {
     /// The protected-domain adapter rejected currentness or durability.
     #[error(transparent)]
     Journal(#[from] ProtectedDomainJournalErrorV1),
+}
+
+impl From<DomainLedgerDataError> for PublisherAdmissionJournalErrorV1 {
+    fn from(error: DomainLedgerDataError) -> Self {
+        Self::from(ProtectedDomainJournalErrorV1::from(error))
+    }
 }
 
 /// Holds one exact reducer branch before durable mutation.
@@ -1835,7 +1843,7 @@ fn validate_capacity_settlement_members(
         || members.is_empty()
         || members
             .iter()
-            .any(|member| member.kind == PublisherAdmissionJournalRecordKindV1::CompletionEffect)
+            .any(|member| member.kind() == PublisherAdmissionJournalRecordKindV1::CompletionEffect)
     {
         return Err(PublisherAdmissionJournalErrorV1::InvalidMutationBatch);
     }
@@ -1844,19 +1852,19 @@ fn validate_capacity_settlement_members(
     let mut entries = Vec::new();
     let codec_limits = maximum_admission_limits();
     for member in members {
-        match member.kind {
+        match member.kind() {
             PublisherAdmissionJournalRecordKindV1::LedgerEntry => {
-                let mutation = decode_mutation(member.body, codec_limits)?;
+                let mutation = decode_mutation(member.body(), codec_limits)?;
                 entries.push(decode_protected_record_v1(&mutation.value, codec_limits)?);
             }
             PublisherAdmissionJournalRecordKindV1::Current => {
-                if member.identity != b"authority" || current.replace(member.body).is_some() {
+                if member.identity() != b"authority" || current.replace(member.body()).is_some() {
                     return Err(PublisherAdmissionJournalErrorV1::InvalidMutationBatch);
                 }
             }
             PublisherAdmissionJournalRecordKindV1::CapacitySettlement => {
-                let decoded = decode_capacity_settlement(member.body)?;
-                if member.identity != decoded.admission_transaction_id
+                let decoded = decode_capacity_settlement(member.body())?;
+                if member.identity() != decoded.admission_transaction_id
                     || settlement.replace(decoded).is_some()
                 {
                     return Err(PublisherAdmissionJournalErrorV1::InvalidMutationBatch);

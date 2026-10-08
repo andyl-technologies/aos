@@ -1274,7 +1274,7 @@ fn ack_transaction(ack: &SourceGenesisAckV1) -> Result<JournalTransaction, crate
                 ack.encode().to_vec(),
             ),
         ],
-    )
+    ).map_err(JournalError::from)
 }
 
 fn transaction_id(kind: &[u8], digest: ObjectDigest) -> [u8; 16] {

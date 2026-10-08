@@ -16,8 +16,8 @@
 //! writes and syncs a replacement file, atomically renames it, then syncs the
 //! parent directory. A separate advisory lock remains held across replacement.
 //!
-//! The private `transaction_codec` child owns transaction DATA, canonical
-//! native/preparation adapters, and bounded typed-record validation. Protected
+//! Protocol's `domain_ledger` owns transaction DATA, canonical native/preparation
+//! adapters, and bounded typed-record validation. Protected
 //! admission and replay publication stay here and with the journal's domain
 //! owners. The private `protected_storage` group owns protected opening, name
 //! witnesses, and retained descriptor/failure custody without widening access
@@ -40,7 +40,9 @@ use aos_sandbox_journal::framing::{
     COMMIT_PAYLOAD_BYTES, EncodedFrameLayout, Frame, FrameError, FrameKind, HEADER_BYTES,
     ReadOnlyFrameScratchV1, read_frame_retained,
 };
-use aos_sandbox_journal::geometry::{EncodedRecordLayout, NativeGeometryBounds};
+use aos_sandbox_journal::geometry::EncodedRecordLayout;
+#[cfg(test)]
+use aos_sandbox_journal::geometry::NativeGeometryBounds;
 use aos_sandbox_journal::materialized::{self, RecordMutationRef};
 use aos_sandbox_journal::record::RecordError;
 use aos_sandbox_journal::recovery::RecoveryTailError;
@@ -62,12 +64,15 @@ mod git_evidence_namespace;
 pub(crate) mod mount_manager_startup;
 pub(crate) mod controller_source_successor_issuance;
 pub(crate) mod source_tree_successor;
-mod transaction_codec;
-pub use transaction_codec::{JournalRecord, JournalTransaction, encoded_transaction_append_bytes};
-pub(super) use transaction_codec::encoded_transaction_record_bytes;
-use transaction_codec::{
+pub use aos_sandbox_protocol::domain_ledger::transaction::{
+    IdempotencyKey, JournalLimits, JournalRecord, JournalTransaction,
+    encoded_transaction_append_bytes,
+};
+pub(super) use aos_sandbox_protocol::domain_ledger::transaction::encoded_transaction_record_bytes;
+use aos_sandbox_protocol::domain_ledger::transaction::{
     decode_record, encode_record, encode_record_fields, encode_transaction, validate_transaction,
 };
+use aos_sandbox_protocol::domain_ledger::JournalTransactionDataError;
 mod root_local_recovery;
 mod root_original_inventory;
 pub(crate) use root_original_inventory::materialize as materialize_root_inventory_transaction;
@@ -215,58 +220,6 @@ pub use mount_source_consumption::{
 };
 
 const AUTHORITY_PREFLIGHT_DOMAIN: &[u8] = b"aos.sandbox.journal.authority-preflight.v1\0";
-
-/// Bounds all disk input and in-memory work performed while opening a journal.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct JournalLimits {
-    /// Maximum journal length accepted during replay.
-    pub maximum_journal_bytes: u64,
-    /// Maximum payload bytes in one record frame.
-    pub maximum_record_bytes: usize,
-    /// Maximum key bytes in one record.
-    pub maximum_key_bytes: usize,
-    /// Maximum records admitted in one transaction.
-    pub maximum_records_per_transaction: usize,
-    /// Maximum aggregate encoded record bytes admitted in one transaction.
-    pub maximum_transaction_bytes: usize,
-    /// Maximum committed transactions accepted during replay.
-    pub maximum_transactions: usize,
-    /// Maximum logical key and value bytes retained by the materialized view.
-    pub maximum_materialized_bytes: usize,
-    /// Maximum entries retained by the materialized view.
-    pub maximum_materialized_records: usize,
-}
-
-// This scalar view carries no owner, reserved capacity, or admission result.
-impl From<JournalLimits> for NativeGeometryBounds {
-    fn from(limits: JournalLimits) -> Self {
-        Self {
-            maximum_journal_bytes: limits.maximum_journal_bytes,
-            maximum_record_bytes: limits.maximum_record_bytes,
-            maximum_key_bytes: limits.maximum_key_bytes,
-            maximum_records_per_transaction: limits.maximum_records_per_transaction,
-            maximum_transaction_bytes: limits.maximum_transaction_bytes,
-            maximum_transactions: limits.maximum_transactions,
-            maximum_materialized_bytes: limits.maximum_materialized_bytes,
-            maximum_materialized_records: limits.maximum_materialized_records,
-        }
-    }
-}
-
-impl Default for JournalLimits {
-    fn default() -> Self {
-        Self {
-            maximum_journal_bytes: 4 * 1024 * 1024 * 1024,
-            maximum_record_bytes: 16 * 1024 * 1024,
-            maximum_key_bytes: 1024,
-            maximum_records_per_transaction: 4096,
-            maximum_transaction_bytes: 64 * 1024 * 1024,
-            maximum_transactions: 1_000_000,
-            maximum_materialized_bytes: 512 * 1024 * 1024,
-            maximum_materialized_records: 1_000_000,
-        }
-    }
-}
 
 /// Carries configured initial-replay representation DATA before a protected open.
 ///
@@ -503,32 +456,6 @@ impl From<aos_sandbox_core::journal_namespace::UnknownRecordNamespace> for Journ
     }
 }
 
-/// Stores a bounded, nonempty opaque client idempotency key.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct IdempotencyKey(Vec<u8>);
-
-impl IdempotencyKey {
-    /// Validates a client idempotency key.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`JournalError::InvalidIdempotencyKey`] for an empty key or a
-    /// key longer than 128 bytes.
-    pub fn new(bytes: impl Into<Vec<u8>>) -> Result<Self, JournalError> {
-        let bytes = bytes.into();
-        if bytes.is_empty() || bytes.len() > 128 {
-            return Err(JournalError::InvalidIdempotencyKey);
-        }
-        Ok(Self(bytes))
-    }
-
-    /// Returns the exact opaque key bytes.
-    #[must_use]
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.0
-    }
-}
-
 /// Reports whether a request key is new, an exact replay, or a conflict.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IdempotencyOutcome {
@@ -646,6 +573,24 @@ pub enum JournalError {
     #[cfg(target_os = "linux")]
     #[error("journal coverage native history failed: {0}")]
     GitCoverageNativeHistory(#[source] Box<GitCoverageNativeHistoryErrorV1>),
+}
+
+impl From<JournalTransactionDataError> for JournalError {
+    fn from(error: JournalTransactionDataError) -> Self {
+        match error {
+            JournalTransactionDataError::InvalidTransaction => Self::InvalidTransaction,
+            JournalTransactionDataError::InvalidIdempotencyKey => Self::InvalidIdempotencyKey,
+            JournalTransactionDataError::MalformedTransaction(reason) => {
+                Self::MalformedTransaction(reason)
+            }
+            JournalTransactionDataError::MalformedRecord(reason) => Self::MalformedRecord(reason),
+            JournalTransactionDataError::LimitExceeded(bound) => Self::LimitExceeded(bound),
+            JournalTransactionDataError::DuplicateRecordKey => Self::DuplicateRecordKey,
+            JournalTransactionDataError::JournalTooLarge => Self::JournalTooLarge,
+            JournalTransactionDataError::Frame(error) => Self::from(error),
+            JournalTransactionDataError::Record(error) => Self::from(error),
+        }
+    }
 }
 
 impl From<FrameError> for JournalError {
@@ -3073,11 +3018,11 @@ impl Journal {
             transaction.records().iter().map(RecordMutationRef::from),
         )?;
         let frames = self.native.encode_at_head(
-            transaction.id,
-            transaction.records.iter().map(|record| NativeRecordRef {
-                namespace_byte: record.namespace as u8,
-                key: &record.key,
-                value: record.value.as_deref(),
+            *transaction.id(),
+            transaction.records().iter().map(|record| NativeRecordRef {
+                namespace_byte: record.namespace() as u8,
+                key: record.key(),
+                value: record.value(),
             }),
         )?;
         let frame_count = u64::try_from(frames.len())
@@ -3233,12 +3178,12 @@ impl Journal {
 
         let durable_bytes = self.native.append_exact(&frames, expected_length)?;
 
-        for record in &transaction.records {
+        for record in transaction.records() {
             self.native.apply_mutation(RecordMutationRef::from(record));
             apply_idempotency_record(&mut self.idempotency, record)?;
         }
         self.native.publish_append(
-            materialized_bytes, following_sequence, transaction.id,
+            materialized_bytes, following_sequence, *transaction.id(),
             transaction.records().iter().map(JournalRecord::namespace),
         );
         #[cfg(target_os = "linux")]
@@ -3693,7 +3638,7 @@ impl Journal {
             }
             validate_transaction(transaction, self.native.limits())?;
             delete_batch::validate(&state, transaction, next_sequence, self.native.limits())?;
-            if !transaction_ids.insert(transaction.id) {
+            if !transaction_ids.insert(*transaction.id()) {
                 return Err(JournalError::DuplicateTransaction);
             }
             if committed_transactions >= self.native.limits().maximum_transactions {
@@ -4974,7 +4919,7 @@ impl ProtectedJournalAuthority<'_> {
             let (request, _admission_transaction, reservation_id) =
                 capacity_reservation::decode_reservation(value)?;
             if key
-                != capacity_reservation::reservation_key_for_validation(reservation_id).as_slice()
+                != capacity_reservation::reservation_key(reservation_id).as_slice()
                 || request.purpose != purpose
                 || request.owner_namespace != self.namespace
                 || !retained.insert(reservation_id)
@@ -6070,7 +6015,6 @@ impl Journal {
             .ok_or_else(limit)
     }
 
-
     fn require_original_release_controller_replay_v1(
         &self,
         replayed: &ReplayState,
@@ -6785,7 +6729,6 @@ impl Journal {
     }
 }
 
-
 // The closed history observers use the original parser and actual File.
 // A private read-at cursor changes no append-description offset or identity.
 fn replay_original_observed<R: Read + Seek + Borrow<File>>(
@@ -6883,11 +6826,11 @@ fn replay_original_retained<R: Read + Seek + Borrow<File>>(
                         ))?;
                         transaction.native.validate_commit(&frame, transaction.records.len())?;
                         let (begin_sequence, begin_offset) = transaction.native.begin_position();
-                        reached_transaction = Some(JournalTransaction {
-                            id: transaction.native.transaction_id(),
-                            records: std::mem::take(&mut reached_pending.as_mut()
+                        reached_transaction = Some(JournalTransaction::from_unvalidated_data(
+                            transaction.native.transaction_id(),
+                            std::mem::take(&mut reached_pending.as_mut()
                                 .ok_or(JournalError::ProtectedBoundary)?.records),
-                        });
+                        ));
                         let replay_transaction = reached_transaction.as_ref()
                             .ok_or(JournalError::ProtectedBoundary)?;
                         validate_transaction(&replay_transaction, limits)?;
@@ -6907,7 +6850,7 @@ fn replay_original_retained<R: Read + Seek + Borrow<File>>(
                         let mut compaction_id = [0_u8; 16];
                         compaction_id[..8].copy_from_slice(&compaction_index.to_le_bytes());
                         compaction_id[8..].copy_from_slice(b"compact1");
-                        if compaction_prefix && replay_transaction.id == compaction_id {
+                        if compaction_prefix && *replay_transaction.id() == compaction_id {
                             if delete_batch::has_dependencies(&state)
                                 || delete_batch::selected(&replay_transaction)
                             {
@@ -6997,12 +6940,12 @@ fn replay_original_retained<R: Read + Seek + Borrow<File>>(
                                 limits,
                             )?;
                         }
-                        native.register_transaction(replay_transaction.id)?;
-                        validate_idempotency_changes(&idempotency, &replay_transaction.records)?;
+                        native.register_transaction(*replay_transaction.id())?;
+                        validate_idempotency_changes(&idempotency, replay_transaction.records())?;
                         materialized_bytes = validate_materialized_change(
                             &state,
                             materialized_bytes,
-                            &replay_transaction.records,
+                            replay_transaction.records(),
                             limits,
                         )?;
                         // Keep floor decoding at its original short-circuit
@@ -7040,7 +6983,7 @@ fn replay_original_retained<R: Read + Seek + Borrow<File>>(
                             }
                             reached_prospective = None;
                         }
-                        for record in &replay_transaction.records {
+                        for record in replay_transaction.records() {
                             committed_namespaces.insert(record.namespace());
                             #[cfg(target_os = "linux")]
                             {
@@ -7049,7 +6992,7 @@ fn replay_original_retained<R: Read + Seek + Borrow<File>>(
                             apply_record(&mut state, &mut idempotency, record)?;
                         }
                         native.finish_commit(
-                            replay_transaction.records.len(), limits.maximum_transactions,
+                            replay_transaction.records().len(), limits.maximum_transactions,
                         )?;
                         reached_transaction = None;
                         reached_pending = None;
@@ -7225,7 +7168,7 @@ fn validate_reserved_capacity(
                     settling_reservation.ok_or(JournalError::ProtectedBoundary)?
                 };
                 if record.key()
-                    != capacity_reservation::reservation_key_for_validation(identifier).as_slice()
+                    != capacity_reservation::reservation_key(identifier).as_slice()
                     || reservations.remove(&identifier).is_none()
                 {
                     return Err(JournalError::MalformedRecord(
@@ -7284,16 +7227,6 @@ fn projected_materialized_record_count(
         .map_err(JournalError::from)
 }
 
-impl<'a> From<&'a JournalRecord> for RecordMutationRef<'a, RecordNamespace> {
-    fn from(record: &'a JournalRecord) -> Self {
-        Self {
-            namespace: record.namespace(),
-            key: record.key(),
-            value: record.value(),
-        }
-    }
-}
-
 fn validate_limits(limits: JournalLimits) -> Result<(), JournalError> {
     aos_sandbox_journal::geometry::validate_native_bounds(limits.into())
         .map_err(JournalError::from)
@@ -7320,10 +7253,10 @@ fn validate_idempotency_changes(
     records: &[JournalRecord],
 ) -> Result<(), JournalError> {
     for record in records {
-        if record.namespace != RecordNamespace::Idempotency {
+        if record.namespace() != RecordNamespace::Idempotency {
             continue;
         }
-        let value = record.value.as_ref().ok_or(JournalError::MalformedRecord(
+        let value = record.value().ok_or(JournalError::MalformedRecord(
             "idempotency records cannot be deleted",
         ))?;
         let request_digest = value[..32]
@@ -7337,7 +7270,7 @@ fn validate_idempotency_changes(
             operation_id: OperationId::from_bytes(operation_bytes),
         };
         if idempotency
-            .get(&record.key)
+            .get(record.key())
             .is_some_and(|existing| existing != &proposed)
         {
             return Err(JournalError::IdempotencyConflict);
@@ -7405,8 +7338,8 @@ fn apply_idempotency_record(
     idempotency: &mut BTreeMap<Vec<u8>, IdempotencyDecision>,
     record: &JournalRecord,
 ) -> Result<(), JournalError> {
-    if record.namespace == RecordNamespace::Idempotency {
-        let value = record.value.as_ref().ok_or(JournalError::MalformedRecord(
+    if record.namespace() == RecordNamespace::Idempotency {
+        let value = record.value().ok_or(JournalError::MalformedRecord(
             "idempotency records cannot be deleted",
         ))?;
         let request_digest = value[..32]
@@ -7416,7 +7349,7 @@ fn apply_idempotency_record(
             .try_into()
             .map_err(|_| JournalError::MalformedRecord("invalid operation identity"))?;
         idempotency.insert(
-            record.key.clone(),
+            record.key().to_vec(),
             IdempotencyDecision {
                 request_digest,
                 operation_id: OperationId::from_bytes(operation_bytes),
@@ -7491,10 +7424,13 @@ fn write_compaction_transaction(
     id[8..].copy_from_slice(b"compact1");
     let records = records
         .iter()
-        .map(|record| JournalRecord {
-            namespace: record.namespace,
-            key: record.key.to_vec(),
-            value: record.value.map(<[u8]>::to_vec),
+        .map(|record| {
+            let namespace = record.namespace;
+            let key = record.key.to_vec();
+            match record.value {
+                Some(value) => JournalRecord::put(namespace, key, value.to_vec()),
+                None => JournalRecord::delete(namespace, key),
+            }
         })
         .collect();
     let transaction = JournalTransaction::new(id, records)?;
@@ -7564,6 +7500,104 @@ mod tests {
     };
 
     #[test]
+    fn transaction_data_errors_project_original_journal_classes_and_native_cause() {
+        use super::{FrameError, RecordError};
+        use aos_sandbox_protocol::domain_ledger::JournalTransactionDataError as DataError;
+
+        let cases = [
+            (
+                DataError::InvalidTransaction,
+                JournalError::InvalidTransaction,
+            ),
+            (
+                DataError::InvalidIdempotencyKey,
+                JournalError::InvalidIdempotencyKey,
+            ),
+            (
+                DataError::MalformedTransaction("shape"),
+                JournalError::MalformedTransaction("shape"),
+            ),
+            (
+                DataError::MalformedRecord("record"),
+                JournalError::MalformedRecord("record"),
+            ),
+            (
+                DataError::LimitExceeded("bound"),
+                JournalError::LimitExceeded("bound"),
+            ),
+            (
+                DataError::DuplicateRecordKey,
+                JournalError::DuplicateRecordKey,
+            ),
+            (DataError::JournalTooLarge, JournalError::JournalTooLarge),
+            (
+                DataError::Frame(FrameError::JournalTooLarge),
+                JournalError::JournalTooLarge,
+            ),
+            (
+                DataError::Frame(FrameError::UnsupportedVersion(3)),
+                JournalError::UnsupportedVersion(3),
+            ),
+            (
+                DataError::Frame(FrameError::ChecksumMismatch(19)),
+                JournalError::ChecksumMismatch(19),
+            ),
+            (
+                DataError::Frame(FrameError::MalformedTransaction("frame")),
+                JournalError::MalformedTransaction("frame"),
+            ),
+            (
+                DataError::Frame(FrameError::LimitExceeded("frame")),
+                JournalError::LimitExceeded("frame"),
+            ),
+            (
+                DataError::Frame(FrameError::MissingRetainedPayload),
+                JournalError::ProtectedBoundary,
+            ),
+            (
+                DataError::Frame(FrameError::SequenceExhausted),
+                JournalError::SequenceExhausted,
+            ),
+            (
+                DataError::Record(RecordError::MalformedRecord("payload")),
+                JournalError::MalformedRecord("payload"),
+            ),
+            (
+                DataError::Record(RecordError::LimitExceeded("payload")),
+                JournalError::LimitExceeded("payload"),
+            ),
+        ];
+        for (data, expected) in cases {
+            let actual = JournalError::from(data);
+
+            assert_eq!(
+                std::mem::discriminant(&actual),
+                std::mem::discriminant(&expected)
+            );
+            assert_eq!(actual.to_string(), expected.to_string());
+        }
+
+        let original = std::io::Error::other(std::io::Error::from_raw_os_error(5));
+        let cause = original.get_ref().unwrap() as *const _;
+        let JournalError::Io(actual) =
+            JournalError::from(DataError::Frame(FrameError::Io(original)))
+        else {
+            panic!("transaction DATA projection lost native I/O custody");
+        };
+
+        assert!(std::ptr::eq(cause, actual.get_ref().unwrap() as *const _));
+        assert_eq!(
+            actual
+                .get_ref()
+                .unwrap()
+                .downcast_ref::<std::io::Error>()
+                .unwrap()
+                .raw_os_error(),
+            Some(5)
+        );
+    }
+
+    #[test]
     fn native_record_decode_preserves_closed_namespace_error_precedence() {
         let limits = JournalLimits {
             maximum_key_bytes: 0,
@@ -7575,11 +7609,11 @@ mod tests {
             let payload = [namespace, 0, 0, 255, 255, 255, 255];
 
             assert!(matches!(
-                super::decode_record(&payload[..6], limits),
+                super::decode_record(&payload[..6], limits).map_err(JournalError::from),
                 Err(JournalError::MalformedRecord("record header is truncated")),
             ));
             assert!(matches!(
-                super::decode_record(&payload, limits),
+                super::decode_record(&payload, limits).map_err(JournalError::from),
                 Err(JournalError::MalformedRecord("unknown record namespace")),
             ));
         }
@@ -7591,11 +7625,11 @@ mod tests {
         };
 
         assert!(matches!(
-            super::decode_record(&[1, 2, 0, 0, 0, 0, 0], limits),
+            super::decode_record(&[1, 2, 0, 0, 0, 0, 0], limits).map_err(JournalError::from),
             Err(JournalError::LimitExceeded("record key bytes")),
         ));
         assert!(matches!(
-            super::decode_record(&[1, 1, 0, 0, 0, 0, 0], limits),
+            super::decode_record(&[1, 1, 0, 0, 0, 0, 0], limits).map_err(JournalError::from),
             Err(JournalError::MalformedRecord("record length mismatch")),
         ));
     }
@@ -7755,10 +7789,9 @@ mod tests {
         ];
 
         for (value, expected) in cases {
-            let record = JournalRecord {
-                namespace: RecordNamespace::DesiredState,
-                key: b"k".to_vec(),
-                value: value.map(<[u8]>::to_vec),
+            let record = match value {
+                Some(value) => JournalRecord::put(RecordNamespace::DesiredState, b"k".to_vec(), value.to_vec()),
+                None => JournalRecord::delete(RecordNamespace::DesiredState, b"k".to_vec()),
             };
 
             let payload = super::encode_record(&record).unwrap();
@@ -7902,10 +7935,7 @@ mod tests {
         for (index, records) in cases.into_iter().enumerate() {
             // Measurement, like encoding, does not perform owner admission or
             // the separate transaction validator's nonempty/UUID checks.
-            let transaction = JournalTransaction {
-                id: [index as u8; 16],
-                records,
-            };
+            let transaction = JournalTransaction::from_unvalidated_data([index as u8; 16], records);
             let frames = encode_transaction(&transaction, 0).unwrap();
             let append_bytes = frames.iter().map(|frame| frame.len() as u64).sum::<u64>();
             let record_bytes = transaction
@@ -7981,15 +8011,15 @@ mod tests {
         );
 
         assert!(matches!(
-            super::encoded_transaction_record_bytes(&transaction),
+            super::encoded_transaction_record_bytes(&transaction).map_err(JournalError::from),
             Err(JournalError::LimitExceeded("record key bytes")),
         ));
         assert!(matches!(
-            super::encoded_transaction_append_bytes(&transaction),
+            super::encoded_transaction_append_bytes(&transaction).map_err(JournalError::from),
             Err(JournalError::LimitExceeded("record key bytes")),
         ));
         assert!(matches!(
-            encode_transaction(&transaction, 0),
+            encode_transaction(&transaction, 0).map_err(JournalError::from),
             Err(JournalError::LimitExceeded("record key bytes")),
         ));
     }
@@ -8013,15 +8043,15 @@ mod tests {
 
         assert!(encode_transaction(&valid, u64::MAX - 2).is_ok());
         assert!(matches!(
-            encode_transaction(&valid, u64::MAX - 1),
+            encode_transaction(&valid, u64::MAX - 1).map_err(JournalError::from),
             Err(JournalError::SequenceExhausted),
         ));
         assert!(matches!(
-            encode_transaction(&invalid, u64::MAX),
+            encode_transaction(&invalid, u64::MAX).map_err(JournalError::from),
             Err(JournalError::SequenceExhausted),
         ));
         assert!(matches!(
-            encode_transaction(&invalid, u64::MAX - 1),
+            encode_transaction(&invalid, u64::MAX - 1).map_err(JournalError::from),
             Err(JournalError::LimitExceeded("record key bytes")),
         ));
     }

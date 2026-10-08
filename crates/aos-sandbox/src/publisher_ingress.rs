@@ -368,7 +368,7 @@ impl<'a> PublisherIngressStore<'a> {
                 key,
                 value,
             )],
-        )?)?;
+        ).map_err(JournalError::from)?)?;
         self.bytes = bytes;
         Ok(())
     }

@@ -506,7 +506,7 @@ impl NetworkLifecycleStateStore {
                     record.request_id.to_vec(),
                 ),
             ],
-        )?;
+        ).map_err(aos_sandbox::JournalError::from)?;
         self.journal.commit(&transaction)?;
         let effect_digest = record.effect_digest;
         self.heads.insert(handle, record.request_id);
@@ -628,7 +628,7 @@ impl NetworkLifecycleStateStore {
                 RecordNamespace::DesiredState,
                 sandbox_id.to_vec(),
             )],
-        )?;
+        ).map_err(aos_sandbox::JournalError::from)?;
         self.journal.commit(&transaction)?;
         Ok(())
     }
@@ -652,7 +652,7 @@ impl NetworkLifecycleStateStore {
                 sandbox_id.to_vec(),
                 fence,
             )],
-        )?;
+        ).map_err(aos_sandbox::JournalError::from)?;
         self.journal.commit(&transaction)?;
         Ok(())
     }
@@ -670,7 +670,7 @@ impl NetworkLifecycleStateStore {
                 sandbox_id.to_vec(),
                 fence,
             )],
-        )?;
+        ).map_err(aos_sandbox::JournalError::from)?;
         self.journal.commit(&transaction)?;
         Ok(())
     }
@@ -691,7 +691,7 @@ impl NetworkLifecycleStateStore {
                 RecordNamespace::NetworkResourceInventory,
                 network_handle.to_vec(),
             )],
-        )?;
+        ).map_err(aos_sandbox::JournalError::from)?;
         self.journal.commit(&transaction)?;
         Ok(())
     }
@@ -754,7 +754,7 @@ impl NetworkLifecycleStateStore {
                 record.request_id.to_vec(),
                 sealed,
             )],
-        )?;
+        ).map_err(aos_sandbox::JournalError::from)?;
         self.journal.commit(&transaction)?;
         Ok(())
     }
@@ -793,7 +793,7 @@ impl NetworkLifecycleStateStore {
                 record.request_id.to_vec(),
                 sealed,
             )],
-        )?;
+        ).map_err(aos_sandbox::JournalError::from)?;
         self.journal.commit(&transaction)?;
         self.records.insert(record.request_id, record);
         Ok(())

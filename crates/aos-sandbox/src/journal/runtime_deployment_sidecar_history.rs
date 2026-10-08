@@ -326,7 +326,7 @@ fn copy_transaction(transaction: &JournalTransaction) -> Result<JournalTransacti
         };
         records.push(record);
     }
-    JournalTransaction::new(*transaction.id(), records)
+    JournalTransaction::new(*transaction.id(), records).map_err(JournalError::from)
 }
 
 fn copy_bytes(bytes: &[u8]) -> Result<Vec<u8>, JournalError> {

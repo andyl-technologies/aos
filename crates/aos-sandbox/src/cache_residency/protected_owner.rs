@@ -2730,7 +2730,7 @@ impl CacheClockWriterReadbackGuard<'_> {
                 vec![JournalRecord::put(
                     RecordNamespace::DesiredState, CACHE_CLOCK_KEY.to_vec(), expected.clone(),
                 )],
-            )?;
+            ).map_err(crate::journal::JournalError::from)?;
             if journal.get(RecordNamespace::DesiredState, CACHE_CLOCK_KEY)
                 != Some(encode_cache_clock_floor(state.floor).as_slice())
             {

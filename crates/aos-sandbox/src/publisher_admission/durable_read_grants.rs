@@ -200,7 +200,7 @@ impl PublisherDurableReadGrantOwnerV1 {
                 grant_key(grant.holder),
                 bytes,
             )],
-        )?;
+        ).map_err(JournalError::from)?;
         let pending = PublisherReadGrantOutcomeUnknownV1 {
             transaction,
             previous,

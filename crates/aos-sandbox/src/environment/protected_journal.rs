@@ -275,6 +275,7 @@ pub fn environment_protected_key_v1(
     identity.extend_from_slice(sandbox.as_bytes());
     identity.extend_from_slice(environment.as_bytes());
     EnvironmentProtectedJournalKeyV1::new(kind, identity)
+        .map_err(ProtectedDomainJournalErrorV1::from)
 }
 
 /// Claims the dormant environment adapter over a protected-open journal.
@@ -367,7 +368,7 @@ pub(crate) fn environment_reducer_envelope_v1(
         predecessor,
         payload,
         manifests,
-    )
+    ).map_err(ProtectedDomainJournalErrorV1::from)
 }
 
 fn selector_for_build_body(

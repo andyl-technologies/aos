@@ -541,7 +541,8 @@ impl<'journal> PublisherPolicyStore<'journal> {
         records: Vec<JournalRecord>,
     ) -> Result<CommitResult, PublisherPolicyError> {
         let (next_records, next_bytes) = self.bounded_replacement_totals(&records)?;
-        let transaction = JournalTransaction::new(transaction_id, records)?;
+        let transaction = JournalTransaction::new(transaction_id, records)
+            .map_err(JournalError::from)?;
         let result = self.journal.commit(&transaction)?;
         self.records = next_records;
         self.materialized_bytes = next_bytes;

@@ -104,7 +104,8 @@ fn run() -> Result<()> {
         })
         .collect();
     journal_records.push(prepared.record().clone());
-    let transaction = JournalTransaction::new(transaction_id, journal_records)?;
+    let transaction = JournalTransaction::new(transaction_id, journal_records)
+        .map_err(aos_sandbox::JournalError::from)?;
     let preflight = authority.preflight_global_capacity_reservation_v1(&prepared, &transaction)?;
     let (_, reserved_capacity) =
         authority.commit_global_capacity_reservation_v1(&preflight, prepared, &transaction)?;

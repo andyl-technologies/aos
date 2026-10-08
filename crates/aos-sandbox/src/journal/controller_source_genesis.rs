@@ -358,5 +358,5 @@ fn transaction(
     );
     let mut id = [0; 16];
     id.copy_from_slice(&digest.as_bytes()[..16]);
-    JournalTransaction::new(id, vec![record])
+    JournalTransaction::new(id, vec![record]).map_err(JournalError::from)
 }

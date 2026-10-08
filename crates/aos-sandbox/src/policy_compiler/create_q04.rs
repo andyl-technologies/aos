@@ -12,6 +12,8 @@
 //! AOSQ4G01 | version=1 | Applying-only policy subgate | checksum
 //! ```
 
+use aos_sandbox_protocol::domain_ledger::JournalTransactionDataError;
+
 use aos_sandbox_core::{ObjectDigest, OperationId, ProjectId, SandboxId};
 use ed25519_dalek::{Signature, Signer as _, SigningKey};
 use sha2::{Digest as _, Sha256};
@@ -236,6 +238,12 @@ pub enum CreateQ04ErrorV1 {
     /// A selected owner scope unwound before its final clearance.
     #[error("the original Q04 continuation unwound")]
     Unwind,
+}
+
+impl From<JournalTransactionDataError> for CreateQ04ErrorV1 {
+    fn from(error: JournalTransactionDataError) -> Self {
+        <Self as From<JournalError>>::from(JournalError::from(error))
+    }
 }
 
 // A signing failure remains the first typed cause. A later whole-owner

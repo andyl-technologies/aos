@@ -768,7 +768,7 @@ impl FixedProviderOwnerV1 {
         let transaction_id = *quartet.id();
         producer.park(
             OriginalProducerAppendV5::Applying,
-            JournalTransaction::new(transaction_id, records)?,
+            JournalTransaction::new(transaction_id, records).map_err(JournalError::from)?,
         )?;
         held.session.current_projection()?;
         Ok(())
@@ -920,7 +920,7 @@ pub(super) fn owner_transaction_v5(
         Some(value) => JournalRecord::put(RecordNamespace::SourceProviderAuthority, key, value),
         None => JournalRecord::delete(RecordNamespace::SourceProviderAuthority, key),
     }).collect();
-    Ok(JournalTransaction::new(identity, records)?)
+    Ok(JournalTransaction::new(identity, records).map_err(JournalError::from)?)
 }
 
 fn quartet_witnesses_v5(
@@ -1109,7 +1109,8 @@ impl FixedProviderOwnerV1 {
             before_floor.to_journal_record()?.key().to_vec(),
         ));
         records.push(after_floor.to_journal_record()?);
-        producer.park(step, JournalTransaction::new(*owner_transaction.id(), records)?)?;
+        producer.park(step, JournalTransaction::new(*owner_transaction.id(), records)
+            .map_err(JournalError::from)?)?;
         held.session.current_projection()?;
         Ok(())
     }

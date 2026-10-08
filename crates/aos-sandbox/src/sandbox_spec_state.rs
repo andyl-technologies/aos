@@ -282,7 +282,7 @@ impl Record {
                 self.key(),
                 self.encode(),
             )],
-        )?)
+        ).map_err(JournalError::from)?)
     }
 }
 

@@ -678,7 +678,7 @@ fn commit_cursor(
             cursor.execution.as_bytes().to_vec(),
             cursor.encode(),
         )],
-    )?;
+    ).map_err(JournalError::from)?;
     controller
         .commit(&transaction)
         .map_err(|_| ControllerNoApplySettlementCursorErrorV1::OutcomeUnknown)?;

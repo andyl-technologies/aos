@@ -369,7 +369,7 @@ pub fn accept_controller_project_history_floor_v1<'controller>(
                 effect_record(operation, &effect)?,
                 reservation.settlement_record(),
             ],
-        )?;
+        ).map_err(JournalError::from)?;
         let mut capacity = journal.claim_global_capacity_reservation_authority(
             GlobalCapacityReservationPurposeV1::ControllerProjectAdmission,
         )?;
@@ -522,7 +522,7 @@ pub fn prepare_current_create_project_admission_v1(
             effect_record(source.operation(), &effect)?,
             prepared.record().clone(),
         ],
-    )?;
+    ).map_err(JournalError::from)?;
     journal.commit_global_capacity_reservation_v1(prepared, &transaction)?;
     require_controller_writer(journal)?;
     owner
@@ -803,8 +803,9 @@ fn transfer_metadata(
             capacity.settlement_record(),
             draft.record().clone(),
         ],
-    )?;
-    let consumed = encoded_transaction_append_bytes(&draft_transaction)?;
+    ).map_err(JournalError::from)?;
+    let consumed = encoded_transaction_append_bytes(&draft_transaction)
+        .map_err(JournalError::from)?;
     request.terminal_bytes = old
         .terminal_bytes
         .checked_sub(consumed)
@@ -823,7 +824,7 @@ fn transfer_metadata(
             capacity.settlement_record(),
             successor.record().clone(),
         ],
-    )?;
+    ).map_err(JournalError::from)?;
     journal.transfer_controller_project_capacity_v1(capacity, successor, &transaction)?;
     Ok(())
 }

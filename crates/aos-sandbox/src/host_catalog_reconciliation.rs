@@ -374,7 +374,7 @@ impl CatalogRecord {
                 self.key().to_vec(),
                 self.encode(),
             )],
-        )?)
+        ).map_err(JournalError::from)?)
     }
 
     fn completion_transaction(&self) -> Result<JournalTransaction, HostCatalogReconciliationError> {
@@ -404,7 +404,7 @@ impl CatalogRecord {
                     PENDING_KEY.to_vec(),
                 ),
             ],
-        )?)
+        ).map_err(JournalError::from)?)
     }
 }
 

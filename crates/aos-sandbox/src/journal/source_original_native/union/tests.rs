@@ -33,7 +33,7 @@ fn legacy_row(byte: u8) -> ([u8; 32], JournalRecord) {
     let mut value = b"AOSJCR01\0\x01\x29\x03\0\0".to_vec();
     value.extend_from_slice(&body);
     value.extend_from_slice(&identity);
-    let key = crate::journal::capacity_reservation::reservation_key_for_validation(identity);
+    let key = crate::journal::capacity_reservation::reservation_key(identity);
     (identity, JournalRecord::put(RecordNamespace::GlobalCapacityReservation, key, value))
 }
 
@@ -86,7 +86,7 @@ fn full_transaction_charges_actual_ordinary_delete_not_a_budget_label() {
     let one = JournalTransaction::new([35; 16], vec![own.clone()]).unwrap();
     let delete = JournalRecord::delete(
         RecordNamespace::GlobalCapacityReservation,
-        crate::journal::capacity_reservation::reservation_key_for_validation(identifier),
+        crate::journal::capacity_reservation::reservation_key(identifier),
     );
     let both = JournalTransaction::new([36; 16], vec![own, delete]).unwrap();
     let first_bytes = crate::journal::encoded_transaction_append_bytes(&one).unwrap();

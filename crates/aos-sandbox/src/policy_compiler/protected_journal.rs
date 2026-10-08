@@ -9,6 +9,8 @@
 //! Its byte consistency is not an authenticated input or runtime-read proof;
 //! V2 remains structurally replayable without supplying that preimage.
 
+use aos_sandbox_protocol::domain_ledger::DomainLedgerDataError;
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     marker::PhantomData,
@@ -301,6 +303,12 @@ pub enum PolicyCompilerJournalErrorV1 {
     /// Protected currentness, CAS, replay, or durability failed.
     #[error(transparent)]
     Journal(#[from] ProtectedDomainJournalErrorV1),
+}
+
+impl From<DomainLedgerDataError> for PolicyCompilerJournalErrorV1 {
+    fn from(error: DomainLedgerDataError) -> Self {
+        Self::from(ProtectedDomainJournalErrorV1::from(error))
+    }
 }
 
 /// Binds external ancestry, authority, cache, and revocation currentness.

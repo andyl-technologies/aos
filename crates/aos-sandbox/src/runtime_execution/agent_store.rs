@@ -162,7 +162,7 @@ impl<'journal> DormantJournalAgentStoreV1<'journal> {
                 OWNER_KEY.to_vec(),
                 owner_value(store_binding, recovery_authority_binding),
             )],
-        )?;
+        ).map_err(JournalError::from)?;
         let preflight = authority.preflight_transactions(std::slice::from_ref(&transaction))?;
         authority.validate_preflight_for_effect(&preflight, std::slice::from_ref(&transaction))?;
         authority.commit(&transaction)?;
@@ -315,7 +315,7 @@ impl<'journal> DormantJournalAgentStoreV1<'journal> {
                 key.clone(),
                 bytes.clone(),
             )],
-        )?;
+        ).map_err(JournalError::from)?;
         self.commit_records(transaction)?;
         if self.authority.get(&key)? != Some(bytes.as_slice()) {
             return Err(JournalAgentStoreError::CorruptRecord);
@@ -568,7 +568,7 @@ impl<'journal> DormantJournalAgentStoreV1<'journal> {
                     ),
                 ),
             ],
-        )
+        ).map_err(JournalError::from)
         .map_err(map_cas_journal_error)?;
         match self.commit_records(transaction) {
             Ok(_) => Ok(AgentOutcomeStoreTransitionV1::Committed(
@@ -671,7 +671,7 @@ impl DormantJournalAgentStoreV1<'_> {
                     encode_head(expected_sequence, operation_id, request_commitment),
                 ),
             ],
-        )
+        ).map_err(JournalError::from)
         .map_err(map_cas_journal_error)?;
         match self.commit_records(transaction) {
             Ok(sequence) if sequence == commit_sequence => AgentOperationReservationV1::new(

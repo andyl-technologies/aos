@@ -668,7 +668,8 @@ impl AccountTransition {
                 settlement::encode(binding)?.to_vec(),
             ));
         }
-        Ok(JournalTransaction::new(self.transaction_id, records)?)
+        Ok(JournalTransaction::new(self.transaction_id, records)
+            .map_err(crate::journal::JournalError::from)?)
     }
 
     pub(crate) fn require_current(
@@ -716,7 +717,8 @@ impl AccountTransition {
         if matches!(self.claim.purpose,
             ClaimPurpose::ControllerFirstGlobalPrefix | ClaimPurpose::NixOriginalStartIntake
                 | ClaimPurpose::Q04OriginalIntake)
-            && crate::journal::encoded_transaction_append_bytes(transaction)?
+            && crate::journal::encoded_transaction_append_bytes(transaction)
+                .map_err(crate::journal::JournalError::from)?
                 != crate::Journal::first_global_prefix_append_bytes_v1()?
         {
             return Err(ResourceReservationErrorV1::Conflict);

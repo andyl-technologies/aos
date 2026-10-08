@@ -106,7 +106,7 @@ impl CacheRootSettlementV2 {
                 archive_key(self.epoch - SETTLEMENT_ARCHIVE_WINDOW),
             ));
         }
-        JournalTransaction::new(transaction_id, records)
+        JournalTransaction::new(transaction_id, records).map_err(JournalError::from)
     }
 }
 

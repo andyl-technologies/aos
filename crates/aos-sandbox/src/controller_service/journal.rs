@@ -280,7 +280,8 @@ fn bind_controller_identity_with_originals(
                 value,
             );
             let transaction =
-                JournalTransaction::new(OperationId::new().into_bytes(), vec![record])?;
+                JournalTransaction::new(OperationId::new().into_bytes(), vec![record])
+                    .map_err(JournalError::from)?;
             match originals {
                 None => { journal.commit(&transaction)?; }
                 Some(originals) => {

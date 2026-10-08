@@ -34,6 +34,8 @@
 //! physical cache state, and effect handoff still need independent proof
 //! before AOSPCB01.
 
+use aos_sandbox_protocol::domain_ledger::JournalTransactionDataError;
+
 use std::path::Path;
 
 use ed25519_dalek::{Signature, Verifier as _, VerifyingKey};
@@ -151,6 +153,12 @@ pub enum PolicyDeploymentHeadErrorV1 {
     /// Protected source-domain hierarchy currentness is unavailable.
     #[error(transparent)]
     Hierarchy(#[from] HierarchyProtectedJournalErrorV1),
+}
+
+impl From<JournalTransactionDataError> for PolicyDeploymentHeadErrorV1 {
+    fn from(error: JournalTransactionDataError) -> Self {
+        <Self as From<JournalError>>::from(JournalError::from(error))
+    }
 }
 
 /// Pins both role-specific deployment verifier generations in root custody.

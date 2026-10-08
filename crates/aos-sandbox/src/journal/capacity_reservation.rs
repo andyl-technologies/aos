@@ -39,184 +39,19 @@ pub(in crate::journal) use family::{
     accounting_reservation, accounting_reservations, require_legacy_reservations,
 };
 
-const KEY_PREFIX: &[u8] = b"aos.journal.global-capacity-reservation.v1\0";
-const RECORD_DOMAIN: &[u8] = b"aos.sandbox.journal.global-capacity-reservation.v1\0";
-const VALUE_BYTES_V1: usize = 262;
-const VALUE_BYTES_V2: usize = 266;
-const RECORD_DOMAIN_V2: &[u8] = b"aos.sandbox.journal.global-capacity-reservation.v2\0";
-const MAXIMUM_FUTURE_TRANSACTIONS: u32 = 3;
-
-/// Selects one closed cross-namespace admission and settlement protocol.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(u8)]
-pub enum GlobalCapacityReservationPurposeV1 {
-    /// Publisher permit issuance and terminal publication settlement.
-    PublisherCompletion = 1,
-    /// Runtime execution admission and terminal effect settlement.
-    RuntimeExecution = 2,
-    /// Source-provider native admission and terminal settlement.
-    SourceProviderNativeTerminal = 3,
-    /// Root project intent, exact decision, and bounded history retirement.
-    RootProjectAdmission = 4,
-    /// Controller acceptance and exact Root-history retirement in one Effect.
-    ControllerProjectAdmission = 5,
-    /// Root-owned initial Source intent and exact semantic-floor settlement.
-    RootSourceGenesisAnchor = 6,
-    /// Non-authorizing Controller resource preparation and retained quarantine.
-    ControllerConsumerResource = 7,
-    /// Fixed Root first-successor settlement; generic capacity scopes refuse it.
-    RootFirstSourceSuccessorAnchor = 8,
-    /// Fixed Source first-successor ACK; generic capacity scopes refuse it.
-    SourceFirstSourceSuccessorAck = 9,
-    /// Fixed Controller first-successor completion; generic scopes refuse it.
-    ControllerFirstSourceSuccessorComplete = 10,
-}
-
-impl GlobalCapacityReservationPurposeV1 {
-    pub(super) const fn owner_namespace(self) -> RecordNamespace {
-        match self {
-            Self::PublisherCompletion => RecordNamespace::PublisherAuthority,
-            Self::RuntimeExecution => RecordNamespace::Effect,
-            Self::RootProjectAdmission => RecordNamespace::DesiredState,
-            Self::SourceProviderNativeTerminal => RecordNamespace::SourceProviderAuthority,
-            Self::ControllerProjectAdmission => RecordNamespace::Effect,
-            Self::RootSourceGenesisAnchor => RecordNamespace::DesiredState,
-            Self::ControllerConsumerResource => RecordNamespace::ControllerConsumerReadAttempt,
-            Self::RootFirstSourceSuccessorAnchor
-            | Self::SourceFirstSourceSuccessorAck
-            | Self::ControllerFirstSourceSuccessorComplete => RecordNamespace::DesiredState,
-        }
-    }
-
-    pub(super) const fn permits(self, namespace: RecordNamespace) -> bool {
-        match self {
-            Self::PublisherCompletion => matches!(
-                namespace,
-                RecordNamespace::PublisherAuthority
-                    | RecordNamespace::AuthorityPublication
-                    | RecordNamespace::Effect
-                    | RecordNamespace::GlobalCapacityReservation
-            ),
-            Self::RuntimeExecution => matches!(
-                namespace,
-                RecordNamespace::Effect | RecordNamespace::GlobalCapacityReservation
-            ),
-            Self::RootProjectAdmission => matches!(
-                namespace,
-                RecordNamespace::DesiredState | RecordNamespace::GlobalCapacityReservation
-            ),
-            Self::SourceProviderNativeTerminal => matches!(
-                namespace,
-                RecordNamespace::SourceProviderAuthority
-                    | RecordNamespace::GlobalCapacityReservation
-            ),
-            Self::ControllerProjectAdmission => matches!(
-                namespace,
-                RecordNamespace::Effect | RecordNamespace::GlobalCapacityReservation
-            ),
-            Self::RootSourceGenesisAnchor => matches!(
-                namespace,
-                RecordNamespace::DesiredState | RecordNamespace::GlobalCapacityReservation
-            ),
-            Self::ControllerConsumerResource => matches!(
-                namespace,
-                RecordNamespace::ControllerConsumerReadAttempt
-                    | RecordNamespace::GlobalCapacityReservation
-            ),
-            Self::RootFirstSourceSuccessorAnchor
-            | Self::SourceFirstSourceSuccessorAck
-            | Self::ControllerFirstSourceSuccessorComplete => matches!(
-                namespace,
-                RecordNamespace::DesiredState | RecordNamespace::GlobalCapacityReservation
-            ),
-        }
-    }
-
-    fn from_byte(value: u8) -> Result<Self, JournalError> {
-        match value {
-            1 => Ok(Self::PublisherCompletion),
-            2 => Ok(Self::RuntimeExecution),
-            3 => Ok(Self::SourceProviderNativeTerminal),
-            4 => Ok(Self::RootProjectAdmission),
-            5 => Ok(Self::ControllerProjectAdmission),
-            6 => Ok(Self::RootSourceGenesisAnchor),
-            7 => Ok(Self::ControllerConsumerResource),
-            8 => Ok(Self::RootFirstSourceSuccessorAnchor),
-            9 => Ok(Self::SourceFirstSourceSuccessorAck),
-            10 => Ok(Self::ControllerFirstSourceSuccessorComplete),
-            _ => Err(JournalError::MalformedRecord(
-                "unknown global capacity reservation purpose",
-            )),
-        }
-    }
-
-    pub(super) const fn is_first_source_successor(self) -> bool {
-        matches!(
-            self,
-            Self::RootFirstSourceSuccessorAnchor
-                | Self::SourceFirstSourceSuccessorAck
-                | Self::ControllerFirstSourceSuccessorComplete
-        )
-    }
-}
-
-/// Describes one exact operation whose terminal capacity must remain available.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct GlobalCapacityReservationRequestV1 {
-    /// Closed transaction protocol that owns this reservation.
-    pub purpose: GlobalCapacityReservationPurposeV1,
-    /// Namespace that owns the terminal operation.
-    pub owner_namespace: RecordNamespace,
-    /// Stable owner identity within that namespace.
-    pub owner_id: [u8; 32],
-    /// Exact owner or permit commitment.
-    pub owner_digest: [u8; 32],
-    /// Stable operation identity.
-    pub operation_id: [u8; 16],
-    /// Exact admitted artifact commitment.
-    pub artifact_digest: [u8; 32],
-    /// Exact admission checkpoint commitment.
-    pub checkpoint_digest: [u8; 32],
-    /// Exact predecessor or chain-head commitment.
-    pub chain_head_digest: [u8; 32],
-    /// Maximum remaining durable transactions, including final settlement.
-    /// Legacy reservations retain exactly one; ordered transfers decrease this
-    /// count atomically with their remaining record and byte budgets.
-    pub future_transactions: u32,
-    /// Maximum records in the successful terminal transaction.
-    pub terminal_records: u32,
-    /// Maximum encoded bytes in the successful terminal transaction.
-    pub terminal_bytes: u64,
-    /// Maximum records in the poison terminal transaction.
-    pub poison_records: u32,
-    /// Maximum encoded bytes in the poison terminal transaction.
-    pub poison_bytes: u64,
-}
-
-/// Identifies a replayed reservation without trusting its retained owner digest.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct GlobalCapacityReservationRecoveryBindingV1 {
-    /// Closed transaction protocol that owns this reservation.
-    pub purpose: GlobalCapacityReservationPurposeV1,
-    /// Stable operation identity.
-    pub operation_id: [u8; 16],
-    /// Exact admitted artifact commitment.
-    pub artifact_digest: [u8; 32],
-    /// Exact admission checkpoint commitment.
-    pub checkpoint_digest: [u8; 32],
-    /// Exact predecessor or chain-head commitment.
-    pub chain_head_digest: [u8; 32],
-    /// Exact remaining durable transaction budget.
-    pub future_transactions: u32,
-    /// Maximum successful terminal record count.
-    pub terminal_records: u32,
-    /// Maximum successful terminal byte count.
-    pub terminal_bytes: u64,
-    /// Maximum poison terminal record count.
-    pub poison_records: u32,
-    /// Maximum poison terminal byte count.
-    pub poison_bytes: u64,
-}
+pub use aos_sandbox_protocol::domain_ledger::capacity::{
+    GlobalCapacityReservationPurposeV1, GlobalCapacityReservationRecoveryBindingV1,
+    GlobalCapacityReservationRequestV1,
+};
+pub(crate) use aos_sandbox_protocol::domain_ledger::capacity::capacity_reservation_identity_is_exact_v1;
+pub(super) use aos_sandbox_protocol::domain_ledger::capacity::{
+    decode_reservation, reservation_key,
+};
+use aos_sandbox_protocol::domain_ledger::capacity::{
+    encode_reservation, reservation_id, uses_v2, valid_future_transactions, MAXIMUM_FUTURE_TRANSACTIONS,
+};
+#[cfg(test)]
+use aos_sandbox_protocol::domain_ledger::capacity::{RECORD_DOMAIN, VALUE_BYTES_V1, VALUE_BYTES_V2};
 
 /// Carries the exact reservation record that must join its admission transaction.
 #[must_use = "a prepared capacity reservation must be committed or discarded before admission"]
@@ -417,7 +252,7 @@ impl Journal {
         {
             return Err(JournalError::AuthorityPreflightMismatch);
         }
-        if transaction.records.len() != 3 {
+        if transaction.records().len() != 3 {
             return Err(JournalError::InvalidTransaction);
         }
         crate::reconciler::project_admission::validate_capacity_transfer(
@@ -467,17 +302,17 @@ impl Journal {
             || old.terminal_bytes != old.poison_bytes
             || new.terminal_records != new.poison_records
             || new.terminal_bytes != new.poison_bytes
-            || successor.admission_transaction_id != transaction.id
+            || successor.admission_transaction_id != *transaction.id()
         {
             return Err(JournalError::AuthorityPreflightMismatch);
         }
         let capacity_records = transaction
-            .records
+            .records()
             .iter()
-            .filter(|record| record.namespace == RecordNamespace::GlobalCapacityReservation)
+            .filter(|record| record.namespace() == RecordNamespace::GlobalCapacityReservation)
             .collect::<Vec<_>>();
         let deletion = reservation.settlement_record();
-        let records = u32::try_from(transaction.records.len())
+        let records = u32::try_from(transaction.records().len())
             .map_err(|_| JournalError::InvalidTransaction)?;
         if capacity_records != [&deletion, &successor.record]
             || old.terminal_records.checked_sub(records) != Some(new.terminal_records)
@@ -550,11 +385,11 @@ impl Journal {
                 &prepared.request,
             )?;
         }
-        if transaction.id != prepared.admission_transaction_id
+        if *transaction.id() != prepared.admission_transaction_id
             || transaction
-                .records
+                .records()
                 .iter()
-                .filter(|record| record.namespace == RecordNamespace::GlobalCapacityReservation)
+                .filter(|record| record.namespace() == RecordNamespace::GlobalCapacityReservation)
                 .ne([&prepared.record])
         {
             return Err(JournalError::InvalidTransaction);
@@ -564,8 +399,7 @@ impl Journal {
         let record_digest = digest_bytes(
             prepared
                 .record
-                .value
-                .as_deref()
+                .value()
                 .ok_or(JournalError::InvalidTransaction)?,
         );
         Ok((
@@ -724,9 +558,9 @@ pub(super) fn validate_settlement_shape(
         ));
     }
     let reservation_records = transaction
-        .records
+        .records()
         .iter()
-        .filter(|record| record.namespace == RecordNamespace::GlobalCapacityReservation)
+        .filter(|record| record.namespace() == RecordNamespace::GlobalCapacityReservation)
         .collect::<Vec<_>>();
     if reservation_records
         != [&JournalRecord::delete(
@@ -737,11 +571,11 @@ pub(super) fn validate_settlement_shape(
         return Err(JournalError::InvalidTransaction);
     }
     let encoded_bytes = super::encoded_transaction_record_bytes(transaction)?;
-    let terminal_fits = transaction.records.len()
+    let terminal_fits = transaction.records().len()
         <= usize::try_from(reservation.request.terminal_records)
             .map_err(|_| JournalError::InvalidTransaction)?
         && encoded_bytes <= reservation.request.terminal_bytes;
-    let poison_fits = transaction.records.len()
+    let poison_fits = transaction.records().len()
         <= usize::try_from(reservation.request.poison_records)
             .map_err(|_| JournalError::InvalidTransaction)?
         && encoded_bytes <= reservation.request.poison_bytes;
@@ -901,13 +735,6 @@ pub(super) fn validate_request_with_limits(
     Ok(())
 }
 
-fn reservation_key(reservation_id: [u8; 32]) -> Vec<u8> {
-    let mut key = Vec::with_capacity(KEY_PREFIX.len() + reservation_id.len());
-    key.extend_from_slice(KEY_PREFIX);
-    key.extend_from_slice(&reservation_id);
-    key
-}
-
 /// Constructs fixed reservation DATA without conferring named-owner custody.
 ///
 /// # Errors
@@ -1011,172 +838,6 @@ impl Journal {
         super::source_tree_successor::require_capacity_owner(self, request.purpose)?;
         first_source_successor_capacity_delete_v2(self.native.state(), request, admission)
     }
-}
-
-pub(super) fn reservation_key_for_validation(reservation_id: [u8; 32]) -> Vec<u8> {
-    reservation_key(reservation_id)
-}
-
-fn reservation_id(
-    request: &GlobalCapacityReservationRequestV1,
-    admission_transaction_id: [u8; 16],
-) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(if uses_v2(request) {
-        RECORD_DOMAIN_V2
-    } else {
-        RECORD_DOMAIN
-    });
-    hasher.update([request.purpose as u8]);
-    hasher.update([request.owner_namespace as u8]);
-    hasher.update(request.owner_id);
-    hasher.update(request.owner_digest);
-    hasher.update(request.operation_id);
-    hasher.update(request.artifact_digest);
-    hasher.update(request.checkpoint_digest);
-    hasher.update(request.chain_head_digest);
-    hasher.update(request.terminal_records.to_be_bytes());
-    hasher.update(request.terminal_bytes.to_be_bytes());
-    hasher.update(request.poison_records.to_be_bytes());
-    hasher.update(request.poison_bytes.to_be_bytes());
-    if uses_v2(request) {
-        hasher.update(request.future_transactions.to_be_bytes());
-    }
-    hasher.update(admission_transaction_id);
-    hasher.finalize().into()
-}
-
-pub(crate) fn capacity_reservation_identity_is_exact_v1(
-    request: &GlobalCapacityReservationRequestV1,
-    admission_transaction_id: [u8; 16],
-    candidate_reservation_id: [u8; 32],
-) -> bool {
-    reservation_id(request, admission_transaction_id) == candidate_reservation_id
-}
-
-fn encode_reservation(
-    request: &GlobalCapacityReservationRequestV1,
-    admission_transaction_id: [u8; 16],
-    reservation_id: [u8; 32],
-) -> Vec<u8> {
-    let v2 = uses_v2(request);
-    let mut value = Vec::with_capacity(if v2 { VALUE_BYTES_V2 } else { VALUE_BYTES_V1 });
-    value.extend_from_slice(b"AOSJCR01");
-    value.extend_from_slice(&(if v2 { 2_u16 } else { 1_u16 }).to_be_bytes());
-    value.push(request.owner_namespace as u8);
-    value.push(request.purpose as u8);
-    value.extend_from_slice(&[0; 2]);
-    value.extend_from_slice(&request.owner_id);
-    value.extend_from_slice(&request.owner_digest);
-    value.extend_from_slice(&request.operation_id);
-    value.extend_from_slice(&request.artifact_digest);
-    value.extend_from_slice(&request.checkpoint_digest);
-    value.extend_from_slice(&request.chain_head_digest);
-    value.extend_from_slice(&request.terminal_records.to_be_bytes());
-    value.extend_from_slice(&request.terminal_bytes.to_be_bytes());
-    value.extend_from_slice(&request.poison_records.to_be_bytes());
-    value.extend_from_slice(&request.poison_bytes.to_be_bytes());
-    if v2 {
-        value.extend_from_slice(&request.future_transactions.to_be_bytes());
-    }
-    value.extend_from_slice(&admission_transaction_id);
-    value.extend_from_slice(&reservation_id);
-    value
-}
-
-pub(super) fn decode_reservation(
-    value: &[u8],
-) -> Result<(GlobalCapacityReservationRequestV1, [u8; 16], [u8; 32]), JournalError> {
-    let v2 =
-        value.len() == VALUE_BYTES_V2 && value.get(8..10) == Some(2_u16.to_be_bytes().as_slice());
-    let v1 =
-        value.len() == VALUE_BYTES_V1 && value.get(8..10) == Some(1_u16.to_be_bytes().as_slice());
-    if (!v1 && !v2) || &value[..8] != b"AOSJCR01" || value[12..14] != [0; 2] {
-        return Err(JournalError::MalformedRecord(
-            "invalid capacity reservation envelope",
-        ));
-    }
-    let namespace = RecordNamespace::from_byte(value[10])?;
-    let purpose = GlobalCapacityReservationPurposeV1::from_byte(value[11])?;
-    let mut offset = 14;
-    let owner_id = take::<32>(value, &mut offset);
-    let owner_digest = take::<32>(value, &mut offset);
-    let operation_id = take::<16>(value, &mut offset);
-    let artifact_digest = take::<32>(value, &mut offset);
-    let checkpoint_digest = take::<32>(value, &mut offset);
-    let chain_head_digest = take::<32>(value, &mut offset);
-    let terminal_records = u32::from_be_bytes(take::<4>(value, &mut offset));
-    let terminal_bytes = u64::from_be_bytes(take::<8>(value, &mut offset));
-    let poison_records = u32::from_be_bytes(take::<4>(value, &mut offset));
-    let poison_bytes = u64::from_be_bytes(take::<8>(value, &mut offset));
-    let future_transactions = if v2 {
-        u32::from_be_bytes(take::<4>(value, &mut offset))
-    } else {
-        1
-    };
-    let admission_transaction_id = take::<16>(value, &mut offset);
-    let reservation_id = take::<32>(value, &mut offset);
-    if offset != value.len()
-        || future_transactions == 0
-        || future_transactions > MAXIMUM_FUTURE_TRANSACTIONS
-        || !valid_future_transactions(purpose, future_transactions)
-        || (purpose == GlobalCapacityReservationPurposeV1::ControllerProjectAdmission && !v2)
-        || (v2
-            && future_transactions == 1
-            && purpose != GlobalCapacityReservationPurposeV1::ControllerProjectAdmission)
-    {
-        return Err(JournalError::MalformedRecord(
-            "capacity reservation has trailing bytes",
-        ));
-    }
-    Ok((
-        GlobalCapacityReservationRequestV1 {
-            purpose,
-            owner_namespace: namespace,
-            owner_id,
-            owner_digest,
-            operation_id,
-            artifact_digest,
-            checkpoint_digest,
-            chain_head_digest,
-            future_transactions,
-            terminal_records,
-            terminal_bytes,
-            poison_records,
-            poison_bytes,
-        },
-        admission_transaction_id,
-        reservation_id,
-    ))
-}
-
-fn uses_v2(request: &GlobalCapacityReservationRequestV1) -> bool {
-    request.future_transactions != 1
-        || request.purpose == GlobalCapacityReservationPurposeV1::ControllerProjectAdmission
-}
-
-fn valid_future_transactions(purpose: GlobalCapacityReservationPurposeV1, count: u32) -> bool {
-    match purpose {
-        GlobalCapacityReservationPurposeV1::ControllerFirstSourceSuccessorComplete => count == 2,
-        GlobalCapacityReservationPurposeV1::ControllerProjectAdmission => {
-            (1..=MAXIMUM_FUTURE_TRANSACTIONS).contains(&count)
-        }
-        GlobalCapacityReservationPurposeV1::RootProjectAdmission => (1..=2).contains(&count),
-        GlobalCapacityReservationPurposeV1::PublisherCompletion
-        | GlobalCapacityReservationPurposeV1::RuntimeExecution
-        | GlobalCapacityReservationPurposeV1::SourceProviderNativeTerminal
-        | GlobalCapacityReservationPurposeV1::ControllerConsumerResource
-        | GlobalCapacityReservationPurposeV1::RootFirstSourceSuccessorAnchor
-        | GlobalCapacityReservationPurposeV1::SourceFirstSourceSuccessorAck
-        | GlobalCapacityReservationPurposeV1::RootSourceGenesisAnchor => count == 1,
-    }
-}
-
-fn take<const N: usize>(value: &[u8], offset: &mut usize) -> [u8; N] {
-    let mut bytes = [0; N];
-    bytes.copy_from_slice(&value[*offset..*offset + N]);
-    *offset += N;
-    bytes
 }
 
 pub(in crate::journal) fn digest_bytes(value: &[u8]) -> [u8; 32] {

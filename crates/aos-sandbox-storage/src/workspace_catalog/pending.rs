@@ -521,7 +521,7 @@ impl PendingStorageWorkspaceCatalogV1 {
                     super::encode_record(&record)?,
                 ),
             ],
-        )?)?;
+        ).map_err(aos_sandbox::JournalError::from)?)?;
         Ok(())
     }
 
@@ -545,7 +545,7 @@ impl PendingStorageWorkspaceCatalogV1 {
                 HEAD_KEY.to_vec(),
                 super::encode_head(&head)?,
             )],
-        )?)?;
+        ).map_err(aos_sandbox::JournalError::from)?)?;
         Ok(())
     }
 
@@ -1060,7 +1060,7 @@ impl ValidatedPendingStorageWorkspaceCatalogV1 {
                     HEAD_KEY.to_vec(),
                     encode_head(&head)?,
                 )],
-            )?);
+            ).map_err(aos_sandbox::JournalError::from)?);
         }
 
         for row in &self.plan.rows {
@@ -1091,7 +1091,7 @@ impl ValidatedPendingStorageWorkspaceCatalogV1 {
                         encode_record(&record)?,
                     ),
                 ],
-            )?);
+            ).map_err(aos_sandbox::JournalError::from)?);
             projected_records.insert(row.workspace_handle, record);
         }
 

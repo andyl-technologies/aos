@@ -299,7 +299,7 @@ pub fn git_protected_key_v1(
     identity.extend_from_slice(project.as_bytes());
     identity.extend_from_slice(repository.as_bytes());
     identity.extend_from_slice(subject.as_bytes());
-    GitProtectedJournalKeyV1::new(kind, identity)
+    GitProtectedJournalKeyV1::new(kind, identity).map_err(ProtectedDomainJournalErrorV1::from)
 }
 
 /// Claims the dormant Git adapter over an already protected-open journal.
@@ -351,7 +351,7 @@ pub(crate) fn git_reducer_envelope_v1(
         predecessor,
         payload,
         trusted_validator,
-    )
+    ).map_err(ProtectedDomainJournalErrorV1::from)
 }
 
 /// Wraps one typed Git reducer record for protected journal admission.
@@ -400,7 +400,7 @@ pub(crate) fn git_typed_reducer_envelope_v1(
                 predecessor,
                 payload,
                 trusted_validator,
-            )
+            ).map_err(GitProtectedJournalErrorV1::from)
         }
         GitReducerRecordV1::SanitizedFork(record) => {
             let kind_matches = matches!(
@@ -433,7 +433,7 @@ pub(crate) fn git_typed_reducer_envelope_v1(
                 predecessor,
                 payload,
                 trusted_validator,
-            )
+            ).map_err(GitProtectedJournalErrorV1::from)
         }
     }
 }

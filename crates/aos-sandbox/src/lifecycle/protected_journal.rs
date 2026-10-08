@@ -350,7 +350,7 @@ pub fn lifecycle_protected_key_v1(
     identity.extend_from_slice(project.as_bytes());
     identity.extend_from_slice(namespace.as_bytes());
     identity.extend_from_slice(operation.as_bytes());
-    LifecycleProtectedJournalKeyV1::new(kind, identity)
+    LifecycleProtectedJournalKeyV1::new(kind, identity).map_err(ProtectedDomainJournalErrorV1::from)
 }
 
 /// Claims the dormant lifecycle adapter over an already protected-open journal.
@@ -414,5 +414,5 @@ pub(crate) fn lifecycle_reducer_envelope_v1(
         predecessor,
         payload,
         verifier,
-    )
+    ).map_err(ProtectedDomainJournalErrorV1::from)
 }

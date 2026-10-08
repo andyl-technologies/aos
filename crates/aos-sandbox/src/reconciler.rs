@@ -1647,7 +1647,8 @@ where
             operation_id.into_bytes().to_vec(),
             encode_ownership_gate(&activated)?,
         ));
-        let transaction = JournalTransaction::new(OperationId::new().into_bytes(), records)?;
+        let transaction = JournalTransaction::new(OperationId::new().into_bytes(), records)
+            .map_err(JournalError::from)?;
         self.journal.commit(&transaction)?;
         Ok(OwnershipGateActivationOutcome::Activated)
     }
@@ -1888,7 +1889,8 @@ where
                 })?,
             ));
         }
-        let transaction = JournalTransaction::new(OperationId::new().into_bytes(), records)?;
+        let transaction = JournalTransaction::new(OperationId::new().into_bytes(), records)
+            .map_err(JournalError::from)?;
         self.journal.commit(&transaction)?;
         Ok(AcceptOutcome::Accepted(plan.operation_id))
     }
@@ -3432,7 +3434,8 @@ where
     }
 
     fn commit_records(&mut self, records: Vec<JournalRecord>) -> Result<(), ReconcilerError> {
-        let transaction = JournalTransaction::new(OperationId::new().into_bytes(), records)?;
+        let transaction = JournalTransaction::new(OperationId::new().into_bytes(), records)
+            .map_err(JournalError::from)?;
         self.journal.commit(&transaction)?;
         Ok(())
     }
@@ -4015,7 +4018,8 @@ fn pending_operator_repair_from_exact_rows_v1(
         public.authorization().selector(),
         Selector::Resource { resource } if resource.as_bytes() == &sandbox_id
     );
-    let idempotency = IdempotencyKey::new(request.idempotency_key().to_vec())?;
+    let idempotency = IdempotencyKey::new(request.idempotency_key().to_vec())
+        .map_err(JournalError::from)?;
     if operation_id.as_bytes() == &[0; 16]
         || sandbox_id == [0; 16]
         || request_digest == [0; 32]

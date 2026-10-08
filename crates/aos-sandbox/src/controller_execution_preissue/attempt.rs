@@ -302,7 +302,7 @@ fn persist_attempt(
             attempt.execution().as_bytes().to_vec(),
             attempt.encode().to_vec(),
         )],
-    )?;
+    ).map_err(JournalError::from)?;
     controller
         .commit(&transaction)
         .map_err(|_| ControllerExecutionOutputAttemptErrorV1::OutcomeUnknown)?;

@@ -421,7 +421,7 @@ fn transaction(key: &[u8], value: &[u8]) -> Result<JournalTransaction, JournalEr
             key.to_vec(),
             value.to_vec(),
         )],
-    )
+    ).map_err(JournalError::from)
 }
 
 fn v8_release_transaction(
@@ -453,7 +453,7 @@ fn v8_release_transaction(
                 pending_bytes.to_vec(),
             ),
         ],
-    )
+    ).map_err(JournalError::from)
 }
 
 fn v8_settlement_transaction(
@@ -475,7 +475,7 @@ fn v8_settlement_transaction(
             RecordNamespace::DesiredState,
             V8_PENDING_KEY.to_vec(),
         )],
-    )
+    ).map_err(JournalError::from)
 }
 
 fn v8_settlement_preflight_transaction(
@@ -494,7 +494,7 @@ fn v8_settlement_preflight_transaction(
             RecordNamespace::DesiredState,
             V8_PENDING_KEY.to_vec(),
         )],
-    )
+    ).map_err(JournalError::from)
 }
 
 struct CachePolicyHoldReadbackV1 {
@@ -1012,7 +1012,7 @@ fn q04_transaction(
 ) -> Result<JournalTransaction, JournalError> {
     JournalTransaction::new(
         Q04TransactionOwnerV1::Cache.transaction_id(identity, phase, predecessor)?, records,
-    )
+    ).map_err(JournalError::from)
 }
 
 fn v8_released_pair(

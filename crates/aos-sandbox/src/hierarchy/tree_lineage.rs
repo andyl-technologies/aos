@@ -384,19 +384,19 @@ pub(super) fn reconstructed_genesis_members_v2(
     let lineage = decode_durable_member::<HierarchyProtectedJournalSchemaV1>(
         lineage_envelope.key().clone(), lineage_bytes, &validator,
     )?;
-    if lineage.member_index != 1 || lineage.member_count != 2
-        || lineage.envelope != lineage_envelope
+    if lineage.member_index() != 1 || lineage.member_count() != 2
+        || lineage.envelope() != &lineage_envelope
     {
         return Err(invalid());
     }
     let tree_head = tree_envelope.digest();
     let lineage_head = lineage_envelope.digest();
     let tree_member = encode_durable_member::<HierarchyProtectedJournalSchemaV1>(
-        lineage.transaction_id, 0, 2, lineage.set_digest, tree_envelope,
+        lineage.transaction_id(), 0, 2, lineage.set_digest(), tree_envelope,
     )?;
     let pair = [
-        (RecordNamespace::DesiredState, tree_member.envelope.key().as_bytes(), tree_member.encoded.as_slice()),
-        (RecordNamespace::DesiredState, lineage.envelope.key().as_bytes(), lineage_bytes.as_slice()),
+        (RecordNamespace::DesiredState, tree_member.envelope().key().as_bytes(), tree_member.encoded()),
+        (RecordNamespace::DesiredState, lineage.envelope().key().as_bytes(), lineage_bytes.as_slice()),
     ];
     let projection = replay_projection_records::<HierarchyProtectedJournalSchemaV1>(
         pair.into_iter(), &validator,
@@ -405,7 +405,8 @@ pub(super) fn reconstructed_genesis_members_v2(
     if heads.len() != 1 || !heads.contains_key(&project) {
         return Err(invalid());
     }
-    Ok((tree_head, lineage_head, tree_member.encoded, lineage_bytes.clone()))
+    let (_, _, _, _, _envelope, encoded) = tree_member.into_parts();
+    Ok((tree_head, lineage_head, encoded, lineage_bytes.clone()))
 }
 
 /// Validates an actual native state through the sole complete lineage engine.
@@ -560,8 +561,8 @@ fn validate_source_successor_members(
                 HierarchyProtectedRecordKindV1::TreeLineage
             };
             if record.namespace() != RecordNamespace::DesiredState
-                || member.envelope.key().kind() != expected_kind
-                || member.envelope.digest() != [receipt.next_tree_head(), receipt.next_lineage_head()][index]
+                || member.envelope().key().kind() != expected_kind
+                || member.envelope().digest() != [receipt.next_tree_head(), receipt.next_lineage_head()][index]
             {
                 return Err(invalid());
             }
@@ -1023,6 +1024,7 @@ fn tree_key(
         identity.extend_from_slice(project.as_bytes());
     }
     HierarchyProtectedJournalKeyV1::new(HierarchyProtectedRecordKindV1::Tree, identity)
+        .map_err(HierarchyProtectedJournalErrorV1::from)
 }
 
 #[cfg(test)]

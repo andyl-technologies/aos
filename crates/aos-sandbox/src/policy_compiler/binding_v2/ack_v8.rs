@@ -738,7 +738,7 @@ fn acknowledge_in_authority(
             ACK_KEY.to_vec(),
             vec![0; ROOT_V8_EFFECT_ACK_RECORD_BYTES_V1],
         )],
-    )?;
+    ).map_err(JournalError::from)?;
     let planned = [
         CHALLENGE_CODEC.transaction(row)?,
         ack_capacity,
@@ -806,7 +806,7 @@ fn acknowledge_in_authority(
             ACK_KEY.to_vec(),
             bytes.to_vec(),
         )],
-    )?)?;
+    ).map_err(JournalError::from)?)?;
     if current_ack(authority, binding, epoch)? != Some(record) {
         return Err(RootV8EffectAckErrorV1::Stale);
     }

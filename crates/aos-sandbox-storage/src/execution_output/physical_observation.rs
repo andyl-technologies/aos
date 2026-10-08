@@ -313,7 +313,7 @@ impl ExecutionOutputLedgerV1 {
                 location.to_vec(),
                 bytes.to_vec(),
             )],
-        )?)?;
+        ).map_err(aos_sandbox::JournalError::from)?)?;
         let committed = self
             .journal
             .get(NAMESPACE, &location)

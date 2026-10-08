@@ -281,7 +281,7 @@ fn completion_capacity_transaction(
             key,
             vec![0; maximum_completion_bytes],
         )],
-    )?;
+    ).map_err(aos_sandbox::JournalError::from)?;
     Ok(transaction)
 }
 
@@ -1643,7 +1643,8 @@ fn prepare_mutations_from_owner(
             None => JournalRecord::delete(RecordNamespace::SourceProviderAuthority, key),
         })
         .collect();
-    let transaction = JournalTransaction::new(transaction_id, journal_records)?;
+    let transaction = JournalTransaction::new(transaction_id, journal_records)
+        .map_err(aos_sandbox::JournalError::from)?;
     Ok(PreparedLedgerMutationV1 {
         transaction,
         digest: ObjectDigest::from_bytes(digest),

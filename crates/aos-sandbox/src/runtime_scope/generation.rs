@@ -213,7 +213,7 @@ impl Record {
                 JournalRecord::put(NAMESPACE, self.key(), self.encode()),
                 JournalRecord::put(NAMESPACE, head_key(self.facts.identity), self.head()),
             ],
-        )?)
+        ).map_err(JournalError::from)?)
     }
 }
 

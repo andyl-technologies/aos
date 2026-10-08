@@ -472,7 +472,7 @@ fn persist_settlement(
             record.execution.as_bytes().to_vec(),
             record.encode().to_vec(),
         )],
-    )?;
+    ).map_err(JournalError::from)?;
     controller
         .commit(&transaction)
         .map_err(|_| ControllerExecutionOutputSettlementErrorV1::OutcomeUnknown)?;

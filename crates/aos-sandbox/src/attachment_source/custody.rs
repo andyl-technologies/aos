@@ -1998,7 +1998,7 @@ fn transaction_records(
     if id == [0; 16] {
         id[15] = 1;
     }
-    Ok(JournalTransaction::new(id, records)?)
+    Ok(JournalTransaction::new(id, records).map_err(crate::journal::JournalError::from)?)
 }
 
 pub(crate) fn validate_attempt_namespace(

@@ -1274,6 +1274,7 @@ impl CanaryExportHeldV1 {
         let returned = self.marker_commit.as_ref().and_then(|result| result.as_ref().ok())
             .ok_or(CanaryPrefixCause::MarkerCommit)?;
         let append = aos_sandbox::journal::encoded_transaction_append_bytes(marker.transaction())
+            .map_err(aos_sandbox::JournalError::from)
             .map_err(CanaryPrefixCause::Sidecar)?;
         let expected_bytes = original.physical_bytes.checked_add(append).ok_or(CanaryPrefixCause::Binding)?;
         let expected_next = original.next_sequence.checked_add(3).ok_or(CanaryPrefixCause::Binding)?;

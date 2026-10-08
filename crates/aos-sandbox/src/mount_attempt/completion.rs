@@ -333,7 +333,7 @@ impl CompletionRecord {
         Ok(JournalTransaction::new(
             transaction_id,
             vec![JournalRecord::put(NAMESPACE, self.key(), self.encode())],
-        )?)
+        ).map_err(crate::journal::JournalError::from)?)
     }
 
     pub(super) fn encoded_len(&self) -> usize {

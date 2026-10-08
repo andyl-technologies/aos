@@ -360,7 +360,8 @@ impl StorageOperatorRecoveryOwnerV1 {
 
     fn commit_terminal_row_v4(&mut self, key: [u8; 32], bytes: Vec<u8>) -> Result<(), StorageOperatorRecoveryErrorV1> {
         let digest = hash(TX_DOMAIN, &[&key, &bytes]);
-        let transaction = JournalTransaction::new(digest[..16].try_into().map_err(|_| StorageOperatorRecoveryErrorV1::Binding)?, vec![JournalRecord::put(RecordNamespace::OperatorRecovery, key.to_vec(), bytes.clone())])?;
+        let transaction = JournalTransaction::new(digest[..16].try_into().map_err(|_| StorageOperatorRecoveryErrorV1::Binding)?, vec![JournalRecord::put(RecordNamespace::OperatorRecovery, key.to_vec(), bytes.clone())])
+            .map_err(aos_sandbox::JournalError::from)?;
         self.journal.claim_protected_authority(RecordNamespace::OperatorRecovery)?.commit(&transaction)?;
         if self.journal.claim_protected_authority(RecordNamespace::OperatorRecovery)?.get(&key)? != Some(bytes.as_slice()) {
             return Err(StorageOperatorRecoveryErrorV1::Binding);

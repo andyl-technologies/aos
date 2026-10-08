@@ -90,7 +90,7 @@ fn release_transaction(
                 marker.to_vec(),
             ),
         ],
-    )?)
+    ).map_err(crate::journal::JournalError::from)?)
 }
 
 pub(in crate::policy_compiler::binding_v2) fn release_capacity_transaction()

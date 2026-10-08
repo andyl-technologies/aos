@@ -896,8 +896,9 @@ impl<'origin, 'startup, 'main>
             &self.origins.genesis, self.snapshot.sequence(), &records, transaction,
         )?;
         let limits = self.origins.genesis.main_limits();
-        let prepared = transaction.encode_prepared_v1(limits)?;
-        let maximum = JournalTransaction::maximum_prepared_bytes_v1(limits)?;
+        let prepared = transaction.encode_prepared_v1(limits).map_err(JournalError::from)?;
+        let maximum = JournalTransaction::maximum_prepared_bytes_v1(limits)
+            .map_err(JournalError::from)?;
         if prepared.len() > maximum {
             return Err(changed_comparison());
         }

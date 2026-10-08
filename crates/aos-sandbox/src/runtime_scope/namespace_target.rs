@@ -329,7 +329,7 @@ impl Record {
                 JournalRecord::put(NAMESPACE, self.key(), self.encode()),
                 JournalRecord::put(NAMESPACE, head_key(self.identity), self.head()),
             ],
-        )?)
+        ).map_err(JournalError::from)?)
     }
 
     const fn advance(&self, payload_scope_handle: [u8; 32]) -> NamespaceTargetAdvanceV1 {

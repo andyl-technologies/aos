@@ -551,7 +551,7 @@ pub fn hierarchy_protected_key_v1(
     identity.extend_from_slice(project.as_bytes());
     identity.extend_from_slice(sandbox.as_bytes());
     identity.extend_from_slice(subject.as_bytes());
-    HierarchyProtectedJournalKeyV1::new(kind, identity)
+    HierarchyProtectedJournalKeyV1::new(kind, identity).map_err(ProtectedDomainJournalErrorV1::from)
 }
 
 /// Claims the dormant hierarchy adapter over an already protected-open journal.
@@ -1485,7 +1485,7 @@ pub(crate) fn hierarchy_reducer_envelope_v1(
         predecessor,
         payload,
         validator,
-    )
+    ).map_err(ProtectedDomainJournalErrorV1::from)
 }
 
 #[cfg(all(test, target_os = "linux"))]

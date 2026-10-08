@@ -568,7 +568,7 @@ pub(super) fn acknowledge_in_authority(
             ACK_KEY.to_vec(),
             encoded.to_vec(),
         )],
-    )
+    ).map_err(crate::journal::JournalError::from)
     .map_err(PolicyCompilerJournalErrorV1::from)?;
     authority
         .commit(&transaction)

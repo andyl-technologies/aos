@@ -2533,7 +2533,8 @@ impl DormantRuntimeExecutionClaimV1<'_> {
                 value,
             ));
         }
-        let transaction = JournalTransaction::new(transaction_id, records)?;
+        let transaction = JournalTransaction::new(transaction_id, records)
+            .map_err(JournalError::from)?;
         let preflight = self
             .lifecycle_authority
             .preflight_transactions(std::slice::from_ref(&transaction))?;
@@ -3831,7 +3832,7 @@ fn runtime_owner_peer_transaction(
                 records.plan_catalog.clone(),
             ),
         ],
-    )
+    ).map_err(JournalError::from)
     .map_err(Into::into)
 }
 
@@ -4302,7 +4303,7 @@ fn open_lifecycle_store<'journal>(
                 LIFECYCLE_HEAD_KEY.to_vec(),
                 encoded,
             )],
-        )?;
+        ).map_err(JournalError::from)?;
         let preflight = authority.preflight_transactions(std::slice::from_ref(&transaction))?;
         authority.validate_preflight_for_effect(&preflight, std::slice::from_ref(&transaction))?;
         authority.commit(&transaction)?;

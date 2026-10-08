@@ -175,7 +175,7 @@ fn replay_transaction(
             key.to_vec(),
             value.to_vec(),
         )],
-    )?)
+    ).map_err(JournalError::from)?)
 }
 
 fn replay_key(

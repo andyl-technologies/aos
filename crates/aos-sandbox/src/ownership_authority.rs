@@ -361,7 +361,7 @@ fn native_ownership_transaction(
         })
         .collect();
 
-    JournalTransaction::new(id, records)
+    JournalTransaction::new(id, records).map_err(JournalError::from)
 }
 
 impl From<OwnershipHistoryError> for DurableOwnershipAuthorityError {

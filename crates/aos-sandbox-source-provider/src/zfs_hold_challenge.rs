@@ -1324,7 +1324,7 @@ fn challenge_transaction(
             key,
             value,
         )],
-    )?)
+    ).map_err(aos_sandbox::JournalError::from)?)
 }
 
 fn validate_location(

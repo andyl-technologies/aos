@@ -262,7 +262,8 @@ pub(crate) fn commit_reservation_checked(
     )?;
     let mut combined = prepared.transaction.records().to_vec();
     combined.push(capacity.record().clone());
-    let transaction = JournalTransaction::new(*prepared.transaction.id(), combined)?;
+    let transaction = JournalTransaction::new(*prepared.transaction.id(), combined)
+        .map_err(aos_sandbox::JournalError::from)?;
     let preflight = ledger
         .journal
         .preflight_global_capacity_reservation_v1(&capacity, &transaction)?;
@@ -304,7 +305,8 @@ pub(crate) fn commit_terminal(
     )?;
     let mut combined = prepared.transaction.records().to_vec();
     combined.push(reservation.settlement_record());
-    let transaction = JournalTransaction::new(*prepared.transaction.id(), combined)?;
+    let transaction = JournalTransaction::new(*prepared.transaction.id(), combined)
+        .map_err(aos_sandbox::JournalError::from)?;
     let preflight = ledger
         .journal
         .preflight_reserved_terminal_v1(&reservation, &transaction)?;

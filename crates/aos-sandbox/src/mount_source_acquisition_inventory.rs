@@ -418,7 +418,7 @@ impl SnapshotRecord {
         Ok(JournalTransaction::new(
             transaction_id,
             vec![JournalRecord::put(NAMESPACE, KEY.to_vec(), self.encode())],
-        )?)
+        ).map_err(JournalError::from)?)
     }
 }
 

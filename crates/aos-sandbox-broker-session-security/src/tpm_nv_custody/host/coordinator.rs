@@ -781,7 +781,7 @@ pub fn run_runtime_deployment_canary_once_v2(
         transaction = Some(aos_sandbox::JournalTransaction::new(fields.main_transaction, vec![
             aos_sandbox::JournalRecord::put(aos_sandbox::RecordNamespace::HostCatalogReconciliation,
                 name.to_vec(), row.bytes().to_vec()),
-        ]).map_err(super::HostOwnedJournalErrorV1::from)?);
+        ]).map_err(aos_sandbox::JournalError::from).map_err(super::HostOwnedJournalErrorV1::from)?);
         let saved = transaction.as_ref().ok_or(CanaryPublisherCauseV2::Changed)?;
 
         delegate.recheck_original_request(publisher_socket_v2(&mut transport.accepted)?, record, &original)?;

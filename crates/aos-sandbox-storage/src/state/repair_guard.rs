@@ -229,7 +229,7 @@ impl StorageRepairGuardRecordV1 {
                 record_key,
                 value,
             )],
-        )
+        ).map_err(aos_sandbox::JournalError::from)
         .map_err(Into::into)
     }
 }

@@ -18,7 +18,11 @@
 //!              repeated(record-length:u32be | native-record-payload)
 //! ```
 
-use aos_sandbox_core::OperationId;
+use aos_sandbox_core::{OperationId, RecordNamespace};
+use aos_sandbox_journal::geometry::NativeGeometryBounds;
+use aos_sandbox_journal::materialized::RecordMutationRef;
+
+use super::JournalTransactionDataError;
 use aos_sandbox_journal::geometry::{
     EncodedRecordLayout, PREPARED_HEADER_BYTES as HEADER_BYTES, RecordShape,
 };
@@ -27,16 +31,102 @@ use aos_sandbox_journal::transaction::{
     self, NativeRecordRef, NativeRecordValidation, NativeRecordValidationError,
 };
 
-use super::{IdempotencyKey, JournalError, JournalLimits, RecordNamespace};
+/// Bounds all disk input and in-memory work performed while opening a journal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct JournalLimits {
+    /// Maximum journal length accepted during replay.
+    pub maximum_journal_bytes: u64,
+    /// Maximum payload bytes in one record frame.
+    pub maximum_record_bytes: usize,
+    /// Maximum key bytes in one record.
+    pub maximum_key_bytes: usize,
+    /// Maximum records admitted in one transaction.
+    pub maximum_records_per_transaction: usize,
+    /// Maximum aggregate encoded record bytes admitted in one transaction.
+    pub maximum_transaction_bytes: usize,
+    /// Maximum committed transactions accepted during replay.
+    pub maximum_transactions: usize,
+    /// Maximum logical key and value bytes retained by the materialized view.
+    pub maximum_materialized_bytes: usize,
+    /// Maximum entries retained by the materialized view.
+    pub maximum_materialized_records: usize,
+}
+
+// This scalar view carries no owner, reserved capacity, or admission result.
+impl From<JournalLimits> for NativeGeometryBounds {
+    fn from(limits: JournalLimits) -> Self {
+        Self {
+            maximum_journal_bytes: limits.maximum_journal_bytes,
+            maximum_record_bytes: limits.maximum_record_bytes,
+            maximum_key_bytes: limits.maximum_key_bytes,
+            maximum_records_per_transaction: limits.maximum_records_per_transaction,
+            maximum_transaction_bytes: limits.maximum_transaction_bytes,
+            maximum_transactions: limits.maximum_transactions,
+            maximum_materialized_bytes: limits.maximum_materialized_bytes,
+            maximum_materialized_records: limits.maximum_materialized_records,
+        }
+    }
+}
+
+impl Default for JournalLimits {
+    fn default() -> Self {
+        Self {
+            maximum_journal_bytes: 4 * 1024 * 1024 * 1024,
+            maximum_record_bytes: 16 * 1024 * 1024,
+            maximum_key_bytes: 1024,
+            maximum_records_per_transaction: 4096,
+            maximum_transaction_bytes: 64 * 1024 * 1024,
+            maximum_transactions: 1_000_000,
+            maximum_materialized_bytes: 512 * 1024 * 1024,
+            maximum_materialized_records: 1_000_000,
+        }
+    }
+}
+
+/// Stores a bounded, nonempty opaque client idempotency key.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct IdempotencyKey(Vec<u8>);
+
+impl IdempotencyKey {
+    /// Validates a client idempotency key.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`JournalTransactionDataError::InvalidIdempotencyKey`] for an empty key or a
+    /// key longer than 128 bytes.
+    pub fn new(bytes: impl Into<Vec<u8>>) -> Result<Self, JournalTransactionDataError> {
+        let bytes = bytes.into();
+        if bytes.is_empty() || bytes.len() > 128 {
+            return Err(JournalTransactionDataError::InvalidIdempotencyKey);
+        }
+        Ok(Self(bytes))
+    }
+
+    /// Returns the exact opaque key bytes.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
 
 const IDEMPOTENCY_VALUE_BYTES: usize = 48;
 
 /// Describes one value replacement or deletion inside a journal transaction.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct JournalRecord {
-    pub(super) namespace: RecordNamespace,
-    pub(super) key: Vec<u8>,
-    pub(super) value: Option<Vec<u8>>,
+    namespace: RecordNamespace,
+    key: Vec<u8>,
+    value: Option<Vec<u8>>,
+}
+
+impl<'a> From<&'a JournalRecord> for RecordMutationRef<'a, RecordNamespace> {
+    fn from(record: &'a JournalRecord) -> Self {
+        Self {
+            namespace: record.namespace(),
+            key: record.key(),
+            value: record.value(),
+        }
+    }
 }
 
 impl JournalRecord {
@@ -95,8 +185,8 @@ impl JournalRecord {
 /// Carries one atomic group of desired-state and operation mutations.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct JournalTransaction {
-    pub(super) id: [u8; 16],
-    pub(super) records: Vec<JournalRecord>,
+    id: [u8; 16],
+    records: Vec<JournalRecord>,
 }
 
 impl JournalTransaction {
@@ -104,13 +194,25 @@ impl JournalTransaction {
     ///
     /// # Errors
     ///
-    /// Returns [`JournalError::InvalidTransaction`] when `id` is all zeroes or
+    /// Returns [`JournalTransactionDataError::InvalidTransaction`] when `id` is all zeroes or
     /// the transaction has no records.
-    pub fn new(id: [u8; 16], records: Vec<JournalRecord>) -> Result<Self, JournalError> {
+    pub fn new(
+        id: [u8; 16],
+        records: Vec<JournalRecord>,
+    ) -> Result<Self, JournalTransactionDataError> {
         if id == [0; 16] || records.is_empty() {
-            return Err(JournalError::InvalidTransaction);
+            return Err(JournalTransactionDataError::InvalidTransaction);
         }
         Ok(Self { id, records })
+    }
+
+    /// Constructs explicitly unvalidated transaction DATA without admission.
+    ///
+    /// The caller must run ordinary transaction validation at the physical owner's
+    /// original boundary. This does not establish currentness, capacity, or commit.
+    #[must_use]
+    pub fn from_unvalidated_data(id: [u8; 16], records: Vec<JournalRecord>) -> Self {
+        Self { id, records }
     }
 
     /// Returns the stable transaction identity.
@@ -119,17 +221,22 @@ impl JournalTransaction {
         &self.id
     }
 
-    /// Returns the ordered records committed by this transaction.
+    /// Returns the ordered transaction record DATA.
     #[must_use]
     pub fn records(&self) -> &[JournalRecord] {
         &self.records
     }
 }
 
-pub(super) fn validate_transaction(
+/// Validates bounded typed transaction DATA without physical admission.
+///
+/// # Errors
+///
+/// Rejects zero identity, empty or oversized records, invalid Idempotency DATA, and duplicate keys.
+pub fn validate_transaction(
     transaction: &JournalTransaction,
     limits: JournalLimits,
-) -> Result<(), JournalError> {
+) -> Result<(), JournalTransactionDataError> {
     let mut validation =
         NativeRecordValidation::begin(transaction.id, transaction.records.len(), limits.into())
             .map_err(native_record_validation_error)?;
@@ -139,14 +246,18 @@ pub(super) fn validate_transaction(
             .map_err(native_record_validation_error)?;
 
         if record.namespace == RecordNamespace::Idempotency {
-            let value = record.value.as_ref().ok_or(JournalError::MalformedRecord(
-                "idempotency records cannot be deleted",
-            ))?;
+            let value =
+                record
+                    .value
+                    .as_ref()
+                    .ok_or(JournalTransactionDataError::MalformedRecord(
+                        "idempotency records cannot be deleted",
+                    ))?;
             if IdempotencyKey::new(record.key.clone()).is_err()
                 || value.len() != IDEMPOTENCY_VALUE_BYTES
                 || value[32..] == [0; 16]
             {
-                return Err(JournalError::MalformedRecord(
+                return Err(JournalTransactionDataError::MalformedRecord(
                     "invalid idempotency decision",
                 ));
             }
@@ -159,18 +270,34 @@ pub(super) fn validate_transaction(
     Ok(())
 }
 
-fn native_record_validation_error(error: NativeRecordValidationError) -> JournalError {
+fn native_record_validation_error(
+    error: NativeRecordValidationError,
+) -> JournalTransactionDataError {
     match error {
-        NativeRecordValidationError::InvalidTransaction => JournalError::InvalidTransaction,
-        NativeRecordValidationError::DuplicateRecordKey => JournalError::DuplicateRecordKey,
-        NativeRecordValidationError::LimitExceeded(bound) => JournalError::LimitExceeded(bound),
-        NativeRecordValidationError::Frame(error) => JournalError::from(error),
+        NativeRecordValidationError::InvalidTransaction => {
+            JournalTransactionDataError::InvalidTransaction
+        }
+        NativeRecordValidationError::DuplicateRecordKey => {
+            JournalTransactionDataError::DuplicateRecordKey
+        }
+        NativeRecordValidationError::LimitExceeded(bound) => {
+            JournalTransactionDataError::LimitExceeded(bound)
+        }
+        NativeRecordValidationError::Frame(
+            aos_sandbox_journal::framing::FrameError::LimitExceeded(bound),
+        ) => JournalTransactionDataError::LimitExceeded(bound),
+        NativeRecordValidationError::Frame(error) => JournalTransactionDataError::from(error),
     }
 }
 
-pub(crate) fn encoded_transaction_record_bytes(
+/// Measures aggregate canonical record-payload DATA without allocating encodings.
+///
+/// # Errors
+///
+/// Rejects unrepresentable record extents or aggregate byte overflow.
+pub fn encoded_transaction_record_bytes(
     transaction: &JournalTransaction,
-) -> Result<u64, JournalError> {
+) -> Result<u64, JournalTransactionDataError> {
     transaction
         .records()
         .iter()
@@ -181,7 +308,7 @@ pub(crate) fn encoded_transaction_record_bytes(
             )?;
             total
                 .checked_add(layout.payload_bytes as u64)
-                .ok_or(JournalError::JournalTooLarge)
+                .ok_or(JournalTransactionDataError::JournalTooLarge)
         })
 }
 
@@ -199,34 +326,50 @@ pub(crate) fn encoded_transaction_record_bytes(
 /// append length cannot be represented by the journal format.
 pub fn encoded_transaction_append_bytes(
     transaction: &JournalTransaction,
-) -> Result<u64, JournalError> {
+) -> Result<u64, JournalTransactionDataError> {
     aos_sandbox_journal::geometry::encoded_transaction_append_bytes(
         transaction.records().iter().map(|record| RecordShape {
             key_bytes: record.key().len(),
             value_bytes: record.value().map(<[u8]>::len),
         }),
     )
-    .map_err(JournalError::from)
+    .map_err(JournalTransactionDataError::from)
 }
 
-pub(super) fn encode_record(record: &JournalRecord) -> Result<Vec<u8>, JournalError> {
+/// Encodes one typed record as canonical native payload DATA.
+///
+/// # Errors
+///
+/// Rejects unrepresentable key or value lengths.
+pub fn encode_record(record: &JournalRecord) -> Result<Vec<u8>, JournalTransactionDataError> {
     encode_record_fields(record.namespace, &record.key, record.value.as_deref())
 }
 
 // The private borrowed field view uses the same measured layout and encoder;
 // retained Q04 before rows need not clone a temporary JournalRecord graph.
-pub(super) fn encode_record_fields(
+/// Encodes a borrowed typed record without cloning its key or value.
+///
+/// # Errors
+///
+/// Rejects unrepresentable key or value lengths.
+pub fn encode_record_fields(
     namespace: RecordNamespace,
     key: &[u8],
     value: Option<&[u8]>,
-) -> Result<Vec<u8>, JournalError> {
-    record::encode_record_fields(namespace as u8, key, value).map_err(JournalError::from)
+) -> Result<Vec<u8>, JournalTransactionDataError> {
+    record::encode_record_fields(namespace as u8, key, value)
+        .map_err(JournalTransactionDataError::from)
 }
 
-pub(super) fn decode_record(
+/// Decodes one canonical native payload using closed domain namespaces.
+///
+/// # Errors
+///
+/// Rejects a truncated header, unknown namespace, or invalid bounded key/value layout.
+pub fn decode_record(
     payload: &[u8],
     limits: JournalLimits,
-) -> Result<JournalRecord, JournalError> {
+) -> Result<JournalRecord, JournalTransactionDataError> {
     let header = RecordHeader::read(payload)?;
     let namespace = RecordNamespace::from_byte(header.namespace_byte())?;
     let fields = header.decode_fields(limits.maximum_key_bytes, limits.maximum_record_bytes)?;
@@ -239,10 +382,15 @@ pub(super) fn decode_record(
     })
 }
 
-pub(super) fn encode_transaction(
+/// Encodes canonical transaction frames without appending them.
+///
+/// # Errors
+///
+/// Rejects sequence, count, record, or aggregate framing overflow.
+pub fn encode_transaction(
     transaction: &JournalTransaction,
     first_sequence: u64,
-) -> Result<Vec<Vec<u8>>, JournalError> {
+) -> Result<Vec<Vec<u8>>, JournalTransactionDataError> {
     transaction::encode_transaction(
         transaction.id,
         first_sequence,
@@ -252,7 +400,7 @@ pub(super) fn encode_transaction(
             value: record.value.as_deref(),
         }),
     )
-    .map_err(JournalError::from)
+    .map_err(JournalTransactionDataError::from)
 }
 
 const MAGIC: &[u8; 8] = b"AOSJPT01";
@@ -266,9 +414,11 @@ impl JournalTransaction {
     ///
     /// Rejects invalid limits or overflowing framing arithmetic.
     #[doc(hidden)]
-    pub fn maximum_prepared_bytes_v1(limits: JournalLimits) -> Result<usize, JournalError> {
+    pub fn maximum_prepared_bytes_v1(
+        limits: JournalLimits,
+    ) -> Result<usize, JournalTransactionDataError> {
         aos_sandbox_journal::geometry::maximum_prepared_bytes(limits.into())
-            .map_err(JournalError::from)
+            .map_err(JournalTransactionDataError::from)
     }
 
     /// Encodes one exact bounded transaction without writing or committing it.
@@ -281,11 +431,14 @@ impl JournalTransaction {
     /// Rejects invalid or oversized native records, duplicate keys, a zero ID,
     /// and framing fields exceeding their integer widths.
     #[doc(hidden)]
-    pub fn encode_prepared_v1(&self, limits: JournalLimits) -> Result<Vec<u8>, JournalError> {
+    pub fn encode_prepared_v1(
+        &self,
+        limits: JournalLimits,
+    ) -> Result<Vec<u8>, JournalTransactionDataError> {
         let maximum_bytes = Self::maximum_prepared_bytes_v1(limits)?;
         validate_transaction(self, limits)?;
         let count = u32::try_from(self.records.len())
-            .map_err(|_| JournalError::LimitExceeded("prepared record count"))?;
+            .map_err(|_| JournalTransactionDataError::LimitExceeded("prepared record count"))?;
         let mut bytes = Vec::new();
         bytes.extend_from_slice(MAGIC);
         bytes.extend_from_slice(&1_u16.to_be_bytes());
@@ -295,12 +448,14 @@ impl JournalTransaction {
         for record in &self.records {
             let payload = encode_record(record)?;
             let length = u32::try_from(payload.len())
-                .map_err(|_| JournalError::LimitExceeded("prepared record bytes"))?;
+                .map_err(|_| JournalTransactionDataError::LimitExceeded("prepared record bytes"))?;
             bytes.extend_from_slice(&length.to_be_bytes());
             bytes.extend_from_slice(&payload);
         }
         if bytes.len() > maximum_bytes {
-            return Err(JournalError::LimitExceeded("prepared transaction bytes"));
+            return Err(JournalTransactionDataError::LimitExceeded(
+                "prepared transaction bytes",
+            ));
         }
         Ok(bytes)
     }
@@ -315,22 +470,25 @@ impl JournalTransaction {
     /// Rejects invalid framing/version/reserved bytes, truncation or padding,
     /// zero IDs, count/record/aggregate overflow, and malformed native records.
     #[doc(hidden)]
-    pub fn decode_prepared_v1(bytes: &[u8], limits: JournalLimits) -> Result<Self, JournalError> {
+    pub fn decode_prepared_v1(
+        bytes: &[u8],
+        limits: JournalLimits,
+    ) -> Result<Self, JournalTransactionDataError> {
         if bytes.len() < HEADER_BYTES
             || bytes.len() > Self::maximum_prepared_bytes_v1(limits)?
             || bytes.get(..8) != Some(MAGIC.as_slice())
             || bytes[8..12] != [0, 1, 0, 0]
         {
-            return Err(JournalError::MalformedTransaction(
+            return Err(JournalTransactionDataError::MalformedTransaction(
                 "invalid preparation framing",
             ));
         }
         let id = read_array(bytes, 12)?;
         if id == [0; 16] {
-            return Err(JournalError::InvalidTransaction);
+            return Err(JournalTransactionDataError::InvalidTransaction);
         }
         let count = usize::try_from(u32::from_be_bytes(read_array(bytes, 28)?))
-            .map_err(|_| JournalError::LimitExceeded("prepared record count"))?;
+            .map_err(|_| JournalTransactionDataError::LimitExceeded("prepared record count"))?;
         if count == 0
             || count > limits.maximum_records_per_transaction
             || count
@@ -338,35 +496,51 @@ impl JournalTransaction {
                 .and_then(|minimum| minimum.checked_add(HEADER_BYTES))
                 .is_none_or(|minimum| minimum > bytes.len())
         {
-            return Err(JournalError::LimitExceeded("prepared record count"));
+            return Err(JournalTransactionDataError::LimitExceeded(
+                "prepared record count",
+            ));
         }
         let mut cursor = HEADER_BYTES;
         let mut records = Vec::with_capacity(count);
         let mut payload_bytes = 0_usize;
         for _ in 0..count {
             let length = usize::try_from(u32::from_be_bytes(read_array(bytes, cursor)?))
-                .map_err(|_| JournalError::LimitExceeded("prepared record bytes"))?;
+                .map_err(|_| JournalTransactionDataError::LimitExceeded("prepared record bytes"))?;
             cursor = cursor
                 .checked_add(4)
-                .ok_or(JournalError::LimitExceeded("prepared transaction bytes"))?;
+                .ok_or(JournalTransactionDataError::LimitExceeded(
+                    "prepared transaction bytes",
+                ))?;
             if length < 7 || length > limits.maximum_record_bytes {
-                return Err(JournalError::LimitExceeded("prepared record bytes"));
+                return Err(JournalTransactionDataError::LimitExceeded(
+                    "prepared record bytes",
+                ));
             }
-            let end = cursor
-                .checked_add(length)
-                .ok_or(JournalError::LimitExceeded("prepared transaction bytes"))?;
-            let payload = bytes
-                .get(cursor..end)
-                .ok_or(JournalError::MalformedTransaction("truncated preparation"))?;
+            let end =
+                cursor
+                    .checked_add(length)
+                    .ok_or(JournalTransactionDataError::LimitExceeded(
+                        "prepared transaction bytes",
+                    ))?;
+            let payload =
+                bytes
+                    .get(cursor..end)
+                    .ok_or(JournalTransactionDataError::MalformedTransaction(
+                        "truncated preparation",
+                    ))?;
             payload_bytes = payload_bytes
                 .checked_add(length)
                 .filter(|total| *total <= limits.maximum_transaction_bytes)
-                .ok_or(JournalError::LimitExceeded("transaction bytes"))?;
+                .ok_or(JournalTransactionDataError::LimitExceeded(
+                    "transaction bytes",
+                ))?;
             records.push(decode_record(payload, limits)?);
             cursor = end;
         }
         if cursor != bytes.len() {
-            return Err(JournalError::MalformedTransaction("padded preparation"));
+            return Err(JournalTransactionDataError::MalformedTransaction(
+                "padded preparation",
+            ));
         }
         let transaction = Self::new(id, records)?;
         validate_transaction(&transaction, limits)?;
@@ -374,20 +548,28 @@ impl JournalTransaction {
     }
 }
 
-fn read_array<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N], JournalError> {
+fn read_array<const N: usize>(
+    bytes: &[u8],
+    offset: usize,
+) -> Result<[u8; N], JournalTransactionDataError> {
     let end = offset
         .checked_add(N)
-        .ok_or(JournalError::LimitExceeded("prepared transaction bytes"))?;
+        .ok_or(JournalTransactionDataError::LimitExceeded(
+            "prepared transaction bytes",
+        ))?;
     bytes
         .get(offset..end)
         .and_then(|value| value.try_into().ok())
-        .ok_or(JournalError::MalformedTransaction("truncated preparation"))
+        .ok_or(JournalTransactionDataError::MalformedTransaction(
+            "truncated preparation",
+        ))
 }
 
 #[cfg(test)]
 mod tests {
+    use super::JournalTransactionDataError as JournalError;
     use super::*;
-    use crate::journal::{JournalRecord, RecordNamespace};
+    use super::{JournalRecord, RecordNamespace};
 
     #[test]
     fn idempotency_semantics_precede_duplicate_key_after_native_extent_checks() {

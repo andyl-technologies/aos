@@ -324,7 +324,7 @@ impl NativeIssuanceRowV1 {
                 key.to_vec(),
                 value,
             )],
-        )?)
+        ).map_err(JournalError::from)?)
     }
 }
 

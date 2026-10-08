@@ -536,7 +536,8 @@ impl<'journal> PublisherCapabilityRegistry<'journal> {
         let id = capability.id();
         let prepared = self.prepare_install_encoded(capability, issuance, runtime, None)?;
         let digest = handle_digest(&prepared.handle);
-        let transaction = JournalTransaction::new(transaction_id, vec![prepared.record])?;
+        let transaction = JournalTransaction::new(transaction_id, vec![prepared.record])
+            .map_err(JournalError::from)?;
         let result = self.journal.commit(&transaction)?;
         self.entries += 1;
         self.materialized_bytes = prepared.next_materialized_bytes;
@@ -645,7 +646,8 @@ impl<'journal> PublisherCapabilityRegistry<'journal> {
         id: CapabilityId,
     ) -> Result<CommitResult, PublisherAuthorityError> {
         let (record, next_materialized_bytes) = self.prepare_revocation(id)?;
-        let transaction = JournalTransaction::new(transaction_id, vec![record])?;
+        let transaction = JournalTransaction::new(transaction_id, vec![record])
+            .map_err(JournalError::from)?;
         let result = self.journal.commit(&transaction)?;
         self.materialized_bytes = next_materialized_bytes;
         Ok(result)

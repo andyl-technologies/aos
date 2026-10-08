@@ -1435,7 +1435,8 @@ impl<'startup> NixOfflineNativeJobV5<'startup> {
         let identifier = expected_record_transaction_id(
             before.as_ref().map(|record| record.body), &records, journal.native.next_sequence(),
         )?;
-        self.transition = Some(JournalTransaction::new(identifier, records)?);
+        self.transition = Some(JournalTransaction::new(identifier, records)
+            .map_err(JournalError::from)?);
         Ok(())
     }
 
@@ -1974,7 +1975,7 @@ fn push_closure_data(
     let full: [u8; 32] = hash.finalize().into();
     let identifier = full[..16].try_into().map_err(|_| Error::Rejected)?;
     *sequence = sequence.checked_add(records.len() as u64 + 2).ok_or(Error::Rejected)?;
-    closure.push(JournalTransaction::new(identifier, records)?);
+    closure.push(JournalTransaction::new(identifier, records).map_err(JournalError::from)?);
     Ok(())
 }
 

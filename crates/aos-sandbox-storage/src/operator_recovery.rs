@@ -258,7 +258,7 @@ impl StorageOperatorRecoveryOwnerV1 {
                 key.to_vec(),
                 packet.clone(),
             )],
-        )?;
+        ).map_err(JournalError::from)?;
         self.journal
             .claim_protected_authority(RecordNamespace::OperatorRecovery)?
             .commit(&transaction)?;
@@ -887,7 +887,7 @@ fn commit_record(
             controller_key_effect_id.to_vec(),
             record.encode(),
         )],
-    )?;
+    ).map_err(JournalError::from)?;
     journal
         .claim_protected_authority(RecordNamespace::OperatorRecovery)?
         .commit(&transaction)?;

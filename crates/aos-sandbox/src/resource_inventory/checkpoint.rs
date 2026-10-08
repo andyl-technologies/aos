@@ -489,7 +489,7 @@ fn reserve_request(
                 head.encode()?.to_vec(),
             ),
         ],
-    )?;
+    ).map_err(crate::journal::JournalError::from)?;
     journal.commit(&transaction)?;
     if journal.snapshot_sequence() != post_reservation_sequence {
         return Err(ResourceInventoryError::CorruptState);
@@ -934,7 +934,8 @@ fn commit_and_require_head(
     records: Vec<JournalRecord>,
 ) -> Result<(), ResourceInventoryError> {
     journal.ensure_healthy()?;
-    let transaction = JournalTransaction::new(transaction_id(head), records)?;
+    let transaction = JournalTransaction::new(transaction_id(head), records)
+        .map_err(crate::journal::JournalError::from)?;
     journal.commit(&transaction)?;
     if journal.snapshot_sequence() != head.expected_journal_sequence {
         return Err(ResourceInventoryError::CorruptState);

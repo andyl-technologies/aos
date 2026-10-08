@@ -136,7 +136,7 @@ impl HostOpenSshAttachRouteOwnerV1 {
                     key.clone(),
                     marker.clone(),
                 )],
-            )?;
+            ).map_err(aos_sandbox::JournalError::from)?;
             authority.commit(&transaction)?;
             if authority.get(&key)? != Some(marker.as_slice()) {
                 return Err(Error::Stale);

@@ -652,7 +652,7 @@ impl NetworkNamespaceCatalogV1 {
                     encode_record(&record)?,
                 ),
             ],
-        )?;
+        ).map_err(aos_sandbox::JournalError::from)?;
         self.journal.commit(&transaction)?;
         self.generation = record.catalog_generation;
         self.records.insert(record.network_handle, record);
@@ -1066,7 +1066,7 @@ fn initialize_head(journal: &mut Journal) -> Result<u64, NetworkNamespaceCatalog
             HEAD_KEY.to_vec(),
             encode_head(&head)?,
         )],
-    )?;
+    ).map_err(aos_sandbox::JournalError::from)?;
     journal.commit(&transaction)?;
     Ok(head.generation)
 }

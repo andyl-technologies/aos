@@ -87,7 +87,8 @@ impl CurrentProviderIngressSessionV1 {
         let mut records = transaction.records().to_vec();
         records.extend(deleted_floors);
         records.push(next_floor.to_journal_record()?);
-        Ok(aos_sandbox::JournalTransaction::new(*transaction.id(), records)?)
+        Ok(aos_sandbox::JournalTransaction::new(*transaction.id(), records)
+            .map_err(aos_sandbox::JournalError::from)?)
     }
 }
 
@@ -253,7 +254,8 @@ fn protected_completion_transaction_v1(
             ),
         })
         .collect();
-    let transaction = aos_sandbox::JournalTransaction::new(transaction_id, records)?;
+    let transaction = aos_sandbox::JournalTransaction::new(transaction_id, records)
+        .map_err(aos_sandbox::JournalError::from)?;
     Ok((transaction, transaction_digest))
 }
 

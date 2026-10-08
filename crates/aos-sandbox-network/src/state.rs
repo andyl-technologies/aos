@@ -657,7 +657,7 @@ impl NetworkStateStore {
         let transaction = JournalTransaction::new(
             test_transaction_id(b"mislink", &[7; 16], &[transaction_marker]),
             vec![JournalRecord::put(namespace, key.to_vec(), value)],
-        )?;
+        ).map_err(aos_sandbox::JournalError::from)?;
         self.commit_journal(&transaction)
     }
 
@@ -718,7 +718,7 @@ impl NetworkStateStore {
                 request_id.to_vec(),
                 sealed_local,
             )],
-        )?)?;
+        ).map_err(aos_sandbox::JournalError::from)?)?;
         self.records.insert(request_id, record);
         Ok(())
     }
@@ -755,7 +755,7 @@ impl NetworkStateStore {
                 request_id.to_vec(),
                 sealed_local,
             )],
-        )?)?;
+        ).map_err(aos_sandbox::JournalError::from)?)?;
         self.records.insert(request_id, record);
         Ok(())
     }
@@ -853,7 +853,7 @@ impl NetworkStateStore {
                     sealed_local,
                 ),
             ],
-        )?;
+        ).map_err(aos_sandbox::JournalError::from)?;
         self.commit_journal(&transaction)?;
         let effect_digest = record.effect_digest;
         self.records.insert(record.request_id, record);
@@ -1233,7 +1233,7 @@ impl NetworkStateStore {
                 record.request_id.to_vec(),
                 sealed_local,
             )],
-        )?;
+        ).map_err(aos_sandbox::JournalError::from)?;
         self.commit_journal(&transaction)?;
         self.records.insert(record.request_id, record);
         Ok(())

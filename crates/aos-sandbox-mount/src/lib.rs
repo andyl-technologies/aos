@@ -17,6 +17,8 @@
 //! - `state` encodes the broker's bounded journal records;
 //! - [`worker`] defines the closed effect interface.
 
+use aos_sandbox_protocol::domain_ledger::JournalTransactionDataError;
+
 pub mod authorization;
 pub mod broker;
 pub mod catalog;
@@ -58,6 +60,12 @@ pub enum MountError {
     /// The fixed worker could not apply or verify the effect.
     #[error("mount worker failure: {0}")]
     Worker(String),
+}
+
+impl From<JournalTransactionDataError> for MountError {
+    fn from(error: JournalTransactionDataError) -> Self {
+        Self::from(aos_sandbox::journal::JournalError::from(error))
+    }
 }
 
 impl From<aos_sandbox::journal::JournalError> for MountError {

@@ -46,7 +46,8 @@ pub fn observe_child_identity_v1(
         .chain_update(reservation.encode())
         .finalize()
         .into();
-    Ok((IdempotencyKey::new(key.to_vec())?, request_digest))
+    Ok((IdempotencyKey::new(key.to_vec())
+        .map_err(crate::journal::JournalError::from)?, request_digest))
 }
 
 fn validate_child(
@@ -269,7 +270,8 @@ pub fn adopt_execution_observe_child_v1(
         ),
         JournalRecord::idempotency(&key, request_digest, operation_id),
     ];
-    journal.commit(&JournalTransaction::new(transaction_id, records)?)?;
+    journal.commit(&JournalTransaction::new(transaction_id, records)
+        .map_err(crate::journal::JournalError::from)?)?;
     Ok(true)
 }
 

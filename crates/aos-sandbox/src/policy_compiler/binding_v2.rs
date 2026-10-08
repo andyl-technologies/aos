@@ -1838,7 +1838,8 @@ impl ClosedPolicyRootSessionV2<'_> {
                     value.to_vec(),
                 ));
             }
-            let transaction = JournalTransaction::new(transaction_id, records)?;
+            let transaction = JournalTransaction::new(transaction_id, records)
+                .map_err(crate::journal::JournalError::from)?;
             // A qualified signer proof shares the binding/head/hold commit.
             // A lost response cannot leave a proof with no Root decision.
             self.authority.commit(&transaction)?;

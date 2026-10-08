@@ -15,6 +15,8 @@
 //! outcome   = 'u' || operation[16] => AOSHRO01 signed outcome custody
 //! ```
 
+use aos_sandbox_protocol::domain_ledger::JournalTransactionDataError;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use aos_sandbox_agent::SignedAgentOutcomePacketV1;
@@ -1563,7 +1565,8 @@ impl<'journal> JournalRuntimeExecutionStoreV1<'journal> {
             capacity.record().clone(),
         ];
         let transaction_record =
-            JournalTransaction::new(transaction, records).map_err(map_admission_journal_error)?;
+            JournalTransaction::new(transaction, records)
+                .map_err(JournalError::from).map_err(map_admission_journal_error)?;
         let preflight = self
             .authority
             .preflight_global_capacity_reservation_v1(&capacity, &transaction_record)
@@ -1783,7 +1786,8 @@ impl<'journal> JournalRuntimeExecutionStoreV1<'journal> {
             records.push(reservation.settlement_record());
         }
         let transaction_record =
-            JournalTransaction::new(transaction, records).map_err(map_effect_journal_error)?;
+            JournalTransaction::new(transaction, records)
+                .map_err(JournalError::from).map_err(map_effect_journal_error)?;
         let commit = if let Some(reservation) = terminal_reservation {
             let preflight = self
                 .authority
@@ -3311,6 +3315,12 @@ pub enum JournalRuntimeExecutionError {
     /// Portable recovery evidence validation failed.
     #[error("runtime execution recovery failed: {0}")]
     Recovery(#[from] aos_sandbox_core::runtime_backend::ExecutionRecoveryError),
+}
+
+impl From<JournalTransactionDataError> for JournalRuntimeExecutionError {
+    fn from(error: JournalTransactionDataError) -> Self {
+        <Self as From<JournalError>>::from(JournalError::from(error))
+    }
 }
 
 #[cfg(test)]

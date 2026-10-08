@@ -909,12 +909,13 @@ fn bootstrap_checked_inner(
     }
     if let Some(destination) = retained_destination {
         *destination = Some(PreparedInitialIssuerV1 {
-            transaction: JournalTransaction::new(*id.as_bytes(), records)?,
+            transaction: JournalTransaction::new(*id.as_bytes(), records)
+                .map_err(JournalError::from)?,
             id, handle, principal: holder.principal, key_binding: holder.key_binding,
         });
         return Ok(None);
     }
-    journal.commit(&JournalTransaction::new(*id.as_bytes(), records)?)?;
+    journal.commit(&JournalTransaction::new(*id.as_bytes(), records).map_err(JournalError::from)?)?;
     let committed_handle =
         PublisherCapabilityRegistry::load(journal, PublisherAuthorityLimits::default())?
             .holder_handle(id, holder.principal, holder.key_binding)?;

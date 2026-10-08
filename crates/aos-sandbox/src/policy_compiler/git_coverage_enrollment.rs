@@ -690,7 +690,7 @@ impl<'profile> GitCoverageAccountAttemptV1<'profile> {
                 JournalRecord::put(RecordNamespace::DesiredState, b"z-git-birth-v1".to_vec(), birth_bytes.to_vec()),
                 JournalRecord::put(RecordNamespace::DesiredState, b"z-git-fence-v1".to_vec(), fence_bytes.to_vec()),
             ],
-        ));
+        ).map_err(JournalError::from));
         let transaction = self.controller_transaction.as_ref()
             .and_then(|result| result.as_ref().ok()).ok_or(RootFlightFailureV1::Refused)?;
         self.controller_preflight = Some(journal.preflight_transactions(std::slice::from_ref(transaction)));
@@ -1433,7 +1433,7 @@ fn root_denial_transaction(
     Ok(JournalTransaction::new(fields.transaction, vec![
         JournalRecord::put(RecordNamespace::DesiredState, b"z-git-birth-v1".to_vec(), birth_bytes.to_vec()),
         JournalRecord::put(RecordNamespace::DesiredState, b"z-git-fence-v1".to_vec(), fence_bytes.to_vec()),
-    ])?)
+    ]).map_err(JournalError::from)?)
 }
 
 /// Keeps both fixed Root writers and every returned durability result resident.

@@ -968,7 +968,7 @@ fn require_exact_transaction(
         }
     }
     for identifier in old.ids.intersection(&next.ids) {
-        let key = crate::journal::capacity_reservation::reservation_key_for_validation(*identifier);
+        let key = crate::journal::capacity_reservation::reservation_key(*identifier);
         let key = (RecordNamespace::GlobalCapacityReservation, key);
         if before.get(&key) != after.get(&key) {
             return Err(invalid("Source unchanged floor bytes changed"));

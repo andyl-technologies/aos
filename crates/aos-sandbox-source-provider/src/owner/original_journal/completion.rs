@@ -593,5 +593,5 @@ fn original_floor_transaction_v5(
     let mut records = owner.records().to_vec();
     records.push(JournalRecord::delete(RecordNamespace::GlobalCapacityReservation, before.to_journal_record()?.key().to_vec()));
     records.push(after.to_journal_record()?);
-    Ok(JournalTransaction::new(*owner.id(), records)?)
+    Ok(JournalTransaction::new(*owner.id(), records).map_err(aos_sandbox::JournalError::from)?)
 }

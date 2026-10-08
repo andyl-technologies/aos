@@ -679,7 +679,7 @@ fn persist_attempt_profile(
             attempt.execution.as_bytes().to_vec(),
             attempt.encode(),
         )],
-    )?;
+    ).map_err(JournalError::from)?;
     if matches!(profile, OriginalOutputProfileV1::Captured) {
         controller.preflight_transactions(std::slice::from_ref(&transaction))?;
     }

@@ -181,7 +181,8 @@ impl SnapshotDerivedStoragePreparationV3 {
             journal, &record, &body_shape, &packet_shape,
         ).map_err(|_| ReconcilerError::InvalidPlan("Snapshot complete native suffix exceeds opened bounds"))?;
         for transaction in &transactions {
-            let bytes = crate::journal::encoded_transaction_append_bytes(transaction)?;
+            let bytes = crate::journal::encoded_transaction_append_bytes(transaction)
+                .map_err(crate::journal::JournalError::from)?;
             let value = transaction.records()[0].value()
                 .ok_or(ReconcilerError::InvalidPlan("Snapshot suffix is not a PUT"))?;
             if bytes != 279 + value.len() as u64 {

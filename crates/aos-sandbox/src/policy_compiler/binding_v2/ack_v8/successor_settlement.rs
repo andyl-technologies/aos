@@ -232,7 +232,7 @@ fn settlement_transaction(
         .into_iter()
         .map(|key| JournalRecord::delete(RecordNamespace::DesiredState, key.to_vec())),
     );
-    Ok(JournalTransaction::new(id, records)?)
+    Ok(JournalTransaction::new(id, records).map_err(crate::journal::JournalError::from)?)
 }
 
 /// Reads and validates the immutable marker for one predecessor.

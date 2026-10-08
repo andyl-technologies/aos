@@ -57,7 +57,7 @@ fn commit() -> Result<(), Box<dyn Error>> {
             KEY.to_vec(),
             VALUE.to_vec(),
         )],
-    )?;
+    ).map_err(aos_sandbox::JournalError::from)?;
     journal.commit(&transaction)?;
     if journal.get(RecordNamespace::MountSourceAcquisition, KEY) != Some(VALUE) {
         return Err("namespace-40 commit was not visible to its owner".into());

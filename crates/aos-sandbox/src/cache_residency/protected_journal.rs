@@ -2124,7 +2124,7 @@ pub(crate) fn cache_residency_reducer_envelope_v1(
         predecessor,
         payload,
         validator,
-    )
+    ).map_err(ProtectedDomainJournalErrorV1::from)
 }
 
 /// Constructs a bounded cache key bound to one partition and optional project.
@@ -2176,6 +2176,7 @@ pub fn cache_residency_protected_key_v1(
         identity.extend_from_slice(digest.as_bytes());
     }
     CacheResidencyProtectedJournalKeyV1::new(kind, identity)
+        .map_err(ProtectedDomainJournalErrorV1::from)
 }
 
 fn validate_cache_transition(

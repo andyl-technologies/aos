@@ -415,7 +415,7 @@ fn status_envelope() -> Result<JournalTransaction, JournalError> {
                 vec![0; VALUE_BYTES],
             ),
         ],
-    )
+    ).map_err(JournalError::from)
 }
 
 fn retained_envelope() -> Result<JournalTransaction, JournalError> {
@@ -431,7 +431,7 @@ fn retained_envelope() -> Result<JournalTransaction, JournalError> {
                 reservation_key([5; 32]),
             ),
         ],
-    )
+    ).map_err(JournalError::from)
 }
 
 fn owner_put(key: Vec<u8>) -> JournalRecord {

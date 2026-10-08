@@ -198,7 +198,7 @@ impl ExecutionOutputLedgerV1 {
                 JournalRecord::put(NAMESPACE, row_location, row_bytes.to_vec()),
                 JournalRecord::put(NAMESPACE, marker_location, marker_bytes.to_vec()),
             ],
-        )?;
+        ).map_err(aos_sandbox::JournalError::from)?;
         if matches!(profile, OriginalReserveProfile::Captured) {
             self.journal.preflight_transactions(std::slice::from_ref(&transaction))?;
         }

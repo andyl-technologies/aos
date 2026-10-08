@@ -94,7 +94,7 @@ impl RootChallengeRecordCodec {
                 self.key.to_vec(),
                 record.to_vec(),
             )],
-        )
+        ).map_err(JournalError::from)
     }
 }
 

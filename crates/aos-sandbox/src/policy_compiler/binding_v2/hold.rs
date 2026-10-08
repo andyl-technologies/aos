@@ -134,7 +134,7 @@ pub(super) fn release_hold(
             HOLD_KEY.to_vec(),
             released.to_vec(),
         )],
-    )?;
+    ).map_err(crate::journal::JournalError::from)?;
     authority.commit(&transaction)?;
     if authority.get(HOLD_KEY)? != Some(released.as_slice()) {
         return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);

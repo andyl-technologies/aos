@@ -495,7 +495,7 @@ impl StorageBrokerRuntime {
                     JournalRecord::put(
                         RecordNamespace::DesiredState, b"z-git-fence-v1".to_vec(), fence.encode()?.to_vec(),
                     ),
-                ])?);
+                ]).map_err(JournalError::from)?);
                 owner.inputs.recheck_storage_inputs_v1()
                     .map_err(|_| StorageGitCoverageCauseV1::Credentials)?;
                 owner.observe_clock(0, Some(deadline))?;

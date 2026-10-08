@@ -571,7 +571,7 @@ fn persist_receipt(
             record.execution.as_bytes().to_vec(),
             bytes,
         )],
-    )?;
+    ).map_err(JournalError::from)?;
     controller
         .commit(&transaction)
         .map_err(|_| ControllerExecutionArgumentReceiptErrorV1::OutcomeUnknown)?;

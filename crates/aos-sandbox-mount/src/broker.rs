@@ -879,7 +879,7 @@ impl<W: MountWorker> MountBroker<W> {
                 JournalRecord::put(RecordNamespace::DesiredState, original.sandbox_id.to_vec(), fence.clone()),
                 JournalRecord::put(RecordNamespace::Effect, original.request_id.to_vec(), effect.clone()),
             ],
-        ));
+        ).map_err(JournalError::from));
         let Some(Ok(transaction)) = original.transaction.as_ref() else {
             original.first_stage = Some(OriginalMountAuthorityStageV1::Transaction);
             return false;

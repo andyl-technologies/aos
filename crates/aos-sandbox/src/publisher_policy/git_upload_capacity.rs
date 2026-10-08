@@ -591,7 +591,7 @@ impl PublisherPolicyStore<'_> {
                 JournalRecord::put(RecordNamespace::PublisherPolicy, account_head_key(source.policy.project()),
                     encode_account_head(source.policy.project(), 2, account_digest)),
             ],
-        ).map_err(PublisherPolicyError::from)?;
+        ).map_err(crate::journal::JournalError::from).map_err(PublisherPolicyError::from)?;
         require_coverage_native_account_transaction(&transaction)?;
         Ok(GitUploadEnrolledAccountAppendV1 {
             transaction,
@@ -824,7 +824,7 @@ impl PublisherPolicyStore<'_> {
                 JournalRecord::put(RecordNamespace::PublisherPolicy, account_key(project, 1), account),
                 JournalRecord::put(RecordNamespace::PublisherPolicy, account_head_key(project), head),
             ],
-        ).map_err(PublisherPolicyError::from)?;
+        ).map_err(crate::journal::JournalError::from).map_err(PublisherPolicyError::from)?;
         Ok(GitUploadBootstrapAppendV1 {
             transaction,
             preflight: None,

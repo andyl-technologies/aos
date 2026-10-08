@@ -830,7 +830,7 @@ impl<'a> LifecycleAtomicSnapshotSourceStoreV1<'a> {
                 record.operation.to_vec(),
                 bytes,
             )],
-        )?;
+        ).map_err(JournalError::from)?;
         self.journal.commit(&transaction)?;
         Ok(())
     }
@@ -1126,6 +1126,7 @@ impl DerivedSourceRecordV3 {
         let mut id = [0; 16];
         id.copy_from_slice(&digest[..16]);
         JournalTransaction::new(id, vec![JournalRecord::put(NAMESPACE, self.operation.to_vec(), self.encode())])
+            .map_err(JournalError::from)
     }
 
     pub(crate) fn append(

@@ -419,7 +419,8 @@ impl ClosedPolicyRootSessionV2<'_> {
                 proof.to_vec(),
             ));
         }
-        let transaction = JournalTransaction::new(transaction_id, records)?;
+        let transaction = JournalTransaction::new(transaction_id, records)
+            .map_err(crate::journal::JournalError::from)?;
         self.authority.commit(&transaction)?;
         let record = match cache_observation {
             Some(observation) => self.recover_terminal_with_held_proof_observation(

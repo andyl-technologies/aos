@@ -24,7 +24,7 @@ pub(super) fn owner_pin_transaction(
             key.to_vec(),
             credential.to_vec(),
         )],
-    )
+    ).map_err(JournalError::from)
 }
 
 #[cfg(test)]

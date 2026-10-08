@@ -150,7 +150,7 @@ impl<'a> ProviderLedgerV1<'a> {
                     catalog_bytes,
                 ),
             ],
-        )?;
+        ).map_err(aos_sandbox::JournalError::from)?;
         let preflight = journal.preflight_transactions(std::slice::from_ref(&transaction))?;
         journal.validate_preflight_for_effect(&preflight, std::slice::from_ref(&transaction))?;
         journal.commit(&transaction)?;

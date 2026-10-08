@@ -131,7 +131,7 @@ fn terminal_transaction(
             TERMINAL_KEY.to_vec(),
             row.to_vec(),
         )],
-    )?)
+    ).map_err(crate::journal::JournalError::from)?)
 }
 
 fn terminal_record(

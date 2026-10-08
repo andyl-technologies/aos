@@ -572,7 +572,7 @@ impl EnrollmentTransition {
                 codec::encode_claim(claim)?.to_vec(),
             ));
         }
-        Ok(JournalTransaction::new(self.transaction_id, records)?)
+        Ok(JournalTransaction::new(self.transaction_id, records).map_err(JournalError::from)?)
     }
 
     pub(super) fn require_current(

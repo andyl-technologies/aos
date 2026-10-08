@@ -523,7 +523,7 @@ fn append_attempt(
             attempt.execution.as_bytes().to_vec(),
             attempt.encode(),
         )],
-    )?;
+    ).map_err(JournalError::from)?;
     controller
         .commit(&transaction)
         .map(|_| ())

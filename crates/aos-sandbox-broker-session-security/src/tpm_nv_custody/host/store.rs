@@ -195,7 +195,7 @@ fn decode_preparation(
     )?;
     let transaction = JournalTransaction::decode_prepared_v1(
         records[1].value().ok_or(HostOwnedJournalErrorV1::Changed)?, main_limits,
-    )?;
+    ).map_err(aos_sandbox::JournalError::from)?;
     intent.require_transaction(&transaction)?;
     if intent.predecessor() != checkpoint
         || native != &host_prepare_transaction(intent, &transaction, main_limits)?

@@ -124,12 +124,16 @@ check remain upper. Removing duplicate key/value and width-only floor buffers
 does not move admission, opening, descriptor custody, or authority below the
 domain boundary, and is not qualification or a complete protected owner cut.
 
-The domain journal's private `transaction_codec` module owns its transaction
-DATA, canonical native/preparation adapters, and bounded record validation.
-Closed namespace decoding and typed Idempotency schema checks remain domain
-responsibilities there; protected admission, semantic publication, and actual
-file/loan custody stay with their existing owners. Private source organization
-does not establish a further crate boundary or complete protected ownership.
+Protocol's `domain_ledger` owns the complete typed transaction/Idempotency
+DATA, legacy capacity-reservation schema and identities, and schema-bound
+record/reducer/replay DATA. It reuses generic Journal framing and bounded
+mechanics; the original role validators still borrow their actual evidence.
+Decoded phases and projections are DATA, not sealed currentness, capacity,
+postcommit authority, or physical admission. Domain wrappers retain the real
+Journal, protected guards, writer/lock loans, native causes, semantic indexes,
+full capacity-family dispatch, and closed authority factories. This shared
+DATA boundary is a prerequisite for further role migration, not removal of the
+whole protected Journal/Policy/Source/Cache/Publisher dependency cycle.
 
 Its bounded native extent accounting and duplicate-key index share the lower
 journal's `NativeRecordValidation` owner with native suffix measurement. Keys

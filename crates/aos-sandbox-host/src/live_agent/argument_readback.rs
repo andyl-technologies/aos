@@ -337,7 +337,7 @@ impl HostRuntimeArgumentReadbackJournalV1 {
                     key,
                     value,
                 )],
-            )?;
+            ).map_err(JournalError::from)?;
             authority.commit(&transaction)?;
         }
         let journal_sequence_after_custody = authority.snapshot()?.sequence();

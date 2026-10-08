@@ -767,7 +767,7 @@ impl SnapshotRecord {
                 KEY.to_vec(),
                 self.encode(),
             )],
-        )?)
+        ).map_err(JournalError::from)?)
     }
 }
 

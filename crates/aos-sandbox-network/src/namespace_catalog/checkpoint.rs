@@ -497,7 +497,7 @@ impl NetworkNamespaceCatalogV1 {
                     next_head.encode().to_vec(),
                 ),
             ],
-        )?;
+        ).map_err(aos_sandbox::JournalError::from)?;
         self.journal.commit(&transaction)?;
         self.checkpoint_head = Some(next_head);
 
@@ -616,7 +616,7 @@ impl NetworkNamespaceCatalogV1 {
                     completed_head.encode().to_vec(),
                 ),
             ],
-        )?;
+        ).map_err(aos_sandbox::JournalError::from)?;
         self.journal.commit(&transaction)?;
         self.checkpoint_head = Some(completed_head);
 

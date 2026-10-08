@@ -249,7 +249,8 @@ pub(crate) fn commit_admission(
     )?;
     let mut rows = prepared.transaction.records().to_vec();
     rows.push(capacity.record().clone());
-    let transaction = JournalTransaction::new(*prepared.transaction.id(), rows)?;
+    let transaction = JournalTransaction::new(*prepared.transaction.id(), rows)
+        .map_err(aos_sandbox::JournalError::from)?;
     let preflight = ledger
         .journal
         .preflight_global_capacity_reservation_v1(&capacity, &transaction)?;

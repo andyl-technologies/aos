@@ -200,7 +200,7 @@ fn retain(journal: &mut Journal, reservation: &ObserveReservation) -> Result<(),
             reservation.execution().as_bytes().to_vec(),
             reservation.encode(),
         )],
-    )
+    ).map_err(aos_sandbox::JournalError::from)
     .map_err(|error| EffectFailure::Retryable(error.to_string()))?;
     journal.commit(&transaction).map_err(|_| {
         EffectFailure::Retryable(

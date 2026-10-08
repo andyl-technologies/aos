@@ -367,7 +367,7 @@ fn append_host_currentness_hold_v1(
             HOST_CURRENTNESS_FENCE_KEY.to_vec(),
             bytes.to_vec(),
         )],
-    )?;
+    ).map_err(crate::journal::JournalError::from)?;
 
     let committed = peer_authority
         .acquire_host_currentness_fence_v1(fence, &transaction)

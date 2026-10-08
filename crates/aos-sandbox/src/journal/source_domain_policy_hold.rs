@@ -784,7 +784,7 @@ fn q04_transaction(
     JournalTransaction::new(
         Q04TransactionOwnerV1::Source.transaction_id(identity, phase, predecessor)?,
         records,
-    )
+    ).map_err(JournalError::from)
 }
 
 pub(super) fn require_no_compaction(
@@ -819,7 +819,7 @@ fn transaction(hold: SourceDomainPolicyHoldV1) -> Result<JournalTransaction, Jou
             KEY.to_vec(),
             bytes.to_vec(),
         )],
-    )
+    ).map_err(JournalError::from)
 }
 
 pub(super) fn release_transaction(
@@ -866,7 +866,7 @@ fn v8_retirement_transaction(
                 marker_bytes.to_vec(),
             ),
         ],
-    )
+    ).map_err(JournalError::from)
 }
 
 fn v8_clear_transaction(
@@ -894,7 +894,7 @@ fn v8_clear_transaction(
             RecordNamespace::SourceDomainPolicyHold,
             V8_PENDING_KEY.to_vec(),
         )],
-    )
+    ).map_err(JournalError::from)
 }
 
 pub(super) fn v8_retirement_and_clear_transactions(

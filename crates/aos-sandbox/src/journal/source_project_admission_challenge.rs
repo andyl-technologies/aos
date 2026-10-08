@@ -1485,7 +1485,7 @@ fn reservation_transaction(
             RETIREMENT_ACK_KEY.to_vec(),
         ));
     }
-    JournalTransaction::new(transaction_id(&bytes)?, records)
+    JournalTransaction::new(transaction_id(&bytes)?, records).map_err(JournalError::from)
 }
 
 fn acquisition_transaction(
@@ -1514,7 +1514,7 @@ fn single_record_transaction(key: &[u8], bytes: &[u8]) -> Result<JournalTransact
             key.to_vec(),
             bytes.to_vec(),
         )],
-    )
+    ).map_err(JournalError::from)
 }
 
 fn transaction_id(bytes: &[u8]) -> Result<[u8; 16], JournalError> {

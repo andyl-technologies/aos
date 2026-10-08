@@ -720,7 +720,7 @@ impl<'a> AuthorityPublicationStore<'a> {
                 ),
                 JournalRecord::idempotency(idempotency_key, request_digest, operation_id),
             ],
-        )?;
+        ).map_err(JournalError::from)?;
         self.journal.commit(&transaction)?;
         Ok(AuthorityPublicationOutcome::Published(operation_id))
     }

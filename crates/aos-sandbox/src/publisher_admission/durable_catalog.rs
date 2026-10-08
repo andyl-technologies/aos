@@ -220,7 +220,7 @@ impl PublisherDurableCatalogOwnerV1 {
                 CURRENT_KEY.to_vec(),
                 bytes,
             )],
-        )?;
+        ).map_err(JournalError::from)?;
         let pending = PublisherDurableCatalogOutcomeUnknownV1 {
             transaction,
             expected_previous: self.current.clone(),

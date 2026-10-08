@@ -1012,7 +1012,7 @@ fn ack_transaction(
             ),
             reservation_delete,
         ],
-    )
+    ).map_err(JournalError::from)
 }
 
 /// Compares canonical receipt DATA with the actual saved intent, not authority.

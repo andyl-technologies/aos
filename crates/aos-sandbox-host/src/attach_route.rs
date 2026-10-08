@@ -230,7 +230,7 @@ impl HostOpenSshAttachRouteOwnerV1 {
                     key.clone(),
                     marker.clone(),
                 )],
-            )?;
+            ).map_err(JournalError::from)?;
             // An ambiguous commit/readback closes this consume permanently.
             authority.commit(&transaction)?;
             if authority.get(&key)? != Some(marker.as_slice()) {
@@ -374,7 +374,7 @@ impl HostOpenSshAttachRouteOwnerV1 {
                             key.clone(),
                             ticket_bytes.to_vec(),
                         )],
-                    )?;
+                    ).map_err(JournalError::from)?;
                     authority.commit(&transaction)?;
                 }
             }
@@ -576,7 +576,7 @@ impl HostOpenSshAttachRouteOwnerV1 {
                     grant_digest.to_vec(),
                 ),
             ],
-        )?;
+        ).map_err(JournalError::from)?;
         authority.commit(&transaction)?;
         Ok(())
     }
@@ -627,7 +627,7 @@ impl HostOpenSshAttachRouteOwnerV1 {
                 revocation_key,
                 marker,
             )],
-        )?;
+        ).map_err(JournalError::from)?;
         authority.commit(&transaction)?;
         Ok(())
     }

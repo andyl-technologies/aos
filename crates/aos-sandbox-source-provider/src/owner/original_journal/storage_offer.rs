@@ -498,7 +498,8 @@ impl FixedProviderOwnerV1 {
         records.push(JournalRecord::delete(RecordNamespace::GlobalCapacityReservation,
             before_floor.to_journal_record()?.key().to_vec()));
         records.push(after_floor.to_journal_record()?);
-        producer.park(Append::StoragePrepared, JournalTransaction::new(*owner.id(), records)?)?;
+        producer.park(Append::StoragePrepared, JournalTransaction::new(*owner.id(), records)
+            .map_err(aos_sandbox::JournalError::from)?)?;
         held.session.current_projection()?;
         Ok(())
     }

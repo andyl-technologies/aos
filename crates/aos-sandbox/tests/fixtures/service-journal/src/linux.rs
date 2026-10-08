@@ -35,7 +35,8 @@ pub(super) fn run() -> Result<(), Box<dyn Error>> {
         b"key".to_vec(),
         b"value".to_vec(),
     );
-    journal.commit(&JournalTransaction::new([1; 16], vec![record])?)?;
+    journal.commit(&JournalTransaction::new([1; 16], vec![record])
+        .map_err(aos_sandbox::JournalError::from)?)?;
     if !matches!(
         Journal::open_protected_at_for_uid(directory, NAME, JournalLimits::default(), OWNER),
         Err(JournalError::AlreadyLocked)

@@ -648,7 +648,7 @@ impl Record {
         Ok(JournalTransaction::new(
             transaction_id,
             vec![JournalRecord::put(NAMESPACE, self.key(), self.encode())],
-        )?)
+        ).map_err(JournalError::from)?)
     }
 
     fn encoded_len(&self) -> usize {

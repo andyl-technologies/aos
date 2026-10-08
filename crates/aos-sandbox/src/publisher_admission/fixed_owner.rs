@@ -299,7 +299,7 @@ impl PublisherFixedProtectedOwnerV1 {
                 key.clone(),
                 bytes,
             )],
-        )?;
+        ).map_err(JournalError::from)?;
         self.authority_journal.commit(&transaction)?;
         let readback = self
             .authority_journal
@@ -353,7 +353,7 @@ fn install_fixed_configuration_from_controller(
             CONFIG_KEY.to_vec(),
             bytes,
         )],
-    )?;
+    ).map_err(JournalError::from)?;
     journal.commit(&transaction)?;
     let (_, readback) = read_config(&journal)?;
     if readback != digest {

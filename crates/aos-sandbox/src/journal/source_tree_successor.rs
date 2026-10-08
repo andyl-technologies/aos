@@ -23,7 +23,7 @@ use sha2::{Digest as _, Sha256};
 use super::capacity_reservation::{
     accounting_reservations, first_source_successor_capacity_delete_v2,
     first_source_successor_capacity_identity_v2, first_source_successor_capacity_record_v2,
-    reservation_key_for_validation,
+    reservation_key,
 };
 use super::{
     CacheMutationGateV1, CommitResult, GlobalCapacityReservationPurposeV1,
@@ -598,7 +598,7 @@ pub(crate) fn capacity_request(
 pub(crate) fn sizing_capacity_delete() -> JournalRecord {
     JournalRecord::delete(
         RecordNamespace::GlobalCapacityReservation,
-        reservation_key_for_validation([1; 32]),
+        reservation_key([1; 32]),
     )
 }
 

@@ -261,7 +261,8 @@ impl CacheReplayControllerBootstrapOwnerV1 {
             let transaction_id: [u8; 16] = digest[..16]
                 .try_into()
                 .map_err(|_| CacheReplayControllerBootstrapErrorV1::InvalidSource)?;
-            let transaction = JournalTransaction::new(transaction_id, missing)?;
+            let transaction = JournalTransaction::new(transaction_id, missing)
+                .map_err(JournalError::from)?;
             let mut authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
             for (partition, _) in requested
                 .iter()

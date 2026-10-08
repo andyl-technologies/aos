@@ -314,7 +314,7 @@ fn owner_projection(transaction: &JournalTransaction) -> Result<JournalTransacti
             .filter(|record| record.namespace() == RecordNamespace::MountSourceAcquisition)
             .cloned()
             .collect(),
-    )
+    ).map_err(JournalError::from)
 }
 
 /// Recognizes a Query floor before any old native/local replay route.
