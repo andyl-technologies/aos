@@ -68,25 +68,15 @@ pub(crate) fn remaining_capacity_profile(
                     for stage in &path {
                         let size = stage_size(held, stage)?;
                         peak = peak.max(size);
-                        // Capacity-only zero bytes cannot decode as a row/control.
-                        // The real Journal encoder supplies the complete framing.
-                        let transaction = JournalTransaction::new(
-                            [1; 16],
-                            vec![JournalRecord::put(
-                                RecordNamespace::AuthorityPublication,
-                                held.key().to_vec(),
-                                vec![0; size],
-                            )],
-                        )
-                        .map_err(|_| invalid("capacity template"))?;
+                        // Measurement needs lengths, not allocated zero-filled rows.
+                        // The old nonzero-ID/single-record template could not fail
+                        // transaction construction; the same geometry stays DATA.
                         path_append = path_append
                             .checked_add(
-                                encoded_transaction_append_bytes(
-                                    transaction.records().iter().map(|record| RecordShape {
-                                        key_bytes: record.key().len(),
-                                        value_bytes: record.value().map(<[u8]>::len),
-                                    }),
-                                )
+                                encoded_transaction_append_bytes(std::iter::once(RecordShape {
+                                    key_bytes: held.key().len(),
+                                    value_bytes: Some(size),
+                                }))
                                 .map_err(|_| invalid("held append geometry"))?,
                             )
                             .ok_or_else(|| invalid("append sum overflow"))?;
@@ -234,4 +224,56 @@ fn stage_size(row: &StorageHeldIssuanceRowV2, stage: &Stage) -> Result<usize> {
         return Err(invalid("complete capacity value bound"));
     }
     Ok(size)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn length_only_geometry_matches_old_templates_and_native_bytes() {
+        let key = [1; 48];
+
+        for size in [0, 1, MAXIMUM_STORAGE_HELD_ISSUANCE_VALUE_BYTES_V2] {
+            let old_template = JournalTransaction::new(
+                [1; 16],
+                vec![JournalRecord::put(
+                    RecordNamespace::AuthorityPublication,
+                    key.to_vec(),
+                    vec![0; size],
+                )],
+            )
+            .unwrap();
+            let record = &old_template.records()[0];
+
+            let old_bytes =
+                encoded_transaction_append_bytes(old_template.records().iter().map(|record| {
+                    RecordShape {
+                        key_bytes: record.key().len(),
+                        value_bytes: record.value().map(<[u8]>::len),
+                    }
+                }))
+                .unwrap();
+            let shape_bytes = encoded_transaction_append_bytes(std::iter::once(RecordShape {
+                key_bytes: key.len(),
+                value_bytes: Some(size),
+            }))
+            .unwrap();
+            let payload = aos_sandbox_journal::record::encode_record_fields(
+                RecordNamespace::AuthorityPublication as u8,
+                record.key(),
+                record.value(),
+            )
+            .unwrap();
+
+            assert_eq!(payload[0], 6);
+            assert_eq!(payload.len(), 7 + 48 + size);
+            assert_eq!(shape_bytes, old_bytes);
+            assert_eq!(
+                shape_bytes,
+                ((72 + 4) + (72 + payload.len()) + (72 + 36)) as u64,
+            );
+            assert_eq!(shape_bytes, (311 + size) as u64);
+        }
+    }
 }
