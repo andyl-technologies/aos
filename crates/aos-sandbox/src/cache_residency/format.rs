@@ -65,7 +65,7 @@ pub enum CacheRecordKindV1 {
 }
 
 impl CacheRecordKindV1 {
-    fn from_code(code: u8) -> Result<Self, CacheFormatError> {
+    pub(super) fn from_code(code: u8) -> Result<Self, CacheFormatError> {
         match code {
             1 => Ok(Self::Domain),
             2 => Ok(Self::Quota),

@@ -420,20 +420,31 @@ pub(super) fn eviction_state(code: u8) -> Result<EvictionCandidateStateV1, Recov
 }
 
 pub(super) fn record_kind(code: u8) -> Result<CacheRecordKindV1, RecoveryError> {
-    match code {
-        1 => Ok(CacheRecordKindV1::Domain),
-        2 => Ok(CacheRecordKindV1::Quota),
-        3 => Ok(CacheRecordKindV1::Reservation),
-        4 => Ok(CacheRecordKindV1::Admission),
-        5 => Ok(CacheRecordKindV1::Catalog),
-        6 => Ok(CacheRecordKindV1::Pin),
-        7 => Ok(CacheRecordKindV1::EvictionPlan),
-        8 => Ok(CacheRecordKindV1::EvictionProgress),
-        9 => Ok(CacheRecordKindV1::Scrub),
-        10 => Ok(CacheRecordKindV1::ReadHandoff),
-        11 => Ok(CacheRecordKindV1::LookupMemo),
-        12 => Ok(CacheRecordKindV1::Poison),
-        13 => Ok(CacheRecordKindV1::Compaction),
-        _ => Err(RecoveryError::MalformedPayload),
+    CacheRecordKindV1::from_code(code).map_err(|_| RecoveryError::MalformedPayload)
+}
+
+#[cfg(test)]
+#[test]
+fn record_kind_preserves_the_closed_registry_and_error_projections() {
+    use super::super::format::CacheFormatError;
+
+    for code in u8::MIN..=u8::MAX {
+        let format_result = CacheRecordKindV1::from_code(code);
+        let recovery_result = record_kind(code);
+
+        if (1..=13).contains(&code) {
+            assert_eq!(format_result.unwrap() as u8, code, "format code {code}");
+            assert_eq!(recovery_result.unwrap() as u8, code, "recovery code {code}");
+        } else {
+            assert_eq!(
+                format_result,
+                Err(CacheFormatError::UnknownKind),
+                "code {code}"
+            );
+            assert!(
+                matches!(recovery_result, Err(RecoveryError::MalformedPayload)),
+                "recovery code {code}"
+            );
+        }
     }
 }
