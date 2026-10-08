@@ -49,20 +49,19 @@ pub use assignment::{
     MAX_SNAPSHOT_TRANSFER_CHUNK_BYTES, MAX_SNAPSHOT_TRANSFER_CHUNKS,
     MAX_SNAPSHOT_TRANSFER_DEPENDENCIES, MAX_SNAPSHOT_TRANSFER_MANIFEST_WIRE_BYTES,
     NodeAssignmentObservationV1, SelectedCapabilityBindingV1, SnapshotDependencyRangeV1,
-    SnapshotRestoreAdmissionDecisionV1, SnapshotRestoreAdmissionV1, SnapshotRestoreBlockReasonV1,
     SnapshotTransferChunkRequestV1, SnapshotTransferChunkV1, SnapshotTransferCompletionV1,
     SnapshotTransferIdentityV1,
     SnapshotTransferManifestV1, SnapshotTransferResumeV1,
     SnapshotTransferVersionV1, VerifiedAssignmentAuthorityV1, VerifiedGuardianStateV1,
-    VerifiedRestoreAuthorizationV1, VerifiedSnapshotDependencySetV1, VerifiedSnapshotDependencyV1,
-    VerifiedStagedSnapshotV1,
+    VerifiedSnapshotDependencySetV1, VerifiedSnapshotDependencyV1, VerifiedStagedSnapshotV1,
 };
 
 #[cfg(feature = "multi-node")]
 pub use assignment::{
     AssignmentObservationApplyOutcomeV1, AssignmentObservationReducerV1,
-    SnapshotDependencyReducerV1, SnapshotTransferApplyOutcomeV1, SnapshotTransferReducerV1,
-    VerifiedAssignmentAcceptanceV1,
+    SnapshotDependencyReducerV1, SnapshotRestoreAdmissionDecisionV1, SnapshotRestoreAdmissionV1,
+    SnapshotRestoreBlockReasonV1, SnapshotTransferApplyOutcomeV1, SnapshotTransferReducerV1,
+    VerifiedAssignmentAcceptanceV1, VerifiedRestoreAuthorizationV1,
 };
 
 pub use capability::{
