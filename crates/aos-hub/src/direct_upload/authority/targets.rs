@@ -1,7 +1,7 @@
 //! Exact target scopes, required physical placements and accounting statements.
 
 use aos_hub_core::{
-    db::{BinaryCache, OciUploadRecord, SurfacePlacementRecord},
+    db::SurfacePlacementRecord,
     domain::{Permission, Scope},
     hybrid_ingress::HybridObjectProjection,
     keymap,
@@ -9,40 +9,26 @@ use aos_hub_core::{
 
 use super::*;
 
-pub(super) enum TargetOwner {
-    Cache(BinaryCache),
-    Publication,
-    Oci(OciUploadRecord),
-}
-
-pub(super) struct Target {
-    pub scope: String,
-    pub path: String,
-    pub expires_at: i64,
-    pub placements: Vec<SurfacePlacementRecord>,
-    pub owner: TargetOwner,
-}
+pub(super) use super::super::native_targets::{Target, TargetOwner};
 
 impl NativeDirectUploadAuthority {
+    fn target_authority(&self) -> super::super::native_targets::NativeUploadTargets {
+        super::super::native_targets::NativeUploadTargets::new(
+            Arc::clone(&self.db),
+            Arc::clone(&self.rpc),
+            self.deployment.clone(),
+        )
+    }
+
     pub(super) async fn ensure_new_effect_accounting(
         &self,
         intent: &DirectUploadIntent,
     ) -> Result<()> {
-        if let DirectUploadTarget::PublicationObject {
-            surface_object_id, ..
-        } = &intent.target
-        {
-            self.db
-                .verified_registry_object_accounting_eligibility(i64::try_from(
-                    surface_object_id.get(),
-                )?)
-                .await?;
-        }
-        Ok(())
+        self.target_authority()
+            .ensure_new_effect_accounting(intent)
+            .await
     }
-}
 
-impl NativeDirectUploadAuthority {
     pub(super) async fn resolve_target(
         &self,
         claims: &Claims,
@@ -51,158 +37,9 @@ impl NativeDirectUploadAuthority {
         prepare: bool,
         now: i64,
     ) -> Result<Target> {
-        ensure!(
-            self.current_actor(claims).await? == *actor,
-            "direct original actor authority unavailable"
-        );
-        let mut target = match &intent.target {
-            DirectUploadTarget::CacheObject { cache_id, path } => {
-                let cache = match self.db.binary_cache_by_stable_id(cache_id).await? {
-                    Some(cache) => cache,
-                    None => self
-                        .db
-                        .binary_cache_by_slug(cache_id)
-                        .await?
-                        .context("direct cache absent")?,
-                };
-                ensure!(
-                    cache.deleted_at.is_none()
-                        && keymap::is_machine_path(path)
-                        && aos_hub_core::url_guard::validate_http_surface_path(path).is_ok(),
-                    "direct cache path unavailable"
-                );
-                self.check_org(cache.org_id).await?;
-                self.require_permission(
-                    claims,
-                    Permission::RegistryConfigure,
-                    &Scope::parse(&cache.scope_key),
-                )
-                .await?;
-                let placements = self
-                    .db
-                    .list_surface_placements(SurfaceTarget::BinaryCache(cache.id))
-                    .await?
-                    .into_iter()
-                    .filter(|row| row.effective_write_enabled)
-                    .collect();
-                Target {
-                    scope: cache.scope_key.clone(),
-                    path: path.clone(),
-                    expires_at: now.saturating_add(3600),
-                    placements,
-                    owner: TargetOwner::Cache(cache),
-                }
-            }
-            DirectUploadTarget::PublicationObject {
-                publication_id,
-                surface_object_id,
-                path,
-            } => {
-                let publication = self
-                    .db
-                    .registry_publication(publication_id)
-                    .await?
-                    .context("direct publication absent")?;
-                let registry = self
-                    .db
-                    .registry_by_id(publication.registry_id)
-                    .await?
-                    .context("direct registry absent")?;
-                self.check_org(registry.org_id).await?;
-                let scope = self.db.registry_authorization_scope(registry.id).await?;
-                self.require_permission(claims, Permission::Publish, &Scope::parse(&scope))
-                    .await?;
-                let object = self
-                    .db
-                    .registry_publication_upload_object(
-                        publication_id,
-                        i64::try_from(surface_object_id.get())?,
-                    )
-                    .await?
-                    .context("direct publication object absent")?;
-                ensure!(
-                    object.object_key == *path
-                        && object.expected_hash == intent.expected_sha256
-                        && object.expected_size == i64::try_from(intent.byte_size.get())?,
-                    "direct publication source differs from admitted manifest"
-                );
-                let placements = if prepare {
-                    self.rpc
-                        .prepare_direct_publication_upload(&publication, &registry, &object)
-                        .await?
-                } else {
-                    let mut rows = Vec::new();
-                    for progress in self
-                        .db
-                        .registry_publication_placement_records(publication_id)
-                        .await?
-                    {
-                        if progress.required {
-                            rows.push(
-                                self.db
-                                    .surface_placement(progress.placement_id)
-                                    .await?
-                                    .context("direct required placement absent")?,
-                            );
-                        }
-                    }
-                    rows
-                };
-                Target {
-                    scope,
-                    path: path.clone(),
-                    expires_at: now.saturating_add(3600),
-                    placements,
-                    owner: TargetOwner::Publication,
-                }
-            }
-            DirectUploadTarget::OciBlob { upload_id } => {
-                let upload = if prepare {
-                    self.db
-                        .direct_oci_upload_for_actor(&self.deployment, actor, upload_id, now)
-                        .await?
-                } else {
-                    self.db
-                        .direct_oci_upload_for_actor_recovery(&self.deployment, actor, upload_id)
-                        .await?
-                };
-                ensure!(
-                    upload.expected_size == Some(intent.byte_size.get())
-                        && upload.expected_digest.map(|item| item.encoded()).as_deref()
-                            == Some(intent.expected_sha256.as_str()),
-                    "direct OCI source differs from original allocation"
-                );
-                let registry = self
-                    .db
-                    .registry_by_id(upload.registry_id)
-                    .await?
-                    .context("direct OCI registry absent")?;
-                self.check_org(registry.org_id).await?;
-                let scope = self.db.registry_authorization_scope(registry.id).await?;
-                self.require_permission(claims, Permission::Publish, &Scope::parse(&scope))
-                    .await?;
-                let placements = self
-                    .db
-                    .list_surface_placements(SurfaceTarget::Registry(registry.id))
-                    .await?
-                    .into_iter()
-                    .filter(|row| row.effective_write_enabled)
-                    .collect();
-                Target {
-                    scope,
-                    path: aos_hub_core::db::oci_blob_object_key(
-                        upload
-                            .expected_digest
-                            .context("direct OCI source digest absent")?,
-                    ),
-                    expires_at: upload.expires_at,
-                    placements,
-                    owner: TargetOwner::Oci(upload),
-                }
-            }
-        };
-        target.placements.sort_by_key(|row| row.id);
-        Ok(target)
+        self.target_authority()
+            .resolve_target(claims, actor, intent, prepare, now)
+            .await
     }
 
     async fn require_permission(
@@ -211,29 +48,13 @@ impl NativeDirectUploadAuthority {
         permission: Permission,
         scope: &Scope,
     ) -> Result<()> {
-        use aos_hub_core::service::RpcError;
-
-        self.rpc
+        self.target_authority()
             .require_permission(claims, permission, scope)
             .await
-            .map_err(|error| match error {
-                RpcError::PermissionDenied(_) | RpcError::Unauthenticated(_) => {
-                    anyhow::Error::new(DirectUploadRefusal {
-                        code: DirectItemErrorCode::Denied,
-                    })
-                }
-                other => anyhow::Error::new(other),
-            })
     }
 
     async fn check_org(&self, org: Option<i64>) -> Result<()> {
-        if let Some(org) = org {
-            ensure!(
-                self.db.org_is_active(org).await?,
-                "direct target owner unavailable"
-            );
-        }
-        Ok(())
+        self.target_authority().check_org(org).await
     }
 
     pub(super) async fn resolve_placement(

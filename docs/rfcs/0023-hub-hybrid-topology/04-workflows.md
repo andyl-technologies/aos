@@ -139,9 +139,42 @@ second publication.
 
 ### Direct multipart, resume and independent metadata
 
+Direct multipart upload is available in every runtime topology with a compatible
+private R2/S3 binding. The client uploads parts directly to the configured store
+using signed URLs; the Hub handles authorization, multipart control and final
+publication. The existing `DirectUploadService` batch API and resume format are
+shared across topologies.
+
+Verification and storage work follow the deployment topology. Native-only runs
+full-object SHA-256 and size verification in Native, streaming with bounded
+memory. Worker-only runs verification in its Worker runtime. Hybrid sends
+verification and parallel storage work to Workers and keeps bulk verification
+reads out of Native. The store may be any configured compatible endpoint;
+storage location does not select the executor. Multipart ETags and composite
+checksums never substitute for a full-object SHA-256 measurement.
+
+Standalone Native enables Direct uploads with a stable `HUB_DEPLOYMENT_ID` and
+validated read, write and presign credentials for each required placement.
+It needs no paired Worker, shared Worker keys or signed previous-test report.
+`HUB_NATIVE_VERIFY_CONCURRENCY` defaults to four and accepts one through sixteen
+background jobs. Control batches run up to eight independent items concurrently;
+part controls for a single upload serialize their SQL updates. Completion returns
+promptly and clients poll `StatusBatch` while background verification and
+storage-side copying run. A Hub deployment currently runs one Native upload
+coordinator process. Another process reports an in-flight provider write as
+unknown and does not redispatch it; restarts likewise leave uncertain writes
+for explicit reconciliation. Native verifies the final destination after copying,
+which adds another full-object read in Native-only mode. Known completed staging
+objects are deleted conditionally after publication; failed cleanup remains
+recorded for retry. Buckets must also expire private staging keys under
+`.aos-direct-upload/native/` within placement prefixes and abort expired incomplete
+multipart uploads, covering abandoned clients and interrupted provider calls.
+Missing deployment identity or an unsupported backend advertises the explicit
+Legacy capability; a Direct request never silently falls back to a body upload.
+
 A direct-required client sends object bytes only through exact provider
-UploadPart grants on private session staging keys. The storage Worker owns
-create/close/abort, whole-object hash verification and guarded storage-side
+UploadPart grants on private session staging keys. In hybrid mode the storage
+Worker owns create/close/abort, whole-object hash verification and guarded storage-side
 promotion; Native sees bounded batch admission, normalized index projections
 and signed results. Missing signing credentials, unqualified provider closure,
 expired admission or an unavailable storage executor rejects direct mode. The

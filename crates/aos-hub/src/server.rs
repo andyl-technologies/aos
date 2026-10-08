@@ -626,6 +626,33 @@ async fn router_with_ports(
         rpc_service = rpc_service.with_release_evidence(Arc::clone(authority));
     }
     let rpc_service = Arc::new(rpc_service);
+    let native_direct = if !hybrid_delivery {
+        let maximum_parallel = std::env::var("HUB_NATIVE_VERIFY_CONCURRENCY")
+            .ok()
+            .map(|value| value.parse::<usize>())
+            .transpose()
+            .map_err(|_| ());
+        match maximum_parallel.and_then(|value| {
+            crate::direct_upload::native::NativeDirectUpload::new(
+                Arc::clone(&state.db),
+                Arc::clone(&rpc_service),
+                state.auth.jwt_keys.clone(),
+                state.deployment_id.clone(),
+                Arc::clone(&state.secret_versions),
+                state.http.clone(),
+                value.unwrap_or(4),
+            )
+            .map_err(|_| ())
+        }) {
+            Ok(runtime) => Some(runtime),
+            Err(_) => {
+                tracing::error!("Native direct upload configuration is invalid");
+                return Router::new().fallback(|| async { StatusCode::SERVICE_UNAVAILABLE });
+            }
+        }
+    } else {
+        None
+    };
     let direct = match (direct_factory, state.deployment_id.as_deref()) {
         (Some(factory), Some(deployment)) => match factory.build(
             Arc::clone(&state.db),
@@ -700,12 +727,16 @@ async fn router_with_ports(
         .layer(axum::middleware::from_fn(
             move |request: axum::extract::Request, next: axum::middleware::Next| {
                 let direct = direct.clone();
+                let native_direct = native_direct.clone();
                 async move {
                     if request
                         .uri()
                         .path()
                         .starts_with("/aos.hub.v1.DirectUploadService/")
                     {
+                        if let Some(runtime) = native_direct {
+                            return runtime.handle(request).await;
+                        }
                         match direct {
                             Some(transport) => return transport.handle(request).await,
                             None => return StatusCode::SERVICE_UNAVAILABLE.into_response(),

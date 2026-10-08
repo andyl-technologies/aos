@@ -568,3 +568,50 @@ async fn postgres_direct_completion_deduplication_and_abort_accounting() {
         assert_eq!(upload.authenticated_source_bytes, Some(input.expected_size));
     }
 }
+
+#[tokio::test]
+async fn native_oci_source_requires_committed_exact_owner_and_materialization() {
+    let (db, input) = fixture().await;
+    let upload = db.begin_direct_oci_upload(&input).await.unwrap();
+    let mut completed = upload.clone();
+    completed.state = "complete".into();
+    completed.final_digest = Some(input.expected_digest);
+    completed.authenticated_source_sha256 = Some(input.expected_digest);
+    completed.authenticated_source_bytes = Some(input.expected_size);
+    completed.materialization_placement_id = Some(10);
+    completed.materialization_binding_id = Some(20);
+
+    assert!(db.validate_direct_oci_source(&completed).await.is_err());
+
+    let mut proof = crate::db::NativeDirectUploadRecord {
+        session_id: "native-source-proof".into(),
+        deployment_id: input.deployment_id.clone(),
+        principal_id: upload.writer_id.clone(),
+        client_operation_id: input.client_operation_id.clone(),
+        oci_upload_id: Some(upload.id.clone()),
+        state: "verified".into(),
+        source_sha256: input.expected_digest.encoded(),
+        declared_size: input.expected_size as i64,
+        verified_sha256: Some(input.expected_digest.encoded()),
+        verified_size: Some(input.expected_size as i64),
+        materialization_placement_id: Some(10),
+        materialization_binding_id: Some(20),
+        state_json: "{}".into(),
+        resource_version: 1,
+    };
+    db.create_native_direct_upload(&proof).await.unwrap();
+    assert!(db.validate_direct_oci_source(&completed).await.is_err());
+
+    proof.state = "committed".into();
+    proof.resource_version = 2;
+    db.replace_native_direct_upload(&proof, 1, Vec::new())
+        .await
+        .unwrap();
+    db.validate_direct_oci_source(&completed).await.unwrap();
+
+    completed.materialization_binding_id = Some(21);
+    assert!(db.validate_direct_oci_source(&completed).await.is_err());
+    completed.materialization_binding_id = Some(20);
+    completed.writer_id = "another-account".into();
+    assert!(db.validate_direct_oci_source(&completed).await.is_err());
+}

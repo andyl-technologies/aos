@@ -55,6 +55,12 @@ impl Database {
         {
             bail!("authenticated OCI source differs from terminal upload");
         }
+        // Native verifies complete bytes itself and retains a different journal.
+        // This branch cannot replace a missing Worker guard: it requires its own
+        // terminal source record, exact owner and original materialization slots.
+        if self.native_direct_oci_source_matches(upload).await? {
+            return Ok(());
+        }
         let rows = self
             .backend
             .query(

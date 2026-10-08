@@ -246,7 +246,7 @@ fn paired_encrypted_requirements_bind_exact_source_and_reject_changed_original()
         Default::default(),
     )
     .unwrap();
-    let schema = SnapshotClassifier::for_supported_generation(12).unwrap();
+    let schema = SnapshotClassifier::for_supported_generation(13).unwrap();
     writer.require_schema(schema.manifest()).unwrap();
     let original = row("surface_objects");
     writer.row("surface_objects", 0, &original).unwrap();
@@ -359,4 +359,20 @@ fn paired_encrypted_requirements_bind_exact_source_and_reject_changed_original()
                 .contains("old_writer_fencing")
         )
     });
+}
+
+#[test]
+fn native_upload_progress_stays_private_in_current_coverage() {
+    let historical = ObjectRequirementsCoverage::current12().unwrap();
+    let current = ObjectRequirementsCoverage::current13().unwrap();
+    assert!(!historical.tables.contains_key("native_direct_uploads"));
+    assert_eq!(historical.schema.version, 12);
+    assert_eq!(current.schema.version, 13);
+    assert_eq!(current.tables.len(), historical.tables.len() + 1);
+    let column = current.tables["native_direct_uploads"]
+        .columns
+        .iter()
+        .find(|column| column.name == "state_json")
+        .unwrap();
+    assert!(matches!(column.policy, Policy::DependencyDigest));
 }

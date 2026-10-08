@@ -4,7 +4,7 @@
 //! standalone mirror insertion. Legacy catalogue rows never acquire an inferred
 //! charge from placement, hash, time or provider observations.
 
-use anyhow::{Context as _, Result, ensure};
+use anyhow::{ensure, Context as _, Result};
 
 use crate::backend::CheckedStatement;
 
@@ -55,7 +55,7 @@ impl Database {
     /// Refuses unknown accounting origins, changed object or placement identity,
     /// inconsistent ownership, invalid receipt fields or database failure.
     #[allow(clippy::too_many_arguments)]
-    pub(super) async fn verified_registry_publication_presence_statements(
+    pub async fn verified_registry_publication_presence_statements(
         &self,
         publication_id: &str,
         object_id: i64,

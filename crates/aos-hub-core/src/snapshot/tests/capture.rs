@@ -1,6 +1,7 @@
 //! Exact private capture, strict scalar decoding, and hostile pairing regressions.
 
 use super::*;
+use crate::db::SCHEMA_IDENTITY;
 
 fn classifier() -> SnapshotClassifier {
     let shapes = contract()

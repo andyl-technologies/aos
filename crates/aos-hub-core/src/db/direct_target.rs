@@ -128,20 +128,24 @@ impl Database {
         Ok(self
             .backend
             .query_opt(
-                "SELECT 1 FROM direct_upload_sessions session
-             JOIN cache_write_tickets ticket ON ticket.ticket_id = session.cache_ticket_id
-             WHERE session.cache_id = ?1 AND session.object_path = ?2
-               AND session.source_sha256 = ?3 AND session.declared_size = ?4
-               AND session.state = 'committed' AND ticket.state = 'completed'
+                "SELECT 1 FROM cache_write_tickets ticket
+             WHERE ticket.cache_id = ?1 AND ticket.object_key = ?2 AND ticket.state = 'completed'
+               AND ((EXISTS (SELECT 1 FROM direct_upload_sessions session
+                 JOIN direct_upload_completion_receipts receipt ON receipt.session_id = session.session_id
+                 WHERE session.cache_ticket_id = ticket.ticket_id AND session.cache_id = ?1 AND session.object_path = ?2
+                   AND session.source_sha256 = ?3 AND session.declared_size = ?4 AND session.state = 'committed'))
+                 OR EXISTS (SELECT 1 FROM native_direct_uploads session
+                   WHERE session.session_id = ticket.ticket_id AND session.state = 'committed'
+                     AND session.source_sha256 = ?3 AND session.verified_sha256 = ?3
+                     AND session.declared_size = ?4 AND session.verified_size = ?4
+                     AND ticket.intended_object_hash = ?3 AND ticket.declared_size = ?4))
                AND NOT EXISTS (SELECT 1 FROM cache_write_tickets newer
                  WHERE newer.cache_id = ?1 AND newer.object_key = ?2 AND newer.ticket_id <> ticket.ticket_id
                    AND (newer.active_cache_slot = 1 OR (newer.state = 'completed' AND newer.finished_at >= ticket.finished_at
                      AND (newer.intended_object_hash IS NULL OR newer.intended_object_hash <> ?3))))
                AND NOT EXISTS (SELECT 1 FROM object_deletion_jobs job
                  JOIN surface_objects object ON object.id = job.surface_object_id
-                 WHERE job.cache_id = ?1 AND job.active_slot = 1 AND object.object_key = ?2)
-               AND EXISTS (SELECT 1 FROM direct_upload_completion_receipts receipt
-                 WHERE receipt.session_id = session.session_id)",
+                 WHERE job.cache_id = ?1 AND job.active_slot = 1 AND object.object_key = ?2)",
                 &vals![cache_id, path, sha256, byte_size],
             )
             .await?
@@ -178,6 +182,16 @@ impl Database {
                      WHERE newer.cache_id = ?1 AND newer.object_key = ?2 AND newer.ticket_id <> ticket.ticket_id
                        AND (newer.active_cache_slot = 1 OR (newer.state = 'completed' AND newer.finished_at >= ticket.finished_at
                          AND (newer.intended_object_hash IS NULL OR newer.intended_object_hash <> ?3)))))
+                 OR EXISTS (SELECT 1 FROM native_direct_uploads session
+                   JOIN cache_write_tickets ticket ON ticket.ticket_id = session.session_id
+                   WHERE ticket.cache_id = ?1 AND ticket.object_key = ?2 AND ticket.state = 'completed'
+                     AND ticket.intended_object_hash = ?3 AND ticket.declared_size = ?4
+                     AND session.state = 'committed' AND session.source_sha256 = ?3 AND session.verified_sha256 = ?3
+                     AND session.declared_size = ?4 AND session.verified_size = ?4
+                     AND NOT EXISTS (SELECT 1 FROM cache_write_tickets newer
+                       WHERE newer.cache_id = ?1 AND newer.object_key = ?2 AND newer.ticket_id <> ticket.ticket_id
+                         AND (newer.active_cache_slot = 1 OR (newer.state = 'completed' AND newer.finished_at >= ticket.finished_at
+                           AND (newer.intended_object_hash IS NULL OR newer.intended_object_hash <> ?3)))))
                  OR EXISTS (SELECT 1 FROM surface_objects object
                    JOIN object_placements presence ON presence.surface_object_id = object.id
                    WHERE object.cache_id = ?1 AND object.object_key = ?2 AND object.lifecycle_state = 'active'

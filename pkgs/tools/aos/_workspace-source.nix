@@ -34,11 +34,14 @@ in
         || lib.hasPrefix "${repoRootString}/stdenv" pathString
         || lib.hasPrefix "${repoRootString}/systems" pathString
         || pathString == "${repoRootString}/tests"
-        # Native authority tests use the disposable TLS pair and its trust root.
+        # Native API tests use disposable TLS fixtures and their trust roots.
         || pathString == "${repoRootString}/tests/fixtures"
         || pathString == "${repoRootString}/tests/fixtures/hub-hybrid-fleet-ca.crt"
         || pathString == "${repoRootString}/tests/fixtures/hub-hybrid-fleet-server.crt"
         || pathString == "${repoRootString}/tests/fixtures/hub-hybrid-fleet-server.key"
+        || pathString == "${repoRootString}/tests/fixtures/hub-hybrid-fleet-s3-ca.crt"
+        || pathString == "${repoRootString}/tests/fixtures/hub-hybrid-fleet-s3.crt"
+        || pathString == "${repoRootString}/tests/fixtures/hub-hybrid-fleet-s3.key"
         || lib.hasPrefix "${repoRootString}/tests/fleet" pathString
         || lib.hasPrefix "${repoRootString}/tests/qualification" pathString
         || lib.hasPrefix "${repoRootString}/tests/vm" pathString

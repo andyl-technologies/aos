@@ -1,6 +1,7 @@
 //! Focused schema coverage, secret omission, and closed-value qualification.
 
 use super::*;
+use crate::db::SCHEMA_IDENTITY;
 
 mod channels;
 mod direct;
@@ -209,13 +210,13 @@ async fn contract_covers_the_actual_production_initializer() {
     let tables = sqlx::query("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
         .fetch_all(&pool).await.unwrap();
     let contracts = contract().unwrap();
-    assert_eq!(contracts.len(), 287);
+    assert_eq!(contracts.len(), 288);
     assert_eq!(
         contracts
             .values()
             .map(|table| table.columns.len())
             .sum::<usize>(),
-        2789
+        2803
     );
     assert_eq!(tables.len(), contracts.len());
 
@@ -680,7 +681,7 @@ fn metadata_is_explicitly_outside_rows_and_manifest_retains_exact_lineage() {
     assert_eq!(classifier.manifest().migration_digests, digests());
     assert_eq!(
         classifier.manifest().classification_digest,
-        hex::encode(Sha256::digest(CONTRACT))
+        hex::encode(Sha256::digest(CONTRACT.as_bytes()))
     );
 }
 
@@ -974,4 +975,51 @@ fn generation8_adds_channel_classification_without_changing_generation7() {
     assert_eq!(current.tables.len(), previous.tables.len() + 1);
     assert_eq!(current.tables["release_channel_advances"].columns.len(), 11);
     assert_eq!(current.manifest.migration_digests, digests()[..8]);
+}
+
+#[test]
+fn native_upload_journal_adds_current_columns_without_changing_twelve() {
+    let historical = SnapshotClassifier::for_supported_generation(12).unwrap();
+    let current = classifier();
+    assert_eq!(
+        historical.manifest().identity,
+        "aos-hub/canonical-serving/12"
+    );
+    assert_eq!(historical.manifest().migration_digests, digests()[..12]);
+    assert!(!historical.tables.contains_key("native_direct_uploads"));
+    assert_eq!(current.tables["native_direct_uploads"].columns.len(), 14);
+    assert_eq!(
+        current.tables["native_direct_uploads"].columns[12].rule,
+        "private_json"
+    );
+}
+
+#[test]
+fn native_upload_json_captures_exact_private_state_without_public_values() {
+    let classifier = classifier();
+    let source = row(
+        "native_direct_uploads",
+        &[
+            ("session_id", Value::Text("native-session".into())),
+            (
+                "state_json",
+                Value::Text("{\"providerUploadId\":\"PRIVATE-UPLOAD\"}".into()),
+            ),
+        ],
+    );
+    let capture = classifier
+        .capture_private_row("native_direct_uploads", &source)
+        .unwrap();
+    let SnapshotRowDisposition::Retained(retained) = capture.classified() else {
+        panic!("journal must be retained");
+    };
+    assert!(!serde_json::to_string(retained)
+        .unwrap()
+        .contains("PRIVATE-UPLOAD"));
+    assert_eq!(capture.private_cells().len(), 1);
+    assert_eq!(capture.private_cells()[0].dependency().column, "state_json");
+    let restored = classifier
+        .reconstruct_private_row(retained, capture.private_cells())
+        .unwrap();
+    restored.with_private_row(|row| assert_eq!(row, &source));
 }

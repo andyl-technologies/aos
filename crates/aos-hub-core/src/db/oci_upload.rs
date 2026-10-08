@@ -22,6 +22,8 @@ pub use terminal_cleanup::OciTerminalChunkCleanupClaim;
 pub use direct::BeginDirectOciUpload;
 #[path = "oci_upload/model.rs"]
 mod model;
+#[path = "oci_upload/native_direct_completion.rs"]
+mod native_direct_completion;
 #[path = "oci_upload/recovery.rs"]
 mod recovery;
 #[path = "oci_upload/sha256.rs"]

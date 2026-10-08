@@ -320,3 +320,106 @@ async fn direct_target_postgres_atomic_authorization_races() {
     };
     atomic_target_contract(Database::connect(&url).await.unwrap()).await;
 }
+
+#[tokio::test]
+async fn native_cache_dependency_requires_committed_verified_source_and_no_newer_write() {
+    let db = Database::open_in_memory().await.unwrap();
+    db.install_write_failure_test_tickets().await.unwrap();
+    let hash = "c".repeat(64);
+    let activation = Database::activate_cache_write_ticket_statements(
+        "cache-single-pre",
+        1,
+        None,
+        0,
+        0,
+        None,
+        Some(&hash),
+        12,
+    )
+    .unwrap();
+    db.backend.checked_batch(&activation).await.unwrap();
+    db.complete_cache_write_ticket("cache-single-pre", 2, 14)
+        .await
+        .unwrap();
+    let ticket = db
+        .cache_write_ticket("cache-single-pre")
+        .await
+        .unwrap()
+        .unwrap();
+    let mut proof = crate::db::NativeDirectUploadRecord {
+        session_id: ticket.ticket_id.clone(),
+        deployment_id: "native-test".into(),
+        principal_id: "native-account".into(),
+        client_operation_id: "d".repeat(64),
+        oci_upload_id: None,
+        state: "verified".into(),
+        source_sha256: hash.clone(),
+        declared_size: ticket.declared_size,
+        verified_sha256: Some(hash.clone()),
+        verified_size: Some(ticket.declared_size),
+        materialization_placement_id: None,
+        materialization_binding_id: None,
+        state_json: "{}".into(),
+        resource_version: 1,
+    };
+    db.create_native_direct_upload(&proof).await.unwrap();
+    assert!(!db
+        .direct_cache_content_ready(
+            ticket.cache_id,
+            &ticket.object_key,
+            &hash,
+            ticket.declared_size
+        )
+        .await
+        .unwrap());
+
+    proof.state = "committed".into();
+    proof.resource_version = 2;
+    db.replace_native_direct_upload(&proof, 1, Vec::new())
+        .await
+        .unwrap();
+    assert!(db
+        .direct_cache_content_ready(
+            ticket.cache_id,
+            &ticket.object_key,
+            &hash,
+            ticket.declared_size
+        )
+        .await
+        .unwrap());
+    let fence = Database::direct_cache_metadata_fence(
+        ticket.cache_id,
+        &ticket.object_key,
+        &hash,
+        ticket.declared_size,
+        None,
+    )
+    .unwrap();
+    db.backend.checked_batch(&[fence]).await.unwrap();
+
+    db.backend
+        .execute(
+            "UPDATE cache_write_tickets SET object_key = ?1 WHERE ticket_id = 'cache-single-post'",
+            &vals![&ticket.object_key],
+        )
+        .await
+        .unwrap();
+    assert!(!db
+        .direct_cache_content_ready(
+            ticket.cache_id,
+            &ticket.object_key,
+            &hash,
+            ticket.declared_size
+        )
+        .await
+        .unwrap());
+    let fence = Database::direct_cache_metadata_fence(
+        ticket.cache_id,
+        &ticket.object_key,
+        &hash,
+        ticket.declared_size,
+        None,
+    )
+    .unwrap();
+    assert!(db.backend.checked_batch(&[fence]).await.is_err());
+}

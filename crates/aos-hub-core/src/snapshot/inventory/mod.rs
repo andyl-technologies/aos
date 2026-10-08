@@ -13,6 +13,7 @@
 //! ```
 
 use std::collections::BTreeMap;
+use std::sync::LazyLock;
 
 use anyhow::{ensure, Result};
 use serde::Serialize;
@@ -33,8 +34,17 @@ mod tests;
 
 const GENERATION8_COVERAGE: &str = include_str!("coverage-v8.tsv");
 const GENERATION8_SOURCE: &str = include_str!("../schema-v8.tsv");
-const COVERAGE: &str = include_str!("coverage-v12.tsv");
-const SOURCE: &str = include_str!("../schema-v12.tsv");
+const GENERATION12_COVERAGE: &str = include_str!("coverage-v12.tsv");
+const GENERATION12_SOURCE: &str = include_str!("../schema-v12.tsv");
+static COVERAGE: LazyLock<String> = LazyLock::new(|| {
+    [
+        GENERATION12_COVERAGE,
+        include_str!("coverage-v13-delta.tsv"),
+    ]
+    .concat()
+});
+static SOURCE: LazyLock<String> =
+    LazyLock::new(|| [GENERATION12_SOURCE, include_str!("../schema-v13-delta.tsv")].concat());
 const PROFILE: &str = "aos.hub.object-requirements/v1";
 const RECORD_BYTES: usize = 1024 * 1024;
 const FAMILIES: [&str; 10] = [
@@ -129,16 +139,24 @@ impl ObjectRequirementsCoverage {
         Self::from_generation_contract(GENERATION8_COVERAGE, GENERATION8_SOURCE, 8)
     }
 
-    /// Admits the exact current generation-twelve requirements coverage.
+    /// Admits immutable generation-twelve requirements coverage.
     ///
     /// # Errors
     /// Refuses missing, reordered or changed columns and incompatible privacy policies.
     pub fn current12() -> Result<Self> {
-        Self::from_contract(COVERAGE)
+        Self::from_generation_contract(GENERATION12_COVERAGE, GENERATION12_SOURCE, 12)
+    }
+
+    /// Admits the current generation-thirteen requirements coverage.
+    ///
+    /// # Errors
+    /// Refuses missing, reordered or changed columns and incompatible privacy policies.
+    pub fn current13() -> Result<Self> {
+        Self::from_contract(COVERAGE.as_str())
     }
 
     fn from_contract(coverage: &str) -> Result<Self> {
-        Self::from_generation_contract(coverage, SOURCE, 12)
+        Self::from_generation_contract(coverage, SOURCE.as_str(), 13)
     }
 
     fn from_generation_contract(coverage: &str, source: &str, generation: usize) -> Result<Self> {

@@ -1,10 +1,15 @@
-//! Bounded signed Native logical control for direct provider uploads.
+//! Native control transports for direct provider uploads.
 //!
-//! The paired ingress attests the public transport, while a separate logical
-//! body domain binds the private phase. Current JWT provenance and configured
-//! target authority are checked before the retained service mutates SQL.
+//! Standalone Native accepts authenticated public upload controls and owns the
+//! storage operations and verification. Hybrid accepts private signed controls
+//! from the paired Worker, which executes storage work. Both transports check
+//! current users and target permissions before committing publication metadata.
 
 pub mod authority;
+pub(crate) mod native;
+mod native_provider;
+mod native_state;
+mod native_targets;
 
 use std::sync::Arc;
 

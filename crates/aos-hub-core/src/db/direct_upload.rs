@@ -171,6 +171,7 @@ impl Database {
             self.direct_batch(&existing)
                 .checked_batch(
                     &[
+                        native_oci_owner_exclusion(&existing.admission.intent.target),
                         vec![current_guard(&existing, now)?],
                         authority_statements.clone(),
                     ]
@@ -202,8 +203,10 @@ impl Database {
                 }
             );
         }
-        let mut statements = vec![Statement::new(
-            "INSERT INTO direct_upload_sessions
+        let mut statements = native_oci_owner_exclusion(&admission.intent.target);
+        statements.push(
+            Statement::new(
+                "INSERT INTO direct_upload_sessions
                (session_id, deployment_id, principal_id, client_operation_id,
                 target_kind, cache_id, cache_identifier, publication_id,
                 surface_object_id, oci_upload_id, object_path, owner_scope_key,
@@ -212,32 +215,33 @@ impl Database {
                 state, expires_at, created_at, updated_at, resource_version)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
                 ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, 'admitted', ?21, ?22, ?22, 1)",
-            vals![
-                admission.session_id,
-                deployment,
-                admission.principal_id,
-                admission.intent.client_operation_id,
-                target_kind,
-                cache,
-                cache_identifier,
-                publication,
-                surface,
-                oci,
-                path,
-                owner_scope_key,
-                canonical(&admission.intent)?,
-                canonical(admission)?,
-                admission.logical_fingerprint,
-                admission.intent.expected_sha256,
-                integer(admission.intent.byte_size)?,
-                integer(admission.intent.part_size)?,
-                phase_name(admission.intent.dependency_phase),
-                ticket,
-                integer(admission.expires_at)?,
-                now
-            ],
-        )
-        .expecting(1)];
+                vals![
+                    admission.session_id,
+                    deployment,
+                    admission.principal_id,
+                    admission.intent.client_operation_id,
+                    target_kind,
+                    cache,
+                    cache_identifier,
+                    publication,
+                    surface,
+                    oci,
+                    path,
+                    owner_scope_key,
+                    canonical(&admission.intent)?,
+                    canonical(admission)?,
+                    admission.logical_fingerprint,
+                    admission.intent.expected_sha256,
+                    integer(admission.intent.byte_size)?,
+                    integer(admission.intent.part_size)?,
+                    phase_name(admission.intent.dependency_phase),
+                    ticket,
+                    integer(admission.expires_at)?,
+                    now
+                ],
+            )
+            .expecting(1),
+        );
         for placement in &admission.placements {
             statements.push(
                 Statement::new(
@@ -301,6 +305,7 @@ impl Database {
                     self.direct_batch(&existing)
                         .checked_batch(
                             &[
+                                native_oci_owner_exclusion(&existing.admission.intent.target),
                                 vec![current_guard(&existing, now)?],
                                 authority_statements.clone(),
                             ]
@@ -1110,4 +1115,26 @@ mod sql_checkpoint_tests {
         assert!(refused.is_err());
         assert!(projection.is_none());
     }
+}
+
+/// Serializes both upload runtimes on the original OCI allocation before checking owners.
+fn native_oci_owner_exclusion(target: &DirectUploadTarget) -> Vec<CheckedStatement> {
+    let DirectUploadTarget::OciBlob { upload_id } = target else {
+        return Vec::new();
+    };
+    vec![
+        Statement::new(
+            "UPDATE oci_upload_sessions SET resource_version = resource_version WHERE id = ?1",
+            vals![upload_id],
+        )
+        .expecting(1),
+        // A separate statement gets a fresh PostgreSQL snapshot after a lock wait.
+        Statement::new(
+            "UPDATE oci_upload_sessions SET resource_version = resource_version WHERE id = ?1
+               AND NOT EXISTS (SELECT 1 FROM native_direct_uploads session
+                 WHERE session.oci_upload_id = ?1 AND session.state <> 'aborted')",
+            vals![upload_id],
+        )
+        .expecting(1),
+    ]
 }

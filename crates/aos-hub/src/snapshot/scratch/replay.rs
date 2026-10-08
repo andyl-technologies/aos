@@ -28,7 +28,7 @@ mod lifetimes;
 
 pub(super) fn verify<M: Read, P: Read>(
     inputs: ScratchVerificationInputs<M, P>,
-    catalogues: [CompiledSqliteSnapshotCatalogue; 7],
+    catalogues: [CompiledSqliteSnapshotCatalogue; 8],
     limits: ScratchVerificationLimits,
     budget: WorkBudget,
     projection: Option<Box<dyn super::ScratchProjection>>,

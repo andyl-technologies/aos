@@ -18,12 +18,13 @@
 //! ```
 
 use std::collections::BTreeMap;
+use std::sync::LazyLock;
 
 use anyhow::{ensure, Result};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use crate::db::{snapshot_schema_identity, MIGRATIONS, SCHEMA_IDENTITY};
+use crate::db::{snapshot_schema_identity, MIGRATIONS};
 use crate::value::{Row, Value};
 
 pub mod archive;
@@ -51,7 +52,9 @@ const GENERATION5_CONTRACT: &str = include_str!("schema-v5.tsv");
 const GENERATION6_CONTRACT: &str = include_str!("schema-v6.tsv");
 const GENERATION7_CONTRACT: &str = include_str!("schema-v7.tsv");
 const GENERATION8_CONTRACT: &str = include_str!("schema-v8.tsv");
-const CONTRACT: &str = include_str!("schema-v12.tsv");
+const GENERATION12_CONTRACT: &str = include_str!("schema-v12.tsv");
+static CONTRACT: LazyLock<String> =
+    LazyLock::new(|| [GENERATION12_CONTRACT, include_str!("schema-v13-delta.tsv")].concat());
 const LEGACY_CONTRACT_MIGRATION_DIGESTS: &[&str] = &[
     "ac60f004a8c71ad9aaf5169a3497a40cbd886648eedee5394da9bc7cbd72e061",
     "8da079db002b25543fc856e9cc57f335e67a73b3272c9a339ef8cc66c65ae51d",
@@ -98,7 +101,7 @@ const GENERATION8_MIGRATION_DIGESTS: &[&str] = &[
     "7d9f4b656245f8e533bf497ef1db9854d0371c54e95dd1942d5b615d63fdd7cb",
 ];
 
-const CONTRACT_MIGRATION_DIGESTS: &[&str] = &[
+const GENERATION12_MIGRATION_DIGESTS: &[&str] = &[
     "ac60f004a8c71ad9aaf5169a3497a40cbd886648eedee5394da9bc7cbd72e061",
     "8da079db002b25543fc856e9cc57f335e67a73b3272c9a339ef8cc66c65ae51d",
     "1378ed62ac1a61f2abaf960d64a4617bdf523a437dcf326f3cb083f7e75ccdb1",
@@ -112,6 +115,12 @@ const CONTRACT_MIGRATION_DIGESTS: &[&str] = &[
     "6ae37e95910570c0bb884a2057c9a0cbaffd1414ed72d41f9b380bcbbcab2764",
     "f365fc114aa545eb5b2db8483c2dbf604b04e733e488376bc34b961812f367b8",
 ];
+
+static CONTRACT_MIGRATION_DIGESTS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+    let mut digests = GENERATION12_MIGRATION_DIGESTS.to_vec();
+    digests.push("aeb9dc5f0234e34a1d460bf2ec8542e3d030df4da3da213e52fd767700831d26");
+    digests
+});
 
 const MAX_CELL_BYTES: usize = 1024 * 1024;
 const MAX_ROW_BYTES: usize = 8 * 1024 * 1024;
@@ -217,7 +226,7 @@ pub struct SnapshotSchemaManifest {
     pub classification_version: String,
     /// Exact compiled production lineage, never inferred from a migration count.
     pub identity: String,
-    /// Exact supported source generation: historical three through eight or current twelve.
+    /// Exact supported source generation: historical three through eight and twelve, or current thirteen.
     pub version: usize,
     /// Ordered SHA-256 hashes of the compiled schema scripts.
     pub migration_digests: Vec<String>,
@@ -477,7 +486,8 @@ fn generation_contract(version: usize) -> Result<(&'static str, &'static [&'stat
         6 => Ok((GENERATION6_CONTRACT, GENERATION6_MIGRATION_DIGESTS)),
         7 => Ok((GENERATION7_CONTRACT, GENERATION7_MIGRATION_DIGESTS)),
         8 => Ok((GENERATION8_CONTRACT, GENERATION8_MIGRATION_DIGESTS)),
-        12 => Ok((CONTRACT, CONTRACT_MIGRATION_DIGESTS)),
+        12 => Ok((GENERATION12_CONTRACT, GENERATION12_MIGRATION_DIGESTS)),
+        13 => Ok((CONTRACT.as_str(), CONTRACT_MIGRATION_DIGESTS.as_slice())),
         _ => anyhow::bail!("snapshot generation is unsupported"),
     }
 }

@@ -537,6 +537,8 @@ mod direct_delivery;
 mod direct_identity;
 mod direct_upload;
 pub use direct_upload::*;
+mod native_direct_upload;
+pub use native_direct_upload::NativeDirectUploadRecord;
 mod session_identity;
 mod publication_delivery;
 pub use delivery_workflow::*;
@@ -641,6 +643,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("oci_registry_retirement.sql"),
     include_str!("oci_namespace_routes.sql"),
     include_str!("012-oci-inventory-progress.sql"),
+    include_str!("013-native-direct-uploads.sql"),
 ];
 
 // Shared by production initialization and trusted disposable schema compilation.
@@ -651,7 +654,10 @@ pub(crate) const SCHEMA_VERSION_DDL: &str =
 ///
 /// Historical development ledgers are incompatible even when their integer
 /// version happens to match a production migration.
-pub const SCHEMA_IDENTITY: &str = "aos-hub/canonical-serving/12";
+pub const SCHEMA_IDENTITY: &str = "aos-hub/canonical-serving/13";
+
+/// Identifies immutable generation-twelve archives independently of serving DDL.
+pub const SNAPSHOT_SCHEMA_IDENTITY_12: &str = "aos-hub/canonical-serving/12";
 
 /// Identifies immutable generation-eight archives independently of serving DDL.
 pub const SNAPSHOT_SCHEMA_IDENTITY_8: &str = "aos-hub/canonical-serving/8";
@@ -670,7 +676,8 @@ pub fn snapshot_schema_identity(generation: usize) -> Result<&'static str> {
     match generation {
         3..=7 => Ok(HISTORICAL_SCHEMA_IDENTITY),
         8 => Ok(SNAPSHOT_SCHEMA_IDENTITY_8),
-        12 => Ok(SCHEMA_IDENTITY),
+        12 => Ok(SNAPSHOT_SCHEMA_IDENTITY_12),
+        13 => Ok(SCHEMA_IDENTITY),
         _ => anyhow::bail!("unsupported snapshot schema generation"),
     }
 }

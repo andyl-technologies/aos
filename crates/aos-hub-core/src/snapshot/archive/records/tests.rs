@@ -21,7 +21,7 @@ struct Fixture {
 
 #[test]
 fn historical_wire_arrays_round_trip_without_rewriting_and_unknown_lengths_fail() {
-    for version in [3, 4, 5, 6, 7, 8] {
+    for version in [3, 4, 5, 6, 7, 8, 12, 13] {
         let classifier = SnapshotClassifier::for_supported_generation(version).unwrap();
         let schema = schema(&classifier).unwrap();
         let original = serde_json::to_vec(&schema).unwrap();
@@ -57,7 +57,7 @@ async fn schema_callback_runs_after_both_headers_and_before_any_row() {
         Cursor::new(&f.output.private),
         StreamLimits::default(),
         |manifest| {
-            assert_eq!(manifest.version, 12);
+            assert_eq!(manifest.version, 13);
             assert!(!called.replace(true));
             Ok(())
         },
@@ -68,7 +68,7 @@ async fn schema_callback_runs_after_both_headers_and_before_any_row() {
     )
     .unwrap();
     assert!(called.get());
-    assert_eq!(report.counts().tables, 287);
+    assert_eq!(report.counts().tables, 288);
 
     let mut bad = fixture().await;
     let (metadata, private) = plaintext(&bad);
@@ -231,7 +231,7 @@ async fn actual_sqlite_capture_reconstructs_every_retained_row_and_omits_session
     )
     .unwrap();
     assert_eq!(report.counts(), &f.output.counts);
-    assert_eq!(report.counts().tables, 287);
+    assert_eq!(report.counts().tables, 288);
     assert_eq!(users.len(), 2);
     assert!(report.counts().private_cells >= 2);
     assert!(report.counts().omitted_rows >= 3);
@@ -355,13 +355,13 @@ async fn empty_tables_and_explicit_omission_counts_are_all_present() {
         meta.iter()
             .filter(|line| line["kind"] == "table_start")
             .count(),
-        287
+        288
     );
     assert_eq!(
         meta.iter()
             .filter(|line| line["kind"] == "table_end")
             .count(),
-        287
+        288
     );
     assert!(meta
         .iter()
@@ -1022,7 +1022,7 @@ fn distinct_postgres_header_requires_exact_closed_source_and_generation() {
             declared_foreign_keys: "passed".into(),
             checked_expressions: "1200".into(),
         },
-        source: Some(PostgresSource::expected_for_generation(12).unwrap()),
+        source: Some(PostgresSource::expected_for_generation(13).unwrap()),
     };
     check_header(&header, &classifier, "test-archive", "metadata").unwrap();
     for (field, value) in [
@@ -1039,11 +1039,11 @@ fn distinct_postgres_header_requires_exact_closed_source_and_generation() {
     }
     header.source = None;
     assert!(check_header(&header, &classifier, "test-archive", "metadata").is_err());
-    header.source = Some(PostgresSource::expected_for_generation(12).unwrap());
+    header.source = Some(PostgresSource::expected_for_generation(13).unwrap());
     header.profile = PROFILE.into();
     assert!(check_header(&header, &classifier, "test-archive", "metadata").is_err());
     // The retained generation-eight declaration is independently pinned and
-    // remains readable; it cannot be borrowed for a generation-twelve archive.
+    // remains readable; it cannot be borrowed for a generation-thirteen archive.
     let historical = SnapshotClassifier::for_supported_generation(8).unwrap();
     header.profile = POSTGRES_PROFILE.into();
     header.schema = schema(&historical).unwrap();
