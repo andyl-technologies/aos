@@ -1,0 +1,2099 @@
+{
+  "format": 1,
+  "target": "terrane-core::format_properties",
+  "requirements": [
+    "TEST-3",
+    "CRATE-4",
+    "CRATE-33"
+  ],
+  "scope": "Reviewed inventory of public terrane-core pure format APIs exercised by the exact test catalog, with known implemented-but-uncovered and deferred formats listed separately. These tests perform no I/O, workflow, signing, issuance, verification or private-authority construction.",
+  "shared_properties": {
+    "cbor": "Model roundtrip and identical canonical bytes; every truncated prefix; every nested widened nonminimal header, including boolean/null simple values; indefinite string/container rejection; duplicate/reordered keys for every adjacent pair in each nested map; u64::MAX nested length/count claims; sampled bit flips and 32 deterministic byte-range replacements. Accepted mutations must reencode exactly because they may represent another valid model.",
+    "binary": "Model roundtrip, every truncated prefix and canonical reencoding after bit/range mutations; explicit count/extent/reserved/tag failures.",
+    "prefix": "Header and chunk envelope APIs deliberately accept prefix/body fragments. Accepted truncations/mutations retain the exact validated header and opaque suffix/body rather than incorrectly requiring all mutations to fail.",
+    "limits": "Tiny hostile claimed-length headers exercise typed decoder rejection without constructing the claimed allocation. Allocator calls are not instrumented. Maximum resource values are tested where listed, not asserted universally.",
+    "history": "Actual Tree::insert from empty for three seeded permutations at counts0/1/64/320 must equal sorted model, root identity and root bytes; generated internal and nonroot nodes use real codecs."
+  },
+  "codec_inventory": [
+    {
+      "codec": "Descriptor",
+      "public_api": [
+        "identity::Descriptor::{from_wire,encode,decode,verify_bytes}"
+      ],
+      "tests": [
+        "content::identity_descriptors_validate_every_registered_domain_and_wire_boundary"
+      ],
+      "models": [
+        "11 registered identity domains; generated plaintext lengths0,1,23,24,255,256,4096; size mismatch1/u64::MAX"
+      ],
+      "closed_alternatives": [
+        "all IdentityKind variants"
+      ],
+      "optional_fields": [],
+      "limits_and_malformed_cases": [
+        "digest lengths0,1,31,33,64; unknown algorithm/domain; nested hostile length headers"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "Canonical CBOR",
+      "public_api": [
+        "cbor::Decoder::{raw_value,skip_value,uint,negative_argument,bytes,text,array,map,finish}",
+        "cbor::write_*"
+      ],
+      "tests": [
+        "content::canonical_cbor_models_cover_integer_lengths_maps_and_preallocation_limits"
+      ],
+      "models": [
+        "unsigned/negative arguments at all width transitions plus32 seeded integers"
+      ],
+      "closed_alternatives": [
+        "major types0..5; false,true,null exercised in typed models"
+      ],
+      "optional_fields": [],
+      "limits_and_malformed_cases": [
+        "indefinite containers/tags/floats/invalidUTF8; u64::MAX claims bytes/text/array/map yield Limit and stop at header"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "Manifest",
+      "public_api": [
+        "manifest::Manifest::{encode,decode,identity}"
+      ],
+      "tests": [
+        "content::manifests_preserve_order_optional_hashes_and_chunk_size_boundaries"
+      ],
+      "models": [
+        "ordered chunk counts1,2,7; final lengths0,1,min-1,min,min+1,max; real empty digest"
+      ],
+      "closed_alternatives": [],
+      "optional_fields": [
+        "media_type absent/present; blake3/sha256 hash entries"
+      ],
+      "limits_and_malformed_cases": [
+        "total-size mismatch; maxchunk+1; u64::MAX count"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "Entry",
+      "public_api": [
+        "tree_format::{encode_entry,decode_entry_bytes}"
+      ],
+      "tests": [
+        "content::entries_nodes_and_properties_cover_all_kinds_and_optional_presence",
+        "content::index_overlay_and_internal_nodes_cover_context_and_summary_boundaries"
+      ],
+      "models": [
+        "24 models of every entry kind; mode0/0644/07777; symlink0/1/255/4096"
+      ],
+      "closed_alternatives": [
+        "File inline/manifest",
+        "Directory",
+        "Symlink",
+        "Tree",
+        "Whiteout",
+        "Conflict",
+        "Index"
+      ],
+      "optional_fields": [
+        "attrs absent/empty/nonempty",
+        "xattrs absent/empty/nonempty",
+        "provenance absent/present",
+        "link_id absent/present",
+        "graft props absent/empty/nonempty",
+        "conflict base absent/null/entry"
+      ],
+      "limits_and_malformed_cases": [
+        "symlink4097; attributes256/257; canonical nested maps"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "Node",
+      "public_api": [
+        "tree_format::{encode_node,decode_node,encode_node_for,decode_node_for}"
+      ],
+      "tests": [
+        "content::entries_nodes_and_properties_cover_all_kinds_and_optional_presence",
+        "content::index_overlay_and_internal_nodes_cover_context_and_summary_boundaries",
+        "content::generated_tree_insertion_orders_match_sorted_model_and_internal_node_bytes",
+        "closed_index::empty_index_nodes_remain_generic_data_in_each_explicit_role"
+      ],
+      "models": [
+        "leaf/internal; root/nonroot nodes; tree counts0,1,64,320 and three insertion permutations; summary count/weight u64::MAX",
+        "Identical empty root leaf bytes decoded as Ordinary and Index; explicit Primary/Gap/PresentRoute/MissingRoute carrier roles validated as generic data, without occurrence or coverage evidence"
+      ],
+      "closed_alternatives": [
+        "TreeUse Ordinary/Index/OverlayLayer",
+        "level0/1/15"
+      ],
+      "optional_fields": [
+        "root props absent/empty/nonempty via property tests"
+      ],
+      "limits_and_malformed_cases": [
+        "level16/255/u64::MAX; huge leaf count; wrong tree-use context; attributes256/257"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "Properties",
+      "public_api": [
+        "properties::{validate_property,validate_map}",
+        "tree_format::{encode_node,decode_node}"
+      ],
+      "tests": [
+        "policy::registered_properties_cover_closed_vocabularies_quantities_and_inheritance_binding",
+        "policy::property_and_tree_limits_reject_claimed_collection_lengths_and_out_of_range_values"
+      ],
+      "models": [
+        "every PropertyName::ALL; every fixed closed choice; structured quantities/quotas/ACL/set/ordered-list/bindings"
+      ],
+      "closed_alternatives": [
+        "all registered vocabularies in policy::property_values",
+        "all four disclosure domains",
+        "all six merge policies",
+        "all eight compression classifier suffixes"
+      ],
+      "optional_fields": [
+        "inherit absent/true/false; ACL false must reject"
+      ],
+      "limits_and_malformed_cases": [
+        "65536+ text; hostile collection claims; threshold10000/10001; tree level bounds"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "Selector",
+      "public_api": [
+        "provenance::Selector::{decode,encode,from_property,preset}"
+      ],
+      "tests": [
+        "content::selectors_recipes_and_unverified_token_envelopes_have_unique_canonical_bytes",
+        "policy::selector_models_cover_every_atom_combinator_preset_and_deep_untrusted_ast"
+      ],
+      "models": [
+        "all atoms; all33 registered attribute names and tag namespace; combinator shuffled model; not depths1,64,512"
+      ],
+      "closed_alternatives": [
+        "issuer,subject,kind,group,source,signed-by-key,preset,accepted-by,attr-by,all,any,not",
+        "all3 principal kinds; all 6 sources; all 4 presets"
+      ],
+      "optional_fields": [],
+      "limits_and_malformed_cases": [
+        "empty all/any; unknown atom/kind/source/preset; unsupported attestation atom; invalid key case/length"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "Recipe / untrusted TrustContext / OperationDomains",
+      "public_api": [
+        "algebra::Recipe::{encode,decode}",
+        "algebra::OwnedRecipe::as_recipe"
+      ],
+      "tests": [
+        "content::selectors_recipes_and_unverified_token_envelopes_have_unique_canonical_bytes",
+        "policy::graft_merge_and_empty_overlay_recipe_models_roundtrip_without_trust_verification",
+        "policy::recipe_domain_evidence_roundtrips_all_operations_without_authenticating_labels",
+        "policy::merge_recipe_untrusted_receipt_and_timestamp_fields_reencode_canonically"
+      ],
+      "models": [
+        "overlay roots0,1,3,16; graft replacefalse/true; merge policy prefixes and all 6 choices; domain rows0,1,4; decoded receipt counts0,1,7 and optional timestamps"
+      ],
+      "closed_alternatives": [
+        "Overlay",
+        "OverlayWithDomains",
+        "Graft",
+        "Merge",
+        "all 6 MergePolicy alternatives",
+        "public/tenant/group/private labels"
+      ],
+      "optional_fields": [
+        "domains absent/present for graft/merge",
+        "trust absent/present according policies",
+        "timestamps absent/nonempty",
+        "opaque configuration/null"
+      ],
+      "limits_and_malformed_cases": [
+        "noncanonical maps; hostile operand/domain/receipt counts; bad known schema through mutations"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "Token envelope",
+      "public_api": [
+        "auth::Token::{decode,encode}"
+      ],
+      "tests": [
+        "content::selectors_recipes_and_unverified_token_envelopes_have_unique_canonical_bytes",
+        "content::unverified_attenuation_envelopes_cover_all_caveats_and_chain_count_boundaries",
+        "content::token_field_models_cover_all_principal_kinds_verb_bits_and_absent_attenuation_fields"
+      ],
+      "models": [
+        "authority and1..16 chain blocks; grants1,2,8,256; empty attenuation body and full body; opaque signatures never issued/verified"
+      ],
+      "closed_alternatives": [
+        "all3 principal kinds",
+        "all5 verb bits plus31",
+        "all 9 caveats before/after/ref/root/verb/domain/surface/locality/epoch"
+      ],
+      "optional_fields": [
+        "authority not_before/workload all 4 presence combinations",
+        "attenuation optional fields all absent and all present",
+        "locality empty/full"
+      ],
+      "limits_and_malformed_cases": [
+        "grant0/257; block0/17/u64::MAX; nested hostile claims; nonminimal integer masks"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "Chunk envelope",
+      "public_api": [
+        "codec::{encode_envelope,parse_envelope,validate_envelope_size}"
+      ],
+      "tests": [
+        "content::chunk_envelopes_roundtrip_opaque_bodies_and_bound_declared_lengths"
+      ],
+      "models": [
+        "opaque body lengths0,1,31,32,255,4096; valid truncated-body prefixes must retain exact bytes"
+      ],
+      "closed_alternatives": [
+        "Raw",
+        "Zstd",
+        "ZstdDictionary"
+      ],
+      "optional_fields": [],
+      "limits_and_malformed_cases": [
+        "unknown tags3..255; dictionary header lengths0..31; declaredusize::MAX against maxchunk"
+      ],
+      "shared_evidence": "prefix"
+    },
+    {
+      "codec": "AttributeValue / AttrRecord / Function",
+      "public_api": [
+        "derived::AttributeValue::{encode,decode}",
+        "derived::AttrRecord::{new,encode,decode}",
+        "derived::AttrRecord::signature_preimage"
+      ],
+      "tests": [
+        "content::derived_attribute_values_and_records_cover_every_registered_variant",
+        "content::derived_function_metadata_and_text_values_preserve_unknown_versions_and_limits"
+      ],
+      "models": [
+        "12 models per registered attribute; ELF32/64 optionalinterpreter and needed0..3; text65536; retained function version2/128chars",
+        "Each generated record preimage equals the registered domain prefix followed by actual unsigned record encoding"
+      ],
+      "closed_alternatives": [
+        "Sha256",
+        "Sha512",
+        "GitBlobSha1",
+        "GitBlobSha256",
+        "ZstdDictionary",
+        "all 8 Magic",
+        "Elf",
+        "Shebang"
+      ],
+      "optional_fields": [
+        "signature absent/present",
+        "ELF interpreter absent/present",
+        "shebang argument absent/present"
+      ],
+      "limits_and_malformed_cases": [
+        "function129chars; text65537/NUL; bounded selected truncation checks on maximum text models"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "Header / Pack / Record",
+      "public_api": [
+        "pack_format::Header::{new,encode,decode}",
+        "pack_format::{encode_pack,validate_record}",
+        "pack_format::PackView::decode"
+      ],
+      "tests": [
+        "containers::generated_packs_indexes_and_shards_preserve_models_and_reject_bad_extents",
+        "containers::pack_flags_codecs_metadata_kinds_and_bundle_index_alternatives_roundtrip"
+      ],
+      "models": [
+        "counts0,1,2,17,64; all 4 header flag combinations; generated write-order bodies and hash-order records"
+      ],
+      "closed_alternatives": [
+        "data kind0; metadata kinds1..9",
+        "codec0/1/2"
+      ],
+      "optional_fields": [],
+      "limits_and_malformed_cases": [
+        "nonzero reserved dictionary field; offsets0/23/u64::MAX; bodyextentu32::MAX; binary structural mutations"
+      ],
+      "shared_evidence": "binary; Header is a fixed-prefix parser and suffix is retained by its oracle"
+    },
+    {
+      "codec": "Per-pack / detached index",
+      "public_api": [
+        "pack_format::{encode_index,decode_index,decode_detached_index,index_count}",
+        "pack_format::PackView::index_object"
+      ],
+      "tests": [
+        "containers::generated_packs_indexes_and_shards_preserve_models_and_reject_bad_extents",
+        "containers::pack_flags_codecs_metadata_kinds_and_bundle_index_alternatives_roundtrip"
+      ],
+      "models": [
+        "same generated Record models as packs; header-prefixed detached view"
+      ],
+      "closed_alternatives": [
+        "kind0..9; codec0..2"
+      ],
+      "optional_fields": [],
+      "limits_and_malformed_cases": [
+        "claimed countu64::MAX for widths56/72; reserved fields and extent failures"
+      ],
+      "shared_evidence": "binary"
+    },
+    {
+      "codec": "Merged shard",
+      "public_api": [
+        "pack_format::{encode_shard,decode_shard}"
+      ],
+      "tests": [
+        "containers::generated_packs_indexes_and_shards_preserve_models_and_reject_bad_extents",
+        "containers::pack_flags_codecs_metadata_kinds_and_bundle_index_alternatives_roundtrip"
+      ],
+      "models": [
+        "counts0,1,2,17,64; generated pack IDs; all record tags"
+      ],
+      "closed_alternatives": [
+        "state0/1/2; kind0..9"
+      ],
+      "optional_fields": [],
+      "limits_and_malformed_cases": [
+        "wrong shard prefix; reserved row byte; hostile count"
+      ],
+      "shared_evidence": "binary"
+    },
+    {
+      "codec": "Bundle",
+      "public_api": [
+        "pack_format::{encode_bundle,decode_bundle,bundle_size,validate_metadata}"
+      ],
+      "tests": [
+        "containers::generated_bundles_verify_content_identity_and_nested_metadata",
+        "containers::pack_flags_codecs_metadata_kinds_and_bundle_index_alternatives_roundtrip"
+      ],
+      "models": [
+        "counts0,1,2,9; all 10 kinds with real domain-separated hashes; index kind6 detached/shard alternatives"
+      ],
+      "closed_alternatives": [
+        "kind0..9",
+        "kind6 detached/merged binary indexes"
+      ],
+      "optional_fields": [],
+      "limits_and_malformed_cases": [
+        "identity mismatch; unknownkind255; hostileobjectcount; malformedbinaryindex; generic metadata canonicality does not claim inner filter/memo/policy codecs"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "Commit and nested provenance/profile/receipt/context",
+      "public_api": [
+        "refs::Commit::{encode,decode,identity}",
+        "refs::CommitContext::from_request",
+        "provenance::disclosure_target_binding",
+        "refs::Commit::signature_preimage"
+      ],
+      "tests": [
+        "records::commit_ref_reflog_and_annotation_models_preserve_optional_fields",
+        "records::nested_receipt_origins_context_surfaces_and_ref_policy_presence_roundtrip",
+        "content::disclosure_target_bindings_normalize_only_typed_signatures_and_retain_metadata"
+      ],
+      "models": [
+        "24 base commits parents0..3; all 13 registered surfaces; source/target opaque path4096; normalized typed signatures and changed metadata",
+        "24 signature preimages equal the actual unsigned Commit encoding; real unsigned Commit decoder used for canonical mutations"
+      ],
+      "closed_alternatives": [
+        "all3 principal kinds",
+        "all 6 commit sources",
+        "EntryOrigin Current/Source"
+      ],
+      "optional_fields": [
+        "workload_identity",
+        "embedded_token",
+        "profile recipe/conflicted/lease/required_properties/entry_receipts/commit_context",
+        "receipt attributes absent/empty/nonempty",
+        "reintroduced_from/disclosure_proof",
+        "packs",
+        "signature"
+      ],
+      "limits_and_malformed_cases": [
+        "empty packs reject; malformed nested receipts; source/path byte-length claims; signatures are opaque/unverified"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "RefRecord / RefPolicy / SnapshotEnvelope",
+      "public_api": [
+        "refs::RefRecord::{encode,decode}",
+        "refs::SnapshotEnvelope::signature_preimage"
+      ],
+      "tests": [
+        "records::commit_ref_reflog_and_annotation_models_preserve_optional_fields",
+        "records::nested_receipt_origins_context_surfaces_and_ref_policy_presence_roundtrip"
+      ],
+      "models": [
+        "sequence1,23,24,u64::MAX; generated epochs/digests;32 optional policy-field combinations and8 locality presences",
+        "8 annotated-tag preimages compared to independent four-field model; empty/nonempty attestation and signature omission"
+      ],
+      "closed_alternatives": [
+        "all 6 merge policies",
+        "retention GC/Lease/Forever/TTL"
+      ],
+      "optional_fields": [
+        "candidate_id",
+        "policy",
+        "multi_writer",
+        "merge_policies",
+        "retention",
+        "conflicted",
+        "snapshot annotation"
+      ],
+      "limits_and_malformed_cases": [
+        "canonical text-key attestation; hostile nested counts and fixed digests"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "RefLogRecord",
+      "public_api": [
+        "refs::RefLogRecord::{encode,decode}"
+      ],
+      "tests": [
+        "records::commit_ref_reflog_and_annotation_models_preserve_optional_fields",
+        "records::selected_reflogs_and_proof_sensitive_checkpoints_preserve_all_predecessor_forms"
+      ],
+      "models": [
+        "legacy predecessor absent/present; selected genesis null, exact predecessor, committed predecessor after recreation;23->24"
+      ],
+      "closed_alternatives": [
+        "all 6 RefLogReason"
+      ],
+      "optional_fields": [
+        "previous_commit",
+        "expected_previous absent/null/record",
+        "committed_previous absent/record"
+      ],
+      "limits_and_malformed_cases": [
+        "noncanonical nested record claims"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "BucketCapabilities / StoreProfile",
+      "public_api": [
+        "bucket::BucketCapabilities::{encode,decode}"
+      ],
+      "tests": [
+        "records::bucket_capabilities_generations_and_tombstones_preserve_known_empty_inventory"
+      ],
+      "models": [
+        "24 models; layouts1/2; seeded profile; each boolean both values"
+      ],
+      "closed_alternatives": [
+        "layout1/2; registered terrane-v1/blake3/cdc-1m"
+      ],
+      "optional_fields": [
+        "generation absent/present",
+        "ref_names absent/empty/nonempty",
+        "publication_protocol absent/1"
+      ],
+      "limits_and_malformed_cases": [
+        "hostile nested count/string claims"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "GenerationManifest / GenerationShard / PackInventoryEntry / PackExclusion",
+      "public_api": [
+        "bucket::GenerationManifest::{encode,decode}"
+      ],
+      "tests": [
+        "records::bucket_capabilities_generations_and_tombstones_preserve_known_empty_inventory"
+      ],
+      "models": [
+        "24 models; shard counts0..3; generated hashes/sizes/times; explicit inventory/exclusion/burn models"
+      ],
+      "closed_alternatives": [],
+      "optional_fields": [
+        "filter absent/present",
+        "inventory absent/empty/nonempty",
+        "exclusions absent/empty in fence/nonempty",
+        "burns absent/empty in fence/nonempty"
+      ],
+      "limits_and_malformed_cases": [
+        "canonical collections; hostile nested header claims"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "bucket::Tombstone",
+      "public_api": [
+        "bucket::Tombstone::{encode,decode}"
+      ],
+      "tests": [
+        "records::bucket_capabilities_generations_and_tombstones_preserve_known_empty_inventory"
+      ],
+      "models": [
+        "24 generated field models"
+      ],
+      "closed_alternatives": [],
+      "optional_fields": [],
+      "limits_and_malformed_cases": [
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "gc::Tombstone",
+      "public_api": [
+        "gc::Tombstone::{encode,decode}"
+      ],
+      "tests": [
+        "records::creation_journal_models_cover_all_states_and_opaque_identity_boundaries"
+      ],
+      "models": [
+        "u64::MAX cycle and other numeric boundaries"
+      ],
+      "closed_alternatives": [],
+      "optional_fields": [],
+      "limits_and_malformed_cases": [
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "GcLease",
+      "public_api": [
+        "gc::GcLease::{encode,decode}"
+      ],
+      "tests": [
+        "records::collector_lease_roots_marks_and_checkpoint_models_cover_empty_and_context_variants"
+      ],
+      "models": [
+        "12 holders/epochs/expiry models"
+      ],
+      "closed_alternatives": [],
+      "optional_fields": [],
+      "limits_and_malformed_cases": [
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "GcRoots / GcRoot",
+      "public_api": [
+        "gc::GcRoots::{encode,decode}"
+      ],
+      "tests": [
+        "records::collector_lease_roots_marks_and_checkpoint_models_cover_empty_and_context_variants"
+      ],
+      "models": [
+        "empty and12 models with all reasons"
+      ],
+      "closed_alternatives": [
+        "all 9 RootReason; ParentCutoff Unbounded/RootsOnly/Since"
+      ],
+      "optional_fields": [],
+      "limits_and_malformed_cases": [
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "GcMark / reconstructed mark filter",
+      "public_api": [
+        "gc::GcMark::{encode,decode}"
+      ],
+      "tests": [
+        "records::collector_lease_roots_marks_and_checkpoint_models_cover_empty_and_context_variants"
+      ],
+      "models": [
+        "sorted shard7 hashes counts0..11; actual new computes canonical filter"
+      ],
+      "closed_alternatives": [],
+      "optional_fields": [],
+      "limits_and_malformed_cases": [
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "GcState / checkpoint / pending / expanded records",
+      "public_api": [
+        "gc::GcState::{encode,decode}"
+      ],
+      "tests": [
+        "records::collector_lease_roots_marks_and_checkpoint_models_cover_empty_and_context_variants",
+        "records::selected_reflogs_and_proof_sensitive_checkpoints_preserve_all_predecessor_forms",
+        "records::collector_kind_models_cover_all_registered_tags_and_flag_constraints"
+      ],
+      "models": [
+        "checkpoints0..3; pending/expanded/object empty/nonempty; progress empty/nonempty; source-scoped proof contexts"
+      ],
+      "closed_alternatives": [
+        "all5 Phase; kinds0..9; flag constraints; all3 ParentCutoff"
+      ],
+      "optional_fields": [
+        "proof_context absent/present"
+      ],
+      "limits_and_malformed_cases": [
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding",
+        "Pending flags 16 reject; invalid pending/object kind and parent/root/index flag combinations reject"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "CreationJournal / ArtifactBinding",
+      "public_api": [
+        "gc::CreationJournal::{encode,decode}"
+      ],
+      "tests": [
+        "records::creation_journal_models_cover_all_states_and_opaque_identity_boundaries",
+        "records::creation_journal_binding_models_cover_pack_index_trash_and_empty_identity_rejection"
+      ],
+      "models": [
+        "opaque identity lengths1,31,32,128; generated nonce/digest and artifact associations"
+      ],
+      "closed_alternatives": [
+        "Pending",
+        "Invalidated",
+        "Committed",
+        "DeleteOwned",
+        "Pack/Index/Trash bindings"
+      ],
+      "optional_fields": [
+        "state-specific fields"
+      ],
+      "limits_and_malformed_cases": [
+        "empty opaque identity; hostile widths/counts; wrong schemas via mutations"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "Local-v1 DeleteAuthorization / DeleteOperation / ArtifactVersion",
+      "public_api": [
+        "gc::DeleteAuthorization::encode",
+        "gc::DeleteOperation::{encode,decode}"
+      ],
+      "tests": [
+        "retirement::local_v1_delete_operations_roundtrip_exact_embedded_authorization_and_all_phases"
+      ],
+      "models": [
+        "12 authorization models, exact three artifact associations and empty detached witnesses; lease, waits and signature-free untrusted data"
+      ],
+      "closed_alternatives": [
+        "all7 DeletePhase; all3 ArtifactBinding"
+      ],
+      "optional_fields": [],
+      "limits_and_malformed_cases": [
+        "wrong operation key; hostile embedded lengths; authorization decoder private and exercised through public operation"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "BackendBinding",
+      "public_api": [
+        "gc::publication::BackendBinding::{encode,decode}"
+      ],
+      "tests": [
+        "publication::publication_models_preserve_binding_selection_pointers_and_transaction_fields"
+      ],
+      "models": [
+        "12 seeded cases with generated digests/scalars; represented consistency checks only"
+      ],
+      "closed_alternatives": [
+        "Local/Remote S3/GCS"
+      ],
+      "optional_fields": [
+        "remote prefix empty/nonempty"
+      ],
+      "limits_and_malformed_cases": [
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "BackendRegistration",
+      "public_api": [
+        "gc::publication::BackendRegistration::{encode,decode}"
+      ],
+      "tests": [
+        "publication::publication_models_preserve_binding_selection_pointers_and_transaction_fields"
+      ],
+      "models": [
+        "12 seeded cases with generated digests/scalars; represented consistency checks only"
+      ],
+      "closed_alternatives": [
+        "Pending/Active"
+      ],
+      "optional_fields": [
+        "genesis absent/present; active requires present"
+      ],
+      "limits_and_malformed_cases": [
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "CommittedSelection",
+      "public_api": [
+        "gc::publication::CommittedSelection::{encode,decode}"
+      ],
+      "tests": [
+        "publication::publication_models_preserve_binding_selection_pointers_and_transaction_fields"
+      ],
+      "models": [
+        "12 seeded cases with generated digests/scalars; represented consistency checks only"
+      ],
+      "closed_alternatives": [
+        "Never/Unknown/Selected"
+      ],
+      "optional_fields": [],
+      "limits_and_malformed_cases": [
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "SelectedHistory",
+      "public_api": [
+        "gc::publication::SelectedHistory::{encode,decode}"
+      ],
+      "tests": [
+        "publication::publication_models_preserve_binding_selection_pointers_and_transaction_fields"
+      ],
+      "models": [
+        "12 seeded cases with generated digests/scalars; represented consistency checks only"
+      ],
+      "closed_alternatives": [
+        "all 4 branch ref classes"
+      ],
+      "optional_fields": [
+        "branches empty/nonempty"
+      ],
+      "limits_and_malformed_cases": [
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "PortableCurrent",
+      "public_api": [
+        "gc::publication::PortableCurrent::{encode,decode}"
+      ],
+      "tests": [
+        "publication::publication_models_preserve_binding_selection_pointers_and_transaction_fields"
+      ],
+      "models": [
+        "12 seeded cases with generated digests/scalars; represented consistency checks only"
+      ],
+      "closed_alternatives": [],
+      "optional_fields": [],
+      "limits_and_malformed_cases": [
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "PortableSnapshot",
+      "public_api": [
+        "gc::publication::PortableSnapshot::{encode,decode}"
+      ],
+      "tests": [
+        "publication::publication_models_preserve_binding_selection_pointers_and_transaction_fields",
+        "publication::portable_full_checkpoint_models_require_complete_capabilities_and_retained_history"
+      ],
+      "models": [
+        "12 seeded cases with generated digests/scalars; represented consistency checks only"
+      ],
+      "closed_alternatives": [
+        "full checkpoint/delta"
+      ],
+      "optional_fields": [
+        "predecessor absent/present; projected values absent/present"
+      ],
+      "limits_and_malformed_cases": [
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding",
+        "Full checkpoint without its required CAPABILITIES projection entry rejects at encode"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "PublicationState",
+      "public_api": [
+        "gc::publication::PublicationState::{encode,decode}"
+      ],
+      "tests": [
+        "publication::publication_models_preserve_binding_selection_pointers_and_transaction_fields",
+        "publication::publication_nonempty_sources_changes_and_genesis_fields_have_unique_bytes"
+      ],
+      "models": [
+        "12 seeded cases with generated digests/scalars; represented consistency checks only"
+      ],
+      "closed_alternatives": [
+        "all 4 branch classes"
+      ],
+      "optional_fields": [
+        "sources empty/nonempty; guard absent/present; burn_owners absent/empty/nonempty"
+      ],
+      "limits_and_malformed_cases": [
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "PublicationCurrent",
+      "public_api": [
+        "gc::publication::PublicationCurrent::{encode,decode}"
+      ],
+      "tests": [
+        "publication::publication_models_preserve_binding_selection_pointers_and_transaction_fields"
+      ],
+      "models": [
+        "12 seeded cases with generated digests/scalars; represented consistency checks only"
+      ],
+      "closed_alternatives": [],
+      "optional_fields": [],
+      "limits_and_malformed_cases": [
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "PublicationCommit",
+      "public_api": [
+        "gc::publication::PublicationCommit::{encode,decode}"
+      ],
+      "tests": [
+        "publication::publication_models_preserve_binding_selection_pointers_and_transaction_fields"
+      ],
+      "models": [
+        "12 seeded cases with generated digests/scalars; represented consistency checks only"
+      ],
+      "closed_alternatives": [],
+      "optional_fields": [
+        "predecessor absent/present"
+      ],
+      "limits_and_malformed_cases": [
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "PublicationProof",
+      "public_api": [
+        "gc::publication::PublicationProof::{encode,decode}"
+      ],
+      "tests": [
+        "publication::publication_models_preserve_binding_selection_pointers_and_transaction_fields",
+        "publication::publication_nonempty_sources_changes_and_genesis_fields_have_unique_bytes",
+        "retirement::permanent_authorization_preparation_and_progress_models_preserve_disjoint_cases"
+      ],
+      "models": [
+        "12 seeded cases with generated digests/scalars; represented consistency checks only"
+      ],
+      "closed_alternatives": [
+        "Raw/Candidate/Guard/Collection/PermanentRetirement"
+      ],
+      "optional_fields": [
+        "collection removed empty/nonempty and carried empty/nonempty; permanent carried empty"
+      ],
+      "limits_and_malformed_cases": [
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "PublicationTransaction",
+      "public_api": [
+        "gc::publication::PublicationTransaction::{encode,decode}"
+      ],
+      "tests": [
+        "publication::publication_models_preserve_binding_selection_pointers_and_transaction_fields",
+        "publication::publication_nonempty_sources_changes_and_genesis_fields_have_unique_bytes"
+      ],
+      "models": [
+        "12 seeded cases with generated digests/scalars; represented consistency checks only"
+      ],
+      "closed_alternatives": [
+        "genesis/successor; raw proof"
+      ],
+      "optional_fields": [
+        "old/predecessor absent/present; changes empty/nonempty; expected/new absent/present"
+      ],
+      "limits_and_malformed_cases": [
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "LocalOriginalRegistration",
+      "public_api": [
+        "gc::publication::evidence::LocalOriginalRegistration::{encode,decode}"
+      ],
+      "tests": [
+        "publication::retained_evidence_models_preserve_ordered_claims_seed_and_null_fields"
+      ],
+      "models": [
+        "6 distinct local registrations from the 12-case local/remote evidence corpus; opaque original IDs and represented device/inode fields"
+      ],
+      "closed_alternatives": [],
+      "optional_fields": [],
+      "limits_and_malformed_cases": [
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "PhysicalRegistration",
+      "public_api": [
+        "gc::publication::evidence::PhysicalRegistration::{encode,decode}"
+      ],
+      "tests": [
+        "publication::retained_evidence_models_preserve_ordered_claims_seed_and_null_fields"
+      ],
+      "models": [
+        "12 seeded evidence models with opaque unverified signature/key references; IDs and cross-record hashes computed through public APIs"
+      ],
+      "closed_alternatives": [
+        "Local/Remote S3/GCS"
+      ],
+      "optional_fields": [],
+      "limits_and_malformed_cases": [
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "OriginalBootstrap",
+      "public_api": [
+        "gc::publication::evidence::OriginalBootstrap::{encode,decode}"
+      ],
+      "tests": [
+        "publication::retained_evidence_models_preserve_ordered_claims_seed_and_null_fields"
+      ],
+      "models": [
+        "12 seeded evidence models with opaque unverified signature/key references; IDs and cross-record hashes computed through public APIs"
+      ],
+      "closed_alternatives": [],
+      "optional_fields": [
+        "ACL empty/nonempty and order/repetition"
+      ],
+      "limits_and_malformed_cases": [
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "OriginalAssociation",
+      "public_api": [
+        "gc::publication::evidence::OriginalAssociation::{encode,decode}"
+      ],
+      "tests": [
+        "publication::retained_evidence_models_preserve_ordered_claims_seed_and_null_fields"
+      ],
+      "models": [
+        "12 seeded evidence models with opaque unverified signature/key references; IDs and cross-record hashes computed through public APIs"
+      ],
+      "closed_alternatives": [],
+      "optional_fields": [],
+      "limits_and_malformed_cases": [
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "OriginalImport",
+      "public_api": [
+        "gc::publication::evidence::OriginalImport::{encode,decode}"
+      ],
+      "tests": [
+        "publication::retained_evidence_models_preserve_ordered_claims_seed_and_null_fields",
+        "publication::evidence_control_selectors_and_optional_configuration_fields_preserve_models"
+      ],
+      "models": [
+        "12 seeded evidence models with opaque unverified signature/key references; IDs and cross-record hashes computed through public APIs"
+      ],
+      "closed_alternatives": [
+        "LocalV1/PhysicalV2; V2 local/remote"
+      ],
+      "optional_fields": [],
+      "limits_and_malformed_cases": [
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "OriginalImportBinding",
+      "public_api": [
+        "gc::publication::evidence::OriginalImportBinding::{encode,decode}"
+      ],
+      "tests": [
+        "publication::retained_evidence_models_preserve_ordered_claims_seed_and_null_fields"
+      ],
+      "models": [
+        "12 seeded evidence models with opaque unverified signature/key references; IDs and cross-record hashes computed through public APIs"
+      ],
+      "closed_alternatives": [],
+      "optional_fields": [],
+      "limits_and_malformed_cases": [
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "OriginalImportTrust",
+      "public_api": [
+        "gc::publication::evidence::OriginalImportTrust::{encode,decode}"
+      ],
+      "tests": [
+        "publication::retained_evidence_models_preserve_ordered_claims_seed_and_null_fields"
+      ],
+      "models": [
+        "12 seeded evidence models with opaque unverified signature/key references; IDs and cross-record hashes computed through public APIs"
+      ],
+      "closed_alternatives": [],
+      "optional_fields": [],
+      "limits_and_malformed_cases": [
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "IssuerRow",
+      "public_api": [
+        "gc::publication::evidence::IssuerRow::{encode,decode}"
+      ],
+      "tests": [
+        "publication::retained_evidence_models_preserve_ordered_claims_seed_and_null_fields"
+      ],
+      "models": [
+        "12 seeded evidence models with opaque unverified signature/key references; IDs and cross-record hashes computed through public APIs"
+      ],
+      "closed_alternatives": [],
+      "optional_fields": [
+        "retired_at absent/present"
+      ],
+      "limits_and_malformed_cases": [
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "DisclosureRow",
+      "public_api": [
+        "gc::publication::evidence::DisclosureRow::{encode,decode}"
+      ],
+      "tests": [
+        "publication::retained_evidence_models_preserve_ordered_claims_seed_and_null_fields"
+      ],
+      "models": [
+        "12 seeded evidence models with opaque unverified signature/key references; IDs and cross-record hashes computed through public APIs"
+      ],
+      "closed_alternatives": [],
+      "optional_fields": [
+        "not_after absent/present"
+      ],
+      "limits_and_malformed_cases": [
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "SeededChunkProfile",
+      "public_api": [
+        "gc::publication::evidence::SeededChunkProfile::{encode,decode}"
+      ],
+      "tests": [
+        "publication::retained_evidence_models_preserve_ordered_claims_seed_and_null_fields"
+      ],
+      "models": [
+        "12 seeded evidence models with opaque unverified signature/key references; IDs and cross-record hashes computed through public APIs"
+      ],
+      "closed_alternatives": [],
+      "optional_fields": [],
+      "limits_and_malformed_cases": [
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "TrustedGuardConfig",
+      "public_api": [
+        "gc::publication::evidence::TrustedGuardConfig::{encode,decode}"
+      ],
+      "tests": [
+        "publication::retained_evidence_models_preserve_ordered_claims_seed_and_null_fields",
+        "publication::evidence_control_selectors_and_optional_configuration_fields_preserve_models"
+      ],
+      "models": [
+        "12 seeded evidence models with opaque unverified signature/key references; IDs and cross-record hashes computed through public APIs"
+      ],
+      "closed_alternatives": [],
+      "optional_fields": [
+        "policy_authority absent/present; home empty/full"
+      ],
+      "limits_and_malformed_cases": [
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "ConfiguredRegistryInputs",
+      "public_api": [
+        "gc::publication::evidence::ConfiguredRegistryInputs::{encode,decode}"
+      ],
+      "tests": [
+        "publication::retained_evidence_models_preserve_ordered_claims_seed_and_null_fields",
+        "publication::evidence_control_selectors_and_optional_configuration_fields_preserve_models",
+        "publication::configured_registry_models_bind_exact_historical_and_current_vocabularies"
+      ],
+      "models": [
+        "Complete fixed registered-name model repeated in 12 evidence cases; additional model with a later.generated property that has no active behavior",
+        "Independent exact historical/current registry vocabularies: property revisions1/2/3 have33/34/35 behavioral names; attribute revision2 for current vocabulary; allowed revision-specific inert later property"
+      ],
+      "closed_alternatives": [],
+      "optional_fields": [
+        "later_properties empty/nonempty"
+      ],
+      "limits_and_malformed_cases": [
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding",
+        "Revision/vocabulary mismatch; property revisions0/4/u64::MAX; missing/extra behavioral name; current registered index-roots cannot be a later property"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "GuardSnapshot",
+      "public_api": [
+        "gc::publication::evidence::GuardSnapshot::{encode,decode}"
+      ],
+      "tests": [
+        "publication::retained_evidence_models_preserve_ordered_claims_seed_and_null_fields"
+      ],
+      "models": [
+        "12 seeded evidence models with opaque unverified signature/key references; IDs and cross-record hashes computed through public APIs"
+      ],
+      "closed_alternatives": [],
+      "optional_fields": [
+        "issuer/disclosure rows nonempty"
+      ],
+      "limits_and_malformed_cases": [
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "RequiredControlPin",
+      "public_api": [
+        "gc::publication::evidence::RequiredControlPin::{encode,decode}"
+      ],
+      "tests": [
+        "publication::retained_evidence_models_preserve_ordered_claims_seed_and_null_fields",
+        "publication::evidence_control_selectors_and_optional_configuration_fields_preserve_models"
+      ],
+      "models": [
+        "12 seeded evidence models with opaque unverified signature/key references; IDs and cross-record hashes computed through public APIs"
+      ],
+      "closed_alternatives": [
+        "all 6 ControlKind and exact key selectors"
+      ],
+      "optional_fields": [],
+      "limits_and_malformed_cases": [
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding",
+        "Every control-kind selector rejects an appended slash at encode"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "ConsumedRootPolicy",
+      "public_api": [
+        "gc::publication::evidence::ConsumedRootPolicy::{encode,decode}"
+      ],
+      "tests": [
+        "publication::retained_evidence_models_preserve_ordered_claims_seed_and_null_fields",
+        "publication::evidence_control_selectors_and_optional_configuration_fields_preserve_models"
+      ],
+      "models": [
+        "12 seeded evidence models with opaque unverified signature/key references; IDs and cross-record hashes computed through public APIs"
+      ],
+      "closed_alternatives": [],
+      "optional_fields": [
+        "layers1/65; path1/4097"
+      ],
+      "limits_and_malformed_cases": [
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding",
+        "65 layers and 4097-byte absolute path roundtrip; adding layer 66 rejects at encode"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "ConsumedViewPolicy",
+      "public_api": [
+        "gc::publication::evidence::ConsumedViewPolicy::{encode,decode}"
+      ],
+      "tests": [
+        "publication::retained_evidence_models_preserve_ordered_claims_seed_and_null_fields",
+        "publication::evidence_control_selectors_and_optional_configuration_fields_preserve_models"
+      ],
+      "models": [
+        "12 seeded evidence models with opaque unverified signature/key references; IDs and cross-record hashes computed through public APIs"
+      ],
+      "closed_alternatives": [],
+      "optional_fields": [
+        "roots empty/nonempty/repeated equal"
+      ],
+      "limits_and_malformed_cases": [
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding",
+        "Nested 65-layer maximum root models roundtrip; no direct view-root count maximum assertion"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "LineageUsedInputs",
+      "public_api": [
+        "gc::publication::evidence::LineageUsedInputs::{encode,decode}"
+      ],
+      "tests": [
+        "publication::retained_evidence_models_preserve_ordered_claims_seed_and_null_fields"
+      ],
+      "models": [
+        "12 seeded evidence models with opaque unverified signature/key references; IDs and cross-record hashes computed through public APIs"
+      ],
+      "closed_alternatives": [],
+      "optional_fields": [
+        "issuer/disclosure/control/view rows nonempty"
+      ],
+      "limits_and_malformed_cases": [
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "CheckedLineage",
+      "public_api": [
+        "gc::publication::evidence::CheckedLineage::{encode,decode}"
+      ],
+      "tests": [
+        "publication::retained_evidence_models_preserve_ordered_claims_seed_and_null_fields"
+      ],
+      "models": [
+        "12 seeded evidence models with opaque unverified signature/key references; IDs and cross-record hashes computed through public APIs"
+      ],
+      "closed_alternatives": [],
+      "optional_fields": [],
+      "limits_and_malformed_cases": [
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "PermanentDeleteAuthorization",
+      "public_api": [
+        "gc::retirement::PermanentDeleteAuthorization::{encode,decode}"
+      ],
+      "tests": [
+        "retirement::permanent_authorization_preparation_and_progress_models_preserve_disjoint_cases"
+      ],
+      "models": [
+        "12 seeded represented-data models; no workflow or authority construction"
+      ],
+      "closed_alternatives": [
+        "Sweep/Copied",
+        "Local/Remote barriers"
+      ],
+      "optional_fields": [],
+      "limits_and_malformed_cases": [
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "RemoteSweepDeleteAuthorization",
+      "public_api": [
+        "gc::retirement::RemoteSweepDeleteAuthorization::{encode,decode}"
+      ],
+      "tests": [
+        "retirement::permanent_authorization_preparation_and_progress_models_preserve_disjoint_cases"
+      ],
+      "models": [
+        "12 seeded represented-data models; no workflow or authority construction"
+      ],
+      "closed_alternatives": [
+        "S3/GCS"
+      ],
+      "optional_fields": [],
+      "limits_and_malformed_cases": [
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding",
+        "Deletion elapsed bound minus one rejects at encode",
+        "Grace seconds u64::MAX rejects overflow at encode"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "CopiedRetirementAuthorization",
+      "public_api": [
+        "gc::retirement::CopiedRetirementAuthorization::{encode,decode}"
+      ],
+      "tests": [
+        "retirement::permanent_authorization_preparation_and_progress_models_preserve_disjoint_cases"
+      ],
+      "models": [
+        "12 seeded represented-data models; no workflow or authority construction"
+      ],
+      "closed_alternatives": [
+        "Local/Remote; Local/Remote barrier"
+      ],
+      "optional_fields": [
+        "lineage_fence absent/present"
+      ],
+      "limits_and_malformed_cases": [
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding",
+        "Genesis revision 1 rejects at encode; local barrier file identity lengths 1, 31 and 128 roundtrip"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "CopiedRetirementPlan",
+      "public_api": [
+        "gc::retirement::CopiedRetirementPlan::{encode,decode}"
+      ],
+      "tests": [
+        "retirement::permanent_authorization_preparation_and_progress_models_preserve_disjoint_cases"
+      ],
+      "models": [
+        "12 seeded represented-data models; no workflow or authority construction"
+      ],
+      "closed_alternatives": [],
+      "optional_fields": [],
+      "limits_and_malformed_cases": [
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "CopiedRetirementPreparation",
+      "public_api": [
+        "gc::retirement::CopiedRetirementPreparation::{encode,decode}"
+      ],
+      "tests": [
+        "retirement::permanent_authorization_preparation_and_progress_models_preserve_disjoint_cases"
+      ],
+      "models": [
+        "12 seeded represented-data models; no workflow or authority construction"
+      ],
+      "closed_alternatives": [
+        "Preparing/Abandoned"
+      ],
+      "optional_fields": [],
+      "limits_and_malformed_cases": [
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "PermanentDeleteOperation",
+      "public_api": [
+        "gc::retirement::PermanentDeleteOperation::{encode,decode}"
+      ],
+      "tests": [
+        "retirement::permanent_authorization_preparation_and_progress_models_preserve_disjoint_cases"
+      ],
+      "models": [
+        "12 seeded represented-data models; no workflow or authority construction"
+      ],
+      "closed_alternatives": [
+        "Proposed/Cancelled/Owned"
+      ],
+      "optional_fields": [
+        "owner/pass absent/present"
+      ],
+      "limits_and_malformed_cases": [
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "PermanentDeletePass",
+      "public_api": [
+        "gc::retirement::PermanentDeletePass::{encode,decode}"
+      ],
+      "tests": [
+        "retirement::permanent_pass_models_cover_observation_handles_states_and_complete_coverage",
+        "retirement::permanent_pass_count_handle_and_whole_record_limits_reject_before_claimed_allocation"
+      ],
+      "models": [
+        "12 seeded represented-data models; no workflow or authority construction"
+      ],
+      "closed_alternatives": [
+        "Open/PassCompleted; all 4 ObservationState; all3 ObservedInstance; all3 PassCoverage; Pack/Index/Trash"
+      ],
+      "optional_fields": [
+        "placement_fence absent/present; observation count0/1/4096"
+      ],
+      "limits_and_malformed_cases": [
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding",
+        "Observation counts 0, 1 and 4096 roundtrip; count 4097 rejects at encode",
+        "Version handle lengths 1 and 4096 roundtrip; 0 and 4097 reject at encode",
+        "Borrowed input of MAX_RECORD_BYTES + 1 (16 MiB + 1) yields decoder Limit before parse"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "PermanentBurnOwner",
+      "public_api": [
+        "gc::retirement::PermanentBurnOwner::{encode,decode}"
+      ],
+      "tests": [
+        "retirement::permanent_authorization_preparation_and_progress_models_preserve_disjoint_cases"
+      ],
+      "models": [
+        "12 seeded represented-data models; no workflow or authority construction"
+      ],
+      "closed_alternatives": [
+        "CopiedVisibility/Permanent"
+      ],
+      "optional_fields": [],
+      "limits_and_malformed_cases": [
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "PermanentOwnerSelection",
+      "public_api": [
+        "gc::retirement::PermanentOwnerSelection::{encode,decode}"
+      ],
+      "tests": [
+        "retirement::permanent_authorization_preparation_and_progress_models_preserve_disjoint_cases"
+      ],
+      "models": [
+        "12 seeded represented-data models; no workflow or authority construction"
+      ],
+      "closed_alternatives": [
+        "CopiedVisibility/Permanent"
+      ],
+      "optional_fields": [],
+      "limits_and_malformed_cases": [
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "CopiedPlacementFence",
+      "public_api": [
+        "gc::retirement::CopiedPlacementFence::{encode,decode}"
+      ],
+      "tests": [
+        "retirement::current_and_copied_fence_models_validate_represented_inventory_and_backend",
+        "retirement::collection_fences_cover_every_ref_class_selected_payload_and_absent_generation"
+      ],
+      "models": [
+        "12 seeded represented-data models; no workflow or authority construction"
+      ],
+      "closed_alternatives": [
+        "all 6 ref classes; Never/Unknown/Selected"
+      ],
+      "optional_fields": [
+        "refs empty/nonempty; controls empty/nonempty"
+      ],
+      "limits_and_malformed_cases": [
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "CurrentCollectionFence",
+      "public_api": [
+        "gc::retirement::CurrentCollectionFence::{encode,decode}"
+      ],
+      "tests": [
+        "retirement::current_and_copied_fence_models_validate_represented_inventory_and_backend",
+        "retirement::collection_fences_cover_every_ref_class_selected_payload_and_absent_generation"
+      ],
+      "models": [
+        "12 seeded represented-data models; no workflow or authority construction"
+      ],
+      "closed_alternatives": [
+        "all 6 ref classes; Never/Unknown/Selected"
+      ],
+      "optional_fields": [
+        "manifest absent/present; ref current/log absent/present; refs empty/nonempty"
+      ],
+      "limits_and_malformed_cases": [
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding",
+        "Represented manifest ref inventory missing a ref row rejects at encode"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "ELF input parsers",
+      "public_api": [
+        "derived::{parse_elf_header,parse_elf_programs,parse_elf_dynamic}"
+      ],
+      "tests": [
+        "foreign::elf_field_models_cover_both_classes_byte_orders_and_checked_ranges"
+      ],
+      "models": [
+        "independent ELF32/64 field models, both byte orders; programcount0/1/7/65534; known/unknown program tags; null/needed/string/unknown dynamic tags"
+      ],
+      "closed_alternatives": [],
+      "optional_fields": [],
+      "limits_and_malformed_cases": [
+        "header every prefix; program/dynamic partial widths; extendedcount65535; nonstandardwidth; size-1 ranges; LOAD filesz>memsz; duplicate string descriptors"
+      ],
+      "shared_evidence": "parser model; no canonical format encoder exists"
+    },
+    {
+      "codec": "Magic / shebang input parsers",
+      "public_api": [
+        "derived::{classify_magic,parse_shebang}"
+      ],
+      "tests": [
+        "foreign::classifier_and_shebang_models_cover_registry_precedence_and_prefix_limits"
+      ],
+      "models": [
+        "all 8 classifiers and precedence; UTF8 absolute interpreters; CRLF/LF/EOF; unsplit optionalargument"
+      ],
+      "closed_alternatives": [],
+      "optional_fields": [],
+      "limits_and_malformed_cases": [
+        "64KiB prefix boundary; NUL/invalidUTF8/relative/empty interpreter"
+      ],
+      "shared_evidence": "parser model; no canonical format encoder exists"
+    },
+    {
+      "codec": "Text refs, bucket keys and view selectors",
+      "public_api": [
+        "refs::RefName::parse",
+        "bucket::BucketKey::{parse,ref_record,reflog,legacy_reflog,reflog_candidate}",
+        "surface::View::parse"
+      ],
+      "tests": [
+        "foreign::textual_ref_key_and_view_parsers_preserve_independent_target_and_path_models"
+      ],
+      "models": [
+        "all 6 ref classes; Ref/Commit view targets; optional policy; subtree byte lengths 0/1/31/4096, with valid separated components at 4096 bytes",
+        "All currently implemented BucketKey parser shapes; canonical decimal 0/1/23/24/u64::MAX, shard 0/255, generated pack/candidate IDs, legacy/current refs and logs, all three note kinds"
+      ],
+      "closed_alternatives": [
+        "All three Mutability alternatives: Immutable/CreateOnce/CompareAndSwap"
+      ],
+      "optional_fields": [],
+      "limits_and_malformed_cases": [
+        "unknown refclass; forbidden bytes/dotdot/empty segments; invalid digest; empty policy; key4097",
+        "Wrong fanout; noncanonical decimal; shard 256; zero sequence; forbidden tag legacy log; NUL/backslash/absolute/dot components; accepted prefix parses retain exact spelling"
+      ],
+      "shared_evidence": "parser model; no canonical format encoder exists"
+    },
+    {
+      "codec": "Untrusted serialized provenance context validator",
+      "public_api": [
+        "provenance::validate_canonical_context"
+      ],
+      "tests": [
+        "contexts::untrusted_context_models_cover_both_versions_and_selected_evidence_boundaries",
+        "contexts::selected_context_schema_rejects_malformed_rows_and_nested_value_encodings"
+      ],
+      "models": [
+        "24 seeded models of each version; independently encoded untrusted field models and public CBOR decoding after actual context validation",
+        "Selected evidence rows 1/2/7; file path lengths 1/4/255/4096 with valid components; distinct producer and carrying-witness commits preserve unsigned inline evidence semantics"
+      ],
+      "closed_alternatives": [
+        "Versions 1/2; all four selector presets; all four disclosure-domain forms"
+      ],
+      "optional_fields": [
+        "baseline absent/empty/present; selected evidence absent for v1/present for v2"
+      ],
+      "limits_and_malformed_cases": [
+        "Shared CBOR structural checks on the outer context",
+        "Canonical wrong row widths 4/6 and side widths 8/10; scalar/empty selection; digest widths 31/33; path 0/4097 and component 256; duplicate/reordered keys; view/domain/name agreement; noncanonical nested value"
+      ],
+      "shared_evidence": "Validator-only wire models; does not qualify the verified-history-dependent production context/selected-evidence encoder",
+      "qualification": "Regression demonstrated 16 accepted malformed cases on d235065775. Borrowed decoder correction 7964a246e4 is a prerequisite; the retained cases must reject through this public validator."
+    },
+    {
+      "codec": "Common derivation Memo",
+      "public_api": [
+        "derivation::Memo::{new,decode,encode,identity}"
+      ],
+      "tests": [
+        "common_memo::common_memo_models_preserve_fields_and_distinct_record_identity",
+        "common_memo::common_memo_refuses_independent_schema_and_hostile_length_models"
+      ],
+      "models": [
+        "64 seeded recipe/root digest pairs, including all-zero/all-255 recipe hash; independent exact71-byte two-field encoding and terrane-memo-v1 identity distinct from recipe lookup hash"
+      ],
+      "closed_alternatives": [],
+      "optional_fields": [],
+      "limits_and_malformed_cases": [
+        "Exact71-byte input cap; digest lengths0/1/31/33/64; unknown/duplicate fields; indefinite map; hostile byte/map length headers;72-byte input"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "IndexRoots value and local property binding",
+      "public_api": [
+        "indexing::IndexRoots::{decode_value,decode_binding,encode_value,encode_binding}"
+      ],
+      "tests": [
+        "closed_index::closed_index_bindings_and_recipes_match_independent_models",
+        "closed_index::closed_index_schemas_refuse_nonlocal_unknown_and_hostile_inputs"
+      ],
+      "models": [
+        "16 seeded digests for each uid/gid/hash.sha256/class.elf; independently constructed lowercase64-hex value maps and exact local value/inherit=false property wrappers"
+      ],
+      "closed_alternatives": [],
+      "optional_fields": [],
+      "limits_and_malformed_cases": [
+        "65,536-byte cap; inherited/nonlocal binding; unknown attribute; uppercase or63/65-character digest text; indefinite/hostile map claims;65,537-byte input"
+      ],
+      "shared_evidence": "cbor"
+    },
+    {
+      "codec": "Opaque IndexKey",
+      "public_api": [
+        "indexing::IndexKey::{new,decode,encode,equality_bounds}"
+      ],
+      "tests": [
+        "closed_index::opaque_index_keys_preserve_canonical_values_objects_and_inclusive_bounds",
+        "closed_index::closed_index_schemas_refuse_nonlocal_unknown_and_hostile_inputs"
+      ],
+      "models": [
+        "Six composite canonical CBOR values plus integers0/1/23/24/255/256/u64::MAX paired with seeded32-byte object digests; independently checked inclusive lower/upper object bounds; text values reaching exact4096-byte key cap"
+      ],
+      "closed_alternatives": [
+        "Opaque canonical CBOR value followed by32-byte object digest"
+      ],
+      "optional_fields": [],
+      "limits_and_malformed_cases": [
+        "4096-byte total cap and4064-byte value cap;4061/4062-character text boundary; hostile byte-length header; indefinite array; trailing canonical value;4065-byte value"
+      ],
+      "shared_evidence": "bytes+cbor"
+    },
+    {
+      "codec": "Closed IndexEvaluationRecipe",
+      "public_api": [
+        "indexing::IndexEvaluationRecipe::{new,decode,encode,identity}"
+      ],
+      "tests": [
+        "closed_index::closed_index_bindings_and_recipes_match_independent_models",
+        "closed_index::closed_index_schemas_refuse_nonlocal_unknown_and_hostile_inputs"
+      ],
+      "models": [
+        "16 seeded owners for each uid/gid/hash.sha256/class.elf; independent op=index, single owner, profile=terrane-index/v1 and attribute map encoding; independent memo-domain recipe identity"
+      ],
+      "closed_alternatives": [
+        "Only registered index recipe alternative in this closed schema"
+      ],
+      "optional_fields": [],
+      "limits_and_malformed_cases": [
+        "338-byte cap; unknown attribute/profile; owner digest lengths0/1/31/33/64; hostile map claims; indefinite containers; oversized input"
+      ],
+      "shared_evidence": "cbor"
+    }
+  ],
+  "test_catalog": [
+    {
+      "id": "containers::generated_packs_indexes_and_shards_preserve_models_and_reject_bad_extents",
+      "source": "crates/terrane-core/tests/format_properties/containers.rs",
+      "seed": "0x187a_ee2d_9873_082d"
+    },
+    {
+      "id": "containers::generated_bundles_verify_content_identity_and_nested_metadata",
+      "source": "crates/terrane-core/tests/format_properties/containers.rs",
+      "seed": "0x28c6_fed3_e41a_3219"
+    },
+    {
+      "id": "containers::pack_flags_codecs_metadata_kinds_and_bundle_index_alternatives_roundtrip",
+      "source": "crates/terrane-core/tests/format_properties/containers.rs",
+      "seed": "0x7d8b_84f1_025a_7ce9"
+    },
+    {
+      "id": "content::identity_descriptors_validate_every_registered_domain_and_wire_boundary",
+      "source": "crates/terrane-core/tests/format_properties/content.rs",
+      "seed": "0x41bd_637a_2886_105f"
+    },
+    {
+      "id": "content::canonical_cbor_models_cover_integer_lengths_maps_and_preallocation_limits",
+      "source": "crates/terrane-core/tests/format_properties/content.rs",
+      "seed": "0x118e_2bd1_986a_4413"
+    },
+    {
+      "id": "content::manifests_preserve_order_optional_hashes_and_chunk_size_boundaries",
+      "source": "crates/terrane-core/tests/format_properties/content.rs",
+      "seed": "0x1375_5c99_67e0_33ad"
+    },
+    {
+      "id": "content::entries_nodes_and_properties_cover_all_kinds_and_optional_presence",
+      "source": "crates/terrane-core/tests/format_properties/content.rs",
+      "seed": "0x33f1_57de_2c55_e8a9"
+    },
+    {
+      "id": "content::generated_tree_insertion_orders_match_sorted_model_and_internal_node_bytes",
+      "source": "crates/terrane-core/tests/format_properties/content.rs",
+      "seed": "0xc00a_d927_c531_efd3"
+    },
+    {
+      "id": "content::derived_attribute_values_and_records_cover_every_registered_variant",
+      "source": "crates/terrane-core/tests/format_properties/content.rs",
+      "seed": "0x36cc_8149_7e2a_086d"
+    },
+    {
+      "id": "content::selectors_recipes_and_unverified_token_envelopes_have_unique_canonical_bytes",
+      "source": "crates/terrane-core/tests/format_properties/content.rs",
+      "seed": "0xf23c_9971_1544_bb4d"
+    },
+    {
+      "id": "content::chunk_envelopes_roundtrip_opaque_bodies_and_bound_declared_lengths",
+      "source": "crates/terrane-core/tests/format_properties/content.rs",
+      "seed": "0x943e_cbb1_4325_111a"
+    },
+    {
+      "id": "content::unverified_attenuation_envelopes_cover_all_caveats_and_chain_count_boundaries",
+      "source": "crates/terrane-core/tests/format_properties/content.rs",
+      "seed": "0x899a_257e_bb61_277e"
+    },
+    {
+      "id": "content::index_overlay_and_internal_nodes_cover_context_and_summary_boundaries",
+      "source": "crates/terrane-core/tests/format_properties/content.rs",
+      "seed": "0x90bc_d88a_55f1_d04b"
+    },
+    {
+      "id": "content::token_field_models_cover_all_principal_kinds_verb_bits_and_absent_attenuation_fields",
+      "source": "crates/terrane-core/tests/format_properties/content.rs",
+      "seed": "0x371b_a3de_f17a_cc87"
+    },
+    {
+      "id": "content::derived_function_metadata_and_text_values_preserve_unknown_versions_and_limits",
+      "source": "crates/terrane-core/tests/format_properties/content.rs",
+      "seed": "0x817e_223f_765a_dbba"
+    },
+    {
+      "id": "content::disclosure_target_bindings_normalize_only_typed_signatures_and_retain_metadata",
+      "source": "crates/terrane-core/tests/format_properties/content.rs",
+      "seed": "0xf732_271d_abde_9371"
+    },
+    {
+      "id": "foreign::elf_field_models_cover_both_classes_byte_orders_and_checked_ranges",
+      "source": "crates/terrane-core/tests/format_properties/foreign.rs",
+      "seed": "0x80ab_d173_e5d2_479f"
+    },
+    {
+      "id": "foreign::classifier_and_shebang_models_cover_registry_precedence_and_prefix_limits",
+      "source": "crates/terrane-core/tests/format_properties/foreign.rs",
+      "seed": "0xa261_33dc_e5b8_471b"
+    },
+    {
+      "id": "foreign::textual_ref_key_and_view_parsers_preserve_independent_target_and_path_models",
+      "source": "crates/terrane-core/tests/format_properties/foreign.rs",
+      "seed": "0x43d8_712e_b5c6_1dfa"
+    },
+    {
+      "id": "policy::registered_properties_cover_closed_vocabularies_quantities_and_inheritance_binding",
+      "source": "crates/terrane-core/tests/format_properties/policy.rs",
+      "seed": "0x77f2_e2d9_3468_129d"
+    },
+    {
+      "id": "policy::property_and_tree_limits_reject_claimed_collection_lengths_and_out_of_range_values",
+      "source": "crates/terrane-core/tests/format_properties/policy.rs",
+      "seed": null
+    },
+    {
+      "id": "policy::graft_merge_and_empty_overlay_recipe_models_roundtrip_without_trust_verification",
+      "source": "crates/terrane-core/tests/format_properties/policy.rs",
+      "seed": "0xabe5_3551_4398_cf21"
+    },
+    {
+      "id": "policy::selector_models_cover_every_atom_combinator_preset_and_deep_untrusted_ast",
+      "source": "crates/terrane-core/tests/format_properties/policy.rs",
+      "seed": "0x809c_7142_aede_3259"
+    },
+    {
+      "id": "policy::recipe_domain_evidence_roundtrips_all_operations_without_authenticating_labels",
+      "source": "crates/terrane-core/tests/format_properties/policy.rs",
+      "seed": "0xb75a_d1d8_9993_817f"
+    },
+    {
+      "id": "policy::merge_recipe_untrusted_receipt_and_timestamp_fields_reencode_canonically",
+      "source": "crates/terrane-core/tests/format_properties/policy.rs",
+      "seed": "0x749b_218e_dbae_61cc"
+    },
+    {
+      "id": "publication::publication_models_preserve_binding_selection_pointers_and_transaction_fields",
+      "source": "crates/terrane-core/tests/format_properties/publication.rs",
+      "seed": "0xf31a_c57d_44a0_9023"
+    },
+    {
+      "id": "publication::retained_evidence_models_preserve_ordered_claims_seed_and_null_fields",
+      "source": "crates/terrane-core/tests/format_properties/publication.rs",
+      "seed": "0x7134_be25_017c_9872"
+    },
+    {
+      "id": "publication::portable_full_checkpoint_models_require_complete_capabilities_and_retained_history",
+      "source": "crates/terrane-core/tests/format_properties/publication.rs",
+      "seed": "0x488a_942e_e77b_241b"
+    },
+    {
+      "id": "publication::evidence_control_selectors_and_optional_configuration_fields_preserve_models",
+      "source": "crates/terrane-core/tests/format_properties/publication.rs",
+      "seed": "0x7e31_558f_bce2_954b"
+    },
+    {
+      "id": "publication::publication_nonempty_sources_changes_and_genesis_fields_have_unique_bytes",
+      "source": "crates/terrane-core/tests/format_properties/publication.rs",
+      "seed": "0xf26c_177d_960a_ce52"
+    },
+    {
+      "id": "records::commit_ref_reflog_and_annotation_models_preserve_optional_fields",
+      "source": "crates/terrane-core/tests/format_properties/records.rs",
+      "seed": "0xb881_35e2_39a7_f021"
+    },
+    {
+      "id": "records::bucket_capabilities_generations_and_tombstones_preserve_known_empty_inventory",
+      "source": "crates/terrane-core/tests/format_properties/records.rs",
+      "seed": "0xcd31_2b37_f099_c401"
+    },
+    {
+      "id": "records::collector_lease_roots_marks_and_checkpoint_models_cover_empty_and_context_variants",
+      "source": "crates/terrane-core/tests/format_properties/records.rs",
+      "seed": "0xc995_8a60_fd39_45eb"
+    },
+    {
+      "id": "records::creation_journal_models_cover_all_states_and_opaque_identity_boundaries",
+      "source": "crates/terrane-core/tests/format_properties/records.rs",
+      "seed": "0x770d_8841_f256_037b"
+    },
+    {
+      "id": "records::selected_reflogs_and_proof_sensitive_checkpoints_preserve_all_predecessor_forms",
+      "source": "crates/terrane-core/tests/format_properties/records.rs",
+      "seed": "0x091f_221b_c790_537d"
+    },
+    {
+      "id": "records::creation_journal_binding_models_cover_pack_index_trash_and_empty_identity_rejection",
+      "source": "crates/terrane-core/tests/format_properties/records.rs",
+      "seed": "0x1fc8_392a_bb72_dbe5"
+    },
+    {
+      "id": "records::nested_receipt_origins_context_surfaces_and_ref_policy_presence_roundtrip",
+      "source": "crates/terrane-core/tests/format_properties/records.rs",
+      "seed": "0x9d40_b8e2_5173_eebb"
+    },
+    {
+      "id": "records::collector_kind_models_cover_all_registered_tags_and_flag_constraints",
+      "source": "crates/terrane-core/tests/format_properties/records.rs",
+      "seed": "0x8e33_290f_b371_045c"
+    },
+    {
+      "id": "retirement::permanent_authorization_preparation_and_progress_models_preserve_disjoint_cases",
+      "source": "crates/terrane-core/tests/format_properties/retirement.rs",
+      "seed": "0x591e_b2a8_7794_fd2b"
+    },
+    {
+      "id": "retirement::permanent_pass_models_cover_observation_handles_states_and_complete_coverage",
+      "source": "crates/terrane-core/tests/format_properties/retirement.rs",
+      "seed": "0x129e_9918_35b1_f0a7"
+    },
+    {
+      "id": "retirement::current_and_copied_fence_models_validate_represented_inventory_and_backend",
+      "source": "crates/terrane-core/tests/format_properties/retirement.rs",
+      "seed": "0x34b7_ef22_9a03_3147"
+    },
+    {
+      "id": "retirement::local_v1_delete_operations_roundtrip_exact_embedded_authorization_and_all_phases",
+      "source": "crates/terrane-core/tests/format_properties/retirement.rs",
+      "seed": "0x92d1_f897_327b_997b"
+    },
+    {
+      "id": "retirement::collection_fences_cover_every_ref_class_selected_payload_and_absent_generation",
+      "source": "crates/terrane-core/tests/format_properties/retirement.rs",
+      "seed": "0xc201_557d_022a_ec4b"
+    },
+    {
+      "id": "retirement::permanent_pass_count_handle_and_whole_record_limits_reject_before_claimed_allocation",
+      "source": "crates/terrane-core/tests/format_properties/retirement.rs",
+      "seed": "0x8a21_79c5_6134_bb92"
+    },
+    {
+      "id": "contexts::untrusted_context_models_cover_both_versions_and_selected_evidence_boundaries",
+      "source": "crates/terrane-core/tests/format_properties/contexts.rs",
+      "seed": "0x6f01_2748_b825_c6a9"
+    },
+    {
+      "id": "contexts::selected_context_schema_rejects_malformed_rows_and_nested_value_encodings",
+      "source": "crates/terrane-core/tests/format_properties/contexts.rs",
+      "seed": "0xda7b_0533_a428_19c1"
+    },
+    {
+      "id": "publication::configured_registry_models_bind_exact_historical_and_current_vocabularies",
+      "source": "crates/terrane-core/tests/format_properties/publication.rs",
+      "seed": "deterministic independent boundary models; no RNG"
+    },
+    {
+      "id": "closed_index::closed_index_bindings_and_recipes_match_independent_models",
+      "source": "crates/terrane-core/tests/format_properties/closed_index.rs",
+      "seed": "0x2349_ba80_d921_770f"
+    },
+    {
+      "id": "closed_index::opaque_index_keys_preserve_canonical_values_objects_and_inclusive_bounds",
+      "source": "crates/terrane-core/tests/format_properties/closed_index.rs",
+      "seed": "0x312a_9c50_ff83_0461"
+    },
+    {
+      "id": "closed_index::closed_index_schemas_refuse_nonlocal_unknown_and_hostile_inputs",
+      "source": "crates/terrane-core/tests/format_properties/closed_index.rs",
+      "seed": "deterministic independent boundary models; no RNG"
+    },
+    {
+      "id": "closed_index::empty_index_nodes_remain_generic_data_in_each_explicit_role",
+      "source": "crates/terrane-core/tests/format_properties/closed_index.rs",
+      "seed": "deterministic independent boundary models; no RNG"
+    },
+    {
+      "id": "common_memo::common_memo_models_preserve_fields_and_distinct_record_identity",
+      "source": "crates/terrane-core/tests/format_properties/common_memo.rs",
+      "seed": "0x3789_423b_afe1_622d"
+    },
+    {
+      "id": "common_memo::common_memo_refuses_independent_schema_and_hostile_length_models",
+      "source": "crates/terrane-core/tests/format_properties/common_memo.rs",
+      "seed": "deterministic independent boundary models; no RNG"
+    }
+  ],
+  "private_unit_evidence": [
+    {
+      "codec": "Regenerated disclosure statement",
+      "private_api": "provenance::disclosure::statement::encode_statement",
+      "requirements": [
+        "TEST-3",
+        "CRATE-4"
+      ],
+      "test": "provenance::disclosure::statement::tests::disclosure_statement_models_retain_every_registered_field",
+      "source": "crates/terrane-core/src/provenance/disclosure/statement/tests.rs",
+      "seed": "0xa791_365d_ef42_08c3",
+      "models": "192 ordinary models: inline file/manifest file/directory/symlink; 12 integer boundaries; complete path byte lengths 1/23/255/4096 with valid components; symlink target lengths 0/23/255/4096; all four source/target domain forms; seeded digest and opaque proof-signature bytes",
+      "projection_evidence": "Actual private serializer compared with independent registered eight-field projection and prefix; canonical whole-value parsing; all retained proof/source/original/reference/target/content/binding fields are sensitive. Typed proof signature, destination commit identity and mode are omitted by the registered projection; four unsupported entry kinds reject.",
+      "scope_limit": "Private borrowed byte serializer only. Genuine history/context/receipt checks remain in its existing caller. No VerifiedHistory construction or standalone stored statement decoder. Public target-binding properties separately test metadata retention."
+    },
+    {
+      "codec": "Serialized provenance context",
+      "private_api": "provenance::trust::encoding::encode",
+      "requirements": [
+        "TEST-3",
+        "CRATE-4"
+      ],
+      "test": "provenance::trust::encoding::tests::context_models_preserve_versions_presence_and_selected_bytes",
+      "source": "crates/terrane-core/src/provenance/trust/encoding/tests.rs",
+      "seed": "0x409b_715e_a38c_d267",
+      "models": "144 ordinary field models each at versions 1/2, for 288 projections; all four presets/domain forms; baseline absent/empty/present with text byte lengths 1/23/24/255/256/4096; 12 integer boundaries; selected rows 1/2/7/32 with complete path byte lengths 1/255/4096",
+      "projection_evidence": "Actual private encoder compared with independent slot projection, field-by-field public CBOR parsing and the public untrusted schema validator; sensitivity for every field; selected bytes retained verbatim; empty/nonempty evidence chooses v1/v2.",
+      "scope_limit": "No trust evaluator or authenticated history is constructed. The existing caller retains verified-context and commit lookup checks. This wire encoder does not replace those checks or provide a standalone authority decoder."
+    },
+    {
+      "codec": "Selected side rows and nine-field evidence tuple",
+      "private_api": "provenance::side_attributes::serialization::{selected,encode_evidence}",
+      "requirements": [
+        "TEST-3",
+        "CRATE-4"
+      ],
+      "test": "provenance::side_attributes::serialization::tests::selected_evidence_models_preserve_tuple_fields_and_filtered_row_order",
+      "source": "crates/terrane-core/src/provenance/side_attributes/serialization/tests.rs",
+      "seed": "0x892c_14af_7ed0_563b",
+      "models": "48 ordinary maps at input row counts 0/1/2/7/24/256; all eight attribute names/values/functions, all eight magic labels, ELF 32/64 and optional interpreter/needed fields, shebang argument absent/one-byte with explicit empty argument encode rejection; path byte lengths 1/23/255/4096 with valid components; all four producer/selected domains; independent producer and carrying-witness commits",
+      "projection_evidence": "Actual tuple helper compared with independent nine-slot model; sensitivity for every tuple field and location component; full canonical parsing. Actual selection helper filters both view and domain over the sorted unique BTreeMap input contract; six view/domain selections and three seeded insertion histories preserve independent five-slot row models; public untrusted context validator checks each resulting projection.",
+      "scope_limit": "Ordinary borrowed payloads and map keys only, without VerifiedAttributeEvidence or history construction. Production keeps the same BTreeMap ordering and genuine evidence getter calls; no extra sort or authority constructor is introduced."
+    },
+    {
+      "codec": "Authority signature-preimage projection",
+      "private_api": "auth::format::authority_preimage",
+      "requirements": [
+        "TEST-3",
+        "CRATE-4"
+      ],
+      "test": "auth::tests::format_properties::authority_preimages_match_unsigned_models_and_omit_only_signature",
+      "source": "crates/terrane-core/src/auth/tests/format_properties.rs",
+      "seed": "0x13d7_a956_b287_f641",
+      "models": "144 ordinary unverified models: 12 integer boundaries crossed with all three principal kinds and all four optional-field patterns; text byte lengths 0/1/23/24/255/256; groups 0/1/23/24/256; grants 1/23/24/256 and all 31 nonzero verb masks; token identifiers, next-keys and signatures all zero/all ff/seeded bytes",
+      "projection_evidence": "Independent numeric field projection; exact key12 omission; whole canonical map parsing; every body field and next-key sensitivity; signature-only changes preserve bytes; actual stored Token field-codec roundtrip without issuance or verification",
+      "scope_limit": "Private encoder evidence is separate from the 53 public integration cases. Preimages have no standalone decoder by design; this does not instrument allocation or test authenticated authority."
+    },
+    {
+      "codec": "Attenuation signature-preimage projection",
+      "private_api": "auth::format::attenuation_preimage",
+      "requirements": [
+        "TEST-3",
+        "CRATE-4"
+      ],
+      "test": "auth::tests::format_properties::attenuation_preimages_match_unsigned_models_for_every_caveat_and_presence",
+      "source": "crates/terrane-core/src/auth/tests/format_properties.rs",
+      "seed": "0x57a3_c896_21ef_04bd",
+      "models": "192 ordinary unverified models: 12 integer boundaries crossed with all 16 field-presence patterns; all nine caveats in rotated/repeated ordered collections; all eight locality presences and empty/present text; grants 1/23/24/256 and all 31 nonzero verb masks; next-keys/signatures all zero/all ff/seeded bytes",
+      "projection_evidence": "Independent numeric field projection; exact key6 omission; whole canonical map parsing; every body field and next-key sensitivity; signature-only changes preserve bytes; actual stored Token field-codec roundtrip without issuance or verification",
+      "scope_limit": "Tests the private block projection, not the previous-signature concatenation or signing/verification workflow. Separate from the 53 public integration cases; no standalone preimage decoder is invented."
+    }
+  ],
+  "gaps_and_deferred_formats": [
+    {
+      "format": "standalone shard filter",
+      "status": "unimplemented public core byte codec",
+      "detail": "General filter wire encoder/decoder is absent. GcMark reconstructed filter and bundle metadata kind5 admission do not qualify a standalone filter codec.",
+      "milestone_owner": "B-bandwidth / T-PACK-3; explicitly deferred from T-PACK-2, not a currently supported T1 standalone codec"
+    },
+    {
+      "format": "standalone ruleset/policy object",
+      "status": "unimplemented public core byte codec",
+      "detail": "Common derivation Memo now has a public codec and explicit model properties above. Ruleset/policy object identity domain and generic metadata kind9 exist; no public standalone ruleset/policy object codec exists in terrane-core.",
+      "milestone_owner": "B-derive / T-RULE-1; required future format, currently unimplemented"
+    },
+    {
+      "format": "compressed frame contents",
+      "status": "implemented outside core",
+      "detail": "Core owns codec envelope structure only; actual zstd decompression and dictionary-backed frame verification belong to terrane.",
+      "milestone_owner": "T1 / chunk-codec and chunk-bomb-cap native checks; outside this core byte-envelope target"
+    },
+    {
+      "format": "future TREE/recipe variants not implemented",
+      "status": "deferred unimplemented",
+      "detail": "The closed IndexEvaluationRecipe and common derivation Memo are covered above. Filter/map/subtree/fold schemas beyond currently public Recipe alternatives remain unclaimed by generic bundle metadata.",
+      "milestone_owner": "B-derive / T-ALG-3 and T-DRV-2; explicitly deferred from T-ALG-2"
+    },
+    {
+      "format": "exhaustive valid resource maxima and all unconstrained strings",
+      "status": "bounded corpus limitation",
+      "detail": "Inventory lists actual numeric/string/count boundaries; it is generative coverage, not exhaustive enumeration or allocator instrumentation.",
+      "milestone_owner": "T1 / T-TEST-1 coverage review; no exhaustive or allocator-instrumentation qualification"
+    },
+    {
+      "format": "Index gap property binding",
+      "status": "implemented public codec; not exercised by the 53-case format_properties target",
+      "detail": "indexing::carrier::GapBinding::{decode_binding,encode_binding} is a heap-free exact map2/lowercase64-hex/inherit=false decoder. Existing indexing::carrier_tests::gap_bindings_require_primary_root_placement_and_exact_wrapper supplies one independent encoding model and selected malformed forms, but the current format_properties target has no direct GapBinding roundtrip/canonical-header/truncation property case. Registry-name admission is not codec evidence.",
+      "milestone_owner": "T1 / T-TEST-1; add public format properties or retain this explicit coverage gap before claiming every implemented codec"
+    },
+    {
+      "format": "ConsumedViewInterpretation",
+      "status": "implemented public codec; optional present form not exercised by the 53-case format_properties target",
+      "detail": "gc::publication::evidence::ConsumedViewInterpretation::{encode,decode} has existing independent owning unit fixtures in evidence/cbor/tests/view_interpretation.rs, including explicit modes/old fences and malformed headers. Public format_properties/publication.rs only builds LineageUsedInputs with view_interpretations=None; this does not qualify the present nested context or direct public codec.",
+      "milestone_owner": "T1 / T-TEST-1; add direct public properties and optional present LineageUsedInputs models or retain an explicit corpus gap"
+    },
+    {
+      "format": "LocalGcReconciliation",
+      "status": "implemented public codec; not exercised by the 53-case format_properties target",
+      "detail": "gc::publication::LocalGcReconciliation::{encode,decode} exists in gc/publication/reconciliation.rs. Decoding validates exact schema, fixed fields, complete borrowed input and registered fence key before its sole owned String copy. It has no direct reference in the 53 public property cases.",
+      "milestone_owner": "T1 / T-TEST-1; add direct independent public properties or retain an explicit corpus gap"
+    }
+  ],
+  "by_design_embedded_formats": [
+    "StoreProfile, RefPolicy, SnapshotEnvelope, profile/provenance/receipt fields, checkpoint row and fence nested types have actual encoding/decoding through their public owning records; an additional standalone decoder is not their contract.",
+    "Commit, SnapshotEnvelope and AttrRecord signature-preimage encoders are directly exercised; non-stored preimages intentionally omit signatures and have no separate wire decoder. Public owning codecs cover stored records.",
+    "Foreign ELF/shebang inputs are parser formats; the public APIs have no canonical foreign-file encoder. Independent parsed field models and bounds checks are distinct from Terrane attribute encodings.",
+    "Header and chunk envelope parsers intentionally accept prefixes/opaque bodies. Whole-pack/index decoders enforce complete container extents; the mutation oracle preserves that API distinction."
+  ]
+}

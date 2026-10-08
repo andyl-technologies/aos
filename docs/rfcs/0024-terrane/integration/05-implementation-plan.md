@@ -1748,6 +1748,15 @@ exclusive five-minute deletion process bound, using the measured 100-210-second
 deletion cases and 45-second imported cold case as scheduling evidence.
 No production clock or collector gate status changes.
 
+Frozen `cd5c6abdaf` subsequently passes fresh SDK build, strict library and
+all-target Clippy, compiled inventory and all three exact post-Done witnesses
+in 356.588 seconds. The configured profile reports actual execution through
+SLOW notices and the complete three-pass summary; individual PASS lines or
+per-case timings are not claimed. All 6,070 tracked inputs and the selected
+executable remain unchanged through the original invocations. The owning
+collector gate, complete deletion matrix and missing-Trash correction on its
+combined source remain separate obligations.
+
 Reviewed private `f1f178a8cb` adds opt-in, test-only aggregate timings for Raw
 installation, recapture and synchronization. Independent comparison preserves
 the ordered production tokens of all four instrumented files, and both complete
@@ -1815,6 +1824,18 @@ payload and descriptor bytes remain unchanged. The twentieth mandatory golden
 consumer must compare independent bytes and identities, decode exact Memo fields
 and reject every negative through the owning codec. Its implementation and
 execution remain pending; the new dependency fails explicitly until supplied.
+
+The decoder audit maps the actual 53 properties to 76 covered API groups,
+including the six new cases and the older configured-registry property omitted
+from the prior 46-case metadata. It separately identifies implemented GapBinding,
+ConsumedViewInterpretation and LocalGcReconciliation codecs without public
+property coverage. The shared catalog prospectively requires five additional
+cases for those formats and two concrete nested allocation-order defects.
+Graft recipe decoding copies embedded Entry bytes before the Entry size bound;
+commit decoding copies embedded provenance token bytes before the token's block
+and grant bounds. Those nested limits must be checked against borrowed data
+before ownership. The corrective task and exact 58-case source-bound gate remain
+pending; malformed-input refusal alone does not establish allocation ordering.
 
 The sealed current floor contains 89 aggregate gates, including all 69 T0/T1
 plan-required names and twenty implemented supporting checks. Read-only evaluation
