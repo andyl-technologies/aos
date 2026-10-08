@@ -20,8 +20,10 @@ use crate::service::StorageServiceError;
 /// Preserves the first concrete startup failure; it is not a recovery permit.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum StorageOriginalWorkerStartupCauseV3 {
+    // Retain the whole rejected capture without inlining its reservoir into
+    // every resident cause slot. Allocate only at the failed startup handoff.
     #[error(transparent)]
-    ResourceRecipient(aos_sandbox::normal_root::StorageResourceRecipientErrorV1),
+    ResourceRecipient(Box<aos_sandbox::normal_root::StorageResourceRecipientErrorV1>),
     #[error(transparent)]
     Service(#[from] StorageServiceError),
     #[error(transparent)]
@@ -174,7 +176,7 @@ pub(super) fn admit_resource_recipient(
             startup.map(|original| StorageOriginalWorkerStartupV3 { original }),
         )),
         Err(error) => Err(StorageOriginalWorkerStartupErrorV3 {
-            cause: StorageOriginalWorkerStartupCauseV3::ResourceRecipient(error),
+            cause: StorageOriginalWorkerStartupCauseV3::ResourceRecipient(Box::new(error)),
             rejected: None,
             admitted: None,
         }),
@@ -198,5 +200,18 @@ fn project_origin_cause(cause: StorageWorkerOriginCauseV3) -> StorageOriginalWor
         StorageWorkerOriginCauseV3::Io(error) => StorageOriginalWorkerStartupCauseV3::Io(error),
         StorageWorkerOriginCauseV3::Binding => StorageOriginalWorkerStartupCauseV3::Binding,
         StorageWorkerOriginCauseV3::Closed => StorageOriginalWorkerStartupCauseV3::Closed,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::StorageOriginalWorkerStartupCauseV3;
+
+    #[test]
+    fn resident_cause_does_not_inline_rejected_recipient_custody() {
+        assert!(
+            std::mem::size_of::<StorageOriginalWorkerStartupCauseV3>()
+                < std::mem::size_of::<aos_sandbox::normal_root::StorageResourceRecipientErrorV1>()
+        );
     }
 }
