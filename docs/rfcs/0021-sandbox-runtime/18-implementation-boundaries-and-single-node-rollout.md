@@ -164,6 +164,12 @@ application-facing ports; this source grouping does not establish the target
 Its private `resident_custody` child owns the unchanged partial parent/worker
 slots, genuine worker loans, first native causes, and negative terminal fences.
 
+The private session-security `inventory_transport` module owns the five sealed
+initialization, successor, send, receive, and commit transport stages. It borrows
+the original session; Controller retains preparation, competing-operation gates,
+method context, pending custody, polling, and native-error parking. This module
+boundary does not establish the Controller-runtime crate boundary.
+
 The fixed raw ownership-clock sampler now belongs to a private session-security
 mechanics module. Controller credential and lease factories remain private to
 the Controller integration; lower clock consumers no longer import that owner.
@@ -184,6 +190,13 @@ Canonical broker/lease and Publisher signing preparations and immutable
 completed artifacts belong to Protocol's `authorization_artifact` module.
 Signing keys and protected currentness recipes remain with their original owners;
 this artifact ownership cut does not remove SessionSecurity's domain dependencies.
+
+The pure compiler and its bounded candidate model now belong to
+`aos-sandbox-policy`, depending only on Core and serialization/hash/error
+libraries. Its public computations return nonauthorizing DATA. Protected
+current-Create source joins, Root binding, journal admission, held-cut decisions,
+publication, and recovery remain in the domain integration and still require
+the larger Policy ownership extraction.
 
 ### Effects, views, and application assembly
 

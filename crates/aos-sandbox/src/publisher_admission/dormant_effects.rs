@@ -11,6 +11,17 @@
 /// owner returns only the domain service, so possessing the service, an
 /// authenticated execution, source descriptor, and root custody still does
 /// not authorize inode materialization, fs-verity enablement, or publication.
+///
+/// Ordinary caller-owned data cannot construct this gate:
+///
+/// ```compile_fail
+/// use aos_sandbox::publisher_admission::PublisherDormantEffectCapabilityV1;
+///
+/// let mut activation = ();
+/// let _effects = PublisherDormantEffectCapabilityV1 {
+///     _activation: &mut activation,
+/// };
+/// ```
 #[must_use = "a dormant publisher effect capability must remain explicitly retained"]
 pub struct PublisherDormantEffectCapabilityV1<'activation> {
     _activation: &'activation mut PublisherDormantEffectActivationSealV1,
