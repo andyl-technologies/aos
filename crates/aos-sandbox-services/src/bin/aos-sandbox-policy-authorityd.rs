@@ -18,9 +18,8 @@
 //! challenge, then Root durably commits the exact binding/head/held decision.
 //! `AOSPHQ4F` uses the same flight but returns only an inert preview. Neither
 //! exchange opens public Create or releases custody for downstream effects.
-//! `AOSPHQ5F` separately spends a fresh Source challenge under Root-last
-//! custody and checks the Source V2 signed journal/lock identities. It is
-//! preview-only and cannot enter the V4 qualified-CAS path.
+//! The V7/V8 Source-writer flights separately spend a fresh Source challenge
+//! under Root-last custody and retain Root through signed terminal postflight.
 //! A distinct V8 ACK exchange records Controller's signed no-Apply receipt
 //! against the still-held AOSPCP02 CAS; it cannot release any owner. The V8
 //! terminal exchange keeps Root's writer across Controller's durable receipt
@@ -126,23 +125,18 @@ use aos_sandbox_broker_session_security::policy_authority_client::{
     POLICY_BINDING_HELD_MARKER_V4, POLICY_BINDING_PREVIEW_QUERY_MAGIC_V4,
     POLICY_BINDING_PREVIEW_REPLY_MAGIC_V4, POLICY_BINDING_QUERY_MAGIC_V4,
     POLICY_BINDING_RECEIPT_MAGIC_V4, POLICY_BINDING_REPLAY_QUERY_MAGIC_V5,
-    POLICY_BINDING_REPLAY_REPLY_MAGIC_V5, POLICY_BINDING_SOURCE_FLIGHT_CHALLENGE_MAGIC_V5,
-    POLICY_BINDING_SOURCE_FLIGHT_CHALLENGE_MAGIC_V6,
-    POLICY_BINDING_SOURCE_FLIGHT_CHALLENGE_MAGIC_V7,
-    POLICY_BINDING_SOURCE_FLIGHT_CHALLENGE_MAGIC_V8, POLICY_BINDING_SOURCE_FLIGHT_DONE_MAGIC_V6,
-    POLICY_BINDING_SOURCE_FLIGHT_DONE_MAGIC_V7, POLICY_BINDING_SOURCE_FLIGHT_DONE_MAGIC_V8,
-    POLICY_BINDING_SOURCE_FLIGHT_QUERY_MAGIC_V5, POLICY_BINDING_SOURCE_FLIGHT_QUERY_MAGIC_V6,
+    POLICY_BINDING_REPLAY_REPLY_MAGIC_V5, POLICY_BINDING_SOURCE_FLIGHT_CHALLENGE_MAGIC_V7,
+    POLICY_BINDING_SOURCE_FLIGHT_CHALLENGE_MAGIC_V8, POLICY_BINDING_SOURCE_FLIGHT_DONE_MAGIC_V7,
+    POLICY_BINDING_SOURCE_FLIGHT_DONE_MAGIC_V8,
     POLICY_BINDING_SOURCE_FLIGHT_QUERY_MAGIC_V7, POLICY_BINDING_SOURCE_FLIGHT_QUERY_MAGIC_V8,
     POLICY_BINDING_SOURCE_FLIGHT_REPLAY_QUERY_MAGIC_V7,
     POLICY_BINDING_SOURCE_FLIGHT_REPLAY_QUERY_MAGIC_V8,
     POLICY_BINDING_SOURCE_FLIGHT_REPLAY_REPLY_MAGIC_V7,
     POLICY_BINDING_SOURCE_FLIGHT_REPLAY_REPLY_MAGIC_V8,
-    POLICY_BINDING_SOURCE_FLIGHT_REPLY_MAGIC_V5, POLICY_BINDING_SOURCE_FLIGHT_REPLY_MAGIC_V6,
     POLICY_BINDING_SOURCE_FLIGHT_REPLY_MAGIC_V7, POLICY_BINDING_SOURCE_FLIGHT_REPLY_MAGIC_V8,
-    POLICY_BINDING_SOURCE_FLIGHT_SUBMIT_MAGIC_V5, POLICY_BINDING_SOURCE_FLIGHT_SUBMIT_MAGIC_V6,
     POLICY_BINDING_SOURCE_FLIGHT_SUBMIT_MAGIC_V7, POLICY_BINDING_SOURCE_FLIGHT_SUBMIT_MAGIC_V8,
-    POLICY_BINDING_SOURCE_FLIGHT_TERMINAL_MAGIC_V6, POLICY_BINDING_SOURCE_FLIGHT_TERMINAL_MAGIC_V7,
-    POLICY_BINDING_SOURCE_FLIGHT_TERMINAL_MAGIC_V8, POLICY_BINDING_STAGE_QUERY_MAGIC_V4,
+    POLICY_BINDING_SOURCE_FLIGHT_TERMINAL_MAGIC_V7, POLICY_BINDING_SOURCE_FLIGHT_TERMINAL_MAGIC_V8,
+    POLICY_BINDING_STAGE_QUERY_MAGIC_V4,
     POLICY_BINDING_STAGE_REPLY_MAGIC_V4, POLICY_BINDING_SUBMIT_MAGIC_V4,
     POLICY_BINDING_TERMINAL_ACK_MAGIC_V4, POLICY_HEAD_LEASE_ACK_MAGIC_V3,
     POLICY_HEAD_LEASE_COMPLETE_MAGIC_V3, POLICY_HEAD_LEASE_QUERY_MAGIC_V3,
@@ -251,8 +245,6 @@ enum HeadRequestMode {
     ClosedBindingStage,
     ClosedBindingPreview,
     ClosedBindingSignerFlight,
-    ClosedBindingSourceWriterFlight,
-    ClosedBindingSourceWriterHeldFlight,
     ClosedBindingSourceWriterSignedFlight,
     ClosedBindingSourceWriterCasFlight,
     ClosedBindingSourceTerminalReplay,
@@ -1470,12 +1462,6 @@ fn read_head_request(
         Some(magic) if magic == POLICY_BINDING_FLIGHT_QUERY_MAGIC_V4 => {
             HeadRequestMode::ClosedBindingSignerFlight
         }
-        Some(magic) if magic == POLICY_BINDING_SOURCE_FLIGHT_QUERY_MAGIC_V5 => {
-            HeadRequestMode::ClosedBindingSourceWriterFlight
-        }
-        Some(magic) if magic == POLICY_BINDING_SOURCE_FLIGHT_QUERY_MAGIC_V6 => {
-            HeadRequestMode::ClosedBindingSourceWriterHeldFlight
-        }
         Some(magic) if magic == POLICY_BINDING_SOURCE_FLIGHT_QUERY_MAGIC_V7 => {
             HeadRequestMode::ClosedBindingSourceWriterSignedFlight
         }
@@ -1517,8 +1503,6 @@ fn read_head_request(
             | HeadRequestMode::ClosedBindingStage
             | HeadRequestMode::ClosedBindingPreview
             | HeadRequestMode::ClosedBindingSignerFlight
-            | HeadRequestMode::ClosedBindingSourceWriterFlight
-            | HeadRequestMode::ClosedBindingSourceWriterHeldFlight
             | HeadRequestMode::ClosedBindingSourceWriterSignedFlight
             | HeadRequestMode::ClosedBindingSourceWriterCasFlight
             | HeadRequestMode::ClosedBindingSourceTerminalReplay
@@ -2068,8 +2052,6 @@ fn serve_current_head(
             | HeadRequestMode::ClosedBindingStage
             | HeadRequestMode::ClosedBindingPreview
             | HeadRequestMode::ClosedBindingSignerFlight
-            | HeadRequestMode::ClosedBindingSourceWriterFlight
-            | HeadRequestMode::ClosedBindingSourceWriterHeldFlight
             | HeadRequestMode::ClosedBindingSourceWriterSignedFlight
             | HeadRequestMode::ClosedBindingSourceWriterCasFlight
             | HeadRequestMode::ClosedBindingSourceTerminalReplay
@@ -2160,8 +2142,6 @@ fn serve_current_head(
     if matches!(
         mode,
         HeadRequestMode::ClosedBindingSignerFlight
-            | HeadRequestMode::ClosedBindingSourceWriterFlight
-            | HeadRequestMode::ClosedBindingSourceWriterHeldFlight
             | HeadRequestMode::ClosedBindingSourceWriterSignedFlight
             | HeadRequestMode::ClosedBindingSourceWriterCasFlight
             | HeadRequestMode::QualifiedClosedBinding
@@ -2186,9 +2166,7 @@ fn serve_current_head(
         })?;
         if matches!(
             mode,
-            HeadRequestMode::ClosedBindingSourceWriterFlight
-                | HeadRequestMode::ClosedBindingSourceWriterHeldFlight
-                | HeadRequestMode::ClosedBindingSourceWriterSignedFlight
+            HeadRequestMode::ClosedBindingSourceWriterSignedFlight
                 | HeadRequestMode::ClosedBindingSourceWriterCasFlight
         ) {
             serve_closed_binding_source_writer_flight_v5(
@@ -2210,13 +2188,6 @@ fn serve_current_head(
                 deployment.expires_at(),
                 project_expires_at,
                 now_unix_seconds,
-                matches!(
-                    mode,
-                    HeadRequestMode::ClosedBindingSourceWriterHeldFlight
-                        | HeadRequestMode::ClosedBindingSourceWriterSignedFlight
-                        | HeadRequestMode::ClosedBindingSourceWriterCasFlight
-                ),
-                matches!(mode, HeadRequestMode::ClosedBindingSourceWriterSignedFlight),
                 matches!(mode, HeadRequestMode::ClosedBindingSourceWriterCasFlight),
                 controller_hold_pin,
             )?;
@@ -3624,8 +3595,6 @@ fn serve_closed_binding_source_writer_flight_v5(
     deployment_expires: i64,
     project_expires: i64,
     now_unix_seconds: i64,
-    held_terminal: bool,
-    signed_terminal: bool,
     committed_binding: bool,
     controller_hold_pin: Option<&[u8]>,
 ) -> Result<(), Box<dyn Error>> {
@@ -3638,7 +3607,7 @@ fn serve_closed_binding_source_writer_flight_v5(
     }
     check_signed_head_expiration(deployment_expires, project_expires)?;
 
-    let reply = with_fixed_explicit_closed_policy_binding_session_v2(
+    let _reply = with_fixed_explicit_closed_policy_binding_session_v2(
         deployment_packet,
         deployment_generation,
         deployment_key,
@@ -3666,12 +3635,8 @@ fn serve_closed_binding_source_writer_flight_v5(
 
             let challenge_magic = if committed_binding {
                 POLICY_BINDING_SOURCE_FLIGHT_CHALLENGE_MAGIC_V8
-            } else if signed_terminal {
-                POLICY_BINDING_SOURCE_FLIGHT_CHALLENGE_MAGIC_V7
-            } else if held_terminal {
-                POLICY_BINDING_SOURCE_FLIGHT_CHALLENGE_MAGIC_V6
             } else {
-                POLICY_BINDING_SOURCE_FLIGHT_CHALLENGE_MAGIC_V5
+                POLICY_BINDING_SOURCE_FLIGHT_CHALLENGE_MAGIC_V7
             };
             stream.write_all(challenge_magic)?;
             stream.write_all(nonce)?;
@@ -3683,13 +3648,8 @@ fn serve_closed_binding_source_writer_flight_v5(
             stream.write_all(&source_issue.to_be_bytes())?;
             stream.set_read_timeout(Some(CACHE_SIGNER_RPC_TIMEOUT))?;
 
-            let (controller_packet, names) = read_source_writer_flight_submission_v5(
-                stream,
-                nonce,
-                held_terminal,
-                signed_terminal,
-                committed_binding,
-            )?;
+            let (controller_packet, names) =
+                read_source_writer_flight_submission_v5(stream, nonce, committed_binding)?;
             let root_packet = root_cache.finish(&cache_signer, controller_uid)?;
             if controller_packet != root_packet {
                 return Err(io::Error::new(
@@ -3722,12 +3682,8 @@ fn serve_closed_binding_source_writer_flight_v5(
             let mut reply = [0_u8; 8 + 16 + 32 + 8 + 16 + 32 + 32 + 32 + 32 + 8 + 48];
             reply[..8].copy_from_slice(if committed_binding {
                 POLICY_BINDING_SOURCE_FLIGHT_REPLY_MAGIC_V8
-            } else if signed_terminal {
-                POLICY_BINDING_SOURCE_FLIGHT_REPLY_MAGIC_V7
-            } else if held_terminal {
-                POLICY_BINDING_SOURCE_FLIGHT_REPLY_MAGIC_V6
             } else {
-                POLICY_BINDING_SOURCE_FLIGHT_REPLY_MAGIC_V5
+                POLICY_BINDING_SOURCE_FLIGHT_REPLY_MAGIC_V7
             });
             reply[8..24].copy_from_slice(nonce);
             reply[24..56].copy_from_slice(cut.binding().as_bytes());
@@ -3740,106 +3696,84 @@ fn serve_closed_binding_source_writer_flight_v5(
             reply[208..216].copy_from_slice(&source_issue.to_be_bytes());
             reply[216..264].copy_from_slice(&names.to_bytes());
 
-            if signed_terminal || committed_binding {
-                check_signed_head_expiration(deployment_expires, project_expires)?;
-                stream.write_all(&reply)?;
-                let packet = read_source_writer_flight_terminal(
-                    stream,
-                    nonce,
-                    if committed_binding {
-                        POLICY_BINDING_SOURCE_FLIGHT_TERMINAL_MAGIC_V8
-                    } else {
-                        POLICY_BINDING_SOURCE_FLIGHT_TERMINAL_MAGIC_V7
-                    },
-                )?;
-                session.require_spent_source_challenge_v1(
-                    &proposed,
-                    staged,
-                    source_challenge,
-                    source_issue,
-                )?;
-                check_signed_head_expiration(deployment_expires, project_expires)?;
-                let client_nonce: [u8; 16] = nonce.try_into().map_err(io::Error::other)?;
-                let claim = ClosedSourceTerminalClaimV1::new(
-                    &proposed,
-                    staged,
-                    source_hold,
-                    source_challenge,
-                    source_issue,
-                    names,
-                    joined.source_packet(),
-                    joined.cache_packet(),
-                    ObjectDigest::from_bytes(Sha256::digest(reply).into()),
-                    client_nonce,
-                )?;
-                let pin = controller_hold_pin.ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::PermissionDenied,
-                        "Controller pin unavailable",
-                    )
-                })?;
-                let record = session.record_staged_source_terminal_with_held_proof_v2(
+            check_signed_head_expiration(deployment_expires, project_expires)?;
+            stream.write_all(&reply)?;
+            let packet = read_source_writer_flight_terminal(
+                stream,
+                nonce,
+                if committed_binding {
+                    POLICY_BINDING_SOURCE_FLIGHT_TERMINAL_MAGIC_V8
+                } else {
+                    POLICY_BINDING_SOURCE_FLIGHT_TERMINAL_MAGIC_V7
+                },
+            )?;
+            session.require_spent_source_challenge_v1(
+                &proposed,
+                staged,
+                source_challenge,
+                source_issue,
+            )?;
+            check_signed_head_expiration(deployment_expires, project_expires)?;
+            let client_nonce: [u8; 16] = nonce.try_into().map_err(io::Error::other)?;
+            let claim = ClosedSourceTerminalClaimV1::new(
+                &proposed,
+                staged,
+                source_hold,
+                source_challenge,
+                source_issue,
+                names,
+                joined.source_packet(),
+                joined.cache_packet(),
+                ObjectDigest::from_bytes(Sha256::digest(reply).into()),
+                client_nonce,
+            )?;
+            let pin = controller_hold_pin.ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "Controller pin unavailable",
+                )
+            })?;
+            let record = session.record_staged_source_terminal_with_held_proof_v2(
+                claim,
+                joined,
+                controller_uid,
+                pin,
+                &packet,
+            )?;
+            if committed_binding {
+                let committed = session.commit_staged_source_held_binding_v2(
                     claim,
                     joined,
                     controller_uid,
-                    pin,
-                    &packet,
                 )?;
-                if committed_binding {
-                    let committed = session.commit_staged_source_held_binding_v2(
-                        claim,
-                        joined,
-                        controller_uid,
-                    )?;
-                    let proof = record.held_proof_digest().ok_or_else(|| {
-                        io::Error::new(io::ErrorKind::InvalidData, "V8 held proof absent")
-                    })?;
-                    write_closed_source_cas_receipt_v8(
-                        stream,
-                        POLICY_BINDING_SOURCE_FLIGHT_DONE_MAGIC_V8,
-                        nonce,
-                        committed.binding(),
-                        committed.handoff_epoch(),
-                        record.digest(),
-                        proof,
-                        joined.physical_cache().quota_digest(),
-                    )?;
-                } else {
-                    stream.write_all(POLICY_BINDING_SOURCE_FLIGHT_DONE_MAGIC_V7)?;
-                    stream.write_all(nonce)?;
-                    stream.write_all(record.digest().as_bytes())?;
-                }
-            } else if held_terminal {
-                check_signed_head_expiration(deployment_expires, project_expires)?;
-                stream.write_all(&reply)?;
-                read_source_writer_flight_terminal_v6(stream, nonce, &reply)?;
-                session.require_spent_source_challenge_v1(
-                    &proposed,
-                    staged,
-                    source_challenge,
-                    source_issue,
+                let proof = record.held_proof_digest().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "V8 held proof absent")
+                })?;
+                write_closed_source_cas_receipt_v8(
+                    stream,
+                    POLICY_BINDING_SOURCE_FLIGHT_DONE_MAGIC_V8,
+                    nonce,
+                    committed.binding(),
+                    committed.handoff_epoch(),
+                    record.digest(),
+                    proof,
+                    joined.physical_cache().quota_digest(),
                 )?;
-                check_signed_head_expiration(deployment_expires, project_expires)?;
-
-                stream.write_all(POLICY_BINDING_SOURCE_FLIGHT_DONE_MAGIC_V6)?;
+            } else {
+                stream.write_all(POLICY_BINDING_SOURCE_FLIGHT_DONE_MAGIC_V7)?;
                 stream.write_all(nonce)?;
-                stream.write_all(&Sha256::digest(reply))?;
+                stream.write_all(record.digest().as_bytes())?;
             }
             Ok(reply)
         },
     )??;
     check_signed_head_expiration(deployment_expires, project_expires)?;
-    if !held_terminal {
-        stream.write_all(&reply)?;
-    }
     Ok(())
 }
 
 fn read_source_writer_flight_submission_v5(
     stream: &mut std::os::unix::net::UnixStream,
     nonce: &[u8],
-    held_terminal: bool,
-    signed_terminal: bool,
     committed_binding: bool,
 ) -> io::Result<(
     [u8; CLOSED_CACHE_OWNER_READBACK_BYTES_V2],
@@ -3847,18 +3781,12 @@ fn read_source_writer_flight_submission_v5(
 )> {
     let mut submission = [0; SOURCE_FLIGHT_SUBMIT_BYTES_V5];
     stream.read_exact(&mut submission)?;
-    let mut trailing = [0];
-    if (!held_terminal && stream.read(&mut trailing)? != 0)
-        || &submission[..8]
-            != if committed_binding {
-                POLICY_BINDING_SOURCE_FLIGHT_SUBMIT_MAGIC_V8
-            } else if signed_terminal {
-                POLICY_BINDING_SOURCE_FLIGHT_SUBMIT_MAGIC_V7
-            } else if held_terminal {
-                POLICY_BINDING_SOURCE_FLIGHT_SUBMIT_MAGIC_V6
-            } else {
-                POLICY_BINDING_SOURCE_FLIGHT_SUBMIT_MAGIC_V5
-            }
+    if &submission[..8]
+        != if committed_binding {
+            POLICY_BINDING_SOURCE_FLIGHT_SUBMIT_MAGIC_V8
+        } else {
+            POLICY_BINDING_SOURCE_FLIGHT_SUBMIT_MAGIC_V7
+        }
         || submission[8..24] != *nonce
     {
         return Err(io::Error::new(
@@ -3904,27 +3832,6 @@ fn read_source_writer_flight_terminal(
         ));
     }
     terminal[24..].try_into().map_err(io::Error::other)
-}
-
-fn read_source_writer_flight_terminal_v6(
-    stream: &mut std::os::unix::net::UnixStream,
-    nonce: &[u8],
-    reply: &[u8],
-) -> io::Result<()> {
-    let mut terminal = [0; 8 + 16 + 32];
-    stream.read_exact(&mut terminal)?;
-    let mut trailing = [0];
-    if stream.read(&mut trailing)? != 0
-        || &terminal[..8] != POLICY_BINDING_SOURCE_FLIGHT_TERMINAL_MAGIC_V6
-        || terminal[8..24] != *nonce
-        || terminal[24..] != Sha256::digest(reply)[..]
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "invalid V6 terminal postflight ACK",
-        ));
-    }
-    Ok(())
 }
 
 fn serve_closed_binding_signer_flight(
@@ -4152,8 +4059,6 @@ fn select_project_source<'a>(
         | HeadRequestMode::ClosedBindingStage
         | HeadRequestMode::ClosedBindingPreview
         | HeadRequestMode::ClosedBindingSignerFlight
-        | HeadRequestMode::ClosedBindingSourceWriterFlight
-        | HeadRequestMode::ClosedBindingSourceWriterHeldFlight
         | HeadRequestMode::ClosedBindingSourceWriterSignedFlight
         | HeadRequestMode::ClosedBindingSourceWriterCasFlight
         | HeadRequestMode::ClosedBindingSourceTerminalReplay
@@ -4429,128 +4334,27 @@ mod tests {
     }
 
     #[test]
-    fn v5_source_flight_is_distinct_and_requires_exact_writer_names() {
-        let nonce = [7; 16];
-        let (mut client, mut server) = UnixStream::pair().expect("local policy socket");
-        let mut request = [0_u8; REQUEST_BYTES];
-        request[..8].copy_from_slice(POLICY_BINDING_SOURCE_FLIGHT_QUERY_MAGIC_V5);
-        request[8..24].copy_from_slice(&nonce);
-        client.write_all(&request).expect("V5 flight query");
-        let opened = Cell::new(false);
-        let (_, mode) = read_head_request(&mut server, || {
-            opened.set(true);
-            Ok(())
-        })
-        .expect("exact V5 query");
-        assert!(opened.get());
-        assert!(matches!(
-            mode,
-            HeadRequestMode::ClosedBindingSourceWriterFlight
-        ));
-        let (mut zero_client, mut zero_server) = UnixStream::pair().expect("local policy socket");
-        request[8..24].fill(0);
-        zero_client.write_all(&request).expect("zero V5 query");
-        let opened = Cell::new(false);
-        assert!(
-            read_head_request(&mut zero_server, || {
-                opened.set(true);
-                Ok(())
-            })
-            .is_err()
-        );
-        assert!(!opened.get());
+    fn retired_source_flight_queries_refuse_before_root_custody() {
+        for magic in [b"AOSPHQ5F", b"AOSPHQ6F"] {
+            for nonce in [[7; 16], [0; 16]] {
+                let (mut client, mut server) = UnixStream::pair().expect("local policy socket");
+                let mut request = [0; REQUEST_BYTES];
+                request[..8].copy_from_slice(magic);
+                request[8..24].copy_from_slice(&nonce);
+                client.write_all(&request).expect("retired flight query");
 
-        let mut names_bytes = [0; 48];
-        for (index, chunk) in names_bytes.chunks_exact_mut(8).enumerate() {
-            chunk.copy_from_slice(&(index as u64 + 1).to_be_bytes());
+                let custody_calls = Cell::new(0);
+                let error = read_head_request(&mut server, || {
+                    custody_calls.set(custody_calls.get() + 1);
+                    Ok(())
+                })
+                .err()
+                .expect("retired purpose must fail at parsing");
+
+                assert_eq!(error.to_string(), "invalid head query");
+                assert_eq!(custody_calls.get(), 0);
+            }
         }
-        let names = ProtectedJournalNamesV1::from_bytes(&names_bytes).unwrap();
-        let mut submission = [0; SOURCE_FLIGHT_SUBMIT_BYTES_V5];
-        submission[..8].copy_from_slice(POLICY_BINDING_SOURCE_FLIGHT_SUBMIT_MAGIC_V5);
-        submission[8..24].copy_from_slice(&nonce);
-        submission[24..24 + CLOSED_CACHE_OWNER_READBACK_BYTES_V2].fill(11);
-        submission[24 + CLOSED_CACHE_OWNER_READBACK_BYTES_V2..].copy_from_slice(&names_bytes);
-        let parse = |bytes: &[u8]| {
-            let (mut client, mut server) = UnixStream::pair().expect("flight pair");
-            client.write_all(bytes).expect("flight bytes");
-            client
-                .shutdown(std::net::Shutdown::Write)
-                .expect("request EOF");
-            read_source_writer_flight_submission_v5(&mut server, &nonce, false, false, false)
-        };
-        let (packet, parsed_names) = parse(&submission).expect("exact V5 submission");
-        assert_eq!(packet, [11; CLOSED_CACHE_OWNER_READBACK_BYTES_V2]);
-        assert_eq!(parsed_names, names);
-
-        for offset in [0, 8, 24 + CLOSED_CACHE_OWNER_READBACK_BYTES_V2 + 7] {
-            let mut changed = submission;
-            changed[offset] = 0;
-            assert!(parse(&changed).is_err());
-        }
-        let mut trailing = submission.to_vec();
-        trailing.push(0);
-        assert!(parse(&trailing).is_err());
-        assert!(parse(&submission[..submission.len() - 1]).is_err());
-    }
-
-    #[test]
-    fn v6_source_flight_requires_distinct_mode_and_exact_terminal_ack() {
-        let nonce = [7; 16];
-        let (mut client, mut server) = UnixStream::pair().expect("local policy socket");
-        let mut request = [0_u8; REQUEST_BYTES];
-        request[..8].copy_from_slice(POLICY_BINDING_SOURCE_FLIGHT_QUERY_MAGIC_V6);
-        request[8..24].copy_from_slice(&nonce);
-        client.write_all(&request).expect("V6 query");
-        let (_, mode) = read_head_request(&mut server, || Ok(())).expect("distinct V6 query");
-        assert!(matches!(
-            mode,
-            HeadRequestMode::ClosedBindingSourceWriterHeldFlight
-        ));
-        let (mut zero_client, mut zero_server) = UnixStream::pair().expect("local policy socket");
-        request[8..24].fill(0);
-        zero_client.write_all(&request).expect("zero V6 query");
-        assert!(read_head_request(&mut zero_server, || Ok(())).is_err());
-
-        let mut names_bytes = [0; 48];
-        for (index, chunk) in names_bytes.chunks_exact_mut(8).enumerate() {
-            chunk.copy_from_slice(&(index as u64 + 1).to_be_bytes());
-        }
-        let mut submission = [0; SOURCE_FLIGHT_SUBMIT_BYTES_V5];
-        submission[..8].copy_from_slice(POLICY_BINDING_SOURCE_FLIGHT_SUBMIT_MAGIC_V6);
-        submission[8..24].copy_from_slice(&nonce);
-        submission[24..24 + CLOSED_CACHE_OWNER_READBACK_BYTES_V2].fill(11);
-        submission[24 + CLOSED_CACHE_OWNER_READBACK_BYTES_V2..].copy_from_slice(&names_bytes);
-        client
-            .write_all(&submission)
-            .expect("V6 submission without EOF");
-        let (_, names) =
-            read_source_writer_flight_submission_v5(&mut server, &nonce, true, false, false)
-                .expect("V6 submission while connection remains writable");
-        assert_eq!(names.to_bytes(), names_bytes);
-
-        let reply = [13; 264];
-        let mut terminal = [0; 56];
-        terminal[..8].copy_from_slice(POLICY_BINDING_SOURCE_FLIGHT_TERMINAL_MAGIC_V6);
-        terminal[8..24].copy_from_slice(&nonce);
-        terminal[24..].copy_from_slice(&Sha256::digest(reply));
-        client.write_all(&terminal).expect("terminal ACK");
-        client.shutdown(std::net::Shutdown::Write).expect("ACK EOF");
-        read_source_writer_flight_terminal_v6(&mut server, &nonce, &reply)
-            .expect("exact terminal ACK");
-
-        for offset in [0, 8, 24, 55] {
-            let (mut client, mut server) = UnixStream::pair().expect("local pair");
-            let mut altered = terminal;
-            altered[offset] ^= 1;
-            client.write_all(&altered).expect("altered ACK");
-            client.shutdown(std::net::Shutdown::Write).expect("ACK EOF");
-            assert!(read_source_writer_flight_terminal_v6(&mut server, &nonce, &reply).is_err());
-        }
-        let (mut client, mut server) = UnixStream::pair().expect("local pair");
-        client.write_all(&terminal).expect("terminal ACK");
-        client.write_all(&[0]).expect("trailing byte");
-        client.shutdown(std::net::Shutdown::Write).expect("ACK EOF");
-        assert!(read_source_writer_flight_terminal_v6(&mut server, &nonce, &reply).is_err());
     }
 
     #[test]
@@ -4592,12 +4396,31 @@ mod tests {
         submission[24 + CLOSED_CACHE_OWNER_READBACK_BYTES_V2..].copy_from_slice(&names_bytes);
         client.write_all(&submission).expect("V7 submission");
         assert_eq!(
-            read_source_writer_flight_submission_v5(&mut server, &nonce, true, true, false)
+            read_source_writer_flight_submission_v5(&mut server, &nonce, false)
                 .expect("held V7 submission")
                 .1
                 .to_bytes(),
             names_bytes
         );
+
+        let parse = |bytes: &[u8]| {
+            let (mut client, mut server) = UnixStream::pair().expect("flight pair");
+            client.write_all(bytes).expect("flight bytes");
+            client
+                .shutdown(std::net::Shutdown::Write)
+                .expect("request EOF");
+            read_source_writer_flight_submission_v5(&mut server, &nonce, false)
+        };
+        let (packet, parsed_names) = parse(&submission).expect("exact V7 submission");
+        assert_eq!(packet, [11; CLOSED_CACHE_OWNER_READBACK_BYTES_V2]);
+        assert_eq!(parsed_names.to_bytes(), names_bytes);
+
+        for offset in [0, 8, 24 + CLOSED_CACHE_OWNER_READBACK_BYTES_V2 + 7] {
+            let mut changed = submission;
+            changed[offset] = 0;
+            assert!(parse(&changed).is_err());
+        }
+        assert!(parse(&submission[..submission.len() - 1]).is_err());
 
         let mut terminal = [0; 8 + 16 + 248];
         terminal[..8].copy_from_slice(POLICY_BINDING_SOURCE_FLIGHT_TERMINAL_MAGIC_V7);
