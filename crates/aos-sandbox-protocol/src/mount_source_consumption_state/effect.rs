@@ -3,6 +3,8 @@
 //! Decoding proves closed framing and canonical field boundaries only. The
 //! trailing MAC is retained but is not authenticated in this pure crate.
 
+use aos_sandbox_core::bounded_codec::BoundedReader;
+
 use super::MountSourceConsumptionStateError;
 
 /// Exact Mount authenticated-wrapper magic.
@@ -185,7 +187,8 @@ fn decode_payload(
     key_id: [u8; 16],
     mac: [u8; 32],
 ) -> Result<StructurallyDecodedMountEffectV1, MountSourceConsumptionStateError> {
-    let mut decoder = Decoder::new(payload);
+    let mut decoder =
+        BoundedReader::new(payload, |_| MountSourceConsumptionStateError::InvalidValue);
     if decoder.array::<8>()? != *MOUNT_EFFECT_PAYLOAD_MAGIC_V1 || decoder.u16()? != 1 {
         return Err(MountSourceConsumptionStateError::InvalidValue);
     }
@@ -271,60 +274,140 @@ fn exact<const N: usize>(
         .ok_or(MountSourceConsumptionStateError::InvalidValue)
 }
 
-struct Decoder<'a> {
-    bytes: &'a [u8],
-    cursor: usize,
-}
+#[cfg(test)]
+mod tests {
+    use sha2::{Digest as _, Sha256};
 
-impl<'a> Decoder<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, cursor: 0 }
+    use super::*;
+
+    fn payload(receipt: &[u8]) -> Vec<u8> {
+        // Canonical lease DATA includes an integrity checksum, not a broker MAC.
+        let mut lease = [1; LOCAL_LEASE_RECORD_BYTES_V1];
+        lease[..8].copy_from_slice(b"AOSLLR\0\0");
+        lease[8..10].copy_from_slice(&1_u16.to_be_bytes());
+        let integrity = Sha256::new()
+            .chain_update(b"aos-local-lease-record-integrity-v1\0")
+            .chain_update(&lease[10..202])
+            .finalize();
+        lease[202..].copy_from_slice(&integrity);
+
+        let mut bytes = vec![1; 549];
+        bytes[..8].copy_from_slice(MOUNT_EFFECT_PAYLOAD_MAGIC_V1);
+        bytes[8..10].copy_from_slice(&1_u16.to_be_bytes());
+        bytes[11] = 8;
+        bytes[12] = 2;
+        bytes[221..225].copy_from_slice(&0x0102_0304_u32.to_be_bytes());
+        bytes[225..227].copy_from_slice(&0x0506_u16.to_be_bytes());
+        bytes[227..235].copy_from_slice(&(-0x0102_0304_0506_0708_i64).to_be_bytes());
+        bytes[259..267].copy_from_slice(&0x1112_1314_1516_1718_u64.to_be_bytes());
+        bytes[315..549].copy_from_slice(&lease);
+        bytes.extend_from_slice(&u32::try_from(receipt.len()).unwrap().to_be_bytes());
+        bytes.extend_from_slice(receipt);
+        bytes
     }
 
-    fn bytes(&mut self, length: usize) -> Result<&'a [u8], MountSourceConsumptionStateError> {
-        let end = self
-            .cursor
-            .checked_add(length)
-            .ok_or(MountSourceConsumptionStateError::InvalidValue)?;
-        let value = self
-            .bytes
-            .get(self.cursor..end)
-            .ok_or(MountSourceConsumptionStateError::InvalidValue)?;
-        self.cursor = end;
-        Ok(value)
-    }
+    #[test]
+    fn complete_payload_retains_bytes_and_rejects_every_short_prefix() {
+        let bytes = payload(&[7, 8, 9]);
+        let effect = structurally_decode_mount_effect_payload_v1(&bytes, [2; 16], [3; 32])
+            .expect("complete structural payload");
 
-    fn array<const N: usize>(&mut self) -> Result<[u8; N], MountSourceConsumptionStateError> {
-        self.bytes(N)?
-            .try_into()
-            .map_err(|_| MountSourceConsumptionStateError::InvalidValue)
-    }
-
-    fn u8(&mut self) -> Result<u8, MountSourceConsumptionStateError> {
-        Ok(self.array::<1>()?[0])
-    }
-
-    fn u16(&mut self) -> Result<u16, MountSourceConsumptionStateError> {
-        Ok(u16::from_be_bytes(self.array()?))
-    }
-
-    fn u32(&mut self) -> Result<u32, MountSourceConsumptionStateError> {
-        Ok(u32::from_be_bytes(self.array()?))
-    }
-
-    fn u64(&mut self) -> Result<u64, MountSourceConsumptionStateError> {
-        Ok(u64::from_be_bytes(self.array()?))
-    }
-
-    fn i64(&mut self) -> Result<i64, MountSourceConsumptionStateError> {
-        Ok(i64::from_be_bytes(self.array()?))
-    }
-
-    fn finish(self) -> Result<(), MountSourceConsumptionStateError> {
-        if self.cursor == self.bytes.len() {
-            Ok(())
-        } else {
-            Err(MountSourceConsumptionStateError::InvalidValue)
+        assert_eq!(bytes.len(), 556);
+        assert_eq!(effect.receipt, [7, 8, 9]);
+        assert_eq!(effect.key_id, [2; 16]);
+        assert_eq!(effect.mac, [3; 32]);
+        assert_eq!(effect.maximum_request_bytes, 0x0102_0304);
+        assert_eq!(effect.maximum_descriptors, 0x0506);
+        assert_eq!(effect.plan_expires_seconds, -0x0102_0304_0506_0708);
+        assert_eq!(effect.fail_stop_boottime_nanoseconds, 0x1112_1314_1516_1718);
+        assert_eq!(
+            structurally_encode_mount_effect_payload_v1(&effect).unwrap(),
+            bytes
+        );
+        for length in 0..bytes.len() {
+            assert_eq!(
+                structurally_decode_mount_effect_payload_v1(&bytes[..length], [2; 16], [3; 32]),
+                Err(MountSourceConsumptionStateError::InvalidValue),
+                "short payload length {length}",
+            );
         }
+    }
+
+    #[test]
+    fn payload_preserves_semantic_checks_and_receipt_error_frontiers() {
+        let bytes = payload(&[7, 8, 9]);
+        for (offset, value) in [(0, 0), (9, 2), (10, 2), (11, 0), (12, 3), (315, 0)] {
+            let mut invalid = bytes.clone();
+            invalid[offset] = value;
+            assert_eq!(
+                structurally_decode_mount_effect_payload_v1(&invalid, [2; 16], [3; 32]),
+                Err(MountSourceConsumptionStateError::InvalidValue),
+                "invalid payload offset {offset}",
+            );
+        }
+
+        let mut oversized_receipt = bytes.clone();
+        oversized_receipt[549..553].copy_from_slice(
+            &u32::try_from(MAXIMUM_MOUNT_EFFECT_RECEIPT_BYTES_V1 + 1)
+                .unwrap()
+                .to_be_bytes(),
+        );
+        assert_eq!(
+            structurally_decode_mount_effect_payload_v1(&oversized_receipt, [2; 16], [3; 32]),
+            Err(MountSourceConsumptionStateError::InvalidSize),
+        );
+        oversized_receipt[315] = 0;
+        assert_eq!(
+            structurally_decode_mount_effect_payload_v1(&oversized_receipt, [2; 16], [3; 32]),
+            Err(MountSourceConsumptionStateError::InvalidValue),
+        );
+
+        let mut trailing = bytes;
+        trailing.push(0);
+        assert_eq!(
+            structurally_decode_mount_effect_payload_v1(&trailing, [2; 16], [3; 32]),
+            Err(MountSourceConsumptionStateError::InvalidValue),
+        );
+
+        let maximum_receipt = payload(&vec![7; MAXIMUM_MOUNT_EFFECT_RECEIPT_BYTES_V1]);
+        assert_eq!(
+            structurally_decode_mount_effect_payload_v1(&maximum_receipt, [2; 16], [3; 32])
+                .unwrap()
+                .receipt
+                .len(),
+            MAXIMUM_MOUNT_EFFECT_RECEIPT_BYTES_V1,
+        );
+    }
+
+    #[test]
+    fn wrapper_size_and_framing_refusals_remain_distinct() {
+        let effect = structurally_decode_mount_effect_payload_v1(&payload(&[]), [2; 16], [3; 32])
+            .expect("complete structural payload");
+        let bytes = structurally_encode_mount_effect_v1(&effect).unwrap();
+
+        assert_eq!(structurally_decode_mount_effect_v1(&bytes), Ok(effect));
+        assert_eq!(
+            structurally_decode_mount_effect_v1(&bytes[..63]),
+            Err(MountSourceConsumptionStateError::InvalidSize),
+        );
+        assert_eq!(
+            structurally_decode_mount_effect_v1(&vec![0; MAXIMUM_MOUNT_EFFECT_VALUE_BYTES_V1 + 1]),
+            Err(MountSourceConsumptionStateError::InvalidSize),
+        );
+        for offset in [0, 9, 10, 11] {
+            let mut invalid = bytes.clone();
+            invalid[offset] ^= 1;
+            assert_eq!(
+                structurally_decode_mount_effect_v1(&invalid),
+                Err(MountSourceConsumptionStateError::InvalidValue),
+                "invalid wrapper offset {offset}",
+            );
+        }
+        let mut invalid_length = bytes;
+        invalid_length[28..32].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert_eq!(
+            structurally_decode_mount_effect_v1(&invalid_length),
+            Err(MountSourceConsumptionStateError::InvalidSize),
+        );
     }
 }
