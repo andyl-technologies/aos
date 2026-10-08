@@ -59,6 +59,7 @@
     defaultDefinition = args:
       import ./aos-definition.nix {
         inherit (args) lib pkgs systemPackageSlice;
+        registryFiles = args.registryFiles or [];
         evidenceOverrides = args.evidenceOverrides or [];
         platform = platformFor args.targetPlatform;
       };

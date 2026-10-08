@@ -29,11 +29,23 @@
     features = pkgs.stdenv.hostPlatform.constraints.features;
   };
   runtimeClosureAudit = lib.build.runtimeClosureAudit;
+
+  # Package registry policy follows the evaluated system, including overrides.
+  # Copy its small text files without admitting the rest of the host /etc tree.
+  registryFiles = lib.mapAttrsToList (_: entry: {
+    path = "/etc/${entry.target}";
+    mode =
+      if builtins.elem entry.mode ["symlink" "direct-symlink"]
+      then "0444"
+      else lib.optionalString (builtins.stringLength entry.mode == 3) "0" + entry.mode;
+    text = entry.text;
+  }) (lib.filterAttrs (_: entry: entry.enable && lib.hasPrefix "apm/" entry.target) config.environment.etc);
+
   defaultDefinition =
     if enabled
     then
       (backend.defaultDefinition {
-        inherit lib pkgs targetPlatform;
+        inherit lib pkgs targetPlatform registryFiles;
         systemPackageSlice = cfg.systemPackageSlice;
       })
       .config
@@ -98,7 +110,15 @@ in {
   };
 
   config = lib.mkIf enabled {
-    aos.containers.definitions.aos = lib.mkDefault defaultDefinition;
+    # File lists compose with release-profile files at ordinary priority. A
+    # default-priority list would disappear as soon as a profile added a file.
+    aos.containers.definitions.aos = lib.mkMerge [
+      (lib.mkDefault (defaultDefinition
+        // {
+          filesystem = builtins.removeAttrs defaultDefinition.filesystem ["files"];
+        }))
+      {filesystem.files = lib.mkBefore defaultDefinition.filesystem.files;}
+    ];
 
     assertions = [
       {

@@ -52,7 +52,10 @@
 
   ${lib.optionalString (fzf != null) ''
     # Load upstream history search only where its terminal UI can run. Explicit
-    # FZF settings remain authoritative; file and directory widgets are opt-in.
+    # history options remain authoritative; file and directory widgets are opt-in.
+    if [ "''${FZF_CTRL_R_OPTS+x}" != x ]; then
+      FZF_CTRL_R_OPTS='--height=~40% --min-height=1 --layout=reverse --info=inline'
+    fi
     case "''${TERM:-dumb}" in
       dumb|"") ;;
       *)
