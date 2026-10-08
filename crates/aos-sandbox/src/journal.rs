@@ -43,6 +43,7 @@ use aos_sandbox_journal::framing::{
 };
 use aos_sandbox_journal::geometry::{EncodedRecordLayout, NativeGeometryBounds, RecordShape};
 use aos_sandbox_journal::materialized::{self, RecordMutationRef};
+use aos_sandbox_journal::record::{self, RecordError, RecordHeader};
 
 pub mod canonical_map;
 mod delete_batch;
@@ -747,6 +748,15 @@ impl From<FrameError> for JournalError {
             FrameError::LimitExceeded(bound) => Self::LimitExceeded(bound),
             FrameError::MissingRetainedPayload => Self::ProtectedBoundary,
             FrameError::SequenceExhausted => Self::SequenceExhausted,
+        }
+    }
+}
+
+impl From<RecordError> for JournalError {
+    fn from(error: RecordError) -> Self {
+        match error {
+            RecordError::MalformedRecord(reason) => Self::MalformedRecord(reason),
+            RecordError::LimitExceeded(bound) => Self::LimitExceeded(bound),
         }
     }
 }
@@ -9393,15 +9403,7 @@ fn encode_record_fields(
     key: &[u8],
     value: Option<&[u8]>,
 ) -> Result<Vec<u8>, JournalError> {
-    let layout = EncodedRecordLayout::new(key.len(), value.map(<[u8]>::len))?;
-    let value_bytes = value.unwrap_or_default();
-    let mut payload = Vec::with_capacity(layout.payload_bytes);
-    payload.push(namespace as u8);
-    payload.extend_from_slice(&layout.key_length.to_le_bytes());
-    payload.extend_from_slice(&layout.value_length.to_le_bytes());
-    payload.extend_from_slice(key);
-    payload.extend_from_slice(value_bytes);
-    Ok(payload)
+    record::encode_record_fields(namespace as u8, key, value).map_err(JournalError::from)
 }
 
 #[cfg(target_os = "linux")]
@@ -9433,36 +9435,11 @@ pub(crate) fn q04_controller_before_rows_digest_v1(
 }
 
 fn decode_record(payload: &[u8], limits: JournalLimits) -> Result<JournalRecord, JournalError> {
-    if payload.len() < 7 {
-        return Err(JournalError::MalformedRecord("record header is truncated"));
-    }
-    let namespace = RecordNamespace::from_byte(payload[0])?;
-    let key_length = u16::from_le_bytes([payload[1], payload[2]]) as usize;
-    let value_length = u32::from_le_bytes(
-        payload[3..7]
-            .try_into()
-            .map_err(|_| JournalError::MalformedRecord("invalid value length"))?,
-    );
-    if key_length == 0 || key_length > limits.maximum_key_bytes {
-        return Err(JournalError::LimitExceeded("record key bytes"));
-    }
-    let expected = if value_length == u32::MAX {
-        7_usize.checked_add(key_length)
-    } else {
-        7_usize
-            .checked_add(key_length)
-            .and_then(|length| length.checked_add(value_length as usize))
-    }
-    .ok_or(JournalError::LimitExceeded("record payload bytes"))?;
-    if expected != payload.len() || payload.len() > limits.maximum_record_bytes {
-        return Err(JournalError::MalformedRecord("record length mismatch"));
-    }
-    let key = payload[7..7 + key_length].to_vec();
-    let value = if value_length == u32::MAX {
-        None
-    } else {
-        Some(payload[7 + key_length..].to_vec())
-    };
+    let header = RecordHeader::read(payload)?;
+    let namespace = RecordNamespace::from_byte(header.namespace_byte())?;
+    let fields = header.decode_fields(limits.maximum_key_bytes, limits.maximum_record_bytes)?;
+    let key = fields.key.to_vec();
+    let value = fields.value.map(<[u8]>::to_vec);
     Ok(JournalRecord {
         namespace,
         key,
@@ -10188,6 +10165,103 @@ mod tests {
         open_protected_file, protected_open_error,
         require_opened_directory_identity, traverse_protected_directory,
     };
+
+    #[test]
+    fn native_record_decode_preserves_closed_namespace_error_precedence() {
+        let limits = JournalLimits {
+            maximum_key_bytes: 0,
+            maximum_record_bytes: 0,
+            ..JournalLimits::default()
+        };
+
+        for namespace in [0, 77, 78, 79, 255] {
+            let payload = [namespace, 0, 0, 255, 255, 255, 255];
+
+            assert!(matches!(
+                super::decode_record(&payload[..6], limits),
+                Err(JournalError::MalformedRecord("record header is truncated")),
+            ));
+            assert!(matches!(
+                super::decode_record(&payload, limits),
+                Err(JournalError::MalformedRecord("unknown record namespace")),
+            ));
+        }
+
+        let limits = JournalLimits {
+            maximum_key_bytes: 1,
+            maximum_record_bytes: 0,
+            ..JournalLimits::default()
+        };
+
+        assert!(matches!(
+            super::decode_record(&[1, 2, 0, 0, 0, 0, 0], limits),
+            Err(JournalError::LimitExceeded("record key bytes")),
+        ));
+        assert!(matches!(
+            super::decode_record(&[1, 1, 0, 0, 0, 0, 0], limits),
+            Err(JournalError::MalformedRecord("record length mismatch")),
+        ));
+    }
+
+    #[test]
+    fn native_record_error_adapter_preserves_each_classification_and_message() {
+        use super::RecordError;
+
+        let cases = [
+            (
+                RecordError::MalformedRecord("record header is truncated"),
+                JournalError::MalformedRecord("record header is truncated"),
+            ),
+            (
+                RecordError::MalformedRecord("invalid value length"),
+                JournalError::MalformedRecord("invalid value length"),
+            ),
+            (
+                RecordError::MalformedRecord("record length mismatch"),
+                JournalError::MalformedRecord("record length mismatch"),
+            ),
+            (
+                RecordError::LimitExceeded("record key bytes"),
+                JournalError::LimitExceeded("record key bytes"),
+            ),
+            (
+                RecordError::LimitExceeded("record payload bytes"),
+                JournalError::LimitExceeded("record payload bytes"),
+            ),
+        ];
+
+        for (codec, expected) in cases {
+            assert_eq!(codec.to_string(), expected.to_string());
+
+            let actual = JournalError::from(codec);
+
+            assert_eq!(std::mem::discriminant(&actual), std::mem::discriminant(&expected));
+            assert_eq!(actual.to_string(), expected.to_string());
+        }
+    }
+
+    #[test]
+    fn typed_native_record_wrappers_preserve_canonical_bytes() {
+        let cases: [(Option<&[u8]>, &[u8]); 3] = [
+            (Some(b"v"), &[1, 1, 0, 1, 0, 0, 0, b'k', b'v']),
+            (Some(b""), &[1, 1, 0, 0, 0, 0, 0, b'k']),
+            (None, &[1, 1, 0, 255, 255, 255, 255, b'k']),
+        ];
+
+        for (value, expected) in cases {
+            let record = JournalRecord {
+                namespace: RecordNamespace::DesiredState,
+                key: b"k".to_vec(),
+                value: value.map(<[u8]>::to_vec),
+            };
+
+            let payload = super::encode_record(&record).unwrap();
+            let decoded = super::decode_record(&payload, JournalLimits::default()).unwrap();
+
+            assert_eq!(payload, expected);
+            assert_eq!(decoded, record);
+        }
+    }
 
     #[test]
     fn materialized_mutation_view_borrows_the_original_record_bytes() {

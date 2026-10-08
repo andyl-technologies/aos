@@ -4,6 +4,8 @@
 //! write/flush/sync mechanics. [`geometry`] owns record and transaction widths
 //! and generic native configuration bounds. [`materialized`] owns ordered
 //! DATA-map projection and mutation without domain-specific indexes or admission.
+//! [`record`] owns raw namespace bytes and borrowed native record payloads;
+//! domain owners retain closed namespace decoding and semantic validation.
 //! Controller, Storage, and session-security owners use these same mechanics
 //! without sharing authority.
 //!
@@ -15,3 +17,4 @@
 pub mod framing;
 pub mod geometry;
 pub mod materialized;
+pub mod record;
