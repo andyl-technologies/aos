@@ -395,9 +395,11 @@ mod tests {
                 OperatorStorageRepairRequestV3::decode(&request.encode()),
                 Ok(request.clone())
             );
-            let mut legacy = request.encode();
-            legacy[..8].copy_from_slice(b"AOSORTR2");
-            assert!(OperatorStorageRepairRequestV3::decode(&legacy).is_err());
+            for magic in [b"AOSORTR1", b"AOSORTR2"] {
+                let mut legacy = request.encode();
+                legacy[..8].copy_from_slice(magic);
+                assert!(OperatorStorageRepairRequestV3::decode(&legacy).is_err());
+            }
             let mut trailing = request.encode();
             trailing.push(1);
             assert!(OperatorStorageRepairRequestV3::decode(&trailing).is_err());
@@ -446,9 +448,11 @@ mod tests {
                 OperatorStorageRepairResponseV3::decode(&response.encode()),
                 Ok(response.clone())
             );
-            let mut legacy = response.encode();
-            legacy[..8].copy_from_slice(b"AOSORRS2");
-            assert!(OperatorStorageRepairResponseV3::decode(&legacy).is_err());
+            for magic in [b"AOSORRS1", b"AOSORRS2"] {
+                let mut legacy = response.encode();
+                legacy[..8].copy_from_slice(magic);
+                assert!(OperatorStorageRepairResponseV3::decode(&legacy).is_err());
+            }
             let mut trailing = response.encode();
             trailing.push(1);
             assert!(OperatorStorageRepairResponseV3::decode(&trailing).is_err());
