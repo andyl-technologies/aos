@@ -1,18 +1,14 @@
-//! Immutable residency catalog and authorization-scoped lookup memoization.
+//! Immutable residency catalog and retained lookup-result data.
 //!
 //! A canonical name is not visibility.  Only a committed catalog entry can be
 //! considered for a hit, and even that hit is returned only through a current
-//! independently authorized lookup.  Negative observations and in-flight
-//! coalescing use the same authority-scoped key as positive observations.
-
-use std::collections::{BTreeMap, VecDeque};
+//! independently authorized lookup. Positive and negative lookup observations
+//! remain nonauthorizing data for protected recovery.
 
 use aos_sandbox_core::{ObjectDescriptor, ObjectDigest, OperationId};
 
 use super::accounting::CacheReservationId;
-use super::domain::{
-    AuthorizedLookupKey, CacheIsolationPolicyV1, PhysicalPartitionId, validate_object_descriptor,
-};
+use super::domain::{PhysicalPartitionId, validate_object_descriptor};
 
 /// Identifies an immutable publisher-verified seal.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -228,43 +224,6 @@ impl CatalogEntryV1 {
     }
 }
 
-/// Bounds lookup retention, coalescing, and caller-visible backpressure.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct LookupMemoLimitsV1 {
-    /// Maximum retained positive and negative entries together.
-    pub maximum_entries: usize,
-    /// Maximum simultaneous coalesced misses.
-    pub maximum_in_flight: usize,
-    /// Maximum aggregate byte permits retained by in-flight lookups.
-    pub maximum_in_flight_bytes: u64,
-    /// Maximum waiters admitted for one exact lookup.
-    pub maximum_waiters_per_lookup: u32,
-    /// Maximum generation span for a negative result.
-    pub maximum_negative_span: u64,
-}
-
-impl LookupMemoLimitsV1 {
-    /// Validates bounded memoization limits.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CatalogError::InvalidLimits`] for zero or excessive limits.
-    pub fn validate(self) -> Result<Self, CatalogError> {
-        if self.maximum_entries == 0
-            || self.maximum_entries > 1_000_000
-            || self.maximum_in_flight == 0
-            || self.maximum_in_flight > 65_536
-            || self.maximum_in_flight_bytes == 0
-            || self.maximum_waiters_per_lookup == 0
-            || self.maximum_waiters_per_lookup > 65_536
-            || self.maximum_negative_span == 0
-        {
-            return Err(CatalogError::InvalidLimits);
-        }
-        Ok(self)
-    }
-}
-
 /// Records one authority-scoped lookup result.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LookupMemoValueV1 {
@@ -274,173 +233,7 @@ pub enum LookupMemoValueV1 {
     Negative { valid_through_generation: u64 },
 }
 
-/// Reports whether a miss became the fetch leader or joined bounded work.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CoalescingOutcomeV1 {
-    /// The caller owns the new fetch attempt.
-    Leader,
-    /// The caller joined the exact same authority-scoped lookup.
-    Joined { waiter_ordinal: u32 },
-}
-
-/// Maintains bounded, authority-scoped lookup observations.
-#[derive(Clone, Debug)]
-pub struct LookupMemoV1 {
-    limits: LookupMemoLimitsV1,
-    entries: BTreeMap<AuthorizedLookupKey, LookupMemoValueV1>,
-    order: VecDeque<AuthorizedLookupKey>,
-    in_flight: BTreeMap<AuthorizedLookupKey, InFlightLookupV1>,
-    in_flight_bytes: u64,
-    coalescing_enabled: bool,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct InFlightLookupV1 {
-    waiters: u32,
-    reserved_bytes: u64,
-}
-
-impl LookupMemoV1 {
-    /// Constructs an empty bounded lookup memo.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CatalogError::InvalidLimits`] for invalid limits.
-    pub fn new(
-        limits: LookupMemoLimitsV1,
-        isolation: CacheIsolationPolicyV1,
-    ) -> Result<Self, CatalogError> {
-        let isolation = isolation
-            .validate()
-            .map_err(|_| CatalogError::InvalidLimits)?;
-        Ok(Self {
-            limits: limits.validate()?,
-            entries: BTreeMap::new(),
-            order: VecDeque::new(),
-            in_flight: BTreeMap::new(),
-            in_flight_bytes: 0,
-            coalescing_enabled: isolation.fetch_coalescing,
-        })
-    }
-
-    /// Reads a memo only when its retained generation remains current.
-    #[must_use]
-    pub fn get(
-        &self,
-        key: AuthorizedLookupKey,
-        current_catalog_generation: u64,
-    ) -> Option<LookupMemoValueV1> {
-        match self.entries.get(&key).copied() {
-            Some(LookupMemoValueV1::Negative {
-                valid_through_generation,
-            }) if current_catalog_generation > valid_through_generation => None,
-            value => value,
-        }
-    }
-
-    /// Begins or joins one bounded authority-scoped miss.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CatalogError::Backpressure`] when either the global in-flight
-    /// bound or per-key waiter bound is exhausted.
-    pub fn begin_miss(
-        &mut self,
-        key: AuthorizedLookupKey,
-        reserved_bytes: u64,
-    ) -> Result<CoalescingOutcomeV1, CatalogError> {
-        if reserved_bytes == 0 {
-            return Err(CatalogError::Backpressure);
-        }
-        let next_total = self
-            .in_flight_bytes
-            .checked_add(reserved_bytes)
-            .ok_or(CatalogError::Backpressure)?;
-        if next_total > self.limits.maximum_in_flight_bytes {
-            return Err(CatalogError::Backpressure);
-        }
-        if let Some(in_flight) = self.in_flight.get_mut(&key) {
-            if !self.coalescing_enabled {
-                return Err(CatalogError::Backpressure);
-            }
-            if in_flight.waiters >= self.limits.maximum_waiters_per_lookup {
-                return Err(CatalogError::Backpressure);
-            }
-            in_flight.waiters += 1;
-            in_flight.reserved_bytes = in_flight
-                .reserved_bytes
-                .checked_add(reserved_bytes)
-                .ok_or(CatalogError::Backpressure)?;
-            self.in_flight_bytes = next_total;
-            return Ok(CoalescingOutcomeV1::Joined {
-                waiter_ordinal: in_flight.waiters,
-            });
-        }
-        if self.in_flight.len() >= self.limits.maximum_in_flight {
-            return Err(CatalogError::Backpressure);
-        }
-        self.in_flight.insert(
-            key,
-            InFlightLookupV1 {
-                waiters: 0,
-                reserved_bytes,
-            },
-        );
-        self.in_flight_bytes = next_total;
-        Ok(CoalescingOutcomeV1::Leader)
-    }
-
-    /// Completes coalesced work and retains a bounded result.
-    pub fn complete(
-        &mut self,
-        key: AuthorizedLookupKey,
-        value: LookupMemoValueV1,
-        current_catalog_generation: u64,
-    ) {
-        if let Some(in_flight) = self.in_flight.remove(&key) {
-            self.in_flight_bytes = self
-                .in_flight_bytes
-                .saturating_sub(in_flight.reserved_bytes);
-        }
-        let bounded_value = match value {
-            LookupMemoValueV1::Negative {
-                valid_through_generation,
-            } => LookupMemoValueV1::Negative {
-                valid_through_generation: valid_through_generation.min(
-                    current_catalog_generation.saturating_add(self.limits.maximum_negative_span),
-                ),
-            },
-            positive => positive,
-        };
-        if self.entries.insert(key, bounded_value).is_none() {
-            self.order.push_back(key);
-        }
-        while self.entries.len() > self.limits.maximum_entries {
-            if let Some(oldest) = self.order.pop_front() {
-                self.entries.remove(&oldest);
-            } else {
-                break;
-            }
-        }
-    }
-
-    /// Removes one in-flight miss without installing a presence observation.
-    ///
-    /// This is used after a proved pre-fetch failure or during bounded recovery;
-    /// it does not create a negative cache entry.
-    #[must_use]
-    pub fn abort_miss(&mut self, key: AuthorizedLookupKey) -> bool {
-        let Some(in_flight) = self.in_flight.remove(&key) else {
-            return false;
-        };
-        self.in_flight_bytes = self
-            .in_flight_bytes
-            .saturating_sub(in_flight.reserved_bytes);
-        true
-    }
-}
-
-/// Reports invalid catalog state or bounded lookup exhaustion.
+/// Reports invalid catalog state or exhausted catalog generations.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum CatalogError {
     /// An entry, seal, backing identity, or chain commitment is malformed.
@@ -452,12 +245,6 @@ pub enum CatalogError {
     /// A generation counter is exhausted.
     #[error("cache catalog generation is exhausted")]
     GenerationExhausted,
-    /// Lookup memo limits are invalid.
-    #[error("cache lookup memo limits are invalid")]
-    InvalidLimits,
-    /// Bounded miss coalescing or request admission is full.
-    #[error("cache lookup is backpressured")]
-    Backpressure,
 }
 
 // Domains and authority validation stay with callers; only these existing

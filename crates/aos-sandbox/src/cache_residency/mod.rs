@@ -60,9 +60,8 @@ pub use admission::{
     SourceAuthorizationV1, WatermarkRequirementV1, initial_pin_set_digest,
 };
 pub use catalog::{
-    BackingObjectIdentityV1, CatalogEntryV1, CatalogError, CatalogPresenceV1, CoalescingOutcomeV1,
-    ImmutableSealV1, LookupMemoLimitsV1, LookupMemoV1, LookupMemoValueV1, SealProfileV1,
-    canonical_name_digest,
+    BackingObjectIdentityV1, CatalogEntryV1, CatalogError, CatalogPresenceV1, ImmutableSealV1,
+    LookupMemoValueV1, SealProfileV1, canonical_name_digest,
 };
 pub use controller_adapter::{
     CacheResidencyAuthorityRequestV1, CacheResidencyControllerCommitV1,
