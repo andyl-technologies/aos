@@ -234,8 +234,15 @@ refuses dropping a required binding; present missing bodies and divergent
 relationships still refuse. Its native Active gate passes the first eight
 cases, then fails the unchanged generic Index metadata fixture. TREE-35 preserves
 generic retained Index data; DRV-30's stricter carrier validation requires an
-independently supplied contextual role. The fixture correction is under review,
-and the owning `index-tree-maintenance` gate still fails explicitly as pending.
+independently supplied contextual role. The separately reviewed fixture correction
+on `66a70878c7` then passes all ten exact native Active Nix cases. It admits
+generic immutable Index bytes while every explicitly supplied executable role
+still rejects their schema; malformed and namespace-use refusals remain intact.
+The owning `index-tree-maintenance` gate still fails explicitly as pending.
+The ordinary merge correction on `4ae7309767` passes all three ordinary contracts
+and the native occurrence case. The native input and Fold cases still fail
+with malformed-request errors. The owning algebra gate passes 31 Core cases,
+then fails its first native case; no complete algebra qualification follows.
 Independent full-diff review of the recovered `a774b69878` dependency verifies
 all fifteen before and after images against the fixed composition. Integration
 preserves actual Original/control retention, independent per-view selection,
