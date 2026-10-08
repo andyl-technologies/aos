@@ -21,7 +21,7 @@ use crate::journal::source_tree_genesis::{
     SourceGenesisTransitionV1, ack_key, receipt_key,
 };
 use crate::journal::{
-    Journal, JournalRecord, JournalTransaction, ProtectedJournalNamesV1, RecordNamespace,
+    Journal, JournalError, JournalRecord, JournalTransaction, ProtectedJournalNamesV1, RecordNamespace,
 };
 use crate::lifecycle::protected_journal_join::{
     PROTECTED_SOURCE_DOMAIN_JOURNAL, PROTECTED_SOURCE_DOMAIN_ROOT,

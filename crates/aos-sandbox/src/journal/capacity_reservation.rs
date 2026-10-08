@@ -840,6 +840,13 @@ impl Journal {
     }
 }
 
+fn take<const N: usize>(value: &[u8], offset: &mut usize) -> [u8; N] {
+    let mut bytes = [0; N];
+    bytes.copy_from_slice(&value[*offset..*offset + N]);
+    *offset += N;
+    bytes
+}
+
 pub(in crate::journal) fn digest_bytes(value: &[u8]) -> [u8; 32] {
     Sha256::digest(value).into()
 }

@@ -17,7 +17,8 @@ use sha2::{Digest as _, Sha256};
 use super::ConsumerResourceErrorV1;
 use super::source::{ResourceSource, SOURCE_BYTES};
 use crate::{
-    GlobalCapacityReservationPurposeV1, GlobalCapacityReservationRequestV1, Journal, JournalRecord,
+    GlobalCapacityReservationPurposeV1, GlobalCapacityReservationRequestV1, Journal, JournalError,
+    JournalRecord,
     JournalTransaction, PreparedGlobalCapacityReservationV1, ProtectedJournalPreflight,
     RecordNamespace,
 };
@@ -629,8 +630,10 @@ pub(super) fn require_transition(
                             capacities[0].key().to_vec(),
                         ),
                     ],
-                )?;
-                if crate::journal::encoded_transaction_append_bytes(&terminal)?
+                )
+                .map_err(JournalError::from)?;
+                if crate::journal::encoded_transaction_append_bytes(&terminal)
+                    .map_err(JournalError::from)?
                     != request.terminal_bytes
                 {
                     return Err(ConsumerResourceErrorV1::Changed);
