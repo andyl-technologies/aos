@@ -1,6 +1,9 @@
 //! Bounded primitive codecs shared by the closed AOSSPL01 record bodies.
 
-use aos_sandbox_core::ObjectDigest;
+use aos_sandbox_core::{
+    ObjectDigest,
+    bounded_codec::{BoundedReader, ReadError},
+};
 use aos_sandbox_source_provider_protocol::{
     SourceProviderAuthorityV1, SourceProviderKeyUsageV1, SourceProviderSigningKeyV1,
 };
@@ -103,30 +106,25 @@ impl Encoder {
 }
 
 pub(super) struct Decoder<'a> {
-    bytes: &'a [u8],
-    offset: usize,
+    reader: BoundedReader<'a, LedgerFormatErrorV1>,
+    // Fixed-layout checks observe consumed bytes; Core owns cursor advances.
+    initial_len: usize,
 }
 
 impl<'a> Decoder<'a> {
     pub(super) fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, offset: 0 }
+        Self {
+            reader: BoundedReader::new(bytes, body_read_error),
+            initial_len: bytes.len(),
+        }
     }
 
     pub(super) fn offset(&self) -> usize {
-        self.offset
+        self.initial_len - self.reader.remaining()
     }
 
     pub(super) fn take(&mut self, count: usize) -> Result<&'a [u8], LedgerFormatErrorV1> {
-        let end = self
-            .offset
-            .checked_add(count)
-            .ok_or(LedgerFormatErrorV1::Corrupt("body offset overflow"))?;
-        let value = self
-            .bytes
-            .get(self.offset..end)
-            .ok_or(LedgerFormatErrorV1::Corrupt("truncated record body"))?;
-        self.offset = end;
-        Ok(value)
+        self.reader.bytes(count)
     }
 
     pub(super) fn array<const N: usize>(&mut self) -> Result<[u8; N], LedgerFormatErrorV1> {
@@ -323,11 +321,20 @@ impl<'a> Decoder<'a> {
     }
 
     pub(super) fn finish(&self) -> Result<(), LedgerFormatErrorV1> {
-        if self.offset == self.bytes.len() {
+        if self.reader.is_empty() {
             Ok(())
         } else {
             Err(LedgerFormatErrorV1::Corrupt("trailing record bytes"))
         }
+    }
+}
+
+fn body_read_error(error: ReadError) -> LedgerFormatErrorV1 {
+    match error {
+        ReadError::LengthOverflow => LedgerFormatErrorV1::Corrupt("body offset overflow"),
+        ReadError::Truncated => LedgerFormatErrorV1::Corrupt("truncated record body"),
+        ReadError::NonzeroReserved => LedgerFormatErrorV1::Corrupt("nonzero reserved bytes"),
+        ReadError::TrailingBytes => LedgerFormatErrorV1::Corrupt("trailing record bytes"),
     }
 }
 
@@ -347,4 +354,60 @@ pub(super) fn read_u32(bytes: &[u8], offset: usize) -> Result<u32, LedgerFormatE
 
 pub(super) fn read_u64(bytes: &[u8], offset: usize) -> Result<u64, LedgerFormatErrorV1> {
     Ok(u64::from_be_bytes(read_array(bytes, offset)?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn range_failures_preserve_offset_and_reserved_and_tail_checks_keep_their_order() {
+        let mut reader = Decoder::new(&[0, 1, 0]);
+        assert_eq!(reader.u8().unwrap(), 0);
+        assert_eq!(reader.offset(), 1);
+
+        assert!(matches!(
+            reader.take(usize::MAX),
+            Err(LedgerFormatErrorV1::Corrupt("body offset overflow"))
+        ));
+        assert!(matches!(
+            reader.array::<3>(),
+            Err(LedgerFormatErrorV1::Corrupt("truncated record body"))
+        ));
+        assert_eq!(reader.offset(), 1);
+
+        assert!(matches!(
+            reader.zeros(1),
+            Err(LedgerFormatErrorV1::Corrupt("nonzero reserved bytes"))
+        ));
+        assert_eq!(reader.offset(), 2);
+        assert!(matches!(
+            reader.finish(),
+            Err(LedgerFormatErrorV1::Corrupt("trailing record bytes"))
+        ));
+
+        assert_eq!(reader.take(1).unwrap(), &[0]);
+        reader.finish().unwrap();
+        assert_eq!(reader.offset(), 3);
+    }
+
+    #[test]
+    fn semantic_field_refusals_keep_consumed_bytes_and_exact_errors() {
+        let mut digest = Decoder::new(&[0; 32]);
+        assert!(matches!(
+            digest.nonzero_digest(),
+            Err(LedgerFormatErrorV1::Corrupt("zero digest"))
+        ));
+        assert_eq!(digest.offset(), 32);
+        digest.finish().unwrap();
+
+        let bytes = 2_u32.to_be_bytes();
+        let mut length = Decoder::new(&bytes);
+        assert!(matches!(
+            length.bounded_len(1),
+            Err(LedgerFormatErrorV1::LimitExceeded("record artifact"))
+        ));
+        assert_eq!(length.offset(), bytes.len());
+        length.finish().unwrap();
+    }
 }

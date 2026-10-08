@@ -77,9 +77,9 @@ pub fn decode_durable_execution_admission_v1(
     if bytes.len() > MAX_DURABLE_RECORD_BYTES {
         return Err(DurableExecutionCodecError::RecordTooLarge);
     }
-    let mut cursor = Cursor::new(bytes);
-    cursor.exact(ADMISSION_MAGIC)?;
-    let specification_bytes = cursor.length_prefixed(16 * 1_048_576)?;
+    let mut cursor = Cursor::new(bytes, cursor_error);
+    expect_magic(&mut cursor, ADMISSION_MAGIC)?;
+    let specification_bytes = length_prefixed(&mut cursor, 16 * 1_048_576)?;
     let operation = BackendOperationIdV1::new(cursor.array()?)?;
     let request_digest = ObjectDigest::from_bytes(cursor.array()?);
     let runtime_currentness = read_runtime_currentness(&mut cursor)?;
@@ -174,9 +174,9 @@ pub fn decode_durable_execution_effect_v1(
     if bytes.len() > MAX_DURABLE_RECORD_BYTES {
         return Err(DurableExecutionCodecError::RecordTooLarge);
     }
-    let mut cursor = Cursor::new(bytes);
-    cursor.exact(EFFECT_MAGIC)?;
-    let admission_bytes = cursor.length_prefixed(MAX_DURABLE_RECORD_BYTES)?;
+    let mut cursor = Cursor::new(bytes, cursor_error);
+    expect_magic(&mut cursor, EFFECT_MAGIC)?;
+    let admission_bytes = length_prefixed(&mut cursor, MAX_DURABLE_RECORD_BYTES)?;
     let admission = decode_durable_execution_admission_v1(admission_bytes)?;
     let operation_code = cursor.u8()?;
     let arguments: [u8; 4] = cursor.array()?;
@@ -190,7 +190,7 @@ pub fn decode_durable_execution_effect_v1(
         1 => {
             let status = decode_completion_status(cursor.u8()?)?;
             let observation_sequence = ObservationSequence::new(cursor.u64()?);
-            let result = cursor.length_prefixed(15 * 1_048_576)?.to_vec();
+            let result = length_prefixed(&mut cursor, 15 * 1_048_576)?.to_vec();
             let result_digest = ObjectDigest::from_bytes(cursor.array()?);
             let completion = EffectCompletionV1::new(status, observation_sequence, result)?;
             if completion.result_digest() != result_digest {
@@ -359,62 +359,108 @@ fn execution_limits(maximum_bytes: usize) -> DecodeLimits {
     }
 }
 
-struct Cursor<'a> {
-    bytes: &'a [u8],
-    position: usize,
+type Cursor<'a> = crate::bounded_codec::BoundedReader<'a, DurableExecutionCodecError>;
+
+fn cursor_error(error: crate::bounded_codec::ReadError) -> DurableExecutionCodecError {
+    use crate::bounded_codec::ReadError;
+
+    match error {
+        ReadError::LengthOverflow => DurableExecutionCodecError::InvalidLength,
+        ReadError::Truncated => DurableExecutionCodecError::Truncated,
+        ReadError::TrailingBytes => DurableExecutionCodecError::TrailingBytes,
+        // These profiles do not consume reserved fields through the reader.
+        ReadError::NonzeroReserved => DurableExecutionCodecError::UnknownValue,
+    }
 }
 
-impl<'a> Cursor<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, position: 0 }
+fn expect_magic(
+    cursor: &mut Cursor<'_>,
+    expected: &[u8],
+) -> Result<(), DurableExecutionCodecError> {
+    let actual = cursor.bytes(expected.len())?;
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(DurableExecutionCodecError::WrongMagic)
     }
-    fn exact(&mut self, expected: &[u8]) -> Result<(), DurableExecutionCodecError> {
-        let actual = self.take(expected.len())?;
-        if actual == expected {
-            Ok(())
-        } else {
-            Err(DurableExecutionCodecError::WrongMagic)
-        }
+}
+
+fn length_prefixed<'a>(
+    cursor: &mut Cursor<'a>,
+    maximum: usize,
+) -> Result<&'a [u8], DurableExecutionCodecError> {
+    let length =
+        usize::try_from(cursor.u32()?).map_err(|_| DurableExecutionCodecError::InvalidLength)?;
+    if length == 0 || length > maximum {
+        return Err(DurableExecutionCodecError::InvalidLength);
     }
-    fn finish(&self) -> Result<(), DurableExecutionCodecError> {
-        if self.position == self.bytes.len() {
-            Ok(())
-        } else {
+    cursor.bytes(length)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn range_failures_keep_position_and_magic_failure_consumes_only_its_field() {
+        let mut reader = Cursor::new(&[0, 1, 0], cursor_error);
+        assert_eq!(reader.u8().unwrap(), 0);
+        assert!(matches!(
+            reader.bytes(usize::MAX),
+            Err(DurableExecutionCodecError::InvalidLength)
+        ));
+        assert!(matches!(
+            reader.array::<3>(),
+            Err(DurableExecutionCodecError::Truncated)
+        ));
+        assert_eq!(reader.remaining(), 2);
+        assert!(matches!(
+            reader.finish(),
             Err(DurableExecutionCodecError::TrailingBytes)
-        }
+        ));
+
+        let mut short = Cursor::new(b"A", cursor_error);
+        assert!(matches!(
+            expect_magic(&mut short, b"AB"),
+            Err(DurableExecutionCodecError::Truncated)
+        ));
+        assert_eq!(short.remaining(), 1);
+
+        let mut wrong = Cursor::new(b"BX", cursor_error);
+        assert!(matches!(
+            expect_magic(&mut wrong, b"A"),
+            Err(DurableExecutionCodecError::WrongMagic)
+        ));
+        assert_eq!(wrong.bytes(1).unwrap(), b"X");
+        wrong.finish().unwrap();
     }
-    fn take(&mut self, length: usize) -> Result<&'a [u8], DurableExecutionCodecError> {
-        let end = self
-            .position
-            .checked_add(length)
-            .ok_or(DurableExecutionCodecError::InvalidLength)?;
-        let value = self
-            .bytes
-            .get(self.position..end)
-            .ok_or(DurableExecutionCodecError::Truncated)?;
-        self.position = end;
-        Ok(value)
-    }
-    fn array<const N: usize>(&mut self) -> Result<[u8; N], DurableExecutionCodecError> {
-        self.take(N)?
-            .try_into()
-            .map_err(|_| DurableExecutionCodecError::Truncated)
-    }
-    fn u8(&mut self) -> Result<u8, DurableExecutionCodecError> {
-        Ok(self.array::<1>()?[0])
-    }
-    fn u32(&mut self) -> Result<u32, DurableExecutionCodecError> {
-        Ok(u32::from_be_bytes(self.array()?))
-    }
-    fn u64(&mut self) -> Result<u64, DurableExecutionCodecError> {
-        Ok(u64::from_be_bytes(self.array()?))
-    }
-    fn length_prefixed(&mut self, maximum: usize) -> Result<&'a [u8], DurableExecutionCodecError> {
-        let length =
-            usize::try_from(self.u32()?).map_err(|_| DurableExecutionCodecError::InvalidLength)?;
-        if length == 0 || length > maximum {
-            return Err(DurableExecutionCodecError::InvalidLength);
-        }
-        self.take(length)
+
+    #[test]
+    fn length_bounds_precede_payload_reads_without_rolling_back_the_prefix() {
+        let mut zero = Cursor::new(&[0; 4], cursor_error);
+        assert!(matches!(
+            length_prefixed(&mut zero, 1),
+            Err(DurableExecutionCodecError::InvalidLength)
+        ));
+        assert_eq!(zero.remaining(), 0);
+
+        let bytes = [0, 0, 0, 2, 3, 4];
+        let mut oversized = Cursor::new(&bytes, cursor_error);
+        assert!(matches!(
+            length_prefixed(&mut oversized, 1),
+            Err(DurableExecutionCodecError::InvalidLength)
+        ));
+        assert_eq!(oversized.remaining(), 2);
+
+        let mut short = Cursor::new(&bytes[..5], cursor_error);
+        assert!(matches!(
+            length_prefixed(&mut short, 2),
+            Err(DurableExecutionCodecError::Truncated)
+        ));
+        assert_eq!(short.remaining(), 1);
+
+        let mut exact = Cursor::new(&bytes, cursor_error);
+        assert_eq!(length_prefixed(&mut exact, 2).unwrap(), &[3, 4]);
+        exact.finish().unwrap();
     }
 }
