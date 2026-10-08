@@ -411,18 +411,18 @@
     builtins.map (host: host.root) (builtins.attrValues virtualHosts)
     ++ lib.concatMap (host: builtins.filter (value: value != null) (builtins.map (location: location.root) (builtins.attrValues host.locations))) (builtins.attrValues virtualHosts)
   );
-  directoryEffects = lib.mapAttrs (name: path: {
-    lifetime =
-      if name == "runtime"
-      then "instance"
-      else "persistent";
-    input = {
-      inherit path;
-      mode = "0750";
-    };
-  })
-  storagePaths;
-  directoryResources = lib.mapAttrsToList (name: _: operations.filesystem.operations.directory.effects."nginx-${name}".outputs.resource) directoryEffects;
+  directoryEffects =
+    lib.mapAttrs (name: path: {
+      lifetime =
+        if name == "runtime"
+        then "instance"
+        else "persistent";
+      input = {
+        inherit path;
+        mode = "0750";
+      };
+    })
+    storagePaths;
   command = arguments: {
     executable = {
       path = "${package}/bin/nginx";
@@ -434,7 +434,7 @@
     configurationPath = operations.configuration.operations.file.effects.nginx.outputs.path;
   in {
     activationInputs = [operations.configuration.operations.file.effects.nginx.outputs.resource];
-    activationAfter = directoryResources;
+    activationAfter = [];
     resources.resource_group = resourceGroup.outputs.name;
     policy.hardening = {
       allow_privilege_escalation = false;
@@ -510,29 +510,40 @@
         optional = false;
       }
     ];
-    storage.mounts = [
-      {
-        name = "runtime";
-        source = storagePaths.runtime;
+    # The service manager owns every writable directory in its identity scope.
+    # Filesystem effects are reserved for standalone configuration below.
+    storage.mounts =
+      [
+        {
+          name = "runtime";
+          source = storagePaths.runtime;
+          ownership = "service-identity";
+          access = "read-write";
+          directory_mode = "0750";
+        }
+        {
+          name = "state";
+          source = storagePaths.state;
+          ownership = "service-identity";
+          access = "read-write";
+          directory_mode = "0750";
+        }
+        {
+          name = "logs";
+          source = storagePaths.logs;
+          ownership = "service-identity";
+          access = "read-write";
+          directory_mode = "0750";
+        }
+      ]
+      ++ builtins.map (relativePath: {
+        name = "document-${builtins.hashString "sha256" relativePath}";
+        source = documentPath relativePath;
         ownership = "service-identity";
         access = "read-write";
         directory_mode = "0750";
-      }
-      {
-        name = "state";
-        source = storagePaths.state;
-        ownership = "service-identity";
-        access = "read-write";
-        directory_mode = "0750";
-      }
-      {
-        name = "logs";
-        source = storagePaths.logs;
-        ownership = "service-identity";
-        access = "read-write";
-        directory_mode = "0750";
-      }
-    ];
+      })
+      documentRoots;
     logging = {
       standard_output = "structured";
       standard_error = "structured";
@@ -721,7 +732,7 @@ in {
     }
     (lib.mkIf configurationEnabled {
       aos.abilities = {
-        filesystem.operations.directory.effects =
+        filesystem.operations.directory.effects = lib.mkIf (!cfg.enable) (
           lib.mapAttrs' (name: value: lib.nameValuePair "nginx-${name}" value) directoryEffects
           // builtins.listToAttrs (builtins.map (relativePath: {
               name = "nginx-document-${builtins.hashString "sha256" relativePath}";
@@ -734,7 +745,8 @@ in {
                 };
               };
             })
-            documentRoots);
+            documentRoots)
+        );
         credential.operations.deliver.effects = lib.optionalAttrs usesTls {
           nginx-tls-certificate.input = tlsCredentials.certificate;
           nginx-tls-private-key.input = tlsCredentials.privateKey;

@@ -5,7 +5,7 @@
       testing = {};
       self = pkgs.nginx;
       inherit pkgs;
-    }).ability-contract;
+    }).native-contract;
 in
   pkgs.runCommand "nginx-config-module-check" {} ''
     test -s ${contract}/result
