@@ -26,14 +26,18 @@
 
   protectedCheck = import ../../pkgs/tools/terrane/_protected-check.nix {util-linux = pkgs.util-linux;};
 
-  sourceGate = sourceGateWithRuntime [] [];
-  sourceGateWithRuntime = runtimeDeps: nukeRefsKeep: name: script:
+  sourceGate = sourceGateWithInputs {};
+  sourceGateWithInputs = {
+    runtimeDeps ? [],
+    nukeRefsKeep ? [],
+    extraBuildDeps ? [],
+  }: name: script:
     pkgs.mkDerivation {
       pname = "terrane-gate-${name}";
       version = "0.1.0";
       src = pkgs.terrane.src;
       inherit runtimeDeps nukeRefsKeep;
-      buildDeps = [pkgs.rust pkgs.rust.dev pkgs.python3 pkgs.util-linux];
+      buildDeps = [pkgs.rust pkgs.rust.dev pkgs.python3 pkgs.util-linux] ++ extraBuildDeps;
       phases = [
         {
           name = "check";
@@ -63,7 +67,11 @@
   # The installed runner consumes Rust's runtime libraries and compares its
   # immutable source identity. Keep these explicit references through fixup.
   nativeSdkTestImage = import ./native-sdk-test-image.nix {
-    sourceGate = sourceGateWithRuntime [pkgs.rust pkgs.rust.dev] [pkgs.terrane.src];
+    sourceGate = sourceGateWithInputs {
+      runtimeDeps = [pkgs.rust pkgs.rust.dev] ++ (pkgs.rust.runtimeDeps or []);
+      nukeRefsKeep = [pkgs.terrane.src];
+      extraBuildDeps = [pkgs.binutils];
+    };
   };
   nativeSdkGate = name: script:
     sourceGate name ''
