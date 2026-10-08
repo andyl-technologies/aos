@@ -2259,9 +2259,28 @@ restores both production files' exact original bytes. Its rebase `acbc592b0b`
 preserves all six owned files and changes only the shared gate and progress
 record. The private merge `f9c938d25a` combines it with qualified `ebf6894409`:
 all twelve portable file images match that source, all six diagnostic images
-remain unchanged, and the worktree is clean. Its physical refusal, clock-sample
-and effect parity tests remain unrun pending combined qualification. These local
-commits remain unpushed; no deadline improvement or task acceptance is claimed.
+remain unchanged, and the worktree is clean. All six combined direct Clippy and
+private-rustdoc profile checks pass, followed by the native build and test
+compilation. The first Nextest inventory command rejects Cargo's `-j` argument
+before discovery; its original failure is preserved and the continuation uses
+the installed tool's `--build-jobs` option without repeating the passing stages.
+Fresh inventory binds all one hundred selected cases, nonignored, within 822
+native cases to the actual compiled executable. The ten new diagnostic cases
+and ninety existing regressions pass with tracing off and again with tracing on.
+Independent review verifies 190 individual PASS rows; the first ten-case run
+instead has an exact selector, prior fresh inventory and ten-of-ten successful
+summary. Its binary-verification helper completes after the run, a preserved
+ordering limitation rather than a claim of completed preflight. Later batches
+await successful preflight completion and record individual results. The owning
+`native-profile-quality` Nix gate passes on the same source, independently bound
+to all 5,046 included tracked files with 1,054 exclusions retained. The owning
+`native-checked-mutation-publication` gate also passes all six exact cases on
+that source. The written-sync gate, application-target compilation and the
+combined mandatory formatter pair remain pending. Read-only audits also verify
+that all 304 Core file images match
+the qualified algebra snapshot and the existing GC fixture corrections are
+already present; no further source transplant is needed. These local commits
+remain unpushed; no deadline improvement or task acceptance is claimed.
 
 The sealed current floor contains 89 aggregate gates, including all 69 T0/T1
 plan-required names and twenty implemented supporting checks. Read-only evaluation
