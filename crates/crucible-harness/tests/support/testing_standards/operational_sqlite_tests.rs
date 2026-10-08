@@ -162,9 +162,9 @@ fn sqlite_operations_require_original_guards_and_busy_cleanup_semantics()
         }
 
         for guard in [
-            "check_original(boundary,&account,operation.as_deref())",
+            "check_original(boundary,account,operation.as_deref())",
             "letmutoriginal=||check(backend,account,boundary);",
-            "account.verify_live().map_err(admission)?;",
+            "account.verify_live().map_err(|error|admission_under(account,error))?;",
             "operation.check()?;",
             "boundary()?;",
             "guard.verify()?;",
@@ -230,6 +230,13 @@ fn sqlite_operations_require_original_guards_and_busy_cleanup_semantics()
                     "Ok::<(),rusqlite::Error>(())",
                 ),
             ] {
+                let bound = binding
+                    .required
+                    .iter()
+                    .any(|obligation| pattern(obligation).contains(before));
+                if !bound {
+                    continue;
+                }
                 assert!(helper.contains(before), "inapplicable mutation: {before}");
                 let mut changed = companions.clone();
                 changed[index] = replace_pattern(&companions[index], before, after);
@@ -249,6 +256,99 @@ fn sqlite_operations_require_original_guards_and_busy_cleanup_semantics()
                     contract, &source, &changed
                 )));
             }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn borrowed_sqlite_accounts_reject_substitution_and_late_checks()
+-> Result<(), Box<dyn std::error::Error>> {
+    for (target, before, after) in [
+        (
+            "src/content_store/sqlite/admin_batch",
+            "letmutoriginal=||check(backend,account,boundary);",
+            "let mut original = || check(backend, &account()?, boundary);",
+        ),
+        (
+            "src/content_store/sqlite/batch",
+            "check_original(boundary,account,operation.as_deref())",
+            "check_original(boundary, &account()?, operation.as_deref())",
+        ),
+        (
+            "src/content_store/sqlite/batch/reader",
+            "letcredit=original.reserve_scratch_array::<u8>(length)",
+            "let credit = account()?.reserve_scratch_array::<u8>(length)",
+        ),
+        (
+            "src/content_store/sqlite/checked_reader",
+            "letoriginal=caller.clone();",
+            "let original = super::super::batch::account()?;",
+        ),
+        (
+            "src/content_store/sqlite/checked_reader",
+            "super::super::checked_reader::check(&original,boundary)?;letdiagnostic=diagnostic::admit(&original,backend.maximum_sqlite_heap_bytes,None)?;",
+            "let diagnostic = diagnostic::admit(&original, backend.maximum_sqlite_heap_bytes, None)?; super::super::checked_reader::check(&original, boundary)?;",
+        ),
+    ] {
+        let contract = CONTRACTS
+            .iter()
+            .find(|contract| contract.target == target)
+            .expect("reviewed original account target");
+        let source = local_source(contract)?;
+        let companions = read_companions(contract)?;
+        assert!(!has_escape(&mask_with_companions(
+            contract,
+            &source,
+            &companions
+        )));
+        assert!(
+            contract
+                .required
+                .iter()
+                .any(|guard| pattern(guard).contains(before))
+        );
+        let changed = replace_all_patterns(&source, before, after);
+        assert!(
+            has_escape(&mask_with_companions(contract, &changed, &companions)),
+            "substituted or late original account: {target} {before}"
+        );
+    }
+
+    let source_path = super::super::super::super::workspace_root()
+        .join("crates/crucible-cas/src/content_store/sqlite/batch/busy.rs");
+    let helper = super::super::super::super::scrub_comments_and_strings(&std::fs::read_to_string(
+        source_path,
+    )?);
+    for (before, after) in [
+        (
+            "letcredit=original.reserve_scratch_bytes(bytes)",
+            "let credit = account()?.reserve_scratch_bytes(bytes)",
+        ),
+        (
+            "original.verify_live().map_err(|error|admission_under(original,error))?;healthy(quarantined)?;boundary()?;",
+            "healthy(quarantined)?; boundary()?; original.verify_live().map_err(|error| admission_under(original, error))?;",
+        ),
+    ] {
+        assert!(
+            BUSY_OBLIGATIONS
+                .iter()
+                .any(|guard| pattern(guard).contains(before))
+        );
+        for contract in CONTRACTS {
+            let source = local_source(contract)?;
+            let mut companions = read_companions(contract)?;
+            let index = contract
+                .companions
+                .iter()
+                .position(|binding| binding.path.ends_with("/sqlite/batch/busy.rs"))
+                .expect("original BUSY companion");
+            companions[index] = replace_all_patterns(&helper, before, after);
+            assert!(
+                has_escape(&mask_with_companions(contract, &source, &companions)),
+                "substituted or late cleanup account: {} {before}",
+                contract.target
+            );
         }
     }
     Ok(())

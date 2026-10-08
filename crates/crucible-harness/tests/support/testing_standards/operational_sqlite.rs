@@ -44,6 +44,7 @@ const BUSY_OBLIGATIONS: &[&str] = &[
     }
 }"#,
     r#"fn with_zero<T>(
+    original: &crate::owned_decode::DecodeBudget,
     connection: &mut Connection,
     quarantined: &AtomicBool,
     boundary: &mut dyn FnMut() -> Result<(), StoreError>,
@@ -54,6 +55,7 @@ const BUSY_OBLIGATIONS: &[&str] = &[
     ) -> Result<T, StoreError>,
 ) -> Result<Accepted<T>, StoreError> {
     with_cleanup(
+        original,
         connection,
         quarantined,
         boundary,
@@ -62,8 +64,14 @@ const BUSY_OBLIGATIONS: &[&str] = &[
         |connection, saved| connection.busy_timeout(saved),
     )
 }"#,
-    r#"healthy(quarantined)?;
+    r#"original
+        .verify_live()
+        .map_err(|error| admission_under(original, error))?;
+    healthy(quarantined)?;
     boundary()?;
+    original
+        .verify_live()
+        .map_err(|error| admission_under(original, error))?;
     if !connection.is_autocommit() {
         quarantined.store(true, Ordering::Release);
         return Err(StoreError::Unavailable);
@@ -96,16 +104,41 @@ const BUSY_OBLIGATIONS: &[&str] = &[
     } else {
         result
     };"#,
+    r#"let credit = original
+        .reserve_scratch_bytes(bytes)
+        .map_err(|error| admission_under(original, error))?;"#,
 ];
 
-const BUSY_COMPANIONS: &[Companion] = &[Companion {
+const BUSY_COMPANION: Companion = Companion {
     path: "crates/crucible-cas/src/content_store/sqlite/batch/busy.rs",
     required: BUSY_OBLIGATIONS,
     counts: &[
         ("fn retry<T>(", 1),
         ("connection.busy_timeout(Duration::ZERO)", 1),
     ],
-}];
+};
+
+const BUSY_COMPANIONS: &[Companion] = &[BUSY_COMPANION];
+
+const CHECKED_READER_COMPANIONS: &[Companion] = &[
+    BUSY_COMPANION,
+    Companion {
+        path: "crates/crucible-cas/src/content_store/checked_reader.rs",
+        required: &[r#"fn check(
+    original: &DecodeBudget,
+    boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+) -> Result<(), StoreError> {
+    original
+        .verify_live()
+        .map_err(|error| batch::admission_under(original, error))?;
+    boundary()?;
+    original
+        .verify_live()
+        .map_err(|error| batch::admission_under(original, error))
+}"#],
+        counts: &[("fn check(", 1)],
+    },
+];
 
 pub(super) const CONTRACTS: &[Contract] = &[
     Contract {
@@ -117,10 +150,14 @@ pub(super) const CONTRACTS: &[Contract] = &[
     account: &DecodeBudget,
     boundary: &mut dyn FnMut() -> Result<(), StoreError>,
 ) -> Result<(), StoreError> {
-    account.verify_live().map_err(admission)?;
+    account
+        .verify_live()
+        .map_err(|error| admission_under(account, error))?;
     busy::healthy(&backend.quarantined)?;
     boundary()?;
-    account.verify_live().map_err(admission)?;
+    account
+        .verify_live()
+        .map_err(|error| admission_under(account, error))?;
     busy::healthy(&backend.quarantined)
 }"#,
             r#"fn delete_candidates_with_boundary(
@@ -137,12 +174,13 @@ pub(super) const CONTRACTS: &[Contract] = &[
             }
             let credit = account
                 .reserve_scratch_array::<PlannedDeleteDisposition>(ids.len())
-                .map_err(admission)?;
+                .map_err(|error| admission_under(account, error))?;
             let mut dispositions = Vec::new();
             dispositions
                 .try_reserve_exact(ids.len())
-                .map_err(allocation)?;
+                .map_err(|error| allocation_under(account, error))?;
             let accepted = busy::with_zero(
+                account,
                 &mut inner.connection,
                 &backend.quarantined,
                 &mut original,
@@ -231,8 +269,12 @@ pub(super) const CONTRACTS: &[Contract] = &[
     foreign
         .execute_batch("BEGIN; SELECT * FROM objects;")
         .expect("retained SHARED read lock");
-    let credit = diagnostic::admit(backend.maximum_sqlite_heap_bytes, Some(root.path()))
-        .expect("original diagnostic loan");
+    let credit = diagnostic::admit(
+        &account,
+        backend.maximum_sqlite_heap_bytes,
+        Some(root.path()),
+    )
+    .expect("original diagnostic loan");
     let mut connection = backend.lock_connection().expect("actual connection");
     connection
         .busy_timeout(Duration::from_millis(987))
@@ -241,6 +283,7 @@ pub(super) const CONTRACTS: &[Contract] = &[
     let mut committing = false;
     let error = diagnostic::retain_failure(credit, || {
         with_zero(
+            &account,
             &mut connection,
             &backend.quarantined,
             &mut || guard.verify(),
@@ -267,8 +310,8 @@ pub(super) const CONTRACTS: &[Contract] = &[
     let _scope = account.enter();
     let connection = backend.lock_connection().expect("actual connection");
     for (code, transactional) in [(6, false), (261, false), (517, false), (5, true)] {
-        let credit =
-            diagnostic::admit(backend.maximum_sqlite_heap_bytes, None).expect("original copy loan");
+        let credit = diagnostic::admit(&account, backend.maximum_sqlite_heap_bytes, None)
+            .expect("original copy loan");
         let mut statements = 0;
         let error = diagnostic::retain_failure(credit, || {
             "#,
@@ -284,12 +327,17 @@ pub(super) const CONTRACTS: &[Contract] = &[
         .expect("held actual writer lock");
     let attempts = std::cell::Cell::new(0);
     let mut released = false;
-    let credit = diagnostic::admit(backend.maximum_sqlite_heap_bytes, Some(root.path()))
-        .expect("original copy loan");
+    let credit = diagnostic::admit(
+        &account,
+        backend.maximum_sqlite_heap_bytes,
+        Some(root.path()),
+    )
+    .expect("original copy loan");
     let mut connection = backend.lock_connection().expect("original connection");
 
     diagnostic::retain_failure(credit, || {
         with_zero(
+            &account,
             &mut connection,
             &backend.quarantined,
             &mut || guard.verify(),
@@ -478,14 +526,18 @@ pub(super) const CONTRACTS: &[Contract] = &[
         target: "src/content_store/sqlite/batch/reader",
         required: &[r#"fn chunk_with_boundary(
         &self,
+        original: &crate::owned_decode::DecodeBudget,
         offset: u64,
         length: usize,
         boundary: &mut dyn FnMut() -> Result<(), StoreError>,
     ) -> Result<ReadChunk, StoreError> {
         boundary()?;
-        let credit = account()?
+        original
+            .verify_live()
+            .map_err(|error| admission_under(original, error))?;
+        let credit = original
             .reserve_scratch_array::<u8>(length)
-            .map_err(admission)?;
+            .map_err(|error| admission_under(original, error))?;
         let mut connection = loop {
             busy::healthy(&self.quarantined)?;
             boundary()?;
@@ -508,6 +560,7 @@ pub(super) const CONTRACTS: &[Contract] = &[
             .and_then(|offset| offset.checked_add(1))
             .ok_or(StoreError::Quota)?;
         let accepted = busy::with_zero(
+            original,
             &mut connection,
             &self.quarantined,
             boundary,
@@ -567,7 +620,9 @@ pub(super) const CONTRACTS: &[Contract] = &[
     operation: Option<&dyn SqliteCatalogOperation>,
 ) -> Result<(), StoreError> {
     boundary()?;
-    account.verify_live().map_err(admission)?;
+    account
+        .verify_live()
+        .map_err(|error| admission_under(account, error))?;
     if let Some(operation) = operation {
         operation.check()?;
     }
@@ -575,12 +630,18 @@ pub(super) const CONTRACTS: &[Contract] = &[
 }"#,
             r#"fn put_batch_with_boundary(
         &self,
+        account: &crate::owned_decode::DecodeBudget,
         objects: &[(ContentId, BlobHandle)],
         boundary: &mut dyn FnMut() -> Result<(), StoreError>,
     ) -> Result<PutBatchReceipt, StoreError> {
+        account
+            .verify_live()
+            .map_err(|error| admission_under(account, error))?;
         busy::healthy(&self.quarantined)?;
         boundary()?;
-        let account = account()?;
+        account
+            .verify_live()
+            .map_err(|error| admission_under(account, error))?;
         if objects.len() > MAX_BATCH_OBJECTS {
             return Err(StoreError::Quota);
         }
@@ -590,21 +651,21 @@ pub(super) const CONTRACTS: &[Contract] = &[
             .map(|supervisor| supervisor.begin(SqliteCatalogOperationKind::Write))
             .transpose()?;
         let _staging = catalog::write_gate_with_boundary(&mut || {
-            check_original(boundary, &account, operation.as_deref())
+            check_original(boundary, account, operation.as_deref())
         })?;
 
         // Sources may read this same database. Authenticate every source
         // before taking the inventory or write-connection lock.
         let _staged_credit = account
             .reserve_scratch_array::<(ContentId, OwnedBlobBytes)>(objects.len())
-            .map_err(admission)?;
-        let receipt_credit = admit_receipts(&account, objects.len(), self.name.len())?;
+            .map_err(|error| admission_under(account, error))?;
+        let receipt_credit = admit_receipts(account, objects.len(), self.name.len())?;
         let staged = {
-            let mut check = || check_original(boundary, &account, operation.as_deref());
+            let mut check = || check_original(boundary, account, operation.as_deref());
             let mut staged = Vec::new();
             staged
                 .try_reserve_exact(objects.len())
-                .map_err(allocation)?;
+                .map_err(|error| allocation_under(account, error))?;
             let mut total_bytes = 0_u64;
             for (id, source) in objects {
                 check()?;
@@ -615,14 +676,14 @@ pub(super) const CONTRACTS: &[Contract] = &[
                     return Err(StoreError::Quota);
                 }
                 let bytes =
-                    read_source(source, MAX_BATCH_BYTES, &mut check).map_err(
-                        |error| match error {
+                    read_source(account, source, MAX_BATCH_BYTES, &mut check).map_err(|error| {
+                        match error {
                             StoreError::InvalidSourceLength { .. } => {
                                 StoreError::Corrupt { id: *id }
                             }
                             other => other,
-                        },
-                    )?;
+                        }
+                    })?;
                 validate_bytes(*id, &bytes)?;
                 check()?;
                 staged.push((*id, bytes));
@@ -630,19 +691,23 @@ pub(super) const CONTRACTS: &[Contract] = &[
             staged
         };
 
-        let diagnostic_credit =
-            diagnostic::admit(self.maximum_sqlite_heap_bytes, Some(&self.root))?;
-        diagnostic::retain_failure(diagnostic_credit, || {
-            let _inventory_lock = self.inventory_lock_with_boundary(&mut || {
-                check_original(boundary, &account, operation.as_deref())
+        let mut diagnostic_credit = Some(diagnostic::admit(
+            account,
+            self.maximum_sqlite_heap_bytes,
+            Some(&self.root),
+        )?);
+        let result = (|| {
+            let _inventory_lock = self.inventory_lock_with_boundary(account, &mut || {
+                check_original(boundary, account, operation.as_deref())
             })?;
             let mut connection = self.connection_with_boundary(&mut || {
-                check_original(boundary, &account, operation.as_deref())
+                check_original(boundary, account, operation.as_deref())
             })?;
             let accepted = busy::with_zero(
+                account,
                 &mut connection,
                 &self.quarantined,
-                &mut || check_original(boundary, &account, operation.as_deref()),
+                &mut || check_original(boundary, account, operation.as_deref()),
                 |connection, progress, check| {
                     let shared: &Connection = connection;
                     let mut transaction ="#,
@@ -654,7 +719,9 @@ pub(super) const CONTRACTS: &[Contract] = &[
             r#"operation.complete()?;
                 }
                 boundary()?;
-                account.verify_live().map_err(admission)?;
+                account
+                    .verify_live()
+                    .map_err(|error| admission_under(account, error))?;
                 busy::healthy(&self.quarantined)?;"#,
         ],
         expressions: &[
@@ -707,6 +774,70 @@ pub(super) const CONTRACTS: &[Contract] = &[
             ),
         ],
         companions: BUSY_COMPANIONS,
+    },
+    Contract {
+        package: "crucible-cas",
+        target: "src/content_store/sqlite/checked_reader",
+        required: &[
+            r#"let original = caller.clone();
+    super::super::checked_reader::check(&original, boundary)?;
+    let diagnostic = diagnostic::admit(&original, backend.maximum_sqlite_heap_bytes, None)?;
+    diagnostic::retain_failure(diagnostic, || {
+        busy::healthy(&backend.quarantined)?;
+        let mut check = || {
+            super::super::checked_reader::check(&original, boundary)?;
+            busy::healthy(&backend.quarantined)
+        };
+        let credit = original
+            .reserve_scratch_bytes(
+                (std::mem::size_of::<SqliteBlobSource>() + 2 * std::mem::size_of::<usize>()) as u64,
+            )
+            .map_err(|error| super::super::batch::admission_under(&original, error))?;
+        let _staging = catalog::read_gate_with_boundary(&mut check)?;
+        let mut connection = loop {
+            check()?;
+            match backend.read_connection.try_lock() {
+                Ok(connection) => break connection,
+                Err(std::sync::TryLockError::WouldBlock) => std::thread::yield_now(),
+                Err(std::sync::TryLockError::Poisoned(_)) => {
+                    return Err(StoreError::Poisoned {
+                        operation: "lock-checked-sqlite-length",
+                    });
+                }
+            }
+        };
+        let accepted = busy::with_zero(
+            &original,
+            &mut connection,
+            &backend.quarantined,
+            &mut check,
+            |connection, _, check| {
+                "#,
+            r#"let handle = accepted.finish(|length| {
+            check()?;"#,
+            r#"drop(connection);
+        drop(_staging);
+        super::super::checked_reader::check(&original, boundary)?;
+        Ok(handle)
+    })"#,
+        ],
+        expressions: &[(
+            r#"busy::retry(connection, false, &backend.quarantined, check, |_| {
+                    let mut statement = connection
+                        .prepare_cached("SELECT length(body) FROM objects WHERE id = ?1")
+                        .map_err(|source| {
+                            database_error("prepare-checked-sqlite-length", source)
+                        })?;
+                    super::super::batch::with_id_text(id, |encoded| {
+                        statement
+                            .query_row([encoded], |row| row.get::<_, i64>(0))
+                            .optional()
+                            .map_err(|source| database_error("read-checked-sqlite-length", source))
+                    })
+                })"#,
+            1,
+        )],
+        companions: CHECKED_READER_COMPANIONS,
     },
     Contract {
         package: "crucible-cas",
