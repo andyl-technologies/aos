@@ -146,6 +146,24 @@ const MANAGED_CONNECTION_COMPANION: Companion = Companion {
 
 const BUSY_COMPANIONS: &[Companion] = &[BUSY_COMPANION, MANAGED_CONNECTION_COMPANION];
 
+const FIXTURE_CONNECTION_COMPANION: Companion = Companion {
+    path: "crates/crucible-cas/src/content_store/sqlite_fixture.rs",
+    required: &[r#"pub fn fixture_sqlite_connection(
+    path: impl AsRef<Path>,
+) -> Result<SqliteConnection, FixtureSqliteConnectionError> {
+    let heap = fixture_sqlite_heap().map_err(FixtureSqliteConnectionError::Admission)?;
+    heap.open_connection(path, rusqlite::OpenFlags::default())
+        .map_err(FixtureSqliteConnectionError::Open)
+}"#],
+    counts: &[("fn fixture_sqlite_connection(", 1)],
+};
+
+const BUSY_FIXTURE_COMPANIONS: &[Companion] = &[
+    BUSY_COMPANION,
+    MANAGED_CONNECTION_COMPANION,
+    FIXTURE_CONNECTION_COMPANION,
+];
+
 const CHECKED_READER_COMPANIONS: &[Companion] = &[
     BUSY_COMPANION,
     MANAGED_CONNECTION_COMPANION,
@@ -292,12 +310,7 @@ pub(super) const CONTRACTS: &[Contract] = &[
     }
     let (root, guard, backend, account) = backend();
     let _scope = account.enter();
-    let foreign = crate::content_store::fixture_sqlite_heap()
-        .expect("authored SQLite fixture process")
-        .open_connection(
-            root.path().join(DATABASE_FILE),
-            rusqlite::OpenFlags::default(),
-        )
+    let foreign = fixture_sqlite_connection(root.path().join(DATABASE_FILE))
         .expect("foreign reader");
     foreign
         .execute_batch("BEGIN; SELECT * FROM objects;")
@@ -354,12 +367,7 @@ pub(super) const CONTRACTS: &[Contract] = &[
     }
     let (root, guard, backend, account) = backend();
     let _scope = account.enter();
-    let foreign = crate::content_store::fixture_sqlite_heap()
-        .expect("authored SQLite fixture process")
-        .open_connection(
-            root.path().join(DATABASE_FILE),
-            rusqlite::OpenFlags::default(),
-        )
+    let foreign = fixture_sqlite_connection(root.path().join(DATABASE_FILE))
         .expect("foreign writer");
     foreign
         .execute_batch("BEGIN IMMEDIATE")
@@ -466,7 +474,7 @@ pub(super) const CONTRACTS: &[Contract] = &[
                 1,
             ),
         ],
-        companions: BUSY_COMPANIONS,
+        companions: BUSY_FIXTURE_COMPANIONS,
     },
     Contract {
         package: "crucible-cas",
@@ -911,6 +919,54 @@ pub(super) const CONTRACTS: &[Contract] = &[
         companions: BUSY_COMPANIONS,
     },
 ];
+
+#[test]
+fn fixture_connections_require_the_same_heap_flags_and_original_errors()
+-> Result<(), Box<dyn std::error::Error>> {
+    let contract = CONTRACTS
+        .iter()
+        .find(|contract| contract.target == "src/content_store/sqlite/batch/busy/tests")
+        .expect("reviewed real BUSY fixture");
+    let root = super::super::super::workspace_root();
+    let source = std::fs::read_to_string(root.join(format!(
+        "crates/{}/{}.rs",
+        contract.package, contract.target
+    )))?;
+    let source = super::super::super::scrub_comments_and_strings(&source);
+    let companions = super::read_companions(contract)?;
+    let fixture = companions.last().expect("bound fixture delegate");
+
+    for (before, after) in [
+        (
+            "fixture_sqlite_heap()",
+            "isolated_small_fixture_sqlite_heap()",
+        ),
+        ("OpenFlags::default()", "OpenFlags::SQLITE_OPEN_READ_ONLY"),
+        (
+            "map_err(FixtureSqliteConnectionError::Admission)",
+            "map_err(|_| FixtureSqliteConnectionError::Open(StoreError::Unavailable))",
+        ),
+        (
+            "map_err(FixtureSqliteConnectionError::Open)",
+            "map_err(|_| FixtureSqliteConnectionError::Open(StoreError::Quota))",
+        ),
+    ] {
+        let before = super::pattern(before);
+        let after = super::pattern(after);
+        let compact = super::pattern(fixture);
+        assert!(compact.contains(&before), "applicable fixture mutation");
+        let mut changed = companions.clone();
+        *changed.last_mut().expect("bound fixture delegate") = compact.replace(&before, &after);
+        let masked = super::mask_with_companions(contract, &source, &changed);
+        assert!(
+            super::super::super::flaky_escape_failures("unreviewed", "unreviewed", &masked)
+                .iter()
+                .any(|finding| finding.contains("`retry`")),
+            "changed fixture scope, flags or original error must reject the operational exception"
+        );
+    }
+    Ok(())
+}
 
 #[cfg(test)]
 #[path = "operational_sqlite_tests.rs"]

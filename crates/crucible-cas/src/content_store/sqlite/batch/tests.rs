@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use super::*;
 use crate::content_store::StorePhysicalQuotaGuard;
+use crate::content_store::fixture_sqlite_connection;
 use crate::owned_decode::DecodeBudget;
 
 mod checked_readers;
@@ -455,12 +456,7 @@ fn same_quota_arc_forwards_one_transaction_and_retains_last_receipt_owner() {
     let account = DecodeBudget::for_store(selected).expect("original metadata bank");
     let scope = account.enter();
     let before = {
-        let connection = crate::content_store::fixture_sqlite_heap()
-            .expect("authored SQLite fixture process")
-            .open_connection(
-                root.path().join(DATABASE_FILE),
-                rusqlite::OpenFlags::default(),
-            )
+        let connection = fixture_sqlite_connection(root.path().join(DATABASE_FILE))
             .expect("inspect component generation");
         load_metadata(&connection.lock().expect("managed metadata connection"))
             .expect("generation")
@@ -488,12 +484,7 @@ fn same_quota_arc_forwards_one_transaction_and_retains_last_receipt_owner() {
     assert!(receipts.iter().all(|receipt| receipt.placements.len() == 1
         && receipt.placements[0].backend == "original-quota"
         && receipt.is_durable()));
-    let connection = crate::content_store::fixture_sqlite_heap()
-        .expect("authored SQLite fixture process")
-        .open_connection(
-            root.path().join(DATABASE_FILE),
-            rusqlite::OpenFlags::default(),
-        )
+    let connection = fixture_sqlite_connection(root.path().join(DATABASE_FILE))
         .expect("inspect committed component database");
     assert_eq!(
         load_metadata(&connection.lock().expect("managed metadata connection"))

@@ -138,7 +138,10 @@ pub(crate) mod test_resources;
 mod sqlite_fixture;
 
 #[cfg(any(test, feature = "test-support"))]
-pub use sqlite_fixture::{fixture_sqlite_heap, isolated_small_fixture_sqlite_heap};
+pub use sqlite_fixture::{
+    FixtureSqliteConnectionError, fixture_sqlite_connection, fixture_sqlite_heap,
+    isolated_small_fixture_sqlite_heap,
+};
 #[cfg(test)]
 mod tests;
 

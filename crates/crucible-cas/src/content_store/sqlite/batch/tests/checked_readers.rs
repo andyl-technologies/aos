@@ -1,6 +1,7 @@
 //! Real checked SQL reader state, deferred ownership and original-boundary tests.
 
 use super::*;
+use crate::content_store::fixture_sqlite_connection;
 
 fn isolated(name: &str) -> bool {
     isolated_heap_test(name)
@@ -294,13 +295,8 @@ fn foreign_sql_lock_refuses_metadata_and_chunks_and_restores_timeout() {
     let source = backend
         .read_with_boundary(&account, id, None, &mut || Ok(()))
         .expect("metadata");
-    let foreign = crate::content_store::fixture_sqlite_heap()
-        .expect("authored SQLite fixture process")
-        .open_connection(
-            root.path().join(DATABASE_FILE),
-            rusqlite::OpenFlags::default(),
-        )
-        .expect("independent SQL holder");
+    let foreign =
+        fixture_sqlite_connection(root.path().join(DATABASE_FILE)).expect("independent SQL holder");
     foreign
         .execute_batch("BEGIN EXCLUSIVE")
         .expect("real foreign SQL lock");

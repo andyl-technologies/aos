@@ -6,12 +6,13 @@
 //! storage and Rust allocation budgets. These portable counters do not prove
 //! payment for loaded native globals or the complete initialization peak.
 
+use std::path::Path;
 use std::sync::OnceLock;
 
 use super::test_resources::FixtureResourceBudget;
 use super::{
-    SqliteHeapAuthority, SqliteHeapIssuer, SqliteProcessBootstrapAuthority, SqliteProcessHeap,
-    StoreError,
+    SqliteConnection, SqliteHeapAuthority, SqliteHeapIssuer, SqliteProcessBootstrapAuthority,
+    SqliteProcessHeap, StoreError,
 };
 use crate::owned_decode::ResourceLoan;
 
@@ -74,6 +75,33 @@ pub fn fixture_sqlite_heap() -> Result<SqliteProcessHeap, &'static StoreError> {
         .get_or_init(install_fixture_heap::<NATIVE_HEAP_BYTES>)
         .as_ref()
         .cloned()
+}
+
+/// Retains the original refusal from fixture heap admission or connection opening.
+#[derive(Debug, thiserror::Error)]
+pub enum FixtureSqliteConnectionError {
+    /// Carries the process's retained first heap admission failure.
+    #[error(transparent)]
+    Admission(&'static StoreError),
+    /// Carries the actual managed connection opening failure.
+    #[error(transparent)]
+    Open(StoreError),
+}
+
+/// Opens a managed connection under the same ordinary fixture process heap.
+///
+/// This convenience uses the default SQLite opening flags. Callers requiring
+/// other flags or the isolated small-heap profile use their explicit heap.
+///
+/// # Errors
+/// Returns the retained original heap admission failure or the actual connection
+/// opening failure without retrying installation or replacing either cause.
+pub fn fixture_sqlite_connection(
+    path: impl AsRef<Path>,
+) -> Result<SqliteConnection, FixtureSqliteConnectionError> {
+    let heap = fixture_sqlite_heap().map_err(FixtureSqliteConnectionError::Admission)?;
+    heap.open_connection(path, rusqlite::OpenFlags::default())
+        .map_err(FixtureSqliteConnectionError::Open)
 }
 
 static SMALL_FIXTURE_PROCESS: OnceLock<Result<SqliteProcessHeap, StoreError>> = OnceLock::new();

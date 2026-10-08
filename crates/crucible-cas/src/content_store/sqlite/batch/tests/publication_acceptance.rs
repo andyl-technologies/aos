@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::content_store::composition::DurabilityPolicyStore;
+use crate::content_store::fixture_sqlite_connection;
 use crate::content_store::physical_quota::PhysicalQuotaStore;
 use crate::content_store::{BackendCapabilities, BlobStoreAdmin, ByteRange};
 use std::cell::RefCell;
@@ -464,13 +465,8 @@ fn prepared_name_and_resource_refusal_precedes_the_actual_child() {
     drop(error);
     drop(blocker);
     assert_eq!(origin.0.used.load(Ordering::SeqCst), baseline);
-    let connection = crate::content_store::fixture_sqlite_heap()
-        .expect("authored SQLite fixture process")
-        .open_connection(
-            root.path().join(DATABASE_FILE),
-            rusqlite::OpenFlags::default(),
-        )
-        .expect("actual database");
+    let connection =
+        fixture_sqlite_connection(root.path().join(DATABASE_FILE)).expect("actual database");
     assert_eq!(
         load_metadata(&connection.lock().expect("managed metadata connection"))
             .expect("unchanged generation")

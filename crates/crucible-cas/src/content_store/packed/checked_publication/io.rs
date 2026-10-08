@@ -148,21 +148,39 @@ impl Staging {
         self.path.as_path()
     }
 
+    pub(super) fn with_native<T>(
+        &self,
+        operation: &'static str,
+        action: impl FnOnce(&std::ffi::CStr) -> Result<T, StoreError>,
+    ) -> Result<T, StoreError> {
+        self.path.with_native(operation, action)
+    }
+
+    pub(super) fn remove(&self) -> Result<(), StoreError> {
+        self.with_native("remove-packed-checked-staging", |path| {
+            rustix::fs::unlinkat(rustix::fs::CWD, path, rustix::fs::AtFlags::empty()).map_err(
+                |source| StoreError::StreamIo {
+                    operation: "remove-packed-checked-staging",
+                    source: source.into(),
+                },
+            )
+        })
+    }
+
     pub(super) fn cleanup(&mut self) -> Result<(), StoreError> {
         drop(self.file.take());
-        match fs::remove_file(self.path()) {
+        match self.remove() {
             Ok(()) => {
                 self.removed = true;
                 Ok(())
             }
-            Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+            Err(StoreError::StreamIo { source, .. })
+                if source.kind() == std::io::ErrorKind::NotFound =>
+            {
                 self.removed = true;
                 Ok(())
             }
-            Err(source) => Err(StoreError::StreamIo {
-                operation: "remove-packed-checked-staging",
-                source,
-            }),
+            Err(error) => Err(error),
         }
     }
 }
@@ -173,7 +191,7 @@ impl Drop for Staging {
         if !self.removed {
             // Unwinding still owns this exclusive temporary name and its path
             // credit. Ordinary return records any failed cleanup explicitly.
-            let _cleanup = fs::remove_file(self.path());
+            let _cleanup = self.remove();
         }
     }
 }
@@ -286,7 +304,7 @@ pub(super) fn copy(
     checked_reader::check_pair(original, &source_original, boundary)
 }
 
-pub(super) fn pack_path(
+pub(in crate::content_store::packed) fn pack_path(
     backend: &PackedBlobBackend,
     pack: PackId,
     original: &DecodeBudget,

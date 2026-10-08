@@ -16,12 +16,57 @@ pub(super) struct EncodedIndex {
 }
 
 impl EncodedIndex {
+    pub(super) fn empty(
+        backend: &PackedBlobBackend,
+        instance: [u8; 32],
+        original: &DecodeBudget,
+    ) -> Result<Self, StoreError> {
+        let capacity = INDEX_MAGIC.len() + 32 + 32 + 8 + 1 + 4 + 32;
+        let credit = original
+            .reserve_scratch_bytes(capacity as u64)
+            .map_err(|error| batch::admission_under(original, error))?;
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(capacity)
+            .map_err(|error| batch::allocation_under(original, error))?;
+        bytes.extend_from_slice(INDEX_MAGIC);
+        bytes.extend_from_slice(&backend.configuration);
+        bytes.extend_from_slice(&instance);
+        bytes.extend_from_slice(&0_u64.to_be_bytes());
+        bytes.push(0);
+        bytes.extend_from_slice(&0_u32.to_be_bytes());
+        let mut checksum = blake3::Hasher::new();
+        checksum.update(INDEX_CHECKSUM_DOMAIN);
+        checksum.update(&bytes);
+        bytes.extend_from_slice(checksum.finalize().as_bytes());
+        Ok(Self {
+            bytes,
+            _credit: credit,
+        })
+    }
+
     pub(super) fn bytes(&self) -> &[u8] {
         &self.bytes
     }
 }
 
 impl IndexSnapshot {
+    pub(super) fn visit(
+        &self,
+        backend: &PackedBlobBackend,
+        original: &DecodeBudget,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+        visit: &mut impl FnMut(ContentId, IndexEntry) -> Result<(), StoreError>,
+    ) -> Result<(), StoreError> {
+        format::scan_index_payload(
+            &self.bytes[..self.bytes.len() - 32],
+            backend.configuration,
+            &mut || checked_reader::check(original, boundary),
+            visit,
+        )?;
+        Ok(())
+    }
+
     pub(super) fn inserted(
         &self,
         backend: &PackedBlobBackend,

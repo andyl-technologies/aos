@@ -4,7 +4,7 @@ use super::*;
 use crate::content_store::{PutBatchReceipt, batch, checked_reader};
 use crate::owned_decode::{DecodeBudget, DecodeScratch};
 
-mod io;
+pub(super) mod io;
 
 /// Reports actual physical pack visibility and logical index durability.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -339,6 +339,29 @@ fn publish_one(
     record_cleanup(work, cleanup, progress)
 }
 
+pub(super) fn initialize_index(
+    backend: &PackedBlobBackend,
+    original: &DecodeBudget,
+    replacement: &index_snapshot::EncodedIndex,
+    boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+) -> Result<(), StoreError> {
+    checked_reader::check(original, boundary)?;
+    let credit = original
+        .reserve_scratch_array::<Failure>(1)
+        .map_err(|error| batch::admission_under(original, error))?;
+    let mut progress = Progress::default();
+    match publish_index(backend, original, replacement, &mut progress, boundary) {
+        Ok(()) => Ok(()),
+        Err(work) => Err(scope_error(
+            None,
+            (!progress.cleanup_only).then_some(work),
+            progress.cleanup,
+            progress.outcome,
+            credit,
+        )),
+    }
+}
+
 fn publish_index(
     backend: &PackedBlobBackend,
     original: &DecodeBudget,
@@ -353,9 +376,15 @@ fn publish_index(
         let target = checked_io::path(&backend.admin, INDEX_FILE, original)?;
         checked_reader::check(original, boundary)?;
         progress.outcome.index_visibility_uncertain = true;
-        fs::rename(staging.path(), target.as_path()).map_err(|source| StoreError::StreamIo {
-            operation: "publish-packed-checked-index",
-            source,
+        staging.with_native("publish-packed-checked-index", |source| {
+            target.with_native("publish-packed-checked-index", |target| {
+                rustix::fs::renameat(rustix::fs::CWD, source, rustix::fs::CWD, target).map_err(
+                    |source| StoreError::StreamIo {
+                        operation: "publish-packed-checked-index",
+                        source: source.into(),
+                    },
+                )
+            })
         })?;
         checked_reader::check(original, boundary)?;
         checked_io::sync_directory(&backend.admin, original, boundary)?;

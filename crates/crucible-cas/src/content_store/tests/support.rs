@@ -76,6 +76,11 @@ impl RecordingPhysicalQuotaGuard {
 }
 
 impl StorePhysicalQuotaGuard for RecordingPhysicalQuotaGuard {
+    fn decoded_metadata_limit(&self) -> Result<u64, StoreError> {
+        // This is the same authored model ceiling already held by resources.
+        Ok(256 * 1024 * 1024)
+    }
+
     fn reserve_resources(
         &self,
         descriptors: u64,

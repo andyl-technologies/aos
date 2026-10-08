@@ -43,6 +43,14 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
+// Unit-only selection of the existing fixed observer. Unarmed allocations
+// delegate to System; production libraries and external binaries keep their
+// own allocator selection. Explicit custody scopes own every observation.
+#[cfg(test)]
+#[global_allocator]
+static TEST_ALLOCATION_OBSERVER: crucible_linux_resource::test_support::TestAllocationObserver =
+    crucible_linux_resource::test_support::TestAllocationObserver;
+
 pub mod owned_decode;
 
 use std::collections::btree_map::Entry;

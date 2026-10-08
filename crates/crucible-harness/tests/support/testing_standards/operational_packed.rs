@@ -38,10 +38,31 @@ pub(super) const CONTRACTS: &[Contract] = &[
                 shared: bool,
                 original: &DecodeBudget,
                 boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+            ) -> Result<OwnedFile, StoreError> {
+                lock_file(backend, name, shared, false, original, boundary)
+            }"#,
+            r#"pub(super) fn create_lock(
+                backend: &PackedBlobBackend,
+                name: &str,
+                shared: bool,
+                original: &DecodeBudget,
+                boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+            ) -> Result<OwnedFile, StoreError> {
+                lock_file(backend, name, shared, true, original, boundary)
+            }"#,
+            r#"fn lock_file(
+                backend: &PackedBlobBackend,
+                name: &str,
+                shared: bool,
+                create: bool,
+                original: &DecodeBudget,
+                boundary: &mut dyn FnMut() -> Result<(), StoreError>,
             ) -> Result<OwnedFile, StoreError>"#,
             "let path = path(&backend.admin, name, original)?;",
             r#"let file = open_file(
-                path.as_path(), OFlags::RDWR, "open-packed-checked-lock", original, boundary,
+                path.as_path(),
+                if create { OFlags::RDWR | OFlags::CREATE } else { OFlags::RDWR },
+                "open-packed-checked-lock", original, boundary,
             )?;
             length(&file, original, boundary)?;"#,
             r#"loop {
@@ -191,6 +212,18 @@ mod tests {
             }
             if contract.target.ends_with("checked_io") {
                 for (before, after) in [
+                    (
+                        "lock_file(backend, name, shared, false, original, boundary)",
+                        "lock_file(backend, name, shared, false, other_original, boundary)",
+                    ),
+                    (
+                        "lock_file(backend, name, shared, true, original, boundary)",
+                        "lock_file(backend, name, shared, true, original, other_boundary)",
+                    ),
+                    (
+                        "if create { OFlags::RDWR | OFlags::CREATE } else { OFlags::RDWR }",
+                        "if create { OFlags::RDWR } else { OFlags::RDWR | OFlags::CREATE }",
+                    ),
                     (
                         "loop { checked_reader::check(original, boundary)?; match flock",
                         "loop { match flock",

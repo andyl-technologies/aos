@@ -533,8 +533,44 @@ struct StoreGraphPhysicalAuthority {
 }
 
 struct StoreGraphPackedRepackAuthority {
+    body: Option<Box<PackedRepackBody>>,
+    _resources: crate::owned_decode::ResourceLoanSlot,
+}
+
+struct PackedRepackBody {
     backend: Arc<PackedBlobBackend>,
     physical_quota: Option<Arc<dyn StorePhysicalQuotaGuard>>,
+}
+
+impl StoreGraphPackedRepackAuthority {
+    fn new(
+        backend: Arc<PackedBlobBackend>,
+        physical_quota: Option<Arc<dyn StorePhysicalQuotaGuard>>,
+        resources: crate::owned_decode::ResourceLoanSlot,
+    ) -> Self {
+        Self {
+            body: Some(Box::new(PackedRepackBody {
+                backend,
+                physical_quota,
+            })),
+            _resources: resources,
+        }
+    }
+
+    fn body(&self) -> Result<&PackedRepackBody, StoreError> {
+        self.body.as_deref().ok_or(StoreError::Unavailable)
+    }
+}
+
+impl Drop for StoreGraphPackedRepackAuthority {
+    fn drop(&mut self) {
+        if let Some(boxed) = self.body.take() {
+            // Free the prepaid Box before its backend and guard aliases close;
+            // the original credit remains outside both physical controls.
+            let body = *boxed;
+            drop(body);
+        }
+    }
 }
 
 struct StoreGraphAuthorityIdentity;
@@ -937,7 +973,7 @@ impl<'a> StoreGraphPackedRepackAdmin<'a> {
     /// the packed index or one of its referenced packs cannot be authenticated.
     pub fn accounting(self) -> Result<PackedStorageAccounting, StoreError> {
         self.verify_physical_quota()?;
-        self.authority.backend.accounting()
+        self.authority.body()?.backend.accounting()
     }
 
     /// Plans an exact deterministic replacement of the current packed generation.
@@ -948,7 +984,7 @@ impl<'a> StoreGraphPackedRepackAdmin<'a> {
     /// the packed index or one of its referenced packs cannot be authenticated.
     pub fn plan_repack(self) -> Result<PackedRepackPlan, StoreError> {
         self.verify_physical_quota()?;
-        self.authority.backend.plan_repack()
+        self.authority.body()?.backend.plan_repack()
     }
 
     /// Plans a deterministic replacement of the current packed generation.
@@ -973,7 +1009,7 @@ impl<'a> StoreGraphPackedRepackAdmin<'a> {
     /// publication and authentication fail.
     pub fn apply_repack(self, plan: &PackedRepackPlan) -> Result<PackedRepackReport, StoreError> {
         self.verify_physical_quota()?;
-        self.authority.backend.apply_repack(plan)
+        self.authority.body()?.backend.apply_repack(plan)
     }
 
     /// Applies one exact-generation packed replacement plan.
@@ -996,11 +1032,12 @@ impl<'a> StoreGraphPackedRepackAdmin<'a> {
         self,
     ) -> Result<super::packed::PackedIncompleteCleanupReport, StoreError> {
         self.verify_physical_quota()?;
-        self.authority.backend.cleanup_incomplete_packs()
+        self.authority.body()?.backend.cleanup_incomplete_packs()
     }
 
     fn verify_physical_quota(self) -> Result<(), StoreError> {
         self.authority
+            .body()?
             .physical_quota
             .as_ref()
             .map(|guard| guard.verify())
@@ -2485,10 +2522,7 @@ fn instantiate(
             state.physical.insert(id.clone(), leaf.clone());
             state.packed_repack.insert(
                 id.clone(),
-                StoreGraphPackedRepackAuthority {
-                    backend: Arc::clone(&leaf),
-                    physical_quota: None,
-                },
+                StoreGraphPackedRepackAuthority::new(Arc::clone(&leaf), None, Default::default()),
             );
             leaf
         }
@@ -2645,14 +2679,57 @@ fn instantiate(
                 *maximum_physical_bytes,
                 *maximum_inodes,
             )?;
-            let child_backend = instantiate(configuration, child, nodes, capabilities, state)?;
-            let child_admin = state.physical.remove(child).ok_or_else(|| {
-                invalid_graph(id.as_str(), GraphViolation::InvalidPhysicalQuotaChild)
-            })?;
-            if let Some(repack) = state.packed_repack.get_mut(child) {
-                repack.physical_quota = Some(Arc::clone(&guard));
-            }
+            let (child_backend, child_admin, packed_resources) = match nodes.get(child) {
+                Some(StoreNodeSpec::Packed {
+                    root,
+                    target_pack_bytes,
+                }) => {
+                    // Exclusive quota-child validation means no other route
+                    // can have constructed this leaf before its real binding.
+                    if state.built.contains_key(child) {
+                        return Err(invalid_graph(
+                            id.as_str(),
+                            GraphViolation::InvalidPhysicalQuotaChild,
+                        ));
+                    }
+                    let admitted = super::packed::admitted::open(
+                        child.as_str(),
+                        root,
+                        *target_pack_bytes,
+                        Arc::clone(&guard),
+                        std::mem::size_of::<PackedRepackBody>() as u64,
+                    )?;
+                    let leaf = Arc::new(admitted.backend);
+                    let resources = admitted.resources;
+                    state.built.insert(child.clone(), leaf.clone());
+                    state.packed_repack.insert(
+                        child.clone(),
+                        StoreGraphPackedRepackAuthority::new(
+                            Arc::clone(&leaf),
+                            Some(Arc::clone(&guard)),
+                            resources.clone().into(),
+                        ),
+                    );
+                    (
+                        leaf.clone() as Arc<dyn ImmutableBlobBackend>,
+                        leaf as Arc<dyn BlobStoreAdmin>,
+                        Some(resources),
+                    )
+                }
+                _ => {
+                    let child_backend =
+                        instantiate(configuration, child, nodes, capabilities, state)?;
+                    let child_admin = state.physical.remove(child).ok_or_else(|| {
+                        invalid_graph(id.as_str(), GraphViolation::InvalidPhysicalQuotaChild)
+                    })?;
+                    (child_backend, child_admin, None)
+                }
+            };
             let store = PhysicalQuotaStore::new(id.as_str(), child_backend, child_admin, guard)?;
+            let store = match packed_resources {
+                Some(resources) => store.with_child_resources(resources),
+                None => store,
+            };
             let store = match nodes.get(child) {
                 Some(StoreNodeSpec::Directory { root }) => {
                     store.with_directory_costs(DirectoryBlobBackend::quota_resource_costs(root)?)
@@ -2812,3 +2889,6 @@ fn invalid_graph(node: &str, violation: GraphViolation) -> StoreError {
         violation,
     }
 }
+
+#[cfg(test)]
+mod packed_constructor_layout;

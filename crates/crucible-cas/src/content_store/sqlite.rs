@@ -33,8 +33,8 @@ mod checked_reader;
 mod process_heap;
 pub(super) use batch::busy::Accepted;
 pub use process_heap::{
-    SqliteConnection, SqliteHeapAuthority, SqliteHeapError, SqliteHeapIssuer, SqliteProcessBootstrapAuthority,
-    SqliteProcessHeap,
+    SqliteConnection, SqliteHeapAuthority, SqliteHeapError, SqliteHeapIssuer,
+    SqliteProcessBootstrapAuthority, SqliteProcessHeap,
 };
 mod catalog;
 #[cfg(feature = "test-support")]
@@ -1386,6 +1386,7 @@ mod tests {
     use std::sync::{Arc, Barrier};
 
     use super::*;
+    use crate::content_store::fixture_sqlite_connection;
 
     struct TestCatalogSupervisor;
     struct TestCatalogOperation;
@@ -1918,12 +1919,7 @@ mod tests {
         );
 
         let before = {
-            let connection = crate::content_store::fixture_sqlite_heap()
-                .expect("authored SQLite fixture process")
-                .open_connection(
-                    database_root.join(DATABASE_FILE),
-                    rusqlite::OpenFlags::default(),
-                )
+            let connection = fixture_sqlite_connection(database_root.join(DATABASE_FILE))
                 .expect("inspect database generation");
             load_metadata(&connection.lock().expect("managed metadata connection"))
                 .expect("valid metadata")
@@ -1935,12 +1931,7 @@ mod tests {
         assert_eq!(receipts.len(), objects.len());
         assert!(receipts.iter().all(PutReceipt::is_durable));
         let after = {
-            let connection = crate::content_store::fixture_sqlite_heap()
-                .expect("authored SQLite fixture process")
-                .open_connection(
-                    database_root.join(DATABASE_FILE),
-                    rusqlite::OpenFlags::default(),
-                )
+            let connection = fixture_sqlite_connection(database_root.join(DATABASE_FILE))
                 .expect("inspect committed generation");
             load_metadata(&connection.lock().expect("managed metadata connection"))
                 .expect("valid committed metadata")
@@ -2008,13 +1999,8 @@ mod tests {
             &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
         )
         .expect("open database");
-        let fault = crate::content_store::fixture_sqlite_heap()
-            .expect("authored SQLite fixture process")
-            .open_connection(
-                root.path().join(DATABASE_FILE),
-                rusqlite::OpenFlags::default(),
-            )
-            .expect("open fault writer");
+        let fault =
+            fixture_sqlite_connection(root.path().join(DATABASE_FILE)).expect("open fault writer");
         fault
             .execute_batch(
                 "CREATE TABLE required_parent (id INTEGER PRIMARY KEY);
@@ -2127,13 +2113,8 @@ mod tests {
             .put_if_absent(existing, &BlobHandle::from_bytes(existing_bytes))
             .expect("publish existing object");
 
-        let fault = crate::content_store::fixture_sqlite_heap()
-            .expect("authored SQLite fixture process")
-            .open_connection(
-                root.path().join(DATABASE_FILE),
-                rusqlite::OpenFlags::default(),
-            )
-            .expect("open for fault");
+        let fault =
+            fixture_sqlite_connection(root.path().join(DATABASE_FILE)).expect("open for fault");
         fault
             .execute(
                 "UPDATE objects SET body = ?1 WHERE id = ?2",
@@ -2182,13 +2163,8 @@ mod tests {
 
         // A separate writer changes the same-length body after both cached
         // statements have run. Cached query plans must never cache row data.
-        let connection = crate::content_store::fixture_sqlite_heap()
-            .expect("authored SQLite fixture process")
-            .open_connection(
-                root.path().join(DATABASE_FILE),
-                rusqlite::OpenFlags::default(),
-            )
-            .expect("open for fault");
+        let connection =
+            fixture_sqlite_connection(root.path().join(DATABASE_FILE)).expect("open for fault");
         connection
             .execute(
                 "UPDATE objects SET body = ?1 WHERE id = ?2",
@@ -2241,13 +2217,8 @@ mod tests {
             .expect("durable put");
         drop(backend);
 
-        let connection = crate::content_store::fixture_sqlite_heap()
-            .expect("authored SQLite fixture process")
-            .open_connection(
-                root.path().join(DATABASE_FILE),
-                rusqlite::OpenFlags::default(),
-            )
-            .expect("open for fault");
+        let connection =
+            fixture_sqlite_connection(root.path().join(DATABASE_FILE)).expect("open for fault");
         connection
             .execute(
                 "UPDATE objects SET body = ?1 WHERE id = ?2",
@@ -2364,13 +2335,8 @@ mod tests {
         .expect("open database");
         drop(backend);
 
-        let connection = crate::content_store::fixture_sqlite_heap()
-            .expect("authored SQLite fixture process")
-            .open_connection(
-                root.path().join(DATABASE_FILE),
-                rusqlite::OpenFlags::default(),
-            )
-            .expect("open writer");
+        let connection =
+            fixture_sqlite_connection(root.path().join(DATABASE_FILE)).expect("open writer");
         let mut native = connection.lock().expect("managed interrupted writer");
         let transaction = native.transaction().expect("begin interrupted write");
         transaction
@@ -2403,13 +2369,8 @@ mod tests {
         .expect("open database");
         drop(backend);
 
-        let connection = crate::content_store::fixture_sqlite_heap()
-            .expect("authored SQLite fixture process")
-            .open_connection(
-                root.path().join(DATABASE_FILE),
-                rusqlite::OpenFlags::default(),
-            )
-            .expect("open for fault");
+        let connection =
+            fixture_sqlite_connection(root.path().join(DATABASE_FILE)).expect("open for fault");
         connection
             .execute("UPDATE metadata SET generation = generation + 1", [])
             .expect("inject metadata corruption");
@@ -2429,12 +2390,7 @@ mod tests {
     #[test]
     fn non_reclaiming_database_layout_fails_closed_on_reopen() {
         let root = tempfile::tempdir().expect("temporary database root");
-        let connection = crate::content_store::fixture_sqlite_heap()
-            .expect("authored SQLite fixture process")
-            .open_connection(
-                root.path().join(DATABASE_FILE),
-                rusqlite::OpenFlags::default(),
-            )
+        let connection = fixture_sqlite_connection(root.path().join(DATABASE_FILE))
             .expect("create non-reclaiming database");
         connection
             .execute_batch("PRAGMA auto_vacuum=NONE; CREATE TABLE legacy (id INTEGER);")

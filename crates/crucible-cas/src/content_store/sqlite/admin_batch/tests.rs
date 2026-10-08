@@ -3,6 +3,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use super::*;
+use crate::content_store::fixture_sqlite_connection;
 use crate::content_store::test_resources::FixtureResourceBudget;
 
 struct Quota {
@@ -311,12 +312,7 @@ fn corrupt_metadata_refuses_before_inventory_or_mutation_and_retains_error_bank(
         let guard = Quota::new();
         let (backend, admin) = pair(root.path(), &guard);
         let ids = seeded(backend.as_ref(), 1);
-        let foreign = crate::content_store::fixture_sqlite_heap()
-            .expect("authored SQLite fixture process")
-            .open_connection(
-                root.path().join(DATABASE_FILE),
-                rusqlite::OpenFlags::default(),
-            )
+        let foreign = fixture_sqlite_connection(root.path().join(DATABASE_FILE))
             .expect("external corruption fixture");
         foreign
             .execute_batch(malformed)
@@ -361,12 +357,7 @@ fn generation_overflow_preflights_all_removals_without_partial_delete() {
     let guard = Quota::new();
     let (backend, admin) = pair(root.path(), &guard);
     let ids = seeded(backend.as_ref(), 2);
-    let foreign = crate::content_store::fixture_sqlite_heap()
-        .expect("authored SQLite fixture process")
-        .open_connection(
-            root.path().join(DATABASE_FILE),
-            rusqlite::OpenFlags::default(),
-        )
+    let foreign = fixture_sqlite_connection(root.path().join(DATABASE_FILE))
         .expect("foreign metadata fixture");
     let (instance, _) =
         load_metadata(&foreign.lock().expect("managed metadata connection")).expect("instance");
@@ -428,13 +419,8 @@ fn actual_foreign_sqlite_lock_polls_original_cancellation_without_native_busy_wa
     let root = tempfile::tempdir().expect("catalog");
     let guard = Quota::new();
     let (_, admin) = pair(root.path(), &guard);
-    let foreign = crate::content_store::fixture_sqlite_heap()
-        .expect("authored SQLite fixture process")
-        .open_connection(
-            root.path().join(DATABASE_FILE),
-            rusqlite::OpenFlags::default(),
-        )
-        .expect("foreign writer");
+    let foreign =
+        fixture_sqlite_connection(root.path().join(DATABASE_FILE)).expect("foreign writer");
     foreign
         .execute_batch("BEGIN EXCLUSIVE")
         .expect("actual SQLite exclusive lock");
@@ -533,12 +519,7 @@ fn late_actual_commit_failure_preserves_cached_generation_and_last_error_credit(
         .expect("actual original lease")
         .into();
     let ids = seeded(&backend, 1);
-    let foreign = crate::content_store::fixture_sqlite_heap()
-        .expect("authored SQLite fixture process")
-        .open_connection(
-            root.path().join(DATABASE_FILE),
-            rusqlite::OpenFlags::default(),
-        )
+    let foreign = fixture_sqlite_connection(root.path().join(DATABASE_FILE))
         .expect("independent durable observer");
     let account = DecodeBudget::for_store(guard.clone()).expect("original account");
     let _scope = account.enter();
@@ -601,13 +582,8 @@ fn actual_commit_busy_keeps_one_original_scope_until_reader_releases() {
     let guard = Quota::new();
     let (backend, admin) = pair(root.path(), &guard);
     let ids = seeded(backend.as_ref(), 1);
-    let foreign = crate::content_store::fixture_sqlite_heap()
-        .expect("authored SQLite fixture process")
-        .open_connection(
-            root.path().join(DATABASE_FILE),
-            rusqlite::OpenFlags::default(),
-        )
-        .expect("foreign reader");
+    let foreign =
+        fixture_sqlite_connection(root.path().join(DATABASE_FILE)).expect("foreign reader");
     foreign
         .execute_batch("BEGIN DEFERRED")
         .expect("read transaction");
@@ -719,12 +695,7 @@ fn late_physical_facade_refusal_keeps_committed_outcome_and_consumes_same_bank()
     let guard = Quota::new();
     let (backend, admin) = pair(root.path(), &guard);
     let ids = seeded(backend.as_ref(), 1);
-    let foreign = crate::content_store::fixture_sqlite_heap()
-        .expect("authored SQLite fixture process")
-        .open_connection(
-            root.path().join(DATABASE_FILE),
-            rusqlite::OpenFlags::default(),
-        )
+    let foreign = fixture_sqlite_connection(root.path().join(DATABASE_FILE))
         .expect("independent durable observer");
     let account = DecodeBudget::for_store(guard.clone()).expect("original account");
     let _scope = account.enter();
@@ -801,13 +772,8 @@ fn late_facade_callback_cannot_hide_original_account_refusal() {
     let guard = Quota::new();
     let (backend, admin) = pair(root.path(), &guard);
     let ids = seeded(backend.as_ref(), 1);
-    let foreign = crate::content_store::fixture_sqlite_heap()
-        .expect("authored SQLite fixture process")
-        .open_connection(
-            root.path().join(DATABASE_FILE),
-            rusqlite::OpenFlags::default(),
-        )
-        .expect("durable observer");
+    let foreign =
+        fixture_sqlite_connection(root.path().join(DATABASE_FILE)).expect("durable observer");
     let account = DecodeBudget::for_store(guard.clone()).expect("original account");
     let _scope = account.enter();
     let baseline = guard.resources.usage().expect("baseline");

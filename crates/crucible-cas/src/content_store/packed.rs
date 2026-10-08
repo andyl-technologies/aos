@@ -30,6 +30,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use rustix::fs::{FlockOperation, Mode, OFlags, flock, open};
 
+pub(super) mod admitted;
 mod checked;
 mod checked_publication;
 
