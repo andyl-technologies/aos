@@ -1770,7 +1770,6 @@ impl OriginalStorageOutputRequestV1 {
         let Some(authorization) = self.preparation.record(2) else { return; };
         if !aos_sandbox_protocol::storage_output_reserve::continuation::matches_nomination_v1(authorization, nomination) { return; }
         let message = aos_proto::aos::sandbox::local::v1::BrokerRequestEnvelope {
-            header: Some(coordinates.request_header()).into(),
             method: aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT.into(),
             body: body.clone(),
             authorization: authorization.host_authorization.clone(),

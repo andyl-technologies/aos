@@ -157,6 +157,28 @@ enum RetainedPhysicalBindingV1<'owner, 'origin, 'startup> {
     Host(RetainedHostPhysicalBindingV1<'owner, 'origin, 'startup>),
 }
 
+impl<'owner, 'origin, 'startup> RetainedPhysicalBindingV1<'owner, 'origin, 'startup> {
+    fn broker(&self) -> Result<&BrokerPhysicalAttemptV1, PhysicalTpmFailureV1> {
+        match self {
+            Self::Broker { attempt, .. } => {
+                attempt.as_ref().ok_or(PhysicalTpmFailureV1::State)
+            }
+            #[cfg(feature = "online-nix")]
+            Self::Online { attempt, .. } => Ok(attempt),
+            Self::Host(_) => Err(PhysicalTpmFailureV1::State),
+        }
+    }
+
+    fn host(
+        &self,
+    ) -> Result<&RetainedHostPhysicalBindingV1<'owner, 'origin, 'startup>, PhysicalTpmFailureV1> {
+        match self {
+            Self::Host(host) => Ok(host),
+            _ => Err(PhysicalTpmFailureV1::State),
+        }
+    }
+}
+
 /// Keeps raw physical comparison causes separate from the actual action cause.
 #[cfg(feature = "online-nix")]
 struct OnlinePhysicalPostflightV1 {
@@ -1487,33 +1509,39 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
                 }
                 self.host_mut()?.note_attempt(frame);
             }
-            let sent = if let Some(original) = original {
-                let descriptors = match &locks {
-                    SentLocksV1::Host => Some(self.host()?.lock_fds()?),
-                    SentLocksV1::None => None,
-                    _ => return Err(PhysicalTpmFailureV1::State),
-                };
-                let channel = self.channel()?;
-                // All owner/image/child/slot/frame observations precede this
-                // final original pair. No replacement deadline or resample
-                // follows it before the one native dispatch.
-                original.require_clock()?;
-                match descriptors {
-                    Some(descriptors) => channel.send_with_descriptors(bytes, &descriptors),
-                    None => channel.send(bytes),
-                }
-            } else {
-                let channel = self.channel()?;
-                match &locks {
-                    SentLocksV1::Broker(locks) => channel
-                        .send_with_descriptors(bytes, &[locks[0].as_fd(), locks[1].as_fd()]),
-                    SentLocksV1::BrokerRetained => {
-                        let locks = &self.broker()?.locks;
-                        channel.send_with_descriptors(bytes, &[locks[0].as_fd(), locks[1].as_fd()])
+            let sent = {
+                // Native send mutates the resident channel, not its lock binding.
+                let (channel_slot, binding) = (&mut self.channel, &self.binding);
+                if let Some(original) = original {
+                    let descriptors = match &locks {
+                        SentLocksV1::Host => Some(binding.host()?.lock_fds()?),
+                        SentLocksV1::None => None,
+                        _ => return Err(PhysicalTpmFailureV1::State),
+                    };
+                    let channel = channel_slot.as_mut()
+                        .ok_or_else(|| PhysicalTpmFailureV1::from(FloorErrorV1::Unavailable))?;
+                    // All owner/image/child/slot/frame observations precede this
+                    // final original pair. No replacement deadline or resample
+                    // follows it before the one native dispatch.
+                    original.require_clock()?;
+                    match descriptors {
+                        Some(descriptors) => channel.send_with_descriptors(bytes, &descriptors),
+                        None => channel.send(bytes),
                     }
-                    SentLocksV1::Host => channel
-                        .send_with_descriptors(bytes, &self.host()?.lock_fds()?),
-                    SentLocksV1::None => channel.send(bytes),
+                } else {
+                    let channel = channel_slot.as_mut()
+                        .ok_or_else(|| PhysicalTpmFailureV1::from(FloorErrorV1::Unavailable))?;
+                    match &locks {
+                        SentLocksV1::Broker(locks) => channel
+                            .send_with_descriptors(bytes, &[locks[0].as_fd(), locks[1].as_fd()]),
+                        SentLocksV1::BrokerRetained => {
+                            let locks = &binding.broker()?.locks;
+                            channel.send_with_descriptors(bytes, &[locks[0].as_fd(), locks[1].as_fd()])
+                        }
+                        SentLocksV1::Host => channel
+                            .send_with_descriptors(bytes, &binding.host()?.lock_fds()?),
+                        SentLocksV1::None => channel.send(bytes),
+                    }
                 }
             };
             match sent {
@@ -1638,14 +1666,7 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
     }
 
     fn broker(&self) -> Result<&BrokerPhysicalAttemptV1, PhysicalTpmFailureV1> {
-        match &self.binding {
-            RetainedPhysicalBindingV1::Broker { attempt, .. } => {
-                attempt.as_ref().ok_or(PhysicalTpmFailureV1::State)
-            }
-            #[cfg(feature = "online-nix")]
-            RetainedPhysicalBindingV1::Online { attempt, .. } => Ok(attempt),
-            RetainedPhysicalBindingV1::Host(_) => Err(PhysicalTpmFailureV1::State),
-        }
+        self.binding.broker()
     }
 
     fn broker_mut(&mut self) -> Result<&mut BrokerPhysicalAttemptV1, PhysicalTpmFailureV1> {
@@ -1797,10 +1818,7 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
     fn host(
         &self,
     ) -> Result<&RetainedHostPhysicalBindingV1<'owner, 'origin, 'startup>, PhysicalTpmFailureV1> {
-        match &self.binding {
-            RetainedPhysicalBindingV1::Host(host) => Ok(host),
-            _ => Err(PhysicalTpmFailureV1::State),
-        }
+        self.binding.host()
     }
 
     fn host_mut(
