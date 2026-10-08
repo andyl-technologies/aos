@@ -6,6 +6,7 @@
 //! The returned mount is still not launch permission: backend and resource
 //! readiness must independently admit the payload.
 
+use std::os::fd::AsFd as _;
 use std::path::Path;
 
 use aos_sandbox_guest::guest_root_label::verify_copied_guest_executable_labels_fd_v1;
@@ -307,7 +308,7 @@ impl HostCanaryRootExportOriginalV1 {
         let request = self.request.as_ref().ok_or_else(canary_export_refusal)?;
         let root = record.descriptors().first().ok_or_else(canary_export_refusal)?;
         let stat = rustix::fs::fstat(root)?;
-        let mount = aos_sandbox_linux::inventory::MountId::from_fd(root)?;
+        let mount = aos_sandbox_linux::inventory::MountId::from_fd(root.as_fd())?;
         if response.nonce != request.nonce
             || response.request_digest != request.digest()?
             || response.root_device != workspace.device || response.root_inode != workspace.inode

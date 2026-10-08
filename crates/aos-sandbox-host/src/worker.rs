@@ -889,7 +889,7 @@ impl HostCanaryPayloadReadbackV1 {
         if self.closed {
             return Err(systemd::resident_readback_missing("fenced canary channel"));
         }
-        self.child_channel.as_ref().map(AsFd::as_fd)
+        self.child_channel.as_ref().map(|channel| channel.as_fd())
             .ok_or_else(|| systemd::resident_readback_missing("canary child channel"))
     }
 

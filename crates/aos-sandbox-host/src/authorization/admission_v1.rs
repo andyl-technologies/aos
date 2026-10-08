@@ -96,7 +96,7 @@ impl HostAuthorityV1 {
             crate::broker::canary_job::CanaryAction::Launch => (&job.launch, 0, job.request_ids[0]),
             crate::broker::canary_job::CanaryAction::Stop => (&job.stop, 1, job.request_ids[1]),
         };
-        let semantics = aos_sandbox_protocol::semantics::canonical_host_template_semantics_v1(template)
+        let semantics = aos_sandbox_protocol::semantics::host::canonical_host_template_semantics_v1(template)
             .map_err(|_| HostAdmissionError::RequestMismatch)?;
         let artifacts = owner.authorization(matches!(action, crate::broker::canary_job::CanaryAction::Stop))?;
         let admitted = self.authority.admit(
