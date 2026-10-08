@@ -269,6 +269,13 @@ in {
         )
     )
     assert isinstance(initial_installed, list), initial_installed
+    system_installed = json.loads(
+        runtime.succeed(
+            "${nerdctl} exec aos-runtime-state /usr/bin/apm --json list --installed --system",
+            timeout=60,
+        )
+    )
+    assert system_installed == initial_installed, system_installed
     runtime.succeed(
         "${nerdctl} exec aos-runtime-state ${bash} -c "
         + shlex.quote(
@@ -390,7 +397,7 @@ in {
         "--check-validity ${fixtureTool}"
     )
     runtime.succeed(
-        "${nerdctl} exec aos-runtime-state /usr/bin/apm install "
+        "${nerdctl} exec aos-runtime-state /usr/bin/apm install --system "
         "container-runtime-tool --registry container-runtime-reg --yes "
         "> /tmp/aos-container-install.out 2>&1",
         timeout=120,
