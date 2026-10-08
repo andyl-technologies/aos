@@ -43,6 +43,9 @@ use aos_sandbox_journal::framing::{
 use aos_sandbox_journal::geometry::{EncodedRecordLayout, NativeGeometryBounds, RecordShape};
 use aos_sandbox_journal::materialized::{self, RecordMutationRef};
 use aos_sandbox_journal::record::{self, RecordError, RecordHeader};
+use aos_sandbox_journal::recovery::{
+    RecoveryTailError, RecoveryTailMode, TailResultSlots, finish_replayed_tail,
+};
 use aos_sandbox_journal::transaction::{self, NativePendingTransaction, NativeRecordRef};
 
 pub mod canonical_map;
@@ -757,6 +760,18 @@ impl From<RecordError> for JournalError {
         match error {
             RecordError::MalformedRecord(reason) => Self::MalformedRecord(reason),
             RecordError::LimitExceeded(bound) => Self::LimitExceeded(bound),
+        }
+    }
+}
+
+impl From<RecoveryTailError> for JournalError {
+    fn from(error: RecoveryTailError) -> Self {
+        match error {
+            RecoveryTailError::Io(error) => Self::Io(error),
+            RecoveryTailError::UncommittedTail => Self::MalformedTransaction(
+                "read-only journal has an uncommitted tail",
+            ),
+            RecoveryTailError::RetainedNativeFailure => Self::ProtectedBoundary,
         }
     }
 }
@@ -2352,15 +2367,19 @@ fn prepare_opened_replay(
     repair_tail: bool,
     destination: OpenedReplayDestinationV1<'_>,
 ) -> Result<(Option<ReplayState>, RecoveryReport), JournalError> {
-    let (metadata_slot, replay_slot, truncate_slot, sync_slot, seek_slot, scratch_slot) = match destination {
-        OpenedReplayDestinationV1::Ordinary => (None, None, None, None, None, None),
+    let (metadata_slot, replay_slot, tail_slots, scratch_slot) = match destination {
+        OpenedReplayDestinationV1::Ordinary => (None, None, None, None),
         OpenedReplayDestinationV1::Controller(originals) => (
             Some(&mut originals.metadata), Some(&mut originals.replay),
-            Some(&mut originals.truncate), Some(&mut originals.sync), Some(&mut originals.seek), None,
+            Some(TailResultSlots::new(
+                &mut originals.truncate, &mut originals.sync, &mut originals.seek,
+            )), None,
         ),
         OpenedReplayDestinationV1::Retained(originals, scratch) => (
             Some(&mut originals.metadata), Some(&mut originals.replay),
-            Some(&mut originals.truncate), Some(&mut originals.sync), Some(&mut originals.seek), Some(scratch),
+            Some(TailResultSlots::new(
+                &mut originals.truncate, &mut originals.sync, &mut originals.seek,
+            )), Some(scratch),
         ),
     };
     let length = match metadata_slot {
@@ -2393,34 +2412,17 @@ fn prepare_opened_replay(
             }
         }
     };
-    let truncated_bytes = length.saturating_sub(replay.durable_end);
-
-    // Native IO results have Copy successes, but actual owning Errs remain
-    // in the selected destination before classification or another operation.
-    macro_rules! native {
-        ($slot:expr, $operation:expr) => {
-            match $slot {
-                None => $operation?,
-                Some(slot) => {
-                    *slot = Some($operation);
-                    match slot.as_ref() {
-                        Some(Ok(value)) => *value,
-                        _ => return Err(JournalError::ProtectedBoundary),
-                    }
-                }
-            }
-        };
-    }
-    if truncated_bytes > 0 {
-        if !repair_tail {
-            return Err(JournalError::MalformedTransaction(
-                "read-only journal has an uncommitted tail",
-            ));
-        }
-        native!(truncate_slot, file.set_len(replay.durable_end));
-        native!(sync_slot, file.sync_data());
-    }
-    native!(seek_slot, file.seek(SeekFrom::End(0)));
+    let truncated_bytes = finish_replayed_tail(
+        file,
+        length,
+        replay.durable_end,
+        if repair_tail {
+            RecoveryTailMode::RepairIncomplete
+        } else {
+            RecoveryTailMode::RejectIncomplete
+        },
+        tail_slots,
+    )?;
     let report = RecoveryReport {
         committed_transactions: replay.committed_transactions,
         committed_records: replay.committed_records,
@@ -10220,6 +10222,39 @@ mod tests {
             assert_eq!(std::mem::discriminant(&actual), std::mem::discriminant(&expected));
             assert_eq!(actual.to_string(), expected.to_string());
         }
+    }
+
+    #[test]
+    fn native_tail_error_adapter_preserves_selected_classification_and_ordinary_cause() {
+        use super::RecoveryTailError;
+
+        let cases = [
+            (
+                RecoveryTailError::UncommittedTail,
+                JournalError::MalformedTransaction("read-only journal has an uncommitted tail"),
+            ),
+            (RecoveryTailError::RetainedNativeFailure, JournalError::ProtectedBoundary),
+        ];
+        for (native, expected) in cases {
+            assert_eq!(native.to_string(), expected.to_string());
+
+            let actual = JournalError::from(native);
+
+            assert_eq!(std::mem::discriminant(&actual), std::mem::discriminant(&expected));
+            assert_eq!(actual.to_string(), expected.to_string());
+        }
+
+        let native = std::io::Error::from_raw_os_error(9);
+        let expected_kind = native.kind();
+        let expected_errno = native.raw_os_error();
+
+        let actual = JournalError::from(RecoveryTailError::Io(native));
+
+        let JournalError::Io(actual) = actual else {
+            panic!("ordinary tail failure must retain its native I/O cause");
+        };
+        assert_eq!(actual.kind(), expected_kind);
+        assert_eq!(actual.raw_os_error(), expected_errno);
     }
 
     #[test]

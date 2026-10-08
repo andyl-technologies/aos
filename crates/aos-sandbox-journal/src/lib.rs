@@ -8,6 +8,8 @@
 //! domain owners retain closed namespace decoding and semantic validation.
 //! [`transaction`] owns ordered native transaction construction and incremental
 //! ID/count/digest state without decoding records or publishing committed state.
+//! [`recovery`] finalizes the already replayed tail on the same borrowed file;
+//! actual semantic replay and selected native-result custody remain upper.
 //! Controller, Storage, and session-security owners use these same mechanics
 //! without sharing authority.
 //!
@@ -20,4 +22,5 @@ pub mod framing;
 pub mod geometry;
 pub mod materialized;
 pub mod record;
+pub mod recovery;
 pub mod transaction;
