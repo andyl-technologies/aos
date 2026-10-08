@@ -23,8 +23,7 @@ use sha2::{Digest as _, Sha256};
 
 use super::DomainLedgerDataError;
 use super::capacity::{
-    GlobalCapacityReservationRequestV1,
-    capacity_reservation_identity_is_exact_v1,
+    GlobalCapacityReservationRequestV1, capacity_reservation_identity_is_exact_v1,
 };
 use super::transaction::{JournalRecord, JournalTransaction};
 
