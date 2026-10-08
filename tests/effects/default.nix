@@ -26,6 +26,7 @@
     frozenHandler = import ./frozen-handler.nix;
     bootConsumers = import ./boot-consumers.nix;
     initSystem = import ./init-system.nix;
+    containerBootstrap = import ./container-bootstrap.nix {inherit pkgs;};
     hostActivationNamespace = hostActivationNamespace.checks;
     bakedTestStorage = import ./baked-test-storage.nix {inherit lib pkgs;};
     fleetBootPolicy = import ./fleet-boot-policy.nix {inherit lib pkgs;};
@@ -100,6 +101,7 @@ in
             export PYTHONDONTWRITEBYTECODE=1
             test -f ${initrdAccountSeed.serialization}/result
             ${pkgs.python3}/bin/python3 ${../services/native-handler.py} ${../../pkgs/system/_systemd-abilities/service-handler.py} ${../../pkgs/system/_aos-configuration-provider/aos_configuration.py} ${../../pkgs/system/_aos-configuration-provider/handler.py} ${pkgs.aos-configuration-provider}/bin/aos-configuration-provider ${pkgs.systemd}/bin/systemd-analyze ${hostActivationInput} ${packageConvergenceInput} ${projectedServiceInput} ${projectedServiceUnits}
+            ${pkgs.python3}/bin/python3 ${../../pkgs/system/_systemd-abilities/bootstrap-provider-tests.py} ${../../pkgs/system/_systemd-abilities/bootstrap-provider.py} ${../../pkgs/system/_aos-configuration-provider/aos_configuration.py}
             ${pkgs.python3}/bin/python3 ${../services/native-flight-oracle.py} ${../fleet/native-reference-service-flights.py}
             ${pkgs.python3}/bin/python3 ${../fleet/native-filesystem-firewall-oracles-self-test.py} ${../fleet/native-filesystem-firewall-oracles.py}
             ${pkgs.python3}/bin/python3 ${../fleet/native-reference-filesystem-flights-self-test.py} ${../fleet/native-reference-filesystem-flights.py}

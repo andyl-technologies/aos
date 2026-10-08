@@ -3,6 +3,7 @@
   lib,
   service-management,
   init-system,
+  dbus,
   aos-configuration-provider,
   aos-host-policy,
   mkDerivation,
@@ -200,7 +201,9 @@ in
 
     inherit version;
     module = ./_systemd-abilities;
-    moduleDeps = [service-management init-system aos-configuration-provider aos-host-policy linux-pam];
+    # Native resource handlers pin the real system-bus manager identity. The
+    # broker's package module is required even when systemd is installed alone.
+    moduleDeps = [service-management init-system aos-configuration-provider aos-host-policy linux-pam dbus];
 
     # Keep UKI construction and kernel installation in `tools`, including
     # kernel-install's Python hook. PID 1 and boot-time generators do not need
@@ -753,6 +756,21 @@ in
             "\$@"
           EOF
           chmod +x "$handlers/bin/aos-service-handler"
+
+          cp ${./_systemd-abilities/bootstrap-provider.py} "$handlers/libexec/aos-systemd-bootstrap.py"
+          cat > "$handlers/bin/aos-systemd-bootstrap" << EOF
+          #!${bash}/bin/bash
+          export PYTHONPATH="${aos-configuration-provider}/libexec"
+          exec "${python3}/bin/python3" -B "$handlers/libexec/aos-systemd-bootstrap.py" \\
+            --nix-store "${nix}/bin/nix-store" \\
+            --nix-hash "${nix}/bin/nix-hash" \\
+            --group-renderer "$handlers/bin/aos-systemd-native-resources" \\
+            --true-executable "${coreutils}/bin/true" \\
+            --flock-executable "${util-linux}/bin/flock" \\
+            --mac-condition-executable "$handlers/bin/aos-service-handler" \\
+            "\$@"
+          EOF
+          chmod +x "$handlers/bin/aos-systemd-bootstrap"
         '';
       }
       {

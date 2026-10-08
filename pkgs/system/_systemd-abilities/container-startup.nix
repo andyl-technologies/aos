@@ -19,7 +19,8 @@
   unit = ''
     [Unit]
     Description=Activate installed container effects
-    After=basic.target
+    Requires=dbus.service
+    After=basic.target dbus.service
 
     [Service]
     Type=oneshot
