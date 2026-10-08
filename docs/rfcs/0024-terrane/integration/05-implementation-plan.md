@@ -1796,6 +1796,13 @@ Reviewed private `05e50903cb` adds only `authoring: None` to that initializer.
 All 6,074 tracked inputs, modes and symlink targets are independently verified;
 both formats and fresh SDK/library/all-target Clippy pass. Compiled discovery,
 the two actual indexed cases and owning collector qualification remain pending.
+Discovery on that unchanged corrected source subsequently succeeds with 768
+library cases and both exact indexed selectors present once and nonignored.
+The first checkpoint/reopen case executes once and fails at writer begin with
+typed `Unsupported` after 2.112 seconds, before its checkpoint assertions.
+The exact indexed-role case and owning checks do not execute. All original
+invocations are terminal and the complete source and selected executable
+remain unchanged; the failure is preserved for diagnosis without retry.
 GC-15, GC-16 and GC-29 also require D-82 copied-retirement and permanent-owner
 recovery. The current source implements their codecs and portable-copy
 registration, but no genuine copied or permanent-owner collector path.
