@@ -57,20 +57,20 @@ impl fmt::Debug for BackendOperationalCause {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_tuple("BackendOperationalCause")
-            .field(self.shared().as_ref().original())
+            .field(self.shared().as_ref())
             .finish()
     }
 }
 
 impl fmt::Display for BackendOperationalCause {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(self.shared().as_ref().original(), formatter)
+        fmt::Display::fmt(self.shared().as_ref(), formatter)
     }
 }
 
 impl Error for BackendOperationalCause {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
-        Some(self.shared().as_ref().original())
+        Some(self.shared().as_ref())
     }
 }
 

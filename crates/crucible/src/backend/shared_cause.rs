@@ -119,17 +119,11 @@ impl<E: Error + Send + Sync + 'static> Eq for SharedOperationalCause<E> {}
 // The trait and all Arc-bearing constructors remain private to the backend
 // boundary. Dispatch retains a concrete Self for extraction, avoiding a second
 // Box allocation or ordinary destruction of an erased Arc's inner error.
-pub(super) trait ClosedOperationalCause: Send + Sync {
-    fn original(&self) -> &(dyn Error + 'static);
-
+pub(super) trait ClosedOperationalCause: Error + Send + Sync {
     fn close(self: Arc<Self>);
 }
 
 impl<E: Error + Send + Sync + 'static> ClosedOperationalCause for E {
-    fn original(&self) -> &(dyn Error + 'static) {
-        self
-    }
-
     fn close(self: Arc<Self>) {
         drop(Arc::into_inner(self));
     }
