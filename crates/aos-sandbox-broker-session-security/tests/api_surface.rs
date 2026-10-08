@@ -265,6 +265,7 @@ fn controller_composition_has_an_exact_closed_declaration_surface() {
     let dormant_sources = [
         include_str!("../src/dormant_handshake.rs"),
         include_str!("../src/dormant_handshake/host_catalog_publication.rs"),
+        include_str!("../src/dormant_handshake/host_scope_terminal.rs"),
     ]
     .concat();
     assert_eq!(
@@ -738,6 +739,7 @@ fn controller_composition_exports_only_named_sealed_owners_and_data() {
     let dormant = [
         include_str!("../src/dormant_handshake.rs"),
         include_str!("../src/dormant_handshake/host_catalog_publication.rs"),
+        include_str!("../src/dormant_handshake/host_scope_terminal.rs"),
     ]
     .concat();
     assert!(!dormant.contains("pub fn sign_lifecycle_bootstrap_attestation"));
