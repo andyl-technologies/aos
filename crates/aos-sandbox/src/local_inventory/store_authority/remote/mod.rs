@@ -44,6 +44,8 @@ use crate::local_inventory::assignment::{
     SnapshotTransferResumeV1, VerifiedAssignmentAuthorityV1, VerifiedRestoreAuthorizationV1,
     VerifiedSnapshotDependencySetV1, VerifiedStagedSnapshotV1, staged_prefix_commitment,
 };
+#[cfg(feature = "multi-node")]
+use crate::local_inventory::capability::PlacementCandidateV1;
 use crate::local_inventory::carrier_authority::{
     AuthenticatedAssignmentCarrierContractV1, issue_response_from_protected_channel,
     issue_session_from_protected_channel, verify_assignment_contract_from_protected_channel,
@@ -83,8 +85,6 @@ use crate::local_inventory::reducer_state::{
     MultiNodeReducerStateV1, SnapshotTransferJournalStateV1, WatchJournalStateV1,
     decode_snapshot_manifest_seed,
 };
-#[cfg(feature = "multi-node")]
-use crate::local_inventory::remote::placement::PlacementCandidateV1;
 
 use super::{
     ProtectedMultiNodeAuthorityOpenErrorV1, ProtectedMultiNodeAuthorityOwnerV1,

@@ -5,6 +5,15 @@
 //! controller capacity, or grant ownership. Authentication and freshness at
 //! the carrier boundary remain responsibilities of the coordinator-to-node
 //! protocol implementation.
+//!
+//! Explicitly selected placement candidates retain these sealed observations
+//! here so protected inventory does not depend on the placement implementation.
+
+#[cfg(feature = "multi-node")]
+mod placement_candidate;
+
+#[cfg(feature = "multi-node")]
+pub use placement_candidate::PlacementCandidateV1;
 
 use std::cmp::Ordering;
 

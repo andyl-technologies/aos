@@ -30,6 +30,8 @@ use super::super::journal::{
     JournalEffectStateV1, MultiNodeJournalDomainV1, ProtectedJournalRecordV1,
 };
 
+pub use super::super::capability::PlacementCandidateV1;
+
 /// Maximum candidate nodes considered by one placement decision.
 pub const MAX_PLACEMENT_CANDIDATES: usize = 4_096;
 /// Maximum complete affinity observations supplied to one placement decision.
@@ -37,43 +39,6 @@ pub const MAX_AFFINITY_PLACEMENTS: usize = super::super::reducer_state::MAX_ASSI
 /// Maximum required features accepted from one semantic placement request.
 pub const MAX_PLACEMENT_REQUIRED_FEATURES: usize =
     super::super::assignment::MAX_SNAPSHOT_TRANSFER_REQUIRED_FEATURES;
-
-/// Couples one node snapshot to its authenticated controller receipt time.
-///
-/// Receipt time is placement freshness evidence and is deliberately outside
-/// the node snapshot's sequence identity. It is not an ownership lease clock.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PlacementCandidateV1 {
-    observation: CarrierValidatedCapabilityObservationV1,
-}
-
-impl PlacementCandidateV1 {
-    /// Constructs one candidate after authenticated snapshot receipt.
-    #[must_use]
-    pub(in crate::local_inventory) fn from_authenticated_observation(
-        observation: CarrierValidatedCapabilityObservationV1,
-    ) -> Self {
-        Self { observation }
-    }
-
-    /// Returns the complete node capability snapshot.
-    #[must_use]
-    pub const fn snapshot(&self) -> &NodeCapabilitySnapshotV1 {
-        self.observation.snapshot()
-    }
-
-    /// Returns the opaque carrier-validated observation.
-    #[must_use]
-    pub const fn observation(&self) -> &CarrierValidatedCapabilityObservationV1 {
-        &self.observation
-    }
-
-    /// Returns the controller-recorded authenticated receipt time.
-    #[must_use]
-    pub const fn received_at_unix_seconds(&self) -> u64 {
-        self.observation.authenticated_at_unix_seconds()
-    }
-}
 
 /// Records the controller-observed node for one affinity dependency.
 #[derive(Clone, Debug, Eq, PartialEq)]
