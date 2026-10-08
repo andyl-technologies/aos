@@ -1512,6 +1512,20 @@ original invocations. No acknowledgment return, post-stage timings, baseline
 output, measured maintenance or independent oracles are reached. Allocation
 cost remains unmeasured; this change does not qualify DRV-29 or advance a task.
 
+The separate `6cd9a20105` removes temporary ancestor-path vector construction
+from native parent checks. It preserves complete structural validation before
+metadata, each exact ordered path, policy and incarnation check, and all original
+errors. Its SDK build, strict library and all-target Clippy, and all six worker
+tests pass. The unchanged 1,024-entry witness fails in 62.506 seconds. Its actual
+Raw acknowledgment returns at Raw-scope elapsed 27.753605488 seconds, then the
+original ref deadline rejects 30.177655775 seconds against 30 seconds before
+the immutable metadata batch returns. The precise caller check is not localized
+beyond that recorded boundary. Independent review matches all 3,252 inputs for
+all five original invocations to the sealed commit. Durable selected staging,
+post-stage diagnostics, baseline output, measured maintenance and independent
+oracles remain unreached. This result establishes no allocation benefit,
+throughput gain or DRV-29 qualification.
+
 Shared native test-image registration preserves all 292 specification gates and
 69 current T0/T1 gate names. Its compiler output remains explicitly pending on
 trunk while the isolated implementation is reviewed. The intended reuse covers
@@ -1535,6 +1549,18 @@ the actual local-head/foreign-used-view cold fork returns `Unsupported` at
 deadline expiry. The other two prerequisites and twelve owning cases remain
 unqualified in this invocation; only the image and cold-source outputs are valid.
 No prerequisite is waived, task accepted or T1 freeze advanced.
+
+The private `1ff700431a` composition keeps imported cold-source qualification
+reachable by applying the local Original binder only to locally sourced heads.
+The imported path retains its complete historical source, signature, ownership,
+physical holder and final current checks. Its native SDK build, strict library
+and all-target Clippy pass. The exact mandatory local-head/foreign-used-view
+cold-fork case passes in 45.092 seconds with unchanged deadlines. Independent
+review matches all 6,061 tracked inputs before and after each of these four
+original invocations to the sealed commit. Its separate owning Nix request is
+compiling the immutable image; all four prerequisites and twelve owning cases
+remain required actual executions. This local regression pass does not qualify
+the owning gate, complete native suite or T1.
 
 Deployable as: a local tool that initializes a store under a `file://`
 root, commits a directory, forks and merges branches, and checks a commit
