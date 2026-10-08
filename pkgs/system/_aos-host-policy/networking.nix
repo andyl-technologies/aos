@@ -1,18 +1,27 @@
 ##! Portable link, resolver, hostname, and network-tuning policy.
-{lib, ...}: {
+{
+  config,
+  lib,
+  ...
+}: let
+  containerTarget = config.aos.initSystem.container or false;
+in {
   imports = [./network-effects.nix];
   options.aos.networking = {
     ## System hostname.
     hostName = lib.mkOption {
-      type = lib.types.str;
-      default = "aos";
-      description = "System hostname written to /etc/hostname and converged through the kernel-tunable provider.";
+      type = lib.types.nullOr lib.types.str;
+      default =
+        if containerTarget
+        then null
+        else "aos";
+      description = "System hostname written to /etc/hostname and converged through the kernel-tunable provider; null preserves the container runtime hostname.";
     };
 
     ## Use DHCP for all Ethernet interfaces by default.
     useDHCP = lib.mkOption {
       type = lib.types.bool;
-      default = true;
+      default = !containerTarget;
       description = ''
         Use DHCP for all Ethernet interfaces by default. When true and no
         static interfaces are defined, a catch-all .network file is generated
@@ -162,7 +171,7 @@
       ## Enable provider-managed DNS resolution.
       enable = lib.mkOption {
         type = lib.types.bool;
-        default = true;
+        default = !containerTarget;
         description = "Enable DNS resolution through the selected network provider.";
       };
 

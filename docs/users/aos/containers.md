@@ -12,6 +12,11 @@ Explicitly enabling a managed service requires a service-management handler.
 Use generated package documentation to inspect each package's options and
 the abilities it consumes or exposes.
 
+Container policy preserves the runtime's hostname and networking by default
+and leaves host-kernel tuning to the host. Installing an init implementation
+does not enable those host defaults. Explicit kernel or network configuration
+still declares effects that must have suitable handlers and runtime support.
+
 ## Installing while building an image
 
 For a derived image, package installation runs in ordinary Dockerfile steps.

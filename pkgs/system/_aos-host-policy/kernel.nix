@@ -1,11 +1,17 @@
 ##! Portable kernel policy shared by image evaluation and profile replay.
-{lib, ...}: {
+{
+  config,
+  lib,
+  ...
+}: let
+  containerTarget = config.aos.initSystem.container or false;
+in {
   imports = [./kernel-effects.nix ./kernel-packages.nix];
   options.aos.kernel = {
     ## Enable TCP BBR congestion control.
     bbr = lib.mkOption {
       type = lib.types.bool;
-      default = true;
+      default = !containerTarget;
       description = ''
         Enable TCP BBR congestion control. BBR achieves higher throughput and
         lower latency than CUBIC on lossy or high-BDP paths. When enabled,
@@ -26,7 +32,7 @@
     };
   };
   config.aos.kernel = {
-    sysctl = lib.mkDefault {
+    sysctl = lib.mkIf (!containerTarget) (lib.mkDefault {
       # This must be a mergeable definition rather than the option default so a
       # package policy adding one tunable retains every unrelated base key.
       # -- Network performance --
@@ -49,6 +55,6 @@
 
       # -- Process limits --
       "kernel.pid_max" = "4194304";
-    };
+    });
   };
 }

@@ -6,6 +6,7 @@
   ...
 }: let
   cfg = config.aos.networking;
+  containerTarget = config.aos.initSystem.container or false;
   optionOwners =
     if provenance != null
     then
@@ -93,6 +94,17 @@
         });
     })
     cfg.bonds;
+  # Container networking belongs to the runtime unless policy requests management.
+  networkConfigured =
+    !containerTarget
+    || cfg.useDHCP
+    || cfg.interfaces != {}
+    || cfg.vlans != {}
+    || cfg.bonds != {}
+    || cfg.mtu != 0
+    || cfg.resolved.enable
+    || cfg.nameservers != []
+    || cfg.search != [];
   networkConfiguration = {
     inherit authority;
     inherit (cfg) mtu;
@@ -108,7 +120,7 @@
   };
 in {
   config = lib.mkIf ((config.aos.boot.stage or "host") == "host") {
-    aos.kernel.sysctl = cfg.tuning // {"kernel.hostname" = cfg.hostName;};
-    aos.abilities.network.operations.configure.effects.host.input = networkConfiguration;
+    aos.kernel.sysctl = cfg.tuning // lib.optionalAttrs (cfg.hostName != null) {"kernel.hostname" = cfg.hostName;};
+    aos.abilities.network.operations.configure.effects.host = lib.mkIf networkConfigured {input = networkConfiguration;};
   };
 }
