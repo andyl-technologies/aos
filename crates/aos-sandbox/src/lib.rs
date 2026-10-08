@@ -193,8 +193,11 @@ pub use runtime_deployment::{
     HeldRuntimeDeploymentPairComparisonV1, HostPhysicalInvocationErrorV1,
     HostPhysicalInvocationLeaseV1, ProductionRuntimeDeploymentStartupCaptureV1,
     ProductionRuntimeDeploymentStartupPartsV1, ProductionRuntimeDeploymentStartupV1,
-    RuntimeDeploymentComparisonErrorV1, RuntimeDeploymentComparisonOriginsV1,
-    RuntimeDeploymentNativeTransactionDataV1, RuntimeDeploymentStartupErrorV1,
+    RuntimeDeploymentCanaryFailureV2, RuntimeDeploymentComparisonErrorV1,
+    RuntimeDeploymentComparisonOriginsV1, RuntimeDeploymentNativeTransactionDataV1,
+    RuntimeDeploymentOriginalClockCauseV3, RuntimeDeploymentOriginalClockRangeV3,
+    RuntimeDeploymentOriginalWindowV3, RuntimeDeploymentStartupErrorV1,
+    observe_original_runtime_deployment_clock_v3,
 };
 
 #[cfg(target_os = "linux")]

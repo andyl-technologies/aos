@@ -45,11 +45,11 @@ const SIGNING_ANCESTRY_V2: [&str; 3] = [
 // Core constructs this owning window only after authenticating the same request
 // record and full job. Consuming its record loan ends that borrow before any
 // whole-transport mutation; no sibling can fabricate or renew the window.
-pub(in crate::tpm_nv_custody) use aos_sandbox::runtime_deployment::{
+pub(in crate::tpm_nv_custody) use aos_sandbox::{
     RuntimeDeploymentOriginalWindowV3 as CanaryAuthenticatedRequestV3,
     RuntimeDeploymentOriginalClockCauseV3 as CanaryClockCauseV2,
 };
-use aos_sandbox::runtime_deployment::observe_original_runtime_deployment_clock_v3
+use aos_sandbox::observe_original_runtime_deployment_clock_v3
     as original_clock_pair_v2;
 
 #[derive(Debug, thiserror::Error)]

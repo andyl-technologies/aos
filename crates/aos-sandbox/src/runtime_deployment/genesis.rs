@@ -12,8 +12,8 @@
 //! runtime-deployment-signing-seed-v1 = separate private publisher seed:32
 //! ```
 
-use std::cell::RefCell;
 use std::path::Path;
+use std::sync::Mutex;
 
 use aos_sandbox_protocol::runtime_deployment::{
     DEPLOYMENT_GENESIS_BYTES_V1, DeploymentGenesisV1,
@@ -68,7 +68,9 @@ pub(crate) struct VerifiedDeploymentGenesisV1<'startup> {
 
 /// Keeps the actual protected originals, not a decoded replacement for custody.
 struct CanaryGenesisCustodyV2 {
-    credentials: RefCell<RuntimeDeploymentCredentialCustodyV2>,
+    // Mutable loans remain nonblocking; busy or poisoned custody is refused
+    // without recovering originals or clearing the lock's poisoned state.
+    credentials: Mutex<RuntimeDeploymentCredentialCustodyV2>,
     purpose: CanaryPurposeV2,
 }
 
@@ -136,7 +138,7 @@ impl<'startup> CanaryGenesisAssemblyV2<'startup> {
             signer: self.signer,
             genesis: self.genesis,
             canary: Some(CanaryGenesisCustodyV2 {
-                credentials: RefCell::new(credentials),
+                credentials: Mutex::new(credentials),
                 purpose: self.purpose,
             }),
         }
@@ -264,7 +266,7 @@ impl<'startup> VerifiedDeploymentGenesisV1<'startup> {
         self.recheck_selected()?;
         {
             let canary = self.canary.as_ref().ok_or(NvCustodyErrorV1::Provisioning)?;
-            let mut credentials = canary.credentials.try_borrow_mut()
+            let mut credentials = canary.credentials.try_lock()
                 .map_err(|_| NvCustodyErrorV1::Provisioning)?;
             if credentials.compare_signing_original(directory, signing_file).is_err() {
                 let cause = credentials.diagnostic();
@@ -272,7 +274,7 @@ impl<'startup> VerifiedDeploymentGenesisV1<'startup> {
                 return Err(super::RuntimeDeploymentComparisonErrorV1::credential_diagnostic(cause));
             }
         }
-        // The original RefCell loan ends before the outer startup/credential
+        // The original credential guard ends before the outer startup/credential
         // comparison and before any Security-side crypto can run.
         self.recheck_selected()
     }
@@ -308,7 +310,7 @@ impl<'startup> VerifiedDeploymentGenesisV1<'startup> {
         -> Result<(), super::RuntimeDeploymentComparisonErrorV1>
     {
         self.startup.recheck()?;
-        let mut credentials = canary.credentials.try_borrow_mut()
+        let mut credentials = canary.credentials.try_lock()
             .map_err(|_| NvCustodyErrorV1::Provisioning)?;
         if credentials.recheck().is_err() {
             let cause = credentials.diagnostic();
