@@ -46,6 +46,9 @@ use aos_sandbox_journal::record::{self, RecordError, RecordHeader};
 use aos_sandbox_journal::recovery::{
     RecoveryTailError, RecoveryTailMode, TailResultSlots, finish_replayed_tail,
 };
+use aos_sandbox_journal::replay::{
+    NativeReplayBookkeeping, NativeReplayCoordinates, NativeReplayError,
+};
 use aos_sandbox_journal::storage::NativeJournalStorage;
 use aos_sandbox_journal::transaction::{self, NativePendingTransaction, NativeRecordRef};
 
@@ -761,6 +764,18 @@ impl From<RecordError> for JournalError {
         match error {
             RecordError::MalformedRecord(reason) => Self::MalformedRecord(reason),
             RecordError::LimitExceeded(bound) => Self::LimitExceeded(bound),
+        }
+    }
+}
+
+impl From<NativeReplayError> for JournalError {
+    fn from(error: NativeReplayError) -> Self {
+        match error {
+            NativeReplayError::SequenceDiscontinuity(offset) => Self::SequenceDiscontinuity(offset),
+            NativeReplayError::SequenceExhausted => Self::SequenceExhausted,
+            NativeReplayError::JournalTooLarge => Self::JournalTooLarge,
+            NativeReplayError::DuplicateTransaction => Self::DuplicateTransaction,
+            NativeReplayError::LimitExceeded(bound) => Self::LimitExceeded(bound),
         }
     }
 }
@@ -8648,13 +8663,7 @@ fn replay_original_retained<R: Read + Seek + Borrow<File>>(
     scratch: Option<&mut Option<ReadOnlyReplayScratchV1>>,
 ) -> Result<ReplayState, JournalError> {
     file.seek(SeekFrom::Start(0))?;
-    let mut offset = 0_u64;
-    let mut durable_end = 0_u64;
-    let mut expected_sequence = 1_u64;
-    let mut durable_next_sequence = 1_u64;
-    let mut committed_transactions = 0_usize;
-    let mut committed_records = 0_usize;
-    let mut transaction_ids = BTreeSet::new();
+    let mut native = NativeReplayBookkeeping::new();
     let mut committed_namespaces = BTreeSet::new();
     #[cfg(target_os = "linux")]
     let mut q04_lower_history_present = false;
@@ -8682,20 +8691,17 @@ fn replay_original_retained<R: Read + Seek + Borrow<File>>(
 
         loop {
             let Some((frame, bytes_read)) = read_frame_retained(
-                file, offset, limits.maximum_record_bytes, retained.then_some(&mut partial_frame),
+                file, native.coordinates().offset, limits.maximum_record_bytes,
+                retained.then_some(&mut partial_frame),
             )? else {
                 break;
             };
             let frame_outcome: Result<(), JournalError> = (|| {
-                if frame.sequence != expected_sequence {
-                    return Err(JournalError::SequenceDiscontinuity(offset));
-                }
-                expected_sequence = expected_sequence
-                    .checked_add(1)
-                    .ok_or(JournalError::SequenceExhausted)?;
-                offset = offset
-                    .checked_add(bytes_read)
-                    .ok_or(JournalError::JournalTooLarge)?;
+                native.observe_frame(&frame, bytes_read)?;
+                let NativeReplayCoordinates {
+                    offset, durable_end, expected_sequence, durable_next_sequence,
+                    committed_transactions, ..
+                } = native.coordinates();
 
                 match frame.kind {
                     FrameKind::Begin => {
@@ -8840,9 +8846,7 @@ fn replay_original_retained<R: Read + Seek + Borrow<File>>(
                                 limits,
                             )?;
                         }
-                        if !transaction_ids.insert(replay_transaction.id) {
-                            return Err(JournalError::DuplicateTransaction);
-                        }
+                        native.register_transaction(replay_transaction.id)?;
                         validate_idempotency_changes(&idempotency, &replay_transaction.records)?;
                         materialized_bytes = validate_materialized_change(
                             &state,
@@ -8893,17 +8897,9 @@ fn replay_original_retained<R: Read + Seek + Borrow<File>>(
                             }
                             apply_record(&mut state, &mut idempotency, record)?;
                         }
-                        committed_transactions = committed_transactions
-                            .checked_add(1)
-                            .ok_or(JournalError::LimitExceeded("committed transaction count"))?;
-                        if committed_transactions > limits.maximum_transactions {
-                            return Err(JournalError::LimitExceeded("committed transaction count"));
-                        }
-                        committed_records = committed_records
-                            .checked_add(replay_transaction.records.len())
-                            .ok_or(JournalError::LimitExceeded("committed record count"))?;
-                        durable_end = offset;
-                        durable_next_sequence = expected_sequence;
+                        native.finish_commit(
+                            replay_transaction.records.len(), limits.maximum_transactions,
+                        )?;
                         reached_transaction = None;
                         reached_pending = None;
                     }
@@ -8926,12 +8922,19 @@ fn replay_original_retained<R: Read + Seek + Borrow<File>>(
         source_tree_successor::validate_replayed_state(&state, materialized_compaction)?;
         root_local_recovery::pending(&state)?;
         root_original_native::pending(&state, limits)?;
+        let NativeReplayCoordinates {
+            durable_end, durable_next_sequence, committed_transactions, ..
+        } = native.coordinates();
         root_original_inventory::validate_rejoined_capacity(
             &state, materialized_bytes, durable_end, committed_transactions, limits,
             durable_next_sequence,
         )?;
         Ok(())
     })();
+    let NativeReplayCoordinates {
+        offset, durable_end, expected_sequence, durable_next_sequence,
+        committed_transactions, committed_records,
+    } = native.coordinates();
     if let Some(destination) = scratch {
         if outcome.is_err() || pending.is_some() || partial_frame.is_some() {
             let failed = outcome.is_err();
@@ -8939,7 +8942,7 @@ fn replay_original_retained<R: Read + Seek + Borrow<File>>(
                 offset, durable_end, expected_sequence, durable_next_sequence,
                 committed_transactions, committed_records, materialized_bytes,
                 source_challenge_history_bytes,
-                transaction_ids: if failed { std::mem::take(&mut transaction_ids) } else { BTreeSet::new() },
+                transaction_ids: if failed { native.take_transaction_ids() } else { BTreeSet::new() },
                 committed_namespaces: if failed { std::mem::take(&mut committed_namespaces) } else { BTreeSet::new() },
                 state: if failed { std::mem::take(&mut state) } else { BTreeMap::new() },
                 idempotency: if failed { std::mem::take(&mut idempotency) } else { BTreeMap::new() },
@@ -8969,7 +8972,7 @@ fn replay_original_retained<R: Read + Seek + Borrow<File>>(
         next_sequence: durable_next_sequence,
         committed_transactions,
         committed_records,
-        transaction_ids,
+        transaction_ids: native.take_transaction_ids(),
         committed_namespaces,
         state,
         materialized_bytes,

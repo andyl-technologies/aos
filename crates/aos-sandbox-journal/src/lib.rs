@@ -10,6 +10,8 @@
 //! ID/count/digest state without decoding records or publishing committed state.
 //! [`recovery`] finalizes the already replayed tail on the same borrowed file;
 //! actual semantic replay and selected native-result custody remain upper.
+//! [`replay`] retains incremental coordinates, counts, and the original ID set;
+//! domain owners still decide when semantic application permits each update.
 //! [`storage`] retains supplied data and lock files, append uncertainty, and
 //! bounded physical readers without admitting the files or issuing receipts.
 //! Controller, Storage, and session-security owners use these same mechanics
@@ -25,5 +27,6 @@ pub mod geometry;
 pub mod materialized;
 pub mod record;
 pub mod recovery;
+pub mod replay;
 pub mod storage;
 pub mod transaction;
