@@ -1057,11 +1057,7 @@ fn receive_original_acknowledgement(
 fn receive_is_transient(
     cause: &aos_sandbox_linux::seqpacket::RetainedSeqpacketReceiveErrorV1,
 ) -> bool {
-    matches!(
-        cause.cause(),
-        aos_sandbox_linux::seqpacket::SeqpacketError::WouldBlock
-            | aos_sandbox_linux::seqpacket::SeqpacketError::Interrupted,
-    )
+    cause.is_nonconsuming_would_block() || cause.is_nonconsuming_interrupted()
 }
 
 fn send_is_transient(cause: &crate::process::original_cutoff::OriginalWorkerCutoffErrorV3) -> bool {

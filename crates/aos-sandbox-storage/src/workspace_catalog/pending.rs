@@ -823,7 +823,7 @@ impl GitCoverageWorkspaceCensusV1 {
             let handle = result.as_ref().map_err(|_| Refused("original read handle failed"))?;
             let readable = rustix::fs::fstat(handle)?;
             if !same_root_stat(&current, &readable)
-                || MountId::from_fd(handle)? != root.mount_id
+                || MountId::from_fd(handle.as_fd())? != root.mount_id
             {
                 return Err(Refused("read handle differs from the original fixed root"));
             }

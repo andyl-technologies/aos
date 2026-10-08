@@ -668,7 +668,6 @@ impl StorageAdmissionCoordinator {
     }
 
     /// Reports a retained, authenticated Repair hold before startup observers run.
-    #[cfg(test)]
     pub(crate) fn has_held_repair_guard(&self) -> bool {
         self.transactions.has_held_repair_guard()
     }

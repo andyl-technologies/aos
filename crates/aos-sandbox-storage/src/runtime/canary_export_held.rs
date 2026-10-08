@@ -648,7 +648,7 @@ fn require_canary_public_protection_v2(
     };
     if stat.st_uid != 0 || stat.st_gid != 0 || stat.st_mode & 0o7777 != expected
         || rustix::fs::FileType::from_raw_mode(stat.st_mode) != kind
-        || leaf_bytes.is_some_and(|width| stat.st_size != width as _ || stat.st_nlink != 1)
+        || leaf_bytes.is_some_and(|width| stat.st_size != width as i64 || stat.st_nlink != 1)
         || !rustix::fs::fstatvfs(file)?.f_flag.contains(rustix::fs::StatVfsMountFlags::RDONLY)
     {
         return Err(CanaryPublicInputCauseV2::Changed);
@@ -748,7 +748,7 @@ impl CanaryExportHeldV1 {
             job: None,
             job_bytes: Vec::new(),
             job_readback: Vec::new(),
-            selected_post_debt: std::array::from_fn(|_| None),
+            selected_post_debt: [const { None }; 16],
             selected_phase: None,
             prepared_marker: None,
             marker_commit: None,

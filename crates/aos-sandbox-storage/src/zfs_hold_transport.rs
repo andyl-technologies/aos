@@ -93,7 +93,8 @@ fn serve_original_held_into(
             .map_err(|cause| Error::HeldAdmission(Box::new(cause)))?);
         let child = carrier.child.as_ref().ok_or(Error::Closed)?;
         carrier.execution = Some(verifier.verify_connection_typed(child.peer())?);
-        let deadline = boottime()?.checked_add(REQUEST_RECEIVE_NANOSECONDS)
+        let deadline = boottime().map_err(StorageServiceError::from)?
+            .checked_add(REQUEST_RECEIVE_NANOSECONDS)
             .ok_or(StorageServiceError::Clock)?;
 
         for (index, maximum) in [
@@ -123,7 +124,7 @@ fn serve_original_held_into(
             } else {
                 carrier.request = Some(SignedStorageNativeAcquireRequestV2::from_canonical_bytes(&record.bytes)?);
             }
-            if boottime()? >= deadline {
+            if boottime().map_err(StorageServiceError::from)? >= deadline {
                 return Err(Error::Closed);
             }
         }
@@ -160,7 +161,8 @@ pub(crate) fn wait_original_record(
     use rustix::event::{PollFd, PollFlags, Timespec, poll};
 
     loop {
-        let remaining = deadline.checked_sub(boottime()?).filter(|value| *value > 0)
+        let remaining = deadline.checked_sub(boottime().map_err(StorageServiceError::from)?)
+            .filter(|value| *value > 0)
             .ok_or(Error::Closed)?;
         let timeout = Timespec::try_from(std::time::Duration::from_nanos(remaining))
             .map_err(|_| Error::Closed)?;
