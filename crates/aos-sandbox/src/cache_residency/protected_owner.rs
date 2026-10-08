@@ -68,7 +68,9 @@ pub use pin_lookup::PublicLogicalPinAcquisitionCommitV1;
 use pin_lookup::ResidentCachePinMutationV1;
 pub use initialization::{CacheResidentInitializationV1, CacheResidentUnavailableV1};
 #[cfg(target_os = "linux")]
-pub(crate) use initialization::{OriginalQ04CacheClearanceLoanV1, OriginalQ04CacheOwnerCutV1};
+pub(crate) use initialization::original_q04::{
+    OriginalQ04CacheClearanceLoanV1, OriginalQ04CacheOwnerCutV1,
+};
 pub use project_usage::{
     CacheProjectUsageLoanV1, CacheProjectUsageObservationErrorV1, CacheProjectUsagePartitionV1,
 };
