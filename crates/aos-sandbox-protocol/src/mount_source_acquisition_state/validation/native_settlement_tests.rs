@@ -4,6 +4,7 @@
 //! They contain no protected journal, live clock, descriptor, or owner authority.
 
 use super::*;
+use crate as protocol;
 use crate::mount_source_acquisition_state::{
     encode_mount_source_state_record_v2, seal_record, validate_mount_source_state_graph_v2,
 };

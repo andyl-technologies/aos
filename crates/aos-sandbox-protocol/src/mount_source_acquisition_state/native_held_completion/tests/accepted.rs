@@ -103,7 +103,7 @@ fn accepted_prefix() -> AcceptedPrefix {
     let capture = receipt_fixture::original_native(&fixture);
     let one = sign(fixture.prepared());
     let full = NativeHeldScopeV1 {
-        provider_attempt: capture.request.request().claims().attempt(),
+        provider_attempt: capture.request.request().claims().attempt().1,
         original_native_request: capture.request.digest(),
         ..fixture.scope
     };
