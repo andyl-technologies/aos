@@ -15,6 +15,8 @@ mod native_clock;
 #[cfg(feature = "std")]
 mod native_effect;
 #[cfg(feature = "std")]
+mod ordinary_read;
+#[cfg(feature = "std")]
 pub(crate) mod protected_read;
 
 #[cfg(feature = "std")]
@@ -41,6 +43,10 @@ pub use native_effect::publication::initialization_inputs::{
 pub(crate) use native_effect::{EffectFault, EffectFaultProbe};
 #[cfg(feature = "std")]
 pub use native_effect::{NativeEffectFailure, NativeExclusion, NativeFsEffect};
+#[cfg(all(feature = "tokio", unix))]
+pub(crate) use ordinary_read::OrdinaryReadOutcome;
+#[cfg(feature = "std")]
+pub use ordinary_read::{NativeOrdinaryRead, NativeOrdinaryRecord};
 #[cfg(feature = "std")]
 pub use protected_read::{NativeProtectedRead, NativeProtectedRecord};
 
@@ -981,6 +987,27 @@ pub trait LocalFs {
         &self,
         _read: NativeProtectedRead,
     ) -> Result<Option<NativeProtectedRecord>, StoreFailure> {
+        Ok(None)
+    }
+
+    /// Executes a fixed ordinary leaf read when the binding supports it.
+    ///
+    /// Callers first validate every parent observation in its original order.
+    /// The recipe supplies whole read data or an ordinary layout rejection;
+    /// it grants no authority and imposes no protected-record owner, mode or
+    /// link-count policy. Callers retain all surrounding validation fences.
+    /// The default returns `None` without I/O. A supported failure must never
+    /// be retried through the scalar fallback. Fault-intercepting wrappers
+    /// retain the default unless forwarding preserves their actual boundaries.
+    ///
+    /// # Errors
+    /// Returns runtime, worker, metadata, open or complete-body read failures
+    /// in recipe order. A named disappearance after a successful body read
+    /// remains an error; earlier observed absence is carried as read data.
+    async fn read_ordinary_record(
+        &self,
+        _read: NativeOrdinaryRead,
+    ) -> std::io::Result<Option<NativeOrdinaryRecord>> {
         Ok(None)
     }
 

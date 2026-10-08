@@ -414,6 +414,25 @@ impl LocalFs for TokioLocalFs {
         }
     }
 
+    async fn read_ordinary_record(
+        &self,
+        read: super::NativeOrdinaryRead,
+    ) -> std::io::Result<Option<super::NativeOrdinaryRecord>> {
+        #[cfg(unix)]
+        {
+            tokio::runtime::Handle::try_current().map_err(std::io::Error::other)?;
+            tokio::task::spawn_blocking(move || read.execute())
+                .await
+                .map_err(std::io::Error::other)?
+                .map(Some)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = read;
+            Ok(None)
+        }
+    }
+
     async fn remove_file(&self, path: &std::path::Path) -> std::io::Result<()> {
         tokio::fs::remove_file(path).await
     }

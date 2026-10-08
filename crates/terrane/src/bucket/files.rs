@@ -257,6 +257,26 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
                 Err(error) => return Err(io_failure(error)),
             }
         }
+        if let Some(record) = self
+            .inner
+            .fs
+            .read_ordinary_record(crate::store::NativeOrdinaryRead::for_leaf(&path))
+            .await
+            .map_err(io_failure)?
+        {
+            match record.into_outcome() {
+                #[cfg(all(feature = "tokio", unix))]
+                crate::store::OrdinaryReadOutcome::Absent => {
+                    return Ok(RecordRead::observed(path, None, None));
+                }
+                #[cfg(all(feature = "tokio", unix))]
+                crate::store::OrdinaryReadOutcome::Present(bytes, metadata) => {
+                    return Ok(RecordRead::observed(path, Some(bytes), Some(metadata)));
+                }
+                #[cfg(all(feature = "tokio", unix))]
+                crate::store::OrdinaryReadOutcome::InvalidLayout => return Err(layout_corrupt()),
+            }
+        }
         let before = match self.inner.fs.symlink_metadata(&path).await {
             Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => metadata,
             Ok(_) => return Err(layout_corrupt()),
