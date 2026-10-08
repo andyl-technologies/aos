@@ -91,6 +91,22 @@ Use the dependency field that matches why the package is needed:
 | `runtimeDeps` | Libraries and commands needed when the package runs |
 | `propagatedDeps` | Dependencies that downstream builds must inherit |
 
+Runtime dependencies normally identify installable packages and become available
+to the retained module. For an internal artifact such as a bootstrap interpreter
+embedded in generated scripts, use an explicit closure-only dependency:
+
+```nix
+runtimeDeps = [
+  { package = stdenv.bash; closureOnly = true; }
+  openssl
+];
+```
+
+The builder still consumes that exact interpreter in the declared order, and
+references in the output retain it in the Nix store closure. It does not become
+an installable package dependency or a retained module binding. Ordinary runtime
+libraries and commands remain ordinary dependency entries.
+
 `mkDerivation` already supplies the wrapped compiler and bootstrap tools.
 List application-specific build tools, libraries, and runtime commands
 explicitly. Include tools that an upstream configure script probes before the

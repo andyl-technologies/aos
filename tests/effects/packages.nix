@@ -4,6 +4,7 @@ let
   fixturePayload = import ./_fixture-payload.nix;
   modules = import ../../lib/build/package-modules.nix {};
   artifacts = import ../../lib/packages/artifacts.nix {};
+  runtimeDependencies = import ../../lib/packages/runtime-dependencies.nix;
   package = name: source: {
     type = "derivation";
     pname = name;
@@ -55,10 +56,42 @@ let
     scope = ["profile" "multiple-outputs"];
     packages = [published tools];
   };
+  privateRuntime = {
+    package = payload;
+    closureOnly = true;
+  };
+  runtimeInputs = [interface privateRuntime handler];
+  runtimePackage = consumer // {runtimeDeps = runtimeDependencies.packages runtimeInputs;};
+  rejectedRuntime = declaration: !(builtins.tryEval (builtins.deepSeq (runtimeDependencies.inputs [declaration]) true)).success;
   node = builtins.head (builtins.attrValues evaluated.deployment.graph.nodes);
 in {
   inherit evaluated consumer handler;
   checks = {
+    runtimeClosureOrder = assert runtimeDependencies.inputs runtimeInputs == [interface payload handler]; true;
+    runtimeClosureEnvelope = assert builtins.attrNames (artifacts.envelope runtimePackage).runtimeDependencies == ["echo-handler" "echo-interface"]; true;
+    runtimeClosureRoles = assert runtimeDependencies.packages {
+      reader = interface;
+      interpreter = privateRuntime;
+      writer = handler;
+    }
+    == {
+      reader = interface;
+      writer = handler;
+    }; true;
+    runtimeClosureRejectsFalse = assert rejectedRuntime {
+      package = payload;
+      closureOnly = false;
+    }; true;
+    runtimeClosureRejectsUnknown = assert rejectedRuntime {
+      package = payload;
+      closureOnly = true;
+      extra = true;
+    }; true;
+    runtimeClosureRejectsPayload = assert rejectedRuntime {
+      package = {};
+      closureOnly = true;
+    }; true;
+    runtimeClosureRejectsContainer = assert !(builtins.tryEval (builtins.deepSeq (runtimeDependencies.packages payload) true)).success; true;
     sharedModuleAcrossOutputs = assert builtins.length selectedOutputs.deployment.packages == 2;
     assert builtins.length selectedOutputs.deployment.artifacts == 2;
     assert builtins.length selectedOutputs.documentation.packages == 2; true;
