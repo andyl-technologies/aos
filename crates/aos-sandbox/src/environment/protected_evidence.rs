@@ -16,6 +16,7 @@
 use std::path::Path;
 
 use aos_sandbox_core::ObjectDigest;
+use aos_sandbox_core::bounded_codec::BoundedReader;
 use sha2::{Digest as _, Sha256};
 
 use crate::journal::{Journal, JournalError, JournalLimits, RecordNamespace, RecoveryReport};
@@ -268,19 +269,21 @@ fn decode_evidence(
         return Err(EnvironmentProtectedEvidenceErrorV1::InvalidEvidence);
     }
 
-    let mut cursor = EvidenceCursorV1::new(body);
-    if cursor.take::<8>()? != *EVIDENCE_MAGIC
-        || u16::from_be_bytes(cursor.take::<2>()?) != EVIDENCE_VERSION
-        || cursor.take::<6>()? != [0; 6]
+    let mut cursor = BoundedReader::new(body, |_| {
+        EnvironmentProtectedEvidenceErrorV1::InvalidEvidence
+    });
+    if cursor.array::<8>()? != *EVIDENCE_MAGIC
+        || u16::from_be_bytes(cursor.array::<2>()?) != EVIDENCE_VERSION
+        || cursor.array::<6>()? != [0; 6]
     {
         return Err(EnvironmentProtectedEvidenceErrorV1::InvalidEvidence);
     }
-    let current_boot = ObjectDigest::from_bytes(cursor.take::<32>()?);
-    let current_time = EnvironmentLeaseTimeV1::new(u64::from_be_bytes(cursor.take::<8>()?))
+    let current_boot = ObjectDigest::from_bytes(cursor.array::<32>()?);
+    let current_time = EnvironmentLeaseTimeV1::new(u64::from_be_bytes(cursor.array::<8>()?))
         .map_err(|_| EnvironmentProtectedEvidenceErrorV1::InvalidEvidence)?;
-    let authenticated_at_unix_seconds = u64::from_be_bytes(cursor.take::<8>()?);
-    let valid_until_unix_seconds = u64::from_be_bytes(cursor.take::<8>()?);
-    let predecessor_count = usize::try_from(u32::from_be_bytes(cursor.take::<4>()?))
+    let authenticated_at_unix_seconds = u64::from_be_bytes(cursor.array::<8>()?);
+    let valid_until_unix_seconds = u64::from_be_bytes(cursor.array::<8>()?);
+    let predecessor_count = usize::try_from(u32::from_be_bytes(cursor.array::<4>()?))
         .map_err(|_| EnvironmentProtectedEvidenceErrorV1::InvalidEvidence)?;
     if current_boot.as_bytes() == &[0; 32] || predecessor_count > MAXIMUM_PREDECESSOR_BOOTS {
         return Err(EnvironmentProtectedEvidenceErrorV1::InvalidEvidence);
@@ -290,7 +293,7 @@ fn decode_evidence(
         .try_reserve_exact(predecessor_count)
         .map_err(|_| EnvironmentProtectedEvidenceErrorV1::InvalidEvidence)?;
     for _ in 0..predecessor_count {
-        predecessor_boots.push(ObjectDigest::from_bytes(cursor.take::<32>()?));
+        predecessor_boots.push(ObjectDigest::from_bytes(cursor.array::<32>()?));
     }
     if !cursor.is_empty()
         || predecessor_boots
@@ -349,26 +352,68 @@ fn environment_evidence_journal_limits() -> JournalLimits {
     }
 }
 
-struct EvidenceCursorV1<'a> {
-    remaining: &'a [u8],
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-impl<'a> EvidenceCursorV1<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { remaining: bytes }
+    fn seal(body: &[u8]) -> Vec<u8> {
+        let mut encoded = body.to_vec();
+        encoded.extend_from_slice(
+            &Sha256::new()
+                .chain_update(EVIDENCE_DOMAIN)
+                .chain_update(body)
+                .finalize(),
+        );
+        encoded
     }
 
-    fn take<const N: usize>(&mut self) -> Result<[u8; N], EnvironmentProtectedEvidenceErrorV1> {
-        let Some((value, remaining)) = self.remaining.split_at_checked(N) else {
-            return Err(EnvironmentProtectedEvidenceErrorV1::InvalidEvidence);
-        };
-        self.remaining = remaining;
-        value
-            .try_into()
-            .map_err(|_| EnvironmentProtectedEvidenceErrorV1::InvalidEvidence)
-    }
+    #[test]
+    fn evidence_fields_prefixes_and_checksummed_noncanonical_records() {
+        // These are format bytes, not protected storage or currentness.
+        let mut body = vec![0; FIXED_PREFIX_BYTES];
+        body[..8].copy_from_slice(EVIDENCE_MAGIC);
+        body[8..10].copy_from_slice(&EVIDENCE_VERSION.to_be_bytes());
+        body[16..48].fill(2);
+        body[48..56].copy_from_slice(&100_u64.to_be_bytes());
+        body[56..64].copy_from_slice(&7_u64.to_be_bytes());
+        body[64..72].copy_from_slice(&8_u64.to_be_bytes());
+        body[72..76].copy_from_slice(&1_u32.to_be_bytes());
+        body.extend_from_slice(&[1; 32]);
+        let encoded = seal(&body);
 
-    const fn is_empty(&self) -> bool {
-        self.remaining.is_empty()
+        let decoded = decode_evidence(&encoded).unwrap();
+        assert_eq!(decoded.current_boot.as_bytes(), &[2; 32]);
+        assert_eq!(
+            decoded.predecessor_boots,
+            [ObjectDigest::from_bytes([1; 32])]
+        );
+        for length in 0..encoded.len() {
+            assert!(matches!(
+                decode_evidence(&encoded[..length]),
+                Err(EnvironmentProtectedEvidenceErrorV1::InvalidEvidence)
+            ));
+        }
+
+        for offset in [0, 8, 10, 72] {
+            let mut malformed = body.clone();
+            malformed[offset] ^= 1;
+            assert!(matches!(
+                decode_evidence(&seal(&malformed)),
+                Err(EnvironmentProtectedEvidenceErrorV1::InvalidEvidence)
+            ));
+        }
+        for offset in [16, FIXED_PREFIX_BYTES] {
+            let mut malformed = body.clone();
+            malformed[offset..offset + 32].fill(0);
+            assert!(matches!(
+                decode_evidence(&seal(&malformed)),
+                Err(EnvironmentProtectedEvidenceErrorV1::InvalidEvidence)
+            ));
+        }
+        body.push(0);
+        assert!(matches!(
+            decode_evidence(&seal(&body)),
+            Err(EnvironmentProtectedEvidenceErrorV1::InvalidEvidence)
+        ));
     }
 }

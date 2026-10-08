@@ -8,6 +8,7 @@
 
 use std::path::Path;
 
+use aos_sandbox_core::bounded_codec::BoundedReader;
 use aos_sandbox_core::{
     MediaType, ObjectDescriptor, ObjectDigest, ProjectId, ResourceId, Revision, SandboxId,
 };
@@ -406,24 +407,24 @@ fn decode_presentation(
     if stored != digest.as_slice() {
         return Err(NixBuildProtectedOwnerErrorV1::InvalidEvidence);
     }
-    let mut cursor = Cursor::new(body);
-    if cursor.take::<8>()? != *PRESENTATION_MAGIC || cursor.take::<1>()? != [1] {
+    let mut cursor = BoundedReader::new(body, |_| NixBuildProtectedOwnerErrorV1::InvalidEvidence);
+    if cursor.array::<8>()? != *PRESENTATION_MAGIC || cursor.array::<1>()? != [1] {
         return Err(NixBuildProtectedOwnerErrorV1::InvalidEvidence);
     }
-    let kind = match cursor.take::<1>()?[0] {
+    let kind = match cursor.array::<1>()?[0] {
         1 => NixStorePresentationKindV1::ReadOnlyClosureView,
         2 => NixStorePresentationKindV1::ReadOnlyUserspaceView,
         _ => return Err(NixBuildProtectedOwnerErrorV1::InvalidEvidence),
     };
-    if cursor.take::<6>()? != [0; 6]
-        || ProjectId::from_bytes(cursor.take::<16>()?) != selector.manifest_record().project()
-        || SandboxId::from_bytes(cursor.take::<16>()?) != selector.manifest_record().sandbox()
-        || Revision::new(u64::from_be_bytes(cursor.take::<8>()?)) != selector.generation()
-        || ObjectDigest::from_bytes(cursor.take::<32>()?) != selector.manifest().digest()
+    if cursor.array::<6>()? != [0; 6]
+        || ProjectId::from_bytes(cursor.array::<16>()?) != selector.manifest_record().project()
+        || SandboxId::from_bytes(cursor.array::<16>()?) != selector.manifest_record().sandbox()
+        || Revision::new(u64::from_be_bytes(cursor.array::<8>()?)) != selector.generation()
+        || ObjectDigest::from_bytes(cursor.array::<32>()?) != selector.manifest().digest()
     {
         return Err(NixBuildProtectedOwnerErrorV1::InvalidEvidence);
     }
-    let count = usize::try_from(u32::from_be_bytes(cursor.take::<4>()?))
+    let count = usize::try_from(u32::from_be_bytes(cursor.array::<4>()?))
         .map_err(|_| NixBuildProtectedOwnerErrorV1::InvalidEvidence)?;
     if count == 0 || count > super::MAXIMUM_NIX_STORE_PRESENTATION_OBJECTS {
         return Err(NixBuildProtectedOwnerErrorV1::InvalidEvidence);
@@ -433,17 +434,17 @@ fn decode_presentation(
         .try_reserve_exact(count)
         .map_err(|_| NixBuildProtectedOwnerErrorV1::InvalidEvidence)?;
     for _ in 0..count {
-        let media_len = usize::from(u16::from_be_bytes(cursor.take::<2>()?));
-        let media = std::str::from_utf8(cursor.take_slice(media_len)?)
+        let media_len = usize::from(u16::from_be_bytes(cursor.array::<2>()?));
+        let media = std::str::from_utf8(cursor.bytes(media_len)?)
             .map_err(|_| NixBuildProtectedOwnerErrorV1::InvalidEvidence)?;
         let descriptor = ObjectDescriptor::new(
             MediaType::new(media.to_owned())
                 .map_err(|_| NixBuildProtectedOwnerErrorV1::InvalidEvidence)?,
-            ObjectDigest::from_bytes(cursor.take::<32>()?),
-            u64::from_be_bytes(cursor.take::<8>()?),
+            ObjectDigest::from_bytes(cursor.array::<32>()?),
+            u64::from_be_bytes(cursor.array::<8>()?),
         );
-        let path_len = usize::from(u16::from_be_bytes(cursor.take::<2>()?));
-        let path = std::str::from_utf8(cursor.take_slice(path_len)?)
+        let path_len = usize::from(u16::from_be_bytes(cursor.array::<2>()?));
+        let path = std::str::from_utf8(cursor.bytes(path_len)?)
             .map_err(|_| NixBuildProtectedOwnerErrorV1::InvalidEvidence)?;
         entries.push(
             NixStorePresentationEntryV1::from_protected(
@@ -480,18 +481,18 @@ fn decode_observation<'current>(
     if stored != commitment.as_bytes() {
         return Err(NixBuildProtectedOwnerErrorV1::InvalidEvidence);
     }
-    let mut cursor = Cursor::new(body);
-    if cursor.take::<8>()? != *OBSERVATION_MAGIC
-        || cursor.take::<1>()? != [1]
-        || cursor.take::<1>()?[0] > 1
-        || cursor.take::<6>()? != [0; 6]
-        || ResourceId::from_bytes(cursor.take::<16>()?) != operation
-        || ObjectDigest::from_bytes(cursor.take::<32>()?) != request
+    let mut cursor = BoundedReader::new(body, |_| NixBuildProtectedOwnerErrorV1::InvalidEvidence);
+    if cursor.array::<8>()? != *OBSERVATION_MAGIC
+        || cursor.array::<1>()? != [1]
+        || cursor.array::<1>()?[0] > 1
+        || cursor.array::<6>()? != [0; 6]
+        || ResourceId::from_bytes(cursor.array::<16>()?) != operation
+        || ObjectDigest::from_bytes(cursor.array::<32>()?) != request
     {
         return Err(NixBuildProtectedOwnerErrorV1::InvalidEvidence);
     }
     let accepted = body[9] == 1;
-    let count = usize::try_from(u32::from_be_bytes(cursor.take::<4>()?))
+    let count = usize::try_from(u32::from_be_bytes(cursor.array::<4>()?))
         .map_err(|_| NixBuildProtectedOwnerErrorV1::InvalidEvidence)?;
     if count > super::MAXIMUM_NIX_STORE_PRESENTATION_OBJECTS
         || (accepted && count == 0)
@@ -504,17 +505,17 @@ fn decode_observation<'current>(
         .try_reserve_exact(count)
         .map_err(|_| NixBuildProtectedOwnerErrorV1::InvalidEvidence)?;
     for _ in 0..count {
-        let media_len = usize::from(u16::from_be_bytes(cursor.take::<2>()?));
-        let media = std::str::from_utf8(cursor.take_slice(media_len)?)
+        let media_len = usize::from(u16::from_be_bytes(cursor.array::<2>()?));
+        let media = std::str::from_utf8(cursor.bytes(media_len)?)
             .map_err(|_| NixBuildProtectedOwnerErrorV1::InvalidEvidence)?;
         outputs.push(ObjectDescriptor::new(
             MediaType::new(media.to_owned())
                 .map_err(|_| NixBuildProtectedOwnerErrorV1::InvalidEvidence)?,
-            ObjectDigest::from_bytes(cursor.take::<32>()?),
-            u64::from_be_bytes(cursor.take::<8>()?),
+            ObjectDigest::from_bytes(cursor.array::<32>()?),
+            u64::from_be_bytes(cursor.array::<8>()?),
         ));
     }
-    let receipt = ObjectDigest::from_bytes(cursor.take::<32>()?);
+    let receipt = ObjectDigest::from_bytes(cursor.array::<32>()?);
     if !cursor.is_empty()
         || receipt.as_bytes() == &[0; 32]
         || outputs
@@ -554,32 +555,98 @@ fn array<const N: usize>(bytes: &[u8]) -> Result<[u8; N], NixBuildProtectedOwner
         .map_err(|_| NixBuildProtectedOwnerErrorV1::InvalidEvidence)
 }
 
-struct Cursor<'a> {
-    bytes: &'a [u8],
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-impl<'a> Cursor<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes }
+    fn seal(body: &[u8]) -> Vec<u8> {
+        let mut encoded = body.to_vec();
+        encoded.extend_from_slice(
+            &Sha256::new()
+                .chain_update(OBSERVATION_DOMAIN)
+                .chain_update(body)
+                .finalize(),
+        );
+        encoded
     }
 
-    fn take<const N: usize>(&mut self) -> Result<[u8; N], NixBuildProtectedOwnerErrorV1> {
-        let Some((value, rest)) = self.bytes.split_at_checked(N) else {
-            return Err(NixBuildProtectedOwnerErrorV1::InvalidEvidence);
-        };
-        self.bytes = rest;
-        array(value)
-    }
+    #[test]
+    fn observation_outputs_prefixes_and_checksummed_noncanonical_records() {
+        let operation = ResourceId::from_bytes([1; 16]);
+        let request = ObjectDigest::from_bytes([2; 32]);
+        let media = b"application/octet-stream";
 
-    fn take_slice(&mut self, length: usize) -> Result<&'a [u8], NixBuildProtectedOwnerErrorV1> {
-        let Some((value, rest)) = self.bytes.split_at_checked(length) else {
-            return Err(NixBuildProtectedOwnerErrorV1::InvalidEvidence);
-        };
-        self.bytes = rest;
-        Ok(value)
-    }
+        for accepted in [false, true] {
+            // Parsing this DATA does not claim a protected observation.
+            let mut body = vec![0; 68];
+            body[..8].copy_from_slice(OBSERVATION_MAGIC);
+            body[8] = 1;
+            body[9] = u8::from(accepted);
+            body[16..32].copy_from_slice(operation.as_bytes());
+            body[32..64].copy_from_slice(request.as_bytes());
+            body[64..68].copy_from_slice(&u32::from(accepted).to_be_bytes());
+            if accepted {
+                body.extend_from_slice(&(media.len() as u16).to_be_bytes());
+                body.extend_from_slice(media);
+                body.extend_from_slice(&[3; 32]);
+                body.extend_from_slice(&9_u64.to_be_bytes());
+            }
+            body.extend_from_slice(&[4; 32]);
+            let encoded = seal(&body);
 
-    const fn is_empty(&self) -> bool {
-        self.bytes.is_empty()
+            let decoded = decode_observation(&encoded, operation, request).unwrap();
+            assert_eq!(decoded.accepted(), accepted);
+            assert_eq!(decoded.outputs().len(), usize::from(accepted));
+            assert_eq!(decoded.receipt().as_bytes(), &[4; 32]);
+            if accepted {
+                assert_eq!(
+                    decoded.outputs()[0].media_type().as_str(),
+                    "application/octet-stream"
+                );
+                assert_eq!(decoded.outputs()[0].digest().as_bytes(), &[3; 32]);
+                assert_eq!(decoded.outputs()[0].encoded_size(), 9);
+            }
+            for length in 0..encoded.len() {
+                assert!(matches!(
+                    decode_observation(&encoded[..length], operation, request),
+                    Err(NixBuildProtectedOwnerErrorV1::InvalidEvidence)
+                ));
+            }
+
+            for offset in [0, 8, 10, 16, 32, 64] {
+                let mut malformed = body.clone();
+                malformed[offset] ^= 1;
+                assert!(matches!(
+                    decode_observation(&seal(&malformed), operation, request),
+                    Err(NixBuildProtectedOwnerErrorV1::InvalidEvidence)
+                ));
+            }
+            let mut malformed = body.clone();
+            malformed[9] = 2;
+            assert!(matches!(
+                decode_observation(&seal(&malformed), operation, request),
+                Err(NixBuildProtectedOwnerErrorV1::InvalidEvidence)
+            ));
+            if accepted {
+                let mut malformed = body.clone();
+                malformed[70] = 0xff;
+                assert!(matches!(
+                    decode_observation(&seal(&malformed), operation, request),
+                    Err(NixBuildProtectedOwnerErrorV1::InvalidEvidence)
+                ));
+                let mut malformed = body.clone();
+                let size_offset = 70 + media.len() + 32;
+                malformed[size_offset..size_offset + 8].fill(0);
+                assert!(matches!(
+                    decode_observation(&seal(&malformed), operation, request),
+                    Err(NixBuildProtectedOwnerErrorV1::InvalidEvidence)
+                ));
+            }
+            body.push(0);
+            assert!(matches!(
+                decode_observation(&seal(&body), operation, request),
+                Err(NixBuildProtectedOwnerErrorV1::InvalidEvidence)
+            ));
+        }
     }
 }

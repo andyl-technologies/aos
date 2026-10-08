@@ -13,6 +13,7 @@
 //! remain quarantined until fresh held Host proof permits the exact CAS.
 
 use aos_proto::aos::sandbox::v1::ExecutionPhase;
+use aos_sandbox_core::bounded_codec::BoundedReader;
 use aos_sandbox_core::{ObjectDigest, OperationId, ResourceKind};
 use aos_sandbox_protocol::host_execution_no_apply::{
     HOST_EXECUTION_NO_APPLY_RECORD_BYTES_V1, HostExecutionNoApplyRecordV1,
@@ -168,14 +169,17 @@ impl CreateFailurePrepareV1 {
         {
             return Err(invalid_settlement());
         }
-        let mut reader = Reader { bytes, offset: 12 };
-        let operation_id = OperationId::from_bytes(reader.take::<16>()?);
+        let mut reader = BoundedReader::new(&bytes[12..], |_| invalid_settlement());
+        let operation_id = OperationId::from_bytes(reader.array::<16>()?);
         let marker = HostExecutionNoApplyRecordV1::decode_canonical(
-            &reader.take::<HOST_EXECUTION_NO_APPLY_RECORD_BYTES_V1>()?,
+            &reader.array::<HOST_EXECUTION_NO_APPLY_RECORD_BYTES_V1>()?,
         )
         .map_err(|_| invalid_settlement())?;
-        let digest = |reader: &mut Reader<'_>| -> Result<ObjectDigest, ReconcilerError> {
-            let bytes = reader.take::<32>()?;
+        let digest = |reader: &mut BoundedReader<'_, ReconcilerError>| -> Result<
+            ObjectDigest,
+            ReconcilerError,
+        > {
+            let bytes = reader.array::<32>()?;
             if bytes == [0; 32] {
                 return Err(invalid_settlement());
             }
@@ -184,9 +188,9 @@ impl CreateFailurePrepareV1 {
         let archive_head = digest(&mut reader)?;
         let signed_outcome = digest(&mut reader)?;
         let current_host_cut = digest(&mut reader)?;
-        let host_lease_epoch = u64::from_be_bytes(reader.take::<8>()?);
+        let host_lease_epoch = u64::from_be_bytes(reader.array::<8>()?);
         let host_lease_head = digest(&mut reader)?;
-        let wall_seconds = i64::from_be_bytes(reader.take::<8>()?);
+        let wall_seconds = i64::from_be_bytes(reader.array::<8>()?);
         let mut predecessor = [ObjectDigest::from_bytes([0; 32]); 3];
         let mut successor = predecessor;
         for value in &mut predecessor {
@@ -198,7 +202,7 @@ impl CreateFailurePrepareV1 {
         if operation_id.as_bytes() != key
             || marker.fields().create_operation_id != *operation_id.as_bytes()
             || host_lease_epoch == 0
-            || reader.offset != BYTES - 32
+            || reader.remaining() != 32
         {
             return Err(invalid_settlement());
         }
@@ -214,25 +218,6 @@ impl CreateFailurePrepareV1 {
             predecessor,
             successor,
         })
-    }
-}
-
-struct Reader<'a> {
-    bytes: &'a [u8],
-    offset: usize,
-}
-
-impl Reader<'_> {
-    fn take<const N: usize>(&mut self) -> Result<[u8; N], ReconcilerError> {
-        let end = self.offset.checked_add(N).ok_or_else(invalid_settlement)?;
-        let value = self
-            .bytes
-            .get(self.offset..end)
-            .ok_or_else(invalid_settlement)?
-            .try_into()
-            .map_err(|_| invalid_settlement())?;
-        self.offset = end;
-        Ok(value)
     }
 }
 
@@ -426,4 +411,86 @@ pub(super) fn validate_all_floors(journal: &Journal) -> Result<(), ReconcilerErr
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use aos_sandbox_protocol::host_execution_no_apply::HostExecutionNoApplyRecordFieldsV1;
+
+    use super::*;
+
+    #[test]
+    fn encoded_floor_prefixes_checksum_tail_and_checksummed_invalid_fields() {
+        let marker = HostExecutionNoApplyRecordV1::new(HostExecutionNoApplyRecordFieldsV1 {
+            execution_id: [1; 16],
+            create_operation_id: [2; 16],
+            original_request_id: [3; 16],
+            terminal_request_id: [4; 16],
+            host_boot_id: [5; 16],
+            assignment_digest: [6; 32],
+            source_record_digest: [7; 32],
+            original_session_binding: [8; 32],
+            original_signed_request_digest: [9; 32],
+            terminal_session_binding: [10; 32],
+            terminal_signed_request_digest: [11; 32],
+            runtime_handle: [12; 32],
+            execution_store_binding: [13; 32],
+            commit_sequence: 1,
+        })
+        .unwrap();
+        // This is a historical DATA floor, not a held settlement proof.
+        let floor = CreateFailurePrepareV1 {
+            operation_id: OperationId::from_bytes([2; 16]),
+            marker,
+            archive_head: ObjectDigest::from_bytes([14; 32]),
+            signed_outcome: ObjectDigest::from_bytes([15; 32]),
+            current_host_cut: ObjectDigest::from_bytes([16; 32]),
+            host_lease_epoch: 1,
+            host_lease_head: ObjectDigest::from_bytes([17; 32]),
+            wall_seconds: -1,
+            predecessor: [ObjectDigest::from_bytes([18; 32]); 3],
+            successor: [ObjectDigest::from_bytes([19; 32]); 3],
+        };
+        let encoded = floor.encode();
+        let key = floor.operation_id.as_bytes();
+
+        assert_eq!(encoded.len(), BYTES);
+        assert_eq!(
+            CreateFailurePrepareV1::decode(key, &encoded).unwrap(),
+            floor
+        );
+        for length in 0..encoded.len() {
+            assert!(CreateFailurePrepareV1::decode(key, &encoded[..length]).is_err());
+        }
+        assert!(CreateFailurePrepareV1::decode(&key[..15], &encoded).is_err());
+        assert!(CreateFailurePrepareV1::decode(&[20; 16], &encoded).is_err());
+        let mut longer = encoded.clone();
+        longer.push(0);
+        assert!(CreateFailurePrepareV1::decode(key, &longer).is_err());
+
+        let marker_end = 28 + HOST_EXECUTION_NO_APPLY_RECORD_BYTES_V1;
+        for (offset, width) in [
+            (12, 16),
+            (28, 1),
+            (marker_end, 32),
+            (marker_end + 32, 32),
+            (marker_end + 64, 32),
+            (marker_end + 96, 8),
+            (marker_end + 104, 32),
+            (marker_end + 144, 32),
+            (BYTES - 64, 32),
+        ] {
+            let mut malformed = encoded.clone();
+            malformed[offset..offset + width].fill(0);
+            let checksum = Sha256::new()
+                .chain_update(DOMAIN)
+                .chain_update(&malformed[..BYTES - 32])
+                .finalize();
+            malformed[BYTES - 32..].copy_from_slice(&checksum);
+            assert!(CreateFailurePrepareV1::decode(key, &malformed).is_err());
+        }
+        let mut malformed = encoded;
+        malformed[BYTES - 1] ^= 1;
+        assert!(CreateFailurePrepareV1::decode(key, &malformed).is_err());
+    }
 }
