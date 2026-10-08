@@ -42,7 +42,7 @@
       builtins.unsafeDiscardStringContext (builtins.toString value));
   # The runtime is an admitted baked root. Keep its location in this replay
   # module without forcing the executable build merely to evaluate the module.
-  startupExecutable = builtins.unsafeDiscardStringContext "${pkgs.aos.packageRuntime}/bin/aos-package-runtime";
+  startupExecutable = builtins.unsafeDiscardStringContext "${pkgs.aos-package-runtime}/bin/aos-package-runtime";
   shellExecutable = builtins.unsafeDiscardStringContext "${pkgs.bash}/bin/bash";
   shellInitConfiguration = buildPkgs.writeTextFile {
     name = "aos-container-shell-init-configuration";

@@ -16,10 +16,10 @@ import subprocess
 import sys
 
 
-from aos_configuration import (
-    ConfigurationHandler, absolute, checked_text, configuration_bytes, digest,
+from aos_service_resources import (
+    ResourceHandler, absolute, checked_text, digest,
     durable_unlink, durable_write, locked_dispatch, mode, read_digest,
-    read_invocation, serialize_toml, synchronize_directory,
+    read_invocation, synchronize_directory,
 )
 
 from aos_service_storage import complete_handoff, handoff_state, plan_handoffs, private_storage_sources
@@ -579,7 +579,7 @@ def image_unit_digest(target):
         os.close(directory)
 
 
-class Handler(ConfigurationHandler):
+class Handler(ResourceHandler):
     """Reconciles systemd state using the shared resource ownership namespace."""
 
     def __init__(self, invocation, systemctl, unit_directory, state_directory, image_unit_directory=None):

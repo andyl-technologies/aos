@@ -1,9 +1,18 @@
 # Packages in AOS containers
 
 Each AOS system variation has a default container projection built through the
-same image backend. The golden container provides AOS/APM, a shell, basic
+same image backend. The golden container provides APM, Bash, basic
 utilities, and runtime dependencies. Pull the published image and install
 additional packages through APM. Building a derived image is optional.
+
+The CLI source build publishes independently installable packages. Install
+the system CLI with `apm install aos` or the registry publisher with
+`apm install apr`; installing one does not install the other CLI outputs.
+`apm` is also an ordinary package, so APM can manage its own updates.
+
+Interactive Bash loads shared prompt, history, readline, and APM completion
+defaults. Customize `/root/.bashrc` or `/root/.inputrc` normally; package
+transactions do not rewrite those files.
 
 Packages use the same payload and native module declarations on machines and
 in containers. The target selects handlers for their abilities. Packages can

@@ -259,6 +259,24 @@ in
   assert getentOutput.derivation == builtins.unsafeDiscardStringContext pkgs.getent.drvPath;
   assert (releasePackageByName "getent").derivation == glibcRelease.derivation;
   assert builtins.length (releasePackageByName "aos").source_store_paths >= 2;
+  assert builtins.elem "apache-portable-runtime" packageNames;
+  assert builtins.all (name: let
+    package = releasePackageByName name;
+    primary = builtins.head package.outputs;
+    physicalOutput = pkgs.aos.outputPackages.${name}.output;
+  in
+    package.derivation
+    == (releasePackageByName "aos").derivation
+    && primary.name == "out"
+    && primary.output == physicalOutput
+    && primary.store_path == builtins.unsafeDiscardStringContext (toString pkgs.aos.${physicalOutput})
+    && pkgs.${name}.deployment.package.name == name
+    && pkgs.${name}.deployment.package.outputs == {out = primary.store_path;}
+    && pkgs.${name}.deployment.module == null
+    && pkgs.${name}.deployment.moduleDependencies == []
+    && !(builtins.elem (toString pkgs.aos) (map toString pkgs.${name}.runtimeDeps)))
+  ["apm" "apr" "aos-package-runtime"];
+  assert (releasePackageByName "aos").publication.output_packages == (import ../../pkgs/tools/aos/_outputs.nix).aos;
   assert builtins.length (releasePackageByName "docker-compose").source_store_paths >= 2;
   assert builtins.length (releasePackageByName "envoy").source_store_paths >= 2;
   assert releaseInventory.schema_version == "aos.release.package-inventory/v1";

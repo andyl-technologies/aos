@@ -528,7 +528,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     lowerArgs =
       # Deployment modules are retained as source artifacts, never evaluated by
       # the payload builder or passed as low-level derivation attributes.
-      (builtins.removeAttrs args ["abilities" "module" "moduleDeps" "catalogName" "platformSupport" "qualification" "configModule" "sharedBuildCache" "cacheCCompilers" "accacheLlvmOptions"])
+      (builtins.removeAttrs args ["abilities" "module" "moduleDeps" "catalogName" "platformSupport" "qualification" "configModule" "sharedBuildCache" "cacheCCompilers" "accacheLlvmOptions" "outputPackages"])
       // lib.optionalAttrs (args ? version) {inherit (release) version;}
       // lib.optionalAttrs cacheCCompilers (builtins.removeAttrs cCompilerCacheEnvironment ["RUSTC_WRAPPER"])
       // {
@@ -561,6 +561,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
         inherit moduleDeps;
         inherit (nativeArtifacts) deployment documentation deploymentArtifact documentationArtifact;
         targetSystem = stdenv.hostPlatform.system;
+        outputPackages = args.outputPackages or {};
       }
       // lib.optionalAttrs (moduleArtifact != null) {
         module = moduleArtifact;
@@ -1461,7 +1462,23 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     fileOwners // subdirOwners;
 
   discoveredPackages = discoverPackages ./.;
-  discoveredPackageOwners = discoverPackageOwners ./.;
+  discoveredPackageOwners =
+    discoverPackageOwners ./.
+    // builtins.mapAttrs (_: declaration: "pkgs/${lib.removePrefix ((builtins.toString ./.) + "/") (builtins.toString declaration.recipe)}")
+    outputPackageDeclarations;
+  outputPackageDeclarations = import ../lib/packages/discover-output-packages.nix {root = ./.;};
+  outputPackages = builtins.mapAttrs (name: declaration: let
+    package = self.${declaration.owner};
+    definition = package.outputPackages.${name}
+      or (throw "Package '${declaration.owner}' lacks declared subpackage '${name}'.");
+  in
+    if discoveredPackages ? ${name} || definition.output != declaration.output
+    then throw "Subpackage '${name}' collides with a package or differs from its declared output."
+    else
+      import ../lib/packages/output-packages.nix {
+        inherit name package definition withNativeArtifacts withQualification;
+      })
+  outputPackageDeclarations;
   darwinGcc = import ./darwin/_darwin-gcc.nix {
     inherit lib mkDerivation fetchurl stdenv buildPackages;
     bash = self.bash;
@@ -1573,6 +1590,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
   };
   uncheckedPackageNames = builtins.attrNames (
     discoveredPackages
+    // outputPackages
     // {
       nuke-references = null;
       qemu-crucible = null;
@@ -1904,6 +1922,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
         });
     }
     // discoveredPackages
+    // outputPackages
     // {
       # --- Explicit overrides for packages needing non-standard arguments ---
       # GLib bootstraps GObject Introspection, while downstream consumers need

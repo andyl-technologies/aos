@@ -33,6 +33,56 @@ fn parse_platform(value: &str) -> Result<Platform> {
         .with_context(|| format!("unsupported package publication platform {value:?}"))
 }
 
+/// Selects declared ordinary subpackages from the same exact evaluated source build.
+///
+/// # Errors
+/// Returns an error for invalid inventory metadata, missing subpackages, or
+/// differences in their version, derivation, physical output, or payload root.
+pub(super) fn publication_group(
+    inventory: &DerivationInventoryV1,
+    package: &DerivationPackage,
+) -> Result<Vec<DerivationPackage>> {
+    inventory.validate()?;
+    let publication = package
+        .publication
+        .as_ref()
+        .context("selected source package lacks publication metadata")?;
+    let mut packages = vec![package.clone()];
+    for (name, output) in &publication.output_packages {
+        let selected = inventory
+            .packages
+            .iter()
+            .find(|candidate| &candidate.name == name)
+            .with_context(|| {
+                format!("declared subpackage '{name}' is absent from the evaluated inventory")
+            })?;
+        let source = package
+            .outputs
+            .iter()
+            .find(|candidate| &candidate.name == output)
+            .context("declared subpackage output is absent from its source build")?;
+        let primary = selected
+            .outputs
+            .iter()
+            .find(|candidate| candidate.name == "out")
+            .context("declared subpackage lacks its primary payload")?;
+        let metadata = selected
+            .publication
+            .as_ref()
+            .context("declared subpackage lacks publication metadata")?;
+        if selected.derivation != package.derivation
+            || metadata.version != publication.version
+            || primary.store_path != source.store_path
+            || primary.derivation != source.derivation
+            || primary.output != source.output
+        {
+            bail!("declared subpackage '{name}' differs from the exact source build output");
+        }
+        packages.push(selected.clone());
+    }
+    Ok(packages)
+}
+
 /// Selects exactly one primary package output from a validated inventory.
 pub(super) fn select_package<'a>(
     inventory: &'a DerivationInventoryV1,
@@ -67,7 +117,7 @@ pub(super) fn select_package<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::select_package;
+    use super::{publication_group, select_package};
     use aos_release::inventory::{
         DERIVATION_INVENTORY_V1, DerivationInventoryV1, DerivationOutput, DerivationPackage,
         PackagePublicationMetadata,
@@ -81,6 +131,7 @@ mod tests {
             packages: vec![DerivationPackage {
                 name: "demo".to_string(),
                 publication: Some(PackagePublicationMetadata {
+                    output_packages: Default::default(),
                     version: "1.2.3".to_string(),
                     description: "Demo package".to_string(),
                     homepage: None,
@@ -141,6 +192,84 @@ mod tests {
             error
                 .to_string()
                 .contains("lacks complete publication metadata")
+        );
+    }
+
+    #[test]
+    fn source_publication_selects_only_declared_exact_subpackages() {
+        let mut inventory = inventory();
+        let source = &mut inventory.packages[0];
+        let mut tools = source.outputs[0].clone();
+        tools.name = "tools".into();
+        tools.output = Some("tools".into());
+        tools.store_path = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-demo-tools".into();
+        source.outputs.push(tools.clone());
+        source
+            .publication
+            .as_mut()
+            .unwrap()
+            .output_packages
+            .insert("demo-tools".into(), "tools".into());
+
+        let mut subpackage = source.clone();
+        subpackage.name = "demo-tools".into();
+        tools.name = "out".into();
+        subpackage.outputs = vec![tools];
+        subpackage
+            .publication
+            .as_mut()
+            .unwrap()
+            .output_packages
+            .clear();
+        let mut independent = subpackage.clone();
+        independent.name = "independent".into();
+        inventory.packages.extend([subpackage, independent]);
+
+        let source = &inventory.packages[0];
+        let group = publication_group(&inventory, source).unwrap();
+
+        assert_eq!(
+            group
+                .iter()
+                .map(|package| package.name.as_str())
+                .collect::<Vec<_>>(),
+            ["demo", "demo-tools"]
+        );
+        assert_eq!(group[1].outputs[0].output.as_deref(), Some("tools"));
+        assert_eq!(
+            publication_group(&inventory, &inventory.packages[2])
+                .unwrap()
+                .len(),
+            1
+        );
+
+        inventory.packages[1].outputs[0].output = Some("out".into());
+
+        assert!(publication_group(&inventory, &inventory.packages[0]).is_err());
+    }
+
+    #[test]
+    fn source_publication_requires_every_declared_subpackage() {
+        let mut inventory = inventory();
+        let source = &mut inventory.packages[0];
+        let mut tools = source.outputs[0].clone();
+        tools.name = "tools".into();
+        tools.output = Some("tools".into());
+        tools.store_path = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-demo-tools".into();
+        source.outputs.push(tools);
+        source
+            .publication
+            .as_mut()
+            .unwrap()
+            .output_packages
+            .insert("demo-tools".into(), "tools".into());
+
+        let error = publication_group(&inventory, &inventory.packages[0]).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("absent from the evaluated inventory")
         );
     }
 }

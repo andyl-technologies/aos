@@ -10,19 +10,17 @@
   evidenceOverrides ? [],
   platform,
 }: let
-  coreRoots = [pkgs.glibc pkgs.glibc-tools pkgs.glibc-locales pkgs.gcc-libs pkgs.ca-certificates];
-  shellRoots = [pkgs.bash pkgs.coreutils pkgs.findutils pkgs.grep pkgs.sed pkgs.gawk];
-  # The CLI is intentionally split into independently portable outputs.  Keep
-  # public commands and the private startup runtime in the image closure. Expose
-  # the public names explicitly; the server login profile is not the authority for the base
-  # image's documented command surface.
-  cliRoots = [pkgs.aos pkgs.aos.apm pkgs.aos.apr pkgs.aos.packageRuntime];
+  coreRoots = [pkgs.glibc pkgs.gcc-libs pkgs.ca-certificates];
+  shellRoots = [pkgs.bash pkgs.coreutils pkgs.findutils pkgs.grep];
+  # APM and its startup runtime are independently installable outputs of the
+  # CLI source build. Retain only the commands needed by a fresh container.
+  cliRoots = [pkgs.apm pkgs.aos-package-runtime];
   packageRoots = lib.uniqueBy builtins.toString (coreRoots ++ shellRoots ++ systemPackageSlice ++ cliRoots);
 in {
   config = {
     name = "aos";
-    # Every facade target must also be a baked GC root.  The split apm/apr
-    # outputs are not necessarily members of the selected system slice, and a
+    # Every facade target must also be a baked GC root. The CLI subpackages
+    # are not necessarily members of the selected system slice, and a
     # daemonless container must retain them across an explicit APM/Nix GC.
     inherit packageRoots;
     # Available handlers retain their implementations only when selected by
@@ -48,16 +46,42 @@ in {
     filesystem = {
       facade = [
         {
-          name = "aos";
-          target = "${pkgs.aos}/bin/aos";
-        }
-        {
           name = "apm";
-          target = "${pkgs.aos.apm}/bin/apm";
+          target = "${pkgs.apm}/bin/apm";
+        }
+      ];
+      files = [
+        {
+          path = "/etc/profile";
+          mode = "0644";
+          text = import ../../system/_aos-host-policy/profile-text.nix {
+            inherit lib;
+            path = "/var/lib/profiles/per-user/root/current/bin:/var/lib/profiles/per-user/root/current/sbin:/usr/bin:/usr/sbin:/bin";
+            pager = "cat";
+          };
         }
         {
-          name = "apr";
-          target = "${pkgs.aos.apr}/bin/apr";
+          path = "/etc/bashrc";
+          mode = "0644";
+          text = import ../../system/_aos-host-policy/bashrc-text.nix {
+            inherit lib;
+            completionFiles = ["${pkgs.apm}/share/bash-completion/completions/apm"];
+          };
+        }
+        {
+          path = "/etc/inputrc";
+          mode = "0644";
+          text = import ../../system/_aos-host-policy/inputrc-text.nix;
+        }
+        {
+          path = "/root/.bashrc";
+          mode = "0644";
+          text = ". /etc/bashrc\n";
+        }
+        {
+          path = "/root/.bash_profile";
+          mode = "0644";
+          text = ". /etc/profile\n. /root/.bashrc\n";
         }
       ];
       directories = [
@@ -148,7 +172,6 @@ in {
         XDG_STATE_HOME = "/root/.local/state";
         NIX_REMOTE = "local";
         LANG = "C.UTF-8";
-        LOCPATH = "${pkgs.glibc-locales}/lib/locale";
         SSL_CERT_FILE = "/etc/ssl/certs/ca-certificates.crt";
         NIX_SSL_CERT_FILE = "/etc/ssl/certs/ca-certificates.crt";
         PATH = "/var/lib/profiles/per-user/root/current/bin:/var/lib/profiles/per-user/root/current/sbin:/usr/bin:/usr/sbin:/bin";

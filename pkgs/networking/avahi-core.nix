@@ -47,8 +47,8 @@ in
       hash = "sha256-BgMJ16Mz042VG8J1mMZ3rxeWk029mOECTnrY3nmP7do=";
     };
 
-    buildDeps = [gnumake pkg-config gettext file glib.tools];
-    runtimeDeps = [bash expat dbus glib glib.dev libcap libdaemon libevent gdbm];
+    buildDeps = [gnumake pkg-config gettext file glib.tools glib.dev];
+    runtimeDeps = [bash expat dbus glib libcap libdaemon libevent gdbm];
     propagatedDeps = [];
 
     phases = [

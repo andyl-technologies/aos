@@ -129,6 +129,9 @@ pub struct DerivationArtifact {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PackagePublicationMetadata {
+    /// Installable subpackage names and their physical outputs of this source build.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub output_packages: BTreeMap<String, String>,
     /// Exact package version common to every published platform.
     pub version: String,
     /// Human-readable package purpose.
@@ -143,6 +146,22 @@ pub struct PackagePublicationMetadata {
 
 impl PackagePublicationMetadata {
     pub(crate) fn validate(&self) -> Result<()> {
+        if self.output_packages.values().collect::<BTreeSet<_>>().len()
+            != self.output_packages.len()
+        {
+            bail!("each source output must have one installable subpackage name");
+        }
+        for (name, output) in &self.output_packages {
+            aos_registry_surface::manifest::validate_package_name(name)?;
+            require_identifier(output, "output package Nix output")?;
+            if output == "out"
+                || !output.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'+')
+                })
+            {
+                bail!("output packages must select non-default Nix outputs");
+            }
+        }
         aos_registry_surface::package_version::validate_package_version(&self.version)
             .context("validating package publication version")?;
         for (value, label) in [
@@ -212,6 +231,16 @@ impl DerivationInventoryV1 {
             require_identifier(&package.name, "derivation package name")?;
             if let Some(publication) = &package.publication {
                 publication.validate()?;
+                for (name, output) in &publication.output_packages {
+                    if name == &package.name
+                        || !package
+                            .outputs
+                            .iter()
+                            .any(|candidate| &candidate.name == output)
+                    {
+                        bail!("output package declaration differs from its source package outputs");
+                    }
+                }
             }
             if package
                 .source_store_paths
@@ -640,6 +669,7 @@ mod tests {
                     name: "example".to_owned(),
                     source_store_paths: vec![SOURCE_PATH.to_owned()],
                     publication: Some(PackagePublicationMetadata {
+                        output_packages: Default::default(),
                         version: "1.0.0".to_owned(),
                         description: "Example package".to_owned(),
                         homepage: Some("https://example.invalid".to_owned()),
@@ -848,6 +878,7 @@ mod tests {
                 packages: vec![DerivationPackage {
                     name: "example".to_owned(),
                     publication: Some(PackagePublicationMetadata {
+                        output_packages: Default::default(),
                         version: "1.0.0".to_owned(),
                         description: "Example package".to_owned(),
                         homepage: None,

@@ -22,6 +22,6 @@ in {
   configurationOnly = builtins.length nodes == 1 && (builtins.head nodes).identity == ["profile" "portable-configuration" "@environment" "configuration" "file" "fixture"];
   pinnedProvider = (builtins.head nodes).handler.executable == "${provider}/bin/aos-configuration-provider";
   neutralModuleDependency = map (package: package.pname) provider.moduleDeps == ["service-management"];
-  portableRuntimeDependencies = map (package: package.pname) provider.runtimeDeps == ["python3" "bash"];
+  portableRuntimeDependencies = map (package: package.pname) provider.runtimeDeps == [];
   checkedGraph = builtins.deepSeq evaluated.deployment true;
 }

@@ -345,6 +345,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-configuration-provider"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "toml 0.8.23",
+]
+
+[[package]]
 name = "aos-contract"
 version = "0.1.0"
 dependencies = [

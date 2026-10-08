@@ -2099,6 +2099,7 @@ in rec {
         };
       };
       aos-runtime-closure = containerImages.aos.checks.runtimeAudit;
+      shell = import ./tests/containers/shell.nix {inherit pkgs lib;};
       production-reproducibility = containerImages.aos.checks.reproducibility;
       all = import ./tests/containers/default.nix {
         inherit pkgs;
@@ -2109,6 +2110,7 @@ in rec {
           evidence-platforms
           evidence
           runtime
+          shell
           aos-runtime-closure
           production-reproducibility
         ];

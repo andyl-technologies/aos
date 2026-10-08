@@ -269,9 +269,15 @@ in
     bakedGcRoots = true;
   };
   assert aos.filesystem.allowedFacadeCollisions == [];
-  assert map (entry: entry.name) aos.filesystem.facade == ["aos" "apm" "apr"];
+  assert map (entry: entry.name) aos.filesystem.facade == ["apm"];
   assert map (entry: entry.target) aos.filesystem.facade
-  == ["${pkgs.aos}/bin/aos" "${pkgs.aos.apm}/bin/apm" "${pkgs.aos.apr}/bin/apr"];
+  == ["${pkgs.apm}/bin/apm"];
+  assert builtins.elem (builtins.toString pkgs.apm) (map builtins.toString aos.packageRoots);
+  assert builtins.elem (builtins.toString pkgs.aos-package-runtime) (map builtins.toString aos.packageRoots);
+  assert builtins.all (package: !builtins.elem (builtins.toString package) (map builtins.toString aos.packageRoots))
+  [pkgs.aos pkgs.apr pkgs.glibc-tools pkgs.glibc-locales];
+  assert builtins.all (path: builtins.elem path (map (file: file.path) aos.filesystem.files))
+  ["/etc/bashrc" "/etc/profile" "/etc/inputrc" "/root/.bashrc" "/root/.bash_profile"];
   assert aos.runtime.environment.PATH == "/var/lib/profiles/per-user/root/current/bin:/var/lib/profiles/per-user/root/current/sbin:/usr/bin:/usr/sbin:/bin";
   assert aos.runtime.environment.NIX_REMOTE == "local";
   assert !userland.config.aos.boot.initrd.abilityHandoff.enable;
@@ -287,7 +293,7 @@ in
   "/etc/systemd/system/aos-ability-host-receiver.service"
   containerFilePaths;
   assert aos.runtime.environment.LANG == "C.UTF-8";
-  assert aos.runtime.environment.LOCPATH == "${pkgs.glibc-locales}/lib/locale";
+  assert !(aos.runtime.environment ? LOCPATH);
   assert builtins.any (directory: directory.path == "/var/tmp" && directory.mode == "1777") aos.filesystem.directories;
   assert aos.runtime.environment.XDG_DATA_HOME == "/root/.local/share";
   assert aos.runtime.workingDirectory == "/work";

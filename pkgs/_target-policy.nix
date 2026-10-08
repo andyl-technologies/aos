@@ -232,6 +232,7 @@ in rec {
               inherit version description maintainers;
               homepage = package.meta.homepage or null;
               license_expression = licenseExpression;
+              output_packages = builtins.mapAttrs (_: definition: definition.output) (package.outputPackages or {});
             };
           derivation = builtins.unsafeDiscardStringContext package.drvPath;
           outputs =
