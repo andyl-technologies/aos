@@ -20,9 +20,9 @@ use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use aos_sandbox_guest::guest_root_label::label_copied_guest_executables_before_v1;
-use aos_sandbox_guest::guest_root_marker::publish_guest_root_marker_before_v1;
-use aos_sandbox_guest::guest_root_populate::populate_fresh_guest_root_before_v1;
+use aos_sandbox_guest_root_realization::guest_root_label::label_copied_guest_executables_before_v1;
+use aos_sandbox_guest_root_realization::guest_root_marker::publish_guest_root_marker_before_v1;
+use aos_sandbox_guest_root_realization::guest_root_populate::populate_fresh_guest_root_before_v1;
 use aos_sandbox_agent::guest_root_publication::GuestRootPublicationProofV1;
 use aos_sandbox_broker::{BrokerEffectIntentV1, BrokerEffectStatusV1};
 use aos_sandbox_core::{BrokerGrantTarget, BrokerVerb};

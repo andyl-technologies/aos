@@ -13,8 +13,8 @@ use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
 use std::path::{Component, Path, PathBuf};
 
 use aos_proto::aos::sandbox::local::v1::InventoryStorageResourcesResponse;
-use aos_sandbox_guest::guest_root_label::verify_copied_guest_executable_labels_fd_v1;
-use aos_sandbox_guest::guest_root_marker::read_guest_root_marker_v1;
+use aos_sandbox_guest_root_realization::guest_root_label::verify_copied_guest_executable_labels_fd_v1;
+use aos_sandbox_guest_root_realization::guest_root_marker::read_guest_root_marker_v1;
 use aos_sandbox_agent::guest_root_publication::{
     CONCRETE_GUEST_FEATURE_MASK_V1, GuestRootPublicationProofV1,
 };

@@ -199,6 +199,7 @@
     "aos-sandbox-client"
     "aos-sandbox-core"
     "aos-sandbox-guest"
+    "aos-sandbox-guest-root-realization"
     "aos-sandbox-guest-root-tree"
     "aos-sandbox-guardian"
     "aos-sandbox-journal"

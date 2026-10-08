@@ -16,9 +16,6 @@
 pub mod dormant_guest_agent;
 pub mod dormant_package;
 pub mod dormant_root_builder;
-pub mod guest_root_label;
-pub mod guest_root_marker;
-pub mod guest_root_populate;
 pub mod openssh_gate_linux;
 pub mod protected_entry;
 mod runtime_argument_observation;

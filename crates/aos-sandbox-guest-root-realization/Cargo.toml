@@ -1,0 +1,19 @@
+[package]
+name = "aos-sandbox-guest-root-realization"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+autobins = false
+
+[dependencies]
+aos-sandbox-agent.workspace = true
+aos-sandbox-guest-root-tree.workspace = true
+aos-sandbox-linux.workspace = true
+rustix = { workspace = true, features = ["fs", "process"] }
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

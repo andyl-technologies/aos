@@ -58,7 +58,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut canary = GuestCanaryReportV1::new();
     let canary_selected = canary.capture_original()?;
     aos_sandbox_linux::guest_confinement::prepare_guest_runtime_anchors()?;
-    aos_sandbox_guest::guest_root_label::label_fresh_guest_manager_before_v1()?;
+    aos_sandbox_guest_root_realization::guest_root_label::label_fresh_guest_manager_before_v1()?;
 
     // Adopt original slots 6/7 before any startup duplicate can reuse them.
     // Their fixed originals remain live only through the one Agent spawn.

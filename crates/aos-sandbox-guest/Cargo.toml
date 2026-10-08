@@ -35,6 +35,7 @@ path = "src/bin/aos-sandbox-guest-root-tree-digest.rs"
 [dependencies]
 aos-sandbox-agent.workspace = true
 aos-sandbox-core.workspace = true
+aos-sandbox-guest-root-realization.workspace = true
 aos-sandbox-guest-root-tree.workspace = true
 aos-sandbox-linux.workspace = true
 ed25519-dalek = { workspace = true, features = ["zeroize"] }

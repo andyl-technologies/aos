@@ -38,6 +38,7 @@ members = [
     "aos-sandbox-agent",
     "aos-sandbox-client",
     "aos-sandbox-guest",
+    "aos-sandbox-guest-root-realization",
     "aos-sandbox-guest-root-tree",
     "aos-sandbox-core",
     "aos-sandbox-coordinator-protocol",
@@ -375,6 +376,7 @@ aos-filesystem-fuse = { path = "aos-filesystem-fuse" }
 aos-sandbox-agent = { path = "aos-sandbox-agent" }
 aos-sandbox-client = { path = "aos-sandbox-client" }
 aos-sandbox-guest = { path = "aos-sandbox-guest" }
+aos-sandbox-guest-root-realization = { path = "aos-sandbox-guest-root-realization" }
 aos-sandbox-guest-root-tree = { path = "aos-sandbox-guest-root-tree" }
 aos-sandbox-core = { path = "aos-sandbox-core" }
 aos-sandbox-journal = { path = "aos-sandbox-journal" }
