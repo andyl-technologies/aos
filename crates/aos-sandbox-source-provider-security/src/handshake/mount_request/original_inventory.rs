@@ -16,9 +16,13 @@ use aos_sandbox_protocol::mount_source_acquisition_state as msa;
 use super::*;
 use crate::carrier::RetainedSourceProviderRecordV5;
 
+#[path = "original_inventory/binding.rs"]
 mod binding;
+#[path = "original_inventory/custody.rs"]
 mod custody;
+#[path = "original_inventory/exchange.rs"]
 mod exchange;
+#[path = "original_inventory/request.rs"]
 mod request;
 
 use custody::QueryBoundaryV6;

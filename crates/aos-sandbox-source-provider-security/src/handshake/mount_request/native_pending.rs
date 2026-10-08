@@ -19,6 +19,7 @@ use aos_sandbox_source_provider_protocol::native_held_completion::{
 use super::*;
 use crate::carrier::RetainedSourceProviderRecordV5;
 
+#[path = "native_pending/root_closed.rs"]
 mod root_closed;
 
 #[path = "native_positive.rs"]

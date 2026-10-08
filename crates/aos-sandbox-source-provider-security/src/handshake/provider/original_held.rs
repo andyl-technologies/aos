@@ -15,10 +15,15 @@ use aos_sandbox_source_provider_protocol::native_held_completion::{
 };
 use ed25519_dalek::Signer as _;
 
+#[path = "original_held/delivery.rs"]
 mod delivery;
+#[path = "original_held/root_accepted.rs"]
 mod root_accepted;
+#[path = "original_held/relay.rs"]
 mod relay;
+#[path = "original_held/settlement.rs"]
 mod settlement;
+#[path = "original_held/root_terminal.rs"]
 mod root_terminal;
 
 #[derive(Clone, Copy)]

@@ -24,6 +24,7 @@ use crate::{RevalidatedProviderConfigurationV1, VerifiedCatalogPublicationV1};
 #[path = "native_catalog/outcome.rs"]
 mod outcome;
 
+#[path = "native_catalog/custody.rs"]
 pub(super) mod custody;
 
 pub(super) use outcome::NativeAcquireOutcomeCustodyV3;

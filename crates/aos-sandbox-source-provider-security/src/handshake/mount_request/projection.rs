@@ -510,6 +510,7 @@ pub(super) fn query_authentication_time_v6(
 }
 
 #[cfg(test)]
+#[path = "projection/query_time_tests.rs"]
 mod query_time_tests;
 
 pub(super) fn mount_plan_freshness_digest(

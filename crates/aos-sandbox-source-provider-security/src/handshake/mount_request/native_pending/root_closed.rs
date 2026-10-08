@@ -501,4 +501,5 @@ fn require_current_companions(
 }
 
 #[cfg(test)]
+#[path = "root_closed/tests.rs"]
 mod tests;

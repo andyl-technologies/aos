@@ -1950,13 +1950,13 @@ pub(crate) fn original_release_projection_v1(
 ) -> Result<MountSourceRootCustodyProjectionV2, SourceProviderSecurityError> {
     let evidence = row.evidence.as_ref().ok_or(SourceProviderSecurityError::SessionContinuity)?;
     if row.manager_custody.is_some() || row.manager_custody_loss.is_some()
-        || checked.method != aos_sandbox_source_provider_protocol::SourceProviderMethod::Acquire
-        || checked.status != aos_sandbox_source_provider_protocol::SourceProviderStatus::Complete
-        || checked.acquisition_id.map(|id| *id.as_bytes())
+        || checked.method() != aos_sandbox_source_provider_protocol::SourceProviderMethod::Acquire
+        || checked.status() != aos_sandbox_source_provider_protocol::SourceProviderStatus::Complete
+        || checked.acquisition_id().map(|id| *id.as_bytes())
             != Some(evidence.provider_acquisition.acquisition_id)
-        || checked.acquisition_sequence != Some(evidence.provider_acquisition.acquisition_sequence)
-        || *checked.descriptor_commitment.as_bytes() != evidence.descriptor_commitment
-        || source_root_descriptor_commitment_v1(observation) != checked.descriptor_commitment
+        || checked.acquisition_sequence() != Some(evidence.provider_acquisition.acquisition_sequence)
+        || *checked.commitments().1.as_bytes() != evidence.descriptor_commitment
+        || source_root_descriptor_commitment_v1(observation) != checked.commitments().1
     {
         return Err(SourceProviderSecurityError::SessionContinuity);
     }
@@ -1966,10 +1966,10 @@ pub(crate) fn original_release_projection_v1(
         provider_acquisition_sequence: evidence.provider_acquisition.acquisition_sequence,
         lease_id: evidence.lease_id,
         lease_digest: ObjectDigest::from_bytes(evidence.signed_lease_digest),
-        session_binding: checked.session_binding,
-        descriptor_commitment: checked.descriptor_commitment,
+        session_binding: checked.response_identity().0,
+        descriptor_commitment: checked.commitments().1,
         signed_outcome_digest: aos_sandbox_source_provider_protocol::provider_response_artifact_digest_v1(
-            aos_sandbox_source_provider_protocol::SourceProviderMethod::Acquire, &checked.canonical_response,
+            aos_sandbox_source_provider_protocol::SourceProviderMethod::Acquire, checked.canonical_response(),
         ),
         observation: observation.clone(),
         source_realization_handle: Some(evidence.source_realization_handle),

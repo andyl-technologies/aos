@@ -1233,6 +1233,11 @@ impl VerifiedMountProviderOutcomeV2 {
         &self.canonical_response
     }
 
+    /// Returns the retained provider method as nonauthorizing DATA.
+    pub(crate) const fn method(&self) -> SourceProviderMethod {
+        self.method
+    }
+
     /// Returns the verified terminal or nonterminal status.
     #[must_use]
     pub const fn status(&self) -> SourceProviderStatus {
@@ -1249,6 +1254,11 @@ impl VerifiedMountProviderOutcomeV2 {
     #[must_use]
     pub const fn acquisition_id(&self) -> Option<ObjectDigest> {
         self.acquisition_id
+    }
+
+    /// Returns the retained acquisition sequence as nonauthorizing DATA.
+    pub(crate) const fn acquisition_sequence(&self) -> Option<u64> {
+        self.acquisition_sequence
     }
 
     /// Returns the authenticated session and response sequence.
