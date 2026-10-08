@@ -340,6 +340,14 @@ every hypothetical backend, forwarding layers without a contract, or a new
 record family per refactor. Implementation and co-located tests are reviewed
 separately under the repository's file-size and documentation standards.
 
+Reconciler's private `operation_ledger` module owns the complete canonical
+Operation and OwnershipGate record models, codecs, bounds, and key layouts.
+It reuses Core's bounded byte reader without moving immutable draft validation
+or canonical domains into Core. The existing public-metadata owner supplies the
+V2 operation tail; admission, activation, currentness, clocks, effects, Journal
+custody, and recovery stay with their actual owners. This private DATA grouping
+does not establish a new crate boundary or complete protected-owner extraction.
+
 ## Multi-node boundary reserved for later
 
 `aos-sandbox-coordinator-protocol` (**new**) owns coordinator-only generated
