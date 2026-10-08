@@ -22,6 +22,8 @@ from aos_configuration import (
     read_invocation, serialize_toml, synchronize_directory,
 )
 
+from aos_service_storage import complete_handoff, handoff_state, plan_handoffs, private_storage_sources
+
 
 TRUE_EXECUTABLE = None
 FLOCK_EXECUTABLE = None
@@ -764,6 +766,16 @@ class Handler(ConfigurationHandler):
                 # A failed stop may have run arbitrary package commands. File
                 # identity alone cannot authorize another lifecycle invocation.
                 return {"status": "indeterminate"}
+            storage = self.receipt.get("private_storage", private_storage_sources(self.value))
+            handoffs = self.receipt.get("storage_handoffs")
+            if storage:
+                if handoffs is None:
+                    return {"status": "retry-safe"}
+                try:
+                    if any(handoff_state(record) != "complete" for record in handoffs) or not self.receipt.get("storage_handoffs_done"):
+                        return {"status": "retry-safe"}
+                except (ValueError, OSError):
+                    return {"status": "indeterminate"}
             if any(self.unit_digest(name, custody) not in {None, value} for name, value in prior_units.items()):
                 return {"status": "indeterminate"}
             if not self.links_safe(prior_links):
@@ -815,15 +827,19 @@ class Handler(ConfigurationHandler):
                     raise ValueError("service definition changed outside its owning effect")
             if not self.links_safe(prior_links):
                 raise ValueError("service installation link changed outside its owning effect")
-            for guard in self.value["lifecycle"].get("removal_guard", []):
-                executable = guard["executable"]
-                checked = subprocess.run([absolute(executable["path"]), *executable["arguments"]], capture_output=True, text=True, check=False)
-                if checked.returncode and not guard["ignore_failure"]:
-                    raise ValueError("service removal guard rejected retirement: " + checked.stderr[:4096])
-            if self.receipt.get("owner") == "ability":
-                self.save(dict(self.receipt, removing=True, dispatching=True))
-                self.manager("stop", *self.receipt.get("starts", []), *self.receipt.get("units", {}))
-                self.save(dict(self.receipt, dispatching=False))
+            if self.receipt.get("removing") and self.receipt.get("dispatching"):
+                raise ValueError("service removal has an uncertain stop dispatch")
+            if not self.receipt.get("removal_stopped"):
+                for guard in self.value["lifecycle"].get("removal_guard", []):
+                    executable = guard["executable"]
+                    checked = subprocess.run([absolute(executable["path"]), *executable["arguments"]], capture_output=True, text=True, check=False)
+                    if checked.returncode and not guard["ignore_failure"]:
+                        raise ValueError("service removal guard rejected retirement: " + checked.stderr[:4096])
+                if self.receipt.get("owner") == "ability":
+                    self.save(dict(self.receipt, removing=True, dispatching=True))
+                    self.manager("stop", *self.receipt.get("starts", []), *self.receipt.get("units", {}))
+                self.save(dict(self.receipt, removing=True, dispatching=False, removal_stopped=True))
+            self.retire_private_storage()
             self.remove_links(prior_links)
             for name in prior_units:
                 durable_unlink(self.unit_directory / name)
@@ -852,6 +868,7 @@ class Handler(ConfigurationHandler):
         self.claim_paths([str(self.unit_directory / name) for name in set(desired) | set(realization["links"])])
         receipt = {"kind": "service", "units": desired, "links": realization["links"], "resource": unit_name, "starts": realization["starts"], "owner": owner, "pending": True, "previous_units": prior_units, "previous_links": prior_links, "image_units": custody, "concurrency": (self.value.get("concurrency") or {}).get("group")}
         receipt.update(configuration=configuration, previous_configuration=previous_configuration)
+        receipt["private_storage"] = sorted(set(private_storage_sources(self.value)) | set((self.receipt or {}).get("private_storage", [])))
         old_resource = (self.receipt or {}).get("resource")
         self.save(receipt)
         for name, text in realization["units"].items():
@@ -896,6 +913,19 @@ class Handler(ConfigurationHandler):
                 durable_unlink(self.unit_directory / name)
         self.save(dict(receipt, pending=False, dispatching=False, previous_units={}, previous_links={}, previous_configuration={}, image_units={}))
         return result
+
+    def retire_private_storage(self):
+        """Journals private directory custody before removing any public alias."""
+        sources = self.receipt.get("private_storage", private_storage_sources(self.value))
+        if sources and self.receipt.get("owner") != "ability":
+            raise ValueError("private storage retirement requires an owned service stop")
+        if "storage_handoffs" not in self.receipt:
+            # Validate the entire plan before transferring its first directory.
+            handoffs = plan_handoffs(sources)
+            self.save(dict(self.receipt, storage_handoffs=handoffs))
+        for record in self.receipt["storage_handoffs"]:
+            complete_handoff(record)
+        self.save(dict(self.receipt, storage_handoffs_done=True))
 
     def links_match(self, links):
         return all((self.unit_directory / name).is_symlink() and os.readlink(self.unit_directory / name) == target for name, target in links.items())

@@ -381,6 +381,13 @@ bootstrap producer. Once custody is released, removal deletes only unadopted
 aliases and owned store roots. This handoff does not establish that a particular
 container launch environment can run the selected manager.
 
+Service-owned storage and standalone filesystem effects must not simultaneously
+manage the same directories. On retirement, the systemd handler stops the owned
+service and durably transfers any private persistent directory backing to its
+public path. It preserves the directory contents and checks exact aliases and
+entry identities before mutation. Pending transfers remain in the service
+receipt until recovery completes them; nested storage moves with its parent.
+
 ## Focused verification
 
 `checks.effects` evaluates recursive contracts, merging, composition, deferred

@@ -745,6 +745,7 @@ in
         script = ''
           mkdir -p "$handlers/libexec" "$handlers/bin"
           cp ${./_systemd-abilities/service-handler.py} "$handlers/libexec/aos-service-handler.py"
+          cp ${./_systemd-abilities/aos_service_storage.py} "$handlers/libexec/aos_service_storage.py"
           cat > "$handlers/bin/aos-service-handler" << EOF
           #!${bash}/bin/bash
           export PYTHONPATH="${aos-configuration-provider}/libexec"

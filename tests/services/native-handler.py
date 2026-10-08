@@ -23,10 +23,16 @@ host_activation_input = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else None
 package_convergence_input = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else None
 projected_service_input = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else None
 projected_service_units = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else None
+storage_path = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else handler_path.parent / "aos_service_storage.py"
 configuration_spec = importlib.util.spec_from_file_location("aos_configuration", configuration_path)
 configuration_module = importlib.util.module_from_spec(configuration_spec)
 sys.modules["aos_configuration"] = configuration_module
 configuration_spec.loader.exec_module(configuration_module)
+
+storage_spec = importlib.util.spec_from_file_location("aos_service_storage", storage_path)
+storage_module = importlib.util.module_from_spec(storage_spec)
+sys.modules["aos_service_storage"] = storage_module
+storage_spec.loader.exec_module(storage_module)
 
 spec = importlib.util.spec_from_file_location("service_handler", handler_path)
 handler_module = importlib.util.module_from_spec(spec)
@@ -2139,6 +2145,278 @@ class NativeHandlerTests(unittest.TestCase):
             pending = handler_module.Handler(removal, "unused", root, state)
             self.assertEqual(pending.service("observe")["status"], "indeterminate")
             self.assertTrue((Path(root) / "example.service").exists())
+
+    def private_storage_case(self, root, sources=None):
+        root = Path(root)
+        roots = {prefix: root / prefix.strip("/") for prefix in storage_module.PRIVATE_DIRECTORY_ROOTS}
+        value = dict(service(), auto_start=False)
+        value["identity"] = {
+            "principal": "example", "primary_group": None,
+            "supplementary_groups": [], "ephemeral": True,
+            "file_creation_mask": "0027",
+        }
+        value["storage"] = {"mounts": [
+            {"source": source, "ownership": "service-identity", "access": "read-write"}
+            for source in (sources or ["/var/log/example"])
+        ]}
+        request = invocation("serviceManagement", "realize", value)
+        instance = handler_module.Handler(request, "unused", root / "units", root / "receipts")
+        calls = []
+        instance.manager = lambda *args, **kwargs: calls.append(args) or subprocess.CompletedProcess(args, 0, "", "")
+        instance.service("apply")
+        return SimpleNamespace(roots=roots, value=value, request=request, handler=instance, calls=calls)
+
+    def private_storage_alias(self, case, source="/var/log/example", relative=False):
+        public, backing = storage_module.storage_paths(source)
+        public.parent.mkdir(parents=True, exist_ok=True)
+        backing.mkdir(parents=True)
+        (backing / "retained-data").write_text("preserved service data")
+        public.symlink_to(os.path.relpath(backing, public.parent) if relative else backing)
+        return public, backing
+
+    def test_private_storage_retirement_preserves_data_and_directory_metadata(self):
+        with tempfile.TemporaryDirectory() as root:
+            case = self.private_storage_case(root)
+            with patch.object(storage_module, "PRIVATE_DIRECTORY_ROOTS", case.roots):
+                public, backing = self.private_storage_alias(case, relative=True)
+                backing.chmod(0o750)
+                original = backing.stat()
+
+                case.handler.service("remove")
+
+                self.assertFalse(public.is_symlink())
+                self.assertEqual((public / "retained-data").read_text(), "preserved service data")
+                self.assertEqual(public.stat().st_ino, original.st_ino)
+                self.assertEqual(stat.S_IMODE(public.stat().st_mode), 0o750)
+                self.assertFalse(backing.exists())
+                self.assertFalse(case.handler.receipt_path.exists())
+
+    def test_private_storage_retirement_moves_nested_mounts_once(self):
+        with tempfile.TemporaryDirectory() as root:
+            case = self.private_storage_case(root, ["/var/lib/example", "/var/lib/example/www/site"])
+            with patch.object(storage_module, "PRIVATE_DIRECTORY_ROOTS", case.roots):
+                public, backing = self.private_storage_alias(case, "/var/lib/example")
+                nested = backing / "www/site"
+                nested.mkdir(parents=True)
+                (nested / "index").write_text("site data")
+                self.assertEqual(case.handler.receipt["private_storage"], ["/var/lib/example"])
+
+                case.handler.service("remove")
+
+                self.assertEqual((public / "www/site/index").read_text(), "site data")
+                self.assertFalse(backing.exists())
+
+    def test_private_storage_retirement_rejects_foreign_alias(self):
+        with tempfile.TemporaryDirectory() as root:
+            case = self.private_storage_case(root)
+            with patch.object(storage_module, "PRIVATE_DIRECTORY_ROOTS", case.roots):
+                public, backing = self.private_storage_alias(case)
+                foreign = Path(root) / "foreign"
+                foreign.mkdir()
+                (foreign / "data").write_text("foreign data")
+                public.unlink()
+                public.symlink_to(foreign)
+
+                with self.assertRaisesRegex(ValueError, "alias changed"):
+                    case.handler.service("remove")
+
+                self.assertEqual(public.readlink(), foreign)
+                self.assertEqual((foreign / "data").read_text(), "foreign data")
+                self.assertEqual((backing / "retained-data").read_text(), "preserved service data")
+                self.assertTrue((Path(root) / "units/example.service").exists())
+                self.assertTrue(case.handler.receipt_path.exists())
+
+    def test_private_storage_retirement_recovers_before_rename_without_repeating_stop(self):
+        with tempfile.TemporaryDirectory() as root:
+            case = self.private_storage_case(root)
+            with patch.object(storage_module, "PRIVATE_DIRECTORY_ROOTS", case.roots):
+                public, backing = self.private_storage_alias(case)
+                with patch.object(storage_module, "rename_directory_noreplace", side_effect=RuntimeError("interrupted before rename")):
+                    with self.assertRaisesRegex(RuntimeError, "before rename"):
+                        case.handler.service("remove")
+                self.assertFalse(public.exists())
+                self.assertTrue(backing.exists())
+                self.assertTrue(case.handler.receipt["removal_stopped"])
+                self.assertEqual(len(case.handler.receipt["storage_handoffs"]), 1)
+
+                removal = dict(case.request, action="remove")
+                recovered = handler_module.Handler(removal, "unused", Path(root) / "units", Path(root) / "receipts")
+                recovered.manager = case.handler.manager
+                # Even absent units cannot acknowledge an incomplete handoff.
+                (Path(root) / "units/example.service").unlink()
+                self.assertEqual(recovered.service("observe")["status"], "retry-safe")
+                self.assertTrue(recovered.receipt_path.exists())
+                recovered.service("remove")
+
+                self.assertEqual((public / "retained-data").read_text(), "preserved service data")
+                self.assertEqual(sum(call[0] == "stop" for call in case.calls), 1)
+                self.assertFalse(recovered.receipt_path.exists())
+
+    def test_private_storage_retirement_recovers_after_rename(self):
+        with tempfile.TemporaryDirectory() as root:
+            case = self.private_storage_case(root)
+            with patch.object(storage_module, "PRIVATE_DIRECTORY_ROOTS", case.roots):
+                public, backing = self.private_storage_alias(case)
+                rename = storage_module.rename_directory_noreplace
+
+                def interrupted(*args):
+                    rename(*args)
+                    raise RuntimeError("interrupted after rename")
+
+                with patch.object(storage_module, "rename_directory_noreplace", side_effect=interrupted):
+                    with self.assertRaisesRegex(RuntimeError, "after rename"):
+                        case.handler.service("remove")
+                self.assertFalse(backing.exists())
+                self.assertEqual((public / "retained-data").read_text(), "preserved service data")
+
+                recovered = handler_module.Handler(dict(case.request, action="remove"), "unused", Path(root) / "units", Path(root) / "receipts")
+                recovered.manager = case.handler.manager
+                self.assertEqual(recovered.service("observe")["status"], "retry-safe")
+                recovered.service("remove")
+
+                self.assertFalse(recovered.receipt_path.exists())
+                self.assertEqual(sum(call[0] == "stop" for call in case.calls), 1)
+                self.assertEqual((public / "retained-data").read_text(), "preserved service data")
+
+    def test_private_storage_retirement_rejects_backing_identity_drift(self):
+        with tempfile.TemporaryDirectory() as root:
+            case = self.private_storage_case(root)
+            with patch.object(storage_module, "PRIVATE_DIRECTORY_ROOTS", case.roots):
+                public, backing = self.private_storage_alias(case)
+                with patch.object(storage_module, "rename_directory_noreplace", side_effect=RuntimeError("interrupted")):
+                    with self.assertRaises(RuntimeError):
+                        case.handler.service("remove")
+                original = backing.with_name("original")
+                backing.rename(original)
+                backing.mkdir()
+                (backing / "foreign").write_text("foreign")
+
+                recovered = handler_module.Handler(dict(case.request, action="remove"), "unused", Path(root) / "units", Path(root) / "receipts")
+                recovered.manager = case.handler.manager
+                self.assertEqual(recovered.service("observe")["status"], "indeterminate")
+                with self.assertRaisesRegex(ValueError, "backing identity changed"):
+                    recovered.service("remove")
+
+                self.assertFalse(public.exists())
+                self.assertEqual((backing / "foreign").read_text(), "foreign")
+                self.assertEqual((original / "retained-data").read_text(), "preserved service data")
+                self.assertTrue(recovered.receipt_path.exists())
+
+    def test_private_storage_retirement_rechecks_backing_after_alias_unlink_sync(self):
+        with tempfile.TemporaryDirectory() as root:
+            case = self.private_storage_case(root)
+            with patch.object(storage_module, "PRIVATE_DIRECTORY_ROOTS", case.roots):
+                public, backing = self.private_storage_alias(case)
+                parent_identity = storage_module.entry_identity(public.parent.stat())
+                original = backing.with_name("original")
+                fsync = os.fsync
+                replaced = False
+
+                def replace_after_sync(descriptor):
+                    nonlocal replaced
+                    fsync(descriptor)
+                    if (not replaced and storage_module.entry_identity(os.fstat(descriptor)) == parent_identity
+                            and not public.is_symlink()):
+                        replaced = True
+                        backing.rename(original)
+                        backing.mkdir()
+                        (backing / "foreign").write_text("foreign data")
+
+                with patch.object(storage_module.os, "fsync", side_effect=replace_after_sync):
+                    with self.assertRaisesRegex(ValueError, "backing identity changed"):
+                        case.handler.service("remove")
+
+                self.assertTrue(replaced)
+                self.assertFalse(public.exists())
+                self.assertEqual((backing / "foreign").read_text(), "foreign data")
+                self.assertEqual((original / "retained-data").read_text(), "preserved service data")
+                self.assertTrue((Path(root) / "units/example.service").exists())
+                self.assertTrue(case.handler.receipt_path.exists())
+
+    def test_private_storage_retirement_never_replaces_competing_public_directory(self):
+        with tempfile.TemporaryDirectory() as root:
+            case = self.private_storage_case(root)
+            with patch.object(storage_module, "PRIVATE_DIRECTORY_ROOTS", case.roots):
+                public, backing = self.private_storage_alias(case)
+                rename = storage_module.rename_directory_noreplace
+
+                def competing_directory(*args):
+                    public.mkdir()
+                    rename(*args)
+
+                with patch.object(storage_module, "rename_directory_noreplace", side_effect=competing_directory):
+                    with self.assertRaises(FileExistsError):
+                        case.handler.service("remove")
+
+                self.assertTrue(public.is_dir())
+                self.assertEqual(list(public.iterdir()), [])
+                self.assertEqual((backing / "retained-data").read_text(), "preserved service data")
+                self.assertTrue(case.handler.receipt_path.exists())
+
+    def test_private_storage_retirement_rejects_intermediate_symlink(self):
+        with tempfile.TemporaryDirectory() as root:
+            case = self.private_storage_case(root)
+            with patch.object(storage_module, "PRIVATE_DIRECTORY_ROOTS", case.roots):
+                public, backing = self.private_storage_alias(case)
+                private_root = backing.parent
+                renamed = private_root.with_name("external")
+                private_root.rename(renamed)
+                private_root.symlink_to(renamed)
+
+                with self.assertRaises(OSError):
+                    case.handler.service("remove")
+
+                self.assertTrue(public.is_symlink())
+                self.assertEqual((renamed / "example/retained-data").read_text(), "preserved service data")
+                self.assertTrue((Path(root) / "units/example.service").exists())
+
+    def test_private_storage_retirement_leaves_plain_public_directory_untouched(self):
+        with tempfile.TemporaryDirectory() as root:
+            case = self.private_storage_case(root)
+            with patch.object(storage_module, "PRIVATE_DIRECTORY_ROOTS", case.roots):
+                public, _ = storage_module.storage_paths("/var/log/example")
+                public.mkdir(parents=True)
+                (public / "data").write_text("standalone data")
+                identity = public.stat().st_ino
+
+                case.handler.service("remove")
+
+                self.assertEqual(public.stat().st_ino, identity)
+                self.assertEqual((public / "data").read_text(), "standalone data")
+
+    def test_private_storage_retirement_includes_cache_and_logging_only_directories(self):
+        with tempfile.TemporaryDirectory() as root:
+            case = self.private_storage_case(root, ["/var/cache/example"])
+            case.value["logging"] = {
+                "standard_output": "structured", "standard_error": "inherit",
+                "namespace": None, "directories": ["example"], "directory_mode": "0750",
+            }
+            case.handler.invocation["previous"] = {"revision": "first"}
+            case.handler.service("apply")
+            with patch.object(storage_module, "PRIVATE_DIRECTORY_ROOTS", case.roots):
+                cache, cache_backing = self.private_storage_alias(case, "/var/cache/example")
+                logs, log_backing = self.private_storage_alias(case)
+
+                case.handler.service("remove")
+
+                self.assertFalse(cache.is_symlink())
+                self.assertFalse(logs.is_symlink())
+                self.assertEqual((cache / "retained-data").read_text(), "preserved service data")
+                self.assertEqual((logs / "retained-data").read_text(), "preserved service data")
+                self.assertFalse(cache_backing.exists())
+                self.assertFalse(log_backing.exists())
+
+    def test_private_storage_retirement_selects_only_ephemeral_authored_custody(self):
+        value = service()
+        value["identity"] = {"ephemeral": False}
+        value["storage"] = {"mounts": [
+            {"source": "/var/log/foreign", "ownership": "provider"},
+            {"source": "/var/lib/example", "ownership": "service-identity"},
+            {"source": "/run/example", "ownership": "service-identity"},
+        ]}
+        self.assertEqual(storage_module.private_storage_sources(value), [])
+        value["identity"]["ephemeral"] = True
+        self.assertEqual(storage_module.private_storage_sources(value), ["/var/lib/example"])
 
     def test_path_conditions_use_scalar_paths_and_literal_specifiers(self):
         value = service()

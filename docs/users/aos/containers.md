@@ -57,6 +57,11 @@ Local accounts and groups are installation effects: they are available before
 the selected manager starts early services. Their normal ownership receipts
 remain authoritative during startup, reconfiguration, and removal.
 
+Each writable directory has one active owner. A managed service delegates its
+storage to the service manager; standalone configuration uses filesystem
+effects. When service management is removed, the manager preserves persistent
+data and releases its directory layout before standalone effects resume.
+
 The container launcher must provide the environment required by the selected
 init and service features. Installation during a Docker build does not establish
 that those runtime features are available. Explicit workload arguments override
