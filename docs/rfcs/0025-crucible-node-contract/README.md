@@ -1,11 +1,10 @@
 # RFC-0025: Crucible simulation node contract
 
-- **Status:** Proposed; target-state specification. No new node implementation,
-  operating mode, wire protocol, or conformance claim is enabled by this RFC.
+- **Status:** Proposed.
 - **Date:** 2026-10-07.
 - **Audience:** Crucible maintainers, scenario authors, simulator and hardware
   vendors, device-model authors, and independent executor implementations.
-- **Updates on adoption:** The node composition, provider abstraction, timing
+- **Updates:** The node composition, provider abstraction, timing
   negotiation, and state compatibility contracts of
   [RFC-0010](../0010-crucible/README.md),
   [RFC-0014](../0014-signal-driven-fault-model/README.md), and
@@ -13,8 +12,6 @@
 - **Preserves:** Coordinator authority over scheduling and assertions; original
   execution and queue custody; implementation-bound exact state; and the
   [Crucible/QEMU licensing and process boundary](../0010-crucible/37-licensing-process-boundary.md).
-- **Implementation companion:**
-  [Migration and qualification plan](../../plans/crucible-node-contract/README.md).
 
 ## Abstract
 
@@ -47,24 +44,17 @@ the process interface without linking Crucible's host implementation. Neither
 trait inheritance nor a capability claim replaces qualification of the actual
 realized configuration.
 
-## Scope and document status
+## Scope
 
-This document describes the target architecture rather than the current
-repository's interface. It does not claim IETF publication, IANA allocation,
-production support, or successful qualification of gem5, KVM quantized
-execution, or external hardware. Requirement language follows BCP 14 as
-specified in [conventions](00-conventions-and-model.md).
+This RFC defines node participation, composition, timing, state preservation,
+provider interoperability, and conformance. Its normative contract comprises
+the numbered chapters and CNP/1 reference records linked below. Requirement
+language follows BCP 14 as specified in
+[conventions](00-conventions-and-model.md).
 
-The normative contract is this RFC's numbered topic set and the CNP/1 reference
-records linked below. Current-code analysis,
-rename candidates, rollout tasks, gate commands, and delivery sequencing live
-in the implementation companion. Source links there are anchored by an audited
-Git revision and describe an implementation baseline, not vendor obligations.
-
-Existing implementation-specific formats and protocols continue to describe
-existing artifacts. Adopting this RFC requires explicit versioned bindings;
-this proposal does not retroactively reinterpret old snapshots or change the
-meaning of a saved instruction count.
+Implementation-specific artifacts retain the interpretation defined by their
+bound protocol and state-format versions. A change to those semantics requires
+an explicit compatible binding or conversion under chapter 05.
 
 ## Document map
 
@@ -79,7 +69,7 @@ meaning of a saved instruction count.
 | [06 — Provider protocol and security](06-provider-protocol-and-security.md) | CNP/1 transport, encoding, operation correlation, retries, errors, trust, and process boundaries |
 | [07 — Reference profiles and examples](07-reference-profiles-and-examples.md) | Compute, device, clock, link, and hardware profiles; mixed-world examples |
 | [08 — Conformance](08-conformance.md) | Independent qualification classes, evidence, negative cases, state preservation, and performance |
-| [09 — Decisions and extensions](09-decisions-and-extensions.md) | Design rationale, extension registration, version policy, deferred profiles, and acceptance decisions |
+| [09 — Decisions and extensions](09-decisions-and-extensions.md) | Design rationale, extension registration, version policy, additional profiles, and references |
 
 Chapter 06 includes two normative references:
 
@@ -101,11 +91,6 @@ A scenario author starts with the composition and capability rules in chapter
 the timing contract of the ports that interact with it; it does not silently
 coarsen every participant's internal model. Nondeterminism and state limitations
 remain visible in the world binding and result.
-
-A maintainer implementing this RFC reads the normative chapters and then the
-[current-state audit](../../plans/crucible-node-contract/current-state.md),
-[refactoring plan](../../plans/crucible-node-contract/refactoring-plan.md), and
-[phased implementation plan](../../plans/crucible-node-contract/phased-implementation.md).
 
 ## Design commitments
 
@@ -134,7 +119,7 @@ A maintainer implementing this RFC reads the normative chapters and then the
    captured interaction history and cannot authorize arbitrary counterfactual
    branches.
 
-## Relationship to existing Crucible contracts
+## Relationship to other Crucible RFCs
 
 RFC-0010's fixed instruction-cost model remains a compute-profile choice; it is
 not the universal conversion from work to time. This RFC retains the exact
@@ -153,7 +138,7 @@ that one planned configuration identifies one resulting state.
 
 The QEMU/plugin remains a separate process from the Apache host. Native owner
 handles, pointers, callback tables, and Rust objects do not become a shared
-memory API. Existing QMP and shared-memory adapters can implement the host
+memory API. QMP and shared-memory adapters can implement the host
 contract without claiming that their native wire formats are CNP/1.
 
 ## Non-goals
@@ -165,18 +150,11 @@ contract without claiming that their native wire formats are CNP/1.
 - Automatic device substitution when a selected provider lacks a required ABI.
 - Making a nondeterministic world deterministic by ordering its observations.
 - Hard real-time guarantees from logical simulation barriers.
-- Immediate remote or distributed-provider interoperability; those profiles
+- Remote or distributed-provider interoperability; those profiles
   require explicit transport, fencing, and timing contracts.
 
-## Review and acceptance
+## Conformance
 
-Acceptance requires agreement on the common node/owner model, operation and
-event semantics, exact and quantized contracts, canonical identity, state
-compatibility rules, and provider conformance obligations. Acceptance of the
-design does not qualify a provider. Each implementation/configuration earns
-its advertised guarantees through the evidence classes in chapter 08.
-
-The companion implementation plan deliberately starts with behavior-preserving
-extraction. New schemas, mixed-provider execution, gem5 exact state, and KVM
-quantized timing have separate exits. Documentation completeness is not their
-execution evidence.
+Provider conformance is assessed for a specific implementation, configuration,
+and selected contract. Chapter 08 defines the evidence classes and qualification
+obligations for each advertised guarantee.

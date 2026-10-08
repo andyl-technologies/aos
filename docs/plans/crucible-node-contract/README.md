@@ -63,3 +63,23 @@ evidence or publishing it through release assets.
 - Any claim of hard wall-clock deadlines for physical hardware requires a separate
   resource and timing qualification. Logical causality alone does not establish
   real-time performance.
+
+## Open implementation decisions
+
+The phased plan assigns feasibility tests and acceptance exits for these choices:
+
+1. Keep common host traits in the engine with device wrappers initially, or
+   extract a lower dependency crate when independent providers need it?
+2. Which current canonical formats can retain legacy decoding, and which need
+   a deliberate cutover with explicit refusal?
+3. Which detailed CPU/device configurations can meet complete gem5 state
+   preservation, including durable restore after source exit?
+4. Which kernel and machine configurations can mediate every KVM clock and I/O
+   path required by the quantized profile?
+5. Which native simulator components should be public logical nodes, and which
+   remain private implementation details inside one declared owner?
+6. What evidence storage and distribution mechanism should a deployed executor
+   use for third-party qualification manifests?
+
+These choices remain constrained by the RFC's causal, ownership, timing, parity,
+and state-preservation requirements.

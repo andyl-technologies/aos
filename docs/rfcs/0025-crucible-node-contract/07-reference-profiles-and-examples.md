@@ -1,16 +1,15 @@
 # 7. Reference Profiles and Interoperable Examples
 
-## 7.1. Status and interpretation
+## 7.1. Profiles and examples
 
-This chapter specifies target provider profiles. A profile states requirements
-for an implementation to claim a particular contract; its presence in this RFC
-does not establish that a packaged provider has passed qualification. The
-conformance evidence required by [Chapter 8](08-conformance.md) identifies the
-implemented build, configuration, devices, and permitted operating modes.
+This chapter specifies provider profiles. A profile defines the requirements
+for a particular contract. The conformance evidence required by
+[Chapter 8](08-conformance.md) identifies the implemented build, configuration,
+devices, and permitted operating modes.
 
-The examples illustrate composition rather than production deployment files.
-Declaration fragments omit required identities, resource limits, content
-references, and other fields where explicitly stated. They are not complete
+The examples illustrate composition. Declaration fragments omit required
+identities, resource limits, content references, and other fields where
+explicitly stated. They are not complete
 manifests, deployable configurations, or capability advertisements.
 
 **[CN-PROFILE-1]** A provider claiming a reference profile MUST implement every
@@ -148,7 +147,7 @@ profiles for each ISA. They do not require implementation of every peripheral
 available in upstream QEMU. Profile versions enumerate supported combinations,
 including optional devices, supported transports, and feature limits.
 
-The initial parity roster corresponds to the supported q35 x86-64 and `virt`
+The parity roster corresponds to the supported q35 x86-64 and `virt`
 AArch64 machine families. The selected manifest pins a specific version and
 realized device inventory; the family name alone is not a compatibility key.
 For q35 this includes the memory/PCI host, LPC, DMA, CMOS/RTC, PIC/IOAPIC/APIC,
@@ -239,7 +238,7 @@ memory mappings and external resources are explicit configuration restrictions.
 Only combinations with qualified event ordering and capture coverage claim the
 exact profile; supporting a CPU model in a standalone simulator is insufficient.
 
-The target x86-64 and AArch64 profiles require the full supported machine/device
+The x86-64 and AArch64 profiles require the full supported machine/device
 parity described above. An integration limited to kernel boot or architectural
 register checkpoints does not satisfy this profile.
 
@@ -255,19 +254,6 @@ and load/store queues, branch prediction, caches and replacement metadata,
 TLBs and page walks, coherence transients, memory-controller scheduling and
 refresh state, native event queues, PRNG state, devices, DMA and interrupts.
 References and sharing in the native object graph must be restored consistently.
-
-Stock gem5 checkpointing is not evidence for this requirement. In the audited
-upstream revision, the Python checkpoint path drains and writes memory back;
-O3 thread serialization preserves architectural thread context, and classic
-cache serialization does not preserve cache contents. These are narrower
-operations than this target profile's exact continuation requirement.
-See the pinned [checkpoint path][gem5-checkpoint],
-[O3 thread serializer][gem5-o3-state], and [cache serializer][gem5-cache-state].
-
-Stock gem5's external 9p proxy also warns that checkpointing a used device can
-lose state. A conforming adapter must implement the required owned filesystem
-continuation rather than treating this warning as an acceptable parity limit.
-See the pinned [9p serialization implementation][gem5-ninep-state].
 
 A no-drain in-memory process fork may be useful implementation machinery, but
 does not alone establish persistent capture. It must also isolate descriptors,
@@ -560,8 +546,3 @@ whether a scenario is repeatable under controlled execution, and how the chosen
 processor/memory/device timing model affects behavior. No profile or example
 implies that a more detailed model is faster or that boot success establishes
 device, timing, snapshot, fault or interoperability conformance.
-
-[gem5-checkpoint]: https://github.com/gem5/gem5/blob/f5c5a6e390f55dd5984977815bf9d0bd05da6945/src/python/m5/simulate.py#L401
-[gem5-o3-state]: https://github.com/gem5/gem5/blob/f5c5a6e390f55dd5984977815bf9d0bd05da6945/src/cpu/o3/thread_state.cc#L57
-[gem5-cache-state]: https://github.com/gem5/gem5/blob/f5c5a6e390f55dd5984977815bf9d0bd05da6945/src/mem/cache/base.cc#L2057
-[gem5-ninep-state]: https://github.com/gem5/gem5/blob/f5c5a6e390f55dd5984977815bf9d0bd05da6945/src/dev/virtio/fs9p.cc#L230

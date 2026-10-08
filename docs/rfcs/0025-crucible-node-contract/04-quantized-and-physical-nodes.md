@@ -13,9 +13,8 @@ when their realized capabilities support it. KVM is an example implementation,
 not part of the public node type. A physical device can remain active while its
 adapter closes logical observation windows; that distinction must be explicit.
 
-An existing exact scheduler's subdivision budget is not this mode. A budget
-that limits an exact RUN still relies on an exact execution ceiling. Quantized
-operation instead defines input sampling, output publication, window closure,
+An exact execution budget constrains work under an exact execution ceiling.
+Quantized operation defines input sampling, output publication, window closure,
 and nondeterministic execution within a logical interval.
 
 ## 2. Quantum Grids

@@ -1,19 +1,17 @@
 # 06 — Provider protocol, compatibility, and security
 
-This chapter specifies the target Crucible Node Protocol, **CNP/1**. It is a
+This chapter specifies the Crucible Node Protocol, **CNP/1**. It is a
 language-neutral local process contract between the coordinator's trusted
 provider broker and a node implementation. A provider can implement compute,
 storage, links, clocks, or an external-device adapter. Scheduling, capabilities,
 and preservation semantics come from the other chapters of this RFC; this
 chapter specifies their transport, correlation, admission, and failure rules.
 
-CNP/1 is a target protocol, not a claim that current QEMU control messages have
-already changed. Existing QEMU integration continues through its versioned
-QMP/control/shared-memory adapters. A broker MAY translate the contract into
-those existing mechanisms, but MUST preserve their authenticated ownership and
-completion obligations. Receipt of a CNP message does not manufacture a native
-QEMU receipt, and a broker MUST NOT report stronger semantics than its adapter
-implements.
+CNP/1 and QEMU's native QMP/control/shared-memory protocols have distinct
+encodings and authority. A broker MAY translate the contract into those
+mechanisms, but MUST preserve their authenticated ownership and completion
+obligations. Receipt of a CNP message does not manufacture a native QEMU receipt,
+and a broker MUST NOT report stronger semantics than its adapter implements.
 
 ## 6.1 Scope and parties
 
@@ -828,8 +826,8 @@ qualification registry, and admission policy are trusted components.
 CNP is a public process protocol. Host-side semantic models, scheduling,
 assertion evaluation, and campaign state remain outside QEMU's GPL process.
 Implementation-specific code linked into or loaded by QEMU remains in its
-applicable GPL-compatible scope. This RFC does not relicense existing files or
-permit a shared in-process callback interface across that boundary.
+applicable GPL-compatible scope. Integration uses the process boundary specified
+by [RFC-0010](../0010-crucible/37-licensing-process-boundary.md).
 
 - **[CN-SEC-9]** Apache-only host crates MUST NOT include QEMU headers, link
   QEMU, expose its callback entry points, or load QEMU implementation libraries.
@@ -853,7 +851,7 @@ permit a shared in-process callback interface across that boundary.
   enforceable mechanism; declaring an allowlist without enforcement is
   insufficient. Permitted preparation effects remain journaled and bounded.
 
-The normative existing policy is [licensing.md](../../legal/licensing.md) and
+The licensing and distribution requirements are specified by
 [RFC-0010's process boundary](../0010-crucible/37-licensing-process-boundary.md).
 
 ## 6.14 Version evolution and conformance

@@ -224,3 +224,29 @@ package-source retention obligations.
 | gem5 | No qualified implementation in this change | Complete nondraining state preservation and device parity |
 | KVM | No quantized participation implemented here | Clock/interrupt/device containment and boundary acknowledgment |
 | External vendors | No universal integration qualification here | Versioned protocols, schemas, extension profiles, and conformance |
+
+## 9. gem5 checkpoint audit
+
+The upstream gem5 audit used revision
+`f5c5a6e390f55dd5984977815bf9d0bd05da6945`. Its checkpoint mechanisms do not
+establish the complete-state contract required by RFC-0025's gem5 profile.
+
+The Python checkpoint path drains and writes memory back; O3 thread
+serialization preserves architectural thread context, and classic cache
+serialization does not preserve cache contents. These are narrower operations
+than the profile's exact continuation requirement. See the pinned
+[checkpoint path][gem5-checkpoint], [O3 thread serializer][gem5-o3-state], and
+[cache serializer][gem5-cache-state].
+
+The external 9p proxy also warns that checkpointing a used device can lose
+state. The integration must implement the required owned filesystem
+continuation. See the pinned [9p serialization implementation][gem5-ninep-state].
+
+T-CN-15 through T-CN-19 in the [phased implementation plan](phased-implementation.md)
+investigate complete nondraining preservation, durable restoration, and live
+branching independently.
+
+[gem5-checkpoint]: https://github.com/gem5/gem5/blob/f5c5a6e390f55dd5984977815bf9d0bd05da6945/src/python/m5/simulate.py#L401
+[gem5-o3-state]: https://github.com/gem5/gem5/blob/f5c5a6e390f55dd5984977815bf9d0bd05da6945/src/cpu/o3/thread_state.cc#L57
+[gem5-cache-state]: https://github.com/gem5/gem5/blob/f5c5a6e390f55dd5984977815bf9d0bd05da6945/src/mem/cache/base.cc#L2057
+[gem5-ninep-state]: https://github.com/gem5/gem5/blob/f5c5a6e390f55dd5984977815bf9d0bd05da6945/src/dev/virtio/fs9p.cc#L230

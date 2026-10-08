@@ -1,8 +1,7 @@
 # 09 — Decisions, extensions, and version policy
 
 This chapter records the design choices and defines how a provider extends the
-contract without silently changing an admitted world's behavior. It does not
-allocate Internet protocol numbers or claim IANA registration.
+contract without silently changing an admitted world's behavior.
 
 ## 1. Decision register
 
@@ -11,7 +10,7 @@ allocate Internet protocol numbers or claim IANA registration.
 | D-01 | Universal simulation-node participation | Compute, storage, clocks, links, and physical adapters share admission, interaction, and lifecycle semantics. Their role-specific operations remain typed. |
 | D-02 | Role, implementation, timing, and guarantees are separate | Avoids a Cartesian hierarchy of exact/quantized compute/disk/link subclasses and prevents a timing claim from implying repeatability or capture support. |
 | D-03 | Logical nodes and mutable owners have separate identities | Native simulator components can be visible without independent mutation or duplicate restoration. Connections do not imply state ownership. |
-| D-04 | One shared integer picosecond coordinate | Avoids floating-point ordering and preserves the existing exact timeline. Provider resolution and guest clock readings are distinct properties. |
+| D-04 | One shared integer picosecond coordinate | Avoids floating-point ordering and uses RFC-0010's exact timeline. Provider resolution and guest clock readings are distinct properties. |
 | D-05 | Exact advancement uses admitted boundaries and complete input knowledge | A scalar ceiling or capability manifest cannot replace retained authorization or justify passing possible input. |
 | D-06 | Quantized advancement has separate grants and acknowledgments | KVM and physical devices can participate through explicit sampling/publication windows without false exact-stop receipts. |
 | D-07 | Mixed timing is expressed at ports and connections | Exact nodes retain finer internal events; crossings follow admitted rounding, sampling, and publication rules. |
@@ -28,7 +27,7 @@ allocate Internet protocol numbers or claim IANA registration.
 | D-18 | Portable semantics and implementation mechanisms are distinct | A fault, port, or state guarantee is defined independently of QMP commands or a simulator's private class names. |
 | D-19 | Capabilities are admitted and qualified per configuration | The same provider binary may realize models with different devices, timing resolutions, capture scopes, and host requirements. |
 | D-20 | Strict failures have explicit retained effect disposition | Timeout, cancellation, and disconnected control sessions cannot authorize blind replay of a possibly completed effect. |
-| D-21 | Versioned compatibility precedes rollout | Mechanical source renames preserve existing bytes; changed graph, mode, and state semantics require new format identities. |
+| D-21 | Compatibility is explicitly versioned | Changed graph, mode, and state semantics require new format identities and declared compatibility relations. |
 | D-22 | Performance evidence is workload-specific | Boot, dispatch, device service, and capture costs are measured separately. Detailed CPU fidelity is not normalized to a fixed instruction cost. |
 
 ## 2. Identifier namespaces and extension registration
@@ -127,11 +126,10 @@ that profile's required properties.
 
 The publisher records immutable specification and test identities. Test logs
 can remain in a dedicated evidence system or local retention with a concise
-manifest. Repository source and release assets are not substitutes for a
-purpose-built evidence service. No evidence-hosting mechanism is required by
-this RFC; unavailable evidence means an unavailable qualification claim.
+manifest. Evidence availability is a condition of an accepted qualification
+claim; its storage mechanism is a deployment choice.
 
-## 5. Deliberately deferred profiles
+## 5. Additional profiles
 
 The local provider contract is the baseline. The following require additional
 specifications rather than implied support:
@@ -146,38 +144,14 @@ specifications rather than implied support:
   capability.
 - Arbitrary cross-ISA compute-state conversion.
 
-- **[CN-EXT-9]** A deferred profile MUST NOT be advertised as core conformance
+- **[CN-EXT-9]** An additional profile MUST NOT be advertised as core conformance
   without an admitted versioned definition covering its additional failure,
   ownership, timing, state, and security semantics.
 
-Deferral is not a prohibition on independent work. It prevents two vendors from
-using the same core label for incompatible behavior.
+Explicit profile definitions prevent vendors from using the same core label
+for incompatible behavior.
 
-## 6. Review questions and implementation decisions
-
-The semantic requirements above are target-state decisions. These delivery
-questions remain implementation choices constrained by that contract:
-
-1. Keep common host traits in the engine with device wrappers initially, or
-   extract a lower dependency crate when independent providers need it?
-2. Which current canonical formats can retain legacy decoding, and which need
-   a deliberate cutover with explicit refusal?
-3. Which detailed CPU/device configurations can meet complete gem5 state
-   preservation, including durable restore after source exit?
-4. Which kernel and machine configurations can mediate every KVM clock and I/O
-   path required by the quantized profile?
-5. Which existing native simulator components should be public logical nodes,
-   and which remain private implementation details inside one declared owner?
-6. What evidence storage and distribution mechanism should a deployed executor
-   use for third-party qualification manifests?
-
-These questions do not permit missing input knowledge, duplicate state
-ownership, false exact receipts, implicit device substitution, or silent
-cross-implementation restore. The
-[implementation companion](../../plans/crucible-node-contract/README.md)
-assigns phased feasibility tests and acceptance exits.
-
-## 7. Normative and informative references
+## 6. Normative and informative references
 
 Normative requirement terminology follows
 [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119.html) and
@@ -186,16 +160,11 @@ process profile follows [RFC 8785](https://www.rfc-editor.org/rfc/rfc8785.html),
 with Crucible's explicit string encoding for wide integer values and its
 domain-separated identity construction in chapter 06.
 
-The existing Crucible RFCs are informative context where this proposal changes
-their node/timing generality. The licensing/process boundary remains a
+This RFC generalizes the node and timing contracts in the following Crucible
+RFCs. The licensing/process boundary remains a
 constraint on any implementation:
 
 - [RFC-0010: Crucible](../0010-crucible/README.md).
 - [RFC-0014: Signal-driven fault model](../0014-signal-driven-fault-model/README.md).
 - [RFC-0020: Crucible campaigns](../0020-crucible-campaigns/README.md).
 - [Crucible/QEMU process boundary](../0010-crucible/37-licensing-process-boundary.md).
-- [Repository licensing policy](../../legal/licensing.md).
-
-Provider-specific implementation references and limitations are identified in
-chapter 07. They are not substitutes for the normative node contract or its
-qualification tests.

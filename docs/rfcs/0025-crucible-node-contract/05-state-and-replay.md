@@ -2,11 +2,10 @@
 
 ## 1. Scope and terminology
 
-This RFC-0025 chapter defines the target state contract for every simulation node,
+This chapter defines the state contract for every simulation node,
 execution owner, capture owner, and external adapter admitted to a Crucible
 world. It applies to compute, storage, clocks, links, shared devices, and their
-coordinator state. It does not assert that an existing provider implements any
-capability described here.
+coordinator state.
 
 Logical time is an unsigned 64-bit count of picoseconds. Native instruction
 counts, CPU cycles, host timestamps, and device counters remain separate

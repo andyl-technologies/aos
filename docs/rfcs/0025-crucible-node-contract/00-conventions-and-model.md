@@ -1,10 +1,10 @@
 # RFC-0025 — 00. Conventions and simulation model
 
-## 00.1. Scope and status
+## 00.1. Scope
 
 This chapter defines the conceptual model for the Crucible node contract.
-The contract describes a target architecture, independent of a particular
-simulator, programming language, transport, or migration sequence.
+The contract is independent of a particular simulator, programming language,
+or transport.
 Compute, storage, filesystem, network, clock, and external-device participants
 share scheduling, event, capability, and state-preservation rules.
 Their role-specific behavior remains explicit.
@@ -14,10 +14,8 @@ possible implementations of nodes. None defines the public meaning of a node.
 A machine is a composition of compute and device nodes, possibly implemented
 within one process. A scenario is a composition of machines and other nodes.
 
-Implementation work and compatibility sequencing are recorded separately in
-the [migration plan](../../plans/crucible-node-contract/README.md).
-Examples and Rust fragments in this RFC are design fixtures; they do not assert
-that a matching shipping interface or qualified provider exists.
+Examples and Rust fragments illustrate the contract. Conformance is assessed
+against the identified requirements and their incorporated schemas.
 
 ## 00.2. Requirement language and traceability
 

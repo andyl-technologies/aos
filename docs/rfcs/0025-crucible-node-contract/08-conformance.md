@@ -1,8 +1,6 @@
 # RFC-0025 — 08. Conformance and qualification
 
 This chapter defines how a provider demonstrates the contracts in this RFC.
-It specifies target qualification obligations. It does not qualify QEMU,
-gem5, KVM, an external adapter, or any existing Crucible implementation.
 The words conformance and qualification have different scopes:
 
 - **Protocol conformance** establishes that an implementation accepts,
@@ -80,7 +78,7 @@ inventory; its encoding and identity are governed by the protocol chapter.
 | Harness and fixture identities | Identify executable tests, reference models, scenario inputs, and oracle revisions. |
 | Result inventory | Separate pass, fail, unsupported, not applicable, and not executed. |
 | Observation and coverage inventory | Identify measured state domains, difficult-state coverage, event traces, and negative controls. |
-| Evidence references and integrity | Locate reports and bind their contents without requiring raw traces in a source repository. |
+| Evidence references and integrity | Locate reports and bind their contents to the qualification claim. |
 | Limitations and expiry conditions | State unsupported configurations and changes that invalidate the claim. |
 
 **[CN-TEST-004]** Evidence MUST bind the tested implementation and configuration
@@ -102,8 +100,8 @@ A provider's self-description alone is not accepted qualification. Signing a
 report establishes provenance, not the truth of its measurements. Evidence
 collection is bounded by deployment retention and confidentiality policies;
 the report can contain authenticated local references or controlled-access
-artifact references. This RFC does not require publishing raw guest state,
-large traces, source-repository artifacts, or release attachments.
+artifact references. Evidence access follows the deployment's retention and
+confidentiality policies.
 
 ## 8.3 Harness structure and meaningful oracles
 

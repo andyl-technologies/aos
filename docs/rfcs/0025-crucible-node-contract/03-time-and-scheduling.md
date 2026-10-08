@@ -288,7 +288,7 @@ decisions made without an earlier input.
 
 ## 6. Same-Time Events and Zero-Latency Paths
 
-**[CN-TIME-17]** The target baseline event-order profile MUST be
+**[CN-TIME-17]** The baseline event-order profile MUST be
 `superdense-v1`, ordered by `(instant, microstep, phase, consumer identity,
 producer identity, sequence)`. Microstep MUST be an unsigned 64-bit integer.
 The fixed phases in increasing order are `boundary-control = 0`,
