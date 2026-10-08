@@ -25,6 +25,13 @@ fn ordinary() {}
 #[test]
 fn another() {}
 
+#[cfg(panic_expected)]
+#[test]
+#[should_panic]
+fn expected_panic() {
+    panic!("an expected panic is a successful libtest completion");
+}
+
 #[cfg(rejections)]
 #[test]
 #[ignore]
@@ -52,6 +59,7 @@ class CampaignModeLibtestTests(unittest.TestCase):
             ("ordinary", []),
             ("rejections", ["rejections"]),
             ("empty", ["empty"]),
+            ("panic_expected", ["panic_expected"]),
         ]
         for name, cfg in fixtures:
             executable = root / name
@@ -178,6 +186,55 @@ class CampaignModeLibtestTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "success summary, found 2"):
             self.run_test(["--exact", "ordinary"], runner=duplicate_summary)
+
+
+    def test_different_real_test_with_the_same_count_is_rejected(self):
+        def different_selection(command, *, timeout):
+            arguments = shlex.split(command)
+            if "--test-threads=1" in arguments:
+                arguments[arguments.index("ordinary")] = "another"
+            return self.run_command(shlex.join(arguments), timeout=timeout)
+
+        with self.assertRaisesRegex(ValueError, "completed test names differ"):
+            self.run_test(["--exact", "ordinary"], runner=different_selection)
+
+        self.assertEqual(self.invocations[0][1:3], ["--exact", "ordinary"])
+        self.assertEqual(self.invocations[1][1:3], ["--exact", "another"])
+
+    def test_expected_panic_keeps_the_original_test_identity(self):
+        _, transcript, evidence = self.run_test(
+            ["--exact", "expected_panic"], fixture="panic_expected"
+        )
+
+        self.assertIn("test expected_panic - should panic ... ok", transcript)
+        self.assertEqual(evidence, "fixture_evidence=PASS")
+
+    def test_duplicate_listing_is_rejected_before_execution(self):
+        def duplicate_listing(command, *, timeout):
+            listed = self.run_command(command, timeout=timeout)
+            return listed.replace("another: test", "ordinary: test")
+
+        with self.assertRaisesRegex(ValueError, "duplicate listed test names"):
+            self.run_test([], expected_count=2, runner=duplicate_listing)
+
+        self.assertEqual(len(self.invocations), 1)
+
+    def test_incomplete_or_duplicate_completions_are_rejected(self):
+        replacements = [
+            ("test ordinary ... ok", ""),
+            ("test ordinary ... ok", "test another ... ok"),
+            ("test ordinary ... ok", "test unknown ... ok"),
+        ]
+        for original, replacement in replacements:
+            with self.subTest(replacement=replacement):
+                def changed_completion(command, *, timeout):
+                    transcript = self.run_command(command, timeout=timeout)
+                    if "--test-threads=1" in shlex.split(command):
+                        transcript = transcript.replace(original, replacement)
+                    return transcript
+
+                with self.assertRaisesRegex(ValueError, "completed test names differ"):
+                    self.run_test([], expected_count=2, runner=changed_completion)
 
 
 if __name__ == "__main__":

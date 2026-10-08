@@ -8,6 +8,7 @@ _SUCCESS_SUMMARY = re.compile(
     r"test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored; "
     r"\d+ measured; \d+ filtered out; finished in [0-9.]+s"
 )
+_SUCCESSFUL_TEST = re.compile(r"test (.+?)(?: - should panic)? \.\.\. ok")
 
 
 def run_campaign_mode_test(
@@ -24,10 +25,17 @@ def run_campaign_mode_test(
     ]
     list_command = " ".join(command_prefix + ["--list", "--format", "terse"])
     listed = run_command(list_command, timeout=900)
-    listed_count = sum(line.endswith(": test") for line in listed.splitlines())
+    listed_names = [
+        line.removesuffix(": test")
+        for line in listed.splitlines()
+        if line.endswith(": test")
+    ]
+    listed_count = len(listed_names)
 
     if listed_count <= 0:
         raise ValueError(f"{evidence}: no tests selected\n{listed}")
+    if any(not name for name in listed_names) or len(set(listed_names)) != listed_count:
+        raise ValueError(f"{evidence}: invalid or duplicate listed test names\n{listed}")
     if expected_count is None:
         expected_count = listed_count
     if expected_count <= 0 or listed_count != expected_count:
@@ -55,6 +63,22 @@ def run_campaign_mode_test(
             f"{evidence}: executed counts "
             f"passed={passed}, failed={failed}, ignored={ignored}; "
             f"expected passed={expected_count}, failed=0, ignored=0\n{transcript}"
+        )
+
+    # Equal aggregate counts cannot prove that the original selection ran.
+    completed_names = [
+        match[1]
+        for line in transcript.splitlines()
+        if (match := _SUCCESSFUL_TEST.fullmatch(line)) is not None
+    ]
+    if (
+        len(completed_names) != expected_count
+        or len(set(completed_names)) != len(completed_names)
+        or set(completed_names) != set(listed_names)
+    ):
+        raise ValueError(
+            f"{evidence}: completed test names differ from original selection\n"
+            f"listing:\n{listed}\nexecution:\n{transcript}"
         )
 
     return command, transcript, f"{evidence}=PASS"
