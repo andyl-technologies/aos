@@ -2,7 +2,7 @@
 {lib, pkgs}: let
   evaluated = lib.evalPackageModules {
     scope = ["test" "native-systemd-services"];
-    packages = [pkgs.systemd];
+    packages = [pkgs.systemd pkgs.aos-init-provider];
     operatorModules = [{
       aos.services.example = {
         enable = true;

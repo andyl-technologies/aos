@@ -6,7 +6,7 @@
   evaluate = packages: configuration:
     lib.evalPackageModules {
       scope = ["test" "kubernetes-services"];
-      packages = packages ++ [pkgs.systemd pkgs.aos-network-ruleset-provider];
+      packages = packages ++ [pkgs.systemd pkgs.aos-init-provider pkgs.aos-network-ruleset-provider];
       operatorModules = [configuration];
     };
   workerConfiguration = {
