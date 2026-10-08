@@ -34,160 +34,18 @@ use rustix::net::{
 
 use crate::{MountError, Result};
 
-const NAME_PREFIX: &str = "aos-mount-v1-";
+mod names;
+
+pub use names::{KernelMountName, SourcePinName};
+
+use names::NAME_PREFIX;
+
 #[cfg(test)]
 const ACTIVATION_FD_BASE: RawFd = 3;
-const SOURCE_NAME_PREFIX: &str = "aos-source-v1-";
-const DIGEST_HEX_LENGTH: usize = 64;
 const MAXIMUM_IMPORTED_DESCRIPTORS: usize = 1_024;
 const BARRIER_TIMEOUT: Duration = Duration::from_secs(5);
 const SOURCE_MANAGER_UNIT: &str = "aos-sandbox-mountd.service";
 const SOURCE_MANAGER_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// An opaque, versioned name used to associate a descriptor with durable state.
-///
-/// Names have the exact form `aos-mount-v1-` followed by 64 lowercase
-/// hexadecimal digits. Keeping the accepted language this narrow makes names
-/// safe both in systemd's newline protocol and in colon-separated
-/// `LISTEN_FDNAMES`.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct KernelMountName(String);
-
-impl KernelMountName {
-    /// Constructs a stable opaque name from a 256-bit resource digest.
-    #[must_use]
-    pub fn from_digest(digest: [u8; 32]) -> Self {
-        const HEX: &[u8; 16] = b"0123456789abcdef";
-        let mut name = String::with_capacity(NAME_PREFIX.len() + DIGEST_HEX_LENGTH);
-        name.push_str(NAME_PREFIX);
-        for byte in digest {
-            name.push(char::from(HEX[usize::from(byte >> 4)]));
-            name.push(char::from(HEX[usize::from(byte & 0x0f)]));
-        }
-        Self(name)
-    }
-
-    /// Parses an exact systemd descriptor-store name.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an unknown version, wrong length, uppercase digit,
-    /// delimiter, control byte, or any non-hexadecimal suffix byte.
-    pub fn parse(value: &str) -> Result<Self> {
-        let suffix = value
-            .strip_prefix(NAME_PREFIX)
-            .ok_or_else(|| state_error("descriptor-store name has an unknown prefix"))?;
-        if suffix.len() != DIGEST_HEX_LENGTH
-            || !suffix
-                .as_bytes()
-                .iter()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
-        {
-            return Err(state_error("descriptor-store name is not canonical"));
-        }
-        Ok(Self(value.to_owned()))
-    }
-
-    /// Returns the exact name transmitted to and restored by systemd.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    /// Decodes the canonical 256-bit resource digest carried by the name.
-    #[must_use]
-    pub fn digest(&self) -> [u8; 32] {
-        let bytes = self.0.as_bytes();
-        let suffix = &bytes[NAME_PREFIX.len()..];
-        let mut digest = [0_u8; 32];
-        for (index, pair) in suffix.chunks_exact(2).enumerate() {
-            digest[index] = (hex_value(pair[0]) << 4) | hex_value(pair[1]);
-        }
-        digest
-    }
-}
-
-/// An opaque descriptor-store name for one broker-minted source realization.
-///
-/// Names use `aos-source-v1-` followed by the lowercase hexadecimal realization
-/// handle. The disjoint prefix prevents a retained source descriptor from ever
-/// being adopted as a detached resource mount.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct SourcePinName(String);
-
-impl SourcePinName {
-    /// Constructs the sole canonical name for a source-realization handle.
-    #[must_use]
-    pub fn from_digest(digest: [u8; 32]) -> Self {
-        Self(hex_name(SOURCE_NAME_PREFIX, digest))
-    }
-
-    /// Parses one canonical source descriptor-store name.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an unknown prefix, wrong length, uppercase or
-    /// non-hexadecimal suffix, or protocol delimiter.
-    pub fn parse(value: &str) -> Result<Self> {
-        validate_digest_name(value, SOURCE_NAME_PREFIX)?;
-        Ok(Self(value.to_owned()))
-    }
-
-    /// Returns the exact name transmitted to systemd.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    /// Decodes the source-realization handle embedded in this name.
-    #[must_use]
-    pub fn digest(&self) -> [u8; 32] {
-        decode_name_digest(&self.0, SOURCE_NAME_PREFIX)
-    }
-}
-
-fn hex_name(prefix: &str, digest: [u8; 32]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut name = String::with_capacity(prefix.len() + DIGEST_HEX_LENGTH);
-    name.push_str(prefix);
-    for byte in digest {
-        name.push(char::from(HEX[usize::from(byte >> 4)]));
-        name.push(char::from(HEX[usize::from(byte & 0x0f)]));
-    }
-    name
-}
-
-fn validate_digest_name(value: &str, prefix: &str) -> Result<()> {
-    let suffix = value
-        .strip_prefix(prefix)
-        .ok_or_else(|| state_error("descriptor-store name has an unknown prefix"))?;
-    if suffix.len() != DIGEST_HEX_LENGTH
-        || !suffix
-            .as_bytes()
-            .iter()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
-    {
-        return Err(state_error("descriptor-store name is not canonical"));
-    }
-    Ok(())
-}
-
-fn decode_name_digest(value: &str, prefix: &str) -> [u8; 32] {
-    let suffix = &value.as_bytes()[prefix.len()..];
-    let mut digest = [0_u8; 32];
-    for (index, pair) in suffix.chunks_exact(2).enumerate() {
-        digest[index] = (hex_value(pair[0]) << 4) | hex_value(pair[1]);
-    }
-    digest
-}
-
-const fn hex_value(byte: u8) -> u8 {
-    match byte {
-        b'0'..=b'9' => byte - b'0',
-        b'a'..=b'f' => byte - b'a' + 10,
-        _ => 0,
-    }
-}
 
 /// Owns one mount descriptor returned by the configured kernel descriptor keeper.
 #[derive(Debug)]
@@ -1050,30 +908,6 @@ mod tests {
         // SAFETY: F_GETFD observes a numeric table entry and reports EBADF for
         // a closed descriptor without assuming ownership.
         unsafe { libc::fcntl(raw, libc::F_GETFD) >= 0 }
-    }
-
-    #[test]
-    fn opaque_names_are_canonical_and_round_trip() {
-        let name = KernelMountName::from_digest([0xab; 32]);
-        assert_eq!(
-            name.as_str(),
-            "aos-mount-v1-abababababababababababababababababababababababababababababababab"
-        );
-        assert_eq!(KernelMountName::parse(name.as_str()).unwrap(), name);
-        assert_eq!(name.digest(), [0xab; 32]);
-
-        for invalid in [
-            "aos-mount-v2-abababababababababababababababababababababababababababababababab",
-            "aos-mount-v1-ABababababababababababababababababababababababababababababababab",
-            "aos-mount-v1-abababababababababababababababababababababababababababababababag",
-            "aos-mount-v1-abab",
-            "aos-mount-v1-abababababababababababababababababababababababababababababababa:",
-        ] {
-            assert!(
-                KernelMountName::parse(invalid).is_err(),
-                "accepted {invalid}"
-            );
-        }
     }
 
     #[test]
