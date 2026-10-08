@@ -616,7 +616,6 @@ fn controller_composition_has_an_exact_closed_declaration_surface() {
             "ArchivedStorageInventoryHeadDataV1",
             "HistoricalAtomicStorageHistoryDataV1",
             "HistoricalAtomicStorageHistoryV1",
-            "HistoricalAtomicStorageHistoryViewV1",
             "into_data",
             "view",
         ],
@@ -642,7 +641,7 @@ fn controller_composition_exports_only_named_sealed_owners_and_data() {
     assert_eq!(
         exports,
         [
-            "pubusehistory::{ArchivedStorageInventoryHeadDataV1,HistoricalAtomicStorageHistoryDataV1,HistoricalAtomicStorageHistoryV1,HistoricalAtomicStorageHistoryViewV1,};",
+            "pubusehistory::{ArchivedStorageInventoryHeadDataV1,HistoricalAtomicStorageHistoryDataV1,HistoricalAtomicStorageHistoryV1,};",
             "pubuseonline::{ControllerOnlineNixEndpointCustodyV1,ControllerOnlineNixHandshakeErrorV1,ControllerOnlineNixHandshakeProgressV1,ControllerOnlineNixHandshakeV1,ControllerOnlineNixHelloV1,ControllerOnlineNixNativeRequestCustodyV1,ControllerOnlineNixOutcomeOpeningV1,ControllerOnlineNixPreparedRequestV1,ControllerOnlineNixProvisionV1,ControllerOnlineNixSessionV1,ControllerOnlineNixVerifiedHandshakeV1,OnlineTransportFailureV1,};",
             "pubusecrate::dormant_handshake::{ExecutionPublicationReceiveCustodyV1,ProtectedStorageSessionBindingV1,check_production_deadline,wait_for_handshake_readiness,};",
             "pubusecrate::handshake::{OriginalBrokerColdDeadlineV1,OutputCurrentnessBoundaryV1,RetainedStorageColdOpenV1,protected_boottime_nanoseconds,};",
@@ -674,6 +673,11 @@ fn controller_composition_exports_only_named_sealed_owners_and_data() {
             );
         }
     }
+
+    let history = include_str!("../src/controller_composition/history.rs");
+    assert!(history.contains(
+        "pub struct HistoricalAtomicStorageHistoryV1(pub(crate) HistoricalAtomicStorageHistoryDataV1);"
+    ));
 
     let online = include_str!("../src/controller_composition/online.rs");
     for declaration in [

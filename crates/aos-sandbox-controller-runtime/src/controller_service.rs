@@ -55,7 +55,7 @@ use aos_sandbox_linux::Error as LinuxError;
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::seqpacket::SeqpacketError;
 use aos_sandbox_ownership_protocol::protocol::session_client::OwnershipSessionTransportError;
-use aos_sandbox_broker_session_security::controller_composition::HistoricalAtomicStorageHistoryViewV1;
+use aos_sandbox_broker_session_security::controller_composition::HistoricalAtomicStorageHistoryDataV1;
 use rustix::net::{
     AddressFamily, SendAncillaryBuffer, SendFlags, SocketAddrUnix, SocketFlags, SocketType,
     sendmsg_addr, socket_with,
@@ -2587,8 +2587,8 @@ fn audit_pending_atomic_snapshot_sources(
             .map_err(|error| CycleFailure::Retryable(format!("{error:?}")))?;
         if !matches!(
             history.view(),
-            HistoricalAtomicStorageHistoryViewV1::Complete { .. }
-                | HistoricalAtomicStorageHistoryViewV1::GroupCommitted { .. }
+            HistoricalAtomicStorageHistoryDataV1::Complete { .. }
+                | HistoricalAtomicStorageHistoryDataV1::GroupCommitted { .. }
         ) {
             return Err(CycleFailure::Retryable(
                 "pending Storage source lacks a verified group result".to_owned(),

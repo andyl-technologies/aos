@@ -15,9 +15,7 @@ use aos_sandbox::lifecycle::{
     lifecycle_protected_key_v1,
 };
 use aos_sandbox::{EffectFailure, Journal, PreparedAuthorityEffectV1};
-use aos_sandbox_broker_session_security::controller_composition::{
-    HistoricalAtomicStorageHistoryDataV1, HistoricalAtomicStorageHistoryViewV1,
-};
+use aos_sandbox_broker_session_security::controller_composition::HistoricalAtomicStorageHistoryDataV1;
 use aos_sandbox_core::{ObjectDigest, OperationId};
 use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodOutcomeV1, AuthenticatedBrokerMethodResultV1,
@@ -177,11 +175,11 @@ impl ProductionEffectExecutor {
                             checkpoint,
                         )?;
                         let predecessor = match history.view() {
-                            HistoricalAtomicStorageHistoryViewV1::Complete {
+                            HistoricalAtomicStorageHistoryDataV1::Complete {
                                 predecessor,
                                 ..
                             }
-                            | HistoricalAtomicStorageHistoryViewV1::GroupCommitted {
+                            | HistoricalAtomicStorageHistoryDataV1::GroupCommitted {
                                 predecessor,
                                 ..
                             } => predecessor.clone(),

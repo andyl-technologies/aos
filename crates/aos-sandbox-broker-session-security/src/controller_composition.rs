@@ -14,7 +14,7 @@ mod online;
 
 pub use history::{
     ArchivedStorageInventoryHeadDataV1, HistoricalAtomicStorageHistoryDataV1,
-    HistoricalAtomicStorageHistoryV1, HistoricalAtomicStorageHistoryViewV1,
+    HistoricalAtomicStorageHistoryV1,
 };
 #[cfg(feature = "online-nix")]
 pub use online::{

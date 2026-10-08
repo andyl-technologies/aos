@@ -224,20 +224,9 @@ pub(crate) enum ProtectedPriorAtomicStorageHistoryV1 {
     },
 }
 
-/// Contains only fully reauthenticated historical outcomes, never a send token.
-pub(crate) enum ProtectedVerifiedAtomicStorageHistoryV1 {
-    Absent,
-    Incomplete,
-    GroupCommitted {
-        predecessor: AuthenticatedBrokerMethodOutcomeV1,
-        group: AuthenticatedBrokerMethodOutcomeV1,
-    },
-    Complete {
-        predecessor: AuthenticatedBrokerMethodOutcomeV1,
-        group: AuthenticatedBrokerMethodOutcomeV1,
-        successor: AuthenticatedBrokerMethodOutcomeV1,
-    },
-}
+// Names the DATA returned by fully reauthenticated protected history reads.
+pub(crate) use crate::controller_composition::HistoricalAtomicStorageHistoryDataV1
+    as ProtectedVerifiedAtomicStorageHistoryV1;
 
 /// Retains one reauthenticated original method-37 request from protected H custody.
 ///
