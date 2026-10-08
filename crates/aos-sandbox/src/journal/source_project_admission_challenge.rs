@@ -1533,6 +1533,7 @@ mod tests {
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
     use super::*;
+    use crate::journal::JournalLimits;
     use crate::lifecycle::protected_journal_join::source_domain_journal_limits;
     use crate::policy_compiler::{
         test_root_project_reservation_cancellation_v1, test_source_project_admission_outcome_v1,
@@ -1843,7 +1844,7 @@ mod tests {
             .expect("ordinary mutation after Root retirement ACK");
         cold.record_source_project_admission_reservation_v1([8; 16], project, names)
             .expect("successor reservation");
-        assert!(current_rows(&cold.state).unwrap().retirement_ack.is_none());
+        assert!(current_rows(cold.native.state()).unwrap().retirement_ack.is_none());
         assert!(
             cold.source_project_admission_terminal_v1()
                 .unwrap()

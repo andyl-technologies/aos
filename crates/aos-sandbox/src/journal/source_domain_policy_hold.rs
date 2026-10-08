@@ -528,7 +528,7 @@ impl<'cut> SourceQ04TransactionRecipesV1<'cut> {
         if source.journal().protected_owner_uid()? != identity.source_uid() {
             return Err(CreateQ04ErrorV1::ChangedCut);
         }
-        let before = current_state(&source.journal().state)?;
+        let before = current_state(source.journal().native.state())?;
         if before.hold.is_some_and(SourceDomainPolicyHoldV1::is_held)
             || before.v8_pending.is_some()
             || before.q04_pending.is_some()
@@ -603,7 +603,7 @@ impl<'cut> SourceQ04TransactionRecipesV1<'cut> {
         let release = root.release_phase()?.digest();
         root.require_lower_transition(1, Some(release))?;
         self.require_named_owner(source)?;
-        self.require_prefix(&source.journal().state, 1)?;
+        self.require_prefix(source.journal().native.state(), 1)?;
         source.journal().require_q04_native_recipe_prefix_v1(
             &self.transactions[..1], self.original_next,
         )?;

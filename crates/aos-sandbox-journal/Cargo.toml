@@ -5,7 +5,7 @@ edition = "2024"
 license.workspace = true
 
 [features]
-# Dependent test harnesses explicitly select raw configuration/head injection.
+# Dependent test harnesses explicitly select raw configuration/head/path injection.
 test-fixtures = []
 
 [dependencies]

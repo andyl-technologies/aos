@@ -238,10 +238,10 @@ fn unrun_no_compaction_is_closed_to_exact_path_not_namespace_or_basename() {
 
     // Exercise only the deny predicate with inert pathname DATA. This does
     // not call a protected opener, compact that path or fabricate a floor.
-    let actual_inert_path = unrelated.path.clone();
-    unrelated.path = Path::new(MAIN_DIRECTORY_V1).join(MAIN_NAME);
+    let actual_inert_path = unrelated.native.path().clone();
+    unrelated.native.replace_path_for_fixture(Path::new(MAIN_DIRECTORY_V1).join(MAIN_NAME));
     assert!(require_no_compaction(&unrelated).is_err());
-    unrelated.path = actual_inert_path;
+    unrelated.native.replace_path_for_fixture(actual_inert_path);
     assert!(unrelated.compact().is_ok());
 }
 

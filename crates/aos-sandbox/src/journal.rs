@@ -829,9 +829,9 @@ macro_rules! journal_from_original_replay {
     ($path:expr, $file:expr, $lock:expr, $limits:expr, $protected:expr,
      $replay:ident, $authority:expr) => {
         Journal {
-            native: NativeJournal::from_owned_parts(
+            native: aos_sandbox_journal::owner::NativeJournal::from_owned_parts(
                 $path, $file, $lock, $limits,
-                NativeJournalState::from_owned_parts(
+                aos_sandbox_journal::owner::NativeJournalState::from_owned_parts(
                     $replay.next_sequence, $replay.committed_transactions,
                     $replay.transaction_ids, $replay.committed_namespaces,
                     $replay.state, $replay.materialized_bytes,

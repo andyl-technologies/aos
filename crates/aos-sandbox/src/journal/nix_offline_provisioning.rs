@@ -1001,7 +1001,7 @@ impl<'startup> NixOfflineNativeJobV5<'startup> {
 
     fn has_original_pending(&self, ordinal: u16) -> Result<bool, Error> {
         let key = effect_key(b'Q', &self.job, 1, ordinal)?;
-        Ok(self.journal.as_ref().ok_or(Error::Rejected)?.state.contains_key(&(NAMESPACE, key)))
+        Ok(self.journal.as_ref().ok_or(Error::Rejected)?.native.state().contains_key(&(NAMESPACE, key)))
     }
 
     fn next_contact_slot(&self) -> Result<usize, Error> {

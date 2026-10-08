@@ -89,6 +89,15 @@ impl<N, L> NativeJournal<N, L> {
         &self.path
     }
 
+    /// Replaces only inert pathname DATA for an explicitly selected test fixture.
+    ///
+    /// This fixture operation opens no file and establishes no admission,
+    /// currentness, or durability. The actual data and lock files are unchanged.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn replace_path_for_fixture(&mut self, path: PathBuf) {
+        self.path = path;
+    }
+
     /// Borrows the actual data file as an ordinary native capability.
     ///
     /// A shared file borrow does not establish read-only access or currentness.
