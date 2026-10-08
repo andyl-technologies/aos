@@ -13,6 +13,7 @@
 //! excludes only its own digest, pending/ACK rows, physical names and positions;
 //! it does not authenticate unrelated Source journal contents.
 
+use aos_sandbox_protocol::source_project_authorization::parse_unverified_project_authorization_claims_v2;
 use aos_sandbox_core::{ObjectDigest, ProjectId};
 use sha2::{Digest as _, Sha256};
 
@@ -80,18 +81,18 @@ impl SourceTreeGenesisReceiptV1 {
         )
         .map_err(|_| SourceGenesisErrorV1::NonCanonical)?;
         let authorization =
-            crate::publisher_policy::parse_unverified_project_authorization_claims_v2(
+            parse_unverified_project_authorization_claims_v2(
                 &bytes[352..joins],
             )
             .map_err(|_| SourceGenesisErrorV1::NonCanonical)?;
         if seed.project().as_bytes() != &bytes[112..128]
-            || authorization.project != seed.project()
-            || authorization.request_id != seed.request_id()
-            || authorization.epoch != seed.epoch()
-            || authorization.limits != seed.limits()
-            || authorization.publisher_generation != seed.publisher_generation()
-            || authorization.publisher_head_digest != seed.publisher_head()
-            || authorization.resource_envelope.is_some() != resource_version
+            || authorization.project() != seed.project()
+            || authorization.request_id() != seed.request_id()
+            || authorization.epoch() != seed.epoch()
+            || authorization.limits() != seed.limits()
+            || authorization.publisher_generation() != seed.publisher_generation()
+            || authorization.publisher_head_digest() != seed.publisher_head()
+            || authorization.resource_envelope().is_some() != resource_version
         {
             return Err(SourceGenesisErrorV1::NonCanonical);
         }

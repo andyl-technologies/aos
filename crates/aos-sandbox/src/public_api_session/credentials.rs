@@ -278,13 +278,13 @@ impl PinnedSystemdCredential {
     ) -> Result<Option<[Self; 2]>, PublicApiSessionError> {
         let lengths = [
             crate::hierarchy::source_seed::CONTROLLER_SOURCE_TREE_SEED_BYTES_V1 as u64,
-            crate::publisher_policy::PROJECT_AUTHORIZATION_SOURCE_BYTES_V2 as u64,
+            aos_sandbox_protocol::source_project_authorization::PROJECT_AUTHORIZATION_SOURCE_BYTES_V2 as u64,
         ];
         let seed =
             Self::open_optional_exact(path.clone(), SOURCE_GENESIS_PACKET_NAMES[0], lengths[0])?;
         let authorization = Self::open_optional_lengths(
             path, SOURCE_GENESIS_PACKET_NAMES[1],
-            &[lengths[1], crate::publisher_policy::PROJECT_AUTHORIZATION_SOURCE_BYTES_V3 as u64],
+            &[lengths[1], aos_sandbox_protocol::source_project_authorization::PROJECT_AUTHORIZATION_SOURCE_BYTES_V3 as u64],
         )?;
         match (seed, authorization) {
             (None, None) => Ok(None),

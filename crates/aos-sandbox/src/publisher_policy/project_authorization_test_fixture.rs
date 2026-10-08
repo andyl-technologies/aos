@@ -9,12 +9,13 @@ use aos_sandbox_core::model::{
     CacheDomain, CacheDomainKind, Policy, ResourceProfile, RevocationMode, RevocationPolicy,
 };
 use aos_sandbox_core::{CacheDomainId, DecodeLimits, ProjectId};
+use aos_sandbox_protocol::source_project_authorization::PROJECT_AUTHORIZATION_SOURCE_BYTES_V2 as PACKET_BYTES;
 use ed25519_dalek::{Signer as _, SigningKey};
 
 use crate::{Journal, JournalLimits, RecordNamespace};
 
 use super::project_authorization_source_v2::{
-    HEAD_DOMAIN, PACKET_BYTES, PinnedPublisherProjectAuthorizationIssuerV2, REVISION_DOMAIN,
+    HEAD_DOMAIN, PinnedPublisherProjectAuthorizationIssuerV2, REVISION_DOMAIN,
     commitment, encode_project_authorization_issuer_credential_v2,
 };
 use super::{

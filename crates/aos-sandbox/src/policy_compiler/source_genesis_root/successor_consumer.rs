@@ -9,6 +9,7 @@
 //! comparison purpose. Six mixed evidence slots own complete decoded maps after
 //! each short Source loan ends; none can reconstruct a live observation.
 
+use aos_sandbox_protocol::source_project_authorization::parse_unverified_project_authorization_claims_v2;
 use std::cell::RefCell;
 use std::os::fd::{AsFd as _, OwnedFd};
 
@@ -1372,10 +1373,10 @@ impl HeldControllerFirstSourceSuccessorV2<'_> {
             journal.require_git_coverage_new_admission_v1()?;
             let original = hold_existing_completed_source_genesis_v2(&mut journal, self.packet.intent()?.project())?;
             let (generation, head, revision, auth_head, limits, packet) = original.current_successor_authorization_v2()?;
-            let current = crate::publisher_policy::parse_unverified_project_authorization_claims_v2(self.packet.authorization_packet())?;
+            let current = parse_unverified_project_authorization_claims_v2(self.packet.authorization_packet())?;
             if generation != u64::from_be_bytes(take(body, 208)?) || head != digest_at(body, 216)
                 || revision != digest_at(body, 248) || auth_head != digest_at(body, 280)
-                || packet.as_slice() != self.packet.authorization_packet() || limits != current.limits
+                || packet.as_slice() != self.packet.authorization_packet() || limits != current.limits()
             {
                 return Err(SourceGenesisErrorV1::Stale);
             }
@@ -1418,10 +1419,10 @@ impl HeldControllerFirstSourceSuccessorV2<'_> {
                 return Err(SourceGenesisErrorV1::Conflict);
             }
             let (generation, head, revision, auth_head, limits, packet) = original.current_successor_authorization_v2()?;
-            let current = crate::publisher_policy::parse_unverified_project_authorization_claims_v2(self.packet.authorization_packet())?;
+            let current = parse_unverified_project_authorization_claims_v2(self.packet.authorization_packet())?;
             if generation != u64::from_be_bytes(take(body, 208)?) || head != digest_at(body, 216)
                 || revision != digest_at(body, 248) || auth_head != digest_at(body, 280)
-                || packet.as_slice() != self.packet.authorization_packet() || limits != current.limits
+                || packet.as_slice() != self.packet.authorization_packet() || limits != current.limits()
             { return Err(SourceGenesisErrorV1::Stale); }
         }
         require_approval_clock(&self.packet, super::flight::kernel_pair()?)

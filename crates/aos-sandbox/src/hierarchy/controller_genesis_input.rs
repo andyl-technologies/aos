@@ -30,7 +30,7 @@ use crate::publisher_policy::{
     PublisherPolicyLimits, PublisherPolicyStore, verify_signed_project_authorization_claims_v2,
 };
 #[cfg(test)]
-use crate::publisher_policy::PROJECT_AUTHORIZATION_SOURCE_BYTES_V2;
+use aos_sandbox_protocol::source_project_authorization::PROJECT_AUTHORIZATION_SOURCE_BYTES_V2;
 
 /// Reports invalid protected delivery or unavailable actual Controller custody.
 #[derive(Debug, thiserror::Error)]
@@ -140,7 +140,7 @@ impl ProvisionedControllerSourceGenesisInputV1 {
     pub(crate) fn selects_resource_global_v2(&self) -> Result<bool, ControllerSourceGenesisInputErrorV1> {
         self.recheck()?;
         let selected = self.authorization_packet()?.len()
-            == crate::publisher_policy::PROJECT_AUTHORIZATION_SOURCE_BYTES_V3;
+            == aos_sandbox_protocol::source_project_authorization::PROJECT_AUTHORIZATION_SOURCE_BYTES_V3;
         self.recheck()?;
         Ok(selected)
     }
@@ -270,12 +270,12 @@ fn validate_pair(
     let seed = verify_signed_controller_source_tree_seed_v1(seed, &seed_pin)?.seed();
     let authorization =
         verify_signed_project_authorization_claims_v2(authorization, &authorization_pin)?;
-    if seed.project() != authorization.project
-        || seed.request_id() != authorization.request_id
-        || seed.epoch() != authorization.epoch
-        || seed.limits() != authorization.limits
-        || seed.publisher_generation() != authorization.publisher_generation
-        || seed.publisher_head() != authorization.publisher_head_digest
+    if seed.project() != authorization.project()
+        || seed.request_id() != authorization.request_id()
+        || seed.epoch() != authorization.epoch()
+        || seed.limits() != authorization.limits()
+        || seed.publisher_generation() != authorization.publisher_generation()
+        || seed.publisher_head() != authorization.publisher_head_digest()
     {
         return Err(ControllerSourceGenesisInputErrorV1::Pair);
     }

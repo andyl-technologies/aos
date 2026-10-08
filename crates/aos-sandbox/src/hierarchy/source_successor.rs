@@ -19,6 +19,7 @@
 //! subsequent fields follow that packet, with a distinct v3 signature domain.
 //! ```
 
+use aos_sandbox_protocol::source_project_authorization::parse_unverified_project_authorization_claims_v2;
 use aos_sandbox_core::{ObjectDigest, ProjectId, SandboxId};
 use ed25519_dalek::{Signature, VerifyingKey};
 
@@ -234,15 +235,15 @@ pub(crate) fn validate_body(body: &[u8]) -> Result<(), SourceGenesisErrorV1> {
     {
         return Err(SourceGenesisErrorV1::NonCanonical);
     }
-    let authorization = crate::publisher_policy::parse_unverified_project_authorization_claims_v2(
+    let authorization = parse_unverified_project_authorization_claims_v2(
         &body[312..joins],
     )?;
-    if authorization.project != intent.project()
-        || authorization.publisher_generation != u64::from_be_bytes(take(body, 208)?)
-        || authorization.publisher_head_digest.as_bytes() != &body[216..248]
-        || authorization.publisher_revision_digest.as_bytes() != &body[248..280]
-        || authorization.limits != limits(body, joins)?
-        || authorization.resource_envelope.is_some() != resource
+    if authorization.project() != intent.project()
+        || authorization.publisher_generation() != u64::from_be_bytes(take(body, 208)?)
+        || authorization.publisher_head_digest().as_bytes() != &body[216..248]
+        || authorization.publisher_revision_digest().as_bytes() != &body[248..280]
+        || authorization.limits() != limits(body, joins)?
+        || authorization.resource_envelope().is_some() != resource
     {
         return Err(SourceGenesisErrorV1::NonCanonical);
     }

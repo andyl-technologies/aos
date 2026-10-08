@@ -4,6 +4,7 @@
 //! complete inventory with the still-held Root archive. It returns no token,
 //! public ancestry, live Create/Delete, retention or retirement permission.
 
+use aos_sandbox_protocol::source_project_authorization::parse_unverified_project_authorization_claims_v2;
 use crate::hierarchy::genesis_profile::SourceGenesisErrorV1;
 use crate::hierarchy::protected_journal::RetainedTreeInventoryDataV1;
 use crate::hierarchy::{HeldSourceFirstSuccessorObservationV2, SourceFirstSuccessorStateV2};
@@ -40,11 +41,11 @@ pub(in crate::policy_compiler) fn consume_completed_first_successor_ancestry_v2(
         .ok_or(SourceGenesisErrorV1::Conflict)?;
     let mut records = tree.records();
     let record = records.next().ok_or(SourceGenesisErrorV1::Conflict)?;
-    let authorization = crate::publisher_policy::parse_unverified_project_authorization_claims_v2(
+    let authorization = parse_unverified_project_authorization_claims_v2(
         controller.packet().authorization_packet(),
     )?;
     if tree.tree_generation().get() != 2 || tree_head != receipt.next_tree_head()
-        || lineage_head != receipt.next_lineage_head() || tree.limits() != authorization.limits
+        || lineage_head != receipt.next_lineage_head() || tree.limits() != authorization.limits()
         || tree.tombstones().next().is_some() || records.next().is_some()
         || record.sandbox() != intent.sandbox() || record.parent().is_some()
         || record.incarnation().is_some() || record.desired_generation().get() != 1
@@ -90,11 +91,11 @@ pub(in crate::policy_compiler) fn consume_completed_project_successor_ancestry_v
         .ok_or(SourceGenesisErrorV1::Conflict)?;
     let mut records = tree.records();
     let record = records.next().ok_or(SourceGenesisErrorV1::Conflict)?;
-    let authorization = crate::publisher_policy::parse_unverified_project_authorization_claims_v2(
+    let authorization = parse_unverified_project_authorization_claims_v2(
         controller.packet().authorization_packet(),
     )?;
     if tree.tree_generation().get() != 2 || tree_head != receipt.next_tree_head()
-        || lineage_head != receipt.next_lineage_head() || tree.limits() != authorization.limits
+        || lineage_head != receipt.next_lineage_head() || tree.limits() != authorization.limits()
         || tree.tombstones().next().is_some() || records.next().is_some()
         || record.sandbox() != intent.sandbox() || record.parent().is_some()
         || record.incarnation().is_some() || record.desired_generation().get() != 1

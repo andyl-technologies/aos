@@ -71,7 +71,7 @@ pub(crate) use git_upload_capacity::require_coverage_native_account_transaction;
 mod project_authorization_source_v2;
 mod project_authorization_store_v2;
 pub(crate) use project_authorization_source_v2::{
-    parse_unverified_project_authorization_claims_v2, verify_signed_project_authorization_claims_v2,
+    verify_signed_project_authorization_claims_v2,
 };
 #[cfg(any(target_os = "linux", test))]
 pub(crate) use project_authorization_store_v2::CurrentSourceTreeSeedPreflightErrorV1;
@@ -83,7 +83,6 @@ pub use model::{
     PublisherResourceBindingV1, PublisherRevocationHeadV1,
 };
 pub use project_authorization_source_v2::{
-    PROJECT_AUTHORIZATION_SOURCE_BYTES_V2, PROJECT_AUTHORIZATION_SOURCE_BYTES_V3,
     PinnedPublisherProjectAuthorizationIssuerV2, ProjectResourceAuthorizationClaimsV3,
     ProjectAuthorizationSourceErrorV2, ProjectAuthorizationSourceExpectedV2,
     VerifiedPublisherProjectAuthorizationSourceV2,

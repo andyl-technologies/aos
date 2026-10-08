@@ -24,13 +24,18 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use aos_sandbox_core::source_tree_model::TreeLimitsV1;
 use aos_sandbox_core::{ObjectDigest, ProjectId};
+use aos_sandbox_protocol::source_project_authorization::{
+    PROJECT_AUTHORIZATION_SOURCE_BYTES_V2 as PACKET_BYTES,
+    PROJECT_AUTHORIZATION_SOURCE_BYTES_V3,
+    parse_unverified_project_authorization_claims_v2, project_authorization_packet_digest,
+};
 use sha2::{Digest as _, Sha256};
 #[cfg(any(target_os = "linux", test))]
 use thiserror::Error;
 
 use crate::controller_service::journal::production_journal_limits;
-use aos_sandbox_core::source_tree_model::TreeLimitsV1;
 #[cfg(target_os = "linux")]
 use crate::hierarchy::source_seed::verify_controller_source_tree_seed_from_fixed_issuer_v1;
 #[cfg(any(target_os = "linux", test))]
@@ -42,13 +47,11 @@ use crate::hierarchy::source_seed::{
 use crate::journal::{CommitResult, Journal, JournalRecord, RecordNamespace};
 
 use super::project_authorization_source_v2::{
-    HEAD_DOMAIN, PACKET_BYTES, PACKET_DOMAIN, PinnedPublisherProjectAuthorizationIssuerV2,
+    HEAD_DOMAIN, PinnedPublisherProjectAuthorizationIssuerV2,
     ProjectAuthorizationSourceErrorV2, ProjectAuthorizationSourceExpectedV2,
     ProtectedProjectAuthorizationIssuerV2, REVISION_DOMAIN,
     VerifiedPublisherProjectAuthorizationSourceV2, commitment,
-    parse_unverified_project_authorization_claims_v2,
     verify_current_project_authorization_source_v2,
-    project_authorization_packet_digest, PROJECT_AUTHORIZATION_SOURCE_BYTES_V3,
 };
 use super::{
     PublisherPolicyError, PublisherPolicyStore, decode_policy_revision, encode_policy_head,
@@ -238,15 +241,15 @@ pub(super) fn decode_row(
     };
     let claims = parse_unverified_project_authorization_claims_v2(&row.packet)
         .map_err(|_| PublisherPolicyError::CorruptState)?;
-    if row.project != claims.project
-        || row.request_id != claims.request_id
-        || row.epoch != claims.epoch
-        || row.issuer_generation != claims.issuer_generation
-        || row.publisher_generation != claims.publisher_generation
-        || row.publisher_head_digest != claims.publisher_head_digest
-        || row.publisher_revision_digest != claims.publisher_revision_digest
-        || row.limits != claims.limits
-        || claims.resource_envelope.is_some() != resource_version
+    if row.project != claims.project()
+        || row.request_id != claims.request_id()
+        || row.epoch != claims.epoch()
+        || row.issuer_generation != claims.issuer_generation()
+        || row.publisher_generation != claims.publisher_generation()
+        || row.publisher_head_digest != claims.publisher_head_digest()
+        || row.publisher_revision_digest != claims.publisher_revision_digest()
+        || row.limits != claims.limits()
+        || claims.resource_envelope().is_some() != resource_version
         || row.packet_digest != project_authorization_packet_digest(&row.packet)
             .map_err(|_| PublisherPolicyError::CorruptState)?
     {
@@ -571,7 +574,7 @@ impl PublisherPolicyStore<'_> {
 
         self.require_fixed_controller_writer_v2()?;
         let claims = parse_unverified_project_authorization_claims_v2(&authorization)?;
-        if claims.project != project {
+        if claims.project() != project {
             return Err(SourceGenesisErrorV1::NonCanonical);
         }
         // Reject an invalid seed or mismatched prospective head before the
@@ -593,7 +596,7 @@ impl PublisherPolicyStore<'_> {
             .map_err(|_| SourceGenesisErrorV1::Stale)?;
         self.preflight_source_genesis_retention_v1(
             project,
-            claims.request_id,
+            claims.request_id(),
             seed,
             authorization,
             &seed_issuer,
@@ -625,7 +628,7 @@ impl PublisherPolicyStore<'_> {
         self.retain_project_authorization_from_fixed_issuer_v2(
             transaction_id,
             project,
-            claims.request_id,
+            claims.request_id(),
             &authorization,
         )?;
         seed_pin
@@ -2033,7 +2036,10 @@ mod tests {
                 .current_authenticated_project_authorization_v2(project, &pin(&signer))
                 .unwrap()
         );
-        assert_eq!(current.packet_digest(), commitment(PACKET_DOMAIN, &signed));
+        assert_eq!(
+            current.packet_digest(),
+            commitment(b"aos.sandbox.publisher-project-authorization.packet.v2\0", &signed),
+        );
         assert_eq!(
             head_digest,
             store
@@ -2059,7 +2065,10 @@ mod tests {
         let mut row =
             decode_row(journal.get(RecordNamespace::PublisherPolicy, &key).unwrap()).unwrap();
         row.packet[PACKET_BYTES - 1] ^= 1;
-        row.packet_digest = commitment(PACKET_DOMAIN, &row.packet);
+        row.packet_digest = commitment(
+            b"aos.sandbox.publisher-project-authorization.packet.v2\0",
+            &row.packet,
+        );
         let row_bytes = encode_row(&row);
         let head = RetainedProjectAuthorizationHeadV2 {
             resource_version: false,

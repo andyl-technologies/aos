@@ -15,6 +15,8 @@
 //! companion schemas and structural four-record consumption projection.
 //! [`host_argument_source`] validates the nonauthorizing, versioned source
 //! carrier reserved for a future Controller-to-Host argument observation grant.
+//! [`source_project_authorization`] decodes canonical unverified Source
+//! project-authorization DATA without importing Publisher state or signers.
 
 pub mod authenticated_session;
 pub mod fencing;
@@ -56,6 +58,7 @@ pub mod payload_scope;
 pub mod runtime_deployment;
 pub mod semantics;
 pub mod session;
+pub mod source_project_authorization;
 mod source_binding;
 mod source_realization;
 pub mod storage_atomic_snapshot;

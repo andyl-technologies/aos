@@ -14,16 +14,16 @@
 //! ```
 
 use aos_sandbox_core::{ObjectDigest, ProjectId, ResourceVector};
+use aos_sandbox_protocol::source_project_authorization::{
+    ProjectAuthorizationSourceDataErrorV2, parse_unverified_project_authorization_claims_v2,
+};
 use sha2::{Digest as _, Sha256};
 
 use super::source_seed::{
     ControllerSourceTreeSeedErrorV1, ControllerSourceTreeSeedV1, decode_source_tree_seed_body_v1,
 };
 use crate::journal::JournalError;
-use crate::publisher_policy::{
-    ProjectAuthorizationSourceErrorV2, PublisherPolicyError,
-    parse_unverified_project_authorization_claims_v2,
-};
+use crate::publisher_policy::{ProjectAuthorizationSourceErrorV2, PublisherPolicyError};
 
 /// Bounds one immutable Controller acceptance of the exact signed inputs.
 pub const CONTROLLER_SOURCE_GENESIS_ACCEPTANCE_BYTES_V1: usize = 608;
@@ -77,6 +77,13 @@ pub enum SourceGenesisErrorV1 {
     Subject(#[from] aos_sandbox_linux::seqpacket::SeqpacketError),
 }
 
+impl From<ProjectAuthorizationSourceDataErrorV2> for SourceGenesisErrorV1 {
+    fn from(error: ProjectAuthorizationSourceDataErrorV2) -> Self {
+        // Pure decoding retains the original administrative-role error class.
+        Self::Authorization(error.into())
+    }
+}
+
 /// Retains the immutable signed input tuple accepted by the Controller owner.
 ///
 /// Decoding authenticates neither the signatures nor their currentness. The
@@ -100,7 +107,7 @@ impl ControllerSourceGenesisAcceptanceRecordV1 {
         let claims = decode_source_tree_seed_body_v1(&seed[..160])?;
         let authorization = authorization.as_ref();
         let authorization_claims = parse_unverified_project_authorization_claims_v2(authorization)?;
-        let resource_version = authorization_claims.resource_envelope.is_some();
+        let resource_version = authorization_claims.resource_envelope().is_some();
         let mut bytes = vec![0; 32 + seed.len() + authorization.len() + 128];
         bytes[..8].copy_from_slice(if resource_version { b"AOSSGC02" } else { ACCEPTANCE_MAGIC });
         bytes[8..10].copy_from_slice(&(if resource_version { 2_u16 } else { 1 }).to_be_bytes());
@@ -140,16 +147,16 @@ impl ControllerSourceGenesisAcceptanceRecordV1 {
         let seed = record.seed_claims()?;
         let authorization = parse_unverified_project_authorization_claims_v2(record.auth_packet())?;
         if record.project() != seed.project()
-            || authorization.project != seed.project()
-            || authorization.request_id != seed.request_id()
-            || authorization.limits != seed.limits()
-            || authorization.epoch != seed.epoch()
-            || authorization.publisher_generation != seed.publisher_generation()
-            || authorization.publisher_head_digest != seed.publisher_head()
+            || authorization.project() != seed.project()
+            || authorization.request_id() != seed.request_id()
+            || authorization.limits() != seed.limits()
+            || authorization.epoch() != seed.epoch()
+            || authorization.publisher_generation() != seed.publisher_generation()
+            || authorization.publisher_head_digest() != seed.publisher_head()
             || record.publisher_pointer() != seed.publisher_head()
-            || record.publisher_revision() != authorization.publisher_revision_digest
+            || record.publisher_revision() != authorization.publisher_revision_digest()
             || record.authorization_head() != seed.project_authorization_head()
-            || authorization.resource_envelope.is_some() != resource_version
+            || authorization.resource_envelope().is_some() != resource_version
             || record.bytes[record.joins_offset()..]
                 .chunks_exact(32)
                 .any(|digest| digest == [0; 32])
@@ -231,7 +238,7 @@ impl ControllerSourceGenesisAcceptanceRecordV1 {
     pub fn resource_envelope(&self) -> Option<ResourceVector> {
         parse_unverified_project_authorization_claims_v2(self.auth_packet())
             .ok()
-            .and_then(|claims| claims.resource_envelope)
+            .and_then(|claims| claims.resource_envelope())
     }
 
     fn joins_offset(&self) -> usize {
