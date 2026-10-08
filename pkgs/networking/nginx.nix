@@ -276,7 +276,7 @@ in
           privateKey.name = credential "tls-private-key";
         };
       };
-      nativeTests = import ./_nginx/native-tests.nix {inherit lib disabled cleartext tls;};
+      nativeTests = import ./_nginx/native-tests.nix {inherit lib self evaluate disabled cleartext tls;};
       contractHolds = builtins.all (value: value) (builtins.attrValues nativeTests);
     in
       {
