@@ -68,7 +68,7 @@ impl MountOriginalNativeJournalAuthorityV5<'_> {
             return Err(invalid());
         }
 
-        let mut successor = apply(&self.authority.journal.state, owners.records())?;
+        let mut successor = apply(self.authority.journal.native.state(), owners.records())?;
         // Remove only already validated retained sidecars for the independent
         // legacy preview. Callers cannot nominate another filtered snapshot.
         for attempt in before.sidecars().keys() {
@@ -182,10 +182,10 @@ impl MountOriginalNativeJournalAuthorityV5<'_> {
             ));
             let owners = JournalTransaction::new(*owners.id(), records)?;
             let (transaction, floor, old_floor) = derive_continuation(
-                &self.authority.journal.state,
+                self.authority.journal.native.state(),
                 &owners,
                 phase1.attempt,
-                self.authority.journal.limits,
+                self.authority.journal.native.limits(),
             )?;
             *slot = Some(PreparedOriginalRootAppendV5 {
                 transaction,
@@ -207,10 +207,10 @@ impl MountOriginalNativeJournalAuthorityV5<'_> {
                 &prepared.transaction,
                 &old_floor,
                 prepared.floor.as_ref(),
-                self.authority.journal.limits,
+                self.authority.journal.native.limits(),
             )?;
             validate_pending_sequence(
-                &self.authority.journal.state,
+                self.authority.journal.native.state(),
                 &prepared.transaction,
                 phase1.attempt,
                 sequence,

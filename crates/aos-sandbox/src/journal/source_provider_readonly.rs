@@ -92,7 +92,7 @@ impl<'journal> SourceProviderHeldReadOnlyJournalAuthorityV1<'journal> {
         self.require_current()?;
         Ok(FixedSourceProviderJournalHandoffV1 {
             authority: &self.authority,
-            sequence: self.authority.journal.next_sequence,
+            sequence: self.authority.journal.native.next_sequence(),
         })
     }
 
@@ -130,17 +130,17 @@ pub(super) fn validate_current_authority(
     }
     authority.validate_held_root_owned_at("/var/lib/aos/source-provider", "provider.journal")?;
     let namespace = RecordNamespace::SourceProviderAuthority;
-    if journal.committed_namespaces.iter().any(|value| {
+    if journal.native.committed_namespaces().iter().any(|value| {
         !matches!(
             value,
             RecordNamespace::SourceProviderAuthority | RecordNamespace::GlobalCapacityReservation
         )
-    }) || journal.state.keys().any(|(value, _)| {
+    }) || journal.native.state().keys().any(|(value, _)| {
         !matches!(
             value,
             RecordNamespace::SourceProviderAuthority | RecordNamespace::GlobalCapacityReservation
         )
-    }) || !capacity_reservation::all_reservations_owned_by(&journal.state, namespace)?
+    }) || !capacity_reservation::all_reservations_owned_by(journal.native.state(), namespace)?
     {
         return Err(JournalError::ForeignAuthorityNamespace);
     }

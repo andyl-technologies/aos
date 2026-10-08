@@ -864,7 +864,7 @@ impl<'cut> CacheQ04TransactionRecipesV1<'cut> {
             transactions: bodies.transactions,
         };
         recipes.require_fixed_journal(journal)?;
-        recipes.require_prefix(&journal.state, 0)?;
+        recipes.require_prefix(journal.native.state(), 0)?;
         Ok(recipes)
     }
 
@@ -897,7 +897,7 @@ impl<'cut> CacheQ04TransactionRecipesV1<'cut> {
         let release = root.release_phase()?.digest();
         root.require_lower_transition(1, Some(release))?;
         self.require_fixed_journal(journal)?;
-        self.require_prefix(&journal.state, 1)?;
+        self.require_prefix(journal.native.state(), 1)?;
         journal.require_q04_native_recipe_prefix_v1(&self.transactions[..1], self.original_next)?;
         let bodies = q04_hold_recipe_bodies(self.identity, self.names, self.held, release)?;
         if bodies.held_marker != self.held_marker || bodies.transactions[0] != self.transactions[0] {
@@ -1171,12 +1171,12 @@ impl Journal {
         self.require_protected_named_location(
             Path::new(crate::cache_residency::PROTECTED_CACHE_ROOT), NAME, uid, hold_limits(),
         )?;
-        let state = decode_full_state(self.state.iter().map(|((namespace, key), value)| {
+        let state = decode_full_state(self.native.state().iter().map(|((namespace, key), value)| {
             (*namespace, key.as_slice(), value.as_slice())
         }).filter_map(|(namespace, key, value)| {
             (namespace == RecordNamespace::DesiredState).then_some((key, value))
         }))?;
-        if self.state.keys().any(|(namespace, _)| *namespace != RecordNamespace::DesiredState)
+        if self.native.state().keys().any(|(namespace, _)| *namespace != RecordNamespace::DesiredState)
             || state.legacy.hold.is_some_and(CachePolicyHoldV1::is_held)
             || state.legacy.v8_pending.is_some()
             || state.q04_pending.is_some()
@@ -1338,7 +1338,7 @@ pub(super) fn mutation_guard(journal: &Journal) -> Result<Option<Journal>, Journ
             .ok_or(JournalError::ProtectedBoundary)?
             .name,
         *uid,
-        journal.limits,
+        journal.native.limits(),
     )?;
     let mut hold = open(directory, *uid)?;
     if current(&mut hold)?.is_some_and(CachePolicyHoldV1::is_held) {

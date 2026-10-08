@@ -278,7 +278,7 @@ impl ProtectedJournalAuthority<'_> {
     ) -> Result<MountSourceConsumptionCompanionProjectionV2, JournalError> {
         self.validate_mount_source_consumption_transaction(transaction)?;
         self.journal.ensure_protected_authority()?;
-        if !self.journal.transaction_ids.contains(transaction.id())
+        if !self.journal.native.transaction_ids().contains(transaction.id())
             || transaction
                 .records()
                 .iter()
@@ -304,7 +304,7 @@ impl ProtectedJournalAuthority<'_> {
             return Err(JournalError::ForeignAuthorityNamespace);
         }
         self.journal.ensure_protected_authority()?;
-        Ok(self.journal.transaction_ids.contains(transaction_id))
+        Ok(self.journal.native.transaction_ids().contains(transaction_id))
     }
 
     fn validate_mount_source_consumption_transaction(

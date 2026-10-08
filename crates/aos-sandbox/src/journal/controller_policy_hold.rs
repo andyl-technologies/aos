@@ -1057,7 +1057,7 @@ impl<'cut> ControllerQ04TransitionV1<'cut> {
 
     pub(crate) fn require_current_readback(&self, journal: &Journal) -> Result<(), CreateQ04ErrorV1> {
         self.require_fixed_owner(journal)?;
-        let current = current_readback(&journal.state)?;
+        let current = current_readback(journal.native.state())?;
         let history = current.q04.ok_or(CreateQ04ErrorV1::ChangedCut)?;
         if history.identity != *self.identity
             || history.phases.len() != usize::from(self.phase.phase())
@@ -1612,9 +1612,9 @@ impl Journal {
     ) -> Result<(), JournalError> {
         ensure_controller(self)?;
         if !hold.is_held()
-            || current(&self.state)?.is_some_and(ControllerPolicyHoldV1::is_held)
-            || current_ack(&self.state)?.is_some()
-            || current_v8_attempt(&self.state)?.is_some()
+            || current(self.native.state())?.is_some_and(ControllerPolicyHoldV1::is_held)
+            || current_ack(self.native.state())?.is_some()
+            || current_v8_attempt(self.native.state())?.is_some()
         {
             return Err(JournalError::ProtectedBoundary);
         }
@@ -1665,7 +1665,7 @@ impl Journal {
             true,
         )?;
         self.commit_with_capacity_scope(&acquire, None, false, true, false, false, false)?;
-        if current(&self.state)? != Some(hold) {
+        if current(self.native.state())? != Some(hold) {
             return Err(JournalError::ProtectedBoundary);
         }
         Ok(())
@@ -1682,7 +1682,7 @@ impl Journal {
         &self,
     ) -> Result<Option<ControllerPolicyHoldV1>, JournalError> {
         ensure_controller(self)?;
-        current(&self.state)
+        current(self.native.state())
     }
 
     #[cfg(target_os = "linux")]
@@ -1690,7 +1690,7 @@ impl Journal {
         &self,
     ) -> Result<Option<ControllerQ04HistoryV1>, JournalError> {
         ensure_controller(self)?;
-        Ok(current_readback(&self.state)?.q04)
+        Ok(current_readback(self.native.state())?.q04)
     }
 
     /// Reads the durable no-Apply Controller acknowledgment under its writer.
@@ -1702,7 +1702,7 @@ impl Journal {
         &self,
     ) -> Result<Option<ControllerPolicyEffectAckV1>, JournalError> {
         ensure_controller(self)?;
-        current_ack(&self.state)
+        current_ack(self.native.state())
     }
 
     /// Reads the exact protected V8 pre-send attempt under Controller custody.
@@ -1714,7 +1714,7 @@ impl Journal {
         &self,
     ) -> Result<Option<ControllerPolicyV8AttemptV1>, JournalError> {
         ensure_controller(self)?;
-        current_v8_attempt(&self.state)
+        current_v8_attempt(self.native.state())
     }
 
     /// Retains the exact V8 terminal digest before sending it to Root.
@@ -1733,10 +1733,10 @@ impl Journal {
     ) -> Result<(), JournalError> {
         ensure_controller(self)?;
         attempt.validate()?;
-        if current(&self.state)? != Some(attempt.hold) || current_ack(&self.state)?.is_some() {
+        if current(self.native.state())? != Some(attempt.hold) || current_ack(self.native.state())?.is_some() {
             return Err(JournalError::ProtectedBoundary);
         }
-        match current_v8_attempt(&self.state)? {
+        match current_v8_attempt(self.native.state())? {
             Some(prior) if prior == attempt => return Ok(()),
             Some(_) => return Err(JournalError::ProtectedBoundary),
             None => {}
@@ -1750,7 +1750,7 @@ impl Journal {
             false,
             false,
         )?;
-        if current_v8_attempt(&self.state)? != Some(attempt) {
+        if current_v8_attempt(self.native.state())? != Some(attempt) {
             return Err(JournalError::ProtectedBoundary);
         }
         Ok(())
@@ -1768,7 +1768,7 @@ impl Journal {
         &self,
     ) -> Result<Option<ControllerPolicyV8EffectAckV1>, JournalError> {
         ensure_controller(self)?;
-        current_v8_ack(&self.state)
+        current_v8_ack(self.native.state())
     }
 
     /// Durably advances one exact V8 attempt to a no-Apply effect ACK.
@@ -1787,13 +1787,13 @@ impl Journal {
     ) -> Result<(), JournalError> {
         ensure_controller(self)?;
         ack.validate()?;
-        if current(&self.state)? != Some(ack.attempt.hold)
-            || current_v8_attempt(&self.state)? != Some(ack.attempt)
-            || current_ack(&self.state)?.is_some()
+        if current(self.native.state())? != Some(ack.attempt.hold)
+            || current_v8_attempt(self.native.state())? != Some(ack.attempt)
+            || current_ack(self.native.state())?.is_some()
         {
             return Err(JournalError::ProtectedBoundary);
         }
-        match current_v8_ack(&self.state)? {
+        match current_v8_ack(self.native.state())? {
             Some(prior) if prior == ack => return Ok(()),
             Some(_) => return Err(JournalError::ProtectedBoundary),
             None => {}
@@ -1807,7 +1807,7 @@ impl Journal {
             false,
             false,
         )?;
-        if current_v8_ack(&self.state)? != Some(ack) {
+        if current_v8_ack(self.native.state())? != Some(ack) {
             return Err(JournalError::ProtectedBoundary);
         }
         Ok(())
@@ -1824,7 +1824,7 @@ impl Journal {
         &self,
     ) -> Result<Option<RootV8EffectAckV1>, JournalError> {
         ensure_controller(self)?;
-        current_v8_root_receipt(&self.state)
+        current_v8_root_receipt(self.native.state())
     }
 
     /// Retains one authenticated historical Root V8 ACK under the held writer.
@@ -1841,13 +1841,13 @@ impl Journal {
         receipt: RootV8EffectAckV1,
     ) -> Result<(), JournalError> {
         ensure_controller(self)?;
-        let ack = current_v8_ack(&self.state)?.ok_or(JournalError::ProtectedBoundary)?;
-        if current(&self.state)? != Some(ack.attempt().hold())
+        let ack = current_v8_ack(self.native.state())?.ok_or(JournalError::ProtectedBoundary)?;
+        if current(self.native.state())? != Some(ack.attempt().hold())
             || !v8_root_receipt_matches_ack(receipt, ack)?
         {
             return Err(JournalError::ProtectedBoundary);
         }
-        match current_v8_root_receipt(&self.state)? {
+        match current_v8_root_receipt(self.native.state())? {
             Some(prior) if prior == receipt => return Ok(()),
             Some(_) => return Err(JournalError::ProtectedBoundary),
             None => {}
@@ -1861,7 +1861,7 @@ impl Journal {
             false,
             false,
         )?;
-        if current_v8_root_receipt(&self.state)? != Some(receipt) {
+        if current_v8_root_receipt(self.native.state())? != Some(receipt) {
             return Err(JournalError::ProtectedBoundary);
         }
         Ok(())
@@ -1888,14 +1888,14 @@ impl Journal {
         source_held: SourceDomainPolicyHoldV1,
     ) -> Result<ControllerPolicyV8PreReleaseFloorV1, JournalError> {
         ensure_controller(self)?;
-        let attempt = current_v8_attempt(&self.state)?.ok_or(JournalError::ProtectedBoundary)?;
-        let ack = current_v8_ack(&self.state)?.ok_or(JournalError::ProtectedBoundary)?;
-        if current(&self.state)? != Some(expected)
+        let attempt = current_v8_attempt(self.native.state())?.ok_or(JournalError::ProtectedBoundary)?;
+        let ack = current_v8_ack(self.native.state())?.ok_or(JournalError::ProtectedBoundary)?;
+        if current(self.native.state())? != Some(expected)
             || !expected.is_held()
             || attempt.hold() != expected
             || ack.attempt() != attempt
             || !v8_root_receipt_matches_ack(receipt, ack)?
-            || current_v8_root_receipt(&self.state)? != Some(receipt)
+            || current_v8_root_receipt(self.native.state())? != Some(receipt)
         {
             return Err(JournalError::ProtectedBoundary);
         }
@@ -1906,7 +1906,7 @@ impl Journal {
             cache_held,
             source_held,
         )?;
-        match current_v8_floor(&self.state)? {
+        match current_v8_floor(self.native.state())? {
             Some(prior) if prior == floor => return Ok(floor),
             Some(_) => return Err(JournalError::ProtectedBoundary),
             None => {}
@@ -1921,7 +1921,7 @@ impl Journal {
             false,
             false,
         )?;
-        if current(&self.state)? != Some(expected) || current_v8_floor(&self.state)? != Some(floor)
+        if current(self.native.state())? != Some(expected) || current_v8_floor(self.native.state())? != Some(floor)
         {
             return Err(JournalError::ProtectedBoundary);
         }
@@ -1938,7 +1938,7 @@ impl Journal {
         &self,
     ) -> Result<Option<ControllerPolicyV8PreReleaseFloorV1>, JournalError> {
         ensure_controller(self)?;
-        current_v8_floor(&self.state)
+        current_v8_floor(self.native.state())
     }
 
     /// Atomically retires Controller V8 custody with exact owner-release evidence.
@@ -1963,19 +1963,19 @@ impl Journal {
     ) -> Result<ControllerPolicyV8SettlementV1, JournalError> {
         ensure_controller(self)?;
         evidence.validate_for(expected)?;
-        if !expected.is_held() || current_ack(&self.state)?.is_some() {
+        if !expected.is_held() || current_ack(self.native.state())?.is_some() {
             return Err(JournalError::ProtectedBoundary);
         }
-        let attempt = current_v8_attempt(&self.state)?.ok_or(JournalError::ProtectedBoundary)?;
-        let ack = current_v8_ack(&self.state)?.ok_or(JournalError::ProtectedBoundary)?;
+        let attempt = current_v8_attempt(self.native.state())?.ok_or(JournalError::ProtectedBoundary)?;
+        let ack = current_v8_ack(self.native.state())?.ok_or(JournalError::ProtectedBoundary)?;
         if attempt.hold() != expected
             || ack.attempt() != attempt
             || !v8_root_receipt_matches_ack(receipt, ack)?
-            || current_v8_root_receipt(&self.state)? != Some(receipt)
+            || current_v8_root_receipt(self.native.state())? != Some(receipt)
         {
             return Err(JournalError::ProtectedBoundary);
         }
-        let floor = current_v8_floor(&self.state)?.ok_or(JournalError::ProtectedBoundary)?;
+        let floor = current_v8_floor(self.native.state())?.ok_or(JournalError::ProtectedBoundary)?;
         if floor.root_release_marker != evidence.root_release_marker
             || floor.cache_held != evidence.cache_held.record_digest()?
             || floor.source_held != evidence.source_held.record_digest()?
@@ -1996,14 +1996,14 @@ impl Journal {
             evidence.cache_released.record_digest()?,
             evidence.source_released.record_digest()?,
         )?;
-        match current(&self.state)? {
+        match current(self.native.state())? {
             Some(prior) if prior == released => {
-                if current_v8_settlement(&self.state)? == Some(settlement) {
+                if current_v8_settlement(self.native.state())? == Some(settlement) {
                     return Ok(settlement);
                 }
                 return Err(JournalError::ProtectedBoundary);
             }
-            Some(prior) if prior == expected && current_v8_settlement(&self.state)?.is_none() => {}
+            Some(prior) if prior == expected && current_v8_settlement(self.native.state())?.is_none() => {}
             _ => return Err(JournalError::ProtectedBoundary),
         }
 
@@ -2016,9 +2016,9 @@ impl Journal {
             false,
             false,
         )?;
-        if current(&self.state)? != Some(released)
-            || current_v8_root_receipt(&self.state)? != Some(receipt)
-            || current_v8_settlement(&self.state)? != Some(settlement)
+        if current(self.native.state())? != Some(released)
+            || current_v8_root_receipt(self.native.state())? != Some(receipt)
+            || current_v8_settlement(self.native.state())? != Some(settlement)
         {
             return Err(JournalError::ProtectedBoundary);
         }
@@ -2035,7 +2035,7 @@ impl Journal {
         &self,
     ) -> Result<Option<ControllerPolicyV8SettlementV1>, JournalError> {
         ensure_controller(self)?;
-        current_v8_settlement(&self.state)
+        current_v8_settlement(self.native.state())
     }
 
     /// Durably acknowledges one qualified Root decision while Controller stays held.
@@ -2055,10 +2055,10 @@ impl Journal {
     ) -> Result<(), JournalError> {
         ensure_controller(self)?;
         ack.validate()?;
-        if current(&self.state)? != Some(ack.hold) || current_v8_attempt(&self.state)?.is_some() {
+        if current(self.native.state())? != Some(ack.hold) || current_v8_attempt(self.native.state())?.is_some() {
             return Err(JournalError::ProtectedBoundary);
         }
-        match current_ack(&self.state)? {
+        match current_ack(self.native.state())? {
             Some(prior) if prior == ack => return Ok(()),
             Some(_) => return Err(JournalError::ProtectedBoundary),
             None => {}
@@ -2072,7 +2072,7 @@ impl Journal {
             false,
             false,
         )?;
-        if current_ack(&self.state)? != Some(ack) {
+        if current_ack(self.native.state())? != Some(ack) {
             return Err(JournalError::ProtectedBoundary);
         }
         Ok(())
@@ -2086,9 +2086,9 @@ impl Journal {
         // A qualified effect ACK needs the later Root ACK and ordered release;
         // this older inert path has no evidence of either.
         if !expected.held
-            || current(&self.state)? != Some(expected)
-            || current_ack(&self.state)?.is_some()
-            || current_v8_attempt(&self.state)?.is_some()
+            || current(self.native.state())? != Some(expected)
+            || current_ack(self.native.state())?.is_some()
+            || current_v8_attempt(self.native.state())?.is_some()
         {
             return Err(JournalError::ProtectedBoundary);
         }
@@ -2098,7 +2098,7 @@ impl Journal {
         };
         let transaction = transaction(released)?;
         self.commit_with_capacity_scope(&transaction, None, false, true, false, false, false)?;
-        if current(&self.state)? != Some(released) {
+        if current(self.native.state())? != Some(released) {
             return Err(JournalError::ProtectedBoundary);
         }
         Ok(())
@@ -2112,7 +2112,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::journal::JournalLimits;
+    use crate::journal::{JournalLimits, RecordMutationRef};
     use aos_sandbox_core::ProjectId;
 
     struct TestDirectory(PathBuf);
@@ -2761,11 +2761,11 @@ mod tests {
         let mut encoded = encode_v8_root_receipt(receipt).unwrap();
         encoded[16] ^= 1;
         assert!(decode_v8_root_receipt(&encoded).is_err());
-        let mut state = reopened.state.clone();
+        let mut state = reopened.native.state().clone();
         state.remove(&(RecordNamespace::ControllerPolicyHold, V8_ACK_KEY.to_vec()));
         assert!(current(&state).is_err(), "receipt requires the exact ACK");
 
-        let mut state = reopened.state.clone();
+        let mut state = reopened.native.state().clone();
         let changed_ack = ControllerPolicyV8EffectAckV1::new(
             attempt,
             ack.accepted_generation() + 1,
@@ -2780,7 +2780,7 @@ mod tests {
         );
         assert!(current(&state).is_err(), "changed Create fails cold replay");
 
-        let mut state = reopened.state.clone();
+        let mut state = reopened.native.state().clone();
         state.insert(
             (RecordNamespace::ControllerPolicyHold, KEY.to_vec()),
             ControllerPolicyHoldV1 {
@@ -3024,7 +3024,7 @@ mod tests {
             Some(settlement)
         );
         assert!(controller.commit(&ordinary_transaction()).is_err());
-        assert!(require_no_compaction(&controller.state).is_err());
+        assert!(require_no_compaction(controller.native.state()).is_err());
         assert_eq!(controller.records(RecordNamespace::Effect).count(), 0);
         drop(controller);
 
@@ -3072,7 +3072,7 @@ mod tests {
         );
         assert_ne!(settlement.record_digest().unwrap().as_bytes(), &[0; 32]);
 
-        let settled_state = reopened.state.clone();
+        let settled_state = reopened.native.state().clone();
         let mut torn = settled_state.clone();
         torn.remove(&(
             RecordNamespace::ControllerPolicyHold,
@@ -3103,20 +3103,25 @@ mod tests {
                 .chain_update(&changed[..280])
                 .finalize();
             changed[280..].copy_from_slice(&checksum);
-            reopened.state.insert(
-                (
-                    RecordNamespace::ControllerPolicyHold,
-                    V8_SETTLEMENT_KEY.to_vec(),
-                ),
-                changed.to_vec(),
-            );
+            reopened.native.apply_mutation(RecordMutationRef {
+                namespace: RecordNamespace::ControllerPolicyHold,
+                key: V8_SETTLEMENT_KEY,
+                value: Some(&changed),
+            });
             assert!(
                 reopened
                     .retire_controller_policy_v8_hold_with_settlement_v1(hold, receipt, evidence)
                     .is_err(),
                 "changed settlement field at {offset} accepted"
             );
-            reopened.state = settled_state.clone();
+            reopened.native.apply_mutation(RecordMutationRef {
+                namespace: RecordNamespace::ControllerPolicyHold,
+                key: V8_SETTLEMENT_KEY,
+                value: settled_state
+                    .get(&(RecordNamespace::ControllerPolicyHold, V8_SETTLEMENT_KEY.to_vec()))
+                    .map(Vec::as_slice),
+            });
+            assert_eq!(reopened.native.state(), &settled_state);
         }
         for offset in [16, 48, 56, 88, 120, 152] {
             let mut changed = floor.record_bytes().unwrap();
@@ -3126,17 +3131,25 @@ mod tests {
                 .chain_update(&changed[..184])
                 .finalize();
             changed[184..].copy_from_slice(&checksum);
-            reopened.state.insert(
-                (RecordNamespace::ControllerPolicyHold, V8_FLOOR_KEY.to_vec()),
-                changed.to_vec(),
-            );
+            reopened.native.apply_mutation(RecordMutationRef {
+                namespace: RecordNamespace::ControllerPolicyHold,
+                key: V8_FLOOR_KEY,
+                value: Some(&changed),
+            });
             assert!(
                 reopened
                     .retire_controller_policy_v8_hold_with_settlement_v1(hold, receipt, evidence)
                     .is_err(),
                 "changed floor field at {offset} accepted"
             );
-            reopened.state = settled_state.clone();
+            reopened.native.apply_mutation(RecordMutationRef {
+                namespace: RecordNamespace::ControllerPolicyHold,
+                key: V8_FLOOR_KEY,
+                value: settled_state
+                    .get(&(RecordNamespace::ControllerPolicyHold, V8_FLOOR_KEY.to_vec()))
+                    .map(Vec::as_slice),
+            });
+            assert_eq!(reopened.native.state(), &settled_state);
         }
         let mut changed = floor.record_bytes().unwrap();
         changed[184] ^= 1;

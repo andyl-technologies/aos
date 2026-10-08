@@ -49,7 +49,7 @@ use aos_sandbox_journal::recovery::{
 use aos_sandbox_journal::replay::{
     NativeReplayBookkeeping, NativeReplayCoordinates, NativeReplayError,
 };
-use aos_sandbox_journal::storage::NativeJournalStorage;
+use aos_sandbox_journal::owner::{NativeJournal, NativeJournalState};
 use aos_sandbox_journal::transaction::{self, NativePendingTransaction, NativeRecordRef};
 
 pub mod canonical_map;
@@ -805,16 +805,9 @@ struct PendingTransaction {
 
 /// Owns one exclusively locked, append-only journal and its replayed indexes.
 pub struct Journal {
-    path: PathBuf,
-    storage: NativeJournalStorage,
-    limits: JournalLimits,
-    next_sequence: u64,
-    committed_transactions: usize,
-    transaction_ids: BTreeSet<[u8; 16]>,
-    // Deleted records remain provenance until compaction establishes a new boundary.
-    committed_namespaces: BTreeSet<RecordNamespace>,
-    state: BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
-    materialized_bytes: usize,
+    // The contiguous native prefix keeps its original file/set/map drop order.
+    // All role admission, semantic indexes, and authority remain in this wrapper.
+    native: NativeJournal<RecordNamespace, JournalLimits>,
     idempotency: BTreeMap<Vec<u8>, IdempotencyDecision>,
     protected: Option<ProtectedJournalLocation>,
     cache_policy_gate: Option<(PathBuf, u32)>,
@@ -836,15 +829,14 @@ macro_rules! journal_from_original_replay {
     ($path:expr, $file:expr, $lock:expr, $limits:expr, $protected:expr,
      $replay:ident, $authority:expr) => {
         Journal {
-            path: $path,
-            storage: aos_sandbox_journal::storage::NativeJournalStorage::from_owned_files($file, $lock),
-            limits: $limits,
-            next_sequence: $replay.next_sequence,
-            committed_transactions: $replay.committed_transactions,
-            transaction_ids: $replay.transaction_ids,
-            committed_namespaces: $replay.committed_namespaces,
-            state: $replay.state,
-            materialized_bytes: $replay.materialized_bytes,
+            native: NativeJournal::from_owned_parts(
+                $path, $file, $lock, $limits,
+                NativeJournalState::from_owned_parts(
+                    $replay.next_sequence, $replay.committed_transactions,
+                    $replay.transaction_ids, $replay.committed_namespaces,
+                    $replay.state, $replay.materialized_bytes,
+                ),
+            ),
             idempotency: $replay.idempotency,
             protected: $protected,
             cache_policy_gate: None,
@@ -1053,7 +1045,7 @@ impl ReadOnlyProtectedJournal {
     /// Re-resolves the directory and both physical names independently.
     pub(crate) fn check_named_currentness(&self) -> Result<(), JournalError> {
         self.witness.check_named_currentness()?;
-        if FileIdentity::of(self.journal.storage.file())? != self.witness.file_identity {
+        if FileIdentity::of(self.journal.native.file())? != self.witness.file_identity {
             return Err(JournalError::ProtectedBoundary);
         }
         Ok(())
@@ -1072,7 +1064,7 @@ impl ReadOnlyProtectedJournal {
     /// Checks the retained name using the test fixture's exact UID.
     pub(crate) fn check_named_currentness_at_uid_for_test(&self) -> Result<(), JournalError> {
         self.witness.check_named_currentness_at_uid_for_test()?;
-        if FileIdentity::of(self.journal.storage.file())? != self.witness.file_identity {
+        if FileIdentity::of(self.journal.native.file())? != self.witness.file_identity {
             return Err(JournalError::ProtectedBoundary);
         }
         Ok(())
@@ -1353,12 +1345,12 @@ struct Q04OriginalCacheTargetV1 {
 impl Q04OriginalCacheTargetV1 {
     fn capture(journal: &Journal, name: &'static str, uid: u32) -> Result<Self, JournalError> {
         journal.require_protected_named_location(
-            Path::new(crate::cache_residency::PROTECTED_CACHE_ROOT), name, uid, journal.limits,
+            Path::new(crate::cache_residency::PROTECTED_CACHE_ROOT), name, uid, journal.native.limits(),
         )?;
         Ok(Self {
             instance: Arc::clone(&journal.authority_instance),
             sequence: journal.snapshot_sequence(),
-            limits: journal.limits,
+            limits: journal.native.limits(),
             name,
             uid,
             witness: journal.protected_writer_name_witness()?,
@@ -1368,7 +1360,7 @@ impl Q04OriginalCacheTargetV1 {
     fn require(&self, journal: &Journal) -> Result<(), JournalError> {
         if !Arc::ptr_eq(&self.instance, &journal.authority_instance)
             || self.sequence != journal.snapshot_sequence()
-            || self.limits != journal.limits
+            || self.limits != journal.native.limits()
         {
             return Err(JournalError::StaleAuthoritySnapshot);
         }
@@ -1453,14 +1445,14 @@ impl Q04CacheTerminalNativeLoanV1<'_, '_, '_> {
         state.require_q04_native_recipes_v1(&[])?;
         authority.journal.require_q04_native_recipes_v1(&[])?;
         self.recipes.require_fixed_journal(self.hold)?;
-        self.recipes.require_prefix(&self.hold.state, self.phase.prefix())?;
+        self.recipes.require_prefix(self.hold.native.state(), self.phase.prefix())?;
         self.hold.require_q04_native_recipe_prefix_v1(
             &self.recipes.transactions()[..self.phase.prefix()], self.recipes.original_next(),
         )?;
         self.targets[0].require(state)?;
         self.targets[1].require(authority.journal)?;
         self.recipes.require_fixed_journal(self.hold)?;
-        self.recipes.require_prefix(&self.hold.state, self.phase.prefix())?;
+        self.recipes.require_prefix(self.hold.native.state(), self.phase.prefix())?;
         Ok(())
     }
 }
@@ -1519,7 +1511,7 @@ impl Journal {
             return Err(JournalError::ProtectedBoundary);
         }
         self.require_protected_named_location(
-            Path::new(crate::cache_residency::PROTECTED_CACHE_ROOT), &location.name, uid, self.limits,
+            Path::new(crate::cache_residency::PROTECTED_CACHE_ROOT), &location.name, uid, self.native.limits(),
         )?;
         self.require_q04_native_recipes_v1(&[])
             .map_err(|cause| JournalError::Q04RootOriginal(Box::new(cause)))?;
@@ -1544,7 +1536,7 @@ impl Journal {
             return Err(JournalError::ProtectedBoundary.into());
         }
         recipes.require_fixed_journal(hold)?;
-        recipes.require_prefix(&hold.state, phase.prefix())?;
+        recipes.require_prefix(hold.native.state(), phase.prefix())?;
         let targets = [
             Q04OriginalCacheTargetV1::capture(state, "state.journal", uid)?,
             Q04OriginalCacheTargetV1::capture(authority, "authority.journal", uid)?,
@@ -2772,26 +2764,26 @@ impl Journal {
             STORAGE_OPERATOR_STATE_DIRECTORY,
             STORAGE_OPERATOR_JOURNAL_NAME,
         )?;
-        let journal_identity = FileIdentity::of(self.storage.file())?;
-        let lock_identity = FileIdentity::of(self.storage.lock_file())?;
+        let journal_identity = FileIdentity::of(self.native.file())?;
+        let lock_identity = FileIdentity::of(self.native.lock_file())?;
         reject_operator_provisioning_history(journal_identity.size)?;
         reject_operator_provisioning_history(lock_identity.size)?;
-        let has_history = !self.transaction_ids.is_empty()
-            || !self.committed_namespaces.is_empty()
-            || !self.state.is_empty()
-            || self.materialized_bytes != 0
+        let has_history = !self.native.transaction_ids().is_empty()
+            || !self.native.committed_namespaces().is_empty()
+            || !self.native.state().is_empty()
+            || self.native.materialized_bytes() != 0
             || !self.idempotency.is_empty();
         require_empty_operator_provisioning_state(
-            self.next_sequence,
-            self.committed_transactions,
+            self.native.next_sequence(),
+            self.native.committed_transactions(),
             has_history,
         )?;
         self.validate_held_root_owned_at(
             STORAGE_OPERATOR_STATE_DIRECTORY,
             STORAGE_OPERATOR_JOURNAL_NAME,
         )?;
-        if FileIdentity::of(self.storage.file())? != journal_identity
-            || FileIdentity::of(self.storage.lock_file())? != lock_identity
+        if FileIdentity::of(self.native.file())? != journal_identity
+            || FileIdentity::of(self.native.lock_file())? != lock_identity
         {
             return Err(JournalError::StaleAuthoritySnapshot);
         }
@@ -2883,7 +2875,7 @@ impl Journal {
             .protected
             .as_ref()
             .ok_or(JournalError::ProtectedBoundary)?;
-        if retained.name != name || retained.expected_uid != expected_uid || self.limits != limits {
+        if retained.name != name || retained.expected_uid != expected_uid || self.native.limits() != limits {
             return Err(JournalError::ProtectedBoundary);
         }
 
@@ -2923,8 +2915,8 @@ impl Journal {
             .ok_or(JournalError::ProtectedBoundary)?;
         Ok(ProtectedWriterNameWitness {
             directory: FileIdentity::of(&location.directory)?,
-            file: FileIdentity::of(self.storage.file())?,
-            lock: FileIdentity::of(self.storage.lock_file())?,
+            file: FileIdentity::of(self.native.file())?,
+            lock: FileIdentity::of(self.native.lock_file())?,
         })
     }
 
@@ -2939,8 +2931,8 @@ impl Journal {
             .ok_or(JournalError::ProtectedBoundary)?;
         Ok(ProtectedJournalNamesV1::from_identities(
             FileIdentity::of(&location.directory)?,
-            FileIdentity::of(self.storage.file())?,
-            FileIdentity::of(self.storage.lock_file())?,
+            FileIdentity::of(self.native.file())?,
+            FileIdentity::of(self.native.lock_file())?,
         ))
     }
 
@@ -2954,8 +2946,8 @@ impl Journal {
             .ok_or(JournalError::ProtectedBoundary)?;
         self.require_protected_names_current()?;
         if FileIdentity::of(&location.directory)? != witness.directory
-            || FileIdentity::of(self.storage.file())? != witness.file
-            || FileIdentity::of(self.storage.lock_file())? != witness.lock
+            || FileIdentity::of(self.native.file())? != witness.file
+            || FileIdentity::of(self.native.lock_file())? != witness.lock
         {
             return Err(JournalError::StaleAuthoritySnapshot);
         }
@@ -2974,7 +2966,7 @@ impl Journal {
             .protected
             .as_ref()
             .ok_or(JournalError::ProtectedBoundary)?;
-        if retained.name != name || retained.expected_uid != expected_uid || self.limits != limits {
+        if retained.name != name || retained.expected_uid != expected_uid || self.native.limits() != limits {
             return Err(JournalError::ProtectedBoundary);
         }
         let current: File = openat2(
@@ -3012,8 +3004,8 @@ impl Journal {
             &retained.directory,
             &retained.name,
             retained.expected_uid,
-            self.storage.lock_file(),
-            self.storage.file(),
+            self.native.lock_file(),
+            self.native.file(),
         )
     }
 
@@ -3212,7 +3204,7 @@ impl Journal {
     ///
     /// Returns [`JournalError::Poisoned`] after an ambiguous durable mutation.
     pub fn ensure_healthy(&self) -> Result<(), JournalError> {
-        if self.storage.is_poisoned() {
+        if self.native.is_poisoned() {
             Err(JournalError::Poisoned)
         } else {
             Ok(())
@@ -3235,15 +3227,15 @@ impl Journal {
         challenges: &[aos_sandbox_source_provider_ledger::ledger::source_capacity::OriginalSourceChallengeDataV5<'_>],
     ) -> Result<SourceCapacityUnionComparisonDataV5, JournalError> {
         self.ensure_healthy()?;
-        if transaction.is_some_and(|transaction| self.transaction_ids.contains(transaction.id())) {
+        if transaction.is_some_and(|transaction| self.native.transaction_ids().contains(transaction.id())) {
             return Err(JournalError::DuplicateTransaction);
         }
         let comparison = compare_source_capacity_union_data_v5(
-            &self.state,
+            self.native.state(),
             transaction,
             origins,
             challenges,
-            self.limits,
+            self.native.limits(),
         )?;
         let (append_bytes, added_transactions, added_frames) = match transaction {
             Some(transaction) => (
@@ -3255,26 +3247,23 @@ impl Journal {
             ),
             None => (0, 0, 0),
         };
-        let journal_bytes = self
-            .storage
+        let journal_bytes = self.native
             .file()
             .metadata()?
             .len()
             .checked_add(append_bytes)
             .ok_or(JournalError::JournalTooLarge)?;
-        let transactions = self
-            .committed_transactions
+        let transactions = self.native.committed_transactions()
             .checked_add(added_transactions)
             .ok_or(JournalError::LimitExceeded("transaction count"))?;
-        let next_sequence = self
-            .next_sequence
+        let next_sequence = self.native.next_sequence()
             .checked_add(added_frames)
             .ok_or(JournalError::SequenceExhausted)?;
         // The complete union already checked every exact changed floor. Reuse
         // the shared all-family fold on the after cut, with no pretend generic
         // settlement identifier or weaker legacy decoder.
         source_original_native::replay::require_advisory_bounds(
-            &comparison, self.limits, journal_bytes, transactions, next_sequence,
+            &comparison, self.native.limits(), journal_bytes, transactions, next_sequence,
         )?;
         Ok(comparison)
     }
@@ -3305,18 +3294,18 @@ impl Journal {
         {
             return Err(JournalError::ForeignAuthorityNamespace);
         }
-        capacity_reservation::require_legacy_reservations(&self.state)?;
-        let has_foreign_history = self.committed_namespaces.iter().any(|committed_namespace| {
+        capacity_reservation::require_legacy_reservations(self.native.state())?;
+        let has_foreign_history = self.native.committed_namespaces().iter().any(|committed_namespace| {
             *committed_namespace != namespace
                 && *committed_namespace != RecordNamespace::GlobalCapacityReservation
         });
-        let has_foreign_state = self.state.keys().any(|(record_namespace, _)| {
+        let has_foreign_state = self.native.state().keys().any(|(record_namespace, _)| {
             *record_namespace != namespace
                 && *record_namespace != RecordNamespace::GlobalCapacityReservation
         });
         if has_foreign_history
             || has_foreign_state
-            || !capacity_reservation::all_reservations_owned_by(&self.state, namespace)?
+            || !capacity_reservation::all_reservations_owned_by(self.native.state(), namespace)?
         {
             return Err(JournalError::ForeignAuthorityNamespace);
         }
@@ -3332,7 +3321,7 @@ impl Journal {
         &mut self,
     ) -> Result<ProtectedJournalAuthority<'_>, JournalError> {
         self.ensure_protected_authority()?;
-        native_held::require_legacy_owner(&self.state, RecordNamespace::MountSourceAcquisition)?;
+        native_held::require_legacy_owner(self.native.state(), RecordNamespace::MountSourceAcquisition)?;
         Ok(ProtectedJournalAuthority {
             journal: self,
             namespace: RecordNamespace::MountSourceAcquisition,
@@ -3356,7 +3345,7 @@ impl Journal {
         &mut self,
     ) -> Result<ProtectedJournalAuthority<'_>, JournalError> {
         self.ensure_protected_authority()?;
-        native_held::require_legacy_owner(&self.state, RecordNamespace::MountSourceAcquisition)?;
+        native_held::require_legacy_owner(self.native.state(), RecordNamespace::MountSourceAcquisition)?;
         Ok(ProtectedJournalAuthority {
             journal: self,
             namespace: RecordNamespace::MountSourceAcquisition,
@@ -3380,7 +3369,7 @@ impl Journal {
         &mut self,
     ) -> Result<ProtectedJournalAuthority<'_>, JournalError> {
         self.ensure_protected_authority()?;
-        native_held::require_legacy_owner(&self.state, RecordNamespace::MountSourceAcquisition)?;
+        native_held::require_legacy_owner(self.native.state(), RecordNamespace::MountSourceAcquisition)?;
         Ok(ProtectedJournalAuthority {
             journal: self,
             namespace: RecordNamespace::MountManagerStartupAuthority,
@@ -3408,7 +3397,7 @@ impl Journal {
         if purpose.is_first_source_successor() {
             return Err(JournalError::ProtectedBoundary);
         }
-        capacity_reservation::require_legacy_reservations(&self.state)?;
+        capacity_reservation::require_legacy_reservations(self.native.state())?;
 
         Ok(ProtectedJournalAuthority {
             journal: self,
@@ -3430,20 +3419,20 @@ impl Journal {
         &mut self,
     ) -> Result<ProtectedJournalAuthority<'_>, JournalError> {
         self.ensure_protected_authority()?;
-        capacity_reservation::require_legacy_reservations(&self.state)?;
+        capacity_reservation::require_legacy_reservations(self.native.state())?;
         let namespace = RecordNamespace::SourceProviderAuthority;
-        let has_foreign_history = self.committed_namespaces.iter().any(|committed_namespace| {
+        let has_foreign_history = self.native.committed_namespaces().iter().any(|committed_namespace| {
             *committed_namespace != namespace
                 && *committed_namespace != RecordNamespace::GlobalCapacityReservation
         });
-        let has_foreign_state = self.state.keys().any(|(record_namespace, _)| {
+        let has_foreign_state = self.native.state().keys().any(|(record_namespace, _)| {
             *record_namespace != namespace
                 && *record_namespace != RecordNamespace::GlobalCapacityReservation
         });
         // Deleted foreign rows still taint this generation until compaction.
         if has_foreign_history
             || has_foreign_state
-            || !capacity_reservation::all_reservations_owned_by(&self.state, namespace)?
+            || !capacity_reservation::all_reservations_owned_by(self.native.state(), namespace)?
         {
             return Err(JournalError::ForeignAuthorityNamespace);
         }
@@ -3491,7 +3480,7 @@ impl Journal {
         &self,
     ) -> Result<ProtectedJournalLockCustodyV1, JournalError> {
         self.validate_held_protected_names()?;
-        let lock = self.storage.lock_file().try_clone()?;
+        let lock = self.native.lock_file().try_clone()?;
         self.validate_held_protected_names()?;
         let custody = ProtectedJournalLockCustodyV1 { lock };
         custody.identity()?;
@@ -3512,7 +3501,7 @@ impl Journal {
         directory: impl AsRef<Path>,
         name: &str,
     ) -> Result<(), JournalError> {
-        self.require_protected_named_location(directory.as_ref(), name, 0, self.limits)
+        self.require_protected_named_location(directory.as_ref(), name, 0, self.native.limits())
     }
 
     /// Rechecks a service-owned writer's original protected path and both names.
@@ -3530,7 +3519,7 @@ impl Journal {
         name: &str,
         expected_uid: u32,
     ) -> Result<(), JournalError> {
-        self.require_protected_named_location(directory.as_ref(), name, expected_uid, self.limits)
+        self.require_protected_named_location(directory.as_ref(), name, expected_uid, self.native.limits())
     }
 
     /// Rechecks exact UID-owned fixture custody without relaxing release openers.
@@ -3555,7 +3544,7 @@ impl Journal {
             directory.as_ref(),
             name,
             expected_uid,
-            self.limits,
+            self.native.limits(),
         )
     }
 
@@ -3565,7 +3554,7 @@ impl Journal {
     /// It does not establish that the value is current durable authority.
     #[must_use]
     pub fn get(&self, namespace: RecordNamespace, key: &[u8]) -> Option<&[u8]> {
-        self.state
+        self.native.state()
             .get(&(namespace, key.to_vec()))
             .map(Vec::as_slice)
     }
@@ -3578,7 +3567,7 @@ impl Journal {
     /// authority after an ambiguous I/O failure. The ordered namespace range
     /// avoids scanning unrelated desired-state and operation records.
     pub fn records(&self, namespace: RecordNamespace) -> impl Iterator<Item = (&[u8], &[u8])> {
-        self.state
+        self.native.state()
             .range((namespace, Vec::new())..)
             .take_while(move |((record_namespace, _), _)| *record_namespace == namespace)
             .map(|((_, key), value)| (key.as_slice(), value.as_slice()))
@@ -3593,7 +3582,7 @@ impl Journal {
     /// journal schema can use this complete ordering to reject foreign
     /// namespaces instead of silently omitting them.
     pub fn all_records(&self) -> impl Iterator<Item = (RecordNamespace, &[u8], &[u8])> {
-        self.state
+        self.native.state()
             .iter()
             .map(|((namespace, key), value)| (*namespace, key.as_slice(), value.as_slice()))
     }
@@ -3606,7 +3595,7 @@ impl Journal {
     ) -> Result<crate::controller_resource_reservation::service_interval::JournalShape, JournalError> {
         self.ensure_healthy()?;
         let mut retained_bytes = 0_usize;
-        for ((_, key), value) in &self.state {
+        for ((_, key), value) in self.native.state() {
             retained_bytes = retained_bytes.checked_add(key.capacity())
                 .and_then(|bytes| bytes.checked_add(value.capacity()))
                 .ok_or(JournalError::JournalTooLarge)?;
@@ -3615,16 +3604,16 @@ impl Journal {
             retained_bytes = retained_bytes.checked_add(key.capacity())
                 .ok_or(JournalError::JournalTooLarge)?;
         }
-        let cells = self.state.len().checked_add(self.idempotency.len())
-            .and_then(|count| count.checked_add(self.transaction_ids.len()))
-            .and_then(|count| count.checked_add(self.committed_namespaces.len()))
+        let cells = self.native.state().len().checked_add(self.idempotency.len())
+            .and_then(|count| count.checked_add(self.native.transaction_ids().len()))
+            .and_then(|count| count.checked_add(self.native.committed_namespaces().len()))
             .ok_or(JournalError::JournalTooLarge)?;
         Ok(crate::controller_resource_reservation::service_interval::JournalShape {
             retained_bytes,
             cells,
-            native_bytes: self.storage.file().metadata()?.len(),
-            maximum_transaction_bytes: self.limits.maximum_transaction_bytes,
-            maximum_record_bytes: self.limits.maximum_record_bytes,
+            native_bytes: self.native.file().metadata()?.len(),
+            maximum_transaction_bytes: self.native.limits().maximum_transaction_bytes,
+            maximum_record_bytes: self.native.limits().maximum_record_bytes,
         })
     }
 
@@ -3672,7 +3661,7 @@ impl Journal {
     /// should use [`ProtectedJournalAuthority::is_materialized_empty`].
     #[must_use]
     pub fn is_materialized_empty(&self) -> bool {
-        self.state.is_empty()
+        self.native.state().is_empty()
     }
 
     /// Returns the next monotonic frame sequence defining the current snapshot boundary.
@@ -3685,12 +3674,12 @@ impl Journal {
     /// [`ProtectedJournalAuthority::snapshot`].
     #[must_use]
     pub const fn snapshot_sequence(&self) -> u64 {
-        self.next_sequence
+        self.native.next_sequence()
     }
 
     /// Supplies actual opened ceilings to a narrowly owned local protocol.
     pub(crate) const fn configured_limits(&self) -> JournalLimits {
-        self.limits
+        self.native.limits()
     }
 
     /// Compares the remaining existing-output Nix main-journal geometry.
@@ -3724,7 +3713,7 @@ impl Journal {
         }
         let keys = [Some(traffic_key), Some(fence_key), Some(current_effect_key), None];
         for key in keys.into_iter().flatten() {
-            if !self.state.iter().any(|((namespace, actual), _)|
+            if !self.native.state().iter().any(|((namespace, actual), _)|
                 *namespace == RecordNamespace::BrokerSessionTraffic && actual.as_slice() == key)
             {
                 return Err(JournalError::ProtectedBoundary);
@@ -3732,7 +3721,7 @@ impl Journal {
         }
 
         let traffic_overhead = EncodedRecordLayout::new(traffic_key.len(), Some(0))?.payload_bytes;
-        let traffic_bytes = self.limits.maximum_record_bytes.checked_sub(traffic_overhead)
+        let traffic_bytes = self.native.limits().maximum_record_bytes.checked_sub(traffic_overhead)
             .ok_or(JournalError::LimitExceeded("record bytes"))?;
         let terminal = [
             OnlineNixExtentV1::put(0, traffic_key.len(), traffic_bytes),
@@ -3777,8 +3766,8 @@ impl Journal {
         prepared_main_value_bytes: [usize; 3],
     ) -> Result<(), JournalError> {
         if checkpoint_key != b"checkpoint" || intent_key != b"intent"
-            || transaction_key != b"transaction" || self.state.len() != 1
-            || !self.state.iter().any(|((namespace, key), value)|
+            || transaction_key != b"transaction" || self.native.state().len() != 1
+            || !self.native.state().iter().any(|((namespace, key), value)|
                 *namespace == RecordNamespace::BrokerSessionTraffic
                     && key.as_slice() == checkpoint_key
                     && value.len() == checkpoint_value_bytes)
@@ -3812,11 +3801,11 @@ impl Journal {
     ) -> Result<[usize; 6], JournalError> {
         self.ensure_healthy()?;
         self.require_protected_names_current()?;
-        validate_limits(self.limits)?;
+        validate_limits(self.native.limits())?;
         if phases.is_empty() || phases.len() > 6
-            || self.committed_namespaces.iter().any(|namespace|
+            || self.native.committed_namespaces().iter().any(|namespace|
                 *namespace != RecordNamespace::BrokerSessionTraffic)
-            || self.state.keys().any(|(namespace, _)|
+            || self.native.state().keys().any(|(namespace, _)|
                 *namespace != RecordNamespace::BrokerSessionTraffic)
             || !self.idempotency.is_empty()
         {
@@ -3825,7 +3814,7 @@ impl Journal {
 
         let mut values = [None; 4];
         let mut materialized = 0_usize;
-        for ((_, key), value) in &self.state {
+        for ((_, key), value) in self.native.state() {
             materialized = materialized.checked_add(key.len())
                 .and_then(|bytes| bytes.checked_add(value.len()))
                 .ok_or(JournalError::LimitExceeded("materialized state bytes"))?;
@@ -3835,24 +3824,24 @@ impl Journal {
                 }
             }
         }
-        if materialized != self.materialized_bytes {
+        if materialized != self.native.materialized_bytes() {
             return Err(JournalError::ProtectedBoundary);
         }
-        let mut entries = self.state.len();
-        let original_length = self.storage.file().metadata()?.len();
+        let mut entries = self.native.state().len();
+        let original_length = self.native.file().metadata()?.len();
         let mut length = original_length;
-        let mut next = self.next_sequence;
-        let mut committed = self.committed_transactions;
+        let mut next = self.native.next_sequence();
+        let mut committed = self.native.committed_transactions();
         let mut widths = [0_usize; 6];
-        if next == 0 || next == u64::MAX || length > self.limits.maximum_journal_bytes
-            || materialized > self.limits.maximum_materialized_bytes
-            || entries > self.limits.maximum_materialized_records
+        if next == 0 || next == u64::MAX || length > self.native.limits().maximum_journal_bytes
+            || materialized > self.native.limits().maximum_materialized_bytes
+            || entries > self.native.limits().maximum_materialized_records
         {
             return Err(JournalError::ProtectedBoundary);
         }
 
         for (phase, records) in phases.iter().enumerate() {
-            if records.is_empty() || records.len() > self.limits.maximum_records_per_transaction {
+            if records.is_empty() || records.len() > self.native.limits().maximum_records_per_transaction {
                 return Err(JournalError::LimitExceeded("transaction record count"));
             }
             let _ = u32::try_from(records.len())
@@ -3870,13 +3859,13 @@ impl Journal {
                 }
                 changed[record.slot] = true;
                 let layout = EncodedRecordLayout::new(record.key_bytes, record.value_bytes)?;
-                if record.key_bytes > self.limits.maximum_key_bytes
-                    || layout.payload_bytes > self.limits.maximum_record_bytes
+                if record.key_bytes > self.native.limits().maximum_key_bytes
+                    || layout.payload_bytes > self.native.limits().maximum_record_bytes
                 {
                     return Err(JournalError::LimitExceeded("record bytes"));
                 }
                 payload = payload.checked_add(layout.payload_bytes)
-                    .filter(|bytes| *bytes <= self.limits.maximum_transaction_bytes)
+                    .filter(|bytes| *bytes <= self.native.limits().maximum_transaction_bytes)
                     .ok_or(JournalError::LimitExceeded("transaction bytes"))?;
                 append = append.checked_add(EncodedFrameLayout::new(layout.payload_bytes)?.frame_bytes)
                     .ok_or(JournalError::JournalTooLarge)?;
@@ -3894,37 +3883,37 @@ impl Journal {
                         }
                         materialized = materialized.checked_add(record.key_bytes)
                             .and_then(|total| total.checked_add(bytes))
-                            .filter(|total| *total <= self.limits.maximum_materialized_bytes)
+                            .filter(|total| *total <= self.native.limits().maximum_materialized_bytes)
                             .ok_or(JournalError::LimitExceeded("materialized state bytes"))?;
                     }
                     None if values[record.slot].is_some() => entries -= 1,
                     None => {}
                 }
                 values[record.slot] = record.value_bytes;
-                if entries > self.limits.maximum_materialized_records {
+                if entries > self.native.limits().maximum_materialized_records {
                     return Err(JournalError::LimitExceeded("materialized record count"));
                 }
             }
 
             committed = committed.checked_add(1)
-                .filter(|count| *count <= self.limits.maximum_transactions)
+                .filter(|count| *count <= self.native.limits().maximum_transactions)
                 .ok_or(JournalError::LimitExceeded("committed transaction count"))?;
             let frames = u64::try_from(records.len()).ok().and_then(|count| count.checked_add(2))
                 .ok_or(JournalError::SequenceExhausted)?;
             next = next.checked_add(frames).filter(|next| *next != u64::MAX)
                 .ok_or(JournalError::SequenceExhausted)?;
             length = length.checked_add(u64::try_from(append).map_err(|_| JournalError::JournalTooLarge)?)
-                .filter(|bytes| *bytes <= self.limits.maximum_journal_bytes)
+                .filter(|bytes| *bytes <= self.native.limits().maximum_journal_bytes)
                 .ok_or(JournalError::JournalTooLarge)?;
             widths[phase] = JournalTransaction::maximum_prepared_bytes_v1(JournalLimits {
                 maximum_records_per_transaction: records.len(),
                 maximum_transaction_bytes: payload,
-                ..self.limits
+                ..self.native.limits()
             })?;
         }
 
         self.require_protected_names_current()?;
-        if self.storage.file().metadata()?.len() != original_length {
+        if self.native.file().metadata()?.len() != original_length {
             return Err(JournalError::ProtectedBoundary);
         }
         Ok(widths)
@@ -4354,7 +4343,7 @@ impl Journal {
         selected: aos_sandbox_core::ProjectId,
     ) -> Result<source_tree_successor::SourceProjectFamilyDataV3, JournalError> {
         self.ensure_healthy()?;
-        source_tree_successor::current_project_genesis_data_v3(&self.state, selected)
+        source_tree_successor::current_project_genesis_data_v3(self.native.state(), selected)
     }
 
     #[cfg(target_os = "linux")]
@@ -4680,7 +4669,7 @@ impl Journal {
         &self,
     ) -> Result<&BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>, JournalError> {
         self.validate_held_protected_names()?;
-        Ok(&self.state)
+        Ok(self.native.state())
     }
 
     #[cfg(target_os = "linux")]
@@ -4689,7 +4678,7 @@ impl Journal {
         transaction_id: &[u8; 16],
     ) -> Result<bool, JournalError> {
         self.validate_held_protected_names()?;
-        Ok(self.transaction_ids.contains(transaction_id))
+        Ok(self.native.transaction_ids().contains(transaction_id))
     }
 
     /// Appends only the exact private bank CAS through the ordinary engine.
@@ -4747,7 +4736,7 @@ impl Journal {
         self.ensure_healthy()?;
         #[cfg(target_os = "linux")]
         crate::controller_resource_reservation::require_transition(
-            &self.state, transaction, resource_reservation,
+            self.native.state(), transaction, resource_reservation,
         )?;
         #[cfg(not(target_os = "linux"))]
         if transaction.records().iter().any(|record| {
@@ -4769,50 +4758,50 @@ impl Journal {
                 return Err(JournalError::ProtectedBoundary);
             }
             source_tree_successor::require_project_genesis_native_owner_v3(self, *phase)?;
-            source_tree_successor::require_project_genesis_family_v3(&self.state, transaction, *phase)?;
+            source_tree_successor::require_project_genesis_family_v3(self.native.state(), transaction, *phase)?;
             None
         } else {
-            source_tree_successor::require_transition(&self.state, transaction, first_successor)?
+            source_tree_successor::require_transition(self.native.state(), transaction, first_successor)?
         };
         let settling_reservation = first_successor_settling.or(settling_reservation);
         if let Some(phase) = first_successor {
-            source_tree_successor::require_live_custody(self, &self.state, transaction, phase)?;
+            source_tree_successor::require_live_custody(self, self.native.state(), transaction, phase)?;
             capacity_reservation::validate_first_source_successor_capacity_records_v2(self, transaction)?;
             if allow_capacity_records != phase.has_capacity_records() {
                 return Err(JournalError::ProtectedBoundary);
             }
         }
         if !nix_offline_provisioning_edge(root_local_edge) {
-            require_no_nix_native_mutation(&self.state, transaction)?;
+            require_no_nix_native_mutation(self.native.state(), transaction)?;
         }
         #[cfg(target_os = "linux")]
-        cache_policy_hold::require_no_exclusive_mutation_v1(self, &self.state)?;
+        cache_policy_hold::require_no_exclusive_mutation_v1(self, self.native.state())?;
         let settling_reservation = if matches!(root_local_edge, Some(RootOwnerEdge::SourceOriginal)) {
             let (_, comparison) = self.source_original_replay.preview_transaction(
-                &self.state, transaction, self.limits,
+                self.native.state(), transaction, self.native.limits(),
             )?;
-            if comparison.before() != &self.state {
+            if comparison.before() != self.native.state() {
                 return Err(JournalError::StaleAuthoritySnapshot);
             }
             None
         } else if let Some(edge) = root_local_edge {
-            validate_root_owner_edge(&self.state, transaction, edge, self.limits)?
+            validate_root_owner_edge(self.native.state(), transaction, edge, self.native.limits())?
         } else {
             if self.source_original_replay.has_dependencies() {
                 return Err(JournalError::ProtectedBoundary);
             }
-            root_local_recovery::require_fences(&self.state, transaction)?;
-            root_original_native::require_generic_transaction(&self.state, transaction)?;
+            root_local_recovery::require_fences(self.native.state(), transaction)?;
+            root_original_native::require_generic_transaction(self.native.state(), transaction)?;
             root_original_inventory::require_generic_transaction(
-                &self.state, transaction, self.limits,
+                self.native.state(), transaction, self.native.limits(),
             )?;
-            native_held::require_legacy_transaction(&self.state, transaction)?;
+            native_held::require_legacy_transaction(self.native.state(), transaction)?;
             settling_reservation
         };
         #[cfg(target_os = "linux")]
         if nix_offline_provisioning_edge(root_local_edge) {
             nix_offline_provisioning::require_native_identifier(
-                &self.state, transaction, self.next_sequence,
+                self.native.state(), transaction, self.native.next_sequence(),
             )?;
         }
         self.validate_consumer_resource_transition(
@@ -4829,37 +4818,37 @@ impl Journal {
             settling_reservation,
         )?;
         controller_source_genesis::require_no_mutation(
-            &self.state,
+            self.native.state(),
             transaction,
             controller_genesis_transition,
         )?;
         controller_source_successor_issuance::require_no_mutation(
-            &self.state,
+            self.native.state(),
             transaction,
             first_successor.map(|phase| phase.controller_transition_for(transaction)).transpose()?.flatten().or(successor_issuance_transition),
         )?;
         source_tree_genesis::require_no_mutation(
-            &self.state,
+            self.native.state(),
             transaction,
             first_successor.map_or(source_genesis_transition, |phase| phase.source_genesis_transition()),
         )?;
         source_project_admission_challenge::require_no_mutation(
-            &self.state,
+            self.native.state(),
             transaction,
             project_admission_transition,
         )?;
         host_settlement_admission_gate::require_no_mutation(
-            &self.state,
+            self.native.state(),
             transaction,
             allow_host_settlement_admission_append,
         )?;
         host_currentness_fence::require_no_mutation(
-            &self.state,
+            self.native.state(),
             transaction,
             allow_host_currentness_fence_acquisition,
         )?;
         host_execution_fence::require_no_mutation(
-            &self.state,
+            self.native.state(),
             transaction,
             allow_host_fence_acquisition,
         )?;
@@ -4886,26 +4875,26 @@ impl Journal {
             }
         }
         #[cfg(target_os = "linux")]
-        require_q04_journal_transition(&self.state, transaction, q04_transition)?;
+        require_q04_journal_transition(self.native.state(), transaction, q04_transition)?;
         if !allow_policy_hold_transition {
             #[cfg(target_os = "linux")]
             if !matches!(q04_transition, Some(Q04JournalTransitionV1::Controller(..))) {
-                controller_policy_hold::require_no_mutation(&self.state, transaction)?;
+                controller_policy_hold::require_no_mutation(self.native.state(), transaction)?;
             }
             #[cfg(not(target_os = "linux"))]
-            controller_policy_hold::require_no_mutation(&self.state, transaction)?;
+            controller_policy_hold::require_no_mutation(self.native.state(), transaction)?;
             #[cfg(target_os = "linux")]
             if !matches!(q04_transition, Some(Q04JournalTransitionV1::Source(..))) {
-                source_domain_policy_hold::require_no_mutation(&self.state, transaction)?;
+                source_domain_policy_hold::require_no_mutation(self.native.state(), transaction)?;
             }
             #[cfg(not(target_os = "linux"))]
-            source_domain_policy_hold::require_no_mutation(&self.state, transaction)?;
+            source_domain_policy_hold::require_no_mutation(self.native.state(), transaction)?;
         }
-        self.require_mount_git_coverage_source_transition_v1(&self.state, transaction)?;
-        self.require_storage_git_coverage_transition_v1(&self.state, transaction)?;
-        self.require_owner_git_coverage_transition_v1(&self.state, transaction)?;
-        validate_transaction(transaction, self.limits)?;
-        delete_batch::validate(&self.state, transaction, self.next_sequence, self.limits)?;
+        self.require_mount_git_coverage_source_transition_v1(self.native.state(), transaction)?;
+        self.require_storage_git_coverage_transition_v1(self.native.state(), transaction)?;
+        self.require_owner_git_coverage_transition_v1(self.native.state(), transaction)?;
+        validate_transaction(transaction, self.native.limits())?;
+        delete_batch::validate(self.native.state(), transaction, self.native.next_sequence(), self.native.limits())?;
         let has_capacity_records = transaction
             .records()
             .iter()
@@ -4913,65 +4902,66 @@ impl Journal {
         if has_capacity_records != allow_capacity_records {
             return Err(JournalError::ProtectedBoundary);
         }
-        if self.transaction_ids.contains(transaction.id()) {
+        if self.native.transaction_ids().contains(transaction.id()) {
             return Err(JournalError::DuplicateTransaction);
         }
-        if self.committed_transactions >= self.limits.maximum_transactions {
+        if self.native.committed_transactions() >= self.native.limits().maximum_transactions {
             return Err(JournalError::LimitExceeded("committed transaction count"));
         }
         validate_idempotency_changes(&self.idempotency, transaction.records())?;
-        let materialized_bytes = validate_materialized_change(
-            &self.state,
-            self.materialized_bytes,
-            transaction.records(),
-            self.limits,
+        let materialized_bytes = self.native.projected_change(
+            transaction.records().iter().map(RecordMutationRef::from),
         )?;
-        let frames = encode_transaction(transaction, self.next_sequence)?;
+        let frames = self.native.encode_at_head(
+            transaction.id,
+            transaction.records.iter().map(|record| NativeRecordRef {
+                namespace_byte: record.namespace as u8,
+                key: &record.key,
+                value: record.value.as_deref(),
+            }),
+        )?;
         let frame_count = u64::try_from(frames.len())
             .map_err(|_| JournalError::LimitExceeded("transaction frame count"))?;
-        let commit_sequence = self
-            .next_sequence
+        let commit_sequence = self.native.next_sequence()
             .checked_add(frame_count - 1)
             .ok_or(JournalError::SequenceExhausted)?;
         let following_sequence = commit_sequence
             .checked_add(1)
             .ok_or(JournalError::SequenceExhausted)?;
         root_original_inventory::require_append_sequence_headroom(
-            &self.state, transaction, following_sequence,
+            self.native.state(), transaction, following_sequence,
         )?;
         if matches!(root_local_edge, Some(RootOwnerEdge::SourceOriginal)) {
             let (_, comparison) = self.source_original_replay.preview_transaction(
-                &self.state, transaction, self.limits,
+                self.native.state(), transaction, self.native.limits(),
             )?;
             source_original_native::replay::require_advisory_bounds(
                 &comparison,
-                self.limits,
-                self.storage.file().metadata()?.len().checked_add(
+                self.native.limits(),
+                self.native.file().metadata()?.len().checked_add(
                     encoded_transaction_append_bytes(transaction)?,
                 ).ok_or(JournalError::JournalTooLarge)?,
-                self.committed_transactions.checked_add(1)
+                self.native.committed_transactions().checked_add(1)
                     .ok_or(JournalError::LimitExceeded("committed transaction count"))?,
                 following_sequence,
             )?;
         }
-        let expected_length = self.storage.expected_append_length(
-            &frames, self.limits.maximum_journal_bytes,
-        )?;
+        let expected_length = self.native.expected_append_length(&frames)?;
         validate_reserved_capacity(
-            &self.state,
+            self.native.state(),
             materialized_bytes,
             transaction.records(),
             settling_reservation,
             expected_length,
-            self.committed_transactions
+            self.native.committed_transactions()
                 .checked_add(1)
                 .ok_or(JournalError::LimitExceeded("committed transaction count"))?,
-            self.limits,
+            self.native.limits(),
             root_local_edge,
         )?;
         if first_successor.is_some() {
             source_tree_successor::require_sequence_headroom(
-                &root_original_inventory::materialize(&self.state, transaction),
+                &root_original_inventory::materialize(self.native.state(), transaction),
                 following_sequence,
             )?;
         }
@@ -5014,7 +5004,7 @@ impl Journal {
         }
 
         if let Some(phase) = first_successor {
-            source_tree_successor::require_live_custody(self, &self.state, transaction, phase)?;
+            source_tree_successor::require_live_custody(self, self.native.state(), transaction, phase)?;
         }
 
         if let Some(ProjectNativeTransitionV3::Genesis(phase, original)) = &project_genesis {
@@ -5047,7 +5037,7 @@ impl Journal {
             { return Err(JournalError::ProtectedBoundary); }
             crate::hierarchy::controller_genesis::require_controller(self, self.protected_owner_uid()?)
                 .map_err(|cause| JournalError::ProjectGenesisOriginal(Box::new(cause)))?;
-            controller_source_successor_issuance::require_no_mutation(&self.state, transaction, Some(*transition))?;
+            controller_source_successor_issuance::require_no_mutation(self.native.state(), transaction, Some(*transition))?;
             completed.recheck().map_err(|cause| JournalError::ProjectGenesisOriginal(Box::new(cause)))?;
             completed.signing_boundary_clock().map_err(|cause| JournalError::ProjectGenesisOriginal(Box::new(cause)))?;
         }
@@ -5081,17 +5071,16 @@ impl Journal {
             )?;
         }
 
-        let durable_bytes = self.storage.append_exact(&frames, expected_length)?;
+        let durable_bytes = self.native.append_exact(&frames, expected_length)?;
 
         for record in &transaction.records {
-            apply_record(&mut self.state, &mut self.idempotency, record)?;
+            self.native.apply_mutation(RecordMutationRef::from(record));
+            apply_idempotency_record(&mut self.idempotency, record)?;
         }
-        self.materialized_bytes = materialized_bytes;
-        self.next_sequence = following_sequence;
-        self.committed_transactions += 1;
-        self.transaction_ids.insert(transaction.id);
-        self.committed_namespaces
-            .extend(transaction.records().iter().map(JournalRecord::namespace));
+        self.native.publish_append(
+            materialized_bytes, following_sequence, transaction.id,
+            transaction.records().iter().map(JournalRecord::namespace),
+        );
         #[cfg(target_os = "linux")]
         {
             self.q04_lower_history_present |= transaction.records().iter()
@@ -5101,7 +5090,7 @@ impl Journal {
         if let Err(error) =
             cache_gate.own_successor(self, transaction, following_sequence, durable_bytes)
         {
-            self.storage.poison();
+            self.native.poison();
             return Err(error);
         }
 
@@ -5376,7 +5365,7 @@ impl Journal {
             return Err(JournalError::ProtectedBoundary);
         }
         #[cfg(target_os = "linux")]
-        cache_policy_hold::require_no_exclusive_mutation_v1(self, &self.state)?;
+        cache_policy_hold::require_no_exclusive_mutation_v1(self, self.native.state())?;
         if root_local_edge.is_some() && transactions.len() != 1
             && !nix_offline_provisioning_edge(root_local_edge)
         {
@@ -5413,14 +5402,14 @@ impl Journal {
         #[cfg(not(target_os = "linux"))]
         cache_gate.check(self)?;
 
-        delete_batch::bound_preview_view(&self.state, &transactions, self.limits)?;
-        let mut state = self.state.clone();
+        delete_batch::bound_preview_view(self.native.state(), &transactions, self.native.limits())?;
+        let mut state = self.native.state().clone();
         let mut idempotency = self.idempotency.clone();
-        let mut transaction_ids = self.transaction_ids.clone();
-        let mut materialized_bytes = self.materialized_bytes;
-        let mut next_sequence = self.next_sequence;
-        let mut committed_transactions = self.committed_transactions;
-        let mut expected_length = self.storage.file().metadata()?.len();
+        let mut transaction_ids = self.native.transaction_ids().clone();
+        let mut materialized_bytes = self.native.materialized_bytes();
+        let mut next_sequence = self.native.next_sequence();
+        let mut committed_transactions = self.native.committed_transactions();
+        let mut expected_length = self.native.file().metadata()?.len();
 
         for index in 0..transactions.len() {
             let transaction = transactions.transaction(index);
@@ -5446,11 +5435,11 @@ impl Journal {
             }
             let settling_reservation = if matches!(root_local_edge, Some(RootOwnerEdge::SourceOriginal)) {
                 self.source_original_replay.preview_transaction(
-                    &state, transaction, self.limits,
+                    &state, transaction, self.native.limits(),
                 )?;
                 None
             } else if let Some(edge) = root_local_edge {
-                validate_root_owner_edge(&state, transaction, edge, self.limits)?
+                validate_root_owner_edge(&state, transaction, edge, self.native.limits())?
             } else {
                 if self.source_original_replay.has_dependencies() {
                     return Err(JournalError::ProtectedBoundary);
@@ -5458,7 +5447,7 @@ impl Journal {
                 root_local_recovery::require_fences(&state, transaction)?;
                 root_original_native::require_generic_transaction(&state, transaction)?;
                 root_original_inventory::require_generic_transaction(
-                    &state, transaction, self.limits,
+                    &state, transaction, self.native.limits(),
                 )?;
                 native_held::require_legacy_transaction(&state, transaction)?;
                 settling_reservation
@@ -5542,12 +5531,12 @@ impl Journal {
             if has_capacity_records != allow_capacity_records {
                 return Err(JournalError::ProtectedBoundary);
             }
-            validate_transaction(transaction, self.limits)?;
-            delete_batch::validate(&state, transaction, next_sequence, self.limits)?;
+            validate_transaction(transaction, self.native.limits())?;
+            delete_batch::validate(&state, transaction, next_sequence, self.native.limits())?;
             if !transaction_ids.insert(transaction.id) {
                 return Err(JournalError::DuplicateTransaction);
             }
-            if committed_transactions >= self.limits.maximum_transactions {
+            if committed_transactions >= self.native.limits().maximum_transactions {
                 return Err(JournalError::LimitExceeded("committed transaction count"));
             }
             validate_idempotency_changes(&idempotency, transaction.records())?;
@@ -5555,7 +5544,7 @@ impl Journal {
                 &state,
                 materialized_bytes,
                 transaction.records(),
-                self.limits,
+                self.native.limits(),
             )?;
 
             let frames = encode_transaction(transaction, next_sequence)?;
@@ -5572,17 +5561,17 @@ impl Journal {
             expected_length = expected_length
                 .checked_add(additional_bytes.ok_or(JournalError::JournalTooLarge)?)
                 .ok_or(JournalError::JournalTooLarge)?;
-            if expected_length > self.limits.maximum_journal_bytes {
+            if expected_length > self.native.limits().maximum_journal_bytes {
                 return Err(JournalError::JournalTooLarge);
             }
 
             if matches!(root_local_edge, Some(RootOwnerEdge::SourceOriginal)) {
                 let (_, comparison) = self.source_original_replay.preview_transaction(
-                    &state, transaction, self.limits,
+                    &state, transaction, self.native.limits(),
                 )?;
                 source_original_native::replay::require_advisory_bounds(
                     &comparison,
-                    self.limits,
+                    self.native.limits(),
                     expected_length,
                     committed_transactions.checked_add(1)
                         .ok_or(JournalError::LimitExceeded("committed transaction count"))?,
@@ -5599,7 +5588,7 @@ impl Journal {
                 committed_transactions
                     .checked_add(1)
                     .ok_or(JournalError::LimitExceeded("committed transaction count"))?,
-                self.limits,
+                self.native.limits(),
                 root_local_edge,
             )?;
             if first_successor.is_some() {
@@ -5640,7 +5629,7 @@ impl Journal {
         if self.mount_git_coverage_denies_new_v1() {
             return Err(JournalError::ProtectedBoundary);
         }
-        if delete_batch::has_dependencies(&self.state) {
+        if delete_batch::has_dependencies(self.native.state()) {
             return Err(JournalError::ProtectedBoundary);
         }
         #[cfg(target_os = "linux")]
@@ -5650,14 +5639,14 @@ impl Journal {
             // released row would erase that relation; no retirement is implied.
             return Err(JournalError::ProtectedBoundary);
         }
-        if self.state.keys().any(|(namespace, _)| {
+        if self.native.state().keys().any(|(namespace, _)| {
             *namespace == RecordNamespace::NixOfflineProvisioning
         }) {
             return Err(JournalError::ProtectedBoundary);
         }
         if self.source_original_replay.has_dependencies()
-            || source_original_native::replay::has_original_rows(&self.state)
-            || self.state.keys().any(|(namespace, key)| {
+            || source_original_native::replay::has_original_rows(self.native.state())
+            || self.native.state().keys().any(|(namespace, key)| {
                 *namespace == RecordNamespace::SourceProviderAuthority
                     && source_original_native::challenge::is_challenge_key(key)
             })
@@ -5666,63 +5655,64 @@ impl Journal {
         }
         #[cfg(target_os = "linux")]
         runtime_deployment_history::require_no_compaction(self)?;
-        root_local_recovery::pending(&self.state)?;
-        root_original_native::pending(&self.state, self.limits)?;
+        root_local_recovery::pending(self.native.state())?;
+        root_original_native::pending(self.native.state(), self.native.limits())?;
         root_original_inventory::validate_rejoined_capacity(
-            &self.state,
-            self.materialized_bytes,
-            self.storage.file().metadata()?.len(),
-            self.committed_transactions,
-            self.limits,
-            self.next_sequence,
+            self.native.state(),
+            self.native.materialized_bytes(),
+            self.native.file().metadata()?.len(),
+            self.native.committed_transactions(),
+            self.native.limits(),
+            self.native.next_sequence(),
         )?;
-        source_tree_genesis::require_no_compaction(&self.state)?;
-        source_tree_successor::require_no_compaction(&self.state)?;
-        source_project_admission_challenge::require_no_compaction(&self.state)?;
-        controller_source_genesis::require_no_compaction(&self.state)?;
-        controller_source_successor_issuance::require_no_compaction(&self.state)?;
+        source_tree_genesis::require_no_compaction(self.native.state())?;
+        source_tree_successor::require_no_compaction(self.native.state())?;
+        source_project_admission_challenge::require_no_compaction(self.native.state())?;
+        controller_source_genesis::require_no_compaction(self.native.state())?;
+        controller_source_successor_issuance::require_no_compaction(self.native.state())?;
         // The bank retains exact native transaction membership and uncertain
         // claims. Generic state-only compaction is not its recovery barrier.
-        if self.state.keys().any(|(namespace, _)| {
+        if self.native.state().keys().any(|(namespace, _)| {
             *namespace == RecordNamespace::ControllerResourceReservation
         }) {
             return Err(JournalError::ProtectedBoundary);
         }
         cache_policy_hold::require_valid_compaction(self)?;
-        host_settlement_admission_gate::require_no_compaction(&self.state)?;
-        host_currentness_fence::require_no_compaction(&self.state)?;
-        host_execution_fence::require_no_compaction(&self.state)?;
-        controller_policy_hold::require_no_compaction(&self.state)?;
-        source_domain_policy_hold::require_no_compaction(&self.state)?;
+        host_settlement_admission_gate::require_no_compaction(self.native.state())?;
+        host_currentness_fence::require_no_compaction(self.native.state())?;
+        host_execution_fence::require_no_compaction(self.native.state())?;
+        controller_policy_hold::require_no_compaction(self.native.state())?;
+        source_domain_policy_hold::require_no_compaction(self.native.state())?;
         let _cache_policy_guard = cache_policy_hold::mutation_guard(self)?;
         if let Err(error) = self.compact_inner() {
-            self.storage.poison();
+            self.native.poison();
             return Err(error);
         }
-        root_local_recovery::pending(&self.state).inspect_err(|_| self.storage.poison())?;
-        root_original_native::pending(&self.state, self.limits)
-            .inspect_err(|_| self.storage.poison())?;
+        root_local_recovery::pending(self.native.state()).inspect_err(|_| self.native.poison())?;
+        root_original_native::pending(self.native.state(), self.native.limits())
+            .inspect_err(|_| self.native.poison())?;
         root_original_inventory::validate_rejoined_capacity(
-            &self.state,
-            self.materialized_bytes,
-            self.storage.file().metadata()?.len(),
-            self.committed_transactions,
-            self.limits,
-            self.next_sequence,
-        ).inspect_err(|_| self.storage.poison())?;
+            self.native.state(),
+            self.native.materialized_bytes(),
+            self.native.file().metadata()?.len(),
+            self.native.committed_transactions(),
+            self.native.limits(),
+            self.native.next_sequence(),
+        ).inspect_err(|_| self.native.poison())?;
         Ok(())
     }
 
     fn compact_inner(&mut self) -> Result<(), JournalError> {
         if let Some(location) = &self.protected {
-            let (file, replay) = compact_protected(location, &self.state, self.limits)?;
-            self.storage.replace_file(file);
-            self.next_sequence = replay.next_sequence;
-            self.committed_transactions = replay.committed_transactions;
-            self.transaction_ids = replay.transaction_ids;
-            self.committed_namespaces = replay.committed_namespaces;
-            self.state = replay.state;
-            self.materialized_bytes = replay.materialized_bytes;
+            let (file, replay) = compact_protected(location, self.native.state(), self.native.limits())?;
+            self.native.replace_replayed_file(
+                file,
+                NativeJournalState::from_owned_parts(
+                    replay.next_sequence, replay.committed_transactions,
+                    replay.transaction_ids, replay.committed_namespaces,
+                    replay.state, replay.materialized_bytes,
+                ),
+            );
             self.idempotency = replay.idempotency;
             self.source_challenge_history = replay.source_challenge_history;
             self.source_original_replay = replay.source_original_replay;
@@ -5734,7 +5724,7 @@ impl Journal {
             self.authority_instance = Arc::new(JournalAuthorityInstance);
             return Ok(());
         }
-        let temporary = sibling_with_suffix(&self.path, ".compact.tmp");
+        let temporary = sibling_with_suffix(self.native.path(), ".compact.tmp");
         let mut replacement = OpenOptions::new()
             .read(true)
             .write(true)
@@ -5742,24 +5732,25 @@ impl Journal {
             .truncate(true)
             .open(&temporary)?;
 
-        write_compacted(&mut replacement, &self.state, self.limits)?;
+        write_compacted(&mut replacement, self.native.state(), self.native.limits())?;
         replacement.sync_all()?;
-        if replacement.metadata()?.len() > self.limits.maximum_journal_bytes {
+        if replacement.metadata()?.len() > self.native.limits().maximum_journal_bytes {
             return Err(JournalError::JournalTooLarge);
         }
         drop(replacement);
 
-        fs::rename(&temporary, &self.path)?;
-        sync_parent(&self.path)?;
+        fs::rename(&temporary, self.native.path())?;
+        sync_parent(self.native.path())?;
 
-        let (file, replay) = reopen_replacement(&self.path, self.limits)?;
-        self.storage.replace_file(file);
-        self.next_sequence = replay.next_sequence;
-        self.committed_transactions = replay.committed_transactions;
-        self.transaction_ids = replay.transaction_ids;
-        self.committed_namespaces = replay.committed_namespaces;
-        self.state = replay.state;
-        self.materialized_bytes = replay.materialized_bytes;
+        let (file, replay) = reopen_replacement(self.native.path(), self.native.limits())?;
+        self.native.replace_replayed_file(
+            file,
+            NativeJournalState::from_owned_parts(
+                replay.next_sequence, replay.committed_transactions,
+                replay.transaction_ids, replay.committed_namespaces,
+                replay.state, replay.materialized_bytes,
+            ),
+        );
         self.idempotency = replay.idempotency;
         self.source_challenge_history = replay.source_challenge_history;
         self.source_original_replay = replay.source_original_replay;
@@ -5863,7 +5854,7 @@ impl ProtectedJournalAuthority<'_> {
         self.validate_fixed_source_provider_storage()?;
         Ok(FixedSourceProviderJournalHandoffV1 {
             authority: self,
-            sequence: self.journal.next_sequence,
+            sequence: self.journal.native.next_sequence(),
         })
     }
 
@@ -5885,7 +5876,7 @@ impl ProtectedJournalAuthority<'_> {
         } else {
             self.validate_fixed_source_provider_storage()?;
         }
-        if !core::ptr::eq(handoff.authority, self) || handoff.sequence != self.journal.next_sequence
+        if !core::ptr::eq(handoff.authority, self) || handoff.sequence != self.journal.native.next_sequence()
         {
             return Err(JournalError::StaleAuthoritySnapshot);
         }
@@ -6011,7 +6002,7 @@ impl ProtectedJournalAuthority<'_> {
         transaction_id: &[u8; 16],
     ) -> Result<bool, JournalError> {
         self.validate_mount_source_acquisition_authority()?;
-        Ok(self.journal.transaction_ids.contains(transaction_id))
+        Ok(self.journal.native.transaction_ids().contains(transaction_id))
     }
 
     /// Validates an exact current namespace-40 snapshot and guard.
@@ -6814,7 +6805,7 @@ impl ProtectedJournalAuthority<'_> {
         expected: &BTreeSet<[u8; 32]>,
     ) -> Result<(), JournalError> {
         let purpose = self.validate_capacity_authority()?;
-        capacity_reservation::require_legacy_reservations(&self.journal.state)?;
+        capacity_reservation::require_legacy_reservations(self.journal.native.state())?;
         let mut retained = BTreeSet::new();
         for (key, value) in self
             .journal
@@ -7616,7 +7607,7 @@ impl Journal {
                 crate::controller_service::journal::production_journal_limits(),
             ),
             OriginalReleaseNativeCutPurposeV1::Root => self.require_protected_named_location(
-                Path::new("/var/lib/aos/sandbox-mount"), "mount.journal", 0, self.limits,
+                Path::new("/var/lib/aos/sandbox-mount"), "mount.journal", 0, self.native.limits(),
             ),
             OriginalReleaseNativeCutPurposeV1::Source => source_original_native::writer::require_fixed(self),
         }
@@ -7654,7 +7645,7 @@ impl Journal {
                 .and_then(|returned| returned.as_ref().ok())
                 .ok_or(JournalError::ProtectedBoundary)?;
             let bytes = self.original_release_controller_replay_copy_bytes_v1(witness.file.size)?;
-            if bytes > self.limits.maximum_materialized_bytes {
+            if bytes > self.native.limits().maximum_materialized_bytes {
                 return Err(JournalError::LimitExceeded("original Release replay copy"));
             }
             Ok(())
@@ -7678,19 +7669,19 @@ impl Journal {
         if captured.first.is_none() && readback.is_none_or(Result::is_ok) {
             if let Some(Ok(witness)) = captured.protection.as_ref() {
                 let mut reader = runtime_deployment_history::ReadAtCursorV1::new(
-                    self.storage.file(), witness.file.size,
+                    self.native.file(), witness.file.size,
                 );
                 // The original native Result is parked before projecting its
                 // full-map comparison, including partial-replay failure.
                 let observer = match challenges {
                     Some(_) => DeploymentHistoryObserverV1::OriginalReleaseSource {
                         history: &mut captured.history,
-                        remaining: self.committed_transactions,
+                        remaining: self.native.committed_transactions(),
                     },
                     None => DeploymentHistoryObserverV1::OriginalRelease(&mut captured.history),
                 };
                 captured.native = Some(replay_original_observed(
-                    &mut reader, self.limits, challenges,
+                    &mut reader, self.native.limits(), challenges,
                     Some(observer),
                 ));
                 if matches!(captured.native, Some(Err(_))) {
@@ -7772,7 +7763,7 @@ impl Journal {
             let bytes = self.original_release_source_replay_copy_bytes_v1(
                 witness.file.size, challenges,
             )?;
-            if bytes > self.limits.maximum_materialized_bytes {
+            if bytes > self.native.limits().maximum_materialized_bytes {
                 return Err(JournalError::LimitExceeded("Source original Release replay copy"));
             }
             Ok(())
@@ -7832,11 +7823,11 @@ impl Journal {
         let map_entry = std::mem::size_of::<((RecordNamespace, Vec<u8>), Vec<u8>)>();
         let idempotency_entry = std::mem::size_of::<(Vec<u8>, IdempotencyDecision)>();
 
-        let original_indexes = self.state.len().checked_mul(map_entry)
-            .and_then(|bytes| bytes.checked_add(self.materialized_bytes))
-            .and_then(|bytes| bytes.checked_add(self.transaction_ids.len().checked_mul(16)?))
+        let original_indexes = self.native.state().len().checked_mul(map_entry)
+            .and_then(|bytes| bytes.checked_add(self.native.materialized_bytes()))
+            .and_then(|bytes| bytes.checked_add(self.native.transaction_ids().len().checked_mul(16)?))
             .and_then(|bytes| bytes.checked_add(
-                self.committed_namespaces.len().checked_mul(std::mem::size_of::<RecordNamespace>())?,
+                self.native.committed_namespaces().len().checked_mul(std::mem::size_of::<RecordNamespace>())?,
             ))
             .and_then(|bytes| bytes.checked_add(self.idempotency.len().checked_mul(idempotency_entry)?))
             .ok_or_else(limit)?;
@@ -7845,7 +7836,7 @@ impl Journal {
         })?;
 
         let NativeReleaseReplayWorkV1 { replay_indexes, pending_records, frame_payload } =
-            native_release_replay_work_v1(physical, self.limits)?;
+            native_release_replay_work_v1(physical, self.native.limits())?;
 
         original_indexes.checked_add(replay_indexes)
             .and_then(|bytes| bytes.checked_add(pending_records))
@@ -7868,8 +7859,8 @@ impl Journal {
         // The fixed Source observer rejects an extra COMMIT before any Source
         // retention. Price actual original metadata, not a guessed count from
         // the serialized width of today's large carriers.
-        let transactions = self.committed_transactions;
-        if transactions == 0 || transactions > self.limits.maximum_transactions {
+        let transactions = self.native.committed_transactions();
+        if transactions == 0 || transactions > self.native.limits().maximum_transactions {
             return Err(JournalError::ProtectedBoundary);
         }
         let pairs = transactions.checked_mul(transactions).ok_or_else(limit)?;
@@ -7891,7 +7882,7 @@ impl Journal {
             )?))
             .and_then(|bytes| bytes.checked_add(pairs.checked_mul(2)?
                 .checked_mul(historical_descriptor)?))
-            .ok_or_else(limit)?.min(self.limits.maximum_materialized_bytes);
+            .ok_or_else(limit)?.min(self.native.limits().maximum_materialized_bytes);
         let resident = self.source_original_replay.original_release_resident_copy_bytes_v1()?;
         let representation = std::mem::size_of::<Option<OriginalReleaseSourceCutCaptureV1>>()
             .checked_sub(std::mem::size_of::<OriginalReleaseControllerCutCaptureV1>())
@@ -7955,16 +7946,16 @@ impl Journal {
     ) -> Result<(), JournalError> {
         self.ensure_protected_authority()?;
         if history.head.is_none_or(|head| head == [0; 32])
-            || self.next_sequence == 0 || self.next_sequence == u64::MAX
+            || self.native.next_sequence() == 0 || self.native.next_sequence() == u64::MAX
             || history.durable_end != physical_end
-            || history.next_sequence != Some(self.next_sequence)
+            || history.next_sequence != Some(self.native.next_sequence())
             || replayed.durable_end != physical_end
-            || replayed.next_sequence != self.next_sequence
-            || replayed.committed_transactions != self.committed_transactions
-            || replayed.transaction_ids != self.transaction_ids
-            || replayed.committed_namespaces != self.committed_namespaces
-            || replayed.state != self.state
-            || replayed.materialized_bytes != self.materialized_bytes
+            || replayed.next_sequence != self.native.next_sequence()
+            || replayed.committed_transactions != self.native.committed_transactions()
+            || replayed.transaction_ids != *self.native.transaction_ids()
+            || replayed.committed_namespaces != *self.native.committed_namespaces()
+            || replayed.state != *self.native.state()
+            || replayed.materialized_bytes != self.native.materialized_bytes()
             || replayed.idempotency != self.idempotency
             || (!matches!(purpose, OriginalReleaseNativeCutPurposeV1::Source)
                 && (!replayed.source_challenge_history.is_empty()
@@ -8070,7 +8061,7 @@ impl Journal {
         history: &crate::policy_compiler::create_q04::Q04RootAuthorityHistoryV1,
         prefix: usize,
     ) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
-        history.require_prefix_rows(self.state.iter().map(|((namespace, key), value)| {
+        history.require_prefix_rows(self.native.state().iter().map(|((namespace, key), value)| {
             (*namespace, key.as_slice(), value.as_slice())
         }), prefix)?;
         Ok(())
@@ -8158,7 +8149,7 @@ impl Journal {
         ledger.require_original(self)?;
         match purpose {
             Q04ControllerBookendPurposeV1::Original => {
-                controller_policy_hold::require_q04_signing_original(&self.state)?;
+                controller_policy_hold::require_q04_signing_original(self.native.state())?;
                 self.require_q04_native_recipes_v1(&[])?;
                 if self.snapshot_sequence() != ledger.original_next() {
                     return Err(CreateQ04ErrorV1::ChangedCut);
@@ -8167,9 +8158,9 @@ impl Journal {
             Q04ControllerBookendPurposeV1::HeldSigner(transitions)
                 | Q04ControllerBookendPurposeV1::Gen1Refresh(transitions) => {
                 let prefix = if matches!(purpose, Q04ControllerBookendPurposeV1::HeldSigner(_)) {
-                    controller_policy_hold::require_q04_signing_prefix(&self.state, transitions)?
+                    controller_policy_hold::require_q04_signing_prefix(self.native.state(), transitions)?
                 } else {
-                    controller_policy_hold::require_q04_refresh_prefix(&self.state, transitions)?
+                    controller_policy_hold::require_q04_refresh_prefix(self.native.state(), transitions)?
                 };
                 if !std::ptr::eq(ledger, transitions[0].ledger()) {
                     return Err(CreateQ04ErrorV1::ChangedCut);
@@ -8286,7 +8277,7 @@ impl Journal {
             // Before any Q04 selfwrite there are no selected recipes yet.
             // An empty selection still audits the entire original native
             // history and compares its complete replay to this same owner.
-            if recipes.len() > self.limits.maximum_transactions
+            if recipes.len() > self.native.limits().maximum_transactions
                 || (0..recipes.len()).any(|index| {
                     (0..index).any(|prior| {
                         recipes.transaction(prior).id() == recipes.transaction(index).id()
@@ -8302,29 +8293,29 @@ impl Journal {
                 previous_end: 0,
                 previous_next: 1,
                 original_next,
-                bank_history: crate::controller_resource_reservation::ResourceNativeHistoryV1::new(&self.state),
+                bank_history: crate::controller_resource_reservation::ResourceNativeHistoryV1::new(self.native.state()),
             };
             let mut reader = runtime_deployment_history::ReadAtCursorV1::new(
-                self.storage.file(), witness.file.size,
+                self.native.file(), witness.file.size,
             );
             let replayed = replay_original_observed(
-                &mut reader, self.limits, None,
+                &mut reader, self.native.limits(), None,
                 Some(DeploymentHistoryObserverV1::Q04(&mut history)),
             )?;
             if let Some(history) = history.bank_history.as_ref() {
                 history.finish(&replayed.transaction_ids, self.protected_writer_physical_names_v1()?)?;
             }
             if history.matched != recipe_count
-                || (recipe_count == 0 && original_next.is_some_and(|next| next != self.next_sequence))
+                || (recipe_count == 0 && original_next.is_some_and(|next| next != self.native.next_sequence()))
                 || history.previous_end != witness.file.size
-                || history.previous_next != self.next_sequence
+                || history.previous_next != self.native.next_sequence()
                 || replayed.durable_end != witness.file.size
-                || replayed.next_sequence != self.next_sequence
-                || replayed.committed_transactions != self.committed_transactions
-                || replayed.transaction_ids != self.transaction_ids
-                || replayed.committed_namespaces != self.committed_namespaces
-                || replayed.state != self.state
-                || replayed.materialized_bytes != self.materialized_bytes
+                || replayed.next_sequence != self.native.next_sequence()
+                || replayed.committed_transactions != self.native.committed_transactions()
+                || replayed.transaction_ids != *self.native.transaction_ids()
+                || replayed.committed_namespaces != *self.native.committed_namespaces()
+                || replayed.state != *self.native.state()
+                || replayed.materialized_bytes != self.native.materialized_bytes()
                 || replayed.idempotency != self.idempotency
                 || !replayed.source_challenge_history.is_empty()
                 || !self.source_challenge_history.is_empty()
@@ -8465,7 +8456,7 @@ impl Journal {
             Ok(())
         })();
         if let Err(error) = readback {
-            self.storage.poison();
+            self.native.poison();
             return Err(error);
         }
         Ok(())
@@ -8492,7 +8483,7 @@ impl Journal {
             return Err(crate::policy_compiler::create_q04::CreateQ04ErrorV1::ChangedCut);
         }
         recipes.require_fixed_journal(self)?;
-        recipes.require_prefix(&self.state, first)?;
+        recipes.require_prefix(self.native.state(), first)?;
         self.require_q04_native_recipe_prefix_v1(&recipes.transactions()[..first], recipes.original_next())?;
         self.preflight_with_q04_transaction_view(
             PreflightTransactionViewV1::SourceQ04 { recipes, first, end: 3 },
@@ -8500,7 +8491,7 @@ impl Journal {
             CacheMutationGateV1::Ordinary, None,
         )?;
         recipes.require_fixed_journal(self)?;
-        recipes.require_prefix(&self.state, first)?;
+        recipes.require_prefix(self.native.state(), first)?;
         self.require_q04_native_recipe_prefix_v1(&recipes.transactions()[..first], recipes.original_next())?;
         Ok(())
     }
@@ -8524,7 +8515,7 @@ impl Journal {
             return Err(crate::policy_compiler::create_q04::CreateQ04ErrorV1::ChangedCut);
         }
         recipes.require_fixed_journal(self)?;
-        recipes.require_prefix(&self.state, first)?;
+        recipes.require_prefix(self.native.state(), first)?;
         self.require_q04_native_recipe_prefix_v1(&recipes.transactions()[..first], recipes.original_next())?;
         self.preflight_with_q04_transaction_view(
             PreflightTransactionViewV1::CacheQ04 { recipes, first, end: 3 },
@@ -8532,7 +8523,7 @@ impl Journal {
             CacheMutationGateV1::Ordinary, None,
         )?;
         recipes.require_fixed_journal(self)?;
-        recipes.require_prefix(&self.state, first)?;
+        recipes.require_prefix(self.native.state(), first)?;
         self.require_q04_native_recipe_prefix_v1(&recipes.transactions()[..first], recipes.original_next())?;
         Ok(())
     }
@@ -8575,10 +8566,10 @@ impl Journal {
             return Err(crate::policy_compiler::create_q04::CreateQ04ErrorV1::ChangedCut);
         }
         recipes.require_fixed_journal(self)?;
-        recipes.require_prefix(&self.state, committed)?;
+        recipes.require_prefix(self.native.state(), committed)?;
         self.require_q04_native_recipe_prefix_v1(&recipes.transactions()[..committed], recipes.original_next())?;
         recipes.require_fixed_journal(self)?;
-        recipes.require_prefix(&self.state, committed)?;
+        recipes.require_prefix(self.native.state(), committed)?;
         Ok(())
     }
 
@@ -8612,10 +8603,10 @@ impl Journal {
             return Err(crate::policy_compiler::create_q04::CreateQ04ErrorV1::ChangedCut);
         }
         recipes.require_fixed_journal(self)?;
-        recipes.require_prefix(&self.state, committed)?;
+        recipes.require_prefix(self.native.state(), committed)?;
         self.require_q04_native_recipe_prefix_v1(&recipes.transactions()[..committed], recipes.original_next())?;
         recipes.require_fixed_journal(self)?;
-        recipes.require_prefix(&self.state, committed)?;
+        recipes.require_prefix(self.native.state(), committed)?;
         Ok(())
     }
 
@@ -8624,8 +8615,8 @@ impl Journal {
         result: &CommitResult,
     ) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
         self.validate_held_protected_names()?;
-        if self.next_sequence != result.commit_sequence.checked_add(1).ok_or(JournalError::SequenceExhausted)?
-            || self.storage.file().metadata()?.len() != result.durable_bytes
+        if self.native.next_sequence() != result.commit_sequence.checked_add(1).ok_or(JournalError::SequenceExhausted)?
+            || self.native.file().metadata()?.len() != result.durable_bytes
         {
             return Err(JournalError::StaleAuthoritySnapshot.into());
         }
@@ -9381,6 +9372,13 @@ fn apply_record(
 ) -> Result<(), JournalError> {
     materialized::apply_mutation(state, RecordMutationRef::from(record));
 
+    apply_idempotency_record(idempotency, record)
+}
+
+fn apply_idempotency_record(
+    idempotency: &mut BTreeMap<Vec<u8>, IdempotencyDecision>,
+    record: &JournalRecord,
+) -> Result<(), JournalError> {
     if record.namespace == RecordNamespace::Idempotency {
         let value = record.value.as_ref().ok_or(JournalError::MalformedRecord(
             "idempotency records cannot be deleted",
@@ -10664,10 +10662,10 @@ mod tests {
         let directory = TestDirectory::new("source-held-readonly-scope");
         let (mut journal, _) = protected_open(&directory.0).unwrap();
         let before = (
-            journal.state.clone(),
-            journal.next_sequence,
-            journal.committed_transactions,
-            journal.storage.file().metadata().unwrap().len(),
+            journal.native.state().clone(),
+            journal.native.next_sequence(),
+            journal.native.committed_transactions(),
+            journal.native.file().metadata().unwrap().len(),
         );
         let request = source_provider_capacity_request();
         let binding = GlobalCapacityReservationRecoveryBindingV1 {
@@ -10744,10 +10742,10 @@ mod tests {
         assert_eq!(
             before,
             (
-                journal.state.clone(),
-                journal.next_sequence,
-                journal.committed_transactions,
-                journal.storage.file().metadata().unwrap().len(),
+                journal.native.state().clone(),
+                journal.native.next_sequence(),
+                journal.native.committed_transactions(),
+                journal.native.file().metadata().unwrap().len(),
             )
         );
         journal.ensure_healthy().unwrap();
@@ -10759,7 +10757,7 @@ mod tests {
         let (mut journal, _) = protected_open(&directory.0).unwrap();
         assert!(journal.claim_source_provider_held_readonly_v1().is_err());
         journal.ensure_healthy().unwrap();
-        assert!(journal.state.is_empty());
+        assert!(journal.native.state().is_empty());
     }
 
     #[test]
@@ -10999,10 +10997,13 @@ mod tests {
 
         // Leave one byte beyond the held promise, then grow the owner by two.
         // The owner alone fits, but its postimage plus the promise must not.
-        journal.limits.maximum_materialized_bytes =
-            journal.materialized_bytes + usize::try_from(request.terminal_bytes).unwrap() + 1;
+        journal.native.replace_limits_for_fixture(JournalLimits {
+            maximum_materialized_bytes: journal.native.materialized_bytes()
+                + usize::try_from(request.terminal_bytes).unwrap() + 1,
+            ..journal.native.limits()
+        });
         let before_sequence = journal.snapshot_sequence();
-        let before_length = journal.storage.file().metadata().unwrap().len();
+        let before_length = journal.native.file().metadata().unwrap().len();
         let competing = transaction(
             12,
             vec![JournalRecord::put(
@@ -11034,7 +11035,7 @@ mod tests {
         drop(authority);
 
         assert_eq!(journal.snapshot_sequence(), before_sequence);
-        assert_eq!(journal.storage.file().metadata().unwrap().len(), before_length);
+        assert_eq!(journal.native.file().metadata().unwrap().len(), before_length);
         assert!(journal.ensure_healthy().is_ok());
     }
 
@@ -11930,7 +11931,7 @@ mod tests {
         fs::remove_dir(&directory.0).unwrap();
         fs::rename(&retained, &directory.0).unwrap();
 
-        journal.storage.poison();
+        journal.native.poison();
         assert!(matches!(
             journal.validate_held_protected_at_uid_for_test(&directory.0, "state.journal", uid),
             Err(JournalError::Poisoned)
@@ -12402,7 +12403,10 @@ mod tests {
                 )],
             ))
             .unwrap();
-        journal.limits.maximum_journal_bytes = 1;
+        journal.native.replace_limits_for_fixture(JournalLimits {
+            maximum_journal_bytes: 1,
+            ..journal.native.limits()
+        });
         assert!(journal.compact().is_err());
         let names: Vec<_> = fs::read_dir(&directory.0)
             .unwrap()
@@ -12712,7 +12716,7 @@ mod tests {
         let path = directory.journal();
         let (mut journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
         journal.ensure_healthy().unwrap();
-        journal.storage.replace_file(
+        journal.native.replace_file(
             OpenOptions::new().read(true).open(&path).unwrap(),
         );
         let entry = transaction(
@@ -12762,7 +12766,7 @@ mod tests {
             PublisherCapabilityRegistry::load(&mut journal, PublisherAuthorityLimits::default(),)
                 .is_ok()
         );
-        journal.storage.replace_file(
+        journal.native.replace_file(
             OpenOptions::new()
                 .read(true)
                 .open(directory.0.join("protected.journal"))
@@ -12853,7 +12857,7 @@ mod tests {
         // An append/sync error is always durability-ambiguous to the service.
         // Keep the materialized capability and challenge maps in memory while
         // forcing the protected handle into its permanently poisoned state.
-        fixture.registered.local.journal.storage.replace_file(
+        fixture.registered.local.journal.native.replace_file(
             OpenOptions::new()
                 .read(true)
                 .open(
@@ -12938,7 +12942,7 @@ mod tests {
         );
         // Preserve the healthy protected journal and policy state while making
         // the first issuance append fail before any bytes can be written.
-        fixture.journal.storage.replace_file(
+        fixture.journal.native.replace_file(
             OpenOptions::new()
                 .read(true)
                 .open(fixture.directory.path().join("issuance.journal"))
@@ -13025,7 +13029,7 @@ mod tests {
         .unwrap();
         // Keep protected policy real, but fail the append before any write.
         // The caller cannot assume that every possible I/O failure is pre-write.
-        fixture.journal.storage.replace_file(
+        fixture.journal.native.replace_file(
             OpenOptions::new()
                 .read(true)
                 .open(fixture.directory.path().join("issuance.journal"))
@@ -13082,7 +13086,7 @@ mod tests {
             .install_from_trusted_controller([1; 16], capability.clone())
             .unwrap();
 
-        journal.storage.replace_file(
+        journal.native.replace_file(
             OpenOptions::new()
                 .read(true)
                 .open(directory.0.join("protected.journal"))
@@ -13138,7 +13142,7 @@ mod tests {
             .advance_controller_from_trusted_controller([1; 16], None, first)
             .unwrap();
 
-        journal.storage.replace_file(
+        journal.native.replace_file(
             OpenOptions::new()
                 .read(true)
                 .open(directory.0.join("protected.journal"))
@@ -13265,7 +13269,7 @@ mod tests {
         let directory = TestDirectory::new("sequence-exhaustion-prewrite");
         let path = directory.journal();
         let (mut journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
-        journal.next_sequence = u64::MAX - 2;
+        journal.native.replace_next_sequence_for_fixture(u64::MAX - 2);
         let entry = transaction(
             1,
             vec![JournalRecord::put(

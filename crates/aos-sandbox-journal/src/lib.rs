@@ -14,6 +14,9 @@
 //! domain owners still decide when semantic application permits each update.
 //! [`storage`] retains supplied data and lock files, append uncertainty, and
 //! bounded physical readers without admitting the files or issuing receipts.
+//! [`owner`] now retains a concrete native journal's files, configuration,
+//! coordinates, identity/provenance sets, and materialized DATA map together.
+//! Domain wrappers still own semantic replay, protected opening, and authority.
 //! Controller, Storage, and session-security owners use these same mechanics
 //! without sharing authority.
 //!
@@ -25,6 +28,7 @@
 pub mod framing;
 pub mod geometry;
 pub mod materialized;
+pub mod owner;
 pub mod record;
 pub mod recovery;
 pub mod replay;

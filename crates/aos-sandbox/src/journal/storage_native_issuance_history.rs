@@ -129,7 +129,7 @@ impl<'journal> StorageNativeIssuanceHistoryDataV1<'journal> {
     /// Returns all eight ceilings opened by the same writer, as DATA only.
     #[must_use]
     pub fn opened_limits(&self) -> JournalLimits {
-        self.journal.limits
+        self.journal.native.limits()
     }
 
     /// Returns the complete captured physical extent, including native framing.
@@ -278,7 +278,7 @@ impl StorageNativeIssuanceHistoryCursorV1<'_, '_> {
                 || self.prefix.next_sequence != self.history.next_sequence
                 || self.prefix.end_offset != self.history.physical_bytes()
                 || self.prefix.materialized_bytes != self.history.materialized_bytes
-                || self.prefix.after != self.history.journal.state
+                || self.prefix.after != *self.history.journal.native.state()
             {
                 return Err(JournalError::StaleAuthoritySnapshot);
             }
@@ -721,15 +721,15 @@ impl Journal {
         let result = (|| {
             let mut observer = match purpose {
                 StorageHistoryPurpose::NativeIssuance => {
-                    StorageHistoryObserverV1::new(self.limits, witness.file.size)?
+                    StorageHistoryObserverV1::new(self.native.limits(), witness.file.size)?
                 }
                 StorageHistoryPurpose::CanaryExport | StorageHistoryPurpose::PrimaryBootstrap => {
-                    StorageHistoryObserverV1::new_for_purpose(self.limits, witness.file.size, purpose)?
+                    StorageHistoryObserverV1::new_for_purpose(self.native.limits(), witness.file.size, purpose)?
                 }
             };
-            let mut reader = ReadAtCursorV1::new(self.storage.file(), witness.file.size);
+            let mut reader = ReadAtCursorV1::new(self.native.file(), witness.file.size);
             let replayed = replay_original_observed(
-                &mut reader, self.limits, None,
+                &mut reader, self.native.limits(), None,
                 Some(DeploymentHistoryObserverV1::Storage(&mut observer)),
             )?;
             observer.finish(&replayed)?;
@@ -748,15 +748,15 @@ impl Journal {
             witness,
             transactions,
             committed_records,
-            next_sequence: self.next_sequence,
-            materialized_bytes: self.materialized_bytes,
+            next_sequence: self.native.next_sequence(),
+            materialized_bytes: self.native.materialized_bytes(),
             phase: HistoryPhase::Available,
         })
     }
 }
 
 fn require_fixed_location(journal: &Journal) -> std::result::Result<(), JournalError> {
-    journal.require_protected_named_location(Path::new(DIRECTORY), NAME, 0, journal.limits)
+    journal.require_protected_named_location(Path::new(DIRECTORY), NAME, 0, journal.native.limits())
 }
 
 fn require_bookend(
@@ -780,7 +780,7 @@ fn require_purpose_location(
             CANARY_EXPORT_LIMITS,
         ),
         StorageHistoryPurpose::PrimaryBootstrap => journal.require_protected_named_location(
-            Path::new(DIRECTORY), "storage-state.journal", 0, journal.limits,
+            Path::new(DIRECTORY), "storage-state.journal", 0, journal.native.limits(),
         ),
     }
 }
@@ -832,13 +832,13 @@ fn require_replayed_snapshot(
     physical_bytes: u64,
 ) -> std::result::Result<(), JournalError> {
     if replayed.durable_end != physical_bytes
-        || replayed.next_sequence != journal.next_sequence
-        || replayed.committed_transactions != journal.committed_transactions
+        || replayed.next_sequence != journal.native.next_sequence()
+        || replayed.committed_transactions != journal.native.committed_transactions()
         || replayed.committed_records != replayed.committed_transactions
-        || replayed.transaction_ids != journal.transaction_ids
-        || replayed.committed_namespaces != journal.committed_namespaces
-        || replayed.state != journal.state
-        || replayed.materialized_bytes != journal.materialized_bytes
+        || replayed.transaction_ids != *journal.native.transaction_ids()
+        || replayed.committed_namespaces != *journal.native.committed_namespaces()
+        || replayed.state != *journal.native.state()
+        || replayed.materialized_bytes != journal.native.materialized_bytes()
         || replayed.idempotency != journal.idempotency
         || !replayed.idempotency.is_empty()
         || replayed.committed_namespaces.iter().any(|namespace| *namespace != NAMESPACE)
@@ -860,12 +860,12 @@ fn require_primary_replayed_snapshot(
     physical_bytes: u64,
 ) -> std::result::Result<(), JournalError> {
     if replayed.durable_end != physical_bytes
-        || replayed.next_sequence != journal.next_sequence
-        || replayed.committed_transactions != journal.committed_transactions
-        || replayed.transaction_ids != journal.transaction_ids
-        || replayed.committed_namespaces != journal.committed_namespaces
-        || replayed.state != journal.state
-        || replayed.materialized_bytes != journal.materialized_bytes
+        || replayed.next_sequence != journal.native.next_sequence()
+        || replayed.committed_transactions != journal.native.committed_transactions()
+        || replayed.transaction_ids != *journal.native.transaction_ids()
+        || replayed.committed_namespaces != *journal.native.committed_namespaces()
+        || replayed.state != *journal.native.state()
+        || replayed.materialized_bytes != journal.native.materialized_bytes()
         || replayed.idempotency != journal.idempotency
         || !replayed.source_challenge_history.is_empty()
         || !journal.source_challenge_history.is_empty()

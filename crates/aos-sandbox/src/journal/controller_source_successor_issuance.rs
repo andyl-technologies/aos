@@ -153,12 +153,12 @@ fn project_publication_names_v3(project: ProjectId) -> (String, String) {
 
 pub(crate) fn retained(journal: &Journal) -> Result<Option<RetainedIssuanceDataV2>, JournalError> {
     journal.ensure_protected_authority()?;
-    validate_rows(&journal.state)
+    validate_rows(journal.native.state())
 }
 
 pub(crate) fn retained_project_v3(journal: &Journal, project: ProjectId) -> Result<Option<RetainedIssuanceDataV2>, JournalError> {
     journal.ensure_protected_authority()?;
-    Ok(validate_project_family_v3(&journal.state)?.remove(&IssuanceKeyRecipeV3::ProjectV3(project)))
+    Ok(validate_project_family_v3(journal.native.state())?.remove(&IssuanceKeyRecipeV3::ProjectV3(project)))
 }
 
 pub(crate) fn project_key_v3(project: ProjectId, suffix: &[u8]) -> Result<Vec<u8>, JournalError> {
@@ -736,7 +736,7 @@ impl Journal {
         };
         if !needed { return Ok(None); }
         let transaction = transaction(packet, transition)?;
-        require_no_mutation(&self.state, &transaction, Some(transition))?;
+        require_no_mutation(self.native.state(), &transaction, Some(transition))?;
         Ok(Some(transaction))
     }
 

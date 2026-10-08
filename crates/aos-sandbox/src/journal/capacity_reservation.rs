@@ -344,7 +344,7 @@ impl Journal {
     ) -> Result<Vec<[u8; 32]>, JournalError> {
         self.ensure_healthy()?;
         legacy_capacity_ids_for_purpose(
-            &self.state,
+            self.native.state(),
             GlobalCapacityReservationPurposeV1::RootSourceGenesisAnchor,
         )
     }
@@ -353,7 +353,7 @@ impl Journal {
     pub(crate) fn controller_project_capacity_ids_v1(&self) -> Result<Vec<[u8; 32]>, JournalError> {
         self.ensure_healthy()?;
         legacy_capacity_ids_for_purpose(
-            &self.state,
+            self.native.state(),
             GlobalCapacityReservationPurposeV1::ControllerProjectAdmission,
         )
     }
@@ -515,8 +515,7 @@ impl Journal {
         }
         let reservation_id = reservation_id(&request, admission_transaction_id);
         let key = reservation_key(reservation_id);
-        if self
-            .state
+        if self.native.state()
             .contains_key(&(RecordNamespace::GlobalCapacityReservation, key.clone()))
         {
             return Err(JournalError::DuplicateRecordKey);
@@ -603,8 +602,8 @@ impl Journal {
         expected_reservation_id: [u8; 32],
     ) -> Result<Option<GlobalCapacityReservationV1>, JournalError> {
         self.ensure_healthy()?;
-        validate_all_reservations(&self.state)?;
-        let Some(value) = self.state.get(&(
+        validate_all_reservations(self.native.state())?;
+        let Some(value) = self.native.state().get(&(
             RecordNamespace::GlobalCapacityReservation,
             reservation_key(expected_reservation_id),
         )) else {
@@ -643,14 +642,13 @@ impl Journal {
         if binding.purpose.is_first_source_successor() {
             return Err(JournalError::ProtectedBoundary);
         }
-        let families = canonical_reservations(&self.state)?;
+        let families = canonical_reservations(self.native.state())?;
         let mut matching = None;
         for family in families {
             let Some((request, admission_transaction_id, decoded_id)) = family.legacy() else {
                 continue;
             };
-            let value = self
-                .state
+            let value = self.native.state()
                 .get(&(
                     RecordNamespace::GlobalCapacityReservation,
                     reservation_key(decoded_id),
@@ -708,8 +706,7 @@ pub(super) fn validate_settlement_shape(
         return Err(JournalError::AuthorityPreflightMismatch);
     }
     let key = reservation_key(reservation.reservation_id);
-    let current = journal
-        .state
+    let current = journal.native.state()
         .get(&(RecordNamespace::GlobalCapacityReservation, key.clone()))
         .ok_or(JournalError::MalformedRecord(
             "capacity reservation is absent",
@@ -865,7 +862,7 @@ fn validate_request(
     request: &GlobalCapacityReservationRequestV1,
     journal: &Journal,
 ) -> Result<(), JournalError> {
-    validate_request_with_limits(request, journal.limits)
+    validate_request_with_limits(request, journal.native.limits())
 }
 
 pub(super) fn validate_request_with_limits(
@@ -996,7 +993,7 @@ impl Journal {
         super::source_tree_successor::require_capacity_owner(self, request.purpose)?;
         validate_request(request, self)?;
         let record = first_source_successor_capacity_record_v2(request, admission)?;
-        if self.state.contains_key(&(record.namespace(), record.key().to_vec())) {
+        if self.native.state().contains_key(&(record.namespace(), record.key().to_vec())) {
             return Err(JournalError::DuplicateRecordKey);
         }
         Ok(record)
@@ -1012,7 +1009,7 @@ impl Journal {
         admission: [u8; 16],
     ) -> Result<JournalRecord, JournalError> {
         super::source_tree_successor::require_capacity_owner(self, request.purpose)?;
-        first_source_successor_capacity_delete_v2(&self.state, request, admission)
+        first_source_successor_capacity_delete_v2(self.native.state(), request, admission)
     }
 }
 

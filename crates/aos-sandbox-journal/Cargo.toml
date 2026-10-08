@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 license.workspace = true
 
+[features]
+# Dependent test harnesses explicitly select raw configuration/head injection.
+test-fixtures = []
+
 [dependencies]
 sha2.workspace = true
 thiserror.workspace = true

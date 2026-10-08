@@ -73,7 +73,7 @@ impl Journal {
         if owner.canary_purpose().is_none() {
             return Err(JournalError::ProtectedBoundary);
         }
-        let before = FileIdentity::of(self.storage.file())?;
+        let before = FileIdentity::of(self.native.file())?;
         let history = match member {
             CanaryCommitMemberV2::Main => self.capture_runtime_deployment_main_history_v1(owner)?,
             CanaryCommitMemberV2::Sidecar => self.capture_runtime_deployment_sidecar_history_v1(owner)?,
@@ -84,14 +84,14 @@ impl Journal {
         if last.transaction() != transaction || last.commit_sequence() != returned.commit_sequence
             || last.begin_sequence().checked_add(distance) != Some(returned.commit_sequence)
             || returned.commit_sequence.checked_add(1) != Some(last.next_sequence())
-            || last.next_sequence() != self.next_sequence || returned.durable_bytes != before.size
+            || last.next_sequence() != self.native.next_sequence() || returned.durable_bytes != before.size
         {
             return Err(JournalError::StaleAuthoritySnapshot);
         }
         // The capture above uses the sole ReadAt/native framing engine and
         // checks the complete replayed physical end against this SAME File.
         // No reopened File, second parser or caller-reconstructed cut is used.
-        if FileIdentity::of(self.storage.file())? != before {
+        if FileIdentity::of(self.native.file())? != before {
             return Err(JournalError::StaleAuthoritySnapshot);
         }
         owner.recheck().map_err(|_| JournalError::ProtectedBoundary)
@@ -143,23 +143,23 @@ impl Journal {
         self.require_protected_named_location(
             Path::new(MAIN_DIRECTORY_V1), MAIN_NAME, 0, limits,
         )?;
-        require_deployment_row_bound_v1(self.state.len())
+        require_deployment_row_bound_v1(self.native.state().len())
             .map_err(|_| JournalError::ProtectedBoundary)?;
-        if self.committed_transactions > limits.maximum_transactions {
+        if self.native.committed_transactions() > limits.maximum_transactions {
             return Err(JournalError::LimitExceeded("deployment native transactions"));
         }
 
         let witness = self.protected_writer_name_witness()?;
-        let physical = FileIdentity::of(self.storage.file())?;
+        let physical = FileIdentity::of(self.native.file())?;
         if physical.size > limits.maximum_journal_bytes {
             return Err(JournalError::JournalTooLarge);
         }
 
         let result = (|| {
             let mut history = if owner.canary_purpose().is_some() {
-                HistoryAuditV1::from_canary_bindings(&self.state, owner)?
+                HistoryAuditV1::from_canary_bindings(self.native.state(), owner)?
             } else { HistoryAuditV1::from_bindings(
-                &self.state,
+                self.native.state(),
                 owner.exact_bytes(),
                 owner.claims(),
                 owner.publisher_verifier(),
@@ -168,7 +168,7 @@ impl Journal {
                 history.retained = Some(RetainedDeploymentNativeHistoryV1::new(physical.size)?);
             }
 
-            let mut reader = ReadAtCursorV1::new(self.storage.file(), physical.size);
+            let mut reader = ReadAtCursorV1::new(self.native.file(), physical.size);
             let replayed = replay_observed(&mut reader, limits, Some(&mut history))?;
             history.finish(&replayed)?;
             self.require_deployment_replayed_snapshot(&replayed, physical.size)?;
@@ -191,7 +191,7 @@ impl Journal {
             Path::new(MAIN_DIRECTORY_V1), MAIN_NAME, 0, limits,
         )?;
         self.validate_protected_writer_name_witness(&witness)?;
-        if FileIdentity::of(self.storage.file())? != physical {
+        if FileIdentity::of(self.native.file())? != physical {
             return Err(JournalError::StaleAuthoritySnapshot);
         }
         owner.recheck().map_err(|_| JournalError::ProtectedBoundary)?;
@@ -204,13 +204,13 @@ impl Journal {
         physical_length: u64,
     ) -> Result<(), JournalError> {
         if replayed.durable_end != physical_length
-            || replayed.next_sequence != self.next_sequence
-            || replayed.committed_transactions != self.committed_transactions
-            || replayed.committed_records != self.committed_transactions
-            || replayed.transaction_ids != self.transaction_ids
-            || replayed.committed_namespaces != self.committed_namespaces
-            || replayed.state != self.state
-            || replayed.materialized_bytes != self.materialized_bytes
+            || replayed.next_sequence != self.native.next_sequence()
+            || replayed.committed_transactions != self.native.committed_transactions()
+            || replayed.committed_records != self.native.committed_transactions()
+            || replayed.transaction_ids != *self.native.transaction_ids()
+            || replayed.committed_namespaces != *self.native.committed_namespaces()
+            || replayed.state != *self.native.state()
+            || replayed.materialized_bytes != self.native.materialized_bytes()
             || replayed.idempotency != self.idempotency
         {
             return Err(JournalError::StaleAuthoritySnapshot);
@@ -257,8 +257,8 @@ impl OriginalCompactionSelectionV1 {
 /// deployment directory. Protected writers retain a basename, so their denial
 /// is captured from the actual original opener rather than that basename.
 pub(super) fn require_no_compaction(journal: &Journal) -> Result<(), JournalError> {
-    if journal.path == Path::new(MAIN_DIRECTORY_V1).join(MAIN_NAME)
-        || journal.path == Path::new(MAIN_DIRECTORY_V1).join(SIDECAR_NAME)
+    if *journal.native.path() == Path::new(MAIN_DIRECTORY_V1).join(MAIN_NAME)
+        || *journal.native.path() == Path::new(MAIN_DIRECTORY_V1).join(SIDECAR_NAME)
         || journal.protected.as_ref().is_some_and(|location| {
             matches!(
                 location.original_compaction_selection,

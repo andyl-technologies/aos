@@ -885,16 +885,16 @@ impl<'journal> MountOriginalNativeJournalAuthorityV5<'journal> {
     /// Rejects stale physical names, unknown owner funding or invalid full graphs.
     pub fn current_graph(&self) -> Result<RootNativeHeldGraphV2, JournalError> {
         self.require_current()?;
-        require_named_funding(&self.authority.journal.state, self.authority.journal.limits)?;
-        pending(&self.authority.journal.state, self.authority.journal.limits)?;
-        if self.authority.journal.state.iter().any(|((namespace, _), value)| {
+        require_named_funding(self.authority.journal.native.state(), self.authority.journal.native.limits())?;
+        pending(self.authority.journal.native.state(), self.authority.journal.native.limits())?;
+        if self.authority.journal.native.state().iter().any(|((namespace, _), value)| {
             *namespace == RecordNamespace::GlobalCapacityReservation
                 && value.get(8..13) == Some(&[0, 4, 40, 10, 12])
         }) {
-            for family in canonical_reservations(&self.authority.journal.state)? {
+            for family in canonical_reservations(self.authority.journal.native.state())? {
                 if let CanonicalCapacityFamily::Ordinary4(floor) = family {
                     if floor.data().kind == OrdinaryCapacityKindV4::ReleaseRequest
-                        && !self.authority.journal.transaction_ids
+                        && !self.authority.journal.native.transaction_ids()
                             .contains(&floor.data().admission_transaction)
                     {
                         // A compacted scalar floor cannot replace actual original
@@ -904,7 +904,7 @@ impl<'journal> MountOriginalNativeJournalAuthorityV5<'journal> {
                 }
             }
         }
-        graph(&self.authority.journal.state)
+        graph(self.authority.journal.native.state())
     }
 
     /// Returns an opaque current snapshot for this named physical scope only.
@@ -988,7 +988,7 @@ impl<'journal> MountOriginalNativeJournalAuthorityV5<'journal> {
         -> Result<(RootNativeCutV1, aos_sandbox_protocol::mount_source_acquisition_state::native_held_completion::RootNativeReconstructedCutV1, u64), JournalError>
     {
         self.current_graph()?;
-        let successor = graph(&apply(&self.authority.journal.state, owners.records())?)?;
+        let successor = graph(&apply(self.authority.journal.native.state(), owners.records())?)?;
         let cut = RootNativeCutV1::capture(
             RootNativeCutKindV1::Admission,
             *owners.id(),
@@ -1051,8 +1051,8 @@ impl<'journal> MountOriginalNativeJournalAuthorityV5<'journal> {
             *slot = Some(self.initial_candidate_v5(owners, root));
             self.current_graph()?;
             let (transaction, _) = derive_original_release(
-                &self.authority.journal.state, owners, root, release,
-                self.authority.journal.limits,
+                self.authority.journal.native.state(), owners, root, release,
+                self.authority.journal.native.limits(),
             )?;
             let candidate = slot.as_mut().ok_or_else(invalid)?;
             candidate.transaction = transaction;
@@ -1079,8 +1079,8 @@ impl<'journal> MountOriginalNativeJournalAuthorityV5<'journal> {
             *slot = Some(self.initial_candidate_v5(owners, root));
             self.current_graph()?;
             let (transaction, _) = derive_original_release_status(
-                &self.authority.journal.state, owners, root, release,
-                self.authority.journal.limits,
+                self.authority.journal.native.state(), owners, root, release,
+                self.authority.journal.native.limits(),
             )?;
             let candidate = slot.as_mut().ok_or_else(invalid)?;
             candidate.transaction = transaction;
@@ -1214,7 +1214,7 @@ impl<'journal> MountOriginalNativeJournalAuthorityV5<'journal> {
             return Err(invalid());
         }
 
-        let families = canonical_reservations(&self.authority.journal.state)?;
+        let families = canonical_reservations(self.authority.journal.native.state())?;
         if families.iter().any(|family| {
             matches!(family, CanonicalCapacityFamily::OriginalRoot5(floor)
                 if floor.request().owner_id == attempt)
@@ -1222,7 +1222,7 @@ impl<'journal> MountOriginalNativeJournalAuthorityV5<'journal> {
             return Err(invalid());
         }
 
-        let transactions = &self.authority.journal.transaction_ids;
+        let transactions = self.authority.journal.native.transaction_ids();
         if !transactions.contains(&sidecar.admission_cut().capture_transaction()) {
             return Err(JournalError::StaleAuthoritySnapshot);
         }
@@ -1264,7 +1264,7 @@ impl<'journal> MountOriginalNativeJournalAuthorityV5<'journal> {
             return Err(invalid());
         }
         if let Some(floor) = &readback.floor {
-            floor.validate_graph(&checked, self.authority.journal.limits)?;
+            floor.validate_graph(&checked, self.authority.journal.native.limits())?;
             let record = floor.to_journal_record()?;
             if self.authority.journal.get(record.namespace(), record.key()) != record.value() {
                 return Err(invalid());
@@ -1311,11 +1311,11 @@ pub(super) fn require_original_root_closed_origin_v6(
     {
         return Err(invalid());
     }
-    floor.validate_graph(&origin.graph, journal.limits)?;
-    let current = graph(&journal.state)?;
-    pending(&journal.state, journal.limits)?;
-    super::root_original_inventory::pending(&journal.state, journal.limits)?;
-    floor.validate_graph(&current, journal.limits)?;
+    floor.validate_graph(&origin.graph, journal.native.limits())?;
+    let current = graph(journal.native.state())?;
+    pending(journal.native.state(), journal.native.limits())?;
+    super::root_original_inventory::pending(journal.native.state(), journal.native.limits())?;
+    floor.validate_graph(&current, journal.native.limits())?;
     let floor_record = floor.to_journal_record()?;
     let sidecar_key = native_root_sidecar_key_v2(origin.attempt).map_err(|_| invalid())?;
     if journal.get(floor_record.namespace(), floor_record.key()) != floor_record.value()

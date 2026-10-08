@@ -93,7 +93,7 @@ impl<'journal> LocalRecoveryWriter<'journal> {
     /// Refuses stale physical names, unhealthy writer, invalid graph or floors.
     fn current_source_state(&self) -> Result<MountSourceAcquisitionStateV2, JournalError> {
         self.require_current()?;
-        Ok(graph(&self.authority.journal.state)?.legacy().clone())
+        Ok(graph(self.authority.journal.native.state())?.legacy().clone())
     }
 
     fn kind(&self) -> Kind {
@@ -111,7 +111,7 @@ impl<'journal> LocalRecoveryWriter<'journal> {
         if self.kind() != Kind::BarrierIdleReplacement {
             return Err(JournalError::ForeignAuthorityNamespace);
         }
-        let (transaction, floor) = prepare(&self.authority.journal.state, successor)?;
+        let (transaction, floor) = prepare(self.authority.journal.native.state(), successor)?;
         self.prepared(transaction, floor, Edge::Admission)
     }
 
@@ -125,7 +125,7 @@ impl<'journal> LocalRecoveryWriter<'journal> {
             return Err(JournalError::ForeignAuthorityNamespace);
         }
         let (transaction, floor) =
-            dead_replacement::prepare(&self.authority.journal.state, successor, death)?;
+            dead_replacement::prepare(self.authority.journal.native.state(), successor, death)?;
         self.prepared(transaction, floor, Edge::DeadAdmission)
     }
 
@@ -168,7 +168,7 @@ impl<'journal> LocalRecoveryWriter<'journal> {
         self.preflight(&prepared.transaction, prepared.edge)?;
         self.append(&prepared.transaction, prepared.edge)?;
         self.readback(prepared.floor)
-            .inspect_err(|_| self.authority.journal.storage.poison())
+            .inspect_err(|_| self.authority.journal.native.poison())
     }
 
     /// Rejoins this named scope's local floors under the current physical owner.
@@ -179,7 +179,7 @@ impl<'journal> LocalRecoveryWriter<'journal> {
     /// Refuses missing/changed postimages, dependency bindings or fixed names.
     fn pending_local_readbacks(&self) -> Result<Vec<LocalReadback>, JournalError> {
         self.require_current()?;
-        pending(&self.authority.journal.state)?
+        pending(self.authority.journal.native.state())?
             .into_iter()
             .filter(|floor| floor.data().kind == self.kind())
             .map(|floor| {
@@ -202,7 +202,7 @@ impl<'journal> LocalRecoveryWriter<'journal> {
         {
             return Err(JournalError::StaleAuthoritySnapshot);
         }
-        rejoin(&self.authority.journal.state, &floor)?;
+        rejoin(self.authority.journal.native.state(), &floor)?;
         Ok(LocalReadback {
             snapshot: self.authority.snapshot()?,
             floor,
@@ -228,13 +228,13 @@ impl<'journal> LocalRecoveryWriter<'journal> {
         if readback.floor.data().kind != self.kind() {
             return Err(JournalError::ForeignAuthorityNamespace);
         }
-        rejoin(&self.authority.journal.state, &readback.floor)?;
+        rejoin(self.authority.journal.native.state(), &readback.floor)?;
         let transaction = settlement(&readback.floor)?;
         self.preflight(&transaction, Edge::InstalledDelete)?;
         let result = self.append(&transaction, Edge::InstalledDelete)?;
         let final_readback = (|| {
             self.require_current()?;
-            graph(&self.authority.journal.state)?;
+            graph(self.authority.journal.native.state())?;
             if self
                 .authority
                 .journal
@@ -249,7 +249,7 @@ impl<'journal> LocalRecoveryWriter<'journal> {
             Ok(())
         })();
         if let Err(error) = final_readback {
-            self.authority.journal.storage.poison();
+            self.authority.journal.native.poison();
             return Err(error);
         }
         Ok(result)

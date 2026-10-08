@@ -188,22 +188,22 @@ impl Journal {
         owner: &VerifiedDeploymentGenesisV1<'_>,
     ) -> Result<RetainedDeploymentNativeHistoryV1, JournalError> {
         owner.recheck().map_err(|_| JournalError::ProtectedBoundary)?;
-        require_sidecar_capture_limits(self.limits)?;
+        require_sidecar_capture_limits(self.native.limits())?;
         self.require_protected_named_location(
-            Path::new(MAIN_DIRECTORY_V1), SIDECAR_NAME, 0, self.limits,
+            Path::new(MAIN_DIRECTORY_V1), SIDECAR_NAME, 0, self.native.limits(),
         )?;
         let witness = self.protected_writer_name_witness()?;
-        let physical = FileIdentity::of(self.storage.file())?;
+        let physical = FileIdentity::of(self.native.file())?;
         if physical.size > MAIN_LIMITS.maximum_journal_bytes
-            || physical.size > self.limits.maximum_journal_bytes
+            || physical.size > self.native.limits().maximum_journal_bytes
         {
             return Err(JournalError::JournalTooLarge);
         }
 
         let result = (|| {
             let mut history = SidecarHistoryAuditV1::new(physical.size)?;
-            let mut reader = ReadAtCursorV1::new(self.storage.file(), physical.size);
-            let replayed = replay_sidecar_observed(&mut reader, self.limits, &mut history)?;
+            let mut reader = ReadAtCursorV1::new(self.native.file(), physical.size);
+            let replayed = replay_sidecar_observed(&mut reader, self.native.limits(), &mut history)?;
             let retained = history.finish(&replayed)?;
             self.require_deployment_pair_replayed_snapshot_v1(
                 &replayed, physical.size,
@@ -213,10 +213,10 @@ impl Journal {
 
         // These physical/origin bookends also run after a failed parse/copy.
         self.require_protected_named_location(
-            Path::new(MAIN_DIRECTORY_V1), SIDECAR_NAME, 0, self.limits,
+            Path::new(MAIN_DIRECTORY_V1), SIDECAR_NAME, 0, self.native.limits(),
         )?;
         self.validate_protected_writer_name_witness(&witness)?;
-        if FileIdentity::of(self.storage.file())? != physical {
+        if FileIdentity::of(self.native.file())? != physical {
             return Err(JournalError::StaleAuthoritySnapshot);
         }
         owner.recheck().map_err(|_| JournalError::ProtectedBoundary)?;
@@ -250,12 +250,12 @@ impl Journal {
         physical_length: u64,
     ) -> Result<(), JournalError> {
         if replayed.durable_end != physical_length
-            || replayed.next_sequence != self.next_sequence
-            || replayed.committed_transactions != self.committed_transactions
-            || replayed.transaction_ids != self.transaction_ids
-            || replayed.committed_namespaces != self.committed_namespaces
-            || replayed.state != self.state
-            || replayed.materialized_bytes != self.materialized_bytes
+            || replayed.next_sequence != self.native.next_sequence()
+            || replayed.committed_transactions != self.native.committed_transactions()
+            || replayed.transaction_ids != *self.native.transaction_ids()
+            || replayed.committed_namespaces != *self.native.committed_namespaces()
+            || replayed.state != *self.native.state()
+            || replayed.materialized_bytes != self.native.materialized_bytes()
             || replayed.idempotency != self.idempotency
             || replayed.committed_namespaces.iter().any(|namespace| *namespace != NAMESPACE)
             || !replayed.source_challenge_history.is_empty()

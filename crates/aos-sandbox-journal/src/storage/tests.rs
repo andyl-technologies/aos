@@ -22,13 +22,13 @@ use crate::framing::FrameError;
 
 static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
 
-struct TemporaryFile {
+pub(crate) struct TemporaryFile {
     file: Option<File>,
     path: PathBuf,
 }
 
 impl TemporaryFile {
-    fn new(contents: &[u8]) -> Self {
+    pub(crate) fn new(contents: &[u8]) -> Self {
         loop {
             let path = std::env::temp_dir().join(format!(
                 "aos-journal-native-storage-{}-{}",
@@ -53,11 +53,11 @@ impl TemporaryFile {
         }
     }
 
-    fn take_file(&mut self) -> File {
+    pub(crate) fn take_file(&mut self) -> File {
         self.file.take().unwrap()
     }
 
-    fn read_only(&self) -> File {
+    pub(crate) fn read_only(&self) -> File {
         OpenOptions::new().read(true).open(&self.path).unwrap()
     }
 }

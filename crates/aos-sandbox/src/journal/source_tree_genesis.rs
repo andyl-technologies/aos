@@ -373,7 +373,7 @@ pub(super) fn recognize_replayed_transition(
 impl Journal {
     pub(crate) fn source_tree_genesis_rows_v1(&self) -> Result<SourceGenesisRowsV1, JournalError> {
         self.ensure_healthy()?;
-        current_rows(&self.state)
+        current_rows(self.native.state())
     }
 
     pub(crate) fn commit_source_tree_genesis_v1(

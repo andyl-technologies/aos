@@ -80,7 +80,7 @@ impl Drop for CommitBoundaryV6<'_, '_, '_> {
         if !self.succeeded {
             self.candidate.failed = true;
             if self.append_entered {
-                self.writer.authority.journal.storage.poison();
+                self.writer.authority.journal.native.poison();
             }
         }
     }
@@ -127,22 +127,22 @@ impl<'journal> MountOriginalInventoryJournalAuthorityV6<'journal> {
         self.require_current()?;
         let journal = &self.authority.journal;
 
-        require_supported_families(&canonical_reservations(&journal.state)?)?;
-        super::pending(&journal.state, journal.limits)?;
-        crate::journal::root_original_native::pending(&journal.state, journal.limits)?;
+        require_supported_families(&canonical_reservations(journal.native.state())?)?;
+        super::pending(journal.native.state(), journal.native.limits())?;
+        crate::journal::root_original_native::pending(journal.native.state(), journal.native.limits())?;
         validate_reserved_capacity(
-            &journal.state,
-            journal.materialized_bytes,
+            journal.native.state(),
+            journal.native.materialized_bytes(),
             &[],
             None,
-            journal.storage.file().metadata()?.len(),
-            journal.committed_transactions,
-            journal.limits,
+            journal.native.file().metadata()?.len(),
+            journal.native.committed_transactions(),
+            journal.native.limits(),
             None,
         )?;
-        require_sequence_headroom(&journal.state, journal.next_sequence)?;
+        require_sequence_headroom(journal.native.state(), journal.native.next_sequence())?;
 
-        let checked = graph(&journal.state)?;
+        let checked = graph(journal.native.state())?;
         self.require_current()?;
 
         Ok(checked)
@@ -263,11 +263,11 @@ impl<'journal> MountOriginalInventoryJournalAuthorityV6<'journal> {
             }
 
             candidate.derived = Some(derive(
-                &self.authority.journal.state,
+                self.authority.journal.native.state(),
                 &candidate.owners,
                 candidate.root,
                 query,
-                self.authority.journal.limits,
+                self.authority.journal.native.limits(),
             )?);
 
             // The complete coupled candidate is retained before any postcheck.
@@ -276,9 +276,9 @@ impl<'journal> MountOriginalInventoryJournalAuthorityV6<'journal> {
                 return Err(invalid());
             }
             validate_derived(
-                &self.authority.journal.state,
+                self.authority.journal.native.state(),
                 derived,
-                self.authority.journal.limits,
+                self.authority.journal.native.limits(),
             )?;
             self.preflight(derived)?;
             self.validate_snapshot(&candidate.snapshot)?;
@@ -300,10 +300,10 @@ impl<'journal> MountOriginalInventoryJournalAuthorityV6<'journal> {
             .map_err(|_| JournalError::SequenceExhausted)?
             .checked_add(2)
             .ok_or(JournalError::SequenceExhausted)?;
-        let next = journal.next_sequence.checked_add(frames)
+        let next = journal.native.next_sequence().checked_add(frames)
             .ok_or(JournalError::SequenceExhausted)?;
 
-        require_sequence_headroom(&materialize(&journal.state, &derived.transaction), next)?;
+        require_sequence_headroom(&materialize(journal.native.state(), &derived.transaction), next)?;
         journal.preflight_with_cache_gate(
             std::slice::from_ref(&derived.transaction),
             None,
@@ -391,7 +391,7 @@ impl<'journal> MountOriginalInventoryJournalAuthorityV6<'journal> {
             let actual = readback.as_mut().ok_or_else(invalid)?;
             // Actual cut/TX metadata is already retained. A failed row clone
             // leaves this partial readback and the real Journal post-state.
-            actual.rows = Some(writer.authority.journal.state.clone());
+            actual.rows = Some(writer.authority.journal.native.state().clone());
             actual.graph = Some(writer.validate_actual_rows(actual)?);
             actual.validated = true;
             Ok(())
@@ -408,8 +408,8 @@ impl<'journal> MountOriginalInventoryJournalAuthorityV6<'journal> {
         self.validate_snapshot(&actual.snapshot)?;
         let journal = &self.authority.journal;
         let rows = actual.rows.as_ref().ok_or_else(invalid)?;
-        if &journal.state != rows
-            || !journal.transaction_ids.contains(actual.transaction.id())
+        if journal.native.state() != rows
+            || !journal.native.transaction_ids().contains(actual.transaction.id())
             || actual.transaction.records().iter().any(|record| {
                 journal.get(record.namespace(), record.key()) != record.value()
             })
@@ -418,7 +418,7 @@ impl<'journal> MountOriginalInventoryJournalAuthorityV6<'journal> {
         }
 
         let checked = graph(rows)?;
-        root_floor(rows, &checked, actual.root)?.validate_graph(&checked, journal.limits)?;
+        root_floor(rows, &checked, actual.root)?.validate_graph(&checked, journal.native.limits())?;
         let query = checked.legacy().provider_attempts.get(&actual.query)
             .ok_or_else(invalid)?;
         match (actual.kind, &query.state) {
@@ -437,7 +437,7 @@ impl<'journal> MountOriginalInventoryJournalAuthorityV6<'journal> {
                 if query.revision == 2 => {}
             _ => return Err(invalid()),
         }
-        let floor = pending(rows, journal.limits)?.into_iter()
+        let floor = pending(rows, journal.native.limits())?.into_iter()
             .find(|(floor, _)| floor.data().owner_id == actual.query);
         match (actual.kind, floor) {
             (Kind::CompleteConsumed, None) => {}

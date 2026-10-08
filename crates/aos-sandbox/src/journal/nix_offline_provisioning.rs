@@ -557,7 +557,7 @@ impl<'startup> NixOfflineNativeJobV5<'startup> {
         image.duplicate_nix_offline_original_into(&mut launch.executable)?;
         let journal = self.journal.as_ref().ok_or(Error::Rejected)?;
         for (index, original) in [
-            self.installation_lock.as_ref().ok_or(Error::Rejected)?, journal.storage.lock_file(),
+            self.installation_lock.as_ref().ok_or(Error::Rejected)?, journal.native.lock_file(),
         ].into_iter().enumerate() {
             launch.child_locks[index] = Some(rustix::io::fcntl_dupfd_cloexec(original, 3)?);
             launch.hello_locks[index] = Some(rustix::io::fcntl_dupfd_cloexec(original, 3)?);
@@ -762,7 +762,7 @@ impl<'startup> NixOfflineNativeJobV5<'startup> {
         let contact = &self.contacts[index];
         let current_key = native_key(b"AOSNPH05", &self.job)?;
         let journal = self.journal.as_ref().ok_or(Error::Rejected)?;
-        let original = journal.state.get(&(NAMESPACE, current_key.clone()))
+        let original = journal.native.state().get(&(NAMESPACE, current_key.clone()))
             .ok_or(Error::Rejected)?;
         let original = decode_record(&current_key, original)?;
         let mut current: [u8; 2320] = array(original.body, 0)?;
@@ -790,7 +790,7 @@ impl<'startup> NixOfflineNativeJobV5<'startup> {
             let ordinal = u16::from(contact.slot - 2);
             let key = effect_key(b'T', &self.job, contact.attempt, ordinal)?;
             let pending_key = effect_key(b'Q', &self.job, contact.attempt, ordinal)?;
-            let pending = journal.state.get(&(NAMESPACE, pending_key)).ok_or(Error::Rejected)?;
+            let pending = journal.native.state().get(&(NAMESPACE, pending_key)).ok_or(Error::Rejected)?;
             let mut body = Vec::new();
             body.try_reserve_exact(52 + result.payload().len()).map_err(io::Error::other)?;
             body.extend_from_slice(b"AOSNTP05");
@@ -946,7 +946,7 @@ impl<'startup> NixOfflineNativeJobV5<'startup> {
         let journal = self.journal.as_ref().ok_or(Error::Rejected)?;
         for attempt in [2, 1] {
             let key = effect_key(b'T', &self.job, attempt, ordinal)?;
-            if let Some(bytes) = journal.state.get(&(NAMESPACE, key.clone())) {
+            if let Some(bytes) = journal.native.state().get(&(NAMESPACE, key.clone())) {
                 let row = decode_record(&key, bytes)?;
                 if row.body[10] == 2 {
                     let result = terminal_result(row.body)?;
@@ -1067,7 +1067,7 @@ impl<'startup> NixOfflineNativeJobV5<'startup> {
         let attempt = if self.origin.recovery() { 2_u8 } else { 1_u8 };
         let current_key = native_key(b"AOSNPH05", &self.job)?;
         let journal = self.journal.as_ref().ok_or(Error::Rejected)?;
-        let original = journal.state.get(&(NAMESPACE, current_key.clone()))
+        let original = journal.native.state().get(&(NAMESPACE, current_key.clone()))
             .ok_or(Error::Rejected)?;
         let original = decode_record(&current_key, original)?;
         let mut current: [u8; 2320] = array(original.body, 0)?;
@@ -1173,7 +1173,7 @@ impl<'startup> NixOfflineNativeJobV5<'startup> {
         contact.hello[160..192].copy_from_slice(&self.origin.compiled_contract()?);
         let journal = self.journal.as_ref().ok_or(Error::Rejected)?;
         for (index, file) in [
-            self.installation_lock.as_ref().ok_or(Error::Rejected)?, journal.storage.lock_file(),
+            self.installation_lock.as_ref().ok_or(Error::Rejected)?, journal.native.lock_file(),
         ].into_iter().enumerate() {
             let identity = inspect_nix_offline_job_identity_v5(file)?;
             if identity.2 != 0 || identity.3 != 0 || identity.6 != 0 {
@@ -1188,7 +1188,7 @@ impl<'startup> NixOfflineNativeJobV5<'startup> {
         contact.request[10] = 4;
         if matches!(slot, 4 | 7) {
             let key = effect_key(b'T', &self.job, attempt, ordinal - 1)?;
-            let original = journal.state.get(&(NAMESPACE, key.clone())).ok_or(Error::Rejected)?;
+            let original = journal.native.state().get(&(NAMESPACE, key.clone())).ok_or(Error::Rejected)?;
             let original = decode_record(&key, original)?;
             let result = terminal_result(original.body)?;
             if result.len() < 152 + 659 || result[148..152] != [0; 4] {
@@ -1229,7 +1229,7 @@ impl<'startup> NixOfflineNativeJobV5<'startup> {
         let current_key = native_key(b"AOSNPH05", &self.job)?;
         let current_body = if self.origin.recovery() {
             let journal = self.journal.as_ref().ok_or(Error::Rejected)?;
-            let original = journal.state.get(&(NAMESPACE, current_key.clone()))
+            let original = journal.native.state().get(&(NAMESPACE, current_key.clone()))
                 .ok_or(Error::Rejected)?;
             let original = decode_record(&current_key, original)?;
             let mut current: [u8; 2320] = array(original.body, 0)?;
@@ -1269,7 +1269,7 @@ impl<'startup> NixOfflineNativeJobV5<'startup> {
     fn settle_original_uncertainty(&mut self) -> Result<(), Error> {
         let current_key = native_key(b"AOSNPH05", &self.job)?;
         let journal = self.journal.as_ref().ok_or(Error::Rejected)?;
-        let original = journal.state.get(&(NAMESPACE, current_key.clone()))
+        let original = journal.native.state().get(&(NAMESPACE, current_key.clone()))
             .ok_or(Error::Rejected)?;
         let row = decode_record(&current_key, original)?;
         let mut current: [u8; 2320] = array(row.body, 0)?;
@@ -1296,8 +1296,8 @@ impl<'startup> NixOfflineNativeJobV5<'startup> {
             let ordinal = (slot - 2) as u16;
             let pending_key = effect_key(b'Q', &self.job, 1, ordinal)?;
             let terminal_key = effect_key(b'T', &self.job, 1, ordinal)?;
-            let pending = journal.state.get(&(NAMESPACE, pending_key)).ok_or(Error::Rejected)?;
-            if journal.state.contains_key(&(NAMESPACE, terminal_key.clone())) {
+            let pending = journal.native.state().get(&(NAMESPACE, pending_key)).ok_or(Error::Rejected)?;
+            if journal.native.state().contains_key(&(NAMESPACE, terminal_key.clone())) {
                 return Err(Error::Rejected);
             }
             let mut body = [0; 52];
@@ -1369,7 +1369,7 @@ impl<'startup> NixOfflineNativeJobV5<'startup> {
             return Err(Error::Rejected);
         }
         let original_key = native_key(b"AOSNPA05", &self.job)?;
-        let original = self.journal.as_ref().ok_or(Error::Rejected)?.state
+        let original = self.journal.as_ref().ok_or(Error::Rejected)?.native.state()
             .get(&(NAMESPACE, original_key)).ok_or(Error::Rejected)?;
         let mut body = Vec::new();
         body.try_reserve_exact(418 + path.len()).map_err(io::Error::other)?;
@@ -1430,10 +1430,10 @@ impl<'startup> NixOfflineNativeJobV5<'startup> {
         }
         let journal = self.journal.as_ref().ok_or(Error::Rejected)?;
         let current = records.last().ok_or(Error::Rejected)?;
-        let before = journal.state.get(&(NAMESPACE, current.key().to_vec()))
+        let before = journal.native.state().get(&(NAMESPACE, current.key().to_vec()))
             .map(|bytes| decode_record(current.key(), bytes)).transpose()?;
         let identifier = expected_record_transaction_id(
-            before.as_ref().map(|record| record.body), &records, journal.next_sequence,
+            before.as_ref().map(|record| record.body), &records, journal.native.next_sequence(),
         )?;
         self.transition = Some(JournalTransaction::new(identifier, records)?);
         Ok(())
@@ -1459,23 +1459,23 @@ impl<'startup> NixOfflineNativeJobV5<'startup> {
 
     fn require_native_readback(&mut self) -> Result<(), Error> {
         let journal = self.journal.as_ref().ok_or(Error::Rejected)?;
-        let before = FileIdentity::of(journal.storage.file())?;
+        let before = FileIdentity::of(journal.native.file())?;
         if before.size > LIMITS.maximum_journal_bytes {
             return Err(Error::Rejected);
         }
         self.readback_bytes.resize(before.size as usize, 0);
-        read_exact_positioned_retaining_cause(journal.storage.file(), &mut self.readback_bytes)?;
+        read_exact_positioned_retaining_cause(journal.native.file(), &mut self.readback_bytes)?;
         let mut observer = NativeHistoryV5::new();
-        let mut cursor = ReadAtCursorV1::new(journal.storage.file(), before.size);
+        let mut cursor = ReadAtCursorV1::new(journal.native.file(), before.size);
         let replay = replay_original_observed(
             &mut cursor, LIMITS, None,
             Some(DeploymentHistoryObserverV1::NixOffline(&mut observer)),
         )?;
         observer.finish(&replay)?;
-        if FileIdentity::of(journal.storage.file())? != before
-            || replay.durable_end != before.size || replay.state != journal.state
-            || replay.next_sequence != journal.next_sequence
-            || replay.committed_transactions != journal.committed_transactions
+        if FileIdentity::of(journal.native.file())? != before
+            || replay.durable_end != before.size || replay.state != *journal.native.state()
+            || replay.next_sequence != journal.native.next_sequence()
+            || replay.committed_transactions != journal.native.committed_transactions()
             || observer.original_digest() != digest(HISTORY_DOMAIN, &self.readback_bytes)
         {
             return Err(Error::Rejected);
@@ -1677,7 +1677,7 @@ impl<'startup> NixOfflineNativeJobV5<'startup> {
     fn require_recovery_original(&mut self) -> Result<(), Error> {
         let key = [b"AOSNPA05".as_slice(), self.job.as_slice()].concat();
         let journal = self.journal.as_ref().ok_or(Error::Rejected)?;
-        let bytes = journal.state.get(&(NAMESPACE, key.clone())).ok_or(Error::Rejected)?;
+        let bytes = journal.native.state().get(&(NAMESPACE, key.clone())).ok_or(Error::Rejected)?;
         let record = decode_record(&key, bytes)?;
         if record.kind != 1 || record.boot != self.boot || record.job != self.job
             || self.history.recovery || record.body.len() < 2130
@@ -1808,7 +1808,7 @@ impl<'startup> NixOfflineNativeJobV5<'startup> {
             self.named.push(self.named_pending.take().ok_or(Error::Rejected)?);
             let named = self.named.last().ok_or(Error::Rejected)?;
             let journal = self.journal.as_ref().ok_or(Error::Rejected)?;
-            let original = if lock { journal.storage.lock_file() } else { journal.storage.file() };
+            let original = if lock { journal.native.lock_file() } else { journal.native.file() };
             if FileIdentity::of(named)? != FileIdentity::of(original)?
                 || Some(MountId::from_fd(named.as_fd())?) != self.directory_mount
                 || !nix_offline_job_has_original_label_v5(named)?
@@ -1838,13 +1838,13 @@ impl<'startup> NixOfflineNativeJobV5<'startup> {
         self.closure.clear();
         let journal = self.journal.as_ref().ok_or(Error::Rejected)?;
         let current_key = native_key(b"AOSNPH05", &self.job)?;
-        let current = journal.state.get(&(NAMESPACE, current_key.clone()))
+        let current = journal.native.state().get(&(NAMESPACE, current_key.clone()))
             .map(|bytes| decode_record(&current_key, bytes)).transpose()?;
         let current_body = current.as_ref().map(|record| record.body);
-        let mut sequence = journal.next_sequence;
+        let mut sequence = journal.native.next_sequence();
 
         let admission_key = native_key(b"AOSNPA05", &self.job)?;
-        if !journal.state.contains_key(&(NAMESPACE, admission_key.clone())) {
+        if !journal.native.state().contains_key(&(NAMESPACE, admission_key.clone())) {
             push_closure_data(
                 &mut self.closure, &self.job, &current_key,
                 Some((admission_key, 6390)), &mut sequence,
@@ -1854,7 +1854,7 @@ impl<'startup> NixOfflineNativeJobV5<'startup> {
         for attempt in first_attempt..=2 {
             if attempt == 2 {
                 let recovery_key = native_key(b"AOSNRA05", &self.job)?;
-                if !journal.state.contains_key(&(NAMESPACE, recovery_key.clone())) {
+                if !journal.native.state().contains_key(&(NAMESPACE, recovery_key.clone())) {
                     push_closure_data(
                         &mut self.closure, &self.job, &current_key,
                         Some((recovery_key, 4678)), &mut sequence,
@@ -1866,8 +1866,8 @@ impl<'startup> NixOfflineNativeJobV5<'startup> {
                     for ordinal in 1..=6 {
                         let pending = effect_key(b'Q', &self.job, 1, ordinal)?;
                         let terminal = effect_key(b'T', &self.job, 1, ordinal)?;
-                        if journal.state.contains_key(&(NAMESPACE, pending))
-                            && !journal.state.contains_key(&(NAMESPACE, terminal.clone()))
+                        if journal.native.state().contains_key(&(NAMESPACE, pending))
+                            && !journal.native.state().contains_key(&(NAMESPACE, terminal.clone()))
                         {
                             push_closure_data(
                                 &mut self.closure, &self.job, &current_key,
@@ -1903,7 +1903,7 @@ impl<'startup> NixOfflineNativeJobV5<'startup> {
                 } else {
                     for prefix in [b'Q', b'T'] {
                         let key = effect_key(prefix, &self.job, attempt, u16::from(slot - 2))?;
-                        if !journal.state.contains_key(&(NAMESPACE, key.clone())) {
+                        if !journal.native.state().contains_key(&(NAMESPACE, key.clone())) {
                             push_closure_data(
                                 &mut self.closure, &self.job, &current_key,
                                 Some((key, 8356)), &mut sequence,
@@ -1913,7 +1913,7 @@ impl<'startup> NixOfflineNativeJobV5<'startup> {
                 }
             }
         }
-        if journal.committed_transactions.checked_add(self.closure.len())
+        if journal.native.committed_transactions().checked_add(self.closure.len())
             .is_none_or(|count| count > 42)
         {
             return Err(Error::Rejected);

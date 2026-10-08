@@ -201,7 +201,7 @@ impl SourceOriginalReplayViewV5<'_> {
 
     /// Borrows the actual current complete namespace41/46 materialization.
     pub fn current_rows(&self) -> &State {
-        &self.journal.state
+        self.journal.native.state()
     }
 }
 
@@ -215,7 +215,7 @@ impl Journal {
     /// Reports an inert Source-history dependency without claiming replay closure.
     #[doc(hidden)]
     pub fn source_original_replay_required_v5(&self) -> bool {
-        self.source_original_replay.has_dependencies() || super::replay::has_original_rows(&self.state)
+        self.source_original_replay.has_dependencies() || super::replay::has_original_rows(self.native.state())
     }
 
     /// Completes the SAME physical parser using actual separately held history.
@@ -233,20 +233,19 @@ impl Journal {
     ) -> Result<(), JournalError> {
         require_fixed_location(self)?;
         challenges.validate_current()?;
-        let mut replay = super::super::replay_with_source_original(
-            self.storage.file_mut(), self.limits, Some(challenges),
-        )?;
+        let (file, limits) = self.native.file_with_limits_mut();
+        let mut replay = super::super::replay_with_source_original(file, limits, Some(challenges))?;
         if replay.source_original_replay.needs_closure()
-            || replay.state != self.state
-            || replay.next_sequence != self.next_sequence
-            || replay.transaction_ids != self.transaction_ids
-            || replay.durable_end != self.storage.file().metadata()?.len()
+            || replay.state != *self.native.state()
+            || replay.next_sequence != self.native.next_sequence()
+            || replay.transaction_ids != *self.native.transaction_ids()
+            || replay.durable_end != self.native.file().metadata()?.len()
         {
             return Err(JournalError::StaleAuthoritySnapshot);
         }
 
         replay.source_original_replay.retain_challenges(challenges)?;
-        replay.source_original_replay.compare_cached(&self.state, None, self.limits)?;
+        replay.source_original_replay.compare_cached(self.native.state(), None, self.native.limits())?;
         require_fixed_location(self)?;
         challenges.validate_current()?;
         self.source_original_replay = replay.source_original_replay;
@@ -266,7 +265,7 @@ impl Journal {
     ) -> Result<SourceOriginalNativeJournalAuthorityV5<'journal, 'challenge>, JournalError> {
         require_fixed(self)?;
         self.source_original_replay.validate_challenges(challenges)?;
-        self.source_original_replay.compare_cached(&self.state, None, self.limits)?;
+        self.source_original_replay.compare_cached(self.native.state(), None, self.native.limits())?;
         Ok(SourceOriginalNativeJournalAuthorityV5 {
             authority: ProtectedJournalAuthority {
                 journal: self,
@@ -524,13 +523,13 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
         if relay_headroom {
             let journal = &self.authority.journal;
             let comparison = journal.source_original_replay
-                .compare_cached(&readback.rows, None, journal.limits)?;
+                .compare_cached(&readback.rows, None, journal.native.limits())?;
             super::replay::require_advisory_bounds(
                 &comparison,
-                journal.limits,
-                journal.storage.file().metadata()?.len(),
-                journal.committed_transactions,
-                journal.next_sequence,
+                journal.native.limits(),
+                journal.native.file().metadata()?.len(),
+                journal.native.committed_transactions(),
+                journal.native.next_sequence(),
             )?;
         }
         self.validate_readback(readback)?;
@@ -752,9 +751,9 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
         self.validate_readback(readback)?;
         self.require_current()?;
         let journal = &self.authority.journal;
-        super::super::validate_transaction(owners, journal.limits)?;
+        super::super::validate_transaction(owners, journal.native.limits())?;
         if owners.records().len() != 7
-            || journal.transaction_ids.contains(owners.id())
+            || journal.native.transaction_ids().contains(owners.id())
             || owners.records().iter().any(|record| {
                 record.namespace() != RecordNamespace::SourceProviderAuthority
                     || record.value().is_none()
@@ -763,9 +762,9 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
             return Err(invalid("original Release admission owner shape"));
         }
 
-        let after = super::super::root_original_inventory::materialize(&journal.state, owners);
+        let after = super::super::root_original_inventory::materialize(journal.native.state(), owners);
         let proposal = propose_native_held_lifecycle_v1(
-            super::owner_views(&journal.state),
+            super::owner_views(journal.native.state()),
             super::owner_views(&after),
             acquisition,
             SourceNativeHeldLifecycleV1::ReleaseAdmitted,
@@ -782,7 +781,7 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
         // The lifecycle comparison cannot replace any original Source5 row.
         // The existing complete union independently checks both actual floors.
         journal.source_original_replay.preview_transaction(
-            &journal.state, &transaction, journal.limits,
+            journal.native.state(), &transaction, journal.native.limits(),
         )?;
         self.validate_readback(readback)?;
         Ok(transaction)
@@ -847,7 +846,7 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
             .find(|origin| origin.admission_comparison().original().acquisition_id == acquisition)
             .ok_or(invalid("original Source completion origin missing"))?;
         let mut selected = None;
-        for family in super::super::capacity_reservation::family::canonical_reservations(&journal.state)? {
+        for family in super::super::capacity_reservation::family::canonical_reservations(journal.native.state())? {
             if let super::super::capacity_reservation::family::CanonicalCapacityFamily::OriginalSource5(floor) = family
                 && floor.original_provenance().claims().claims.provider_acquisition().1 == acquisition
                 && selected.replace(floor).is_some()
@@ -857,7 +856,7 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
         }
         let floor = selected.ok_or(invalid("original Source completion floor absent"))?;
         let continuations = derive_original_source_continuations_v5(
-            super::owner_views(&journal.state),
+            super::owner_views(journal.native.state()),
             Some(origin.admission_comparison()), floor.original_provenance(),
             floor.original_provenance().claims().configuration,
         ).map_err(|_| invalid("original Source completion continuations"))?;
@@ -971,11 +970,11 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
                 record.namespace() != RecordNamespace::SourceProviderAuthority
                     || record.value().is_none()
             })
-            || journal.transaction_ids.contains(quartet.id())
+            || journal.native.transaction_ids().contains(quartet.id())
         {
             return Err(invalid("original Source initial quartet shape"));
         }
-        let owner_rows = || super::owner_views(&journal.state);
+        let owner_rows = || super::owner_views(journal.native.state());
         let proposal = propose_original_source_applying_v5(
             owner_rows(),
             quartet.records().iter().map(|record| (record.key(), record.value())),
@@ -995,7 +994,7 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
             after_rows(), Some(&comparison), provenance, provenance.claims().configuration,
         ).map_err(|_| invalid("original Source initial continuations"))?;
         let budgets = OriginalSourceGeometryDataV5::measure_initial_envelopes(
-            &continuation, journal.limits,
+            &continuation, journal.native.limits(),
         )?;
 
         // Reuse the existing dispatch-binding derivation, not another owner-ID hash.
@@ -1046,7 +1045,7 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
             .find(|origin| origin.admission_comparison().original().acquisition_id == acquisition)
             .ok_or(invalid("original Source transfer origin missing"))?;
         let mut selected = None;
-        for family in super::super::capacity_reservation::family::canonical_reservations(&journal.state)? {
+        for family in super::super::capacity_reservation::family::canonical_reservations(journal.native.state())? {
             if let super::super::capacity_reservation::family::CanonicalCapacityFamily::OriginalSource5(floor)
                 = family
                 && floor.original_provenance().claims().claims.provider_acquisition().1 == acquisition
@@ -1057,7 +1056,7 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
             }
         }
         let floor = selected.ok_or(invalid("original Source transfer floor missing"))?;
-        let mut owners = super::owner_views(&journal.state)
+        let mut owners = super::owner_views(journal.native.state())
             .map(|(key, value)| (key.to_vec(), value.to_vec()))
             .collect::<std::collections::BTreeMap<_, _>>();
         for record in owner_transaction.records() {
@@ -1074,7 +1073,7 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
             floor.original_provenance().claims().configuration,
         ).map_err(|_| invalid("original Source transfer continuation"))?;
         let geometry = OriginalSourceGeometryDataV5::measure_remaining(
-            &floor, &continuation, journal.limits,
+            &floor, &continuation, journal.native.limits(),
         )?;
         let successor = OriginalSourceCapacityRecordV5::new(
             geometry.remaining_request().ok_or(invalid("original Source transfer retired"))?,
@@ -1162,7 +1161,7 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
 
     /// Returns the exact limits opened by this held Journal.
     pub fn configured_limits(&self) -> super::super::JournalLimits {
-        self.authority.journal.limits
+        self.authority.journal.native.limits()
     }
 
     /// Derives the exact current held Release status reservation as comparison DATA.
@@ -1252,10 +1251,10 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
     ) -> Result<SourceOriginalAppendSubjectV5, JournalError> {
         self.require_current()?;
         super::super::validate_transaction(transaction, self.configured_limits())?;
-        let identity = super::super::FileIdentity::of(self.authority.journal.storage.file())?;
+        let identity = super::super::FileIdentity::of(self.authority.journal.native.file())?;
         let mutation_frames = u64::try_from(transaction.records().len())
             .map_err(|_| JournalError::SequenceExhausted)?;
-        let commit_sequence = self.authority.journal.next_sequence
+        let commit_sequence = self.authority.journal.native.next_sequence()
             .checked_add(mutation_frames)
             .and_then(|sequence| sequence.checked_add(1))
             .ok_or(JournalError::SequenceExhausted)?;
@@ -1263,7 +1262,7 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
             identity: (identity.device, identity.inode),
             transaction: *transaction.id(),
             digest: authority_preflight_digest(std::slice::from_ref(transaction)),
-            begin_sequence: self.authority.journal.next_sequence,
+            begin_sequence: self.authority.journal.native.next_sequence(),
             commit_sequence,
             begin_offset: identity.size,
         })
@@ -1278,7 +1277,7 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
     ///
     /// This only revokes availability; it cannot mint or restore authority.
     pub fn poison_after_owner_failure(&mut self) {
-        self.authority.journal.storage.poison();
+        self.authority.journal.native.poison();
     }
 
     /// Borrows real physical origins/cuts after complete currentness checks.
@@ -1302,7 +1301,7 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
         self.require_current()?;
         Ok(FixedSourceProviderJournalHandoffV1 {
             authority: &self.authority,
-            sequence: self.authority.journal.next_sequence,
+            sequence: self.authority.journal.native.next_sequence(),
         })
     }
 
@@ -1338,9 +1337,9 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
             self.require_current()?;
             self.authority.validate_snapshot(&prepared.snapshot)?;
             let journal = &self.authority.journal;
-            super::super::validate_transaction(&prepared.owners, journal.limits)?;
+            super::super::validate_transaction(&prepared.owners, journal.native.limits())?;
             let (origins, comparison) = journal.source_original_replay.preview_transaction(
-                &journal.state, &prepared.owners, journal.limits,
+                journal.native.state(), &prepared.owners, journal.native.limits(),
             )?;
             prepared.prospective_origins = Some(origins);
             prepared.candidate = Some(comparison);
@@ -1373,7 +1372,7 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
             self.authority.validate_snapshot(&prepared.snapshot)?;
             let journal = &self.authority.journal;
             let (_, actual) = journal.source_original_replay.preview_transaction(
-                &journal.state, &prepared.owners, journal.limits,
+                journal.native.state(), &prepared.owners, journal.native.limits(),
             )?;
             let candidate = prepared.candidate.as_ref().ok_or(JournalError::InvalidTransaction)?;
             if actual.before() != candidate.before() || actual.after() != candidate.after() {
@@ -1442,7 +1441,7 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
             )?;
             *readback = Some(OriginalSourceProtectedReadbackV5 {
                 snapshot: self.authority.current_snapshot(),
-                rows: self.authority.journal.state.clone(),
+                rows: self.authority.journal.native.state().clone(),
                 transaction: prepared.owners.clone(),
                 validated: false,
                 original_native_signing_attempted: std::cell::Cell::new(false),
@@ -1465,7 +1464,7 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
         if result.is_err() {
             prepared.failed = true;
             if prepared.attempted {
-                self.authority.journal.storage.poison();
+                self.authority.journal.native.poison();
             }
         }
         result
@@ -1478,15 +1477,15 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
         self.require_current()?;
         self.authority.validate_snapshot(&actual.snapshot)?;
         let journal = &self.authority.journal;
-        if journal.state != actual.rows
-            || !journal.transaction_ids.contains(actual.transaction.id())
+        if *journal.native.state() != actual.rows
+            || !journal.native.transaction_ids().contains(actual.transaction.id())
             || actual.transaction.records().iter().any(|record| {
                 journal.get(record.namespace(), record.key()) != record.value()
             })
         {
             return Err(JournalError::StaleAuthoritySnapshot);
         }
-        journal.source_original_replay.compare_cached(&actual.rows, None, journal.limits)?;
+        journal.source_original_replay.compare_cached(&actual.rows, None, journal.native.limits())?;
         Ok(())
     }
 
@@ -1579,7 +1578,7 @@ pub(in crate::journal) fn require_original_release_source_replay_v1(
             return Err(JournalError::StaleAuthoritySnapshot);
         }
     }
-    actual.compare(&replayed.state, None, challenges, journal.limits)?;
+    actual.compare(&replayed.state, None, challenges, journal.native.limits())?;
     Ok(())
 }
 
@@ -1594,11 +1593,11 @@ pub(in crate::journal) fn require_fixed(journal: &Journal) -> Result<(), Journal
 fn require_fixed_location(journal: &Journal) -> Result<(), JournalError> {
     journal.ensure_protected_authority()?;
     journal.validate_held_root_owned_at("/var/lib/aos/source-provider", "provider.journal")?;
-    if journal.committed_namespaces.iter().any(|namespace| {
+    if journal.native.committed_namespaces().iter().any(|namespace| {
         !matches!(namespace,
             RecordNamespace::SourceProviderAuthority | RecordNamespace::GlobalCapacityReservation)
     })
-        || journal.state.keys().any(|(namespace, _)| {
+        || journal.native.state().keys().any(|(namespace, _)| {
             !matches!(namespace,
                 RecordNamespace::SourceProviderAuthority | RecordNamespace::GlobalCapacityReservation)
         })

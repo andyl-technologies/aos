@@ -604,7 +604,7 @@ impl Journal {
     #[cfg(target_os = "linux")]
     #[doc(hidden)]
     pub fn require_git_coverage_new_admission_v1(&self) -> Result<(), JournalError> {
-        if !self.controller_git_coverage_fenced_v1(&self.state) {
+        if !self.controller_git_coverage_fenced_v1(self.native.state()) {
             return Ok(());
         }
         Err(JournalError::ProtectedBoundary)
@@ -614,7 +614,7 @@ impl Journal {
         &self,
         state: &std::collections::BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
     ) -> bool {
-        self.path == std::path::Path::new("/var/lib/aos/sandboxd/controller.journal")
+        *self.native.path() == std::path::Path::new("/var/lib/aos/sandboxd/controller.journal")
             && has_durable_owner_fence_v1(state)
     }
 
@@ -623,7 +623,7 @@ impl Journal {
         state: &std::collections::BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
         transaction: &JournalTransaction,
     ) -> Result<(), JournalError> {
-        let fixed_remote_owner = matches!(self.path.to_str(),
+        let fixed_remote_owner = matches!(self.native.path().to_str(),
             Some("/var/lib/aos/sandbox-mount/mount.journal")
                 | Some("/var/lib/aos/sandbox-storage/storage-state.journal")
                 | Some("/var/lib/aos/sandbox/policy-compiler/authority.journal")
@@ -764,7 +764,7 @@ impl Journal {
         name: &'static str,
         recipe: NativePrefixRecipeV1,
     ) -> Result<GitCoverageNativePrefixLoanV1<'_>, GitCoverageNativeHistoryErrorV1> {
-        if self.path != std::path::Path::new(directory).join(name) {
+        if *self.native.path() != std::path::Path::new(directory).join(name) {
             return Err(GitCoverageNativeHistoryErrorV1 {
                 first: JournalError::ProtectedBoundary,
                 final_bookend: None,
@@ -805,7 +805,7 @@ impl Journal {
     #[must_use]
     pub fn mount_git_coverage_denies_new_v1(&self) -> bool {
         self.mount_git_coverage_denied
-            || has_durable_owner_fence_v1(&self.state)
+            || has_durable_owner_fence_v1(self.native.state())
     }
 
     pub(super) fn require_mount_git_coverage_source_transition_v1(
@@ -827,7 +827,7 @@ impl Journal {
             // empty before this fence. No earlier debt can be hidden here.
             return Err(JournalError::ProtectedBoundary);
         }
-        super::validate_transaction(transaction, self.limits)?;
+        super::validate_transaction(transaction, self.native.limits())?;
         require_original_source_cleanup_v1(state, transaction)
     }
 
@@ -1095,9 +1095,9 @@ impl Journal {
                     previous_clock: None,
                 });
             }
-            let mut cursor = ReadAtCursorV1::new(self.storage.file(), witness.file.size);
+            let mut cursor = ReadAtCursorV1::new(self.native.file(), witness.file.size);
             let replayed = replay_original_observed(
-                &mut cursor, self.limits, None,
+                &mut cursor, self.native.limits(), None,
                 Some(DeploymentHistoryObserverV1::GitCoverage(&mut observer)),
             )?;
             require_replayed_snapshot(self, &replayed, &observer, witness.file.size)?;
@@ -1105,7 +1105,7 @@ impl Journal {
                 GitCoverageJournalProfileV1::Controller,
             )) && observer.publisher_account_seen {
                 crate::publisher_policy::PublisherPolicyStore::require_complete_coverage_read_state_v1(
-                    &self.state,
+                    self.native.state(),
                 ).map_err(|_| JournalError::ProtectedBoundary)?;
                 crate::cli_model::authorization_adapter::compare_git_coverage_floor_history_v1(
                     self, observer.controller_floor,
@@ -1258,7 +1258,7 @@ fn require_bookend(
     journal.ensure_healthy()?;
     journal.require_protected_names_current()?;
     journal.validate_protected_writer_name_witness(witness)?;
-    if FileIdentity::of(journal.storage.file())? != witness.file {
+    if FileIdentity::of(journal.native.file())? != witness.file {
         return Err(JournalError::StaleAuthoritySnapshot);
     }
     Ok(())
@@ -1272,15 +1272,15 @@ fn require_replayed_snapshot(
 ) -> Result<(), JournalError> {
     if replayed.durable_end != physical_bytes
         || observer.end_offset != physical_bytes
-        || replayed.next_sequence != journal.next_sequence
-        || observer.next_sequence != journal.next_sequence
-        || replayed.committed_transactions != journal.committed_transactions
-        || observer.transactions != journal.committed_transactions
+        || replayed.next_sequence != journal.native.next_sequence()
+        || observer.next_sequence != journal.native.next_sequence()
+        || replayed.committed_transactions != journal.native.committed_transactions()
+        || observer.transactions != journal.native.committed_transactions()
         || observer.records != replayed.committed_records
-        || replayed.transaction_ids != journal.transaction_ids
-        || replayed.committed_namespaces != journal.committed_namespaces
-        || replayed.state != journal.state
-        || replayed.materialized_bytes != journal.materialized_bytes
+        || replayed.transaction_ids != *journal.native.transaction_ids()
+        || replayed.committed_namespaces != *journal.native.committed_namespaces()
+        || replayed.state != *journal.native.state()
+        || replayed.materialized_bytes != journal.native.materialized_bytes()
         || replayed.idempotency != journal.idempotency
         || replayed.q04_lower_history_present != journal.q04_lower_history_present
         || replayed.source_history_compacted

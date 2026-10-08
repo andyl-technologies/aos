@@ -58,14 +58,14 @@ pub(crate) fn rows(
     journal: &Journal,
     project: ProjectId,
 ) -> Result<Option<ControllerSourceGenesisRowsV1>, SourceGenesisErrorV1> {
-    let validated = all_rows(&journal.state).map_err(SourceGenesisErrorV1::from)?;
+    let validated = all_rows(journal.native.state()).map_err(SourceGenesisErrorV1::from)?;
     Ok(validated.get(&project).cloned())
 }
 
 pub(crate) fn pending(
     journal: &Journal,
 ) -> Result<Option<ControllerSourceGenesisAcceptanceRecordV1>, SourceGenesisErrorV1> {
-    let validated = all_rows(&journal.state)?;
+    let validated = all_rows(journal.native.state())?;
     Ok(validated
         .into_values()
         .find(|row| row.complete.is_none())

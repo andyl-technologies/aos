@@ -290,7 +290,7 @@ pub(in crate::journal) fn derive_original_source_geometry_v5(
     tentative_applying: Option<&OriginalSourceOwnerTransactionV5>,
 ) -> Result<OriginalSourceGeometryDataV5, JournalError> {
     // Validate all floor families before selecting the transferred own debt.
-    let all_debts = accounting_reservations(&journal.state)?;
+    let all_debts = accounting_reservations(journal.native.state())?;
     let floor = typed_own_source.to_journal_record()?;
     if typed_own_source.original_provenance() != continuation.provenance() {
         return Err(invalid("original Source geometry provenance changed"));
@@ -302,7 +302,7 @@ pub(in crate::journal) fn derive_original_source_geometry_v5(
         RecordNamespace::GlobalCapacityReservation,
         floor.key().to_vec(),
     );
-    let retained_floor = journal.state.get(&floor_key);
+    let retained_floor = journal.native.state().get(&floor_key);
     let cold_retired = continuation.prefix()
         == OriginalSourceContinuationPrefixV5::PreRequestedCold(ColdPhase::RootAcknowledged)
         || continuation
@@ -320,20 +320,19 @@ pub(in crate::journal) fn derive_original_source_geometry_v5(
         return Err(invalid("original Source geometry floor/admission presence"));
     }
 
-    let mut owners = journal
-        .state
+    let mut owners = journal.native.state()
         .iter()
         .filter(|((namespace, _), _)| *namespace == RecordNamespace::SourceProviderAuthority)
         .map(|((_, key), value)| (key.clone(), value.clone()))
         .collect::<BTreeMap<_, _>>();
     let mut usage = NativeHeldCapacityUsageV3 {
-        journal_bytes: journal.storage.file().metadata()?.len(),
-        transactions: journal.committed_transactions as u64,
-        materialized_bytes: journal.materialized_bytes as u64,
-        materialized_records: journal.state.len() as u64,
+        journal_bytes: journal.native.file().metadata()?.len(),
+        transactions: journal.native.committed_transactions() as u64,
+        materialized_bytes: journal.native.materialized_bytes() as u64,
+        materialized_records: journal.native.state().len() as u64,
         ..NativeHeldCapacityUsageV3::default()
     };
-    let mut sequence = journal.next_sequence;
+    let mut sequence = journal.native.next_sequence();
     let mut admission_growth = CoupledPrefix::default();
 
     if let Some(proposal) = tentative_applying {
@@ -370,20 +369,20 @@ pub(in crate::journal) fn derive_original_source_geometry_v5(
         records.push(floor.clone());
         let admission =
             JournalTransaction::new(typed_own_source.admission_transaction_id(), records)?;
-        if journal.transaction_ids.contains(admission.id()) {
+        if journal.native.transaction_ids().contains(admission.id()) {
             return Err(invalid("original Source tentative admission transaction reused"));
         }
-        validate_transaction(&admission, journal.limits)?;
-        let entries = projected_materialized_record_count(&journal.state, admission.records())?;
+        validate_transaction(&admission, journal.native.limits())?;
+        let entries = projected_materialized_record_count(journal.native.state(), admission.records())?;
         let materialized = validate_materialized_change(
-            &journal.state,
-            journal.materialized_bytes,
+            journal.native.state(),
+            journal.native.materialized_bytes(),
             admission.records(),
-            journal.limits,
+            journal.native.limits(),
         )?;
         admission_growth = CoupledPrefix {
-            bytes: materialized as i128 - journal.materialized_bytes as i128,
-            records: entries as i64 - journal.state.len() as i64,
+            bytes: materialized as i128 - journal.native.materialized_bytes() as i128,
+            records: entries as i64 - journal.native.state().len() as i64,
         };
         usage.journal_bytes = add(
             usage.journal_bytes,
@@ -432,14 +431,14 @@ pub(in crate::journal) fn derive_original_source_geometry_v5(
         typed_own_source,
         continuation,
         &owner_view,
-        journal.limits,
+        journal.native.limits(),
         !cold_retired,
     )?;
     let mut staged_peak_bytes = positive_bytes(admission_growth.bytes)?;
     let mut staged_peak_records = positive_records(admission_growth.records)?;
     for measured in &result.alternatives {
-        measured.owner.require_headroom(journal.limits, usage)?;
-        require_coupled_headroom(journal.limits, usage, measured)?;
+        measured.owner.require_headroom(journal.native.limits(), usage)?;
+        require_coupled_headroom(journal.native.limits(), usage, measured)?;
         require_sequence_headroom(sequence, measured.frames, other_frames)?;
         staged_peak_bytes = staged_peak_bytes.max(positive_bytes(
             admission_growth.bytes + i128::from(measured.maximum_coupled_growth_bytes),

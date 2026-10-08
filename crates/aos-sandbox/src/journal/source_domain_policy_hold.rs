@@ -937,7 +937,7 @@ impl Journal {
         hold: SourceDomainPolicyHoldV1,
     ) -> Result<(), JournalError> {
         ensure_source_domain(self)?;
-        let (current_hold, pending) = current_with_v8_pending(&self.state)?;
+        let (current_hold, pending) = current_with_v8_pending(self.native.state())?;
         if !hold.held
             || current_hold.is_some_and(SourceDomainPolicyHoldV1::is_held)
             || pending.is_some()
@@ -961,7 +961,7 @@ impl Journal {
             true,
         )?;
         self.commit_with_capacity_scope(&acquire, None, false, true, false, false, false)?;
-        if current(&self.state)? != Some(hold) {
+        if current(self.native.state())? != Some(hold) {
             return Err(JournalError::ProtectedBoundary);
         }
         Ok(())
@@ -976,7 +976,7 @@ impl Journal {
         &self,
     ) -> Result<Option<SourceDomainPolicyHoldV1>, JournalError> {
         ensure_source_domain(self)?;
-        current(&self.state)
+        current(self.native.state())
     }
 
     /// Reads the V8 pending marker under the retained protected Source writer.
@@ -988,7 +988,7 @@ impl Journal {
         &self,
     ) -> Result<Option<SourceDomainPolicyV8PendingSettlementV1>, JournalError> {
         ensure_source_domain(self)?;
-        current_with_v8_pending(&self.state).map(|(_, pending)| pending)
+        current_with_v8_pending(self.native.state()).map(|(_, pending)| pending)
     }
 
     /// Reads the marker-anchored held predecessor and current released row.
@@ -1000,7 +1000,7 @@ impl Journal {
         &self,
     ) -> Result<(SourceDomainPolicyHoldV1, SourceDomainPolicyHoldV1), JournalError> {
         ensure_source_domain(self)?;
-        let (Some(released), Some(_)) = current_with_v8_pending(&self.state)? else {
+        let (Some(released), Some(_)) = current_with_v8_pending(self.native.state())? else {
             return Err(JournalError::ProtectedBoundary);
         };
         let held = SourceDomainPolicyHoldV1 {
@@ -1015,7 +1015,7 @@ impl Journal {
         expected: SourceDomainPolicyHoldV1,
     ) -> Result<(), JournalError> {
         ensure_source_domain(self)?;
-        if !expected.held || current(&self.state)? != Some(expected) {
+        if !expected.held || current(self.native.state())? != Some(expected) {
             return Err(JournalError::ProtectedBoundary);
         }
         self.commit_released_source_domain_policy_hold(expected)
@@ -1046,7 +1046,7 @@ impl Journal {
         };
 
         let marker = SourceDomainPolicyV8PendingSettlementV1::new(expected)?;
-        match current_with_v8_pending(&self.state)? {
+        match current_with_v8_pending(self.native.state())? {
             (Some(current), None) if current == expected => {
                 self.commit_with_capacity_scope(
                     &v8_retirement_transaction(expected)?,
@@ -1057,7 +1057,7 @@ impl Journal {
                     false,
                     false,
                 )?;
-                if current_with_v8_pending(&self.state)? != (Some(released), Some(marker)) {
+                if current_with_v8_pending(self.native.state())? != (Some(released), Some(marker)) {
                     return Err(JournalError::ProtectedBoundary);
                 }
                 Ok(())
@@ -1090,7 +1090,7 @@ impl Journal {
         if expected_released.is_held() {
             return Err(JournalError::ProtectedBoundary);
         }
-        match current_with_v8_pending(&self.state)? {
+        match current_with_v8_pending(self.native.state())? {
             (Some(current), Some(_)) if current == expected_released => {
                 self.commit_with_capacity_scope(
                     &v8_clear_transaction(expected_released)?,
@@ -1105,7 +1105,7 @@ impl Journal {
             (Some(current), None) if current == expected_released => {}
             _ => return Err(JournalError::ProtectedBoundary),
         }
-        if current_with_v8_pending(&self.state)? != (Some(expected_released), None) {
+        if current_with_v8_pending(self.native.state())? != (Some(expected_released), None) {
             return Err(JournalError::ProtectedBoundary);
         }
         Ok(())
@@ -1128,7 +1128,7 @@ impl Journal {
             false,
             false,
         )?;
-        if current(&self.state)? != Some(released) {
+        if current(self.native.state())? != Some(released) {
             return Err(JournalError::ProtectedBoundary);
         }
         Ok(())

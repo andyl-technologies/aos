@@ -198,11 +198,11 @@ fn retain_target(
     uid: u32,
     name: &'static str,
 ) -> Result<RetainedCacheTargetV1, JournalError> {
-    require_named(journal, directory, name, uid, journal.limits)?;
+    require_named(journal, directory, name, uid, journal.native.limits())?;
     Ok(RetainedCacheTargetV1 {
         name,
         instance: Arc::clone(&journal.authority_instance),
-        limits: journal.limits,
+        limits: journal.native.limits(),
         sequence: journal.snapshot_sequence(),
         witness: journal.protected_writer_name_witness()?,
         own_append: None,
@@ -631,7 +631,7 @@ mod tests {
     #[test]
     fn borrowed_preflight_preserves_next_frame_sequence_overflow() {
         let (_directory, _uid, mut state, authority) = fixture(true);
-        state.next_sequence = u64::MAX;
+        state.native.replace_next_sequence_for_fixture(u64::MAX);
         let mut original = Journal::retain_cache_read_mutation_gate_v1(&state, &authority).unwrap();
         let mut borrowed =
             Journal::borrow_cache_mutation_gate_v1(&state, &authority, &mut original.gate).unwrap();

@@ -39,10 +39,10 @@ impl MountOriginalNativeJournalAuthorityV5<'_> {
             }
             let owners = root_closed_owners(phase10.graph(), phase10.attempt(), floor, signed)?;
             let (transaction, next, old) = derive_continuation(
-                &self.authority.journal.state,
+                self.authority.journal.native.state(),
                 &owners,
                 phase10.attempt(),
-                self.authority.journal.limits,
+                self.authority.journal.native.limits(),
             )?;
             *slot = Some(PreparedOriginalRootAppendV5 {
                 transaction,
@@ -63,7 +63,7 @@ impl MountOriginalNativeJournalAuthorityV5<'_> {
                 &candidate.transaction,
                 &old,
                 candidate.floor.as_ref(),
-                self.authority.journal.limits,
+                self.authority.journal.native.limits(),
             )?;
             // Begin/three records/Commit consume five physical sequence positions.
             phase10

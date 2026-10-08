@@ -357,31 +357,31 @@ impl Journal {
         let witness = self.protected_writer_name_witness()?;
         let result = (|| {
             let key = codec::batch_key(batch.project(), batch.operation());
-            if self.state.get(&(RecordNamespace::DesiredState, key)).map(Vec::as_slice)
+            if self.native.state().get(&(RecordNamespace::DesiredState, key)).map(Vec::as_slice)
                 != Some(batch_bytes)
             {
                 return Err(invalid());
             }
-            bound_preview(&self.state, &[], self.limits)?;
+            bound_preview(self.native.state(), &[], self.native.limits())?;
 
             let mut observer = NativeObserverV1 {
                 transaction: batch.transaction(),
                 proof: None,
             };
-            let mut reader = ReadAtCursorV1::new(self.storage.file(), witness.file.size);
+            let mut reader = ReadAtCursorV1::new(self.native.file(), witness.file.size);
             let replayed = replay_original_observed(
                 &mut reader,
-                self.limits,
+                self.native.limits(),
                 None,
                 Some(DeploymentHistoryObserverV1::Delete(&mut observer)),
             )?;
             if replayed.durable_end != witness.file.size
-                || replayed.next_sequence != self.next_sequence
-                || replayed.committed_transactions != self.committed_transactions
-                || replayed.transaction_ids != self.transaction_ids
-                || replayed.state != self.state
+                || replayed.next_sequence != self.native.next_sequence()
+                || replayed.committed_transactions != self.native.committed_transactions()
+                || replayed.transaction_ids != *self.native.transaction_ids()
+                || replayed.state != *self.native.state()
                 || replayed.idempotency != self.idempotency
-                || replayed.materialized_bytes != self.materialized_bytes
+                || replayed.materialized_bytes != self.native.materialized_bytes()
                 || replayed.q04_lower_history_present != self.q04_lower_history_present
                 || replayed.source_history_compacted
             {

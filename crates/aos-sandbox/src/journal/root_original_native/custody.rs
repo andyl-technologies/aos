@@ -87,7 +87,7 @@ impl Drop for CommitBoundaryV5<'_, '_, '_> {
         if !self.succeeded {
             self.failed.set(true);
             if self.append_entered {
-                self.writer.authority.journal.storage.poison();
+                self.writer.authority.journal.native.poison();
             }
         }
     }
@@ -169,15 +169,15 @@ impl MountOriginalNativeJournalAuthorityV5<'_> {
             *slot = Some(self.initial_candidate_v5(owners, attempt));
             self.current_graph()?;
             let (transaction, floor) = derive_admission(
-                &self.authority.journal.state,
+                self.authority.journal.native.state(),
                 owners,
                 prepared.clone(),
-                self.authority.journal.limits,
+                self.authority.journal.native.limits(),
             )?;
             let candidate = slot.as_mut().ok_or_else(invalid)?;
             candidate.transaction = transaction;
             candidate.floor = Some(floor);
-            validate_transaction(&candidate.transaction, self.authority.journal.limits)?;
+            validate_transaction(&candidate.transaction, self.authority.journal.native.limits())?;
 
             self.finish_preparation_v5(candidate)
         })
@@ -202,10 +202,10 @@ impl MountOriginalNativeJournalAuthorityV5<'_> {
             *slot = Some(self.initial_candidate_v5(owners, attempt));
             self.current_graph()?;
             let (transaction, floor, old) = derive_continuation(
-                &self.authority.journal.state,
+                self.authority.journal.native.state(),
                 owners,
                 attempt,
-                self.authority.journal.limits,
+                self.authority.journal.native.limits(),
             )?;
             let candidate = slot.as_mut().ok_or_else(invalid)?;
             candidate.transaction = transaction;
@@ -214,7 +214,7 @@ impl MountOriginalNativeJournalAuthorityV5<'_> {
                 &candidate.transaction,
                 &old,
                 candidate.floor.as_ref(),
-                self.authority.journal.limits,
+                self.authority.journal.native.limits(),
             )?;
             let frames = u64::try_from(candidate.transaction.records().len())
                 .map_err(|_| JournalError::SequenceExhausted)?
@@ -226,7 +226,7 @@ impl MountOriginalNativeJournalAuthorityV5<'_> {
                 .checked_add(frames)
                 .ok_or(JournalError::SequenceExhausted)?;
             pending_v5::validate_pending_sequence(
-                &self.authority.journal.state,
+                self.authority.journal.native.state(),
                 &candidate.transaction,
                 attempt,
                 sequence,
@@ -356,10 +356,10 @@ impl MountOriginalNativeJournalAuthorityV5<'_> {
             validated: false,
         });
         let actual = actual.as_mut().ok_or_else(invalid)?;
-        actual.rows = Some(writer.authority.journal.state.clone());
+        actual.rows = Some(writer.authority.journal.native.state().clone());
 
         writer.require_current()?;
-        if !writer.authority.journal.transaction_ids.contains(actual.transaction.id())
+        if !writer.authority.journal.native.transaction_ids().contains(actual.transaction.id())
             || actual.transaction.records().iter().any(|record| {
                 writer.authority.journal.get(record.namespace(), record.key()) != record.value()
             })
@@ -367,8 +367,8 @@ impl MountOriginalNativeJournalAuthorityV5<'_> {
             return Err(JournalError::StaleAuthoritySnapshot);
         }
         let rows = actual.rows.as_ref().ok_or_else(invalid)?;
-        require_named_funding(rows, writer.authority.journal.limits)?;
-        pending(rows, writer.authority.journal.limits)?;
+        require_named_funding(rows, writer.authority.journal.native.limits())?;
+        pending(rows, writer.authority.journal.native.limits())?;
         let checked = graph(rows)?;
         if checked.canonical_records() != writer.current_graph()?.canonical_records() {
             return Err(invalid());

@@ -632,12 +632,12 @@ impl ProtectedJournalAuthority<'_> {
         ) {
             return Err(JournalError::ForeignAuthorityNamespace);
         }
-        super::root_local_recovery::graph(&self.journal.state)?;
+        super::root_local_recovery::graph(self.journal.native.state())?;
         if self.scope == ProtectedAuthorityScope::RootOriginalInventoryV6 {
             super::root_original_inventory::validate_rejoined_capacity(
-                &self.journal.state, self.journal.materialized_bytes,
-                self.journal.storage.file().metadata()?.len(), self.journal.committed_transactions,
-                self.journal.limits, self.journal.next_sequence,
+                self.journal.native.state(), self.journal.native.materialized_bytes(),
+                self.journal.native.file().metadata()?.len(), self.journal.native.committed_transactions(),
+                self.journal.native.limits(), self.journal.native.next_sequence(),
             )?;
         }
         self.validate_startup_policy_replay()

@@ -11,7 +11,7 @@ impl Journal {
     pub(crate) fn require_fixed_git_evidence_namespace_v1(&self) -> Result<(), JournalError> {
         self.validate_held_protected_names()?;
         let location = self.protected.as_ref().ok_or(JournalError::ProtectedBoundary)?;
-        for descriptor in [&location.directory, self.storage.file(), self.storage.lock_file()] {
+        for descriptor in [&location.directory, self.native.file(), self.native.lock_file()] {
             let mut context = [0_u8; 256];
             let length = rustix::fs::fgetxattr(descriptor, "security.selinux", &mut context[..])
                 .map_err(super::rustix_io)?;
@@ -21,9 +21,9 @@ impl Journal {
             }
         }
         require_shape(
-            self.committed_transactions,
-            self.committed_namespaces.iter().copied(),
-            self.state.keys().map(|(namespace, key)| (*namespace, key.as_slice())),
+            self.native.committed_transactions(),
+            self.native.committed_namespaces().iter().copied(),
+            self.native.state().keys().map(|(namespace, key)| (*namespace, key.as_slice())),
         )
     }
 }

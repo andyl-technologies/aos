@@ -896,7 +896,7 @@ impl Journal {
         &self,
     ) -> Result<Option<SourceProjectAdmissionTerminalV1>, JournalError> {
         self.ensure_healthy()?;
-        Ok(current_rows(&self.state)?.terminal())
+        Ok(current_rows(self.native.state())?.terminal())
     }
 
     /// Lifts only the exact terminal fence after Root and held Controller ACK.
@@ -914,7 +914,7 @@ impl Journal {
         controller: &ControllerProjectHistoryAcceptanceV1<'_>,
     ) -> Result<(), JournalError> {
         source_domain_policy_hold::ensure_source_domain(self)?;
-        let rows = current_rows(&self.state)?;
+        let rows = current_rows(self.native.state())?;
         let terminal = rows.terminal().ok_or(JournalError::ProtectedBoundary)?;
         let floor = proof.floor();
         if self.protected_writer_physical_names_v1()? != terminal.reservation.names() {
@@ -949,7 +949,7 @@ impl Journal {
             terminal.challenge(),
             terminal.source_terminal_digest(),
         )?;
-        let current = current_rows(&self.state)?;
+        let current = current_rows(self.native.state())?;
         if current.retirement_ack != Some(ack)
             || current.terminal() != Some(terminal)
             || self.protected_writer_physical_names_v1()? != terminal.reservation.names()
@@ -966,7 +966,7 @@ impl Journal {
     pub(crate) fn source_project_admission_reservation_status_v1(
         &self,
     ) -> Result<Option<(SourceProjectAdmissionReservationV1, bool)>, JournalError> {
-        let rows = current_rows(&self.state)?;
+        let rows = current_rows(self.native.state())?;
         Ok(rows
             .reservation
             .map(|row| (row, rows.cancellation.is_some())))
@@ -976,7 +976,7 @@ impl Journal {
     pub(crate) fn source_project_admission_reservation_v1(
         &self,
     ) -> Result<Option<SourceProjectAdmissionReservationV1>, JournalError> {
-        Ok(current_rows(&self.state)?.reservation)
+        Ok(current_rows(self.native.state())?.reservation)
     }
 
     /// Retires an unconsumed reservation only after exact Root cancellation.
@@ -990,7 +990,7 @@ impl Journal {
     ) -> Result<(), JournalError> {
         source_domain_policy_hold::ensure_source_domain(self)?;
         let marker = proof.marker();
-        let rows = current_rows(&self.state)?;
+        let rows = current_rows(self.native.state())?;
         if rows.reservation != Some(expected)
             || self.protected_writer_physical_names_v1()? != expected.names()
             || marker.reservation() != expected.record_digest()
@@ -1020,7 +1020,7 @@ impl Journal {
             &transaction,
             SourceProjectAdmissionTransition::CancelReservation,
         )?;
-        if current_cancellation(&self.state)? != Some(cancellation)
+        if current_cancellation(self.native.state())? != Some(cancellation)
             || self.protected_writer_physical_names_v1()? != expected.names()
         {
             return Err(JournalError::ProtectedBoundary);
@@ -1051,7 +1051,7 @@ impl Journal {
         {
             return Err(JournalError::ProtectedBoundary);
         }
-        let rows = current_rows(&self.state)?;
+        let rows = current_rows(self.native.state())?;
         if let Some(prior) = rows.reservation {
             if prior.client_nonce == client_nonce
                 && prior.project == project
@@ -1094,7 +1094,7 @@ impl Journal {
     ) -> Result<SourceProjectAdmissionReservationV1, JournalError> {
         let row =
             self.preview_source_project_admission_reservation_v1(client_nonce, project, names)?;
-        let rows = current_rows(&self.state)?;
+        let rows = current_rows(self.native.state())?;
         if rows.reservation == Some(row) {
             return Ok(row);
         }
@@ -1104,7 +1104,7 @@ impl Journal {
             &transaction,
             SourceProjectAdmissionTransition::Reserve,
         )?;
-        if current_reservation(&self.state)? != Some(row)
+        if current_reservation(self.native.state())? != Some(row)
             || self.protected_writer_physical_names_v1()? != names
         {
             return Err(JournalError::ProtectedBoundary);
@@ -1116,7 +1116,7 @@ impl Journal {
     pub(crate) fn source_project_admission_status_v1(
         &self,
     ) -> Result<Option<(SourceProjectAdmissionChallengeV1, bool)>, JournalError> {
-        let rows = current_rows(&self.state)?;
+        let rows = current_rows(self.native.state())?;
         Ok(rows.challenge.map(|row| (row, rows.settlement.is_some())))
     }
 
@@ -1142,7 +1142,7 @@ impl Journal {
         {
             return Err(JournalError::ProtectedBoundary);
         }
-        let rows = current_rows(&self.state)?;
+        let rows = current_rows(self.native.state())?;
         let prior = rows.challenge;
         let settlement = rows.settlement;
         let prior_reservation = rows.reservation;
@@ -1237,7 +1237,7 @@ impl Journal {
     ) -> Result<(), JournalError> {
         let reservation =
             self.preview_source_project_admission_reservation_v1(client_nonce, project, names)?;
-        let rows = current_rows(&self.state)?;
+        let rows = current_rows(self.native.state())?;
         if rows.reservation.is_some() && rows.retirement_ack.is_none() {
             return Err(JournalError::ProtectedBoundary);
         }
@@ -1356,7 +1356,7 @@ impl Journal {
         {
             return Err(JournalError::ProtectedBoundary);
         }
-        let rows = current_rows(&self.state)?;
+        let rows = current_rows(self.native.state())?;
         let reserved = rows.reservation.ok_or(JournalError::ProtectedBoundary)?;
         if let Some(row) = rows.challenge {
             if row.kind == kind
@@ -1415,7 +1415,7 @@ impl Journal {
     ) -> Result<(), JournalError> {
         source_domain_policy_hold::ensure_source_domain(self)?;
         let outcome = proof.outcome();
-        let rows = current_rows(&self.state)?;
+        let rows = current_rows(self.native.state())?;
         if rows.challenge != Some(expected)
             || self.protected_writer_physical_names_v1()? != expected.names()
             || outcome.project() != expected.project()
@@ -1443,7 +1443,7 @@ impl Journal {
             &transaction,
             SourceProjectAdmissionTransition::Settle,
         )?;
-        if current_rows(&self.state)?.settlement != Some(settlement)
+        if current_rows(self.native.state())?.settlement != Some(settlement)
             || self.protected_writer_physical_names_v1()? != expected.names()
         {
             return Err(JournalError::ProtectedBoundary);
@@ -2008,17 +2008,17 @@ mod tests {
                 ..ack
             },
         ] {
-            let mut state = writer.state.clone();
+            let mut state = writer.native.state().clone();
             state.insert(
                 (RecordNamespace::DesiredState, RETIREMENT_ACK_KEY.to_vec()),
                 foreign.encode().to_vec(),
             );
             assert!(current_rows(&state).is_err());
         }
-        let mut missing = writer.state.clone();
+        let mut missing = writer.native.state().clone();
         missing.remove(&(RecordNamespace::DesiredState, KEY.to_vec()));
         assert!(current_rows(&missing).is_err());
-        let mut wrong_stage = writer.state.clone();
+        let mut wrong_stage = writer.native.state().clone();
         wrong_stage.insert(
             (RecordNamespace::DesiredState, SETTLEMENT_KEY.to_vec()),
             SourceProjectAdmissionSettlementV1 {
@@ -2098,7 +2098,10 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-        writer.limits.maximum_transactions = 4;
+        writer.native.replace_limits_for_fixture(JournalLimits {
+            maximum_transactions: 4,
+            ..writer.native.limits()
+        });
         writer
             .preflight_source_project_admission_capacity_v1(
                 [2; 16],
@@ -2139,7 +2142,10 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-        writer.limits.maximum_transactions = 3;
+        writer.native.replace_limits_for_fixture(JournalLimits {
+            maximum_transactions: 3,
+            ..writer.native.limits()
+        });
         writer
             .preflight_source_project_negative_capacity_v1([74; 16], project, names)
             .unwrap();
@@ -2167,7 +2173,7 @@ mod tests {
         );
         assert!(writer.compact().is_err());
         append_retirement_ack_for_test(&mut writer);
-        assert_eq!(writer.committed_transactions, 3);
+        assert_eq!(writer.native.committed_transactions(), 3);
         // This test-only exact ACK helper models the final authority join; it
         // is not a production Root/Controller proof or an installed issuer.
         assert_eq!(
@@ -2301,7 +2307,7 @@ mod tests {
                 .unwrap(),
             next
         );
-        let rows = current_rows(&recovered.state).unwrap();
+        let rows = current_rows(recovered.native.state()).unwrap();
         assert!(rows.retirement_ack.is_none());
         assert!(rows.terminal().is_none());
         assert_eq!(rows.reservation, Some(next));

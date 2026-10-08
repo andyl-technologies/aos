@@ -104,6 +104,16 @@ domain owning the state. Generic journal replay returns data and durability
 outcomes, not domain authority. Moving codec primitives into core must not
 move role-specific validation or canonical signing domains there.
 
+The concrete native journal pilot now owns the original files and append poison,
+configuration DATA, coordinates, identity and namespace-provenance sets, and
+materialized DATA map in `aos-sandbox-journal::owner`. The domain wrapper keeps
+its semantic indexes, genuine loans, admission and final crossings at their
+original steps. Native file replacement retains the original lock and poison;
+upper histories and authority-instance rotation remain upper. This contiguous
+ownership cut is partial: protected opening, typed replay, compaction admission,
+and the protected Policy/Source/Cache/Ownership crate boundaries still require
+their separate migrations.
+
 Linux owns the unchanged bounded optional credential reader and its retained
 native read DATA; role-specific decoding, key separation, and startup admission
 remain with their original owners.

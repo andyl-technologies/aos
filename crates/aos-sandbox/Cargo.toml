@@ -59,6 +59,7 @@ rustls-pemfile.workspace = true
 tokio-rustls.workspace = true
 
 [dev-dependencies]
+aos-sandbox-journal = { workspace = true, features = ["test-fixtures"] }
 hex.workspace = true
 rcgen.workspace = true
 tempfile.workspace = true

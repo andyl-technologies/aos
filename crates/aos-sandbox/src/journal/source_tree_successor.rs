@@ -1407,35 +1407,35 @@ impl Journal {
                 JournalRecord::delete(RecordNamespace::GlobalCapacityReservation, reservation.key().to_vec()),
             ],
         )?;
-        super::validate_transaction(&suffix, self.limits)?;
-        if suffix.id() == prepared.id() || self.transaction_ids.contains(suffix.id()) {
+        super::validate_transaction(&suffix, self.native.limits())?;
+        if suffix.id() == prepared.id() || self.native.transaction_ids().contains(suffix.id()) {
             return Err(JournalError::DuplicateTransaction);
         }
 
-        let after_prepared = super::root_original_inventory::materialize(&self.state, prepared);
+        let after_prepared = super::root_original_inventory::materialize(self.native.state(), prepared);
         let prefix_bytes = super::validate_materialized_change(
-            &self.state, self.materialized_bytes, prepared.records(), self.limits,
+            self.native.state(), self.native.materialized_bytes(), prepared.records(), self.native.limits(),
         )?;
         let terminal_bytes = super::validate_materialized_change(
-            &after_prepared, prefix_bytes, suffix.records(), self.limits,
+            &after_prepared, prefix_bytes, suffix.records(), self.native.limits(),
         )?;
         let prefix_append_bytes = super::encoded_transaction_append_bytes(prepared)?;
         let suffix_append_bytes = super::encoded_transaction_append_bytes(&suffix)?;
-        let journal_bytes = self.storage.file().metadata()?.len()
+        let journal_bytes = self.native.file().metadata()?.len()
             .checked_add(prefix_append_bytes)
             .and_then(|bytes| bytes.checked_add(suffix_append_bytes))
             .ok_or(JournalError::JournalTooLarge)?;
-        if journal_bytes > self.limits.maximum_journal_bytes {
+        if journal_bytes > self.native.limits().maximum_journal_bytes {
             return Err(JournalError::JournalTooLarge);
         }
-        let transactions = self.committed_transactions.checked_add(2)
+        let transactions = self.native.committed_transactions().checked_add(2)
             .ok_or(JournalError::LimitExceeded("committed transaction count"))?;
-        if transactions > self.limits.maximum_transactions {
+        if transactions > self.native.limits().maximum_transactions {
             return Err(JournalError::LimitExceeded("committed transaction count"));
         }
         super::validate_reserved_capacity(
             &after_prepared, terminal_bytes, suffix.records(), Some(capacity_id),
-            journal_bytes, transactions, self.limits, None,
+            journal_bytes, transactions, self.native.limits(), None,
         )?;
 
         let prefix_frames = u64::try_from(prepared.records().len())
@@ -1444,7 +1444,7 @@ impl Journal {
         let terminal_frames = u64::try_from(suffix.records().len())
             .map_err(|_| JournalError::SequenceExhausted)?
             .checked_add(2).ok_or(JournalError::SequenceExhausted)?;
-        let next = self.next_sequence.checked_add(prefix_frames)
+        let next = self.native.next_sequence().checked_add(prefix_frames)
             .and_then(|sequence| sequence.checked_add(terminal_frames))
             .ok_or(JournalError::SequenceExhausted)?;
         let after_terminal = super::root_original_inventory::materialize(&after_prepared, &suffix);
@@ -1461,7 +1461,7 @@ impl Journal {
         &self,
     ) -> Result<SourceFirstSuccessorRowsV2, JournalError> {
         self.ensure_healthy()?;
-        current_rows(&self.state)
+        current_rows(self.native.state())
     }
 
     /// Returns the complete mixed family as selected comparison DATA.
@@ -1470,7 +1470,7 @@ impl Journal {
         selected: Option<ProjectId>,
     ) -> Result<SourceFirstSuccessorRowsV2, JournalError> {
         self.ensure_healthy()?;
-        current_project_rows_v3(&self.state, selected)
+        current_project_rows_v3(self.native.state(), selected)
     }
 
     pub(crate) fn source_project_genesis_rows_v3(
@@ -1478,7 +1478,7 @@ impl Journal {
         selected: ProjectId,
     ) -> Result<SourceFirstSuccessorRowsV2, JournalError> {
         self.ensure_healthy()?;
-        current_project_genesis_rows_v3(&self.state, selected)
+        current_project_genesis_rows_v3(self.native.state(), selected)
     }
 
     /// Appends one exact native phase under its fixed genuine writer.

@@ -216,4 +216,4 @@ impl Seek for CapturedFileCursor<'_> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
