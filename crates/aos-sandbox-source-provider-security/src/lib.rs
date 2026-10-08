@@ -112,11 +112,7 @@ pub use handshake::{
     SentMountProviderRequestV2, VerifiedMountProviderOutcomeV2,
     VerifiedReceivedMountProviderOutcomeV2,
 };
-pub use migration::{
-    AuthorizedMountSourceStateMigrationV2, AuthorizedV2MigrationInstallPartsV1,
-    AuthorizedV2MigrationPlanV1, MountSourceStateMigrationInstallOutcomeV2,
-    MountSourceStateMigrationRecoveryV2,
-};
+pub use migration::{AuthorizedV2MigrationInstallPartsV1, AuthorizedV2MigrationPlanV1};
 pub use storage_transport::{
     OriginalStorageOfferErrorV5, OriginalStorageOfferTransportV5,
     ProductionSourceProviderStorageErrorV1, ProductionSourceProviderStorageOutcomeV1,

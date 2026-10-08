@@ -1122,14 +1122,11 @@ acquisition ID. Namespace 40's normal decoder accepts only canonical
 
 Each canonical JSON value, including its envelope and hex-encoded retained
 bytes, is bounded at four MiB; the complete materialized graph is bounded at
-512 MiB before cloning or allocation. A version-1 key is never recognized by
-the normal decoder. `AOSMSA01` remains available only to the explicit, pure,
-bounded hard-cut migration planner. That planner validates the complete legacy
-graph and requires a complete supplemental `AOSMSA02` provenance graph for
-four-key trust, executions, normalized intents, floors, attempts, and holder
-sequences. Retained legacy authority that cannot supply those facts returns
-`NeedsProvenance`; no ordinary open, implicit upgrade, installer, or authority
-is created by the migration decoder.
+512 MiB before cloning or allocation. Version-1 keys and `AOSMSA01` values
+are unsupported and are never recognized by the normal decoder. The earlier,
+undeployed PR format has no migration API. Retained unsupported state fails
+closed; it is not silently discarded or reinterpreted as canonical
+`AOSMSA02` state.
 
 The acquisition row retains the closed lifecycle `PendingQuery`,
 `DescriptorCustodied`, `Active`,

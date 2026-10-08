@@ -1125,7 +1125,6 @@ enum ProtectedAuthorityScope {
     SourceProviderHeldReadOnly,
     SourceOriginalNativeV5,
     MountSourceConsumption,
-    MountSourceMigration,
     MountManagerStartup,
     CapacityReservation(GlobalCapacityReservationPurposeV1),
 }
@@ -1734,16 +1733,6 @@ impl FixedSourceProviderJournalHandoffV1<'_, '_> {
     }
 }
 
-/// Borrows the fixed Mount journal for one authenticated AOSMSA migration.
-///
-/// The move-only wrapper exposes only namespace-40 replay, snapshot, preflight,
-/// commit, and readback. Its raw purpose claim and journal never escape the
-/// fixed Mount-manager owner.
-#[must_use = "a Mount migration authority must remain live through readback"]
-pub struct MountSourceMigrationJournalAuthorityV2<'journal> {
-    authority: ProtectedJournalAuthority<'journal>,
-}
-
 /// Lends the exact fixed Mount namespace-40 owner without allowing it to escape.
 #[must_use = "the fixed Mount source authority must remain owner-scoped"]
 pub struct MountSourceAcquisitionJournalAuthorityV2<'journal> {
@@ -1773,93 +1762,6 @@ impl<'journal> MountSourceAcquisitionJournalAuthorityV2<'journal> {
         operation: impl for<'borrow> FnOnce(&'borrow mut ProtectedJournalAuthority<'journal>) -> R,
     ) -> R {
         operation(&mut self.authority)
-    }
-}
-
-impl core::fmt::Debug for MountSourceMigrationJournalAuthorityV2<'_> {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        formatter.write_str("MountSourceMigrationJournalAuthorityV2([protected authority])")
-    }
-}
-
-impl<'journal> MountSourceMigrationJournalAuthorityV2<'journal> {
-    pub(crate) fn claim(journal: &'journal mut Journal) -> Result<Self, JournalError> {
-        Ok(Self {
-            authority: journal.claim_mount_source_migration_authority()?,
-        })
-    }
-
-    /// Iterates the exact current namespace-40 record set.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if fixed protected authority is stale or poisoned.
-    #[doc(hidden)]
-    pub fn records(&self) -> Result<impl Iterator<Item = (&[u8], &[u8])>, JournalError> {
-        self.authority.mount_source_acquisition_records()
-    }
-
-    /// Captures the exact fixed-journal generation.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if fixed protected authority is stale or poisoned.
-    #[doc(hidden)]
-    pub fn snapshot(&self) -> Result<ProtectedJournalSnapshot, JournalError> {
-        self.authority.snapshot()
-    }
-
-    /// Revalidates one exact migration snapshot.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error after any append, compaction, reopen, or owner change.
-    #[doc(hidden)]
-    pub fn validate_snapshot(
-        &self,
-        snapshot: &ProtectedJournalSnapshot,
-    ) -> Result<(), JournalError> {
-        self.authority
-            .validate_mount_source_acquisition_snapshot(snapshot)
-    }
-
-    /// Preflights one namespace-40-only replacement transaction.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for malformed, foreign, stale, or oversized input.
-    #[doc(hidden)]
-    pub fn preflight(
-        &self,
-        transaction: &JournalTransaction,
-    ) -> Result<ProtectedJournalPreflight, JournalError> {
-        self.authority
-            .preflight_transactions(core::slice::from_ref(transaction))
-    }
-
-    /// Revalidates the exact preflight immediately before its effect.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error after drift or transaction substitution.
-    #[doc(hidden)]
-    pub fn validate_preflight(
-        &self,
-        preflight: &ProtectedJournalPreflight,
-        transaction: &JournalTransaction,
-    ) -> Result<(), JournalError> {
-        self.authority
-            .validate_preflight_for_effect(preflight, core::slice::from_ref(transaction))
-    }
-
-    /// Commits the exact preflighted namespace-40 replacement.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for stale preflight, I/O failure, or ambiguity.
-    #[doc(hidden)]
-    pub fn commit(&mut self, transaction: &JournalTransaction) -> Result<(), JournalError> {
-        self.authority.commit(transaction).map(|_| ())
     }
 }
 
@@ -3438,18 +3340,6 @@ impl Journal {
             journal: self,
             namespace: RecordNamespace::MountSourceAcquisition,
             scope: ProtectedAuthorityScope::MountSourceConsumption,
-        })
-    }
-
-    fn claim_mount_source_migration_authority(
-        &mut self,
-    ) -> Result<ProtectedJournalAuthority<'_>, JournalError> {
-        self.ensure_protected_authority()?;
-        native_held::require_legacy_owner(&self.state, RecordNamespace::MountSourceAcquisition)?;
-        Ok(ProtectedJournalAuthority {
-            journal: self,
-            namespace: RecordNamespace::MountSourceAcquisition,
-            scope: ProtectedAuthorityScope::MountSourceMigration,
         })
     }
 
@@ -6025,7 +5915,6 @@ impl ProtectedJournalAuthority<'_> {
                     | ProtectedAuthorityScope::RootOriginalNativeV5
                     | ProtectedAuthorityScope::RootOriginalInventoryV6
                     | ProtectedAuthorityScope::MountSourceConsumption
-                    | ProtectedAuthorityScope::MountSourceMigration
             ) | (
                 RecordNamespace::MountManagerStartupAuthority,
                 ProtectedAuthorityScope::MountManagerStartup
@@ -7222,7 +7111,6 @@ impl ProtectedJournalAuthority<'_> {
             self.scope,
             ProtectedAuthorityScope::SingleNamespace
                 | ProtectedAuthorityScope::FixedMountSourceAcquisition
-                | ProtectedAuthorityScope::MountSourceMigration
                 | ProtectedAuthorityScope::CapacityReservation(
                     GlobalCapacityReservationPurposeV1::RuntimeExecution
                         | GlobalCapacityReservationPurposeV1::SourceProviderNativeTerminal

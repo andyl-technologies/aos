@@ -94,8 +94,8 @@ pub use model::{
 pub use native_completion::ProtectedProviderNativeCleanupObservationV2;
 pub use native_no_dispatch_recovery::NativeNoDispatchSettlementV1;
 pub use owner::{
-    FixedMountStateMigrationRecoveryOutcomeV2, FixedProviderAcquireReopenV1,
-    FixedProviderAuthenticatedSourceRequestV1, FixedProviderCatalogProgressV1,
+    FixedProviderAcquireReopenV1, FixedProviderAuthenticatedSourceRequestV1,
+    FixedProviderCatalogProgressV1,
     FixedProviderHeldReadOnlyObservationV1, FixedProviderHistoricalOutcomeV1,
     FixedProviderIngressProgressV1, FixedProviderOpenReportV1, FixedProviderOwnerStatusV1,
     FixedProviderOriginalStorageOfferProgressV5, FixedProviderOriginalCompletionProgressV5,

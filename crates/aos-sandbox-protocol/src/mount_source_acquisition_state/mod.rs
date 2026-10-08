@@ -20,8 +20,6 @@ pub mod floor;
 pub mod format;
 #[doc(hidden)]
 pub mod history;
-mod migration;
-mod migration_v1;
 #[doc(hidden)]
 pub mod model;
 pub mod native_export_fence;
@@ -51,11 +49,6 @@ pub use format::{
 pub use inventory_owner::{
     InventoryOwnerDerivationErrorV2, derive_inventory_disposition_head_v2,
     derive_inventory_reservation_head_v2, derive_provider_completed_head_v2,
-};
-pub use migration::{
-    LegacyMountSourceStateV1, MountSourceStateMigrationDispositionV2,
-    MountSourceStateMigrationPlanV2, decode_mount_source_state_graph_v1,
-    plan_mount_source_state_migration_v2,
 };
 pub use model::*;
 pub use projection::{

@@ -38,10 +38,7 @@ use crate::journal::{
     Journal, JournalError, JournalLimits, MountManagerStartupCaptureRecoveryV1, RecordNamespace,
     RecoveryReport,
 };
-use crate::{
-    MountSourceAcquisitionJournalAuthorityV2, MountSourceConsumptionJournalAuthorityV1,
-    MountSourceMigrationJournalAuthorityV2,
-};
+use crate::{MountSourceAcquisitionJournalAuthorityV2, MountSourceConsumptionJournalAuthorityV1};
 
 const PROTECTED_MOUNT_MANAGER_ROOT: &str = "/var/lib/aos/sandbox-mount";
 const MOUNT_MANAGER_JOURNAL: &str = "mount.journal";
@@ -607,21 +604,6 @@ impl MountManagerStartupProtectedOwnerV1 {
     ) -> Result<MountSourceAcquisitionJournalAuthorityV2<'_>, MountManagerSourceInventoryError>
     {
         Ok(MountSourceAcquisitionJournalAuthorityV2::claim(
-            self.current_journal()?,
-        )?)
-    }
-
-    /// Borrows the fixed Mount journal for one authenticated AOSMSA migration.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the fixed owner is unavailable, poisoned, or cannot
-    /// establish the namespace-40-only migration scope.
-    #[doc(hidden)]
-    pub fn source_migration_authority(
-        &mut self,
-    ) -> Result<MountSourceMigrationJournalAuthorityV2<'_>, MountManagerSourceInventoryError> {
-        Ok(MountSourceMigrationJournalAuthorityV2::claim(
             self.current_journal()?,
         )?)
     }
