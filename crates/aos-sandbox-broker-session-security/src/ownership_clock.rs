@@ -7,11 +7,16 @@ use aos_sandbox::ownership_resume::OwnershipClockObservationError;
 use aos_sandbox_core::{RawClockProvenance, RawPairedClockSample};
 use aos_sandbox_linux::boot::KernelBootId;
 
+/// Names the unchanged raw ownership-clock observation provenance.
 pub(crate) const CLOCK_PROVENANCE: [u8; 16] = *b"AOSOWNCTRLCLKV1!";
 
 /// Samples paired host clocks without accepting clock facts from a caller.
-pub(crate) fn sample_ownership_clock()
--> Result<RawPairedClockSample, OwnershipClockObservationError> {
+///
+/// # Errors
+///
+/// Returns an error if the boot identity cannot be read or changes across the
+/// samples, elapsed time is unrepresentable, or raw sample validation fails.
+pub(crate) fn sample_ownership_clock() -> Result<RawPairedClockSample, OwnershipClockObservationError> {
     let boot_before = KernelBootId::current()
         .map_err(|_| OwnershipClockObservationError)?
         .into_bytes();
@@ -20,9 +25,11 @@ pub(crate) fn sample_ownership_clock()
     let boot_after = KernelBootId::current()
         .map_err(|_| OwnershipClockObservationError)?
         .into_bytes();
+
     if boot_before != boot_after {
         return Err(OwnershipClockObservationError);
     }
+
     let seconds = u64::try_from(boottime.tv_sec).map_err(|_| OwnershipClockObservationError)?;
     let nanoseconds =
         u64::try_from(boottime.tv_nsec).map_err(|_| OwnershipClockObservationError)?;
@@ -30,6 +37,7 @@ pub(crate) fn sample_ownership_clock()
         .checked_mul(1_000_000_000)
         .and_then(|value| value.checked_add(nanoseconds))
         .ok_or(OwnershipClockObservationError)?;
+
     let provenance = RawClockProvenance::new_untrusted(CLOCK_PROVENANCE)
         .map_err(|_| OwnershipClockObservationError)?;
     RawPairedClockSample::new_untrusted(
