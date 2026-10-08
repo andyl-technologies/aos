@@ -7,14 +7,15 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 
+use super::activation::SystemdReadyNotifier;
 use super::{
     CapabilityState, ControllerAttachCredentialsV1, ControllerBrokerPlanSignerV1,
     ControllerCommand, ControllerNixStartRecipeSelectorV2, ControllerOwnershipConfigurationV1,
     ControllerRequestScopeV1, ControllerRuntimeError, ControllerServerAssembly,
     ControllerServerTerminal, NodeControllerLimits, ProductionController,
     ProvisionedControllerSourceGenesisInputV1, SharedControllerBrokerSessions,
-    SnapshotOwnershipDonationV3, SystemdReadyNotifier, WorkerEvent, git_read_inspection,
-    publisher_ingress, publisher_policy_source,
+    SnapshotOwnershipDonationV3, WorkerEvent, git_read_inspection, publisher_ingress,
+    publisher_policy_source,
 };
 
 // These slots are a fixed destination for actual returned startup inputs, not

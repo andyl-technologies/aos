@@ -6,10 +6,12 @@
   moduleSource = builtins.readFile ../../modules/sandbox/controller-service.nix;
   hostModuleSource = builtins.readFile ../../modules/sandbox/host-broker.nix;
   runtimeRootSource = builtins.readFile ../../crates/aos-sandbox-controller-runtime/src/controller_service.rs;
+  activationSource = builtins.readFile ../../crates/aos-sandbox-controller-runtime/src/controller_service/activation.rs;
+  activationConfigurationSource = builtins.readFile ../../crates/aos-sandbox-controller-runtime/src/controller_service/activation/configuration.rs;
   commandsSource = builtins.readFile ../../crates/aos-sandbox-controller-runtime/src/controller_service/commands.rs;
   publicRpcSource = builtins.readFile ../../crates/aos-sandbox-controller-runtime/src/controller_service/public_rpc.rs;
   publicRpcTestSource = builtins.readFile ../../crates/aos-sandbox-controller-runtime/src/controller_service/public_rpc/tests.rs;
-  runtimeSource = runtimeRootSource + commandsSource + publicRpcSource + publicRpcTestSource;
+  runtimeSource = runtimeRootSource + activationSource + activationConfigurationSource + commandsSource + publicRpcSource + publicRpcTestSource;
   diagnosticSource = builtins.readFile ../../crates/aos-sandbox-services/src/controller/diagnostic.rs;
   assemblySource = builtins.readFile ../../crates/aos-sandbox-services/src/controller.rs;
   journalSource = builtins.readFile ../../crates/aos-sandbox/src/controller_service/journal.rs;

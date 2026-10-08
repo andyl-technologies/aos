@@ -13,6 +13,8 @@ use aos_sandbox::normal_root::{
     SourceSuccessorCredentialErrorV2,
 };
 
+use super::activation::configuration::RuntimeConfiguration;
+use super::activation::read_node_id;
 use super::*;
 
 #[derive(Debug, thiserror::Error)]

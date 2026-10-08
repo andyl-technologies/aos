@@ -24,7 +24,8 @@ use aos_sandbox_mount::keeper::SystemdFdStore;
 use aos_sandbox_mount::worker::DescriptorMountWorker;
 use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodResultV1;
 
-use super::{CycleFailure, connect_controller_session, read_node_id};
+use super::activation::read_node_id;
+use super::{CycleFailure, connect_controller_session};
 use crate::{
     DormantMountLifecycleInventoryOwnerV1, ProductionBrokerSessionActivationV1,
     ProductionMountBrokerOwnersV1, ProtectedBrokerSessionFixedEndpointV1,

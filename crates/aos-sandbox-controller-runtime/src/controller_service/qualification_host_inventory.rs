@@ -10,7 +10,8 @@ use aos_proto::aos::sandbox::local::v1::{BrokerMethod, InventoryRuntimeResponse}
 use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodResultV1;
 use buffa::Message as _;
 
-use super::{CycleFailure, connect_controller_session, read_node_id};
+use super::activation::read_node_id;
+use super::{CycleFailure, connect_controller_session};
 use crate::{DormantHostRuntimeInventoryOwnerV1, ProtectedBrokerSessionFixedEndpointV1};
 
 const CLIENT_DONE: &str = "/run/aos/controller-qualification/host-inventory-complete";
