@@ -32,6 +32,8 @@ pub mod draining;
 pub mod evidence;
 mod evidence_authority;
 pub mod journal;
+#[cfg(feature = "multi-node")]
+mod placement_input;
 mod protected_artifact_store;
 pub mod protocol;
 mod reducer_state;

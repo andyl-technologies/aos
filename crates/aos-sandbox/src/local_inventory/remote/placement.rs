@@ -13,24 +13,20 @@ use aos_sandbox_core::model::PlacementRequest;
 use aos_sandbox_core::state::DesiredSandboxState;
 use aos_sandbox_core::{
     AssignmentEpoch, CanonicalAssignmentManifestV1, DesiredGeneration, FeatureRef, IncarnationId,
-    NodeId, ObjectDigest, ObservationSequence, ProtocolId, ResourceDimension, ResourceVector,
-    SandboxId, supported_protocol_version,
+    NodeId, ObservationSequence, ProtocolId, ResourceDimension, ResourceVector, SandboxId,
+    supported_protocol_version,
 };
 
 use super::super::assignment::{
-    AssignmentIntentV1, InvalidAssignmentModel, NodeAssignmentObservationV1,
-    SelectedCapabilityBindingV1, VerifiedGuardianStateV1,
+    AssignmentIntentV1, InvalidAssignmentModel, SelectedCapabilityBindingV1,
 };
+pub use super::super::capability::PlacementCandidateV1;
 use super::super::capability::{
     CarrierValidatedCapabilityObservationV1, NodeAdmissionStateV1, NodeBootId, NodeBootLineageV1,
     NodeCapabilitySnapshotV1, NodeProtocolV1,
 };
-use super::super::evidence_authority::VerifierEvidenceGrantV1;
-use super::super::journal::{
-    JournalEffectStateV1, MultiNodeJournalDomainV1, ProtectedJournalRecordV1,
-};
-
-pub use super::super::capability::PlacementCandidateV1;
+pub use super::super::evidence_authority::AffinityPlacementV1;
+pub use super::super::placement_input::InvalidPlacementInput;
 
 /// Maximum candidate nodes considered by one placement decision.
 pub const MAX_PLACEMENT_CANDIDATES: usize = 4_096;
@@ -39,208 +35,6 @@ pub const MAX_AFFINITY_PLACEMENTS: usize = super::super::reducer_state::MAX_ASSI
 /// Maximum required features accepted from one semantic placement request.
 pub const MAX_PLACEMENT_REQUIRED_FEATURES: usize =
     super::super::assignment::MAX_SNAPSHOT_TRANSFER_REQUIRED_FEATURES;
-
-/// Records the controller-observed node for one affinity dependency.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AffinityPlacementV1 {
-    observation: NodeAssignmentObservationV1,
-    worker_identity_digest: ObjectDigest,
-    liveness_record: ProtectedJournalRecordV1,
-}
-
-impl AffinityPlacementV1 {
-    /// Constructs one non-authorizing affinity observation inside the liveness verifier.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`InvalidPlacementInput::AffinityNotLive`] unless the exact
-    /// worker, assignment generation, armed Guardian, protected durability,
-    /// carrier binding, and currentness all agree.
-    pub(in crate::local_inventory) fn from_liveness_verifier(
-        grant: VerifierEvidenceGrantV1<(
-            NodeAssignmentObservationV1,
-            ObjectDigest,
-            ProtectedJournalRecordV1,
-            u64,
-        )>,
-    ) -> Result<Self, InvalidPlacementInput> {
-        let (
-            (observation, worker_identity_digest, liveness_record, coordinator_unix_seconds),
-            verifier_domain_digest,
-            replay_fence,
-            issuance_sequence,
-            verifier_context,
-        ) = grant.into_parts();
-        let liveness_digest = affinity_liveness_digest(&observation, worker_identity_digest);
-        let durable_affinity = liveness_record
-            .record()
-            .state_payload()
-            .assignment_state()
-            .and_then(|state| {
-                state
-                    .affinities()
-                    .iter()
-                    .find(|affinity| affinity.sandbox == observation.sandbox())
-            });
-        if worker_identity_digest.as_bytes() == &[0; 32]
-            || verifier_domain_digest.as_bytes() == &[0; 32]
-            || replay_fence.as_bytes() == &[0; 32]
-            || issuance_sequence == 0
-            || verifier_context.node() != observation.node()
-            || verifier_context.lineage() != observation.lineage()
-            || !verifier_context.is_current_at(coordinator_unix_seconds)
-            || observation.phase() != aos_sandbox_core::state::AssignmentPhase::Active
-            || !observation
-                .context()
-                .is_current_at(coordinator_unix_seconds)
-            || observation.observed_at_unix_seconds() > coordinator_unix_seconds
-            || !observation.authority().is_some_and(|authority| {
-                authority.guardian_state() == VerifiedGuardianStateV1::Armed
-                    && authority.is_current_at(coordinator_unix_seconds)
-            })
-            || liveness_record.record().domain() != MultiNodeJournalDomainV1::Assignment
-            || liveness_record.record().payload_digest() != observation.assignment_digest()
-            || liveness_record.record().effect_state() != JournalEffectStateV1::Committed
-            || liveness_record.record().effect_digest() != liveness_digest
-            || durable_affinity.is_none_or(|affinity| {
-                affinity.node != observation.node()
-                    || affinity.incarnation != observation.incarnation()
-                    || affinity.epoch != observation.epoch()
-                    || affinity.desired_generation != observation.desired_generation()
-                    || affinity.assignment_digest != observation.assignment_digest()
-                    || affinity.worker_identity_digest != worker_identity_digest
-                    || affinity.liveness_record_digest != liveness_digest
-                    || affinity.live_until_unix_seconds < coordinator_unix_seconds
-            })
-            || liveness_record.context().node() != observation.node()
-            || liveness_record.context().lineage() != observation.lineage()
-            || liveness_record.context().audience_digest()
-                != observation.context().audience_digest()
-            || !liveness_record
-                .context()
-                .is_current_at(coordinator_unix_seconds)
-        {
-            return Err(InvalidPlacementInput::AffinityNotLive);
-        }
-        Ok(Self {
-            observation,
-            worker_identity_digest,
-            liveness_record,
-        })
-    }
-
-    /// Returns the exact dependent sandbox.
-    #[must_use]
-    pub const fn sandbox(&self) -> SandboxId {
-        self.observation.sandbox()
-    }
-
-    /// Returns the currently live worker node.
-    #[must_use]
-    pub const fn node(&self) -> NodeId {
-        self.observation.node()
-    }
-
-    /// Returns the exact live assignment incarnation.
-    #[must_use]
-    pub const fn incarnation(&self) -> IncarnationId {
-        self.observation.incarnation()
-    }
-
-    /// Returns the exact live desired generation.
-    #[must_use]
-    pub const fn desired_generation(&self) -> DesiredGeneration {
-        self.observation.desired_generation()
-    }
-
-    /// Returns the exact live assignment fencing epoch.
-    #[must_use]
-    pub const fn epoch(&self) -> AssignmentEpoch {
-        self.observation.epoch()
-    }
-
-    /// Returns the exact live assignment semantic commitment.
-    #[must_use]
-    pub const fn assignment_digest(&self) -> ObjectDigest {
-        self.observation.assignment_digest()
-    }
-
-    /// Returns the independently authenticated worker identity commitment.
-    #[must_use]
-    pub const fn worker_identity_digest(&self) -> ObjectDigest {
-        self.worker_identity_digest
-    }
-
-    /// Reports whether the exact assignment and protected liveness proof remain current.
-    #[must_use]
-    pub fn is_current_at(&self, coordinator_unix_seconds: u64) -> bool {
-        self.observation
-            .context()
-            .is_current_at(coordinator_unix_seconds)
-            && self.observation.observed_at_unix_seconds() <= coordinator_unix_seconds
-            && self.observation.authority().is_some_and(|authority| {
-                authority.guardian_state() == VerifiedGuardianStateV1::Armed
-                    && authority.is_current_at(coordinator_unix_seconds)
-            })
-            && self
-                .liveness_record
-                .context()
-                .is_current_at(coordinator_unix_seconds)
-    }
-
-    /// Returns the exact protected durability capability for this liveness fact.
-    #[must_use]
-    pub const fn liveness_record(&self) -> &ProtectedJournalRecordV1 {
-        &self.liveness_record
-    }
-
-    fn canonical_key(&self) -> (SandboxId, AssignmentEpoch, IncarnationId, DesiredGeneration) {
-        (
-            self.sandbox(),
-            self.epoch(),
-            self.incarnation(),
-            self.desired_generation(),
-        )
-    }
-
-    fn ensure_specified(&self) -> Result<(), InvalidPlacementInput> {
-        if self.sandbox().as_bytes() == &[0; 16]
-            || self.node().as_bytes() == &[0; 16]
-            || self.incarnation().as_bytes() == &[0; 16]
-            || self.desired_generation().get() == 0
-            || self.worker_identity_digest.as_bytes() == &[0; 32]
-        {
-            return Err(InvalidPlacementInput::UnspecifiedIdentity);
-        }
-        Ok(())
-    }
-}
-
-/// Reports malformed, incomplete, or nondeterministic placement inputs.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-pub enum InvalidPlacementInput {
-    /// An identity uses its all-zero sentinel.
-    #[error("placement input contains an unspecified identity")]
-    UnspecifiedIdentity,
-    /// Candidate snapshots are oversized, duplicated, or not ordered by node.
-    #[error("placement candidates must be a canonical set of at most 4096 nodes")]
-    CandidatesNotCanonical,
-    /// Affinity observations are oversized, duplicated, or not ordered by sandbox.
-    #[error("affinity observations must be a canonical set of at most 4096 sandboxes")]
-    AffinitiesNotCanonical,
-    /// The semantic request exceeds the scheduler's bounded feature profile.
-    #[error("placement request exceeds the 64-feature scheduler limit")]
-    TooManyRequiredFeatures,
-    /// A required feature is outside the local closed semantic registry.
-    #[error("placement request contains an unknown required feature")]
-    UnknownRequiredFeature,
-    /// Freshness evaluation has no positive maximum age.
-    #[error("placement capability maximum age must be positive")]
-    InvalidFreshnessLimit,
-    /// A local-live dependency lacks exact current worker and durability evidence.
-    #[error("local-live affinity evidence is absent, stale, or unprotected")]
-    AffinityNotLive,
-}
 
 /// Explains why one candidate could not satisfy placement.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -544,10 +338,10 @@ fn validate_inputs(
     if affinities.len() > MAX_AFFINITY_PLACEMENTS
         || affinities
             .iter()
-            .any(|placement| placement.ensure_specified().is_err())
+            .any(|placement| ensure_affinity_specified(placement).is_err())
         || !affinities
             .windows(2)
-            .all(|pair| pair[0].canonical_key() < pair[1].canonical_key())
+            .all(|pair| affinity_canonical_key(&pair[0]) < affinity_canonical_key(&pair[1]))
         || affinities
             .windows(2)
             .any(|pair| pair[0].sandbox() == pair[1].sandbox())
@@ -556,6 +350,29 @@ fn validate_inputs(
     }
     if maximum_capability_age_seconds == 0 {
         return Err(InvalidPlacementInput::InvalidFreshnessLimit);
+    }
+    Ok(())
+}
+
+fn affinity_canonical_key(
+    placement: &AffinityPlacementV1,
+) -> (SandboxId, AssignmentEpoch, IncarnationId, DesiredGeneration) {
+    (
+        placement.sandbox(),
+        placement.epoch(),
+        placement.incarnation(),
+        placement.desired_generation(),
+    )
+}
+
+fn ensure_affinity_specified(placement: &AffinityPlacementV1) -> Result<(), InvalidPlacementInput> {
+    if placement.sandbox().as_bytes() == &[0; 16]
+        || placement.node().as_bytes() == &[0; 16]
+        || placement.incarnation().as_bytes() == &[0; 16]
+        || placement.desired_generation().get() == 0
+        || placement.worker_identity_digest().as_bytes() == &[0; 32]
+    {
+        return Err(InvalidPlacementInput::UnspecifiedIdentity);
     }
     Ok(())
 }
@@ -583,25 +400,6 @@ fn resolve_affinity_node(
         required_node = Some(placement.node());
     }
     Ok(required_node)
-}
-
-fn affinity_liveness_digest(
-    observation: &NodeAssignmentObservationV1,
-    worker_identity_digest: ObjectDigest,
-) -> ObjectDigest {
-    use sha2::{Digest as _, Sha256};
-
-    let mut hasher = Sha256::new();
-    hasher.update(b"aos.affinity-live-worker.v1\0");
-    hasher.update(observation.node().as_bytes());
-    hasher.update(observation.lineage().digest().as_bytes());
-    hasher.update(observation.sandbox().as_bytes());
-    hasher.update(observation.incarnation().as_bytes());
-    hasher.update(observation.epoch().get().to_be_bytes());
-    hasher.update(observation.desired_generation().get().to_be_bytes());
-    hasher.update(observation.assignment_digest().as_bytes());
-    hasher.update(worker_identity_digest.as_bytes());
-    ObjectDigest::from_bytes(hasher.finalize().into())
 }
 
 fn is_fresh(

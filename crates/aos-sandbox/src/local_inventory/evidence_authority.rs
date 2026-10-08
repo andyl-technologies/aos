@@ -5,6 +5,12 @@
 //! singular grants and therefore cannot manufacture verifier outcomes from a
 //! collection of otherwise plausible scalar fields.
 
+#[cfg(feature = "multi-node")]
+mod affinity_observation;
+
+#[cfg(feature = "multi-node")]
+pub use affinity_observation::AffinityPlacementV1;
+
 use aos_sandbox_core::ObjectDigest;
 
 use super::evidence::AuthenticatedEvidenceContextV1;
