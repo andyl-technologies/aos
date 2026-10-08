@@ -701,6 +701,8 @@ pub fn readiness_message(
             snapshot_references: blockers.snapshot_references,
             abandonable_gc_runs: blockers.abandonable_gc_runs,
             unavailable_placements: blockers.unavailable_placements,
+            enabled_oci_namespaces: blockers.enabled_oci_namespaces,
+            instance_oci_route_defaults: blockers.instance_oci_route_defaults,
         }),
         placements: readiness
             .placements

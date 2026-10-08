@@ -31,7 +31,7 @@ use crate::plan::{
 use crate::platform::{MatrixCell, Platform};
 use crate::qualification::change_scope::{CHANGE_SCOPE, ChangedPackageCell};
 use crate::qualification::{ChangeScope, QualificationContract, QualificationPhase};
-use crate::registry::{MAIN_REGISTRY, EXPERIMENTAL_REGISTRY, registry_policy};
+use crate::registry::{EXPERIMENTAL_REGISTRY, MAIN_REGISTRY, registry_policy};
 use crate::signing::{
     SignatureAlgorithm, SignatureResponse, SignerRequirement, SignerRole, SigningOperation,
     SigningRequest, TrustedEd25519Key,
@@ -952,7 +952,8 @@ fn complete_release_fixture_verifies() -> anyhow::Result<()> {
         &[fixture.key],
     )?;
     let (_, manifest) = qualification_fixture()?;
-    assert_eq!(summary.artifact_count, 33);
+    // Both Linux image sets retain their native provider provenance contract.
+    assert_eq!(summary.artifact_count, 35);
     assert_eq!(summary.evidence_count, manifest.evidence.len());
     assert!(summary.evidence_count > 0);
     assert_eq!(summary.signatures_verified, 1);

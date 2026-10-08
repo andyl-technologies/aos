@@ -168,7 +168,7 @@ readlink /var/lib/profiles/system/current
 cat /var/lib/profiles/image/state.json
 cat /var/lib/profiles/system/state.json
 cat /run/aos/activation.json
-apm rollback --system --list
+apm config rollback --list
 cat /var/lib/aos-provisioning/audit.json
 ```
 
@@ -204,7 +204,7 @@ determine the active pointer and transaction-bound activation result:
 ```sh
 readlink /var/lib/profiles/system/current
 cat /etc/os-release
-apm rollback --system --list
+apm config rollback --list
 systemctl --failed
 journalctl -b \
   -u aos-eval.service \
@@ -215,8 +215,8 @@ journalctl -b \
 Preview rollback, then switch to the intended generation:
 
 ```sh
-apm rollback --system --dry-run
-apm rollback --system
+apm config rollback --dry-run
+apm config rollback
 ```
 
 The preview is an authenticated read-only activatability check. Resolve every
@@ -232,9 +232,9 @@ It does not switch the kernel or root slot.
 To select a known-good image for the next boot, use the image axis explicitly:
 
 ```sh
-apm rollback --system --image --list
-apm rollback --system --image --generation N --dry-run
-apm rollback --system --image --generation N --reboot
+apm image list
+apm image rollback --generation N --dry-run
+apm image rollback --generation N --reboot
 ```
 
 The candidate is accepted only after its boot-time configuration transaction
@@ -257,10 +257,19 @@ systemctl status acme-agent.service
 journalctl -u acme-agent.service -b
 ```
 
-The current CLI has no supported rollback command for the machine-wide runtime
-package profile: `apm rollback --system` rolls back configuration, while
-`--system --image` selects an A/B image. Restore a known-good image or follow a
-release-specific recovery procedure that has been tested before the incident.
+List the machine-wide package generations, preview a known-good package set,
+then restore it:
+
+```sh
+apm rollback --system --list
+apm rollback --system --generation N --dry-run
+apm rollback --system --generation N
+```
+
+Package rollback restores the package set without rolling back application
+data, host configuration, or the OS image. Verify the service and its data
+afterward.
+
 Do not move a registry channel backward; registry
 consumers enforce a monotonic release floor. Stop the rollout and publish a
 higher corrected release.
@@ -295,7 +304,7 @@ Use application-specific cleanup for application state and AOS Hub storage.
 `apm clean --generations --keep N` cleans the invoking user's package profile;
 `apm clean --system --generations --keep N` safely prunes both machine-wide
 package and configuration generations while retaining each current generation.
-Run `apm gc` afterward to collect store paths released by pruned configuration
+Run `apm gc --system` afterward to collect store paths released by pruned configuration
 roots. A/B image generations are not pruned by this command. Do not remove
 profile directories or current links by hand.
 

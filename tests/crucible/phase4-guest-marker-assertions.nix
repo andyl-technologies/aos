@@ -8,14 +8,19 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
-  guestAssertion = builtins.readFile ../../crates/crucible/src/model/guest_assertion.rs;
+  propertiesModel = import ./_crucible-model-source.nix {inherit lib;};
   crateRoot = import ./_rust-module-source.nix {
     inherit lib;
     entry = ../../crates/crucible/src/lib.rs;
   };
-  guestMarkerAssertionsTest =
-    builtins.readFile ../../crates/crucible/tests/guest_marker_assertions.rs
-    + builtins.readFile ../../crates/crucible/tests/guest_assertion_declarations.rs;
+  guestMarkerAssertionsTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/tests/guest_marker_assertions.rs;
+  };
+  guestAssertionDeclarationsTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/tests/guest_assertion_declarations.rs;
+  };
   assertionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -141,7 +146,7 @@
         needle = "GuestAssertionDetail";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model/guest_assertion.rs" guestAssertion [
+    ++ failuresFor "crates/crucible/src/model.rs" propertiesModel [
       {
         label = "declared guest sometimes assertion constructor";
         needle = "pub fn guest_sometimes";
@@ -155,10 +160,6 @@
       {
         label = "unified report test";
         needle = "guest_marker_assertions_fold_into_unified_report";
-      }
-      {
-        label = "declared guest assertion outcome test";
-        needle = "declared_guest_assertion_uses_marker_truth_without_duplicate_host_outcome";
       }
       {
         label = "catalog finalization test";
@@ -209,6 +210,12 @@
         needle = "catalog-reachable-fail";
       }
     ]
+    ++ failuresFor "crates/crucible/tests/guest_assertion_declarations.rs" guestAssertionDeclarationsTest [
+      {
+        label = "declared guest assertion outcome test";
+        needle = "declared_guest_assertion_uses_marker_truth_without_duplicate_host_outcome";
+      }
+    ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
         label = "phase4 guest marker assertions check import";
@@ -250,6 +257,20 @@
       }
     ]
     ++ forbiddenFor "crates/crucible/tests/guest_marker_assertions.rs" guestMarkerAssertionsTest [
+      {
+        label = "ignored placeholder";
+        needle = "#[ignore";
+      }
+      {
+        label = "unfinished todo";
+        needle = "todo!";
+      }
+      {
+        label = "unfinished unimplemented";
+        needle = "unimplemented!";
+      }
+    ]
+    ++ forbiddenFor "crates/crucible/tests/guest_assertion_declarations.rs" guestAssertionDeclarationsTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";

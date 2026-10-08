@@ -7,6 +7,9 @@
   cfg = config.qualification;
   types = import ./_types.nix {inherit lib;};
   named = field: values: lib.mapAttrsToList (name: value: value // {${field} = name;}) values;
+  linuxPlatforms = ["x86_64-linux" "aarch64-linux"];
+  deferred = platform: builtins.elem platform cfg.deferredPlatforms;
+  deferredTargetNames = builtins.attrNames (lib.filterAttrs (_: target: deferred target.platform) cfg.targets);
   failures = builtins.filter (check: !check.assertion) cfg.assertions;
   # Submodule evaluation retains private module metadata. The signed process
   # contract contains only option values, independent of evaluator internals.
@@ -28,6 +31,11 @@ in {
       default = {};
       description = "Reference execution configurations.";
     };
+    deferredPlatforms = lib.mkOption {
+      type = lib.types.listOf (lib.types.enum linuxPlatforms);
+      default = [];
+      description = "Linux platforms whose image and container targets are deferred to a later release: their targets are optional and carry no claims, and plans may ship no artifact on them.";
+    };
     assertions = lib.mkOption {
       type = lib.types.listOf (types.closed {
         assertion = types.option lib.types.bool "Condition required for a valid policy.";
@@ -44,6 +52,24 @@ in {
   };
   config = {
     _module.strict = true;
+    qualification.assertions = [
+      {
+        assertion =
+          lib.unique cfg.deferredPlatforms
+          == cfg.deferredPlatforms
+          && builtins.any (platform: !deferred platform) linuxPlatforms;
+        message = "Deferred platforms must be distinct and leave at least one Linux platform in the release.";
+      }
+      {
+        # A deferred target is kept with its reviewed environment so that
+        # un-deferring is only a change to the list, but it must never gate or
+        # claim anything while deferred.
+        assertion =
+          builtins.all (name: !cfg.targets.${name}.required) deferredTargetNames
+          && builtins.all (claim: !(builtins.elem claim.target deferredTargetNames)) (builtins.attrValues cfg.claims);
+        message = "Targets on deferred platforms are optional and carry no claims.";
+      }
+    ];
     qualification.export =
       if failures != []
       then throw ("Invalid qualification policy: " + lib.concatStringsSep "; " (map (check: check.message) failures))
@@ -86,6 +112,11 @@ in {
           # separate identity field; attribute order keeps it sorted by key.
           destinations = builtins.attrValues cfg.destinations;
           fitness = named "kind" cfg.fitness;
+        }
+        # An empty list is omitted, so a contract without deferrals keeps the
+        # exact bytes and digest it had before deferral existed.
+        // lib.optionalAttrs (cfg.deferredPlatforms != []) {
+          deferred_platforms = builtins.sort builtins.lessThan cfg.deferredPlatforms;
         };
   };
 }

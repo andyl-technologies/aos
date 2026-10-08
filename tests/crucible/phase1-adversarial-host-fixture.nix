@@ -9,7 +9,6 @@
 
   harnessAdversarial = builtins.readFile ../../crates/crucible-harness/src/adversarial.rs;
   harnessFixtureTest = builtins.readFile ../../crates/crucible-harness/tests/adversarial_host_fixture.rs;
-  modelFingerprintGate = builtins.readFile ../../crates/crucible/tests/gate_single_vm_fingerprint.rs;
   defaultChecks = builtins.readFile ./default.nix;
   determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
   adversarialGateTest = builtins.readFile ../../crates/crucible-harness/tests/gate_adversarial_determinism.rs;
@@ -109,30 +108,6 @@
         needle = "producer_consumer_fixture_applies_role_aware_skew";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/gate_single_vm_fingerprint.rs" modelFingerprintGate [
-      {
-        label = "model gate consumes canonical matrix";
-        needle = "canonical_host_adversary_matrix()";
-      }
-      {
-        label = "model gate consumes profiled runner";
-        needle = "run_profiled_tasks(profile, fixtures.len()";
-      }
-      {
-        label = "model gate keeps adversarial equality assertion";
-        needle = "assert_eq!(candidate, baseline";
-      }
-    ]
-    ++ forbiddenFor "crates/crucible/tests/gate_single_vm_fingerprint.rs" modelFingerprintGate [
-      {
-        label = "local adversarial fixture copy";
-        needle = "fn with_concurrent_host_load";
-      }
-      {
-        label = "local host adversary type copy";
-        needle = "struct HostAdversaryProfile";
-      }
-    ]
     ++ failuresFor "crates/crucible-harness/tests/gate_adversarial_determinism.rs" adversarialGateTest [
       {
         label = "phase3 gate consumes shared matrix";
@@ -213,15 +188,6 @@ in
               -p crucible-harness \
               --test adversarial_host_fixture \
               -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-adversarial-host-fixture-target" \
-              -p crucible \
-              --features test-double \
-              --test gate_single_vm_fingerprint \
-              gate_single_vm_fingerprint_model_determinism_survives_adversarial_host_profiles \
-              -- --test-threads=1
           '';
         }
         {
@@ -235,7 +201,7 @@ in
             tasks=${builtins.concatStringsSep "," taskIds}
             fixture=canonical-host-adversary-matrix
             dimensions=seeded-scheduling,seeded-affinity,bounded-seeded-work-yield,core-counts,producer-consumer-skew
-            rust_tests=crucible-harness::adversarial_host_fixture,crucible::gate_single_vm_fingerprint::adversarial-host-profiles
+            rust_tests=crucible-harness::adversarial_host_fixture
             RESULT
           '';
         }

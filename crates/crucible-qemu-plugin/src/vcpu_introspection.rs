@@ -15,27 +15,13 @@ use crucible_protocol::{
 };
 use thiserror::Error;
 
+#[cfg(test)]
 use crate::RoundRobinRunState;
 
 /// Required QEMU plugin extension symbol for per-vCPU register-file reads.
 pub const QEMU_PLUGIN_READ_VCPU_REGS_SYMBOL: &str = "qemu_plugin_read_vcpu_regs";
 /// Required QEMU plugin extension symbol for round-robin cursor reads.
 pub const QEMU_PLUGIN_RR_CURSOR_SYMBOL: &str = "qemu_plugin_rr_cursor";
-/// Compatibility symbol carried by the AOS QEMU fingerprint helper patch.
-pub const QEMU_PLUGIN_CRUCIBLE_GET_VCPU_REGISTERS_SYMBOL: &str =
-    "qemu_plugin_crucible_get_vcpu_registers";
-/// Compatibility symbol carried by the AOS QEMU fingerprint helper patch.
-pub const QEMU_PLUGIN_CRUCIBLE_READ_VCPU_REGISTER_SYMBOL: &str =
-    "qemu_plugin_crucible_read_vcpu_register";
-/// Compatibility symbol carried by the AOS QEMU fingerprint helper patch.
-pub const QEMU_PLUGIN_CRUCIBLE_RR_CURRENT_VCPU_SYMBOL: &str =
-    "qemu_plugin_crucible_rr_current_vcpu";
-/// Compatibility symbol carried by the AOS QEMU fingerprint helper patch.
-pub const QEMU_PLUGIN_CRUCIBLE_RR_CURSOR_POSITION_SYMBOL: &str =
-    "qemu_plugin_crucible_rr_cursor_position";
-/// Compatibility symbol carried by the AOS QEMU fingerprint helper patch.
-pub const QEMU_PLUGIN_CRUCIBLE_RR_SWITCH_QUANTUM_SYMBOL: &str =
-    "qemu_plugin_crucible_rr_switch_quantum";
 /// Fixed byte length used by the execution-fingerprint register digest.
 pub const PLUGIN_REGISTER_DIGEST_BYTES: usize = 32;
 /// Maximum canonical register-file byte payload accepted from the QEMU adapter.
@@ -196,17 +182,6 @@ impl PluginRoundRobinCursor {
             quantum_remaining: rr_switch_quantum - cursor_position,
             rr_switch_quantum,
         })
-    }
-
-    /// Builds a cursor snapshot from the plugin's local RUN cursor.
-    #[must_use]
-    pub fn from_run_state(run_state: RoundRobinRunState) -> Self {
-        Self {
-            current_vcpu: u64::from(run_state.current_vcpu()),
-            cursor_position: run_state.cursor_position(),
-            quantum_remaining: run_state.remaining_in_quantum(),
-            rr_switch_quantum: run_state.rr_switch_quantum(),
-        }
     }
 
     /// Returns the current vCPU.
@@ -765,7 +740,13 @@ mod tests {
             .retire(0, 3)
             .unwrap_or_else(|error| panic!("retirement should validate: {error}"));
 
-        let cursor = PluginRoundRobinCursor::from_run_state(state);
+        let cursor = PluginRoundRobinCursor::new(
+            u64::from(state.current_vcpu()),
+            state.cursor_position(),
+            state.rr_switch_quantum(),
+            state.vcpu_count(),
+        )
+        .unwrap_or_else(|error| panic!("local cursor should remain valid: {error}"));
         assert_eq!(cursor.current_vcpu(), 0);
         assert_eq!(cursor.cursor_position(), 3);
         assert_eq!(cursor.quantum_remaining(), 5);

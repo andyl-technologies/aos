@@ -650,7 +650,7 @@ pub async fn list(
 
             // Check sysroot containment for non-installed packages.
             let sysroot_info = if !is_installed && installed_only {
-                crate::sysroot::check_sysroot_containment(&meta.references, config)
+                crate::sysroot::check_sysroot_containment(meta, config)
             } else {
                 None
             };

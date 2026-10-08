@@ -6,7 +6,7 @@
 use std::error::Error;
 use std::fmt;
 
-use super::definition::{FingerprintDefinition, FingerprintDigest, FingerprintSampleTrigger};
+use super::definition::{FingerprintDefinition, FingerprintDigest};
 use super::hasher::FingerprintHasher;
 
 /// One canonical fingerprint sample captured at a deterministic icount boundary.
@@ -18,8 +18,6 @@ pub struct FingerprintSample {
     pub node: String,
     /// Node-local instruction count at the sample point.
     pub icount: u64,
-    /// The deterministic reason this sample was taken.
-    pub trigger: FingerprintSampleTrigger,
     /// Rolling fingerprint bytes after incorporating this sample.
     pub rolling_fingerprint: FingerprintDigest,
 }

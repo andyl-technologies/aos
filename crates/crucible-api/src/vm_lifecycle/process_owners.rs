@@ -354,6 +354,10 @@ impl ProductionProcessOwners {
         self.entries.len()
     }
 
+    pub(super) fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
     pub(super) fn values(&self) -> impl Iterator<Item = &QemuProcessIdentity> {
         self.entries.iter().map(|(_, identity)| identity)
     }

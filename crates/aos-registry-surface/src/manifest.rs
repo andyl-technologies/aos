@@ -27,7 +27,7 @@
 //! source_nar_hash = "sha256:…"
 //! ```
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -104,7 +104,7 @@ pub struct VersionEntry {
     /// Per-platform artifacts, keyed by platform triple
     /// (e.g. `x86_64-linux` or `aarch64-darwin`).
     #[serde(default)]
-    pub platforms: HashMap<String, PlatformEntry>,
+    pub platforms: BTreeMap<String, PlatformEntry>,
 }
 
 /// Authenticates one explicitly selectable named package output.
@@ -1152,7 +1152,7 @@ tools = {store_path = "/aos/store/server-tools"}
 #[serde(deny_unknown_fields)]
 pub struct SysrootImageEntry {
     /// Image format identifier (e.g. `qcow2`, `raw`), matched against
-    /// `apm install --image <FMT>`.
+    /// `apm image download NAME --format <FMT>`.
     pub format: String,
     /// Store path containing the image file.
     pub store_path: String,
@@ -1565,7 +1565,7 @@ pub fn parse_package_file(content: &str) -> Result<PackageToml> {
                     artifact.validate()?;
                 }
             }
-            let mut output_paths = HashSet::from([entry.store_path.as_str()]);
+            let mut output_paths = BTreeSet::from([entry.store_path.as_str()]);
             for (output, metadata) in &entry.named_outputs {
                 let store_path = &metadata.store_path;
                 if let Some(deployment) = &metadata.deployment {
@@ -1607,7 +1607,7 @@ pub fn parse_package_file(content: &str) -> Result<PackageToml> {
                 }
             }
 
-            let mut formats = HashSet::new();
+            let mut formats = BTreeSet::new();
             for image in &entry.images {
                 if !formats.insert(image.format.as_str()) {
                     bail!(

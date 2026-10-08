@@ -79,7 +79,9 @@ pub use distribution::{run_cache, run_origin, run_web};
 pub(crate) use git::{
     refresh_registry_object_store, semver_tag_versions, validate_canonical_release_registry_index,
 };
-pub use lifecycle::{LocalRegistry, authoring_clone_precious, create, local_registries};
+pub use lifecycle::{
+    InitialRoster, LocalRegistry, authoring_clone_precious, create, local_registries,
+};
 pub(crate) use metadata::record_named_output;
 pub(crate) use native_artifacts::publish_native_documents;
 

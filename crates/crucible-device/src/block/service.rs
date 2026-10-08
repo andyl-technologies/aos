@@ -119,7 +119,7 @@ pub struct BlockServiceJob {
     /// Exact transferred byte count; zero-byte commands rely on optional IOPS.
     pub bytes: u64,
     /// Exact virtual coordinate at queue admission.
-    pub admitted_nanos: u64,
+    pub admitted_ticks: u64,
 }
 
 /// Evidence emitted when one contributor finishes one request.
@@ -130,9 +130,9 @@ pub struct BlockServiceCompletion {
     /// Request sequence completed by this server.
     pub sequence: u64,
     /// Exact non-preemptive service start coordinate.
-    pub started_nanos: u64,
+    pub started_ticks: u64,
     /// Exact service completion coordinate.
-    pub finished_nanos: u64,
+    pub finished_ticks: u64,
     /// Cumulative bytes serviced in the current continuously busy epoch.
     pub busy_epoch_bytes: u128,
     /// Cumulative operations serviced in the current continuously busy epoch.
@@ -148,8 +148,8 @@ struct QueuedJob {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct ActiveJob {
     queued: QueuedJob,
-    started_nanos: u64,
-    finished_nanos: u64,
+    started_ticks: u64,
+    finished_ticks: u64,
 }
 
 /// Checkpointed continuation for one service contributor.
@@ -159,7 +159,7 @@ pub struct BlockServiceContinuation {
     pub rule: ResolvedBlockServiceRule,
     pending: BTreeMap<u64, QueuedJob>,
     active: Option<ActiveJob>,
-    busy_origin_nanos: u64,
+    busy_origin_ticks: u64,
     busy_epoch_bytes: u128,
     busy_epoch_operations: u128,
     weighted_cursor: usize,
@@ -243,7 +243,7 @@ impl BlockServiceState {
         Ok(())
     }
 
-    /// Advances every contributor through completions at or before `now_nanos`.
+    /// Advances every contributor through completions at or before `now_ticks`.
     ///
     /// Returned evidence is sorted by completion coordinate, contributor, then
     /// request sequence, independent of map insertion order.
@@ -254,11 +254,11 @@ impl BlockServiceState {
     /// next exact service boundary.
     pub fn advance_to(
         &mut self,
-        now_nanos: u64,
+        now_ticks: u64,
     ) -> Result<Vec<BlockServiceCompletion>, DeviceError> {
         let mut completed = Vec::new();
         for (contributor, continuation) in &mut self.continuations {
-            completed.extend(continuation.advance_to(now_nanos)?.into_iter().map(
+            completed.extend(continuation.advance_to(now_ticks)?.into_iter().map(
                 |mut completion| {
                     completion.contributor = *contributor;
                     completion
@@ -269,7 +269,7 @@ impl BlockServiceState {
             .retain(|_contributor, continuation| !continuation.is_idle());
         completed.sort_by_key(|completion| {
             (
-                completion.finished_nanos,
+                completion.finished_ticks,
                 completion.contributor,
                 completion.sequence,
             )
@@ -279,10 +279,10 @@ impl BlockServiceState {
 
     /// Returns the earliest active service completion coordinate.
     #[must_use]
-    pub fn next_completion_nanos(&self) -> Option<u64> {
+    pub fn next_completion_ticks(&self) -> Option<u64> {
         self.continuations
             .values()
-            .filter_map(|continuation| continuation.active.map(|active| active.finished_nanos))
+            .filter_map(|continuation| continuation.active.map(|active| active.finished_ticks))
             .min()
     }
 
@@ -329,7 +329,7 @@ impl BlockServiceContinuation {
             rule,
             pending: BTreeMap::new(),
             active: None,
-            busy_origin_nanos: 0,
+            busy_origin_ticks: 0,
             busy_epoch_bytes: 0,
             busy_epoch_operations: 0,
             weighted_cursor: 0,
@@ -357,30 +357,30 @@ impl BlockServiceContinuation {
             class_index: self.rule.class_index(job.operation)?,
         };
         if self.active.is_none() {
-            self.start(queued, job.admitted_nanos)?;
+            self.start(queued, job.admitted_ticks)?;
         } else {
             self.pending.insert(job.sequence, queued);
         }
         Ok(())
     }
 
-    fn advance_to(&mut self, now_nanos: u64) -> Result<Vec<BlockServiceCompletion>, DeviceError> {
+    fn advance_to(&mut self, now_ticks: u64) -> Result<Vec<BlockServiceCompletion>, DeviceError> {
         let mut completed = Vec::new();
         while let Some(active) = self.active {
-            if active.finished_nanos > now_nanos {
+            if active.finished_ticks > now_ticks {
                 break;
             }
             self.active = None;
             completed.push(BlockServiceCompletion {
                 contributor: [0; 32],
                 sequence: active.queued.job.sequence,
-                started_nanos: active.started_nanos,
-                finished_nanos: active.finished_nanos,
+                started_ticks: active.started_ticks,
+                finished_ticks: active.finished_ticks,
                 busy_epoch_bytes: self.busy_epoch_bytes,
                 busy_epoch_operations: self.busy_epoch_operations,
             });
             if let Some(next) = self.select_next() {
-                self.start(next, active.finished_nanos)?;
+                self.start(next, active.finished_ticks)?;
             } else {
                 self.busy_epoch_bytes = 0;
                 self.busy_epoch_operations = 0;
@@ -390,9 +390,9 @@ impl BlockServiceContinuation {
         Ok(completed)
     }
 
-    fn start(&mut self, queued: QueuedJob, start_nanos: u64) -> Result<(), DeviceError> {
+    fn start(&mut self, queued: QueuedJob, start_ticks: u64) -> Result<(), DeviceError> {
         if self.busy_epoch_bytes == 0 && self.busy_epoch_operations == 0 {
-            self.busy_origin_nanos = start_nanos;
+            self.busy_origin_ticks = start_ticks;
         }
         self.busy_epoch_bytes = self
             .busy_epoch_bytes
@@ -402,16 +402,16 @@ impl BlockServiceContinuation {
             .busy_epoch_operations
             .checked_add(1)
             .ok_or_else(|| invalid("block service operation ledger overflow"))?;
-        let finished_nanos = self.cumulative_deadline()?;
-        if finished_nanos < start_nanos {
+        let finished_ticks = self.cumulative_deadline()?;
+        if finished_ticks < start_ticks {
             return Err(invalid(
                 "block service cumulative deadline precedes its start",
             ));
         }
         self.active = Some(ActiveJob {
             queued,
-            started_nanos: start_nanos,
-            finished_nanos,
+            started_ticks: start_ticks,
+            finished_ticks,
         });
         Ok(())
     }
@@ -421,7 +421,7 @@ impl BlockServiceContinuation {
             BlockServiceDiscipline::Fifo => self
                 .pending
                 .values()
-                .min_by_key(|queued| (queued.job.admitted_nanos, queued.job.sequence))
+                .min_by_key(|queued| (queued.job.admitted_ticks, queued.job.sequence))
                 .map(|queued| queued.job.sequence),
             BlockServiceDiscipline::StrictPriority => self
                 .pending
@@ -432,7 +432,7 @@ impl BlockServiceContinuation {
                         .and_then(|index| self.rule.classes.get(index));
                     (
                         class.map_or(u16::MAX, |class| class.priority),
-                        queued.job.admitted_nanos,
+                        queued.job.admitted_ticks,
                         queued.job.sequence,
                     )
                 })
@@ -453,7 +453,7 @@ impl BlockServiceContinuation {
                 .pending
                 .values()
                 .filter(|queued| queued.class_index == Some(self.weighted_cursor))
-                .min_by_key(|queued| (queued.job.admitted_nanos, queued.job.sequence))
+                .min_by_key(|queued| (queued.job.admitted_ticks, queued.job.sequence))
                 .map(|queued| queued.job.sequence);
             if let Some(sequence) = selected
                 && self.weighted_used < class.weight
@@ -478,12 +478,12 @@ impl BlockServiceContinuation {
             || (self.rule.discipline != BlockServiceDiscipline::WeightedRoundRobin
                 && (self.weighted_cursor != 0 || self.weighted_used != 0))
             || self.active.is_some_and(|active| {
-                active.finished_nanos < active.started_nanos
-                    || active.started_nanos < active.queued.job.admitted_nanos
-                    || self.busy_origin_nanos > active.started_nanos
+                active.finished_ticks < active.started_ticks
+                    || active.started_ticks < active.queued.job.admitted_ticks
+                    || self.busy_origin_ticks > active.started_ticks
                     || self.busy_epoch_operations == 0
                     || self.busy_epoch_bytes < u128::from(active.queued.job.bytes)
-                    || self.cumulative_deadline().ok() != Some(active.finished_nanos)
+                    || self.cumulative_deadline().ok() != Some(active.finished_ticks)
             })
         {
             return Err(invalid("invalid restored block service continuation"));
@@ -512,20 +512,20 @@ impl BlockServiceContinuation {
     fn cumulative_deadline(&self) -> Result<u64, DeviceError> {
         let byte_offset = ceil_ratio(
             self.busy_epoch_bytes
-                .checked_mul(1_000_000_000)
+                .checked_mul(1_000_000_000 * u128::from(crucible_shmem::TICKS_PER_NS))
                 .ok_or_else(|| invalid("block service byte-time product overflow"))?,
             u128::from(self.rule.bytes_per_second),
         )?;
         let operation_offset = self.rule.iops.map_or(Ok(0), |iops| {
             ceil_ratio(
                 self.busy_epoch_operations
-                    .checked_mul(1_000_000_000)
+                    .checked_mul(1_000_000_000 * u128::from(crucible_shmem::TICKS_PER_NS))
                     .ok_or_else(|| invalid("block service IOPS-time product overflow"))?,
                 u128::from(iops),
             )
         })?;
         let offset = byte_offset.max(operation_offset);
-        self.busy_origin_nanos
+        self.busy_origin_ticks
             .checked_add(
                 u64::try_from(offset).map_err(|_error| {
                     invalid("block service completion exceeds virtual-time width")

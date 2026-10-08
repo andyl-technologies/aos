@@ -7,7 +7,7 @@
 - **Date:** 2026-06-18
 - **PR:** [#112](https://github.com/andyl-technologies/aos/pull/112) (draft)
 - **Audience:** anyone working on `crates/crucible-*`, the AOS QEMU package
-  (`pkgs/emulation/qemu*`) and its patch series, the AOS kernel/rootfs builders,
+  (`pkgs/emulation/qemu*`) and its atomic patch, the AOS kernel/rootfs builders,
   or CI determinism gates.
 
 This is a directory RFC. This `README.md` carries the status header, the
@@ -112,7 +112,7 @@ each layer with its own determinism gate:
 ```
 
 The hard determinism work concentrates at L0–L2: eliminate every entropy source
-inside a single VM (L2 + the AOS QEMU patch series, [`11-qemu-patches.md`](11-qemu-patches.md)),
+inside a single VM (L2 + the AOS atomic QEMU patch, [`11-qemu-patches.md`](11-qemu-patches.md)),
 make cross-VM event injection a pure function of instruction-count time
 (L1 + [`08-scheduling.md`](08-scheduling.md)), and prove both with a layered
 determinism harness ([`24-determinism-harness-testing.md`](24-determinism-harness-testing.md))
@@ -151,7 +151,7 @@ Start here, then read in three bands:
 36. [`36-time-travel-debugging.md`](36-time-travel-debugging.md) — gdb-stub attach to any checkpoint, reverse/time-travel via restore-nearest+replay, the non-canonical debug branch.
 37. [`37-licensing-process-boundary.md`](37-licensing-process-boundary.md) — the normative license/component map and the public socket-plus-shared-memory process boundary maintainers must preserve.
 
-(Multi-vCPU determinism, concurrency-interleaving exploration, guided/adaptive search, and optional app-controlled randomness are folded into the relevant spec files above — see [01](01-goals-nongoals-invariants.md) [G-10]/[G-11], [05](05-execution-model.md) `Decision::Preemption`/`Decision::AppRandom`, and [22](22-advanced-features.md).)
+(Multi-vCPU determinism, concurrency-interleaving exploration, guided/adaptive search, and optional app-controlled randomness are folded into the relevant spec files above — see [01](01-goals-nongoals-invariants.md) [G-10]/[G-11], [05](05-execution-model.md) `Decision::Preemption`/`BackendRngEvidence`, and [22](22-advanced-features.md).)
 
 **The plan (the thing an implementor works through):**
 33. [`32-implementation-plan.md`](32-implementation-plan.md) — the master, phased, checkbox implementation plan. Every task references the spec requirement IDs it satisfies; every spec file carries the slice of the plan that belongs to it. Phase ordering puts **determinism, the test harness, the transport ABI, and the control-plane API correctness first**, before any feature is built on top.

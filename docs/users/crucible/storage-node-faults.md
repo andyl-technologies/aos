@@ -44,12 +44,9 @@ moving the declared durability frontier. A volatile-cache-loss impulse chooses
 from the eligible cached writes at a boundary; it is not equivalent to
 corrupting the backing artifact.
 
-The live examples
-[`crucible-qemu-live-block-io.rs`](../../../crates/crucible-qemu/examples/crucible-qemu-live-block-io.rs),
-[`crucible-qemu-live-block-node.rs`](../../../crates/crucible-qemu/examples/crucible-qemu-live-block-node.rs),
-and
-[`crucible-qemu-live-ninep-io.rs`](../../../crates/crucible-qemu/examples/crucible-qemu-live-ninep-io.rs)
-show the production protocol boundaries.
+The current shared-memory block and 9p servicers implement these production
+protocol boundaries. The terminal `gate:signal-fault-system` aggregate compiles
+the servicer tests with whole-world block and 9p evidence.
 
 ## Complete storage and 9p effect contract
 
@@ -118,8 +115,8 @@ but progress stops and a watchdog or recovery policy governs resumption.
 
 Lifecycle effects act on the complete production VM participant, not merely a
 host-side model flag. The adapter records generation changes and restores only
-the state the effect declares preserved. The production reference is
-[`crucible-qemu-live-node-lifecycle-fault.rs`](../../../crates/crucible-qemu/examples/crucible-qemu-live-node-lifecycle-fault.rs).
+the state the effect declares preserved. The production reference is the guarded node-lifecycle adapter certified by
+`gate:signal-fault-system`.
 
 ## Complete node and hardware effect contract
 
@@ -141,7 +138,7 @@ All effects use semantic version `1`. The target must also exist in
 | `memory.access_transform` | memory range; `fetch`, `load`, `store`, `dma_read`, `dma_write`, `page_table_walk`; `persistent` or `opportunity`; `ordered_transform` | `qemu.memory.access-transform.v1` | range, access classes, optional DMA device, atomicity-violation flag, mutation, occurrence |
 | `memory.ecc_event` | memory range; `fetch`, `load`, `store`, `dma_read`, `dma_write`, `page_table_walk`, `boundary`; `impulse` or `opportunity`; `severity` | `qemu.memory.ecc-event.v1` | target vCPU, ECC kind, address, syndrome, bank/channel/rank, guest visibility |
 | `memory.region_state` | memory range; `fetch`, `load`, `store`, `dma_read`, `dma_write`, `page_table_walk`, `refresh`; `persistent` or `state_machine`; `ordered_transform` | `qemu.memory.region-state.v1` | range, failed/retention/rowhammer kind, process parameters |
-| `memory.service` | memory range; `fetch`, `load`, `store`, `dma_read`, `dma_write`, `page_table_walk`, `queue`; `persistent` or `state_machine`; `composite` | `qemu.memory.service.v1` | latency, optional byte/operation rates, sharing scope |
+| `memory.service` | memory range; `fetch`, `load`, `store`, `dma_read`, `dma_write`, `page_table_walk`, `queue`; `persistent` or `state_machine`; `composite` | `qemu.memory.service.v3` | exact picosecond latency, optional byte/operation rates, sharing scope |
 | `clock.transform` | clock source; `clock_read`, `arm`, `fire`; `persistent` or `impulse`; `composite` | `qemu.clock.transform.v1` | source, offset/drift/jump/freeze/jitter/wander mutation, monotonicity, overdue-timer policy |
 | `clock.source_state` | clock source; `source_switch`, `synchronize`; `state_machine`; `conflict` | `qemu.clock.source-state.v1` | source set, transition, synchronization policy |
 | `accelerator.lifecycle` | accelerator; `boundary`, `submit`; `state_machine`; `severity` | `qemu.accelerator.lifecycle.v1` | device, transition, queue policy, memory policy |
@@ -241,9 +238,9 @@ might:
 - reset a storage controller and classify pending I/O; and
 - power down a network forwarder with explicit queue/table policy.
 
-The certified shared-cause example implements this pattern and checks exact
-effect evidence across fresh-process checkpoint and replay:
-[`crucible-qemu-signal-shared-cause.rs`](../../../crates/crucible-api/examples/crucible-qemu-signal-shared-cause.rs).
+For shared-cause plans, bind storage and node effects to the same authenticated
+signal coordinate and check each exact effect record across checkpoint and
+replay.
 
 ## Assertions and replay
 

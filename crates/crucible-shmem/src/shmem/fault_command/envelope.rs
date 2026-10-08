@@ -159,7 +159,7 @@ impl FaultCommandHeaderV1 {
 
 /// One decoded command result with authenticated out-of-line evidence bytes.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FaultResultHeaderV1 {
+pub struct FaultResultHeaderV2 {
     /// ABI major version.
     pub abi_major: u16,
     /// ABI minor version.
@@ -176,6 +176,8 @@ pub struct FaultResultHeaderV1 {
     pub observed_icount: u64,
     /// Icount at which mutation committed, or zero when it did not.
     pub applied_icount: u64,
+    /// Exact QEMU logical tick when this result entered the completed queue.
+    pub emitted_tick: u64,
     /// Exact QEMU handler capability version.
     pub capability_version: u32,
     /// Boundary phase reached by QEMU.
@@ -194,11 +196,11 @@ pub struct FaultResultHeaderV1 {
     pub result_length: u32,
 }
 
-impl FaultResultHeaderV1 {
+impl FaultResultHeaderV2 {
     /// Encodes the canonical little-endian result header.
     #[must_use]
-    pub fn encode(&self) -> [u8; FAULT_RESULT_HEADER_V1_BYTES] {
-        let mut bytes = [0_u8; FAULT_RESULT_HEADER_V1_BYTES];
+    pub fn encode(&self) -> [u8; FAULT_RESULT_HEADER_V2_BYTES] {
+        let mut bytes = [0_u8; FAULT_RESULT_HEADER_V2_BYTES];
         let mut writer = FaultByteWriter::new(&mut bytes);
         writer.u16(self.abi_major);
         writer.u16(self.abi_minor);
@@ -208,6 +210,7 @@ impl FaultResultHeaderV1 {
         writer.u64(self.command_sequence);
         writer.u64(self.observed_icount);
         writer.u64(self.applied_icount);
+        writer.u64(self.emitted_tick);
         writer.u32(self.capability_version);
         writer.u16(self.phase as u16);
         writer.u16(0);
@@ -242,7 +245,7 @@ impl FaultResultHeaderV1 {
     }
 
     pub(super) fn decode_header(bytes: &[u8]) -> Result<Self, FaultAbiError> {
-        if bytes.len() != FAULT_RESULT_HEADER_V1_BYTES {
+        if bytes.len() != FAULT_RESULT_HEADER_V2_BYTES {
             return Err(FaultAbiError::HeaderLength);
         }
         let mut reader = FaultByteReader::new(bytes);
@@ -255,6 +258,7 @@ impl FaultResultHeaderV1 {
             command_sequence: reader.u64()?,
             observed_icount: reader.u64()?,
             applied_icount: reader.u64()?,
+            emitted_tick: reader.u64()?,
             capability_version: reader.u32()?,
             phase: FaultBoundaryPhase::from_u16(reader.u16()?)?,
             before_hash: {

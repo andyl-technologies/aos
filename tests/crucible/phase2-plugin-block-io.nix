@@ -3,7 +3,7 @@
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginBlockIo",
   taskIds ? [],
-  openTaskIds ? [],
+  openTaskIds ? ["T-PLUG-12"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -57,10 +57,6 @@
 
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
-      {
-        label = "T-PLUG-12 live completion evidence";
-        needle = "Completed by `checks.crucible.phase2.qemuLiveBlockIo`";
-      }
       {
         label = "block callback wording";
         needle = "Implement the block submit/poll callbacks against the";
@@ -406,7 +402,7 @@ in
             check=${attrPath}
             tasks=${taskList}
             open_tasks=${openTaskList}
-            status=complete
+            status=partial
             block_rings=vm-slot-to-block-io-and-return
             submit_icount=stamped-in-request-frame
             device_io_freeze=begin-submit-before-enqueue

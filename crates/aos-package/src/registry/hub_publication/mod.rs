@@ -364,12 +364,12 @@ async fn upload_registry_publication_with_commit(
 }
 
 /// Uploads one publication class with bounded request concurrency.
-async fn upload_publication_object_class(
+async fn upload_publication_object_class<'objects>(
     access: &PublicationAccess,
     publication_id: &str,
     root: &std::os::fd::OwnedFd,
     inputs: &[hub_types::RegistryPublicationObjectInput],
-    objects: &[&hub_types::RegistryPublicationObject],
+    objects: &[&'objects hub_types::RegistryPublicationObject],
     printer: &Printer,
     label: &str,
 ) -> Result<()> {
@@ -384,7 +384,10 @@ async fn upload_publication_object_class(
     // publication-object lookup keeps each remote-SQL response constant-sized;
     // near-limit objects naturally serialize through the byte budget.
     const SNAPSHOT_BUDGET_PERMITS: u32 = 32;
-    const CONCURRENT_MULTIPART_UPLOADS: usize = 2;
+    // Each multipart object sends one part at a time, so its Hub-side body is
+    // one part. Four lanes keep the accounted bytes within the snapshot budget
+    // while hiding most of the per-part request latency.
+    const CONCURRENT_MULTIPART_UPLOADS: usize = 4;
 
     let snapshot_budget = std::sync::Arc::new(tokio::sync::Semaphore::new(
         SNAPSHOT_BUDGET_PERMITS as usize,
@@ -405,23 +408,34 @@ async fn upload_publication_object_class(
     let progress = printer.transfer(label, total_bytes);
     let transfer_manager =
         std::sync::Arc::new(TransferManager::new(TransferManagerConfig::default()));
-    // Mutable pointers share one publication lease and advance placement
-    // watermarks. Serialize them so independent HTTP requests cannot race the
-    // durable pointer-phase transition; immutable content remains parallel.
-    let request_concurrency = if objects
+    // The first pointer upload opens the durable pointer phase and each
+    // placement's pointer advance, so it runs alone. Later pointers refresh
+    // the same publication lease and write independent per-object evidence;
+    // watermarks move only at commit, which re-verifies every object. Each
+    // pointer request costs many sequential Hub database round trips, so a
+    // few concurrent requests hide that latency without crowding the Hub.
+    const CONCURRENT_POINTER_UPLOADS: usize = 8;
+    let pointers = objects
         .iter()
-        .any(|object| object.kind == "mutable_pointer")
-    {
-        1
+        .any(|object| object.kind == "mutable_pointer");
+    let request_concurrency = if pointers {
+        CONCURRENT_POINTER_UPLOADS
     } else {
         CONCURRENT_IMMUTABLE_UPLOADS
+    };
+    let leading = if pointers {
+        objects.iter().position(|object| !object.verified)
+    } else {
+        None
     };
 
     let inputs = inputs
         .iter()
         .map(|input| (input.path.as_str(), input))
         .collect::<std::collections::BTreeMap<_, _>>();
-    let result = stream::iter(objects.iter().copied().map(|object| {
+    // The named lifetime keeps each upload future tied to the objects slice
+    // rather than making the closure higher-ranked over its argument.
+    let upload_one = |object: &'objects hub_types::RegistryPublicationObject| {
         let declared = inputs.get(object.path.as_str()).copied();
         let snapshot_budget = std::sync::Arc::clone(&snapshot_budget);
         let multipart_budget = std::sync::Arc::clone(&multipart_budget);
@@ -444,10 +458,11 @@ async fn upload_publication_object_class(
 
             let byte_size = u64::try_from(object.byte_size)
                 .context("Hub publication response returned a negative object size")?;
-            // Multipart snapshots remain on disk. Reserve the part buffer and
-            // its transport copy so independent large objects can overlap.
+            // Multipart snapshots remain on disk. Reserve the one part body a
+            // multipart object has in flight at the Hub; its parts are
+            // sequential, and the client-side transport copy is local memory.
             let resident_bytes = if object.upload_url.is_empty() {
-                byte_size.min(2 * MAX_PUBLICATION_PART_BYTES)
+                byte_size.min(MAX_PUBLICATION_PART_BYTES)
             } else {
                 byte_size
             };
@@ -487,9 +502,22 @@ async fn upload_publication_object_class(
             )
             .await
         }
-    }))
-    .buffer_unordered(request_concurrency)
-    .try_collect::<Vec<()>>()
+    };
+    let result = async {
+        if let Some(index) = leading {
+            upload_one(objects[index]).await?;
+        }
+        stream::iter(
+            objects
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| Some(*index) != leading)
+                .map(|(_, object)| upload_one(*object)),
+        )
+        .buffer_unordered(request_concurrency)
+        .try_collect::<Vec<()>>()
+        .await
+    }
     .await;
     progress.finish();
     result.map(|_| ())

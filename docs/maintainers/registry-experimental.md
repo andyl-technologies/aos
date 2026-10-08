@@ -137,8 +137,14 @@ the first canonical registry base:
 apr create andyl-experimental \
   --trust-key "$ANDYL_EXPERIMENTAL_TRUST_KEY" \
   --trust-key-id experimental-v1 \
+  --roster-key andyl-experimental-provenance-v1="$ANDYL_EXPERIMENTAL_PROVENANCE_TRUST_KEY" \
   --key "$ANDYL_EXPERIMENTAL_REGISTRY_KEY"
 ```
+
+`--roster-key` commits the package-provenance signer as a second active
+`keys.toml` key in the root commit: the release's package-provenance signer
+must be an active roster key, and a first release plans from the clone's
+single root commit, so the key cannot be added by a later commit.
 
 The Hub slug and signed release identity are `andyl/experimental`; the clone name and
 trust-line prefix are `andyl-experimental`. Keep this clone clean and at its
@@ -211,17 +217,20 @@ reset, not a key rotation.
 
 The file-backed adapter reads all of these from one configuration; see the
 file-backed signer section of
-[`canonical-releases.md`](canonical-releases.md). Confirm the adapter resolves
-every role before planning a release:
+[`canonical-releases.md`](canonical-releases.md). The adapter itself ships in
+the `release-tooling` closure, so the maintainer configuration sets only
+`[signer] config` to that file and names no signer executable. Confirm the
+bundled adapter resolves every role before planning a release:
 
 ```sh
-aos-release-signer show
+nix develop .#release
+aos-release-signer --config /etc/aos-release/signer.json show
 ```
 
 ## Publish the first or a later edge release
 
 The prepared first-release profile uses
-`2026.9.0-dev.20260927.1`. For every later edge release, update
+`2026.10.0-dev.20261002.1`. For every later edge release, update
 `aos.system.version` in the experimental profile to the next calendar SemVer
 `YYYY.M.P-dev.YYYYMMDD.N` through the reviewed source-update workflow before
 building. That value is the disk version and the OCI signed release identity;
@@ -229,7 +238,7 @@ the `aos` package version remains separate provenance.
 
 Before freezing the epoch-one public `.1` plan, create and retain the
 [non-public qualification predecessor](canonical-releases.md#create-a-first-qualification-predecessor)
-at `2026.9.0-dev.20260917.0`. Its protected source revision carries the `.0`
+at `2026.10.0-dev.20261002.0`. Its protected source revision carries the `.0`
 experimental profile and uses the reserved snapshot release id and source tag. After
 offline verification, advance the profile to `.1` in a later reviewed protected
 source revision.
@@ -271,6 +280,21 @@ retaining the approved empty base commit and generation.
 Set the experimental configuration's `predecessor_bundle` to the retained
 snapshot and write the reviewed Linux image decisions to `images.json`.
 
+### Deferred platforms
+
+[`qualification/deferred-platforms.nix`](../../qualification/deferred-platforms.nix)
+lists Linux platforms a release defers; it is empty, so every edge release
+ships both Linux platforms. A listed platform ships nothing: the contract
+exports it as `deferred_platforms` (check with `aos maintain release step
+contract --registry andyl/experimental --json`), every package cell on it is
+blocked with `platform-release-deferred`, `images.json` must give its image
+cell the [blocked decision](canonical-releases.md#prepare-a-plan-request), the
+container bundle omits its manifest, and the frozen plan records all of it.
+Deferring or releasing a platform is a reviewed source change followed by a
+later edge release. The x86_64 maintainer tooling closure carries both the
+native x86_64 executor and the hosted aarch64 executor (QEMU TCG), so no extra
+machine is needed to qualify aarch64 claims.
+
 Both Hub surfaces authenticate through their `aos hub login` profiles unless
 the configuration sets `token_credential`. Only the active profile is used
 (see [Hub credentials](canonical-releases.md#hub-credentials)): sign in to
@@ -283,7 +307,7 @@ exact prepared version:
 
 ```sh
 aos maintain release new --registry andyl/experimental \
-  --version 2026.9.0-dev.20260917.1 --images images.json \
+  --version 2026.10.0-dev.20261002.1 --images images.json \
   --first-release \
   --source-registry ~/.local/share/apm/registries/andyl-experimental
 ```

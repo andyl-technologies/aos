@@ -473,6 +473,14 @@
           value = machine.system;
         })
         machineBuilds);
+      # Expose the exact systems baked into the VM images for identity checks.
+      machineSystems = builtins.listToAttrs (
+        map (machine: {
+          name = machine.name;
+          value = machine.system;
+        })
+        machineBuilds
+      );
       driverInteractive = sshAuthorizedKey:
         mkFleetTestInteractive {inherit spec sshAuthorizedKey;};
     };

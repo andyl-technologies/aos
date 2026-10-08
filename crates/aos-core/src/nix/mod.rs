@@ -5,7 +5,8 @@
 //!
 //! - [`runner`] -- [`NixRunner`], the project-rooted high-level wrapper
 //!   used by `aos build`/`aos test` (finds `default.nix`, runs
-//!   `nix-build`, `nix-instantiate`, garbage collection, repl).
+//!   `nix-build`, `nix-instantiate`, garbage collection, repl) and the
+//!   [`CheckReport`] of a Nix `--check` repeat-build pass.
 //! - [`store`] -- [`NixCli`], a thinner per-path wrapper around
 //!   `nix-store` queries, realisation, dump/export/import, plus the
 //!   [`PathInfo`] metadata record.
@@ -21,5 +22,5 @@ pub mod runner;
 pub mod store;
 
 pub use env::{aos_management_nix_env, aos_nix_env, configure_aos_nix_store};
-pub use runner::NixRunner;
+pub use runner::{CheckFailure, CheckReport, NixRunner};
 pub use store::{NixCli, PathInfo};

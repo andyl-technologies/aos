@@ -220,7 +220,7 @@ in {
           before_boot = machine.succeed("cat /proc/sys/kernel/random/boot_id").strip()
           machine.succeed(
               "HOME=/tmp PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH "
-              f"{APM} upgrade --system --yes", timeout=1800
+              f"{APM} image upgrade --yes", timeout=1800
           )
           staged = image_state(machine)
           assert staged["running"] == 1, staged
@@ -273,7 +273,7 @@ in {
       assert second_attestation["activation_id"] != initial_attestation["activation_id"]
 
       # Rollback creates a new checked publication of the exact retained source.
-      target.succeed(f"{APM} rollback --system --generation {initial['number']}", timeout=300)
+      target.succeed(f"{APM} config rollback --generation {initial['number']}", timeout=300)
       direct_state, direct = current_config(target)
       assert direct["number"] not in (initial["number"], second["number"]), direct
       assert direct["content"] == initial["content"], (direct, initial)
@@ -440,7 +440,7 @@ in {
       # A physical image transition leaves historical evaluator/source identity
       # intact. Rollback replays the retained descriptor into a new publication.
       boot_before_cross = target.succeed("cat /proc/sys/kernel/random/boot_id").strip()
-      target.succeed(f"{APM} rollback --system --generation {second['number']}", timeout=300)
+      target.succeed(f"{APM} config rollback --generation {second['number']}", timeout=300)
       cross_state, cross = current_config(target)
       assert cross["number"] not in (initial["number"], second["number"]), cross
       assert cross["content"] == second["content"], (cross, second)

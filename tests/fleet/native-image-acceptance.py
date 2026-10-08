@@ -322,7 +322,7 @@ def invoke_reboot(arguments: str, label: str) -> None:
 def counted_boot_fallback(original: dict[str, Any], initrd_before: dict[str, Any]) -> None:
     """Exhausts three real candidate boots before native activation or health."""
     runtime.succeed(f"printf '%s\\n' {shlex.quote(CANDIDATE_TOP)} > /var/lib/aos-test/blocked-image-toplevel")
-    runtime.succeed(f"{SYSTEMD_RUN} --quiet --unit=native-image-counted-failure --property=Type=exec {APM} upgrade --system --yes --drain --reboot")
+    runtime.succeed(f"{SYSTEMD_RUN} --quiet --unit=native-image-counted-failure --property=Type=exec {APM} image upgrade --yes --drain --reboot")
     boot_ids = set()
     for left, done in ((2, 1), (1, 2), (0, 3)):
         candidate_selected = f"test \"$({COREUTILS}/readlink /run/current-system)\" = {shlex.quote(CANDIDATE_TOP)}"
@@ -402,7 +402,7 @@ def run() -> None:
     initrd_before = initrd_journal_snapshot()
     counted_boot_fallback(original, initrd_before)
 
-    invoke_reboot("upgrade --system --yes --drain --reboot", "native-image-upgrade")
+    invoke_reboot("image upgrade --yes --drain --reboot", "native-image-upgrade")
     selected = image_state()
     candidate = generation(selected, selected["running"])
     assert_candidate(candidate)
@@ -414,13 +414,13 @@ def run() -> None:
     if image_state() != before:
         raise RuntimeError("native boot-commit replay changed settled image authority")
 
-    invoke_reboot(f"rollback --system --image --generation {original['number']} --drain --reboot", "native-image-rollback")
+    invoke_reboot(f"image rollback --generation {original['number']} --drain --reboot", "native-image-rollback")
     assert_identity(generation(image_state(), image_state()["running"]))
     if image_state()["running"] != original["number"]:
         raise RuntimeError("native rollback did not restore the retained predecessor")
 
     runtime.succeed(f"printf '%s\\n' {shlex.quote(candidate['toplevel'])} > /var/lib/aos-test/unhealthy-image-toplevel; {COREUTILS}/touch /var/lib/aos-test/rollout-health-fail")
-    invoke_reboot("upgrade --system --yes --drain --reboot", "native-image-health-failure")
+    invoke_reboot("image upgrade --yes --drain --reboot", "native-image-health-failure")
     runtime.wait_until_succeeds(f"{JQ} -e '.running == {original['number']} and .pending == null and .active_rollout == null' {IMAGE_STATE}", timeout=1800)
     assert_identity(original)
     receipt = read_json(IMAGE_RECEIPT)

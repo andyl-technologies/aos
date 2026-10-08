@@ -273,29 +273,7 @@ impl PluginDeviceIoFreeze {
         token: DeviceIoRequestToken,
         outcome: DeviceIoRequestOutcome,
     ) -> Result<DeviceIoRequestRelease, DeviceIoFreezeError> {
-        if token.owner_id != self.owner_id {
-            return Err(DeviceIoFreezeError::CompletionForDifferentFreezeState {
-                expected_owner_id: self.owner_id,
-                actual_owner_id: token.owner_id,
-                request_seq: token.request_seq,
-                submit_icount: token.submit_icount,
-                outcome,
-            });
-        }
-        if self.pending_requests == 0 {
-            return Err(DeviceIoFreezeError::CompletionWithoutPendingRequest {
-                request_seq: token.request_seq,
-                submit_icount: token.submit_icount,
-                outcome,
-            });
-        }
-
-        if token.burst_member && self.burst_pending_requests == 0 {
-            return Err(DeviceIoFreezeError::BurstMembershipUnderflow {
-                request_seq: token.request_seq,
-                submit_icount: token.submit_icount,
-            });
-        }
+        self.completion_current(&token, outcome)?;
         self.pending_requests -= 1;
         if token.burst_member {
             self.burst_pending_requests -= 1;
@@ -319,6 +297,39 @@ impl PluginDeviceIoFreeze {
             release_wake,
             outcome,
         })
+    }
+
+    // Guest delivery must check the same token constraints before exposing
+    // output, while the pending count stays held until ring settlement.
+    pub(crate) fn completion_current(
+        &self,
+        token: &DeviceIoRequestToken,
+        outcome: DeviceIoRequestOutcome,
+    ) -> Result<(), DeviceIoFreezeError> {
+        if token.owner_id != self.owner_id {
+            return Err(DeviceIoFreezeError::CompletionForDifferentFreezeState {
+                expected_owner_id: self.owner_id,
+                actual_owner_id: token.owner_id,
+                request_seq: token.request_seq,
+                submit_icount: token.submit_icount,
+                outcome,
+            });
+        }
+        if self.pending_requests == 0 {
+            return Err(DeviceIoFreezeError::CompletionWithoutPendingRequest {
+                request_seq: token.request_seq,
+                submit_icount: token.submit_icount,
+                outcome,
+            });
+        }
+
+        if token.burst_member && self.burst_pending_requests == 0 {
+            return Err(DeviceIoFreezeError::BurstMembershipUnderflow {
+                request_seq: token.request_seq,
+                submit_icount: token.submit_icount,
+            });
+        }
+        Ok(())
     }
 
     fn burst_state(&self, slot: &NodeSlot) -> DeviceIoBurstState {

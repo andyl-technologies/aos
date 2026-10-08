@@ -60,6 +60,13 @@ pub struct InventoryPlatformCell {
 pub enum InventoryDecision {
     /// The package is a public root on this target.
     Eligible {},
+    /// A reviewed release policy postpones a structurally eligible cell.
+    Blocked {
+        /// Stable release deferral rule.
+        rule: String,
+        /// Public explanation of the deferred publication.
+        reason: String,
+    },
     /// A versioned policy proves this target is inapplicable.
     NotApplicable {
         /// Stable eligibility rule.
@@ -93,7 +100,7 @@ pub struct DerivationPackage {
     pub source_store_paths: Vec<String>,
     /// Exact `.drv` path.
     pub derivation: String,
-    /// Every named output produced by the derivation.
+    /// Every published output with its exact owning derivation identity.
     pub outputs: Vec<DerivationOutput>,
     /// Evaluated native deployment-envelope derivation and directory root.
     #[serde(default)]
@@ -188,7 +195,8 @@ impl DerivationInventoryV1 {
     /// # Errors
     ///
     /// Returns an error for the wrong schema, duplicate or unsorted packages,
-    /// invalid derivations, empty/duplicate outputs, or invalid output paths.
+    /// invalid derivations, empty/duplicate outputs, invalid output paths, or
+    /// incomplete exact derivation/output identities.
     pub fn validate(&self) -> Result<()> {
         if self.schema_version != DERIVATION_INVENTORY_V1 {
             bail!("unsupported derivation inventory schema");
@@ -434,6 +442,13 @@ impl PackageInventoryV1 {
                             &(package.name.as_str(), cell.platform),
                         )?,
                     },
+                    InventoryDecision::Blocked { rule, reason } => MatrixCell::Blocked {
+                        required_work: format!("{rule}: {reason}"),
+                        failure_evidence: crate::digest::Sha256Digest::of_canonical(
+                            "aos.release.package-deferral/v1",
+                            &(package.name.as_str(), cell.platform, rule, reason),
+                        )?,
+                    },
                     InventoryDecision::NotApplicable { rule, reason } => {
                         MatrixCell::NotApplicable {
                             rule: rule.clone(),
@@ -540,13 +555,14 @@ fn index_derivations<'a>(
 fn validate_decision(decision: &InventoryDecision) -> Result<()> {
     match decision {
         InventoryDecision::Eligible {} => Ok(()),
-        InventoryDecision::NotApplicable { rule, reason } => {
+        InventoryDecision::Blocked { rule, reason }
+        | InventoryDecision::NotApplicable { rule, reason } => {
             require_identifier(rule, "package eligibility rule")?;
             if reason.trim().is_empty()
                 || reason.len() > 1024
                 || reason.chars().any(char::is_control)
             {
-                bail!("package inapplicability reason must contain printable public text");
+                bail!("package policy reason must contain printable public text");
             }
             Ok(())
         }
@@ -705,6 +721,47 @@ mod tests {
             Some("1.0.0")
         );
         assert!(plan[0].platform_versions.is_empty());
+
+        // Independently built runtime outputs preserve their owning derivation
+        // and actual output name, even when the logical package name differs.
+        let utilities = "/nix/store/33333333333333333333333333333333-utilities.drv";
+        let mut independent = derivations.clone();
+        independent[0].packages[0].outputs.push(DerivationOutput {
+            name: "bin".into(),
+            derivation: Some(utilities.into()),
+            output: Some("out".into()),
+            store_path: "/nix/store/44444444444444444444444444444444-utilities".into(),
+            deployment: None,
+        });
+        let independent_plan = inventory.package_plan(&independent)?;
+        let MatrixCell::Artifact { artifact } = &independent_plan[0].platforms[0].decision else {
+            panic!("independent output should produce an artifact plan");
+        };
+        let bin = artifact
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.id.ends_with("/bin"))
+            .context("planned independent bin output")?;
+        assert_eq!(bin.derivation.as_deref(), Some(utilities));
+        assert_eq!(bin.output.as_deref(), Some("out"));
+
+        // Deferral suppresses exactly one cell and forbids evaluating its roots.
+        let mut deferred_inventory = inventory.clone();
+        deferred_inventory.packages[0].platforms[1].decision = InventoryDecision::Blocked {
+            rule: "platform-release-deferred/v1".into(),
+            reason: "Release publication is deferred on this platform".into(),
+        };
+        let mut deferred_derivations = derivations.clone();
+        deferred_derivations[1].packages.clear();
+        let deferred_plan = deferred_inventory.package_plan(&deferred_derivations)?;
+        assert!(matches!(
+            deferred_plan[0].platforms[1].decision,
+            MatrixCell::Blocked { .. }
+        ));
+        for index in [0, 2, 3] {
+            assert_eq!(deferred_plan[0].platforms[index], plan[0].platforms[index]);
+        }
+        assert!(deferred_inventory.package_plan(&derivations).is_err());
 
         for target in &mut derivations {
             if !target.platform.supports_images() {

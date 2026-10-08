@@ -3,6 +3,10 @@
 use std::thread;
 
 use super::*;
+use super::operator_relay::{
+    handle_operator_rsp_unit, record_semantic_response, restore_backend_after_operator_disconnect,
+    write_active_backend,
+};
 
 #[path = "tests/scheduler_ownership.rs"]
 mod scheduler_ownership_tests;
@@ -59,11 +63,9 @@ fn hello() -> DebugGatewayFrame {
 }
 
 fn test_process() -> SharedGatewayProcess {
-    Arc::new(Mutex::new(GatewayProcess::new(Some(
-        "127.0.0.1:12345"
-            .parse()
-            .unwrap_or_else(|error| panic!("test listener should parse: {error}")),
-    ))))
+    Arc::new(Mutex::new(GatewayProcess::new(Some(String::from(
+        "unix:/run/crucible/operator.sock",
+    )))))
 }
 
 fn configure_active_backend(process: &SharedGatewayProcess, endpoint: &str) -> UnixStream {
@@ -83,6 +85,246 @@ fn configure_active_backend(process: &SharedGatewayProcess, endpoint: &str) -> U
     })
     .unwrap_or_else(|error| panic!("active backend should configure: {error}"));
     peer
+}
+
+#[test]
+fn canonical_software_breakpoint_reaches_qemu_only_as_hardware() {
+    let process = test_process();
+    let mut backend = configure_active_backend(&process, "/run/crucible/private-qemu.sock");
+    let (_operator, writer) = UnixStream::pair().expect("operator stream pair");
+    backend
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .expect("backend read timeout");
+    with_gateway(&process, |gateway| {
+        gateway.operator_writer = Some(writer);
+        Ok(())
+    })
+    .expect("operator writer setup");
+
+    let mut pending = VecDeque::new();
+    let mut synthetic_stop = false;
+    for (request, hardware) in [
+        (b"Z0,4000,1".as_slice(), b"Z1,4000,1".as_slice()),
+        (b"z0,4000,1".as_slice(), b"z1,4000,1".as_slice()),
+    ] {
+        handle_operator_rsp_unit(
+            &process,
+            RspUnit::Packet(encode_rsp_packet(request)),
+            &mut pending,
+            &mut synthetic_stop,
+        )
+        .expect("canonical breakpoint admission");
+
+        let expected = encode_rsp_packet(hardware);
+        let mut received = vec![0_u8; expected.len()];
+        backend.read_exact(&mut received).expect("QEMU breakpoint");
+        assert_eq!(received, expected);
+        assert_eq!(pending.pop_front(), Some(expected));
+    }
+}
+
+#[test]
+fn direct_operator_writes_require_private_branch_authorization() {
+    let process = Arc::new(Mutex::new(GatewayProcess::new(Some(String::from(
+        "unix:/tmp/private-gdb.sock",
+    )))));
+    let mut backend = configure_active_backend(&process, "/run/crucible/private-qemu.sock");
+    let (mut operator, writer) = UnixStream::pair().expect("operator stream pair");
+    operator
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .expect("operator read timeout");
+    backend
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .expect("backend read timeout");
+    with_gateway(&process, |gateway| {
+        gateway.operator_writer = Some(writer);
+        Ok(())
+    })
+    .expect("operator writer setup");
+
+    let mut pending = VecDeque::new();
+    let mut synthetic_stop = false;
+    let write = encode_rsp_packet(b"P0=ff");
+    handle_operator_rsp_unit(
+        &process,
+        RspUnit::Packet(write.clone()),
+        &mut pending,
+        &mut synthetic_stop,
+    )
+    .expect("read-only rejection");
+    let expected_rejection = [b"+".as_slice(), encode_rsp_packet(b"E22").as_slice()].concat();
+    let mut rejection = vec![0_u8; expected_rejection.len()];
+    operator.read_exact(&mut rejection).expect("read rejection");
+    assert_eq!(rejection, expected_rejection);
+    assert!(
+        backend.read(&mut [0_u8; 8]).is_err(),
+        "denied write reached QEMU"
+    );
+
+    for control in [b"c".as_slice(), b"s", b"vCont;c"] {
+        handle_operator_rsp_unit(
+            &process,
+            RspUnit::Packet(encode_rsp_packet(control)),
+            &mut pending,
+            &mut synthetic_stop,
+        )
+        .expect("run control rejection");
+    }
+    assert!(
+        backend.read(&mut [0_u8; 8]).is_err(),
+        "run control reached QEMU"
+    );
+    with_gateway(&process, |gateway| {
+        assert_eq!(gateway.run_control_requests.len(), 1);
+        gateway.run_control_requests.clear();
+        Ok(())
+    })
+    .expect("clear queued run control before testing branch writes");
+
+    let unlock = DebugGatewayFrame::v1(
+        DebugGatewayMessageKind::OperatorAccess,
+        0,
+        b"branch-guest-write".to_vec(),
+    )
+    .expect("unlock frame");
+    with_gateway(&process, |gateway| gateway.handle(unlock)).expect("owner unlock");
+    handle_operator_rsp_unit(
+        &process,
+        RspUnit::Packet(write.clone()),
+        &mut pending,
+        &mut synthetic_stop,
+    )
+    .expect("branch write admission");
+    let mut forwarded = vec![0_u8; write.len()];
+    backend
+        .read_exact(&mut forwarded)
+        .expect("authorized QEMU write");
+    assert_eq!(forwarded, write);
+}
+
+#[test]
+fn forwarded_rsp_queue_rejects_flood_at_fixed_capacity() {
+    let process = test_process();
+    let mut backend = configure_active_backend(&process, "/run/crucible/flood-qemu.sock");
+    let (mut operator, writer) = UnixStream::pair().expect("operator stream pair");
+    with_gateway(&process, |gateway| {
+        gateway.operator_writer = Some(writer);
+        Ok(())
+    })
+    .expect("install operator writer");
+    let mut pending = VecDeque::new();
+    let mut synthetic_stop = false;
+
+    for _ in 0..MAX_PENDING_RSP_REQUESTS {
+        handle_operator_rsp_unit(
+            &process,
+            RspUnit::Packet(encode_rsp_packet(b"g")),
+            &mut pending,
+            &mut synthetic_stop,
+        )
+        .expect("admit bounded query");
+    }
+    handle_operator_rsp_unit(
+        &process,
+        RspUnit::Packet(encode_rsp_packet(b"g")),
+        &mut pending,
+        &mut synthetic_stop,
+    )
+    .expect("reject excess query");
+    assert_eq!(pending.len(), MAX_PENDING_RSP_REQUESTS);
+    let expected = [b"+".as_slice(), encode_rsp_packet(b"E20").as_slice()].concat();
+    let mut rejection = vec![0_u8; expected.len()];
+    operator
+        .read_exact(&mut rejection)
+        .expect("read bounded rejection");
+    assert_eq!(rejection, expected);
+
+    backend
+        .set_read_timeout(Some(Duration::from_millis(50)))
+        .expect("set backend read timeout");
+    let packet = encode_rsp_packet(b"g");
+    let mut forwarded = vec![0_u8; packet.len() * MAX_PENDING_RSP_REQUESTS];
+    backend
+        .read_exact(&mut forwarded)
+        .expect("read admitted queries");
+    assert_eq!(forwarded, packet.repeat(MAX_PENDING_RSP_REQUESTS));
+    assert!(
+        backend.read(&mut [0_u8; 8]).is_err(),
+        "excess query reached QEMU"
+    );
+}
+
+#[test]
+fn forwarded_rsp_queue_rejects_oversized_byte_total() {
+    let process = test_process();
+    let mut backend = configure_active_backend(&process, "/run/crucible/byte-cap-qemu.sock");
+    let (mut operator, writer) = UnixStream::pair().expect("operator stream pair");
+    with_gateway(&process, |gateway| {
+        gateway.operator_writer = Some(writer);
+        Ok(())
+    })
+    .expect("install operator writer");
+    let mut pending = VecDeque::new();
+    let mut synthetic_stop = false;
+    let mut query = vec![b'0'; 40 * 1024];
+    query[0] = b'm';
+    let encoded = encode_rsp_packet(&query);
+
+    for _ in 0..2 {
+        handle_operator_rsp_unit(
+            &process,
+            RspUnit::Packet(encoded.clone()),
+            &mut pending,
+            &mut synthetic_stop,
+        )
+        .expect("admit or reject large query");
+    }
+    assert_eq!(pending.len(), 1);
+    let expected = [b"+".as_slice(), encode_rsp_packet(b"E20").as_slice()].concat();
+    let mut rejection = vec![0_u8; expected.len()];
+    operator
+        .read_exact(&mut rejection)
+        .expect("read byte-cap rejection");
+    assert_eq!(rejection, expected);
+
+    backend
+        .set_read_timeout(Some(Duration::from_millis(50)))
+        .expect("set backend read timeout");
+    let mut forwarded = vec![0_u8; encoded.len()];
+    backend
+        .read_exact(&mut forwarded)
+        .expect("read admitted large query");
+    assert_eq!(forwarded, encoded);
+    assert!(
+        backend.read(&mut [0_u8; 8]).is_err(),
+        "second query reached QEMU"
+    );
+}
+
+#[test]
+fn initial_stop_nack_replays_to_operator_without_reaching_backend() {
+    let process = test_process();
+    let mut backend = configure_active_backend(&process, "/run/crucible/initial-stop.sock");
+    let (mut operator, writer) = UnixStream::pair().expect("operator stream pair");
+    with_gateway(&process, |gateway| {
+        gateway.operator_writer = Some(writer);
+        Ok(())
+    })
+    .expect("install operator writer");
+    let mut pending = VecDeque::new();
+    let mut synthetic_stop = true;
+
+    handle_operator_rsp_unit(&process, RspUnit::Nack, &mut pending, &mut synthetic_stop)
+        .expect("replay initial stop");
+    let mut packet = vec![0_u8; encode_rsp_packet(b"T05").len()];
+    operator
+        .read_exact(&mut packet)
+        .expect("read replayed initial stop");
+    assert_eq!(packet, encode_rsp_packet(b"T05"));
+    backend
+        .set_read_timeout(Some(Duration::from_millis(50)))
+        .expect("set backend read timeout");
+    assert!(backend.read(&mut [0_u8; 1]).is_err(), "NACK reached QEMU");
 }
 
 #[test]
@@ -360,17 +602,8 @@ fn packet_admitted_after_commit_barrier_reaches_only_new_backend() {
     new_peer
         .set_read_timeout(Some(Duration::from_millis(50)))
         .unwrap_or_else(|error| panic!("new backend timeout should set: {error}"));
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .unwrap_or_else(|error| panic!("operator listener should bind: {error}"));
-    let operator_peer = TcpStream::connect(
-        listener
-            .local_addr()
-            .unwrap_or_else(|error| panic!("operator address should inspect: {error}")),
-    )
-    .unwrap_or_else(|error| panic!("operator peer should connect: {error}"));
-    let (operator_writer, _) = listener
-        .accept()
-        .unwrap_or_else(|error| panic!("operator writer should accept: {error}"));
+    let (operator_peer, operator_writer) =
+        UnixStream::pair().unwrap_or_else(|error| panic!("operator pair should open: {error}"));
     let new_generation = with_gateway(&process, |gateway| {
         let old = gateway
             .model

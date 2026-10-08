@@ -49,6 +49,9 @@ members = [
     "aos-block-storage-provider",
     "aos-storage-provisioning",
     "crucible-cas",
+    "crucible-linux-resource",
+    "crucible-s3-store",
+    "crucible-campaign",
     "crucible-sim",
     "crucible-assert",
     "crucible-shmem",
@@ -77,6 +80,9 @@ miette = { version = "7", features = ["fancy"] }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 schemars = "1"
+num-bigint = "0.4"
+num-integer = "0.1"
+num-traits = "0.2"
 # `application/x-www-form-urlencoded` (de)serialization — the same decoder
 # axum 0.8's `Form` extractor uses, so hand-routing a form body to a shared
 # handler reproduces axum's parsing exactly.
@@ -95,7 +101,7 @@ rnix = "0.10"
 glob = "0.3"
 ignore = "0.4"
 hex = "0.4"
-rustix = { version = "1.1.4", features = ["fs"] }
+rustix = { version = "1.1.4", features = ["event", "fs"] }
 indicatif = "0.17"
 console = "0.15"
 humantime = "2"
@@ -158,6 +164,7 @@ ssh2 = { version = "0.9", features = ["vendored-openssl"] }
 # rustls 0.21 compatibility connector; clients use BehaviorVersion::latest().
 aws-sdk-s3 = { version = "1", default-features = false, features = ["sigv4a", "http-1x", "default-https-client", "rt-tokio"] }
 aws-config = "1"
+aws-credential-types = "1"
 aws-types = "1"
 suppaftp = { version = "6", features = ["async-rustls"] }
 
@@ -229,6 +236,9 @@ aos-ability-runtime = { path = "aos-ability-runtime" }
 aos-ability-crucible = { path = "aos-ability-crucible" }
 aos-maintain = { path = "aos-maintain" }
 crucible-cas = { path = "crucible-cas" }
+crucible-linux-resource = { path = "crucible-linux-resource" }
+crucible-s3-store = { path = "crucible-s3-store" }
+crucible-campaign = { path = "crucible-campaign" }
 aos-core = { path = "aos-core" }
 aos-oci-types = { path = "aos-oci-types" }
 aos-oci = { path = "aos-oci" }

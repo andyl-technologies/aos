@@ -215,7 +215,7 @@ impl ProductionFaultRuntime {
         )?;
         validate_pending_qemu_event_sequences(
             &checkpoint.pending_qemu_events,
-            &checkpoint.qemu_fault_event_sequences,
+            checkpoint.qemu_fault_event_sequences.as_ref(),
         )?;
         validate_qemu_action_ledger(
             &checkpoint.qemu_issued_actions,
@@ -405,6 +405,18 @@ impl ProductionFaultRuntime {
         Ok(())
     }
 
+    /// Reports whether one exact finite search override was consumed.
+    #[must_use]
+    pub fn search_override_consumed(
+        &self,
+        choice: SearchChoiceId,
+        expected: &SearchOverride,
+    ) -> bool {
+        self.runtime
+            .as_ref()
+            .is_some_and(|runtime| runtime.search_override_consumed(choice, expected))
+    }
+
     /// Returns every committed production effect as an unconsumed replay trace.
     ///
     /// # Errors
@@ -420,6 +432,21 @@ impl ProductionFaultRuntime {
             .as_ref()
             .ok_or(FaultExecutionError::CheckpointPresence)?
             .recorded_trace(mode)?)
+    }
+
+    /// Returns committed signal-effect usage of the shared resolved-record budget.
+    #[must_use]
+    pub fn recorded_effect_count(&self) -> u64 {
+        self.runtime
+            .as_ref()
+            .map_or(0, OwnedFaultExecutionRuntime::recorded_effect_count)
+    }
+
+    /// Charges campaign-owned committed effects against the shared signal budget.
+    pub fn set_external_effect_count(&mut self, count: u64) {
+        if let Some(runtime) = self.runtime.as_mut() {
+            runtime.set_external_effect_count(count);
+        }
     }
 }
 
@@ -438,35 +465,6 @@ fn runtime_clone_allocation(
             .unwrap_or(0),
     }
     .into()
-}
-
-pub(crate) fn validate_qemu_fingerprints(
-    expected: &BTreeMap<NodeId, ContentHash>,
-    observed: &BTreeMap<NodeId, ContentHash>,
-) -> Result<(), ProductionFaultRuntimeError> {
-    if expected.len() == observed.len()
-        && expected
-            .iter()
-            .all(|(node, fingerprint)| observed.get(node) == Some(fingerprint))
-    {
-        return Ok(());
-    }
-
-    let node = expected
-        .keys()
-        .chain(observed.keys())
-        .find(|node| expected.get(*node) != observed.get(*node))
-        .cloned()
-        .ok_or(FaultExecutionError::CheckpointPresence)?;
-    Err(ProductionFaultRuntimeError::QemuFingerprintMismatch {
-        expected: expected
-            .get(&node)
-            .map_or_else(|| String::from("<missing>"), |hash| (*hash).to_hex()),
-        observed: observed
-            .get(&node)
-            .map_or_else(|| String::from("<missing>"), |hash| (*hash).to_hex()),
-        node: node.name,
-    })
 }
 
 fn validate_checkpoint_qemu_fingerprints(

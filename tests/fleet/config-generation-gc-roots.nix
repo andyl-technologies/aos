@@ -117,7 +117,7 @@
 
     # Native rollback reconciles the retained older desired graph as a new
     # transaction. Its new generation must retain the original source snapshot.
-    target.succeed(f"{APM} rollback --system --generation {second}", timeout=300)
+    target.succeed(f"{APM} config rollback --generation {second}", timeout=300)
     restored = current_generation()
     assert restored > fourth, (restored, fourth)
     assert diagnostic(restored) == second_desired
@@ -155,7 +155,7 @@
         target.succeed(f"test -L {image_root}/{name}; test -e {shlex.quote(path)}")
         assert target.succeed(f"{CORE}/readlink {image_root}/{name}").strip() == path
 
-    target.succeed(f"{APM} rollback --system --generation {fourth}", timeout=300)
+    target.succeed(f"{APM} config rollback --generation {fourth}", timeout=300)
     final = current_generation()
     assert final > restored
     assert descriptor(final) == fourth_source

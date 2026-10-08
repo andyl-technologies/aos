@@ -24,7 +24,7 @@ pub(super) fn node_lifecycle_decision(
     current_nodes: usize,
     resource_limits: FaultResourceLimits,
 ) -> Result<Option<QemuNodeLifecycleDecision>, ProductionFaultRuntimeError> {
-    if event.payload.get(0..8) != Some(b"CRUCLIF1") {
+    if event.payload.get(0..8) != Some(b"CRUCLIF2") || read_u16(&event.payload, 8) != Some(5) {
         return Ok(None);
     }
     let requested_transition = lifecycle_transition_from_tag(u32::from(
@@ -157,14 +157,15 @@ pub(super) fn validate_lifecycle_evidence(
     effect: &NodeEffectSpecification,
 ) -> bool {
     let bytes = event.payload.as_slice();
+    // Offset 24 is raw retired count; the header and virtual-time fields are
+    // logical ticks and may advance without another instruction retiring.
     if bytes.len() != LIFECYCLE_EVIDENCE_BYTES
-        || bytes.get(0..8) != Some(b"CRUCLIF1")
-        || read_u16(bytes, 8) != Some(4)
+        || bytes.get(0..8) != Some(b"CRUCLIF2")
+        || read_u16(bytes, 8) != Some(5)
         || !matches!(
             event.header.outcome,
             FaultEventOutcomeV1::Applied | FaultEventOutcomeV1::Error
         )
-        || read_u64(bytes, 24) != Some(event.header.observed_icount)
         || bytes.get(64..96) != Some(event.header.binding_hash.as_slice())
         || bytes.get(128..160) != Some(event.header.before_hash.as_slice())
         || bytes.get(160..192) != Some(event.header.after_hash.as_slice())
@@ -201,7 +202,10 @@ pub(super) fn validate_lifecycle_evidence(
         || !(1..=2).contains(&volatile_policy)
         || !(1..=3).contains(&device_policy)
         || preserved_domains != expected_preserved_domains
-        || virtual_before.checked_add(downtime) != Some(virtual_after)
+        || downtime
+            .checked_mul(crucible_shmem::TICKS_PER_NS)
+            .and_then(|ticks| virtual_before.checked_add(ticks))
+            != Some(virtual_after)
         || read_u64(bytes, 48).is_none_or(|ram_bytes| ram_bytes == 0)
         || read_u64(bytes, 56).is_none()
     {
@@ -263,68 +267,6 @@ pub(super) fn validate_lifecycle_evidence(
         }
         _ => false,
     }
-}
-
-/// Validates the lifecycle evidence emitted by the real-QEMU negative gate.
-///
-/// This is the same production decoder used during normal event admission; the
-/// gate wrapper fixes only the authored effect whose real output it requested.
-pub(crate) fn validate_live_gate_lifecycle_event(event: &DequeuedFaultEvent) -> bool {
-    validate_lifecycle_evidence(
-        event,
-        &NodeEffectSpecification::Lifecycle {
-            transition: NodeLifecycleTransition::Crash,
-            downtime_nanos: 1,
-            boot_policy: NodeBootPolicy::Immediate,
-            volatile_state_policy: NodeStatePolicy::Preserve,
-            device_state_policy: NodeStatePolicy::Clear,
-        },
-    )
-}
-
-/// Summarizes the independent lifecycle-evidence predicates used by the live gate.
-pub(crate) fn live_gate_lifecycle_event_diagnostic(event: &DequeuedFaultEvent) -> String {
-    let bytes = event.payload.as_slice();
-    let transition = read_u16(bytes, 10);
-    let volatile_policy = read_u32(bytes, 12);
-    let device_policy = read_u32(bytes, 16);
-    let effective_transition = read_u32(bytes, 288);
-    let terminal_cause = read_u32(bytes, 292);
-    let terminal_flags = read_u32(bytes, 296);
-    let terminal_shape = transition
-        .zip(effective_transition)
-        .zip(terminal_cause)
-        .zip(terminal_flags)
-        .is_some_and(|(((requested, effective), cause), flags)| {
-            validate_lifecycle_terminal_shape(event, bytes, requested, effective, cause, flags)
-        });
-    let boot_valid = validate_boot_evidence(bytes, &NodeBootPolicy::Immediate);
-    let terminal_policy =
-        effective_transition
-            .zip(terminal_cause)
-            .is_some_and(|(effective, cause)| {
-                validate_lifecycle_terminal_policy(&NodeBootPolicy::Immediate, effective, cause)
-            });
-
-    format!(
-        "len={} magic={} version={:?} outcome={:?} observed={} binding={} payload_before={} payload_after={} transition={transition:?} volatile={volatile_policy:?} device={device_policy:?} preserved={:?} virtual_before={:?} downtime={:?} virtual_after={:?} ram_before={:?} device_before={:?} ram_after={:?} device_after={:?} effective={effective_transition:?} cause={terminal_cause:?} flags={terminal_flags:?} terminal_shape={terminal_shape} boot={boot_valid} terminal_policy={terminal_policy}",
-        bytes.len(),
-        bytes.get(0..8) == Some(b"CRUCLIF1"),
-        read_u16(bytes, 8),
-        event.header.outcome,
-        read_u64(bytes, 24) == Some(event.header.observed_icount),
-        bytes.get(64..96) == Some(event.header.binding_hash.as_slice()),
-        bytes.get(128..160) == Some(event.header.before_hash.as_slice()),
-        bytes.get(160..192) == Some(event.header.after_hash.as_slice()),
-        read_u32(bytes, 20),
-        read_u64(bytes, 32),
-        read_u64(bytes, 40),
-        read_u64(bytes, 96),
-        read_u64(bytes, 48),
-        read_u64(bytes, 56),
-        read_u64(bytes, 112),
-        read_u64(bytes, 120),
-    )
 }
 
 pub(super) fn validate_lifecycle_terminal_shape(
@@ -484,19 +426,22 @@ pub(super) fn validate_hang_evidence(
     if bytes.len() != HANG_EVIDENCE_BYTES || event.header.outcome != FaultEventOutcomeV1::Applied {
         return false;
     }
+    // CRUCHNG2 offsets 16 and 56 are raw retirements. QEMU stamps the event
+    // header at enqueue, so its tick must match the evidence across idle jumps.
     match bytes.get(0..8) {
-        Some(b"CRUCHNG1") => {
-            read_u16(bytes, 8) == Some(1)
+        Some(b"CRUCHNG2") => {
+            read_u16(bytes, 8) == Some(2)
                 && read_u16(bytes, 10).is_some_and(|kind| kind == 1 || kind == 2)
                 && read_u32(bytes, 12) == Some(hang_scope_tag(scope))
-                && read_u64(bytes, 56) == Some(event.header.observed_icount)
+                && validate_hang_deadline(bytes, watchdog_policy)
+                && read_u64(bytes, 32) == Some(event.header.observed_icount)
                 && read_u64(bytes, 48) == Some(event.header.generation)
                 && bytes.get(64..96) == Some(event.header.binding_hash.as_slice())
                 && bytes.get(96..128) == Some(event.header.action_hash.as_slice())
                 && bytes.get(128..160) == Some(event.header.before_hash.as_slice())
                 && bytes.get(160..192) == Some(event.header.after_hash.as_slice())
         }
-        Some(b"CRUCWDC1") => {
+        Some(b"CRUCWDC2") => {
             let NodeWatchdogPolicy::TransitionAfter {
                 transition,
                 downtime_nanos,
@@ -507,7 +452,7 @@ pub(super) fn validate_hang_evidence(
             else {
                 return false;
             };
-            read_u16(bytes, 8) == Some(1)
+            read_u16(bytes, 8) == Some(2)
                 && read_u16(bytes, 10) == Some(lifecycle_tag(*transition))
                 && read_u16(bytes, 12).is_some_and(|value| (1..=6).contains(&value))
                 && read_u32(bytes, 16) == Some(state_policy_tag(*volatile_state_policy))
@@ -515,13 +460,28 @@ pub(super) fn validate_hang_evidence(
                 && read_u32(bytes, 24).is_some_and(|value| (1..=2).contains(&value))
                 && read_u32(bytes, 28).is_some_and(|value| (1..=3).contains(&value))
                 && read_u64(bytes, 32) == Some(*downtime_nanos)
+                && read_u64(bytes, 48).is_some_and(|deadline| deadline != u64::MAX)
                 && read_u64(bytes, 48) == read_u64(bytes, 56)
+                && read_u64(bytes, 56) == Some(event.header.observed_icount)
                 && bytes.get(64..96) == Some(event.header.binding_hash.as_slice())
                 && bytes.get(128..160) == Some(event.header.action_hash.as_slice())
                 && bytes.get(96..128).is_some_and(|hash| hash != [0_u8; 32])
                 && bytes.get(160..192).is_some_and(|hash| hash != [0_u8; 32])
         }
         _ => false,
+    }
+}
+
+fn validate_hang_deadline(bytes: &[u8], watchdog_policy: &NodeWatchdogPolicy) -> bool {
+    match watchdog_policy {
+        NodeWatchdogPolicy::Disabled => read_u64(bytes, 40) == Some(u64::MAX),
+        NodeWatchdogPolicy::TransitionAfter { timeout_nanos, .. } => {
+            timeout_nanos
+                .get()
+                .checked_mul(crucible_shmem::TICKS_PER_NS)
+                .and_then(|timeout_ticks| read_u64(bytes, 24)?.checked_add(timeout_ticks))
+                == read_u64(bytes, 40)
+        }
     }
 }
 

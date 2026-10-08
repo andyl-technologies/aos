@@ -99,12 +99,12 @@ fn invalid(message: impl Into<String>) -> DocumentationError {
     DocumentationError::Invalid(message.into())
 }
 
-fn search_row<'a, const N: usize>(
+fn search_row<const N: usize>(
     kind: &str,
     key: &str,
     title: &str,
     summary: &str,
-    sources: [(&'a str, u16); N],
+    sources: [(&str, u16); N],
 ) -> SearchDocument {
     let mut terms: BTreeMap<String, u16> = BTreeMap::new();
     for (source, weight) in sources {

@@ -582,14 +582,7 @@ async fn import_toplevel(
         &root.compression,
     )?;
     for result in results {
-        crate::store::import_nar_with_compression(
-            &result.local_path,
-            &result.store_path,
-            &result.references,
-            result.deriver.as_deref(),
-            &result.compression,
-        )
-        .await?;
+        crate::store::import_nar(&result.local_path, &result.narinfo).await?;
     }
     Ok(())
 }
@@ -641,14 +634,7 @@ async fn import_exact(
         &result.compression,
     )?;
     for result in results {
-        crate::store::import_nar_with_compression(
-            &result.local_path,
-            &result.store_path,
-            &result.references,
-            result.deriver.as_deref(),
-            &result.compression,
-        )
-        .await?;
+        crate::store::import_nar(&result.local_path, &result.narinfo).await?;
     }
     Ok(())
 }

@@ -471,6 +471,10 @@ in
       export OPENSSL_NO_VENDOR=1
       export OPENSSL_STATIC=0
       export LIBSQLITE3_SYS_USE_PKG_CONFIG=1
+      # SDK clients created by loopback HTTP tests still initialize rustls.
+      # Give them the source-built trust roots rather than builder-local roots.
+      export SSL_CERT_FILE="${ca-certificates}/etc/ssl/certs/ca-bundle.crt"
+      unset SSL_CERT_DIR
       export PROTOC="${buildProtobuf}/bin/protoc"
       export AOS_NIX_INSTANTIATE="${buildNix}/bin/nix-instantiate"
       ${lib.optionalString (!isCross) ''

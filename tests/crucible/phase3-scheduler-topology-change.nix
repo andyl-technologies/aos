@@ -40,7 +40,7 @@
       }
       {
         label = "runtime queue note";
-        needle = "runtime `queue_topology_change` APIs";
+        needle = "`SingleScheduler::schedule_topology_change` lets fault, heal, and latency";
       }
       {
         label = "production adapter note";
@@ -59,14 +59,6 @@
       {
         label = "scenario queues topology changes";
         needle = "pub topology_changes: Vec<SchedulerTopologyChange>";
-      }
-      {
-        label = "actor topology message";
-        needle = "QueueTopologyChange(SchedulerTopologyChange)";
-      }
-      {
-        label = "actor topology queue method";
-        needle = "pub fn queue_topology_change";
       }
       {
         label = "boundary apply helper";
@@ -195,10 +187,6 @@
       {
         label = "runtime queue test";
         needle = "runtime_topology_change_queue_recomputes_before_next_pick";
-      }
-      {
-        label = "actor queue test";
-        needle = "actor_topology_change_message_recomputes_before_next_pick";
       }
       {
         label = "lowered lookahead before pick test";

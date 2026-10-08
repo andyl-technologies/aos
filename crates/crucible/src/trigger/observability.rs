@@ -696,7 +696,7 @@ pub enum ReadyPointResolutionKind {
 pub struct ReadyPointResolution {
     node: NodeId,
     kind: ReadyPointResolutionKind,
-    icount: Icount,
+    icount: Option<Icount>,
     virtual_time: VirtualTime,
 }
 
@@ -713,9 +713,12 @@ impl ReadyPointResolution {
         self.kind
     }
 
-    /// Returns the deterministic retired-instruction coordinate.
+    /// Returns the authenticated retired-instruction coordinate, when known.
+    ///
+    /// Readiness derived from a clock or console observation has no raw
+    /// retirement witness and therefore returns `None`.
     #[must_use]
-    pub const fn icount(&self) -> Icount {
+    pub const fn icount(&self) -> Option<Icount> {
         self.icount
     }
 
@@ -840,13 +843,9 @@ pub fn resolve_ready_point(
         .iter()
         .find(|candidate| &candidate.id == node)
         .ok_or_else(|| ReadyPointResolutionError::UnknownNode { node: node.clone() })?;
-    let shift = Shift {
-        bits: world_node.icount_shift,
-    };
-
     match &world_node.ready_point {
         ReadyPoint::FixedIcount { icount } => {
-            resolution_from_icount(node, ReadyPointResolutionKind::FixedIcount, *icount, shift)
+            resolution_from_icount(node, ReadyPointResolutionKind::FixedIcount, *icount)
         }
         ReadyPoint::NetworkIdle { window } => {
             resolve_network_idle_ready_point(world, node, *window, observed_until, observations)
@@ -855,19 +854,16 @@ pub fn resolve_ready_point(
                         node,
                         ReadyPointResolutionKind::FirstNetworkIdle,
                         at,
-                        shift,
                     )
                 })
         }
-        ReadyPoint::ConsoleMarker { marker } => resolve_console_marker_ready_point(
-            node,
-            marker,
-            observed_until,
-            observations,
-        )
-        .and_then(|at| {
-            resolution_from_virtual_time(node, ReadyPointResolutionKind::ConsoleMarker, at, shift)
-        }),
+        ReadyPoint::ConsoleMarker { marker } => {
+            resolve_console_marker_ready_point(node, marker, observed_until, observations).and_then(
+                |at| {
+                    resolution_from_virtual_time(node, ReadyPointResolutionKind::ConsoleMarker, at)
+                },
+            )
+        }
         ReadyPoint::AgentSignal => Err(
             ReadyPointResolutionError::AgentSignalRequiresWhiteBoxChannel { node: node.clone() },
         ),
@@ -878,21 +874,19 @@ pub(super) fn resolution_from_icount(
     node: &NodeId,
     kind: ReadyPointResolutionKind,
     icount: Icount,
-    shift: Shift,
 ) -> Result<ReadyPointResolution, ReadyPointResolutionError> {
-    let virtual_time =
-        icount
-            .to_virtual(shift)
-            .map_err(|source| ReadyPointResolutionError::TimeConversion {
-                node: node.clone(),
-                source,
-            })?;
+    let virtual_time = icount.initial_virtual_time().map_err(|source| {
+        ReadyPointResolutionError::TimeConversion {
+            node: node.clone(),
+            source,
+        }
+    })?;
     Ok(ReadyPointResolution {
         node: node.clone(),
         kind,
-        icount,
+        icount: Some(icount),
         virtual_time: VirtualTime {
-            ticks: virtual_time.nanos,
+            ticks: virtual_time.ticks,
         },
     })
 }
@@ -901,30 +895,12 @@ pub(super) fn resolution_from_virtual_time(
     node: &NodeId,
     kind: ReadyPointResolutionKind,
     virtual_time: VirtualTime,
-    shift: Shift,
 ) -> Result<ReadyPointResolution, ReadyPointResolutionError> {
-    let icount = crate::model::VirtualInstant {
-        nanos: virtual_time.ticks,
-    }
-    .to_icount_ceil(shift)
-    .map_err(|source| ReadyPointResolutionError::TimeConversion {
-        node: node.clone(),
-        source,
-    })?;
-    let rounded_virtual_time =
-        icount
-            .to_virtual(shift)
-            .map_err(|source| ReadyPointResolutionError::TimeConversion {
-                node: node.clone(),
-                source,
-            })?;
     Ok(ReadyPointResolution {
         node: node.clone(),
         kind,
-        icount,
-        virtual_time: VirtualTime {
-            ticks: rounded_virtual_time.nanos,
-        },
+        icount: None,
+        virtual_time,
     })
 }
 
@@ -953,6 +929,8 @@ pub(super) fn resolve_network_idle_ready_point(
             | ObservableEventPayload::AssertionStateChanged { .. }
             | ObservableEventPayload::AssertionEvaluated { .. }
             | ObservableEventPayload::GuestMarker { .. }
+            | ObservableEventPayload::GuestMeasurement { .. }
+            | ObservableEventPayload::GuestSemanticMarker { .. }
             | ObservableEventPayload::GuestAssertionMarker { .. } => None,
         })
         .collect::<BTreeSet<_>>()
@@ -969,7 +947,7 @@ pub(super) fn resolve_network_idle_ready_point(
     for (index, last_activity) in activity.iter().copied().enumerate() {
         let ready_at = last_activity
             .ticks
-            .checked_add(window.nanos)
+            .checked_add(window.ticks)
             .map(|ticks| VirtualTime { ticks })
             .ok_or_else(|| ReadyPointResolutionError::NetworkIdleWindowOverflow {
                 node: node.clone(),
@@ -1019,6 +997,8 @@ pub(super) fn resolve_console_marker_ready_point(
                 | ObservableEventPayload::AssertionStateChanged { .. }
                 | ObservableEventPayload::AssertionEvaluated { .. }
                 | ObservableEventPayload::GuestMarker { .. }
+                | ObservableEventPayload::GuestMeasurement { .. }
+                | ObservableEventPayload::GuestSemanticMarker { .. }
                 | ObservableEventPayload::GuestAssertionMarker { .. } => None,
             }
         })

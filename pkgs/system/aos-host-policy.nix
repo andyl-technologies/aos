@@ -43,4 +43,5 @@ mkDerivation {
     }
   ];
   meta.description = "Replayable kernel and networking system policy";
+  meta.license = "Apache-2.0";
 }

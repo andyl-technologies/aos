@@ -42,28 +42,28 @@
         needle = "crucible::FAULT_CAMPAIGN_FAMILY_NAME";
       }
       {
-        label = "randomized scheduler hostile profile";
-        needle = "\"randomized-host-scheduler\"";
+        label = "loaded single-core hostile profile";
+        needle = "\"loaded-single-core\"";
       }
       {
-        label = "wall clock jitter hostile profile";
-        needle = "\"wall-clock-jitter\"";
+        label = "reordered two-core hostile profile";
+        needle = "\"reordered-two-core\"";
       }
       {
-        label = "varied core count hostile profile";
-        needle = "\"varied-core-count\"";
+        label = "loaded many-core hostile profile";
+        needle = "\"loaded-many-core\"";
       }
       {
-        label = "hostile profile applied to run plan";
-        needle = "observer_profile: reduction.host_profile";
+        label = "host profile applied to run plan";
+        needle = "host_profile: reduction.host_profile";
       }
       {
-        label = "adversarial reduction expansion";
+        label = "hostile condition reduction expansion";
         needle = "VERIFY_HOSTILE_PROFILES";
       }
       {
-        label = "built-in adversarial verify test";
-        needle = "cli_verify_builtin_example_corpus_adversarial";
+        label = "built-in hostile-profile verify test";
+        needle = "cli_verify_builtin_corpus_host_profiles";
       }
       {
         label = "divergence report line";
@@ -99,11 +99,16 @@ in
     pkgs.mkDerivation {
       pname = "crucible-phase7-adversarial-example-verify";
       version = "0";
+      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+      runtimeDeps = [pkgs.sqlite];
       src = crucibleSrc;
       buildDeps = [
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
+
+        pkgs.pkg-config
+        pkgs.sqlite
       ];
       phases = [
         {
@@ -145,7 +150,7 @@ in
               --target-dir "$TMPDIR/crucible-adversarial-example-verify-target" \
               --manifest-path crates/Cargo.toml \
               -p crucible-cli \
-              cli_verify_builtin_example_corpus_adversarial \
+              cli_verify_builtin_corpus_host_profiles \
               -- --test-threads=1
             cargo test \
               --frozen \
@@ -165,9 +170,10 @@ in
             attr=${attrPath}
             tasks=${builtins.concatStringsSep "," taskIds}
             adversarial_profiles=${builtins.concatStringsSep "," [
-              "randomized-host-scheduler"
-              "wall-clock-jitter"
-              "varied-core-count"
+              "quiet-single-core"
+              "loaded-single-core"
+              "reordered-two-core"
+              "loaded-many-core"
             ]}
             built_in_verify=true
             divergence_report_shape=golden-tested

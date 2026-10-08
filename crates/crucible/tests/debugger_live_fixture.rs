@@ -30,7 +30,6 @@ fn debugger_live_scenario(architecture: VmArchitecture) -> Result<ScenarioDefFor
         },
         white_box: WhiteBoxPolicy::Enabled,
         smp_vcpus: 1,
-        icount_shift: 0,
         kernel: Some(asset("linux-kernel")),
         root_image: Some(asset("debug-agent-root-image")),
         initrd: None,

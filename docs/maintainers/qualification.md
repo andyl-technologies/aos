@@ -356,7 +356,10 @@ the actual tested configurations and evidence separately for each release.
 
 [`qualification/modules/qemu.nix`](../../qualification/modules/qemu.nix) and
 [`containers.nix`](../../qualification/modules/containers.nix) define the four
-mandatory reference configurations.
+mandatory reference configurations. A platform listed in
+[`qualification/deferred-platforms.nix`](../../qualification/deferred-platforms.nix)
+(currently `aarch64-linux`) keeps its configurations, but they are optional and
+carry no claims until the platform returns; the release ships no artifact on it.
 Their required checks cannot be waived by lowering assurance. Additional claims
 must state their required level and release-blocking status before the plan is
 frozen. Additional A3 image/container claims require corresponding target cases

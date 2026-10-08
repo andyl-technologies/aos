@@ -84,7 +84,7 @@ pub async fn list(config: &ApmConfig, printer: &Printer) -> Result<()> {
         printer.info("No profile generations.");
         if let Some(count) = system_generation_hint(config) {
             printer.info(&format!(
-                "{count} system generation{} available; did you mean `apm rollback --system --list`?",
+                "{count} system generation{} available; did you mean `apm config rollback --list`?",
                 if count == 1 { "" } else { "s" },
             ));
         }
@@ -157,7 +157,7 @@ pub async fn run(
         None => match system_generation_hint(config) {
             Some(count) => bail!(
                 "no active generation to roll back from ({count} system generation{} available; \
-                 did you mean `apm rollback --system`?)",
+                 did you mean `apm config rollback`?)",
                 if count == 1 { "" } else { "s" },
             ),
             None => bail!("no active generation to roll back from"),
@@ -382,7 +382,7 @@ fn load_registries(config: &ApmConfig) -> Result<RegistrySet> {
 /// selected by the absence of `--system` ([`ProfileScope::User`]). When that
 /// profile is empty, operators frequently meant to roll back the *system*
 /// profile instead. This returns the count of recorded system generations so
-/// the caller can nudge toward `apm rollback --system` — but only when the
+/// the caller can nudge toward `apm config rollback` — but only when the
 /// current scope is the implicit user default and at least one system
 /// generation exists. Returns `None` for an explicit system scope, an empty
 /// or unreadable system state file, so the hint never fires spuriously.

@@ -3861,9 +3861,9 @@ in {
           > "$work/apm-search-host-image-channel.out" 2>&1
         grep -q "hostsysroot/host-image-channel 1.0.0" \
           "$work/apm-search-host-image-channel.out"
-        run_clean ${self}/bin/apm --json install hostsysroot \
+        run_clean ${self}/bin/apm --json image download hostsysroot \
           --registry host-image-channel \
-          --image qcow2 \
+          --format qcow2 \
           --output "$work/hostsysroot-dry-run.qcow2" \
           --dry-run > "$work/apm-install-host-sysroot-image-dry-run.json"
         ${pkgs.jq}/bin/jq -e \
@@ -3887,9 +3887,9 @@ in {
           cat "$work/nix-valid-host-sysroot-image-after-dry-run.out"
           exit 1
         fi
-        run_clean ${self}/bin/apm --json install hostsysroot \
+        run_clean ${self}/bin/apm --json image download hostsysroot \
           --registry host-image-channel \
-          --image qcow2 \
+          --format qcow2 \
           --output "$work/hostsysroot-downloaded.qcow2" \
           --yes > "$work/apm-install-host-sysroot-image.json"
         ${pkgs.jq}/bin/jq -e \
