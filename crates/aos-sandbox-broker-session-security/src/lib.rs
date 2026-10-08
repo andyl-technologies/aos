@@ -73,7 +73,6 @@ mod host_execution_handoff;
 mod host_mount_scope_identity_transfer;
 mod immutable_image;
 mod inventory_transport;
-mod lifecycle_domain_effect;
 pub mod manifest;
 pub mod ownership_authority_client;
 pub mod ownership_authority_runtime;
@@ -191,10 +190,6 @@ pub use host_execution_handoff::HostExecutionHandoffErrorV1;
 pub use host_mount_scope_identity_transfer::{
     ProtectedHostMountScopeCurrentV1, ProtectedHostMountScopeIdentityTransferV1,
     ProtectedHostMountScopeIdentityV1,
-};
-pub use lifecycle_domain_effect::{
-    DormantLifecycleDomainEffectOwnerV1, DormantLifecycleDomainEffectProgressV1,
-    DormantLifecycleDomainEffectRecoveryV1,
 };
 pub use controller_service::inventory::{
     DormantAtomicStorageInventoryCompletionV1, DormantAtomicStorageInventoryFinishProgressV1,

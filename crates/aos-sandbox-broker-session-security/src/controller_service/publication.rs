@@ -29,6 +29,8 @@ use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBroke
 use aos_sandbox_protocol::host_catalog::HOST_CATALOG_PUBLICATION_DESCRIPTOR_ROLES;
 use buffa::Message as _;
 
+use super::lifecycle_runtime_effect::ControllerLifecycleRuntimeEffectOwnerV1;
+
 use crate::controller_service::argument_exchange::{
     ControllerHostArgumentExchangeV1, ControllerHostArgumentOutcomeV1,
 };
@@ -641,7 +643,7 @@ impl ControllerHostPublication {
             .session
             .take()
             .ok_or(LifecyclePhase6ErrorV1::StaleAuthority)?;
-        let mut owner = crate::DormantLifecycleDomainEffectOwnerV1::from_protected_session(session);
+        let mut owner = ControllerLifecycleRuntimeEffectOwnerV1::from_protected_session(session);
         let result = owner
             .observe_runtime(challenge, effect, fence, action, authority)
             .and_then(|progress| owner.complete_blocking(progress));

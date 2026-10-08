@@ -151,6 +151,7 @@ mod capture_candidate_exchange;
 mod guest_root_credentials;
 mod hold_credential;
 pub(crate) mod inventory;
+mod lifecycle_runtime_effect;
 mod no_apply_exchange;
 mod output_exchange;
 mod ownership;
