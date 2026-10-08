@@ -1872,6 +1872,16 @@ post-sync completion event alone cannot prove that no syscall was attempted.
 Implementation, those witnesses and the unchanged six-population conformance
 gate remain pending.
 
+Reviewed private `6cc17e62af` implements only that Raw-specific outer-refresh
+guard, retaining the ordinary schedule and every inner, post-body, directory
+and final check. Four new tests cover six prepared dependency and target faults,
+deadline refusal before actual syscall entry, current refusal after the actual
+post-body read, and exclusion retention after dropping a native receipt waiter.
+The latter uses an actual worker thread and private channel; it does not claim
+Tokio-future cancellation. The thirteen existing scoped tests remain a
+byte-identical prefix. Both mandatory formats pass; compilation, the actual
+selected runtime corpus and the unchanged large-population gate remain pending.
+
 Reviewed private `85558972ae` adds six public format properties for the existing
 common Memo, closed index bindings and recipes, opaque index keys, and generic
 empty Nodes in explicit index roles. SDK compilation, strict library and
@@ -1957,6 +1967,24 @@ the owning index-reference consumer: three stale test-template calls omit the
 explicit current revision required by `RecordedContext::new`. All 6,072 source
 inputs remain unchanged. The original compiler diagnostics are preserved;
 the complete golden gate and its replacement qualification remain pending.
+
+Reviewed private `4a1551897c` supplies the explicit independently selected current
+revision 3 in exactly those three template calls. Recorded revisions 1 and 2
+retain their inert later metadata; the revision-3 namespace placement refusal
+and every existing assertion, model and wire remain unchanged. Both mandatory
+formats pass. The owning index suite executes all seven exact groups and passes
+its independent 176-wire checks and strict generated-test Clippy. Its subsequent
+complete golden request passes all twenty owning suites and 104 exact successful
+test invocations, including all three Memo cases and their strict Clippy check.
+Each exact invocation reports one passed, zero failed and zero ignored; sibling
+filtering is intentional and does not omit a registered owning selector.
+Independent review verifies all 58 packet artifacts, each consumer's actual
+evaluated selectors against its successful log, every result and reference
+output, and all 6,072 unchanged source inputs. All twenty consumers bind to the
+same reviewed immutable source, whose 5,018 files include the complete 61-file
+Terrane RFC. The aggregate inventory covers 31 reviewed sections. Earlier
+partial or failed golden requests remain separate historical evidence; this
+success does not qualify the complete current trunk floor or advance a task.
 
 The sealed current floor contains 89 aggregate gates, including all 69 T0/T1
 plan-required names and twenty implemented supporting checks. Read-only evaluation
