@@ -818,6 +818,26 @@ struct Receipt {
     digest: Sha256Digest,
 }
 
+/// Returns the exact canonical store root of a resolved image receipt.
+///
+/// Callers first resolve a bounded regular immutable document and verify its
+/// bytes against the retained image digest. That original authority covers the
+/// receipt's exact store-root file; its catalog covers every other artifact.
+///
+/// # Errors
+/// Returns an error for a noncanonical store locator or a document below a root.
+pub(crate) fn image_receipt_root(path: &Path) -> Result<String> {
+    let (root, suffix) = crate::deployment::nix::store_root_and_suffix(path)?;
+    ensure!(
+        suffix.as_os_str().is_empty(),
+        "admission must be an immutable regular store-root file"
+    );
+    Ok(root
+        .to_str()
+        .context("admission root is not UTF-8")?
+        .to_owned())
+}
+
 pub(crate) struct Admission {
     executable: PathBuf,
     roots: BTreeMap<String, AdmittedRoot>,
@@ -844,16 +864,8 @@ impl Admission {
             &CancellationToken::default(),
         )
         .context("resolving immutable admission document")?;
-        let (root, suffix) = crate::deployment::nix::store_root_and_suffix(&path)?;
-        ensure!(
-            suffix.as_os_str().is_empty(),
-            "admission must be an immutable regular store-root file"
-        );
+        let root = image_receipt_root(&path)?;
         let catalog = AdmissionCatalog::decode(&bytes, receipt.digest)?;
-        let root = root
-            .to_str()
-            .context("admission root is not UTF-8")?
-            .to_owned();
         for record in catalog.roots().values().cloned() {
             if let Some(previous) = self.roots.get(&record.store_path) {
                 ensure!(
