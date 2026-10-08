@@ -1445,7 +1445,23 @@ reports duplicate test-fixture inclusion and the independent source-oracle
 conditional. No owning task gate, full native suite or complete T1 floor is
 qualified. The final `2fed289ff4` changes only a wrapper description after the
 recorded executions. Further diagnostics and implementation must retain every
-original output, physical/current check, acknowledgment and deadline.
+original output, acknowledgment and deadline. The prospective Raw-only
+installation refinement may defer repeated whole-body reads of an unrelated,
+genuinely new immutable output between exhaustive cohort boundaries. Its private
+producer must independently exclude every consumed present and absent input,
+preexisting or repair payload, mutable/control record, pack container and
+unclassified or conflicting role. Eligibility follows actual no-replace
+installation and physical rebind, never a caller claim or future synchronization
+scope. Every current staging/target body and physical binding, consumed input,
+namespace exclusion and deadline remains checked around the actual primitives.
+Complete initial/final cohort checks, native receipts, target recapture and full
+verification before the publication commit slot remain mandatory. Unclassified
+callers retain complete checks. Persistent prior-output changes must refuse
+before publication; unrelated transient changes restored before an exhaustive
+boundary may be unobserved, and refusal precedence or harmless attempted effects
+may differ. This scoped promise adjustment authorizes no weaker source checks,
+successful partial receipt, extended deadline or post-commit-only verification;
+its producer, fault, cancellation and boundary witnesses remain pending.
 
 The isolated `d4f4355fef` diagnostic candidate adds opt-in test-only refusal-site
 observations around the original refresh and synchronization results. Its
@@ -1759,6 +1775,35 @@ measure different publications and cannot substitute for the missing final
 measurement. All 6,067 captured inputs and the actual executable remain
 unchanged through the original executions. No retry, speedup or full-gate
 qualification follows.
+
+Frozen `6982ff4694` subsequently passes fresh SDK compilation, strict library
+and all-target Clippy, compiled inventory and all 37 exact regressions in
+1.379 seconds. Its one unchanged 1,024-entry ordinary case fails after
+65.740 seconds with explicit expiry at 39.234267728 seconds against 30 seconds.
+Within that execution, thirty native cohorts install 233 outputs. Tracked
+installation takes 14.878164579 seconds, including 14.661457031 seconds in
+execution and receipt waits. Inclusive write, file-sync and no-replace-rename
+groups take 3.419065483, 4.367444422 and 6.419222802 seconds respectively;
+their validation and syscall substeps remain unsplit. Final Raw acknowledgment
+returns after actual synchronization of 241 output records. Its nested fresh
+preimage work takes 7.303011136 seconds across 986 sweeps and 522,444 attempts;
+330,665,896 bytes describe expected lengths, not measured reads. Durable staging
+is observed at 27.129154822 seconds of the original deadline, then history takes
+11.849036594 seconds. Baseline, maintenance and independent oracles remain
+unreached. All 6,068 captured inputs and the selected executable remain unchanged
+through the original invocations. Inclusive groups must not be added to their
+parents; differing reach between executions establishes no speedup or cause.
+
+Reviewed private `85558972ae` adds six public format properties for the existing
+common Memo, closed index bindings and recipes, opaque index keys, and generic
+empty Nodes in explicit index roles. SDK compilation, strict library and
+all-target Clippy pass. The entire public integration corpus executes all 53
+cases without failures, ignored cases or filtering; the five required private
+preimage properties each execute and pass. A cached no-default-features build
+also passes. All 6,066 tracked inputs remain unchanged. An earlier read-only
+shared-target refusal occurred before compilation and remains separately
+recorded. These Cargo results do not qualify the owning Nix gates, published
+common-Memo decoder witnesses, WASM execution or the complete trunk floor.
 
 The sealed current floor contains 89 aggregate gates, including all 69 T0/T1
 plan-required names and twenty implemented supporting checks. Read-only evaluation
