@@ -9,10 +9,12 @@ use aos_sandbox_core::{ProtocolId, ProtocolVersion, supported_protocol_version};
 use buffa::Message as _;
 
 use super::{
-    AuthenticatedEvidenceContextV1, AuthenticatedNodeSessionV1, CanonicalNodeFrameKindV1,
-    CanonicalNodeSemanticCodecV1, InvalidMultiNodeProtocol, NodeRequestBodyV1, NodeResponseBodyV1,
-    NodeWatchEventBodyV1, ResyncInventoryV1, semantic_codec_v1,
+    AuthenticatedEvidenceContextV1, CanonicalNodeFrameKindV1, CanonicalNodeSemanticCodecV1,
+    InvalidMultiNodeProtocol, NodeResponseBodyV1, NodeWatchEventBodyV1, ResyncInventoryV1,
+    semantic_codec_v1,
 };
+#[cfg(feature = "multi-node")]
+use super::{AuthenticatedNodeSessionV1, NodeRequestBodyV1};
 
 const SCHEMA_MAJOR: u16 = 1;
 const SCHEMA_MINOR: u16 = 0;
@@ -117,6 +119,7 @@ fn validate_version(envelope: &wire::SemanticEnvelope) -> Result<(), InvalidMult
     Ok(())
 }
 
+#[cfg(feature = "multi-node")]
 pub(super) fn encode_request(
     body: &NodeRequestBodyV1,
 ) -> Result<Vec<u8>, InvalidMultiNodeProtocol> {
@@ -124,6 +127,7 @@ pub(super) fn encode_request(
     Ok(encode(kind, semantic_codec_v1::protobuf_request(body)?))
 }
 
+#[cfg(feature = "multi-node")]
 pub(in crate::local_inventory) fn decode_request(
     session: &AuthenticatedNodeSessionV1,
     kind: CanonicalNodeFrameKindV1,
@@ -285,6 +289,7 @@ fn body_matches_kind(body: Option<&wire::semantic_envelope::Body>, expected_kind
     )
 }
 
+#[cfg(feature = "multi-node")]
 const fn request_kind(kind: CanonicalNodeFrameKindV1) -> i32 {
     match kind {
         CanonicalNodeFrameKindV1::GetCapabilitiesRequest => KIND_GET_CAPABILITIES_REQUEST,
@@ -317,6 +322,7 @@ const fn response_kind(kind: CanonicalNodeFrameKindV1) -> i32 {
     }
 }
 
+#[cfg(feature = "multi-node")]
 pub(in crate::local_inventory) const fn request_frame_kind(
     kind: i32,
 ) -> Result<CanonicalNodeFrameKindV1, InvalidMultiNodeProtocol> {
@@ -335,6 +341,7 @@ pub(in crate::local_inventory) const fn request_frame_kind(
     })
 }
 
+#[cfg(feature = "multi-node")]
 pub(in crate::local_inventory) const fn response_frame_kind(
     kind: i32,
 ) -> Result<CanonicalNodeFrameKindV1, InvalidMultiNodeProtocol> {

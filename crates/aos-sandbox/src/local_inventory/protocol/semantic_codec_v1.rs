@@ -7,6 +7,7 @@ use buffa::MessageField;
 use serde::{Deserialize, Serialize};
 
 use aos_proto::aos::sandbox::coordinator::v1 as protobuf;
+#[cfg(feature = "multi-node")]
 use aos_sandbox_core::model::{
     AssignmentManifestV1, MAX_ANCESTRY_DEPTH, MAX_ASSIGNMENT_REQUIRED_FEATURES,
     MAX_ASSIGNMENT_SOURCE_COMMITMENTS, SandboxAncestry,
@@ -19,17 +20,21 @@ use aos_sandbox_core::{
     ResourceVector, SandboxId, SnapshotId,
 };
 
+#[cfg(feature = "multi-node")]
+use super::NodeRequestBodyV1;
 use super::{
     AuthenticatedEvidenceContextV1, CanonicalNodeFrameKindV1, CanonicalNodeSemanticCodecV1,
-    InvalidMultiNodeProtocol, NodeRequestBodyV1, NodeResponseBodyV1, NodeWatchBindingV1,
-    NodeWatchCursorV1, NodeWatchEventBodyV1, NodeWatchEventV1, ResyncInventoryV1,
-    RollingVersionWindowV1,
+    InvalidMultiNodeProtocol, NodeResponseBodyV1, NodeWatchBindingV1, NodeWatchCursorV1,
+    NodeWatchEventBodyV1, NodeWatchEventV1, ResyncInventoryV1, RollingVersionWindowV1,
 };
 use crate::local_inventory::assignment::{
     AssignmentIntentV1, AssignmentObservationReasonV1, NodeAssignmentObservationV1,
-    SelectedCapabilityBindingV1, SnapshotDependencyRangeV1, SnapshotTransferChunkRequestV1,
-    SnapshotTransferChunkV1, SnapshotTransferIdentityV1, SnapshotTransferManifestV1,
-    SnapshotTransferResumeV1, SnapshotTransferVersionV1,
+    SelectedCapabilityBindingV1, SnapshotTransferChunkV1, SnapshotTransferIdentityV1,
+    SnapshotTransferManifestV1, SnapshotTransferVersionV1,
+};
+#[cfg(feature = "multi-node")]
+use crate::local_inventory::assignment::{
+    SnapshotDependencyRangeV1, SnapshotTransferChunkRequestV1, SnapshotTransferResumeV1,
 };
 use crate::local_inventory::capability::{
     NodeAdmissionStateV1, NodeBootId, NodeBootLineageV1, NodeCapabilityFactV1,
@@ -1095,6 +1100,7 @@ pub(in crate::local_inventory) fn manifest_model(
     .map_err(|_| InvalidMultiNodeProtocol::NonCanonicalFrame)
 }
 
+#[cfg(feature = "multi-node")]
 #[derive(Clone, Copy, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ResumeWire {
@@ -1102,6 +1108,7 @@ struct ResumeWire {
     next_chunk: u32,
     verified_prefix_digest: ObjectDigest,
 }
+#[cfg(feature = "multi-node")]
 fn resume_wire(v: SnapshotTransferResumeV1) -> ResumeWire {
     ResumeWire {
         identity: v.identity().into(),
@@ -1509,6 +1516,7 @@ fn wire_capability(
     })
 }
 
+#[cfg(feature = "multi-node")]
 fn pb_binding(value: BindingWire) -> protobuf::CapabilityBinding {
     protobuf::CapabilityBinding {
         node: value.node.to_string(),
@@ -1527,6 +1535,7 @@ fn pb_binding(value: BindingWire) -> protobuf::CapabilityBinding {
         ..Default::default()
     }
 }
+#[cfg(feature = "multi-node")]
 fn wire_binding(
     value: protobuf::CapabilityBinding,
 ) -> Result<BindingWire, InvalidMultiNodeProtocol> {
@@ -1740,6 +1749,7 @@ fn wire_identity(
         manifest_digest: parse(&value.manifest_digest)?,
     })
 }
+#[cfg(feature = "multi-node")]
 fn pb_chunk(value: ChunkWire) -> protobuf::SnapshotChunk {
     protobuf::SnapshotChunk {
         index: value.index,
@@ -1749,6 +1759,7 @@ fn pb_chunk(value: ChunkWire) -> protobuf::SnapshotChunk {
         ..Default::default()
     }
 }
+#[cfg(feature = "multi-node")]
 fn wire_chunk(value: protobuf::SnapshotChunk) -> Result<ChunkWire, InvalidMultiNodeProtocol> {
     Ok(ChunkWire {
         index: value.index,
@@ -1757,6 +1768,7 @@ fn wire_chunk(value: protobuf::SnapshotChunk) -> Result<ChunkWire, InvalidMultiN
         digest: parse(&value.digest)?,
     })
 }
+#[cfg(feature = "multi-node")]
 fn pb_manifest(value: ManifestWire) -> protobuf::SnapshotManifest {
     protobuf::SnapshotManifest {
         identity: Some(pb_identity(value.identity)).into(),
@@ -1768,6 +1780,7 @@ fn pb_manifest(value: ManifestWire) -> protobuf::SnapshotManifest {
         ..Default::default()
     }
 }
+#[cfg(feature = "multi-node")]
 fn wire_manifest(
     value: protobuf::SnapshotManifest,
 ) -> Result<ManifestWire, InvalidMultiNodeProtocol> {
@@ -1799,6 +1812,7 @@ fn wire_manifest(
     })
 }
 
+#[cfg(feature = "multi-node")]
 fn strategy_number(value: StrategyWire) -> i32 {
     match value {
         StrategyWire::SnapshotStopAndReplace => 1,
@@ -1807,6 +1821,7 @@ fn strategy_number(value: StrategyWire) -> i32 {
         StrategyWire::LeaveStopped => 4,
     }
 }
+#[cfg(feature = "multi-node")]
 fn wire_strategy(value: i32) -> Result<StrategyWire, InvalidMultiNodeProtocol> {
     Ok(match value {
         1 => StrategyWire::SnapshotStopAndReplace,
@@ -1816,6 +1831,7 @@ fn wire_strategy(value: i32) -> Result<StrategyWire, InvalidMultiNodeProtocol> {
         _ => return Err(invalid()),
     })
 }
+#[cfg(feature = "multi-node")]
 fn pb_drain_directive(value: DrainDirectiveWire) -> protobuf::DrainDirective {
     protobuf::DrainDirective {
         operation: value.operation.to_string(),
@@ -1845,6 +1861,7 @@ fn pb_drain_directive(value: DrainDirectiveWire) -> protobuf::DrainDirective {
         ..Default::default()
     }
 }
+#[cfg(feature = "multi-node")]
 fn wire_drain_directive(
     value: protobuf::DrainDirective,
 ) -> Result<DrainDirectiveWire, InvalidMultiNodeProtocol> {
@@ -2011,6 +2028,7 @@ fn wire_drain_observation(
     })
 }
 
+#[cfg(feature = "multi-node")]
 fn pb_assignment(value: &CanonicalAssignmentManifestV1) -> protobuf::AssignmentManifest {
     let manifest = value.manifest();
     protobuf::AssignmentManifest {
@@ -2047,6 +2065,7 @@ fn pb_assignment(value: &CanonicalAssignmentManifestV1) -> protobuf::AssignmentM
     }
 }
 
+#[cfg(feature = "multi-node")]
 fn wire_assignment(
     value: protobuf::AssignmentManifest,
 ) -> Result<CanonicalAssignmentManifestV1, InvalidMultiNodeProtocol> {
@@ -2096,6 +2115,7 @@ fn wire_assignment(
     Ok(CanonicalAssignmentManifestV1::new(manifest))
 }
 
+#[cfg(feature = "multi-node")]
 pub(super) fn protobuf_request(
     body: &NodeRequestBodyV1,
 ) -> Result<protobuf::semantic_envelope::Body, InvalidMultiNodeProtocol> {
@@ -2183,6 +2203,7 @@ pub(super) fn protobuf_request(
     })
 }
 
+#[cfg(feature = "multi-node")]
 pub(super) fn protobuf_request_model(
     kind: CanonicalNodeFrameKindV1,
     body: protobuf::semantic_envelope::Body,

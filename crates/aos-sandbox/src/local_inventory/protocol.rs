@@ -22,18 +22,23 @@ use aos_sandbox_core::{
 };
 
 use super::assignment::{
-    AssignmentIntentV1, AuthenticatedSnapshotChunkV1, AuthenticatedSnapshotDependencyRangeV1,
-    NodeAssignmentObservationV1, SnapshotDependencyRangeV1, SnapshotTransferChunkRequestV1,
-    SnapshotTransferIdentityV1, SnapshotTransferManifestV1, SnapshotTransferResumeV1,
+    AssignmentIntentV1, NodeAssignmentObservationV1, SnapshotTransferIdentityV1,
 };
-use super::capability::{
-    CarrierValidatedCapabilityObservationV1, NodeBootId, NodeBootLineageV1,
-    NodeCapabilitySnapshotV1,
+#[cfg(feature = "multi-node")]
+use super::assignment::{
+    AuthenticatedSnapshotChunkV1, AuthenticatedSnapshotDependencyRangeV1,
+    SnapshotDependencyRangeV1, SnapshotTransferChunkRequestV1, SnapshotTransferManifestV1,
+    SnapshotTransferResumeV1,
 };
-use super::carrier_authority::{
-    AuthenticatedFrameSealV1, CarrierResponseGrantV1, CarrierSessionGrantV1,
-};
-use super::draining::{DrainDirectiveV1, DrainObservationV1};
+#[cfg(feature = "multi-node")]
+use super::capability::CarrierValidatedCapabilityObservationV1;
+use super::capability::{NodeBootId, NodeBootLineageV1, NodeCapabilitySnapshotV1};
+use super::carrier_authority::CarrierSessionGrantV1;
+#[cfg(feature = "multi-node")]
+use super::carrier_authority::{AuthenticatedFrameSealV1, CarrierResponseGrantV1};
+#[cfg(feature = "multi-node")]
+use super::draining::DrainDirectiveV1;
+use super::draining::DrainObservationV1;
 use super::evidence::AuthenticatedEvidenceContextV1;
 
 pub(super) mod protobuf_codec_v1;
@@ -709,6 +714,7 @@ impl CarrierValidatedResyncInventoryV1 {
 }
 
 /// Selects one coordinator-to-node semantic request.
+#[cfg(feature = "multi-node")]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NodeRequestBodyV1 {
     /// Requests the complete current node capability snapshot.
@@ -779,6 +785,7 @@ impl CanonicalNodeSemanticCodecV1 {
         Ok(())
     }
 
+    #[cfg(feature = "multi-node")]
     fn decode_request(
         &self,
         session: &AuthenticatedNodeSessionV1,
@@ -798,6 +805,7 @@ impl CanonicalNodeSemanticCodecV1 {
         Ok(body)
     }
 
+    #[cfg(feature = "multi-node")]
     pub(in crate::local_inventory) fn encode_request(
         &self,
         body: &NodeRequestBodyV1,
@@ -906,6 +914,7 @@ impl CanonicalNodeSemanticCodecV1 {
     }
 }
 
+#[cfg(feature = "multi-node")]
 impl NodeRequestBodyV1 {
     const fn method(&self) -> NodeMethodV1 {
         match self {
@@ -939,6 +948,7 @@ impl NodeRequestBodyV1 {
 }
 
 /// Carries one request bound to an authenticated session and correlation ID.
+#[cfg(feature = "multi-node")]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NodeRequestEnvelopeV1 {
     binding: [u8; 32],
@@ -952,6 +962,7 @@ pub struct NodeRequestEnvelopeV1 {
     body: NodeRequestBodyV1,
 }
 
+#[cfg(feature = "multi-node")]
 impl NodeRequestEnvelopeV1 {
     /// Constructs one request under an exact session contract.
     ///
@@ -1132,6 +1143,7 @@ impl NodeRequestEnvelopeV1 {
     }
 }
 
+#[cfg(feature = "multi-node")]
 fn request_body_matches_session(
     session: &AuthenticatedNodeSessionV1,
     body: &NodeRequestBodyV1,
@@ -1340,6 +1352,7 @@ pub enum NodeResponseBodyV1 {
 }
 
 impl NodeResponseBodyV1 {
+    #[cfg(feature = "multi-node")]
     const fn method(&self) -> NodeMethodV1 {
         match self {
             Self::Capabilities(_) => NodeMethodV1::GetCapabilities,
@@ -1370,6 +1383,7 @@ impl NodeResponseBodyV1 {
 }
 
 /// Carries one response bound to its exact session and request.
+#[cfg(feature = "multi-node")]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NodeResponseEnvelopeV1 {
     context: AuthenticatedEvidenceContextV1,
@@ -1389,6 +1403,7 @@ pub struct NodeResponseEnvelopeV1 {
     body: NodeResponseBodyV1,
 }
 
+#[cfg(feature = "multi-node")]
 impl NodeResponseEnvelopeV1 {
     /// Constructs and validates one response to an exact request.
     ///
@@ -1726,6 +1741,7 @@ impl NodeResponseEnvelopeV1 {
     }
 }
 
+#[cfg(feature = "multi-node")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum NodeMethodV1 {
     GetCapabilities,
@@ -1738,6 +1754,7 @@ enum NodeMethodV1 {
     Watch,
 }
 
+#[cfg(feature = "multi-node")]
 pub(in crate::local_inventory) fn validate_response_body(
     session: &AuthenticatedNodeSessionV1,
     request: &NodeRequestBodyV1,
@@ -1856,6 +1873,7 @@ pub(in crate::local_inventory) fn validate_response_body(
     }
 }
 
+#[cfg(feature = "multi-node")]
 fn watch_events_follow(after: NodeWatchCursorV1, events: &[NodeWatchEventV1]) -> bool {
     let mut previous = after;
     for event in events {
@@ -2424,6 +2442,7 @@ impl<'a> CanonicalNodeFrameV1<'a> {
     /// Returns [`InvalidMultiNodeProtocol`] when semantic encoding is not
     /// canonical or the resulting frame exceeds a bound.
     #[allow(clippy::too_many_arguments)]
+    #[cfg(feature = "multi-node")]
     pub fn encode_request(
         body: &NodeRequestBodyV1,
         version: ProtocolVersion,
@@ -2530,6 +2549,7 @@ impl<'a> CanonicalNodeFrameV1<'a> {
     ///
     /// Returns [`InvalidMultiNodeProtocol::NonCanonicalFrame`] unless the codec
     /// accepts the hostile bytes and its canonical source encoding is identical.
+    #[cfg(feature = "multi-node")]
     fn decode_request_body(
         &self,
         session: &AuthenticatedNodeSessionV1,
