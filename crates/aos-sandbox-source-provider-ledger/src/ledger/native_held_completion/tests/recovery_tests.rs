@@ -117,13 +117,6 @@ pub(super) fn child_query(
     .unwrap()
 }
 
-// Constructs only canonical metadata. In particular, no Source Complete graph,
-// protected snapshot, eligible current signature or writer is supplied here.
-fn cold_storage_recorded() -> SourceNativeHeldCompletionRecordV1 {
-    let held = held_prepared(d(120));
-    cold_storage_recorded_from(&held)
-}
-
 pub(super) fn cold_storage_recorded_from(
     original: &SourceNativeHeldCompletionRecordV1,
 ) -> SourceNativeHeldCompletionRecordV1 {
@@ -289,45 +282,4 @@ pub(super) fn provider_terminal(
         ),
     )
     .unwrap()
-}
-
-#[test]
-fn cold_terminal_artifact_is_not_zero_from_missing_hot3_after_complete() {
-    let held = held_prepared(d(120));
-    assert_eq!(evidence::artifact(&held).unwrap(), d(120));
-    let storage = cold_storage_recorded();
-    assert_eq!(storage.original.state, Outer::Active);
-    assert!(storage.suffix.control(Kind::ProviderHeld).is_none());
-    assert_eq!(
-        evidence::root_disposition(&storage)
-            .unwrap()
-            .unwrap()
-            .source_artifact,
-        d(0)
-    );
-
-    let terminal = provider_terminal(&storage, d(120));
-    let next = changed(
-        &storage,
-        8,
-        Some(terminal),
-        storage.suffix.controls().to_vec(),
-    );
-    assert_eq!(evidence::artifact(&next).unwrap(), d(120));
-    // Complete/A authenticity is still a full original graph obligation. This
-    // canonical claim cannot pass that graph by itself or create a terminal permit.
-    let key = native_completion::native_completion_key_v2(next.original.acquisition_id);
-    let bytes = next.to_canonical_bytes().unwrap();
-    assert!(validate_native_held_records_v1([(key.as_slice(), bytes.as_slice())]).is_err());
-
-    let zero = provider_terminal(&storage, d(0));
-    let suffix = NativeHeldCompletionSuffixV1::new(
-        Owner::Provider,
-        8,
-        storage.suffix.flight(),
-        Some(zero),
-        storage.suffix.controls().to_vec(),
-    )
-    .unwrap();
-    assert!(SourceNativeHeldCompletionRecordV1::new(storage.original.clone(), suffix).is_err());
 }

@@ -396,6 +396,83 @@ fn full_recovery_funnel_rejects_rewritten_archives_originals_and_queries() {
 }
 
 #[test]
+fn cold_terminal_artifact_is_not_zero_from_missing_hot3_after_complete() {
+    let held = held_prepared(d(120));
+    assert_eq!(evidence::artifact(&held).unwrap(), d(120));
+    let storage = super::super::recovery_tests::cold_storage_recorded_from(&held);
+    assert_eq!(storage.original.state, Outer::Active);
+    assert!(storage.suffix.control(Kind::ProviderHeld).is_none());
+    assert_eq!(
+        evidence::root_disposition(&storage)
+            .unwrap()
+            .unwrap()
+            .source_artifact,
+        d(0)
+    );
+
+    let terminal = provider_terminal(&storage, d(120));
+    let next = changed(
+        &storage,
+        8,
+        Some(terminal),
+        storage.suffix.controls().to_vec(),
+    );
+    assert_eq!(evidence::artifact(&next).unwrap(), d(120));
+    // Complete/A authenticity is still a full original graph obligation. This
+    // canonical claim cannot pass that graph by itself or create a terminal permit.
+    let key = native_completion::native_completion_key_v2(next.original.acquisition_id);
+    let bytes = next.to_canonical_bytes().unwrap();
+    assert!(validate_native_held_records_v1([(key.as_slice(), bytes.as_slice())]).is_err());
+
+    let mut complete = Flight::held_prepared();
+    complete.first_query(true);
+    complete.record_cold_storage();
+    assert_eq!(complete.record.original.state, Outer::Active);
+    assert!(complete.record.suffix.control(Kind::ProviderHeld).is_none());
+    assert_ne!(complete.artifact(), d(0));
+
+    let terminal = provider_terminal(&complete.record, complete.artifact());
+    let valid = changed(
+        &complete.record,
+        8,
+        Some(terminal),
+        complete.record.suffix.controls().to_vec(),
+    );
+    complete
+        .check(
+            SourceNativeHeldStepV1::ProviderRecoveryPrepared,
+            &valid,
+            None,
+        )
+        .unwrap();
+
+    // Only the actual Complete companions distinguish zero from the retained A.
+    let zero = provider_terminal(&complete.record, d(0));
+    let invalid = changed(
+        &complete.record,
+        8,
+        Some(zero),
+        complete.record.suffix.controls().to_vec(),
+    );
+    assert!(matches!(
+        graph::validate(&complete.proposed_rows(&invalid)),
+        Err(crate::LedgerFormatErrorV1::Corrupt(
+            "held exact completed response artifact"
+        ))
+    ));
+    assert!(matches!(
+        complete.check(
+            SourceNativeHeldStepV1::ProviderRecoveryPrepared,
+            &invalid,
+            None,
+        ),
+        Err(crate::LedgerFormatErrorV1::Corrupt(
+            "held exact completed response artifact"
+        ))
+    ));
+}
+
+#[test]
 fn full_cold_terminal_funnel_cannot_erase_complete_a_or_forge_before_witness() {
     use aos_sandbox_source_provider_protocol::native_held_completion::recovery::ProviderNativeRecoveryStateV1;
     let mut flight = Flight::held_prepared();

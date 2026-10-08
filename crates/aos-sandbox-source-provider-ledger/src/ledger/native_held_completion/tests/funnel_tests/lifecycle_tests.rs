@@ -1198,14 +1198,14 @@ fn release_status_genuine_terminal_recovery_and_compaction_preserve_original_com
     }
 }
 
-// Independent full-response construction binds the actual carrier and status
+// Independent native Pending construction binds the actual carrier and status
 // reservation DATA, not a legacy projection or a protected signing producer.
 fn fenced_status_rows(
     before: &graph::Records,
     record: &SourceNativeHeldCompletionRecordV1,
-    status: SourceProviderStatus,
     projected_cut: bool,
 ) -> graph::Records {
+    let status = SourceProviderStatus::Pending;
     let mut after = release_completion(before, record, status, false);
     let proposal =
         propose_lifecycle(before, &after, record, Lifecycle::ReleaseStatusCompleted).unwrap();
@@ -1339,6 +1339,75 @@ fn fenced_status_rows(
 }
 
 #[test]
+fn native_fence_refuses_signed_unavailable_status_in_constructor_and_decoder() {
+    let flight = marker(&completed_terminal());
+    let admitted = release_admission(&flight);
+    let status_rows = fenced_status_rows(&admitted, &flight.record, false);
+    let attempt = status_rows
+        .iter()
+        .find_map(
+            |(key, bytes)| match format::decode_record(key, bytes).ok()? {
+                DecodedRecordV1::Attempt(attempt)
+                    if attempt.method == SourceProviderMethod::Release
+                        && attempt.status == Some(SourceProviderStatus::Pending) =>
+                {
+                    Some(attempt)
+                }
+                _ => None,
+            },
+        )
+        .unwrap();
+    let pending =
+        ReleaseSourceResponseV2::from_canonical_bytes(&attempt.completed_response).unwrap();
+    let status = pending.signed_status().subject();
+    let fence = pending.fence().clone();
+    let unavailable = sign_response_status(
+        SourceProviderResponseStatusV1::new(
+            SourceProviderMethod::Release,
+            status.request_id(),
+            status.signed_request_digest(),
+            SourceProviderStatus::Unavailable,
+            status.provider_process_instance(),
+            status.session_binding(),
+            status.response_sequence(),
+            response_result_digest_v1(
+                SourceProviderMethod::Release,
+                SourceProviderStatus::Unavailable,
+                Some(&fence.to_canonical_bytes()),
+            ),
+            empty_descriptor_set_commitment_v1(),
+        )
+        .unwrap(),
+        pending.signed_status().signer().clone(),
+        &SigningKey::from_bytes(&[54; 32]),
+    )
+    .unwrap();
+
+    assert!(matches!(
+        ReleaseSourceResponseV2::new(unavailable.clone(), fence.clone()),
+        Err(SourceProviderSignatureError::InvalidEnvelope)
+    ));
+
+    // Independent native framing reaches the same closed status check on decode.
+    let status_bytes = unavailable.to_canonical_bytes();
+    let mut bytes = b"AOSNER02".to_vec();
+    bytes.extend_from_slice(&2_u16.to_be_bytes());
+    bytes.extend_from_slice(&[0; 6]);
+    bytes.extend_from_slice(&(status_bytes.len() as u32).to_be_bytes());
+    bytes.extend_from_slice(&status_bytes);
+    bytes.extend_from_slice(&fence.to_canonical_bytes());
+    assert_eq!(bytes.len(), pending.to_canonical_bytes().len());
+    assert!(matches!(
+        ReleaseSourceResponseV2::from_canonical_bytes(&bytes),
+        Err(SourceProviderSignatureError::InvalidEnvelope)
+    ));
+    assert!(matches!(
+        ReleaseSourceResponseProfileV2::from_canonical_bytes(&bytes),
+        Err(SourceProviderSignatureError::InvalidEnvelope)
+    ));
+}
+
+#[test]
 fn actual_held_status_fence_survives_genuine_release_and_refuses_projected_cut() {
     let flight = marker(&completed_terminal());
     let admitted = release_admission(&flight);
@@ -1346,7 +1415,11 @@ fn actual_held_status_fence_survives_genuine_release_and_refuses_projected_cut()
         SourceProviderStatus::Pending,
         SourceProviderStatus::Unavailable,
     ] {
-        let status_rows = fenced_status_rows(&admitted, &flight.record, status, false);
+        let status_rows = if status == SourceProviderStatus::Pending {
+            fenced_status_rows(&admitted, &flight.record, false)
+        } else {
+            release_completion(&admitted, &flight.record, status, false)
+        };
         let proposal = propose_lifecycle(
             &admitted,
             &status_rows,
@@ -1366,16 +1439,18 @@ fn actual_held_status_fence_survives_genuine_release_and_refuses_projected_cut()
         .unwrap();
         graph::validate(&released).unwrap();
 
-        let projected = fenced_status_rows(&admitted, &flight.record, status, true);
-        assert!(
-            propose_lifecycle(
-                &admitted,
-                &projected,
-                &flight.record,
-                Lifecycle::ReleaseStatusCompleted,
-            )
-            .is_err()
-        );
+        if status == SourceProviderStatus::Pending {
+            let projected = fenced_status_rows(&admitted, &flight.record, true);
+            assert!(
+                propose_lifecycle(
+                    &admitted,
+                    &projected,
+                    &flight.record,
+                    Lifecycle::ReleaseStatusCompleted,
+                )
+                .is_err()
+            );
+        }
     }
 }
 
@@ -1410,7 +1485,11 @@ fn retained_status_uses_release_history_independently_of_acquire_and_current_ses
             SourceProviderStatus::Pending,
             SourceProviderStatus::Unavailable,
         ] {
-            let status_rows = fenced_status_rows(&admitted, &flight.record, status, false);
+            let status_rows = if status == SourceProviderStatus::Pending {
+                fenced_status_rows(&admitted, &flight.record, false)
+            } else {
+                release_completion(&admitted, &flight.record, status, false)
+            };
             let released = release_completion(&status_rows, &flight.record, status, true);
             propose_lifecycle(
                 &status_rows,
@@ -1452,7 +1531,7 @@ fn retained_status_rejects_missing_associations_wrong_history_and_nonstatus_outc
     let flight = marker(&completed_terminal());
     let admitted = release_admission(&flight);
     let status = SourceProviderStatus::Pending;
-    let status_rows = fenced_status_rows(&admitted, &flight.record, status, false);
+    let status_rows = fenced_status_rows(&admitted, &flight.record, false);
     let released = Flight {
         rows: release_completion(&status_rows, &flight.record, status, true),
         record: flight.record.clone(),
