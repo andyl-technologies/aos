@@ -20,7 +20,9 @@
 //! orchestration are feature-gated private children of that same owner. Local
 //! opener, inventory discovery, readback, and all retained-history checks remain
 //! available by default. Coordinator persistence DATA, shared session verifiers,
-//! and model helpers are retained; this is not a fully isolated ownership crate
+//! and model helpers are retained. Streaming snapshot/dependency verification is
+//! selected by `multi-node`; shared checkpoints and receipt types stay available.
+//! This is not a fully isolated ownership crate
 //! or a coordinator-free implementation graph.
 
 pub mod assignment;
@@ -45,14 +47,20 @@ pub use assignment::{
     InvalidSnapshotTransfer, MAX_SNAPSHOT_TRANSFER_CHUNK_BYTES, MAX_SNAPSHOT_TRANSFER_CHUNKS,
     MAX_SNAPSHOT_TRANSFER_DEPENDENCIES, MAX_SNAPSHOT_TRANSFER_MANIFEST_WIRE_BYTES,
     NodeAssignmentObservationV1, SelectedCapabilityBindingV1, SnapshotDependencyRangeV1,
-    SnapshotDependencyReducerV1, SnapshotRestoreAdmissionDecisionV1, SnapshotRestoreAdmissionV1,
-    SnapshotRestoreBlockReasonV1, SnapshotTransferApplyOutcomeV1, SnapshotTransferChunkRequestV1,
-    SnapshotTransferChunkV1, SnapshotTransferCompletionV1, SnapshotTransferIdentityV1,
-    SnapshotTransferManifestV1, SnapshotTransferReducerV1, SnapshotTransferResumeV1,
+    SnapshotRestoreAdmissionDecisionV1, SnapshotRestoreAdmissionV1, SnapshotRestoreBlockReasonV1,
+    SnapshotTransferChunkRequestV1, SnapshotTransferChunkV1, SnapshotTransferCompletionV1,
+    SnapshotTransferIdentityV1,
+    SnapshotTransferManifestV1, SnapshotTransferResumeV1,
     SnapshotTransferVersionV1, VerifiedAssignmentAcceptanceV1, VerifiedAssignmentAuthorityV1,
     VerifiedGuardianStateV1, VerifiedRestoreAuthorizationV1, VerifiedSnapshotDependencySetV1,
     VerifiedSnapshotDependencyV1, VerifiedStagedSnapshotV1,
 };
+
+#[cfg(feature = "multi-node")]
+pub use assignment::{
+    SnapshotDependencyReducerV1, SnapshotTransferApplyOutcomeV1, SnapshotTransferReducerV1,
+};
+
 pub use capability::{
     CarrierValidatedCapabilityObservationV1, HardFeatureFactRequirementV1, InvalidNodeCapability,
     MAX_NODE_CAPABILITY_FACTS, MAX_NODE_FEATURES, MAX_NODE_PROTOCOL_OFFERS, NodeAdmissionStateV1,
