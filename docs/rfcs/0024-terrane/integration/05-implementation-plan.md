@@ -1822,6 +1822,36 @@ unreached. All 6,068 captured inputs and the selected executable remain unchange
 through the original invocations. Inclusive groups must not be added to their
 parents; differing reach between executions establishes no speedup or cause.
 
+Reviewed private `dad6f7714f` implements the scoped installation refinement and
+seventeen additional real producer, worker and publication-boundary witnesses.
+Every consumed present or absent input, current staging and target body,
+physical binding, exclusion and deadline retains its checks. The complete
+cohort boundaries, actual creation receipts, recapture and full verification
+before selecting the publication slot remain required. The earlier `1f13cafc81`
+qualification stops at two test-only borrow-checker errors; `dad6f7714f` corrects
+only the fixture observation's drop order after all assertions. Those original
+diagnostics remain preserved. Fresh strict all-target Clippy and compiled
+discovery pass; the actual inventory contains 790 cases. All 54 exact selected
+regressions execute once and pass in 2.532 seconds, including the seventeen new
+fault cases. Independent review matches their literal passing results to the
+compiled inventory and verifies all 6,075 unchanged source inputs and the
+captured executable before and after each original invocation.
+
+Its single unchanged 1,024-entry ordinary witness still fails: the original
+ref deadline explicitly rejects 40.799392140 seconds against 30 seconds.
+The case fails after 67.078 seconds. In that same execution thirty cohorts
+prepare, install and recapture 234 outputs; the earlier execution's 233-output
+count is not substituted. Tracked installation takes 15.696339526 seconds,
+including 15.398183130 seconds in execution and receipt waits. The final Raw
+acknowledgment interval takes 8.340082659 seconds, with nested fresh preimage
+work taking 6.903716614 seconds across 990 refreshes and 524,242 attempts.
+The 332,975,554 expected bytes do not measure actual body reads. Durable staging
+is observed at 28.715111480 seconds of the original deadline; history then takes
+11.747015140 seconds. Baseline publication, measured maintenance and independent
+oracles remain unqualified, and the other five required populations remain
+unrun. Nested timing groups are not additive, and these separate executions
+establish no speedup attribution or successful DRV-29 qualification.
+
 Reviewed private `85558972ae` adds six public format properties for the existing
 common Memo, closed index bindings and recipes, opaque index keys, and generic
 empty Nodes in explicit index roles. SDK compilation, strict library and
@@ -1883,6 +1913,30 @@ qualification before the 58-case corpus is claimed.
 Reviewed test-only `c7692f308e` adds exactly the missing nested import and passes
 both mandatory format checks. Existing test bodies and production bytes remain
 unchanged; compiler and runtime replacement qualification remain pending.
+
+The corrected private composition `bf1fc85e74` subsequently passes both
+mandatory format checks, strict Core all-target Clippy, compiled discovery and
+the complete 58-case public corpus. Every selected case executes once and
+passes in 5.149 seconds, with zero aggregate skips. The complete Core suite
+also executes all 718 cases across eight binaries, passing in 17.970 seconds
+with zero aggregate skips. This includes all three Memo consumers and the five
+required private preimage properties. The no-default-features Core library
+build passes. Independent review verifies all 42 packet artifacts, every
+original terminal result, all 6,072 unchanged source inputs and all eight
+runtime executables' before, after and final captured hashes and metadata.
+The preserved original compiler failure and corrected read-only log parser
+error do not cause a runtime retry. These results do not execute doctests,
+observe allocations, qualify WASM or establish the complete trunk floor.
+The owning source-bound `core-fuzz` Nix gate also passes all 58 public cases
+and each of the five exact private cases. Independent review matches all 5,018
+immutable source files to the frozen tracked bytes, symlinks and executable bits,
+including all 61 Terrane RFC files, and verifies the derivation's source binding
+and actual successful executions. Earlier SDK results retain their original
+source scope. The original complete twenty-consumer golden request fails at
+the owning index-reference consumer: three stale test-template calls omit the
+explicit current revision required by `RecordedContext::new`. All 6,072 source
+inputs remain unchanged. The original compiler diagnostics are preserved;
+the complete golden gate and its replacement qualification remain pending.
 
 The sealed current floor contains 89 aggregate gates, including all 69 T0/T1
 plan-required names and twenty implemented supporting checks. Read-only evaluation
