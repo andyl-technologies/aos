@@ -610,10 +610,13 @@ mod tests {
             OperationSet::one(Operation::ContentRead),
             Selector::Resource { resource: capacity.resource() }, false,
         ).unwrap());
-        let features = vec![
+        let mut features = vec![
             FeatureRef::new("aos.sandbox.git.upload-operation-capacity", 1, 0).unwrap(),
             FeatureRef::new("aos.sandbox.git.whole-odb-read", 1, 0).unwrap(),
         ];
+        // FeatureRef orders canonical text by length before namespace bytes.
+        features.sort();
+
         let policy = Policy::new(
             features, vec![descriptor], grants, Vec::new(), ordinary.limits().clone(),
             Vec::new(), ordinary.cache_domain(), ordinary.revocation(), None, Vec::new(),
