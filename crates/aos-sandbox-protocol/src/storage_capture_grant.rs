@@ -907,6 +907,34 @@ mod tests {
     }
 
     #[test]
+    fn legacy_capture_carrier_is_rejected_by_captured_output_decoders() {
+        let (peer, policy) = peer();
+        let request = ReserveStorageExecutionCaptureRequestV1 {
+            header: Some(header(17, 100)).into(),
+            canonical_grant_source: source_bytes().to_vec(),
+            ..Default::default()
+        };
+        let body = request.encode_to_vec();
+
+        assert!(decode_storage_capture_reserve_request_v1(&body, peer, policy, 99).is_ok());
+
+        // A valid legacy DATA carrier is not either captured-output request
+        // representation. Decoder rejection does not qualify dispatch effects.
+        assert!(
+            crate::storage_output_reserve::decode_captured_storage_output_reserve_request_v1(
+                &body, peer, policy, 99,
+            )
+            .is_err()
+        );
+        assert!(
+            crate::storage_output_reserve::decode_captured_storage_output_query_request_v1(
+                &body, peer, policy, 99,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn reserve_and_fresh_query_reject_noncanonical_or_reused_headers() {
         let (peer, policy) = peer();
         let reserve = ReserveStorageExecutionCaptureRequestV1 {
