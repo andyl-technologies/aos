@@ -71,11 +71,7 @@ pub async fn run_schema(
 }
 
 fn scope(system: bool) -> ProfileScope {
-    if system {
-        ProfileScope::System
-    } else {
-        ProfileScope::User
-    }
+    crate::runtime_boundary::profile_scope(system)
 }
 
 #[derive(Debug, Clone, serde::Serialize)]

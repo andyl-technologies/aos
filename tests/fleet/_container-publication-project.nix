@@ -15,11 +15,14 @@
   };
   # Recipe paths retain source evidence without requesting every compiler or
   # sibling output that the recipe's original evaluation made available.
+  retainArtifact = artifact: [artifact (builtins.unsafeDiscardOutputDependency artifact.drvPath)];
   nativeRoots = lib.concatMap (name: let
     package = packages.${name};
+    artifacts =
+      [package package.deploymentArtifact package.documentationArtifact]
+      ++ lib.optional (package ? qualificationArtifact && package.qualificationArtifact != null) package.qualificationArtifact;
   in
-    [package (builtins.unsafeDiscardOutputDependency package.drvPath) package.deploymentArtifact package.documentationArtifact]
-    ++ lib.optional (package ? qualificationArtifact && package.qualificationArtifact != null) package.qualificationArtifact)
+    lib.concatMap retainArtifact artifacts)
   names;
   # Inventory locators deliberately have no string context. Restore retention
   # from their actual package roots without inventing publication metadata.

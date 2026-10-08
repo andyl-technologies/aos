@@ -44,12 +44,16 @@ impl RuntimeBoundary {
         }
     }
 
-    fn configuration_scope(self) -> crate::types::ProfileScope {
-        if self.container {
-            crate::types::ProfileScope::User
-        } else {
+    fn profile_scope(self, system: bool) -> crate::types::ProfileScope {
+        if system && !self.container {
             crate::types::ProfileScope::System
+        } else {
+            crate::types::ProfileScope::User
         }
+    }
+
+    fn configuration_scope(self) -> crate::types::ProfileScope {
+        self.profile_scope(true)
     }
 
     fn validate(self, command: &PackageCommand) -> Result<()> {
@@ -73,6 +77,15 @@ impl RuntimeBoundary {
 /// Returns whether the process runs in the official container environment.
 pub(crate) fn is_container() -> bool {
     RuntimeBoundary::from_env().container
+}
+
+/// Resolves a requested scope to the profile owned by this runtime.
+///
+/// Container package and registry operations share the user profile seeded by
+/// their image. `--system` aliases that same profile rather than creating a
+/// separate namespace that container startup cannot recover or activate.
+pub(crate) fn profile_scope(system: bool) -> crate::types::ProfileScope {
+    RuntimeBoundary::from_env().profile_scope(system)
 }
 
 /// Selects the native profile whose operator configuration owns this runtime.
@@ -481,6 +494,29 @@ mod tests {
         assert!(
             TestCli::try_parse_from(["apm", "image", "prepare", "server", "--reboot"]).is_err()
         );
+    }
+
+    #[test]
+    fn requested_scopes_share_the_container_runtime_profile() {
+        use crate::types::ProfileScope;
+
+        let machine = RuntimeBoundary::default();
+        let container = RuntimeBoundary::from_values(Some(OsStr::new("container")), None);
+        let read_only =
+            RuntimeBoundary::from_values(Some(OsStr::new("container")), Some(OsStr::new("1")));
+        let unmatched = RuntimeBoundary::from_values(Some(OsStr::new("Container")), None);
+
+        for system in [false, true] {
+            assert_eq!(container.profile_scope(system), ProfileScope::User);
+            assert_eq!(read_only.profile_scope(system), ProfileScope::User);
+            let requested = if system {
+                ProfileScope::System
+            } else {
+                ProfileScope::User
+            };
+            assert_eq!(machine.profile_scope(system), requested);
+            assert_eq!(unmatched.profile_scope(system), requested);
+        }
     }
 
     #[test]
