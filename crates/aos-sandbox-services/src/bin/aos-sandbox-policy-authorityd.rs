@@ -118,8 +118,7 @@ use aos_sandbox_cache_signer::cache_signer_exchange::{
     begin_root_cache_signer_exchange_v2, begin_root_q04_cache_signer_exchange_v3,
 };
 use aos_sandbox_broker_session_security::policy_authority_client::{
-    POLICY_AUTHORITY_SOCKET_PATH_V2, POLICY_BINDING_ACK_MAGIC_V4, POLICY_BINDING_BASE_MAGIC_V4,
-    POLICY_BINDING_COMMITTED_MAGIC_V4, POLICY_BINDING_COMPLETE_MAGIC_V4,
+    POLICY_AUTHORITY_SOCKET_PATH_V2, POLICY_BINDING_COMMITTED_MAGIC_V4,
     POLICY_BINDING_FLIGHT_CHALLENGE_MAGIC_V4, POLICY_BINDING_FLIGHT_QUERY_MAGIC_V4,
     POLICY_BINDING_FLIGHT_REPLY_MAGIC_V4, POLICY_BINDING_FLIGHT_SUBMIT_MAGIC_V4,
     POLICY_BINDING_HELD_MARKER_V4, POLICY_BINDING_PREVIEW_QUERY_MAGIC_V4,
@@ -137,8 +136,7 @@ use aos_sandbox_broker_session_security::policy_authority_client::{
     POLICY_BINDING_SOURCE_FLIGHT_SUBMIT_MAGIC_V7, POLICY_BINDING_SOURCE_FLIGHT_SUBMIT_MAGIC_V8,
     POLICY_BINDING_SOURCE_FLIGHT_TERMINAL_MAGIC_V7, POLICY_BINDING_SOURCE_FLIGHT_TERMINAL_MAGIC_V8,
     POLICY_BINDING_STAGE_QUERY_MAGIC_V4,
-    POLICY_BINDING_STAGE_REPLY_MAGIC_V4, POLICY_BINDING_SUBMIT_MAGIC_V4,
-    POLICY_BINDING_TERMINAL_ACK_MAGIC_V4, POLICY_HEAD_LEASE_ACK_MAGIC_V3,
+    POLICY_BINDING_STAGE_REPLY_MAGIC_V4, POLICY_HEAD_LEASE_ACK_MAGIC_V3,
     POLICY_HEAD_LEASE_COMPLETE_MAGIC_V3, POLICY_HEAD_LEASE_QUERY_MAGIC_V3,
     POLICY_HEAD_QUERY_MAGIC_V2, POLICY_HEAD_RECEIPT_MAGIC_V2,
 };
@@ -194,8 +192,6 @@ const REQUEST_BYTES: usize = 32;
 const MAXIMUM_RECEIPT_BYTES: usize = 224 + 4 * (4 + 64 * 1024) + 312 + 4 + 3 * 1024 + 24;
 const EXPLICIT_PROJECT_PACKET_BYTES: usize = 328;
 const LEASE_ACK_TIMEOUT: Duration = Duration::from_secs(30);
-const CLOSED_BINDING_SUBMISSION_BYTES: usize = 8 + 16 + 4 + CLOSED_POLICY_BINDING_BYTES_V2;
-const CLOSED_BINDING_ACK_BYTES: usize = 8 + 16 + 32 + 8;
 const CLOSED_BINDING_REPLAY_CLAIM_BYTES: usize = 32 + 8;
 const CLOSED_BINDING_PREVIEW_CLAIM_BYTES: usize = 96 + CLOSED_POLICY_BINDING_BYTES_V2;
 const CLOSED_BINDING_FLIGHT_HOLD_BYTES: usize = 16 + 16 + 32 + 32 + 32 + 8;
@@ -2283,67 +2279,11 @@ fn serve_current_head(
         return Ok(());
     }
     if matches!(mode, HeadRequestMode::ClosedBinding) {
-        with_fixed_explicit_closed_policy_binding_session_v2(
-            packet,
-            deployment_signer_generation,
-            verifying_key,
-            selected_project_packet,
-            selected_project_input,
-            project_signer_generation,
-            project_key,
-            controller_uid,
-            controller_gid,
-            now_unix_seconds,
-            |session| -> io::Result<()> {
-                let length = u32::try_from(receipt.len()).map_err(io::Error::other)?;
-                stream.write_all(&length.to_be_bytes())?;
-                stream.write_all(&receipt)?;
-                write_closed_binding_base(
-                    stream,
-                    session.current_base().map_err(io::Error::other)?,
-                )?;
-                stream.set_read_timeout(Some(LEASE_ACK_TIMEOUT))?;
-
-                let mut submission = [0_u8; CLOSED_BINDING_SUBMISSION_BYTES];
-                stream.read_exact(&mut submission)?;
-                let binding = decode_closed_binding_submission(&submission, &request[8..24])?;
-                let committed = session
-                    .commit_closed_binding(binding)
-                    .map_err(io::Error::other)?;
-                write_closed_binding_frame(
-                    stream,
-                    POLICY_BINDING_COMMITTED_MAGIC_V4,
-                    &request[8..24],
-                    committed.binding().as_bytes(),
-                    committed.handoff_epoch(),
-                )?;
-
-                let mut acknowledgement = [0_u8; CLOSED_BINDING_ACK_BYTES];
-                stream.read_exact(&mut acknowledgement)?;
-                validate_closed_binding_ack(
-                    &acknowledgement,
-                    &request[8..24],
-                    committed.binding().as_bytes(),
-                    committed.handoff_epoch(),
-                )?;
-                check_signed_head_expiration(deployment.expires_at(), project_expires_at)?;
-                complete_closed_binding_handoff_v4(
-                    stream,
-                    &request[8..24],
-                    committed.binding().as_bytes(),
-                    committed.handoff_epoch(),
-                    || {
-                        check_signed_head_expiration(deployment.expires_at(), project_expires_at)?;
-                        session
-                            .release_inert_hold(committed)
-                            .map_err(io::Error::other)
-                    },
-                )?;
-                Ok(())
-            },
-        )??;
-        // The terminal ACK and postcommit snapshot were checked under the
-        // root writer. This remains an inert observation, not an effect token.
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "closed policy binding admission is unavailable",
+        )
+        .into());
     } else if matches!(mode, HeadRequestMode::Lease) {
         with_fixed_current_policy_head_lease_v1(packet, || -> io::Result<()> {
             let length = u32::try_from(receipt.len()).map_err(io::Error::other)?;
@@ -2586,86 +2526,6 @@ fn validate_lease_ack(acknowledgement: &[u8; 24], nonce: &[u8]) -> io::Result<()
     Ok(())
 }
 
-fn decode_closed_binding_submission<'a>(
-    submission: &'a [u8; CLOSED_BINDING_SUBMISSION_BYTES],
-    nonce: &[u8],
-) -> io::Result<&'a [u8]> {
-    if &submission[..8] != POLICY_BINDING_SUBMIT_MAGIC_V4
-        || &submission[8..24] != nonce
-        || submission[24..28]
-            != u32::try_from(CLOSED_POLICY_BINDING_BYTES_V2)
-                .map_err(io::Error::other)?
-                .to_be_bytes()
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "invalid closed binding submission",
-        ));
-    }
-    Ok(&submission[28..])
-}
-
-fn write_closed_binding_frame(
-    stream: &mut impl Write,
-    magic: &[u8; 8],
-    nonce: &[u8],
-    binding: &[u8; 32],
-    epoch: u64,
-) -> io::Result<()> {
-    stream.write_all(magic)?;
-    stream.write_all(nonce)?;
-    stream.write_all(binding)?;
-    stream.write_all(&epoch.to_be_bytes())
-}
-
-fn complete_closed_binding_handoff_v4(
-    stream: &mut (impl Read + Write),
-    nonce: &[u8],
-    binding: &[u8; 32],
-    epoch: u64,
-    release: impl FnOnce() -> io::Result<()>,
-) -> io::Result<()> {
-    write_closed_binding_frame(
-        stream,
-        POLICY_BINDING_COMPLETE_MAGIC_V4,
-        nonce,
-        binding,
-        epoch,
-    )?;
-
-    let mut terminal_ack = [0_u8; CLOSED_BINDING_ACK_BYTES];
-    stream.read_exact(&mut terminal_ack)?;
-    validate_closed_binding_ack_with_magic(
-        &terminal_ack,
-        POLICY_BINDING_TERMINAL_ACK_MAGIC_V4,
-        nonce,
-        binding,
-        epoch,
-    )?;
-    // The terminal ACK ends this one-shot connection; no trailing record may
-    // be interpreted as part of the same held authority cut.
-    let mut trailing = [0_u8; 1];
-    if stream.read(&mut trailing)? != 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "trailing closed binding acknowledgement bytes",
-        ));
-    }
-    release()
-}
-
-fn write_closed_binding_base(
-    stream: &mut std::os::unix::net::UnixStream,
-    base: ClosedPolicyRootCasBaseV2,
-) -> io::Result<()> {
-    stream.write_all(POLICY_BINDING_BASE_MAGIC_V4)?;
-    stream.write_all(&base.issuer_owner())?;
-    stream.write_all(base.predecessor().as_bytes())?;
-    stream.write_all(&base.next_generation().to_be_bytes())?;
-    stream.write_all(&base.deployment_signer_generation().to_be_bytes())?;
-    stream.write_all(&base.project_signer_generation().to_be_bytes())
-}
-
 fn write_closed_binding_stage_reply(
     stream: &mut std::os::unix::net::UnixStream,
     nonce: &[u8],
@@ -2689,41 +2549,6 @@ fn require_q04_stage_request_end(stream: &mut std::os::unix::net::UnixStream) ->
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "trailing Q04 stage data",
-        ));
-    }
-    Ok(())
-}
-
-fn validate_closed_binding_ack(
-    acknowledgement: &[u8; CLOSED_BINDING_ACK_BYTES],
-    nonce: &[u8],
-    binding: &[u8; 32],
-    handoff_epoch: u64,
-) -> io::Result<()> {
-    validate_closed_binding_ack_with_magic(
-        acknowledgement,
-        POLICY_BINDING_ACK_MAGIC_V4,
-        nonce,
-        binding,
-        handoff_epoch,
-    )
-}
-
-fn validate_closed_binding_ack_with_magic(
-    acknowledgement: &[u8; CLOSED_BINDING_ACK_BYTES],
-    magic: &[u8; 8],
-    nonce: &[u8],
-    binding: &[u8; 32],
-    handoff_epoch: u64,
-) -> io::Result<()> {
-    if &acknowledgement[..8] != magic
-        || &acknowledgement[8..24] != nonce
-        || &acknowledgement[24..56] != binding
-        || acknowledgement[56..64] != handoff_epoch.to_be_bytes()
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "invalid closed binding acknowledgement",
         ));
     }
     Ok(())
@@ -4113,7 +3938,6 @@ fn select_project_source<'a>(
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
-    use std::io::Cursor;
     use std::os::unix::net::UnixStream;
 
     use super::*;
@@ -4248,39 +4072,41 @@ mod tests {
 
     #[test]
     fn q04_request_emits_no_receipt_and_does_not_open_root_custody() {
-        let directory = tempfile::tempdir().expect("root journal fixture");
-        let journal_path = directory.path().join("policy-authority.journal");
-        std::fs::write(&journal_path, b"root journal before request")
-            .expect("root journal fixture");
-        let (mut client, mut server) = UnixStream::pair().expect("local policy socket");
-        let mut request = [0_u8; REQUEST_BYTES];
-        request[..8].copy_from_slice(POLICY_BINDING_QUERY_MAGIC_V4);
-        request[8..24].copy_from_slice(&[1; 16]);
-        client.write_all(&request).expect("Q04 request");
+        for nonce in [[1; 16], [0; 16]] {
+            let directory = tempfile::tempdir().expect("root journal fixture");
+            let journal_path = directory.path().join("policy-authority.journal");
+            std::fs::write(&journal_path, b"root journal before request")
+                .expect("root journal fixture");
+            let (mut client, mut server) = UnixStream::pair().expect("local policy socket");
+            let mut request = [0_u8; REQUEST_BYTES];
+            request[..8].copy_from_slice(POLICY_BINDING_QUERY_MAGIC_V4);
+            request[8..24].copy_from_slice(&nonce);
+            client.write_all(&request).expect("Q04 request");
 
-        let root_custody_opened = Cell::new(false);
-        let error = read_head_request(&mut server, || {
-            root_custody_opened.set(true);
-            std::fs::write(&journal_path, b"root journal changed")?;
-            Ok(())
-        })
-        .err()
-        .expect("Q04 stays closed");
-        assert_eq!(
-            error.downcast_ref::<io::Error>().map(io::Error::kind),
-            Some(io::ErrorKind::PermissionDenied)
-        );
-        assert!(!root_custody_opened.get());
-        assert_eq!(
-            std::fs::read(&journal_path)
-                .expect("unchanged root journal")
-                .as_slice(),
-            b"root journal before request"
-        );
-        drop(server);
-        let mut response = Vec::new();
-        client.read_to_end(&mut response).expect("closed response");
-        assert!(response.is_empty());
+            let root_custody_opened = Cell::new(false);
+            let error = read_head_request(&mut server, || {
+                root_custody_opened.set(true);
+                std::fs::write(&journal_path, b"root journal changed")?;
+                Ok(())
+            })
+            .err()
+            .expect("Q04 stays closed");
+            assert_eq!(
+                error.downcast_ref::<io::Error>().map(io::Error::kind),
+                Some(io::ErrorKind::PermissionDenied)
+            );
+            assert!(!root_custody_opened.get());
+            assert_eq!(
+                std::fs::read(&journal_path)
+                    .expect("unchanged root journal")
+                    .as_slice(),
+                b"root journal before request"
+            );
+            drop(server);
+            let mut response = Vec::new();
+            client.read_to_end(&mut response).expect("closed response");
+            assert!(response.is_empty());
+        }
     }
 
     #[test]
@@ -5124,127 +4950,6 @@ mod tests {
         }
     }
 
-    struct ScriptedExchange {
-        incoming: Cursor<Vec<u8>>,
-        outgoing: Vec<u8>,
-        fail_write: bool,
-    }
-
-    impl ScriptedExchange {
-        fn new(incoming: Vec<u8>, fail_write: bool) -> Self {
-            Self {
-                incoming: Cursor::new(incoming),
-                outgoing: Vec::new(),
-                fail_write,
-            }
-        }
-    }
-
-    impl Read for ScriptedExchange {
-        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-            self.incoming.read(buffer)
-        }
-    }
-
-    impl Write for ScriptedExchange {
-        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-            if self.fail_write {
-                return Err(io::Error::from(io::ErrorKind::BrokenPipe));
-            }
-            self.outgoing.extend_from_slice(buffer);
-            Ok(buffer.len())
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn lost_complete_or_terminal_ack_retains_root_hold() {
-        let nonce = [9; 16];
-        let binding = [10; 32];
-        let epoch = 11_u64;
-        let released = Cell::new(false);
-
-        let mut lost_complete = ScriptedExchange::new(Vec::new(), true);
-        assert!(
-            complete_closed_binding_handoff_v4(&mut lost_complete, &nonce, &binding, epoch, || {
-                released.set(true);
-                Ok(())
-            },)
-            .is_err()
-        );
-        assert!(!released.get());
-
-        let mut lost_terminal_ack = ScriptedExchange::new(Vec::new(), false);
-        assert!(
-            complete_closed_binding_handoff_v4(
-                &mut lost_terminal_ack,
-                &nonce,
-                &binding,
-                epoch,
-                || {
-                    released.set(true);
-                    Ok(())
-                },
-            )
-            .is_err()
-        );
-        assert_eq!(
-            &lost_terminal_ack.outgoing[..8],
-            POLICY_BINDING_COMPLETE_MAGIC_V4
-        );
-        assert!(!released.get());
-    }
-
-    #[test]
-    fn exact_terminal_ack_releases_only_after_complete() {
-        let nonce = [9; 16];
-        let binding = [10; 32];
-        let epoch = 11_u64;
-        let mut terminal_ack = Vec::new();
-        terminal_ack.extend_from_slice(POLICY_BINDING_TERMINAL_ACK_MAGIC_V4);
-        terminal_ack.extend_from_slice(&nonce);
-        terminal_ack.extend_from_slice(&binding);
-        terminal_ack.extend_from_slice(&epoch.to_be_bytes());
-        let released = Cell::new(false);
-
-        let mut exchange = ScriptedExchange::new(terminal_ack.clone(), false);
-        complete_closed_binding_handoff_v4(&mut exchange, &nonce, &binding, epoch, || {
-            released.set(true);
-            Ok(())
-        })
-        .expect("exact terminal acknowledgement");
-        assert_eq!(&exchange.outgoing[..8], POLICY_BINDING_COMPLETE_MAGIC_V4);
-        assert!(released.get());
-
-        let mut trailing_ack = terminal_ack.clone();
-        trailing_ack.push(1);
-        let mut trailing = ScriptedExchange::new(trailing_ack, false);
-        released.set(false);
-        assert!(
-            complete_closed_binding_handoff_v4(&mut trailing, &nonce, &binding, epoch, || {
-                released.set(true);
-                Ok(())
-            },)
-            .is_err()
-        );
-        assert!(!released.get());
-
-        terminal_ack[..8].copy_from_slice(POLICY_BINDING_ACK_MAGIC_V4);
-        let mut wrong_version = ScriptedExchange::new(terminal_ack, false);
-        released.set(false);
-        assert!(
-            complete_closed_binding_handoff_v4(&mut wrong_version, &nonce, &binding, epoch, || {
-                released.set(true);
-                Ok(())
-            },)
-            .is_err()
-        );
-        assert!(!released.get());
-    }
-
     #[test]
     fn offline_hold_selector_requires_one_exact_nonzero_digest() {
         let digest = ObjectDigest::from_bytes([0xab; 32]);
@@ -5265,41 +4970,6 @@ mod tests {
         assert!(validate_lease_ack(&acknowledgement, &[2; 16]).is_err());
         acknowledgement[0] ^= 1;
         assert!(validate_lease_ack(&acknowledgement, &[1; 16]).is_err());
-    }
-
-    #[test]
-    fn closed_binding_frames_reject_nonce_length_head_and_epoch_substitution() {
-        let nonce = [1; 16];
-        let head = [2; 32];
-        let mut submission = [0_u8; CLOSED_BINDING_SUBMISSION_BYTES];
-        submission[..8].copy_from_slice(POLICY_BINDING_SUBMIT_MAGIC_V4);
-        submission[8..24].copy_from_slice(&nonce);
-        submission[24..28].copy_from_slice(
-            &u32::try_from(CLOSED_POLICY_BINDING_BYTES_V2)
-                .unwrap()
-                .to_be_bytes(),
-        );
-        assert_eq!(
-            decode_closed_binding_submission(&submission, &nonce)
-                .expect("exact frame")
-                .len(),
-            CLOSED_POLICY_BINDING_BYTES_V2
-        );
-        assert!(decode_closed_binding_submission(&submission, &[3; 16]).is_err());
-        submission[24] ^= 1;
-        assert!(decode_closed_binding_submission(&submission, &nonce).is_err());
-
-        let mut acknowledgement = [0_u8; CLOSED_BINDING_ACK_BYTES];
-        acknowledgement[..8].copy_from_slice(POLICY_BINDING_ACK_MAGIC_V4);
-        acknowledgement[8..24].copy_from_slice(&nonce);
-        acknowledgement[24..56].copy_from_slice(&head);
-        acknowledgement[56..64].copy_from_slice(&4_u64.to_be_bytes());
-        assert!(validate_closed_binding_ack(&acknowledgement, &nonce, &head, 4).is_ok());
-        assert!(validate_closed_binding_ack(&acknowledgement, &[3; 16], &head, 4).is_err());
-        assert!(validate_closed_binding_ack(&acknowledgement, &nonce, &[3; 32], 4).is_err());
-        assert!(validate_closed_binding_ack(&acknowledgement, &nonce, &head, 5).is_err());
-        acknowledgement[0] ^= 1;
-        assert!(validate_closed_binding_ack(&acknowledgement, &nonce, &head, 4).is_err());
     }
 
     #[test]

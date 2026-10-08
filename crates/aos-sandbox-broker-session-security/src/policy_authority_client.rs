@@ -7,13 +7,6 @@
 //! current head custody at query time; it does not issue a compiler binding.
 //! `AOSPHQ03` frames the same receipt while root retains its writer lock
 //! through a nonce-bound action ACK and post-action snapshot validation.
-//! Legacy `AOSPHQ04` additionally accepts one canonical AOSPCB02 proposal and
-//! commits a closed root CAS. It requires an `AOSPHR04` receipt with an
-//! `AOSPPH02` project source; the V1 receipt cannot downgrade this exchange.
-//! After the root sends `AOSPHC04` under its writer, the client echoes the
-//! exact nonce, binding, and epoch in `AOSPHT04`. Only that terminal ACK can
-//! release the root-local hold. An older client that stops at completion
-//! leaves the hold unresolved. No response authorizes publication.
 //! `AOSPHQ4F` is a separate inert Root-last signer flight: Root opens Cache V3
 //! before Controller's held half, verifies the Source-only packet on the same
 //! staged cut, and returns only exact packet digests and a checked preview.
@@ -99,18 +92,8 @@ pub const POLICY_BINDING_QUERY_MAGIC_V4: &[u8; 8] = b"AOSPHQ04";
 pub const POLICY_BINDING_HELD_MARKER_V4: &[u8; 8] = b"AOSQ4H01";
 /// Identifies the nonce-linked V2 project-source receipt for closed CAS.
 pub const POLICY_BINDING_RECEIPT_MAGIC_V4: &[u8; 8] = b"AOSPHR04";
-/// Identifies root-derived CAS and signer-generation base fields.
-pub const POLICY_BINDING_BASE_MAGIC_V4: &[u8; 8] = b"AOSPHB04";
-/// Frames one exact AOSPCB02 proposal under the root-held nonce.
-pub const POLICY_BINDING_SUBMIT_MAGIC_V4: &[u8; 8] = b"AOSPBS04";
 /// Reports a durable but non-authorizing root compare-and-swap.
 pub const POLICY_BINDING_COMMITTED_MAGIC_V4: &[u8; 8] = b"AOSPBC04";
-/// Acknowledges the retained epoch without conferring an effect.
-pub const POLICY_BINDING_ACK_MAGIC_V4: &[u8; 8] = b"AOSPHA04";
-/// Confirms exact root postcommit readback and snapshot validation.
-pub const POLICY_BINDING_COMPLETE_MAGIC_V4: &[u8; 8] = b"AOSPHC04";
-/// Acknowledges the exact completed response before the root releases custody.
-pub const POLICY_BINDING_TERMINAL_ACK_MAGIC_V4: &[u8; 8] = b"AOSPHT04";
 /// Requests exact historical Q04 decision replay without admitting a new CAS.
 pub const POLICY_BINDING_REPLAY_QUERY_MAGIC_V5: &[u8; 8] = b"AOSPHQ5R";
 /// Frames Root's protected, non-authorizing Q04 decision readback.
@@ -177,7 +160,6 @@ const MAXIMUM_RECEIPT_BYTES: usize = 24
 const MAXIMUM_EXPLICIT_RECEIPT_BYTES: usize =
     MAXIMUM_RECEIPT_BYTES - PROJECT_PACKET_BYTES + EXPLICIT_PROJECT_PACKET_BYTES;
 const CLOSED_BINDING_FRAME_BYTES: usize = 8 + 16 + 32 + 8;
-const CLOSED_BINDING_BASE_BYTES: usize = 8 + 16 + 32 + 8 + 8 + 8;
 const CLOSED_BINDING_REPLAY_REPLY_BYTES: usize =
     8 + 16 + 32 + 8 + 1 + CLOSED_POLICY_BINDING_BYTES_V2 + 32;
 const CLOSED_BINDING_STAGE_REPLY_BYTES: usize = 8 + 16 + 16 + 32 + 8 + 8 + 8 + 16 + 8;
@@ -187,51 +169,6 @@ const CLOSED_BINDING_FLIGHT_REPLY_BYTES: usize = CLOSED_BINDING_PREVIEW_REPLY_BY
 const SOURCE_FLIGHT_CHALLENGE_BYTES_V5: usize = CLOSED_BINDING_FLIGHT_CHALLENGE_BYTES + 16 + 32 + 8;
 const SOURCE_FLIGHT_REPLY_BYTES_V5: usize = CLOSED_BINDING_FLIGHT_REPLY_BYTES + 8 + 48;
 const SOURCE_FLIGHT_CAS_RECEIPT_BYTES_V8: usize = 8 + 16 + 32 + 8 + 32 + 32 + 32;
-
-/// Reports root-owned fields required to propose a closed binding.
-///
-/// The service rechecks these values under its writer at CAS. They are not a
-/// substitute for controller, source-domain, or physical Cache custody.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ClosedPolicyBindingBaseV4 {
-    issuer_owner: [u8; 16],
-    predecessor: ObjectDigest,
-    next_generation: u64,
-    deployment_signer_generation: u64,
-    project_signer_generation: u64,
-}
-
-impl ClosedPolicyBindingBaseV4 {
-    /// Returns the root-derived controller owner commitment.
-    #[must_use]
-    pub const fn issuer_owner(self) -> [u8; 16] {
-        self.issuer_owner
-    }
-
-    /// Returns the protected root binding predecessor.
-    #[must_use]
-    pub const fn predecessor(self) -> ObjectDigest {
-        self.predecessor
-    }
-
-    /// Returns the required next root and handoff generation.
-    #[must_use]
-    pub const fn next_generation(self) -> u64 {
-        self.next_generation
-    }
-
-    /// Returns the pinned deployment signer generation.
-    #[must_use]
-    pub const fn deployment_signer_generation(self) -> u64 {
-        self.deployment_signer_generation
-    }
-
-    /// Returns the pinned project signer generation.
-    #[must_use]
-    pub const fn project_signer_generation(self) -> u64 {
-        self.project_signer_generation
-    }
-}
 
 /// Reports one durable root CAS that still cannot authorize an effect.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1643,79 +1580,6 @@ pub fn with_current_policy_head_lease_v3<R>(
     Ok(result)
 }
 
-/// Sends one closed AOSPCB02 proposal under the root-owned same-session CAS.
-///
-/// The caller must first hold controller, source-domain, and physical Cache
-/// writers in that order. Root independently pins its signer generations,
-/// signed heads, predecessor, and CAS epoch; the other fields remain claims.
-/// A successful response is not a policy-publication or effect capability.
-/// It may precede the root reading the terminal ACK; if that ACK is lost, the
-/// root retains its durable hold and the returned observation remains inert.
-/// There is no live controller callsite until complete replay and handoff are
-/// independently connected. The verification keys here only check the signed
-/// receipt; they do not nominate the root service's signer or head.
-///
-/// # Errors
-///
-/// Rejects an unexpected root peer, malformed or stale signed receipt,
-/// noncanonical proposal, changed CAS response, missing completion, or failed
-/// terminal acknowledgement delivery.
-pub fn commit_closed_policy_binding_v4(
-    deployment_verifying_key: &VerifyingKey,
-    project_verifying_key: &VerifyingKey,
-    propose: impl FnOnce(
-        &PolicyAuthorityExplicitHeadReceiptV4,
-        ClosedPolicyBindingBaseV4,
-    ) -> io::Result<Vec<u8>>,
-) -> io::Result<ClosedPolicyBindingClientObservationV4> {
-    let (mut stream, nonce) =
-        connect_policy_query(POLICY_BINDING_QUERY_MAGIC_V4, Duration::from_secs(35))?;
-    let receipt = read_explicit_receipt_v4(
-        &mut stream,
-        nonce,
-        deployment_verifying_key,
-        project_verifying_key,
-    )?;
-
-    let mut base = [0_u8; CLOSED_BINDING_BASE_BYTES];
-    stream.read_exact(&mut base)?;
-    let base = decode_closed_binding_base(&base)?;
-    validate_receipt_signer_generations(&receipt, base)?;
-
-    let proposed = propose(&receipt, base)?;
-    if proposed.len() != CLOSED_POLICY_BINDING_BYTES_V2 {
-        return Err(invalid_receipt());
-    }
-    let binding = closed_policy_binding_digest_v2(&proposed).map_err(io::Error::other)?;
-    stream.write_all(POLICY_BINDING_SUBMIT_MAGIC_V4)?;
-    stream.write_all(&nonce)?;
-    stream.write_all(
-        &u32::try_from(proposed.len())
-            .map_err(io::Error::other)?
-            .to_be_bytes(),
-    )?;
-    stream.write_all(&proposed)?;
-
-    let mut committed = [0_u8; CLOSED_BINDING_FRAME_BYTES];
-    stream.read_exact(&mut committed)?;
-    let epoch = validate_closed_binding_frame(
-        &committed,
-        POLICY_BINDING_COMMITTED_MAGIC_V4,
-        nonce,
-        binding,
-    )?;
-    stream.write_all(POLICY_BINDING_ACK_MAGIC_V4)?;
-    stream.write_all(&nonce)?;
-    stream.write_all(binding.as_bytes())?;
-    stream.write_all(&epoch.to_be_bytes())?;
-
-    acknowledge_closed_binding_completion_v4(&mut stream, nonce, binding, epoch)?;
-    Ok(ClosedPolicyBindingClientObservationV4 {
-        binding,
-        handoff_epoch: epoch,
-    })
-}
-
 fn read_explicit_receipt_v4(
     stream: &mut impl Read,
     nonce: [u8; 16],
@@ -1741,75 +1605,6 @@ fn read_explicit_receipt_v4(
         project_verifying_key,
         now_unix_seconds,
     )
-}
-
-fn acknowledge_closed_binding_completion_v4(
-    stream: &mut (impl Read + Write),
-    nonce: [u8; 16],
-    binding: ObjectDigest,
-    epoch: u64,
-) -> io::Result<()> {
-    let mut completion = [0_u8; CLOSED_BINDING_FRAME_BYTES];
-    stream.read_exact(&mut completion)?;
-    if validate_closed_binding_frame(
-        &completion,
-        POLICY_BINDING_COMPLETE_MAGIC_V4,
-        nonce,
-        binding,
-    )? != epoch
-    {
-        return Err(invalid_receipt());
-    }
-
-    stream.write_all(POLICY_BINDING_TERMINAL_ACK_MAGIC_V4)?;
-    stream.write_all(&nonce)?;
-    stream.write_all(binding.as_bytes())?;
-    stream.write_all(&epoch.to_be_bytes())
-}
-
-fn decode_closed_binding_base(
-    frame: &[u8; CLOSED_BINDING_BASE_BYTES],
-) -> io::Result<ClosedPolicyBindingBaseV4> {
-    if &frame[..8] != POLICY_BINDING_BASE_MAGIC_V4 {
-        return Err(invalid_receipt());
-    }
-    let issuer_owner: [u8; 16] = frame[8..24].try_into().map_err(|_| invalid_receipt())?;
-    let predecessor =
-        ObjectDigest::from_bytes(frame[24..56].try_into().map_err(|_| invalid_receipt())?);
-    let next_generation =
-        u64::from_be_bytes(frame[56..64].try_into().map_err(|_| invalid_receipt())?);
-    let deployment_signer_generation =
-        u64::from_be_bytes(frame[64..72].try_into().map_err(|_| invalid_receipt())?);
-    let project_signer_generation =
-        u64::from_be_bytes(frame[72..80].try_into().map_err(|_| invalid_receipt())?);
-    if issuer_owner == [0; 16]
-        || next_generation == 0
-        || deployment_signer_generation == 0
-        || project_signer_generation == 0
-        || (next_generation == 1) != (predecessor.as_bytes() == &[0; 32])
-    {
-        return Err(invalid_receipt());
-    }
-    Ok(ClosedPolicyBindingBaseV4 {
-        issuer_owner,
-        predecessor,
-        next_generation,
-        deployment_signer_generation,
-        project_signer_generation,
-    })
-}
-
-fn validate_receipt_signer_generations(
-    receipt: &PolicyAuthorityExplicitHeadReceiptV4,
-    base: ClosedPolicyBindingBaseV4,
-) -> io::Result<()> {
-    let signed = receipt.project().head();
-    if signed.deployment_signer_generation() != base.deployment_signer_generation()
-        || signed.project_signer_generation() != base.project_signer_generation()
-    {
-        return Err(invalid_receipt());
-    }
-    Ok(())
 }
 
 fn validate_closed_binding_frame(
@@ -2007,7 +1802,7 @@ fn invalid_receipt() -> io::Error {
 
 #[cfg(test)]
 mod tests {
-    use std::io::{Cursor, Write as _};
+    use std::io::Write as _;
     use std::os::unix::net::UnixStream;
 
     use aos_sandbox::policy_compiler::ClosedPolicyBindingDecisionV2;
@@ -2016,23 +1811,21 @@ mod tests {
     use sha2::{Digest as _, Sha256};
 
     use super::{
-        CLOSED_BINDING_BASE_BYTES, CLOSED_BINDING_FRAME_BYTES, CLOSED_BINDING_PREVIEW_REPLY_BYTES,
+        CLOSED_BINDING_FRAME_BYTES, CLOSED_BINDING_PREVIEW_REPLY_BYTES,
         CLOSED_BINDING_REPLAY_REPLY_BYTES, CLOSED_BINDING_STAGE_REPLY_BYTES,
         CLOSED_POLICY_BINDING_BYTES_V2, EXPLICIT_PROJECT_PACKET_BYTES,
         MAXIMUM_EXPLICIT_RECEIPT_BYTES, MAXIMUM_INPUT_BYTES, MAXIMUM_PROJECT_INPUT_BYTES,
-        MAXIMUM_RECEIPT_BYTES, ObjectDigest, PACKET_BYTES, POLICY_BINDING_BASE_MAGIC_V4,
-        POLICY_BINDING_COMMITTED_MAGIC_V4, POLICY_BINDING_COMPLETE_MAGIC_V4,
+        MAXIMUM_RECEIPT_BYTES, ObjectDigest, PACKET_BYTES, POLICY_BINDING_COMMITTED_MAGIC_V4,
         POLICY_BINDING_PREVIEW_QUERY_MAGIC_V4, POLICY_BINDING_PREVIEW_REPLY_MAGIC_V4,
         POLICY_BINDING_QUERY_MAGIC_V4, POLICY_BINDING_RECEIPT_MAGIC_V4,
         POLICY_BINDING_REPLAY_QUERY_MAGIC_V5, POLICY_BINDING_REPLAY_REPLY_MAGIC_V5,
         POLICY_BINDING_STAGE_QUERY_MAGIC_V4, POLICY_BINDING_STAGE_REPLY_MAGIC_V4,
-        POLICY_BINDING_TERMINAL_ACK_MAGIC_V4, POLICY_HEAD_LEASE_COMPLETE_MAGIC_V3,
-        POLICY_HEAD_LEASE_QUERY_MAGIC_V3, POLICY_HEAD_QUERY_MAGIC_V2, POLICY_HEAD_RECEIPT_MAGIC_V2,
-        PROJECT_PACKET_BYTES, acknowledge_closed_binding_completion_v4, decode_closed_binding_base,
+        POLICY_HEAD_LEASE_COMPLETE_MAGIC_V3, POLICY_HEAD_LEASE_QUERY_MAGIC_V3,
+        POLICY_HEAD_QUERY_MAGIC_V2, POLICY_HEAD_RECEIPT_MAGIC_V2, PROJECT_PACKET_BYTES,
         decode_closed_binding_preview_reply, decode_closed_binding_replay_reply,
         decode_closed_binding_stage_reply, decode_explicit_receipt_v4, decode_receipt,
         parse_receipt_frame, policy_query_request, validate_closed_binding_frame,
-        validate_lease_completion, validate_receipt_signer_generations,
+        validate_lease_completion,
     };
 
     #[test]
@@ -2647,18 +2440,6 @@ mod tests {
         assert_eq!(decoded.project().head().deployment_signer_generation(), 2);
         assert_eq!(decoded.project().head().project_signer_generation(), 3);
 
-        let mut base = [0_u8; CLOSED_BINDING_BASE_BYTES];
-        base[..8].copy_from_slice(POLICY_BINDING_BASE_MAGIC_V4);
-        base[8..24].fill(1);
-        base[56..64].copy_from_slice(&1_u64.to_be_bytes());
-        base[64..72].copy_from_slice(&2_u64.to_be_bytes());
-        base[72..80].copy_from_slice(&3_u64.to_be_bytes());
-        let current = decode_closed_binding_base(&base).expect("current signer base");
-        assert!(validate_receipt_signer_generations(&decoded, current).is_ok());
-        base[72..80].copy_from_slice(&4_u64.to_be_bytes());
-        let rotated = decode_closed_binding_base(&base).expect("rotated signer base");
-        assert!(validate_receipt_signer_generations(&decoded, rotated).is_err());
-
         assert!(
             decode_explicit_receipt_v4(
                 &bytes,
@@ -2767,70 +2548,5 @@ mod tests {
             )
             .is_err()
         );
-    }
-
-    #[test]
-    fn lost_complete_never_sends_terminal_ack() {
-        let nonce = [7; 16];
-        let binding = ObjectDigest::from_bytes([8; 32]);
-        let mut partial = Cursor::new(vec![0_u8; 32]);
-        assert!(acknowledge_closed_binding_completion_v4(&mut partial, nonce, binding, 3).is_err());
-        assert_eq!(partial.get_ref().len(), 32);
-
-        let mut wrong_epoch = [0_u8; CLOSED_BINDING_FRAME_BYTES];
-        wrong_epoch[..8].copy_from_slice(POLICY_BINDING_COMPLETE_MAGIC_V4);
-        wrong_epoch[8..24].copy_from_slice(&nonce);
-        wrong_epoch[24..56].copy_from_slice(binding.as_bytes());
-        wrong_epoch[56..64].copy_from_slice(&4_u64.to_be_bytes());
-        let mut wrong_epoch = Cursor::new(wrong_epoch.to_vec());
-        assert!(
-            acknowledge_closed_binding_completion_v4(&mut wrong_epoch, nonce, binding, 3).is_err()
-        );
-        assert_eq!(wrong_epoch.get_ref().len(), CLOSED_BINDING_FRAME_BYTES);
-    }
-
-    #[test]
-    fn exact_complete_sends_distinct_terminal_ack() {
-        let nonce = [7; 16];
-        let binding = ObjectDigest::from_bytes([8; 32]);
-        let epoch = 3_u64;
-        let mut complete = [0_u8; CLOSED_BINDING_FRAME_BYTES];
-        complete[..8].copy_from_slice(POLICY_BINDING_COMPLETE_MAGIC_V4);
-        complete[8..24].copy_from_slice(&nonce);
-        complete[24..56].copy_from_slice(binding.as_bytes());
-        complete[56..64].copy_from_slice(&epoch.to_be_bytes());
-
-        let mut exchange = Cursor::new(complete.to_vec());
-        acknowledge_closed_binding_completion_v4(&mut exchange, nonce, binding, epoch)
-            .expect("exact completion");
-        let terminal = &exchange.get_ref()[CLOSED_BINDING_FRAME_BYTES..];
-        assert_eq!(terminal.len(), CLOSED_BINDING_FRAME_BYTES);
-        assert_eq!(&terminal[..8], POLICY_BINDING_TERMINAL_ACK_MAGIC_V4);
-        assert_eq!(&terminal[8..24], &nonce);
-        assert_eq!(&terminal[24..56], binding.as_bytes());
-        assert_eq!(&terminal[56..64], &epoch.to_be_bytes());
-    }
-
-    #[test]
-    fn closed_binding_base_rejects_stale_or_unscoped_root_state() {
-        let mut frame = [0_u8; CLOSED_BINDING_BASE_BYTES];
-        frame[..8].copy_from_slice(POLICY_BINDING_BASE_MAGIC_V4);
-        frame[8..24].fill(1);
-        frame[56..64].copy_from_slice(&1_u64.to_be_bytes());
-        frame[64..72].copy_from_slice(&2_u64.to_be_bytes());
-        frame[72..80].copy_from_slice(&3_u64.to_be_bytes());
-        let base = decode_closed_binding_base(&frame).expect("genesis root state");
-        assert_eq!(base.next_generation(), 1);
-        assert_eq!(base.deployment_signer_generation(), 2);
-        assert_eq!(base.project_signer_generation(), 3);
-
-        frame[56..64].copy_from_slice(&2_u64.to_be_bytes());
-        assert!(decode_closed_binding_base(&frame).is_err());
-        frame[24..56].fill(4);
-        assert!(decode_closed_binding_base(&frame).is_ok());
-        frame[64..72].fill(0);
-        assert!(decode_closed_binding_base(&frame).is_err());
-        frame[0] ^= 1;
-        assert!(decode_closed_binding_base(&frame).is_err());
     }
 }
