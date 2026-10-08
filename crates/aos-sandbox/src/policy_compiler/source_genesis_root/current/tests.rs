@@ -11,7 +11,8 @@ use crate::JournalLimits;
 use crate::hierarchy::source_genesis::tests as source_fixture;
 use crate::journal::Journal;
 use crate::policy_compiler::source_genesis_readback::{
-    SourceTreeGenesisChallengeV1, verify_source_tree_genesis_readback_v1,
+    SOURCE_TREE_GENESIS_READBACK_BYTES_V1, SourceTreeGenesisChallengeV1,
+    verify_source_tree_genesis_readback_v1,
 };
 use crate::policy_compiler::source_hold_readback::{
     PinnedSourceHoldReadbackSignerV1, encode_source_hold_readback_signer_credential_v1,

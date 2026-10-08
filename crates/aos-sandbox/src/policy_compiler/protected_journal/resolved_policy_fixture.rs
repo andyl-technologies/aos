@@ -133,7 +133,7 @@ fn compiled_publication_from_verified(
     verified: VerifiedPolicyPublicationV1,
 ) -> FixturePublicationV1 {
     let diagnostics = digest_bytes(DIAGNOSTICS_DOMAIN, &verified.diagnostics);
-    let body = encode_candidate_payload(1, &verified, diagnostics).unwrap();
+    let body = encode_candidate_payload(1, verified.body_fields(), diagnostics).unwrap();
     let policy = verified.candidate.portable().policy_bytes().to_vec();
     FixturePublicationV1 {
         project: verified.project,

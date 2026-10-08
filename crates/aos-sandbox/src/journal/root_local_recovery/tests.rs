@@ -13,8 +13,8 @@ mod fixture;
 
 use super::*;
 use crate::journal::{
-    JournalLimits, append_and_sync, encode_transaction, encoded_transaction_append_bytes, replay,
-    validate_reserved_capacity, write_compacted,
+    JournalLimits, RootOwnerEdge, append_and_sync, encode_transaction,
+    encoded_transaction_append_bytes, replay, validate_reserved_capacity, write_compacted,
 };
 
 fn put(state: &mut State, record: StoredRecordV2) {
@@ -159,7 +159,7 @@ fn unrelated_native_floor_remains_byte_exact_and_is_counted() {
             0,
             1,
             limits,
-            Some(Edge::Admission)
+            Some(RootOwnerEdge::Local(Edge::Admission))
         )
         .is_err()
     );
@@ -340,7 +340,7 @@ fn kind5_counts_new_floor_and_retains_unrelated_native_promises() {
             0,
             1,
             limits,
-            Some(Edge::DeadAdmission),
+            Some(RootOwnerEdge::Local(Edge::DeadAdmission)),
         )
         .is_err()
     );
@@ -415,7 +415,7 @@ fn coupled_admission_accounts_own_floor_physical_postimage_and_remaining_credit(
             0,
             1,
             limits,
-            Some(Edge::Admission)
+            Some(RootOwnerEdge::Local(Edge::Admission))
         )
         .is_err()
     );
@@ -429,7 +429,7 @@ fn coupled_admission_accounts_own_floor_physical_postimage_and_remaining_credit(
             0,
             1,
             limits,
-            Some(Edge::Admission)
+            Some(RootOwnerEdge::Local(Edge::Admission))
         )
         .is_ok()
     );

@@ -242,12 +242,12 @@ fn source_genesis_intent_context_rejects_noncanonical_data_and_foreign_fixed_uid
         assert!(SourceTreeGenesisIntentContextV1::decode(&bytes[..length]).is_err());
     }
     for range in [8..10, 16..20, 24..56, 56..64, 632..664] {
-        let mut changed = bytes;
+        let mut changed = bytes.clone();
         changed[range].fill(0);
         assert!(SourceTreeGenesisIntentContextV1::decode(&changed).is_err());
     }
     for offset in [0, 10, 20, 56] {
-        let mut changed = bytes;
+        let mut changed = bytes.clone();
         changed[offset] ^= 1;
         assert!(SourceTreeGenesisIntentContextV1::decode(&changed).is_err());
     }

@@ -322,7 +322,8 @@ fn nonempty_rules(
 
 fn encoded_fixture(verified: &VerifiedPolicyPublicationV1) -> (Vec<u8>, Vec<u8>) {
     let diagnostics = digest_bytes(DIAGNOSTICS_DOMAIN, &verified.diagnostics);
-    let candidate = encode_candidate_payload(13, verified, diagnostics).expect("V3 candidate");
+    let candidate =
+        encode_candidate_payload(13, verified.body_fields(), diagnostics).expect("V3 candidate");
     let current = encode_current_payload(
         verified.project,
         verified.sandbox,

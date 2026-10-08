@@ -217,7 +217,7 @@ fn canonical_output_full_publication_survives_protected_commit_and_cold_replay()
     )
     .unwrap();
     let diagnostics_digest = digest_bytes(DIAGNOSTICS_DOMAIN, &diagnostics);
-    let candidate = encode_candidate_payload(1, &verified, diagnostics_digest).unwrap();
+    let candidate = encode_candidate_payload(1, verified.body_fields(), diagnostics_digest).unwrap();
     let current = encode_current_payload(
         verified.project,
         verified.sandbox,

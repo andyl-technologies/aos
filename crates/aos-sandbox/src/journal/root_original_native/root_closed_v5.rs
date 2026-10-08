@@ -187,4 +187,4 @@ fn require_store_transfer(
 mod tests;
 
 #[cfg(test)]
-pub(super) use tests::phase11_funded_data;
+pub(in crate::journal) use tests::phase11_funded_data;

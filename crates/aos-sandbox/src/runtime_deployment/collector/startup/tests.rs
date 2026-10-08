@@ -90,12 +90,14 @@ fn unrun_exact_two_capability_collector_is_not_empty_capability_host() {
          CapBnd:\t{CAPABILITIES:016x}\nCapAmb:\t0000000000000000\nNoNewPrivs:\t1\nSeccomp:\t0\n"
     );
     assert!(require_status(status.as_bytes()).is_ok());
-    for (original, replacement) in [
+    let mutations: [(String, String); 4] = [
         (format!("CapEff:\t{CAPABILITIES:016x}"), "CapEff:\t0000000000000000".into()),
         ("NoNewPrivs:\t1".into(), "NoNewPrivs:\t0".into()),
         ("Seccomp:\t0".into(), "Seccomp:\t2".into()),
         ("Uid:\t0\t0\t0\t0".into(), "Uid:\t0\t1\t0\t0".into()),
-    ] {
+    ];
+
+    for (original, replacement) in mutations {
         assert!(require_status(status.replace(&original, &replacement).as_bytes()).is_err());
     }
     assert!(require_status(format!("{status}CapEff:\t{CAPABILITIES:016x}\n").as_bytes()).is_err());
