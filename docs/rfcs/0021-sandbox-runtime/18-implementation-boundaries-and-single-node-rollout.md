@@ -69,6 +69,14 @@ default; decoded history does not become fresh drain authority. This source
 boundary does not isolate the remaining protected ownership/Journal dependency
 group or qualify distributed execution.
 
+The private `local_inventory::assignment::acceptance_evidence` and
+`restore_admission` owners also require `multi-node`. They retain the original
+sealed assignment-acceptance and destination restore-admission factories, with
+their exact verifier, capability, publication and currentness joins. Local
+assignment models, snapshot manifests and checkpoints, and canonical retained
+history remain available by default. Destination restore-admission evidence is
+not the local snapshot/restore implementation or permission to execute a restore.
+
 ## Dependency direction
 
 Arrows below mean "depends on", not IPC or privilege inheritance:
