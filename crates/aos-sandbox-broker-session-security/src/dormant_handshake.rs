@@ -5,7 +5,10 @@
 //! custody and joins concrete domain effects to protected terminal commits and
 //! recovery. Its private `host_catalog_publication` child owns catalog
 //! publication integration, descriptor custody, and readback/retry recipes;
-//! shared session mechanics remain with their original owners.
+//! `host_scope_terminal` owns Host scope descriptor reservoirs and their
+//! terminal commit, finalization, replay reopening, and transport recipes.
+//! Shared session mechanics remain with their original owners. These private
+//! groups do not isolate the concrete domain dependency closure.
 //!
 //! This module performs no listener or route registration.
 

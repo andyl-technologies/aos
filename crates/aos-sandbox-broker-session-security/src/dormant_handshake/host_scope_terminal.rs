@@ -1,4 +1,10 @@
 //! Host scope descriptor-terminal custody, finalization, replay, and transport.
+//!
+//! Descriptor reservoirs retain their original field and drop order across
+//! terminal commit, Host receipt finalization, replay reopening, and transport.
+//! These recipes borrow the original authenticated session; its protected
+//! journal, socket, and retained replay-ticket vector keep their original owner.
+//! This private grouping adds no authority factory or crate boundary.
 
 use std::os::fd::OwnedFd;
 
