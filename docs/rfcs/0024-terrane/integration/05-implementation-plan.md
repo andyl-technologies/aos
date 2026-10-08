@@ -1697,6 +1697,29 @@ changes no production code. Its exact selector joins the existing exclusive
 five-minute local-deletion process scheduling class; C/G/D/H, lease and writer
 deadlines remain unchanged. Compilation and runtime qualification are pending.
 
+Integrated `971ff5d82c` passes fresh SDK library compilation, strict library
+and all-target Clippy, and compiled discovery of its exact new witness.
+The first actual execution fails after 110.731 seconds: native deletion and
+durable Done complete, but the unchanged helper expects capability generation
+6 from an earlier reopen rather than generation 8 captured before deletion.
+Later preservation assertions do not execute. All 6,064 captured inputs and
+the executable remain unchanged. The earlier read-only target refusal occurred
+before compilation and remains separate. Reviewed test-only `b82427b68c` clears
+the obsolete reopen override only in the new test, so the unchanged oracle
+compares the complete actual pre-deletion record. Its two-file diff and all
+6,062 unaffected source images are verified; compilation and execution remain
+pending. No complete witness or collector qualification follows.
+
+Reviewed private `f1f178a8cb` adds opt-in, test-only aggregate timings for Raw
+installation, recapture and synchronization. Independent comparison preserves
+the ordered production tokens of all four instrumented files, and both complete
+format checks pass. Timing groups are inclusive and must not be added together;
+byte counts describe expected bodies, not measured successful reads.
+Compilation, regression execution and the unchanged indexing deadline witness
+remain pending on this source. Separately, review identifies missing witnesses
+for ordinary and imported cold-source preservation after physical Done;
+retirement-only source checks do not prove that outcome.
+
 The sealed current floor contains 89 aggregate gates, including all 69 T0/T1
 plan-required names and twenty implemented supporting checks. Read-only evaluation
 finds `gc-two-phase-delete` explicitly pending. Output validity establishes no
