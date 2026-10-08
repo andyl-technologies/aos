@@ -1715,10 +1715,28 @@ installation, recapture and synchronization. Independent comparison preserves
 the ordered production tokens of all four instrumented files, and both complete
 format checks pass. Timing groups are inclusive and must not be added together;
 byte counts describe expected bodies, not measured successful reads.
-Compilation, regression execution and the unchanged indexing deadline witness
-remain pending on this source. Separately, review identifies missing witnesses
+Initial compilation and runtime qualification were pending on this source.
+Separately, review identifies missing witnesses
 for ordinary and imported cold-source preservation after physical Done;
 retirement-only source checks do not prove that outcome.
+
+Frozen `f1f178a8cb` subsequently passes fresh SDK library compilation, strict
+library and all-target Clippy, compiled inventory and all 31 exact regressions
+in 1.205 seconds. Its single unchanged 1,024-entry ordinary witness fails in
+62.885 seconds with a store denial. The trace identifies the actual retained
+deadline refusal at 30.024610374 seconds against 30 seconds, before final Raw
+synchronization. The thirty bounded install batches prepare and recapture 233
+outputs; tracked installation takes 26.665524070 seconds, including
+26.432649637 seconds in native execution and receipt waits, 0.166761583 seconds
+in preparation and 0.064502962 seconds in recapture. These nested intervals
+must not be added to the installation total. Internal validation, syscall and
+dispatch contributors remain unsplit. Final synchronization of those 233
+outputs, Raw acknowledgment, durable staging, history, baseline output and
+maintenance oracles are unreached. Earlier setup synchronization aggregates
+measure different publications and cannot substitute for the missing final
+measurement. All 6,067 captured inputs and the actual executable remain
+unchanged through the original executions. No retry, speedup or full-gate
+qualification follows.
 
 The sealed current floor contains 89 aggregate gates, including all 69 T0/T1
 plan-required names and twenty implemented supporting checks. Read-only evaluation
