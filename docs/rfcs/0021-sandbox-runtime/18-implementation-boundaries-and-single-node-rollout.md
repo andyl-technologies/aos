@@ -49,14 +49,6 @@ The first implementation phase does **not** implement or enable:
 - cluster consensus, failover, federation, or cluster networking; or
 - multi-node services, configuration, credentials, or background workers.
 
-The private `local_inventory::draining::verified_observation` owner is selected
-only by `multi-node`. It retains the existing trusted drain evidence factories,
-protected joins, commitments and currentness validation. Raw drain reports,
-model layouts, phase checks and retained-history validation remain available by
-default; decoded history does not become fresh drain authority. This source
-boundary does not isolate the remaining protected ownership/Journal dependency
-group or qualify distributed execution.
-
 Their contracts remain documented for a later implementation phase. A local
 request selecting another node fails explicitly rather than entering a dormant
 remote path. Local scheduling means capacity admission and choosing among
@@ -68,6 +60,14 @@ requirements. Local ownership must not require coordinator code, a simulated
 fleet, or an online off-host service. It retains the independently protected
 local authority and any required provisioned local floor; it does not claim
 cross-host exclusivity or whole-host rollback resistance without their proofs.
+
+The private `local_inventory::draining::verified_observation` owner is selected
+only by `multi-node`. It retains the existing trusted drain evidence factories,
+protected joins, commitments and currentness validation. Raw drain reports,
+model layouts, phase checks and retained-history validation remain available by
+default; decoded history does not become fresh drain authority. This source
+boundary does not isolate the remaining protected ownership/Journal dependency
+group or qualify distributed execution.
 
 ## Dependency direction
 
@@ -247,11 +247,13 @@ payloads, response projection and complete journal-owner dispatch. Private
 `public_rpc` owns client-facing registration, authorization and routing. The
 private `worker` owns the complete reconciliation loop, retained history
 recovery, broker inventories, catalog publication and retry classification.
-Both startup routes borrow that same loop. The root retains concrete effect
-execution and the shared authenticated broker-session slots used across these
-owners. These internal
-boundaries clarify responsibilities without creating public authority factories
-or isolating the remaining concrete domain dependency closure.
+Both startup routes borrow that same loop. Private `effects` retains one concrete
+executor with focused admission, lifecycle, snapshot coordination and execution
+children. The original field order, constructor moves, pending native outcomes
+and journal/session borrow boundaries remain on that same owner. The root keeps
+the shared authenticated broker-session slots used across these owners. These
+internal boundaries clarify responsibilities without creating public authority
+factories or isolating the remaining concrete domain dependency closure.
 
 The private Runtime `inventory_transport` module owns the five sealed
 initialization, successor, send, receive, and commit transport stages. It borrows
