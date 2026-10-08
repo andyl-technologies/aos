@@ -15,13 +15,15 @@
 //! expected-lease-digest:32 || requested-maximum-seconds:u64be
 //! ```
 
-mod transition;
-
-use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use aos_sandbox_core::model::KeyReference;
-use aos_sandbox_core::{ObjectDigest, RawPairedClockSample, SandboxId};
+use aos_sandbox_core::{RawPairedClockSample, SandboxId};
+use aos_sandbox_ownership::{
+    OwnershipHistory, OwnershipHistoryBegin, OwnershipHistoryBounds, OwnershipHistoryCompletion,
+    OwnershipHistoryError, OwnershipHistoryQuery, OwnershipHistoryRecordKind,
+    OwnershipHistoryTransaction,
+};
 use aos_sandbox_ownership_protocol::protocol::OwnershipTransactionReferenceV1;
 pub use aos_sandbox_ownership_protocol::{
     CLAIM_BYTES, ExpectedOwnershipLease, OwnershipAuthority, OwnershipAuthorityError,
@@ -29,32 +31,24 @@ pub use aos_sandbox_ownership_protocol::{
     OwnershipLeaseAcquisitionError, OwnershipTransactionReceiptV1, RecoveredOwnershipLease,
     SignedOwnershipLease, UnverifiedOwnershipLeaseResponse,
 };
-use sha2::{Digest as _, Sha256};
 
 use crate::journal::{
     Journal, JournalError, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace,
     RecoveryReport,
 };
 
-const MAXIMUM_LEASE_BYTES: usize = 64 * 1024;
-const MAXIMUM_SIGNATURE_BYTES: usize = 64 * 1024;
-const DURABLE_ENTRY_MAGIC: &[u8; 8] = b"AOSOWNE1";
-const DURABLE_CURRENT_MAGIC: &[u8; 8] = b"AOSOWNC1";
-const DURABLE_FORMAT_VERSION: u16 = 1;
-const DURABLE_ENTRY_PREFIX: &[u8] = b"ownership-entry-v1:";
-const DURABLE_CURRENT_PREFIX: &[u8] = b"ownership-current-v1:";
-const MAXIMUM_DURABLE_ENTRY_BYTES: usize = 196 * 1024;
-const MAXIMUM_DURABLE_ENTRIES: usize = 256;
+const MAXIMUM_DURABLE_ENTRY_BYTES: usize = OwnershipHistoryBounds::MAXIMUM_ENTRY_BYTES;
+const MAXIMUM_DURABLE_ENTRIES: usize = OwnershipHistoryBounds::MAXIMUM_ENTRIES;
 const MAXIMUM_DURABLE_CURRENT_POINTERS: usize = MAXIMUM_DURABLE_ENTRIES;
 const MAXIMUM_DURABLE_RECORDS: usize = MAXIMUM_DURABLE_ENTRIES + MAXIMUM_DURABLE_CURRENT_POINTERS;
-const MAXIMUM_DURABLE_KEY_BYTES: usize = 64;
+const MAXIMUM_DURABLE_KEY_BYTES: usize = OwnershipHistoryBounds::MAXIMUM_KEY_BYTES;
 // The fixed entry envelope is 330 bytes plus a bounded 255-byte stable key ID.
-const MAXIMUM_DURABLE_INTENT_BYTES: usize = 585;
+const MAXIMUM_DURABLE_INTENT_BYTES: usize = OwnershipHistoryBounds::MAXIMUM_INTENT_BYTES;
 const MAXIMUM_DURABLE_INTENT_RECORD_BYTES: usize =
     7 + MAXIMUM_DURABLE_KEY_BYTES + MAXIMUM_DURABLE_INTENT_BYTES;
 const MAXIMUM_DURABLE_RECORD_BYTES: usize =
     MAXIMUM_DURABLE_ENTRY_BYTES + MAXIMUM_DURABLE_KEY_BYTES + 7;
-const MAXIMUM_DURABLE_CURRENT_BYTES: usize = 8 + 2 + 16 + 8 + 32;
+const MAXIMUM_DURABLE_CURRENT_BYTES: usize = OwnershipHistoryBounds::MAXIMUM_CURRENT_BYTES;
 const MAXIMUM_DURABLE_MATERIALIZED_BYTES: usize = MAXIMUM_DURABLE_ENTRIES
     * (MAXIMUM_DURABLE_KEY_BYTES + MAXIMUM_DURABLE_ENTRY_BYTES)
     + MAXIMUM_DURABLE_CURRENT_POINTERS
@@ -69,8 +63,6 @@ const MAXIMUM_DURABLE_JOURNAL_BYTES: u64 = 72
             + MAXIMUM_DURABLE_KEY_BYTES as u64
             + 657);
 const MAXIMUM_DURABLE_TRANSACTIONS: usize = MAXIMUM_DURABLE_ENTRIES * 2;
-const BEGIN_TRANSACTION_DOMAIN: &[u8] = b"aos-sandbox-ownership-intent-transaction-v1\0";
-const COMPLETION_TRANSACTION_DOMAIN: &[u8] = b"aos-sandbox-ownership-completion-transaction-v1\0";
 
 /// Reports durable ownership-authority state or recovery failure.
 #[derive(Debug, thiserror::Error)]
@@ -133,21 +125,6 @@ pub enum DurableOwnershipQueryOutcome {
     Completed(Box<UnverifiedOwnershipLeaseResponse>),
 }
 
-#[derive(Clone, Debug)]
-enum DurableEntryState {
-    Intent,
-    Completed {
-        accepted_wall_seconds: i64,
-        lease: Box<RecoveredOwnershipLease>,
-    },
-}
-
-#[derive(Clone, Debug)]
-struct DurableOwnershipEntry {
-    claim: OwnershipClaimV1,
-    state: DurableEntryState,
-}
-
 /// Owns one protected, crash-recoverable ownership authority journal.
 ///
 /// The store is an authority state machine, not a broker. Historical proofs
@@ -157,8 +134,11 @@ struct DurableOwnershipEntry {
 /// guarantees exact response replay for the canonical request ID and digest.
 /// Recovery never contacts that issuer, so a dangling intent remains durable
 /// and non-authorizing until an operator or controller explicitly resumes it.
-/// The protected journal is dedicated to this owner; recovery rejects records
-/// from other subsystems rather than sharing a writable journal namespace.
+/// Canonical operation and current-pointer records are owned by the lower
+/// historical state owner. This adapter retains the protected journal, fixed
+/// native limits, issuer calls, and paired-clock sampling. Historical recovery
+/// rejects foreign operation/current records and all effect/idempotency
+/// records; other namespace gates remain the native journal's responsibility.
 ///
 /// Same-owner advancement changes assignment semantics without transferring
 /// node, incarnation, or epoch. Release, expiry retirement, and ownership
@@ -170,9 +150,7 @@ struct DurableOwnershipEntry {
 /// Durable encoding and namespaces use the sole V1 authority-state schema.
 pub struct DurableOwnershipAuthority {
     journal: Journal,
-    verifier: OwnershipAuthorityVerifier,
-    entries: BTreeMap<[u8; 16], DurableOwnershipEntry>,
-    current: BTreeMap<SandboxId, RecoveredOwnershipLease>,
+    history: OwnershipHistory,
 }
 
 impl DurableOwnershipAuthority {
@@ -203,19 +181,22 @@ impl DurableOwnershipAuthority {
         journal: Journal,
         verifier: OwnershipAuthorityVerifier,
     ) -> Result<Self, DurableOwnershipAuthorityError> {
-        let (entries, current) = recover_durable_ownership(&journal, &verifier)?;
-        Ok(Self {
-            journal,
+        let history = OwnershipHistory::from_records(
             verifier,
-            entries,
-            current,
-        })
+            journal.records(RecordNamespace::Operation),
+            journal.records(RecordNamespace::DesiredState),
+            journal.records(RecordNamespace::Effect),
+            journal.records(RecordNamespace::Idempotency),
+        )
+        .map_err(DurableOwnershipAuthorityError::from)?;
+
+        Ok(Self { journal, history })
     }
 
     /// Returns the exact protected ownership-authority key generation.
     #[must_use]
     pub const fn authority(&self) -> &KeyReference {
-        self.verifier.authority()
+        self.history.authority()
     }
 
     /// Observes one exact durable request and claim binding.
@@ -232,18 +213,13 @@ impl DurableOwnershipAuthority {
         &self,
         reference: OwnershipTransactionReferenceV1,
     ) -> Result<DurableOwnershipQueryOutcome, DurableOwnershipAuthorityError> {
-        let Some(entry) = self.entries.get(reference.request_id()) else {
-            return Ok(DurableOwnershipQueryOutcome::Absent);
-        };
-        if entry.claim.digest() != reference.claim_digest() {
-            return Err(DurableOwnershipAuthorityError::IdempotencyConflict);
-        }
-        Ok(match &entry.state {
-            DurableEntryState::Intent => DurableOwnershipQueryOutcome::Pending {
-                action: entry.claim.action(),
-            },
-            DurableEntryState::Completed { lease, .. } => {
-                DurableOwnershipQueryOutcome::Completed(Box::new(lease.exact_response()))
+        Ok(match self.history.query(reference)? {
+            OwnershipHistoryQuery::Absent => DurableOwnershipQueryOutcome::Absent,
+            OwnershipHistoryQuery::Pending { action } => {
+                DurableOwnershipQueryOutcome::Pending { action }
+            }
+            OwnershipHistoryQuery::Completed(response) => {
+                DurableOwnershipQueryOutcome::Completed(response)
             }
         })
     }
@@ -268,46 +244,19 @@ impl DurableOwnershipAuthority {
         &mut self,
         claim: &OwnershipClaimV1,
     ) -> Result<DurableOwnershipBeginOutcome, DurableOwnershipAuthorityError> {
-        if let Some(existing) = self.entries.get(claim.request_id()) {
-            if existing.claim != *claim {
-                return Err(DurableOwnershipAuthorityError::IdempotencyConflict);
+        match self.history.prepare_begin(claim)? {
+            OwnershipHistoryBegin::Pending => Ok(DurableOwnershipBeginOutcome::Pending),
+            OwnershipHistoryBegin::Replay(response) => {
+                Ok(DurableOwnershipBeginOutcome::Replay(response))
             }
-            return Ok(match &existing.state {
-                DurableEntryState::Intent => DurableOwnershipBeginOutcome::Pending,
-                DurableEntryState::Completed { lease, .. } => {
-                    DurableOwnershipBeginOutcome::Replay(Box::new(lease.exact_response()))
-                }
-            });
+            OwnershipHistoryBegin::Prepared(prepared, transaction) => {
+                let transaction = native_ownership_transaction(transaction)?;
+                self.journal.commit(&transaction)?;
+
+                prepared.publish();
+                Ok(DurableOwnershipBeginOutcome::Pending)
+            }
         }
-        // The fixed journal limits reserve a worst-case completion transaction
-        // for every admitted intent. Refusing the (N + 1)th request before its
-        // intent is durable prevents successful external issuance from ever
-        // becoming permanently uncommittable due to local capacity.
-        if self.entries.len() >= MAXIMUM_DURABLE_ENTRIES {
-            return Err(DurableOwnershipAuthorityError::ResourceExhausted);
-        }
-        let sandbox = claim.assignment().sandbox();
-        if self.entries.values().any(|entry| {
-            entry.claim.assignment().sandbox() == sandbox
-                && matches!(entry.state, DurableEntryState::Intent)
-        }) {
-            return Err(DurableOwnershipAuthorityError::CompareAndSwapConflict);
-        }
-        validate_claim_against_current(claim, &self.current)?;
-        let entry = DurableOwnershipEntry {
-            claim: claim.clone(),
-            state: DurableEntryState::Intent,
-        };
-        let record = JournalRecord::put(
-            RecordNamespace::Operation,
-            durable_entry_key(claim.request_id()),
-            encode_durable_entry(&entry, self.verifier.authority()),
-        );
-        let transaction =
-            JournalTransaction::new(begin_transaction_id(*claim.request_id()), vec![record])?;
-        self.journal.commit(&transaction)?;
-        self.entries.insert(*claim.request_id(), entry);
-        Ok(DurableOwnershipBeginOutcome::Pending)
     }
 
     /// Completes or explicitly resumes one durable unsigned intent.
@@ -339,57 +288,28 @@ impl DurableOwnershipAuthority {
         A: OwnershipAuthority,
         C: FnMut() -> Result<RawPairedClockSample, ProtectedOwnershipClockError>,
     {
-        let entry = self
-            .entries
-            .get(&request_id)
-            .cloned()
-            .ok_or(DurableOwnershipAuthorityError::IntentNotFound)?;
-        if let DurableEntryState::Completed { lease, .. } = entry.state {
-            return Ok(lease.exact_response());
-        }
-        let claim = entry.claim;
-        validate_claim_against_current(&claim, &self.current)?;
+        let pending = match self.history.prepare_completion(request_id)? {
+            OwnershipHistoryCompletion::Replay(response) => return Ok(response),
+            OwnershipHistoryCompletion::Pending(pending) => pending,
+        };
+        let claim = pending.claim();
         let response = match claim.action() {
-            OwnershipClaimAction::Acquire => issuer.acquire(&claim),
-            OwnershipClaimAction::Renew => issuer.renew(&claim),
-            OwnershipClaimAction::Advance => issuer.advance(&claim),
+            OwnershipClaimAction::Acquire => issuer.acquire(claim),
+            OwnershipClaimAction::Renew => issuer.renew(claim),
+            OwnershipClaimAction::Advance => issuer.advance(claim),
         };
         let response = response.map_err(OwnershipLeaseAcquisitionError::Authority)?;
+
         // The protected clock is sampled only after the possibly blocking
         // issuer call, so an already-expired response cannot be recorded using
         // stale pre-call time. This sample is advisory input to live signature
         // verification, not a transferable clock capability.
         let clock = protected_clock()?;
-        let lease = self.verifier.verify_response(&claim, response, &clock)?;
-        let exact_response = lease.exact_response();
-        validate_claim_against_current(&claim, &self.current)?;
-        let recovered = lease.into_recovered();
-        let completed = DurableOwnershipEntry {
-            claim: claim.clone(),
-            state: DurableEntryState::Completed {
-                accepted_wall_seconds: clock.wall_seconds(),
-                lease: Box::new(recovered.clone()),
-            },
-        };
-        let current_record = encode_current_pointer(request_id, &recovered);
-        let records = vec![
-            JournalRecord::put(
-                RecordNamespace::Operation,
-                durable_entry_key(&request_id),
-                encode_durable_entry(&completed, self.verifier.authority()),
-            ),
-            JournalRecord::put(
-                RecordNamespace::DesiredState,
-                durable_current_key(recovered.assignment().sandbox()),
-                current_record,
-            ),
-        ];
-        let transaction = JournalTransaction::new(completion_transaction_id(request_id), records)?;
+        let (prepared, transaction) = pending.authenticate(response, &clock)?;
+        let transaction = native_ownership_transaction(transaction)?;
         self.journal.commit(&transaction)?;
-        self.entries.insert(request_id, completed);
-        self.current
-            .insert(recovered.assignment().sandbox(), recovered);
-        Ok(exact_response)
+
+        Ok(prepared.publish())
     }
 
     /// Returns the unique state-machine head for one sandbox, if completed.
@@ -399,15 +319,13 @@ impl DurableOwnershipAuthority {
     /// and must pass the normal live broker verification path before use.
     #[must_use]
     pub fn current(&self, sandbox: SandboxId) -> Option<&RecoveredOwnershipLease> {
-        self.current.get(&sandbox)
+        self.history.current(sandbox)
     }
 
     /// Returns whether one request is a durable unsigned intent.
     #[must_use]
     pub fn is_pending(&self, request_id: &[u8; 16]) -> bool {
-        self.entries
-            .get(request_id)
-            .is_some_and(|entry| matches!(entry.state, DurableEntryState::Intent))
+        self.history.is_pending(request_id)
     }
 }
 
@@ -424,468 +342,39 @@ fn ownership_journal_limits() -> JournalLimits {
     }
 }
 
-fn validate_claim_against_current(
-    claim: &OwnershipClaimV1,
-    current: &BTreeMap<SandboxId, RecoveredOwnershipLease>,
-) -> Result<(), DurableOwnershipAuthorityError> {
-    let existing = current.get(&claim.assignment().sandbox());
-    match (claim.action(), existing) {
-        (OwnershipClaimAction::Acquire, None) => Ok(()),
-        (_, Some(lease)) if transition::is_valid_successor(claim, lease) => Ok(()),
-        _ => Err(DurableOwnershipAuthorityError::CompareAndSwapConflict),
-    }
-}
+// Record bytes carry no commit proof. The prepared scope retains the semantic
+// owner borrow while this adapter constructs and commits the native transaction.
+fn native_ownership_transaction(
+    prepared: OwnershipHistoryTransaction,
+) -> Result<JournalTransaction, JournalError> {
+    let (id, records) = prepared.into_parts();
+    let records = records
+        .into_iter()
+        .map(|record| {
+            let (kind, key, value) = record.into_parts();
+            let namespace = match kind {
+                OwnershipHistoryRecordKind::Entry => RecordNamespace::Operation,
+                OwnershipHistoryRecordKind::Current => RecordNamespace::DesiredState,
+            };
 
-fn durable_entry_key(request_id: &[u8; 16]) -> Vec<u8> {
-    let mut key = Vec::with_capacity(DURABLE_ENTRY_PREFIX.len() + request_id.len());
-    key.extend_from_slice(DURABLE_ENTRY_PREFIX);
-    key.extend_from_slice(request_id);
-    key
-}
-
-fn durable_current_key(sandbox: SandboxId) -> Vec<u8> {
-    let mut key = Vec::with_capacity(DURABLE_CURRENT_PREFIX.len() + 16);
-    key.extend_from_slice(DURABLE_CURRENT_PREFIX);
-    key.extend_from_slice(sandbox.as_bytes());
-    key
-}
-
-fn completion_transaction_id(request_id: [u8; 16]) -> [u8; 16] {
-    ownership_transaction_id(COMPLETION_TRANSACTION_DOMAIN, request_id)
-}
-
-fn begin_transaction_id(request_id: [u8; 16]) -> [u8; 16] {
-    ownership_transaction_id(BEGIN_TRANSACTION_DOMAIN, request_id)
-}
-
-fn ownership_transaction_id(domain: &[u8], request_id: [u8; 16]) -> [u8; 16] {
-    let mut digest = Sha256::new();
-    digest.update(domain);
-    digest.update(request_id);
-    let mut id = [0; 16];
-    id.copy_from_slice(&digest.finalize()[..16]);
-    // Journal transaction IDs reserve all-zero. Fixing one bit avoids a
-    // probabilistic invalid output without admitting caller-selected bytes.
-    id[0] |= 0x80;
-    id
-}
-
-fn encode_durable_entry(entry: &DurableOwnershipEntry, authority: &KeyReference) -> Vec<u8> {
-    let key_id = authority.stable_key_id().as_str().as_bytes();
-    let response_bytes = match &entry.state {
-        DurableEntryState::Intent => 0,
-        DurableEntryState::Completed { lease, .. } => {
-            lease.canonical_lease().len()
-                + lease.canonical_signature().len()
-                + lease.canonical_receipt().len()
-                + lease.canonical_receipt_signature().len()
-        }
-    };
-    let mut bytes = Vec::with_capacity(328 + key_id.len() + response_bytes);
-    bytes.extend_from_slice(DURABLE_ENTRY_MAGIC);
-    bytes.extend_from_slice(&DURABLE_FORMAT_VERSION.to_be_bytes());
-    bytes.push(match entry.state {
-        DurableEntryState::Intent => 1,
-        DurableEntryState::Completed { .. } => 2,
-    });
-    bytes.extend_from_slice(&[0; 5]);
-    bytes.extend_from_slice(&(key_id.len() as u16).to_be_bytes());
-    bytes.extend_from_slice(key_id);
-    bytes.extend_from_slice(&authority.generation().to_be_bytes());
-    bytes.extend_from_slice(authority.public_key_sha256().as_bytes());
-    bytes.extend_from_slice(entry.claim.canonical_bytes());
-    bytes.extend_from_slice(entry.claim.digest().as_bytes());
-    match &entry.state {
-        DurableEntryState::Intent => {
-            bytes.extend_from_slice(&[0; 8 + 8 + 32 + 4 + 4 + 4 + 4]);
-        }
-        DurableEntryState::Completed {
-            accepted_wall_seconds,
-            lease,
-        } => {
-            bytes.extend_from_slice(&accepted_wall_seconds.to_be_bytes());
-            bytes.extend_from_slice(&lease.generation().to_be_bytes());
-            bytes.extend_from_slice(lease.digest().as_bytes());
-            bytes.extend_from_slice(&(lease.canonical_lease().len() as u32).to_be_bytes());
-            bytes.extend_from_slice(&(lease.canonical_signature().len() as u32).to_be_bytes());
-            bytes.extend_from_slice(&(lease.canonical_receipt().len() as u32).to_be_bytes());
-            bytes.extend_from_slice(
-                &(lease.canonical_receipt_signature().len() as u32).to_be_bytes(),
-            );
-            bytes.extend_from_slice(lease.canonical_lease());
-            bytes.extend_from_slice(lease.canonical_signature());
-            bytes.extend_from_slice(lease.canonical_receipt());
-            bytes.extend_from_slice(lease.canonical_receipt_signature());
-        }
-    }
-    debug_assert!(bytes.len() <= MAXIMUM_DURABLE_ENTRY_BYTES);
-    bytes
-}
-
-fn decode_durable_entry(
-    key: &[u8],
-    bytes: &[u8],
-    verifier: &OwnershipAuthorityVerifier,
-) -> Result<DurableOwnershipEntry, DurableOwnershipAuthorityError> {
-    if key.len() != DURABLE_ENTRY_PREFIX.len() + 16
-        || !key.starts_with(DURABLE_ENTRY_PREFIX)
-        || bytes.len() > MAXIMUM_DURABLE_ENTRY_BYTES
-    {
-        return Err(DurableOwnershipAuthorityError::CorruptState);
-    }
-    let request_id: [u8; 16] = key[DURABLE_ENTRY_PREFIX.len()..]
-        .try_into()
-        .map_err(|_| DurableOwnershipAuthorityError::CorruptState)?;
-    let mut cursor = 0;
-    if durable_take::<8>(bytes, &mut cursor)? != *DURABLE_ENTRY_MAGIC
-        || u16::from_be_bytes(durable_take::<2>(bytes, &mut cursor)?) != DURABLE_FORMAT_VERSION
-    {
-        return Err(DurableOwnershipAuthorityError::CorruptState);
-    }
-    let status = durable_take::<1>(bytes, &mut cursor)?[0];
-    if durable_take::<5>(bytes, &mut cursor)? != [0; 5] {
-        return Err(DurableOwnershipAuthorityError::CorruptState);
-    }
-    let key_id_length = usize::from(u16::from_be_bytes(durable_take::<2>(bytes, &mut cursor)?));
-    if key_id_length == 0 || key_id_length > 255 {
-        return Err(DurableOwnershipAuthorityError::CorruptState);
-    }
-    let key_id = durable_slice(bytes, &mut cursor, key_id_length)?;
-    let authority_generation = u64::from_be_bytes(durable_take::<8>(bytes, &mut cursor)?);
-    let authority_fingerprint = ObjectDigest::from_bytes(durable_take::<32>(bytes, &mut cursor)?);
-    if key_id != verifier.authority().stable_key_id().as_str().as_bytes()
-        || authority_generation != verifier.authority().generation()
-        || authority_fingerprint != verifier.authority().public_key_sha256()
-    {
-        return Err(DurableOwnershipAuthorityError::CorruptState);
-    }
-    let claim_bytes = durable_take::<CLAIM_BYTES>(bytes, &mut cursor)?;
-    let claim = OwnershipClaimV1::from_canonical_bytes(&claim_bytes)
-        .map_err(|_| DurableOwnershipAuthorityError::CorruptState)?;
-    let persisted_claim_digest = ObjectDigest::from_bytes(durable_take::<32>(bytes, &mut cursor)?);
-    if claim.request_id() != &request_id || persisted_claim_digest != claim.digest() {
-        return Err(DurableOwnershipAuthorityError::CorruptState);
-    }
-    let accepted_wall_seconds = i64::from_be_bytes(durable_take::<8>(bytes, &mut cursor)?);
-    let response_generation = u64::from_be_bytes(durable_take::<8>(bytes, &mut cursor)?);
-    let response_digest = ObjectDigest::from_bytes(durable_take::<32>(bytes, &mut cursor)?);
-    let lease_length = usize::try_from(u32::from_be_bytes(durable_take::<4>(bytes, &mut cursor)?))
-        .map_err(|_| DurableOwnershipAuthorityError::CorruptState)?;
-    let signature_length =
-        usize::try_from(u32::from_be_bytes(durable_take::<4>(bytes, &mut cursor)?))
-            .map_err(|_| DurableOwnershipAuthorityError::CorruptState)?;
-    let receipt_length =
-        usize::try_from(u32::from_be_bytes(durable_take::<4>(bytes, &mut cursor)?))
-            .map_err(|_| DurableOwnershipAuthorityError::CorruptState)?;
-    let receipt_signature_length =
-        usize::try_from(u32::from_be_bytes(durable_take::<4>(bytes, &mut cursor)?))
-            .map_err(|_| DurableOwnershipAuthorityError::CorruptState)?;
-    if status == 1 {
-        if accepted_wall_seconds != 0
-            || response_generation != 0
-            || response_digest.as_bytes() != &[0; 32]
-            || lease_length != 0
-            || signature_length != 0
-            || receipt_length != 0
-            || receipt_signature_length != 0
-            || cursor != bytes.len()
-        {
-            return Err(DurableOwnershipAuthorityError::CorruptState);
-        }
-        return Ok(DurableOwnershipEntry {
-            claim,
-            state: DurableEntryState::Intent,
-        });
-    }
-    if status != 2
-        || response_generation == 0
-        || response_digest.as_bytes() == &[0; 32]
-        || lease_length == 0
-        || lease_length > MAXIMUM_LEASE_BYTES
-        || signature_length == 0
-        || signature_length > MAXIMUM_SIGNATURE_BYTES
-        || receipt_length == 0
-        || receipt_length > aos_sandbox_ownership_protocol::MAXIMUM_RECEIPT_BYTES
-        || receipt_signature_length == 0
-        || receipt_signature_length > MAXIMUM_SIGNATURE_BYTES
-        || lease_length
-            .checked_add(signature_length)
-            .and_then(|length| length.checked_add(receipt_length))
-            .and_then(|length| length.checked_add(receipt_signature_length))
-            .and_then(|length| cursor.checked_add(length))
-            != Some(bytes.len())
-    {
-        return Err(DurableOwnershipAuthorityError::CorruptState);
-    }
-    let response = UnverifiedOwnershipLeaseResponse::from_transport(
-        durable_slice(bytes, &mut cursor, lease_length)?.to_vec(),
-        durable_slice(bytes, &mut cursor, signature_length)?.to_vec(),
-        durable_slice(bytes, &mut cursor, receipt_length)?.to_vec(),
-        durable_slice(bytes, &mut cursor, receipt_signature_length)?.to_vec(),
-    )
-    .map_err(|_| DurableOwnershipAuthorityError::CorruptState)?;
-    let lease = verifier
-        .authenticate_historical_response(
-            &claim,
-            response,
-            accepted_wall_seconds,
-            response_generation,
-            response_digest,
-        )
-        .map_err(|_| DurableOwnershipAuthorityError::CorruptState)?;
-    Ok(DurableOwnershipEntry {
-        claim,
-        state: DurableEntryState::Completed {
-            accepted_wall_seconds,
-            lease: Box::new(lease),
-        },
-    })
-}
-
-fn encode_current_pointer(request_id: [u8; 16], lease: &RecoveredOwnershipLease) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(66);
-    bytes.extend_from_slice(DURABLE_CURRENT_MAGIC);
-    bytes.extend_from_slice(&DURABLE_FORMAT_VERSION.to_be_bytes());
-    bytes.extend_from_slice(&request_id);
-    bytes.extend_from_slice(&lease.generation().to_be_bytes());
-    bytes.extend_from_slice(lease.digest().as_bytes());
-    bytes
-}
-
-fn decode_current_pointer(
-    key: &[u8],
-    bytes: &[u8],
-) -> Result<(SandboxId, [u8; 16], u64, ObjectDigest), DurableOwnershipAuthorityError> {
-    if key.len() != DURABLE_CURRENT_PREFIX.len() + 16
-        || !key.starts_with(DURABLE_CURRENT_PREFIX)
-        || bytes.len() != 66
-    {
-        return Err(DurableOwnershipAuthorityError::CorruptState);
-    }
-    let sandbox = SandboxId::from_bytes(
-        key[DURABLE_CURRENT_PREFIX.len()..]
-            .try_into()
-            .map_err(|_| DurableOwnershipAuthorityError::CorruptState)?,
-    );
-    let mut cursor = 0;
-    if durable_take::<8>(bytes, &mut cursor)? != *DURABLE_CURRENT_MAGIC
-        || u16::from_be_bytes(durable_take::<2>(bytes, &mut cursor)?) != DURABLE_FORMAT_VERSION
-    {
-        return Err(DurableOwnershipAuthorityError::CorruptState);
-    }
-    let request_id = durable_take::<16>(bytes, &mut cursor)?;
-    let generation = u64::from_be_bytes(durable_take::<8>(bytes, &mut cursor)?);
-    let digest = ObjectDigest::from_bytes(durable_take::<32>(bytes, &mut cursor)?);
-    if sandbox.as_bytes() == &[0; 16]
-        || request_id == [0; 16]
-        || generation == 0
-        || digest.as_bytes() == &[0; 32]
-        || cursor != bytes.len()
-    {
-        return Err(DurableOwnershipAuthorityError::CorruptState);
-    }
-    Ok((sandbox, request_id, generation, digest))
-}
-
-type RecoveredOwnershipState = (
-    BTreeMap<[u8; 16], DurableOwnershipEntry>,
-    BTreeMap<SandboxId, RecoveredOwnershipLease>,
-);
-
-fn recover_durable_ownership(
-    journal: &Journal,
-    verifier: &OwnershipAuthorityVerifier,
-) -> Result<RecoveredOwnershipState, DurableOwnershipAuthorityError> {
-    let mut entries = BTreeMap::new();
-    for (key, value) in journal.records(RecordNamespace::Operation) {
-        if entries.len() >= MAXIMUM_DURABLE_ENTRIES {
-            return Err(DurableOwnershipAuthorityError::CorruptState);
-        }
-        if !key.starts_with(DURABLE_ENTRY_PREFIX) {
-            return Err(DurableOwnershipAuthorityError::CorruptState);
-        }
-        let entry = decode_durable_entry(key, value, verifier)?;
-        if entries.insert(*entry.claim.request_id(), entry).is_some() {
-            return Err(DurableOwnershipAuthorityError::CorruptState);
-        }
-    }
-    let mut pointers = BTreeMap::new();
-    for (key, value) in journal.records(RecordNamespace::DesiredState) {
-        if pointers.len() >= MAXIMUM_DURABLE_CURRENT_POINTERS {
-            return Err(DurableOwnershipAuthorityError::CorruptState);
-        }
-        if !key.starts_with(DURABLE_CURRENT_PREFIX) {
-            return Err(DurableOwnershipAuthorityError::CorruptState);
-        }
-        let (sandbox, request, generation, digest) = decode_current_pointer(key, value)?;
-        if pointers
-            .insert(sandbox, (request, generation, digest))
-            .is_some()
-        {
-            return Err(DurableOwnershipAuthorityError::CorruptState);
-        }
-    }
-    if journal.records(RecordNamespace::Effect).next().is_some()
-        || journal
-            .records(RecordNamespace::Idempotency)
-            .next()
-            .is_some()
-    {
-        return Err(DurableOwnershipAuthorityError::CorruptState);
-    }
-    let mut grouped = BTreeMap::<SandboxId, Vec<_>>::new();
-    for (request, entry) in &entries {
-        grouped
-            .entry(entry.claim.assignment().sandbox())
-            .or_default()
-            .push((request, entry));
-    }
-    if pointers
-        .keys()
-        .any(|sandbox| !grouped.contains_key(sandbox))
-    {
-        return Err(DurableOwnershipAuthorityError::CorruptState);
-    }
-    let mut current = BTreeMap::new();
-    for (sandbox, scoped) in grouped {
-        recover_sandbox_chain(sandbox, &scoped, &entries, &pointers, &mut current)?;
-    }
-    Ok((entries, current))
-}
-
-fn recover_sandbox_chain(
-    sandbox: SandboxId,
-    scoped: &[(&[u8; 16], &DurableOwnershipEntry)],
-    entries: &BTreeMap<[u8; 16], DurableOwnershipEntry>,
-    pointers: &BTreeMap<SandboxId, ([u8; 16], u64, ObjectDigest)>,
-    current: &mut BTreeMap<SandboxId, RecoveredOwnershipLease>,
-) -> Result<(), DurableOwnershipAuthorityError> {
-    let pending: Vec<_> = scoped
-        .iter()
-        .filter(|(_, entry)| matches!(entry.state, DurableEntryState::Intent))
-        .collect();
-    if pending.len() > 1 {
-        return Err(DurableOwnershipAuthorityError::CorruptState);
-    }
-    let completed: Vec<_> = scoped
-        .iter()
-        .filter_map(|(request, entry)| match &entry.state {
-            DurableEntryState::Intent => None,
-            DurableEntryState::Completed { lease, .. } => Some((*request, entry, lease)),
+            JournalRecord::put(namespace, key, value)
         })
         .collect();
-    if completed.is_empty() {
-        if pointers.contains_key(&sandbox)
-            || pending
-                .first()
-                .is_some_and(|(_, entry)| entry.claim.action() != OwnershipClaimAction::Acquire)
-        {
-            return Err(DurableOwnershipAuthorityError::CorruptState);
-        }
-        return Ok(());
-    }
-    let roots: Vec<_> = completed
-        .iter()
-        .filter(|(_, entry, _)| entry.claim.action() == OwnershipClaimAction::Acquire)
-        .collect();
-    if roots.len() != 1 {
-        return Err(DurableOwnershipAuthorityError::CorruptState);
-    }
-    let mut by_fence = BTreeMap::new();
-    for (request, _, lease) in &completed {
-        let fence = (lease.generation(), *lease.digest().as_bytes());
-        if by_fence.insert(fence, **request).is_some() {
-            return Err(DurableOwnershipAuthorityError::CorruptState);
-        }
-    }
-    let mut children = BTreeMap::new();
-    for (request, entry, lease) in &completed {
-        if entry.claim.action() != OwnershipClaimAction::Acquire {
-            let prior = entry
-                .claim
-                .expected_prior()
-                .ok_or(DurableOwnershipAuthorityError::CorruptState)?;
-            let predecessor = by_fence
-                .get(&(prior.generation(), *prior.digest().as_bytes()))
-                .ok_or(DurableOwnershipAuthorityError::CorruptState)?;
-            let predecessor_entry = entries
-                .get(predecessor)
-                .ok_or(DurableOwnershipAuthorityError::CorruptState)?;
-            let DurableEntryState::Completed {
-                lease: predecessor_lease,
-                ..
-            } = &predecessor_entry.state
-            else {
-                return Err(DurableOwnershipAuthorityError::CorruptState);
-            };
-            if lease.generation() <= predecessor_lease.generation()
-                || !transition::is_valid_successor(&entry.claim, predecessor_lease)
-                || children.insert(*predecessor, **request).is_some()
-            {
-                return Err(DurableOwnershipAuthorityError::CorruptState);
-            }
-        }
-    }
-    let mut visited = BTreeSet::new();
-    let mut head_request = *roots[0].0;
-    loop {
-        if !visited.insert(head_request) {
-            return Err(DurableOwnershipAuthorityError::CorruptState);
-        }
-        match children.get(&head_request) {
-            Some(next) => head_request = *next,
-            None => break,
-        }
-    }
-    if visited.len() != completed.len() {
-        return Err(DurableOwnershipAuthorityError::CorruptState);
-    }
-    let head = entries
-        .get(&head_request)
-        .ok_or(DurableOwnershipAuthorityError::CorruptState)?;
-    let DurableEntryState::Completed {
-        lease: head_lease, ..
-    } = &head.state
-    else {
-        return Err(DurableOwnershipAuthorityError::CorruptState);
-    };
-    if pointers.get(&sandbox) != Some(&(head_request, head_lease.generation(), head_lease.digest()))
-    {
-        return Err(DurableOwnershipAuthorityError::CorruptState);
-    }
-    if let Some((_, pending_entry)) = pending.first() {
-        validate_claim_against_current(
-            &pending_entry.claim,
-            &BTreeMap::from([(sandbox, head_lease.as_ref().clone())]),
-        )
-        .map_err(|_| DurableOwnershipAuthorityError::CorruptState)?;
-    }
-    current.insert(sandbox, head_lease.as_ref().clone());
-    Ok(())
+
+    JournalTransaction::new(id, records)
 }
 
-fn durable_take<const N: usize>(
-    bytes: &[u8],
-    cursor: &mut usize,
-) -> Result<[u8; N], DurableOwnershipAuthorityError> {
-    durable_slice(bytes, cursor, N)?
-        .try_into()
-        .map_err(|_| DurableOwnershipAuthorityError::CorruptState)
-}
-
-fn durable_slice<'a>(
-    bytes: &'a [u8],
-    cursor: &mut usize,
-    length: usize,
-) -> Result<&'a [u8], DurableOwnershipAuthorityError> {
-    let end = cursor
-        .checked_add(length)
-        .ok_or(DurableOwnershipAuthorityError::CorruptState)?;
-    let value = bytes
-        .get(*cursor..end)
-        .ok_or(DurableOwnershipAuthorityError::CorruptState)?;
-    *cursor = end;
-    Ok(value)
+impl From<OwnershipHistoryError> for DurableOwnershipAuthorityError {
+    fn from(error: OwnershipHistoryError) -> Self {
+        match error {
+            OwnershipHistoryError::CorruptState => Self::CorruptState,
+            OwnershipHistoryError::IdempotencyConflict => Self::IdempotencyConflict,
+            OwnershipHistoryError::CompareAndSwapConflict => Self::CompareAndSwapConflict,
+            OwnershipHistoryError::IntentNotFound => Self::IntentNotFound,
+            OwnershipHistoryError::Acquisition(error) => Self::Acquisition(error),
+            OwnershipHistoryError::ResourceExhausted => Self::ResourceExhausted,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -900,6 +389,11 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::rc::Rc;
 
+    use aos_sandbox_core::ObjectDigest;
+    use sha2::{Digest as _, Sha256};
+
+    const MAXIMUM_SIGNATURE_BYTES: usize = 64 * 1024;
+
     use aos_sandbox_core::format::{encode_ownership_lease, encode_signature, encode_trust_policy};
     use aos_sandbox_core::model::{
         KeyUsage, SignaturePurpose, SignatureStatement, StableKeyId, TrustPolicy,
@@ -909,12 +403,12 @@ mod tests {
         MediaType, NodeId, OwnershipLease, OwnershipLeaseTrustAnchor, PortableMediaType,
         ProtocolVersion, RawClockProvenance, TrustScopeId, descriptor_for_bytes, sign_statement,
     };
+    use aos_sandbox_ownership_protocol::protocol::session_client::OwnershipAuthoritySessionClient;
     use aos_sandbox_ownership_protocol::protocol::{
         MAXIMUM_OWNERSHIP_RESPONSE_BYTES, NegotiatedOwnershipSessionV1, OwnershipClientHelloV1,
         OwnershipMethodV1, OwnershipProtocolValidationError, OwnershipRequestBodyV1,
         OwnershipResponseOutcomeV1, OwnershipTransactionReferenceV1, OwnershipTransactionStatusV1,
     };
-    use aos_sandbox_ownership_protocol::protocol::session_client::OwnershipAuthoritySessionClient;
     use ed25519_dalek::SigningKey;
 
     use super::*;
@@ -1271,6 +765,66 @@ mod tests {
         .unwrap_or_else(|error| panic!("test claim failed: {error}"))
     }
 
+    // These helpers obtain identifiers from genuine inert prepared data rather
+    // than duplicating the lower owner's transaction domains or private codec.
+    fn empty_test_history(key_byte: u8) -> OwnershipHistory {
+        OwnershipHistory::from_records(
+            fixture(key_byte).verifier,
+            std::iter::empty(),
+            std::iter::empty(),
+            std::iter::empty(),
+            std::iter::empty(),
+        )
+        .unwrap()
+    }
+
+    fn begin_transaction_id(request_id: [u8; 16]) -> [u8; 16] {
+        let claim = OwnershipClaimV1::acquire(
+            request_id,
+            assignment(1),
+            DesiredGeneration::new(6),
+            NodeId::from_bytes([4; 16]),
+            60,
+        )
+        .unwrap();
+        let mut history = empty_test_history(50);
+        let OwnershipHistoryBegin::Prepared(_prepared, transaction) =
+            history.prepare_begin(&claim).unwrap()
+        else {
+            panic!("test intent was not prepared");
+        };
+
+        *transaction.id()
+    }
+
+    fn completion_transaction_id(request_id: [u8; 16]) -> [u8; 16] {
+        let claim = OwnershipClaimV1::acquire(
+            request_id,
+            assignment(1),
+            DesiredGeneration::new(6),
+            NodeId::from_bytes([4; 16]),
+            60,
+        )
+        .unwrap();
+        let mut history = empty_test_history(50);
+        let OwnershipHistoryBegin::Prepared(prepared, _transaction) =
+            history.prepare_begin(&claim).unwrap()
+        else {
+            panic!("test intent was not prepared");
+        };
+        prepared.publish();
+        let OwnershipHistoryCompletion::Pending(pending) =
+            history.prepare_completion(request_id).unwrap()
+        else {
+            panic!("test completion was not pending");
+        };
+        let mut issuer = fixture(50).authority;
+        let response = issuer.acquire(&claim).unwrap();
+        let (_prepared, transaction) = pending.authenticate(response, &test_clock(150)).unwrap();
+
+        *transaction.id()
+    }
+
     fn open_test_store(
         path: &Path,
         key_byte: u8,
@@ -1321,20 +875,6 @@ mod tests {
         .unwrap_or_else(|error| panic!("test renewal claim failed: {error}"))
     }
 
-    fn completed_entry(
-        claim: OwnershipClaimV1,
-        lease: SignedOwnershipLease,
-        accepted_wall_seconds: i64,
-    ) -> DurableOwnershipEntry {
-        DurableOwnershipEntry {
-            claim,
-            state: DurableEntryState::Completed {
-                accepted_wall_seconds,
-                lease: Box::new(lease.into_recovered()),
-            },
-        }
-    }
-
     fn to_hex(bytes: &[u8]) -> String {
         use std::fmt::Write as _;
 
@@ -1344,14 +884,6 @@ mod tests {
                 .unwrap_or_else(|error| panic!("test hex encoding failed: {error}"));
         }
         encoded
-    }
-
-    fn flip_embedded_artifact(bytes: &mut [u8], artifact: &[u8]) {
-        let offset = bytes
-            .windows(artifact.len())
-            .position(|candidate| candidate == artifact)
-            .unwrap_or_else(|| panic!("test artifact was not embedded"));
-        bytes[offset + artifact.len() / 2] ^= 1;
     }
 
     #[test]
@@ -1835,275 +1367,6 @@ mod tests {
     }
 
     #[test]
-    fn cross_sandbox_current_pointer_substitution_fails_recovery_closed() {
-        for attack in 0..3_u8 {
-            let directory = TestDirectory::new(&format!("pointer-substitution-{attack}"));
-            let path = directory.journal();
-            let verifier = fixture(46 + attack).verifier;
-            let mut issuer_a = fixture(46 + attack).authority;
-            let mut issuer_b = fixture(46 + attack).authority;
-            let (journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
-            let mut store = DurableOwnershipAuthority::from_journal(journal, verifier).unwrap();
-            let claim_a = OwnershipClaimV1::acquire(
-                [10; 16],
-                assignment(10),
-                DesiredGeneration::new(6),
-                NodeId::from_bytes([50; 16]),
-                60,
-            )
-            .unwrap();
-            let claim_b = OwnershipClaimV1::acquire(
-                [20; 16],
-                assignment(20),
-                DesiredGeneration::new(6),
-                NodeId::from_bytes([51; 16]),
-                60,
-            )
-            .unwrap();
-            store.begin(&claim_a).unwrap();
-            store
-                .complete(*claim_a.request_id(), &mut issuer_a, &mut || {
-                    Ok(test_clock(150))
-                })
-                .unwrap();
-            let lease_a = store
-                .current(claim_a.assignment().sandbox())
-                .unwrap()
-                .clone();
-            store.begin(&claim_b).unwrap();
-            store
-                .complete(*claim_b.request_id(), &mut issuer_b, &mut || {
-                    Ok(test_clock(150))
-                })
-                .unwrap();
-            let lease_b = store
-                .current(claim_b.assignment().sandbox())
-                .unwrap()
-                .clone();
-            drop(store);
-
-            let key_a = durable_current_key(claim_a.assignment().sandbox());
-            let key_b = durable_current_key(claim_b.assignment().sandbox());
-            let records = match attack {
-                0 => vec![JournalRecord::delete(RecordNamespace::DesiredState, key_a)],
-                1 => vec![JournalRecord::put(
-                    RecordNamespace::DesiredState,
-                    key_a,
-                    encode_current_pointer(*claim_b.request_id(), &lease_b),
-                )],
-                _ => vec![
-                    JournalRecord::put(
-                        RecordNamespace::DesiredState,
-                        key_a,
-                        encode_current_pointer(*claim_b.request_id(), &lease_b),
-                    ),
-                    JournalRecord::put(
-                        RecordNamespace::DesiredState,
-                        key_b,
-                        encode_current_pointer(*claim_a.request_id(), &lease_a),
-                    ),
-                ],
-            };
-            let (mut journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
-            journal
-                .commit(&JournalTransaction::new([100 + attack; 16], records).unwrap())
-                .unwrap();
-            drop(journal);
-
-            assert!(matches!(
-                open_test_store(&path, 46 + attack),
-                Err(DurableOwnershipAuthorityError::CorruptState)
-            ));
-        }
-    }
-
-    #[test]
-    fn durable_recovery_rejects_duplicate_roots_and_forks() {
-        let directory = TestDirectory::new("durable-roots");
-        let path = directory.journal();
-        let Fixture {
-            mut authority,
-            verifier,
-            clock,
-        } = fixture(33);
-        let (journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
-        let mut store = DurableOwnershipAuthority::from_journal(journal, verifier).unwrap();
-        let first_claim = acquire_claim(5);
-        store.begin(&first_claim).unwrap();
-        store
-            .complete(*first_claim.request_id(), &mut authority, &mut || Ok(clock))
-            .unwrap();
-        drop(store);
-
-        let mut second = fixture(33);
-        let second_claim = acquire_claim(6);
-        let second_lease = second
-            .verifier
-            .acquire(&mut second.authority, &second_claim, &second.clock)
-            .unwrap();
-        let entry = completed_entry(second_claim.clone(), second_lease, 150);
-        let (mut journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
-        journal
-            .commit(
-                &JournalTransaction::new(
-                    [90; 16],
-                    vec![JournalRecord::put(
-                        RecordNamespace::Operation,
-                        durable_entry_key(second_claim.request_id()),
-                        encode_durable_entry(&entry, second.verifier.authority()),
-                    )],
-                )
-                .unwrap(),
-            )
-            .unwrap();
-        drop(journal);
-        assert!(matches!(
-            open_test_store(&path, 33),
-            Err(DurableOwnershipAuthorityError::CorruptState)
-        ));
-
-        let directory = TestDirectory::new("durable-fork");
-        let path = directory.journal();
-        let mut base = fixture(34);
-        let (journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
-        let mut store = DurableOwnershipAuthority::from_journal(journal, base.verifier).unwrap();
-        let root_claim = acquire_claim(5);
-        store.begin(&root_claim).unwrap();
-        store
-            .complete(*root_claim.request_id(), &mut base.authority, &mut || {
-                Ok(base.clock)
-            })
-            .unwrap();
-        let root = store
-            .current(root_claim.assignment().sandbox())
-            .unwrap()
-            .clone();
-        drop(store);
-        let mut journal = Journal::open(&path, JournalLimits::default()).unwrap().0;
-        for (request, transaction) in [(7, 91), (8, 92)] {
-            let mut branch = fixture(34);
-            branch.authority.current = Some((
-                root.assignment(),
-                root.node(),
-                root.generation(),
-                root.digest(),
-                root.desired_generation(),
-            ));
-            let claim = renewal_claim(request, &root);
-            let lease = branch
-                .verifier
-                .renew(&mut branch.authority, &claim, &branch.clock)
-                .unwrap();
-            let entry = completed_entry(claim.clone(), lease, 150);
-            journal
-                .commit(
-                    &JournalTransaction::new(
-                        [transaction; 16],
-                        vec![JournalRecord::put(
-                            RecordNamespace::Operation,
-                            durable_entry_key(claim.request_id()),
-                            encode_durable_entry(&entry, branch.verifier.authority()),
-                        )],
-                    )
-                    .unwrap(),
-                )
-                .unwrap();
-        }
-        drop(journal);
-        assert!(matches!(
-            open_test_store(&path, 34),
-            Err(DurableOwnershipAuthorityError::CorruptState)
-        ));
-    }
-
-    #[test]
-    fn durable_recovery_rejects_broken_predecessor_rollback_and_tamper() {
-        for attack in 0..4 {
-            let directory = TestDirectory::new(&format!("durable-chain-attack-{attack}"));
-            let path = directory.journal();
-            let mut base = fixture(35 + attack);
-            let (journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
-            let mut store =
-                DurableOwnershipAuthority::from_journal(journal, base.verifier).unwrap();
-            let root_claim = acquire_claim(5);
-            store.begin(&root_claim).unwrap();
-            store
-                .complete(*root_claim.request_id(), &mut base.authority, &mut || {
-                    Ok(base.clock)
-                })
-                .unwrap();
-            let root = store
-                .current(root_claim.assignment().sandbox())
-                .unwrap()
-                .clone();
-            drop(store);
-
-            let mut branch = fixture(35 + attack);
-            let claim = renewal_claim(7, &root);
-            let raw = branch
-                .authority
-                .issue(&claim, root.generation() + 2)
-                .unwrap();
-            let signed = branch
-                .verifier
-                .verify_response(&claim, raw.clone(), &branch.clock)
-                .unwrap();
-            let entry = completed_entry(claim.clone(), signed, 150);
-            let mut encoded = encode_durable_entry(&entry, &branch.authority.authority);
-            match attack {
-                0 => flip_embedded_artifact(&mut encoded, claim.canonical_bytes()),
-                1 => flip_embedded_artifact(&mut encoded, raw.lease()),
-                2 => flip_embedded_artifact(&mut encoded, raw.receipt()),
-                _ => flip_embedded_artifact(&mut encoded, raw.receipt_signature()),
-            }
-            let (mut journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
-            journal
-                .commit(
-                    &JournalTransaction::new(
-                        [93; 16],
-                        vec![JournalRecord::put(
-                            RecordNamespace::Operation,
-                            durable_entry_key(claim.request_id()),
-                            encoded,
-                        )],
-                    )
-                    .unwrap(),
-                )
-                .unwrap();
-            drop(journal);
-            assert!(matches!(
-                open_test_store(&path, 35 + attack),
-                Err(DurableOwnershipAuthorityError::CorruptState)
-            ));
-        }
-    }
-
-    #[test]
-    fn durable_recovery_rejects_oversized_record_before_decode() {
-        let directory = TestDirectory::new("durable-oversized");
-        let path = directory.journal();
-        let (mut journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
-        journal
-            .commit(
-                &JournalTransaction::new(
-                    [94; 16],
-                    vec![JournalRecord::put(
-                        RecordNamespace::Operation,
-                        durable_entry_key(&[5; 16]),
-                        vec![0; MAXIMUM_DURABLE_ENTRY_BYTES + 1],
-                    )],
-                )
-                .unwrap(),
-            )
-            .unwrap();
-        drop(journal);
-        assert!(matches!(
-            open_test_store(&path, 39),
-            Err(DurableOwnershipAuthorityError::CorruptState)
-        ));
-    }
-
-    #[test]
     fn transaction_domains_prevent_caller_selected_begin_completion_collision() {
         fn exercise(completion_first: bool, key_byte: u8) {
             let directory = TestDirectory::new(if completion_first {
@@ -2277,21 +1540,19 @@ mod tests {
             .get(claim.request_id())
             .map(|(_, response)| response.clone());
         assert!(response.is_none());
-        let maximal_entry_bytes = MAXIMUM_DURABLE_ENTRY_BYTES;
-        let entry_record_bytes = 7 + durable_entry_key(&[1; 16]).len() + maximal_entry_bytes;
-        let current_record_bytes = 7
-            + durable_current_key(claim.assignment().sandbox()).len()
-            + MAXIMUM_DURABLE_CURRENT_BYTES;
+        let mut history = empty_test_history(43);
+        let OwnershipHistoryBegin::Prepared(intent, transaction) =
+            history.prepare_begin(&claim).unwrap()
+        else {
+            panic!("test intent was not prepared");
+        };
+        let record = &transaction.records()[0];
+        let entry_record_bytes = 7 + record.key().len() + MAXIMUM_DURABLE_ENTRY_BYTES;
+        let current_record_bytes = 7 + MAXIMUM_DURABLE_KEY_BYTES + MAXIMUM_DURABLE_CURRENT_BYTES;
         assert!(entry_record_bytes <= limits.maximum_record_bytes);
         assert!(entry_record_bytes + current_record_bytes <= limits.maximum_transaction_bytes);
-        let intent = DurableOwnershipEntry {
-            claim: claim.clone(),
-            state: DurableEntryState::Intent,
-        };
-        assert!(
-            encode_durable_entry(&intent, fixture.verifier.authority()).len()
-                <= MAXIMUM_DURABLE_INTENT_BYTES
-        );
+        assert!(record.value().len() <= MAXIMUM_DURABLE_INTENT_BYTES);
+        drop(intent);
 
         let directory = TestDirectory::new("epoch-capacity");
         let path = directory.journal();

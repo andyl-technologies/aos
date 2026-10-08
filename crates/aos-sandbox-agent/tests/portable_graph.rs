@@ -37,7 +37,7 @@ fn portable_production_graphs_have_no_linux_or_effect_owner() -> Result<(), Box<
         .filter_map(|node| node["id"].as_str().map(|id| (id, node)))
         .collect();
 
-    let roots: [(&str, &[&str]); 4] = [
+    let roots: [(&str, &[&str]); 5] = [
         ("aos-sandbox-core", &["aos-sandbox-core"]),
         (
             "aos-sandbox-agent",
@@ -46,6 +46,14 @@ fn portable_production_graphs_have_no_linux_or_effect_owner() -> Result<(), Box<
         (
             "aos-sandbox-policy",
             &["aos-sandbox-policy", "aos-sandbox-core"],
+        ),
+        (
+            "aos-sandbox-ownership",
+            &[
+                "aos-sandbox-ownership",
+                "aos-sandbox-ownership-protocol",
+                "aos-sandbox-core",
+            ],
         ),
         (
             "aos-sandbox-protocol",

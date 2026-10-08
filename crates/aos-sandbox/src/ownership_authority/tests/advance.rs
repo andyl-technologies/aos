@@ -290,7 +290,11 @@ fn invalid_same_owner_transitions_fail_before_intent_or_issuance() {
             "{name}"
         );
         assert!(!store.is_pending(claim.request_id()), "{name}");
-        assert_eq!(store.entries.len(), 1, "{name}");
+        assert_eq!(
+            store.journal.records(RecordNamespace::Operation).count(),
+            1,
+            "{name}"
+        );
         assert_eq!(
             store.current(prior.assignment().sandbox()),
             Some(&prior),
@@ -344,57 +348,6 @@ fn pending_advance_fences_renewal_and_competing_assignment_updates() {
         Err(DurableOwnershipAuthorityError::CompareAndSwapConflict)
     ));
     assert_eq!(issuer.calls.get(), 2);
-}
-
-#[test]
-fn signed_but_invalid_historical_advances_cannot_become_a_recovered_head() {
-    let fixture_directory = TestDirectory::new("advance-history-cases");
-    let (_, _, prior) = acquired_store(&fixture_directory.journal());
-    for (index, (name, claim)) in invalid_successors(&prior).into_iter().enumerate() {
-        let directory = TestDirectory::new(&format!("advance-history-{index}"));
-        let (store, mut issuer, prior) = acquired_store(&directory.journal());
-        drop(store);
-        // Model a correctly signed malicious response and internally consistent
-        // journal pointers. Historical chain validation must still reject it.
-        let response = issuer.issue(&claim, prior.generation() + 1).unwrap();
-        let verified = fixture(42)
-            .verifier
-            .verify_response(&claim, response, &test_clock(150))
-            .unwrap();
-        let recovered = verified.clone().into_recovered();
-        let entry = completed_entry(claim.clone(), verified, 150);
-        let mut journal = Journal::open(directory.journal(), ownership_journal_limits())
-            .unwrap()
-            .0;
-        journal
-            .commit(
-                &JournalTransaction::new(
-                    [90; 16],
-                    vec![
-                        JournalRecord::put(
-                            RecordNamespace::Operation,
-                            durable_entry_key(claim.request_id()),
-                            encode_durable_entry(&entry, &issuer.authority),
-                        ),
-                        JournalRecord::put(
-                            RecordNamespace::DesiredState,
-                            durable_current_key(claim.assignment().sandbox()),
-                            encode_current_pointer(*claim.request_id(), &recovered),
-                        ),
-                    ],
-                )
-                .unwrap(),
-            )
-            .unwrap();
-        drop(journal);
-        assert!(
-            matches!(
-                open_test_store(&directory.journal(), 42),
-                Err(DurableOwnershipAuthorityError::CorruptState)
-            ),
-            "{name}"
-        );
-    }
 }
 
 pub(super) fn session(authority: &KeyReference) -> NegotiatedOwnershipSessionV1 {

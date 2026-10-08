@@ -851,6 +851,7 @@ dependencies = [
  "aos-sandbox-guest",
  "aos-sandbox-journal",
  "aos-sandbox-linux",
+ "aos-sandbox-ownership",
  "aos-sandbox-ownership-protocol",
  "aos-sandbox-policy",
  "aos-sandbox-protocol",
@@ -1182,6 +1183,17 @@ dependencies = [
  "sha2 0.10.9",
  "tokio",
  "zbus",
+]
+
+[[package]]
+name = "aos-sandbox-ownership"
+version = "0.1.0"
+dependencies = [
+ "aos-sandbox-core",
+ "aos-sandbox-ownership-protocol",
+ "ed25519-dalek",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

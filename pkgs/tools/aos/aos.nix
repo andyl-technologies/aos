@@ -202,6 +202,7 @@
     "aos-sandbox-mount"
     "aos-sandbox-network"
     "aos-sandbox-ownership-protocol"
+    "aos-sandbox-ownership"
     "aos-sandbox-policy"
     "aos-sandbox-protocol"
     "aos-sandbox-source-provider"
