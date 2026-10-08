@@ -130,6 +130,14 @@ responsibilities there; protected admission, semantic publication, and actual
 file/loan custody stay with their existing owners. Private source organization
 does not establish a further crate boundary or complete protected ownership.
 
+The domain journal's private `protected_storage` group co-locates protected
+names, descriptor/lock loans, rooted opening and recovery, and complete retained
+opening/failure reservoirs. Their original fields, drop order, native causes,
+and name bookends remain unchanged; the actual native owner stays private to
+Journal. Semantic replay, protected admission, compaction guards, and authority
+factories remain domain-owned. This organization adds no constructor, descriptor
+escape, or callback and does not complete a protected role-crate migration.
+
 Linux owns the unchanged bounded optional credential reader and its retained
 native read DATA; role-specific decoding, key separation, and startup admission
 remain with their original owners.
