@@ -1,6 +1,7 @@
 //! Native evaluation and transaction publication for signed registry installs.
 
 pub(crate) mod configuration;
+mod discovery;
 mod module_upgrade;
 
 #[cfg(test)]
@@ -27,6 +28,13 @@ use crate::resolve::ResolvedClosure;
 use crate::types::{InstalledMeta, PackageMeta};
 
 /// Realizes pinned module companions before invoking the pure package resolver.
+///
+/// Exact admitted catalogs from the current profile satisfy runtime bindings
+/// even when their original registry is no longer configured.
+///
+/// # Errors
+/// Returns an error for invalid retained native context, unresolved authenticated
+/// companions, failed transport or artifact admission, or cancellation.
 pub(crate) async fn realize_modules(
     config: &ApmConfig,
     registries: &RegistrySet,
@@ -35,12 +43,20 @@ pub(crate) async fn realize_modules(
     download_only: bool,
     temporary_roots: &mut Option<crate::store::temp_roots::TemporaryRoots>,
 ) -> Result<Vec<(String, PackageMeta)>> {
+    let profile = Profile::open_readonly(config.scope);
+    let retained_artifacts = match discovery::RetainedDiscovery::read(&profile)? {
+        Some(retained) => {
+            let installed = crate::profile::meta::list_meta(&profile)?;
+            retained.authenticate(registries, &installed)?.artifacts
+        }
+        None => Vec::new(),
+    };
     discover_modules(
         config,
         registries,
         closures,
         &[],
-        &[],
+        &retained_artifacts,
         printer,
         download_only,
         temporary_roots,
@@ -1365,6 +1381,83 @@ mod tests {
             &original.package,
             &changed_catalog
         ));
+    }
+
+    async fn discover_retained_runtime(
+        requester: crate::deployment::model::Envelope,
+        retained: &[crate::deployment::model::Artifact],
+    ) -> Result<Vec<(String, PackageMeta)>> {
+        let config = ApmConfig {
+            settings: Default::default(),
+            registries: Vec::new(),
+            scope: crate::types::ProfileScope::User,
+        };
+        discover_modules(
+            &config,
+            &RegistrySet::new(Vec::new()),
+            &[],
+            &[requester],
+            retained,
+            &aos_core::output::Printer::new(0, true, false),
+            false,
+            &mut None,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn exact_retained_runtime_satisfies_discovery_without_a_registry() {
+        let runtime = package("runtime", 'b').package;
+        let mut requester = package("requester", 'a');
+        requester
+            .runtime_dependencies
+            .insert("runtime".into(), runtime.clone());
+        let mut retained = Vec::new();
+        discovery::extend_runtime_artifacts(&mut retained, &[requester.clone()], |artifact| {
+            Ok(artifact == &runtime)
+        })
+        .unwrap();
+
+        assert!(
+            discover_retained_runtime(requester, &retained)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_discovery_rejects_different_outputs_and_missing_authority() {
+        let runtime = package("runtime", 'b').package;
+        let mut requester = package("requester", 'a');
+        requester
+            .runtime_dependencies
+            .insert("runtime".into(), runtime.clone());
+        let mut retained = Vec::new();
+        discovery::extend_runtime_artifacts(&mut retained, &[requester.clone()], |_| Ok(false))
+            .unwrap();
+        let error = discover_retained_runtime(requester.clone(), &retained)
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("lacks an authenticated exact envelope")
+        );
+
+        let mut different_output = runtime.clone();
+        different_output.path = format!("/nix/store/{}-runtime", "c".repeat(32));
+        different_output
+            .outputs
+            .insert("out".into(), different_output.path.clone());
+        let error = discover_retained_runtime(requester, &[different_output])
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("lacks an authenticated exact envelope")
+        );
     }
 
     #[test]

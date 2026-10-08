@@ -10,7 +10,6 @@ use anyhow::{Context, Result, ensure};
 use super::{Prepared, discover_modules, packaged_path, prepare};
 use crate::config::ApmConfig;
 use crate::native_deployment::EvaluationInput;
-use crate::native_registry::{NativeRegistry, RegistryAdmission};
 use crate::profile::Profile;
 use crate::registry::RegistrySet;
 use crate::types::{InstalledMeta, PackageMeta};
@@ -33,47 +32,15 @@ pub(crate) async fn realize_module_upgrades(
     if refresh_names.is_empty() {
         return Ok(Vec::new());
     }
-    let executable = packaged_path("AOS_NIX_STORE")?;
-    let admission = RegistryAdmission::new(
-        executable.clone(),
-        &profile.path.join("deployment/registry-admissions"),
-    )?;
-    let mut resolver = NativeRegistry::new(registries, admission);
-    let generation = profile
-        .current_generation()?
-        .context("module upgrade requires a committed profile")?;
-    let committed =
-        crate::profile::deployment::committed_generation(&profile.path, generation.number)?;
-    let (_, descriptor) = crate::native_deployment::read_retained_evaluation_in(
-        &generation.path.join("evaluation.json"),
-        &committed.deployment,
-        &executable,
-        &Default::default(),
-    )?;
-    if !has_refreshable_ranges(descriptor.resolution_lock.as_ref(), refresh_names) {
+    let retained = super::discovery::RetainedDiscovery::read(profile)?
+        .context("module upgrade requires a committed native profile")?;
+    if !has_refreshable_ranges(retained.descriptor.resolution_lock.as_ref(), refresh_names) {
         return Ok(Vec::new());
     }
-    resolver.retain_modules(&descriptor, &committed.deployment)?;
-    let mut originals = Vec::new();
-    let mut retained_artifacts = Vec::new();
-    for meta in installed {
-        let envelope = resolver.installed(meta)?;
-        retained_artifacts.push(envelope.package.clone());
-        if meta.apm.as_ref().is_some_and(|package| package.explicit) {
-            originals.push(envelope);
-        }
-    }
-    for path in descriptor.module_envelopes.values() {
-        let bytes = crate::native_deployment::read_regular_store_document_in(
-            &path.join("deployment.json"),
-            &executable,
-            &Default::default(),
-        )?;
-        let envelope = crate::deployment::model::Envelope::decode(&bytes)?;
-        if !originals.contains(&envelope) {
-            originals.push(envelope);
-        }
-    }
+    let super::discovery::RetainedContext {
+        mut originals,
+        artifacts: retained_artifacts,
+    } = retained.authenticate(registries, installed)?;
     let mut eligible = refresh_names.clone();
     loop {
         let previous = eligible.len();
@@ -89,14 +56,6 @@ pub(crate) async fn realize_module_upgrades(
         }
         if eligible.len() == previous {
             break;
-        }
-    }
-    for artifact in originals
-        .iter()
-        .flat_map(|envelope| envelope.runtime_dependencies.values())
-    {
-        if resolver.has_output_authority(artifact)? && !retained_artifacts.contains(artifact) {
-            retained_artifacts.push(artifact.clone());
         }
     }
     originals.retain(|envelope| eligible.contains(&envelope.package.name));
