@@ -4,23 +4,31 @@
 //! and authenticated capability snapshots. The result identifies a preferred
 //! node and the exact observation used to choose it. It neither reserves
 //! capacity nor authorizes that node to realize the sandbox.
+//! The assignment-intent adapter keeps the manifest-to-selection checks here;
+//! the shared assignment model consumes only its canonical capability binding.
 
 use std::cmp::Ordering;
 
 use aos_sandbox_core::model::PlacementRequest;
+use aos_sandbox_core::state::DesiredSandboxState;
 use aos_sandbox_core::{
-    AssignmentEpoch, DesiredGeneration, FeatureRef, IncarnationId, NodeId, ObjectDigest,
-    ObservationSequence, ProtocolId, ResourceDimension, ResourceVector, SandboxId,
-    supported_protocol_version,
+    AssignmentEpoch, CanonicalAssignmentManifestV1, DesiredGeneration, FeatureRef, IncarnationId,
+    NodeId, ObjectDigest, ObservationSequence, ProtocolId, ResourceDimension, ResourceVector,
+    SandboxId, supported_protocol_version,
 };
 
-use super::super::assignment::{NodeAssignmentObservationV1, VerifiedGuardianStateV1};
+use super::super::assignment::{
+    AssignmentIntentV1, InvalidAssignmentModel, NodeAssignmentObservationV1,
+    SelectedCapabilityBindingV1, VerifiedGuardianStateV1,
+};
 use super::super::capability::{
     CarrierValidatedCapabilityObservationV1, NodeAdmissionStateV1, NodeBootId, NodeBootLineageV1,
     NodeCapabilitySnapshotV1, NodeProtocolV1,
 };
 use super::super::evidence_authority::VerifierEvidenceGrantV1;
-use super::super::journal::{JournalEffectStateV1, MultiNodeJournalDomainV1, ProtectedJournalRecordV1};
+use super::super::journal::{
+    JournalEffectStateV1, MultiNodeJournalDomainV1, ProtectedJournalRecordV1,
+};
 
 /// Maximum candidate nodes considered by one placement decision.
 pub const MAX_PLACEMENT_CANDIDATES: usize = 4_096;
@@ -390,6 +398,35 @@ impl PlacementSelectionV1 {
     #[must_use]
     pub const fn projected_headroom(&self) -> ResourceVector {
         self.projected_headroom
+    }
+}
+
+impl AssignmentIntentV1 {
+    /// Constructs one assignment desired-state record.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidAssignmentModel::PlacementMismatch`] when the
+    /// deterministic selection names another node. The canonical manifest has
+    /// already validated every assignment identity and derives its own digest.
+    #[cfg(feature = "multi-node")]
+    pub fn new(
+        assignment: CanonicalAssignmentManifestV1,
+        desired_lifecycle: DesiredSandboxState,
+        selection: &PlacementSelectionV1,
+    ) -> Result<Self, InvalidAssignmentModel> {
+        if assignment.manifest().node() != selection.node()
+            || assignment.manifest().sandbox() != selection.sandbox()
+            || assignment.manifest().reservations() != selection.requested_resources()
+            || assignment.manifest().required_features() != selection.required_features()
+        {
+            return Err(InvalidAssignmentModel::PlacementMismatch);
+        }
+
+        let selected_capability =
+            SelectedCapabilityBindingV1::from_observation(selection.capability_observation())?;
+
+        Self::from_canonical_binding(assignment, desired_lifecycle, selected_capability)
     }
 }
 

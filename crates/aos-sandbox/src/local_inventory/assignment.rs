@@ -24,8 +24,6 @@ use super::carrier_authority::AuthenticatedFrameSealV1;
 use super::evidence::AuthenticatedEvidenceContextV1;
 use super::evidence_authority::VerifierEvidenceGrantV1;
 use super::journal::{JournalEffectStateV1, MultiNodeJournalDomainV1, ProtectedJournalRecordV1};
-#[cfg(feature = "multi-node")]
-use super::remote::placement::PlacementSelectionV1;
 
 #[cfg(feature = "multi-node")]
 mod remote_verification;
@@ -427,7 +425,13 @@ impl SelectedCapabilityBindingV1 {
         })
     }
 
-    fn from_observation(
+    /// Copies the exact non-authorizing binding from a validated observation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidAssignmentModel::PlacementMismatch`] for an unspecified
+    /// identity or commitment, empty frame, or invalid currentness interval.
+    pub(super) fn from_observation(
         observation: &CarrierValidatedCapabilityObservationV1,
     ) -> Result<Self, InvalidAssignmentModel> {
         Self::new(
@@ -532,35 +536,6 @@ impl SelectedCapabilityBindingV1 {
 }
 
 impl AssignmentIntentV1 {
-    /// Constructs one assignment desired-state record.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`InvalidAssignmentModel::PlacementMismatch`] when the
-    /// deterministic selection names another node. The canonical manifest has
-    /// already validated every assignment identity and derives its own digest.
-    #[cfg(feature = "multi-node")]
-    pub fn new(
-        assignment: CanonicalAssignmentManifestV1,
-        desired_lifecycle: DesiredSandboxState,
-        selection: &PlacementSelectionV1,
-    ) -> Result<Self, InvalidAssignmentModel> {
-        if assignment.manifest().node() != selection.node()
-            || assignment.manifest().sandbox() != selection.sandbox()
-            || assignment.manifest().reservations() != selection.requested_resources()
-            || assignment.manifest().required_features() != selection.required_features()
-        {
-            return Err(InvalidAssignmentModel::PlacementMismatch);
-        }
-        Ok(Self {
-            assignment,
-            desired_lifecycle,
-            selected_capability: SelectedCapabilityBindingV1::from_observation(
-                selection.capability_observation(),
-            )?,
-        })
-    }
-
     /// Reconstructs authenticated controller intent from its exact wire binding.
     ///
     /// The binding remains historical scheduling evidence. Acceptance still
