@@ -277,7 +277,12 @@ and conditional fresh-open capability probe; prior failed runs remain separate.
 The fixture starts with empty lineage sources and does not prove clearing a
 nonempty lineage set. Its separate crate build passes; shared-target Tokio test
 compilation initially reuses a core artifact missing APIs present in the actual
-source, so that attempt executes neither selector. Fresh qualification is pending.
+source, so that attempt executes neither selector.
+
+The byte-identical source timestamp refresh on the same `a85b475297` candidate
+then rebuilds both actual worktree dependencies and passes both exact Tokio
+physical-exclusion selectors. All 6,036 tracked inputs remain unchanged; the
+earlier failed compilation and this successful execution remain separate.
 
 A final-callback diagnostic on `4b47694659` isolates the Native input failure:
 registration, issuers, configuration and registries compare equal, while the
@@ -287,6 +292,25 @@ no-std test import correction on `83cb88a5ef` passes mandatory compilation of
 all application test targets; all 4,611 actual Nix source inputs match that clean
 commit. Complete native projection, recovery composition and the current T1
 floor remain unqualified; no task, milestone exit or freeze advances.
+
+The normally composed disclosure and recovery candidate on `959f74486b`
+passes its native SDK build. Separate bounded test-compilation corrections
+produce an eleven-case run on `c7bf1a50fa`: both disclosure regressions and all
+six owning ordinary/native merge contracts pass; the three recovery cases fail
+before their maintenance assertions. The owning `algebra-merge` Nix gate on
+`ed7aa2f06a` subsequently passes all 38 unique exact cases (32 Core and six SDK).
+Independent review matches all 4,993 actual source inputs. These scoped passes
+do not replace the earlier failing full native suite or qualify T1.
+
+Finer opt-in tracing on `b92d3afb3d` corrects the initial location inferred for
+the recovery fixture refusal: actual native registration, binding, verifier
+installation and Original-retention loading all complete. Its next raw reflog
+append uses a new record without a candidate identifier, which the backend
+explicitly refuses. The separately reviewed test-only correction supplies the
+genuinely signed commit identity as an ordinary raw selection identifier while
+preserving real signing, Original checks, full previous-record matching, append
+and CAS. Recovery qualification remains pending; no production factory change,
+task acceptance, milestone exit or freeze follows from this diagnostic.
 
 An isolated instrumented run of the fourth private backfill case on
 `faf2f0adfa` still fails with `Expired`. It reaches both catalog ACKs and
