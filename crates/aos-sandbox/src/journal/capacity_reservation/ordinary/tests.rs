@@ -210,7 +210,13 @@ fn every_closed_kind_profile_and_count_is_checked() {
             }
         }
     }
-    assert!(LegacyPurpose::from_byte(10).is_err());
+    assert_eq!(
+        LegacyPurpose::from_byte(10).unwrap(),
+        LegacyPurpose::ControllerFirstSourceSuccessorComplete,
+    );
+    for byte in [0, 11, 12, 255] {
+        assert!(LegacyPurpose::from_byte(byte).is_err());
+    }
     assert_eq!(super::super::MAXIMUM_FUTURE_TRANSACTIONS, 3);
 }
 

@@ -63,11 +63,13 @@ fn every_legacy_purpose_keeps_independent_bytes_and_identity_golden() {
             LegacyPurpose::PublisherCompletion,
             RecordNamespace::PublisherAuthority,
             1,
+            1,
             "ba0bada33775bb5638892434397e23e282a027b84dbebbd8e3a45e2d376cbe7d",
         ),
         (
             LegacyPurpose::RuntimeExecution,
             RecordNamespace::Effect,
+            1,
             1,
             "837feae50f22a2786cd7068b835f76778bc83d7363d3b2084e996c0585dd4f7e",
         ),
@@ -75,11 +77,13 @@ fn every_legacy_purpose_keeps_independent_bytes_and_identity_golden() {
             LegacyPurpose::SourceProviderNativeTerminal,
             RecordNamespace::SourceProviderAuthority,
             1,
+            1,
             "693aef0be027b1affc35d294b9857ceec1f4d767f62ad128e0e99056921dbe65",
         ),
         (
             LegacyPurpose::RootProjectAdmission,
             RecordNamespace::DesiredState,
+            1,
             1,
             "a165d12334d9cf96d047e3320f0ac6b07c68aa3f919124a7643aa7d7282389df",
         ),
@@ -87,11 +91,13 @@ fn every_legacy_purpose_keeps_independent_bytes_and_identity_golden() {
             LegacyPurpose::ControllerProjectAdmission,
             RecordNamespace::Effect,
             2,
+            1,
             "9b9cd5d707ec083557966461343369a8d29f9226c73654eb53fef4a0c3a96090",
         ),
         (
             LegacyPurpose::RootSourceGenesisAnchor,
             RecordNamespace::DesiredState,
+            1,
             1,
             "7dfc41c1fe59284ec66c2b48c7ce24880ee46acda846a738360c52ca8e9ee119",
         ),
@@ -99,10 +105,32 @@ fn every_legacy_purpose_keeps_independent_bytes_and_identity_golden() {
             LegacyPurpose::ControllerConsumerResource,
             RecordNamespace::ControllerConsumerReadAttempt,
             1,
+            1,
             "9d31bf45875f4c7d8efecab11678dea7a85bd0a628bfdce0c174a3be2bb878a0",
         ),
+        (
+            LegacyPurpose::RootFirstSourceSuccessorAnchor,
+            RecordNamespace::DesiredState,
+            1,
+            1,
+            "ce0fae4c8c128f649aad8c469fef1d227ab4539d3c6a92fea1a2effd0c67a9e6",
+        ),
+        (
+            LegacyPurpose::SourceFirstSourceSuccessorAck,
+            RecordNamespace::DesiredState,
+            1,
+            1,
+            "1b789754a46f024770e07d9f779db6c2780339ad48669a0289755c1c29a615ee",
+        ),
+        (
+            LegacyPurpose::ControllerFirstSourceSuccessorComplete,
+            RecordNamespace::DesiredState,
+            2,
+            2,
+            "603d962e72bc28f0584ea56bf96430688194a2cb232649e4903841c786c84703",
+        ),
     ];
-    for (purpose, namespace, version, expected_hex) in cases {
+    for (purpose, namespace, version, count, expected_hex) in cases {
         let request = LegacyRequest {
             purpose,
             owner_namespace: namespace,
@@ -112,7 +140,7 @@ fn every_legacy_purpose_keeps_independent_bytes_and_identity_golden() {
             artifact_digest: [4; 32],
             checkpoint_digest: [5; 32],
             chain_head_digest: [6; 32],
-            future_transactions: 1,
+            future_transactions: count,
             terminal_records: 2,
             terminal_bytes: 1024,
             poison_records: 3,
@@ -121,7 +149,10 @@ fn every_legacy_purpose_keeps_independent_bytes_and_identity_golden() {
         let expected_id = digest(expected_hex);
         let mut expected = b"AOSJCR01".to_vec();
         expected.extend_from_slice(&[0, version, namespace as u8, purpose as u8, 0, 0]);
-        expected.extend_from_slice(&independent_fields(version == 2));
+        expected.extend_from_slice(&independent_fields(false));
+        if version == 2 {
+            expected.extend_from_slice(&count.to_be_bytes());
+        }
         expected.extend_from_slice(&[7; 16]);
         expected.extend_from_slice(&expected_id);
 
@@ -133,7 +164,7 @@ fn every_legacy_purpose_keeps_independent_bytes_and_identity_golden() {
         );
     }
     assert_eq!(MAXIMUM_FUTURE_TRANSACTIONS, 3);
-    for byte in [0, 8, 9, 255] {
+    for byte in [0, 11, 12, 255] {
         assert!(LegacyPurpose::from_byte(byte).is_err());
     }
 }
