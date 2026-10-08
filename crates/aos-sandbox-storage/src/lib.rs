@@ -213,9 +213,7 @@ pub use runtime::{
     StoragePrepareReadiness, StorageRuntimeError, StorageRuntimeMutationOutcome,
     StorageRuntimeReadiness, WorkspacePinRepairExecutionOutcomeV1,
 };
-pub use service::{
-    StorageConnectionOutcome, StorageRpcRuntime, StorageService, StorageServiceError,
-};
+pub use service::{StorageConnectionOutcome, StorageServiceError};
 pub use state::{
     BeginStorageTransaction, CommittedStorageResultV1, DurableStoragePhase, StorageRecoveryEntry,
     StorageStateError, StorageStateKey, StorageTransactionStore, VerifiedStorageResultV1,
