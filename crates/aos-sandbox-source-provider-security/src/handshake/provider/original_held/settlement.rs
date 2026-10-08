@@ -132,7 +132,9 @@ impl OriginalProviderSettlementV5 {
     }
 
     fn verify_storage6(&self, selected: &crate::ProtectedOriginalSelectedInputV1, relay5: &SignedNativeHeldControlV1) -> Result<(), OriginalHeldCauseV5> {
-        use aos_sandbox_source_provider_protocol::{STORAGE_ZFS_HOLD_ENROLLMENT_BYTES_V1, decode_storage_zfs_hold_enrollment_v1};
+        use aos_sandbox_source_provider_protocol::storage_zfs_hold_receipt::{
+            STORAGE_ZFS_HOLD_ENROLLMENT_BYTES_V1, decode_storage_zfs_hold_enrollment_v1,
+        };
         let exact = self.storage6()?;
         let bytes: &[u8; STORAGE_ZFS_HOLD_ENROLLMENT_BYTES_V1] = selected.dedicated_enrollment().try_into()
             .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;

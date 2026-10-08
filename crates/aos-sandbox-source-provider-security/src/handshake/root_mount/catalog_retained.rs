@@ -86,7 +86,9 @@ impl CurrentRootMountSourceProviderSessionV1 {
                     Err(CarrierFailureV1::Fatal(error)) => return Err(owner.poison(error)),
                 }
             }
-            require_current().map_err(|error| owner.poison(error))?;
+            if let Err(error) = require_current() {
+                return Err(owner.poison(error));
+            }
             match owner.carrier.receive_zero_descriptors_retaining_v5(
                 aos_sandbox_source_provider_protocol::MAXIMUM_FRAME_BYTES,
                 &mut exchange.received,

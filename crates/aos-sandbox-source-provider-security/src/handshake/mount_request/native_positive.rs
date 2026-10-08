@@ -1231,7 +1231,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
                 {
                     return Err(SourceProviderSecurityError::SessionContinuity);
                 }
-                owner.require_current_root_mount_record_role_v5(signed.signer())?;
+                owner.require_current_root_mount_record_role_v5(signed.prepared().signer())?;
                 require_original_complete_cut_v5(current, original, retained)?;
                 owner.recheck_original_complete_baseline_v1(original, retained)?;
                 let checked = retained.positive.checked.as_ref()
