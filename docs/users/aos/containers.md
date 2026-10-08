@@ -13,9 +13,17 @@ the system CLI with `apm install aos` or the registry publisher with
 Interactive Bash loads shared prompt, history, readline, and APM completion
 defaults. Press Ctrl+R to search history with fzf, Enter to place a selected
 command at the prompt, or Escape to cancel. Ctrl+L clears the screen while
-preserving the command being edited; Ctrl+C cancels it quietly. Customize
+preserving the command being edited; Ctrl+C cancels it quietly. History search
+fits short histories and grows to at most 40% of the terminal, with the search
+bar at the top. Set `FZF_CTRL_R_OPTS` to customize its layout. Customize
 `/root/.bashrc` or `/root/.inputrc` normally; package transactions do not rewrite
 those files. These shell defaults are shared with the host base image.
+
+The container inherits the system variation's APM registry configuration,
+channel, and trust keys. These local settings are present even when the registry
+server is unavailable; synchronization and downloads require the server.
+`apm config list` lists operator modules you have added, so it can be empty on a
+fresh container independently of registry availability.
 
 Packages use the same payload and native module declarations on machines and
 in containers. The target selects handlers for their abilities. Packages can

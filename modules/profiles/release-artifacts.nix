@@ -23,8 +23,6 @@
     caches = [];
     sbDbCerts = [];
   };
-  registryToml = registryRenderer.registryToml cfg.clientName registry;
-  trustedKeys = registryRenderer.trustedKeys registry;
   experimentalRegistryPattern = "andyl/experimental(-v([2-9]|[1-9][0-9]+))?";
   expectedClientName =
     if cfg.registry == "andyl/main"
@@ -176,16 +174,6 @@ in {
             path = "/etc/aos/release-profile";
             mode = "0444";
             text = config.environment.etc."aos/release-profile".text;
-          }
-          {
-            path = "/etc/apm/registries.d/${cfg.clientName}.toml";
-            mode = "0444";
-            text = registryToml;
-          }
-          {
-            path = "/etc/apm/trusted-keys.d/${cfg.clientName}.pub";
-            mode = "0444";
-            text = trustedKeys;
           }
         ]
         ++ lib.optional (cfg.warning != "") {

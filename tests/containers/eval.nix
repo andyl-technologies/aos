@@ -48,6 +48,16 @@
     builtins.tryEval (builtins.deepSeq evaluated.config.system.build.toplevel true);
 
   server = evaluateServer {};
+  registryOverrides = evaluateServer {
+    environment.etc."apm/registries.d/andyl.toml" = {
+      target = "apm/registries.d/local.toml";
+      mode = "0400";
+    };
+    environment.etc."apm/trusted-keys.d/andyl.pub".enable = false;
+  };
+  registryOverrideFiles = (definitionFor registryOverrides).filesystem.files;
+  registryFile = evaluated: path:
+    builtins.head (builtins.filter (file: file.path == path) evaluated.config.aos.containers.definitions.aos.filesystem.files);
   userland = evaluate "userland-eval" [
     serverModule
     {aos.boot.initrd.abilityHandoff.enable = lib.mkForce false;}
@@ -220,6 +230,16 @@
   containerInitNodes = builtins.filter (node: builtins.elemAt node.identity 3 == "initSystem") containerNodes;
 in
   assert aos.name == "aos";
+  assert (registryFile server "/etc/apm/registries.d/andyl.toml").text
+  == server.config.environment.etc."apm/registries.d/andyl.toml".text;
+  assert (registryFile server "/etc/apm/trusted-keys.d/andyl.pub").text
+  == server.config.environment.etc."apm/trusted-keys.d/andyl.pub".text;
+  assert (registryFile experimental "/etc/apm/registries.d/andyl-experimental.toml").text
+  == experimental.config.environment.etc."apm/registries.d/andyl-experimental.toml".text;
+  assert (registryFile registryOverrides "/etc/apm/registries.d/local.toml").mode == "0400";
+  assert !builtins.any (file: file.path == "/etc/apm/trusted-keys.d/andyl.pub") registryOverrideFiles;
+  assert builtins.length experimentalAos.filesystem.files
+  == builtins.length (lib.unique (map (file: file.path) experimentalAos.filesystem.files));
   assert !aos.runtimePolicy.allowTestArtifacts;
   assert aos.runtimePolicy.testArtifactRoots == [];
   assert fixturePolicy.allowTestArtifacts;
@@ -244,7 +264,9 @@ in
   assert aos.runtime.entrypoint == ["/usr/bin/aos-container-init"];
   assert aos.runtime.command == [];
   assert containerTransaction.scope == ["profile" "/var/lib/profiles/per-user/root"];
-  assert containerAbilities == ["configuration" "filesystem" "initSystem"];
+  # The minimal baked profile has no filesystem effects; its filesystem
+  # handler becomes active when an installed package declares one.
+  assert containerAbilities == ["configuration" "initSystem"];
   assert builtins.all (node: node.phase == "installation") containerNodes;
   assert builtins.length containerInitNodes == 1;
   assert (builtins.head containerInitNodes).input
@@ -277,6 +299,8 @@ in
   assert builtins.all (package: !builtins.elem (builtins.toString package) (map builtins.toString aos.packageRoots))
   [pkgs.aos pkgs.apr pkgs.glibc-tools pkgs.glibc-locales];
   assert builtins.all (path: builtins.elem path (map (file: file.path) aos.filesystem.files))
+  ["/etc/bashrc" "/etc/profile" "/etc/inputrc" "/root/.bashrc" "/root/.bash_profile"];
+  assert builtins.all (path: builtins.elem path (map (file: file.path) experimentalAos.filesystem.files))
   ["/etc/bashrc" "/etc/profile" "/etc/inputrc" "/root/.bashrc" "/root/.bash_profile"];
   assert aos.runtime.environment.PATH == "/var/lib/profiles/per-user/root/current/bin:/var/lib/profiles/per-user/root/current/sbin:/usr/bin:/usr/sbin:/bin";
   assert aos.runtime.environment.NIX_REMOTE == "local";
