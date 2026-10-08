@@ -27,6 +27,8 @@ in
     buildDeps =
       if stdenv.isCross
       then [
+        buildPackages.bash
+        buildPackages.sed
         buildPackages.gnumake
         buildPackages.pkg-config
         buildPackages.meson
@@ -34,6 +36,8 @@ in
         buildPackages.python3
       ]
       else [
+        buildPackages.bash
+        buildPackages.sed
         gnumake
         pkg-config
         meson
@@ -51,6 +55,11 @@ in
         script = ''
           tar xf $src
           cd libslirp-v${version}
+          # Meson executes this build helper directly, including in cross builds.
+          ${buildPackages.sed}/bin/sed -i \
+            '1s|^#!/bin/sh$|#!${buildPackages.bash}/bin/bash|' \
+            build-aux/git-version-gen
+
           # libslirp derives its version from git via build-aux/git-version-gen.
           # When building from a tarball, drop the version into .tarball-version
           # so meson reads it instead of failing the git probe.
