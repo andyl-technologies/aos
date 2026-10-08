@@ -146,7 +146,11 @@ mod argument_exchange;
 mod attach_credentials;
 mod attach_exchange;
 mod authority_effect;
+mod cache_directory_source;
+mod cache_index_buffer;
+mod cache_public_pin;
 mod cache_readback_credential;
+mod cache_source_membership;
 mod capture_candidate_exchange;
 mod guest_root_credentials;
 mod hold_credential;
@@ -248,7 +252,7 @@ struct ControllerBrokerSessions {
     #[cfg(feature = "online-nix")]
     nix_existing_outputs: bool,
     #[cfg(feature = "online-nix")]
-    nix_input_source: Option<crate::cache_directory_source::ProjectSealedViewObjectSourceV1>,
+    nix_input_source: Option<cache_directory_source::ProjectSealedViewObjectSourceV1>,
     launch_image: Option<crate::production_startup::Pid1LaunchImageV1>,
     host: Option<ControllerHostPublication>,
     mount: Option<crate::DormantMountLifecycleInventoryOwnerV1>,

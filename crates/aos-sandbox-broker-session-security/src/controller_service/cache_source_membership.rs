@@ -1,10 +1,12 @@
-//! Joins a rechecked public Cache consumer to authenticated View source data.
+//! Controller-private compilation of borrowed Cache source membership.
+//!
+//! The durable View revision supplies canonical bytes; exact tree objects and
+//! compiler-owned index commitments prove membership without authorizing a pin.
 
 use aos_filesystem_view_core::{
     CompileError, INDEX_MEDIA_TYPE, IndexError, IndexExpectation, IndexStaging, ObjectSource,
     ProjectionError, ProjectionLimits, SourceError, TreeCompileLimits, TreeCompiler,
-    ValidatedViewProjection, ValidatedViewSourceObject, compile_view_projection, load_exact,
-    validate_index,
+    ValidatedViewProjection, ValidatedViewSourceObject, compile_view_projection, validate_index,
 };
 use aos_sandbox::filesystem_view_state::{
     DurableFilesystemViewRevisionV1, FilesystemViewRevisionPresenceV1,
@@ -15,33 +17,33 @@ use aos_sandbox_core::{
     CanonicalCborError, MediaType, Revision, decode_view, descriptor_for_bytes,
 };
 
-use crate::cache_index_buffer::CacheIndexBuffer;
+use super::cache_index_buffer::CacheIndexBuffer;
 
 /// Bounds structural-index validation and View projection for a public Cache pin.
 #[derive(Clone, Copy, Debug)]
-pub struct CacheSourceMembershipLimitsV1 {
+pub(super) struct CacheSourceMembershipLimitsV1 {
     /// Maximum bytes retained for the authenticated structural index.
-    pub maximum_index_bytes: u64,
+    pub(super) maximum_index_bytes: u64,
     /// Maximum modeled working bytes while validating that index.
-    pub maximum_index_working_bytes: u64,
+    pub(super) maximum_index_working_bytes: u64,
     /// Limits for canonical View decoding and projected namespace expansion.
-    pub projection: ProjectionLimits,
+    pub(super) projection: ProjectionLimits,
 }
 
 /// Bounds private tree compilation and its aggregate live memory envelope.
 #[derive(Clone, Copy, Debug)]
-pub struct CacheCompiledSourceLimitsV1 {
+pub(super) struct CacheCompiledSourceLimitsV1 {
     /// Exact-object and graph-wide compiler limits.
-    pub tree: TreeCompileLimits,
+    pub(super) tree: TreeCompileLimits,
     /// Limits for index validation and View projection.
-    pub membership: CacheSourceMembershipLimitsV1,
+    pub(super) membership: CacheSourceMembershipLimitsV1,
     /// Maximum modeled live heap across View, index, compiler, and projection.
-    pub maximum_memory_bytes: u64,
+    pub(super) maximum_memory_bytes: u64,
 }
 
 /// Reports why an exact View source cannot authorize a requested Cache pin.
 #[derive(Debug, thiserror::Error)]
-pub enum CacheSourceMembershipErrorV1 {
+pub(super) enum CacheSourceMembershipErrorV1 {
     /// A release-only consumer cannot authorize a new pin.
     #[error("cache consumer has no current acquisition fence")]
     ReleaseOnly,
@@ -61,7 +63,7 @@ pub enum CacheSourceMembershipErrorV1 {
 
 /// Reports failure to compile source membership from exact portable objects.
 #[derive(Debug, thiserror::Error)]
-pub enum CompiledCacheSourceMembershipErrorV1<E: std::error::Error + 'static> {
+pub(super) enum CompiledCacheSourceMembershipErrorV1<E: std::error::Error + 'static> {
     /// A release-only consumer cannot acquire a source pin.
     #[error("cache consumer has no current acquisition fence")]
     ReleaseOnly,
@@ -99,7 +101,7 @@ pub enum CompiledCacheSourceMembershipErrorV1<E: std::error::Error + 'static> {
 ///
 /// Returns an error for release-only consumers, mismatched View identity or
 /// generation, an absent source object, or invalid authenticated index data.
-pub fn join_cache_source_membership_v1<'projection, 'index, 'bytes>(
+pub(super) fn join_cache_source_membership_v1<'projection, 'index, 'bytes>(
     consumer: &'projection RecheckedCacheConsumerV1,
     projection: &'projection ValidatedViewProjection<'index, 'bytes>,
 ) -> Result<ValidatedViewSourceObject<'projection, 'index, 'bytes>, CacheSourceMembershipErrorV1> {
@@ -133,7 +135,7 @@ pub fn join_cache_source_membership_v1<'projection, 'index, 'bytes>(
 ///
 /// Returns an error for release-only consumers, invalid or stale View/index
 /// data, an absent source object, or exceeded validation limits.
-pub fn with_cache_source_membership_v1<R>(
+pub(super) fn with_cache_source_membership_v1<R>(
     consumer: &RecheckedCacheConsumerV1,
     view_bytes: &[u8],
     index_bytes: &[u8],
@@ -163,71 +165,21 @@ pub fn with_cache_source_membership_v1<R>(
     Ok(use_membership(&membership))
 }
 
-/// Compiles exact portable source objects into a private membership proof.
-///
-/// The index and its expected commitments are both produced by the trusted
-/// compiler. This differs from validating an externally supplied index: no
-/// untrusted index header or candidate bytes supply the expectation. The
-/// caller must still recheck desired state at the protected pin commit.
-/// The aggregate preflight models up to twice the View and index byte lengths
-/// for `Vec` capacity, plus compiler or validation/projection working memory.
-/// It is not an allocator-exact cgroup guarantee; callers must leave headroom.
-///
-/// # Errors
-///
-/// Returns an error when the consumer cannot acquire a pin, exact source
-/// loading or graph compilation fails, a limit is exceeded, or the requested
-/// object is absent from the compiled View source.
-pub fn with_compiled_cache_source_membership_v1<S, R>(
-    consumer: &RecheckedCacheConsumerV1,
-    source: &mut S,
-    compiler_abi: [u8; 32],
-    limits: CacheCompiledSourceLimitsV1,
-    use_membership: impl FnOnce(&ValidatedViewSourceObject<'_, '_, '_>) -> R,
-) -> Result<R, CompiledCacheSourceMembershipErrorV1<S::Error>>
-where
-    S: ObjectSource,
-{
-    let tree_limits = limits.tree;
-    let membership_limits = limits.membership;
-    let fence = consumer
-        .acquisition_fence()
-        .ok_or(CompiledCacheSourceMembershipErrorV1::ReleaseOnly)?;
-    let maximum_view_bytes = tree_limits
-        .object_bytes
-        .min(membership_limits.projection.decode.maximum_bytes);
-    let maximum_index_bytes = tree_limits
-        .index_bytes
-        .min(membership_limits.maximum_index_bytes);
-    preflight_compilation_memory(
-        fence.view_revision().encoded_size(),
-        maximum_index_bytes,
-        limits,
-    )?;
-    let view_object = load_exact(source, fence.view_revision(), maximum_view_bytes)?;
-
-    compile_authenticated_cache_source_membership_v1(
-        consumer,
-        source,
-        view_object.bytes(),
-        compiler_abi,
-        limits,
-        use_membership,
-    )
-}
-
 /// Compiles source membership using canonical bytes from a durable View revision.
 ///
 /// The protected revision supplies the View bytes, so the project source only
 /// needs the exact immutable tree objects. The revision must still match the
 /// consumer's current desired-state fence; released or stale revisions cannot
 /// authorize a new pin.
+/// The aggregate preflight models up to twice the View and index byte lengths
+/// for `Vec` capacity, plus compiler or validation/projection working memory.
+/// It is not an allocator-exact cgroup guarantee; callers must leave headroom.
 ///
 /// # Errors
 ///
 /// Returns an error for a release-only consumer, stale or released revision,
 /// exceeded compilation limits, invalid tree source, or absent object.
-pub fn with_compiled_cache_source_membership_from_revision_v1<S, R>(
+pub(super) fn with_compiled_cache_source_membership_from_revision_v1<S, R>(
     consumer: &RecheckedCacheConsumerV1,
     source: &mut S,
     revision: &DurableFilesystemViewRevisionV1,

@@ -28,7 +28,7 @@ use sha2::{Digest as _, Sha256};
 use super::{
     EffectFailure, EffectObservation, EffectReceipt, Journal, OperationId, PublicMutationEffectV1,
 };
-use crate::ProjectSealedViewObjectSourceV1;
+use super::cache_directory_source::ProjectSealedViewObjectSourceV1;
 
 const MAXIMUM_VIEW_BYTES: usize = 1024 * 1024;
 const REQUEST_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.public-view-effect.v1\0";

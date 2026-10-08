@@ -32,7 +32,7 @@ use aos_sandbox_core::{
 use aos_sandbox_linux::immutable_file::{FsVerityDigest, ObservedSealedPublicationFile};
 use aos_sandbox_protocol::nix_build::{NixPreadmittedRecipeV2, NixStoreObjectV2};
 
-use crate::cache_directory_source::{
+use super::cache_directory_source::{
     ProjectSealedViewObjectSourceV1, ProjectSealedViewSourceErrorV1,
 };
 

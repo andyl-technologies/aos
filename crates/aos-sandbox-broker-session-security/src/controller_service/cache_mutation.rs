@@ -17,12 +17,12 @@ use sha2::{Digest as _, Sha256};
 
 use super::{EffectFailure, Journal, OperationId, ProductionEffectExecutor};
 use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1;
-use crate::cache_public_pin::{
+use super::cache_public_pin::{
     PublicCachePinExecutionErrorV1, ResidentPublicCacheUnpinV1,
     execute_resident_public_cache_pin_v1, execute_resident_public_cache_unpin_v1,
     public_cache_pin_transaction_id_v1,
 };
-use crate::cache_directory_source::{ProjectSealedViewObjectSourceV1, ProjectSealedViewSourceErrorV1};
+use super::cache_directory_source::{ProjectSealedViewObjectSourceV1, ProjectSealedViewSourceErrorV1};
 
 #[derive(Clone, Copy)]
 enum MutationFailureV1 {

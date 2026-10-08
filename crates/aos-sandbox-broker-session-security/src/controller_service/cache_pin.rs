@@ -13,8 +13,9 @@ use sha2::{Digest as _, Sha256};
 
 use super::{EffectFailure, EffectReceipt, Journal, OperationId, ProductionEffectExecutor};
 use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1;
-use crate::{
-    CacheCompiledSourceLimitsV1, CacheSourceMembershipLimitsV1, ProjectSealedViewObjectSourceV1,
+use super::cache_directory_source::ProjectSealedViewObjectSourceV1;
+use super::cache_source_membership::{CacheCompiledSourceLimitsV1, CacheSourceMembershipLimitsV1};
+use super::cache_public_pin::{
     PublicCachePinExecutionV1, PublicCachePinRecoveryV1,
     execute_public_cache_pin_from_project_revision_v1, public_cache_pin_transaction_id_v1,
     recover_public_cache_pin_v1,

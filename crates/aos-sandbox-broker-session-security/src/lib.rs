@@ -34,11 +34,11 @@
 //! method profile, and retain recovery custody before advertising readiness.
 //!
 //! [`manifest`] owns the fixed `AOSBSC01` format.
-//! `cache_source_membership` binds public Cache consumers to the independently
-//! authenticated View source projection; `cache_directory_source` streams
-//! staged objects beneath a caller-pinned source root. The private
-//! protected-files module pins the endpoint directory and its three role-local
-//! files. The private self-execution module pins and revalidates the loading
+//! Controller's private Cache/View integration binds public Cache consumers
+//! to independently authenticated View source projections and retains the
+//! fixed sealed project source roots. The private protected-files module pins
+//! the endpoint directory and its three role-local files. The private
+//! self-execution module pins and revalidates the loading
 //! process. The private entropy module implements bounded kernel acquisition;
 //! the endpoint module owns narrow client and broker custody APIs; and the
 //! handshake module owns the dormant same-channel hello and general protected
@@ -50,12 +50,8 @@
 
 #![cfg(target_os = "linux")]
 
-mod cache_directory_source;
-mod cache_index_buffer;
-mod cache_public_pin;
 mod cache_signer_credential;
 pub mod cache_signer_exchange;
-mod cache_source_membership;
 pub mod controller_service;
 mod dormant_handshake;
 mod endpoint;
@@ -116,28 +112,6 @@ mod storage_host_output_readback;
 #[cfg(test)]
 mod test_signed_endpoint;
 
-pub use cache_directory_source::{
-    DirectoryPortableObjectSource, PortableObjectReader, ProjectSealedViewObjectSourceV1,
-    ProjectSealedViewSourceErrorV1,
-};
-pub use cache_public_pin::{
-    ConfirmedPublicCachePinV1, PublicCachePinExecutionErrorV1, PublicCachePinExecutionV1,
-    PublicCachePinRecoveryErrorV1, PublicCachePinRecoveryV1, PublicCacheUnpinExecutionV1,
-    PublicCacheUnpinObservationErrorV1, PublicCacheUnpinProgressErrorV1,
-    PublicCacheUnpinProgressV1, PublicCacheUnpinRecoveryErrorV1, PublicCacheUnpinRecoveryV1,
-    execute_public_cache_pin_from_project_revision_v1,
-    execute_public_cache_pin_from_project_source_v1, execute_public_cache_pin_v1,
-    execute_public_cache_unpin_consumer_v1, execute_public_cache_unpin_v1,
-    observe_public_cache_unpin_completion_v1, public_cache_pin_transaction_id_v1,
-    public_cache_unpin_transaction_id_v1, recover_public_cache_pin_v1,
-    recover_public_cache_unpin_v1,
-};
-pub use cache_source_membership::{
-    CacheCompiledSourceLimitsV1, CacheSourceMembershipErrorV1, CacheSourceMembershipLimitsV1,
-    CompiledCacheSourceMembershipErrorV1, join_cache_source_membership_v1,
-    with_cache_source_membership_v1, with_compiled_cache_source_membership_from_revision_v1,
-    with_compiled_cache_source_membership_v1,
-};
 pub use dormant_handshake::{
     DormantAuthenticatedBrokerSessionV1, DormantBrokerDescriptorCommitRecoveryV1,
     DormantBrokerDescriptorCommitResultV1, DormantBrokerDescriptorExecutionFailureV1,

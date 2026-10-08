@@ -1,6 +1,10 @@
-//! Joins public Cache source membership to protected and physical pin owners.
+//! Controller-private Cache pin acquisition, drain, and exact recovery.
+//!
+//! Source membership remains borrowed through the protected pin transition.
+//! Protected and physical owners retain their independent admission, while
+//! every unresolved outcome returns intact to the Controller's custody slots.
 
-use aos_filesystem_view_core::{ObjectSource, ValidatedViewSourceObject};
+use aos_filesystem_view_core::ValidatedViewSourceObject;
 use aos_sandbox::Journal;
 use aos_sandbox::cache_residency::{
     CacheOwnerCurrentnessV1, CacheOwnerErrorV1, CacheOwnerPinActionV1, CacheOwnerPinIdV1,
@@ -11,41 +15,43 @@ use aos_sandbox::cache_residency::{
     DormantCacheOwnerV1, PhysicalPartitionId, PublicLogicalPinAcquisitionCommitV1,
     PublicLogicalPinAcquisitionErrorV1, ValidatedPublicLogicalPinAcquisitionV1,
 };
-use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1;
 use aos_sandbox::filesystem_view_state::DurableFilesystemViewRevisionV1;
 use aos_sandbox::production_operation_compiler::RecheckedCacheConsumerV1;
 use aos_sandbox_core::{NodeId, OperationId};
+use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1;
 use sha2::{Digest as _, Sha256};
 
-use crate::cache_directory_source::{
+use super::cache_directory_source::{
     ProjectSealedViewObjectSourceV1, ProjectSealedViewSourceErrorV1,
 };
-use crate::cache_source_membership::{
+use super::cache_source_membership::{
     CacheCompiledSourceLimitsV1, CompiledCacheSourceMembershipErrorV1,
     with_compiled_cache_source_membership_from_revision_v1,
-    with_compiled_cache_source_membership_v1,
 };
 
 /// Keeps the complete consumer-wide selection and each physical observation.
 #[derive(Default)]
-pub(crate) struct ResidentPublicCacheUnpinV1 {
-    selected: Option<Result<(Vec<CachePinV1>, Vec<CachePinV1>), CacheResidencyProtectedJournalErrorV1>>,
+pub(super) struct ResidentPublicCacheUnpinV1 {
+    selected:
+        Option<Result<(Vec<CachePinV1>, Vec<CachePinV1>), CacheResidencyProtectedJournalErrorV1>>,
     observations: Vec<Result<CacheOwnerPinPresenceV1, CacheOwnerErrorV1>>,
 }
 
 impl ResidentPublicCacheUnpinV1 {
-    pub(crate) fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+    pub(super) fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
         if let Some(Err(cause)) = self.selected.as_ref() {
             return Some(cause);
         }
-        self.observations.iter().find_map(|result| result.as_ref().err())
+        self.observations
+            .iter()
+            .find_map(|result| result.as_ref().err())
             .map(|cause| cause as &(dyn std::error::Error + 'static))
     }
 }
 
 /// Uses the sole portable compiler with the actual retained Cache owner cut.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn execute_resident_public_cache_pin_v1(
+pub(super) fn execute_resident_public_cache_pin_v1(
     original: &mut aos_sandbox::cache_residency::CacheResidentInitializationV1,
     protected: &mut CacheResidencyProtectedOwnerV1,
     physical: &mut DormantCacheOwnerV1,
@@ -62,13 +68,20 @@ pub(crate) fn execute_resident_public_cache_pin_v1(
     if source.project() != consumer.project() {
         return Err(PublicCachePinExecutionErrorV1::SourceProjectMismatch);
     }
+
     let mut reader = source.borrow_cache_pin_source_v1();
     with_compiled_cache_source_membership_from_revision_v1(
-        consumer, &mut reader, revision, compiler_abi, limits,
+        consumer,
+        &mut reader,
+        revision,
+        compiler_abi,
+        limits,
         |membership| {
-            source.recheck_retained_cache_pin_root_v1()
+            source
+                .recheck_retained_cache_pin_root_v1()
                 .map_err(cache_pin_root_error)?;
-            let inventories = original.existing_pin_inventories(protected)
+            let inventories = original
+                .existing_pin_inventories(protected)
                 .map_err(|_| CacheResidencyProtectedJournalErrorV1::StaleAuthority)?;
             let mut selected = None;
             for inventory in inventories {
@@ -89,20 +102,33 @@ pub(crate) fn execute_resident_public_cache_pin_v1(
             }
             let partition = selected.ok_or(PublicCachePinExecutionErrorV1::PartitionSelection)?;
             let acquisition = ValidatedPublicLogicalPinAcquisitionV1::new(
-                consumer, membership, partition, controller_node,
+                consumer,
+                membership,
+                partition,
+                controller_node,
             )?;
-            source.recheck_retained_cache_pin_root_v1()
+            source
+                .recheck_retained_cache_pin_root_v1()
                 .map_err(cache_pin_root_error)?;
-            original.pin_existing_logical_consumer(
-                protected, physical, &acquisition, operation,
-                public_cache_pin_transaction_id_v1(operation), source_journal, request,
-            ).map_err(|_| CacheResidencyProtectedJournalErrorV1::StaleAuthority)?;
+            original
+                .pin_existing_logical_consumer(
+                    protected,
+                    physical,
+                    &acquisition,
+                    operation,
+                    public_cache_pin_transaction_id_v1(operation),
+                    source_journal,
+                    request,
+                )
+                .map_err(|_| CacheResidencyProtectedJournalErrorV1::StaleAuthority)?;
             Ok(())
         },
     )?
 }
 
-fn cache_pin_root_error(cause: ProjectSealedViewSourceErrorV1) -> PublicCachePinExecutionErrorV1<ProjectSealedViewSourceErrorV1> {
+fn cache_pin_root_error(
+    cause: ProjectSealedViewSourceErrorV1,
+) -> PublicCachePinExecutionErrorV1<ProjectSealedViewSourceErrorV1> {
     PublicCachePinExecutionErrorV1::Source(CompiledCacheSourceMembershipErrorV1::ViewSource(
         aos_filesystem_view_core::SourceError::Source(cause),
     ))
@@ -116,7 +142,10 @@ fn public_pin_partition_payload_matches(
     payload.plan.partition == partition
         && payload.plan.project == consumer.project()
         && &payload.plan.descriptor == consumer.object()
-        && payload.catalog.as_ref().is_some_and(|entry| entry.presence == CatalogPresenceV1::Committed)
+        && payload
+            .catalog
+            .as_ref()
+            .is_some_and(|entry| entry.presence == CatalogPresenceV1::Committed)
 }
 
 fn public_consumer_pin_matches(pin: &CachePinV1, consumer: &RecheckedCacheConsumerV1) -> bool {
@@ -169,7 +198,7 @@ fn select_resident_consumer_pins(
 
 /// Releases all partitions, then checks every retained release tombstone.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn execute_resident_public_cache_unpin_v1(
+pub(super) fn execute_resident_public_cache_unpin_v1(
     original: &mut aos_sandbox::cache_residency::CacheResidentInitializationV1,
     protected: &mut CacheResidencyProtectedOwnerV1,
     physical: &mut DormantCacheOwnerV1,
@@ -180,22 +209,30 @@ pub(crate) fn execute_resident_public_cache_unpin_v1(
     operation: OperationId,
 ) -> Result<(), aos_sandbox::cache_residency::CacheResidentUnavailableV1> {
     progress.selected = Some(select_resident_consumer_pins(
-        original.existing_pin_inventories(protected)?, consumer,
+        original.existing_pin_inventories(protected)?,
+        consumer,
     ));
     let Some(Ok((active, _))) = progress.selected.as_ref() else {
         return Err(aos_sandbox::cache_residency::CacheResidentUnavailableV1);
     };
     for pin in active {
         original.unpin_existing_logical_consumer(
-            protected, physical, consumer, pin, operation,
-            public_cache_unpin_transaction_id_v1(pin), source_journal, request,
+            protected,
+            physical,
+            consumer,
+            pin,
+            operation,
+            public_cache_unpin_transaction_id_v1(pin),
+            source_journal,
+            request,
         )?;
     }
 
     // Recapture all partitions only after the exact own successors settled.
     // This replaces completed selection DATA, not any failed or live owner.
     progress.selected = Some(select_resident_consumer_pins(
-        original.existing_pin_inventories(protected)?, consumer,
+        original.existing_pin_inventories(protected)?,
+        consumer,
     ));
     let Some(Ok((active, released))) = progress.selected.as_ref() else {
         return Err(aos_sandbox::cache_residency::CacheResidentUnavailableV1);
@@ -205,13 +242,22 @@ pub(crate) fn execute_resident_public_cache_unpin_v1(
     }
     for pin in released {
         let id = CacheOwnerPinIdV1::for_cache_pin(pin.partition(), pin.id());
-        progress.observations.push(id.and_then(|id| physical.observe_pin(id, pin.partition(), pin.object())));
+        progress
+            .observations
+            .push(id.and_then(|id| physical.observe_pin(id, pin.partition(), pin.object())));
         match progress.observations.last() {
             Some(Ok(CacheOwnerPinPresenceV1::Absent)) => {}
-            Some(Ok(CacheOwnerPinPresenceV1::Present)) => original.reconcile_existing_public_unpin(
-                protected, physical, consumer, pin, operation,
-                public_cache_unpin_transaction_id_v1(pin), source_journal, request,
-            )?,
+            Some(Ok(CacheOwnerPinPresenceV1::Present)) => original
+                .reconcile_existing_public_unpin(
+                    protected,
+                    physical,
+                    consumer,
+                    pin,
+                    operation,
+                    public_cache_unpin_transaction_id_v1(pin),
+                    source_journal,
+                    request,
+                )?,
             _ => return Err(aos_sandbox::cache_residency::CacheResidentUnavailableV1),
         }
         original.recheck(protected)?;
@@ -221,7 +267,7 @@ pub(crate) fn execute_resident_public_cache_unpin_v1(
 
 /// Retains every required outcome of one public logical pin acquisition.
 #[must_use = "public completion requires a confirmed protected and physical pin"]
-pub enum PublicCachePinExecutionV1 {
+pub(super) enum PublicCachePinExecutionV1 {
     /// The one existing logical pin and its physical owner pin remain current.
     Retained(CachePinV1),
     /// A protected transition was attempted; physical settlement is separate.
@@ -235,7 +281,7 @@ pub enum PublicCachePinExecutionV1 {
 
 /// Proves that one public pin is retained by both protected and physical owners.
 #[must_use = "a confirmed public pin must be reflected in its operation result"]
-pub enum ConfirmedPublicCachePinV1 {
+pub(super) enum ConfirmedPublicCachePinV1 {
     /// The existing logical and physical pins remained current.
     Retained(CachePinV1),
     /// A protected transition was read back and its physical effect settled.
@@ -253,7 +299,7 @@ impl PublicCachePinExecutionV1 {
     ///
     /// Returns the original execution when protected readback or physical
     /// settlement has not been confirmed.
-    pub fn into_confirmed(self) -> Result<ConfirmedPublicCachePinV1, Self> {
+    pub(super) fn into_confirmed(self) -> Result<ConfirmedPublicCachePinV1, Self> {
         match self {
             Self::Retained(pin) => Ok(ConfirmedPublicCachePinV1::Retained(pin)),
             Self::Committed {
@@ -267,11 +313,12 @@ impl PublicCachePinExecutionV1 {
 
 /// Retains the protected and physical outcomes of one exact public pin drain.
 #[must_use = "public unpin completion requires every retained partition to be drained"]
-pub struct PublicCacheUnpinExecutionV1 {
+pub(super) struct PublicCacheUnpinExecutionV1 {
     /// Exact protected outcome, including ambiguous recovery custody.
-    pub outcome: CacheResidencyCommitOutcomeV1,
+    pub(super) outcome: CacheResidencyCommitOutcomeV1,
     /// Physical settlement, absent while the protected outcome is unresolved.
-    pub settlement: Option<Result<CacheOwnerPinSettlementV1, CacheOwnerPinSettlementErrorV1>>,
+    pub(super) settlement:
+        Option<Result<CacheOwnerPinSettlementV1, CacheOwnerPinSettlementErrorV1>>,
 }
 
 impl PublicCacheUnpinExecutionV1 {
@@ -284,7 +331,7 @@ impl PublicCacheUnpinExecutionV1 {
     ///
     /// Returns the original execution when protected readback or physical
     /// settlement has not been confirmed.
-    pub fn into_confirmed(self) -> Result<CacheOwnerPinSettlementV1, Self> {
+    pub(super) fn into_confirmed(self) -> Result<CacheOwnerPinSettlementV1, Self> {
         match self {
             Self {
                 outcome: CacheResidencyCommitOutcomeV1::Applied(_),
@@ -297,7 +344,7 @@ impl PublicCacheUnpinExecutionV1 {
 
 /// Reports failure before a public Cache pin has a complete execution result.
 #[derive(Debug, thiserror::Error)]
-pub enum PublicCachePinExecutionErrorV1<E: std::error::Error + 'static> {
+pub(super) enum PublicCachePinExecutionErrorV1<E: std::error::Error + 'static> {
     /// The protected source root belongs to a different project.
     #[error("public Cache pin source project differs from the consumer")]
     SourceProjectMismatch,
@@ -318,48 +365,6 @@ pub enum PublicCachePinExecutionErrorV1<E: std::error::Error + 'static> {
     Physical(#[from] CacheOwnerErrorV1),
 }
 
-/// Acquires a public logical pin from one project-bound sealed source root.
-///
-/// The root's project binding is checked before any portable object is read.
-/// Exact source membership, current desired state, protected Cache authority,
-/// and physical pin settlement are still checked by the generic execution.
-///
-/// # Errors
-///
-/// Returns an error for a cross-project source root or any ordinary public
-/// Cache pin source, authority, or physical-owner failure.
-#[allow(clippy::too_many_arguments)]
-pub fn execute_public_cache_pin_from_project_source_v1(
-    protected: &mut CacheResidencyProtectedOwnerV1,
-    physical: &mut DormantCacheOwnerV1,
-    source: &mut ProjectSealedViewObjectSourceV1,
-    consumer: &RecheckedCacheConsumerV1,
-    source_journal: &Journal,
-    request: &DormantSandboxRequestKindV1,
-    operation: OperationId,
-    controller_node: NodeId,
-    compiler_abi: [u8; 32],
-    compilation_limits: CacheCompiledSourceLimitsV1,
-) -> Result<PublicCachePinExecutionV1, PublicCachePinExecutionErrorV1<ProjectSealedViewSourceErrorV1>>
-{
-    if source.project() != consumer.project() {
-        return Err(PublicCachePinExecutionErrorV1::SourceProjectMismatch);
-    }
-
-    execute_public_cache_pin_v1(
-        protected,
-        physical,
-        source,
-        consumer,
-        source_journal,
-        request,
-        operation,
-        controller_node,
-        compiler_abi,
-        compilation_limits,
-    )
-}
-
 /// Acquires a public pin using the durable View revision and sealed project tree objects.
 ///
 /// The protected View revision supplies canonical View bytes, while the
@@ -371,7 +376,7 @@ pub fn execute_public_cache_pin_from_project_source_v1(
 /// Returns an error for a cross-project root, stale or released View revision,
 /// invalid source graph, or protected and physical pin failures.
 #[allow(clippy::too_many_arguments)]
-pub fn execute_public_cache_pin_from_project_revision_v1(
+pub(super) fn execute_public_cache_pin_from_project_revision_v1(
     protected: &mut CacheResidencyProtectedOwnerV1,
     physical: &mut DormantCacheOwnerV1,
     source: &mut ProjectSealedViewObjectSourceV1,
@@ -412,7 +417,7 @@ pub fn execute_public_cache_pin_from_project_revision_v1(
 
 /// Classifies a cold public pin acquisition without selecting a new partition.
 #[must_use = "public pin recovery must be settled or retried"]
-pub enum PublicCachePinRecoveryV1 {
+pub(super) enum PublicCachePinRecoveryV1 {
     /// The original transaction has no current physical effect.
     StateOnly,
     /// The original acquisition is physically present, newly or previously.
@@ -425,7 +430,7 @@ pub enum PublicCachePinRecoveryV1 {
 
 /// Reports an invalid or unavailable public pin recovery attempt.
 #[derive(Debug, thiserror::Error)]
-pub enum PublicCachePinRecoveryErrorV1 {
+pub(super) enum PublicCachePinRecoveryErrorV1 {
     /// The consumer no longer has an acquisition fence.
     #[error("public cache pin recovery requires an acquisition-fenced consumer")]
     MissingAcquisitionFence,
@@ -436,7 +441,7 @@ pub enum PublicCachePinRecoveryErrorV1 {
 
 /// Reports failure while confirming every public unpin obligation is gone.
 #[derive(Debug, thiserror::Error)]
-pub enum PublicCacheUnpinObservationErrorV1 {
+pub(super) enum PublicCacheUnpinObservationErrorV1 {
     /// The protected logical-pin projection could not be replayed as current.
     #[error(transparent)]
     Protected(#[from] CacheResidencyProtectedJournalErrorV1),
@@ -447,7 +452,7 @@ pub enum PublicCacheUnpinObservationErrorV1 {
 
 /// Classifies one exact public unpin after protected and physical cold replay.
 #[must_use = "public unpin recovery must not be mistaken for completion"]
-pub enum PublicCacheUnpinRecoveryV1 {
+pub(super) enum PublicCacheUnpinRecoveryV1 {
     /// The named transaction has no current protected pin effect.
     StateOnly,
     /// The protected release and exact physical absence are confirmed.
@@ -458,7 +463,7 @@ pub enum PublicCacheUnpinRecoveryV1 {
 
 /// Reports an invalid or unavailable public unpin recovery attempt.
 #[derive(Debug, thiserror::Error)]
-pub enum PublicCacheUnpinRecoveryErrorV1 {
+pub(super) enum PublicCacheUnpinRecoveryErrorV1 {
     /// The expected pin is not this release-only consumer's retained tombstone.
     #[error("public cache unpin recovery does not match a released consumer pin")]
     MismatchedPin,
@@ -469,7 +474,7 @@ pub enum PublicCacheUnpinRecoveryErrorV1 {
 
 /// Retains the exact point at which a consumer-wide unpin needs recovery.
 #[must_use = "the public operation is incomplete until every partition is drained"]
-pub enum PublicCacheUnpinProgressV1 {
+pub(super) enum PublicCacheUnpinProgressV1 {
     /// No matching protected or physical pin obligation remains.
     Complete,
     /// A new protected release or its physical handoff is unresolved.
@@ -492,7 +497,7 @@ pub enum PublicCacheUnpinProgressV1 {
 
 /// Reports failure before consumer-wide unpin returns complete recovery custody.
 #[derive(Debug, thiserror::Error)]
-pub enum PublicCacheUnpinProgressErrorV1 {
+pub(super) enum PublicCacheUnpinProgressErrorV1 {
     /// Protected replay or the new release commit failed closed.
     #[error(transparent)]
     Protected(#[from] CacheResidencyProtectedJournalErrorV1),
@@ -510,7 +515,7 @@ pub enum PublicCacheUnpinProgressErrorV1 {
 /// current partition selection changes. The acquisition and release domains
 /// are distinct, and the reserved all-zero journal identity is remapped.
 #[must_use]
-pub fn public_cache_pin_transaction_id_v1(operation: OperationId) -> [u8; 16] {
+pub(super) fn public_cache_pin_transaction_id_v1(operation: OperationId) -> [u8; 16] {
     let digest: [u8; 32] = Sha256::new()
         .chain_update(b"aos.sandbox.cache.public-pin-transaction.v1\0")
         .chain_update(operation.as_bytes())
@@ -531,7 +536,7 @@ pub fn public_cache_pin_transaction_id_v1(operation: OperationId) -> [u8; 16] {
 /// cold recovery possible after that operation or journal suffix is gone.
 /// The reserved all-zero journal identity is remapped deterministically.
 #[must_use]
-pub fn public_cache_unpin_transaction_id_v1(pin: &CachePinV1) -> [u8; 16] {
+pub(super) fn public_cache_unpin_transaction_id_v1(pin: &CachePinV1) -> [u8; 16] {
     let digest: [u8; 32] = Sha256::new()
         .chain_update(b"aos.sandbox.cache.public-unpin-transaction.v1\0")
         .chain_update(pin.partition().digest().as_bytes())
@@ -556,7 +561,7 @@ pub fn public_cache_unpin_transaction_id_v1(pin: &CachePinV1) -> [u8; 16] {
 ///
 /// Returns an error when the consumer lacks an acquisition fence or protected
 /// replay cannot validate the original transaction and consumer.
-pub fn recover_public_cache_pin_v1(
+pub(super) fn recover_public_cache_pin_v1(
     protected: &mut CacheResidencyProtectedOwnerV1,
     physical: &mut DormantCacheOwnerV1,
     consumer: &RecheckedCacheConsumerV1,
@@ -602,7 +607,7 @@ pub fn recover_public_cache_pin_v1(
 ///
 /// Returns an error when the expected pin is not a released obligation of the
 /// rechecked consumer or protected authority cannot validate the transaction.
-pub fn recover_public_cache_unpin_v1(
+pub(super) fn recover_public_cache_unpin_v1(
     protected: &mut CacheResidencyProtectedOwnerV1,
     physical: &mut DormantCacheOwnerV1,
     consumer: &RecheckedCacheConsumerV1,
@@ -653,7 +658,7 @@ pub fn recover_public_cache_unpin_v1(
 ///
 /// Returns an error when either protected replay or physical observation
 /// cannot establish the exact consumer/object state.
-pub fn observe_public_cache_unpin_completion_v1(
+pub(super) fn observe_public_cache_unpin_completion_v1(
     protected: &mut CacheResidencyProtectedOwnerV1,
     physical: &DormantCacheOwnerV1,
     consumer: &RecheckedCacheConsumerV1,
@@ -696,7 +701,7 @@ pub fn observe_public_cache_unpin_completion_v1(
 ///
 /// Returns an error when protected replay, release construction, or physical
 /// observation fails before a complete pending result can be returned.
-pub fn execute_public_cache_unpin_consumer_v1(
+pub(super) fn execute_public_cache_unpin_consumer_v1(
     protected: &mut CacheResidencyProtectedOwnerV1,
     physical: &mut DormantCacheOwnerV1,
     consumer: &RecheckedCacheConsumerV1,
@@ -752,54 +757,6 @@ pub fn execute_public_cache_unpin_consumer_v1(
     } else {
         Ok(PublicCacheUnpinProgressV1::RecheckRequired)
     }
-}
-
-/// Executes one source-proven public pin against both protected Cache owners.
-///
-/// A repeated pin does not acquire a second logical or physical pin. It may
-/// return `Retained` only after checking the current physical owner manifest.
-/// New and renewed protected transitions retain their exact commit outcome;
-/// callers must settle or recover an unresolved outcome before public success.
-/// The partition is selected only from the protected resident catalog and
-/// authenticated View disclosure domain. The caller supplies source authority
-/// and retains the source journal through the protected commit-time recheck.
-/// The protected transaction identity is derived from `operation` for retry.
-///
-/// # Errors
-///
-/// Returns an error for missing source membership, stale consumer or local
-/// partition, rejected protected authority, or a missing retained physical pin.
-#[allow(clippy::too_many_arguments)]
-pub fn execute_public_cache_pin_v1<S: ObjectSource>(
-    protected: &mut CacheResidencyProtectedOwnerV1,
-    physical: &mut DormantCacheOwnerV1,
-    source: &mut S,
-    consumer: &RecheckedCacheConsumerV1,
-    source_journal: &Journal,
-    request: &DormantSandboxRequestKindV1,
-    operation: OperationId,
-    controller_node: NodeId,
-    compiler_abi: [u8; 32],
-    compilation_limits: CacheCompiledSourceLimitsV1,
-) -> Result<PublicCachePinExecutionV1, PublicCachePinExecutionErrorV1<S::Error>> {
-    with_compiled_cache_source_membership_v1(
-        consumer,
-        source,
-        compiler_abi,
-        compilation_limits,
-        |membership| {
-            commit_public_pin_for_membership(
-                protected,
-                physical,
-                consumer,
-                membership,
-                source_journal,
-                request,
-                operation,
-                controller_node,
-            )
-        },
-    )?
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -893,7 +850,7 @@ fn select_public_cache_pin_partition_v1<E: std::error::Error + 'static>(
 ///
 /// Returns an error when the pin is not the exact retained consumer obligation,
 /// the consumer changed at commit time, or protected authority is unavailable.
-pub fn execute_public_cache_unpin_v1(
+pub(super) fn execute_public_cache_unpin_v1(
     protected: &mut CacheResidencyProtectedOwnerV1,
     physical: &mut DormantCacheOwnerV1,
     consumer: &RecheckedCacheConsumerV1,

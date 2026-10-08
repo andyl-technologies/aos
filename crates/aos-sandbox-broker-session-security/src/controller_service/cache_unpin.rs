@@ -9,7 +9,7 @@ use aos_sandbox::production_operation_compiler::RecheckedCacheConsumerV1;
 
 use super::{EffectFailure, EffectReceipt, Journal, OperationId, ProductionEffectExecutor};
 use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1;
-use crate::{
+use super::cache_public_pin::{
     PublicCacheUnpinProgressV1, PublicCacheUnpinRecoveryV1, execute_public_cache_unpin_consumer_v1,
     public_cache_unpin_transaction_id_v1,
 };
