@@ -1383,6 +1383,19 @@ pass; the owning runtime qualification remains pending. Gate Cargo jobs now
 follow `NIX_BUILD_CORES` so explicit build-core limits also bound compilation.
 No task checkbox, milestone exit or freeze advances.
 
+The isolated retained catalog cohort passes six focused real-worker tests in
+its frozen Tokio invocation: complete native acknowledgment, callback-only
+refusal, whole-byte change and expiry between primitives, partial rename
+failure, and lock retention after waiter cancellation. The subsequent sealed
+native SDK candidate `7bd19e5edb` includes the exact unchanged five-file
+`2857045eac` fixture. Its first 1,024-entry ordinary case fails after 63.554
+seconds with baseline publication denied at the existing writer deadline.
+All 3,251 captured inputs remain unchanged; baseline output, measured
+maintenance and independent oracles are not reached. The full-upfront cohort
+does not establish a throughput fix or DRV-29 qualification. Native regressions
+and strict quality remain pending; bounded batches must retain every original
+output, physical/current check, acknowledgment and deadline.
+
 Deployable as: a local tool that initializes a store under a `file://`
 root, commits a directory, forks and merges branches, and checks a commit
 out to a directory through the `sdk` surface.
