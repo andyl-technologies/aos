@@ -308,11 +308,19 @@ impl NativeFilesystem {
                     && other.kind == "directory"
                     && invocation.effect.dependencies.contains(&other.id)
                     && input.parent_resource.as_ref() == Some(&other.id);
+                // Updating an owned directory preserves its existing children.
+                // Only an existing same-path claim grants this; new allocations
+                // still require explicit parent authorization and reject overlap.
+                let retained_children = input.kind == "directory"
+                    && claim
+                        .is_some_and(|claim| claim.path == input.path && claim.kind == "directory")
+                    && other.path != input.path
+                    && other.path.starts_with(&input.path);
                 if authorized_parent {
                     let metadata = fs::symlink_metadata(&other.path)
                         .context("inspecting explicitly authorized parent directory")?;
                     self.ensure_entry_kind(&metadata, &other)?;
-                } else {
+                } else if !retained_children {
                     validate_storage_claim(&input.path, [other.path])?;
                 }
             }

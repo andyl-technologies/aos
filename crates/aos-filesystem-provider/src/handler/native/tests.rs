@@ -668,6 +668,50 @@ fn nested_allocation_accepts_rematerialized_claimed_parent() {
 }
 
 #[test]
+fn owned_directory_reconciles_and_reconfigures_with_claimed_children() {
+    let (temporary, handler) = fixture();
+    let path = temporary.path().join("data");
+    let mut parent = invocation(&path);
+    call(&handler, "apply", &parent);
+
+    let child_path = path.join("child");
+    let mut child = invocation(&child_path);
+    child.id = "child".into();
+    child.effect.identity[2] = "entry".into();
+    child.effect.dependencies = vec![parent.id.clone()];
+    child.input["parentResource"] = json!(parent.id);
+    child.input["kind"] = json!("empty-file");
+    call(&handler, "apply", &child);
+    fs::write(&child_path, b"application state").unwrap();
+    let child_claim = fs::read(handler.claim_path(&child.id)).unwrap();
+
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o777)).unwrap();
+    assert_eq!(call(&handler, "observe", &parent)["status"], "retry-safe");
+    call(&handler, "apply", &parent);
+    assert_eq!(call(&handler, "observe", &parent)["status"], "current");
+
+    parent.revision = "revision-two".into();
+    parent.input["mode"] = json!("0750");
+    call(&handler, "apply", &parent);
+    assert_eq!(call(&handler, "observe", &parent)["status"], "current");
+    assert_eq!(fs::read(&child_path).unwrap(), b"application state");
+    assert_eq!(
+        fs::read(handler.claim_path(&child.id)).unwrap(),
+        child_claim
+    );
+    assert_eq!(call(&handler, "observe", &child)["status"], "current");
+
+    let mut competing_parent = parent.clone();
+    competing_parent.id = "unclaimed-parent".into();
+    assert!(
+        handler
+            .handle("apply", &serde_json::to_vec(&competing_parent).unwrap())
+            .is_err()
+    );
+    assert_eq!(fs::read(&child_path).unwrap(), b"application state");
+}
+
+#[test]
 fn production_policy_accepts_platform_entries_and_rejects_shared_or_immutable_paths() {
     let handler = NativeFilesystem::production();
 
