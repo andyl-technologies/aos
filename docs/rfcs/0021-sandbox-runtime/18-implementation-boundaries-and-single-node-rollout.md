@@ -260,6 +260,13 @@ optional coordinator boundary; obsolete parallel code is removed. First-phase
 work does not expand dormant distributed functionality or simulate a remote
 coordinator to unblock local creation.
 
+Later coordinator acceptance must advance desired generation contiguously within
+an assignment epoch, reject same-fence semantic equivocation, and retain exact
+protected journal succession. Drain observation advancement must check the node
+phase and each assignment's allowed progress edge under current evidence. These
+reserved requirements do not imply an enabled coordinator or a live admission
+path; unused warm status caches are not durability or effect authority.
+
 ## Removal and migration plan
 
 1. Map each public/local operation from entry point through admission, owner,

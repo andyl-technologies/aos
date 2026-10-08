@@ -38,8 +38,7 @@ pub mod remote;
 mod store_authority;
 
 pub use assignment::{
-    AssignmentAcceptanceApplyOutcomeV1, AssignmentAcceptanceReducerV1, AssignmentIntentV1,
-    AssignmentObservationApplyOutcomeV1, AssignmentObservationPhaseV1,
+    AssignmentIntentV1, AssignmentObservationApplyOutcomeV1, AssignmentObservationPhaseV1,
     AssignmentObservationReasonV1, AssignmentObservationReducerV1, AtomicSnapshotPublicationV1,
     AuthenticatedSnapshotChunkV1, AuthenticatedSnapshotDependencyRangeV1,
     DurableSnapshotDependencySetV1, DurableSnapshotTransferCheckpointV1, InvalidAssignmentModel,
@@ -55,20 +54,18 @@ pub use assignment::{
     VerifiedSnapshotDependencyV1, VerifiedStagedSnapshotV1,
 };
 pub use capability::{
-    CapabilityApplyOutcomeV1, CapabilityChangeV1, CarrierValidatedCapabilityObservationV1,
-    HardFeatureFactRequirementV1, InvalidNodeCapability, MAX_NODE_CAPABILITY_FACTS,
-    MAX_NODE_FEATURES, MAX_NODE_PROTOCOL_OFFERS, NodeAdmissionStateV1, NodeBootId,
-    NodeBootLineageV1, NodeCapabilityFactV1, NodeCapabilityKindV1, NodeCapabilityReducerV1,
+    CarrierValidatedCapabilityObservationV1, HardFeatureFactRequirementV1, InvalidNodeCapability,
+    MAX_NODE_CAPABILITY_FACTS, MAX_NODE_FEATURES, MAX_NODE_PROTOCOL_OFFERS, NodeAdmissionStateV1,
+    NodeBootId, NodeBootLineageV1, NodeCapabilityFactV1, NodeCapabilityKindV1,
     NodeCapabilitySnapshotV1, NodeProbeEvidenceV1, NodeProtocolOfferV1, NodeProtocolV1,
     hard_feature_fact_requirements_v1_0,
 };
 pub use draining::{
     DrainAssignmentObservationV1, DrainAssignmentPlanV1, DrainAssignmentProgressV1,
-    DrainAssignmentStrategyV1, DrainBlockReasonV1, DrainContainmentEvidenceV1,
-    DrainDirectiveApplyOutcomeV1, DrainDirectiveReducerV1, DrainDirectiveV1,
-    DrainGuardianEvidenceV1, DrainGuardianStateV1, DrainObservationApplyOutcomeV1,
-    DrainObservationReducerV1, DrainObservationV1, DrainPhaseV1, DrainReleaseEvidenceV1,
-    DrainSnapshotEvidenceV1, InvalidDrainModel, MAX_DRAIN_ASSIGNMENTS, NodeDrainModeV1,
+    DrainAssignmentStrategyV1, DrainBlockReasonV1, DrainContainmentEvidenceV1, DrainDirectiveV1,
+    DrainGuardianEvidenceV1, DrainGuardianStateV1, DrainObservationV1, DrainPhaseV1,
+    DrainReleaseEvidenceV1, DrainSnapshotEvidenceV1, InvalidDrainModel, MAX_DRAIN_ASSIGNMENTS,
+    NodeDrainModeV1,
 };
 pub use evidence::{AuthenticatedEvidenceContextV1, InvalidEvidenceContext};
 pub use journal::{
