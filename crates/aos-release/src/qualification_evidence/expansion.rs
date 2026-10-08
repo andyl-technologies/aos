@@ -28,10 +28,13 @@ use crate::qualification::{
 /// every predecessor-independent contract obligation), which is how build
 /// evidence and manifest structure are checked.
 ///
+/// A platform the contract defers yields no case: it ships no artifact, and
+/// its optional targets carry no claims.
+///
 /// # Errors
 /// Returns an error for an invalid plan, an unknown destination, missing
-/// required image/OCI artifacts, missing predecessor, empty subjects, or
-/// noncanonical requirement identities.
+/// required image/OCI artifacts, any artifact on a deferred platform, missing
+/// predecessor, empty subjects, or noncanonical requirement identities.
 pub fn cases(
     plan: &ReleasePlan,
     manifest: &ReleaseManifestV1,
@@ -52,6 +55,7 @@ pub(super) fn expand(
     plan.validate()?;
     let selection = select(plan, destination, phase, effective)?;
     let contract = selection.contract;
+    reject_deferred_artifacts(contract, manifest)?;
     let package_roles = inherited_package_roles(contract, manifest)?;
     let mut requirements: Vec<_> = selection
         .requirements
@@ -135,14 +139,19 @@ pub(super) fn expand(
             } else {
                 None
             };
-            let predecessor = if requires_predecessor(&requirement.id)
+            // A qualification snapshot is the first installed source. Its
+            // selected recovery cases record no predecessor transition.
+            let predecessor = if plan.is_qualification_snapshot() {
+                None
+            } else if requires_predecessor(&requirement.id)
                 || claim.as_ref().is_some_and(|claim| {
                     claim.minimum_assurance >= AssuranceLevel::A2
                         && claim.requirements.iter().any(|id| requires_predecessor(id))
                 })
                 || package_rule.is_some_and(|rule| {
                     matches!(rule.execution, Some(PackageExecution::RecoveryImage { .. }))
-                }) {
+                })
+            {
                 Some(plan.qualification_predecessor.clone().ok_or_else(|| {
                     anyhow::anyhow!("qualification execution requires a frozen predecessor")
                 })?)
@@ -298,6 +307,7 @@ pub(super) fn expand(
                     .targets
                     .iter()
                     .filter(|target| target.kind == TargetKind::Image)
+                    .filter(|target| !contract.is_deferred(target.platform))
                     .filter(|target| claim.as_ref().is_none_or(|claim| claim.target == target.id))
                 {
                     for image in &manifest.images {
@@ -328,6 +338,7 @@ pub(super) fn expand(
                     .targets
                     .iter()
                     .filter(|target| target.kind == TargetKind::Container)
+                    .filter(|target| !contract.is_deferred(target.platform))
                     .filter(|target| claim.as_ref().is_none_or(|claim| claim.target == target.id))
                 {
                     let subjects: Vec<_> = manifest
@@ -370,6 +381,30 @@ pub(super) fn expand(
     }
     result.sort_by(|left, right| left.id.cmp(&right.id));
     Ok(result)
+}
+
+/// Rejects a final manifest that ships anything on a deferred platform.
+///
+/// Plan validation already rejects planned artifacts there. Images, package
+/// outputs, cache objects and OCI platform manifests all record their platform,
+/// so this also catches a container bundle built for a deferred architecture,
+/// which no case could qualify.
+fn reject_deferred_artifacts(
+    contract: &crate::qualification::QualificationContract,
+    manifest: &ReleaseManifestV1,
+) -> Result<()> {
+    let deferred = manifest.artifacts.iter().find(|artifact| {
+        artifact
+            .platform
+            .is_some_and(|platform| contract.is_deferred(platform))
+    });
+    if let Some(artifact) = deferred {
+        bail!(
+            "release artifact {} targets a deferred platform and cannot ship",
+            artifact.id
+        );
+    }
+    Ok(())
 }
 
 /// Binds every service package and the published workload used by a K3s fleet.
@@ -448,14 +483,15 @@ fn inherited_package_roles(
     let mut roles = BTreeMap::new();
 
     for package in &manifest.packages {
-        let role = rules
-            .get(package.name.as_str())
-            .copied()
-            .ok_or_else(|| anyhow::anyhow!("package case lacks its criticality classification"))?;
+        // Only published cells carry a role. Build and test inputs are in the
+        // inventory as not-applicable on every platform and have no rule.
         for cell in &package.platforms {
             let MatrixCell::Artifact { artifact } = &cell.decision else {
                 continue;
             };
+            let role = rules.get(package.name.as_str()).copied().ok_or_else(|| {
+                anyhow::anyhow!("package case lacks its criticality classification")
+            })?;
             propagate_package_role(&artifacts, &artifact.artifact_ids, role, &mut roles)?;
         }
     }

@@ -28,4 +28,5 @@ mkDerivation {
     }
   ];
   meta.description = "Kernel policy contracts shared by native package modules";
+  meta.license = "Apache-2.0";
 }

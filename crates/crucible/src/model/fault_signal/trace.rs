@@ -11,7 +11,7 @@ use std::fmt;
 use super::*;
 
 /// Canonical trace codec semantic version.
-pub const TRACE_CODEC_VERSION: u16 = 1;
+pub const TRACE_CODEC_VERSION: u16 = 2;
 /// Exact maximum entries in one channel chunk.
 pub const TRACE_ENTRIES_PER_CHUNK: usize = 4_096;
 /// Hard maximum channels in one artifact.
@@ -21,9 +21,9 @@ pub const HARD_TRACE_VALUE_BYTES: usize = 67_108_864;
 /// Compiled maximum chunk references across one trace manifest.
 pub const HARD_TRACE_CHUNKS_TOTAL: usize = 16_777_216;
 /// Binary manifest magic.
-const MANIFEST_MAGIC: &[u8; 8] = b"CRTRMAN1";
+const MANIFEST_MAGIC: &[u8; 8] = b"CRTRMAN2";
 /// Binary chunk magic.
-const CHUNK_MAGIC: &[u8; 8] = b"CRTRCHK1";
+const CHUNK_MAGIC: &[u8; 8] = b"CRTRCHK2";
 
 /// Exact source timestamp basis.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -36,7 +36,7 @@ pub enum TraceTimeBasis {
     Sequence,
 }
 
-/// Exact affine mapping from one source interval to virtual nanoseconds.
+/// Exact affine mapping from one source interval to virtual ticks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TraceTimeSegment {
     /// Inclusive first source coordinate.
@@ -46,8 +46,8 @@ pub struct TraceTimeSegment {
     /// Source epoch subtracted before scaling.
     pub source_epoch: u64,
     /// Virtual epoch added after scaling.
-    pub virtual_epoch_nanos: u64,
-    /// Positive scale numerator.
+    pub virtual_epoch_ticks: u64,
+    /// Positive virtual-nanosecond-per-source scale numerator.
     pub numerator: PositiveU64,
     /// Positive scale denominator.
     pub denominator: PositiveU64,
@@ -72,12 +72,13 @@ impl TraceTimeSegment {
         let delta = u128::from(source - self.source_epoch);
         let product = delta
             .checked_mul(u128::from(self.numerator.get()))
+            .and_then(|value| value.checked_mul(u128::from(SIM_TICKS_PER_NS)))
             .ok_or(TraceError::TimeOverflow)?;
         let divisor = u128::from(self.denominator.get());
         let quotient = product / divisor;
         let remainder = product % divisor;
         let rounded = round_unsigned(quotient, remainder, divisor, self.rounding)?;
-        let mapped = u128::from(self.virtual_epoch_nanos)
+        let mapped = u128::from(self.virtual_epoch_ticks)
             .checked_add(rounded)
             .ok_or(TraceError::TimeOverflow)?;
         u64::try_from(mapped).map_err(|_| TraceError::TimeOverflow)
@@ -401,7 +402,7 @@ impl SignalTraceManifest {
             put_u64(&mut output, segment.source_start);
             put_optional_u64(&mut output, segment.source_end);
             put_u64(&mut output, segment.source_epoch);
-            put_u64(&mut output, segment.virtual_epoch_nanos);
+            put_u64(&mut output, segment.virtual_epoch_ticks);
             put_u64(&mut output, segment.numerator.get());
             put_u64(&mut output, segment.denominator.get());
             output.push(rounding_tag(segment.rounding));
@@ -464,7 +465,7 @@ impl SignalTraceManifest {
                 source_start: reader.u64()?,
                 source_end: reader.optional_u64()?,
                 source_epoch: reader.u64()?,
-                virtual_epoch_nanos: reader.u64()?,
+                virtual_epoch_ticks: reader.u64()?,
                 numerator: PositiveU64::new("trace_time_numerator", reader.u64()?)
                     .map_err(TraceError::Contract)?,
                 denominator: PositiveU64::new("trace_time_denominator", reader.u64()?)
@@ -1365,21 +1366,27 @@ mod tests {
             Ok(value) => value,
             Err(error) => panic!("one must be valid: {error}"),
         };
-        let two = match PositiveU64::new("two", 2) {
+        let two_thousand = match PositiveU64::new("two_thousand", 2_000) {
             Ok(value) => value,
-            Err(error) => panic!("two must be valid: {error}"),
+            Err(error) => panic!("sixteen must be valid: {error}"),
         };
         let segment = TraceTimeSegment {
             source_start: 0,
             source_end: None,
             source_epoch: 0,
-            virtual_epoch_nanos: 0,
+            virtual_epoch_ticks: 0,
             numerator: one,
-            denominator: two,
+            denominator: two_thousand,
             rounding: SignalRounding::NearestTiesToEven,
         };
         assert_eq!(segment.map(1), Ok(0));
         assert_eq!(segment.map(3), Ok(2));
+
+        let nanosecond_segment = TraceTimeSegment {
+            denominator: one,
+            ..segment
+        };
+        assert_eq!(nanosecond_segment.map(1), Ok(SIM_TICKS_PER_NS));
     }
 
     #[test]

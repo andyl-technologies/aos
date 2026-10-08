@@ -35,7 +35,6 @@ fn live_qemu_search_scenario() -> Result<ScenarioDefForm, EngineError> {
             },
             white_box: WhiteBoxPolicy::Disabled,
             smp_vcpus: 1,
-            icount_shift: 0,
             kernel: Some(kernel),
             root_image: Some(root_image),
             initrd: Some(initrd),
@@ -45,9 +44,9 @@ fn live_qemu_search_scenario() -> Result<ScenarioDefForm, EngineError> {
         node("client"),
         node("server"),
         SimDuration {
-            nanos: 3_999_000_000,
+            ticks: 3_999_000_000_000,
         },
-        SimDuration { nanos: 0 },
+        SimDuration { ticks: 0 },
         LinkLossProbability::from_millionths(250_000)?,
         None,
     )?;

@@ -21,7 +21,7 @@
 //!    preserved across reinstalls), build the merged FHS tree, and atomically
 //!    switch the profile's `current` link.
 //!
-//! Image/sysroot installs (`apm install --system`) are handled by
+//! Image/sysroot installs (`apm image install`) are handled by
 //! [`crate::sysroot`]. Profile installs handled here can still target the
 //! system profile.
 
@@ -179,10 +179,45 @@ async fn run_inner(
         reinstall && registry_filter.is_none(),
         &installed,
     )?;
+    // Images have boot and authentication invariants that runtime profiles cannot satisfy.
+    if let Some(closure) = closures.iter().find(|closure| closure.root.sysroot) {
+        anyhow::bail!(
+            "'{}' is an operating-system image; use `apm image install {}`",
+            closure.root.name,
+            closure.root.name
+        );
+    }
+
     if no_deps {
         ensure_skipped_dependencies_present(&closures).await?;
         prune_dependency_members(&mut closures);
     }
+    verify_install_provenance_from_cache_with_policy(config, &closures)?;
+
+    // Base-provided roots need no profile entry, but must not skip other requested packages.
+    let provided = partition_base_provided_closures(&mut closures, |closure| {
+        let (name, version) = crate::sysroot::check_sysroot_containment(&closure.root, config)?;
+        if !json_mode {
+            printer.info(&format!(
+                "{} {} already provided by sysroot {} {}",
+                closure.root.name, closure.root.version, name, version,
+            ));
+        }
+        Some((name, version))
+    });
+    if closures.is_empty() {
+        if json_mode && let Some((closure, name, version)) = provided.first() {
+            printer.json(&serde_json::json!({
+                "action": if reinstall { "reinstall" } else { "install" },
+                "status": "sysroot_provided",
+                "requested": packages,
+                "package": closure,
+                "sysroot": { "name": name, "version": version },
+            }));
+        }
+        return Ok(());
+    }
+
     let all_metas = collect_unique_metas(&closures);
     for meta in &all_metas {
         anyhow::ensure!(
@@ -214,8 +249,6 @@ async fn run_inner(
     } else {
         filter_missing(&store_paths).await?
     };
-    verify_install_provenance_from_cache_with_policy(config, &closures)?;
-
     if !reinstall
         && missing.is_empty()
         && requested_closures_already_installed(&closures, &installed)
@@ -246,32 +279,6 @@ async fn run_inner(
         }
         printer.info("All requested packages are already installed. No changes made.");
         return Ok(());
-    }
-
-    // Check if any requested package is already provided by the sysroot.
-    for closure in &closures {
-        if let Some((sys_name, sys_ver)) =
-            crate::sysroot::check_sysroot_containment(&closure.root.references, config)
-        {
-            if json_mode {
-                printer.json(&serde_json::json!({
-                    "action": if reinstall { "reinstall" } else { "install" },
-                    "status": "sysroot_provided",
-                    "requested": packages,
-                    "package": install_package_json(&closure.registry_name, &closure.root, true),
-                    "sysroot": {
-                        "name": sys_name,
-                        "version": sys_ver,
-                    },
-                }));
-            } else {
-                printer.info(&format!(
-                    "{} {} already provided by sysroot {} {}",
-                    closure.root.name, closure.root.version, sys_name, sys_ver,
-                ));
-            }
-            return Ok(());
-        }
     }
 
     // Sysroot-lock check: verify package closures don't diverge from sysroot.
@@ -476,15 +483,9 @@ async fn run_inner(
             )?;
         }
         for result in &results {
-            crate::store::import_nar_with_compression(
-                &result.local_path,
-                &result.store_path,
-                &result.references,
-                result.deriver.as_deref(),
-                &result.compression,
-            )
-            .await
-            .with_context(|| format!("importing {}", result.store_path))?;
+            crate::store::import_nar(&result.local_path, &result.narinfo)
+                .await
+                .with_context(|| format!("importing {}", result.store_path))?;
         }
         imported_count = results.len();
     } else {
@@ -1300,6 +1301,27 @@ fn installed_source_registry<'a>(package: &str, installed: &'a [InstalledMeta]) 
     fallback
 }
 
+// Partitioning preserves every requested root that still needs profile installation.
+// Keeping JSON emission outside this helper ensures mixed requests emit one result.
+fn partition_base_provided_closures(
+    closures: &mut Vec<ResolvedClosure>,
+    mut provided_by: impl FnMut(&ResolvedClosure) -> Option<(String, String)>,
+) -> Vec<(serde_json::Value, String, String)> {
+    let mut provided = Vec::new();
+    closures.retain(|closure| {
+        let Some((name, version)) = provided_by(closure) else {
+            return true;
+        };
+        provided.push((
+            install_package_json(&closure.registry_name, &closure.root, true),
+            name,
+            version,
+        ));
+        false
+    });
+    provided
+}
+
 /// Whether the install would be a no-op: every requested root is already
 /// installed explicitly *at the same store hash*, and every closure member
 /// has an installed-metadata record.
@@ -1959,6 +1981,40 @@ mod tests {
     }
 
     #[test]
+    fn base_provided_root_does_not_skip_other_requested_roots_or_split_json() {
+        let base = sample_package("curl", "1.0.0", "/nix/store/base-curl");
+        let added = sample_package("nginx", "1.0.0", "/nix/store/added-nginx");
+        let mut closures = vec![
+            sample_closure(base.clone(), vec![base]),
+            sample_closure(added.clone(), vec![added]),
+        ];
+
+        let provided = partition_base_provided_closures(&mut closures, |closure| {
+            (closure.root.name == "curl").then(|| ("aos".into(), "1".into()))
+        });
+
+        assert_eq!(provided.len(), 1);
+        assert_eq!(closures.len(), 1);
+        assert_eq!(closures[0].root.name, "nginx");
+        let result = install_result_json(
+            "installed",
+            &["curl".into(), "nginx".into()],
+            &closures,
+            false,
+            false,
+            false,
+            false,
+            &[],
+            0,
+            0,
+            None,
+        );
+        let encoded = serde_json::to_string(&result).expect("one install result");
+        let decoded: serde_json::Value = serde_json::from_str(&encoded).expect("one JSON document");
+        assert_eq!(decoded["requested"], serde_json::json!(["curl", "nginx"]));
+    }
+
+    #[test]
     fn install_summary_explains_documentation_only_downloads_and_local_reuse() {
         let mut package = sample_package("xz", "5.8.3", "/nix/store/root-xz");
         package.nar_size = 993336;
@@ -2547,6 +2603,18 @@ mod tests {
     #[test]
     fn verify_secondary_artifact_downloads_rejects_image_references() {
         let result = crate::download::DownloadResult {
+            narinfo: aos_core::nar::info::NarInfo {
+                store_path: "/var/lib/store/image-web".to_string(),
+                url: "nar/image.nar.zst".to_string(),
+                compression: "zstd".to_string(),
+                file_hash: Some("sha256:download".to_string()),
+                file_size: None,
+                nar_hash: "sha256:image".to_string(),
+                nar_size: 0,
+                references: vec!["/var/lib/store/ref-dep".to_string()],
+                deriver: None,
+                signatures: Vec::new(),
+            },
             store_path: "/var/lib/store/image-web".to_string(),
             local_path: std::path::PathBuf::from("/does/not/exist"),
             download_hash: "sha256:download".to_string(),

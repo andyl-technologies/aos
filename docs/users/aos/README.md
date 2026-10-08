@@ -23,8 +23,8 @@ production deployments must supply their own trust material.
 | First-boot storage | Literal `host.nix` supplied through metadata | Committed once; later changes are drift |
 | Host configuration | Pure `host.nix` evaluation and authenticated package configuration | Numbered configuration generations under `/var/lib/profiles/system` |
 | User packages | `apm install`, `upgrade`, `remove`, and `rollback` after account storage is provisioned | Per-user profile generations under `/var/lib/profiles/per-user` |
-| Runtime system packages | `apm install --system --from DESIRED.toml` | Machine-wide package generations under `/var/lib/profiles/system-packages` |
-| OS image | `apm upgrade --system` and `apm rollback --system --image` | A/B image generations under `/var/lib/profiles/image` |
+| Runtime system packages | `apm install --system PACKAGE`, `upgrade --system`, and `remove --system` | Machine-wide package generations under `/var/lib/profiles/system` |
+| OS image | `apm image install`, `upgrade`, and `rollback` | A/B image generations under `/var/lib/profiles/image` |
 
 Three command names cover different jobs in the AOS toolchain:
 
@@ -58,8 +58,9 @@ consumption, and on-host activation as distinct installed capabilities.
 
 ## Operate the host
 
-- [Manage packages](packages.md) covers user packages, declarative machine-wide
-  packages, profiles, and package rollback.
+- [Manage packages](packages.md) covers installing, upgrading, removing, and
+  rolling back machine-wide and personal packages, plus optional package sets
+  from a file.
 - [Configure package registries](registries.md) covers the built-in registry,
   other public and internal registries, priorities, credentials, and trust.
 - [Understand native package runtime policy](package-sandbox.md) explains how

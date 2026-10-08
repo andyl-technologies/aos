@@ -67,7 +67,7 @@ pub(super) struct RegionHeaderState {
     pub(super) ring_data_off: u64,
     pub(super) entry_stride: u64,
     pub(super) region_size: u64,
-    pub(super) icount_shift: u32,
+    pub(super) ticks_per_ns: u32,
     pub(super) pause_requested: u8,
     pub(super) shutdown_requested: u8,
     pub(super) fault_payload_arena_bytes: u32,
@@ -85,9 +85,11 @@ pub(super) struct NodeSlotState {
     pub(super) device_io_active: u8,
     pub(super) publish_gen: u32,
     pub(super) control_boundary_ack: u32,
-    pub(super) preemption_at_icount: u64,
-    pub(super) preemption_deadline_icount: u64,
-    pub(super) preemption_ceiling_icount: u64,
+    pub(super) control_boundary_fault_command_frontier: u64,
+    pub(super) control_boundary_capture_request: u32,
+    pub(super) preemption_at_tick: u64,
+    pub(super) preemption_deadline_tick: u64,
+    pub(super) preemption_ceiling_tick: u64,
     pub(super) preemption_published_sequence: u32,
     pub(super) preemption_consumed_sequence: u32,
     pub(super) preemption_arg0: u32,
@@ -97,12 +99,22 @@ pub(super) struct NodeSlotState {
     pub(super) logical_time_restore_target: u64,
     pub(super) logical_time_restore_request: u32,
     pub(super) logical_time_restore_ack: u32,
+    pub(super) timer_witness_generation: u64,
+    pub(super) timer_witness_deadline_ps: u64,
+    pub(super) timer_witness_deadline_tick: u64,
+    pub(super) timer_witness_armed_raw_icount: u64,
+    pub(super) timer_witness_fired_expire_ps: u64,
+    pub(super) timer_witness_fired_virtual_ps: u64,
+    pub(super) timer_witness_fired_raw_icount: u64,
+    pub(super) timer_witness_completed: u32,
+    pub(super) timer_witness_reserved: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct RingHeaderState {
     pub(super) read_idx: u64,
     pub(super) write_idx: u64,
+    pub(super) producer_state: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

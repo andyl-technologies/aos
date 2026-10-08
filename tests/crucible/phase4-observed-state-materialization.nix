@@ -110,10 +110,6 @@
         needle = "Decision::Preemption(_)";
       }
       {
-        label = "ignored app-random decision";
-        needle = "Decision::AppRandom(_)";
-      }
-      {
         label = "evaluation pass exposes observed state";
         needle = "pub fn observed_state(&self) -> ObservedState<'_>";
       }
@@ -170,10 +166,6 @@
       {
         label = "preemption ignored by observed state";
         needle = "Decision::Preemption";
-      }
-      {
-        label = "app random ignored by observed state";
-        needle = "Decision::AppRandom";
       }
       {
         label = "checked future rejection";

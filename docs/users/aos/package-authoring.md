@@ -407,25 +407,19 @@ copies of those fields for ordinary packages.
 
 Create and upload a signed registry release using the workflow in
 [Publish packages and releases](../registry/publishing.md). Once the consumer
-has synchronized that registry, declare the service in a machine-wide desired
-file:
-
-```toml
-packages = ["acme-health-agent"]
-```
-
-Preview and reconcile the complete desired set:
+has synchronized that registry, install the service by name:
 
 ```sh
 apm update --system
-apm install --system --from ./desired.toml --dry-run
-apm install --system --from ./desired.toml --yes
+apm install --system acme-health-agent --registry acme --dry-run
+apm install --system acme-health-agent --registry acme
 systemctl status acme-health-agent.service
 ```
 
-The file is authoritative: packages omitted from it are removed during
-reconciliation. `apm install PACKAGE --system` is instead the OS-sysroot
-install path and rejects an ordinary application package.
+For repeatable provisioning, include the package in a complete desired file
+and apply it with `apm apply --system --from desired.toml`. See
+[Manage packages](packages.md#apply-a-complete-package-set-from-a-file) for the
+file's removal semantics.
 
 ## Ship a new version
 
@@ -439,13 +433,12 @@ apm list --upgradable --system
 apm policy acme-health-agent --system
 ```
 
-The current machine-wide desired-package reconciler installs and removes roots,
-but does not replace an already-present package with a newer registry
-candidate. `apm upgrade --system` stages an A/B OS image, not the runtime
-package profile. Until a machine-wide runtime upgrade operation ships, roll a
-new image containing the new package or use a release-specific, tested
-remove-and-reconcile procedure. Do not present that workaround as an atomic
-upgrade.
+Preview and upgrade the installed runtime package:
+
+```sh
+apm upgrade --system acme-health-agent --dry-run
+apm upgrade --system acme-health-agent
+```
 
 Verify the unit and application behavior before advancing more rollout
 partitions. Registry channels are monotonic: stop a bad rollout and publish a

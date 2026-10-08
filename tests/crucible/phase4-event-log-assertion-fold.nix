@@ -125,7 +125,7 @@
       }
       {
         label = "assertion state is causal";
-        needle = "EventClass::Causal";
+        needle = "SchedulerEventLogClass::Causal";
       }
       {
         label = "guest assertion marker stored as guest_marker";
@@ -143,11 +143,11 @@
       }
       {
         label = "assertion state changed is causal";
-        needle = "assert_eq!(assertion_entry.class(), EventClass::Causal)";
+        needle = "assert_eq!(assertion_entry.class(), SchedulerEventLogClass::Causal)";
       }
       {
         label = "assertion evaluated is causal";
-        needle = "assert_eq!(evaluated_entry.class(), EventClass::Causal)";
+        needle = "assert_eq!(evaluated_entry.class(), SchedulerEventLogClass::Causal)";
       }
       {
         label = "assertion state id attribute tested";

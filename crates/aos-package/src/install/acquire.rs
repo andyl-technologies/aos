@@ -8,12 +8,12 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use anyhow::{ensure, Context as _, Result};
+use anyhow::{Context as _, Result, ensure};
 use aos_core::output::Printer;
 
 use crate::config::ApmConfig;
-use crate::registry::{store_path_hash, RegistrySet};
-use crate::resolve::{collect_unique_metas, resolve_multiple, ResolvedClosure};
+use crate::registry::{RegistrySet, store_path_hash};
+use crate::resolve::{ResolvedClosure, collect_unique_metas, resolve_multiple};
 use crate::store::temp_roots::TemporaryRoots;
 
 /// Resolves and imports signed package closures while retaining their inputs.
@@ -147,15 +147,9 @@ pub(crate) async fn acquire(
     // Finish immutable imports rather than dropping futures whose download or
     // decompressor children may outlive them. Callers cancel before activation.
     for download in &downloaded {
-        crate::store::import_nar_with_compression(
-            &download.local_path,
-            &download.store_path,
-            &download.references,
-            download.deriver.as_deref(),
-            &download.compression,
-        )
-        .await
-        .with_context(|| format!("importing {}", download.store_path))?;
+        crate::store::import_nar(&download.local_path, &download.narinfo)
+            .await
+            .with_context(|| format!("importing {}", download.store_path))?;
     }
 
     Ok(closures)
@@ -229,9 +223,11 @@ mod tests {
         .await
         .unwrap_err();
 
-        assert!(error
-            .to_string()
-            .contains("authenticated signed release graph"));
+        assert!(
+            error
+                .to_string()
+                .contains("authenticated signed release graph")
+        );
         assert!(roots.is_none(), "unauthorized acquisition opened the store");
         assert!(!scratch.path().join("profile").exists());
     }

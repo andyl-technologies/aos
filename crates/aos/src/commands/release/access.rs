@@ -102,7 +102,7 @@ fn surface_signers(
     plan: &ReleasePlan,
     partitions: bool,
 ) -> Result<SurfaceSigners> {
-    let signer = ExternalSigner::new(config.signer.executable.clone(), config.signer.timeout())?;
+    let signer = ExternalSigner::configured(&config.signer)?;
     let receipt_key = single_key(config, SignerRole::SurfaceReceipt)?;
     let receipt = PayloadSigningKey {
         key: TrustedEd25519Key::from_encoded(

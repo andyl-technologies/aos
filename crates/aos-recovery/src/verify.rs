@@ -517,23 +517,6 @@ where
     }
 }
 
-fn run_output<I, S>(
-    program: &str,
-    args: I,
-    final_path: Option<&Path>,
-) -> Result<Output, VerificationError>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
-{
-    let mut command = Command::new(program);
-    command.args(args);
-    if let Some(path) = final_path {
-        command.arg(path);
-    }
-    command.output().map_err(VerificationError::Io)
-}
-
 fn stderr_reason(output: &Output) -> String {
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
     if stderr.is_empty() {

@@ -377,7 +377,7 @@ pub fn format_violation_error(
     }
 
     let names: Vec<&str> = violations.iter().map(|v| v.name.as_str()).collect();
-    msg.push_str("\nA system update may be needed. Run: apm upgrade --system\n");
+    msg.push_str("\nA system update may be needed. Run: apm image upgrade\n");
     msg.push_str(&format!(
         "\nTo install anyway: apm install <pkg> --ignore-sysroot-lock={}\n",
         names.join(","),
@@ -713,7 +713,7 @@ mod tests {
         assert!(msg.contains("openssl"));
         assert!(msg.contains("3.2.1"));
         assert!(msg.contains("3.3.0"));
-        assert!(msg.contains("apm upgrade --system"));
+        assert!(msg.contains("apm image upgrade"));
         assert!(msg.contains("--ignore-sysroot-lock=openssl"));
     }
 }

@@ -355,6 +355,8 @@ fn is_registry_git_path(path: &str) -> bool {
         || path.starts_with("releases/")
         || path == "channels"
         || path.starts_with("channels/")
+        || path.starts_with("tuf/")
+        || path.starts_with("publication-receipts/")
 }
 
 /// A digest-algorithm tag in RFC-0012 object identities.
@@ -651,6 +653,10 @@ mod tests {
         assert_eq!(
             classify_capability(DeliverySurfaceKind::Registry, "x.narinfo"),
             DeliveryCapability::NixCache
+        );
+        assert_eq!(
+            classify_capability(DeliverySurfaceKind::Registry, "tuf/timestamp.json"),
+            DeliveryCapability::Git
         );
         assert_eq!(
             classify_capability(DeliverySurfaceKind::BinaryCache, "HEAD"),

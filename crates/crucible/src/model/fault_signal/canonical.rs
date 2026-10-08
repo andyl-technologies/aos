@@ -80,7 +80,7 @@ use stateful::stateful_material;
 
 fn coordinate_material(coordinate: &SignalCoordinate) -> String {
     match coordinate {
-        SignalCoordinate::VirtualTime { nanos } => format!("virtual_time:{nanos}"),
+        SignalCoordinate::VirtualTime { ticks } => format!("virtual_time:{ticks}"),
         SignalCoordinate::NodeCounter {
             node,
             retired_instructions,
@@ -156,7 +156,7 @@ fn time_mapping_material(mapping: &Option<TraceTimeMapping>) -> String {
             format!(
                 "some:{}:{}:{}/{}:{}",
                 mapping.source_epoch,
-                mapping.virtual_epoch_nanos,
+                mapping.virtual_epoch_ticks,
                 mapping.scale.numerator(),
                 mapping.scale.denominator(),
                 rounding_name(mapping.rounding)

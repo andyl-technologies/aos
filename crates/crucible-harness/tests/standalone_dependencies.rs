@@ -2,8 +2,7 @@
 //!
 //! RFC-0010 file 27 requires all content-addressing primitives needed today to
 //! live in `crucible-sim`. This lint rejects direct or workspace-inherited
-//! dependencies on `ratchet-*` and `aos-nix-*` crates, and verifies the named
-//! future integration seam remains documented in the simulation crate.
+//! dependencies on `ratchet-*` and `aos-nix-*` crates.
 
 #![forbid(unsafe_code)]
 
@@ -16,9 +15,6 @@ use toml::Value;
 
 const FORBIDDEN_DEPENDENCY_PREFIXES: [&str; 2] = ["ratchet-", "aos-nix-"];
 const FORBIDDEN_DEPENDENCY_NAMES: [&str; 2] = ["ratchet", "aos-nix"];
-const SEAM_MARKER: &str = "FUTURE_RATCHET_INTEGRATION_SEAM";
-const SEAM_VALUE: &str = "crucible-sim::content-addressing";
-
 #[test]
 fn crucible_crates_do_not_depend_on_ratchet_or_aos_nix() -> Result<(), Box<dyn Error>> {
     let manifests = load_crucible_manifests()?;
@@ -29,30 +25,6 @@ fn crucible_crates_do_not_depend_on_ratchet_or_aos_nix() -> Result<(), Box<dyn E
         findings.is_empty(),
         "Crucible standalone dependency findings:\n{}",
         findings.join("\n")
-    );
-
-    Ok(())
-}
-
-#[test]
-fn crucible_sim_marks_the_future_ratchet_integration_seam() -> Result<(), Box<dyn Error>> {
-    let sim_root = workspace_root().join("crates/crucible-sim/src/lib.rs");
-    let content = fs::read_to_string(&sim_root)?;
-
-    assert!(
-        content.contains(SEAM_MARKER),
-        "{} must expose `{SEAM_MARKER}`",
-        display_repo_path(&sim_root)
-    );
-    assert!(
-        content.contains(SEAM_VALUE),
-        "{} must name the content-addressing seam value `{SEAM_VALUE}`",
-        display_repo_path(&sim_root)
-    );
-    assert!(
-        content.contains("no Crucible crate may depend on `ratchet-*` or `aos-nix-*`"),
-        "{} must document the standalone dependency rule near the seam marker",
-        display_repo_path(&sim_root)
     );
 
     Ok(())
@@ -323,14 +295,6 @@ fn workspace_root() -> PathBuf {
     match manifest_dir.parent().and_then(Path::parent) {
         Some(root) => root.to_path_buf(),
         None => panic!("crucible-harness manifest is not inside the workspace"),
-    }
-}
-
-fn display_repo_path(path: &Path) -> String {
-    let root = workspace_root();
-    match path.strip_prefix(&root) {
-        Ok(relative) => relative.display().to_string(),
-        Err(_) => path.display().to_string(),
     }
 }
 

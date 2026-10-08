@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginSynchronousIdleAdvance",
-  taskIds ? ["T-PLUG-7"],
+  taskIds ? [],
   openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -46,8 +46,8 @@
   pluginTimeControl = import ./_qemu-plugin-time-control-source.nix {inherit lib;};
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   qemuPatchSpec = builtins.readFile ../../docs/rfcs/0010-crucible/11-qemu-patches.md;
-  qemuTimeAdvancePatch = builtins.readFile ../../pkgs/emulation/qemu-patches/0010-crucible-plugin-time-advance.patch;
-  qemuIdleCallbacksPatch = builtins.readFile ../../pkgs/emulation/qemu-patches/0025-crucible-sim-idle-callbacks.patch;
+  qemuTimeAdvancePatch = builtins.readFile ../../pkgs/emulation/qemu-patches/crucible-qemu-11.1.1.patch;
+  qemuIdleCallbacksPatch = builtins.readFile ../../pkgs/emulation/qemu-patches/crucible-qemu-11.1.1.patch;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -101,12 +101,12 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
       {
-        label = "T-PLUG-7 live completion evidence";
-        needle = "Completed by `checks.crucible.phase2.qemuLivePluginQuantum`";
+        label = "T-PLUG-7 production-flight completion";
+        needle = "Completed by `checks.crucible.phase2.qemuPluginSynchronousIdleAdvance`";
       }
       {
         label = "queued advance wording";
-        needle = "queued-advance (`qemu_plugin_advance_time_ns`) and normal-main-loop completion";
+        needle = "queued-advance (`qemu_plugin_advance_time_ticks`) and normal-main-loop completion";
       }
       {
         label = "completion barrier wording";
@@ -120,7 +120,7 @@
     ++ failuresFor "docs/rfcs/0010-crucible/11-qemu-patches.md" qemuPatchSpec [
       {
         label = "queued advance export spec";
-        needle = "qemu_plugin_advance_time_ns(ns)";
+        needle = "qemu_plugin_advance_time_ticks(target_tick)";
       }
       {
         label = "queued virtual timer run spec";
@@ -131,7 +131,7 @@
         needle = "timer-produced main-loop";
       }
     ]
-    ++ failuresFor "pkgs/emulation/qemu-patches/0010-crucible-plugin-time-advance.patch" qemuTimeAdvancePatch [
+    ++ failuresFor "pkgs/emulation/qemu-patches/crucible-qemu-11.1.1.patch" qemuTimeAdvancePatch [
       {
         label = "pending advance predicate";
         needle = "qemu_plugin_time_advance_is_pending";
@@ -141,7 +141,7 @@
         needle = "qatomic_store_release(&qemu_plugin_time_advance_pending, 0)";
       }
     ]
-    ++ failuresFor "pkgs/emulation/qemu-patches/0025-crucible-sim-idle-callbacks.patch" qemuIdleCallbacksPatch [
+    ++ failuresFor "pkgs/emulation/qemu-patches/crucible-qemu-11.1.1.patch" qemuIdleCallbacksPatch [
       {
         label = "queued idle-advance handoff";
         needle = "rr_crucible_sim_drain_vcpu_work";
@@ -158,7 +158,7 @@
     ++ failuresFor "crates/crucible-qemu-plugin/src/lib.rs" pluginLib [
       {
         label = "queued advance function pointer exported";
-        needle = "QemuAdvanceTimeNsFn";
+        needle = "QemuAdvanceTimeTicksFn";
       }
       {
         label = "queued idle advance exported";
@@ -178,21 +178,21 @@
       }
       {
         label = "queued advance resolver exported";
-        needle = "resolve_qemu_advance_time_ns_symbol";
+        needle = "resolve_qemu_advance_time_ticks_symbol";
       }
       {
-        label = "time-capability install helper exported";
-        needle = "install_required_time_capability_scaffold_from_qemu_info";
+        label = "sole runtime capability bundle";
+        needle = "RequiredRuntimeApiSymbols";
       }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/time_control.rs" pluginTimeControl [
       {
         label = "queued advance symbol constant";
-        needle = "QEMU_PLUGIN_ADVANCE_TIME_NS_SYMBOL";
+        needle = "QEMU_PLUGIN_ADVANCE_TIME_TICKS_SYMBOL";
       }
       {
         label = "queued advance function pointer";
-        needle = "pub type QemuAdvanceTimeNsFn = extern \"C\" fn(i64) -> c_int;";
+        needle = "pub type QemuAdvanceTimeTicksFn = extern \"C\" fn(i64) -> c_int;";
       }
       {
         label = "completion registration symbol constant";
@@ -216,7 +216,7 @@
       }
       {
         label = "optional queued advance rejected";
-        needle = "Option<QemuAdvanceTimeNsFn>";
+        needle = "Option<QemuAdvanceTimeTicksFn>";
       }
       {
         label = "enqueue method";
@@ -224,7 +224,7 @@
       }
       {
         label = "QEMU queued advance call";
-        needle = "(self.advance_time_ns)(qemu_target_ns)";
+        needle = "(self.advance_time_ticks)(prepared.qemu_target_tick)";
       }
       {
         label = "pending completion evidence";
@@ -236,11 +236,11 @@
       }
       {
         label = "signed QEMU range guard";
-        needle = "VirtualTimeOutOfRange";
+        needle = "TickOutOfRange";
       }
       {
         label = "authorized target projection";
-        needle = "pub fn target_virtual_ns";
+        needle = "pub const fn target_tick";
       }
       {
         label = "queued advance missing-symbol test";
@@ -266,7 +266,7 @@
       }
       {
         label = "registration requires queued advance function";
-        needle = "QemuAdvanceTimeNsFn";
+        needle = "QemuAdvanceTimeTicksFn";
       }
       {
         label = "registration invokes queued advance require";
@@ -288,11 +288,11 @@
       }
       {
         label = "idle completion projects authorized target";
-        needle = ".target_virtual_ns(clock.icount_shift())";
+        needle = ".target_tick()";
       }
       {
         label = "idle callback queues the advance";
-        needle = ".enqueue(target_virtual_ns)";
+        needle = ".enqueue(target_tick)";
       }
       {
         label = "idle result carries completion evidence";
@@ -320,11 +320,11 @@
     ++ failuresFor "crates/crucible-qemu-plugin/src/abi.rs" pluginAbi [
       {
         label = "queued advance dlsym bytes";
-        needle = "QEMU_PLUGIN_ADVANCE_TIME_NS_SYMBOL_C";
+        needle = "QEMU_PLUGIN_ADVANCE_TIME_TICKS_SYMBOL_C";
       }
       {
         label = "queued advance resolver";
-        needle = "pub fn resolve_qemu_advance_time_ns_symbol";
+        needle = "pub fn resolve_qemu_advance_time_ticks_symbol";
       }
       {
         label = "completion registration dlsym bytes";
@@ -339,16 +339,16 @@
         needle = "libc::dlsym";
       }
       {
-        label = "time capability install helper";
-        needle = "pub fn install_required_time_capability_scaffold";
+        label = "time capability admission";
+        needle = "QueuedIdleAdvance::require(symbols.advance_time_ticks)";
       }
       {
-        label = "time capability QEMU-info install helper";
-        needle = "pub fn install_required_time_capability_scaffold_from_qemu_info";
+        label = "sole runtime install helper";
+        needle = "fn admit_required_runtime_apis";
       }
       {
         label = "install boundary resolves queued advance";
-        needle = "resolve_qemu_advance_time_ns_symbol()";
+        needle = "resolve_qemu_advance_time_ticks_symbol()";
       }
       {
         label = "install boundary resolves completion registration";
@@ -359,18 +359,18 @@
         needle = "QueuedIdleAdvanceCapability";
       }
       {
-        label = "state stores queued advance handle";
-        needle = "queued_idle_advance: Some(queued_idle_advance)";
+        label = "runtime admission validates queued advance capability";
+        needle = "let _queued_idle_advance = QueuedIdleAdvance::require(symbols.advance_time_ticks)";
       }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/abi/tests.rs" pluginAbiTests [
       {
-        label = "install missing queued advance test";
-        needle = "abi_install_requires_queued_idle_advance_symbol";
+        label = "missing queued advance capability rejection test";
+        needle = "runtime_install_rejects_each_missing_capability_family";
       }
       {
-        label = "entrypoint missing queued advance test";
-        needle = "abi_install_entrypoint_requires_queued_advance_after_deadline_resolution";
+        label = "entrypoint fail-closed capability test";
+        needle = "abi_install_entrypoint_fails_closed_without_required_runtime_symbols";
       }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/runtime.rs" pluginRuntime [
@@ -397,8 +397,12 @@
         needle = ".queued_idle_advance";
       }
       {
-        label = "live idle callback arms the exact pending target";
-        needle = "self.arm_idle_advance(raw_icount, target_icount, pending)";
+        label = "live idle callback arms the exact pending target and timer witness";
+        needle = ''          let generation = match self.arm_idle_advance(
+                      raw_icount_at_request,
+                      target_icount,
+                      pending,
+                      timer_deadline_ns,'';
       }
       {
         label = "busy queued advance re-arms the all-halted edge";
@@ -499,7 +503,7 @@ in
               --target-dir "$TMPDIR/crucible-plugin-synchronous-idle-target" \
               --manifest-path crates/Cargo.toml \
               -p crucible-qemu-plugin \
-              abi_install_entrypoint_requires_queued_advance_after_deadline_resolution \
+              abi_install_entrypoint_fails_closed_without_required_runtime_symbols \
               -- --test-threads=1
             cargo test \
               --frozen \
@@ -562,7 +566,7 @@ in
             tasks=${taskList}
             open_tasks=${openTaskList}
             status=partial
-            queued_advance_symbol=qemu_plugin_advance_time_ns
+            queued_advance_symbol=qemu_plugin_advance_time_ticks
             callback_entry=live-all-idle
             timer_bottom_halves=before-normal-main-loop-completion
             pending_advance_suppresses_resume=true

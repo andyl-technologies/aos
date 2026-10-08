@@ -19,8 +19,8 @@ findmnt /
 findmnt /var
 lsblk -o NAME,SIZE,FSTYPE,PARTLABEL,MOUNTPOINTS
 networkctl list
-apm rollback --system --list
-apm rollback --system --image --list
+apm config rollback --list
+apm image list
 apm list --installed --system
 cat /var/lib/aos-provisioning/audit.json
 ```
@@ -134,29 +134,34 @@ Do not delete APM profile directories or generation links by hand. Use
 `apm clean --generations --keep N` for the invoking user's package generations,
 or add `--system` to prune both machine-wide package and configuration
 generations. The current generation is retained even when it falls outside the
-latest-`N` window. Follow with `apm gc` to reclaim released config output and
+latest-`N` window. Follow with `apm gc --system` to reclaim released config output and
 input roots. A/B image-generation pruning is not implemented.
 
 ## Operate packages, images, and configuration generations
 
-Preview package changes:
+Preview and upgrade runtime packages:
 
 ```sh
 apm update --system
 apm list --upgradable --system
 apm upgrade --system --dry-run
+apm upgrade --system
 ```
 
-`apm upgrade --system` stages an authenticated image in the inactive A/B root
-slot and publishes its counted UKI as the next-boot default. It does not replace
-the running root. Use the [upgrade guide](upgrades.md) for boot assessment,
-image rollback, configuration rebind, and activation semantics.
+See [Manage packages](packages.md) for installation, removal, and package
+rollback. These commands change the machine-wide runtime package set.
 
-`apm upgrade --system` is specifically the OS-sysroot operation. It is not a
-machine-wide runtime-package upgrade. The current desired-package reconciler
-can add and remove package roots but does not upgrade roots that are already
-present; see [Manage packages with APM](packages.md) before designing an
-application rollout.
+Update the operating-system image separately:
+
+```sh
+apm image upgrade --dry-run
+apm image upgrade
+```
+
+This stages an authenticated image in the inactive A/B root slot and publishes
+its counted UKI as the next-boot default. It does not replace the running root.
+Use the [upgrade guide](upgrades.md) for boot assessment, image rollback,
+configuration rebind, and activation semantics.
 
 ## Monitor hardware
 

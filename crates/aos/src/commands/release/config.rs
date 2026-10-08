@@ -4,11 +4,12 @@
 //! registry's maintainer machine: its work and fitness roots, the public Git
 //! identity of registry release commits, both publication surfaces, the
 //! external signer and its role keys, TUF trust, the reviewer key, and the
-//! alert path. The coordinator's own closure and the native qualification
-//! executors are not configured here; they come from the installed
-//! [tooling environment](super::tooling). Leaf commands read only the
-//! sections they need (for example `step publish` reads a static surface's
-//! credentials and the `surface-receipt` signer); the porcelain reads all of it.
+//! alert path. The coordinator's own closure, the native qualification
+//! executors, and the bundled release signer are not configured here; they
+//! come from the installed [tooling environment](super::tooling). Leaf
+//! commands read only the sections they need (for example `step publish`
+//! reads a static surface's credentials and the `surface-receipt` signer);
+//! the porcelain reads all of it.
 //!
 //! The file is found at an explicit `--config` path, else `$AOS_RELEASE_CONFIG`,
 //! else `/etc/aos-release/maintainer.toml`, else `~/.config/aos/release.toml`.
@@ -45,7 +46,9 @@
 //! s3_region = "us-east-1"
 //!
 //! [signer]
-//! executable = "/etc/aos-release/bin/signer"
+//! # The tooling closure's bundled aos-release-signer reads this file. Name
+//! # `executable = "/abs/path"` instead (or as well) for an external provider.
+//! config = "/etc/aos-release/signer.json"
 //! timeout_seconds = 900
 //! provider_revision = "provider-2026-09"   # frozen into every plan's signer roster
 //!
@@ -300,12 +303,23 @@ impl SurfaceConfig {
     }
 }
 
-/// External signer executable and role keys.
+/// Signer executable, its configuration, and role keys.
+///
+/// At least one of `executable` and `config` is present. Without
+/// `executable` the coordinator signs through the `aos-release-signer`
+/// bundled in its own tooling closure, which needs `config`.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct SignerConfig {
-    /// Absolute path of the deployment-configured signer executable.
-    pub(super) executable: PathBuf,
+    /// Absolute path of an external signer executable; absent selects the
+    /// tooling closure's bundled signer.
+    #[serde(default)]
+    pub(super) executable: Option<PathBuf>,
+    /// Absolute path of the signer's own configuration, handed to the
+    /// signer as `AOS_RELEASE_SIGNER_CONFIG`; required for the bundled
+    /// signer.
+    #[serde(default)]
+    pub(super) config: Option<PathBuf>,
     /// Maximum duration of one signer invocation.
     #[serde(default = "default_signer_timeout")]
     pub(super) timeout_seconds: u64,
@@ -321,6 +335,29 @@ impl SignerConfig {
     /// Returns the bounded signer invocation timeout.
     pub(super) fn timeout(&self) -> Duration {
         Duration::from_secs(self.timeout_seconds)
+    }
+
+    /// Validates the executable, configuration, and timeout without touching
+    /// the filesystem; the files are inspected when a signing step resolves
+    /// its signer.
+    fn validate(&self) -> Result<()> {
+        match (&self.executable, &self.config) {
+            (None, None) => bail!(
+                "[signer] needs `config` for the bundled release signer or \
+                 `executable` for an external signer"
+            ),
+            (Some(executable), _) if !executable.is_absolute() => {
+                bail!("signer executable path must be absolute")
+            }
+            (_, Some(config)) if !config.is_absolute() => {
+                bail!("signer configuration path must be absolute")
+            }
+            _ => {}
+        }
+        if self.timeout_seconds == 0 || self.timeout_seconds > 15 * 60 {
+            bail!("signer timeout must be within 1..=900 seconds");
+        }
+        Ok(())
     }
 }
 
@@ -486,12 +523,7 @@ impl MaintainerConfig {
         if self.surfaces.staging.identity == self.surfaces.production.identity {
             bail!("staging and production surfaces must have different identities");
         }
-        if !self.signer.executable.is_absolute() {
-            bail!("signer executable path must be absolute");
-        }
-        if self.signer.timeout_seconds == 0 || self.signer.timeout_seconds > 15 * 60 {
-            bail!("signer timeout must be within 1..=900 seconds");
-        }
+        self.signer.validate()?;
         for (name, role) in &self.signer.roles {
             parse_role(name)?;
             role.normalize(name)?;
@@ -768,6 +800,57 @@ keys = [
             destination: "backup@example.org".to_owned(),
         });
         assert_ne!(first, config.alert_config_digest()?);
+        Ok(())
+    }
+
+    #[test]
+    fn an_absent_executable_selects_the_bundled_signer_with_its_configuration() -> Result<()> {
+        let bundled = MINIMAL.replace(
+            "executable = \"/etc/aos-release/bin/signer\"",
+            "config = \"/etc/aos-release/signer.json\"",
+        );
+        let config = MaintainerConfig::parse(bundled.as_bytes())?;
+        assert_eq!(config.signer.executable, None);
+        assert_eq!(
+            config.signer.config.as_deref(),
+            Some(Path::new("/etc/aos-release/signer.json"))
+        );
+
+        let relative = MINIMAL.replace(
+            "executable = \"/etc/aos-release/bin/signer\"",
+            "config = \"signer.json\"",
+        );
+        assert!(MaintainerConfig::parse(relative.as_bytes()).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn a_signer_needs_an_executable_or_a_configuration() {
+        let neither = MINIMAL.replace("executable = \"/etc/aos-release/bin/signer\"\n", "");
+        assert!(MaintainerConfig::parse(neither.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn an_external_executable_works_with_or_without_a_configuration() -> Result<()> {
+        let config = MaintainerConfig::parse(MINIMAL.as_bytes())?;
+        assert_eq!(
+            config.signer.executable.as_deref(),
+            Some(Path::new("/etc/aos-release/bin/signer"))
+        );
+        assert_eq!(config.signer.config, None);
+
+        let both = MINIMAL.replace(
+            "executable = \"/etc/aos-release/bin/signer\"",
+            "executable = \"/etc/aos-release/bin/signer\"\nconfig = \"/etc/aos-release/signer.json\"",
+        );
+        let config = MaintainerConfig::parse(both.as_bytes())?;
+        assert!(config.signer.executable.is_some() && config.signer.config.is_some());
+
+        let relative = MINIMAL.replace(
+            "executable = \"/etc/aos-release/bin/signer\"",
+            "executable = \"bin/signer\"",
+        );
+        assert!(MaintainerConfig::parse(relative.as_bytes()).is_err());
         Ok(())
     }
 

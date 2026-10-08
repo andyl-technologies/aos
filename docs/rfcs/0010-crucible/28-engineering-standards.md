@@ -27,7 +27,7 @@ Requirement IDs here use the prefix **`STD`**. (The `CRATE` prefix is reserved b
 [`27-crate-structure.md`](27-crate-structure.md); both files share the area
 column in [`00-conventions.md`](00-conventions.md) §"Area prefixes" but this file
 numbers its requirements `STD-n`.) These standards align with the repository's
-root `CLAUDE.md` (the AOS Rust code style and documentation standard) exactly,
+root `AGENTS.md` (the AOS Rust code style and documentation standard) exactly,
 and add the Crucible-specific determinism rules on top.
 
 The spine of this file is one sentence:
@@ -43,15 +43,15 @@ The spine of this file is one sentence:
 
 ## 1. Rust quality
 
-These requirements restate the root `CLAUDE.md` Rust code style as normative
+These requirements restate the root `AGENTS.md` Rust code style as normative
 Crucible requirements so the implementation plan can cover them and a reviewer
-can cite them. Where `CLAUDE.md` and this file appear to differ, `CLAUDE.md`
+can cite them. Where `AGENTS.md` and this file appear to differ, `AGENTS.md`
 wins and the discrepancy is a defect in this file.
 
 ### 1.1 Documentation (docs.rs quality)
 
 - **[STD-1]** Every `crucible-*` crate MUST carry docs.rs-quality rustdoc to the
-  bar defined in the root `CLAUDE.md` "Rust documentation standard". Concretely:
+  bar defined in the root `AGENTS.md` "Rust documentation standard". Concretely:
   each crate's `lib.rs`/`main.rs` MUST carry a `//!` crate overview (what the
   crate does, a map of its modules, how the pieces fit); every module file MUST
   carry a `//!` header naming what the module owns and its key concepts; and a
@@ -79,11 +79,11 @@ wins and the discrepancy is a defect in this file.
 - **[STD-4]** Every fenced code block in rustdoc MUST be tagged (` ```text `,
   ` ```rust `, ` ```toml `, ` ```no_run `, or ` ```ignore `). An untagged fence
   becomes a compiled doctest in the hermetic AOS build and an untagged *format*
-  example is therefore a build failure (consistent with `CLAUDE.md` and the AOS
+  example is therefore a build failure (consistent with `AGENTS.md` and the AOS
   `pkgs.aos`/`pkgs.crucible` doc build). Runnable `# Examples` are added only
   when they compile against the public API alone; prefer `no_run`. *Spec:* §4.5.
 
-- **[STD-5]** The clap-derive caveat from `CLAUDE.md` applies to the `crucible`
+- **[STD-5]** The clap-derive caveat from `AGENTS.md` applies to the `crucible`
   CLI ([`23-cli.md`](23-cli.md)): doc comments on `#[derive(Parser/Subcommand/Args)]`
   containers and their fields become `--help` output. Container `///` docs MUST
   NOT be added (document the surrounding module instead); a field doc edit is a
@@ -254,7 +254,7 @@ buildable spec, not a slogan.
 
 Crucible needs `unsafe` in a small, sharply-bounded set of places — the shared
 memory mapping, the lock-free SPSC ring, the FFI to the QEMU plugin C ABI, and
-atomics with explicit orderings — and nowhere else. The root `CLAUDE.md` rule
+atomics with explicit orderings — and nowhere else. The root `AGENTS.md` rule
 ("avoid `unsafe` at all costs; justify and document the invariants with a
 `// SAFETY:` comment") is tightened here into a crate-level fence.
 
@@ -379,15 +379,33 @@ layer's gate and MUST NOT be "covered" from a higher layer ([HARN-3]).
 
 ## 5. File, module, and commit hygiene
 
-- **[STD-27]** **File and module size.** A source file SHOULD stay under **~600
-  lines** and MUST stay under **1000**; a file that exceeds the soft limit MUST
-  be split along a module boundary, not left as a monolith. Every `.rs` file is a
-  module with a `//!` header ([STD-1]); a module owns one coherent concern (one
-  ABI format, one scheduler concern, one fault family). A function on a
-  determinism-significant path (the quantum loop, the ordering comparator, the
-  codec) SHOULD be small enough to review for nondeterminism in one sitting;
-  where it cannot be, it MUST be decomposed so each ordering decision is
-  individually reviewable against the §6 checklist. *Spec:* §5.
+- **[STD-27]** **File and module size.** Authors MUST reconsider a hand-written
+  module's responsibilities as either its implementation or test section grows
+  beyond **1000 lines**. Beyond **1500 lines**, that section MUST have a clear
+  cohesion argument explaining why its responsibilities belong together.
+  `#[cfg(test)]` modules are counted separately from the implementation, and a
+  test-only source is counted wholly as tests. These are review boundaries:
+  exactly 1000 lines does not require a responsibility review, and exactly 1500
+  lines does not require the additional cohesion argument.
+
+  `checks.crucible.phase1.engineeringHygiene` records every new or grown section
+  above the review boundary in `engineering-hygiene-baseline.txt`. A
+  `shape-review` record binds
+  the repository path, responsibility role, reviewed section count, concise
+  responsibility description, and cohesion disposition to the SHA-256 digest
+  of the whole source file. A later source change invalidates that review. The
+  older `shape-line` rows remain frozen inventory from the superseded 600/1000
+  policy: a file at or below its frozen old cap remains grandfathered, but growth
+  above that cap requires a content-bound review and the cap itself is never
+  raised. A record becomes stale when its reviewed section returns to 1000 lines
+  or fewer.
+
+  Every `.rs` file is a module with a `//!` header ([STD-1]); a module owns one
+  coherent concern (one ABI format, one scheduler concern, one fault family).
+  A function on a determinism-significant path (the quantum loop, the ordering
+  comparator, the codec) SHOULD be small enough to review for nondeterminism in
+  one sitting; where it cannot be, it MUST be decomposed so each ordering
+  decision is individually reviewable against the §6 checklist. *Spec:* §5.
 
 - **[STD-28]** **Module boundaries follow the layer map.** A crate MUST NOT
   depend on a higher layer or sideways across a peer boundary that
@@ -408,7 +426,7 @@ layer's gate and MUST NOT be "covered" from a higher layer ([HARN-3]).
   only when explicitly requested. *Spec:* §5.
 
 - **[STD-30]** **Documenting existing code is comments-only.** A docs pass MUST
-  NOT reorder, rename, or reformat code (root `CLAUDE.md`): it adds `//!`/`///`
+  NOT reorder, rename, or reformat code (root `AGENTS.md`): it adds `//!`/`///`
   and `// SAFETY:` comments only. If a doc claim contradicts the code, the doc is
   fixed to match the *observed* behavior and the discrepancy is flagged in the PR
   for separate resolution — the code is never changed in a docs pass. This keeps

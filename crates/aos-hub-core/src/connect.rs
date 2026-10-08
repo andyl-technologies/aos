@@ -948,7 +948,9 @@ fn delivery_audience(surface: crate::db::SurfaceTarget, path: &str) -> DeliveryA
             || path.starts_with("objects/")
             || path.starts_with("releases/")
             || path.starts_with("channels/")
-            || path.starts_with("images/"))
+            || path.starts_with("images/")
+            || path.starts_with("tuf/")
+            || path.starts_with("publication-receipts/"))
     {
         return DeliveryAudience::Git;
     }
@@ -4935,6 +4937,16 @@ mod tests {
         assert_eq!(
             delivery_audience(registry, "abc.narinfo"),
             DeliveryAudience::NixCache
+        );
+        // Signed release metadata is machine data served from storage; the
+        // browse renderer has no page for it.
+        assert_eq!(
+            delivery_audience(registry, "tuf/1.root.json"),
+            DeliveryAudience::Git
+        );
+        assert_eq!(
+            delivery_audience(registry, "publication-receipts/aa.json"),
+            DeliveryAudience::Git
         );
         assert_eq!(
             delivery_audience(registry, "-/packages"),

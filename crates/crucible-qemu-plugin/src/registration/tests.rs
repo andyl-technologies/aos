@@ -170,7 +170,7 @@ fn registration_order_waits_boot_barrier_before_first_instruction() {
     let slot = boot_barrier_slot(3);
 
     let release = sequence
-        .wait_boot_barrier(setup_ack, &slot, 0)
+        .wait_boot_barrier(setup_ack, &slot)
         .unwrap_or_else(|error| panic!("boot barrier should release: {error}"));
 
     assert_eq!(
@@ -277,7 +277,7 @@ fn registration_order_records_callbacks_after_exact_deadline_capability_check() 
 
     assert_eq!(
         capabilities.exact_deadline_reader().read_next_deadline(),
-        Ok(crate::ExactDeadlineReport::Armed { deadline_ns: 777 })
+        Ok(crate::ExactDeadlineReport::Armed { deadline_ps: 777 })
     );
     assert_eq!(
         capabilities.coverage_registration_plan(),
@@ -359,7 +359,7 @@ fn registration_order_fails_loud_when_queued_idle_advance_missing() {
     assert!(
         failure
             .diagnostic()
-            .contains(crate::QEMU_PLUGIN_ADVANCE_TIME_NS_SYMBOL)
+            .contains(crate::QEMU_PLUGIN_ADVANCE_TIME_TICKS_SYMBOL)
     );
     assert_eq!(
         sequence.record_step(PluginRegistrationStep::SendSetupAck),
@@ -479,7 +479,7 @@ fn record_steps_through_setup_ack(
 fn record_fixed_sequence(sequence: &mut PluginRegistrationSequence) {
     let setup_ack = record_steps_through_setup_ack(sequence);
     let slot = boot_barrier_slot(2);
-    if let Err(error) = sequence.wait_boot_barrier(setup_ack, &slot, 0) {
+    if let Err(error) = sequence.wait_boot_barrier(setup_ack, &slot) {
         panic!("boot barrier should release: {error}");
     }
     if let Err(error) = sequence.record_step(PluginRegistrationStep::FirstVisibleInstruction) {
@@ -491,7 +491,7 @@ extern "C" fn registration_test_deadline() -> i64 {
     777
 }
 
-extern "C" fn registration_test_direct_advance(_target_virtual_ns: i64) -> std::os::raw::c_int {
+extern "C" fn registration_test_direct_advance(_target_tick: i64) -> std::os::raw::c_int {
     0
 }
 
@@ -508,13 +508,14 @@ fn registration_test_coverage_capabilities() -> CoverageCapabilities {
         registration_test_scoreboard_new,
         registration_test_scoreboard_free,
         registration_test_u64_set,
+        registration_test_num_vcpus,
     ))
 }
 
 extern "C" fn registration_test_register_tb_trans_cb(
     _plugin_id: crate::QemuPluginId,
-    _callback: Option<crate::QemuVcpuTbTransCbFn>,
-    _userdata: *mut std::ffi::c_void,
+    _callback: Option<crate::coverage::QemuVcpuTbTransCbFn>,
+    _userdata: *mut std::os::raw::c_void,
 ) {
 }
 
@@ -542,6 +543,10 @@ extern "C" fn registration_test_u64_set(
     _vcpu_index: std::os::raw::c_uint,
     _value: u64,
 ) {
+}
+
+extern "C" fn registration_test_num_vcpus() -> std::os::raw::c_int {
+    1
 }
 
 extern "C" fn registration_test_tb_vaddr(_tb: *const crate::QemuPluginTb) -> u64 {
@@ -577,8 +582,8 @@ extern "C" fn registration_test_icount_at_tb_entry(
 
 extern "C" fn registration_test_register_flush_cb(
     _plugin_id: crate::QemuPluginId,
-    _callback: crate::QemuPluginSimpleCbFn,
-    _userdata: *mut std::ffi::c_void,
+    _callback: crate::coverage::QemuPluginSimpleCbFn,
+    _userdata: *mut std::os::raw::c_void,
 ) {
 }
 
@@ -590,7 +595,7 @@ fn boot_barrier_slot(max_advance_icount: u64) -> NodeSlot {
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, max_advance_icount, None)
         .unwrap_or_else(|error| panic!("boot barrier ceiling should authorize: {error}"));
-    slot.publish_scheduler_ceiling(ceiling)
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("boot barrier ceiling should publish: {error}"));
     slot
 }

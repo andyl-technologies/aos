@@ -18,7 +18,7 @@
 #                 peer over the fleet L2.
 #   4. INSTALL  — `apm install bc` downloads a package off the wire
 #                 (bc is deliberately NOT in the image's closure).
-#   5. UPGRADE  — `apm upgrade --system` authenticates a measured raw image,
+#   5. UPGRADE  — `apm image upgrade` authenticates a measured raw image,
 #                 stages it into the inactive A/B slot, then the machine
 #                 REBOOTS through UEFI and commits the new image and its
 #                 re-evaluated host configuration.
@@ -501,7 +501,7 @@ in {
       )
 
       out = target.succeed(
-          "HOME=/tmp PATH=${pkgs.git-minimal}/bin:${pkgs.nix}/bin:$PATH ${pkgs.aos.apm}/bin/apm upgrade --system --dry-run 2>&1",
+          "HOME=/tmp PATH=${pkgs.git-minimal}/bin:${pkgs.nix}/bin:$PATH ${pkgs.aos.apm}/bin/apm image upgrade --dry-run 2>&1",
           timeout=120,
       )
       assert "test-2" in out, f"dry-run did not surface test-2: {out!r}"
@@ -510,10 +510,10 @@ in {
       # into the inactive slot. Configuration remains on generation 1 until
       # the candidate boots and re-evaluates the retained host inputs.
       out = target.succeed(
-          "HOME=/tmp PATH=${pkgs.git-minimal}/bin:${pkgs.nix}/bin:$PATH ${pkgs.aos.apm}/bin/apm upgrade --system --yes 2>&1",
+          "HOME=/tmp PATH=${pkgs.git-minimal}/bin:${pkgs.nix}/bin:$PATH ${pkgs.aos.apm}/bin/apm image upgrade --yes 2>&1",
           timeout=1800,
       )
-      print("=== apm upgrade --system output ===\n" + out)
+      print("=== apm image upgrade output ===\n" + out)
       assert "Downloading" in out, (
           f"system upgrade did not download the generation delta: {out!r}"
       )

@@ -293,7 +293,7 @@ class FleetScenario:
         desired.write_text("packages = " + json.dumps(packages) + "\n")
         machine.copy_to(desired, "/run/qualification-k3s-desired.toml")
         machine.ssh(
-            "apm install --system --from /run/qualification-k3s-desired.toml --yes", timeout=1800,
+            "apm apply --system --from /run/qualification-k3s-desired.toml --yes", timeout=1800,
         )
 
     def credential(self, machine, token):
@@ -405,7 +405,7 @@ class FleetScenario:
                 self.reconcile_packages(machine, [])
                 self.verify_outputs(machine, package, present=False)
                 machine.ssh("! systemctl is-active --quiet k3s.service")
-                machine.ssh(f"apm rollback --system --generation {generation}", timeout=1200)
+                machine.ssh(f"apm config rollback --generation {generation}", timeout=1200)
                 restored = image.read_remote_json(
                     machine, "/var/lib/profiles/system/state.json"
                 )["current"]

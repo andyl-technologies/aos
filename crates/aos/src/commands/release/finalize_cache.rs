@@ -68,8 +68,9 @@ pub(super) async fn run(
         bail!("Nix narinfo format requires the plan's one exact cache signer key");
     }
     let trusted_key = load_cache_public_key(&key_id, &key_path)?;
-    let external = ExternalSigner::new(
-        args.signer_executable.clone(),
+    let external = ExternalSigner::resolve(
+        args.signer_executable.as_deref(),
+        args.signer_config.as_deref(),
         Duration::from_secs(args.signer_timeout_seconds),
     )?;
 

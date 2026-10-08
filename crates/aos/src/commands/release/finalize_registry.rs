@@ -77,8 +77,9 @@ pub(super) async fn prepare(
     require_active_signing_key(&args.source_registry, &provenance_key.0, &provenance_key.1)?;
     let provenance_requirement =
         signer_requirement(&plan, SignerRole::Provenance, &provenance_key.0)?;
-    let external = ExternalSigner::new(
-        args.signer_executable.clone(),
+    let external = ExternalSigner::resolve(
+        args.signer_executable.as_deref(),
+        args.signer_config.as_deref(),
         Duration::from_secs(args.signer_timeout_seconds),
     )?;
     let mut signer = ReleaseRegistrySigner {
@@ -96,8 +97,9 @@ pub(super) async fn prepare(
     require_active_signing_key(&args.source_registry, &registry_key.0, &registry_key.1)?;
     let registry_requirement = signer_requirement(&plan, SignerRole::Registry, &registry_key.0)?;
     let mut metadata_signer = ReleaseRegistrySigner {
-        external: ExternalSigner::new(
-            args.signer_executable.clone(),
+        external: ExternalSigner::resolve(
+            args.signer_executable.as_deref(),
+            args.signer_config.as_deref(),
             Duration::from_secs(args.signer_timeout_seconds),
         )?,
         plan: &plan,
@@ -190,8 +192,9 @@ pub(super) async fn finalize(
         require_active_signing_key(&args.prepared_registry, &registry_key.0, &registry_key.1)?;
         let registry_requirement =
             signer_requirement(&plan, SignerRole::Registry, &registry_key.0)?;
-        let external = ExternalSigner::new(
-            args.signer_executable.clone(),
+        let external = ExternalSigner::resolve(
+            args.signer_executable.as_deref(),
+            args.signer_config.as_deref(),
             Duration::from_secs(args.signer_timeout_seconds),
         )?;
         let mut signer = ReleaseRegistrySigner {

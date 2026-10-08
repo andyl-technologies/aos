@@ -217,7 +217,7 @@ in {
       runtime.succeed(f"{CMP} {ca_paths[0]} {ca_paths[2]}")
 
       # Rollback reconciles the original authenticated descriptor into a new publication.
-      runtime.succeed(f"{APM} rollback --system --generation {first}", timeout=300)
+      runtime.succeed(f"{APM} config rollback --generation {first}", timeout=300)
       rolled, rolled_marker, rolled_descriptor = current(runtime)
       assert rolled not in (first, second)
       assert rolled_marker["sequence"] > second_marker["sequence"]

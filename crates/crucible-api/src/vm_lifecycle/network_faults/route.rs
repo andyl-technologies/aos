@@ -18,13 +18,13 @@ pub(super) use custody_and_payload::*;
 pub(super) use frame_policy::*;
 pub(super) use random_and_selection::*;
 
-impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
+impl BackendNetworkOutputInterceptor<SingleScheduler, QemuNodeSet>
     for ProductionFaultNetworkInterceptor
 {
     fn intercept_network_outputs(
         &mut self,
         loop_impl: &mut SingleScheduler,
-        _backend: &mut ProductionNodeSet,
+        _backend: &mut QemuNodeSet,
         frontier: VirtualTime,
         pending_outputs: &mut Vec<crucible::BackendNetworkOutput>,
         outputs: &mut Vec<crucible::BackendNetworkOutput>,
@@ -47,10 +47,11 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
         let source_outputs = outputs.clone();
         let mut routed = Vec::new();
         let mut observation_batches = Vec::new();
-        let mut transition_records = Vec::new();
-        let mut next_wakeup_nanos = None;
+        let mut next_wakeup_ticks = None;
         let mut runtime_committed = false;
         let mut staged_effect_state = self.effect_state.clone();
+        let mut staged_campaign_records = Vec::new();
+        let mut staged_campaign_replay_cursor = self.campaign_effect_replay_cursor;
         let staged = (|| {
             for output in source_outputs {
                 'route: for route in staged_scheduler.resolve_backend_network_routes(&output)? {
@@ -124,13 +125,13 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                             ),
                         }
                     })?;
-                    if frontier.ticks < output.fault_continuation.cursor().not_before_nanos() {
+                    if frontier.ticks < output.fault_continuation.cursor().not_before_ticks() {
                         return Err(SchedulerError::BoundaryViolation {
                             message: format!(
                                 "network frame {} resumed at {} before its adapter release coordinate {}",
                                 output.sequence,
                                 frontier.ticks,
-                                output.fault_continuation.cursor().not_before_nanos()
+                                output.fault_continuation.cursor().not_before_ticks()
                             ),
                         });
                     }
@@ -188,8 +189,8 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                                 stage.operation,
                                 phase,
                                 FaultCoordinate {
-                                    virtual_nanos: frontier.ticks,
-                                    retired_instructions: Some(output.emit_icount.retired),
+                                    virtual_ticks: frontier.ticks,
+                                    retired_instructions: None,
                                 },
                                 output.sequence,
                                 Some(stage.direction),
@@ -224,10 +225,10 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                                 ),
                             })?;
                             runtime_committed = true;
-                            next_wakeup_nanos =
-                                earliest_wakeup(next_wakeup_nanos, evaluation.next_wakeup_nanos);
+                            next_wakeup_ticks =
+                                earliest_wakeup(next_wakeup_ticks, evaluation.next_wakeup_ticks);
                             let impulses = runtime.drain_host_impulses();
-                            let (transition_observations, records) = self
+                            let transition_observations = self
                                 .stage_availability_transition_drops(
                                     opportunity.coordinate(),
                                     &evaluation.actions,
@@ -239,7 +240,6 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                             let mut evaluation_observations = evaluation.observations;
                             evaluation_observations.extend(transition_observations);
                             observation_batches.push((sequence.journal, evaluation_observations));
-                            transition_records.extend(records);
                             let mut frame_actions = Vec::new();
                             staged_effect_state.boundary.apply_frame(
                                 opportunity.target(),
@@ -281,6 +281,40 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                                 }
                                 frame_actions.push(action.clone());
                             }
+                            let campaign_actions = self
+                                .campaign_replay
+                                .as_ref()
+                                .map(|replay| {
+                                    replay.actions_for_opportunity(&self.topology, &opportunity)
+                                })
+                                .transpose()
+                                .map_err(|error| SchedulerError::BoundaryViolation {
+                                    message: format!(
+                                        "resolve selected network fault action: {error}"
+                                    ),
+                                })?
+                                .unwrap_or_default();
+                            super::super::fault_implementation::require_network_actions_implemented(
+                                campaign_actions.iter(),
+                            )
+                            .map_err(|error| SchedulerError::BoundaryViolation {
+                                message: format!(
+                                    "selected network availability lacks a production implementation: {error}"
+                                ),
+                            })?;
+                            for action in &campaign_actions {
+                                if let EffectSpecification::Network(
+                                    NetworkEffectSpecification::Availability { state, .. },
+                                ) = action.effect.specification()
+                                {
+                                    admitted &= availability_allows(*state, stage.direction);
+                                    if !admitted {
+                                        resolved_effects.mark_drop();
+                                    }
+                                } else {
+                                    frame_actions.push(action.clone());
+                                }
+                            }
                             super::super::fault_implementation::require_network_actions_implemented(
                                 frame_actions.iter(),
                             )
@@ -289,6 +323,7 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                                     "active network frame action is absent from the production implementation registry: {error}"
                                 ),
                             })?;
+                            let campaign_precondition = ContentHash::from_bytes(&output.payload);
                             let application = if !frame_actions.is_empty() {
                                 let base_rate_bps = output
                                     .route
@@ -308,13 +343,20 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                                     &mut resolved_effects,
                                     &frame_actions,
                                     &opportunity,
-                                    runtime.scenario_seed().ok_or_else(|| {
+                                    runtime
+                                        .scenario_seed()
+                                        .or_else(|| {
+                                            self.campaign_replay
+                                                .as_ref()
+                                                .map(|replay| replay.target().def.id())
+                                        })
+                                        .ok_or_else(|| {
                                         SchedulerError::BoundaryViolation {
                                             message: String::from(
                                                 "production network runtime omitted its scenario seed",
                                             ),
                                         }
-                                    })?,
+                                        })?,
                                     &self.topology,
                                     &mut staged_effect_state,
                                     &mut staged_pending,
@@ -325,6 +367,89 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                             } else {
                                 NetworkFrameApplication::default()
                             };
+                            if !campaign_actions.is_empty() {
+                                let campaign_current = self
+                                    .campaign_records
+                                    .len()
+                                    .checked_add(staged_campaign_records.len())
+                                    .and_then(|count| u64::try_from(count).ok())
+                                    .ok_or_else(|| SchedulerError::BoundaryViolation {
+                                        message: String::from(
+                                            "campaign network effect record count exceeds u64",
+                                        ),
+                                    })?;
+                                let current = runtime
+                                    .recorded_effect_count()
+                                    .checked_add(campaign_current)
+                                    .ok_or_else(|| SchedulerError::BoundaryViolation {
+                                        message: String::from(
+                                            "combined resolved-effect record count exceeds u64",
+                                        ),
+                                    })?;
+                                let requested =
+                                    u64::try_from(campaign_actions.len()).map_err(|_| {
+                                        SchedulerError::BoundaryViolation {
+                                            message: String::from(
+                                                "campaign network action count exceeds u64",
+                                            ),
+                                        }
+                                    })?;
+                                self.resource_limits
+                                    .reserve("resolved_effect_records", current, requested)
+                                    .map_err(|error| SchedulerError::BoundaryViolation {
+                                        message: format!(
+                                            "campaign network effect evidence exceeds authored limits: {error}"
+                                        ),
+                                    })?;
+                                let mut outcome_material = Vec::new();
+                                outcome_material.extend_from_slice(b"campaign-network-outcome-v1");
+                                outcome_material.extend_from_slice(
+                                    &ContentHash::from_bytes(&output.payload).bytes,
+                                );
+                                outcome_material.push(u8::from(resolved_effects.is_dropped()));
+                                outcome_material.extend_from_slice(
+                                    &resolved_effects.additional_delay_ticks().to_be_bytes(),
+                                );
+                                outcome_material.extend_from_slice(
+                                    &resolved_effects.latency_delta_ticks().to_be_bytes(),
+                                );
+                                let evidence_digest = ContentHash::from_bytes(&outcome_material);
+                                for action in &campaign_actions {
+                                    let record = crucible::model::ResolvedEffectRecord::from_committed_action(
+                                        action,
+                                        Some(&opportunity),
+                                        sequence.same_coordinate,
+                                        action.mapped_digest,
+                                        Some(campaign_precondition),
+                                        evidence_digest,
+                                    )
+                                    .map_err(|error| SchedulerError::BoundaryViolation {
+                                        message: format!("record selected network fault effect: {error}"),
+                                    })?;
+                                    if let Some(expected) = &self.campaign_effect_replay {
+                                        if expected.get(staged_campaign_replay_cursor)
+                                            != Some(&record)
+                                        {
+                                            return Err(SchedulerError::BoundaryViolation {
+                                                message: String::from(
+                                                    "selected network effect differs from exact replay evidence",
+                                                ),
+                                            });
+                                        }
+                                        staged_campaign_replay_cursor += 1;
+                                    }
+                                    staged_campaign_records.push(record);
+                                }
+                                runtime.set_external_effect_count(
+                                    campaign_current.checked_add(requested).ok_or_else(|| {
+                                        SchedulerError::BoundaryViolation {
+                                            message: String::from(
+                                                "campaign resolved-effect record count exceeds u64",
+                                            ),
+                                        }
+                                    })?,
+                                );
+                            }
                             if application.repeat_effect_on_resume.is_none() {
                                 output
                                     .fault_continuation
@@ -336,8 +461,8 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                                         ),
                                     })?;
                             }
-                            next_wakeup_nanos =
-                                earliest_wakeup(next_wakeup_nanos, application.next_wakeup_nanos);
+                            next_wakeup_ticks =
+                                earliest_wakeup(next_wakeup_ticks, application.next_wakeup_ticks);
                             if let Some(response) = application.typed_response.as_ref() {
                                 if !resolved_effects.is_dropped() {
                                     return Err(SchedulerError::BoundaryViolation {
@@ -357,8 +482,8 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                                     frontier,
                                     self.resource_limits,
                                 )?;
-                                next_wakeup_nanos =
-                                    earliest_wakeup(next_wakeup_nanos, response_wakeup);
+                                next_wakeup_ticks =
+                                    earliest_wakeup(next_wakeup_ticks, response_wakeup);
                                 continue 'route;
                             }
                             if let Some(recipients) = application.forwarding_recipients.as_ref() {
@@ -433,11 +558,11 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                                 }
                                 continue 'route;
                             }
-                            if let Some(not_before_nanos) = application.defer_until {
-                                if not_before_nanos <= frontier.ticks {
+                            if let Some(not_before_ticks) = application.defer_until {
+                                if not_before_ticks <= frontier.ticks {
                                     return Err(SchedulerError::BoundaryViolation {
                                         message: format!(
-                                            "network queue deferred frame {} to nonfuture coordinate {not_before_nanos}",
+                                            "network queue deferred frame {} to nonfuture coordinate {not_before_ticks}",
                                             output.sequence
                                         ),
                                     });
@@ -447,7 +572,7 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                                         .fault_continuation
                                         .cursor_mut()
                                         .defer_repeated_effect_until(
-                                            not_before_nanos,
+                                            not_before_ticks,
                                             opportunity.id(),
                                             effect,
                                             application.queue_priority,
@@ -456,7 +581,7 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                                     output
                                         .fault_continuation
                                         .cursor_mut()
-                                        .defer_until(not_before_nanos, opportunity.id());
+                                        .defer_until(not_before_ticks, opportunity.id());
                                 }
                                 output
                                     .fault_continuation
@@ -478,8 +603,8 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                     }
                 }
             }
-            if next_wakeup_nanos.is_some() {
-                staged_scheduler.set_signal_fault_wakeup(next_wakeup_nanos)?;
+            if next_wakeup_ticks.is_some() {
+                staged_scheduler.set_signal_fault_wakeup(next_wakeup_ticks)?;
             }
             staged_scheduler
                 .record_pending_signal_fault_search_frontiers(runtime.drain_search_choices())?;
@@ -517,6 +642,15 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                     runtime.poison();
                 } else {
                     *cursor = cursor_before;
+                    runtime.set_external_effect_count(
+                        u64::try_from(self.campaign_records.len()).map_err(|_| {
+                            SchedulerError::BoundaryViolation {
+                                message: String::from(
+                                    "campaign network effect record count exceeds u64",
+                                ),
+                            }
+                        })?,
+                    );
                 }
                 return Err(error);
             }
@@ -525,9 +659,8 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
         *pending_outputs = staged_pending;
         *outputs = routed;
         self.effect_state = staged_effect_state;
-        for record in transition_records {
-            self.transition_ledger.insert(record.action, record);
-        }
+        self.campaign_records.extend(staged_campaign_records);
+        self.campaign_effect_replay_cursor = staged_campaign_replay_cursor;
         Ok(appends)
     }
 }
@@ -612,7 +745,7 @@ fn apply_network_frame_actions_with_limits(
         pending_outputs,
         actions,
         topology,
-        opportunity.coordinate().virtual_nanos,
+        opportunity.coordinate().virtual_ticks,
     )?;
     for action in actions {
         let EffectSpecification::Network(specification) = action.effect.specification() else {
@@ -624,7 +757,7 @@ fn apply_network_frame_actions_with_limits(
         match specification {
             NetworkEffectSpecification::ServiceCurve { segments } => {
                 service_curves.push(NetworkServiceCurveState {
-                    activation_nanos: action.coordinate.virtual_nanos,
+                    activation_ticks: action.coordinate.virtual_ticks,
                     segments: segments.as_slice().to_vec(),
                 });
             }
@@ -644,7 +777,7 @@ fn apply_network_frame_actions_with_limits(
                 )?;
                 deferred_until = latest_wakeup(
                     deferred_until,
-                    opportunity.coordinate().virtual_nanos.checked_add(delay),
+                    opportunity.coordinate().virtual_ticks.checked_add(delay),
                 );
             }
             NetworkEffectSpecification::BurstErrorState {
@@ -822,7 +955,7 @@ fn apply_network_frame_actions_with_limits(
                     opportunity,
                     capacity_bytes.get(),
                     u64::from(capacity_bundles.get()),
-                    expiry_nanos.get(),
+                    network_duration_ticks(expiry_nanos.get())?,
                     custody_policy,
                     route_contact_plan,
                     *priority,
@@ -895,10 +1028,10 @@ fn apply_network_frame_actions_with_limits(
         return Ok(NetworkFrameApplication {
             expanded_payloads,
             typed_response,
-            next_wakeup_nanos: earliest_wakeup(
+            next_wakeup_ticks: earliest_wakeup(
                 state
                     .boundary
-                    .next_wakeup_nanos(opportunity.coordinate().virtual_nanos),
+                    .next_wakeup_ticks(opportunity.coordinate().virtual_ticks),
                 backpressure_wakeup,
             ),
             ..NetworkFrameApplication::default()
@@ -975,17 +1108,17 @@ fn apply_network_frame_actions_with_limits(
         deferred_until = latest_wakeup(deferred_until, release);
     }
     let defer_until =
-        deferred_until.filter(|coordinate| *coordinate > opportunity.coordinate().virtual_nanos);
+        deferred_until.filter(|coordinate| *coordinate > opportunity.coordinate().virtual_ticks);
     Ok(NetworkFrameApplication {
         defer_until,
         repeat_effect_on_resume,
         queue_priority,
-        next_wakeup_nanos: earliest_wakeup(
+        next_wakeup_ticks: earliest_wakeup(
             earliest_wakeup(defer_until, state_machine_wakeup),
             earliest_wakeup(
                 state
                     .boundary
-                    .next_wakeup_nanos(opportunity.coordinate().virtual_nanos),
+                    .next_wakeup_ticks(opportunity.coordinate().virtual_ticks),
                 backpressure_wakeup,
             ),
         ),
@@ -993,36 +1126,6 @@ fn apply_network_frame_actions_with_limits(
         typed_response,
         forwarding_recipients,
     })
-}
-
-#[cfg(test)]
-// crucible-lint: allow rust-allow -- the compatibility wrapper mirrors the complete production frame-action boundary.
-#[allow(clippy::too_many_arguments)]
-fn apply_network_frame_actions(
-    payload: &mut Vec<u8>,
-    effects: &mut crucible::ResolvedNetworkFrameEffects,
-    actions: &[ResolvedBindingAction],
-    opportunity: &FaultOpportunity,
-    scenario_seed: ContentHash,
-    topology: &crucible::model::WorldFaultTopology,
-    state: &mut NetworkEffectRuntimeState,
-    pending_outputs: &mut Vec<crucible::BackendNetworkOutput>,
-    base_rate_bps: Option<u64>,
-    repeated_phase_effect: Option<crucible::model::EffectKind>,
-) -> Result<NetworkFrameApplication, SchedulerError> {
-    apply_network_frame_actions_with_limits(
-        payload,
-        effects,
-        actions,
-        opportunity,
-        scenario_seed,
-        topology,
-        state,
-        pending_outputs,
-        base_rate_bps,
-        repeated_phase_effect,
-        FaultResourceLimits::default(),
-    )
 }
 
 #[cfg(test)]

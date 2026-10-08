@@ -16,7 +16,7 @@ impl ProductionFaultNetworkInterceptor {
     pub(in crate::vm_lifecycle) fn preview_node_lifecycle_intents(
         &self,
         coordinate: FaultCoordinate,
-        nodes: &mut ProductionNodeSet,
+        nodes: &mut QemuNodeSet,
     ) -> Result<Vec<crucible_qemu::QemuNodeLifecycleIntent>, SchedulerError> {
         let sequence = self
             .cursor
@@ -24,7 +24,7 @@ impl ProductionFaultNetworkInterceptor {
             .map_err(|_| SchedulerError::BoundaryViolation {
                 message: String::from("production fault evaluation cursor lock is poisoned"),
             })?
-            .preview_next_sequence(coordinate.virtual_nanos)?;
+            .preview_next_sequence(coordinate.virtual_ticks)?;
         let mut runtime = self
             .runtime
             .lock()

@@ -1,7 +1,8 @@
-# Patch 0111: correct the accelerator service schema
+# Capability task 0111 — Correct the accelerator service schema
 
-Patch `0111-crucible-accelerator-service-schema.patch` makes the closed QEMU
-node-fault parser agree with the versioned accelerator service payload.
+The atomic patch `crucible-qemu-11.1.1.patch` makes the
+closed QEMU node-fault parser agree with the versioned accelerator service
+payload.
 
 ## Problem
 
@@ -29,5 +30,6 @@ The live hardware gate submits the typed state-machine effect through the
 production signal runtime and real patched QEMU. It requires one authenticated
 service action, three exact job-service occurrences, and guest-visible GPU,
 TPU, and FPGA completion under the half-capacity thermal/power policy. The
-per-patch certificate also requires the dedicated ratio schema, rejects the old
-generic mapping, and consumes the exact drop-one negative control.
+atomic-patch capability test also requires the dedicated ratio schema, rejects
+the incorrect generic mapping, and proves the capability is absent from
+pristine QEMU.

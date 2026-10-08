@@ -44,6 +44,7 @@ async fn first_add_preserves_boot_source_and_relative_imports() {
             name: Some("daemon.nix".into()),
             worktree: worktree.clone(),
         },
+        false,
         &aos_core::output::Printer::new(0, true, false),
     )
     .await
@@ -91,6 +92,7 @@ async fn seeded_host_can_be_replaced_and_removed_normally() {
             source: replacement,
             worktree: worktree.clone(),
         },
+        false,
         &printer,
     )
     .await
@@ -105,6 +107,7 @@ async fn seeded_host_can_be_replaced_and_removed_normally() {
             name: "host.nix".into(),
             worktree: worktree.clone(),
         },
+        false,
         &printer,
     )
     .await

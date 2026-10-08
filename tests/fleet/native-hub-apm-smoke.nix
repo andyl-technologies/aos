@@ -1015,8 +1015,8 @@ in {
           {APM} update --system --registry production
           {APM} show aos --system --registry production 2>&1 | grep test-2 >/dev/null
           {APM} list --system --upgradable 2>&1 | grep test-2 >/dev/null
-          {APM} upgrade --system --dry-run 2>&1 | grep test-2 >/dev/null
-          {APM} upgrade --system --yes 2>&1
+          {APM} image upgrade --dry-run 2>&1 | grep test-2 >/dev/null
+          {APM} image upgrade --yes 2>&1
       """), timeout=1200)
       assert system_status == 0, (system_status, system_stdout, system_stderr)
       system_upgrade = system_stdout + system_stderr
@@ -1046,7 +1046,7 @@ in {
           ! systemctl is-active --quiet aos-upgrade-removed.service
           {JQ} -e '.running == 2 and .default == 2 and .pending == null' \\
             /var/lib/profiles/image/state.json >/dev/null
-          {APM} rollback --system --image --generation 1
+          {APM} image rollback --generation 1
       """), timeout=1200)
       consumer.reboot(timeout=600)
       consumer.wait_until_succeeds(
@@ -1060,7 +1060,7 @@ in {
           systemctl is-active --quiet aos-upgrade-removed.service
           {JQ} -e '.running == 1 and .default == 1 and .pending == null' \\
             /var/lib/profiles/image/state.json >/dev/null
-          {APM} rollback --system --image --generation 2
+          {APM} image rollback --generation 2
       """), timeout=1200)
       consumer.reboot(timeout=600)
       consumer.wait_until_succeeds(

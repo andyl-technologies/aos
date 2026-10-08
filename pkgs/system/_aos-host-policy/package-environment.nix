@@ -13,8 +13,8 @@
       "/run/wrappers/bin"
       "/var/lib/profiles/per-user/${user}/current/bin"
       "/var/lib/profiles/per-user/${user}/current/sbin"
-      "/var/lib/profiles/system-packages/current/bin"
-      "/var/lib/profiles/system-packages/current/sbin"
+      "/var/lib/profiles/system/current/bin"
+      "/var/lib/profiles/system/current/sbin"
       basePath
     ];
 in {

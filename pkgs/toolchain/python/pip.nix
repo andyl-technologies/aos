@@ -128,6 +128,9 @@ in
         name = "check";
         script = ''
           unset PYTHONPATH
+          # Importing pip from $out would otherwise leave bytecode caches
+          # stamped with build-time source mtimes, so repeat builds differ.
+          export PYTHONDONTWRITEBYTECODE=1
           # Run the installed pure-Python launcher on the build platform;
           # its target interpreter cannot execute during a cross build.
           ${buildPackages.python3}/bin/python3 "$out/bin/pip" --version \

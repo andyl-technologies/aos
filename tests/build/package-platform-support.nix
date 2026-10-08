@@ -9,8 +9,7 @@
     if decision.state == "eligible"
     then fields == ["state"]
     else
-      decision.state
-      == "not-applicable"
+      builtins.elem decision.state ["not-applicable" "blocked"]
       && fields == ["reason" "rule" "state"];
   publicationMatrix = support.publicationMatrix packageNames;
   releaseInventory = support.releaseInventory packageNames;
@@ -183,6 +182,12 @@
   );
   releasePackageByName = name:
     builtins.head (builtins.filter (package: package.name == name) releaseDerivations.packages);
+  # glibc binds its `bin` output attribute to a separately built utilities
+  # derivation, while getent aliases an output of the main glibc derivation.
+  glibcRelease = releasePackageByName "glibc";
+  glibcBinOutput =
+    builtins.head (builtins.filter (output: output.name == "bin") glibcRelease.outputs);
+  getentOutput = builtins.head (releasePackageByName "getent").outputs;
   releaseSourcesComplete =
     builtins.all (
       package:
@@ -201,6 +206,15 @@
       builtins.filter (cell: cell.platform == platform) (packageByName name).platforms
     ))
     .decision;
+  # A deferred Linux platform blocks every eligible cell with one reviewed
+  # reason; every other eligible cell is unblocked.
+  deferred = platform: builtins.elem platform support.deferredPlatforms;
+  deferredSupport = import ../../pkgs/_target-policy.nix {
+    lib = pkgs.lib;
+    packages = pkgs;
+    releasePlatforms = support.platforms;
+    deferredPlatforms = ["aarch64-linux"];
+  };
 in
   assert support.validate packageNames;
   assert !(builtins.elem "darwin-runtimes" linuxPackages);
@@ -239,6 +253,11 @@ in
   assert missingEntryRejected;
   assert directoryModulePayload ? deploymentArtifact && directoryModulePayload ? documentationArtifact;
   assert releaseSourcesComplete;
+  assert glibcBinOutput.derivation == builtins.unsafeDiscardStringContext pkgs.glibc.bin.drvPath;
+  assert glibcBinOutput.derivation != glibcRelease.derivation;
+  assert glibcBinOutput.output == (pkgs.glibc.bin.outputName or "bin");
+  assert getentOutput.derivation == builtins.unsafeDiscardStringContext pkgs.getent.drvPath;
+  assert (releasePackageByName "getent").derivation == glibcRelease.derivation;
   assert builtins.length (releasePackageByName "aos").source_store_paths >= 2;
   assert builtins.length (releasePackageByName "docker-compose").source_store_paths >= 2;
   assert builtins.length (releasePackageByName "envoy").source_store_paths >= 2;
@@ -261,7 +280,7 @@ in
   assert builtins.stringLength inapplicableDecision.reason > 0;
   assert builtins.attrNames publicationMatrix == builtins.sort builtins.lessThan support.platforms;
   assert linuxPackages == support.targetPackageNames pkgs.stdenv.hostPlatform.system packageNames;
-  assert support.publicationEligibleNames pkgs.stdenv.hostPlatform.system packageNames
+  assert support.releaseDerivationNames pkgs.stdenv.hostPlatform.system packageNames
   == map (package: package.name) releaseDerivations.packages;
   assert builtins.elem "aos-recovery" eligibleOnAnyPlatform;
   assert !(builtins.elem "aos-hub-e2e" eligibleOnAnyPlatform);
@@ -294,6 +313,32 @@ in
   )
   releaseInventory.packages;
   assert (decisionFor "systemd" "x86_64-linux").state == "eligible";
+  assert support.deferredPlatforms == import ../../qualification/deferred-platforms.nix;
+  assert builtins.all (package:
+    builtins.all (cell: let
+      structural = support.publicationDecision cell.platform package.name;
+    in
+      if structural.state == "eligible" && deferred cell.platform
+      then cell.decision.state == "blocked" && cell.decision.rule == "platform-release-deferred/v1"
+      else cell.decision == structural)
+    package.platforms)
+  releaseInventory.packages;
+  assert builtins.all (platform:
+    support.releaseDerivationNames platform packageNames
+    == (
+      if deferred platform
+      then []
+      else support.publicationEligibleNames platform packageNames
+    ))
+  support.platforms;
+  assert deferredSupport.publicationDecision "aarch64-linux" "rust" == {state = "eligible";};
+  assert deferredSupport.releaseDecision "aarch64-linux" "rust"
+  == {
+    state = "blocked";
+    rule = "platform-release-deferred/v1";
+    reason = "Release publication is deferred on this platform";
+  };
+  assert deferredSupport.releaseDerivationNames "aarch64-linux" packageNames == [];
   assert (decisionFor "darwin-runtimes" "x86_64-linux").state == "not-applicable";
   assert (decisionFor "aos-hub-e2e" "x86_64-linux").state == "not-applicable";
     pkgs.mkDerivation {

@@ -24,25 +24,14 @@ impl CrucibleAcceleratorDevice {
         }
     }
 
-    /// Returns the attachment with a different stable QEMU identity.
-    #[must_use]
-    pub fn with_device_id(mut self, device_id: impl Into<String>) -> Self {
-        self.device_id = device_id.into();
-        self
-    }
-
-    /// Returns the QEMU device identity.
-    #[must_use]
-    pub fn device_id(&self) -> &str {
-        &self.device_id
-    }
-
     pub(super) fn append_qemu_args(&self, args: &mut Vec<String>) {
         args.extend([
             "-device".to_owned(),
             format!(
-                "virtio-crucible-accelerator-pci,id={},disable-legacy=on",
-                self.device_id
+                "virtio-crucible-accelerator-pci,id={},disable-legacy=on,bus={},addr={}",
+                self.device_id,
+                super::QEMU_PCI_BUS,
+                super::QEMU_ACCELERATOR_PCI_ADDRESS,
             ),
         ]);
     }
@@ -86,7 +75,7 @@ mod tests {
             arguments,
             [
                 "-device",
-                "virtio-crucible-accelerator-pci,id=crucible-accelerator0,disable-legacy=on",
+                "virtio-crucible-accelerator-pci,id=crucible-accelerator0,disable-legacy=on,bus=pcie.0,addr=0x6",
             ]
         );
     }

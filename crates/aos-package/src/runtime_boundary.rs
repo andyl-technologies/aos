@@ -12,9 +12,9 @@ use anyhow::{Result, bail};
 
 use crate::{
     ApmRegistryCommand, AttestCommand, BranchCommand, CacheCommand, ChangeCommand, ChannelCommand,
-    CredentialCommand, DocumentationCacheCommand, DocumentationCommand, KeysCommand, OriginCommand,
-    PackageCommand, RegistryCommand, RegistryStageCommand, RuntimeConfigCommand, StoreCommand,
-    TrustCommand,
+    CredentialCommand, DocumentationCacheCommand, DocumentationCommand, ImageCommand, KeysCommand,
+    OriginCommand, PackageCommand, RegistryCommand, RegistryStageCommand, RuntimeConfigCommand,
+    StoreCommand, TrustCommand,
 };
 
 const RUNTIME_ENV: &str = "AOS_RUNTIME";
@@ -163,30 +163,6 @@ pub(crate) fn validate_registry(command: &RegistryCommand, system: bool) -> Resu
 fn requires_host_runtime(command: &PackageCommand) -> bool {
     match command {
         PackageCommand::Image { .. } => true,
-        PackageCommand::Install {
-            from,
-            image,
-            kexec,
-            reboot,
-            live,
-            drain,
-            ..
-        } => from.is_some() || image.is_some() || *kexec || *reboot || *live || *drain,
-        PackageCommand::Upgrade {
-            kexec,
-            reboot,
-            live,
-            drain,
-            ..
-        } => *kexec || *reboot || *live || *drain,
-        PackageCommand::Rollback {
-            image,
-            kexec,
-            reboot,
-            live,
-            drain,
-            ..
-        } => *image || *kexec || *reboot || *live || *drain,
         PackageCommand::Attest {
             command: AttestCommand::Quote { .. },
         } => true,
@@ -201,6 +177,8 @@ fn requires_host_runtime(command: &PackageCommand) -> bool {
 /// they do not write.
 fn is_read_only(command: &PackageCommand) -> bool {
     match command {
+        PackageCommand::Image { command } => matches!(command, ImageCommand::List),
+        PackageCommand::Apply { .. } => false,
         PackageCommand::Search { .. }
         | PackageCommand::Show { .. }
         | PackageCommand::List { .. }
@@ -227,19 +205,18 @@ fn is_read_only(command: &PackageCommand) -> bool {
         PackageCommand::Credential(CredentialCommand::Encrypt { output, .. }) => output.is_none(),
         PackageCommand::Registry { command, .. } => apm_registry_is_read_only(command),
         PackageCommand::Install { .. }
-        | PackageCommand::Image { .. }
         | PackageCommand::ApplyDeployment(..)
         | PackageCommand::ContainerStartup(..)
         | PackageCommand::Remove { .. }
-        | PackageCommand::Autoremove
+        | PackageCommand::Autoremove { .. }
         | PackageCommand::Reinstall { .. }
         | PackageCommand::Update { .. }
         | PackageCommand::Upgrade { .. }
-        | PackageCommand::FullUpgrade
+        | PackageCommand::FullUpgrade { .. }
         | PackageCommand::Hold { .. }
         | PackageCommand::Unhold { .. }
         | PackageCommand::Clean { .. }
-        | PackageCommand::Gc
+        | PackageCommand::Gc { .. }
         | PackageCommand::Switch { .. } => false,
     }
 }
@@ -264,7 +241,8 @@ fn documentation_is_read_only(command: &DocumentationCommand) -> bool {
 fn runtime_config_is_read_only(command: &RuntimeConfigCommand) -> bool {
     matches!(
         command,
-        RuntimeConfigCommand::Status { .. }
+        RuntimeConfigCommand::Rollback { list: true, .. }
+            | RuntimeConfigCommand::Status { .. }
             | RuntimeConfigCommand::List { .. }
             | RuntimeConfigCommand::Diff { .. }
     )
@@ -594,6 +572,20 @@ mod tests {
 
         for arguments in [
             &["list", "--system"][..],
+            &["install", "nginx", "--system"][..],
+            &["remove", "nginx", "--system"][..],
+            &["reinstall", "nginx", "--system"][..],
+            &["upgrade", "--system"][..],
+            &["full-upgrade", "--system"][..],
+            &["autoremove", "--system"][..],
+            &["hold", "nginx", "--system"][..],
+            &["unhold", "nginx", "--system"][..],
+            &["verify", "nginx", "--system"][..],
+            &["source", "nginx", "--system"][..],
+            &["rollback", "--system"][..],
+            &["gc", "--system"][..],
+            &["apply", "--system", "--from", "desired.toml"][..],
+            &["config", "rollback", "--list"][..],
             &["docs", "search", "hello", "--system"][..],
             &["deployment-current", "--profile", "/tmp/profile"][..],
             &["config", "status"][..],
@@ -604,7 +596,12 @@ mod tests {
         }
 
         for arguments in [
-            &["install", "hello", "--image", "raw"][..],
+            &["image", "install", "aos"][..],
+            &["image", "upgrade"][..],
+            &["image", "rollback"][..],
+            &["image", "list"][..],
+            &["image", "prepare", "aos"][..],
+            &["image", "download", "hello", "--format", "raw"][..],
             &["attest", "quote", "--nonce", "00", "--output-dir", "/tmp/q"][..],
         ] {
             let error = boundary

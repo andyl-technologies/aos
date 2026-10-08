@@ -207,8 +207,9 @@ pub(super) async fn sign(signing: AdmissionSigning<'_>, printer: &Printer) -> Re
         payload_digest: Sha256Digest::of_bytes(digest.as_bytes()),
         approval_policy_digest: plan.restricted_operator_policy_digest,
     };
-    let signer = ExternalSigner::new(
-        args.authority_executable.clone(),
+    let signer = ExternalSigner::resolve(
+        args.authority_executable.as_deref(),
+        args.authority_config.as_deref(),
         Duration::from_secs(args.authority_timeout_seconds),
     )?;
     let response = signer

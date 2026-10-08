@@ -25,7 +25,7 @@ pub(super) fn device(base_len: usize) -> BlockDevice {
 /// Builds a block device over a ramp base with an explicit latency model.
 pub(super) fn device_with_latency(base_len: usize, latency: BlockLatency) -> BlockDevice {
     let src = crucible_shmem::SLOT_BLK_IO as u32;
-    let core = ok(IoCore::new(8, src, 16, 16));
+    let core = ok(IoCore::new(src, 16, 16));
     BlockDevice::new(core, ramp_base(base_len), latency)
 }
 
@@ -51,7 +51,7 @@ pub(super) fn run_sequence(skew: usize) -> Vec<(u64, Vec<u8>)> {
         ok(dev.submit(t, req));
         let lim = dev.core().next_exact_local_event().unwrap_or(t);
         ok(dev.advance_to(lim));
-        while let Some(pending) = dev.core_mut().pop_response() {
+        while let Some(pending) = ok(dev.core_mut().pop_response()) {
             out.push((pending.delivery_icount(), pending.response.payload));
         }
         t = lim;

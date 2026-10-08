@@ -11,7 +11,7 @@ cat /etc/os-release
 readlink /var/lib/profiles/system/current
 cat /var/lib/profiles/image/state.json
 cat /var/lib/profiles/system/state.json
-apm rollback --system --list
+apm config rollback --list
 
 systemctl is-system-running
 systemctl --failed
@@ -187,8 +187,8 @@ Capture the current boot journal before rollback:
 
 ```sh
 journalctl -b > /var/tmp/aos-upgrade-failure.log
-apm rollback --system --list
-apm rollback --system --generation N --dry-run
+apm config rollback --list
+apm config rollback --generation N --dry-run
 ```
 
 ## `/var` is filling up
@@ -204,7 +204,7 @@ Relevant persistent trees include:
 
 ```text
 /var/lib/profiles/system
-/var/lib/profiles/system-packages
+/var/lib/profiles/system
 /var/lib/profiles/per-user
 /var/lib/apm
 /var/lib/aos-provisioning
@@ -215,7 +215,7 @@ Do not delete profile generations or provisioning state by hand.
 `apm clean --generations --keep N` prunes the invoking user's package profile.
 `apm clean --system --generations --keep N` prunes machine-wide package and
 configuration generations, always preserving each current generation; follow
-it with `apm gc` to reclaim unreachable store paths. There is no supported A/B
+it with `apm gc --system` to reclaim unreachable store paths. There is no supported A/B
 image-generation prune command, so preserve image rollback capacity and expand
 or reimage the host if the image profile is the material consumer.
 

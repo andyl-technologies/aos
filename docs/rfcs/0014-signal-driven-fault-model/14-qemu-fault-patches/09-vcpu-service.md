@@ -1,4 +1,4 @@
-# Patch 0055 — `crucible-vcpu-service-control`
+# Capability task 0055 — `crucible-vcpu-service-control`
 
 ## Purpose
 
@@ -10,8 +10,9 @@ live backend for CPU service and vCPU state effects.
 
 - Provides `qemu.cpu.service.v1` and `qemu.cpu.vcpu-state.v1` on x86-64 and
   AArch64.
-- Depends on 0047–0048, fixed RR quantum/cursor, sim time control, idle deadline,
-  and preemption patches.
+- Requires the capabilities specified by capability tasks 0047–0048, the fixed
+  RR quantum/cursor, sim time control, idle deadline,
+  and preemption capabilities.
 
 ## Service model
 
@@ -73,7 +74,8 @@ the interrupt policy for stalled/offline targets.
 
 Evidence includes service contributors, share/cap, window, credits/remainder,
 retired budget, old/new vCPU state, RR cursor, skipped selections, idle jumps,
-interrupt treatment, and fingerprints. Patch 0067 serializes rule generations,
+interrupt treatment, and fingerprints. The VMState capability specified by
+capability task 0067 serializes rule generations,
 window coordinate, credits, remainder, state, recovery timers, and cursor.
 
 ## Live microtests
@@ -85,8 +87,8 @@ window coordinate, credits, remainder, state, recovery timers, and cursor.
 3. Apply resource-bounded scheduler preemption to QEMU and prove identical trajectories.
 4. Save/restore mid-window with fractional remainder and pending interrupts.
 5. Verify zero/overflow/bad rational, impossible routing, and bound errors.
-6. Benchmark disabled/empty/active control; revert patch and fail live gate;
-   prove non-sim RR behavior is unchanged.
+6. Benchmark disabled/empty/active control; run the live gate against pristine
+   QEMU and require capability absence; prove non-sim RR behavior is unchanged.
 
 ## Licensing checklist
 

@@ -195,7 +195,7 @@ in {
       )
 
       node.succeed(
-          f"{APM} rollback --system --generation {rebooted}", timeout=600
+          f"{APM} config rollback --generation {rebooted}", timeout=600
       )
       assert generation() == rebooted
       assert_running("standalone-b", 64)

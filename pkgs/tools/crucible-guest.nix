@@ -8,8 +8,25 @@
   fetchCargoVendor,
   patchelf,
   glibc,
+  sqliteStatic,
+  buildPackages,
 }: let
   version = "0.1.0";
+
+  # patchelf only inspects the installed guest, so it runs on the build
+  # machine. Static SQLite is the opposite role: an archive linked into the
+  # guest for its own platform. Cross package sets reject target-platform
+  # buildDeps, so the archive enters through runtimeDeps there, which exposes
+  # its headers and libraries to the cross linker. Native builds keep the
+  # original buildDeps placement; the roles coincide and derivation
+  # identities stay unchanged.
+  buildPatchelf =
+    if stdenv.isCross
+    then buildPackages.patchelf
+    else patchelf;
+  guestBuildDeps = [buildPatchelf] ++ lib.optional (!stdenv.isCross) sqliteStatic;
+  guestLinkDeps = lib.optional stdenv.isCross sqliteStatic;
+
   src = import ./crucible/_source.nix {inherit lib;};
   cargoDeps = fetchCargoVendor {
     inherit src;
@@ -25,6 +42,14 @@
     .${
       stdenv.hostPlatform.system
     };
+  cargoEnv = {
+    # Guest tests transitively use CAS. Force its SQLite dependency to link
+    # the AOS-built archive even when Cargo enables bundled bindings.
+    SQLITE3_LIB_DIR = "${sqliteStatic}/lib";
+    SQLITE3_INCLUDE_DIR = "${sqliteStatic}/include";
+    SQLITE3_STATIC = "1";
+    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+  };
   staticBuildSetup = ''
     target_triple="${
       if stdenv.isCross
@@ -49,12 +74,12 @@
     family = "crucible-static-guest-release-and-test";
     target = targetTriple;
     rustflags = "-C target-feature=+crt-static -C relocation-model=static";
-    nativeInputs = map toString [patchelf];
-    licenseScope = "MIT";
+    nativeInputs = map toString [buildPatchelf sqliteStatic];
+    licenseScope = "Apache-2.0";
   };
   cargoArtifacts = mkCargoArtifacts {
     pname = "crucible-static-guest-artifacts";
-    inherit version cargoDeps cargoArtifactContract;
+    inherit version cargoDeps cargoArtifactContract cargoEnv;
     src = mkCargoDummySource {
       srcRoot = ../../crates;
       name = "crucible-static-guest-dummy-source";
@@ -66,7 +91,8 @@
       "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p crucible-guest"
     ];
     preBuild = staticBuildSetup;
-    buildDeps = [patchelf];
+    buildDeps = guestBuildDeps;
+    runtimeDeps = guestLinkDeps;
   };
 in
   mkCargoPackage {
@@ -129,15 +155,15 @@ in
 
     inherit version src;
 
-    inherit cargoDeps cargoArtifacts cargoArtifactContract;
+    inherit cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
     cargoRoot = "crates";
     cargoNextest = true;
 
     cargoFlags = "-p crucible-guest --bin crucible-guest";
     cargoTestFlags = "-p crucible-guest";
     doCheck = true;
-    buildDeps = [patchelf];
-    runtimeDeps = [];
+    buildDeps = guestBuildDeps;
+    runtimeDeps = guestLinkDeps;
 
     preBuild = ''
       ${staticBuildSetup}
@@ -186,9 +212,9 @@ in
     '';
 
     meta = {
-      description = "Static Crucible guest white-box marker emitter";
+      description = "Static Crucible guest marker and typed-selectable client";
       homepage = "https://github.com/andyl/andyl-os";
-      license = "MIT";
+      license = "Apache-2.0";
       mainProgram = "crucible-guest";
     };
   }

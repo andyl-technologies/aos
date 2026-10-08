@@ -7,7 +7,14 @@
   lib,
   packages,
   releasePlatforms,
+  deferredPlatforms ? import ../qualification/deferred-platforms.nix,
 }: let
+  normalizedDeferredPlatforms =
+    if
+      builtins.all (system: (lib.mkPlatform system).isLinux) deferredPlatforms
+      && lib.unique deferredPlatforms == deferredPlatforms
+    then deferredPlatforms
+    else throw "package platform policy: deferred platforms must be distinct Linux systems";
   normalizedReleasePlatforms =
     builtins.map (
       selected:
@@ -36,6 +43,25 @@
 in rec {
   schema = "aos.package-platform-support/v1";
   platforms = releaseSystems;
+  deferredPlatforms = normalizedDeferredPlatforms;
+
+  # Structural eligibility remains independent of release deferral so the
+  # qualification contract keeps its complete package classification.
+  releaseDecision = system: name: let
+    decision = publicationDecision system name;
+  in
+    if decision.state == "eligible" && builtins.elem system deferredPlatforms
+    then {
+      state = "blocked";
+      rule = "platform-release-deferred/v1";
+      reason = "Release publication is deferred on this platform";
+    }
+    else decision;
+
+  releaseDerivationNames = system: names:
+    if builtins.elem system deferredPlatforms
+    then []
+    else publicationEligibleNames system names;
 
   supportsTarget = system: name:
     supportsAxis system "host" name;
@@ -89,7 +115,7 @@ in rec {
         platforms =
           map (platform: {
             inherit platform;
-            decision = publicationDecision platform name;
+            decision = releaseDecision platform name;
           })
           releaseSystems;
       })
@@ -101,7 +127,7 @@ in rec {
     packages,
     names,
   }: let
-    eligibleNames = publicationEligibleNames system names;
+    eligibleNames = releaseDerivationNames system names;
     outputStorePath = package: output:
       if output == "out"
       then package
@@ -218,8 +244,10 @@ in rec {
                   if selectedOutput == "out"
                   then output
                   else "out";
-                derivation = builtins.unsafeDiscardStringContext package.drvPath;
-                output = output;
+                # A named attribute can select a separately built derivation.
+                # Record its exact output identity rather than the logical alias.
+                derivation = builtins.unsafeDiscardStringContext (package.${output}.drvPath or package.drvPath);
+                output = package.${output}.outputName or output;
                 deployment = let
                   selected = package.${output} or package;
                 in
@@ -251,7 +279,7 @@ in rec {
   }: let
     selectedPackages = map (
       name: packages.${name}
-    ) (publicationEligibleNames system names);
+    ) (releaseDerivationNames system names);
     publicationArtifacts = builtins.concatMap (package: let
       selectedOutput = package.outputName or "out";
       outputs =
@@ -275,7 +303,19 @@ in rec {
       ++ lib.optional (package ? qualificationArtifact) package.qualificationArtifact)
     selectedPackages;
   in
-    selectedPackages ++ publicationArtifacts;
+    selectedPackages
+    ++ builtins.concatMap (package: let
+      selectedOutput = package.outputName or "out";
+      outputs =
+        if selectedOutput == "out"
+        then package.outputs or ["out"]
+        else [selectedOutput];
+    in
+      map (output: package.${output}) (builtins.filter (output:
+        (package.${output}.drvPath or package.drvPath) != package.drvPath)
+      outputs))
+    selectedPackages
+    ++ publicationArtifacts;
 
   publicationMatrix = names:
     builtins.listToAttrs (

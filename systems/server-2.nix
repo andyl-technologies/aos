@@ -2,11 +2,11 @@
 ##!
 ##! Identical to systems/server.nix except for a small set of
 ##! eval-time deltas designed to exercise every code path of
-##! `apm upgrade --system` (the v2 refactor) without changing the
+##! `apm image upgrade` (the v2 refactor) without changing the
 ##! kernel or bootloader:
 ##!
 ##!   1. bumped aos.system.version → makes the registry's entry register
-##!      as a newer sysroot target for `apm upgrade --system`.
+##!      as a newer sysroot target for `apm image upgrade`.
 ##!   2. one new environment.etc symlink-mode entry → lands in the EROFS
 ##!      metadata image, proving the /etc overlay swap landed.
 ##!   3. upgraded package-owned transition fixture: its typed ingress policy
@@ -40,7 +40,7 @@
   ];
 
   # server.nix inherits the 0.1.0 default (modules/base/system.nix).
-  # `apm upgrade --system` only requires a *different* sysroot version
+  # `apm image upgrade` only requires a *different* sysroot version
   # (no ordering — sysroot.rs upgrade_system), so "test-2" is enough to
   # make the registry entry register as an upgrade target.
   aos.system.version = "test-2";

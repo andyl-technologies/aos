@@ -7,6 +7,7 @@
   cmake,
   ninja,
   stdenv,
+  buildPackages,
 }: let
   upstream = mkGithubUpstream {
     unitId = "brotli-1";
@@ -123,9 +124,9 @@ in
     update = upstream.update;
 
     buildDeps = [
-      gnumake
-      cmake
-      ninja
+      buildPackages.gnumake
+      buildPackages.cmake
+      buildPackages.ninja
     ];
     runtimeDeps = [];
     propagatedDeps = [];

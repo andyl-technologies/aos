@@ -338,6 +338,33 @@ fn qualification_classifies_eligible_and_blocked_packages() -> anyhow::Result<()
 }
 
 #[test]
+fn case_expansion_skips_unclassified_not_applicable_manifest_packages() -> anyhow::Result<()> {
+    let (plan, mut manifest) = qualification_fixture()?;
+    let mut build_input = manifest.packages[0].clone();
+    build_input.name = "unclassified-build-input".into();
+    for cell in &mut build_input.platforms {
+        cell.decision = MatrixCell::NotApplicable {
+            rule: "package-build-input-only/v1".into(),
+            reason: "This derivation is a build or test input, not a public package root.".into(),
+        };
+    }
+    manifest.packages.push(build_input);
+
+    cases(&plan, &manifest, Some(STABLE), QualificationPhase::Staging)?;
+
+    let artifact_cell = manifest.packages[0].platforms[0].decision.clone();
+    let published = manifest.packages.last_mut().unwrap();
+    published.platforms[0].decision = artifact_cell;
+    assert!(
+        cases(&plan, &manifest, Some(STABLE), QualificationPhase::Staging)
+            .unwrap_err()
+            .to_string()
+            .contains("criticality classification")
+    );
+    Ok(())
+}
+
+#[test]
 fn qualification_binds_private_plan_without_requesting_it_as_a_public_object() -> anyhow::Result<()>
 {
     let (plan, manifest) = qualification_fixture()?;
@@ -807,6 +834,70 @@ fn observations_cannot_be_replayed_for_changed_bytes_with_the_same_artifact_ids(
     let (mut another_plan, manifest) = qualification_fixture()?;
     another_plan.release_id = "another-release-with-the-same-artifacts".into();
     assert!(check(&another_plan, &manifest).is_err());
+    Ok(())
+}
+
+#[test]
+fn qualification_snapshot_expands_recovery_image_package_cases_without_a_predecessor()
+-> anyhow::Result<()> {
+    use crate::qualification::PackageExecution;
+
+    // Recovery execution images exist only for Linux, so the recovery
+    // package is published on x86_64 Linux alone, as in the update case above.
+    let (mut snapshot, mut manifest) = qualification_fixture()?;
+    let platform = Platform::X86_64Linux;
+    manifest
+        .packages
+        .iter_mut()
+        .find(|package| package.name == "example")
+        .unwrap()
+        .platforms
+        .retain(|cell| cell.platform == platform);
+    for cell in &mut snapshot
+        .packages
+        .iter_mut()
+        .find(|package| package.name == "example")
+        .unwrap()
+        .platforms
+    {
+        if cell.platform != platform {
+            cell.decision = MatrixCell::NotApplicable {
+                rule: "recovery-execution-fixture".into(),
+                reason: "This fixture exercises recovery on x86_64 Linux only.".into(),
+            };
+        }
+    }
+    snapshot
+        .qualification
+        .package_rules
+        .iter_mut()
+        .find(|rule| rule.name == "example")
+        .unwrap()
+        .execution = Some(PackageExecution::RecoveryImage {
+        system_variant: "server".into(),
+    });
+    rebind(&mut snapshot)?;
+    snapshot.qualification_predecessor = None;
+    snapshot.release_id = format!(
+        "{}{}",
+        crate::plan::QUALIFICATION_SNAPSHOT_RELEASE_PREFIX,
+        snapshot.version
+    );
+    snapshot.source.source_tag = format!(
+        "{}{}",
+        crate::plan::QUALIFICATION_SNAPSHOT_TAG_PREFIX,
+        snapshot.version
+    );
+    snapshot.destinations.clear();
+
+    let staging_cases = cases(&snapshot, &manifest, None, QualificationPhase::Staging)?;
+
+    assert!(
+        staging_cases
+            .iter()
+            .any(|case| case.id.starts_with("package-function/example/"))
+    );
+    assert!(staging_cases.iter().all(|case| case.predecessor.is_none()));
     Ok(())
 }
 

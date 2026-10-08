@@ -201,8 +201,8 @@ use sysroot::SystemTransitionMode;
 use types::ProfileScope;
 
 use types::{
-    RegistryUploadAuthConfig, validate_branch_name, validate_channel_name,
-    validate_commit_hash, validate_git_ref_name, validate_registry_name,
+    RegistryUploadAuthConfig, validate_branch_name, validate_channel_name, validate_commit_hash,
+    validate_git_ref_name, validate_registry_name,
 };
 
 /// Returns the SHA-256 identity of a value in the canonical AOS JSON dialect.
@@ -232,12 +232,6 @@ pub const ENVIRONMENT_HELP: &str = "Environment:
 /// Package-consumer operations implemented for `apm`.
 #[derive(Subcommand)]
 pub enum PackageCommand {
-    /// Prepare authenticated system images without selecting the next boot
-    Image {
-        /// Select the image operation
-        #[command(subcommand)]
-        command: ImageCommand,
-    },
     /// Apply the complete operator configuration worktree
     Switch {
         /// Preview changes without activating them
@@ -302,9 +296,6 @@ pub enum PackageCommand {
     Install {
         /// Package names to install
         packages: Vec<String>,
-        /// Reconcile packages from a desired-package TOML file
-        #[arg(long = "from")]
-        from: Option<PathBuf>,
         /// Install from a specific registry
         #[arg(long)]
         registry: Option<String>,
@@ -317,30 +308,26 @@ pub enum PackageCommand {
         /// Skip automatic dependency installation
         #[arg(long)]
         no_deps: bool,
-        /// Install as system sysroot (generation switching)
+        /// Install machine-wide packages
         #[arg(long)]
         system: bool,
-        /// Download a pre-compiled image instead of the toplevel
-        #[arg(long)]
-        image: Option<String>,
-        /// Output path for a downloaded image (with --image)
-        #[arg(long)]
-        output: Option<String>,
         /// Bypass sysroot-lock check for specific packages (comma-separated) or "all"
         #[arg(long, value_name = "NAMES", num_args = 0..=1, default_missing_value = "all")]
         ignore_sysroot_lock: Option<String>,
-        /// Reject legacy kexec transitions, which cannot change the A/B root slot
-        #[arg(long, group = "kernel_mode", hide = true)]
-        kexec: bool,
-        /// Reboot after staging the immutable system image
-        #[arg(long, group = "kernel_mode")]
-        reboot: bool,
-        /// Reject the retired userspace-only system switch
-        #[arg(long, group = "kernel_mode", hide = true)]
-        live: bool,
-        /// Drain workloads before --reboot
-        #[arg(long)]
-        drain: bool,
+    },
+    /// Apply a complete desired machine-wide package set
+    Apply {
+        /// Desired-package TOML file (omitted packages are removed)
+        #[arg(long = "from")]
+        from: PathBuf,
+        /// Manage the machine-wide package set
+        #[arg(long, required = true)]
+        system: bool,
+    },
+    /// Manage immutable operating-system images
+    Image {
+        #[command(subcommand)]
+        command: ImageCommand,
     },
     /// Remove packages (keep deps)
     Remove {
@@ -349,12 +336,16 @@ pub enum PackageCommand {
         /// Also remove orphaned dependencies
         #[arg(long)]
         autoremove: bool,
-        /// Remove from the system package profile
+        /// Manage machine-wide packages
         #[arg(long)]
         system: bool,
     },
     /// Remove orphaned dependency packages
-    Autoremove,
+    Autoremove {
+        /// Manage machine-wide packages
+        #[arg(long)]
+        system: bool,
+    },
     /// Re-download and reinstall packages
     Reinstall {
         /// Package names to reinstall
@@ -362,6 +353,9 @@ pub enum PackageCommand {
         /// Bypass sysroot-lock check for specific packages (comma-separated) or "all"
         #[arg(long, value_name = "NAMES", num_args = 0..=1, default_missing_value = "all")]
         ignore_sysroot_lock: Option<String>,
+        /// Manage machine-wide packages
+        #[arg(long)]
+        system: bool,
     },
     /// Fetch latest registry metadata
     Update {
@@ -379,27 +373,19 @@ pub enum PackageCommand {
         /// Skip specific packages
         #[arg(long)]
         exclude: Vec<String>,
-        /// Upgrade the system sysroot
+        /// Upgrade machine-wide packages
         #[arg(long)]
         system: bool,
         /// Bypass sysroot-lock check for specific packages (comma-separated) or "all"
         #[arg(long, value_name = "NAMES", num_args = 0..=1, default_missing_value = "all")]
         ignore_sysroot_lock: Option<String>,
-        /// Reject legacy kexec transitions, which cannot change the A/B root slot
-        #[arg(long, group = "kernel_mode", hide = true)]
-        kexec: bool,
-        /// Reboot after staging the immutable system image
-        #[arg(long, group = "kernel_mode")]
-        reboot: bool,
-        /// Reject the retired userspace-only system switch
-        #[arg(long, group = "kernel_mode", hide = true)]
-        live: bool,
-        /// Drain workloads before --reboot
-        #[arg(long)]
-        drain: bool,
     },
     /// Upgrade all packages with dependency resolution changes
-    FullUpgrade,
+    FullUpgrade {
+        /// Manage machine-wide packages
+        #[arg(long)]
+        system: bool,
+    },
     /// Search package names and descriptions
     Search {
         /// Search pattern
@@ -523,11 +509,17 @@ pub enum PackageCommand {
     Hold {
         /// Package name
         package: String,
+        /// Manage machine-wide packages
+        #[arg(long)]
+        system: bool,
     },
     /// Remove upgrade hold
     Unhold {
         /// Package name
         package: String,
+        /// Manage machine-wide packages
+        #[arg(long)]
+        system: bool,
     },
     /// List held packages
     Held {
@@ -554,11 +546,18 @@ pub enum PackageCommand {
         system: bool,
     },
     /// Run Nix garbage collection on unreachable paths
-    Gc,
+    Gc {
+        /// Use machine-wide package metadata for cleanup
+        #[arg(long)]
+        system: bool,
+    },
     /// Verify installed package against registry hash
     Verify {
         /// Package name
         package: String,
+        /// Manage machine-wide packages
+        #[arg(long)]
+        system: bool,
     },
     /// Show/fetch the source derivation for a package
     Source {
@@ -573,33 +572,21 @@ pub enum PackageCommand {
         /// Rebuild from source and compare hash with installed binary
         #[arg(long)]
         verify: bool,
+        /// Manage machine-wide packages
+        #[arg(long)]
+        system: bool,
     },
     /// Roll back to a previous profile generation
     Rollback {
         /// Roll back to a specific generation number
         #[arg(long)]
         generation: Option<u32>,
-        /// Roll back the system sysroot
+        /// Roll back machine-wide packages
         #[arg(long)]
         system: bool,
-        /// Roll back the durable A/B image selection instead of configuration
-        #[arg(long, requires = "system")]
-        image: bool,
-        /// List profile generations (system generations with --system)
+        /// List package profile generations
         #[arg(long)]
         list: bool,
-        /// Reject legacy kexec transitions, which cannot change the A/B root slot
-        #[arg(long, group = "kernel_mode", hide = true)]
-        kexec: bool,
-        /// Reboot after selecting an image rollback
-        #[arg(long, group = "kernel_mode")]
-        reboot: bool,
-        /// Reject the retired userspace-only system switch
-        #[arg(long, group = "kernel_mode", hide = true)]
-        live: bool,
-        /// Drain workloads before --reboot
-        #[arg(long)]
-        drain: bool,
     },
     /// Prepare package credential payloads
     #[command(subcommand)]
@@ -613,21 +600,6 @@ pub enum PackageCommand {
         /// The registry operation to run
         #[command(subcommand)]
         command: ApmRegistryCommand,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum ImageCommand {
-    /// Authenticate and physically stage a candidate without changing boot selection
-    Prepare {
-        /// Resolve this sysroot package from signed registry metadata
-        package: String,
-        /// Select this configured registry
-        #[arg(long)]
-        registry: Option<String>,
-        /// Require candidate health admission for a later qualified rollout
-        #[arg(long)]
-        qualified: bool,
     },
 }
 
@@ -846,7 +818,83 @@ pub enum DocumentationOutput {
 }
 
 #[derive(Subcommand)]
+pub enum ImageCommand {
+    /// Authenticate and physically stage a candidate without changing boot selection
+    Prepare {
+        /// Resolve this sysroot package from signed registry metadata
+        package: String,
+        /// Select this configured registry
+        #[arg(long)]
+        registry: Option<String>,
+        /// Require candidate health admission for a later qualified rollout
+        #[arg(long)]
+        qualified: bool,
+    },
+    /// Download and stage an operating-system image
+    Install {
+        /// Image package name
+        package: String,
+        /// Select a registry
+        #[arg(long)]
+        registry: Option<String>,
+        #[command(flatten)]
+        transition: ImageTransitionOptions,
+    },
+    /// Stage the latest version of the installed operating-system image
+    Upgrade {
+        #[command(flatten)]
+        transition: ImageTransitionOptions,
+    },
+    /// Select a previous operating-system image generation
+    Rollback {
+        #[arg(long)]
+        generation: Option<u32>,
+        #[command(flatten)]
+        transition: ImageTransitionOptions,
+    },
+    /// List operating-system image generations
+    List,
+    /// Download a precompiled image without staging it
+    Download {
+        package: String,
+        #[arg(long)]
+        format: String,
+        #[arg(long)]
+        output: Option<String>,
+        #[arg(long)]
+        registry: Option<String>,
+        /// Read machine-wide registries instead of personal registries
+        #[arg(long)]
+        system: bool,
+    },
+}
+
+#[derive(clap::Args)]
+pub struct ImageTransitionOptions {
+    /// Reboot after selecting the image
+    #[arg(long, group = "kernel_mode")]
+    reboot: bool,
+    /// Drain workloads before rebooting
+    #[arg(long)]
+    drain: bool,
+    /// Reject unsupported kexec transitions
+    #[arg(long, group = "kernel_mode", hide = true)]
+    kexec: bool,
+    /// Reject unsupported userspace-only transitions
+    #[arg(long, group = "kernel_mode", hide = true)]
+    live: bool,
+}
+
+#[derive(Subcommand)]
 pub enum RuntimeConfigCommand {
+    /// Restore a previous configuration generation
+    Rollback {
+        #[arg(long)]
+        generation: Option<u32>,
+        /// List configuration generations
+        #[arg(long)]
+        list: bool,
+    },
     /// Show the active immutable set and mutable worktree state.
     Status {
         #[arg(long, default_value = "/var/lib/aos/config/modules.d")]
@@ -946,6 +994,15 @@ impl PackageCommand {
         }
 
         match self {
+            PackageCommand::Image {
+                command: ImageCommand::Download { system, .. },
+            } => {
+                if *system {
+                    AosRoot
+                } else {
+                    Portable
+                }
+            }
             PackageCommand::Image { .. } => environment::RuntimeRequirement::LiveAos,
             PackageCommand::ContainerStartup(..)
             | PackageCommand::ApplyDeployment(..)
@@ -953,14 +1010,18 @@ impl PackageCommand {
             | PackageCommand::DeploymentCurrent { .. }
             | PackageCommand::DeploymentRetainedEffects { .. }
             | PackageCommand::DeploymentResult { .. } => Portable,
-            PackageCommand::Switch { .. } => AosRoot,
+            PackageCommand::Switch { .. }
+            | PackageCommand::Config {
+                command: RuntimeConfigCommand::Rollback { .. },
+            } => AosRoot,
             PackageCommand::Install { .. }
+            | PackageCommand::Apply { .. }
             | PackageCommand::Remove { .. }
-            | PackageCommand::Autoremove
+            | PackageCommand::Autoremove { .. }
             | PackageCommand::Reinstall { .. }
             | PackageCommand::Update { .. }
             | PackageCommand::Upgrade { .. }
-            | PackageCommand::FullUpgrade
+            | PackageCommand::FullUpgrade { .. }
             | PackageCommand::Search { .. }
             | PackageCommand::Show { .. }
             | PackageCommand::Docs { .. }
@@ -977,7 +1038,7 @@ impl PackageCommand {
             | PackageCommand::Held { .. }
             | PackageCommand::Orphans { .. }
             | PackageCommand::Clean { .. }
-            | PackageCommand::Gc
+            | PackageCommand::Gc { .. }
             | PackageCommand::Verify { .. }
             | PackageCommand::Source { .. }
             | PackageCommand::Rollback { .. }
@@ -987,19 +1048,28 @@ impl PackageCommand {
         }
     }
 
-    /// Returns whether the command requests system scope.
+    /// Returns whether the command uses machine-wide registry and profile state.
     ///
-    /// Mutating and sysroot commands (`install`, `remove`, `upgrade`, `rollback`,
-    /// `update`, `registry`) select the system scope to act on it; the
-    /// read-only query commands (`search`, `show`, `list`, `depends`,
-    /// `rdepends`, `policy`, `files`, `held`, `orphans`, `info`) select it to
-    /// read the system registry cache and profile instead of the per-user ones.
-    /// Containers resolve both requests to their image's user package profile.
+    /// Package commands select it with `--system`. Image staging, upgrades,
+    /// rollback, and generation listing implicitly select machine-wide state;
+    /// image downloads select personal registries unless passed `--system`.
     pub fn is_system(&self) -> bool {
         match self {
+            PackageCommand::Image {
+                command: ImageCommand::Download { system, .. },
+            } => *system,
             PackageCommand::Image { .. } => true,
+            PackageCommand::Apply { system, .. }
+            | PackageCommand::Remove { system, .. }
+            | PackageCommand::Autoremove { system }
+            | PackageCommand::Reinstall { system, .. }
+            | PackageCommand::FullUpgrade { system }
+            | PackageCommand::Hold { system, .. }
+            | PackageCommand::Unhold { system, .. }
+            | PackageCommand::Verify { system, .. }
+            | PackageCommand::Source { system, .. }
+            | PackageCommand::Gc { system } => *system,
             PackageCommand::Install { system, .. } => *system,
-            PackageCommand::Remove { system, .. } => *system,
             PackageCommand::Upgrade { system, .. } => *system,
             PackageCommand::Rollback { system, .. } => *system,
             PackageCommand::Update { system, .. } => *system,
@@ -1224,6 +1294,9 @@ pub enum RegistryCommand {
         /// Identifier for --trust-key inside keys.toml
         #[arg(long = "trust-key-id")]
         trust_key_id: Option<String>,
+        /// Add another active key to the initial keys.toml (repeatable; requires --trust-key)
+        #[arg(long = "roster-key", value_name = "ID=TRUST_LINE")]
+        roster_key: Vec<String>,
         /// Private key path used to sign the initial commit
         /// (required with --trust-key)
         #[arg(long)]
@@ -2464,68 +2537,18 @@ fn validate_system_transition_options(command: &PackageCommand) -> Result<()> {
         Ok(())
     };
 
-    match command {
-        PackageCommand::Install {
-            system,
-            image,
-            kexec,
-            reboot,
-            live,
-            drain,
-            ..
-        } => {
-            let any_transition = *kexec || *reboot || *live || *drain;
-            if any_transition && image.is_some() {
-                bail!("system transition flags cannot be used with --image download mode");
+    if let PackageCommand::Image { command } = command {
+        let transition = match command {
+            ImageCommand::Install { transition, .. }
+            | ImageCommand::Upgrade { transition }
+            | ImageCommand::Rollback { transition, .. } => Some(transition),
+            ImageCommand::Prepare { .. } | ImageCommand::List | ImageCommand::Download { .. } => {
+                None
             }
-            if any_transition && !system {
-                bail!("system transition flags require --system");
-            }
-            if *system {
-                validate_image_transition(*kexec, *reboot, *live, *drain)?;
-            }
+        };
+        if let Some(options) = transition {
+            validate_image_transition(options.kexec, options.reboot, options.live, options.drain)?;
         }
-        PackageCommand::Upgrade {
-            system,
-            kexec,
-            reboot,
-            live,
-            drain,
-            ..
-        } => {
-            let any_transition = *kexec || *reboot || *live || *drain;
-            if any_transition && !system {
-                bail!("system transition flags require --system");
-            }
-            if *system {
-                validate_image_transition(*kexec, *reboot, *live, *drain)?;
-            }
-        }
-        PackageCommand::Rollback {
-            system,
-            image,
-            list,
-            kexec,
-            reboot,
-            live,
-            drain,
-            ..
-        } => {
-            let any_transition = *kexec || *reboot || *live || *drain;
-            if any_transition && !system {
-                bail!("system transition flags require --system --image");
-            }
-            if any_transition && !image {
-                bail!("system transition flags apply only to rollback --system --image");
-            }
-            if any_transition && *list {
-                bail!("system transition flags cannot be used with rollback --list");
-            }
-            if *image {
-                validate_image_transition(*kexec, *reboot, *live, *drain)?;
-            }
-        }
-        _ => {}
     }
 
     Ok(())
@@ -2571,6 +2594,9 @@ fn validate_runtime_module_name(name: &str) -> Result<()> {
 }
 
 fn publish_runtime_module(source: &Path, destination: &Path, replace: bool) -> Result<()> {
+    use std::io::Write as _;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
     let bytes = std::fs::read(source)
         .with_context(|| format!("reading runtime module {}", source.display()))?;
     std::str::from_utf8(&bytes).context("runtime module source is not UTF-8")?;
@@ -2588,8 +2614,11 @@ fn publish_runtime_module(source: &Path, destination: &Path, replace: bool) -> R
     let mut output = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
+        .mode(0o600)
         .open(&temporary)?;
-    use std::io::Write as _;
+    // Set the final mode on the open file before publication, independently of
+    // the caller's umask and the input file's permissions.
+    output.set_permissions(std::fs::Permissions::from_mode(0o600))?;
     output.write_all(&bytes)?;
     output.sync_all()?;
     std::fs::rename(&temporary, destination)?;
@@ -2599,9 +2628,14 @@ fn publish_runtime_module(source: &Path, destination: &Path, replace: bool) -> R
 
 async fn run_runtime_config_command(
     command: &RuntimeConfigCommand,
+    dry_run: bool,
     printer: &Printer,
 ) -> Result<()> {
     match command {
+        RuntimeConfigCommand::Rollback { generation, list } => {
+            let config = config::ApmConfig::load(runtime_boundary::configuration_scope())?;
+            sysroot::rollback_system(&config, *generation, *list, dry_run, printer).await
+        }
         RuntimeConfigCommand::Status { worktree } => {
             let descriptor = runtime_boundary::configuration_scope()
                 .profile_path()
@@ -2881,7 +2915,7 @@ pub async fn run(
     }
 
     if let PackageCommand::Config { command } = command {
-        return run_runtime_config_command(command, printer).await;
+        return run_runtime_config_command(command, dry_run, printer).await;
     }
 
     if let PackageCommand::Switch {
@@ -2995,72 +3029,112 @@ pub async fn run(
         }
         PackageCommand::Install {
             packages,
-            from,
             registry,
             download_only,
             no_deps,
-            system: install_system,
-            image: image_fmt,
-            output: image_output,
             reinstall,
             ignore_sysroot_lock,
-            reboot,
-            drain,
             ..
         } => {
             let ignore = sysroot_lock::IgnoreSysrootLock::parse(ignore_sysroot_lock.as_deref());
-            if let Some(path) = from {
-                if !*install_system {
-                    anyhow::bail!("apm install --from requires --system");
-                }
-                if !packages.is_empty() {
-                    anyhow::bail!("apm install --from cannot be combined with package names");
-                }
-                if registry.is_some()
-                    || *download_only
-                    || *reinstall
-                    || *no_deps
-                    || image_fmt.is_some()
-                    || image_output.is_some()
-                {
-                    anyhow::bail!(
-                        "apm install --from cannot be combined with registry, download, reinstall, dependency, or image options"
-                    );
-                }
-                desired::reconcile_from_file(&config, path, dry_run, yes, printer).await
-            } else if (*install_system && !runtime_boundary::is_container()) || image_fmt.is_some()
-            {
-                let transition_mode = parse_system_transition_mode(*reboot);
+            install::run(
+                &config,
+                packages,
+                registry.as_deref(),
+                *reinstall,
+                false,
+                *download_only,
+                *no_deps,
+                dry_run,
+                yes,
+                &ignore,
+                printer,
+            )
+            .await
+        }
+        PackageCommand::Apply { from, .. } => {
+            desired::reconcile_from_file(&config, from, dry_run, yes, printer).await
+        }
+        PackageCommand::Image { command } => match command {
+            ImageCommand::Prepare { .. } => unreachable!("Image preparation is handled above"),
+            ImageCommand::Install {
+                package,
+                registry,
+                transition,
+            } => {
                 sysroot::install_system(
                     &config,
-                    packages,
+                    std::slice::from_ref(package),
                     registry.as_deref(),
-                    image_fmt.as_deref(),
-                    image_output.as_deref(),
+                    None,
+                    None,
                     dry_run,
                     yes,
-                    transition_mode,
-                    *drain,
-                    printer,
-                )
-                .await
-            } else {
-                install::run(
-                    &config,
-                    packages,
-                    registry.as_deref(),
-                    *reinstall,
-                    false,
-                    *download_only,
-                    *no_deps,
-                    dry_run,
-                    yes,
-                    &ignore,
+                    parse_system_transition_mode(transition.reboot),
+                    transition.drain,
                     printer,
                 )
                 .await
             }
-        }
+            ImageCommand::Download {
+                package,
+                registry,
+                format,
+                output,
+                ..
+            } => {
+                sysroot::install_system(
+                    &config,
+                    std::slice::from_ref(package),
+                    registry.as_deref(),
+                    Some(format),
+                    output.as_deref(),
+                    dry_run,
+                    yes,
+                    SystemTransitionMode::Advisory,
+                    false,
+                    printer,
+                )
+                .await
+            }
+            ImageCommand::Upgrade { transition } => {
+                sysroot::upgrade_system(
+                    &config,
+                    dry_run,
+                    parse_system_transition_mode(transition.reboot),
+                    transition.drain,
+                    printer,
+                )
+                .await
+            }
+            ImageCommand::Rollback {
+                generation,
+                transition,
+            } => {
+                sysroot::rollback_image_generation(
+                    &config,
+                    *generation,
+                    false,
+                    dry_run,
+                    parse_system_transition_mode(transition.reboot),
+                    transition.drain,
+                    printer,
+                )
+                .await
+            }
+            ImageCommand::List => {
+                sysroot::rollback_image_generation(
+                    &config,
+                    None,
+                    true,
+                    dry_run,
+                    SystemTransitionMode::Advisory,
+                    false,
+                    printer,
+                )
+                .await
+            }
+        },
         PackageCommand::Remove {
             packages,
             autoremove,
@@ -3074,7 +3148,7 @@ pub async fn run(
             }
             Ok(())
         }
-        PackageCommand::Autoremove => {
+        PackageCommand::Autoremove { .. } => {
             let outcome = remove::run_autoremove(&config, dry_run, yes, printer).await?;
             if config.settings.auto_gc && !dry_run && outcome.orphan_count > 0 {
                 clean::run_gc_after_mutation(config.scope, printer).await?;
@@ -3084,6 +3158,7 @@ pub async fn run(
         PackageCommand::Reinstall {
             packages,
             ignore_sysroot_lock,
+            ..
         } => {
             let ignore = sysroot_lock::IgnoreSysrootLock::parse(ignore_sysroot_lock.as_deref());
             install::run(
@@ -3097,21 +3172,13 @@ pub async fn run(
         PackageCommand::Upgrade {
             packages,
             exclude,
-            system: upgrade_system,
             ignore_sysroot_lock,
-            reboot,
-            drain,
             ..
         } => {
             let ignore = sysroot_lock::IgnoreSysrootLock::parse(ignore_sysroot_lock.as_deref());
-            if *upgrade_system && !runtime_boundary::is_container() {
-                let transition_mode = parse_system_transition_mode(*reboot);
-                sysroot::upgrade_system(&config, dry_run, transition_mode, *drain, printer).await
-            } else {
-                upgrade::run(&config, packages, exclude, dry_run, yes, &ignore, printer).await
-            }
+            upgrade::run(&config, packages, exclude, dry_run, yes, &ignore, printer).await
         }
-        PackageCommand::FullUpgrade => {
+        PackageCommand::FullUpgrade { .. } => {
             let ignore = sysroot_lock::IgnoreSysrootLock::Enforce;
             upgrade::run(&config, &[], &[], dry_run, yes, &ignore, printer).await
         }
@@ -3213,47 +3280,29 @@ pub async fn run(
         PackageCommand::Attest {
             command: AttestCommand::Enroll { .. },
         } => unreachable!("AttestCommand::Enroll is handled before ApmConfig::load"),
-        PackageCommand::Hold { package } => hold::run_hold(&config, package, printer).await,
-        PackageCommand::Unhold { package } => hold::run_unhold(&config, package, printer).await,
+        PackageCommand::Hold { package, .. } => hold::run_hold(&config, package, printer).await,
+        PackageCommand::Unhold { package, .. } => hold::run_unhold(&config, package, printer).await,
         PackageCommand::Held { .. } => hold::run_held(&config, printer).await,
         PackageCommand::Orphans { .. } => query::orphans(&config, printer).await,
         PackageCommand::Clean {
             generations, keep, ..
         } => clean::run(&config, *generations, *keep, printer).await,
-        PackageCommand::Gc => clean::run_gc(config.scope, printer).await,
-        PackageCommand::Verify { package } => source::run_verify(&config, package, printer).await,
+        PackageCommand::Gc { .. } => clean::run_gc(config.scope, printer).await,
+        PackageCommand::Verify { package, .. } => {
+            source::run_verify(&config, package, printer).await
+        }
         PackageCommand::Source {
             package,
             show_drv,
             fetch,
             verify,
+            ..
         } => source::run_source(&config, package, *show_drv, *fetch, *verify, printer).await,
         PackageCommand::Credential(command) => credential::run(command, printer),
         PackageCommand::Rollback {
-            generation,
-            system: rollback_system,
-            image,
-            list: rollback_list,
-            reboot,
-            drain,
-            ..
+            generation, list, ..
         } => {
-            if *rollback_system && *image {
-                let transition_mode = parse_system_transition_mode(*reboot);
-                sysroot::rollback_image_generation(
-                    &config,
-                    *generation,
-                    *rollback_list,
-                    dry_run,
-                    transition_mode,
-                    *drain,
-                    printer,
-                )
-                .await
-            } else if *rollback_system && !runtime_boundary::is_container() {
-                sysroot::rollback_system(&config, *generation, *rollback_list, dry_run, printer)
-                    .await
-            } else if *rollback_list {
+            if *list {
                 rollback::list(&config, printer).await
             } else {
                 rollback::run(&config, *generation, dry_run, printer).await
@@ -4043,15 +4092,20 @@ async fn run_registry(
             remote,
             trust_key,
             trust_key_id,
+            roster_key,
             key,
             key_id,
         } => {
+            let roster = registry_ops::InitialRoster {
+                trust_key: trust_key.as_deref(),
+                trust_key_id: trust_key_id.as_deref(),
+                roster_keys: roster_key,
+            };
             registry_ops::create(
                 config,
                 name,
                 remote.as_deref(),
-                trust_key.as_deref(),
-                trust_key_id.as_deref(),
+                &roster,
                 key.as_deref(),
                 key_id.as_deref(),
                 printer,
@@ -5335,6 +5389,66 @@ mod tests {
         ApmSettings, AttestationMeta, PACKAGE_META_FORMAT, PackageMeta, RegistryConfig,
     };
     use tempfile::TempDir;
+
+    #[test]
+    fn runtime_module_publication_is_private_under_any_umask() {
+        use std::os::unix::fs::PermissionsExt;
+
+        const CHILD_ENV: &str = "AOS_TEST_RUNTIME_MODULE_PUBLICATION_CHILD";
+        if std::env::var_os(CHILD_ENV).is_none() {
+            // A separate test process isolates the process-wide umask from
+            // concurrently running tests.
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "tests::runtime_module_publication_is_private_under_any_umask",
+                    "--test-threads=1",
+                ])
+                .env(CHILD_ENV, "1")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+
+        let directory = TempDir::new().unwrap();
+        let source = directory.path().join("source.nix");
+        let destination = directory.path().join("module.nix");
+        std::fs::write(&source, "{ ... }: {}\n").unwrap();
+        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        for mask in [0, 0o777] {
+            let previous = rustix::process::umask(rustix::fs::Mode::from_raw_mode(mask));
+            publish_runtime_module(&source, &destination, false).unwrap();
+            assert_eq!(
+                std::fs::metadata(&destination)
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+
+            std::fs::set_permissions(&destination, std::fs::Permissions::from_mode(0o666)).unwrap();
+            std::fs::write(&source, "{ ... }: { services.nginx.enable = true; }\n").unwrap();
+            publish_runtime_module(&source, &destination, true).unwrap();
+            assert_eq!(
+                std::fs::metadata(&destination)
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+            assert_eq!(
+                std::fs::read(&destination).unwrap(),
+                std::fs::read(&source).unwrap()
+            );
+
+            rustix::process::umask(previous);
+            std::fs::remove_file(&destination).unwrap();
+        }
+    }
 
     fn preverified_generation_quote() -> (PreverifiedGenerationQuote, [u8; 32]) {
         (

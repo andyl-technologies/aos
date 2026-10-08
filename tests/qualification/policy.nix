@@ -5,7 +5,7 @@
   nativeAdapterMatrix,
   nativeOperationSpec,
 }: let
-  packageNames = pkgs.platformSupport.publicationEligibleNamesAny pkgs.allPackageNames;
+  packageNames = pkgs.allPackageNames;
   contract = import ../../qualification {
     inherit lib nativeAdapterMatrix nativeOperationSpec;
     inherit packageNames;
@@ -13,6 +13,36 @@
   packageFunctionRequirement = builtins.head (
     builtins.filter (requirement: requirement.id == "package-function") contract.requirements
   );
+  deferredPlatforms = import ../../qualification/deferred-platforms.nix;
+  fixturePackages = ["aos" "nginx" "containerd" "runc"];
+  # A complete native contract isolates the platform deferral transformation.
+  fixture = import ../../qualification {
+    inherit lib nativeAdapterMatrix nativeOperationSpec;
+    packageNames = fixturePackages;
+    deferredPlatforms = [];
+  };
+  deferredFixture = import ../../qualification {
+    inherit lib nativeAdapterMatrix nativeOperationSpec;
+    packageNames = fixturePackages;
+    deferredPlatforms = ["aarch64-linux"];
+  };
+  # Deferral keeps every target with its environment, makes the deferred
+  # ones optional, and drops exactly their claims.
+  defer = platforms: complete: let
+    deferredTarget = target: builtins.elem target.platform platforms;
+    deferredIds = map (target: target.id) (builtins.filter deferredTarget complete.targets);
+  in
+    complete
+    // {
+      deferred_platforms = platforms;
+      targets = map (target:
+        target
+        // lib.optionalAttrs (deferredTarget target) {
+          required = false;
+        })
+      complete.targets;
+      claims = builtins.filter (claim: !(builtins.elem claim.target deferredIds)) complete.claims;
+    };
   sourceTree = builtins.path {
     path = ../../qualification;
     name = "qualification-source-fixture";
@@ -279,6 +309,9 @@ in
   assert !(lib.hasInfix "release step qualification respond" (containerReport true));
   assert lib.hasInfix "release step qualification respond" (containerReport false);
   assert lib.hasInfix "lifecycle_cycles" (containerReport true);
+  assert !(fixture ? deferred_platforms);
+  assert deferredFixture == defer ["aarch64-linux"] fixture;
+  assert (contract.deferred_platforms or []) == builtins.sort builtins.lessThan deferredPlatforms;
   assert builtins.match "^/nix/store/[0-9a-z]{32}-[^/]+$" (builtins.toString sourceRoot) != null;
   assert builtins.readFile (sourceRoot + "/server.nix") == builtins.readFile (nestedSource + "/server.nix");
   assert generatedSourceRoot == builtins.toString generatedArchive;
@@ -347,6 +380,8 @@ in
   assert packageExecutor.passthru.qualification.probes == ["gzip"];
   assert builtins.match "^/nix/store/[0-9a-z]{32}-[^/]+/probes.json$" packageExecutor.passthru.qualification.probeRegistry != null;
   assert rejectsPackageExecutor ["gzip" "gzip"];
+  # Each released Linux platform retains both image and container claims.
+  assert builtins.length contract.claims == 4 * (2 - builtins.length deferredPlatforms);
   assert contract.support.default
   == {
     kind = "standard";
@@ -384,6 +419,12 @@ in
     };
   };
   assert rejects {qualification.qemu.unknown = true;};
+  assert rejects {qualification.deferredPlatforms = lib.mkForce ["aarch64-linux" "x86_64-linux"];};
+  assert rejects {qualification.deferredPlatforms = lib.mkForce ["x86_64-darwin"];};
+  assert rejects {
+    qualification.deferredPlatforms = lib.mkForce ["aarch64-linux"];
+    qualification.targets.disk-aarch64-linux.required = lib.mkForce true;
+  };
   assert contract.schema_version == "aos.release.qualification-contract/v2";
   assert contract.id == "aos-system-v2";
   assert builtins.all (requirement: lib.hasPrefix "ability-" requirement.id || !(requirement ? production_only)) contract.requirements;

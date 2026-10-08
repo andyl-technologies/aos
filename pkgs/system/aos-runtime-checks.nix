@@ -19,4 +19,5 @@ mkDerivation {
     }
   ];
   meta.description = "Typed runtime VM check specifications";
+  meta.license = "Apache-2.0";
 }
