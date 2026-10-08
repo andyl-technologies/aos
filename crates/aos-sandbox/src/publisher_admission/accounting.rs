@@ -219,30 +219,7 @@ impl PublicationAccounting {
             state.validate_account(&account)?;
             let key = *account.reservation.as_bytes();
             if let Some(previous) = state.accounts.get(&key) {
-                let next_generation = previous
-                    .generation
-                    .checked_add(1)
-                    .ok_or(AccountingError::GenerationExhausted)?;
-                let valid_transition = matches!(
-                    (previous.state, account.state),
-                    (ReservationStateV1::Reserved, ReservationStateV1::Uncertain)
-                        | (ReservationStateV1::Reserved, ReservationStateV1::Resident)
-                        | (ReservationStateV1::Reserved, ReservationStateV1::Released)
-                        | (ReservationStateV1::Uncertain, ReservationStateV1::Resident)
-                        | (ReservationStateV1::Uncertain, ReservationStateV1::Released)
-                        | (ReservationStateV1::Resident, ReservationStateV1::Evicted)
-                );
-                if account.generation != next_generation
-                    || account.predecessor_digest != Some(previous.digest)
-                    || account.authority_epoch != previous.authority_epoch
-                    || account.resource != previous.resource
-                    || account.project != previous.project
-                    || account.domain != previous.domain
-                    || account.reserved_bytes != previous.reserved_bytes
-                    || !valid_transition
-                {
-                    return Err(AccountingError::CorruptState);
-                }
+                validate_replayed_account_successor(previous, &account)?;
             } else if account.generation != 1 {
                 return Err(AccountingError::CorruptState);
             }
@@ -275,30 +252,7 @@ impl PublicationAccounting {
             state.validate_account(&account)?;
             let key = *account.reservation.as_bytes();
             if let Some(previous) = state.accounts.get(&key) {
-                let next_generation = previous
-                    .generation
-                    .checked_add(1)
-                    .ok_or(AccountingError::GenerationExhausted)?;
-                let valid_transition = matches!(
-                    (previous.state, account.state),
-                    (ReservationStateV1::Reserved, ReservationStateV1::Uncertain)
-                        | (ReservationStateV1::Reserved, ReservationStateV1::Resident)
-                        | (ReservationStateV1::Reserved, ReservationStateV1::Released)
-                        | (ReservationStateV1::Uncertain, ReservationStateV1::Resident)
-                        | (ReservationStateV1::Uncertain, ReservationStateV1::Released)
-                        | (ReservationStateV1::Resident, ReservationStateV1::Evicted)
-                );
-                if account.generation != next_generation
-                    || account.predecessor_digest != Some(previous.digest)
-                    || account.authority_epoch != previous.authority_epoch
-                    || account.resource != previous.resource
-                    || account.project != previous.project
-                    || account.domain != previous.domain
-                    || account.reserved_bytes != previous.reserved_bytes
-                    || !valid_transition
-                {
-                    return Err(AccountingError::CorruptState);
-                }
+                validate_replayed_account_successor(previous, &account)?;
             }
             state.accounts.insert(key, account);
         }
@@ -567,6 +521,39 @@ impl PublicationAccounting {
     }
 }
 
+// Both replay forms retain the same successor semantics. Their distinct
+// first-head requirements stay in the caller's replay loop.
+fn validate_replayed_account_successor(
+    previous: &CapacityAccountV1,
+    account: &CapacityAccountV1,
+) -> Result<(), AccountingError> {
+    let next_generation = previous
+        .generation
+        .checked_add(1)
+        .ok_or(AccountingError::GenerationExhausted)?;
+    let valid_transition = matches!(
+        (previous.state, account.state),
+        (ReservationStateV1::Reserved, ReservationStateV1::Uncertain)
+            | (ReservationStateV1::Reserved, ReservationStateV1::Resident)
+            | (ReservationStateV1::Reserved, ReservationStateV1::Released)
+            | (ReservationStateV1::Uncertain, ReservationStateV1::Resident)
+            | (ReservationStateV1::Uncertain, ReservationStateV1::Released)
+            | (ReservationStateV1::Resident, ReservationStateV1::Evicted)
+    );
+    if account.generation != next_generation
+        || account.predecessor_digest != Some(previous.digest)
+        || account.authority_epoch != previous.authority_epoch
+        || account.resource != previous.resource
+        || account.project != previous.project
+        || account.domain != previous.domain
+        || account.reserved_bytes != previous.reserved_bytes
+        || !valid_transition
+    {
+        return Err(AccountingError::CorruptState);
+    }
+    Ok(())
+}
+
 fn account_digest(account: &CapacityAccountV1) -> ObjectDigest {
     let state = match account.state {
         ReservationStateV1::Reserved => 1,
@@ -604,5 +591,176 @@ pub(super) fn domain_code(domain: CacheDomain) -> u8 {
         CacheDomainKind::Project => 2,
         CacheDomainKind::TrustDomain => 3,
         CacheDomainKind::Public => 4,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use aos_sandbox_core::CacheDomainId;
+
+    use super::*;
+
+    fn policy() -> CapacityPolicyV1 {
+        CapacityPolicyV1 {
+            resource: ResourceId::from_bytes([1; 16]),
+            project: ProjectId::from_bytes([2; 16]),
+            domain: CacheDomain::new(CacheDomainKind::Project, CacheDomainId::from_bytes([3; 16])),
+            isolation_policy: ObjectDigest::from_bytes([4; 32]),
+            maximum_bytes: 1000,
+            maximum_objects: 8,
+            recovery_reserve_bytes: 16,
+        }
+    }
+
+    fn initial_account(state: ReservationStateV1) -> CapacityAccountV1 {
+        let mut account = CapacityAccountV1::initial(
+            policy(),
+            PublicationReservationId::from_bytes([5; 16]),
+            PublicationAuthorityEpoch::new(1).unwrap(),
+            16,
+        )
+        .unwrap();
+        account.state = state;
+        account.resident_bytes = if state == ReservationStateV1::Resident {
+            8
+        } else {
+            0
+        };
+        account.digest = account_digest(&account);
+        account
+    }
+
+    #[test]
+    fn both_replay_forms_preserve_all_closed_successor_edges_and_account_totals() {
+        use ReservationStateV1::{Evicted, Released, Reserved, Resident, Uncertain};
+
+        let states = [Reserved, Uncertain, Resident, Released, Evicted];
+        let allowed = [
+            (Reserved, Uncertain),
+            (Reserved, Resident),
+            (Reserved, Released),
+            (Uncertain, Resident),
+            (Uncertain, Released),
+            (Resident, Evicted),
+        ];
+        for previous_state in states {
+            for next_state in states {
+                let previous = initial_account(previous_state);
+                let resident_bytes = if next_state == Resident { 8 } else { 0 };
+                let next = previous.successor(next_state, resident_bytes).unwrap();
+                let results = [
+                    PublicationAccounting::replay(policy(), [previous.clone(), next.clone()]),
+                    PublicationAccounting::replay_compacted(policy(), [previous, next.clone()]),
+                ];
+
+                for result in results {
+                    if allowed.contains(&(previous_state, next_state)) {
+                        let replay = result.unwrap();
+                        assert_eq!(replay.account(next.reservation), Some(&next));
+                        let charged = match next_state {
+                            Reserved | Uncertain => 16,
+                            Resident => 8,
+                            Released | Evicted => 0,
+                        };
+                        assert_eq!(replay.charged_bytes(), charged);
+                        assert_eq!(replay.charged_objects(), u64::from(charged != 0));
+                        assert_eq!(replay.resident_bytes(), resident_bytes);
+                        assert_eq!(replay.resident_objects, u64::from(next_state == Resident));
+                    } else {
+                        assert_eq!(result.unwrap_err(), AccountingError::CorruptState);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn both_replay_forms_reject_canonical_successor_binding_changes() {
+        let previous = initial_account(ReservationStateV1::Reserved);
+        for field in [
+            "generation",
+            "predecessor",
+            "epoch",
+            "resource",
+            "project",
+            "domain",
+            "bytes",
+        ] {
+            let mut next = previous
+                .successor(ReservationStateV1::Uncertain, 0)
+                .unwrap();
+            match field {
+                "generation" => next.generation = 3,
+                "predecessor" => next.predecessor_digest = Some(ObjectDigest::from_bytes([6; 32])),
+                "epoch" => next.authority_epoch = PublicationAuthorityEpoch::new(2).unwrap(),
+                "resource" => next.resource = ResourceId::from_bytes([6; 16]),
+                "project" => next.project = ProjectId::from_bytes([6; 16]),
+                "domain" => {
+                    next.domain = CacheDomain::new(
+                        CacheDomainKind::Project,
+                        CacheDomainId::from_bytes([6; 16]),
+                    )
+                }
+                "bytes" => next.reserved_bytes = 17,
+                _ => unreachable!(),
+            }
+            next.digest = account_digest(&next);
+            let results = [
+                PublicationAccounting::replay(policy(), [previous.clone(), next.clone()]),
+                PublicationAccounting::replay_compacted(policy(), [previous.clone(), next]),
+            ];
+
+            for result in results {
+                assert_eq!(
+                    result.unwrap_err(),
+                    AccountingError::CorruptState,
+                    "{field}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn first_head_rules_and_compacted_overflow_frontier_remain_distinct() {
+        let initial = initial_account(ReservationStateV1::Reserved);
+        let retained = initial.successor(ReservationStateV1::Uncertain, 0).unwrap();
+        assert_eq!(
+            PublicationAccounting::replay(policy(), [retained.clone()]).unwrap_err(),
+            AccountingError::CorruptState,
+        );
+        let compacted =
+            PublicationAccounting::replay_compacted(policy(), [retained.clone()]).unwrap();
+        assert_eq!(compacted.account(retained.reservation), Some(&retained));
+
+        let mut previous = initial;
+        previous.generation = u64::MAX;
+        previous.predecessor_digest = Some(ObjectDigest::from_bytes([7; 32]));
+        previous.digest = account_digest(&previous);
+        let mut next = previous.clone();
+        next.state = ReservationStateV1::Uncertain;
+        next.authority_epoch = PublicationAuthorityEpoch::new(2).unwrap();
+        next.predecessor_digest = Some(previous.digest);
+        next.digest = account_digest(&next);
+
+        // Both records pass the same account validation that precedes the
+        // successor check in each real replay loop.
+        compacted.validate_account(&previous).unwrap();
+        compacted.validate_account(&next).unwrap();
+        assert_eq!(
+            PublicationAccounting::replay_compacted(policy(), [previous.clone(), next.clone()])
+                .unwrap_err(),
+            AccountingError::GenerationExhausted,
+        );
+        assert_eq!(
+            PublicationAccounting::replay(policy(), [previous.clone(), next.clone()]).unwrap_err(),
+            AccountingError::CorruptState,
+        );
+
+        next.resource = ResourceId::from_bytes([6; 16]);
+        next.digest = account_digest(&next);
+        assert_eq!(
+            PublicationAccounting::replay_compacted(policy(), [previous, next]).unwrap_err(),
+            AccountingError::CorruptState,
+        );
     }
 }
