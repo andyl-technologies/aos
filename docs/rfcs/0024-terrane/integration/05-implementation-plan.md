@@ -1822,8 +1822,18 @@ common-Memo field models and 249 independently produced rejecting wires,
 including every strict prefix of the positive records. Existing foundation
 payload and descriptor bytes remain unchanged. The twentieth mandatory golden
 consumer must compare independent bytes and identities, decode exact Memo fields
-and reject every negative through the owning codec. Its implementation and
-execution remain pending; the new dependency fails explicitly until supplied.
+and reject every negative through the owning codec. Reviewed private
+`db62c57e22` supplies the independent Python producer and public Rust consumer.
+Fresh SDK compilation, strict library and all-target Clippy, compiled discovery
+and the three exact serial Memo cases pass. The cases compare all positive
+fields, bytes and identities, reproduce and reject every negative, and decode
+the unchanged foundation payload through the common Memo codec. The final
+runtime summary reports three passed and zero skipped in 0.248 seconds; the
+configured profile hides individual passing status lines. Independent review
+matches all artifact hashes, the exact nonignored inventory and filter, all
+6,071 unchanged tracked inputs, and the captured prerun executable binding.
+The twentieth source-bound Nix consumer and complete golden gate remain pending;
+these scoped Cargo results do not qualify the full format or trunk gate set.
 
 The decoder audit maps the actual 53 properties to 76 covered API groups,
 including the six new cases and the older configured-registry property omitted
