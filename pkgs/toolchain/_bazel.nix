@@ -1503,6 +1503,13 @@ in
                         "$f" 2>/dev/null || true
                     done
 
+                  # This shell is shipped in Bazel's Java classes, so it must
+                  # select target Bash rather than the cross builder's Bash.
+                  command_builder=src/main/java/com/google/devtools/build/lib/util/CommandBuilder.java
+                  if test -f "$command_builder"; then
+                    sed -i 's|"/bin/sh"|"${bash}/bin/bash"|g' "$command_builder"
+                  fi
+
                   # Patch Python bootstrap template shebang placeholder
                   sed -i "s|%shebang%|#!${buildPython3}/bin/python3|" \
                     tools/python/python_bootstrap_template.txt 2>/dev/null || true
