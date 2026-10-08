@@ -1064,7 +1064,7 @@ fn compare_git_coverage_initial_entitlements_v1(
         let holder = AuthenticatedHolderV1 {
             principal: original.principal,
             project: original.project,
-            key_binding: ChannelBinding::from_bytes(original.channel_binding),
+            key_binding: ChannelBinding::new(original.channel_binding),
         };
         let entry = document.for_holder(holder.principal, holder.project, &original.channel_binding)?;
         if policy.generation() != entry.policy_generation

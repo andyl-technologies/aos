@@ -128,7 +128,7 @@ pub(super) fn encode_q04_cut_recipe_v1(
         let start = 200 + index * 32;
         body[start..start + 32].copy_from_slice(digest.as_bytes());
     }
-    Q04CutIdentityV1::from_body(body)
+    Q04CutIdentityV1::from_body(body).map_err(CreateQ04ErrorV1::Journal)
 }
 
 /// Reports the original typed failure of a selected Q04 continuation.

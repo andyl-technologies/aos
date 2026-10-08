@@ -609,7 +609,7 @@ impl ControllerNixStartRecipeSelectorV2 {
         carrier: &NixStartAdmissionCarrierV2,
     ) -> Result<&'selector VerifiedNixRecipeArtifactV2, NixStartAdmissionErrorV2> {
         carrier.validate()?;
-        if carrier.credential_commitments != self.commitments() {
+        if carrier.credential_commitments != self.commitments()? {
             return Err(NixStartAdmissionErrorV2::Invalid);
         }
         let artifact = self.recipes.iter().find(|artifact| {

@@ -413,7 +413,7 @@ impl<'source> OriginalQ04SourceOwnerCutV1<'source> {
                 .and_then(|returned| returned.as_ref().ok())
                 .ok_or(CreateQ04ErrorV1::ChangedCut)?;
             self.source.journal.require_q04_returned_commit_v1(result)?;
-            recipes.require_named_owner(self.source)
+            recipes.require_named_owner(self.source).map_err(CreateQ04ErrorV1::Journal)
         })();
         self.park_failure(prepared)?;
         invocation.finish_original_clearance(

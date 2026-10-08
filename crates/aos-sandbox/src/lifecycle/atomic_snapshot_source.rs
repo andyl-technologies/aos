@@ -843,13 +843,14 @@ pub(crate) fn capture_snapshot_source_original_v3(
     let transaction = coordination.coordination().transaction();
     let source = transaction.admitted_source()
         .ok_or(LifecycleAtomicSnapshotSourceErrorV1::Stale)?;
-    source.require_current(transaction, current.operation()).map_err(stale_lifecycle)?;
+    source.require_current(transaction, current.operation())
+        .map_err(|_| LifecycleAtomicSnapshotSourceErrorV1::Stale)?;
     if coordination.projection_root() != current.projection_root() {
         return Err(LifecycleAtomicSnapshotSourceErrorV1::Stale);
     }
-    source.encoded_length().map_err(stale_lifecycle)?;
+    source.encoded_length().map_err(|_| LifecycleAtomicSnapshotSourceErrorV1::Stale)?;
     let admitted_operation = super::encode_operation_record_v1(source.original())
-        .map_err(stale_lifecycle)?;
+        .map_err(|_| LifecycleAtomicSnapshotSourceErrorV1::Stale)?;
     let mut digests = [[0; 32]; 11];
     digests[0] = *current.record().digest().as_bytes();
     digests[1] = *source.record().digest().as_bytes();
@@ -870,7 +871,8 @@ impl SnapshotSourceOriginalV3 {
         let transaction = coordination.coordination().transaction();
         let source = transaction.admitted_source()
             .ok_or(LifecycleAtomicSnapshotSourceErrorV1::Stale)?;
-        source.require_current(transaction, current.operation()).map_err(stale_lifecycle)?;
+        source.require_current(transaction, current.operation())
+            .map_err(|_| LifecycleAtomicSnapshotSourceErrorV1::Stale)?;
         if self.operation != current.operation().operation_id().into_bytes()
             || self.digests[0] != *current.record().digest().as_bytes()
             || self.digests[1] != *source.record().digest().as_bytes()
@@ -878,7 +880,7 @@ impl SnapshotSourceOriginalV3 {
             || self.digests[3] != *source.commitment().as_bytes()
             || coordination.projection_root() != current.projection_root()
             || self.admitted_operation != super::encode_operation_record_v1(source.original())
-                .map_err(stale_lifecycle)?
+                .map_err(|_| LifecycleAtomicSnapshotSourceErrorV1::Stale)?
         {
             return Err(LifecycleAtomicSnapshotSourceErrorV1::Stale);
         }
@@ -948,9 +950,9 @@ impl DerivedSourceRecordV3 {
             return Err(LifecycleAtomicSnapshotSourceErrorV1::Corrupt);
         }
         let operation = super::decode_operation_record_v1(&self.sections[0])
-            .map_err(stale_lifecycle)?;
+            .map_err(|_| LifecycleAtomicSnapshotSourceErrorV1::Stale)?;
         if operation.operation_id().as_bytes() != &self.operation
-            || super::format::record_digest(&self.sections[0]).map_err(stale_lifecycle)?
+            || super::format::record_digest(&self.sections[0]).map_err(|_| LifecycleAtomicSnapshotSourceErrorV1::Stale)?
                 .digest().as_bytes() != &self.digests[1]
         {
             return Err(LifecycleAtomicSnapshotSourceErrorV1::Corrupt);
