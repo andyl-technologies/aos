@@ -1620,10 +1620,26 @@ Actual scope eligibility contains 233 outputs; Raw acknowledgement returns at
 measured maintenance and independent oracles are not reached. This localizes
 the complete history-call span, without measuring its internal contributors or
 establishing throughput or DRV-29 conformance. The frozen combined `8e86fc32bc`
-candidate passes both mandatory format checks; its six owning fork derivations
-bind one independently reviewed immutable source containing 5,010 files and
-877 directories. The complete owning request and current T1 floor remain
-required; no task checkbox, milestone exit or freeze advances.
+candidate passes both mandatory format checks and its complete owning fork
+Nix request: all 47 required executions pass with none ignored. These comprise
+thirteen cold-source, one imported-source, nine source-preservation, twelve
+requalification and twelve owning cases. The image discovers 764 unique tests
+with none ignored; all six outputs are valid and bind one independently reviewed
+immutable source containing 5,010 files and 877 directories. Independent review
+matches all 6,064 captured inputs before and after, all 3,063 image-bound crate
+hashes, and the exact builder selectors to the actual execution logs. The earlier
+failed requests remain recorded. This qualifies the owning fork request on that
+source; the complete current T1 floor remains required before task acceptance.
+
+The separate test-only history diagnostic initially builds its SDK library,
+then fresh strict library Clippy finds an unused private cohort wrapper. The
+previous cached library checks did not establish fresh production lint
+cleanliness. The reviewed two-file `bb1cd0ab7c` correction removes only that
+wrapper and updates its two test callers to the tracked installer; publication
+bodies and assertions remain unchanged. Private composition `d3409008a9` passes
+fresh SDK library compilation and strict library/all-targets Clippy, each
+compiling its actual assigned source. The unchanged instrumented deadline witness
+remains pending. No task checkbox, milestone exit or freeze advances.
 
 Deployable as: a local tool that initializes a store under a `file://`
 root, commits a directory, forks and merges branches, and checks a commit
