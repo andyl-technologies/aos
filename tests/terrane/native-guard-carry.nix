@@ -5,7 +5,7 @@
     "successive_public_trust_installs_recheck_foreign_original_dependencies"
     "final_guard_install_refuses_original_lost_after_carry_qualification"
   ];
-  selectors = map (name: "selected_bridge::native_guard::cold_fork::tests::publication::guard_carry::${name}") names;
+  selectors = map (name: "selected_bridge::native_guard::cold_fork::tests::ordinary::publication::guard_carry::${name}") names;
 in
   # The measured carry interval ends only after the real Guard publication ACK.
   sourceGate "native-guard-carry" ''

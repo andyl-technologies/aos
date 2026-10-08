@@ -1,6 +1,6 @@
 {sourceGate}: let
   selectors = [
-    "ref_advance::active_completion_tests::native_active_completion_missing_owner_binding_reports_exact_incomplete_cause"
+    "ref_advance::active_completion_tests::native_active_completion_dropped_required_owner_binding_refuses_publication"
     "ref_advance::active_completion_tests::native_active_completion_verifies_indexed_owner_before_selected_ack"
     "ref_advance::active_completion_tests::native_active_completion_checks_every_shared_graft_occurrence"
     "ref_advance::active_completion_tests::native_active_completion_missing_primary_never_selects_ref_or_lineage"

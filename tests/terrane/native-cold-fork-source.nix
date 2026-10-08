@@ -11,13 +11,13 @@
     "repository_fork_publishes_fresh_signed_commit_without_node_io"
     "cold_reuse_refuses_absent_or_changed_per_view_interpretation_inputs"
     "final_cold_dispatch_refuses_source_original_lost_after_preparation"
-    "repository_raw_source_uses_ordinary_full_admission"
+    "repository_raw_source_requalifies_before_separate_zero_node_fork"
     "repository_selected_source_propagates_current_fork_denial_without_fallback"
     "repository_older_lineage_requalifies_before_separate_zero_node_fork"
   ];
   selectors =
-    map (name: "selected_bridge::native_guard::cold_fork::tests::${name}") tests
-    ++ map (name: "selected_bridge::native_guard::cold_fork::tests::publication::${name}") publicationTests
+    map (name: "selected_bridge::native_guard::cold_fork::tests::ordinary::${name}") tests
+    ++ map (name: "selected_bridge::native_guard::cold_fork::tests::ordinary::publication::${name}") publicationTests
     ++ ["guard::original::verifier::cold::tests::abandoned_routes_are_pruned_without_evicting_live_attempts"];
 in
   sourceGate "native-cold-fork-source" ''
