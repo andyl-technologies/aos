@@ -420,6 +420,14 @@ fn native_v3_no_dispatch_terminal_consumes_exact_floor_and_reopens_idempotently(
             ),
             encode_session(&cleared),
         ),
+        (
+            session_history_key(
+                cleared.provider.authority_id(),
+                cleared.holder.authority_id(),
+                cleared.session_binding,
+            ),
+            encode_session_history(&cleared),
+        ),
     ];
     for (key, value) in &changed {
         next.insert(key.clone(), value.clone());
