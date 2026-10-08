@@ -34,6 +34,7 @@
 //! purpose does not supply a paid owner or permission to mutate a journal.
 
 use aos_sandbox_core::RecordNamespace;
+use aos_sandbox_core::bounded_codec::{BoundedReader, ReadError};
 use aos_sandbox_core::model::{KeyReference, KeyUsage, StableKeyId};
 use aos_sandbox_core::{
     AssignmentEpoch, BrokerAdmissionIntersection, BrokerAssignment, BrokerGrantTarget,
@@ -997,13 +998,13 @@ fn decode_fence(
     bytes: &[u8],
     domain: BrokerDomain,
 ) -> Result<BrokerAuthorizationFenceV1, AuthorizationRecordError> {
-    let mut decoder = Decoder::new(bytes);
-    if decoder.take::<8>()? != *domain.fence_magic() || decoder.u16()? != FENCE_VERSION {
+    let mut decoder = Decoder::new(bytes, payload_read_error);
+    if decoder.array::<8>()? != *domain.fence_magic() || decoder.u16()? != FENCE_VERSION {
         return Err(AuthorizationRecordError::InvalidPayload);
     }
     let assignment = decode_assignment(&mut decoder)?;
-    let node = NodeId::from_bytes(decoder.take::<16>()?);
-    let plan_digest = ObjectDigest::from_bytes(decoder.take::<32>()?);
+    let node = NodeId::from_bytes(decoder.array::<16>()?);
+    let plan_digest = ObjectDigest::from_bytes(decoder.array::<32>()?);
     let plan_expires_seconds = decoder.i64()?;
     let stable_key_id_length = decoder.u8()? as usize;
     if stable_key_id_length == 0 || stable_key_id_length > MAXIMUM_STABLE_KEY_ID_BYTES {
@@ -1014,7 +1015,7 @@ fn decode_fence(
     let stable_key_id = StableKeyId::new(stable_key_id_text.to_owned())
         .map_err(|_| AuthorizationRecordError::InvalidPayload)?;
     let authority_generation = decoder.u64()?;
-    let authority_public_key = ObjectDigest::from_bytes(decoder.take::<32>()?);
+    let authority_public_key = ObjectDigest::from_bytes(decoder.array::<32>()?);
     let authority_usage = decode_key_usage(decoder.u8()?)?;
     let ownership_authority = KeyReference::new(
         stable_key_id,
@@ -1112,8 +1113,8 @@ fn decode_effect_fields(
         EffectPayloadProfile::Ordinary(domain) => domain.effect_magic(),
         EffectPayloadProfile::MountFuseIntent => fuse_intent::MAGIC,
     };
-    let mut decoder = Decoder::new(bytes);
-    if decoder.take::<8>()? != *magic || decoder.u16()? != EFFECT_VERSION {
+    let mut decoder = Decoder::new(bytes, payload_read_error);
+    if decoder.array::<8>()? != *magic || decoder.u16()? != EFFECT_VERSION {
         return Err(AuthorizationRecordError::InvalidPayload);
     }
     let status = match decoder.u8()? {
@@ -1132,18 +1133,18 @@ fn decode_effect_fields(
         }
     };
     let target = decode_target(&mut decoder)?;
-    let request_id = decoder.take::<16>()?;
-    let transport_request_digest = ObjectDigest::from_bytes(decoder.take::<32>()?);
-    let request_digest = ObjectDigest::from_bytes(decoder.take::<32>()?);
-    let plan_digest = ObjectDigest::from_bytes(decoder.take::<32>()?);
-    let lease_digest = ObjectDigest::from_bytes(decoder.take::<32>()?);
+    let request_id = decoder.array::<16>()?;
+    let transport_request_digest = ObjectDigest::from_bytes(decoder.array::<32>()?);
+    let request_digest = ObjectDigest::from_bytes(decoder.array::<32>()?);
+    let plan_digest = ObjectDigest::from_bytes(decoder.array::<32>()?);
+    let lease_digest = ObjectDigest::from_bytes(decoder.array::<32>()?);
     let maximum_request_bytes = decoder.u32()?;
     let maximum_descriptors = decoder.u16()?;
     let plan_expires_seconds = decoder.i64()?;
     let authority_expires_seconds = decoder.i64()?;
-    let host_boot_id = decoder.take::<16>()?;
+    let host_boot_id = decoder.array::<16>()?;
     let fail_stop_boottime_nanoseconds = decoder.u64()?;
-    let clock_provenance = decoder.take::<16>()?;
+    let clock_provenance = decoder.array::<16>()?;
     let admitted_wall_seconds = decoder.i64()?;
     let admitted_boottime_nanoseconds = decoder.u64()?;
     let request_deadline_boottime_nanoseconds = decoder.u64()?;
@@ -1321,11 +1322,11 @@ fn decode_assignment(
     decoder: &mut Decoder<'_>,
 ) -> Result<BrokerAssignment, AuthorizationRecordError> {
     BrokerAssignment::new(
-        SandboxId::from_bytes(decoder.take::<16>()?),
-        IncarnationId::from_bytes(decoder.take::<16>()?),
+        SandboxId::from_bytes(decoder.array::<16>()?),
+        IncarnationId::from_bytes(decoder.array::<16>()?),
         AssignmentEpoch::new(decoder.u64()?),
         DesiredGeneration::new(decoder.u64()?),
-        ObjectDigest::from_bytes(decoder.take::<32>()?),
+        ObjectDigest::from_bytes(decoder.array::<32>()?),
     )
     .map_err(|_| AuthorizationRecordError::InvalidPayload)
 }
@@ -1354,8 +1355,8 @@ fn encode_target(bytes: &mut Vec<u8>, target: BrokerGrantTarget) {
 
 fn decode_target(decoder: &mut Decoder<'_>) -> Result<BrokerGrantTarget, AuthorizationRecordError> {
     let tag = decoder.u8()?;
-    let first = decoder.take::<32>()?;
-    let second = decoder.take::<32>()?;
+    let first = decoder.array::<32>()?;
+    let second = decoder.array::<32>()?;
     match tag {
         0 if first == [0; 32] && second == [0; 32] => Ok(BrokerGrantTarget::Assignment),
         1 if second == [0; 32] => Ok(BrokerGrantTarget::Resource(resource_handle(first)?)),
@@ -1495,62 +1496,10 @@ fn decode_key_usage(code: u8) -> Result<KeyUsage, AuthorizationRecordError> {
     }
 }
 
-struct Decoder<'a> {
-    bytes: &'a [u8],
-    cursor: usize,
-}
+type Decoder<'a> = BoundedReader<'a, AuthorizationRecordError>;
 
-impl<'a> Decoder<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, cursor: 0 }
-    }
-
-    fn take<const N: usize>(&mut self) -> Result<[u8; N], AuthorizationRecordError> {
-        self.bytes(N)?
-            .try_into()
-            .map_err(|_| AuthorizationRecordError::InvalidPayload)
-    }
-
-    fn bytes(&mut self, length: usize) -> Result<&'a [u8], AuthorizationRecordError> {
-        let end = self
-            .cursor
-            .checked_add(length)
-            .ok_or(AuthorizationRecordError::InvalidPayload)?;
-        let value = self
-            .bytes
-            .get(self.cursor..end)
-            .ok_or(AuthorizationRecordError::InvalidPayload)?;
-        self.cursor = end;
-        Ok(value)
-    }
-
-    fn u8(&mut self) -> Result<u8, AuthorizationRecordError> {
-        Ok(self.take::<1>()?[0])
-    }
-
-    fn u16(&mut self) -> Result<u16, AuthorizationRecordError> {
-        Ok(u16::from_be_bytes(self.take::<2>()?))
-    }
-
-    fn u32(&mut self) -> Result<u32, AuthorizationRecordError> {
-        Ok(u32::from_be_bytes(self.take::<4>()?))
-    }
-
-    fn u64(&mut self) -> Result<u64, AuthorizationRecordError> {
-        Ok(u64::from_be_bytes(self.take::<8>()?))
-    }
-
-    fn i64(&mut self) -> Result<i64, AuthorizationRecordError> {
-        Ok(i64::from_be_bytes(self.take::<8>()?))
-    }
-
-    fn finish(self) -> Result<(), AuthorizationRecordError> {
-        if self.cursor == self.bytes.len() {
-            Ok(())
-        } else {
-            Err(AuthorizationRecordError::InvalidPayload)
-        }
-    }
+fn payload_read_error(_: ReadError) -> AuthorizationRecordError {
+    AuthorizationRecordError::InvalidPayload
 }
 
 #[cfg(test)]
@@ -1558,6 +1507,53 @@ mod tests {
     use super::*;
     use aos_sandbox_core::InvalidBrokerAuthorizationPlan;
     use sha2::Digest as _;
+
+    #[test]
+    fn bounded_payload_failures_keep_position_and_invalid_payload_classification() {
+        let mut decoder = Decoder::new(&[0, 1, 0], payload_read_error);
+        assert_eq!(decoder.u8().unwrap(), 0);
+
+        assert_eq!(
+            decoder.bytes(usize::MAX),
+            Err(AuthorizationRecordError::InvalidPayload)
+        );
+        assert_eq!(
+            decoder.array::<3>(),
+            Err(AuthorizationRecordError::InvalidPayload)
+        );
+        assert_eq!(decoder.remaining(), 2);
+
+        assert_eq!(decoder.bytes(1).unwrap(), &[1]);
+        assert_eq!(
+            decoder.finish(),
+            Err(AuthorizationRecordError::InvalidPayload)
+        );
+
+        let mut truncated = Decoder::new(&[1, 2, 3], payload_read_error);
+        assert_eq!(
+            truncated.u32(),
+            Err(AuthorizationRecordError::InvalidPayload)
+        );
+        assert_eq!(truncated.remaining(), 3);
+        assert_eq!(truncated.bytes(3).unwrap(), &[1, 2, 3]);
+        truncated.finish().unwrap();
+    }
+
+    #[test]
+    fn bounded_payload_integers_keep_network_order_and_exact_ending() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&0x0102_u16.to_be_bytes());
+        bytes.extend_from_slice(&0x0304_0506_u32.to_be_bytes());
+        bytes.extend_from_slice(&0x0708_090a_0b0c_0d0e_u64.to_be_bytes());
+        bytes.extend_from_slice(&(-2_i64).to_be_bytes());
+
+        let mut decoder = Decoder::new(&bytes, payload_read_error);
+        assert_eq!(decoder.u16().unwrap(), 0x0102);
+        assert_eq!(decoder.u32().unwrap(), 0x0304_0506);
+        assert_eq!(decoder.u64().unwrap(), 0x0708_090a_0b0c_0d0e);
+        assert_eq!(decoder.i64().unwrap(), -2);
+        decoder.finish().unwrap();
+    }
 
     #[test]
     fn storage_population_native_code_is_distinct_and_keeps_guest_eleven() {
@@ -2460,7 +2456,7 @@ mod tests {
         encode_target(&mut assignment_bytes, BrokerGrantTarget::Assignment);
         assignment_bytes[1] = 1;
         assert_eq!(
-            decode_target(&mut Decoder::new(&assignment_bytes)),
+            decode_target(&mut Decoder::new(&assignment_bytes, payload_read_error)),
             Err(AuthorizationRecordError::InvalidPayload)
         );
 
@@ -2474,7 +2470,7 @@ mod tests {
                 successor: handle,
             },
         );
-        let decoded = decode_target(&mut Decoder::new(&equal_pair))
+        let decoded = decode_target(&mut Decoder::new(&equal_pair, payload_read_error))
             .unwrap_or_else(|error| panic!("target decode: {error}"));
         let lease = local_lease();
         let intent = BrokerEffectIntentV1 {
