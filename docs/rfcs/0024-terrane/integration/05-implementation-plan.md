@@ -1521,6 +1521,21 @@ feature and profile binding are checked before consumption, and required runtime
 references are preserved through AOS fixup. No execution qualification is claimed
 from registration or static checks.
 
+The private `7b9c63d9a6` composition now builds that immutable native SDK image
+through the actual owning Nix request. Compilation, AOS fixup and discovery pass;
+the installed inventory contains 737 tests with none ignored. Independent review
+matches all 6,054 tracked pre-invocation inputs and the actual source's 5,000 files
+and 875 directories to the sealed commit, and all 3,053 image-bound crate hashes
+to that immutable source. Source, feature, test-profile, package working-directory
+and runtime bindings survive fixup. All thirteen cold-source prerequisite cases
+pass, including the corrected complete older-lineage oracle. The same original
+request then fails its mandatory imported-source prerequisite in 75.51 seconds:
+the actual local-head/foreign-used-view cold fork returns `Unsupported` at
+`gc/runner/tests/source_carry/imported.rs:248`. This result does not establish
+deadline expiry. The other two prerequisites and twelve owning cases remain
+unqualified in this invocation; only the image and cold-source outputs are valid.
+No prerequisite is waived, task accepted or T1 freeze advanced.
+
 Deployable as: a local tool that initializes a store under a `file://`
 root, commits a directory, forks and merges branches, and checks a commit
 out to a directory through the `sdk` surface.
