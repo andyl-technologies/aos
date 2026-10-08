@@ -16,13 +16,8 @@
     if isDarwinCross
     then buildPackages.protobuf
     else protobuf;
-  src = import ./aos/_workspace-source.nix {inherit lib;};
-  cargoDeps = fetchCargoVendor {
-    inherit src;
-    name = "aos-netd-vendor-${version}";
-    sourceRoot = "source/crates";
-    hash = import ./crucible/_cargo-deps-hash.nix;
-  };
+  workspaceCargo = import ./aos/_workspace-cargo.nix {inherit lib fetchCargoVendor;};
+  inherit (workspaceCargo) src cargoDeps;
   cargoEnv = {
     PROTOC = "${buildProtobuf}/bin/protoc";
     AOS_NO_SETID_TEST_LAUNCHER = "${noSetidTestLauncher}/bin/no-setid-exec";

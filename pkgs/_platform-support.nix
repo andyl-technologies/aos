@@ -1144,6 +1144,7 @@ let
     "tools/aos/_network-test-launcher.nix" = "linux-only-build-helper";
     "tools/aos/_release-tooling.nix" = "native-release-helper";
     "tools/aos/_tests.nix" = "native-test-helper";
+    "tools/aos/_workspace-cargo.nix" = "target-independent-source";
     "tools/aos/_workspace-source.nix" = "target-independent-source";
     "tools/crucible/_cargo-deps-hash.nix" = "target-independent-source";
     "tools/crucible/_cargo-source.nix" = "mixed-source";

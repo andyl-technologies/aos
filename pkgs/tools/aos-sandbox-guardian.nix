@@ -7,13 +7,8 @@
   fetchCargoVendor,
 }: let
   version = "0.1.0";
-  src = import ./aos/_workspace-source.nix {inherit lib;};
-  cargoDeps = fetchCargoVendor {
-    inherit src;
-    name = "aos-sandbox-guardian-vendor-${version}";
-    sourceRoot = "source/crates";
-    hash = import ./crucible/_cargo-deps-hash.nix;
-  };
+  workspaceCargo = import ./aos/_workspace-cargo.nix {inherit lib fetchCargoVendor;};
+  inherit (workspaceCargo) src cargoDeps;
   cargoArtifactContract = {
     family = "aos-sandbox-guardian-native";
     checkType = "debug";

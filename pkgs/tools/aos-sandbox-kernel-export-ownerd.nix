@@ -8,13 +8,8 @@
   aos-selinux-production-policy,
 }: let
   version = "0.1.0";
-  src = import ./aos/_workspace-source.nix {inherit lib;};
-  cargoDeps = fetchCargoVendor {
-    inherit src;
-    name = "aos-sandbox-kernel-export-ownerd-vendor-${version}";
-    sourceRoot = "source/crates";
-    hash = import ./crucible/_cargo-deps-hash.nix;
-  };
+  workspaceCargo = import ./aos/_workspace-cargo.nix {inherit lib fetchCargoVendor;};
+  inherit (workspaceCargo) src cargoDeps;
   cargoArtifactContract = {
     family = "aos-sandbox-kernel-export-ownerd-native";
     checkType = "debug";

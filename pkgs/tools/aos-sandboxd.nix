@@ -68,13 +68,8 @@
   roleTestCommands = map (role: "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${roleFlags role} -p aos-sandbox-services") serviceRoles;
   coreTestCommand = "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${controllerRoleFlags} -p aos-sandbox -p aos-sandbox-broker-session-security";
   onlineInputs = lib.optionals onlineSelected [nixOnlineStoreReader aos-nix-runtime-tpm-helpers];
-  src = import ./aos/_workspace-source.nix {inherit lib;};
-  cargoDeps = fetchCargoVendor {
-    inherit src;
-    name = "aos-sandboxd-vendor-${version}";
-    sourceRoot = "source/crates";
-    hash = import ./crucible/_cargo-deps-hash.nix;
-  };
+  workspaceCargo = import ./aos/_workspace-cargo.nix {inherit lib fetchCargoVendor;};
+  inherit (workspaceCargo) src cargoDeps;
   cargoEnv =
     {
       PROTOC = "${buildProtobuf}/bin/protoc";

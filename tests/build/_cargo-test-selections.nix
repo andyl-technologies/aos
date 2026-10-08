@@ -17,6 +17,65 @@ let
 
   lib = import ../../lib {system = "x86_64-linux";};
   capturePackage = arguments: arguments // {outPath = "/test/${arguments.pname}";};
+  captureVendor = arguments: arguments // {outPath = "/test/${arguments.name}";};
+
+  # Capture every actual role recipe while retaining optional input defaults.
+  roleRecipes = [
+    ../../pkgs/tools/aos-sandboxd.nix
+    ../../pkgs/tools/aos-storaged.nix
+    ../../pkgs/tools/aos-source-providerd.nix
+    ../../pkgs/tools/aos-sandbox-ownershipd.nix
+    ../../pkgs/tools/aos-sandbox-mountd.nix
+    ../../pkgs/tools/aos-sandbox-hostd.nix
+    ../../pkgs/tools/aos-sandbox-guardian.nix
+    ../../pkgs/tools/aos-sandbox-agent.nix
+    ../../pkgs/tools/aos-sandbox-zfs-worker.nix
+    ../../pkgs/tools/aos-sandbox-runtime-publisher.nix
+    ../../pkgs/tools/aos-sandbox-kernel-export-ownerd.nix
+    ../../pkgs/tools/aos-netd.nix
+  ];
+  rolePackage = recipe: let
+    packageFunction = import recipe;
+    formals = builtins.functionArgs packageFunction;
+    requiredNames = lib.filter (name: !formals.${name}) (builtins.attrNames formals);
+    dependencies = lib.genAttrs requiredNames (name: "unused-${name}");
+  in
+    packageFunction (builtins.intersectAttrs formals (dependencies
+      // {
+        inherit lib;
+        mkCargoPackage = capturePackage;
+        mkCargoArtifacts = capturePackage;
+        mkCargoDummySource = _: "unused-dummy-source";
+        fetchCargoVendor = captureVendor;
+        mkDerivation = capturePackage;
+        git = capturePackage {
+          pname = "git";
+          version = "2.55.0";
+        };
+        stdenv = {
+          isCross = false;
+          hostPlatform = {
+            isDarwin = false;
+            isLinux = true;
+          };
+        };
+        buildPackages = dependencies;
+      }));
+  rolePackages = map rolePackage roleRecipes;
+  expectedVendorArguments = {
+    src = import ../../pkgs/tools/aos/_workspace-source.nix {inherit lib;};
+    name = "aos-vendor-0.1.0";
+    sourceRoot = "source/crates";
+    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
+  };
+  sharedVendorRetained = package:
+    builtins.removeAttrs package.cargoDeps ["outPath"]
+    == expectedVendorArguments
+    && package.src == expectedVendorArguments.src
+    && package.cargoArtifacts.cargoDeps == package.cargoDeps
+    && package.passthru.cargoDeps == package.cargoDeps;
+  roleArtifactFamilies = map (package: package.cargoArtifactContract.family) rolePackages;
+
   controllerPackage = online:
     import ../../pkgs/tools/aos-sandboxd.nix ({
         inherit lib;
@@ -156,6 +215,9 @@ in
   assert invalid [" \t\n"];
   assert invalid [1];
   assert invalid "not-a-list";
+  assert lib.length rolePackages == 12;
+  assert lib.all sharedVendorRetained rolePackages;
+  assert lib.length (lib.unique roleArtifactFamilies) == 12;
   assert controllerSelectionsRetained false;
   assert controllerSelectionsRetained true;
   assert launcher.src == ../../crates/aos-sandbox-network/tests/no_setid_exec.c;
