@@ -5,6 +5,11 @@ profiles. User packages, machine-wide runtime packages, configuration
 generations, and A/B image generations are separate scopes. The distinction is
 important: `--system` does not simply make a normal user install global.
 
+In an AOS container, ordinary package installation also works in Dockerfile
+`RUN` steps. File/configuration effects execute during installation; service
+effects can remain pending until the selected init starts. See
+[packages in containers](containers.md) for the target handlers and lifecycle.
+
 ## Establish package policy first
 
 Before installing a package, configure and verify its source as described in
