@@ -68,7 +68,7 @@
   # immutable source identity. Keep these explicit references through fixup.
   nativeSdkTestImage = import ./native-sdk-test-image.nix {
     sourceGate = sourceGateWithInputs {
-      runtimeDeps = [pkgs.rust pkgs.rust.dev] ++ (pkgs.rust.runtimeDeps or []);
+      runtimeDeps = [pkgs.rust pkgs.rust.dev pkgs.diffutils] ++ (pkgs.rust.runtimeDeps or []);
       nukeRefsKeep = [pkgs.terrane.src];
       extraBuildDeps = [pkgs.binutils];
     };
