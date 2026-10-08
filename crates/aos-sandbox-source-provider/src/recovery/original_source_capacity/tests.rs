@@ -249,7 +249,7 @@ fn tiny_canonical_origin_remains_data_and_legacy_decode_stays_closed() {
     let row = tiny.to_journal_record().unwrap();
 
     validate_capacity_snapshot_data_v2(&state_with(&[row.clone()])).unwrap();
-    assert!(aos_sandbox::decode_capacity_reservation_request_v1(&row).is_err());
+    assert!(aos_sandbox::journal::decode_capacity_reservation_request_v1(&row).is_err());
     assert_eq!(tiny.request().terminal_bytes, 1);
     // No comparison helper promotes this syntactic budget to whole-journal funding.
 }
@@ -310,7 +310,7 @@ fn exact_legacy_obligations_match_once_or_refuse_missing_ambiguous_and_changed_b
     let (_, second) = fixtures::legacy_row(36);
     let source = fixtures::floor().to_journal_record().unwrap();
     let one = Floors::collect_original_source_comparison(vec![source, first.clone()]).unwrap();
-    let (_, admission, identifier) = aos_sandbox::decode_capacity_reservation_request_v1(&first).unwrap();
+    let (_, admission, identifier) = aos_sandbox::journal::decode_capacity_reservation_request_v1(&first).unwrap();
     assert_eq!(admission, [35; 16]);
     assert_eq!(one.exact_legacy(request).unwrap(), identifier);
     let mut changed = request;
