@@ -2115,6 +2115,18 @@ Terrane RFC. The aggregate inventory covers 31 reviewed sections. Earlier
 partial or failed golden requests remain separate historical evidence; this
 success does not qualify the complete current trunk floor or advance a task.
 
+Prepared private `da49d4ae08` composes the reviewed native `201f568606` with
+current trunk progress and exactly 26 independently reviewed source paths:
+ten Core/property/Memo inputs from `bf1fc85e74`, two golden-template corrections
+from `4a1551897c`, and fourteen test-only collector paths from `9fa5a657fc`.
+Every carried file matches its recorded source byte-for-byte; collector
+production, normative specifications, dependencies and package definitions are
+unchanged. All 6,087 tracked contents, modes and symlink targets are sealed,
+and the mandatory formatter pair passes. Compiler, runtime and full-floor
+qualification remain unrun; historical component successes do not qualify this
+joint source. The original collector run and queued native-read qualification
+retain their separate frozen sources and evidence.
+
 The sealed current floor contains 89 aggregate gates, including all 69 T0/T1
 plan-required names and twenty implemented supporting checks. Read-only evaluation
 finds `gc-two-phase-delete` explicitly pending. Output validity establishes no
@@ -5376,6 +5388,10 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   remains the current feature matrix, five-case local SDK prerequisite,
   three-case separate-process CLI prerequisite, required package tests and
   genuine ext4 guest workflow; older candidate passes do not qualify this source.
+  Independent comparison also finds all eight files already present byte-for-byte
+  in the current native `201f568606` candidate. Its owning SDK and CLI prerequisites
+  can therefore run on that frozen runtime after native qualification without
+  another frontend copy. This equality is source evidence, not an execution result.
   — satisfies CRATE-22 to CRATE-27;
   `checks.terrane.gates.feature-matrix`.
 
