@@ -43,6 +43,9 @@ mod staged;
 mod tag;
 mod time;
 
+#[cfg(all(test, feature = "tokio", feature = "surface-sdk", unix))]
+mod index_contract_tests;
+
 #[cfg(test)]
 mod principal_tests;
 
