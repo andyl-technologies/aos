@@ -1666,6 +1666,18 @@ Unknown or conflicting roles retain complete checking. Error timing and harmless
 read/sync attempts before refusal may change; persistent final faults still refuse.
 No specification or freeze changes, task acceptance or performance claim follows.
 
+The reviewed private composition `8d505691b2` implements the bounded frontier
+and unrelated-output leaf deferral. Its SDK library build and fresh strict
+library Clippy pass; fresh all-target Clippy stops before execution because the
+new frontier test constructs the structured `Denied` outcome incorrectly.
+The separate test-only `d1a967697b` correction preserves the exact failure kind,
+subject, cause and DFS ordering, then all-target Clippy finds twelve configured
+test lint errors. Reviewed `f2e623d1ec` and `c1510ba1ed` replace the eleven
+`unwrap` calls and one `unwrap_err` with the existing panic-on-failure fixture
+helper and explicit outcome matching. Assertions and production bytes remain
+unchanged. No runtime test or deadline witness has yet qualified this candidate;
+the original failures and cached versus fresh library results remain distinct.
+
 The sealed current floor contains 89 aggregate gates, including all 69 T0/T1
 plan-required names and twenty implemented supporting checks. Read-only evaluation
 finds `gc-two-phase-delete` explicitly pending. Output validity establishes no
