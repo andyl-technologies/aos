@@ -2,6 +2,7 @@
 ''
   $if Bash
   set bell-style none
+  set echo-control-characters off
   set completion-ignore-case on
   set show-all-if-ambiguous on
   set mark-symlinked-directories on

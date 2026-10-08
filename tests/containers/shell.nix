@@ -2,11 +2,12 @@
 {
   pkgs,
   lib,
+  fzf ? pkgs.fzf,
 }: let
   bashrc = pkgs.writeTextFile {
     name = "aos-shell-test-bashrc";
     text = import ../../pkgs/system/_aos-host-policy/bashrc-text.nix {
-      inherit lib;
+      inherit lib fzf;
       completionFiles = ["${pkgs.apm}/share/bash-completion/completions/apm"];
     };
   };
@@ -25,6 +26,12 @@
       test "''${PROMPT_COMMAND[0]}" = __aos_sync_history
       complete -p cd | grep -F -- '-d' >/dev/null
       complete -p apm | grep -F -- '-F _apm' >/dev/null
+      bind -q clear-screen | grep -F '"\C-l"' >/dev/null
+      bind -v | grep -Fx 'set echo-control-characters off' >/dev/null
+
+      # These invocations lack a tty, so reverse search remains readline-native.
+      ! declare -F __fzf_history__ >/dev/null
+      bind -q reverse-search-history | grep -F '"\C-r"' >/dev/null
 
       COMP_WORDS=(apm ins)
       COMP_CWORD=1
@@ -52,8 +59,10 @@
 
       # Sourcing twice must not duplicate history hooks or override customization.
       PS1='custom prompt> '
+      bind '"\C-l": redraw-current-line'
       . ${bashrc}
       test "$PS1" = 'custom prompt> '
+      bind -q redraw-current-line | grep -F '"\C-l"' >/dev/null
       test "''${#PROMPT_COMMAND[@]}" -eq 1
       printf '%s\n' PASS
     '';
@@ -83,6 +92,12 @@ in
     ' > "$TMPDIR/noninteractive-output" 2> "$TMPDIR/noninteractive-errors"
     test ! -s "$TMPDIR/noninteractive-output"
     test ! -s "$TMPDIR/noninteractive-errors"
+
+    # Exercise the source-built matcher without requiring a terminal widget.
+    test -s ${fzf}/share/fzf/key-bindings.bash
+    printf '%s\n' 'irrelevant command' 'unique history command with spaces' \
+      | ${fzf}/bin/fzf --filter 'unique history' > "$TMPDIR/fzf-selection"
+    test "$(cat "$TMPDIR/fzf-selection")" = 'unique history command with spaces'
 
     mkdir -p "$out"
     printf '%s\n' PASS > "$out/result"

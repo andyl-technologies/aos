@@ -11,8 +11,11 @@ the system CLI with `apm install aos` or the registry publisher with
 `apm` is also an ordinary package, so APM can manage its own updates.
 
 Interactive Bash loads shared prompt, history, readline, and APM completion
-defaults. Customize `/root/.bashrc` or `/root/.inputrc` normally; package
-transactions do not rewrite those files.
+defaults. Press Ctrl+R to search history with fzf, Enter to place a selected
+command at the prompt, or Escape to cancel. Ctrl+L clears the screen while
+preserving the command being edited; Ctrl+C cancels it quietly. Customize
+`/root/.bashrc` or `/root/.inputrc` normally; package transactions do not rewrite
+those files. These shell defaults are shared with the host base image.
 
 Packages use the same payload and native module declarations on machines and
 in containers. The target selects handlers for their abilities. Packages can
