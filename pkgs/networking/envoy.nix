@@ -45,8 +45,14 @@
   m4,
   patchelf,
   bootstrapTools,
+  buildMemoryCgroup ? null,
+  buildMaxLocalActions ? null,
 }: let
   version = "1.37.0";
+  buildResourceFlags = lib.escapeShellArgs (
+    lib.optionals (buildMemoryCgroup != null) ["--cgroup-dir" buildMemoryCgroup]
+    ++ lib.optionals (buildMaxLocalActions != null) ["--max-actions" (toString buildMaxLocalActions)]
+  );
   isCross = stdenv.isCross;
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
   isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
@@ -1369,6 +1375,12 @@ in
         "--cxxopt=-Wno-error"
       ];
     preBazelBuild = ''
+                # Envoy's large C++ actions outgrow Bazel's generic memory estimate.
+                # Limit local admission, preserving the requested Nix cores and flags.
+                ${buildPython}/bin/python3 ${./envoy-patches/build-resources.py} \
+                  --cores "$NIX_BUILD_CORES" ${buildResourceFlags} \
+                  >> .bazelrc
+
                 ${lib.optionalString isSameTripleLinuxCross ''
         # Execution-platform generators linked by rules_go do not retain
         # the compiler launcher's runtime RPATH. The Bazel shell wrapper
