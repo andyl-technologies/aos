@@ -44,6 +44,11 @@
     "publication::held_read_tests::burns::index_alias_filter_preserves_missing_bodies_and_original_error_priority"
   ];
 
+  physicalExclusionTests = [
+    "retirement_tests::physical_exclusion_overrides_live_rows_during_fresh_admission"
+    "retirement_tests::raw_publication_refuses_mixed_live_row_exclusion_without_changing_selected_catalog"
+  ];
+
   nativeCreationTests = [
     "native_creation_commits_pack_and_index_from_real_container_writers"
     "native_creation_selects_pending_before_any_artifact_mutation"
@@ -95,7 +100,7 @@
       printf 'PASS: ${name} native file bucket conformance\n' > "$out/result"
     '';
 in {
-  store-idempotent-put = gate "store-idempotent-put" ["retirement_tests::physical_exclusion_overrides_live_rows_during_fresh_admission" "content_tests::repeated_put_preserves_first_encoding_and_survives_reopen" "readmission_tests::verified_reupload_replaces_gc_retired_placement_without_restoring_old_pack"];
+  store-idempotent-put = gate "store-idempotent-put" (physicalExclusionTests ++ ["content_tests::repeated_put_preserves_first_encoding_and_survives_reopen" "readmission_tests::verified_reupload_replaces_gc_retired_placement_without_restoring_old_pack"]);
   store-verify-on-put = gate "store-verify-on-put" ["content_tests::admission_validates_identity_length_profile_and_independent_dedup_context"];
   store-verify-on-get = gate "store-verify-on-get" (heldContentTests ++ indexPolicyTests ++ ["fault_tests::dictionary_backend_unavailability_preserves_put_and_get_failure_kinds" "content_tests::corrupt_bytes_outside_requested_range_are_never_returned"]);
   store-ranged-get = gate "store-ranged-get" ["content_tests::ranges_address_verified_encoded_bytes_and_check_overflow" "publication::held_read_tests::content::held_content_get_preserves_all_exact_reads_and_reduces_metadata_dispatch" "publication::held_read_tests::content::held_content_get_preserves_unavailable_read_and_complete_body_verification"];
@@ -185,5 +190,5 @@ in {
   bucket-mutability-classes = gate "bucket-mutability-classes" ["tests::tags_and_reflogs_never_replace_existing_bytes" "content_tests::repeated_put_preserves_first_encoding_and_survives_reopen"];
   bucket-create-once = gate "bucket-create-once" ["tests::tags_and_reflogs_never_replace_existing_bytes"];
   bucket-probe = gate "bucket-probe" (activeOpenTests ++ ["fault_tests::startup_refuses_a_binding_that_overwrites_create_once_keys" "tests::probe_revalidates_persisted_layout_and_profile_each_open"]);
-  index-generation-manifest = gate "index-generation-manifest" (indexPolicyTests ++ ["retirement_tests::legacy_state1_without_inventory_blocks_opaque_index_aliases_even_with_empty_key6" "retirement_tests::physical_exclusion_overrides_live_rows_during_fresh_admission" "retirement_tests::physical_retirement_survives_fresh_readmission_and_exact_restore" "retirement_tests::legacy_unknown_retirement_never_loses_its_last_physical_evidence" "content_tests::manifest_and_every_listed_artifact_are_required_for_generation_visibility" "fault_tests::partial_generation_is_unpublished_and_retry_uses_a_fresh_generation" "container_tests::whole_pack_import_verifies_members_without_admitting_them" "container_tests::quarantine_survives_reopen_and_container_or_body_republication" "manifest_tests::publishing_after_a_legacy_manifest_preserves_existing_bodies" "container_tests::container_inventory_cannot_resurrect_an_excluded_index_identity"]);
+  index-generation-manifest = gate "index-generation-manifest" (indexPolicyTests ++ physicalExclusionTests ++ ["retirement_tests::legacy_state1_without_inventory_blocks_opaque_index_aliases_even_with_empty_key6" "retirement_tests::physical_retirement_survives_fresh_readmission_and_exact_restore" "retirement_tests::legacy_unknown_retirement_never_loses_its_last_physical_evidence" "content_tests::manifest_and_every_listed_artifact_are_required_for_generation_visibility" "fault_tests::partial_generation_is_unpublished_and_retry_uses_a_fresh_generation" "container_tests::whole_pack_import_verifies_members_without_admitting_them" "container_tests::quarantine_survives_reopen_and_container_or_body_republication" "manifest_tests::publishing_after_a_legacy_manifest_preserves_existing_bodies" "container_tests::container_inventory_cannot_resurrect_an_excluded_index_identity"]);
 }

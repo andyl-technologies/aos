@@ -263,6 +263,11 @@ Commit batch's Raw acknowledgment, then refuses during later held publication;
 the exact predicate remains unproven. These focused results do not replace the
 failing full native suite or qualify the complete algebra gate or T1.
 
+The bucket gate inventory retains the genuine stale-Live physical-exclusion
+positive and additionally requires the independent Raw-exclusion refusal in
+both `store-idempotent-put` and `index-generation-manifest`. A private gate
+using only the refusal does not execute or qualify the missing positive.
+
 An isolated instrumented run of the fourth private backfill case on
 `faf2f0adfa` still fails with `Expired`. It reaches both catalog ACKs and
 durable reflog staging, then observes 30.803 seconds against the unchanged
