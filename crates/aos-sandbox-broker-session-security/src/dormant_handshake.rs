@@ -6385,36 +6385,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
             deadline,
             maximum_response_bytes,
         )?;
-        let prepared = DormantPreparedBrokerRequestV1(authenticated.clone());
-        if initialize {
-            return Ok(
-                match self.0.initialize_authenticated_request(&authenticated)? {
-                    ProtectedBrokerSessionInitializationResultV1::Initialized => {
-                        DormantBrokerRequestPreparationV1::Prepared(prepared)
-                    }
-                    ProtectedBrokerSessionInitializationResultV1::RecoveryRequired {
-                        error,
-                        recovery,
-                    } => DormantBrokerRequestPreparationV1::InitializationRecoveryRequired {
-                        error,
-                        recovery,
-                        request: DormantUnconfirmedBrokerRequestV1(authenticated),
-                    },
-                },
-            );
-        }
-        Ok(match self.0.append_authenticated_request(&authenticated)? {
-            ProtectedBrokerRequestCommitResultV1::Committed => {
-                DormantBrokerRequestPreparationV1::Prepared(prepared)
-            }
-            ProtectedBrokerRequestCommitResultV1::RecoveryRequired { error, recovery } => {
-                DormantBrokerRequestPreparationV1::SuccessorRecoveryRequired {
-                    error,
-                    recovery,
-                    request: DormantUnconfirmedBrokerRequestV1(authenticated),
-                }
-            }
-        })
+        self.reserve_exact_authenticated_request(authenticated, initialize)
     }
 
     /// Builds and durably reserves one authenticated descriptor-bearing request.
