@@ -1388,8 +1388,11 @@ witnesses at their unchanged 120-second deadlines. Review identifies an
 observation adapter retaining its cloned namespace exclusion after the holder
 is dropped, blocking the subsequent fork. The separate `062c7b40e2` fixture
 correction drops that adapter before the holder; no production behavior,
-incarnation assertion or deadline changes. Its replacement execution and the
-owning Nix gate with all four prerequisites remain unqualified.
+incarnation assertion or deadline changes. Its separately frozen replacement
+executes all twelve owning cases successfully in 138.261 seconds, with no ignored
+selected tests and unchanged 120-second case deadlines. The original two
+timeouts remain preserved. The owning Nix gate with all four prerequisites is
+running and remains unqualified; this focused pass closes no task.
 No task checkbox, milestone exit or freeze advances.
 
 The isolated retained catalog cohort passes six focused real-worker tests in
