@@ -1,4 +1,14 @@
-//! Canonical bounded primitive encoding shared by durable cache formats.
+//! Canonical encoding and Cache-owned decoding rules for durable recovery formats.
+//!
+//! Each component has a fixed header followed by its typed fields:
+//!
+//! ```text
+//! magic[8] | version:u16be | reserved-zero[6] | component fields
+//! ```
+//!
+//! Core's bounded reader owns byte ranges, arrays, integers, digest DATA, and
+//! EOF checks. This module retains framing, capacity limits, canonical boolean
+//! and optional encodings, closed codes, and Cache semantic validation.
 
 use aos_sandbox_core::bounded_codec::{BoundedReader, ReadError};
 use aos_sandbox_protocol::cache_state::{
@@ -135,6 +145,8 @@ impl CanonicalWriter {
 
 pub(super) type RecoveryReader<'bytes> = BoundedReader<'bytes, RecoveryError>;
 
+// Offset overflow and truncation are malformed framing. Only decoded count
+// and length limits below project to Capacity.
 pub(super) fn recovery_read_error(_: ReadError) -> RecoveryError {
     RecoveryError::MalformedPayload
 }
@@ -144,6 +156,8 @@ pub(super) fn read_component_header(
     magic: &[u8; 8],
     maximum_bytes: usize,
 ) -> Result<(), RecoveryError> {
+    // Each parser supplies the entire component, keeping envelope offsets
+    // relative to the original header rather than a body-only slice.
     if reader.remaining() < 16
         || reader.remaining() > maximum_bytes
         || maximum_bytes > MAXIMUM_COMPONENT_BYTES

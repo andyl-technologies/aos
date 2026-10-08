@@ -424,6 +424,15 @@ preconditions, physical verification and crash boundaries explicit. One
 declarative method registry supplies shared metadata; it does not replace
 method-specific verification with a generic permissive dispatcher.
 
+The complete Cache recovery codec reader now uses Core's bounded byte mechanics
+across its fourteen component, atomic-envelope, and typed-checkpoint parser
+roots. Cache retains its fixed headers, capacity limits, canonical booleans and
+optional fields, closed codes, commitments, and semantic validation. Envelope
+hashing includes the original header, and EOF validation still precedes digest
+comparison. This removes the duplicate recovery byte engine without changing
+protected Cache admission, custody, or recovery authority, and establishes no
+new runtime qualification or protected Cache crate boundary.
+
 Do not introduce a universal owner/context containing every role, a field for
 every hypothetical backend, forwarding layers without a contract, or a new
 record family per refactor. Implementation and co-located tests are reviewed

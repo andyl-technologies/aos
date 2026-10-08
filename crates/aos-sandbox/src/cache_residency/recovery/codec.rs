@@ -777,8 +777,10 @@ pub fn decode_atomic_object_record(
     let record_bytes = read_length_prefixed(&mut reader, DURABLE_RECORD_BYTES)?;
     let record = decode_record(record_bytes)?;
     let payload_bytes = read_length_prefixed(&mut reader, limits.maximum_payload_bytes)?;
+    // The commitment includes the fixed header and both length prefixes.
     let envelope_end = bytes.len() - reader.remaining();
     let expected_digest = reader.digest()?;
+    // Malformed trailing bytes take precedence over a digest mismatch.
     reader.finish()?;
     if expected_digest
         != digest_bytes(
