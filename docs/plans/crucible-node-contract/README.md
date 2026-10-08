@@ -1,0 +1,65 @@
+# Crucible node contract implementation studies
+
+These documents describe how the existing implementation could reach the target
+defined by [RFC-0025: Crucible Simulation Node Contract](../../rfcs/0025-crucible-node-contract/README.md).
+They are nonnormative engineering plans, not an implementation, an interoperability
+specification, or evidence that a backend has been qualified.
+
+The source audit was performed on 2026-10-07 against commit
+`1037fd8490479ad8eeef9349dd1043bb799fc405`. Source paths and line numbers in these
+documents refer to that revision. They may move during implementation. Requirement
+identifiers refer to RFC-0025; the RFC controls if these plans disagree with it.
+
+## Reading order
+
+| Document | Purpose |
+| --- | --- |
+| [Current state](current-state.md) | Audited abstractions, ownership, hardcoded assumptions, dependency directions, and target gaps |
+| [Refactoring plan](refactoring-plan.md) | Extraction and renaming boundaries, compatibility classifications, and implementation constraints |
+| [Phased implementation](phased-implementation.md) | Dependency-ordered tasks, deliverables, exit criteria, risks, and rollback points |
+| [Qualification plan](qualification-plan.md) | Existing regression coverage, new behavioral qualification, performance methodology, and requirement traceability |
+
+## Scope and engineering posture
+
+The public integration surface is a simulation-node contract. QEMU, gem5, KVM,
+deterministic host models, and external adapters are implementations or providers
+of nodes. Compute, block storage, filesystem, clocks, links, and other roles do
+not need a VM-shaped lifecycle. A logical node, an execution owner, and a state
+owner need not have a one-to-one relationship.
+
+Implementation starts by wrapping the current QEMU and host-device paths without
+changing execution, canonical ordering, native receipt authority, serialized
+bytes, or persisted identities. Graph and schema changes follow as explicitly
+versioned features. Exact gem5 and quantized KVM are separate qualification
+workstreams; neither is a justification for weakening the current QEMU exact
+contract.
+
+The complete connected graph must be admitted before activation. An unsupported
+timing, device, capture, or replay combination is refused. Capability discovery
+does not authorize a backend to substitute a weaker operating mode after launch.
+
+## What this documentation change verifies
+
+Documentation review can verify source references, local links, requirement
+coverage, and internal consistency. It cannot establish runtime correctness,
+timing accuracy, device parity, complete state preservation, or performance.
+All test programs described here are future implementation work unless explicitly
+identified as existing source. There are no new benchmark results in this plan.
+
+Large traces, profiles, raw timing logs, and native state dumps remain local
+qualification artifacts. Future change descriptions should include concise
+summaries and artifact identities; this plan does not require committing raw
+evidence or publishing it through release assets.
+
+## Changes that require a separate decision
+
+- Implementing the specified CNP/1 transport, encodings, operation registry,
+  bounds, and extensions requires an explicit protocol migration. Host Rust
+  traits are not a wire ABI and existing QEMU messages remain adapter-specific.
+- Backward readers and canonical identity migration need a compatibility design
+  before a writer begins emitting a new format.
+- Cross-implementation initialization, such as KVM-to-gem5 architectural
+  conversion, creates a distinct realization and lineage. It is not exact restore.
+- Any claim of hard wall-clock deadlines for physical hardware requires a separate
+  resource and timing qualification. Logical causality alone does not establish
+  real-time performance.
