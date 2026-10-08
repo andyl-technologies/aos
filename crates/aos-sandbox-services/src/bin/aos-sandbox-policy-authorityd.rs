@@ -60,7 +60,7 @@ use aos_sandbox::policy_compiler::{
     CLOSED_POLICY_BINDING_BYTES_V2, CONTROLLER_PROJECT_ADMISSION_READBACK_BYTES_V1,
     CONTROLLER_PROJECT_DISPATCH_READBACK_BYTES_V1, CONTROLLER_PROJECT_TERMINAL_READBACK_BYTES_V1,
     CacheSignerRootChallengeStatusV2, CacheSignerRootSettlementStateV2,
-    ClosedCacheReadbackRootChallengeV1, ClosedPolicyBindingDecisionV2, ClosedPolicyRootCasBaseV2,
+    ClosedPolicyBindingDecisionV2, ClosedPolicyRootCasBaseV2,
     ClosedSourceTerminalClaimV1, ControllerEffectAckChallengeV1, PinnedSourceHoldReadbackSignerV1,
     PolicyDeploymentInputsV1, ROOT_PROJECT_ADMISSION_ABORT_QUERY_MAGIC,
     ROOT_PROJECT_ADMISSION_COMMIT_QUERY_MAGIC, ROOT_PROJECT_ADMISSION_CURRENT_QUERY_MAGIC,
@@ -111,7 +111,7 @@ use aos_sandbox::policy_compiler::{
     stage_fixed_cache_signer_challenge_v2, stage_fixed_root_project_admission_v1,
     staged_closed_policy_signer_challenge_v2, verify_fixed_policy_cache_owner_readback_v2,
     verify_signed_project_policy_source_v1,
-    verify_signed_project_policy_source_v2, with_fixed_closed_cache_readback_session_v1,
+    verify_signed_project_policy_source_v2,
     with_fixed_current_policy_head_lease_v1, with_fixed_explicit_closed_policy_binding_session_v2,
 };
 use aos_sandbox::{Journal, controller_service::journal::production_journal_limits};
@@ -149,10 +149,8 @@ use aos_sandbox_broker_session_security::policy_authority_client::{
     POLICY_HEAD_QUERY_MAGIC_V2, POLICY_HEAD_RECEIPT_MAGIC_V2,
 };
 use aos_sandbox_broker_session_security::policy_cache_readback_client::{
-    CLOSED_CACHE_READBACK_SUBMIT_FRAME_BYTES_V5, CLOSED_CACHE_SIGNER_RECOVERY_FRAME_BYTES_V7,
-    CLOSED_CACHE_SIGNER_SUBMIT_FRAME_BYTES_V6, CacheSignerRootRecoveryV7,
-    POLICY_CACHE_READBACK_CHALLENGE_MAGIC_V5, POLICY_CACHE_READBACK_OBSERVATION_MAGIC_V5,
-    POLICY_CACHE_READBACK_QUERY_MAGIC_V5, POLICY_CACHE_READBACK_SUBMIT_MAGIC_V5,
+    CLOSED_CACHE_SIGNER_RECOVERY_FRAME_BYTES_V7, CLOSED_CACHE_SIGNER_SUBMIT_FRAME_BYTES_V6,
+    CacheSignerRootRecoveryV7,
     POLICY_CACHE_SIGNER_CHALLENGE_MAGIC_V6, POLICY_CACHE_SIGNER_QUERY_MAGIC_V6,
     POLICY_CACHE_SIGNER_RECOVERY_QUERY_MAGIC_V7, POLICY_CACHE_SIGNER_RECOVERY_SOCKET_PATH_V7,
     POLICY_CACHE_SIGNER_SETTLED_MAGIC_V6, POLICY_CACHE_SIGNER_SUBMIT_MAGIC_V6,
@@ -259,7 +257,6 @@ enum HeadRequestMode {
     ClosedBindingSourceWriterCasFlight,
     ClosedBindingSourceTerminalReplay,
     ClosedBindingSourceCasReplay,
-    ClosedCacheReadback,
     StagedCacheSigner,
 }
 
@@ -1491,9 +1488,6 @@ fn read_head_request(
         Some(magic) if magic == POLICY_BINDING_SOURCE_FLIGHT_REPLAY_QUERY_MAGIC_V8 => {
             HeadRequestMode::ClosedBindingSourceCasReplay
         }
-        Some(magic) if magic == POLICY_CACHE_READBACK_QUERY_MAGIC_V5 => {
-            HeadRequestMode::ClosedCacheReadback
-        }
         Some(magic) if magic == POLICY_CACHE_SIGNER_QUERY_MAGIC_V6 => {
             HeadRequestMode::StagedCacheSigner
         }
@@ -2056,10 +2050,7 @@ fn serve_current_head(
         serve_closed_source_cas_replay_v8(stream, &request[8..24], controller_uid, controller_gid)?;
         return Ok(());
     }
-    if matches!(
-        mode,
-        HeadRequestMode::ClosedCacheReadback | HeadRequestMode::StagedCacheSigner
-    ) && request[8..24] == [0; 16]
+    if matches!(mode, HeadRequestMode::StagedCacheSigner) && request[8..24] == [0; 16]
     {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "zero Cache client nonce").into());
     }
@@ -2082,7 +2073,6 @@ fn serve_current_head(
             | HeadRequestMode::ClosedBindingSourceWriterSignedFlight
             | HeadRequestMode::ClosedBindingSourceWriterCasFlight
             | HeadRequestMode::ClosedBindingSourceTerminalReplay
-            | HeadRequestMode::ClosedCacheReadback
             | HeadRequestMode::StagedCacheSigner
     ) {
         let verified = verify_signed_project_policy_source_v2(
@@ -2256,30 +2246,6 @@ fn serve_current_head(
         return Ok(());
     }
 
-    if matches!(mode, HeadRequestMode::ClosedCacheReadback) {
-        let cache_pin = cache_pin.ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "Cache readback pin unavailable",
-            )
-        })?;
-        serve_closed_cache_readback(
-            stream,
-            &request[8..24],
-            packet,
-            selected_project_packet,
-            selected_project_input,
-            cache_pin,
-            deployment_signer_generation,
-            verifying_key,
-            project_signer_generation,
-            project_key,
-            controller_uid,
-            deployment.expires_at(),
-            project_expires_at,
-        )?;
-        return Ok(());
-    }
     if matches!(mode, HeadRequestMode::StagedCacheSigner) {
         let cache_pin = cache_pin.ok_or_else(|| {
             io::Error::new(
@@ -2430,49 +2396,6 @@ fn serve_current_head(
     } else {
         stream.write_all(&receipt)?;
     }
-    Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn serve_closed_cache_readback(
-    stream: &mut std::os::unix::net::UnixStream,
-    client_nonce: &[u8],
-    deployment_head: &[u8],
-    project_head: &[u8],
-    project_input: &[u8],
-    cache_pin: &[u8],
-    deployment_generation: u64,
-    deployment_key: &VerifyingKey,
-    project_generation: u64,
-    project_key: &VerifyingKey,
-    controller_uid: u32,
-    deployment_expires: i64,
-    project_expires: i64,
-) -> Result<(), Box<dyn Error>> {
-    let observation = with_fixed_closed_cache_readback_session_v1(
-        deployment_head,
-        project_head,
-        project_input,
-        cache_pin,
-        deployment_generation,
-        deployment_key,
-        project_generation,
-        project_key,
-        controller_uid,
-        fresh_root_cache_nonce,
-        |challenge| {
-            write_cache_challenge(stream, client_nonce, challenge)?;
-            stream.set_read_timeout(Some(LEASE_ACK_TIMEOUT))?;
-            let mut response = [0_u8; CLOSED_CACHE_READBACK_SUBMIT_FRAME_BYTES_V5];
-            stream.read_exact(&mut response)?;
-            decode_cache_response(&response, client_nonce)
-        },
-    )?;
-    check_signed_head_expiration(deployment_expires, project_expires)?;
-    stream.write_all(POLICY_CACHE_READBACK_OBSERVATION_MAGIC_V5)?;
-    stream.write_all(client_nonce)?;
-    stream.write_all(observation.packet_digest().as_bytes())?;
-    stream.write_all(&observation.epoch().to_be_bytes())?;
     Ok(())
 }
 
@@ -2668,32 +2591,6 @@ fn fresh_root_cache_nonce() -> io::Result<[u8; 16]> {
         return Err(io::Error::other("zero root nonce"));
     }
     Ok(nonce)
-}
-
-fn write_cache_challenge(
-    stream: &mut std::os::unix::net::UnixStream,
-    client_nonce: &[u8],
-    challenge: ClosedCacheReadbackRootChallengeV1,
-) -> io::Result<()> {
-    let readback = challenge.readback();
-    stream.write_all(POLICY_CACHE_READBACK_CHALLENGE_MAGIC_V5)?;
-    stream.write_all(client_nonce)?;
-    stream.write_all(&readback.nonce())?;
-    stream.write_all(readback.cut().as_bytes())?;
-    stream.write_all(&challenge.epoch().to_be_bytes())
-}
-
-fn decode_cache_response(
-    response: &[u8; CLOSED_CACHE_READBACK_SUBMIT_FRAME_BYTES_V5],
-    client_nonce: &[u8],
-) -> io::Result<Vec<u8>> {
-    if &response[..8] != POLICY_CACHE_READBACK_SUBMIT_MAGIC_V5 || &response[8..24] != client_nonce {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "invalid closed Cache readback response",
-        ));
-    }
-    Ok(response[24..].to_vec())
 }
 
 fn decode_cache_signer_submission(
@@ -4260,7 +4157,6 @@ fn select_project_source<'a>(
         | HeadRequestMode::ClosedBindingSourceWriterSignedFlight
         | HeadRequestMode::ClosedBindingSourceWriterCasFlight
         | HeadRequestMode::ClosedBindingSourceTerminalReplay
-        | HeadRequestMode::ClosedCacheReadback
         | HeadRequestMode::StagedCacheSigner => explicit.ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
@@ -5363,11 +5259,28 @@ mod tests {
     }
 
     #[test]
+    fn retired_cache_readback_is_refused_before_root_custody() {
+        let (mut client, mut server) = UnixStream::pair().expect("local policy socket");
+        let mut request = [0_u8; REQUEST_BYTES];
+        request[..8].copy_from_slice(b"AOSPHQ05");
+        request[8..24].copy_from_slice(&[1; 16]);
+        client.write_all(&request).expect("retired Cache query");
+
+        let root_custody_opened = Cell::new(false);
+        let returned = read_head_request(&mut server, || {
+            root_custody_opened.set(true);
+            Ok(())
+        });
+
+        assert!(returned.is_err());
+        assert!(!root_custody_opened.get());
+    }
+
+    #[test]
     fn read_only_and_cache_request_modes_reach_root_custody_gate() {
         for magic in [
             POLICY_HEAD_QUERY_MAGIC_V2,
             POLICY_HEAD_LEASE_QUERY_MAGIC_V3,
-            POLICY_CACHE_READBACK_QUERY_MAGIC_V5,
             POLICY_CACHE_SIGNER_QUERY_MAGIC_V6,
             POLICY_BINDING_STAGE_QUERY_MAGIC_V4,
             POLICY_BINDING_PREVIEW_QUERY_MAGIC_V4,
@@ -5569,23 +5482,6 @@ mod tests {
     }
 
     #[test]
-    fn closed_cache_response_rejects_wrong_magic_and_client_session() {
-        let client_nonce = [2; 16];
-        let mut response = [0_u8; CLOSED_CACHE_READBACK_SUBMIT_FRAME_BYTES_V5];
-        response[..8].copy_from_slice(POLICY_CACHE_READBACK_SUBMIT_MAGIC_V5);
-        response[8..24].copy_from_slice(&client_nonce);
-        assert_eq!(
-            decode_cache_response(&response, &client_nonce)
-                .expect("closed frame")
-                .len(),
-            CLOSED_CACHE_READBACK_SUBMIT_FRAME_BYTES_V5 - 24
-        );
-        assert!(decode_cache_response(&response, &[3; 16]).is_err());
-        response[..8].copy_from_slice(POLICY_BINDING_SUBMIT_MAGIC_V4);
-        assert!(decode_cache_response(&response, &client_nonce).is_err());
-    }
-
-    #[test]
     fn staged_cache_signer_submission_is_exactly_session_bound() {
         let client_nonce = [2; 16];
         let mut submission = [0; CLOSED_CACHE_SIGNER_SUBMIT_FRAME_BYTES_V6];
@@ -5598,7 +5494,7 @@ mod tests {
             [7; CLOSED_CACHE_OWNER_READBACK_BYTES_V2]
         );
         assert!(decode_cache_signer_submission(&submission, &[3; 16]).is_err());
-        submission[..8].copy_from_slice(POLICY_CACHE_READBACK_SUBMIT_MAGIC_V5);
+        submission[..8].copy_from_slice(b"AOSPHR05");
         assert!(decode_cache_signer_submission(&submission, &client_nonce).is_err());
     }
 
@@ -5640,7 +5536,6 @@ mod tests {
         assert!(select_project_source(HeadRequestMode::Query, None, explicit).is_err());
         assert!(select_project_source(HeadRequestMode::Lease, None, explicit).is_err());
         assert!(select_project_source(HeadRequestMode::ClosedBinding, legacy, None).is_err());
-        assert!(select_project_source(HeadRequestMode::ClosedCacheReadback, legacy, None).is_err());
         assert!(select_project_source(HeadRequestMode::StagedCacheSigner, legacy, None).is_err());
         assert_eq!(
             select_project_source(HeadRequestMode::ClosedBinding, None, explicit)
@@ -5649,7 +5544,7 @@ mod tests {
             b"explicit-packet"
         );
         assert_eq!(
-            select_project_source(HeadRequestMode::ClosedCacheReadback, None, explicit)
+            select_project_source(HeadRequestMode::StagedCacheSigner, None, explicit)
                 .expect("explicit source")
                 .0,
             b"explicit-packet"

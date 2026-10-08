@@ -109,10 +109,10 @@ mod tests {
         b"\0aos-policy-controller-hold-challenge-v1\0",
     );
     const CACHE: RootChallengeRecordCodec = RootChallengeRecordCodec::new(
-        b"AOSCRH01",
-        b"aos.sandbox.policy-cache-readback-challenge-record.v1\0",
-        b"aos.sandbox.policy-cache-readback-challenge-transaction.v1\0",
-        b"\0aos-policy-cache-readback-challenge-v1\0",
+        b"AOSCRH02",
+        b"aos.sandbox.policy-cache-signer-challenge-record.v2\0",
+        b"aos.sandbox.policy-cache-signer-challenge-transaction.v2\0",
+        b"\0aos-policy-cache-signer-challenge-v2\0",
     );
 
     #[test]

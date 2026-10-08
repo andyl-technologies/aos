@@ -30,7 +30,9 @@ The root-only `AOSPHQ04` request is currently rejected before root journal
 admission or an `AOSPHR04` receipt/base is sent. This prevents the Controller
 bridge from freezing its journals for a submission that root cannot safely
 accept. The paired `project-head-v2.packet` and `project-layer-v2.json`
-credentials remain available for the nonauthorizing `AOSPHQ05` Cache readback.
+credentials remain available for the genuine original Q04 recipe and the
+separate Cache signer lifecycle. The unused `AOSPHQ05` physical-only diagnostic
+exchange is removed and rejected before Root custody opens.
 The closed-CAS client still verifies exact V2 signatures and rejects an
 `AOSPHR02` downgrade, but no server path currently accepts its `AOSPBS04`
 submission. All-owner currentness and crash-safe release are required before

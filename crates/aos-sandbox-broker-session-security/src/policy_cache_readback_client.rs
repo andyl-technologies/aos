@@ -1,17 +1,12 @@
 //! Authenticated, nonauthorizing Root challenges for Cache owner readback.
 //!
-//! V5 signs a physical Cache owner while it keeps `.owner.lock`. V6 stages a
-//! separate Root challenge before Controller takes its owners, then records a
-//! Cache-only signer packet when Controller submits under its held callback.
+//! V6 stages a separate Root challenge before Controller takes its owners,
+//! then records a Cache-only signer packet under Controller's held callback.
 //! The Root socket authenticates the Controller peer but cannot prove its
 //! local locks. Neither response joins an all-owner CAS or authorizes Q04,
 //! public Create, publication, or effects.
 //!
 //! ```text
-//! AOSPHQ05 | client-nonce:16 | reserved:8
-//! AOSPHB05 | client-nonce:16 | root-nonce:16 | root-source-cut:32 | epoch:u64
-//! AOSPHR05 | client-nonce:16 | AOSCRB01 packet:244
-//! AOSPHO05 | client-nonce:16 | packet-sha256:32 | epoch:u64
 //! AOSPHQ06 | client-nonce:16 | reserved:8
 //! AOSPHB06 | client-nonce:16 | root-nonce:16 | root-source-cut:32 | epoch:u64
 //! AOSPHR06 | client-nonce:16 | AOSCRB02 packet:412
@@ -26,30 +21,17 @@ use std::path::Path;
 use std::time::Duration;
 
 use aos_sandbox::cache_residency::{
-    CLOSED_CACHE_OWNER_READBACK_BYTES_V1, CLOSED_CACHE_OWNER_READBACK_BYTES_V2,
-    CacheOwnerHeldSnapshotV1, CacheOwnerReadbackChallengeV1,
+    CLOSED_CACHE_OWNER_READBACK_BYTES_V2, CacheOwnerReadbackChallengeV1,
 };
 use aos_sandbox_core::ObjectDigest;
-use ed25519_dalek::SigningKey;
 use sha2::{Digest as _, Sha256};
 
 use crate::policy_authority_client::{connect_policy_query, connect_policy_query_at};
 
-/// Selects the closed Cache-owner readback exchange; it never selects Q04.
-pub const POLICY_CACHE_READBACK_QUERY_MAGIC_V5: &[u8; 8] = b"AOSPHQ05";
-/// Frames one root-generated challenge under its protected writer.
-pub const POLICY_CACHE_READBACK_CHALLENGE_MAGIC_V5: &[u8; 8] = b"AOSPHB05";
-/// Frames one signed physical owner response.
-pub const POLICY_CACHE_READBACK_SUBMIT_MAGIC_V5: &[u8; 8] = b"AOSPHR05";
-/// Acknowledges only exact nonauthorizing signature verification.
-pub const POLICY_CACHE_READBACK_OBSERVATION_MAGIC_V5: &[u8; 8] = b"AOSPHO05";
-/// Bounds the fixed root challenge frame.
-pub const CLOSED_CACHE_READBACK_CHALLENGE_FRAME_BYTES_V5: usize = 80;
-/// Bounds the fixed Controller response frame.
-pub const CLOSED_CACHE_READBACK_SUBMIT_FRAME_BYTES_V5: usize =
-    24 + CLOSED_CACHE_OWNER_READBACK_BYTES_V1;
-/// Bounds the fixed root observation frame.
-pub const CLOSED_CACHE_READBACK_OBSERVATION_FRAME_BYTES_V5: usize = 64;
+/// Bounds the fixed Root challenge frame.
+pub const CLOSED_CACHE_SIGNER_CHALLENGE_FRAME_BYTES_V6: usize = 80;
+/// Bounds the fixed Root settlement observation frame.
+pub const CLOSED_CACHE_SIGNER_OBSERVATION_FRAME_BYTES_V6: usize = 64;
 
 /// Begins a staged, single-use V2 Cache signer challenge; it does not select Q04.
 pub const POLICY_CACHE_SIGNER_QUERY_MAGIC_V6: &[u8; 8] = b"AOSPHQ06";
@@ -141,8 +123,8 @@ pub fn encode_cache_signer_recovery_observation_v7(
     client_nonce: [u8; 16],
     packet_digest: ObjectDigest,
     epoch: u64,
-) -> [u8; CLOSED_CACHE_READBACK_OBSERVATION_FRAME_BYTES_V5] {
-    let mut frame = [0; CLOSED_CACHE_READBACK_OBSERVATION_FRAME_BYTES_V5];
+) -> [u8; CLOSED_CACHE_SIGNER_OBSERVATION_FRAME_BYTES_V6] {
+    let mut frame = [0; CLOSED_CACHE_SIGNER_OBSERVATION_FRAME_BYTES_V6];
     let magic = match state {
         CacheSignerRootRecoveryV7::Recorded => POLICY_CACHE_SIGNER_RECOVERY_RECORDED_MAGIC_V7,
         CacheSignerRootRecoveryV7::Unrecorded => POLICY_CACHE_SIGNER_RECOVERY_UNRECORDED_MAGIC_V7,
@@ -160,7 +142,7 @@ pub fn encode_cache_signer_recovery_observation_v7(
 ///
 /// Rejects a foreign status, nonce, packet digest, or epoch.
 pub fn decode_cache_signer_recovery_observation_v7(
-    frame: &[u8; CLOSED_CACHE_READBACK_OBSERVATION_FRAME_BYTES_V5],
+    frame: &[u8; CLOSED_CACHE_SIGNER_OBSERVATION_FRAME_BYTES_V6],
     client_nonce: [u8; 16],
     packet_digest: ObjectDigest,
     epoch: u64,
@@ -206,7 +188,7 @@ pub fn recover_cache_signer_root_settlement_v7(
     stream.write_all(&submission)?;
     stream.shutdown(std::net::Shutdown::Write)?;
 
-    let mut frame = [0; CLOSED_CACHE_READBACK_OBSERVATION_FRAME_BYTES_V5];
+    let mut frame = [0; CLOSED_CACHE_SIGNER_OBSERVATION_FRAME_BYTES_V6];
     stream.read_exact(&mut frame)?;
     let state = decode_cache_signer_recovery_observation_v7(
         &frame,
@@ -264,7 +246,7 @@ impl CacheSignerRootSessionV6 {
         self.stream.write_all(packet)?;
         self.stream.shutdown(std::net::Shutdown::Write)?;
 
-        let mut frame = [0; CLOSED_CACHE_READBACK_OBSERVATION_FRAME_BYTES_V5];
+        let mut frame = [0; CLOSED_CACHE_SIGNER_OBSERVATION_FRAME_BYTES_V6];
         self.stream.read_exact(&mut frame)?;
         let digest = ObjectDigest::from_bytes(Sha256::digest(packet).into());
         validate_observation(
@@ -294,7 +276,7 @@ impl CacheSignerRootSessionV6 {
 pub fn begin_cache_signer_root_session_v6() -> io::Result<CacheSignerRootSessionV6> {
     let (mut stream, client_nonce) =
         connect_policy_query(POLICY_CACHE_SIGNER_QUERY_MAGIC_V6, Duration::from_secs(75))?;
-    let mut frame = [0; CLOSED_CACHE_READBACK_CHALLENGE_FRAME_BYTES_V5];
+    let mut frame = [0; CLOSED_CACHE_SIGNER_CHALLENGE_FRAME_BYTES_V6];
     stream.read_exact(&mut frame)?;
     let (challenge, epoch) =
         decode_challenge(&frame, POLICY_CACHE_SIGNER_CHALLENGE_MAGIC_V6, client_nonce)?;
@@ -306,84 +288,8 @@ pub fn begin_cache_signer_root_session_v6() -> io::Result<CacheSignerRootSession
     })
 }
 
-/// Reports a matched closed readback observation, never an effect token.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ClosedCacheReadbackClientObservationV5 {
-    packet_digest: ObjectDigest,
-    challenge_epoch: u64,
-}
-
-impl ClosedCacheReadbackClientObservationV5 {
-    /// Returns the exact signed response packet digest.
-    #[must_use]
-    pub const fn packet_digest(self) -> ObjectDigest {
-        self.packet_digest
-    }
-
-    /// Returns the root's spent challenge epoch.
-    #[must_use]
-    pub const fn challenge_epoch(self) -> u64 {
-        self.challenge_epoch
-    }
-}
-
-/// Signs one fresh root challenge with a locally held physical Cache owner.
-///
-/// The caller must load the distinct seed and generation from fixed protected
-/// Controller credentials. Root independently verifies against its fixed
-/// `AOSCPK01` pin. Even a successful observation does not prove protected
-/// Cache quota currentness or confer publication/effect authority.
-///
-/// # Errors
-///
-/// Rejects an unexpected root peer, changed physical root/lock/manifest,
-/// malformed or stale framing, signing failure, transport loss, or a missing
-/// exact root observation.
-pub fn observe_closed_cache_owner_readback_v5(
-    snapshot: &CacheOwnerHeldSnapshotV1<'_>,
-    signer_generation: u64,
-    signing_key: &SigningKey,
-) -> io::Result<ClosedCacheReadbackClientObservationV5> {
-    let (mut stream, client_nonce) = connect_policy_query(
-        POLICY_CACHE_READBACK_QUERY_MAGIC_V5,
-        Duration::from_secs(35),
-    )?;
-    let mut challenge_frame = [0_u8; CLOSED_CACHE_READBACK_CHALLENGE_FRAME_BYTES_V5];
-    stream.read_exact(&mut challenge_frame)?;
-    let (challenge, epoch) = decode_challenge(
-        &challenge_frame,
-        POLICY_CACHE_READBACK_CHALLENGE_MAGIC_V5,
-        client_nonce,
-    )?;
-
-    snapshot.revalidate().map_err(io::Error::other)?;
-    let packet = snapshot
-        .sign_closed_readback(challenge, signer_generation, signing_key)
-        .map_err(io::Error::other)?;
-    snapshot.revalidate().map_err(io::Error::other)?;
-    stream.write_all(POLICY_CACHE_READBACK_SUBMIT_MAGIC_V5)?;
-    stream.write_all(&client_nonce)?;
-    stream.write_all(&packet)?;
-
-    let mut observation_frame = [0_u8; CLOSED_CACHE_READBACK_OBSERVATION_FRAME_BYTES_V5];
-    stream.read_exact(&mut observation_frame)?;
-    let digest = ObjectDigest::from_bytes(Sha256::digest(packet).into());
-    validate_observation(
-        &observation_frame,
-        POLICY_CACHE_READBACK_OBSERVATION_MAGIC_V5,
-        client_nonce,
-        digest,
-        epoch,
-    )?;
-    snapshot.revalidate().map_err(io::Error::other)?;
-    Ok(ClosedCacheReadbackClientObservationV5 {
-        packet_digest: digest,
-        challenge_epoch: epoch,
-    })
-}
-
 fn decode_challenge(
-    frame: &[u8; CLOSED_CACHE_READBACK_CHALLENGE_FRAME_BYTES_V5],
+    frame: &[u8; CLOSED_CACHE_SIGNER_CHALLENGE_FRAME_BYTES_V6],
     magic: &[u8; 8],
     client_nonce: [u8; 16],
 ) -> io::Result<(CacheOwnerReadbackChallengeV1, u64)> {
@@ -401,7 +307,7 @@ fn decode_challenge(
 }
 
 fn validate_observation(
-    frame: &[u8; CLOSED_CACHE_READBACK_OBSERVATION_FRAME_BYTES_V5],
+    frame: &[u8; CLOSED_CACHE_SIGNER_OBSERVATION_FRAME_BYTES_V6],
     magic: &[u8; 8],
     client_nonce: [u8; 16],
     packet_digest: ObjectDigest,
@@ -497,15 +403,15 @@ mod tests {
     #[test]
     fn frames_reject_cross_session_nonce_cut_epoch_and_digest() {
         let client_nonce = [3; 16];
-        let mut challenge = [0_u8; CLOSED_CACHE_READBACK_CHALLENGE_FRAME_BYTES_V5];
-        challenge[..8].copy_from_slice(POLICY_CACHE_READBACK_CHALLENGE_MAGIC_V5);
+        let mut challenge = [0_u8; CLOSED_CACHE_SIGNER_CHALLENGE_FRAME_BYTES_V6];
+        challenge[..8].copy_from_slice(POLICY_CACHE_SIGNER_CHALLENGE_MAGIC_V6);
         challenge[8..24].copy_from_slice(&client_nonce);
         challenge[24..40].copy_from_slice(&[4; 16]);
         challenge[40..72].copy_from_slice(&[5; 32]);
         challenge[72..80].copy_from_slice(&7_u64.to_be_bytes());
         let (decoded, epoch) = decode_challenge(
             &challenge,
-            POLICY_CACHE_READBACK_CHALLENGE_MAGIC_V5,
+            POLICY_CACHE_SIGNER_CHALLENGE_MAGIC_V6,
             client_nonce,
         )
         .expect("fresh frame");
@@ -514,7 +420,7 @@ mod tests {
         assert!(
             decode_challenge(
                 &challenge,
-                POLICY_CACHE_READBACK_CHALLENGE_MAGIC_V5,
+                POLICY_CACHE_SIGNER_CHALLENGE_MAGIC_V6,
                 [9; 16]
             )
             .is_err()
@@ -522,7 +428,7 @@ mod tests {
         assert!(
             decode_challenge(
                 &challenge,
-                POLICY_CACHE_SIGNER_CHALLENGE_MAGIC_V6,
+                b"AOSPHB05",
                 client_nonce
             )
             .is_err()
@@ -531,22 +437,22 @@ mod tests {
         assert!(
             decode_challenge(
                 &challenge,
-                POLICY_CACHE_READBACK_CHALLENGE_MAGIC_V5,
+                POLICY_CACHE_SIGNER_CHALLENGE_MAGIC_V6,
                 client_nonce
             )
             .is_err()
         );
 
         let digest = ObjectDigest::from_bytes([6; 32]);
-        let mut observation = [0_u8; CLOSED_CACHE_READBACK_OBSERVATION_FRAME_BYTES_V5];
-        observation[..8].copy_from_slice(POLICY_CACHE_READBACK_OBSERVATION_MAGIC_V5);
+        let mut observation = [0_u8; CLOSED_CACHE_SIGNER_OBSERVATION_FRAME_BYTES_V6];
+        observation[..8].copy_from_slice(POLICY_CACHE_SIGNER_SETTLED_MAGIC_V6);
         observation[8..24].copy_from_slice(&client_nonce);
         observation[24..56].copy_from_slice(digest.as_bytes());
         observation[56..64].copy_from_slice(&7_u64.to_be_bytes());
         assert!(
             validate_observation(
                 &observation,
-                POLICY_CACHE_READBACK_OBSERVATION_MAGIC_V5,
+                POLICY_CACHE_SIGNER_SETTLED_MAGIC_V6,
                 client_nonce,
                 digest,
                 7
@@ -556,7 +462,7 @@ mod tests {
         assert!(
             validate_observation(
                 &observation,
-                POLICY_CACHE_READBACK_OBSERVATION_MAGIC_V5,
+                POLICY_CACHE_SIGNER_SETTLED_MAGIC_V6,
                 client_nonce,
                 digest,
                 8
@@ -566,7 +472,7 @@ mod tests {
         assert!(
             validate_observation(
                 &observation,
-                POLICY_CACHE_READBACK_OBSERVATION_MAGIC_V5,
+                POLICY_CACHE_SIGNER_SETTLED_MAGIC_V6,
                 [9; 16],
                 digest,
                 7
@@ -576,7 +482,7 @@ mod tests {
         assert!(
             validate_observation(
                 &observation,
-                POLICY_CACHE_SIGNER_SETTLED_MAGIC_V6,
+                b"AOSPHO05",
                 client_nonce,
                 digest,
                 7
@@ -586,7 +492,7 @@ mod tests {
         assert!(
             validate_observation(
                 &observation,
-                POLICY_CACHE_READBACK_OBSERVATION_MAGIC_V5,
+                POLICY_CACHE_SIGNER_SETTLED_MAGIC_V6,
                 client_nonce,
                 ObjectDigest::from_bytes([8; 32]),
                 7,

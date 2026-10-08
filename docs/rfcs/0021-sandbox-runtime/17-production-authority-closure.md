@@ -59,9 +59,10 @@ handoff. The receipt must bind exact named identities, durable head, current
 quota envelope, revocation, and the all-owner cut. A signature or persisted
 pin alone never opens Create. The current Cache owner shares the Controller
 UID, so this is delegated same-UID trust, not process isolation.
-The closed `AOSPHQ05` Cache readback exchange may durably spend a root challenge
-and verify that signer, but its root-source cut is not the all-owner cut and
-its acknowledgement is not a publication or effect capability.
+The unused physical-only `AOSPHQ05` diagnostic exchange and its separate Root
+challenge producer are removed. Its former root-source cut was not the
+all-owner cut, and its acknowledgement was never a publication or effect
+capability. Packet verification and the genuine original Q04 custody remain.
 
 An initial protected Source ancestry tree needs its own administrative seed.
 The signed project layer cannot issue that seed: its admission already requires

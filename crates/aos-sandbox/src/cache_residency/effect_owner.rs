@@ -26,10 +26,9 @@ use rustix::fs::{AtFlags, FileType, FlockOperation, Mode, OFlags, RenameFlags};
 use sha2::{Digest as _, Sha256};
 
 use super::owner_readback::{
-    CLOSED_CACHE_OWNER_READBACK_BYTES_V1, CLOSED_CACHE_OWNER_READBACK_BYTES_V2,
+    CLOSED_CACHE_OWNER_READBACK_BYTES_V2,
     CacheOwnerReadbackChallengeV1, CacheOwnerReadbackErrorV1,
     CacheOwnerReadbackFieldsV1, VerifiedClosedCacheOwnerReadbackV2, cache_owner_limits_digest_v1,
-    sign_closed_cache_owner_readback_v1, sign_closed_cache_owner_readback_v2,
 };
 use super::{
     AuthorizedLookupKey, CacheAuthorityOwner, CachePinId, CacheReservationV1,
@@ -611,31 +610,6 @@ impl CacheOwnerHeldSnapshotV1<'_> {
         )?;
         self.revalidate()?;
         Ok(())
-    }
-
-    /// Signs one closed fixed-name readback while the owner retains its flock.
-    ///
-    /// The caller must obtain a distinct Cache-purpose seed from protected
-    /// deployment custody. The signing key and generation do not become
-    /// authority merely because this method was invoked. No production path
-    /// currently loads that seed or accepts the resulting statement.
-    ///
-    /// # Errors
-    ///
-    /// Rejects a lost flock, changed fixed names or durable head, malformed
-    /// owner envelope, or zero signer generation.
-    pub fn sign_closed_readback(
-        &self,
-        challenge: CacheOwnerReadbackChallengeV1,
-        signer_generation: u64,
-        signing_key: &ed25519_dalek::SigningKey,
-    ) -> Result<[u8; CLOSED_CACHE_OWNER_READBACK_BYTES_V1], CacheOwnerReadbackErrorV1> {
-        self.revalidate()?;
-        let fields = self.readback_fields()?;
-        let bytes =
-            sign_closed_cache_owner_readback_v1(fields, challenge, signer_generation, signing_key)?;
-        self.revalidate()?;
-        Ok(bytes)
     }
 
     // The original Q04 initializer joins the protected writers separately and

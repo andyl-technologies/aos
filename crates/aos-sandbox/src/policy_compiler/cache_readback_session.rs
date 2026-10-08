@@ -1,18 +1,13 @@
-//! Durable, nonauthorizing root challenge for a Cache-owner readback.
+//! Durable, nonauthorizing Root challenges and settlement for Cache signer packets.
 //!
-//! A protected root writer spends an epoch before exposing its fresh challenge.
-//! The returned observation proves only that the pinned Cache-purpose key
-//! signed the exact challenge. It does not independently prove Controller,
-//! source-domain, protected Cache quota, or physical flock currentness and
-//! cannot be consumed as an AOSPCB02 or public Create authority.
+//! A protected Root writer spends an epoch before exposing its fresh challenge.
+//! The V2 lifecycle retains exact packet settlement and cold recovery; neither
+//! replay nor signature verification grants a held all-owner cut or Create authority.
 //!
 //! ```text
-//! AOSCRH01 | epoch:u64 | nonce:16 | root-source-cut:32 |
+//! AOSCRH02 | epoch:u64 | nonce:16 | root-source-cut:32 |
 //! SHA-256(challenge-record-domain || preceding 64 bytes):32
 //! ```
-//!
-//! V2 signer challenges use a separate `AOSCRH02` record/key so legacy V1
-//! diagnostic sessions cannot strand or consume the V2 settlement lifecycle.
 
 use std::io;
 use std::path::Path;
@@ -23,8 +18,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::cache_residency::{
     CacheOwnerReadbackChallengeV1, CacheOwnerReadbackErrorV1, PinnedCacheOwnerReadbackSignerV1,
-    VerifiedClosedCacheOwnerReadbackV1, VerifiedClosedCacheOwnerReadbackV2,
-    verify_closed_cache_owner_readback_v1, verify_closed_cache_owner_readback_v2,
+    VerifiedClosedCacheOwnerReadbackV2, verify_closed_cache_owner_readback_v2,
 };
 use crate::journal::{Journal, JournalError, ProtectedJournalAuthority, RecordNamespace};
 
@@ -41,23 +35,11 @@ use super::protected_owner::{
 };
 use super::root_challenge_record::{RECORD_BYTES, RootChallengeRecordCodec};
 
-const CHALLENGE_KEY_V1: &[u8] = b"\0aos-policy-cache-readback-challenge-v1\0";
 const CHALLENGE_KEY_V2: &[u8] = b"\0aos-policy-cache-signer-challenge-v2\0";
-const MAGIC_V1: &[u8; 8] = b"AOSCRH01";
 const MAGIC_V2: &[u8; 8] = b"AOSCRH02";
-const CUT_DOMAIN: &[u8] = b"aos.sandbox.policy-cache-readback-root-source-cut.v1\0";
 const SIGNER_CUT_DOMAIN_V2: &[u8] = b"aos.sandbox.policy-cache-signer-root-source-cut.v2\0";
-const RECORD_DOMAIN_V1: &[u8] = b"aos.sandbox.policy-cache-readback-challenge-record.v1\0";
-const TRANSACTION_DOMAIN_V1: &[u8] =
-    b"aos.sandbox.policy-cache-readback-challenge-transaction.v1\0";
 const RECORD_DOMAIN_V2: &[u8] = b"aos.sandbox.policy-cache-signer-challenge-record.v2\0";
 const TRANSACTION_DOMAIN_V2: &[u8] = b"aos.sandbox.policy-cache-signer-challenge-transaction.v2\0";
-const CODEC_V1: RootChallengeRecordCodec = RootChallengeRecordCodec::new(
-    MAGIC_V1,
-    RECORD_DOMAIN_V1,
-    TRANSACTION_DOMAIN_V1,
-    CHALLENGE_KEY_V1,
-);
 const CODEC_V2: RootChallengeRecordCodec = RootChallengeRecordCodec::new(
     MAGIC_V2,
     RECORD_DOMAIN_V2,
@@ -96,57 +78,6 @@ pub enum ClosedCacheReadbackSessionErrorV1 {
     /// The local Controller exchange failed while the root writer was held.
     #[error(transparent)]
     Transport(#[from] io::Error),
-}
-
-/// Carries one spent root challenge without granting publication authority.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ClosedCacheReadbackRootChallengeV1 {
-    readback: CacheOwnerReadbackChallengeV1,
-    epoch: u64,
-}
-
-impl ClosedCacheReadbackRootChallengeV1 {
-    /// Returns the nonce and root-source cut that the physical owner must sign.
-    #[must_use]
-    pub const fn readback(self) -> CacheOwnerReadbackChallengeV1 {
-        self.readback
-    }
-
-    /// Returns the durable, spent root challenge epoch.
-    #[must_use]
-    pub const fn epoch(self) -> u64 {
-        self.epoch
-    }
-}
-
-/// Reports signature verification under one spent root challenge.
-///
-/// This is evidence only, never a policy binding or effect token.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ClosedCacheReadbackRootObservationV1 {
-    readback: VerifiedClosedCacheOwnerReadbackV1,
-    packet_digest: ObjectDigest,
-    epoch: u64,
-}
-
-impl ClosedCacheReadbackRootObservationV1 {
-    /// Returns the verified but nonauthorizing Cache-owner statement.
-    #[must_use]
-    pub const fn readback(self) -> VerifiedClosedCacheOwnerReadbackV1 {
-        self.readback
-    }
-
-    /// Returns the exact response packet digest for transport acknowledgement.
-    #[must_use]
-    pub const fn packet_digest(self) -> ObjectDigest {
-        self.packet_digest
-    }
-
-    /// Returns the consumed root challenge epoch.
-    #[must_use]
-    pub const fn epoch(self) -> u64 {
-        self.epoch
-    }
 }
 
 /// Carries a durably spent Cache-only signer challenge after Root releases its writer.
@@ -488,112 +419,6 @@ pub fn recover_fixed_cache_signer_root_settlement_v2(
     };
     with_existing_fixed_cache_signer_root_journal_v2(|journal| {
         recover_cache_signer_root_settlement_in_journal_v2(journal, challenge, packet, expected)
-    })
-}
-
-/// Spends a fresh root challenge and verifies one Cache-purpose signature.
-///
-/// Production passes only its fixed deployment credentials and generates the
-/// nonce inside `fresh_root_nonce` while this function holds the root writer.
-/// The cut covers root-authenticated source records only. The Controller,
-/// source-domain, protected Cache, and physical Cache owners are not joined
-/// here; successful verification cannot authorize Q04 or Create.
-///
-/// # Errors
-///
-/// Rejects missing or changed signer pins and signed source records, malformed
-/// prior epochs, unavailable entropy, failed journal commit/readback, transport
-/// loss, stale challenge, or an invalid Cache-purpose signature.
-#[allow(clippy::too_many_arguments)]
-pub fn with_fixed_closed_cache_readback_session_v1(
-    expected_deployment_head: &[u8],
-    expected_project_head: &[u8],
-    expected_project_input: &[u8],
-    cache_credential: &[u8],
-    deployment_generation: u64,
-    deployment_key: &VerifyingKey,
-    project_generation: u64,
-    project_key: &VerifyingKey,
-    expected_owner_uid: u32,
-    fresh_root_nonce: impl FnOnce() -> io::Result<[u8; 16]>,
-    exchange: impl FnOnce(ClosedCacheReadbackRootChallengeV1) -> io::Result<Vec<u8>>,
-) -> Result<ClosedCacheReadbackRootObservationV1, ClosedCacheReadbackSessionErrorV1> {
-    let (mut journal, _) = Journal::open_protected_at(
-        Path::new(PROTECTED_POLICY_ROOT),
-        POLICY_AUTHORITY_JOURNAL,
-        policy_authority_journal_limits(),
-    )?;
-    with_closed_cache_readback_session_in_journal_v1(
-        &mut journal,
-        expected_deployment_head,
-        expected_project_head,
-        expected_project_input,
-        cache_credential,
-        deployment_generation,
-        deployment_key,
-        project_generation,
-        project_key,
-        expected_owner_uid,
-        fresh_root_nonce,
-        exchange,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn with_closed_cache_readback_session_in_journal_v1(
-    journal: &mut Journal,
-    expected_deployment_head: &[u8],
-    expected_project_head: &[u8],
-    expected_project_input: &[u8],
-    cache_credential: &[u8],
-    deployment_generation: u64,
-    deployment_key: &VerifyingKey,
-    project_generation: u64,
-    project_key: &VerifyingKey,
-    expected_owner_uid: u32,
-    fresh_root_nonce: impl FnOnce() -> io::Result<[u8; 16]>,
-    exchange: impl FnOnce(ClosedCacheReadbackRootChallengeV1) -> io::Result<Vec<u8>>,
-) -> Result<ClosedCacheReadbackRootObservationV1, ClosedCacheReadbackSessionErrorV1> {
-    let expected = CacheRootSourceExpectation {
-        deployment_head: expected_deployment_head,
-        project_head: expected_project_head,
-        project_input: expected_project_input,
-        cache_credential,
-        deployment_generation,
-        deployment_key,
-        project_generation,
-        project_key,
-        owner_uid: expected_owner_uid,
-    };
-    let mut authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
-    let (signer, challenge, record) = spend_cache_root_challenge(
-        &mut authority,
-        expected,
-        &CODEC_V1,
-        CHALLENGE_KEY_V1,
-        fresh_root_nonce,
-        |expected, epoch| cache_root_cut(CUT_DOMAIN, expected, epoch),
-    )?;
-
-    let packet = exchange(ClosedCacheReadbackRootChallengeV1 {
-        readback: challenge.readback,
-        epoch: challenge.epoch,
-    })?;
-    let verified = verify_closed_cache_owner_readback_v1(
-        &packet,
-        &signer,
-        challenge.readback,
-        expected_owner_uid,
-    )?;
-    if authority.get(CHALLENGE_KEY_V1)? != Some(record.as_slice())
-        || authority.get(CACHE_PIN_KEY)? != Some(cache_credential)
-    {
-        return Err(ClosedCacheReadbackSessionErrorV1::Stale);
-    }
-    Ok(ClosedCacheReadbackRootObservationV1 {
-        readback: verified,
-        packet_digest: ObjectDigest::from_bytes(Sha256::digest(packet).into()),
-        epoch: challenge.epoch,
     })
 }
 
@@ -1021,24 +846,6 @@ fn require_cache_root_source(
     Ok(signer)
 }
 
-fn cache_root_cut(
-    domain: &[u8],
-    expected: CacheRootSourceExpectation<'_>,
-    epoch: u64,
-) -> ObjectDigest {
-    ObjectDigest::from_bytes(
-        Sha256::new()
-            .chain_update(domain)
-            .chain_update(expected.deployment_head)
-            .chain_update(expected.project_head)
-            .chain_update(expected.project_input)
-            .chain_update(expected.cache_credential)
-            .chain_update(epoch.to_be_bytes())
-            .finalize()
-            .into(),
-    )
-}
-
 fn cache_signer_root_cut_v2(expected: CacheRootSourceExpectation<'_>, epoch: u64) -> ObjectDigest {
     ObjectDigest::from_bytes(
         Sha256::new()
@@ -1067,8 +874,7 @@ mod tests {
     use ed25519_dalek::SigningKey;
 
     use crate::cache_residency::{
-        CLOSED_CACHE_OWNER_READBACK_BYTES_V1, encode_cache_owner_readback_signer_credential_v1,
-        sign_test_cache_owner_readback_v1, sign_test_cache_owner_readback_v2,
+        encode_cache_owner_readback_signer_credential_v1, sign_test_cache_owner_readback_v2,
     };
     use crate::journal::{CachePolicyHoldV1, JournalLimits, JournalRecord, JournalTransaction};
 
@@ -1118,211 +924,6 @@ mod tests {
     }
 
     #[test]
-    fn root_challenge_spends_epoch_and_rejects_replay_rotation_and_disconnect() {
-        let directory = tempfile::tempdir().expect("private root fixture");
-        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
-            .expect("private root mode");
-        let deployment = SigningKey::from_bytes(&[2; 32]).verifying_key();
-        let project = SigningKey::from_bytes(&[3; 32]).verifying_key();
-        let cache_signing = SigningKey::from_bytes(&[4; 32]);
-        let cache_pin =
-            encode_cache_owner_readback_signer_credential_v1(5, &cache_signing.verifying_key())
-                .expect("Cache pin");
-        let mut root = journal(directory.path());
-        admit_source(&mut root, &cache_pin, &deployment, &project);
-
-        assert!(matches!(
-            with_closed_cache_readback_session_in_journal_v1(
-                &mut root,
-                DEPLOYMENT_HEAD,
-                PROJECT_HEAD,
-                PROJECT_INPUT,
-                &cache_pin,
-                3,
-                &deployment,
-                4,
-                &project,
-                811,
-                || Ok([0; 16]),
-                |_| panic!("zero nonce must not be issued"),
-            ),
-            Err(ClosedCacheReadbackSessionErrorV1::Nonce)
-        ));
-
-        let mut first_packet = [0_u8; CLOSED_CACHE_OWNER_READBACK_BYTES_V1];
-        let first = with_closed_cache_readback_session_in_journal_v1(
-            &mut root,
-            DEPLOYMENT_HEAD,
-            PROJECT_HEAD,
-            PROJECT_INPUT,
-            &cache_pin,
-            3,
-            &deployment,
-            4,
-            &project,
-            811,
-            || Ok([7; 16]),
-            |challenge| {
-                assert_eq!(challenge.epoch(), 1);
-                first_packet =
-                    sign_test_cache_owner_readback_v1(challenge.readback(), 5, &cache_signing, 811)
-                        .expect("signed fixture");
-                Ok(first_packet.to_vec())
-            },
-        )
-        .expect("closed signed readback");
-        assert_eq!(first.epoch(), 1);
-        assert_eq!(first.readback().manifest_head().0, 7);
-        assert_eq!(
-            first.packet_digest(),
-            ObjectDigest::from_bytes(Sha256::digest(first_packet).into())
-        );
-
-        let mut second_epoch = 0;
-        assert!(matches!(
-            with_closed_cache_readback_session_in_journal_v1(
-                &mut root,
-                DEPLOYMENT_HEAD,
-                PROJECT_HEAD,
-                PROJECT_INPUT,
-                &cache_pin,
-                3,
-                &deployment,
-                4,
-                &project,
-                811,
-                || Ok([8; 16]),
-                |challenge| {
-                    second_epoch = challenge.epoch();
-                    Ok(first_packet.to_vec())
-                },
-            ),
-            Err(ClosedCacheReadbackSessionErrorV1::Readback(
-                CacheOwnerReadbackErrorV1::Stale
-            ))
-        ));
-        assert_eq!(second_epoch, 2);
-
-        assert!(matches!(
-            with_closed_cache_readback_session_in_journal_v1(
-                &mut root,
-                DEPLOYMENT_HEAD,
-                PROJECT_HEAD,
-                PROJECT_INPUT,
-                &cache_pin,
-                3,
-                &deployment,
-                4,
-                &project,
-                811,
-                || Ok([9; 16]),
-                |_| Err(io::Error::new(io::ErrorKind::TimedOut, "lost Controller")),
-            ),
-            Err(ClosedCacheReadbackSessionErrorV1::Transport(_))
-        ));
-        drop(root);
-
-        let mut reopened = journal(directory.path());
-        let fourth = with_closed_cache_readback_session_in_journal_v1(
-            &mut reopened,
-            DEPLOYMENT_HEAD,
-            PROJECT_HEAD,
-            PROJECT_INPUT,
-            &cache_pin,
-            3,
-            &deployment,
-            4,
-            &project,
-            811,
-            || Ok([10; 16]),
-            |challenge| {
-                assert_eq!(challenge.epoch(), 4);
-                Ok(
-                    sign_test_cache_owner_readback_v1(challenge.readback(), 5, &cache_signing, 811)
-                        .expect("signed fixture")
-                        .to_vec(),
-                )
-            },
-        )
-        .expect("durable challenge replay and released lock");
-        assert_eq!(fourth.epoch(), 4);
-
-        let rotated =
-            encode_cache_owner_readback_signer_credential_v1(6, &cache_signing.verifying_key())
-                .expect("rotated pin");
-        let mut nonce_called = false;
-        assert!(matches!(
-            with_closed_cache_readback_session_in_journal_v1(
-                &mut reopened,
-                DEPLOYMENT_HEAD,
-                PROJECT_HEAD,
-                PROJECT_INPUT,
-                &rotated,
-                3,
-                &deployment,
-                4,
-                &project,
-                811,
-                || {
-                    nonce_called = true;
-                    Ok([11; 16])
-                },
-                |_| Ok(first_packet.to_vec()),
-            ),
-            Err(ClosedCacheReadbackSessionErrorV1::Stale)
-        ));
-        assert!(!nonce_called);
-        assert!(matches!(
-            with_closed_cache_readback_session_in_journal_v1(
-                &mut reopened,
-                DEPLOYMENT_HEAD,
-                PROJECT_HEAD,
-                b"stale-project-input",
-                &cache_pin,
-                3,
-                &deployment,
-                4,
-                &project,
-                811,
-                || Ok([12; 16]),
-                |_| Ok(first_packet.to_vec()),
-            ),
-            Err(ClosedCacheReadbackSessionErrorV1::Stale)
-        ));
-
-        reopened
-            .commit(
-                &JournalTransaction::new(
-                    [36; 16],
-                    vec![JournalRecord::put(
-                        RecordNamespace::DesiredState,
-                        PROJECT_HEAD_KEY.to_vec(),
-                        b"legacy-downgrade".to_vec(),
-                    )],
-                )
-                .expect("legacy transaction"),
-            )
-            .expect("legacy record fixture");
-        assert!(matches!(
-            with_closed_cache_readback_session_in_journal_v1(
-                &mut reopened,
-                DEPLOYMENT_HEAD,
-                PROJECT_HEAD,
-                PROJECT_INPUT,
-                &cache_pin,
-                3,
-                &deployment,
-                4,
-                &project,
-                811,
-                || Ok([13; 16]),
-                |_| Ok(first_packet.to_vec()),
-            ),
-            Err(ClosedCacheReadbackSessionErrorV1::Stale)
-        ));
-    }
-
-    #[test]
     fn staged_signer_challenge_survives_reopen_and_rejects_superseded_packet() {
         let directory = tempfile::tempdir().expect("private root fixture");
         fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
@@ -1345,14 +946,6 @@ mod tests {
         };
         let mut root = journal(directory.path());
         admit_source(&mut root, &pin, &deployment, &project);
-        let legacy = CODEC_V1.encode(1, [9; 16], ObjectDigest::from_bytes([9; 32]));
-        root.commit(
-            &CODEC_V1
-                .transaction(legacy)
-                .expect("legacy challenge transaction"),
-        )
-        .expect("legacy diagnostic challenge");
-
         let first = stage_cache_signer_challenge_in_journal_v2(&mut root, expected, || Ok([7; 16]))
             .expect("spent V2 challenge");
         assert_eq!(first.epoch(), 1);

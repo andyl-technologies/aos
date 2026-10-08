@@ -413,6 +413,7 @@ fn validate_manifest_identity(
     }
 }
 
+#[cfg(test)]
 pub(super) fn sign_closed_cache_owner_readback_v1(
     fields: CacheOwnerReadbackFieldsV1,
     challenge: CacheOwnerReadbackChallengeV1,
