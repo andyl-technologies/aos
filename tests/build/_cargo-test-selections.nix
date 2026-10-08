@@ -113,7 +113,8 @@ let
     cacheSignerTestsRetained = commands: let
       selected = lib.filter (command: builtins.elem "cache-signer" (selectedRoles command)) commands;
     in
-      lib.length selected == 1
+      lib.length selected
+      == 1
       && lib.all (lib.hasInfix "-p aos-sandbox-cache-signer") selected;
     artifactCommands = package.cargoArtifacts.cargoBuildCommands;
     artifactBuilds = lib.filter (lib.hasPrefix "build ") artifactCommands;
