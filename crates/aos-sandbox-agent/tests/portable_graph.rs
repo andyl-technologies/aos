@@ -1,4 +1,4 @@
-//! Guards the normal package dependency boundaries of the portable wire roots.
+//! Guards normal dependency boundaries of portable wire and pure compiler roots.
 //!
 //! Workspace metadata does not prove isolated active feature selection or the
 //! absence of external transport runtimes. Coordinator generation is checked
@@ -37,11 +37,15 @@ fn portable_production_graphs_have_no_linux_or_effect_owner() -> Result<(), Box<
         .filter_map(|node| node["id"].as_str().map(|id| (id, node)))
         .collect();
 
-    let roots: [(&str, &[&str]); 3] = [
+    let roots: [(&str, &[&str]); 4] = [
         ("aos-sandbox-core", &["aos-sandbox-core"]),
         (
             "aos-sandbox-agent",
             &["aos-sandbox-agent", "aos-sandbox-core"],
+        ),
+        (
+            "aos-sandbox-policy",
+            &["aos-sandbox-policy", "aos-sandbox-core"],
         ),
         (
             "aos-sandbox-protocol",
@@ -68,7 +72,7 @@ fn portable_production_graphs_have_no_linux_or_effect_owner() -> Result<(), Box<
 }
 
 // Keep each root's boundary independent: Protocol's wider wire closure must
-// not permit an Agent or Core dependency backedge.
+// not permit an Agent, Core, or pure Policy dependency backedge.
 fn check_production_graph(
     root_name: &str,
     allowed_path_packages: &[&str],
