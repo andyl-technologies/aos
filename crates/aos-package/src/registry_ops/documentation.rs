@@ -6,7 +6,7 @@ use crate::registry_ops::config_modules::{
 };
 use crate::registry_ops::mac::PublishExposeManifest;
 use crate::registry_ops::store_paths::{
-    StorePathInfo, introspect_store_path, nix_command, store_dir_from_store_path,
+    StorePathInfo, StoreQueries, nix_command, store_dir_from_store_path,
 };
 use crate::registry_ops::uki::sha256_hex;
 use crate::types::{
@@ -173,6 +173,7 @@ in assert catalog.schema == "aos.service-documentation/v1";
 
 #[allow(clippy::too_many_arguments)]
 pub(in crate::registry_ops) fn publish_package_documentation(
+    store: &StoreQueries,
     name: &str,
     version: &str,
     platform: &str,
@@ -352,7 +353,8 @@ pub(in crate::registry_ops) fn publish_package_documentation(
         .context("documentation store path is not UTF-8")?
         .trim()
         .to_string();
-    let info = introspect_store_path(&store_path)
+    let info = store
+        .introspect(&store_path)
         .context("introspecting canonical package documentation store object")?;
     if !info.references.is_empty() {
         bail!("package documentation store object must have no references");
