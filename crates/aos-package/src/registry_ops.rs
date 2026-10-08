@@ -87,7 +87,10 @@ pub(crate) use native_artifacts::publish_native_documents;
 
 pub(crate) use provenance::require_active_registry_key;
 pub use publish::publish;
-pub(crate) use publish::{publish_canonical_named_output, publish_canonical_release_entry};
+pub(crate) use publish::{
+    preload_canonical_release_entries, publish_canonical_named_output,
+    publish_canonical_release_entry,
+};
 pub use query::{packages, show, unpublish, verify};
 pub use release::{
     ContainerReleaseAttachment, ReleaseReport, ReleaseStorePublish, ReleaseTreeOptions,
@@ -95,6 +98,7 @@ pub use release::{
 };
 pub use staging::run_stage;
 pub use store_commands::run_store;
+pub(crate) use store_paths::StoreQueries;
 pub(crate) use tags::release_commit;
 pub use tags::{sign, tag};
 pub use trust::{run_keys, run_trust};

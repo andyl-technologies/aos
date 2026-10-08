@@ -14,7 +14,7 @@ use super::provenance::{
     PublishProvenanceArtifact, append_package_provenance_transparency_log, publish_provenance_ref,
     publish_provenance_statement, validate_external_provenance_signer,
 };
-use super::store_paths::{first_letter, introspect_store_path};
+use super::store_paths::{StoreQueries, first_letter};
 use crate::provenance::{ProvenanceSigner, sign_statement_dsse_jsonl_external};
 use crate::types::{AttestationMeta, NativeArtifactMeta};
 
@@ -119,6 +119,7 @@ pub(crate) async fn publish_output_evidence(
     platform: &str,
     output: &str,
     signer: &mut dyn ProvenanceSigner,
+    store: &StoreQueries,
 ) -> Result<()> {
     validate_external_provenance_signer(directory, signer)?;
     let catalog_path = directory
@@ -144,6 +145,7 @@ pub(crate) async fn publish_output_evidence(
     };
     let deployment = deployment.context("selectable output lacks its own native envelope")?;
     let (actual, bytes) = super::native_artifacts::inspect_native_artifact(
+        store,
         &deployment.store_path,
         "deployment.json",
     )?;
@@ -164,8 +166,8 @@ pub(crate) async fn publish_output_evidence(
         entry.module_documentation.as_ref(),
         entry.qualification.as_ref(),
     )?;
-    let info = introspect_store_path(payload)?;
-    let source = introspect_store_path(&entry.source_drv)?;
+    let info = store.introspect(payload)?;
+    let source = store.introspect(&entry.source_drv)?;
     ensure!(
         aos_registry_surface::store::canonical_digest_hex(&source.nar_hash)?
             == aos_registry_surface::store::canonical_digest_hex(&entry.source_nar_hash)?,
@@ -424,10 +426,13 @@ store_path = "/nix/store/22222222222222222222222222222222-example-tools"
             .unwrap()
             .to_str()
             .unwrap();
-        let info = introspect_store_path(&available.path).unwrap();
-        let source = super::super::store_paths::introspect_deriver(&available.path)
-            .unwrap()
-            .unwrap();
+        let info = StoreQueries::new().introspect(&available.path).unwrap();
+        let source = super::super::store_paths::introspect_deriver(
+            &super::super::store_paths::StoreQueries::new(),
+            &available.path,
+        )
+        .unwrap()
+        .unwrap();
         let directory = tempfile::TempDir::new().unwrap();
         init_test_transparency_repo(directory.path());
         git(directory.path(), &["add", "registry.toml", "keys.toml"]).unwrap();
@@ -479,6 +484,7 @@ store_path = "/nix/store/22222222222222222222222222222222-example-tools"
                 envelope,
                 Some(documentation),
                 qualification,
+                &super::super::store_paths::StoreQueries::new(),
                 &printer,
             )
             .unwrap();
@@ -493,6 +499,7 @@ store_path = "/nix/store/22222222222222222222222222222222-example-tools"
                 "x86_64-linux",
                 output,
                 &mut signer.signer,
+                &StoreQueries::new(),
             )
             .await
             .unwrap();

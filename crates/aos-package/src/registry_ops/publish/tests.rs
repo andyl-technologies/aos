@@ -118,6 +118,7 @@ async fn native_release_publication_requires_an_active_committed_signer() {
         "Apache-2.0",
         "AOS test",
         &mut signer.signer,
+        &super::StoreQueries::new(),
         &aos_core::output::Printer::new(0, true, false),
     )
     .await
