@@ -128,7 +128,10 @@ impl ProtectedLedgerReplayV1 {
             records.push(ReplayedPublisherRecordV1 { envelope, payload });
         }
 
-        let checkpoint = projection.checkpoint.ok_or(AdmissionError::Poisoned)?;
+        let checkpoint = projection
+            .checkpoint
+            .clone()
+            .ok_or(AdmissionError::Poisoned)?;
         if !matches!(
             records.last().map(|record| record.envelope.kind),
             Some(ProtectedRecordKindV1::AuthorityCheckpoint)
@@ -136,32 +139,15 @@ impl ProtectedLedgerReplayV1 {
         {
             return Err(AdmissionError::Poisoned);
         }
-        let sources =
-            SourceReleaseRegistry::replay(maximum_source_releases, projection.sources.clone())?;
-        let roots = crate::publisher_roots::PublicationRootRegistry::replay(
-            maximum_root_records,
-            projection.roots.clone(),
-        )
-        .map_err(|_| AdmissionError::Poisoned)?;
-        let ledger = AdmissionLedger::from_replayed(
+        let (ledger, sources, roots) = ledger_from_projection(
+            projection,
             limits,
-            checkpoint.epoch,
             capacity,
-            projection.challenges,
-            projection.decisions,
-            projection.accounts,
-            projection.preparation_intents,
-            projection.artifacts,
-            projection.permits,
-            projection.receipts,
-            projection.evictions,
-            projection.recovery_observations,
-            latest_sources(projection.sources),
-            projection.roots,
+            maximum_source_releases,
+            maximum_root_records,
             checkpoint.sequence,
             predecessor,
             materialized_bytes,
-            projection.poisoned,
             false,
         )?;
         verify_checkpoint(&ledger, &checkpoint)?;
