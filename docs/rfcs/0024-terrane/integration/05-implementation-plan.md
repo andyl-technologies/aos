@@ -1376,7 +1376,7 @@ generation installs 232 new index shards; incremental measurement and the
 independent maintenance oracle are not reached. An isolated production
 optimization is in progress; every native physical/current check and the
 existing deadlines remain qualification requirements.
-The owning `algebra-fork` registration now requires ten exact native witnesses
+The owning `algebra-fork` registration now requires twelve exact native witnesses
 and the separate cold-source, full requalification, source-preservation and
 imported-source-preservation checks. Registry completeness and both formatters
 pass; the owning runtime qualification remains pending. Gate Cargo jobs now

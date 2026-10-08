@@ -20,6 +20,8 @@
     "root_native_cold_fork_after_separate_same_head_requalification"
     "root_native_cold_fork_refuses_current_source_and_destination_rights"
     "root_native_cold_fork_refuses_changed_original_and_selected_controls"
+    "root_native_cold_fork_refuses_source_record_incarnation_after_preparation"
+    "root_native_cold_fork_refuses_selected_log_incarnation_after_preparation"
     "root_native_cold_fork_rejects_profile_and_occurrence_contradictions"
     "root_native_cold_fork_stops_on_sync_failure_and_expiry"
     "current_revision::root_native_cold_fork_revalidates_new_current_registration_without_nodes"
@@ -45,7 +47,7 @@ in {
       python3 ../tests/terrane/check_native_gate.py execution \
         "$TMPDIR/algebra-fork-test.log" "[\"$test_name\"]"
     done
-    printf 'PASS: native cold-fork publication (10 exact cases), selected source requalification and preservation\n' \
+    printf 'PASS: native cold-fork publication (12 exact cases), selected source requalification and preservation\n' \
       > "$out/result"
   '';
 
