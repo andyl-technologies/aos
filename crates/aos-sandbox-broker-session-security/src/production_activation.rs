@@ -9,14 +9,12 @@
 mod host;
 
 pub(crate) use host::verify_storage_session_peer;
-pub use host::{ProductionHostBrokerServiceErrorV1, ProductionHostBrokerServiceV1};
+pub use host::{ProductionHostActivationV1, ProductionHostReadinessV1, ProductionHostRoleV1};
 
 use std::collections::BTreeMap;
 use std::os::fd::{BorrowedFd, OwnedFd};
 use std::path::Path;
 
-use aos_sandbox::runtime_execution::DormantRuntimeExecutionOwnerErrorV1;
-use aos_sandbox_host::live_agent::HostAgentLiveErrorV1;
 use aos_sandbox_linux::inherited_fd::claim_systemd_activation_descriptor_range;
 use aos_sandbox_linux::seqpacket::{RecordSubjectListener, SeqpacketError};
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
@@ -60,12 +58,6 @@ pub enum ProductionBrokerSessionActivationErrorV1 {
     /// A kernel clock, poll, or activation-descriptor operation failed.
     #[error("broker-session activation kernel operation failed")]
     Kernel,
-    /// The protected runtime generation could not be claimed for a guest launch.
-    #[error("guest-agent launch currentness is unavailable: {0}")]
-    GuestRuntime(#[from] DormantRuntimeExecutionOwnerErrorV1),
-    /// The private launch channel did not authenticate its exact guest peer.
-    #[error("guest-agent launch session is invalid: {0}")]
-    GuestSession(#[from] HostAgentLiveErrorV1),
 }
 
 struct FixedListenerV1 {
@@ -315,12 +307,14 @@ impl ProductionBrokerSessionActivationV1 {
     /// This is the descriptor-owned counterpart of [`Self::adopt_host`]. All three
     /// audience-specific listeners are required, and each must retain its exact
     /// production filesystem path and record-subject configuration.
+    /// This checked adopter is available only to tests and the explicit
+    /// `kernel-tests` qualification feature; production startup remains unchanged.
     ///
     /// # Errors
     ///
     /// Rejects any listener whose kernel socket properties or fixed path differ.
-    #[cfg(test)]
-    pub(crate) fn adopt_host_listeners(
+    #[cfg(any(test, feature = "kernel-tests"))]
+    pub fn adopt_host_listeners(
         controller: RecordSubjectListener,
         root_mount: RecordSubjectListener,
         storage: RecordSubjectListener,

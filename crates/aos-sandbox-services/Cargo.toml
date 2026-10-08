@@ -34,12 +34,14 @@ cache-signer = ["dep:aos-sandbox-broker-session-security"]
 source-signer = ["dep:aos-sandbox-broker-session-security"]
 publisher = ["dep:aos-sandbox-linux"]
 host = [
+    "dep:aos-sandbox",
     "dep:aos-sandbox-broker-session-security",
     "dep:aos-sandbox-host",
     "dep:aos-sandbox-linux",
     "dep:aos-systemd",
     "dep:ed25519-dalek",
     "dep:rustix",
+    "dep:thiserror",
     "dep:tokio",
     "dep:zeroize",
 ]

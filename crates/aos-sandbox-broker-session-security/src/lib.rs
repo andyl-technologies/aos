@@ -226,7 +226,7 @@ pub use manifest::{
 };
 pub use production_activation::{
     ProductionBrokerSessionActivationErrorV1, ProductionBrokerSessionActivationV1,
-    ProductionHostBrokerServiceErrorV1, ProductionHostBrokerServiceV1,
+    ProductionHostActivationV1, ProductionHostReadinessV1, ProductionHostRoleV1,
 };
 pub use production_dispatch::{
     ProductionHostBrokerDispatchCommitV1, ProductionHostBrokerDispatchFailureV1,

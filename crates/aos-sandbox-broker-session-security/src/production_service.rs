@@ -832,33 +832,6 @@ impl DormantAuthenticatedBrokerSessionV1 {
         ProductionOriginalStorageOutputCycleV1::begin(self)
     }
 
-    /// Receives and completes one Host request or exact replay.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error after consuming the session when any receive,
-    /// admission, Host effect, recovery, commit, or response step fails.
-    pub async fn serve_production_host_request(
-        self,
-        host: &mut dyn aos_sandbox_host::DormantHostBrokerCallsiteV1,
-        publisher: &aos_sandbox_host::catalog::FileHostCatalogPublisher,
-        agent: Option<&mut aos_sandbox_host::live_agent::HostAgentLiveSessionV1>,
-        deadline_boottime_nanoseconds: u64,
-    ) -> Result<Self, ProductionBrokerServiceErrorV1> {
-        let (session, event) =
-            self.receive_production_host_request(deadline_boottime_nanoseconds)?;
-        session
-            .complete_host_request_event(
-                event,
-                host,
-                publisher,
-                agent,
-                deadline_boottime_nanoseconds,
-            )
-            .await
-            .map_err(Into::into)
-    }
-
     /// Receives and completes one Storage request or exact replay.
     ///
     /// # Errors

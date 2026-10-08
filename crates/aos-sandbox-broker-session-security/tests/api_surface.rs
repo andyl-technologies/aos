@@ -36,6 +36,39 @@ fn executable_and_http_registration_ownership_is_outside_security() {
 }
 
 #[test]
+fn host_scheduling_stays_above_fixed_session_admission() {
+    let activation = include_str!("../src/production_activation.rs");
+    let host = include_str!("../src/production_activation/host.rs");
+    let service = include_str!("../src/production_service.rs");
+
+    for source in [LIBRARY_SOURCE, activation, host, service] {
+        assert!(!source.contains("ProductionHostBrokerServiceV1"));
+        assert!(!source.contains("into_host_service"));
+        assert!(!source.contains("serve_production_host_request"));
+    }
+
+    for forbidden in [
+        "pub fn as_fd",
+        "pub fn descriptor",
+        "pub fn sign",
+        "pub fn from_bytes",
+        "pub fn verification_context",
+        "DormantRuntimeExecutionOwnerV1",
+        "select_ready_role",
+    ] {
+        assert!(
+            !host.contains(forbidden),
+            "fixed Host port exposed {forbidden}"
+        );
+    }
+
+    assert!(activation.contains("#[cfg(any(test, feature = \"kernel-tests\"))]"));
+    assert!(activation.contains("pub fn adopt_host_listeners("));
+    assert!(host.contains("open_fixed_protected(fixed.endpoint)"));
+    assert!(host.contains("verify_storage_connection_peer(socket.peer())?"));
+}
+
+#[test]
 fn endpoint_surface_exposes_no_signer_or_scalar_escape_hatch() {
     for forbidden in [
         "pub fn sign",

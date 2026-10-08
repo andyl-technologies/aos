@@ -1,9 +1,9 @@
 //! Runs the authenticated, systemd-activated sandbox Host broker.
 //!
-//! The daemon adopts both fixed Host listeners before opening any other file
+//! The daemon adopts all three fixed Host listeners before opening any other file
 //! descriptor. Each accepted connection completes the protected broker-session
 //! handshake and retains its protected sequence owner across bounded request
-//! cycles. Ready controller and RootMount roles alternate without dropping idle
+//! cycles. Ready controller, RootMount, and Storage roles rotate without dropping idle
 //! sessions. A failed request drops only its session, preserving durable recovery.
 
 use std::env;
@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use aos_sandbox_broker_session_security::{
     ProductionBrokerSessionActivationErrorV1, ProductionBrokerSessionActivationV1,
-    ProductionHostBrokerServiceErrorV1, ProductionHostBrokerServiceV1, production_deadline_after,
+    production_deadline_after,
 };
 use aos_sandbox_host::DormantHostBrokerCompositionV1;
 use aos_sandbox_host::authorization::{HostAuthorityConfigError, HostAuthorityV1};
@@ -30,6 +30,9 @@ use aos_sandbox_host::{HostError, Result};
 use aos_sandbox_linux::cgroup::CgroupV2Root;
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::path::BeneathRoot;
+use aos_sandbox_services::host::{
+    ProductionHostBrokerServiceErrorV1, ProductionHostBrokerServiceV1,
+};
 
 const CATALOG_ROOT: &str = "/run/aos/sandbox-host";
 const STATE_ROOT: &str = "/var/lib/aos/sandbox-host";
@@ -77,7 +80,7 @@ fn run() -> Result<()> {
         }
         None => unsafe { ProductionBrokerSessionActivationV1::adopt_host() }.map_err(production_error)?,
     };
-    let mut service = activation.into_host_service().map_err(production_error)?;
+    let mut service = ProductionHostBrokerServiceV1::new(activation).map_err(production_error)?;
 
     // This probe is diagnostic only. Protected backend readiness remains the
     // sole authority for enabling Host Launch.
@@ -313,7 +316,7 @@ impl ComponentAssembly {
             // The sole selected producer above constructs exactly these three
             // endpoints. The ordinary converter's negative profile branch is
             // unreachable for this producer, not waived for arbitrary input.
-            self.service = Some(activation.into_host_service());
+            self.service = Some(ProductionHostBrokerServiceV1::new(activation));
         }
         if !self.service.as_ref().is_some_and(|result| result.is_ok()) {
             self.first.get_or_insert(ComponentAssemblySite::Service);
@@ -578,6 +581,12 @@ fn serve_host(
                 }
                 Err(ProductionHostBrokerServiceErrorV1::Request(error)) => {
                     eprintln!("aos-sandbox-hostd: authenticated request failed: {error}");
+                }
+                Err(
+                    error @ (ProductionHostBrokerServiceErrorV1::GuestRuntime(_)
+                    | ProductionHostBrokerServiceErrorV1::GuestSession(_)),
+                ) => {
+                    return Err(HostError::State(error.to_string()));
                 }
             }
         }

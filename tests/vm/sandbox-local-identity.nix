@@ -62,10 +62,49 @@
       install -m 0755 kernel-fixtures/* "$out/bin/"
     '';
   };
+
+  # Keep Host scheduler qualification separate from the Controller fixture's
+  # service feature graph; neither production role gains an ambient default.
+  hostFixtures = pkgs.mkCargoPackage {
+    pname = "aos-sandbox-host-service-identity-tests";
+    version = "0.1.0";
+    src = import ../../pkgs/tools/aos/_workspace-source.nix {inherit lib;};
+    cargoDeps = pkgs.aos.passthru.cargoDeps;
+    cargoRoot = "crates";
+    buildType = "debug";
+    cargoBuildCommands = [
+      "test --no-run --lib --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-services --no-default-features --features host,kernel-tests"
+    ];
+    doCheck = true;
+    cargoNextest = true;
+    cargoTestFlags = "-p aos-sandbox-services --lib --no-default-features --features host";
+    installBins = false;
+    buildDeps = [pkgs.protobuf];
+    runtimeDeps = [];
+    cargoEnv.PROTOC = "${pkgs.protobuf}/bin/protoc";
+    postBuild = ''
+      mkdir kernel-fixtures
+      count=0
+      for candidate in target/debug/deps/aos_sandbox_services-*; do
+        if [ -f "$candidate" ] && [ -x "$candidate" ]; then
+          install -m 0755 "$candidate" kernel-fixtures/aos_sandbox_services_host
+          count=$((count + 1))
+        fi
+      done
+      if [ "$count" -ne 1 ]; then
+        echo "expected exactly one Host service unit-test executable, found $count" >&2
+        exit 1
+      fi
+    '';
+    postInstall = ''
+      mkdir -p "$out/bin"
+      install -m 0755 kernel-fixtures/aos_sandbox_services_host "$out/bin/"
+    '';
+  };
 in
   testing.mkVMTest {
     name = "sandbox-local-identity";
-    rootfsDeps = [fixtures pkgs.aos pkgs.aos-sandbox-mountd pkgs.coreutils pkgs.grep pkgs.util-linux];
+    rootfsDeps = [fixtures hostFixtures pkgs.aos pkgs.aos-sandbox-mountd pkgs.coreutils pkgs.grep pkgs.util-linux];
     memory = 512;
     testScript = ''
       unset LD_LIBRARY_PATH
@@ -281,19 +320,21 @@ in
       chmod 0500 /var/lib/aos/sandbox-host/broker-session/controller/custody
       ${pkgs.coreutils}/bin/install -d -o 0 -g 811 -m 0710 /run/aos/sandbox-host
 
-      for filter in \
-        controller_service::qualification_host_inventory::fixed_host_inventory_broker \
-        controller_service::qualification_host_inventory::fixed_controller_host_inventory_client; do
-        ${fixtures}/bin/aos_sandbox_broker_session_security \
-          --ignored --list "$filter" > /tmp/selected-host-tests
-        ${pkgs.grep}/bin/grep -q ': test$' /tmp/selected-host-tests
-      done
+      ${hostFixtures}/bin/aos_sandbox_services_host \
+        --ignored --list host::qualification::fixed_host_inventory_broker \
+        > /tmp/selected-host-tests
+      ${pkgs.grep}/bin/grep -q ': test$' /tmp/selected-host-tests
+      ${fixtures}/bin/aos_sandbox_broker_session_security \
+        --ignored --list \
+        controller_service::qualification_host_inventory::fixed_controller_host_inventory_client \
+        > /tmp/selected-host-tests
+      ${pkgs.grep}/bin/grep -q ': test$' /tmp/selected-host-tests
 
       echo $$ > /sys/fs/cgroup/aos.slice/aos-control.slice/aos-sandbox-hostd.service/cgroup.procs
       export CREDENTIALS_DIRECTORY=/run/aos/broker-qualification/host-authority
-      ${fixtures}/bin/aos_sandbox_broker_session_security \
+      ${hostFixtures}/bin/aos_sandbox_services_host \
         --ignored --exact \
-        controller_service::qualification_host_inventory::fixed_host_inventory_broker \
+        host::qualification::fixed_host_inventory_broker \
         --test-threads=1 --nocapture > /tmp/fixed-host-inventory-broker.log 2>&1 &
       host_broker_pid=$!
       for attempt in 1 2 3 4 5 6 7 8 9 10; do

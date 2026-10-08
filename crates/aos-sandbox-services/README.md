@@ -9,6 +9,7 @@ confinement stay unchanged.
 | Owner | Current responsibility |
 | --- | --- |
 | `aos-sandbox-services::controller` | Socket custody, root-only diagnostic acceptance, bounded registered TLS acceptance, HTTP registration and serving |
+| `aos-sandbox-services::host` | Fixed-role session scheduling, fairness, guest-launch retention and sealed request-cycle composition |
 | Role-selected binaries | Arguments, installed daemon composition and the existing selected startup recipes |
 | Session security `controller_service` | Opaque authenticated API handlers, sole worker command channel, reconciliation, retained startup parent and readiness/terminal ordering |
 | Session security and domain owners | Protected credentials, authentication, verified handoffs, replay/currentness and semantic/physical checks |
@@ -19,6 +20,15 @@ access, readiness, and authority constructors stay private to their existing
 owners. Associated listener/partial-startup fields stay in the same retained
 runtime parent; assembly failures use that parent's terminal before releasing
 partial originals.
+
+The Host scheduler keeps its activation owner, three private authenticated
+session slots, guest channel and fairness cursor in their original drop order.
+Session security retains the opaque fixed-listener adapter, authenticated
+handshake and Storage peer checks around each selected request cycle. Readiness
+is descriptor observation only; it grants no authority. The scheduler composes
+existing sealed receive/completion methods without exposing signing or raw
+transport. Its VM broker fixture follows the scheduler into a separate explicit
+`host,kernel-tests` executable; the Controller inventory client stays lower.
 
 The public port is a trusted application contract: arbitrary implementations
 are not proof of authenticated transport or retained custody. The installed

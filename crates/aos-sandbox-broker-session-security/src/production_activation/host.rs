@@ -1,68 +1,66 @@
-//! Schedules retained controller, RootMount, and Storage Host sessions fairly.
+//! Owns fixed Host listener admission and protected Storage peer bookends.
 //!
-//! Each role owns at most one authenticated session. Idle sessions retain their
-//! sequence custody without blocking another listener. Ready roles rotate
-//! after each bounded handshake/request cycle; effects still execute serially.
+//! Role readiness is only a descriptor observation, not verified authority.
+//! The application chooses its next ready role and retains authenticated
+//! sessions; listener sockets, handshake custody, and peer pidfds stay private.
 
 use std::fs::File;
 use std::path::Path;
 
-use aos_sandbox::runtime_execution::DormantRuntimeExecutionOwnerV1;
 use aos_sandbox_host::peer::ControllerPeerVerifier;
 use aos_sandbox_linux::cgroup::CgroupV2Root;
 use aos_sandbox_linux::pidfd::PidFd;
 use aos_sandbox_linux::seqpacket::ConnectionPeerIdentity;
 
 use super::*;
-use crate::ProductionBrokerServiceErrorV1;
 
-const STORAGE_ROLE: usize = 2;
 const STORAGE_SERVICE_CGROUP: &str = "aos.slice/aos-control.slice/aos-storaged.service";
 
-/// Owns three fixed Host listeners and one retained session per peer role.
-pub struct ProductionHostBrokerServiceV1 {
-    activation: ProductionBrokerSessionActivationV1,
-    sessions: [Option<DormantAuthenticatedBrokerSessionV1>; 3],
-    agent: Option<aos_sandbox_host::live_agent::HostAgentLiveSessionV1>,
-    next_role: usize,
-}
-
-/// Reports admission failure or a consumed Host request-cycle failure.
-#[derive(Debug, thiserror::Error)]
-pub enum ProductionHostBrokerServiceErrorV1 {
-    /// Activation, readiness polling, or protected session admission failed.
-    #[error(transparent)]
-    Activation(#[from] ProductionBrokerSessionActivationErrorV1),
-    /// A selected request failed and its session custody was consumed.
-    #[error(transparent)]
-    Request(#[from] ProductionBrokerServiceErrorV1),
-}
-
+/// Selects one of the three fixed Host listener audiences.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RetainedAgentStateV1 {
-    Current,
-    Stale,
+pub enum ProductionHostRoleV1 {
+    /// Selects the Controller-to-Host listener.
+    Controller,
+    /// Selects the RootMount-to-Host listener.
+    RootMount,
+    /// Selects the Storage-to-Host listener.
+    Storage,
 }
 
-fn retained_agent_state(
-    validation: Result<(), HostAgentLiveErrorV1>,
-) -> Result<RetainedAgentStateV1, ProductionBrokerSessionActivationErrorV1> {
-    match validation {
-        Ok(()) => Ok(RetainedAgentStateV1::Current),
-        Err(HostAgentLiveErrorV1::Binding) => Ok(RetainedAgentStateV1::Stale),
-        Err(error) => Err(error.into()),
+impl ProductionHostRoleV1 {
+    const fn index(self) -> usize {
+        match self {
+            Self::Controller => 0,
+            Self::RootMount => 1,
+            Self::Storage => 2,
+        }
     }
 }
 
+/// Reports readiness of fixed Host roles without attesting peer authority.
+pub struct ProductionHostReadinessV1([bool; 3]);
+
+impl ProductionHostReadinessV1 {
+    /// Reports whether the selected role had an input, hangup, or error event.
+    #[must_use]
+    pub fn contains(&self, role: ProductionHostRoleV1) -> bool {
+        self.0[role.index()]
+    }
+}
+
+/// Retains the exact three-listener Host activation profile.
+#[must_use = "retain the fixed listeners while serving Host sessions"]
+pub struct ProductionHostActivationV1(ProductionBrokerSessionActivationV1);
+
 impl ProductionBrokerSessionActivationV1 {
-    /// Retains all Host role listeners in a bounded round-robin service owner.
+    /// Retains all three ordered Host listeners behind fixed admission ports.
     ///
     /// # Errors
     ///
     /// Rejects an activation profile other than the fixed three-listener Host profile.
-    pub fn into_host_service(
+    pub fn into_host_activation(
         self,
-    ) -> Result<ProductionHostBrokerServiceV1, ProductionBrokerSessionActivationErrorV1> {
+    ) -> Result<ProductionHostActivationV1, ProductionBrokerSessionActivationErrorV1> {
         if self.listeners.len() != 3
             || !matches!(
                 self.listeners[0].endpoint,
@@ -81,154 +79,93 @@ impl ProductionBrokerSessionActivationV1 {
                 "Host scheduling requires all three fixed role listeners",
             ));
         }
-        Ok(ProductionHostBrokerServiceV1 {
-            activation: self,
-            sessions: [None, None, None],
-            agent: None,
-            next_role: 0,
-        })
+        Ok(ProductionHostActivationV1(self))
     }
 }
 
-impl ProductionHostBrokerServiceV1 {
-    fn retain_authenticated_agent_launch(
-        &mut self,
-        session: aos_sandbox_host::live_agent::HostAgentLiveSessionV1,
-    ) -> Result<(), ProductionBrokerSessionActivationErrorV1> {
-        // The sealed Host callsite releases this channel only after the
-        // Guardian-first transaction durably reaches Complete. There is no
-        // standalone pending-session installer that can skip that transition.
-        let mut owner = DormantRuntimeExecutionOwnerV1::open()?;
-        let claim = owner.claim()?;
-        session.validate_claim(&claim)?;
-        if let Some(retained) = self.agent.as_ref() {
-            if retained_agent_state(retained.validate_claim(&claim))?
-                == RetainedAgentStateV1::Current
-            {
-                return Err(ProductionBrokerSessionActivationErrorV1::Activation(
-                    "current guest agent session already retained",
-                ));
-            }
-        }
-        self.agent = Some(session);
-        Ok(())
-    }
-
-    /// Serves at most one bounded request from the next ready Host peer role.
+impl ProductionHostActivationV1 {
+    /// Polls retained sessions or their corresponding fixed listeners once.
     ///
-    /// An idle deadline preserves both sessions. A request failure consumes
-    /// only the selected session; its protected journal is never cleared.
-    /// Admission failures remain fatal to the service owner.
+    /// Session references are borrowed only for polling. Descriptor readiness
+    /// neither verifies a peer nor permits an effect; authenticated receive and
+    /// completion remain the independent sealed request owners' responsibility.
+    /// An interrupted poll returns `None` so the application can retry.
     ///
     /// # Errors
     ///
-    /// Returns an activation error on timeout, invalid listener or session
-    /// custody, or failed handshake. Returns a request error if selected
-    /// request admission, execution, commit, or response delivery fails.
-    pub async fn serve_next(
-        &mut self,
-        host: &mut dyn aos_sandbox_host::DormantHostBrokerCallsiteV1,
-        publisher: &aos_sandbox_host::catalog::FileHostCatalogPublisher,
-        deadline_boottime_nanoseconds: u64,
-    ) -> Result<(), ProductionHostBrokerServiceErrorV1> {
-        self.retire_stale_agent_session()?;
-        let role = self.wait_for_ready_role(deadline_boottime_nanoseconds)?;
-        self.next_role = (role + 1) % self.sessions.len();
-
-        let mut session = match self.sessions[role].take() {
-            Some(session) => session,
-            None => {
-                let fixed = &mut self.activation.listeners[role];
-                fixed
-                    .listener
-                    .validate_current()
-                    .map_err(ProductionBrokerSessionActivationErrorV1::from)?;
-                let socket = match fixed.listener.accept() {
-                    Ok(socket) => socket,
-                    Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => return Ok(()),
-                    Err(error) => {
-                        return Err(ProductionBrokerSessionActivationErrorV1::from(error).into());
-                    }
-                };
-                if role == STORAGE_ROLE {
-                    verify_storage_connection_peer(socket.peer())?;
-                }
-                let custody =
-                    ProtectedBrokerSessionFixedCustodyV1::open_fixed_protected(fixed.endpoint)
-                        .map_err(DormantBrokerSessionHandshakeErrorV1::Protected)
-                        .map_err(ProductionBrokerSessionActivationErrorV1::from)?;
-                custody
-                    .complete_production_broker_handshake(socket, deadline_boottime_nanoseconds)
-                    .map_err(ProductionBrokerSessionActivationErrorV1::from)?
-            }
-        };
-
-        if role == STORAGE_ROLE {
-            verify_storage_session_peer(&mut session)?;
-        }
-
-        let served = session
-            .serve_production_host_request(
-                host,
-                publisher,
-                self.agent.as_mut(),
-                deadline_boottime_nanoseconds,
-            )
-            .await;
-        if let Some(agent) = host.take_authenticated_agent_launch() {
-            self.retain_authenticated_agent_launch(agent)?;
-        }
-        let mut retained = served?;
-        if role == STORAGE_ROLE {
-            verify_storage_session_peer(&mut retained)?;
-        }
-        self.sessions[role] = Some(retained);
-        Ok(())
-    }
-
-    fn retire_stale_agent_session(
-        &mut self,
-    ) -> Result<(), ProductionBrokerSessionActivationErrorV1> {
-        let Some(agent) = self.agent.as_ref() else {
-            return Ok(());
-        };
-        let mut owner = DormantRuntimeExecutionOwnerV1::open()?;
-        let claim = owner.claim()?;
-        match retained_agent_state(agent.validate_claim(&claim))? {
-            RetainedAgentStateV1::Current => Ok(()),
-            RetainedAgentStateV1::Stale => {
-                // A private socket cannot cross an assignment or boot change.
-                // Recovery must launch and authenticate a new guest channel.
-                self.agent = None;
-                Ok(())
-            }
-        }
-    }
-
-    fn wait_for_ready_role(
+    /// Returns an error on invalid listener/session custody, deadline expiry,
+    /// or a failed kernel poll. No descriptor or accepted socket escapes.
+    pub fn poll_readiness(
         &self,
+        sessions: &[Option<DormantAuthenticatedBrokerSessionV1>; 3],
         deadline: u64,
-    ) -> Result<usize, ProductionBrokerSessionActivationErrorV1> {
-        loop {
-            let mut descriptors = [
-                self.poll_descriptor(0)?,
-                self.poll_descriptor(1)?,
-                self.poll_descriptor(2)?,
-            ];
-            if let Some(role) = poll_ready_role(&mut descriptors, self.next_role, deadline)? {
-                return Ok(role);
-            }
-        }
+    ) -> Result<Option<ProductionHostReadinessV1>, ProductionBrokerSessionActivationErrorV1> {
+        let mut descriptors = [
+            self.poll_descriptor(sessions, ProductionHostRoleV1::Controller)?,
+            self.poll_descriptor(sessions, ProductionHostRoleV1::RootMount)?,
+            self.poll_descriptor(sessions, ProductionHostRoleV1::Storage)?,
+        ];
+        poll_host_readiness(&mut descriptors, deadline)
     }
 
-    fn poll_descriptor(
+    /// Accepts at most one peer from the selected fixed Host listener.
+    ///
+    /// The Storage peer is checked before the handshake. Every admitted socket
+    /// completes the exact selected audience's protected handshake before its
+    /// authenticated session is returned. Transient acceptance returns `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if listener currentness, peer identity, protected custody,
+    /// or the bounded authenticated handshake fails.
+    pub fn try_accept(
+        &mut self,
+        role: ProductionHostRoleV1,
+        deadline: u64,
+    ) -> Result<Option<DormantAuthenticatedBrokerSessionV1>, ProductionBrokerSessionActivationErrorV1>
+    {
+        let fixed = &mut self.0.listeners[role.index()];
+        fixed.listener.validate_current()?;
+        let socket = match fixed.listener.accept() {
+            Ok(socket) => socket,
+            Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        if role == ProductionHostRoleV1::Storage {
+            verify_storage_connection_peer(socket.peer())?;
+        }
+        let custody = ProtectedBrokerSessionFixedCustodyV1::open_fixed_protected(fixed.endpoint)
+            .map_err(DormantBrokerSessionHandshakeErrorV1::Protected)?;
+        let session = custody.complete_production_broker_handshake(socket, deadline)?;
+        Ok(Some(session))
+    }
+
+    /// Rejects a Storage Host session whose exact protected peer is no longer current.
+    ///
+    /// This negative-only bookend checks the retained peer pidfd, fixed service
+    /// cgroup, thread-group identity, and all root credential identities. It
+    /// returns no grant, verification token, or raw peer descriptor.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when protected peer custody or exact current membership
+    /// and credentials cannot be established.
+    pub fn recheck_storage_peer(
         &self,
-        role: usize,
-    ) -> Result<PollFd<'_>, ProductionBrokerSessionActivationErrorV1> {
-        let fd = match &self.sessions[role] {
+        session: &mut DormantAuthenticatedBrokerSessionV1,
+    ) -> Result<(), ProductionBrokerSessionActivationErrorV1> {
+        verify_storage_session_peer(session)
+    }
+
+    fn poll_descriptor<'a>(
+        &'a self,
+        sessions: &'a [Option<DormantAuthenticatedBrokerSessionV1>; 3],
+        role: ProductionHostRoleV1,
+    ) -> Result<PollFd<'a>, ProductionBrokerSessionActivationErrorV1> {
+        let fd = match &sessions[role.index()] {
             Some(session) => session.as_fd()?,
             None => {
-                let listener = &self.activation.listeners[role].listener;
+                let listener = &self.0.listeners[role.index()].listener;
                 listener.validate_current()?;
                 listener.as_fd()
             }
@@ -300,11 +237,10 @@ pub(crate) fn verify_storage_session_peer(
     Ok(())
 }
 
-fn poll_ready_role(
+fn poll_host_readiness(
     descriptors: &mut [PollFd<'_>; 3],
-    next_role: usize,
     deadline: u64,
-) -> Result<Option<usize>, ProductionBrokerSessionActivationErrorV1> {
+) -> Result<Option<ProductionHostReadinessV1>, ProductionBrokerSessionActivationErrorV1> {
     let remaining = remaining_duration(deadline)?;
     let timeout = Timespec {
         tv_sec: i64::try_from(remaining / 1_000_000_000)
@@ -322,13 +258,7 @@ fn poll_ready_role(
     // HUP/ERR also select a session so its consuming request path can retire
     // it. An idle session must never suppress the other role.
     let ready = std::array::from_fn(|index| !descriptors[index].revents().is_empty());
-    Ok(select_ready_role(ready, next_role))
-}
-
-fn select_ready_role(ready: [bool; 3], next_role: usize) -> Option<usize> {
-    (0..ready.len())
-        .map(|offset| (next_role + offset) % ready.len())
-        .find(|role| ready[*role])
+    Ok(Some(ProductionHostReadinessV1(ready)))
 }
 
 #[cfg(test)]
@@ -339,67 +269,7 @@ mod tests {
     use std::time::Duration;
 
     #[test]
-    fn only_an_identity_mismatch_allows_guest_channel_replacement() {
-        assert_eq!(
-            retained_agent_state(Ok(())).unwrap(),
-            RetainedAgentStateV1::Current
-        );
-        assert_eq!(
-            retained_agent_state(Err(HostAgentLiveErrorV1::Binding)).unwrap(),
-            RetainedAgentStateV1::Stale
-        );
-        assert!(matches!(
-            retained_agent_state(Err(HostAgentLiveErrorV1::Unauthenticated)),
-            Err(ProductionBrokerSessionActivationErrorV1::GuestSession(
-                HostAgentLiveErrorV1::Unauthenticated
-            ))
-        ));
-    }
-
-    #[test]
-    fn continuously_ready_roles_alternate() {
-        let mut next_role = 0;
-        for cycle in 0..100 {
-            let role = select_ready_role([true, true, true], next_role).unwrap();
-            assert_eq!(role, cycle % 3);
-            next_role = (role + 1) % 3;
-        }
-    }
-
-    #[test]
-    fn scheduler_restart_does_not_inherit_a_previous_role_cursor() {
-        let mut prior_next_role = 0;
-        for _ in 0..8 {
-            let selected = select_ready_role([true, true, true], prior_next_role).unwrap();
-            prior_next_role = (selected + 1) % 3;
-        }
-        assert_ne!(prior_next_role, 0);
-
-        // Session sequence and role custody are reopened from their journals;
-        // the volatile fairness cursor starts at the first fixed listener.
-        let restarted_next_role = 0;
-        assert_eq!(
-            select_ready_role([true, true, true], restarted_next_role),
-            Some(0)
-        );
-        assert_eq!(
-            select_ready_role([false, false, true], restarted_next_role),
-            Some(2)
-        );
-    }
-
-    #[test]
-    fn idle_role_does_not_block_the_other_role() {
-        for next_role in 0..3 {
-            assert_eq!(select_ready_role([true, false, false], next_role), Some(0));
-            assert_eq!(select_ready_role([false, true, false], next_role), Some(1));
-            assert_eq!(select_ready_role([false, false, true], next_role), Some(2));
-            assert_eq!(select_ready_role([false, false, false], next_role), None);
-        }
-    }
-
-    #[test]
-    fn poll_selects_ready_peer_without_waiting_on_idle_peer() {
+    fn poll_observes_ready_peers_without_waiting_on_idle_peers() {
         let (controller, mut controller_peer) = UnixStream::pair().unwrap();
         let (root_mount, mut root_mount_peer) = UnixStream::pair().unwrap();
         let (storage, mut storage_peer) = UnixStream::pair().unwrap();
@@ -412,23 +282,26 @@ mod tests {
 
         root_mount_peer.write_all(&[1]).unwrap();
         assert_eq!(
-            poll_ready_role(&mut descriptors, 0, deadline).unwrap(),
-            Some(1)
+            poll_host_readiness(&mut descriptors, deadline)
+                .unwrap()
+                .map(|ready| ready.0),
+            Some([false, true, false])
         );
 
         controller_peer.write_all(&[1]).unwrap();
         assert_eq!(
-            poll_ready_role(&mut descriptors, 0, deadline).unwrap(),
-            Some(0)
+            poll_host_readiness(&mut descriptors, deadline)
+                .unwrap()
+                .map(|ready| ready.0),
+            Some([true, true, false])
         );
-        assert_eq!(
-            poll_ready_role(&mut descriptors, 1, deadline).unwrap(),
-            Some(1)
-        );
+
         storage_peer.write_all(&[1]).unwrap();
         assert_eq!(
-            poll_ready_role(&mut descriptors, 2, deadline).unwrap(),
-            Some(2)
+            poll_host_readiness(&mut descriptors, deadline)
+                .unwrap()
+                .map(|ready| ready.0),
+            Some([true, true, true])
         );
     }
 
@@ -445,7 +318,7 @@ mod tests {
         peer.write_all(&[1]).unwrap();
 
         assert!(matches!(
-            poll_ready_role(&mut descriptors, 0, 0),
+            poll_host_readiness(&mut descriptors, 0),
             Err(ProductionBrokerSessionActivationErrorV1::Deadline)
         ));
     }
