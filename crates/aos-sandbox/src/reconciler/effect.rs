@@ -2548,7 +2548,7 @@ mod tests {
         })
         .unwrap();
 
-        for version in [0, CONTROLLER_PROJECT_EFFECT_VERSION + 1, u8::MAX] {
+        for version in [0, CONTROLLER_Q04_EFFECT_VERSION + 1, u8::MAX] {
             for canonical in [&generic, &authority] {
                 let mut unknown_version = canonical.clone();
                 unknown_version[0] = version;
