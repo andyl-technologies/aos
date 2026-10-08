@@ -380,7 +380,7 @@ impl OriginalSourceStartupV1 {
         };
         for (index, descriptor) in [first, second].into_iter().enumerate() {
             if self.measurements[index].measure_once(descriptor).is_err() {
-                self.note(FailureStage::Measurement(index));
+                Self::record_first_failure(&mut self.first_stage, FailureStage::Measurement(index));
                 return false;
             }
         }
@@ -438,8 +438,14 @@ impl OriginalSourceStartupV1 {
     }
 
     fn note(&mut self, stage: FailureStage) {
-        if self.first_stage.is_none() {
-            self.first_stage = Some(stage);
+        Self::record_first_failure(&mut self.first_stage, stage);
+    }
+
+    // Failure bookkeeping borrows no image custody while its descriptors are
+    // still lent to the one-shot measurements.
+    fn record_first_failure(first_stage: &mut Option<FailureStage>, stage: FailureStage) {
+        if first_stage.is_none() {
+            *first_stage = Some(stage);
         }
     }
 
@@ -507,7 +513,17 @@ fn root_credentials(credentials: aos_sandbox_linux::pidfd::PidFdCredentials) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::{OriginalSourceStartupV1, SourceStartupFailureRefV1};
+    use super::{FailureStage, OriginalSourceStartupV1, SourceStartupFailureRefV1};
+
+    #[test]
+    fn field_disjoint_bookkeeping_preserves_the_original_failure_stage() {
+        let mut first_stage = None;
+
+        OriginalSourceStartupV1::record_first_failure(&mut first_stage, FailureStage::Measurement(1));
+        OriginalSourceStartupV1::record_first_failure(&mut first_stage, FailureStage::Runtime);
+
+        assert!(matches!(first_stage, Some(FailureStage::Measurement(1))));
+    }
 
     #[test]
     fn inert_owner_cannot_lend_a_listener_or_revive_after_end() {
