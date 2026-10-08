@@ -12,7 +12,6 @@
 //! execution record. A sealed record alone is not a host authentication token;
 //! launch confinement and descriptor custody establish that boundary.
 
-use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::Read as _;
 use std::os::fd::{AsFd as _, OwnedFd};
@@ -20,7 +19,7 @@ use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
 use std::time::{Duration, Instant};
 
 use aos_sandbox_core::{
-    AssignmentEpoch, DesiredGeneration, ExecutionId, IncarnationId, NamespaceGeneration,
+    AssignmentEpoch, DesiredGeneration, IncarnationId, NamespaceGeneration,
     ObjectDigest, SandboxId,
 };
 use aos_sandbox_linux::immutable_file::SealedMemfdMapping;
@@ -401,64 +400,6 @@ pub trait GuestOperationEffectsV1 {
         ProtectedGuestAgentErrorV1,
     > {
         Err(ProtectedGuestAgentErrorV1::EffectUnavailable)
-    }
-}
-
-/// Conservatively handles the source-only guest without launching a process.
-///
-/// Authorize returns a signed terminal failure. Quiesce succeeds only because
-/// this implementation cannot create guest processes. Unsupported controls
-/// terminate the channel instead of inventing process observations.
-#[derive(Default)]
-pub struct RejectingGuestEffectsV1 {
-    failed: BTreeMap<ExecutionId, AgentExecutionPhaseV1>,
-    quiesced: bool,
-}
-
-impl GuestOperationEffectsV1 for RejectingGuestEffectsV1 {
-    fn supports(&self, feature: AgentFeatureV1) -> bool {
-        matches!(
-            feature,
-            AgentFeatureV1::Readiness
-                | AgentFeatureV1::ExecutionHandoff
-                | AgentFeatureV1::ExecutionObservation
-                | AgentFeatureV1::Quiesce
-        )
-    }
-
-    fn apply(
-        &mut self,
-        request: &AgentOperationRequestV1,
-        _runtime: &AgentRuntimeBindingV1,
-        _channel: ObjectDigest,
-        _deadline: Instant,
-    ) -> Result<(AgentExecutionPhaseV1, Vec<u8>), ProtectedGuestAgentErrorV1> {
-        match request.operation() {
-            AgentExecutionOperationV1::Authorize { execution, .. } if !self.quiesced => {
-                self.failed
-                    .insert(*execution, AgentExecutionPhaseV1::Failed);
-                Ok((
-                    AgentExecutionPhaseV1::Failed,
-                    b"guest process effects unavailable".to_vec(),
-                ))
-            }
-            AgentExecutionOperationV1::Observe { execution } => {
-                let phase = self
-                    .failed
-                    .get(execution)
-                    .ok_or(ProtectedGuestAgentErrorV1::EffectUnavailable)?;
-                Ok((*phase, b"guest process was not started".to_vec()))
-            }
-            AgentExecutionOperationV1::BeginQuiesce if !self.quiesced => {
-                self.quiesced = true;
-                Ok((AgentExecutionPhaseV1::Quiesced, b"quiesced".to_vec()))
-            }
-            AgentExecutionOperationV1::EndQuiesce if self.quiesced => {
-                self.quiesced = false;
-                Ok((AgentExecutionPhaseV1::Ready, b"ready".to_vec()))
-            }
-            _ => Err(ProtectedGuestAgentErrorV1::EffectUnavailable),
-        }
     }
 }
 

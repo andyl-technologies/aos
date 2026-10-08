@@ -17,10 +17,6 @@ name = "aos-sandbox-guest-init"
 path = "src/init.rs"
 
 [[bin]]
-name = "aos-sandbox-agent"
-path = "src/bin/aos-sandbox-agent.rs"
-
-[[bin]]
 name = "aos-sandbox-exec-gate"
 path = "src/bin/aos-sandbox-exec-gate.rs"
 

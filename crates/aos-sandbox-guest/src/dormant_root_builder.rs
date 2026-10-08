@@ -12,7 +12,6 @@ use std::path::{Path, PathBuf};
 use aos_sandbox_core::ObjectDigest;
 use sha2::{Digest as _, Sha256};
 
-const EXECUTABLE_RELATIVE_PATH: &str = "usr/libexec/aos-sandbox-agent";
 const CREDENTIAL_RELATIVE_PATH: &str = "etc/aos/sandbox-agent/guest-executable-v1";
 const CONCRETE_AGENT_PATH: &str = "usr/libexec/aos-sandbox-guest-agent";
 const CONCRETE_HELPER_PATH: &str = "usr/libexec/aos-sandbox-guest-exec";
@@ -144,67 +143,6 @@ fn prepare_owner_configuration(root: &Path) -> Result<(), DormantGuestRootBuildE
         &root.join("etc/nsswitch.conf"),
         0o644,
         b"passwd: files\ngroup: files\nshadow: files\n",
-    )
-}
-
-/// Describes exact offline inputs for one dormant guest root.
-pub struct DormantGuestRootBuildPlanV1 {
-    staging_root: PathBuf,
-    executable_source: PathBuf,
-    executable_digest: ObjectDigest,
-    credential_binding: ObjectDigest,
-}
-
-impl DormantGuestRootBuildPlanV1 {
-    /// Constructs one fixed-layout root build plan.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DormantGuestRootBuildErrorV1::InvalidPlan`] for a nonabsolute
-    /// staging root/source or sentinel commitment.
-    pub fn new(
-        staging_root: PathBuf,
-        executable_source: PathBuf,
-        executable_digest: ObjectDigest,
-        credential_binding: ObjectDigest,
-    ) -> Result<Self, DormantGuestRootBuildErrorV1> {
-        if !staging_root.is_absolute()
-            || !executable_source.is_absolute()
-            || executable_digest.as_bytes() == &[0; 32]
-            || credential_binding.as_bytes() == &[0; 32]
-        {
-            return Err(DormantGuestRootBuildErrorV1::InvalidPlan);
-        }
-        Ok(Self {
-            staging_root,
-            executable_source,
-            executable_digest,
-            credential_binding,
-        })
-    }
-}
-
-/// Materializes the dormant guest-agent files into an offline staging root.
-///
-/// # Errors
-///
-/// Returns [`DormantGuestRootBuildErrorV1`] for unavailable filesystem access,
-/// substituted executable content, or a nonempty destination file.
-pub fn build_dormant_guest_root_v1(
-    plan: &DormantGuestRootBuildPlanV1,
-) -> Result<(), DormantGuestRootBuildErrorV1> {
-    let executable_bytes = read_bounded(&plan.executable_source)?;
-    if content_digest(&executable_bytes) != plan.executable_digest {
-        return Err(DormantGuestRootBuildErrorV1::ExecutableMismatch);
-    }
-
-    let executable_target = plan.staging_root.join(EXECUTABLE_RELATIVE_PATH);
-    write_new_file(&executable_target, 0o500, &executable_bytes)?;
-
-    write_credential(
-        &plan.staging_root,
-        plan.executable_digest,
-        plan.credential_binding,
     )
 }
 
