@@ -85,6 +85,11 @@ by shared drain observations and canonical Journal history remain available by
 default; their retained model layouts and recovery validation do not depend on
 this selected handoff owner.
 
+The selected `local_inventory::protocol::remote_exchange` owner also retains
+complete authenticated resync inventory and watch-bootstrap validation. Raw
+inventory, cursor and stable-UID semantics, canonical codecs, and retained
+history validation remain available by default.
+
 ## Dependency direction
 
 Arrows below mean "depends on", not IPC or privilege inheritance:
