@@ -712,6 +712,65 @@ fn owned_directory_reconciles_and_reconfigures_with_claimed_children() {
 }
 
 #[test]
+fn guarded_directory_removal_preserves_symlink_targets() {
+    let (temporary, _) = fixture();
+    let path = temporary.path().join("owned");
+    let external = temporary.path().join("external");
+    fs::create_dir_all(path.join("nested")).unwrap();
+    fs::create_dir(&external).unwrap();
+    fs::write(path.join("nested/file"), b"owned data").unwrap();
+    fs::write(external.join("file"), b"retained data").unwrap();
+    std::os::unix::fs::symlink(&external, path.join("link")).unwrap();
+    let metadata = fs::symlink_metadata(&path).unwrap();
+
+    remove_directory_guarded(&path, (metadata.dev(), metadata.ino())).unwrap();
+
+    assert!(!path.exists());
+    assert_eq!(fs::read(external.join("file")).unwrap(), b"retained data");
+}
+
+#[test]
+fn guarded_directory_removal_rejects_replaced_roots() {
+    let (temporary, _) = fixture();
+    let path = temporary.path().join("owned");
+    fs::create_dir(&path).unwrap();
+    let metadata = fs::symlink_metadata(&path).unwrap();
+    let original = temporary.path().join("original");
+    fs::rename(&path, &original).unwrap();
+    fs::create_dir(&path).unwrap();
+    fs::write(path.join("file"), b"replacement data").unwrap();
+
+    assert!(remove_directory_guarded(&path, (metadata.dev(), metadata.ino())).is_err());
+
+    assert!(original.is_dir());
+    assert_eq!(fs::read(path.join("file")).unwrap(), b"replacement data");
+}
+
+#[test]
+fn absent_directory_release_retains_claim_until_parent_sync_succeeds() {
+    let (temporary, handler) = fixture();
+    let parent = temporary.path().join("parent");
+    let path = parent.join("owned");
+    let mut removal = invocation(&path);
+    call(&handler, "apply", &removal);
+    let claim = handler.claim_path(&removal.id);
+
+    fs::remove_dir(&path).unwrap();
+    fs::remove_dir(&parent).unwrap();
+    removal.action = Action::Remove;
+    assert!(
+        handler
+            .handle("remove", &serde_json::to_vec(&removal).unwrap())
+            .is_err()
+    );
+    assert!(claim.exists());
+
+    fs::create_dir(&parent).unwrap();
+    call(&handler, "remove", &removal);
+    assert!(!claim.exists());
+}
+
+#[test]
 fn production_policy_accepts_platform_entries_and_rejects_shared_or_immutable_paths() {
     let handler = NativeFilesystem::production();
 
