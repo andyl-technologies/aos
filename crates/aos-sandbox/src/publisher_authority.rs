@@ -644,42 +644,8 @@ impl<'journal> PublisherCapabilityRegistry<'journal> {
         transaction_id: [u8; 16],
         id: CapabilityId,
     ) -> Result<CommitResult, PublisherAuthorityError> {
-        self.journal.ensure_protected_authority()?;
-        let key = capability_key(id);
-        let current = self
-            .journal
-            .get(RecordNamespace::PublisherAuthority, &key)
-            .ok_or(PublisherAuthorityError::UnknownCapability)?;
-        let current_length = current.len();
-        let record = decode_record(&key, current, self.limits.maximum_record_bytes)?;
-        if record.state == DurableCapabilityStateV1::Revoked {
-            return Err(PublisherAuthorityError::Revoked);
-        }
-        let value = encode_record(
-            DurableCapabilityStateV1::Revoked,
-            &record.capability,
-            record.issuance.as_ref(),
-            record.runtime.as_ref(),
-            record.parent,
-            record.handle,
-            self.limits.maximum_record_bytes,
-        )?;
-        let next_materialized_bytes = self
-            .materialized_bytes
-            .checked_sub(current_length)
-            .and_then(|bytes| bytes.checked_add(value.len()))
-            .ok_or(PublisherAuthorityError::LimitExceeded("materialized bytes"))?;
-        if next_materialized_bytes > self.limits.maximum_materialized_bytes {
-            return Err(PublisherAuthorityError::LimitExceeded("materialized bytes"));
-        }
-        let transaction = JournalTransaction::new(
-            transaction_id,
-            vec![JournalRecord::put(
-                RecordNamespace::PublisherAuthority,
-                key.to_vec(),
-                value,
-            )],
-        )?;
+        let (record, next_materialized_bytes) = self.prepare_revocation(id)?;
+        let transaction = JournalTransaction::new(transaction_id, vec![record])?;
         let result = self.journal.commit(&transaction)?;
         self.materialized_bytes = next_materialized_bytes;
         Ok(result)
@@ -700,6 +666,14 @@ impl<'journal> PublisherCapabilityRegistry<'journal> {
         &self,
         id: CapabilityId,
     ) -> Result<JournalRecord, PublisherAuthorityError> {
+        self.prepare_revocation(id).map(|(record, _)| record)
+    }
+
+    // Shares canonical tombstone preparation without committing or updating counters.
+    fn prepare_revocation(
+        &self,
+        id: CapabilityId,
+    ) -> Result<(JournalRecord, usize), PublisherAuthorityError> {
         self.journal.ensure_protected_authority()?;
         let key = capability_key(id);
         let current = self
@@ -729,10 +703,9 @@ impl<'journal> PublisherCapabilityRegistry<'journal> {
             return Err(PublisherAuthorityError::LimitExceeded("materialized bytes"));
         }
 
-        Ok(JournalRecord::put(
-            RecordNamespace::PublisherAuthority,
-            key.to_vec(),
-            value,
+        Ok((
+            JournalRecord::put(RecordNamespace::PublisherAuthority, key.to_vec(), value),
+            next_materialized_bytes,
         ))
     }
 
@@ -1410,6 +1383,126 @@ pub(crate) mod tests {
             registry.resolve_holder_handle(&first_handle, holder, binding),
             Err(PublisherAuthorityError::Revoked)
         ));
+    }
+
+    #[test]
+    fn prepared_revocation_matches_committed_bytes_without_publishing_early() {
+        let directory = TestDirectory::new("prepared-revoke");
+        let mut journal = directory.open();
+        let id = CapabilityId::from_bytes([24; 16]);
+        let mut registry =
+            PublisherCapabilityRegistry::load(&mut journal, PublisherAuthorityLimits::default())
+                .unwrap();
+        registry
+            .install_from_trusted_controller([1; 16], capability(id, 200))
+            .unwrap();
+        let bytes_before = registry.materialized_bytes;
+        let entries_before = registry.entries;
+        let handles_before = registry.handle_index.clone();
+        let sequence_before = registry.journal.snapshot_sequence();
+
+        let prepared = registry.prepare_revoke_from_trusted_controller(id).unwrap();
+        assert_eq!(registry.materialized_bytes, bytes_before);
+        assert_eq!(registry.journal.snapshot_sequence(), sequence_before);
+        assert!(registry.resolve_current(id).is_ok());
+        assert!(matches!(
+            registry.revoke_from_trusted_controller([0; 16], id),
+            Err(PublisherAuthorityError::Journal(
+                JournalError::InvalidTransaction
+            ))
+        ));
+        assert_eq!(registry.materialized_bytes, bytes_before);
+        assert_eq!(registry.journal.snapshot_sequence(), sequence_before);
+
+        let committed = registry
+            .revoke_from_trusted_controller([2; 16], id)
+            .unwrap();
+        assert_eq!(prepared.namespace(), RecordNamespace::PublisherAuthority);
+        assert_eq!(prepared.key(), capability_key(id).as_slice());
+        assert_eq!(
+            registry.journal.get(prepared.namespace(), prepared.key()),
+            prepared.value()
+        );
+        assert_eq!(registry.materialized_bytes, bytes_before);
+        assert_eq!(registry.entries, entries_before);
+        assert_eq!(registry.handle_index, handles_before);
+        assert_eq!(
+            registry.journal.snapshot_sequence(),
+            committed.commit_sequence + 1
+        );
+        assert!(matches!(
+            registry.resolve_current(id),
+            Err(PublisherAuthorityError::Revoked)
+        ));
+    }
+
+    #[test]
+    fn revocation_recipes_preserve_lookup_decode_and_capacity_error_order() {
+        let directory = TestDirectory::new("revoke-error-order");
+        let mut journal = directory.open();
+        let id = CapabilityId::from_bytes([25; 16]);
+        let mut registry =
+            PublisherCapabilityRegistry::load(&mut journal, PublisherAuthorityLimits::default())
+                .unwrap();
+        registry
+            .install_from_trusted_controller([1; 16], capability(id, 200))
+            .unwrap();
+        let bytes_before = registry.materialized_bytes;
+
+        for case in 0..5 {
+            registry.limits = PublisherAuthorityLimits::default();
+            registry.materialized_bytes = bytes_before;
+            match case {
+                0 | 1 => {
+                    registry.limits.maximum_record_bytes = 1;
+                    registry.materialized_bytes = 0;
+                }
+                2 => registry.materialized_bytes = 0,
+                3 => registry.limits.maximum_materialized_bytes = bytes_before - 1,
+                4 => {
+                    registry
+                        .revoke_from_trusted_controller([2; 16], id)
+                        .unwrap();
+                    registry.materialized_bytes = 0;
+                }
+                _ => unreachable!(),
+            }
+            let target = if case == 0 {
+                CapabilityId::from_bytes([26; 16])
+            } else {
+                id
+            };
+            let sequence = registry.journal.snapshot_sequence();
+            let materialized_bytes = registry.materialized_bytes;
+
+            for error in [
+                registry
+                    .prepare_revoke_from_trusted_controller(target)
+                    .unwrap_err(),
+                registry
+                    .revoke_from_trusted_controller([0; 16], target)
+                    .unwrap_err(),
+            ] {
+                assert!(
+                    match case {
+                        0 => matches!(error, PublisherAuthorityError::UnknownCapability),
+                        1 => matches!(
+                            error,
+                            PublisherAuthorityError::LimitExceeded("record bytes")
+                        ),
+                        2 | 3 => matches!(
+                            error,
+                            PublisherAuthorityError::LimitExceeded("materialized bytes")
+                        ),
+                        4 => matches!(error, PublisherAuthorityError::Revoked),
+                        _ => unreachable!(),
+                    },
+                    "revocation case {case}: {error}"
+                );
+            }
+            assert_eq!(registry.materialized_bytes, materialized_bytes);
+            assert_eq!(registry.journal.snapshot_sequence(), sequence);
+        }
     }
 
     #[test]
