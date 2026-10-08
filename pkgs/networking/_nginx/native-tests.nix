@@ -11,10 +11,12 @@
   fragments = plain.aos.abilities.configuration.operations.file.effects.nginx.input.fragments;
 in {
   validation = assert assertionsHold cleartext && assertionsHold tls; true;
-  disabledService = assert disabled.config.aos.abilities.serviceManagement.operations.realize.effects == {};
-  assert disabled.config.aos.abilities.serviceManagement.operations.resourceGroup.effects == {};
+  disabledService = assert !(disabled.config.aos.abilities.serviceManagement.operations.realize.effects ? nginx);
+  assert !(disabled.config.aos.abilities.serviceManagement.operations.resourceGroup.effects ? nginx);
   assert disabled.config.aos.abilities.configuration.operations.file.effects ? nginx;
-  assert builtins.attrNames disabled.config.aos.abilities.filesystem.operations.directory.effects == ["nginx-logs" "nginx-runtime" "nginx-state"]; true;
+  assert builtins.filter (name: lib.hasPrefix "nginx-" name)
+  (builtins.attrNames disabled.config.aos.abilities.filesystem.operations.directory.effects)
+  == ["nginx-logs" "nginx-runtime" "nginx-state"]; true;
   retainedStorage = assert plain.aos.abilities.filesystem.operations.directory.effects.nginx-state.lifetime == "persistent";
   assert plain.aos.abilities.filesystem.operations.directory.effects.nginx-logs.lifetime == "persistent";
   assert plain.aos.abilities.filesystem.operations.directory.effects.nginx-runtime.lifetime == "instance"; true;

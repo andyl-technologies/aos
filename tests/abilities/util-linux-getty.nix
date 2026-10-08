@@ -6,7 +6,7 @@
   evaluate = stage: operatorModules:
     lib.evalPackageModules {
       scope = ["test" "getty" stage];
-      packages = [pkgs.util-linux pkgs.systemd pkgs.nftables pkgs.aos-network-ruleset-provider];
+      packages = [pkgs.util-linux pkgs.systemd pkgs.aos-init-provider pkgs.nftables pkgs.aos-network-ruleset-provider];
       operatorModules = [{aos.getty.autologin.stage = stage;}] ++ operatorModules;
     };
   disabled = evaluate "host" [];

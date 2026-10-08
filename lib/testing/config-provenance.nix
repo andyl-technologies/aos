@@ -95,7 +95,7 @@
   };
   loginPolicy = operatorModules: lib.evalPackageModules {
     scope = ["profile" "login-provenance"];
-    packages = [pkgs.aos-host-policy pkgs.systemd];
+    packages = [pkgs.aos-host-policy pkgs.systemd pkgs.aos-init-provider];
     inherit operatorModules;
   };
   loginBase = loginPolicy [];

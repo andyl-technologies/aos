@@ -6,7 +6,7 @@
   evaluate = settings:
     lib.evalPackageModules {
       scope = ["test" "nginx"];
-      packages = [pkgs.nginx];
+      packages = [pkgs.nginx pkgs.systemd pkgs.aos-init-provider];
       operatorModules = [{aos.services.nginx = settings;}];
     };
   disabled = evaluate {};
@@ -23,4 +23,7 @@
     };
   };
 in
-  builtins.all (value: value) (builtins.attrValues (import ../../pkgs/networking/_nginx/native-tests.nix {inherit lib disabled cleartext tls;}))
+  assert disabled.config.aos.abilities.serviceManagement.operations.realize.effects ? dbus;
+  assert disabled.config.aos.abilities.serviceManagement.operations.realize.effects.dbus.input.bootstrap;
+  assert disabled.config.aos.abilities.serviceManagement.operations.realize.handler.program.outPath == pkgs.systemd.handlers.outPath;
+    builtins.all (value: value) (builtins.attrValues (import ../../pkgs/networking/_nginx/native-tests.nix {inherit lib disabled cleartext tls;}))
