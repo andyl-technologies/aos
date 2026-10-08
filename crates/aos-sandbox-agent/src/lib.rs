@@ -15,7 +15,6 @@
 //! Durable execution admission and semantic commit remain with their respective
 //! protected runtime owners.
 
-pub mod broker_adapter;
 pub mod guest_attach_trust;
 pub mod guest_root_publication;
 pub mod launch;
