@@ -26,11 +26,13 @@
 
   protectedCheck = import ../../pkgs/tools/terrane/_protected-check.nix {util-linux = pkgs.util-linux;};
 
-  sourceGate = name: script:
+  sourceGate = sourceGateWithRuntime [] [];
+  sourceGateWithRuntime = runtimeDeps: nukeRefsKeep: name: script:
     pkgs.mkDerivation {
       pname = "terrane-gate-${name}";
       version = "0.1.0";
       src = pkgs.terrane.src;
+      inherit runtimeDeps nukeRefsKeep;
       buildDeps = [pkgs.rust pkgs.rust.dev pkgs.python3 pkgs.util-linux];
       phases = [
         {
@@ -58,9 +60,31 @@
 
   # Share compilation of one immutable native test image, while every gate
   # retains its own protected execution and fresh filesystem fixtures.
-  nativeSdkTestImage = import ./native-sdk-test-image.nix {inherit sourceGate;};
+  # The installed runner consumes Rust's runtime libraries and compares its
+  # immutable source identity. Keep these explicit references through fixup.
+  nativeSdkTestImage = import ./native-sdk-test-image.nix {
+    sourceGate = sourceGateWithRuntime [pkgs.rust pkgs.rust.dev] [pkgs.terrane.src];
+  };
   nativeSdkGate = name: script:
     sourceGate name ''
+      python3 - ${nativeSdkTestImage}/share/identity.json "$src" <<'PY'
+      import json
+      import pathlib
+      import sys
+
+      identity = json.loads(pathlib.Path(sys.argv[1]).read_text())
+      profile = identity.get("profile", {})
+      if (identity.get("schema_version") != 1
+              or identity.get("source") != sys.argv[2]
+              or identity.get("cargo_profile") != "test"
+              or identity.get("default_features") is not False
+              or identity.get("requested_features") != ["tokio", "surface-sdk"]
+              or identity.get("features") != ["send", "std", "surface-sdk", "tokio"]
+              or profile.get("test") is not True
+              or profile.get("opt_level") != "s"
+              or profile.get("debuginfo") != 0):
+          raise SystemExit("native SDK test image source, feature or profile mismatch")
+      PY
       export TERRANE_NATIVE_SDK_TEST_BINARY="${nativeSdkTestImage}/bin/terrane-native-sdk-tests"
       ${script}
     '';
