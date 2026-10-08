@@ -21,8 +21,8 @@
 //!   views, snapshots, capabilities, operations, and observations.
 //! - `aos::sandbox::coordinator::v1` — compatibility, lease, snapshot-transfer,
 //!   and ordered-watch DATA used by local recovery and inventory validation.
-//!   The off-default `multi-node` feature additionally generates the original
-//!   private coordinator/node RPC client and server bindings.
+//!   Coordinator-only session, exchange and watch carriers and their RPCs
+//!   belong to the separately selected `aos-sandbox-coordinator-protocol` crate.
 //!
 //! Message types are generated `buffa` structs; each selected service also gets
 //! a typed ConnectRPC client (e.g. `CacheServiceClient`) and a server trait.
@@ -30,12 +30,13 @@
 //! higher-level API (`AosClient`), and `aos-server` implements the
 //! server side.
 //!
-//! Default generation omits only coordinator service declarations from the
-//! compiled descriptor. All messages, enums, views, JSON support, module paths,
-//! and compatibility pins remain unchanged; local lease and replay owners do
-//! not require `multi-node`. Enabling it passes the original complete descriptor
-//! to the same generator. RPC-derived view aliases and response adapters are
-//! service helpers, so they are generated only with those coordinator RPCs.
+//! Shared schemas generate directly from their complete original descriptors.
+//! Local semantic, capability, inventory, lease and replay DATA keep their
+//! existing module paths, fields, views and JSON support without `multi-node`.
+//! The optional transport schema imports these definitions with the unchanged
+//! protobuf package and references their original Rust owners directly. This
+//! crate neither generates coordinator RPC helpers nor depends back on that
+//! optional owner; generic public/local ConnectRPC bindings remain here.
 //!
 //! To change the API surface, edit the `.proto` files and rebuild; never
 //! edit the generated output.

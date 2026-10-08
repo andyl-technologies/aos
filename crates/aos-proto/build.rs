@@ -1,4 +1,4 @@
-//! Generates the complete API DATA and explicitly selected coordinator RPCs.
+//! Generates shared public and local API DATA and their service bindings.
 
 #[path = "build_support/coordinator_descriptor.rs"]
 mod coordinator_descriptor;
@@ -80,9 +80,9 @@ fn compile_descriptor(output_path: &std::path::Path) -> Result<(), Box<dyn std::
 
 fn verify_sandbox_coordinator_compatibility() -> Result<(), Box<dyn std::error::Error>> {
     let source = include_str!("src/proto/aos/sandbox/coordinator/v1/coordinator.proto");
-    // This fingerprint covers the complete comment-free schema, including
-    // syntax/package declarations, every message and enum field's spelling,
-    // type, cardinality, number, oneof membership, and every RPC signature.
+    // This fingerprint covers the complete comment-free shared schema:
+    // syntax/package declarations and every message/enum field's spelling,
+    // type, cardinality, number and oneof membership.
     // A V1 compatibility edit therefore requires an explicit baseline review.
     // The original complete 0xd99c_ce9e_ffb7_be9e baseline is split only
     // by ownership. These shared declarations and the selected transport file

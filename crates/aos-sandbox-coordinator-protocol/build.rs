@@ -85,9 +85,9 @@ fn compile_descriptor(output_path: &std::path::Path) -> Result<(), Box<dyn std::
 
 fn verify_transport_compatibility() -> Result<(), Box<dyn std::error::Error>> {
     let source = include_str!("src/proto/aos/sandbox/coordinator/v1/coordinator_transport.proto");
-    // These complete original transport declarations complement aos-proto's
-    // shared 0x2898_7641_eee4_10f1 pin. Together they preserve the original
-    // 0xd99c_ce9e_ffb7_be9e schema's six types and two RPC methods unchanged.
+    // This complete transport pin complements aos-proto's shared
+    // 0x2898_7641_eee4_10f1 pin. They replace the original complete
+    // 0xd99c_ce9e_ffb7_be9e baseline after byte-exact declaration relocation.
     const EXPECTED_TRANSPORT_V1_FINGERPRINT: u64 = 0x9741_bfae_c3fa_6c09;
     let actual = complete_schema_fingerprint(source);
     if actual != EXPECTED_TRANSPORT_V1_FINGERPRINT {
