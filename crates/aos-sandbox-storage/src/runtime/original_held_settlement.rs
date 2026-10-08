@@ -35,12 +35,6 @@ use crate::native_issuance::{
 use crate::peer::ProviderLiveExportPeerVerifier;
 use crate::storage_zfs_hold_key::StorageZfsHoldKeyV1;
 
-#[derive(Clone, Copy, Eq, PartialEq)]
-pub(crate) enum OriginalHeldServePurposeV1 {
-    OfferOnly,
-    OfferAndSettle,
-}
-
 /// Resident actual outcomes, not a synthetic successful native receipt.
 #[derive(Default)]
 pub(crate) struct OriginalHeldAppendOutcomeV1 {

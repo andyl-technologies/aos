@@ -80,7 +80,7 @@ enum NativeCustodyActionV2 {
     Unavailable,
 }
 
-// Both purposes call the sole native-row recipe. Connected outcomes own their
+// The selected route calls the sole native-row recipe. Connected outcomes own their
 // actual errors before this nonobserving refusal reaches the enclosing owner.
 fn store_offer_row(
     ledger: &mut crate::native_issuance::StorageNativeIssuanceLedgerV1,
@@ -89,23 +89,16 @@ fn store_offer_row(
     attempted: &mut Option<aos_sandbox::JournalTransaction>,
     state: &mut super::original_held_settlement::OriginalHeldSettlementV1,
     slot: usize,
-    purpose: super::original_held_settlement::OriginalHeldServePurposeV1,
-    clock: Option<&super::original_held_settlement::OriginalHeldAppendClockLoanV1<'_, '_, '_>>,
+    clock: &super::original_held_settlement::OriginalHeldAppendClockLoanV1<'_, '_, '_>,
 ) -> Result<u64, super::original_held_measurement::OriginalHeldMeasurementErrorV3> {
     use super::original_held_measurement::OriginalHeldMeasurementErrorV3 as Error;
-    match purpose {
-        super::original_held_settlement::OriginalHeldServePurposeV1::OfferOnly =>
-            Ok(ledger.store_original_held_row(row, step, attempted)?),
-        super::original_held_settlement::OriginalHeldServePurposeV1::OfferAndSettle => {
-            let result = ledger.store_original_held_row_retaining(row, step, attempted,
-                &mut state.appends[slot], clock.ok_or(Error::Closed)?);
-            state.note_append_failure(slot);
-            if state.appends[slot].first_cause().is_some() {
-                return Err(Error::Closed);
-            }
-            Ok(result?)
-        }
+    let result = ledger.store_original_held_row_retaining(row, step, attempted,
+        &mut state.appends[slot], clock);
+    state.note_append_failure(slot);
+    if state.appends[slot].first_cause().is_some() {
+        return Err(Error::Closed);
     }
+    Ok(result?)
 }
 
 fn native_custody_action(
@@ -163,24 +156,12 @@ impl StorageBrokerRuntime {
     /// The carrier and original reader stay resident on every refusal. This
     /// fixed route never invokes legacy accept_live, retries an old offer,
     /// clears dispatch debt, or reconstructs an original after restart.
-    pub(crate) fn offer_original_held_native(
-        &mut self,
-        carrier: super::original_held_measurement::OriginalHeldCarrierV1,
-        trust: &crate::live_export_request_trust::StorageLiveExportRequestTrustV1,
-        verifier: &crate::peer::ProviderLiveExportPeerVerifier,
-        key: &StorageZfsHoldKeyV1,
-    ) -> Result<StorageNativeDeliveryOutcomeV2, StorageRuntimeError> {
-        self.offer_original_held_native_into(carrier, trust, verifier, key,
-            super::original_held_settlement::OriginalHeldServePurposeV1::OfferOnly)
-    }
-
     pub(crate) fn offer_original_held_native_into(
         &mut self,
         mut carrier: super::original_held_measurement::OriginalHeldCarrierV1,
         trust: &crate::live_export_request_trust::StorageLiveExportRequestTrustV1,
         verifier: &crate::peer::ProviderLiveExportPeerVerifier,
         key: &StorageZfsHoldKeyV1,
-        purpose: super::original_held_settlement::OriginalHeldServePurposeV1,
     ) -> Result<StorageNativeDeliveryOutcomeV2, StorageRuntimeError> {
         use super::original_held_measurement::{OriginalHeldMeasurementErrorV3 as Error, OriginalPhase};
         use crate::native_issuance::held_completion::{StorageHeldIssuanceRowV2, StorageHeldStepV1 as Step};
@@ -237,13 +218,12 @@ impl StorageBrokerRuntime {
             carrier.interest = Some(self.native_issuance.as_mut().ok_or(Error::Closed)?
                 .original_held_interest(&authenticated, held, reply,
                     carrier.root.as_ref().ok_or(Error::Closed)?, &current, key)?);
-            let append_clock = (purpose == super::original_held_settlement::OriginalHeldServePurposeV1::OfferAndSettle)
-                .then(|| super::original_held_settlement::OriginalHeldAppendClockLoanV1::from_original(
-                    &self.original_measurements.originals[index], &authenticated));
+            let append_clock = super::original_held_settlement::OriginalHeldAppendClockLoanV1::from_original(
+                &self.original_measurements.originals[index], &authenticated);
             carrier.readbacks[0] = Some(store_offer_row(
                 self.native_issuance.as_mut().ok_or(Error::Closed)?,
                 carrier.interest.as_ref().ok_or(Error::Closed)?, Step::InterestRecorded,
-                &mut carrier.appends[0], &mut carrier.settlement, 0, purpose, append_clock.as_ref())?);
+                &mut carrier.appends[0], &mut carrier.settlement, 0, &append_clock)?);
 
             // The witness derives from the actual committed interest and the
             // same current writers/child, not a prospective TX or decoded pin.
@@ -283,22 +263,19 @@ impl StorageBrokerRuntime {
                 reply.acceptance().acceptance().clone(), None,
                 NativeHeldCompletionSuffixV1::new(Owner::Storage, 1, scope.flight,
                     Some(prepared), vec![root.clone()])?)?);
-            let append_clock = (purpose == super::original_held_settlement::OriginalHeldServePurposeV1::OfferAndSettle)
-                .then(|| super::original_held_settlement::OriginalHeldAppendClockLoanV1::from_original(
-                    &self.original_measurements.originals[index], &authenticated));
+            let append_clock = super::original_held_settlement::OriginalHeldAppendClockLoanV1::from_original(
+                &self.original_measurements.originals[index], &authenticated);
             carrier.readbacks[1] = Some(store_offer_row(
                 self.native_issuance.as_mut().ok_or(Error::Closed)?,
                 carrier.prepared.as_ref().ok_or(Error::Closed)?, Step::HeldPrepared,
-                &mut carrier.appends[1], &mut carrier.settlement, 1, purpose, append_clock.as_ref())?);
+                &mut carrier.appends[1], &mut carrier.settlement, 1, &append_clock)?);
 
             // Slow message/key preparation occurs inside the concrete signer,
             // before its last genuine stored-original paired-clock check.
-            if purpose == super::original_held_settlement::OriginalHeldServePurposeV1::OfferAndSettle {
-                if carrier.settlement.signing_attempted[0] {
-                    return Err(Error::Closed);
-                }
-                carrier.settlement.signing_attempted[0] = true;
+            if carrier.settlement.signing_attempted[0] {
+                return Err(Error::Closed);
             }
+            carrier.settlement.signing_attempted[0] = true;
             let mut signing = self.stored_original_held_signing_loan(
                 index, &authenticated, trust, &carrier, verifier)?;
             let control = key.sign_stored_original_held_control(&mut signing)?;
@@ -316,13 +293,12 @@ impl StorageBrokerRuntime {
                 NativeHeldCompletionSuffixV1::new(Owner::Storage, 2, scope.flight, None,
                     vec![carrier.root.as_ref().ok_or(Error::Closed)?.clone(),
                         carrier.control.as_ref().ok_or(Error::Closed)?.clone()])?)?);
-            let append_clock = (purpose == super::original_held_settlement::OriginalHeldServePurposeV1::OfferAndSettle)
-                .then(|| super::original_held_settlement::OriginalHeldAppendClockLoanV1::from_original(
-                    &self.original_measurements.originals[index], &authenticated));
+            let append_clock = super::original_held_settlement::OriginalHeldAppendClockLoanV1::from_original(
+                &self.original_measurements.originals[index], &authenticated);
             carrier.readbacks[2] = Some(store_offer_row(
                 self.native_issuance.as_mut().ok_or(Error::Closed)?,
                 carrier.stored.as_ref().ok_or(Error::Closed)?, Step::HeldStored,
-                &mut carrier.appends[2], &mut carrier.settlement, 2, purpose, append_clock.as_ref())?);
+                &mut carrier.appends[2], &mut carrier.settlement, 2, &append_clock)?);
             carrier.control_packet = Some(carrier.control.as_ref().ok_or(Error::Closed)?.to_canonical_bytes());
             self.original_measurements.originals[index].packet = Some(reply.to_canonical_bytes());
 
@@ -341,15 +317,13 @@ impl StorageBrokerRuntime {
                 return Err(Error::Closed);
             }
             self.check_original_held_offer(index, &authenticated, trust, verifier, key, &carrier)?;
-            if purpose == super::original_held_settlement::OriginalHeldServePurposeV1::OfferAndSettle {
-                let settled = self.settle_original_held_native(index, &authenticated, trust, verifier, key,
-                    carrier.child.as_mut().ok_or(Error::Closed)?, carrier.execution,
-                    &carrier.records, carrier.stored.as_ref().ok_or(Error::Closed)?,
-                    &mut carrier.settlement);
-                if let Err(cause) = settled {
-                    carrier.settlement.retain_failure(cause);
-                    return Err(Error::Closed);
-                }
+            let settled = self.settle_original_held_native(index, &authenticated, trust, verifier, key,
+                carrier.child.as_mut().ok_or(Error::Closed)?, carrier.execution,
+                &carrier.records, carrier.stored.as_ref().ok_or(Error::Closed)?,
+                &mut carrier.settlement);
+            if let Err(cause) = settled {
+                carrier.settlement.retain_failure(cause);
+                return Err(Error::Closed);
             }
             Ok::<_, Error>(StorageNativeDeliveryOutcomeV2::Delivered)
         })();
@@ -358,23 +332,17 @@ impl StorageBrokerRuntime {
         // marker must not replace that first cause or erase attempted transfer.
         if let Err(cause) = result {
             if !carrier.sends.iter().any(|send| send.as_ref().is_some_and(Result::is_err)) {
-                if purpose == super::original_held_settlement::OriginalHeldServePurposeV1::OfferAndSettle {
-                    carrier.settlement.retain_failure(cause);
-                } else {
-                    carrier.first_failure = Some(cause);
-                }
+                carrier.settlement.retain_failure(cause);
             }
-            if purpose == super::original_held_settlement::OriginalHeldServePurposeV1::OfferAndSettle {
-                if let Some(index) = resident_index {
-                    let original = &self.original_measurements.originals[index];
-                    if let (Some(first), Some(cutoff), Some(request)) =
-                        (original.first, original.cutoff, carrier.request.as_ref())
-                    {
-                        let debt = trusted_paired_clock_sample()
-                            .map_err(Error::from).and_then(|later|
-                                validate_original_clock(request, first, later, cutoff).map_err(Error::from));
-                        carrier.settlement.retain_postcheck_debt(debt);
-                    }
+            if let Some(index) = resident_index {
+                let original = &self.original_measurements.originals[index];
+                if let (Some(first), Some(cutoff), Some(request)) =
+                    (original.first, original.cutoff, carrier.request.as_ref())
+                {
+                    let debt = trusted_paired_clock_sample()
+                        .map_err(Error::from).and_then(|later|
+                            validate_original_clock(request, first, later, cutoff).map_err(Error::from));
+                    carrier.settlement.retain_postcheck_debt(debt);
                 }
             }
             if let Some(index) = resident_index {
@@ -394,7 +362,7 @@ impl StorageBrokerRuntime {
         self.original_measurements.originals[index].held_carrier = Some(carrier);
         self.original_measurements.held_carrier_in_flight = false;
         self.original_measurements.closed = false;
-        // Dispatch/reader/child/interest stay held in both purposes. Connected
+        // Dispatch/reader/child/interest stay held. Connected
         // success adds only local Storage6 delivery, not remote receipt or Drain.
         Ok(StorageNativeDeliveryOutcomeV2::Delivered)
     }

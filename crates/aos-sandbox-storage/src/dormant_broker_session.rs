@@ -813,26 +813,6 @@ impl DormantStorageApplyCompositionV1 {
         )
     }
 
-    /// Stores and offers the first held native prefix on the same genuine carrier.
-    ///
-    /// # Errors
-    ///
-    /// Rejects missing original startup or changed peer, writer, role, request,
-    /// root or cutoff. Returned originals and the first cause stay resident;
-    /// this entry grants neither relay/settlement nor public Acquire.
-    pub fn serve_original_held_offer_once(
-        &mut self,
-        listener: &mut RecordSubjectListener,
-        verifier: &crate::peer::ProviderLiveExportPeerVerifier,
-        trust: &crate::runtime::StorageOriginalNativeTrustLoanV1<'_>,
-        key: &crate::storage_zfs_hold_key::StorageZfsHoldKeyV1,
-    ) -> Result<crate::zfs_hold_transport::StorageZfsHoldTransportOutcomeV1,
-        crate::service::StorageServiceError> {
-        crate::zfs_hold_transport::serve_original_held_offer_once(
-            listener, &mut self.runtime, verifier, trust, key,
-        )
-    }
-
     /// Offers the original root, then stores and sends its signed Storage6 once.
     ///
     /// The same child, request, reader and cutoff stay held. Local delivery

@@ -41,35 +41,12 @@ const READBACK_NANOSECONDS: u64 = 180_000_000_000;
 /// Returns reopen-required after retaining the actual first cause and all
 /// returned carrier custody in the selected runtime. Lower consuming failure
 /// prefixes remain lower-layer functional obligations.
-pub(crate) fn serve_original_held_offer_once(
-    listener: &mut RecordSubjectListener,
-    runtime: &mut StorageBrokerRuntime,
-    verifier: &ProviderLiveExportPeerVerifier,
-    trust: &crate::runtime::StorageOriginalNativeTrustLoanV1<'_>,
-    key: &StorageZfsHoldKeyV1,
-) -> Result<StorageZfsHoldTransportOutcomeV1, StorageServiceError> {
-    serve_original_held_into(listener, runtime, verifier, trust, key,
-        crate::runtime::original_held_settlement::OriginalHeldServePurposeV1::OfferOnly)
-}
-
 pub(crate) fn serve_original_held_settlement_once(
     listener: &mut RecordSubjectListener,
     runtime: &mut StorageBrokerRuntime,
     verifier: &ProviderLiveExportPeerVerifier,
     trust: &crate::runtime::StorageOriginalNativeTrustLoanV1<'_>,
     key: &StorageZfsHoldKeyV1,
-) -> Result<StorageZfsHoldTransportOutcomeV1, StorageServiceError> {
-    serve_original_held_into(listener, runtime, verifier, trust, key,
-        crate::runtime::original_held_settlement::OriginalHeldServePurposeV1::OfferAndSettle)
-}
-
-fn serve_original_held_into(
-    listener: &mut RecordSubjectListener,
-    runtime: &mut StorageBrokerRuntime,
-    verifier: &ProviderLiveExportPeerVerifier,
-    trust: &crate::runtime::StorageOriginalNativeTrustLoanV1<'_>,
-    key: &StorageZfsHoldKeyV1,
-    purpose: crate::runtime::original_held_settlement::OriginalHeldServePurposeV1,
 ) -> Result<StorageZfsHoldTransportOutcomeV1, StorageServiceError> {
     use crate::runtime::original_held_measurement::{
         OriginalHeldMeasurementErrorV3 as Error, OriginalHeldRecordV1,
@@ -79,12 +56,7 @@ fn serve_original_held_into(
         frame::SignedNativeHeldControlV1,
     };
 
-    let mut carrier = match purpose {
-        crate::runtime::original_held_settlement::OriginalHeldServePurposeV1::OfferOnly =>
-            runtime.begin_original_held_carrier()?,
-        crate::runtime::original_held_settlement::OriginalHeldServePurposeV1::OfferAndSettle =>
-            runtime.begin_original_held_settlement_carrier()?,
-    };
+    let mut carrier = runtime.begin_original_held_settlement_carrier()?;
     let _crossing = carrier.unwind_fence();
     let received = (|| {
         verifier.validate_current()?;
@@ -138,12 +110,7 @@ fn serve_original_held_into(
         runtime.retain_original_held_carrier_failure(carrier, cause);
         return Err(StorageRuntimeError::ReopenRequired.into());
     }
-    let offered = match purpose {
-        crate::runtime::original_held_settlement::OriginalHeldServePurposeV1::OfferOnly =>
-            runtime.offer_original_held_native(carrier, trust.owner, verifier, key),
-        crate::runtime::original_held_settlement::OriginalHeldServePurposeV1::OfferAndSettle =>
-            runtime.offer_original_held_native_into(carrier, trust.owner, verifier, key, purpose),
-    };
+    let offered = runtime.offer_original_held_native_into(carrier, trust.owner, verifier, key);
     offered
         .map(|outcome| match outcome {
             StorageNativeDeliveryOutcomeV2::Delivered => StorageZfsHoldTransportOutcomeV1::Exported,

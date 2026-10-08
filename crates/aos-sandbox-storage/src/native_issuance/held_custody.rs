@@ -36,11 +36,6 @@ struct Geometry {
     next: u64,
 }
 
-enum OriginalHeldAppendDestinationV1<'slot> {
-    Local,
-    Retained(&'slot mut OriginalHeldAppendOutcomeV1),
-}
-
 impl StorageNativeIssuanceLedgerV1 {
     pub(crate) fn uses_original_held_route(&self) -> bool {
         matches!(self.custody, NativeIssuanceCustodyV1::RootOwnedHeld)
@@ -215,15 +210,6 @@ impl StorageNativeIssuanceLedgerV1 {
         Ok(geometry.next)
     }
 
-    pub(crate) fn store_original_held_row(
-        &mut self,
-        row: &StorageHeldIssuanceRowV2,
-        step: StorageHeldStepV1,
-        attempted: &mut Option<JournalTransaction>,
-    ) -> Result<u64> {
-        self.store_original_held_row_into(row, step, attempted, OriginalHeldAppendDestinationV1::Local, None)
-    }
-
     pub(crate) fn store_original_held_row_retaining(
         &mut self,
         row: &StorageHeldIssuanceRowV2,
@@ -232,24 +218,10 @@ impl StorageNativeIssuanceLedgerV1 {
         outcome: &mut OriginalHeldAppendOutcomeV1,
         clock: &OriginalHeldAppendClockLoanV1<'_, '_, '_>,
     ) -> Result<u64> {
-        self.store_original_held_row_into(row, step, attempted,
-            OriginalHeldAppendDestinationV1::Retained(outcome), Some(clock))
-    }
-
-    fn store_original_held_row_into(
-        &mut self,
-        row: &StorageHeldIssuanceRowV2,
-        step: StorageHeldStepV1,
-        attempted: &mut Option<JournalTransaction>,
-        mut destination: OriginalHeldAppendDestinationV1<'_>,
-        clock: Option<&OriginalHeldAppendClockLoanV1<'_, '_, '_>>,
-    ) -> Result<u64> {
-        if let OriginalHeldAppendDestinationV1::Retained(outcome) = &mut destination {
-            if outcome.attempted || attempted.is_some() {
-                return Err(StorageNativeIssuanceErrorV1::Conflict);
-            }
-            outcome.attempted = true;
+        if outcome.attempted || attempted.is_some() {
+            return Err(StorageNativeIssuanceErrorV1::Conflict);
         }
+        outcome.attempted = true;
         self.validate_boundary()?;
         let (before, geometry) = self.held_state()?;
         let mut after = before.clone();
@@ -261,49 +233,34 @@ impl StorageNativeIssuanceLedgerV1 {
         *attempted = Some(transaction);
         let transaction = attempted.as_ref().ok_or(StorageNativeIssuanceErrorV1::Conflict)?;
         require_funding(&after, &geometry, Some(transaction))?;
-        match &mut destination {
-            OriginalHeldAppendDestinationV1::Local =>
-                self.journal.preflight_transactions(std::slice::from_ref(transaction))?,
-            OriginalHeldAppendDestinationV1::Retained(outcome) => {
-                outcome.check_clock(0, clock.ok_or(StorageNativeIssuanceErrorV1::Conflict)?)?;
-                outcome.preflight = Some(self.journal.preflight_transactions(std::slice::from_ref(transaction)));
-                if outcome.preflight.as_ref().is_some_and(std::result::Result::is_err) {
-                    outcome.failure = Some(OriginalHeldAppendFailureV1::Preflight);
-                    return Err(StorageNativeIssuanceErrorV1::Conflict);
-                }
-            }
+        outcome.check_clock(0, clock)?;
+        outcome.preflight = Some(self.journal.preflight_transactions(std::slice::from_ref(transaction)));
+        if outcome.preflight.as_ref().is_some_and(std::result::Result::is_err) {
+            outcome.failure = Some(OriginalHeldAppendFailureV1::Preflight);
+            return Err(StorageNativeIssuanceErrorV1::Conflict);
         }
         self.validate_boundary()?;
-        match destination {
-            OriginalHeldAppendDestinationV1::Local => {
-                self.journal.claim_protected_authority(RecordNamespace::AuthorityPublication)?.commit(transaction)?;
-                self.held_row_readback(row)
-            }
-            OriginalHeldAppendDestinationV1::Retained(outcome) => {
-                let clock = clock.ok_or(StorageNativeIssuanceErrorV1::Conflict)?;
-                outcome.check_clock(1, clock)?;
-                // The short guard ends before readback or any other owner borrow.
-                outcome.commit = Some((|| {
-                    self.journal.claim_protected_authority(RecordNamespace::AuthorityPublication)?
-                        .commit(transaction)
-                })());
-                if outcome.commit.as_ref().is_some_and(std::result::Result::is_err) {
-                    outcome.failure = Some(OriginalHeldAppendFailureV1::Commit);
-                    let _postcheck = outcome.check_clock(2, clock);
-                    return Err(StorageNativeIssuanceErrorV1::Conflict);
-                }
-                outcome.check_clock(2, clock)?;
-                outcome.readback = Some(self.held_row_readback(row));
-                if outcome.readback.as_ref().is_some_and(std::result::Result::is_err) {
-                    outcome.failure = Some(OriginalHeldAppendFailureV1::Readback);
-                    let _postcheck = outcome.check_clock(3, clock);
-                    return Err(StorageNativeIssuanceErrorV1::Conflict);
-                }
-                outcome.check_clock(3, clock)?;
-                outcome.readback.as_ref().and_then(|readback| readback.as_ref().ok()).copied()
-                    .ok_or(StorageNativeIssuanceErrorV1::Conflict)
-            }
+        outcome.check_clock(1, clock)?;
+        // The short guard ends before readback or any other owner borrow.
+        outcome.commit = Some((|| {
+            self.journal.claim_protected_authority(RecordNamespace::AuthorityPublication)?
+                .commit(transaction)
+        })());
+        if outcome.commit.as_ref().is_some_and(std::result::Result::is_err) {
+            outcome.failure = Some(OriginalHeldAppendFailureV1::Commit);
+            let _postcheck = outcome.check_clock(2, clock);
+            return Err(StorageNativeIssuanceErrorV1::Conflict);
         }
+        outcome.check_clock(2, clock)?;
+        outcome.readback = Some(self.held_row_readback(row));
+        if outcome.readback.as_ref().is_some_and(std::result::Result::is_err) {
+            outcome.failure = Some(OriginalHeldAppendFailureV1::Readback);
+            let _postcheck = outcome.check_clock(3, clock);
+            return Err(StorageNativeIssuanceErrorV1::Conflict);
+        }
+        outcome.check_clock(3, clock)?;
+        outcome.readback.as_ref().and_then(|readback| readback.as_ref().ok()).copied()
+            .ok_or(StorageNativeIssuanceErrorV1::Conflict)
     }
 
     pub(crate) fn original_held_interest(
