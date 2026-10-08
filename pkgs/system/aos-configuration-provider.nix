@@ -35,4 +35,5 @@ mkDerivation {
   ];
   meta.mainProgram = "aos-configuration-provider";
   meta.description = "Durable portable configuration file reconciliation";
+  meta.license = "Apache-2.0";
 }

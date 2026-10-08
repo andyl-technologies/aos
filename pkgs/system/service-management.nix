@@ -19,4 +19,5 @@ mkDerivation {
     }
   ];
   meta.description = "Typed service lifecycle contracts and domain configuration";
+  meta.license = "Apache-2.0";
 }
