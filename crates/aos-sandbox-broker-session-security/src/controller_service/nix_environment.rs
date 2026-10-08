@@ -25,7 +25,8 @@ use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBroke
 use aos_sandbox_protocol::nix_build::ValidatedNixBuildRequestV2;
 
 use super::nix_inputs::{NixLocalInputCutV2, NixLocalInputErrorV2};
-use super::{ControllerResidentCauseV1, ControllerWorkerCustodyV1, ProductionEffectExecutor};
+use super::resident_custody::{ControllerResidentCauseV1, ControllerWorkerCustodyV1};
+use super::ProductionEffectExecutor;
 use crate::controller_service::plan_signer::{ControllerBrokerPlanSignerError, ControllerBrokerPlanSignerV1};
 use crate::handshake::{
     ColdClientHandshakeProgressV1, DormantAuthenticatedBrokerSessionV1,
@@ -328,7 +329,7 @@ pub(super) fn resolve(
         };
     }
     let mut current = checked!(selector.borrow_current_retained_start_v2(journal, operation, step, plan));
-    let _current_unwind = super::AbortControllerCustodyUnwindV1;
+    let _current_unwind = super::resident_custody::AbortControllerCustodyUnwindV1;
     attempt.connect(&selector, &mut current, &worker, *executor.node.as_bytes());
     *nix_input_source = Some(checked!(super::nix_inputs::open_fixed_input_source_v2(&mut current)));
     let source = match nix_input_source.as_ref() {
@@ -336,7 +337,7 @@ pub(super) fn resolve(
         None => attempt.terminate(&worker, NixResolveFailureV1::Closed),
     };
     let mut cut = checked!(super::nix_inputs::pin_local_inputs_v2(&mut current, source));
-    let _cut_unwind = super::AbortControllerCustodyUnwindV1;
+    let _cut_unwind = super::resident_custody::AbortControllerCustodyUnwindV1;
     let signer = match executor.broker_plan_signer.as_ref() {
         Some(signer) => signer,
         None => attempt.terminate(&worker, NixResolveFailureV1::Closed),

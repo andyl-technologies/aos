@@ -161,6 +161,9 @@ The existing selected service entry and named inventory exports remain the
 application-facing ports; this source grouping does not establish the target
 `aos-sandbox-controller-runtime` crate boundary or reduce the dependency graph.
 
+Its private `resident_custody` child owns the unchanged partial parent/worker
+slots, genuine worker loans, first native causes, and negative terminal fences.
+
 The fixed raw ownership-clock sampler now belongs to a private session-security
 mechanics module. Controller credential and lease factories remain private to
 the Controller integration; lower clock consumers no longer import that owner.

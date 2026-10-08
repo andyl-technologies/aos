@@ -19,7 +19,8 @@ use aos_sandbox::{EffectFailure, EffectObservation, EffectPlan, EffectReceipt, S
 use aos_sandbox_core::OperationId;
 
 use super::nix_inputs::{NixLocalInputCutV2, NixLocalInputErrorV2};
-use super::{ControllerResidentCauseV1, ControllerWorkerCustodyV1, ProductionEffectExecutor};
+use super::resident_custody::{ControllerResidentCauseV1, ControllerWorkerCustodyV1};
+use super::ProductionEffectExecutor;
 use crate::controller_service::authority_effect::ControllerStorageGenerationExchangeV1;
 use crate::controller_service::plan_signer::ControllerBrokerPlanSignerError;
 
@@ -300,7 +301,7 @@ fn prepare_unpaid_generation_tail(
     let Some(attempt) = slot.as_mut() else {
         worker.terminate(ControllerResidentCauseV1::NixGeneration);
     };
-    let _unwind = super::AbortControllerCustodyUnwindV1;
+    let _unwind = super::resident_custody::AbortControllerCustodyUnwindV1;
     let mut current = match selector.borrow_current_retained_start_v2(journal, operation, step, plan) {
         Ok(current) => current,
         Err(error) => {
@@ -332,7 +333,7 @@ fn prepare_unpaid_generation_tail(
     };
     // This guard is younger than the successful complete cut, so unwinding
     // cannot destroy its original input OFDs before the same worker aborts.
-    let _cut_unwind = super::AbortControllerCustodyUnwindV1;
+    let _cut_unwind = super::resident_custody::AbortControllerCustodyUnwindV1;
     macro_rules! checked {
         ($value:expr) => {
             match $value {

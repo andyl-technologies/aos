@@ -13,7 +13,8 @@ use aos_sandbox::git::delegated_read::{
 };
 use aos_sandbox::public_api_session::PublicApiSessionAcceptor;
 
-use super::{ControllerCommand, ControllerResidentCauseV1, ControllerWorkerCustodyV1, ProductionController};
+use super::resident_custody::{ControllerResidentCauseV1, ControllerWorkerCustodyV1};
+use super::{ControllerCommand, ProductionController};
 use super::publisher_policy_source::PublisherPolicyBootstrapAttemptV1;
 
 #[derive(Default)]

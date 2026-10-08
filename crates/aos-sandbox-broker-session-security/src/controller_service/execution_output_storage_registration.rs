@@ -234,9 +234,9 @@ where
             // Close before the shared session lock releases. The marker does
             // not replace the typed first cause borrowed from its resident slot.
             worker.close(if sessions.storage.as_ref().is_some_and(|storage| storage.has_capture_candidate()) {
-                super::ControllerResidentCauseV1::CaptureCandidate
+                super::resident_custody::ControllerResidentCauseV1::CaptureCandidate
             } else {
-                super::ControllerResidentCauseV1::OutputRegistration
+                super::resident_custody::ControllerResidentCauseV1::OutputRegistration
             });
         }
         if let Some(storage) = sessions.storage.as_ref() {
