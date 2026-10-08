@@ -5571,6 +5571,15 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   in the current native `201f568606` candidate. Its owning SDK and CLI prerequisites
   can therefore run on that frozen runtime after native qualification without
   another frontend copy. This equality is source evidence, not an execution result.
+  Current frozen `c99810493f` now passes all three owning local prerequisites:
+  `local-factory-construction` (two cases), `local-sdk-checkout` (five cases),
+  and `local-cli-workflow` (three cases). All ten cases execute with zero ignored
+  tests in fresh hermetic builds. The separate-process CLI workflow completes
+  initialization, commits, fork, merge, registered merged checkout and fixed
+  historical checkout in 79.11 seconds under the unchanged 120-second limit.
+  The complete tracked source remains unchanged, and the actual builder source
+  matches the frozen commit. These checks qualify the local prerequisites;
+  feature-matrix, package, ext4 and full trunk qualification remain pending.
   — satisfies CRATE-22 to CRATE-27;
   `checks.terrane.gates.feature-matrix`.
 
