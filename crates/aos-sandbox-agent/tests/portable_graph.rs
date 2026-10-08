@@ -41,7 +41,7 @@ fn portable_production_graphs_have_no_linux_or_effect_owner() -> Result<(), Box<
         ("aos-sandbox-core", &["aos-sandbox-core"]),
         (
             "aos-sandbox-agent",
-            &["aos-sandbox-agent", "aos-sandbox-core", "aos-proto"],
+            &["aos-sandbox-agent", "aos-sandbox-core"],
         ),
         (
             "aos-sandbox-protocol",

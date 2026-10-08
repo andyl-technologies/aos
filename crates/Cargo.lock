@@ -886,7 +886,6 @@ dependencies = [
 name = "aos-sandbox-agent"
 version = "0.1.0"
 dependencies = [
- "aos-proto",
  "aos-sandbox-core",
  "ed25519-dalek",
  "serde",
