@@ -262,8 +262,13 @@ fn controller_composition_has_an_exact_closed_declaration_surface() {
         "handshake.rs public composition surface changed"
     );
 
+    let dormant_sources = [
+        include_str!("../src/dormant_handshake.rs"),
+        include_str!("../src/dormant_handshake/host_catalog_publication.rs"),
+    ]
+    .concat();
     assert_eq!(
-        public_declaration_names(include_str!("../src/dormant_handshake.rs")),
+        public_declaration_names(&dormant_sources),
         [
             "DormantAuthenticatedBrokerSessionV1",
             "DormantBrokerDescriptorCommitRecoveryV1",
@@ -730,7 +735,11 @@ fn controller_composition_exports_only_named_sealed_owners_and_data() {
     }
     assert!(HANDSHAKE_SOURCE.contains("pub(super) fn prepare_client_request("));
     assert!(HANDSHAKE_SOURCE.contains("pub(crate) fn send_online_packet("));
-    let dormant = include_str!("../src/dormant_handshake.rs");
+    let dormant = [
+        include_str!("../src/dormant_handshake.rs"),
+        include_str!("../src/dormant_handshake/host_catalog_publication.rs"),
+    ]
+    .concat();
     assert!(!dormant.contains("pub fn sign_lifecycle_bootstrap_attestation"));
     let startup = include_str!("../src/production_startup.rs");
     assert!(!startup.contains("pub fn bind_controller_profile"));
