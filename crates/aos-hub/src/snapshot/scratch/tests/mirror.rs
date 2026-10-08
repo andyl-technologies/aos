@@ -222,8 +222,8 @@ async fn current_generation_replays_mirror_child_before_registry_with_exact_priv
     .unwrap();
     assert_eq!(recovered, vec![mirror_row(&original)]);
     let report = scratch(&fixture).await.unwrap();
-    assert_eq!(report.records().counts().tables, 287);
-    assert_eq!(report.checked_tables(), 277);
+    assert_eq!(report.records().counts().tables, 288);
+    assert_eq!(report.checked_tables(), 278);
     assert_eq!(report.synthetic_lineage_rows(), 2);
     let (metadata, _) = plaintext(&fixture);
     let names = lines(&metadata)

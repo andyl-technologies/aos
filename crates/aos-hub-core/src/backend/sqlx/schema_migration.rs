@@ -8,7 +8,7 @@ mod postgres;
 use anyhow::{ensure, Context, Result};
 use sqlx::{Row as _, SqliteConnection};
 
-use super::SqlxBackend;
+use super::{begin_sqlite_migration, SqlxBackend};
 use crate::backend::schema_lineage::{
     admit_sqlite, SchemaAdmission, SqliteMigrationLedger, SqliteSchemaObject, MAX_SCHEMA_BYTES,
     MAX_SCHEMA_DEFINITION_BYTES, MAX_SCHEMA_IDENTIFIER_BYTES, MAX_SCHEMA_OBJECTS, RESET_REQUIRED,
@@ -21,7 +21,7 @@ pub(super) async fn migrate(backend: &SqlxBackend) -> Result<()> {
         SqlxBackend::Sqlite(pool) => {
             // This lock exists before the first schema-version row/table. The
             // SQLx transaction also queues rollback if this future is cancelled.
-            let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await?;
+            let mut transaction = begin_sqlite_migration(pool).await?;
             let admission = inspect_sqlite(&mut transaction)
                 .await
                 .context(RESET_REQUIRED)?;

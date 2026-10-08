@@ -27607,8 +27607,8 @@ source_nar_hash = ""
     fn fresh_schema_is_final_and_foreign_key_clean() {
         assert_eq!(
             MIGRATIONS.len(),
-            12,
-            "immutable Hybrid history plus serving additions 009–012"
+            13,
+            "immutable Hybrid history plus serving additions 009–013"
         );
         let connection = Connection::open_in_memory().unwrap();
         connection

@@ -54,7 +54,7 @@ async fn empty_initializes_and_current_reopens_without_writes() {
         .query("SELECT version FROM schema_version", &[])
         .await
         .unwrap();
-    assert_eq!(current[0].get::<i64>(0).unwrap(), 12);
+    assert_eq!(current[0].get::<i64>(0).unwrap(), 13);
     let identity = backend
         .query("SELECT identity FROM hub_schema_identity", &[])
         .await
@@ -124,6 +124,43 @@ async fn missing_duplicate_or_foreign_identity_refuses_without_any_write() {
 }
 
 #[tokio::test]
+async fn canonical_startup_waits_beyond_the_statement_busy_timeout() {
+    use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
+    use std::time::Duration;
+
+    let directory = tempfile::tempdir().unwrap();
+    let options = SqliteConnectOptions::new()
+        .filename(directory.path().join("shared.sqlite"))
+        .create_if_missing(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(Duration::from_millis(5));
+    let pool = SqlitePoolOptions::new()
+        .min_connections(2)
+        .max_connections(2)
+        .connect_with(options)
+        .await
+        .unwrap();
+
+    let writer = pool.begin_with("BEGIN IMMEDIATE").await.unwrap();
+    let release_writer = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        writer.commit().await.unwrap();
+    });
+    let backend = SqlxBackend::Sqlite(pool.clone());
+
+    backend.migrate_schema().await.unwrap();
+    release_writer.await.unwrap();
+
+    let versions = backend
+        .query("SELECT version FROM schema_version", &[])
+        .await
+        .unwrap();
+    assert_eq!(versions.len(), 1);
+    assert_eq!(versions[0].get::<i64>(0).unwrap(), 13);
+    pool.close().await;
+}
+
+#[tokio::test]
 async fn concurrent_fresh_starters_share_actual_file_lock() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("shared.sqlite");
@@ -144,7 +181,7 @@ async fn concurrent_fresh_starters_share_actual_file_lock() {
         .await
         .unwrap();
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].get::<i64>(0).unwrap(), 12);
+    assert_eq!(rows[0].get::<i64>(0).unwrap(), 13);
 }
 
 #[cfg(any(feature = "postgres", feature = "mysql"))]

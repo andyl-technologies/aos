@@ -84,6 +84,25 @@ fn sqlite_lock_error(error: &sqlx::Error) -> bool {
     )
 }
 
+/// Retries the migration writer lock before any schema statement takes effect.
+async fn begin_sqlite_migration(
+    pool: &sqlx::SqlitePool,
+) -> Result<sqlx::Transaction<'_, sqlx::Sqlite>> {
+    let retry_deadline = tokio::time::Instant::now() + SQLITE_LOCK_RETRY_LIMIT;
+
+    loop {
+        match pool.begin_with("BEGIN IMMEDIATE").await {
+            Ok(transaction) => return Ok(transaction),
+            Err(error)
+                if sqlite_lock_error(&error) && tokio::time::Instant::now() < retry_deadline =>
+            {
+                tokio::time::sleep(SQLITE_LOCK_RETRY_INTERVAL).await;
+            }
+            Err(error) => return Err(error).context("locking sqlite schema version"),
+        }
+    }
+}
+
 impl SqlxBackend {
     /// Opens a sqlite pool at `path`, or an in-memory database when `path` is
     /// empty or `:memory:`.
@@ -370,7 +389,7 @@ mod sqlite {
     use super::super::super::dialect::Dialect;
     use super::super::super::value::{Row, Value};
     use super::super::{prepare, CheckedStatement, Statement};
-    use super::{sqlite_lock_error, SQLITE_LOCK_RETRY_INTERVAL, SQLITE_LOCK_RETRY_LIMIT};
+    use super::begin_sqlite_migration;
 
     /// Binds `params` onto a sqlite query, encoding each [`Value`] in its
     /// native type.
@@ -471,19 +490,7 @@ mod sqlite {
         // Take the writer lock before reading the ledger. Concurrent starters
         // can hold it beyond SQLite's per-statement busy timeout; retry only
         // acquisition, before any migration statement can have taken effect.
-        let retry_deadline = tokio::time::Instant::now() + SQLITE_LOCK_RETRY_LIMIT;
-        let mut tx = loop {
-            match pool.begin_with("BEGIN IMMEDIATE").await {
-                Ok(tx) => break tx,
-                Err(error)
-                    if sqlite_lock_error(&error)
-                        && tokio::time::Instant::now() < retry_deadline =>
-                {
-                    tokio::time::sleep(SQLITE_LOCK_RETRY_INTERVAL).await;
-                }
-                Err(error) => return Err(error).context("locking sqlite schema version"),
-            }
-        };
+        let mut tx = begin_sqlite_migration(pool).await?;
         let versions = sqlx::query_scalar::<_, i64>("SELECT version FROM schema_version")
             .fetch_all(&mut *tx)
             .await
