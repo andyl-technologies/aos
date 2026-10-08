@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use aos_sandbox::journal::encoded_transaction_append_bytes;
+use aos_sandbox_journal::geometry::{RecordShape, encoded_transaction_append_bytes};
 use aos_sandbox_source_provider_protocol::native_held_completion::{
     NativeHeldOwnerV1 as Owner,
     suffix::NativeHeldCompletionSuffixV1,
@@ -375,7 +375,18 @@ fn convert_prefix(
 
 fn require_funding(after: &Values, cut: &Geometry, prospective: Option<&JournalTransaction>) -> Result<()> {
     let profile = remaining_capacity_profile(after)?;
-    let append = prospective.map(encoded_transaction_append_bytes).transpose()?.unwrap_or(0);
+    let append = prospective
+        .map(|transaction| {
+            encoded_transaction_append_bytes(
+                transaction.records().iter().map(|record| RecordShape {
+                    key_bytes: record.key().len(),
+                    value_bytes: record.value().map(<[u8]>::len),
+                }),
+            )
+            .map_err(aos_sandbox::JournalError::from)
+        })
+        .transpose()?
+        .unwrap_or(0);
     let prospective_count = usize::from(prospective.is_some());
     let remaining_count = prospective_count.checked_add(profile.remaining_transactions)
         .ok_or(StorageNativeIssuanceErrorV1::Noncanonical)?;

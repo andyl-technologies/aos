@@ -15,9 +15,9 @@ use super::{
     JournalError, JournalLimits, JournalTransaction, decode_record, encode_record,
     validate_transaction,
 };
+use aos_sandbox_journal::geometry::PREPARED_HEADER_BYTES as HEADER_BYTES;
 
 const MAGIC: &[u8; 8] = b"AOSJPT01";
-const HEADER_BYTES: usize = 32;
 
 impl JournalTransaction {
     /// Returns the maximum bounded preparation width for the supplied native limits.
@@ -29,13 +29,8 @@ impl JournalTransaction {
     /// Rejects invalid limits or overflowing framing arithmetic.
     #[doc(hidden)]
     pub fn maximum_prepared_bytes_v1(limits: JournalLimits) -> Result<usize, JournalError> {
-        super::validate_limits(limits)?;
-        limits
-            .maximum_records_per_transaction
-            .checked_mul(4)
-            .and_then(|framing| framing.checked_add(HEADER_BYTES))
-            .and_then(|framing| framing.checked_add(limits.maximum_transaction_bytes))
-            .ok_or(JournalError::LimitExceeded("prepared transaction bytes"))
+        aos_sandbox_journal::geometry::maximum_prepared_bytes(limits.into())
+            .map_err(JournalError::from)
     }
 
     /// Encodes one exact bounded transaction without writing or committing it.

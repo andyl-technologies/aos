@@ -35,16 +35,16 @@ use rustix::fs::{
 use sha2::{Digest, Sha256};
 
 #[cfg(test)]
-use self::framing::CHECKSUM_OFFSET;
-use self::framing::{
+use aos_sandbox_journal::framing::CHECKSUM_OFFSET;
+use aos_sandbox_journal::framing::{
     COMMIT_PAYLOAD_BYTES, EncodedFrameLayout, Frame, FrameError, FrameKind, HEADER_BYTES,
-    ReadOnlyFrameScratchV1, append_and_sync, encode_frame, read_frame,
+    ReadOnlyFrameScratchV1, append_and_sync, encode_frame,
     read_frame_retained, transaction_hasher,
 };
+use aos_sandbox_journal::geometry::{EncodedRecordLayout, NativeGeometryBounds, RecordShape};
 
 pub mod canonical_map;
 mod delete_batch;
-mod framing;
 #[cfg(target_os = "linux")]
 mod git_coverage_history;
 #[cfg(target_os = "linux")]
@@ -227,6 +227,22 @@ pub struct JournalLimits {
     pub maximum_materialized_bytes: usize,
     /// Maximum entries retained by the materialized view.
     pub maximum_materialized_records: usize,
+}
+
+// This scalar view carries no owner, reserved capacity, or admission result.
+impl From<JournalLimits> for NativeGeometryBounds {
+    fn from(limits: JournalLimits) -> Self {
+        Self {
+            maximum_journal_bytes: limits.maximum_journal_bytes,
+            maximum_record_bytes: limits.maximum_record_bytes,
+            maximum_key_bytes: limits.maximum_key_bytes,
+            maximum_records_per_transaction: limits.maximum_records_per_transaction,
+            maximum_transaction_bytes: limits.maximum_transaction_bytes,
+            maximum_transactions: limits.maximum_transactions,
+            maximum_materialized_bytes: limits.maximum_materialized_bytes,
+            maximum_materialized_records: limits.maximum_materialized_records,
+        }
+    }
 }
 
 impl Default for JournalLimits {
@@ -729,6 +745,7 @@ impl From<FrameError> for JournalError {
             FrameError::MalformedTransaction(reason) => Self::MalformedTransaction(reason),
             FrameError::LimitExceeded(bound) => Self::LimitExceeded(bound),
             FrameError::MissingRetainedPayload => Self::ProtectedBoundary,
+            FrameError::SequenceExhausted => Self::SequenceExhausted,
         }
     }
 }
@@ -9129,7 +9146,11 @@ fn validate_transaction(
         if record.key.is_empty() || record.key.len() > limits.maximum_key_bytes {
             return Err(JournalError::LimitExceeded("record key bytes"));
         }
-        let payload_bytes = EncodedRecordLayout::of(record)?.payload_bytes;
+        let payload_bytes = EncodedRecordLayout::new(
+            record.key.len(),
+            record.value.as_ref().map(|value| value.len()),
+        )?
+        .payload_bytes;
         if payload_bytes > limits.maximum_record_bytes {
             return Err(JournalError::LimitExceeded("record payload bytes"));
         }
@@ -9166,7 +9187,10 @@ pub(super) fn encoded_transaction_record_bytes(
         .records()
         .iter()
         .try_fold(0_u64, |total, record| {
-            let layout = EncodedRecordLayout::of(record)?;
+            let layout = EncodedRecordLayout::new(
+                record.key.len(),
+                record.value.as_ref().map(|value| value.len()),
+            )?;
             total
                 .checked_add(layout.payload_bytes as u64)
                 .ok_or(JournalError::JournalTooLarge)
@@ -9188,30 +9212,13 @@ pub(super) fn encoded_transaction_record_bytes(
 pub fn encoded_transaction_append_bytes(
     transaction: &JournalTransaction,
 ) -> Result<u64, JournalError> {
-    let record_count = u32::try_from(transaction.records.len())
-        .map_err(|_| JournalError::LimitExceeded("records per transaction"))?;
-    let begin = EncodedFrameLayout::new(record_count.to_le_bytes().len())?;
-    let mut total = Some(begin.frame_bytes as u64);
-    let mut sequence = 0_u64;
-    sequence = sequence
-        .checked_add(1)
-        .ok_or(JournalError::SequenceExhausted)?;
-
-    // The encoder validates every frame before folding its lengths. Preserve
-    // that precedence even after the aggregate can no longer fit in u64.
-    for record in &transaction.records {
-        let record_layout = EncodedRecordLayout::of(record)?;
-        let frame = EncodedFrameLayout::new(record_layout.payload_bytes)?;
-        total = total.and_then(|bytes| bytes.checked_add(frame.frame_bytes as u64));
-        sequence = sequence
-            .checked_add(1)
-            .ok_or(JournalError::SequenceExhausted)?;
-    }
-
-    let commit = EncodedFrameLayout::new(COMMIT_PAYLOAD_BYTES)?;
-    total
-        .and_then(|bytes| bytes.checked_add(commit.frame_bytes as u64))
-        .ok_or(JournalError::JournalTooLarge)
+    aos_sandbox_journal::geometry::encoded_transaction_append_bytes(
+        transaction.records().iter().map(|record| RecordShape {
+            key_bytes: record.key().len(),
+            value_bytes: record.value().map(<[u8]>::len),
+        }),
+    )
+    .map_err(JournalError::from)
 }
 
 // Closed lower clear-recipe DATA, not an append certificate. The actual
@@ -9375,19 +9382,8 @@ fn projected_materialized_record_count(
 }
 
 fn validate_limits(limits: JournalLimits) -> Result<(), JournalError> {
-    if limits.maximum_journal_bytes < HEADER_BYTES as u64
-        || limits.maximum_record_bytes < 7
-        || limits.maximum_key_bytes == 0
-        || limits.maximum_key_bytes > u16::MAX as usize
-        || limits.maximum_records_per_transaction == 0
-        || limits.maximum_transaction_bytes < 7
-        || limits.maximum_transactions == 0
-        || limits.maximum_materialized_bytes == 0
-        || limits.maximum_materialized_records == 0
-    {
-        return Err(JournalError::LimitExceeded("invalid journal configuration"));
-    }
-    Ok(())
+    aos_sandbox_journal::geometry::validate_native_bounds(limits.into())
+        .map_err(JournalError::from)
 }
 
 fn validate_materialized_change(
@@ -9505,13 +9501,6 @@ fn encode_transaction(
     Ok(frames)
 }
 
-/// Shares the encoder's length fields and payload width without copying bytes.
-struct EncodedRecordLayout {
-    key_length: u16,
-    value_length: u32,
-    payload_bytes: usize,
-}
-
 /// Carries only one fixed selected sizing extent, never record bytes or a key.
 struct OnlineNixExtentV1 {
     slot: usize,
@@ -9526,38 +9515,6 @@ impl OnlineNixExtentV1 {
 
     const fn delete(slot: usize, key_bytes: usize) -> Self {
         Self { slot, key_bytes, value_bytes: None }
-    }
-}
-
-impl EncodedRecordLayout {
-    fn of(record: &JournalRecord) -> Result<Self, JournalError> {
-        Self::new(
-            record.key.len(),
-            record.value.as_ref().map(|value| value.len()),
-        )
-    }
-
-    fn new(key_bytes: usize, value_bytes: Option<usize>) -> Result<Self, JournalError> {
-        let key_length = u16::try_from(key_bytes)
-            .map_err(|_| JournalError::LimitExceeded("record key bytes"))?;
-        let value_length = match value_bytes {
-            Some(bytes) => u32::try_from(bytes)
-                .map_err(|_| JournalError::LimitExceeded("record value bytes"))?,
-            None => u32::MAX,
-        };
-
-        // Some(u32::MAX) retains its bytes despite sharing the DEL sentinel.
-        // Checked usize arithmetic avoids wrapping the capacity sum on 32-bit.
-        let payload_bytes = 7_usize
-            .checked_add(key_bytes)
-            .and_then(|bytes| bytes.checked_add(value_bytes.unwrap_or_default()))
-            .ok_or(JournalError::JournalTooLarge)?;
-
-        Ok(Self {
-            key_length,
-            value_length,
-            payload_bytes,
-        })
     }
 }
 
@@ -10377,6 +10334,33 @@ mod tests {
     };
 
     #[test]
+    fn native_geometry_view_preserves_all_eight_typed_limit_fields() {
+        let limits = JournalLimits {
+            maximum_journal_bytes: 101,
+            maximum_record_bytes: 102,
+            maximum_key_bytes: 103,
+            maximum_records_per_transaction: 104,
+            maximum_transaction_bytes: 105,
+            maximum_transactions: 106,
+            maximum_materialized_bytes: 107,
+            maximum_materialized_records: 108,
+        };
+
+        let actual = super::NativeGeometryBounds::from(limits);
+
+        assert_eq!(actual, super::NativeGeometryBounds {
+            maximum_journal_bytes: 101,
+            maximum_record_bytes: 102,
+            maximum_key_bytes: 103,
+            maximum_records_per_transaction: 104,
+            maximum_transaction_bytes: 105,
+            maximum_transactions: 106,
+            maximum_materialized_bytes: 107,
+            maximum_materialized_records: 108,
+        });
+    }
+
+    #[test]
     fn framing_error_adapter_preserves_original_classification_and_io() {
         use super::FrameError;
 
@@ -10393,6 +10377,7 @@ mod tests {
                 JournalError::LimitExceeded("frame payload bytes"),
             ),
             (FrameError::MissingRetainedPayload, JournalError::ProtectedBoundary),
+            (FrameError::SequenceExhausted, JournalError::SequenceExhausted),
         ];
 
         for (framing, expected) in cases {
@@ -10512,54 +10497,6 @@ mod tests {
         assert_eq!(sidecar_prepare, largest_prepared + 355);
         assert_eq!(sidecar_finalize, 204);
         assert_eq!(10 + 156 + 6 + 324 + 11 + largest_prepared, 67_244_209);
-    }
-
-    #[test]
-    fn record_layout_preserves_length_order_and_delete_sentinel() {
-        use super::{EncodedFrameLayout, EncodedRecordLayout};
-
-        let deleted = EncodedRecordLayout::new(u16::MAX as usize, None).unwrap();
-        let empty_put = EncodedRecordLayout::new(u16::MAX as usize, Some(0)).unwrap();
-
-        assert_eq!(deleted.key_length, u16::MAX);
-        assert_eq!(deleted.value_length, u32::MAX);
-        assert_eq!(empty_put.value_length, 0);
-        assert_eq!(deleted.payload_bytes, empty_put.payload_bytes);
-        assert_eq!(deleted.payload_bytes, 7 + u16::MAX as usize);
-        assert!(matches!(
-            EncodedRecordLayout::new(usize::MAX, Some(usize::MAX)),
-            Err(JournalError::LimitExceeded("record key bytes")),
-        ));
-
-        #[cfg(target_pointer_width = "64")]
-        {
-            let maximum_put = EncodedRecordLayout::new(0, Some(u32::MAX as usize)).unwrap();
-
-            assert_eq!(maximum_put.value_length, deleted.value_length);
-            assert_eq!(maximum_put.payload_bytes, 7 + u32::MAX as usize);
-            assert!(matches!(
-                EncodedRecordLayout::new(0, Some(u32::MAX as usize + 1)),
-                Err(JournalError::LimitExceeded("record value bytes")),
-            ));
-            assert!(matches!(
-                EncodedFrameLayout::new(maximum_put.payload_bytes).map_err(JournalError::from),
-                Err(JournalError::LimitExceeded("frame payload bytes")),
-            ));
-            let maximum_frame = EncodedFrameLayout::new(u32::MAX as usize).unwrap();
-            assert_eq!(maximum_frame.frame_bytes, HEADER_BYTES + u32::MAX as usize);
-        }
-
-        #[cfg(target_pointer_width = "32")]
-        {
-            assert!(matches!(
-                EncodedRecordLayout::new(0, Some(u32::MAX as usize)),
-                Err(JournalError::JournalTooLarge),
-            ));
-            assert!(matches!(
-                EncodedFrameLayout::new(u32::MAX as usize).map_err(JournalError::from),
-                Err(JournalError::JournalTooLarge),
-            ));
-        }
     }
 
     #[test]

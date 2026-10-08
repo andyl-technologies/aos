@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use aos_sandbox::journal::encoded_transaction_append_bytes;
+use aos_sandbox_journal::geometry::{RecordShape, encoded_transaction_append_bytes};
 use aos_sandbox_source_provider_protocol::native_held_completion::MAXIMUM_NATIVE_HELD_CONTROL_BYTES_V1;
 
 use super::*;
@@ -52,8 +52,13 @@ pub(crate) fn remaining_capacity_profile(
                             ObjectDigest::from_bytes([2; 32]),
                         )
                         .transaction()?;
-                    append = encoded_transaction_append_bytes(&transaction)
-                        .map_err(|_| invalid("legacy append geometry"))?;
+                    append = encoded_transaction_append_bytes(
+                        transaction.records().iter().map(|record| RecordShape {
+                            key_bytes: record.key().len(),
+                            value_bytes: record.value().map(<[u8]>::len),
+                        }),
+                    )
+                    .map_err(|_| invalid("legacy append geometry"))?;
                     count = 1;
                 }
             }
@@ -76,8 +81,13 @@ pub(crate) fn remaining_capacity_profile(
                         .map_err(|_| invalid("capacity template"))?;
                         path_append = path_append
                             .checked_add(
-                                encoded_transaction_append_bytes(&transaction)
-                                    .map_err(|_| invalid("held append geometry"))?,
+                                encoded_transaction_append_bytes(
+                                    transaction.records().iter().map(|record| RecordShape {
+                                        key_bytes: record.key().len(),
+                                        value_bytes: record.value().map(<[u8]>::len),
+                                    }),
+                                )
+                                .map_err(|_| invalid("held append geometry"))?,
                             )
                             .ok_or_else(|| invalid("append sum overflow"))?;
                     }

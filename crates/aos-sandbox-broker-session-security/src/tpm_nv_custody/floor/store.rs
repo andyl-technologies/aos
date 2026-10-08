@@ -10,6 +10,7 @@ use aos_sandbox::{
     Journal, JournalLimits, JournalRecord, JournalTransaction,
     ProtectedJournalLockCustodyV1, ProtectedJournalPreflight, RecordNamespace,
 };
+use aos_sandbox_journal::geometry::maximum_prepared_bytes;
 
 use super::{
     CHECKPOINT_BYTES, INTENT_BYTES, FloorCheckpointV1, FloorErrorV1, FloorIntentV1,
@@ -561,8 +562,7 @@ fn sidecar_sequence(ordinal: u64, pending: bool) -> Result<u64, FloorErrorV1> {
 }
 
 pub(crate) fn sidecar_limits(main: JournalLimits) -> Result<JournalLimits, FloorErrorV1> {
-    let encoded =
-        JournalTransaction::maximum_prepared_bytes_v1(main).map_err(|_| FloorErrorV1::Encoding)?;
+    let encoded = maximum_prepared_bytes(main.into()).map_err(|_| FloorErrorV1::Encoding)?;
     let prepared_record_bytes = encoded
         .checked_add(TRANSACTION_KEY.len() + 7)
         .ok_or(FloorErrorV1::Encoding)?;
@@ -796,6 +796,30 @@ mod tests {
             maximum_transactions: 321,
             maximum_materialized_bytes: 262144,
             maximum_materialized_records: 321,
+        }
+    }
+
+    #[test]
+    fn shared_sidecar_geometry_preserves_native_configuration_refusal() {
+        let main = inert_main_limits();
+        let invalid = [
+            JournalLimits { maximum_journal_bytes: 71, ..main },
+            JournalLimits { maximum_record_bytes: 6, ..main },
+            JournalLimits { maximum_key_bytes: 0, ..main },
+            JournalLimits { maximum_key_bytes: u16::MAX as usize + 1, ..main },
+            JournalLimits { maximum_records_per_transaction: 0, ..main },
+            JournalLimits { maximum_transaction_bytes: 6, ..main },
+            JournalLimits { maximum_transactions: 0, ..main },
+            JournalLimits { maximum_materialized_bytes: 0, ..main },
+            JournalLimits { maximum_materialized_records: 0, ..main },
+        ];
+
+        for limits in invalid {
+            assert_eq!(sidecar_limits(limits), Err(FloorErrorV1::Encoding));
+            assert!(matches!(
+                JournalTransaction::maximum_prepared_bytes_v1(limits),
+                Err(aos_sandbox::JournalError::LimitExceeded("invalid journal configuration")),
+            ));
         }
     }
 

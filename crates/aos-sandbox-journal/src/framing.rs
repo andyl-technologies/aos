@@ -10,8 +10,8 @@
 //! ```
 //!
 //! Structural errors and the record-byte bound are independent of domain types.
-//! The parent journal preserves its existing error classification through an
-//! exhaustive adapter. This private module is not yet a separate journal crate.
+//! Domain owners preserve their existing error classification through exhaustive
+//! adapters; these mechanics do not decode namespaces or admit transitions.
 
 use std::fs::File;
 use std::io::{self, Read, Write};
@@ -20,7 +20,7 @@ use sha2::{Digest, Sha256};
 
 /// Reports structural framing and append failures without domain authority.
 #[derive(Debug, thiserror::Error)]
-pub(super) enum FrameError {
+pub enum FrameError {
     /// A native read, write, sync, or metadata operation failed.
     #[error("journal I/O failed: {0}")]
     Io(#[from] io::Error),
@@ -43,21 +43,31 @@ pub(super) enum FrameError {
     // Preserve this internal case's legacy classification without authority.
     #[error("protected journal storage boundary is invalid")]
     MissingRetainedPayload,
+    /// Sequence space is exhausted and cannot safely wrap.
+    #[error("journal sequence space is exhausted")]
+    SequenceExhausted,
 }
 
 const MAGIC: &[u8; 8] = b"AOSJRN01";
 const FORMAT_VERSION: u16 = 1;
-pub(super) const HEADER_BYTES: usize = 72;
-pub(super) const COMMIT_PAYLOAD_BYTES: usize = 36;
-pub(super) const CHECKSUM_OFFSET: usize = 40;
+/// Specifies the complete native frame header width.
+pub const HEADER_BYTES: usize = 72;
+/// Specifies the native COMMIT count and digest payload width.
+pub const COMMIT_PAYLOAD_BYTES: usize = 36;
+/// Specifies the checksum's offset within the native frame header.
+pub const CHECKSUM_OFFSET: usize = 40;
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.journal.transaction.v1\0";
 const FRAME_DOMAIN: &[u8] = b"aos.sandbox.journal.frame.v1\0";
 
+/// Identifies the closed native transaction frame cases.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
-pub(super) enum FrameKind {
+pub enum FrameKind {
+    /// Starts a transaction with its declared record count.
     Begin = 1,
+    /// Carries one uninterpreted native record payload.
     Record = 2,
+    /// Ends a transaction with its count and ordered payload digest.
     Commit = 3,
 }
 
@@ -72,14 +82,20 @@ impl FrameKind {
     }
 }
 
-pub(super) struct Frame {
-    pub(super) kind: FrameKind,
-    pub(super) sequence: u64,
-    pub(super) transaction_id: [u8; 16],
-    pub(super) payload: Vec<u8>,
+/// Carries decoded frame DATA, not committed state or domain authority.
+pub struct Frame {
+    /// Names the closed frame case.
+    pub kind: FrameKind,
+    /// Carries the sequence checked by the owning replay engine.
+    pub sequence: u64,
+    /// Carries the transaction identity supplied to or read from the frame.
+    pub transaction_id: [u8; 16],
+    /// Owns the payload without interpreting any namespace or record schema.
+    pub payload: Vec<u8>,
 }
 
-pub(super) struct ReadOnlyFrameScratchV1 {
+/// Retains the original partial frame allocation on incomplete or failed reads.
+pub struct ReadOnlyFrameScratchV1 {
     header: [u8; HEADER_BYTES],
     header_filled: usize,
     payload: Option<Vec<u8>>,
@@ -87,13 +103,19 @@ pub(super) struct ReadOnlyFrameScratchV1 {
 }
 
 /// Shares the frame's u32 payload field and complete serialized width.
-pub(super) struct EncodedFrameLayout {
+pub struct EncodedFrameLayout {
     payload_length: u32,
-    pub(super) frame_bytes: usize,
+    /// Measures the complete serialized header and payload width.
+    pub frame_bytes: usize,
 }
 
 impl EncodedFrameLayout {
-    pub(super) fn new(payload_bytes: usize) -> Result<Self, FrameError> {
+    /// Computes the checked native frame width without allocating bytes.
+    ///
+    /// # Errors
+    ///
+    /// Rejects payloads exceeding u32 or overflowing the complete usize width.
+    pub fn new(payload_bytes: usize) -> Result<Self, FrameError> {
         let payload_length = u32::try_from(payload_bytes)
             .map_err(|_| FrameError::LimitExceeded("frame payload bytes"))?;
         let frame_bytes = HEADER_BYTES
@@ -107,7 +129,8 @@ impl EncodedFrameLayout {
     }
 }
 
-pub(super) fn read_frame<R: Read>(
+#[cfg(test)]
+fn read_frame<R: Read>(
     file: &mut R,
     offset: u64,
     maximum_record_bytes: usize,
@@ -115,8 +138,22 @@ pub(super) fn read_frame<R: Read>(
     read_frame_retained(file, offset, maximum_record_bytes, None)
 }
 
-// The sole frame parser retains a selected partial payload before returning.
-pub(super) fn read_frame_retained<R: Read>(
+/// Reads one bounded native frame and retains selected partial scratch.
+///
+/// EOF returns `None`, including a partial final frame. The decoder checks
+/// framing and checksum only; owners separately validate sequence, transaction
+/// ordering, typed namespaces, and semantic admission.
+///
+/// # Errors
+///
+/// Returns the original I/O, version, structural, checksum, or width error.
+/// Selected scratch preserves the exact reached header and payload allocation.
+///
+/// # Panics
+///
+/// Panics if the bounded payload capacity exceeds the platform's Vec allocation
+/// limit. Owners retain their existing configured allocation and physical bounds.
+pub fn read_frame_retained<R: Read>(
     file: &mut R,
     offset: u64,
     maximum_record_bytes: usize,
@@ -213,7 +250,17 @@ pub(super) fn read_frame_retained<R: Read>(
     outcome
 }
 
-pub(super) fn encode_frame(
+/// Encodes a native frame without granting commit or domain admission.
+///
+/// # Errors
+///
+/// Rejects payload widths exceeding u32 or overflowing the full frame width.
+///
+/// # Panics
+///
+/// Panics if the complete frame capacity exceeds the platform's Vec allocation
+/// limit. This preserves the existing encoder's allocation behavior.
+pub fn encode_frame(
     kind: FrameKind,
     sequence: u64,
     transaction_id: [u8; 16],
@@ -244,13 +291,22 @@ fn frame_checksum(header_prefix: &[u8], payload: &[u8]) -> [u8; 32] {
     digest.finalize().into()
 }
 
-pub(super) fn transaction_hasher() -> Sha256 {
+/// Starts the canonical ordered native transaction-payload digest.
+pub fn transaction_hasher() -> Sha256 {
     let mut digest = Sha256::new();
     digest.update(TRANSACTION_DOMAIN);
     digest
 }
 
-pub(super) fn append_and_sync(file: &mut File, frames: &[Vec<u8>]) -> Result<u64, FrameError> {
+/// Writes, flushes, and syncs supplied frames before observing durable length.
+///
+/// The caller retains writer custody and handles ambiguous failure or poisoning.
+/// This function neither opens a journal nor validates domain transitions.
+///
+/// # Errors
+///
+/// Returns an unchanged native write, flush, sync, or metadata I/O error.
+pub fn append_and_sync(file: &mut File, frames: &[Vec<u8>]) -> Result<u64, FrameError> {
     for frame in frames {
         file.write_all(frame)?;
     }
