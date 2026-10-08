@@ -44,6 +44,7 @@
             cd source
             export CARGO_HOME="$TMPDIR/cargo-home"
             export CARGO_TARGET_DIR="$TMPDIR/cargo-target"
+            export CARGO_BUILD_JOBS="$NIX_BUILD_CORES"
             mkdir -p "$CARGO_HOME" crates/.cargo
             sed 's|@vendor@|${pkgs.terrane.passthru.cargoDeps}|g' \
               ${pkgs.terrane.passthru.cargoDeps}/.cargo/config.toml > crates/.cargo/config.toml
@@ -54,6 +55,15 @@
     };
 
   algebraFormatVectors = import ./algebra-models.nix {inherit sourceGate;};
+
+  # A zero-node fork depends on genuine selected source lineage. Full source
+  # requalification and preservation are qualified outside the cold interval.
+  nativeForkPrerequisites = {
+    coldSource = import ./native-cold-fork-source.nix {inherit sourceGate;};
+    requalification = import ./native-source-requalification.nix {inherit sourceGate;};
+    sourcePreservation = import ./native-source-preserving-retirement.nix {inherit sourceGate;};
+    importedPreservation = import ./native-imported-source-retirement.nix {inherit sourceGate;};
+  };
 
   structureGate = name:
     sourceGate name ''
@@ -138,6 +148,7 @@
       accumulated: file: let
         added = import (./gates + "/${file}") {
           inherit pkgs lib sourceGate structureGate;
+          forkPrerequisites = builtins.attrValues nativeForkPrerequisites;
         };
         duplicates = builtins.filter (name: builtins.hasAttr name accumulated) (builtins.attrNames added);
       in
@@ -228,10 +239,10 @@ in {
   integration.native-local-first-ownership = import ./native-local-first-ownership.nix {inherit sourceGate;};
   integration.native-local-deletion = import ./native-local-deletion.nix {inherit sourceGate;};
   integration.native-collector-clock = import ./native-collector-clock.nix {inherit sourceGate;};
-  integration.native-cold-fork-source = import ./native-cold-fork-source.nix {inherit sourceGate;};
+  integration.native-cold-fork-source = nativeForkPrerequisites.coldSource;
   integration.native-cold-fork-legacy = import ./native-cold-fork-legacy.nix {inherit sourceGate;};
   integration.native-guard-carry = import ./native-guard-carry.nix {inherit sourceGate;};
-  integration.native-source-requalification = import ./native-source-requalification.nix {inherit sourceGate;};
+  integration.native-source-requalification = nativeForkPrerequisites.requalification;
   integration.native-missing-placement = import ./native-missing-placement.nix {inherit sourceGate;};
   integration.native-legacy-completion = import ./native-legacy-completion.nix {inherit sourceGate;};
   integration.native-meta-batch = import ./native-meta-batch.nix {inherit sourceGate;};
@@ -244,8 +255,8 @@ in {
   integration.native-index-locality = import ./native-index-locality.nix {inherit sourceGate;};
   integration.native-memo-persistence = import ./native-memo-persistence.nix {inherit sourceGate;};
   integration.native-memo-retention = import ./native-memo-retention.nix {inherit sourceGate;};
-  integration.native-source-preserving-retirement = import ./native-source-preserving-retirement.nix {inherit sourceGate;};
-  integration.native-imported-source-retirement = import ./native-imported-source-retirement.nix {inherit sourceGate;};
+  integration.native-source-preserving-retirement = nativeForkPrerequisites.sourcePreservation;
+  integration.native-imported-source-retirement = nativeForkPrerequisites.importedPreservation;
   integration.namespace-reference-models = import ./namespace-models.nix {inherit sourceGate;};
   integration.attribute-reference-models = import ./attribute-models.nix {inherit sourceGate;};
   integration.index-format = import ./index-format.nix {inherit sourceGate;};

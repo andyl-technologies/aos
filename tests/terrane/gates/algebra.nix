@@ -1,4 +1,8 @@
-{sourceGate, ...}: let
+{
+  sourceGate,
+  forkPrerequisites,
+  ...
+}: let
   runTest = name: ''
     cargo test --frozen --offline -p terrane-core --lib ${name} -- --exact > "$TMPDIR/test.log"
     python3 -c 'import pathlib, sys; output = pathlib.Path(sys.argv[1]).read_text(); print(output); sys.exit("test result: ok. 1 passed; 0 failed" not in output or "test " + sys.argv[2] + " ... ok" not in output)' "$TMPDIR/test.log" "${name}"
@@ -8,9 +12,43 @@
     cargo test --frozen --offline -p terrane --no-default-features --features tokio,surface-sdk --lib ${name} -- --exact > "$TMPDIR/test.log"
     python3 -c 'import pathlib, sys; output = pathlib.Path(sys.argv[1]).read_text(); print(output); sys.exit("test result: ok. 1 passed; 0 failed" not in output or "test " + sys.argv[2] + " ... ok" not in output)' "$TMPDIR/test.log" "${name}"
   '';
+
+  forkSelectors = map (name: "selected_bridge::native_guard::cold_fork::tests::publication::${name}") [
+    "root_native_cold_fork_publishes_fresh_signed_namespace_without_nodes"
+    "root_native_cold_fork_reuses_after_unrelated_ref_admission"
+    "root_native_cold_fork_refuses_absent_context_before_node_io"
+    "root_native_cold_fork_after_separate_same_head_requalification"
+    "root_native_cold_fork_refuses_current_source_and_destination_rights"
+    "root_native_cold_fork_refuses_changed_original_and_selected_controls"
+    "root_native_cold_fork_rejects_profile_and_occurrence_contradictions"
+    "root_native_cold_fork_stops_on_sync_failure_and_expiry"
+    "current_revision::root_native_cold_fork_revalidates_new_current_registration_without_nodes"
+    "current_revision::root_native_cold_fork_refuses_changed_historical_inputs_without_nodes"
+  ];
 in {
-  # Cold native forks need actual selected lineage and zero TreeNode I/O.
-  # Keep algebra-fork registered as pending until that qualification exists.
+  algebra-fork = sourceGate "algebra-fork" ''
+    for prerequisite in ${builtins.concatStringsSep " " (map toString forkPrerequisites)}; do
+      test -s "$prerequisite/result"
+    done
+    cd crates
+    cargo test --frozen --offline -p terrane --no-default-features \
+      --features tokio,surface-sdk --lib -- --list > "$TMPDIR/algebra-fork-tests.txt"
+    python3 ../tests/terrane/check_native_gate.py inventory \
+      "$TMPDIR/algebra-fork-tests.txt" '${builtins.toJSON forkSelectors}'
+    for test_name in ${builtins.concatStringsSep " " forkSelectors}; do
+      if ! cargo test --frozen --offline -p terrane --no-default-features \
+        --features tokio,surface-sdk --lib "$test_name" -- --exact \
+        > "$TMPDIR/algebra-fork-test.log" 2>&1; then
+        cat "$TMPDIR/algebra-fork-test.log"
+        exit 1
+      fi
+      python3 ../tests/terrane/check_native_gate.py execution \
+        "$TMPDIR/algebra-fork-test.log" "[\"$test_name\"]"
+    done
+    printf 'PASS: native cold-fork publication (10 exact cases), selected source requalification and preservation\n' \
+      > "$out/result"
+  '';
+
   algebra-graft = sourceGate "algebra-graft" ''
     cd crates
     ${runTest "algebra::tests::graft_reuses_target_and_nested_lookup_resolves"}

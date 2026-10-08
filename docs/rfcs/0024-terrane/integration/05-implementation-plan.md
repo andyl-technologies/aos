@@ -1365,6 +1365,24 @@ establish the causes of the runtime failures. Source discovery and complete
 index maintenance remain subsequent prerequisites. No formal task merge,
 checkbox, milestone exit or freeze follows; the candidates stay isolated.
 
+The native index feature boundary on private `066d12c9f5` passes all 76
+portable and 77 WebAssembly tests with zero skips. Two native-only constructor
+tests retain their bodies behind `std`; both compile and pass in the native
+SDK profile. Its compiled inventory contains 735 tests; the full native suite
+and feature matrix have not been rerun. The unchanged DRV-29 fixture on
+`2857045eac` completes genuine source preparation, then refuses baseline
+catalog publication at the existing 30-second writer deadline. Its attempted
+generation installs 232 new index shards; incremental measurement and the
+independent maintenance oracle are not reached. An isolated production
+optimization is in progress; every native physical/current check and the
+existing deadlines remain qualification requirements.
+The owning `algebra-fork` registration now requires ten exact native witnesses
+and the separate cold-source, full requalification, source-preservation and
+imported-source-preservation checks. Registry completeness and both formatters
+pass; the owning runtime qualification remains pending. Gate Cargo jobs now
+follow `NIX_BUILD_CORES` so explicit build-core limits also bound compilation.
+No task checkbox, milestone exit or freeze advances.
+
 Deployable as: a local tool that initializes a store under a `file://`
 root, commits a directory, forks and merges branches, and checks a commit
 out to a directory through the `sdk` surface.
