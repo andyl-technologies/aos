@@ -19,11 +19,14 @@
 //! carrier reserved for a future Controller-to-Host argument observation grant.
 //! [`source_project_authorization`] decodes canonical unverified Source
 //! project-authorization DATA without importing Publisher state or signers.
+//! [`canonical_map`] owns versioned catalog JSON envelopes, fixed-handle keys,
+//! and transaction-ID DATA without catalog admission or durable publication.
 //! [`public_api`] owns checked public-message projections, feature registries,
 //! and bounded client-state reducers without adopting requests or authorizing effects.
 
 pub mod authenticated_session;
 pub mod authorization_artifact;
+pub mod canonical_map;
 pub mod fencing;
 pub mod fuse_worker_preparation;
 pub mod git_project_coverage;

@@ -59,7 +59,6 @@ use std::path::Path;
 use aos_proto::aos::sandbox::local::v1::{
     AssignmentFence, Descriptor, InventoryStorageResourcesResponse, StorageWorkspaceInventoryRecord,
 };
-use aos_sandbox::journal::canonical_map;
 use aos_sandbox::{Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace};
 use aos_sandbox_core::model::{IdentityProfile, SandboxSpec};
 use aos_sandbox_core::{
@@ -69,6 +68,7 @@ use aos_sandbox_core::{
 };
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::inventory::{MountId, MountListOrder, MountNamespace};
+use aos_sandbox_protocol::canonical_map;
 use aos_sandbox_protocol::semantics::storage::CanonicalStorageWorkspaceMetadataV1;
 use aos_sandbox_protocol::{
     MAXIMUM_RESPONSE_BYTES, MAXIMUM_STORAGE_WORKSPACE_INVENTORY_RECORDS,

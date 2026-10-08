@@ -18,13 +18,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use aos_sandbox::journal::canonical_map;
 use aos_sandbox::{Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace};
 use aos_sandbox_core::model::{NetworkKind, NetworkProfile, SandboxSpec};
 use aos_sandbox_core::{
     BrokerAssignment, CanonicalAssignmentManifestV1, DecodeLimits, NetworkEndpointId, NodeId,
     ObjectDigest, decode_sandbox_spec, descriptor_for_bytes, encode_sandbox_spec,
 };
+use aos_sandbox_protocol::canonical_map;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 

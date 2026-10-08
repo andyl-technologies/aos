@@ -3,6 +3,15 @@
 //! The journal validates frames but leaves each catalog's payload schema to its
 //! owner. These helpers reject alternate spellings of the same typed head or
 //! record, so recovery cannot admit a noncanonical durable representation.
+//!
+//! The versioned envelopes retain the typed value's serialization:
+//!
+//! ```text
+//! {"version":1,"head":<typed head>}
+//! {"version":1,"record":<typed record>}
+//! ```
+//! Schema validation, admission, and durable publication remain with each
+//! catalog owner; these encodings and keys do not establish authority.
 
 use serde::{Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};

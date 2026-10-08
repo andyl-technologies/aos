@@ -26,12 +26,12 @@ use aos_proto::aos::sandbox::local::v1::{
     AssignmentFence, BrokerError, BrokerErrorCode, InventoryNetworkResourcesResponse,
     InventoryNetworksResponse, NetworkNamespaceInventoryRecord, NetworkResult, NetworkState,
 };
-use aos_sandbox::journal::canonical_map;
 use aos_sandbox::{Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace};
 use aos_sandbox_core::{BrokerAssignment, ObjectDigest};
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::path::BeneathRoot;
 use aos_sandbox_linux::pidfd::{NamespaceIdentity, NamespaceKind};
+use aos_sandbox_protocol::canonical_map;
 use aos_sandbox_protocol::{
     MAXIMUM_NETWORK_NAMESPACE_INVENTORY_RECORDS, MAXIMUM_RESPONSE_BYTES,
     decode_network_resource_inventory_response,

@@ -50,7 +50,6 @@ use aos_sandbox_journal::replay::{
 use aos_sandbox_journal::owner::{NativeJournal, NativeJournalState};
 use aos_sandbox_journal::transaction::{self, NativePendingTransaction, NativeRecordRef};
 
-pub mod canonical_map;
 mod delete_batch;
 #[cfg(target_os = "linux")]
 mod git_coverage_history;
