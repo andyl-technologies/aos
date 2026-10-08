@@ -137,6 +137,7 @@ fn run() -> Result<(), Box<dyn Error>> {
             require_uid(0)?;
             let pin = aos_sandbox::policy_compiler::recover_fixed_root_project_source_pin_v1()?
                 .ok_or("protected historical Source pin absent")?;
+            let pin = PinnedSourceHoldReadbackSignerV1::decode(&pin)?;
             let current = PinnedSourceHoldReadbackSignerV1::decode(&fs::read(credential_path(
                 "aos-sandbox-policy-authorityd.service",
                 "source-hold-public-key",
