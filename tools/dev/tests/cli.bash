@@ -22,7 +22,11 @@ case " $* " in
   *' category checks '*' scope build.aos-dev-cli '*) printf 'build.aos-dev-cli' ;;
   *' category checks '*' scope build.aos-dev '*) : ;;
   *' category checks '*' scope build '*) printf 'build.aos-dev-cli\nbuild.aos-dev-cache-identity' ;;
-  *' category checks '*) printf 'eval\nbuild.all' ;;
+  *' category checks '*' scope fleet.hub-hybrid-postgres '*) printf 'fleet.hub-hybrid-postgres' ;;
+  *' category checks '*)
+    [[ ${AOS_DEV_TEST_SCOPED_CHECK_ONLY:-0} != 1 ]] || exit 1
+    printf 'eval\nbuild.all'
+    ;;
   *' category images '*) printf 'server:qcow2' ;;
   *' category containers '*) printf 'aos:oci' ;;
   *' category builds '*) printf 'server:toplevel' ;;
@@ -102,6 +106,9 @@ bash "$root/tools/dev/aos-dev" completion bash | grep -Fq '_aos_dev_complete()'
 test "$(bash "$root/tools/dev/aos-dev" list packages)" = $'alpha\nbeta'
 test "$(bash "$root/tools/dev/aos-dev" list check build.aos-dev)" = $'build.aos-dev-cli\nbuild.aos-dev-cache-identity'
 test "$(bash "$root/tools/dev/aos-dev" list check build.aos-dev-cli)" = 'build.aos-dev-cli'
+test "$(AOS_DEV_TEST_SCOPED_CHECK_ONLY=1 bash "$root/tools/dev/aos-dev" \
+  --release build check fleet.hub-hybrid-postgres --no-out-link)" = /tmp/aos-dev-test-output
+grep -Fq -- '-A checks.fleet.hub-hybrid-postgres --no-out-link' "$AOS_DEV_TEST_LOG"
 test "$(bash "$root/tools/dev/aos-dev" --release build package alpha --no-out-link)" = /tmp/aos-dev-test-output
 grep -Fq -- '-A pkgs.alpha --no-out-link' "$AOS_DEV_TEST_LOG"
 test "$(bash "$root/tools/dev/aos-dev" --release all checks --no-out-link)" = /tmp/aos-dev-test-output

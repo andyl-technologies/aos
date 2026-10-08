@@ -89,7 +89,7 @@ aos_dev_validate_target() {
     return
   fi
   local entries
-  entries=$(aos_dev_list "$category" "" "$cross_system")
+  entries=$(aos_dev_list "$category" "$name" "$cross_system")
   if ! printf '%s\n' "$entries" | grep -Fxq -- "$name"; then
     printf 'aos-dev: unknown %s target: %s\n' "$category" "$name" >&2
     printf '%s\n' "$entries" | grep -iF -- "${name%%:*}" | head -8 >&2 || true
