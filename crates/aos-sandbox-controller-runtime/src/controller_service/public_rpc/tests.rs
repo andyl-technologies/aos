@@ -6,7 +6,6 @@
 )]
 
 use super::*;
-use buffa::Message as _;
 
 #[tokio::test]
 async fn first_capability_bootstrap_requires_registered_public_peer() {
