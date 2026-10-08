@@ -1428,6 +1428,19 @@ qualified. The final `2fed289ff4` changes only a wrapper description after the
 recorded executions. Further diagnostics and implementation must retain every
 original output, physical/current check, acknowledgment and deadline.
 
+The isolated `d4f4355fef` diagnostic candidate adds opt-in test-only refusal-site
+observations around the original refresh and synchronization results. Its
+deadline diagnostic reports the rejecting predicate's existing clock sample;
+no clock read, check, returned failure or deadline is changed. Review verifies
+the same ordered check calls in all four instrumented existing files. Its
+traced native execution remains pending. The separate `4b5d80d0dd` quality
+composition groups admission's owned inputs, shares the genuine existing
+backfill fixture through a test-only import, and preserves the source oracle's
+short-circuit order in an equivalent let-chain. Independent review verifies
+the unchanged admission validation/effect tail and complete fixture bodies.
+The compiler, strict quality checks, application test-target compilation and
+owning gates remain unrun on this composition; these edits close no task.
+
 Deployable as: a local tool that initializes a store under a `file://`
 root, commits a directory, forks and merges branches, and checks a commit
 out to a directory through the `sdk` surface.
