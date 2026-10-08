@@ -8,21 +8,32 @@
   nix,
   nlohmann-json,
   boost,
+  libarchive,
+  openssl,
+  libsodium,
+  brotli,
+  curl,
+  libseccomp,
+  sqlite,
   pkg-config,
   coreutils,
   gcc-libs,
   stdenv,
   buildPackages,
-}: {
-  domainIdHex,
-}: let
+}: {domainIdHex}: let
   validDomain =
     builtins.isString domainIdHex
     && builtins.match "[0-9a-f]{32}" domainIdHex != null
     && domainIdHex != "00000000000000000000000000000000";
   domainRoot = "/var/lib/aos/sandbox-nix/domains/${domainIdHex}/root";
-  buildPkgConfig = if stdenv.isCross then buildPackages.pkg-config else pkg-config;
-  buildCoreutils = if stdenv.isCross then buildPackages.coreutils else coreutils;
+  buildPkgConfig =
+    if stdenv.isCross
+    then buildPackages.pkg-config
+    else pkg-config;
+  buildCoreutils =
+    if stdenv.isCross
+    then buildPackages.coreutils
+    else coreutils;
 in
   assert validDomain;
   assert nix.version == "2.24.12";
@@ -30,8 +41,23 @@ in
       pname = "aos-nix-online-store-reader-${domainIdHex}";
       version = "1";
       src = ./aos-nix-online-store-reader;
-      buildDeps = [nix.dev nlohmann-json boost.dev buildPkgConfig buildCoreutils];
-      runtimeDeps = [nix gcc-libs];
+      buildDeps = [buildPkgConfig buildCoreutils];
+      # Headers and pkg-config metadata describe the target libraries, not
+      # native build tools. Nix does not propagate its public/private pc deps.
+      runtimeDeps = [
+        nix
+        nix.dev
+        nlohmann-json
+        boost.dev
+        libarchive
+        openssl
+        libsodium
+        brotli
+        curl
+        libseccomp
+        sqlite
+        gcc-libs
+      ];
       propagatedDeps = [];
 
       phases = [
@@ -49,11 +75,13 @@ in
             # Nix.dev holds the headers; its library paths refer to Nix.out.
             # The release's installed configuration headers are required by
             # the same public C++ headers used by the upstream library build.
+            nix_flags=$(pkg-config --cflags --libs nix-store nix-main nix-util) || exit 1
+
             $CXX -std=c++20 -O2 -Wall -Wextra \
               -I${nix.dev}/include/nix \
               -include config-util.hh -include config-store.hh -include config-main.hh \
               -DAOS_NIX_ONLINE_DOMAIN_ROOT='${builtins.toJSON domainRoot}' \
-              reader.cc $(pkg-config --cflags --libs nix-store nix-main nix-util) \
+              reader.cc $nix_flags \
               -Wl,-rpath,${nix}/lib -o aos-nix-online-store-reader
           '';
         }
