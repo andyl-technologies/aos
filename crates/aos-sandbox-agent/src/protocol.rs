@@ -17,6 +17,7 @@
 //! decoder applies its semantic maximum before allocation. Closed values have
 //! no unknown-value pass-through and trailing bytes are forbidden.
 
+use aos_sandbox_core::bounded_codec::{BoundedReader, ReadError};
 use aos_sandbox_core::{
     AssignmentEpoch, AuditId, DesiredGeneration, ExecutionId, IncarnationId, NamespaceGeneration,
     ObjectDigest, PrincipalId, SandboxId,
@@ -248,45 +249,61 @@ pub fn decode_frame_v1(bytes: &[u8]) -> Result<AgentFrameV1, AgentProtocolError>
     if bytes.len() > MAX_AGENT_FRAME_BYTES {
         return Err(AgentProtocolError::FrameTooLarge);
     }
-    let mut cursor = Cursor::new(bytes);
-    cursor.exact(MAGIC)?;
+    let mut cursor = BoundedReader::new(bytes, frame_read_error);
+    if cursor.bytes(MAGIC.len())? != MAGIC {
+        return Err(AgentProtocolError::WrongMagic);
+    }
     let frame = match cursor.u8()? {
         1 => AgentFrameV1::HandshakeRequest(decode_handshake_request(&mut cursor)?),
         2 => AgentFrameV1::HandshakeResponse(decode_handshake_response(&mut cursor)?),
         3 => AgentFrameV1::OperationRequest(decode_operation_request(&mut cursor)?),
         4 => AgentFrameV1::OperationOutcome(decode_operation_outcome(&mut cursor)?),
-        5 => AgentFrameV1::OpenSshGateObserveRequest(cursor.length_prefixed(4096)?.to_vec()),
-        6 => AgentFrameV1::OpenSshGateReadback(cursor.length_prefixed(8192)?.to_vec()),
+        5 => AgentFrameV1::OpenSshGateObserveRequest(
+            read_length_prefixed(&mut cursor, 4096)?.to_vec(),
+        ),
+        6 => AgentFrameV1::OpenSshGateReadback(read_length_prefixed(&mut cursor, 8192)?.to_vec()),
         7 => AgentFrameV1::OpenSshTicketBindRequestV2(
-            cursor
-                .length_prefixed(crate::openssh_ticket::MAXIMUM_TICKET_GATE_BYTES_V2)?
-                .to_vec(),
+            read_length_prefixed(
+                &mut cursor,
+                crate::openssh_ticket::MAXIMUM_TICKET_GATE_BYTES_V2,
+            )?
+            .to_vec(),
         ),
         9 => AgentFrameV1::OpenSshTicketReadbackV2(
-            cursor
-                .length_prefixed(crate::openssh_ticket::MAXIMUM_TICKET_GATE_BYTES_V2)?
-                .to_vec(),
+            read_length_prefixed(
+                &mut cursor,
+                crate::openssh_ticket::MAXIMUM_TICKET_GATE_BYTES_V2,
+            )?
+            .to_vec(),
         ),
         8 => AgentFrameV1::SealedAuthorizeRequest(decode_sealed_authorize_reference(&mut cursor)?),
         10 => AgentFrameV1::OriginalAttachRequestV3(
-            cursor
-                .length_prefixed(crate::openssh_consume::MAXIMUM_CONSUME_BYTES_V3)?
-                .to_vec(),
+            read_length_prefixed(
+                &mut cursor,
+                crate::openssh_consume::MAXIMUM_CONSUME_BYTES_V3,
+            )?
+            .to_vec(),
         ),
         11 => AgentFrameV1::OriginalAttachResponseV3(
-            cursor
-                .length_prefixed(crate::openssh_consume::MAXIMUM_CONSUME_BYTES_V3)?
-                .to_vec(),
+            read_length_prefixed(
+                &mut cursor,
+                crate::openssh_consume::MAXIMUM_CONSUME_BYTES_V3,
+            )?
+            .to_vec(),
         ),
         12 => AgentFrameV1::OriginalControlRequestV5(
-            cursor
-                .length_prefixed(crate::openssh_control_channel::MAXIMUM_ORIGINAL_CONTROL_BYTES_V5)?
-                .to_vec(),
+            read_length_prefixed(
+                &mut cursor,
+                crate::openssh_control_channel::MAXIMUM_ORIGINAL_CONTROL_BYTES_V5,
+            )?
+            .to_vec(),
         ),
         13 => AgentFrameV1::OriginalControlResponseV5(
-            cursor
-                .length_prefixed(crate::openssh_control_channel::MAXIMUM_ORIGINAL_CONTROL_BYTES_V5)?
-                .to_vec(),
+            read_length_prefixed(
+                &mut cursor,
+                crate::openssh_control_channel::MAXIMUM_ORIGINAL_CONTROL_BYTES_V5,
+            )?
+            .to_vec(),
         ),
         _ => return Err(AgentProtocolError::UnknownValue),
     };
@@ -313,7 +330,7 @@ fn encode_sealed_authorize_reference(
 }
 
 fn decode_sealed_authorize_reference(
-    cursor: &mut Cursor<'_>,
+    cursor: &mut BoundedReader<'_, AgentProtocolError>,
 ) -> Result<AgentSealedAuthorizeReferenceV1, AgentProtocolError> {
     let reference = AgentSealedAuthorizeReferenceV1 {
         session: AgentSessionBindingV1::from_digest(ObjectDigest::from_bytes(cursor.array()?))?,
@@ -347,7 +364,9 @@ fn encode_runtime(output: &mut Vec<u8>, runtime: &AgentRuntimeBindingV1) {
     output.extend_from_slice(runtime.payload_boot_id());
 }
 
-fn decode_runtime(cursor: &mut Cursor<'_>) -> Result<AgentRuntimeBindingV1, AgentProtocolError> {
+fn decode_runtime(
+    cursor: &mut BoundedReader<'_, AgentProtocolError>,
+) -> Result<AgentRuntimeBindingV1, AgentProtocolError> {
     AgentRuntimeBindingV1::new(
         SandboxId::from_bytes(cursor.array()?),
         IncarnationId::from_bytes(cursor.array()?),
@@ -370,7 +389,7 @@ fn encode_handshake_request(output: &mut Vec<u8>, request: &AgentHandshakeReques
 }
 
 fn decode_handshake_request(
-    cursor: &mut Cursor<'_>,
+    cursor: &mut BoundedReader<'_, AgentProtocolError>,
 ) -> Result<AgentHandshakeRequestV1, AgentProtocolError> {
     let session = AgentSessionIdV1::new(cursor.array()?)?;
     if cursor.u16()? != 1 || cursor.u16()? != 0 {
@@ -393,7 +412,7 @@ fn encode_handshake_response(output: &mut Vec<u8>, response: &AgentHandshakeResp
 }
 
 fn decode_handshake_response(
-    cursor: &mut Cursor<'_>,
+    cursor: &mut BoundedReader<'_, AgentProtocolError>,
 ) -> Result<AgentHandshakeResponseV1, AgentProtocolError> {
     let session = AgentSessionBindingV1::from_digest(ObjectDigest::from_bytes(cursor.array()?))?;
     let agent_instance = cursor.array()?;
@@ -461,7 +480,7 @@ fn encode_operation_request(output: &mut Vec<u8>, request: &AgentOperationReques
 }
 
 fn decode_operation_request(
-    cursor: &mut Cursor<'_>,
+    cursor: &mut BoundedReader<'_, AgentProtocolError>,
 ) -> Result<AgentOperationRequestV1, AgentProtocolError> {
     let session = AgentSessionBindingV1::from_digest(ObjectDigest::from_bytes(cursor.array()?))?;
     let sequence = AgentOperationSequenceV1::new(cursor.u64()?)?;
@@ -470,8 +489,7 @@ fn decode_operation_request(
     let operation = match cursor.u8()? {
         1 => AgentExecutionOperationV1::Authorize {
             execution: ExecutionId::from_bytes(cursor.array()?),
-            specification_bytes: cursor
-                .length_prefixed(MAX_AGENT_SEALED_SPEC_BYTES_V1)?
+            specification_bytes: read_length_prefixed(cursor, MAX_AGENT_SEALED_SPEC_BYTES_V1)?
                 .to_vec(),
             specification_digest: ObjectDigest::from_bytes(cursor.array()?),
             admission_commitment: ObjectDigest::from_bytes(cursor.array()?),
@@ -522,7 +540,7 @@ fn encode_operation_outcome(output: &mut Vec<u8>, outcome: &AgentExecutionOutcom
 }
 
 fn decode_operation_outcome(
-    cursor: &mut Cursor<'_>,
+    cursor: &mut BoundedReader<'_, AgentProtocolError>,
 ) -> Result<AgentExecutionOutcomeV1, AgentProtocolError> {
     let session = AgentSessionBindingV1::from_digest(ObjectDigest::from_bytes(cursor.array()?))?;
     let sequence = AgentOperationSequenceV1::new(cursor.u64()?)?;
@@ -530,7 +548,7 @@ fn decode_operation_outcome(
     let request_commitment = ObjectDigest::from_bytes(cursor.array()?);
     let phase =
         AgentExecutionPhaseV1::from_code(cursor.u8()?).ok_or(AgentProtocolError::UnknownValue)?;
-    let result_bytes = cursor.length_prefixed(1_048_576)?.to_vec();
+    let result_bytes = read_length_prefixed(cursor, 1_048_576)?.to_vec();
     let result_digest = ObjectDigest::from_bytes(cursor.array()?);
     AgentExecutionOutcomeV1::restore(
         session,
@@ -600,74 +618,24 @@ pub enum AgentProtocolError {
     Model(#[from] InvalidAgentModel),
 }
 
-struct Cursor<'a> {
-    bytes: &'a [u8],
-    position: usize,
+fn frame_read_error(error: ReadError) -> AgentProtocolError {
+    match error {
+        ReadError::LengthOverflow | ReadError::NonzeroReserved => AgentProtocolError::InvalidLength,
+        ReadError::Truncated => AgentProtocolError::Truncated,
+        ReadError::TrailingBytes => AgentProtocolError::TrailingBytes,
+    }
 }
 
-impl<'a> Cursor<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, position: 0 }
+/// Applies the frame-owned nonempty ceiling before reading or allocating payload bytes.
+fn read_length_prefixed<'a>(
+    cursor: &mut BoundedReader<'a, AgentProtocolError>,
+    maximum: usize,
+) -> Result<&'a [u8], AgentProtocolError> {
+    let length = usize::try_from(cursor.u32()?).map_err(|_| AgentProtocolError::InvalidLength)?;
+    if length == 0 || length > maximum {
+        return Err(AgentProtocolError::InvalidLength);
     }
-
-    fn exact(&mut self, expected: &[u8]) -> Result<(), AgentProtocolError> {
-        if self.take(expected.len())? == expected {
-            Ok(())
-        } else {
-            Err(AgentProtocolError::WrongMagic)
-        }
-    }
-
-    fn finish(&self) -> Result<(), AgentProtocolError> {
-        if self.position == self.bytes.len() {
-            Ok(())
-        } else {
-            Err(AgentProtocolError::TrailingBytes)
-        }
-    }
-
-    fn take(&mut self, length: usize) -> Result<&'a [u8], AgentProtocolError> {
-        let end = self
-            .position
-            .checked_add(length)
-            .ok_or(AgentProtocolError::InvalidLength)?;
-        let value = self
-            .bytes
-            .get(self.position..end)
-            .ok_or(AgentProtocolError::Truncated)?;
-        self.position = end;
-        Ok(value)
-    }
-
-    fn array<const N: usize>(&mut self) -> Result<[u8; N], AgentProtocolError> {
-        self.take(N)?
-            .try_into()
-            .map_err(|_| AgentProtocolError::Truncated)
-    }
-
-    fn u8(&mut self) -> Result<u8, AgentProtocolError> {
-        Ok(self.array::<1>()?[0])
-    }
-
-    fn u16(&mut self) -> Result<u16, AgentProtocolError> {
-        Ok(u16::from_be_bytes(self.array()?))
-    }
-
-    fn u32(&mut self) -> Result<u32, AgentProtocolError> {
-        Ok(u32::from_be_bytes(self.array()?))
-    }
-
-    fn u64(&mut self) -> Result<u64, AgentProtocolError> {
-        Ok(u64::from_be_bytes(self.array()?))
-    }
-
-    fn length_prefixed(&mut self, maximum: usize) -> Result<&'a [u8], AgentProtocolError> {
-        let length = usize::try_from(self.u32()?).map_err(|_| AgentProtocolError::InvalidLength)?;
-        if length == 0 || length > maximum {
-            return Err(AgentProtocolError::InvalidLength);
-        }
-        self.take(length)
-    }
+    cursor.bytes(length)
 }
 
 #[cfg(test)]
@@ -695,5 +663,118 @@ mod openssh_gate_tests {
             decode_frame_v1(&encode_frame_v1(&oversized)),
             Err(AgentProtocolError::InvalidLength)
         );
+    }
+}
+
+#[cfg(test)]
+mod reader_frontier_tests {
+    use super::*;
+
+    #[test]
+    fn frame_magic_version_and_model_refusals_precede_later_reads_and_eof() {
+        for length in 0..=MAGIC.len() {
+            assert_eq!(
+                decode_frame_v1(&MAGIC[..length]),
+                Err(AgentProtocolError::Truncated)
+            );
+        }
+        assert_eq!(
+            decode_frame_v1(b"NOTAGE01"),
+            Err(AgentProtocolError::WrongMagic)
+        );
+
+        let mut unknown = MAGIC.to_vec();
+        unknown.extend_from_slice(&[14, 0x55]);
+        assert_eq!(
+            decode_frame_v1(&unknown),
+            Err(AgentProtocolError::UnknownValue)
+        );
+
+        let mut handshake = MAGIC.to_vec();
+        handshake.push(1);
+        handshake.extend_from_slice(&[1; 16]);
+        handshake.extend_from_slice(&2_u16.to_be_bytes());
+        assert_eq!(
+            decode_frame_v1(&handshake),
+            Err(AgentProtocolError::WrongVersion)
+        );
+
+        let major_offset = MAGIC.len() + 1 + 16;
+        handshake[major_offset..].copy_from_slice(&1_u16.to_be_bytes());
+        assert_eq!(
+            decode_frame_v1(&handshake),
+            Err(AgentProtocolError::Truncated)
+        );
+        handshake.extend_from_slice(&1_u16.to_be_bytes());
+        assert_eq!(
+            decode_frame_v1(&handshake),
+            Err(AgentProtocolError::WrongVersion)
+        );
+
+        let mut response = MAGIC.to_vec();
+        response.push(2);
+        response.extend_from_slice(&[1; 32]);
+        response.extend_from_slice(&[2; 16]);
+        response.extend_from_slice(&2_u16.to_be_bytes());
+        response.extend_from_slice(&[1, 2]);
+        response.extend_from_slice(&[3; 64]);
+        assert!(matches!(
+            decode_frame_v1(&response),
+            Ok(AgentFrameV1::HandshakeResponse(_))
+        ));
+
+        response.push(0x55);
+        assert_eq!(
+            decode_frame_v1(&response),
+            Err(AgentProtocolError::TrailingBytes)
+        );
+        let instance_offset = MAGIC.len() + 1 + 32;
+        response[instance_offset..instance_offset + 16].fill(0);
+        assert_eq!(
+            decode_frame_v1(&response),
+            Err(AgentProtocolError::Model(InvalidAgentModel::Unspecified))
+        );
+    }
+
+    #[test]
+    fn failed_ranges_and_nonempty_length_limits_preserve_original_input_positions() {
+        let bytes = [1, 2, 3];
+        let mut cursor = BoundedReader::new(&bytes, frame_read_error);
+        assert_eq!(cursor.u8(), Ok(1));
+        assert_eq!(
+            cursor.bytes(usize::MAX),
+            Err(AgentProtocolError::InvalidLength)
+        );
+        assert_eq!(cursor.remaining_bytes(), &bytes[1..]);
+        assert_eq!(cursor.array::<3>(), Err(AgentProtocolError::Truncated));
+        assert_eq!(cursor.remaining_bytes(), &bytes[1..]);
+        assert_eq!(cursor.finish(), Err(AgentProtocolError::TrailingBytes));
+
+        let short_prefix = [0; 3];
+        let mut cursor = BoundedReader::new(&short_prefix, frame_read_error);
+        assert_eq!(
+            read_length_prefixed(&mut cursor, 4),
+            Err(AgentProtocolError::Truncated)
+        );
+        assert_eq!(cursor.remaining_bytes(), &short_prefix);
+
+        for (length, error) in [
+            (0_u32, AgentProtocolError::InvalidLength),
+            (5, AgentProtocolError::InvalidLength),
+            (4, AgentProtocolError::Truncated),
+        ] {
+            let mut bytes = length.to_be_bytes().to_vec();
+            bytes.push(0x55);
+            let mut cursor = BoundedReader::new(&bytes, frame_read_error);
+            assert_eq!(read_length_prefixed(&mut cursor, 4), Err(error));
+            assert_eq!(cursor.remaining_bytes(), &bytes[4..]);
+        }
+
+        let bytes = [0, 0, 0, 1, 0x55];
+        let mut cursor = BoundedReader::new(&bytes, frame_read_error);
+        let payload = read_length_prefixed(&mut cursor, 4).unwrap();
+        assert_eq!(payload, &bytes[4..]);
+        assert_eq!(payload.as_ptr(), bytes[4..].as_ptr());
+        assert_eq!(cursor.finish(), Ok(()));
     }
 }
