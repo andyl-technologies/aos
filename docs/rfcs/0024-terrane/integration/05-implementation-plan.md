@@ -219,13 +219,29 @@ The reviewed upload baseline correction measures required physical validation
 and final placement rechecks, preserving exact read and effect assertions.
 All four selected upload cases pass on `daf085bc11`; the successful case
 requires all 109 reads and reduces selected reads from 72 to 54. Its owning
-Nix gates remain pending. The existing qualified retention/imported-source
+`bucket-file-cas` and `store-verify-on-get` Nix gates pass all 45 and twelve
+exact cases respectively. The existing qualified retention/imported-source
 dependency `9d5cd28c33ae`, absent from the original run, is normally merged
 into the private composition at `09a21494ad`. A separately reviewed synthetic
 restore assertion now requires exact missing-protected-intent corruption;
 copied-burn refusal and unchanged-state assertions remain intact. These
 changes and the active-index/ordinary-merge corrections still need combined
 qualification. No task, milestone exit or freeze advances.
+
+The active-index correction on `d3c65a3bc2` passes six fresh exact regression
+cases. It preserves absent-binding incompleteness while the writer independently
+refuses dropping a required binding; present missing bodies and divergent
+relationships still refuse. Its native Active gate passes the first eight
+cases, then fails the unchanged generic Index metadata fixture. TREE-35 preserves
+generic retained Index data; DRV-30's stricter carrier validation requires an
+independently supplied contextual role. The fixture correction is under review,
+and the owning `index-tree-maintenance` gate still fails explicitly as pending.
+Independent full-diff review of the recovered `a774b69878` dependency verifies
+all fifteen before and after images against the fixed composition. Integration
+preserves actual Original/control retention, independent per-view selection,
+strict cold refusal and the eight native cold witnesses; the recovered raw
+positive separately completes its source before measuring the zero-Node fork.
+The composed candidate and complete T1 floor remain unqualified.
 
 An isolated instrumented run of the fourth private backfill case on
 `faf2f0adfa` still fails with `Expired`. It reaches both catalog ACKs and
