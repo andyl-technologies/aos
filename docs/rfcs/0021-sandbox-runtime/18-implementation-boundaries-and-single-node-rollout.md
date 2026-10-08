@@ -114,6 +114,15 @@ ownership cut is partial: protected opening, typed replay, compaction admission,
 and the protected Policy/Source/Cache/Ownership crate boundaries still require
 their separate migrations.
 
+Borrowed native suffix measurement also owns the exact before/after accounting,
+signed prefix deltas, raw namespace/key duplicate checks, and checked record and
+frame extents in `aos-sandbox-journal::native_suffix`. Actual upper mutation
+graphs stay borrowed through measurement; closed owner semantics, Source forecast
+buffers, every alternative and historical/current cut, and the final headroom
+check remain upper. Removing duplicate key/value and width-only floor buffers
+does not move admission, opening, descriptor custody, or authority below the
+domain boundary, and is not qualification or a complete protected owner cut.
+
 Linux owns the unchanged bounded optional credential reader and its retained
 native read DATA; role-specific decoding, key separation, and startup admission
 remain with their original owners.

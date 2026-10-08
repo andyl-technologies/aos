@@ -4,6 +4,8 @@
 //! write/flush/sync mechanics. [`geometry`] owns record and transaction widths
 //! and generic native configuration bounds. [`materialized`] owns ordered
 //! DATA-map projection and mutation without domain-specific indexes or admission.
+//! [`native_suffix`] owns borrowed before/after accounting and raw suffix widths;
+//! domain owners retain actual mutation graphs and final headroom admission.
 //! [`record`] owns raw namespace bytes and borrowed native record payloads;
 //! domain owners retain closed namespace decoding and semantic validation.
 //! [`transaction`] owns ordered native transaction construction and incremental
@@ -28,6 +30,7 @@
 pub mod framing;
 pub mod geometry;
 pub mod materialized;
+pub mod native_suffix;
 pub mod owner;
 pub mod record;
 pub mod recovery;
