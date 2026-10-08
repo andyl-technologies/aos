@@ -14,7 +14,8 @@ use aos_proto::aos::sandbox::local::v1::{
     MountRecipe, MountResult, MountSourceConsistency, MountSourceProofClass, MountState,
 };
 use aos_sandbox::journal::{
-    IdempotencyKey, IdempotencyOutcome, Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace,
+    CommitResult, IdempotencyKey, IdempotencyOutcome, Journal, JournalError, JournalRecord,
+    JournalTransaction, RecordNamespace,
 };
 use aos_sandbox_core::{
     AttachmentSlotId, ObjectDigest, OperationId, ProtocolVersion, RawPairedClockSample,
@@ -140,7 +141,7 @@ pub struct OriginalMountAcquireAuthorityV1 {
     sealed_effect: Option<core::result::Result<Vec<u8>, crate::authorization::MountAdmissionError>>,
     transaction: Option<core::result::Result<JournalTransaction, JournalError>>,
     preflight: Option<core::result::Result<(), JournalError>>,
-    commit: Option<core::result::Result<(), JournalError>>,
+    commit: Option<core::result::Result<CommitResult, JournalError>>,
     opened_fence: Option<core::result::Result<aos_sandbox_broker::BrokerAuthorizationFenceV1, crate::authorization::MountAdmissionError>>,
     opened_effect: Option<core::result::Result<aos_sandbox_broker::BrokerEffectIntentV1, crate::authorization::MountAdmissionError>>,
     current_fence: Option<core::result::Result<(), crate::authorization::MountAdmissionError>>,
@@ -890,7 +891,7 @@ impl<W: MountWorker> MountBroker<W> {
         }
 
         original.commit = Some(self.journal.commit(transaction));
-        if !matches!(original.commit, Some(Ok(()))) {
+        if !matches!(original.commit, Some(Ok(_))) {
             original.first_stage = Some(OriginalMountAuthorityStageV1::Commit);
             return false;
         }

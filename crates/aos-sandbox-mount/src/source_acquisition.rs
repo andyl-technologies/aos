@@ -28,6 +28,7 @@ use aos_proto::aos::sandbox::local::v1::{
     ReleaseMountSourceAcquisitionResponse,
 };
 use aos_sandbox::journal::{Journal, RecordNamespace};
+use aos_sandbox::MountManagerSourceInventoryError;
 use aos_sandbox_protocol::mount_source_acquisition_state::{
     MountSourceAcquisitionStateV2, validate_mount_source_state_graph_v2,
 };
@@ -166,8 +167,8 @@ pub struct FixedMountSourceAcquisitionOwnerV2<'journal> {
 /// operate without a fresh borrow of the same fixed protected journal.
 pub(crate) struct SourceAcquisitionRuntimeV2 {
     table: SourceAcquisitionTableV2,
-    git_coverage_first_failure: Option<aos_sandbox::journal::JournalError>,
-    original_terminal_inventory_failure: Option<aos_sandbox::journal::JournalError>,
+    git_coverage_first_failure: Option<MountManagerSourceInventoryError>,
+    original_terminal_inventory_failure: Option<MountManagerSourceInventoryError>,
     original_terminal_inventory_kernel_failure: Option<aos_sandbox_linux::Error>,
     broker_instance_id: [u8; 16],
     last_boottime_nanoseconds: Option<u64>,
@@ -868,11 +869,11 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         if self.runtime.git_coverage_first_failure.is_some() {
             return Err(crate::MountError::Fence("original Source cohort check failed"));
         }
-        let checked = (|| {
+        let checked = (|| -> std::result::Result<bool, MountManagerSourceInventoryError> {
             let mut authority = self.protected.source_acquisition_authority()?;
-            authority.with_authority(|journal| {
+            Ok(authority.with_authority(|journal| {
                 journal.mount_source_git_coverage_denies_new_v1()
-            })
+            })?)
         })();
         let denied = match checked {
             Ok(denied) => denied,
@@ -2271,7 +2272,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         let graph = match writer.current_graph() {
             Ok(graph) => graph,
             Err(cause) => {
-                self.runtime.original_terminal_inventory_failure = Some(cause);
+                self.runtime.original_terminal_inventory_failure = Some(cause.into());
                 return Err(state_error("original terminal inventory full graph refused"));
             }
         };
@@ -2283,7 +2284,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         let snapshot = match writer.snapshot() {
             Ok(snapshot) => snapshot,
             Err(cause) => {
-                self.runtime.original_terminal_inventory_failure = Some(cause);
+                self.runtime.original_terminal_inventory_failure = Some(cause.into());
                 return Err(state_error("original terminal inventory snapshot refused"));
             }
         };
@@ -2298,7 +2299,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             boot, snapshot.sequence(), self.runtime.broker_instance_id,
         )?);
         if let Err(cause) = writer.validate_snapshot(&snapshot) {
-            self.runtime.original_terminal_inventory_failure = Some(cause);
+            self.runtime.original_terminal_inventory_failure = Some(cause.into());
             return Err(state_error("original terminal inventory final snapshot refused"));
         }
         effect.check_before_original_effect()?;

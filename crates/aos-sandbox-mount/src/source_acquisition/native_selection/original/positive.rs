@@ -7,9 +7,10 @@
 
 use aos_sandbox::{JournalRecord, JournalTransaction, RecordNamespace};
 use aos_sandbox_source_provider_protocol::native_held_completion::{
-    NativeHeldCompletionSuffixV1, NativeHeldControlKindV1 as Kind, NativeHeldOwnerV1,
+    NativeHeldControlKindV1 as Kind, NativeHeldOwnerV1,
     NativeHeldSectionTagV1 as Tag,
     assertion::RootNativeDispositionAssertionV1,
+    suffix::NativeHeldCompletionSuffixV1,
 };
 use aos_sandbox_protocol::mount_source_acquisition_state::native_held_completion::native_root_sidecar_key_v2;
 use sha2::{Digest as _, Sha256};

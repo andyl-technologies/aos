@@ -5,7 +5,7 @@
 //! parent; no manager-presence object, new endpoint or cleanup permit is made.
 
 use super::*;
-use aos_sandbox::JournalError;
+use aos_sandbox::{JournalError, MountManagerSourceInventoryError};
 use aos_sandbox_protocol::LiveValidatedReleaseMountSourceAcquisitionRequest;
 use aos_sandbox_source_provider_protocol::SignedSourceProviderRequestV1;
 use aos_sandbox_source_provider_security::{
@@ -140,7 +140,7 @@ pub(super) struct OriginalRootReleaseFlightV1 {
     stage: ReleaseStageV1,
     first: Option<ReleaseFailureV1>,
     claim_pending: bool,
-    claim: Option<JournalError>,
+    claim: Option<MountManagerSourceInventoryError>,
     readback: Option<std::result::Result<OriginalRootProtectedReadbackV5, JournalError>>,
     projection: Option<std::result::Result<MountSourceRootCustodyProjectionV2, SourceProviderSecurityError>>,
     signed: Option<SignedSourceProviderRequestV1>,
@@ -420,7 +420,7 @@ impl OriginalNativeAcquireFlightV5 {
 
     pub(in crate::source_acquisition) fn retain_original_release_claim_v1(
         &mut self,
-        result: std::result::Result<(), JournalError>,
+        result: std::result::Result<(), MountManagerSourceInventoryError>,
     ) {
         if let Some(child) = self.release.as_mut() {
             child.claim_pending = false;

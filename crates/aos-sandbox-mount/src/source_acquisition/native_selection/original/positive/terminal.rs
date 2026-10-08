@@ -4,7 +4,7 @@
 //! successful Root4 call selects this inline child; no public phase or progress
 //! DATA can initialize it. Every append Result and typed claim cause stays here.
 
-use aos_sandbox::{JournalError, JournalLimits};
+use aos_sandbox::{JournalError, JournalLimits, MountManagerSourceInventoryError};
 use aos_sandbox_source_provider_protocol::native_held_completion::assertion::NativeHeldSettlementV1;
 
 use super::*;
@@ -38,7 +38,7 @@ enum FirstFailure {
 pub(super) struct OriginalRootTerminalFlightV5 {
     stage: TerminalStage,
     claim_pending: bool,
-    claim_failure: Option<JournalError>,
+    claim_failure: Option<MountManagerSourceInventoryError>,
     journal_failure: Option<JournalError>,
     first: Option<FirstFailure>,
     mount_failure: Option<crate::MountError>,
@@ -161,7 +161,10 @@ impl OriginalNativeAcquireFlightV5 {
 
     // The closed caller checked the destination before the SAME single claim;
     // no other field mutation/observation occurs between its Err and this park.
-    pub(in crate::source_acquisition) fn retain_original_terminal_claim_error_v5(&mut self, cause: JournalError) {
+    pub(in crate::source_acquisition) fn retain_original_terminal_claim_error_v5(
+        &mut self,
+        cause: MountManagerSourceInventoryError,
+    ) {
         let terminal = &mut self.positive.terminal;
         terminal.claim_failure = Some(cause);
         terminal.first = Some(FirstFailure::Claim);

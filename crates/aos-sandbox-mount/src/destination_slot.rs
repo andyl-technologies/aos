@@ -28,7 +28,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::mem::MaybeUninit;
-use std::os::fd::{BorrowedFd, OwnedFd};
+use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 
@@ -1452,7 +1452,7 @@ fn require_git_coverage_census_root(
             || readable.st_mode != stat.st_mode
             || readable.st_dev != stat.st_dev
             || readable.st_ino != stat.st_ino
-            || MountId::from_fd(handle)? != mount
+            || MountId::from_fd(handle.as_fd())? != mount
         {
             return Err(GitCoverageCensusCauseV1::Refused("read handle changed root"));
         }
