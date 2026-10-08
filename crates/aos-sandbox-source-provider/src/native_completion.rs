@@ -34,7 +34,10 @@ pub(crate) use live::NativeAcquireLiveObservationV3;
 #[path = "native_completion/clock.rs"]
 mod clock;
 
-pub(crate) use clock::NativeAcquireClockGuardV1;
+pub(crate) use clock::{
+    NativeAcquireClockGuardV1, OriginalReleaseClockGuardV1, original_release_receive_cut_v1,
+    require_original_release_receive_cut_v1,
+};
 
 #[path = "native_completion/reply_custody.rs"]
 mod reply_custody;

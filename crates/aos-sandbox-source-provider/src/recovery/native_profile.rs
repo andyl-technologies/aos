@@ -8,10 +8,13 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use aos_sandbox::{
     GlobalCapacityReservationPurposeV1, GlobalCapacityReservationRequestV1, JournalRecord,
-    SourceProviderHeldReadOnlyJournalAuthorityV1, decode_capacity_reservation_request_v1,
-    journal::native_held::{
-        NativeHeldCapacityPurposeV3, NativeHeldCapacityRecordV3, OriginalSourceCapacityRecordV5,
-        validate_capacity_snapshot_data_v2,
+    SourceProviderHeldReadOnlyJournalAuthorityV1,
+    journal::{
+        decode_capacity_reservation_request_v1,
+        native_held::{
+            NativeHeldCapacityPurposeV3, NativeHeldCapacityRecordV3, OriginalSourceCapacityRecordV5,
+            validate_capacity_snapshot_data_v2,
+        },
     },
 };
 use aos_sandbox_core::ObjectDigest;

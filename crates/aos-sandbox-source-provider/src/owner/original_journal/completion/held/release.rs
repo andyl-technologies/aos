@@ -17,7 +17,7 @@ use aos_sandbox_source_provider_protocol::{
     SignedSourceProviderStatusV1, ReleaseSourceResponseV2,
 };
 use crate::FixedSelectedProviderFailureRefV1;
-use crate::native_completion::clock::{
+use crate::native_completion::{
     OriginalReleaseClockGuardV1, original_release_receive_cut_v1,
     require_original_release_receive_cut_v1,
 };

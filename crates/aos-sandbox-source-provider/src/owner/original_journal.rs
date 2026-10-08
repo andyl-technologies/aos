@@ -63,7 +63,7 @@ enum OriginalJournalPurposeV1 {
 }
 
 struct OriginalReleaseClockLoanV1<'owner> {
-    clock: &'owner crate::native_completion::clock::OriginalReleaseClockGuardV1,
+    clock: &'owner crate::native_completion::OriginalReleaseClockGuardV1,
     current: &'owner CurrentProviderRequestV1,
     signed: &'owner SignedSourceProviderRequestV1,
 }
@@ -1302,7 +1302,7 @@ fn verify_reply(
     reply: &StorageNativeAcquireReplyV3,
 ) -> Result<(), ProviderLedgerError> {
     let verifier = storage.protocol_verifier()?;
-    reply.acceptance().verify(&verifier).map_err(|_| ProviderLedgerError::Equivocation)?;
+    reply.acceptance().verify(verifier).map_err(|_| ProviderLedgerError::Equivocation)?;
     verifier.verify_retained_signature_claim(reply.receipt())
         .map_err(|_| ProviderLedgerError::Equivocation)?;
     storage.revalidate()

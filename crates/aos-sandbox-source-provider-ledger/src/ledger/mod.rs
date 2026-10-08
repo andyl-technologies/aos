@@ -28,3 +28,27 @@ pub enum LedgerFormatErrorV1 {
     /// A legacy migration lacks authenticated facts absent from its source format.
     NeedsProvenance(&'static str),
 }
+
+impl core::fmt::Display for LedgerFormatErrorV1 {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Corrupt(message) => {
+                write!(
+                    formatter,
+                    "SourceProvider ledger record is corrupt: {message}"
+                )
+            }
+            Self::LimitExceeded(message) => {
+                write!(formatter, "SourceProvider ledger limit exceeded: {message}")
+            }
+            Self::NeedsProvenance(message) => {
+                write!(
+                    formatter,
+                    "SourceProvider ledger migration needs provenance: {message}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for LedgerFormatErrorV1 {}

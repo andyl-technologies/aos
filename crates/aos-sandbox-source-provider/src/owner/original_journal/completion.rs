@@ -95,12 +95,25 @@ impl OriginalSourceCompletionV5 {
     }
 
     fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        (|| match self.failure.as_ref()? {
-            CompletionFailureV5::Boundary(cause) => Some(cause),
-            CompletionFailureV5::Duplicate => self.duplicate.as_ref()?.as_ref().err().map(|cause| cause as _),
-            CompletionFailureV5::Handoff => self.handoff.as_ref()?.as_ref().err().map(|cause| cause as _),
-            CompletionFailureV5::Signatures => self.signatures.as_ref()?.failure(),
-        })().or_else(|| self.held.as_ref()?.failure())
+        (|| -> Option<&(dyn std::error::Error + 'static)> {
+            match self.failure.as_ref()? {
+                CompletionFailureV5::Boundary(cause) => Some(cause),
+                CompletionFailureV5::Duplicate => self
+                    .duplicate
+                    .as_ref()?
+                    .as_ref()
+                    .err()
+                    .map(|cause| cause as _),
+                CompletionFailureV5::Handoff => self
+                    .handoff
+                    .as_ref()?
+                    .as_ref()
+                    .err()
+                    .map(|cause| cause as _),
+                CompletionFailureV5::Signatures => self.signatures.as_ref()?.failure(),
+            }
+        })()
+        .or_else(|| self.held.as_ref()?.failure())
     }
 }
 
@@ -462,7 +475,8 @@ impl FixedProviderOwnerV1 {
             observed,
             expiry,
             acquisition.normalized_intent.holder_revocation_digest(),
-        )?);
+        )
+        .map_err(ProviderLedgerError::from)?);
         let patch = AcquireCompletionPatchV1::new(
             acquisition_key,
             attempt.attempt_digest,

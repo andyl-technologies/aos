@@ -466,7 +466,7 @@ impl FixedProviderOwnerV1 {
         FixedSelectedProviderOpeningV1::new(socket)
     }
 
-    fn require_ordinary_owner(&self) -> Result<(), ProviderLedgerError> {
+    pub(super) fn require_ordinary_owner(&self) -> Result<(), ProviderLedgerError> {
         if self.selected_prefix.is_some() {
             return Err(ProviderLedgerError::InvalidTransition(
                 "selected original owner cannot enter generic Ready or recovery",
