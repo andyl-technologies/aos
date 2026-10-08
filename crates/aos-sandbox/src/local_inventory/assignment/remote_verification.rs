@@ -2,8 +2,8 @@
 //!
 //! This owner retains authenticated chunk/range bytes, protected streaming
 //! checkpoints, and reducers that verify contiguous manifest-bound bytes.
-//! Immutable manifests, resume DATA, completed drain evidence and local history
-//! remain in the parent module and are not feature-gated.
+//! Immutable manifests, resume DATA, completed snapshot receipts and local history
+//! remain available by default outside this selected owner.
 
 use aos_sandbox_core::{ObjectDescriptor, ObjectDigest, PortableMediaType};
 use sha2::{Digest as _, Sha256};

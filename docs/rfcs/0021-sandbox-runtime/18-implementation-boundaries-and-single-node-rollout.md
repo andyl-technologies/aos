@@ -73,9 +73,17 @@ The private `local_inventory::assignment::acceptance_evidence` and
 `restore_admission` owners also require `multi-node`. They retain the original
 sealed assignment-acceptance and destination restore-admission factories, with
 their exact verifier, capability, publication and currentness joins. Local
-assignment models, snapshot manifests and checkpoints, and canonical retained
+assignment models, snapshot manifests and resume DATA, and canonical retained
 history remain available by default. Destination restore-admission evidence is
 not the local snapshot/restore implementation or permission to execute a restore.
+
+Authenticated chunk, dependency-range and protected transfer-checkpoint handoffs
+belong to the existing private `assignment::remote_verification` owner, selected
+only by `multi-node`. Its original carrier checks, scoped commitments and
+streaming/replay validation remain together. Completed snapshot receipts used
+by shared drain observations and canonical Journal history remain available by
+default; their retained model layouts and recovery validation do not depend on
+this selected handoff owner.
 
 ## Dependency direction
 
