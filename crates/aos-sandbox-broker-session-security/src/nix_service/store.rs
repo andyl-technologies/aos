@@ -37,8 +37,8 @@ use rustix::fs::{Mode, OFlags};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use crate::controller_service::nix_inputs::{
-    NixLocalInputErrorV2, NixStoreMemberKindV2, NixStoreMemberV2, project_store_members_v2,
+use aos_sandbox_protocol::nix_build::store_projection::{
+    NixStoreMemberKindV2, NixStoreMemberV2, NixStoreProjectionErrorV2, project_store_members_v2,
     project_store_output_members_v2,
 };
 use crate::fixed_role_credential::{
@@ -113,7 +113,7 @@ pub(super) enum StoreFailureV1 {
     #[error("authenticated Store seal failed: {0}")]
     Verity(#[from] ImmutableFileError),
     #[error("canonical portable input failed: {0}")]
-    Portable(#[from] NixLocalInputErrorV2),
+    Portable(#[from] NixStoreProjectionErrorV2),
     #[error("portable Content verification failed: {0}")]
     Content(#[from] ObjectDescriptorVerificationError),
     #[error("bounded Store allocation failed: {0}")]

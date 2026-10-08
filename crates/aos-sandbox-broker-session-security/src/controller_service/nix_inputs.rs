@@ -36,7 +36,9 @@ use crate::cache_directory_source::{
     ProjectSealedViewObjectSourceV1, ProjectSealedViewSourceErrorV1,
 };
 
+#[cfg(test)]
 const MAXIMUM_INPUT_PINS: usize = 4_096;
+#[cfg(test)]
 const MAXIMUM_INPUT_BYTES: u64 = 1_073_741_824;
 const INPUT_SCRATCH_BYTES: usize = 64 * 1_024;
 
@@ -69,6 +71,25 @@ pub(crate) enum NixLocalInputErrorV2 {
     ShortRead,
     #[error("local input cut is permanently closed")]
     Closed,
+}
+
+impl From<aos_sandbox_protocol::nix_build::store_projection::NixStoreProjectionErrorV2>
+    for NixLocalInputErrorV2
+{
+    fn from(
+        error: aos_sandbox_protocol::nix_build::store_projection::NixStoreProjectionErrorV2,
+    ) -> Self {
+        use aos_sandbox_protocol::nix_build::store_projection::NixStoreProjectionErrorV2;
+
+        match error {
+            NixStoreProjectionErrorV2::Directory(cause) => Self::Directory(cause),
+            NixStoreProjectionErrorV2::Allocation(cause) => Self::Allocation(cause),
+            NixStoreProjectionErrorV2::Bound => Self::Bound,
+            NixStoreProjectionErrorV2::Conflict => Self::Conflict,
+            NixStoreProjectionErrorV2::UnsupportedLayout => Self::UnsupportedLayout,
+            NixStoreProjectionErrorV2::Changed => Self::Changed,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -440,15 +461,12 @@ fn checked_projection_growth(
     distinct_bytes: u64,
     encoded_size: u64,
 ) -> Result<u64, NixLocalInputErrorV2> {
-    let next_count = count.checked_add(1).ok_or(NixLocalInputErrorV2::Bound)?;
-    let next_bytes = distinct_bytes.checked_add(encoded_size).ok_or(NixLocalInputErrorV2::Bound)?;
-    if next_count > MAXIMUM_INPUT_PINS
-        || encoded_size > MAXIMUM_INPUT_BYTES
-        || next_bytes > MAXIMUM_INPUT_BYTES
-    {
-        return Err(NixLocalInputErrorV2::Bound);
-    }
-    Ok(next_bytes)
+    aos_sandbox_protocol::nix_build::store_projection::checked_store_projection_growth_v2(
+        count,
+        distinct_bytes,
+        encoded_size,
+    )
+    .map_err(Into::into)
 }
 
 fn project_inputs(
@@ -525,201 +543,6 @@ fn project_directory_leaves<'recipe>(
             // A decoded entry owns its descriptor only until the next entry.
             // Retain this bounded descriptor DATA, not the Directory payload.
             projection.add(&content, None)?;
-        }
-    }
-    Ok(())
-}
-
-/// Projects names from an already signature- and graph-checked recipe.
-///
-/// This is comparison DATA, not an opener or store admission. The same Core
-/// Tree/Directory decoders enumerate original records without revalidating a
-/// second graph. Source projection and its allocation/error order stay above.
-#[cfg(feature = "online-nix")]
-pub(crate) fn project_store_members_v2(
-    recipe: &NixPreadmittedRecipeV2,
-) -> Result<Vec<NixStoreMemberV2>, NixLocalInputErrorV2> {
-    project_store_objects_v2(std::iter::once(&recipe.derivation).chain(&recipe.inputs), 0, 0)
-}
-
-/// Projects selected predicted outputs through the same portable engine.
-#[cfg(feature = "online-nix")]
-pub(crate) fn project_store_output_members_v2<'input>(
-    recipe: &NixPreadmittedRecipeV2,
-    mut inputs: impl Iterator<Item = &'input NixStoreMemberV2>,
-) -> Result<Vec<NixStoreMemberV2>, NixLocalInputErrorV2> {
-    if recipe.outputs.is_empty() {
-        return Err(NixLocalInputErrorV2::Bound);
-    }
-    // Borrow the already-retained input graph rather than reconstructing a
-    // second full union. Every output insertion shares its remaining count
-    // and Content-byte headroom with those actual original input members.
-    let (count, bytes) = inputs.try_fold((0_usize, 0_u64), |(count, bytes), member| {
-        let content_bytes = match &member.kind {
-            NixStoreMemberKindV2::Content { descriptor, .. } => descriptor.encoded_size(),
-            _ => 0,
-        };
-        let bytes = checked_projection_growth(count, bytes, content_bytes)?;
-        Ok::<_, NixLocalInputErrorV2>((count + 1, bytes))
-    })?;
-    project_store_objects_v2(recipe.outputs.iter().map(|output| &output.object), count, bytes)
-}
-
-#[cfg(feature = "online-nix")]
-fn project_store_objects_v2<'object>(
-    objects: impl Iterator<Item = &'object NixStoreObjectV2>,
-    retained_members: usize,
-    retained_bytes: u64,
-) -> Result<Vec<NixStoreMemberV2>, NixLocalInputErrorV2> {
-    let mut members = Vec::new();
-    let mut total_bytes = retained_bytes;
-    for (object_index, object) in objects.enumerate()
-    {
-        let name = object.path.strip_prefix('/').ok_or(NixLocalInputErrorV2::Changed)?;
-        if object.portable.media_type().as_str() == PortableMediaType::Content.as_str() {
-            push_store_member(
-                &mut members,
-                &mut total_bytes,
-                retained_members,
-                name,
-                NixStoreMemberKindV2::Content {
-                    descriptor: object.portable.clone(),
-                    metadata: None,
-                    hardlink: None,
-                },
-            )?;
-        } else {
-            let tree = object.portable_objects.iter()
-                .find(|record| record.descriptor == object.portable)
-                .ok_or(NixLocalInputErrorV2::Conflict)?;
-            let tree = aos_sandbox_core::format::decode_tree(&tree.bytes, DecodeLimits::default())?;
-            project_store_directory(
-                object,
-                object_index,
-                tree.root(),
-                name,
-                0,
-                &mut members,
-                &mut total_bytes,
-                retained_members,
-            )?;
-        }
-    }
-    members.sort_unstable_by(|left, right| left.name.cmp(&right.name));
-    if !members.windows(2).all(|pair| pair[0].name < pair[1].name) {
-        return Err(NixLocalInputErrorV2::Conflict);
-    }
-    Ok(members)
-}
-
-#[cfg(feature = "online-nix")]
-pub(crate) struct NixStoreMemberV2 {
-    pub(crate) name: String,
-    pub(crate) kind: NixStoreMemberKindV2,
-}
-
-#[cfg(feature = "online-nix")]
-pub(crate) enum NixStoreMemberKindV2 {
-    Content {
-        descriptor: ObjectDescriptor,
-        metadata: Option<aos_sandbox_core::model::FilesystemMetadata>,
-        // Hardlink labels are local to this admitted Tree, not global groups.
-        hardlink: Option<(usize, aos_sandbox_core::ObjectDigest)>,
-    },
-    Directory(aos_sandbox_core::model::FilesystemMetadata),
-    Symlink(aos_sandbox_core::model::SymlinkNode),
-}
-
-#[cfg(feature = "online-nix")]
-fn push_store_member(
-    members: &mut Vec<NixStoreMemberV2>,
-    total_bytes: &mut u64,
-    retained_members: usize,
-    name: &str,
-    kind: NixStoreMemberKindV2,
-) -> Result<(), NixLocalInputErrorV2> {
-    let bytes = match &kind {
-        NixStoreMemberKindV2::Content { descriptor, .. } => descriptor.encoded_size(),
-        _ => 0,
-    };
-    let count = retained_members.checked_add(members.len())
-        .ok_or(NixLocalInputErrorV2::Bound)?;
-    let next = checked_projection_growth(count, *total_bytes, bytes)?;
-    if name.is_empty() || name.len() > 4_096 {
-        return Err(NixLocalInputErrorV2::Bound);
-    }
-    members.try_reserve_exact(1)?;
-    let mut retained_name = String::new();
-    retained_name.try_reserve_exact(name.len())?;
-    retained_name.push_str(name);
-    members.push(NixStoreMemberV2 { name: retained_name, kind });
-    *total_bytes = next;
-    Ok(())
-}
-
-#[cfg(feature = "online-nix")]
-fn project_store_directory(
-    object: &NixStoreObjectV2,
-    object_index: usize,
-    descriptor: &ObjectDescriptor,
-    name: &str,
-    depth: usize,
-    members: &mut Vec<NixStoreMemberV2>,
-    total_bytes: &mut u64,
-    retained_members: usize,
-) -> Result<(), NixLocalInputErrorV2> {
-    if depth >= 64 {
-        return Err(NixLocalInputErrorV2::Bound);
-    }
-    let record = object.portable_objects.iter()
-        .find(|record| &record.descriptor == descriptor)
-        .ok_or(NixLocalInputErrorV2::Conflict)?;
-    let mut stream = StreamingDirectory::new(&record.bytes, DecodeLimits::default())?;
-    push_store_member(
-        members,
-        total_bytes,
-        retained_members,
-        name,
-        NixStoreMemberKindV2::Directory(stream.metadata().clone()),
-    )?;
-
-    while let Some(entry) = stream.next_entry()? {
-        let leaf = std::str::from_utf8(entry.name.as_bytes())
-            .map_err(|_| NixLocalInputErrorV2::UnsupportedLayout)?;
-        let length = name.len().checked_add(1).and_then(|length| length.checked_add(leaf.len()))
-            .ok_or(NixLocalInputErrorV2::Bound)?;
-        if length > 4_096 {
-            return Err(NixLocalInputErrorV2::Bound);
-        }
-        let mut child = String::new();
-        child.try_reserve_exact(length)?;
-        child.push_str(name);
-        child.push('/');
-        child.push_str(leaf);
-        match entry.node {
-            Node::Directory(descriptor) => project_store_directory(
-                object, object_index, &descriptor, &child, depth + 1, members, total_bytes,
-                retained_members,
-            )?,
-            Node::File(file) => {
-                let ContentLayout::Whole { content } = file.content else {
-                    return Err(NixLocalInputErrorV2::UnsupportedLayout);
-                };
-                push_store_member(
-                    members,
-                    total_bytes,
-                    retained_members,
-                    &child,
-                    NixStoreMemberKindV2::Content {
-                        descriptor: content,
-                        metadata: Some(file.metadata),
-                        hardlink: file.hardlink_group.map(|group| (object_index, group)),
-                    },
-                )?;
-            }
-            Node::Symlink(link) => push_store_member(
-                members, total_bytes, retained_members, &child, NixStoreMemberKindV2::Symlink(link),
-            )?,
         }
     }
     Ok(())

@@ -31,6 +31,7 @@ use crate::{
 mod historical;
 mod observation;
 mod portable_graph;
+pub mod store_projection;
 
 #[cfg(test)]
 mod tests;
