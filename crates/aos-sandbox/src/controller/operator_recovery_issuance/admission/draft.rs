@@ -275,7 +275,7 @@ impl<C: ActivatedOperationCompiler, E: SingleNodeEffectExecutor> NodeController<
 fn decode_repair_public_request(
     canonical: &[u8],
 ) -> Result<
-    (PublicMutationRequestV1, super::super::super::OperatorRecoveryRequestV1),
+    (PublicMutationRequestV1, crate::cli_model::OperatorRecoveryRequestV1),
     OperationCompilationError,
 > {
     let envelope = PublicMutationRequestV1::decode(canonical)
@@ -289,7 +289,7 @@ fn decode_repair_public_request(
     let request = super::super::decode_public_request(envelope.protobuf_body())
         .map_err(|_| OperationCompilationError::Malformed)?;
     if envelope.method() != crate::cli_model::PublicApiAuditMethodV1::OperatorRecover
-        || request != super::super::super::OperatorRecoveryRequestV1::try_from(decoded)
+        || request != crate::cli_model::OperatorRecoveryRequestV1::try_from(decoded)
             .map_err(|_| OperationCompilationError::Malformed)?
         || request.action()
             != aos_proto::aos::sandbox::v1::OperatorRecoveryAction::OPERATOR_RECOVERY_ACTION_REPAIR as i32

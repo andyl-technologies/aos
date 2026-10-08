@@ -38,12 +38,13 @@ use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
 use super::{
-    ActivatedOperationCompiler, NodeController, OperatorRecoveryRequestV1, PublicApiAuditMethodV1,
+    ActivatedOperationCompiler, NodeController, PublicApiAuditMethodV1,
     SingleNodeEffectExecutor, decode_recovery_current, recovery_current_key,
     validate_recovery_current,
 };
 use crate::cli_model::{
-    DormantSandboxRequestKindV1, InvalidObservationClientAdapter, PublicMutationRequestV1,
+    DormantSandboxRequestKindV1, InvalidObservationClientAdapter, OperatorRecoveryRequestV1,
+    PublicMutationRequestV1,
 };
 use aos_sandbox_protocol::public_api::CheckedSandboxResourceV1;
 use crate::controller_service::public_projection::{
