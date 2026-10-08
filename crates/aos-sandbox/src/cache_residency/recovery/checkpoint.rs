@@ -106,16 +106,20 @@ pub fn decode_typed_checkpoint(
     limits: CacheRecoveryLimitsV1,
 ) -> Result<CacheTypedCheckpointV1, RecoveryError> {
     let limits = limits.validate()?;
-    let mut reader =
-        CanonicalReader::new(TYPED_CHECKPOINT_MAGIC, bytes, limits.maximum_payload_bytes)?;
-    let checkpoint = decode_checkpoint(reader.length_prefixed(CHECKPOINT_BYTES)?)?;
-    let baseline_count = reader.count(limits.maximum_subjects)?;
+    let mut reader = RecoveryReader::new(bytes, recovery_read_error);
+    read_component_header(
+        &mut reader,
+        TYPED_CHECKPOINT_MAGIC,
+        limits.maximum_payload_bytes,
+    )?;
+    let checkpoint = decode_checkpoint(read_length_prefixed(&mut reader, CHECKPOINT_BYTES)?)?;
+    let baseline_count = read_count(&mut reader, limits.maximum_subjects)?;
     let mut baselines = Vec::with_capacity(baseline_count);
     for _ in 0..baseline_count {
-        let record = reader.length_prefixed(limits.maximum_payload_bytes)?;
+        let record = read_length_prefixed(&mut reader, limits.maximum_payload_bytes)?;
         baselines.push(decode_atomic_object_record(partition, record, limits)?);
     }
-    let head_count = reader.count(limits.maximum_records)?;
+    let head_count = read_count(&mut reader, limits.maximum_records)?;
     let mut family_heads = Vec::with_capacity(head_count);
     for _ in 0..head_count {
         family_heads.push(CacheSubjectFamilyHeadV1 {
@@ -127,11 +131,11 @@ pub fn decode_typed_checkpoint(
     }
     let global = decode_global_recovery_state(
         partition,
-        reader.length_prefixed(limits.maximum_payload_bytes)?,
+        read_length_prefixed(&mut reader, limits.maximum_payload_bytes)?,
         limits,
     )?;
     let digest = reader.digest()?;
-    reader.complete()?;
+    reader.finish()?;
     let typed = CacheTypedCheckpointV1 {
         checkpoint,
         baselines,
@@ -211,58 +215,58 @@ pub(super) fn decode_atomic_payload_components(
     bytes: &[u8],
     limits: CacheRecoveryLimitsV1,
 ) -> Result<CacheAtomicObjectPayloadV1, RecoveryError> {
-    let mut reader =
-        CanonicalReader::new(ATOMIC_PAYLOAD_MAGIC, bytes, limits.maximum_payload_bytes)?;
+    let mut reader = RecoveryReader::new(bytes, recovery_read_error);
+    read_component_header(&mut reader, ATOMIC_PAYLOAD_MAGIC, limits.maximum_payload_bytes)?;
     let plan = decode_admission_plan(
         partition,
-        reader.length_prefixed(limits.maximum_payload_bytes)?,
+        read_length_prefixed(&mut reader, limits.maximum_payload_bytes)?,
         limits.maximum_payload_bytes,
     )?;
     let reservation = decode_reservation(
         partition,
-        reader.length_prefixed(limits.maximum_payload_bytes)?,
+        read_length_prefixed(&mut reader, limits.maximum_payload_bytes)?,
         limits.maximum_payload_bytes,
     )?;
-    let catalog = match reader.boolean()? {
+    let catalog = match read_boolean(&mut reader)? {
         true => Some(decode_catalog(
             partition,
-            reader.length_prefixed(limits.maximum_payload_bytes)?,
+            read_length_prefixed(&mut reader, limits.maximum_payload_bytes)?,
             limits.maximum_payload_bytes,
         )?),
         false => None,
     };
-    let pin_count = reader.count(limits.maximum_subjects)?;
+    let pin_count = read_count(&mut reader, limits.maximum_subjects)?;
     let mut pins = Vec::with_capacity(pin_count);
     for _ in 0..pin_count {
         pins.push(decode_pin(
             partition,
-            reader.length_prefixed(limits.maximum_payload_bytes)?,
+            read_length_prefixed(&mut reader, limits.maximum_payload_bytes)?,
             limits.maximum_payload_bytes,
         )?);
     }
-    let released_count = reader.count(limits.maximum_subjects)?;
+    let released_count = read_count(&mut reader, limits.maximum_subjects)?;
     let mut released_pins = Vec::with_capacity(released_count);
     for _ in 0..released_count {
         released_pins.push(decode_released_pin(
             partition,
-            reader.length_prefixed(limits.maximum_payload_bytes)?,
+            read_length_prefixed(&mut reader, limits.maximum_payload_bytes)?,
             limits.maximum_payload_bytes,
         )?);
     }
     let progress = decode_admission_progress(
-        reader.length_prefixed(limits.maximum_payload_bytes)?,
+        read_length_prefixed(&mut reader, limits.maximum_payload_bytes)?,
         limits.maximum_payload_bytes,
     )?;
-    let eviction_plan = match reader.boolean()? {
+    let eviction_plan = match read_boolean(&mut reader)? {
         true => Some(decode_eviction_plan(
             partition,
-            reader.length_prefixed(limits.maximum_payload_bytes)?,
+            read_length_prefixed(&mut reader, limits.maximum_payload_bytes)?,
             limits.maximum_payload_bytes,
             limits.maximum_subjects,
         )?),
         false => None,
     };
-    let eviction_count = reader.count(MAXIMUM_EVICTION_CANDIDATES)?;
+    let eviction_count = read_count(&mut reader, MAXIMUM_EVICTION_CANDIDATES)?;
     let mut eviction_progress = Vec::with_capacity(eviction_count);
     for _ in 0..eviction_count {
         let plan = eviction_plan
@@ -270,27 +274,27 @@ pub(super) fn decode_atomic_payload_components(
             .ok_or(RecoveryError::PayloadMismatch)?;
         eviction_progress.push(decode_eviction_progress(
             plan,
-            reader.length_prefixed(limits.maximum_payload_bytes)?,
+            read_length_prefixed(&mut reader, limits.maximum_payload_bytes)?,
             limits.maximum_payload_bytes,
         )?);
     }
-    let scrub = match reader.boolean()? {
+    let scrub = match read_boolean(&mut reader)? {
         true => Some(decode_scrub_record(
             partition,
-            reader.length_prefixed(limits.maximum_payload_bytes)?,
+            read_length_prefixed(&mut reader, limits.maximum_payload_bytes)?,
             limits.maximum_payload_bytes,
         )?),
         false => None,
     };
-    let global_after = match reader.boolean()? {
+    let global_after = match read_boolean(&mut reader)? {
         true => Some(decode_global_recovery_state(
             partition,
-            reader.length_prefixed(limits.maximum_payload_bytes)?,
+            read_length_prefixed(&mut reader, limits.maximum_payload_bytes)?,
             limits,
         )?),
         false => None,
     };
-    reader.complete()?;
+    reader.finish()?;
     Ok(CacheAtomicObjectPayloadV1 {
         record,
         plan,

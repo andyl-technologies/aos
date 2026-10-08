@@ -1,5 +1,6 @@
 //! Canonical bounded primitive encoding shared by durable cache formats.
 
+use aos_sandbox_core::bounded_codec::{BoundedReader, ReadError};
 use aos_sandbox_protocol::cache_state::{
     BackingObjectIdentityV1, ImmutableSealV1, SealProfileV1, validate_object_descriptor,
 };
@@ -132,142 +133,89 @@ impl CanonicalWriter {
     }
 }
 
-pub(super) struct CanonicalReader<'bytes> {
-    bytes: &'bytes [u8],
-    position: usize,
+pub(super) type RecoveryReader<'bytes> = BoundedReader<'bytes, RecoveryError>;
+
+pub(super) fn recovery_read_error(_: ReadError) -> RecoveryError {
+    RecoveryError::MalformedPayload
 }
 
-impl<'bytes> CanonicalReader<'bytes> {
-    pub(super) fn new(
-        magic: &[u8; 8],
-        bytes: &'bytes [u8],
-        maximum_bytes: usize,
-    ) -> Result<Self, RecoveryError> {
-        if bytes.len() < 16
-            || bytes.len() > maximum_bytes
-            || maximum_bytes > MAXIMUM_COMPONENT_BYTES
-        {
-            return Err(RecoveryError::MalformedPayload);
-        }
-        let version = CODEC_VERSION.to_be_bytes();
-        if &bytes[0..8] != magic || bytes[8..10] != version || bytes[10..16] != [0; 6] {
-            return Err(RecoveryError::MalformedPayload);
-        }
-        Ok(Self {
-            bytes,
-            position: 16,
-        })
+pub(super) fn read_component_header(
+    reader: &mut RecoveryReader<'_>,
+    magic: &[u8; 8],
+    maximum_bytes: usize,
+) -> Result<(), RecoveryError> {
+    if reader.remaining() < 16
+        || reader.remaining() > maximum_bytes
+        || maximum_bytes > MAXIMUM_COMPONENT_BYTES
+    {
+        return Err(RecoveryError::MalformedPayload);
     }
+    if reader.bytes(8)? != magic || reader.u16()? != CODEC_VERSION {
+        return Err(RecoveryError::MalformedPayload);
+    }
+    reader.zeros(6)
+}
 
-    pub(super) fn position(&self) -> usize {
-        self.position
+pub(super) fn read_expected_digest(
+    reader: &mut RecoveryReader<'_>,
+    expected: ObjectDigest,
+) -> Result<(), RecoveryError> {
+    if reader.digest()? == expected {
+        Ok(())
+    } else {
+        Err(RecoveryError::PayloadMismatch)
     }
+}
 
-    pub(super) fn complete(&self) -> Result<(), RecoveryError> {
-        if self.position == self.bytes.len() {
-            Ok(())
-        } else {
-            Err(RecoveryError::MalformedPayload)
-        }
+pub(super) fn read_count(
+    reader: &mut RecoveryReader<'_>,
+    maximum: usize,
+) -> Result<usize, RecoveryError> {
+    let count = usize::try_from(reader.u32()?).map_err(|_| RecoveryError::Capacity)?;
+    if count > maximum {
+        return Err(RecoveryError::Capacity);
     }
+    Ok(count)
+}
 
-    pub(super) fn take(&mut self, length: usize) -> Result<&'bytes [u8], RecoveryError> {
-        let end = self
-            .position
-            .checked_add(length)
-            .ok_or(RecoveryError::MalformedPayload)?;
-        let value = self
-            .bytes
-            .get(self.position..end)
-            .ok_or(RecoveryError::MalformedPayload)?;
-        self.position = end;
-        Ok(value)
+pub(super) fn read_boolean(reader: &mut RecoveryReader<'_>) -> Result<bool, RecoveryError> {
+    match reader.u8()? {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(RecoveryError::MalformedPayload),
     }
+}
 
-    pub(super) fn array<const N: usize>(&mut self) -> Result<[u8; N], RecoveryError> {
-        self.take(N)?
-            .try_into()
-            .map_err(|_| RecoveryError::MalformedPayload)
+pub(super) fn read_optional_identity(
+    reader: &mut RecoveryReader<'_>,
+) -> Result<Option<[u8; 16]>, RecoveryError> {
+    let present = read_boolean(reader)?;
+    let value = reader.array()?;
+    match (present, value == [0; 16]) {
+        (false, true) => Ok(None),
+        (true, false) => Ok(Some(value)),
+        _ => Err(RecoveryError::MalformedPayload),
     }
+}
 
-    pub(super) fn identity(&mut self) -> Result<[u8; 16], RecoveryError> {
-        self.array()
+pub(super) fn read_optional_digest(
+    reader: &mut RecoveryReader<'_>,
+) -> Result<Option<ObjectDigest>, RecoveryError> {
+    let present = read_boolean(reader)?;
+    let value = reader.digest()?;
+    match (present, value.as_bytes() == &[0; 32]) {
+        (false, true) => Ok(None),
+        (true, false) => Ok(Some(value)),
+        _ => Err(RecoveryError::MalformedPayload),
     }
+}
 
-    pub(super) fn digest(&mut self) -> Result<ObjectDigest, RecoveryError> {
-        Ok(ObjectDigest::from_bytes(self.array()?))
-    }
-
-    pub(super) fn expect_digest(&mut self, expected: ObjectDigest) -> Result<(), RecoveryError> {
-        if self.digest()? == expected {
-            Ok(())
-        } else {
-            Err(RecoveryError::PayloadMismatch)
-        }
-    }
-
-    pub(super) fn u8(&mut self) -> Result<u8, RecoveryError> {
-        Ok(self.array::<1>()?[0])
-    }
-
-    pub(super) fn u16(&mut self) -> Result<u16, RecoveryError> {
-        Ok(u16::from_be_bytes(self.array()?))
-    }
-
-    pub(super) fn u32(&mut self) -> Result<u32, RecoveryError> {
-        Ok(u32::from_be_bytes(self.array()?))
-    }
-
-    pub(super) fn u64(&mut self) -> Result<u64, RecoveryError> {
-        Ok(u64::from_be_bytes(self.array()?))
-    }
-
-    pub(super) fn count(&mut self, maximum: usize) -> Result<usize, RecoveryError> {
-        let count = usize::try_from(self.u32()?).map_err(|_| RecoveryError::Capacity)?;
-        if count > maximum {
-            return Err(RecoveryError::Capacity);
-        }
-        Ok(count)
-    }
-
-    pub(super) fn boolean(&mut self) -> Result<bool, RecoveryError> {
-        match self.u8()? {
-            0 => Ok(false),
-            1 => Ok(true),
-            _ => Err(RecoveryError::MalformedPayload),
-        }
-    }
-
-    pub(super) fn optional_identity(&mut self) -> Result<Option<[u8; 16]>, RecoveryError> {
-        let present = self.boolean()?;
-        let value = self.identity()?;
-        match (present, value == [0; 16]) {
-            (false, true) => Ok(None),
-            (true, false) => Ok(Some(value)),
-            _ => Err(RecoveryError::MalformedPayload),
-        }
-    }
-
-    pub(super) fn optional_digest(&mut self) -> Result<Option<ObjectDigest>, RecoveryError> {
-        let present = self.boolean()?;
-        let value = self.digest()?;
-        match (present, value.as_bytes() == &[0; 32]) {
-            (false, true) => Ok(None),
-            (true, false) => Ok(Some(value)),
-            _ => Err(RecoveryError::MalformedPayload),
-        }
-    }
-
-    pub(super) fn length_prefixed(
-        &mut self,
-        maximum: usize,
-    ) -> Result<&'bytes [u8], RecoveryError> {
-        let length = usize::try_from(self.u32()?).map_err(|_| RecoveryError::Capacity)?;
-        if length > maximum {
-            return Err(RecoveryError::Capacity);
-        }
-        self.take(length)
-    }
+pub(super) fn read_length_prefixed<'bytes>(
+    reader: &mut RecoveryReader<'bytes>,
+    maximum: usize,
+) -> Result<&'bytes [u8], RecoveryError> {
+    let length = read_count(reader, maximum)?;
+    reader.bytes(length)
 }
 
 pub(super) fn write_descriptor(
@@ -283,10 +231,10 @@ pub(super) fn write_descriptor(
 }
 
 pub(super) fn read_descriptor(
-    reader: &mut CanonicalReader<'_>,
+    reader: &mut RecoveryReader<'_>,
 ) -> Result<ObjectDescriptor, RecoveryError> {
     let media_length = usize::from(reader.u16()?);
-    let media = std::str::from_utf8(reader.take(media_length)?)
+    let media = std::str::from_utf8(reader.bytes(media_length)?)
         .map_err(|_| RecoveryError::MalformedPayload)?;
     let media = MediaType::new(media).map_err(|_| RecoveryError::MalformedPayload)?;
     let descriptor = ObjectDescriptor::new(media, reader.digest()?, reader.u64()?);
@@ -304,7 +252,7 @@ pub(super) fn write_seal(
 }
 
 pub(super) fn read_seal(
-    reader: &mut CanonicalReader<'_>,
+    reader: &mut RecoveryReader<'_>,
 ) -> Result<ImmutableSealV1, RecoveryError> {
     let profile = match reader.u8()? {
         1 => SealProfileV1::FsVeritySha256,
@@ -335,7 +283,7 @@ pub(super) fn write_eviction_candidate(
 }
 
 pub(super) fn read_eviction_candidate(
-    reader: &mut CanonicalReader<'_>,
+    reader: &mut RecoveryReader<'_>,
 ) -> Result<EvictionCandidateV1, RecoveryError> {
     Ok(EvictionCandidateV1 {
         descriptor: read_descriptor(reader)?,

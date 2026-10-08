@@ -64,16 +64,17 @@ pub fn decode_scrub_record(
     bytes: &[u8],
     maximum_bytes: usize,
 ) -> Result<CacheScrubRecordV1, RecoveryError> {
-    let mut reader = CanonicalReader::new(b"AOSSCR01", bytes, maximum_bytes)?;
-    reader.expect_digest(partition.digest())?;
-    let operation = OperationId::from_bytes(reader.identity()?);
+    let mut reader = RecoveryReader::new(bytes, recovery_read_error);
+    read_component_header(&mut reader, b"AOSSCR01", maximum_bytes)?;
+    read_expected_digest(&mut reader, partition.digest())?;
+    let operation = OperationId::from_bytes(reader.array()?);
     let catalog_digest = reader.digest()?;
     let before_validation = read_backing_observation(&mut reader)?;
     let after_validation = read_backing_observation(&mut reader)?;
     let content_digest = reader.digest()?;
     let digest = reader.digest()?;
     let subject = reader.digest()?;
-    let scope_operation = OperationId::from_bytes(reader.identity()?);
+    let scope_operation = OperationId::from_bytes(reader.array()?);
     let plan = reader.digest()?;
     let root_custody = reader.digest()?;
     let generation = reader.u64()?;
@@ -81,15 +82,15 @@ pub fn decode_scrub_record(
     let authority_record = reader.digest()?;
     let prior_catalog = decode_catalog(
         partition,
-        reader.length_prefixed(maximum_bytes)?,
+        read_length_prefixed(&mut reader, maximum_bytes)?,
         maximum_bytes,
     )?;
     let resulting_catalog = decode_catalog(
         partition,
-        reader.length_prefixed(maximum_bytes)?,
+        read_length_prefixed(&mut reader, maximum_bytes)?,
         maximum_bytes,
     )?;
-    reader.complete()?;
+    reader.finish()?;
     let authority_scope = CacheAuthorityScopeV1::new(
         partition,
         subject,
@@ -133,7 +134,7 @@ fn write_backing_observation(
 }
 
 fn read_backing_observation(
-    reader: &mut CanonicalReader<'_>,
+    reader: &mut RecoveryReader<'_>,
 ) -> Result<BackingObservationV1, RecoveryError> {
     Ok(BackingObservationV1 {
         root_custody: reader.digest()?,
@@ -143,8 +144,8 @@ fn read_backing_observation(
             .map_err(|_| RecoveryError::MalformedPayload)?,
         size: reader.u64()?,
         seal: read_seal(reader)?,
-        read_only: reader.boolean()?,
-        confined_resolution: reader.boolean()?,
+        read_only: read_boolean(reader)?,
+        confined_resolution: read_boolean(reader)?,
     })
 }
 
@@ -192,12 +193,13 @@ pub fn decode_admission_plan(
     bytes: &[u8],
     maximum_bytes: usize,
 ) -> Result<ImmutableAdmissionPlanV1, RecoveryError> {
-    let mut reader = CanonicalReader::new(b"AOSPLN01", bytes, maximum_bytes)?;
-    let operation = OperationId::from_bytes(reader.identity()?);
-    let reservation = CacheReservationId::from_bytes(reader.identity()?)
+    let mut reader = RecoveryReader::new(bytes, recovery_read_error);
+    read_component_header(&mut reader, b"AOSPLN01", maximum_bytes)?;
+    let operation = OperationId::from_bytes(reader.array()?);
+    let reservation = CacheReservationId::from_bytes(reader.array()?)
         .map_err(|_| RecoveryError::MalformedPayload)?;
-    let project = ProjectId::from_bytes(reader.identity()?);
-    reader.expect_digest(partition.digest())?;
+    let project = ProjectId::from_bytes(reader.array()?);
+    read_expected_digest(&mut reader, partition.digest())?;
     let descriptor = read_descriptor(&mut reader)?;
     let release_digest = reader.digest()?;
     let source_revision = reader.digest()?;
@@ -222,7 +224,7 @@ pub fn decode_admission_plan(
     let initial_pins_digest = reader.digest()?;
     let request_digest = reader.digest()?;
     let expected_digest = reader.digest()?;
-    reader.complete()?;
+    reader.finish()?;
     let plan = ImmutableAdmissionPlanV1::new(
         operation,
         reservation,
@@ -283,15 +285,16 @@ pub fn decode_reservation(
     bytes: &[u8],
     maximum_bytes: usize,
 ) -> Result<CacheReservationV1, RecoveryError> {
-    let mut reader = CanonicalReader::new(b"AOSRSV01", bytes, maximum_bytes)?;
+    let mut reader = RecoveryReader::new(bytes, recovery_read_error);
+    read_component_header(&mut reader, b"AOSRSV01", maximum_bytes)?;
     let reservation = CacheReservationV1 {
-        id: CacheReservationId::from_bytes(reader.identity()?)
+        id: CacheReservationId::from_bytes(reader.array()?)
             .map_err(|_| RecoveryError::MalformedPayload)?,
-        operation: OperationId::from_bytes(reader.identity()?),
-        project: ProjectId::from_bytes(reader.identity()?),
+        operation: OperationId::from_bytes(reader.array()?),
+        project: ProjectId::from_bytes(reader.array()?),
         partition,
         descriptor: {
-            reader.expect_digest(partition.digest())?;
+            read_expected_digest(&mut reader, partition.digest())?;
             read_descriptor(&mut reader)?
         },
         reserved_bytes: reader.u64()?,
@@ -299,10 +302,10 @@ pub fn decode_reservation(
         resident_bytes: reader.u64()?,
         state: reservation_state(reader.u8()?)?,
         generation: reader.u64()?,
-        predecessor: reader.optional_digest()?,
+        predecessor: read_optional_digest(&mut reader)?,
         digest: reader.digest()?,
     };
-    reader.complete()?;
+    reader.finish()?;
     reservation
         .validate_record()
         .map_err(|_| RecoveryError::PayloadMismatch)?;
@@ -350,8 +353,9 @@ pub fn decode_catalog(
     bytes: &[u8],
     maximum_bytes: usize,
 ) -> Result<CatalogEntryV1, RecoveryError> {
-    let mut reader = CanonicalReader::new(b"AOSCAT01", bytes, maximum_bytes)?;
-    reader.expect_digest(partition.digest())?;
+    let mut reader = RecoveryReader::new(bytes, recovery_read_error);
+    read_component_header(&mut reader, b"AOSCAT01", maximum_bytes)?;
+    read_expected_digest(&mut reader, partition.digest())?;
     let entry = CatalogEntryV1 {
         partition,
         descriptor: read_descriptor(&mut reader)?,
@@ -362,15 +366,15 @@ pub fn decode_catalog(
         root_custody: reader.digest()?,
         root_generation: reader.u64()?,
         canonical_name: reader.digest()?,
-        publication: OperationId::from_bytes(reader.identity()?),
-        reservation: CacheReservationId::from_bytes(reader.identity()?)
+        publication: OperationId::from_bytes(reader.array()?),
+        reservation: CacheReservationId::from_bytes(reader.array()?)
             .map_err(|_| RecoveryError::MalformedPayload)?,
         presence: catalog_presence(reader.u8()?)?,
         generation: reader.u64()?,
-        predecessor: reader.optional_digest()?,
+        predecessor: read_optional_digest(&mut reader)?,
         digest: reader.digest()?,
     };
-    reader.complete()?;
+    reader.finish()?;
     entry.validate().map_err(|_| RecoveryError::PayloadMismatch)
 }
 
@@ -409,21 +413,22 @@ pub fn decode_pin(
     bytes: &[u8],
     maximum_bytes: usize,
 ) -> Result<CachePinV1, RecoveryError> {
-    let mut reader = CanonicalReader::new(b"AOSPIN01", bytes, maximum_bytes)?;
+    let mut reader = RecoveryReader::new(bytes, recovery_read_error);
+    read_component_header(&mut reader, b"AOSPIN01", maximum_bytes)?;
     let id =
-        CachePinId::from_bytes(reader.identity()?).map_err(|_| RecoveryError::MalformedPayload)?;
-    reader.expect_digest(partition.digest())?;
+        CachePinId::from_bytes(reader.array()?).map_err(|_| RecoveryError::MalformedPayload)?;
+    read_expected_digest(&mut reader, partition.digest())?;
     let object = read_descriptor(&mut reader)?;
-    let project = ProjectId::from_bytes(reader.identity()?);
-    let view = ViewId::from_bytes(reader.identity()?);
-    let attachment = reader.optional_identity()?.map(AttachmentId::from_bytes);
-    let sandbox = reader.optional_identity()?.map(SandboxId::from_bytes);
-    let incarnation = reader.optional_identity()?.map(IncarnationId::from_bytes);
+    let project = ProjectId::from_bytes(reader.array()?);
+    let view = ViewId::from_bytes(reader.array()?);
+    let attachment = read_optional_identity(&mut reader)?.map(AttachmentId::from_bytes);
+    let sandbox = read_optional_identity(&mut reader)?.map(SandboxId::from_bytes);
+    let incarnation = read_optional_identity(&mut reader)?.map(IncarnationId::from_bytes);
     let kind = pin_kind(reader.u8()?)?;
     let assignment_epoch = reader.u64()?;
     let lease_valid_until = reader.u64()?;
     let evidence = reader.digest()?;
-    reader.complete()?;
+    reader.finish()?;
     CachePinV1::recover_historical(
         id,
         partition,
@@ -472,16 +477,17 @@ pub fn decode_released_pin(
     bytes: &[u8],
     maximum_bytes: usize,
 ) -> Result<ReleasedCachePinV1, RecoveryError> {
-    let mut reader = CanonicalReader::new(b"AOSRPN01", bytes, maximum_bytes)?;
+    let mut reader = RecoveryReader::new(bytes, recovery_read_error);
+    read_component_header(&mut reader, b"AOSRPN01", maximum_bytes)?;
     let pin = decode_pin(
         partition,
-        reader.length_prefixed(maximum_bytes)?,
+        read_length_prefixed(&mut reader, maximum_bytes)?,
         maximum_bytes,
     )?;
     let outcome = pin_drain_outcome(reader.u8()?)?;
     let valid_until = reader.u64()?;
     let digest = reader.digest()?;
-    reader.complete()?;
+    reader.finish()?;
     let drain = PinDrainEvidenceV1::recover_historical(&pin, outcome, digest, valid_until)
         .map_err(|_| RecoveryError::PayloadMismatch)?;
     Ok(ReleasedCachePinV1 { pin, drain })
@@ -519,17 +525,18 @@ pub fn decode_admission_progress(
     bytes: &[u8],
     maximum_bytes: usize,
 ) -> Result<AdmissionProgressV1, RecoveryError> {
-    let mut reader = CanonicalReader::new(b"AOSAPR01", bytes, maximum_bytes)?;
+    let mut reader = RecoveryReader::new(bytes, recovery_read_error);
+    read_component_header(&mut reader, b"AOSAPR01", maximum_bytes)?;
     let progress = AdmissionProgressV1 {
         plan_digest: reader.digest()?,
         stage: admission_stage(reader.u8()?)?,
         last_certain_stage: admission_stage(reader.u8()?)?,
         generation: reader.u64()?,
-        predecessor: reader.optional_digest()?,
+        predecessor: read_optional_digest(&mut reader)?,
         evidence: reader.digest()?,
         digest: reader.digest()?,
     };
-    reader.complete()?;
+    reader.finish()?;
     progress
         .validate()
         .map_err(|_| RecoveryError::PayloadMismatch)?;
@@ -575,28 +582,28 @@ pub fn decode_eviction_plan(
     if maximum_candidates == 0 || maximum_candidates > MAXIMUM_EVICTION_CANDIDATES {
         return Err(RecoveryError::InvalidLimits);
     }
-    let mut reader = CanonicalReader::new(b"AOSEVP01", bytes, maximum_bytes)?;
-    let operation = OperationId::from_bytes(reader.identity()?);
-    reader.expect_digest(partition.digest())?;
+    let mut reader = RecoveryReader::new(bytes, recovery_read_error);
+    read_component_header(&mut reader, b"AOSEVP01", maximum_bytes)?;
+    let operation = OperationId::from_bytes(reader.array()?);
+    read_expected_digest(&mut reader, partition.digest())?;
     let catalog_generation = reader.u64()?;
     let authority_digest = reader.digest()?;
-    let target_reservation = reader
-        .optional_identity()?
+    let target_reservation = read_optional_identity(&mut reader)?
         .map(CacheReservationId::from_bytes)
         .transpose()
         .map_err(|_| RecoveryError::MalformedPayload)?;
     let target_reclaim_bytes = reader.u64()?;
     let valid_until = reader.u64()?;
-    let count = reader.count(maximum_candidates)?;
+    let count = read_count(&mut reader, maximum_candidates)?;
     let mut candidates = Vec::with_capacity(count);
     for _ in 0..count {
         candidates.push(decode_eviction_candidate(
-            reader.length_prefixed(maximum_bytes)?,
+            read_length_prefixed(&mut reader, maximum_bytes)?,
             maximum_bytes,
         )?);
     }
     let expected_digest = reader.digest()?;
-    reader.complete()?;
+    reader.finish()?;
     let plan = FrozenEvictionPlanV1::recover_historical(
         operation,
         partition,
@@ -646,15 +653,18 @@ pub fn decode_eviction_progress(
     bytes: &[u8],
     maximum_bytes: usize,
 ) -> Result<EvictionProgressV1, RecoveryError> {
-    let mut reader = CanonicalReader::new(b"AOSEVG01", bytes, maximum_bytes)?;
-    reader.expect_digest(plan.digest)?;
-    let candidate =
-        decode_eviction_candidate(reader.length_prefixed(maximum_bytes)?, maximum_bytes)?;
+    let mut reader = RecoveryReader::new(bytes, recovery_read_error);
+    read_component_header(&mut reader, b"AOSEVG01", maximum_bytes)?;
+    read_expected_digest(&mut reader, plan.digest)?;
+    let candidate = decode_eviction_candidate(
+        read_length_prefixed(&mut reader, maximum_bytes)?,
+        maximum_bytes,
+    )?;
     let state = eviction_state(reader.u8()?)?;
     let current_catalog_digest = reader.digest()?;
-    let evidence = reader.optional_digest()?;
+    let evidence = read_optional_digest(&mut reader)?;
     let reclaimed_bytes = reader.u64()?;
-    reader.complete()?;
+    reader.finish()?;
     EvictionProgressV1::recover_historical(
         plan,
         candidate,
@@ -690,9 +700,10 @@ pub fn decode_eviction_candidate(
     bytes: &[u8],
     maximum_bytes: usize,
 ) -> Result<EvictionCandidateV1, RecoveryError> {
-    let mut reader = CanonicalReader::new(b"AOSEVC01", bytes, maximum_bytes)?;
+    let mut reader = RecoveryReader::new(bytes, recovery_read_error);
+    read_component_header(&mut reader, b"AOSEVC01", maximum_bytes)?;
     let candidate = read_eviction_candidate(&mut reader)?;
-    reader.complete()?;
+    reader.finish()?;
     validate_eviction_candidate(&candidate).map_err(|_| RecoveryError::PayloadMismatch)?;
     Ok(candidate)
 }
@@ -761,14 +772,14 @@ pub fn decode_atomic_object_record(
     limits: CacheRecoveryLimitsV1,
 ) -> Result<CacheAtomicObjectPayloadV1, RecoveryError> {
     let limits = limits.validate()?;
-    let mut reader =
-        CanonicalReader::new(ATOMIC_RECORD_MAGIC, bytes, limits.maximum_payload_bytes)?;
-    let record_bytes = reader.length_prefixed(DURABLE_RECORD_BYTES)?;
+    let mut reader = RecoveryReader::new(bytes, recovery_read_error);
+    read_component_header(&mut reader, ATOMIC_RECORD_MAGIC, limits.maximum_payload_bytes)?;
+    let record_bytes = read_length_prefixed(&mut reader, DURABLE_RECORD_BYTES)?;
     let record = decode_record(record_bytes)?;
-    let payload_bytes = reader.length_prefixed(limits.maximum_payload_bytes)?;
-    let envelope_end = reader.position();
+    let payload_bytes = read_length_prefixed(&mut reader, limits.maximum_payload_bytes)?;
+    let envelope_end = bytes.len() - reader.remaining();
     let expected_digest = reader.digest()?;
-    reader.complete()?;
+    reader.finish()?;
     if expected_digest
         != digest_bytes(
             b"aos.sandbox.cache.atomic-record-envelope.v1\0",
@@ -812,20 +823,21 @@ pub fn decode_global_recovery_state(
     limits: CacheRecoveryLimitsV1,
 ) -> Result<CacheGlobalRecoveryStateV1, RecoveryError> {
     let limits = limits.validate()?;
-    let mut reader = CanonicalReader::new(b"AOSGLB01", bytes, limits.maximum_payload_bytes)?;
-    reader.expect_digest(partition.digest())?;
+    let mut reader = RecoveryReader::new(bytes, recovery_read_error);
+    read_component_header(&mut reader, b"AOSGLB01", limits.maximum_payload_bytes)?;
+    read_expected_digest(&mut reader, partition.digest())?;
     let node_quota = read_node_quota(&mut reader, partition)?;
-    let project_count = reader.count(limits.maximum_subjects)?;
+    let project_count = read_count(&mut reader, limits.maximum_subjects)?;
     let mut project_quotas = Vec::with_capacity(project_count);
     for _ in 0..project_count {
         project_quotas.push(read_project_quota(&mut reader, partition)?);
     }
-    let watermark_count = reader.count(limits.maximum_subjects)?;
+    let watermark_count = read_count(&mut reader, limits.maximum_subjects)?;
     let mut watermarks = Vec::with_capacity(watermark_count);
     for _ in 0..watermark_count {
         watermarks.push(WatermarkRequirementV1 {
             reservation: CacheReservationId::from_bytes(
-                reader.identity()?,
+                reader.array()?,
             )
             .map_err(|_| RecoveryError::MalformedPayload)?,
             plan_digest: reader.digest()?,
@@ -833,46 +845,46 @@ pub fn decode_global_recovery_state(
             credited_bytes: reader.u64()?,
         });
     }
-    let idempotency_count = reader.count(limits.maximum_records)?;
+    let idempotency_count = read_count(&mut reader, limits.maximum_records)?;
     let mut idempotency = Vec::with_capacity(idempotency_count);
     for _ in 0..idempotency_count {
         idempotency.push(decode_idempotency(
-            reader.length_prefixed(limits.maximum_payload_bytes)?,
+            read_length_prefixed(&mut reader, limits.maximum_payload_bytes)?,
         )?);
     }
-    let pin_floor = match reader.boolean()? {
+    let pin_floor = match read_boolean(&mut reader)? {
         true => Some(
-            decode_pin_compaction_floor_persisted(partition, reader.take(PIN_FLOOR_BYTES)?)
+            decode_pin_compaction_floor_persisted(partition, reader.bytes(PIN_FLOOR_BYTES)?)
                 .map_err(|_| RecoveryError::PayloadMismatch)?,
         ),
         false => None,
     };
-    let idempotency_floor = match reader.boolean()? {
+    let idempotency_floor = match read_boolean(&mut reader)? {
         true => Some(
-            decode_idempotency_floor_persisted(partition, reader.take(IDEMPOTENCY_FLOOR_BYTES)?)
+            decode_idempotency_floor_persisted(partition, reader.bytes(IDEMPOTENCY_FLOOR_BYTES)?)
                 .map_err(|_| RecoveryError::PayloadMismatch)?,
         ),
         false => None,
     };
-    let handoff_count = reader.count(limits.maximum_records)?;
+    let handoff_count = read_count(&mut reader, limits.maximum_records)?;
     let mut handoffs = Vec::with_capacity(handoff_count);
     for _ in 0..handoff_count {
         handoffs.push(read_handoff_state(&mut reader)?);
     }
-    let lookup_count = reader.count(limits.maximum_subjects)?;
+    let lookup_count = read_count(&mut reader, limits.maximum_subjects)?;
     let mut lookups = Vec::with_capacity(lookup_count);
     for _ in 0..lookup_count {
         lookups.push(read_lookup_state(&mut reader)?);
     }
-    let poison = match reader.boolean()? {
+    let poison = match read_boolean(&mut reader)? {
         true => Some(CachePoisonLatchV1 {
-            operation: OperationId::from_bytes(reader.identity()?),
+            operation: OperationId::from_bytes(reader.array()?),
             record_digest: reader.digest()?,
         }),
         false => None,
     };
     let digest = reader.digest()?;
-    reader.complete()?;
+    reader.finish()?;
     let state = CacheGlobalRecoveryStateV1 {
         node_quota,
         project_quotas,
@@ -1110,7 +1122,7 @@ pub(super) fn write_node_quota(
 }
 
 pub(super) fn read_node_quota(
-    reader: &mut CanonicalReader<'_>,
+    reader: &mut RecoveryReader<'_>,
     partition: PhysicalPartitionId,
 ) -> Result<NodeCacheQuotaV1, RecoveryError> {
     Ok(NodeCacheQuotaV1 {
@@ -1146,11 +1158,11 @@ pub(super) fn write_project_quota(
 }
 
 pub(super) fn read_project_quota(
-    reader: &mut CanonicalReader<'_>,
+    reader: &mut RecoveryReader<'_>,
     partition: PhysicalPartitionId,
 ) -> Result<ProjectCacheQuotaV1, RecoveryError> {
-    let project = ProjectId::from_bytes(reader.identity()?);
-    reader.expect_digest(partition.digest())?;
+    let project = ProjectId::from_bytes(reader.array()?);
+    read_expected_digest(reader, partition.digest())?;
     Ok(ProjectCacheQuotaV1 {
         project,
         partition,
@@ -1180,19 +1192,19 @@ pub(super) fn write_handoff_state(
 }
 
 pub(super) fn read_handoff_state(
-    reader: &mut CanonicalReader<'_>,
+    reader: &mut RecoveryReader<'_>,
 ) -> Result<CacheReadHandoffStateV1, RecoveryError> {
     Ok(CacheReadHandoffStateV1 {
-        operation: OperationId::from_bytes(reader.identity()?),
+        operation: OperationId::from_bytes(reader.array()?),
         authority: reader.digest()?,
         catalog: reader.digest()?,
-        pin: CachePinId::from_bytes(reader.identity()?)
+        pin: CachePinId::from_bytes(reader.array()?)
             .map_err(|_| RecoveryError::MalformedPayload)?,
         descriptor: read_descriptor(reader)?,
         backing: BackingObjectIdentityV1::from_bytes(reader.array()?)
             .map_err(|_| RecoveryError::MalformedPayload)?,
         preparation_evidence: reader.digest()?,
-        receipt_evidence: reader.optional_digest()?,
+        receipt_evidence: read_optional_digest(reader)?,
         cancellation: read_pending_cancellation(reader)?,
         valid_until: reader.u64()?,
         digest: reader.digest()?,
@@ -1280,7 +1292,7 @@ pub(super) fn write_lookup_state(
 }
 
 pub(super) fn read_lookup_state(
-    reader: &mut CanonicalReader<'_>,
+    reader: &mut RecoveryReader<'_>,
 ) -> Result<CacheLookupStateV1, RecoveryError> {
     let key = reader.digest()?;
     let value = match reader.u8()? {
@@ -1345,9 +1357,9 @@ pub(super) fn write_pending_cancellation(
 }
 
 pub(super) fn read_pending_cancellation(
-    reader: &mut CanonicalReader<'_>,
+    reader: &mut RecoveryReader<'_>,
 ) -> Result<Option<PendingCancellationV1>, RecoveryError> {
-    if !reader.boolean()? {
+    if !read_boolean(reader)? {
         return Ok(None);
     }
     let target = reader.digest()?;
@@ -1367,4 +1379,186 @@ pub(super) fn read_pending_cancellation(
     };
     validate_pending_cancellation(cancellation, target, None)?;
     Ok(Some(cancellation))
+}
+
+#[cfg(test)]
+mod tests {
+    use aos_sandbox_core::{
+        CacheDomainId,
+        model::{CacheDomain, CacheDomainKind},
+    };
+    use aos_sandbox_protocol::cache_state::{CacheNodeIdV1, ProtectedBackingIdentityV1};
+
+    use super::*;
+
+    #[test]
+    fn admission_progress_rejects_framing_and_canonical_faults_before_digest_validation() {
+        let progress = AdmissionProgressV1::reserved(
+            ObjectDigest::from_bytes([1; 32]),
+            ObjectDigest::from_bytes([2; 32]),
+        )
+        .unwrap();
+        let bytes = encode_admission_progress(&progress, MAXIMUM_COMPONENT_BYTES).unwrap();
+
+        assert_eq!(
+            decode_admission_progress(&bytes, MAXIMUM_COMPONENT_BYTES).unwrap(),
+            progress
+        );
+        for length in 0..bytes.len() {
+            assert!(
+                matches!(
+                    decode_admission_progress(&bytes[..length], MAXIMUM_COMPONENT_BYTES),
+                    Err(RecoveryError::MalformedPayload)
+                ),
+                "prefix {length}"
+            );
+        }
+
+        for (name, offset, value) in [
+            ("magic", 0, 0),
+            ("version", 9, 2),
+            ("reserved", 10, 1),
+            ("stage", 48, 0),
+            ("optional boolean", 58, 2),
+            ("absent predecessor", 59, 1),
+            ("present sentinel", 58, 1),
+        ] {
+            let mut malformed = bytes.clone();
+            malformed[offset] = value;
+            assert!(
+                matches!(
+                    decode_admission_progress(&malformed, MAXIMUM_COMPONENT_BYTES),
+                    Err(RecoveryError::MalformedPayload)
+                ),
+                "{name}"
+            );
+        }
+
+        assert!(matches!(
+            decode_admission_progress(&bytes, bytes.len() - 1),
+            Err(RecoveryError::MalformedPayload)
+        ));
+        assert!(matches!(
+            decode_admission_progress(&bytes, MAXIMUM_COMPONENT_BYTES + 1),
+            Err(RecoveryError::MalformedPayload)
+        ));
+
+        let mut wrong_digest = bytes;
+        let digest_end = wrong_digest.len() - 1;
+        wrong_digest[digest_end] ^= 1;
+        assert!(matches!(
+            decode_admission_progress(&wrong_digest, MAXIMUM_COMPONENT_BYTES),
+            Err(RecoveryError::PayloadMismatch)
+        ));
+
+        wrong_digest.push(0);
+        assert!(matches!(
+            decode_admission_progress(&wrong_digest, MAXIMUM_COMPONENT_BYTES),
+            Err(RecoveryError::MalformedPayload)
+        ));
+    }
+
+    #[test]
+    fn atomic_envelope_hash_includes_header_and_eof_precedes_digest_validation() {
+        let partition = partition();
+        let limits = CacheRecoveryLimitsV1::default();
+        let commitment = ObjectDigest::from_bytes([1; 32]);
+        let sentinel = ObjectDigest::from_bytes([0; 32]);
+        let record = CacheDurableRecordV1::new(
+            CacheRecordKindV1::Admission,
+            AdmissionStageV1::Reserved as u8,
+            1,
+            OperationId::from_bytes([1; 16]),
+            commitment,
+            partition.digest(),
+            commitment,
+            atomic_projection_digest(commitment, commitment, commitment, commitment),
+            commitment,
+            commitment,
+            commitment,
+            commitment,
+            commitment,
+            commitment,
+            payload_digest_bytes(&[]),
+            0,
+            1,
+            sentinel,
+            sentinel,
+        )
+        .unwrap();
+        let mut writer =
+            CanonicalWriter::new(ATOMIC_RECORD_MAGIC, limits.maximum_payload_bytes).unwrap();
+        writer
+            .length_prefixed(&encode_record(&record).unwrap())
+            .unwrap();
+        writer.length_prefixed(&[]).unwrap();
+        let digest = digest_bytes(
+            b"aos.sandbox.cache.atomic-record-envelope.v1\0",
+            writer.as_bytes(),
+        );
+        writer.digest(digest).unwrap();
+        let bytes = writer.finish();
+
+        let mut oversized_record = bytes.clone();
+        oversized_record[16..20]
+            .copy_from_slice(&((DURABLE_RECORD_BYTES + 1) as u32).to_be_bytes());
+        assert!(matches!(
+            decode_atomic_object_record(partition, &oversized_record, limits),
+            Err(RecoveryError::Capacity)
+        ));
+
+        let mut oversized_payload = bytes.clone();
+        let payload_length = 20 + DURABLE_RECORD_BYTES;
+        oversized_payload[payload_length..payload_length + 4]
+            .copy_from_slice(&((limits.maximum_payload_bytes + 1) as u32).to_be_bytes());
+        assert!(matches!(
+            decode_atomic_object_record(partition, &oversized_payload, limits),
+            Err(RecoveryError::Capacity)
+        ));
+
+        // The envelope is valid; its deliberately empty inner component fails next.
+        assert!(matches!(
+            decode_atomic_object_record(partition, &bytes, limits),
+            Err(RecoveryError::MalformedPayload)
+        ));
+        let mut wrong_digest = bytes.clone();
+        let digest_end = wrong_digest.len() - 1;
+        wrong_digest[digest_end] ^= 1;
+        assert!(matches!(
+            decode_atomic_object_record(partition, &wrong_digest, limits),
+            Err(RecoveryError::PayloadMismatch)
+        ));
+
+        wrong_digest.push(0);
+        assert!(matches!(
+            decode_atomic_object_record(partition, &wrong_digest, limits),
+            Err(RecoveryError::MalformedPayload)
+        ));
+        for length in (bytes.len() - 32)..bytes.len() {
+            assert!(
+                matches!(
+                    decode_atomic_object_record(partition, &bytes[..length], limits),
+                    Err(RecoveryError::MalformedPayload)
+                ),
+                "digest prefix {length}"
+            );
+        }
+    }
+
+    fn partition() -> PhysicalPartitionId {
+        let commitment = ObjectDigest::from_bytes([1; 32]);
+        let node = CacheNodeIdV1::from_bytes([1; 16]).unwrap();
+        let backing = ProtectedBackingIdentityV1::new(
+            commitment,
+            commitment,
+            commitment,
+            commitment,
+        )
+        .unwrap();
+        let disclosure = CacheDomain::new(
+            CacheDomainKind::Project,
+            CacheDomainId::from_bytes([1; 16]),
+        );
+        PhysicalPartitionId::derive(node, backing, disclosure, commitment).unwrap()
+    }
 }
