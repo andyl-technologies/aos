@@ -3014,7 +3014,7 @@ impl ProtectedCacheClockV1 {
                     observed_unix_seconds: sampled,
                     predecessor_unix_seconds: 0,
                 };
-                let (reopened, applied) = persist_cache_clock(journal, None, genesis, owner_uid)?;
+                let (reopened, applied) = persist_cache_clock(journal, root, None, genesis, owner_uid)?;
                 if !applied {
                     return Err(ProtectedDomainJournalErrorV1::CompareAndSwapFailed);
                 }
@@ -3094,7 +3094,7 @@ impl CacheResidencyCurrentTimeAuthorityV1 for ProtectedCacheClockV1 {
             .take()
             .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
         let (reopened, applied) =
-            persist_cache_clock(journal, Some(state.floor), successor, self.owner_uid)?;
+            persist_cache_clock(journal, &self.root, Some(state.floor), successor, self.owner_uid)?;
         state.journal = Some(reopened);
         if !applied {
             return Err(ProtectedDomainJournalErrorV1::CompareAndSwapFailed);
@@ -3104,8 +3104,11 @@ impl CacheResidencyCurrentTimeAuthorityV1 for ProtectedCacheClockV1 {
     }
 }
 
+// Reopen beneath the original clock's root, not an unrelated fixed name. The
+// production opener supplies the fixed root; private fixtures retain their own.
 fn persist_cache_clock(
     mut journal: Journal,
+    root: &Path,
     predecessor: Option<CacheClockFloorV1>,
     successor: CacheClockFloorV1,
     owner_uid: u32,
@@ -3134,7 +3137,7 @@ fn persist_cache_clock(
     drop(journal);
 
     let (mut reopened, _) = open_cache_journal(
-        Path::new(PROTECTED_CACHE_ROOT),
+        root,
         CACHE_CLOCK_JOURNAL,
         cache_clock_journal_limits(),
         owner_uid,
@@ -3797,6 +3800,33 @@ pub(in crate::cache_residency) mod tests {
         held.revalidate().expect("same named clock writer");
         drop(held);
         assert!(!clock.state.lock().expect("clock state").readback_held);
+    }
+
+    #[test]
+    fn clock_successor_reopens_its_original_private_root() {
+        let now = sample_wall_clock().expect("fixture time");
+        let observed = now.checked_sub(5).expect("older fixture floor");
+        let (directory, uid, _) = cache_hold_fixture(now + 86_400, observed);
+        let (clock, _) = ProtectedCacheClockV1::open(directory.path(), cache_owner_scope(), uid)
+            .expect("open private clock");
+        let named = directory.path().join(CACHE_CLOCK_JOURNAL);
+        let before = fs::metadata(&named).expect("original clock metadata").len();
+
+        let sampled = clock.current_unix_seconds().expect("persist real successor");
+
+        assert!(sampled >= now);
+        assert!(fs::metadata(&named).expect("successor clock metadata").len() > before);
+        let mut state = clock.state.lock().expect("clock state");
+        let journal = state.journal.as_mut().expect("reopened original clock");
+        clock.check_named_journal(journal).expect("same protected root");
+        let persisted = read_cache_clock_floor(journal)
+            .expect("read persisted successor")
+            .expect("successor floor");
+        assert_eq!(persisted.owner_scope, cache_owner_scope());
+        assert_eq!(persisted.revision, 2);
+        assert_eq!(persisted.predecessor_unix_seconds, observed);
+        assert_eq!(persisted.observed_unix_seconds, sampled);
+        assert_eq!(state.floor.observed_unix_seconds, sampled);
     }
 
     #[test]

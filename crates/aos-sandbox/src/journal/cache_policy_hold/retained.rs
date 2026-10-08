@@ -616,13 +616,15 @@ mod tests {
                 .unwrap()
             };
 
+            let before = state.snapshot_sequence();
+
             let returned = borrowed.as_gate().preflight(&state, &[transaction(81), transaction(82)]);
 
             assert!(
                 returned.is_err(),
                 "limit family {index} must refuse before append"
             );
-            assert_eq!(state.snapshot_sequence(), 0);
+            assert_eq!(state.snapshot_sequence(), before);
         }
     }
 
