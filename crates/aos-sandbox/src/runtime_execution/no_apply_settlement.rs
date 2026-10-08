@@ -412,7 +412,9 @@ fn preliminary_sequence_matches_epoch(epoch: u64, commit_sequence: u64) -> bool 
 type Reader<'a> = BoundedReader<'a, HostSettlementRecordErrorV1>;
 
 /// Retains the Host format's required digest rule above byte mechanics.
-fn read_nonzero_digest(reader: &mut Reader<'_>) -> Result<ObjectDigest, HostSettlementRecordErrorV1> {
+fn read_nonzero_digest(
+    reader: &mut Reader<'_>,
+) -> Result<ObjectDigest, HostSettlementRecordErrorV1> {
     let bytes = reader.array::<32>()?;
     if bytes == [0; 32] {
         return Err(HostSettlementRecordErrorV1);
