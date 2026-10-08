@@ -20,8 +20,10 @@
 //! orchestration are feature-gated private children of that same owner. Local
 //! opener, inventory discovery, readback, and all retained-history checks remain
 //! available by default. Coordinator persistence DATA, shared session verifiers,
-//! and model helpers are retained. Streaming snapshot/dependency verification is
-//! selected by `multi-node`; shared checkpoints and receipt types stay available.
+//! and model helpers are retained. Authenticated snapshot byte handoffs,
+//! protected streaming checkpoints and streaming verification require `multi-node`.
+//! Immutable manifests, resume DATA, historical Journal checkpoints and completed
+//! drain evidence remain available by default.
 //! This is not a fully isolated ownership crate
 //! or a coordinator-free implementation graph.
 
@@ -43,10 +45,8 @@ mod store_authority;
 
 pub use assignment::{
     AssignmentIntentV1, AssignmentObservationPhaseV1, AssignmentObservationReasonV1,
-    AtomicSnapshotPublicationV1, AuthenticatedSnapshotChunkV1,
-    AuthenticatedSnapshotDependencyRangeV1, DurableSnapshotDependencySetV1,
-    DurableSnapshotTransferCheckpointV1, InvalidAssignmentModel, InvalidSnapshotTransfer,
-    MAX_SNAPSHOT_TRANSFER_CHUNK_BYTES, MAX_SNAPSHOT_TRANSFER_CHUNKS,
+    AtomicSnapshotPublicationV1, DurableSnapshotDependencySetV1, InvalidAssignmentModel,
+    InvalidSnapshotTransfer, MAX_SNAPSHOT_TRANSFER_CHUNK_BYTES, MAX_SNAPSHOT_TRANSFER_CHUNKS,
     MAX_SNAPSHOT_TRANSFER_DEPENDENCIES, MAX_SNAPSHOT_TRANSFER_MANIFEST_WIRE_BYTES,
     NodeAssignmentObservationV1, SelectedCapabilityBindingV1, SnapshotDependencyRangeV1,
     SnapshotTransferChunkRequestV1, SnapshotTransferChunkV1, SnapshotTransferCompletionV1,
@@ -59,7 +59,9 @@ pub use assignment::{
 #[cfg(feature = "multi-node")]
 pub use assignment::{
     AssignmentObservationApplyOutcomeV1, AssignmentObservationReducerV1,
-    SnapshotDependencyReducerV1, SnapshotRestoreAdmissionDecisionV1, SnapshotRestoreAdmissionV1,
+    AuthenticatedSnapshotChunkV1, AuthenticatedSnapshotDependencyRangeV1,
+    DurableSnapshotTransferCheckpointV1, SnapshotDependencyReducerV1,
+    SnapshotRestoreAdmissionDecisionV1, SnapshotRestoreAdmissionV1,
     SnapshotRestoreBlockReasonV1, SnapshotTransferApplyOutcomeV1, SnapshotTransferReducerV1,
     VerifiedAssignmentAcceptanceV1, VerifiedRestoreAuthorizationV1,
 };

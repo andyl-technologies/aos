@@ -1,19 +1,290 @@
-//! Selected streaming verification of authenticated cross-node snapshot bytes.
+//! Selected authenticated snapshot handoffs and streaming verification.
 //!
-//! These reducers construct the existing private-field verified receipts only
-//! after contiguous authenticated bytes satisfy the manifest and digest checks.
-//! Shared snapshot models, checkpoints, receipt types and local history
-//! validation remain in the parent module and are not feature-gated.
+//! This owner retains authenticated chunk/range bytes, protected streaming
+//! checkpoints, and reducers that verify contiguous manifest-bound bytes.
+//! Immutable manifests, resume DATA, completed drain evidence and local history
+//! remain in the parent module and are not feature-gated.
 
 use aos_sandbox_core::{ObjectDescriptor, ObjectDigest, PortableMediaType};
 use sha2::{Digest as _, Sha256};
 
-use super::{
-    AuthenticatedSnapshotChunkV1, AuthenticatedSnapshotDependencyRangeV1,
-    DurableSnapshotTransferCheckpointV1, InvalidSnapshotTransfer, SnapshotTransferIdentityV1,
-    SnapshotTransferManifestV1, SnapshotTransferResumeV1, VerifiedSnapshotDependencyV1,
-    VerifiedStagedSnapshotV1, is_inert_transfer_dependency, staged_prefix_commitment,
+use crate::local_inventory::carrier_authority::AuthenticatedFrameSealV1;
+use crate::local_inventory::evidence::AuthenticatedEvidenceContextV1;
+use crate::local_inventory::evidence_authority::VerifierEvidenceGrantV1;
+use crate::local_inventory::journal::{
+    JournalEffectStateV1, MultiNodeJournalDomainV1, ProtectedJournalRecordV1,
 };
+
+use super::{
+    InvalidSnapshotTransfer, SnapshotDependencyRangeV1, SnapshotTransferChunkRequestV1,
+    SnapshotTransferIdentityV1, SnapshotTransferManifestV1, SnapshotTransferResumeV1,
+    VerifiedSnapshotDependencyV1, VerifiedStagedSnapshotV1, is_inert_transfer_dependency,
+};
+
+/// Carries one exact chunk whose carrier, audience, and bytes were authenticated.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthenticatedSnapshotChunkV1 {
+    request: SnapshotTransferChunkRequestV1,
+    bytes: Vec<u8>,
+    context: AuthenticatedEvidenceContextV1,
+}
+
+impl AuthenticatedSnapshotChunkV1 {
+    /// Constructs chunk evidence only inside the authenticated carrier boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidSnapshotTransfer`] for source, disclosure, currentness,
+    /// exact length, or chunk digest mismatch.
+    pub(in crate::local_inventory) fn from_authenticated_carrier(
+        request: SnapshotTransferChunkRequestV1,
+        bytes: Vec<u8>,
+        context: AuthenticatedEvidenceContextV1,
+        frame_seal: &AuthenticatedFrameSealV1,
+        canonical_body_digest: ObjectDigest,
+        verified_at_unix_seconds: u64,
+    ) -> Result<Self, InvalidSnapshotTransfer> {
+        if context.node() != request.identity().source_node()
+            || context.audience_digest() != request.identity().audience_digest()
+            || context.disclosure_domain_digest() != request.identity().disclosure_domain_digest()
+            || !context.is_current_at(verified_at_unix_seconds)
+            || !frame_seal.matches(
+                super::protocol::CanonicalNodeFrameKindV1::SnapshotChunkResponse,
+                canonical_body_digest,
+                context,
+            )
+        {
+            return Err(InvalidSnapshotTransfer::RestoreAdmissionMismatch);
+        }
+        request.chunk().verify_bytes(&bytes)?;
+        Ok(Self {
+            request,
+            bytes,
+            context,
+        })
+    }
+
+    /// Returns the exact manifest-derived chunk request.
+    #[must_use]
+    pub const fn request(&self) -> SnapshotTransferChunkRequestV1 {
+        self.request
+    }
+
+    /// Returns exact authenticated immutable chunk bytes.
+    #[must_use]
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// Returns exact carrier/audience/boot/currentness evidence.
+    #[must_use]
+    pub const fn context(&self) -> AuthenticatedEvidenceContextV1 {
+        self.context
+    }
+}
+
+/// Carries one manifest-bound dependency range from an authenticated source.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthenticatedSnapshotDependencyRangeV1 {
+    request: SnapshotDependencyRangeV1,
+    bytes: Vec<u8>,
+    context: AuthenticatedEvidenceContextV1,
+}
+
+impl AuthenticatedSnapshotDependencyRangeV1 {
+    /// Constructs dependency bytes only inside the authenticated carrier boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidSnapshotTransfer`] unless source, disclosure domain,
+    /// currentness, descriptor, offset, and exact bounded byte count match.
+    pub(in crate::local_inventory) fn from_authenticated_carrier(
+        request: SnapshotDependencyRangeV1,
+        bytes: Vec<u8>,
+        context: AuthenticatedEvidenceContextV1,
+        frame_seal: &AuthenticatedFrameSealV1,
+        canonical_body_digest: ObjectDigest,
+        verified_at_unix_seconds: u64,
+    ) -> Result<Self, InvalidSnapshotTransfer> {
+        if context.node() != request.identity().source_node()
+            || context.audience_digest() != request.identity().audience_digest()
+            || context.disclosure_domain_digest() != request.identity().disclosure_domain_digest()
+            || !context.is_current_at(verified_at_unix_seconds)
+            || !frame_seal.matches(
+                super::protocol::CanonicalNodeFrameKindV1::SnapshotDependencyResponse,
+                canonical_body_digest,
+                context,
+            )
+            || bytes.len() != request.length() as usize
+        {
+            return Err(InvalidSnapshotTransfer::ChunkIntegrityMismatch);
+        }
+        Ok(Self {
+            request,
+            bytes,
+            context,
+        })
+    }
+
+    /// Returns the exact manifest-derived dependency range request.
+    #[must_use]
+    pub const fn request(&self) -> &SnapshotDependencyRangeV1 {
+        &self.request
+    }
+
+    /// Returns the exact authenticated range bytes.
+    #[must_use]
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// Returns exact carrier/audience/boot/currentness evidence.
+    #[must_use]
+    pub const fn context(&self) -> AuthenticatedEvidenceContextV1 {
+        self.context
+    }
+}
+
+/// Proves that a resume boundary and its exact staged bytes are durably committed.
+///
+/// This verifier-issued value is inert recovery evidence. It cannot publish,
+/// restore, or grant access to the staged snapshot.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DurableSnapshotTransferCheckpointV1 {
+    resume: SnapshotTransferResumeV1,
+    staged_bytes: u64,
+    staged_prefix_digest: ObjectDigest,
+    journal_record: ProtectedJournalRecordV1,
+    evidence_context: AuthenticatedEvidenceContextV1,
+}
+
+impl DurableSnapshotTransferCheckpointV1 {
+    /// Constructs a checkpoint only inside the destination storage verifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidSnapshotTransfer`] unless the exact chunk boundary,
+    /// staged length, committed journal record, destination, disclosure domain,
+    /// and verifier currentness all match the immutable manifest.
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::local_inventory) fn from_storage_verifier(
+        grant: VerifierEvidenceGrantV1<(
+            SnapshotTransferManifestV1,
+            SnapshotTransferResumeV1,
+            Vec<u8>,
+            ProtectedJournalRecordV1,
+            u64,
+        )>,
+    ) -> Result<Self, InvalidSnapshotTransfer> {
+        let (
+            (manifest, resume, staged_prefix, journal_record, verified_at_unix_seconds),
+            verifier_domain_digest,
+            replay_fence,
+            issuance_sequence,
+            verifier_context,
+        ) = grant.into_parts();
+        let evidence_context = journal_record.context();
+        let boundary = usize::try_from(resume.next_chunk())
+            .map_err(|_| InvalidSnapshotTransfer::InvalidResumeCheckpoint)?;
+        let expected_bytes = manifest
+            .chunks()
+            .get(..boundary)
+            .ok_or(InvalidSnapshotTransfer::InvalidResumeCheckpoint)?
+            .iter()
+            .try_fold(0_u64, |total, chunk| {
+                total
+                    .checked_add(u64::from(chunk.length()))
+                    .ok_or(InvalidSnapshotTransfer::InvalidResumeCheckpoint)
+            })?;
+        let staged_bytes = u64::try_from(staged_prefix.len())
+            .map_err(|_| InvalidSnapshotTransfer::InvalidResumeCheckpoint)?;
+        let staged_prefix_digest =
+            staged_prefix_commitment(manifest.identity(), resume, &staged_prefix);
+        let durable_state = journal_record
+            .record()
+            .state_payload()
+            .snapshot_transfer_state()
+            .ok_or(InvalidSnapshotTransfer::InvalidResumeCheckpoint)?;
+        if verifier_domain_digest.as_bytes() == &[0; 32]
+            || replay_fence.as_bytes() == &[0; 32]
+            || replay_fence != verifier_context.replay_fence()
+            || issuance_sequence == 0
+            || verifier_context != evidence_context
+            || resume.identity() != manifest.identity()
+            || manifest.prefix_commitment(resume.next_chunk())? != resume.verified_prefix_digest()
+            || staged_bytes != expected_bytes
+            || journal_record.record().domain() != MultiNodeJournalDomainV1::SnapshotTransfer
+            || journal_record.record().operation() != manifest.identity().operation()
+            || journal_record.record().payload_digest() != resume.verified_prefix_digest()
+            || journal_record.record().effect_state() != JournalEffectStateV1::Committed
+            || journal_record.record().effect_digest() != staged_prefix_digest
+            || durable_state.manifest() != &manifest
+            || durable_state.resume() != resume
+            || durable_state.staged_chunks().len() != boundary
+            || durable_state.publication().is_some()
+            || journal_record.storage_domain_digest() != manifest.identity().storage_domain_digest()
+            || !journal_record
+                .context()
+                .is_current_at(verified_at_unix_seconds)
+            || evidence_context.node() != manifest.identity().destination_node()
+            || evidence_context.audience_digest() != manifest.identity().audience_digest()
+            || evidence_context.disclosure_domain_digest()
+                != manifest.identity().disclosure_domain_digest()
+            || !evidence_context.is_current_at(verified_at_unix_seconds)
+        {
+            return Err(InvalidSnapshotTransfer::InvalidResumeCheckpoint);
+        }
+        Ok(Self {
+            resume,
+            staged_bytes,
+            staged_prefix_digest,
+            journal_record,
+            evidence_context,
+        })
+    }
+
+    /// Returns the exact integrity-verified chunk boundary.
+    #[must_use]
+    pub const fn resume(&self) -> SnapshotTransferResumeV1 {
+        self.resume
+    }
+
+    /// Returns the exact scoped immutable transfer identity.
+    #[must_use]
+    pub const fn identity(&self) -> SnapshotTransferIdentityV1 {
+        self.resume.identity()
+    }
+
+    /// Returns the first chunk not covered by the durable staged prefix.
+    #[must_use]
+    pub const fn next_chunk(&self) -> u32 {
+        self.resume.next_chunk()
+    }
+
+    /// Returns the exact durably staged byte count.
+    #[must_use]
+    pub const fn staged_bytes(&self) -> u64 {
+        self.staged_bytes
+    }
+
+    /// Returns the storage verifier's exact staged-byte commitment.
+    #[must_use]
+    pub const fn staged_prefix_digest(&self) -> ObjectDigest {
+        self.staged_prefix_digest
+    }
+
+    /// Returns the committed journal record covering this boundary.
+    #[must_use]
+    pub const fn journal_record(&self) -> &ProtectedJournalRecordV1 {
+        &self.journal_record
+    }
+
+    /// Returns the exact authenticated destination verifier context.
+    #[must_use]
+    pub const fn evidence_context(&self) -> AuthenticatedEvidenceContextV1 {
+        self.evidence_context
+    }
+}
 
 /// Hashes contiguous authenticated dependency ranges without trusting metadata.
 #[derive(Clone, Debug)]
@@ -282,4 +553,24 @@ impl SnapshotTransferReducerV1 {
             final_prefix_digest: self.manifest.prefix_commitment(self.next_chunk)?,
         })
     }
+}
+
+pub(in crate::local_inventory) fn staged_prefix_commitment(
+    identity: SnapshotTransferIdentityV1,
+    checkpoint: SnapshotTransferResumeV1,
+    staged_prefix: &[u8],
+) -> ObjectDigest {
+    let mut hasher = Sha256::new();
+    hasher.update(b"aos.snapshot-transfer.staged-prefix.v1\0");
+    hasher.update(identity.operation().as_bytes());
+    hasher.update(identity.manifest_digest().as_bytes());
+    hasher.update(identity.destination_node().as_bytes());
+    hasher.update(identity.storage_domain_digest().as_bytes());
+    hasher.update(identity.audience_digest().as_bytes());
+    hasher.update(identity.disclosure_domain_digest().as_bytes());
+    hasher.update(checkpoint.next_chunk().to_be_bytes());
+    hasher.update(checkpoint.verified_prefix_digest().as_bytes());
+    hasher.update((staged_prefix.len() as u64).to_be_bytes());
+    hasher.update(Sha256::digest(staged_prefix));
+    ObjectDigest::from_bytes(hasher.finalize().into())
 }
