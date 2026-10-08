@@ -523,7 +523,7 @@ pub(super) fn validate_recovery_terminal(
     {
         return Err(InvalidObservationClientAdapter::InvalidOperatorRecovery);
     }
-    crate::cli_model::CheckedOperatorRecoveryResultV1::try_from(result.clone())
+    aos_sandbox_protocol::public_api::proto_json::CheckedOperatorRecoveryResultV1::try_from(result.clone())
         .map_err(|_| InvalidObservationClientAdapter::InvalidOperatorRecovery)?;
     Ok(())
 }

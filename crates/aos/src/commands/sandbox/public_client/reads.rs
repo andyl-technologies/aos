@@ -9,10 +9,13 @@ use aos_proto::aos::sandbox::v1::{
     SnapshotServiceClient,
 };
 use aos_sandbox::cli_model::{
-    CheckedCacheStatusV1, CheckedListProtoJsonV1, CheckedPolicyPlanV1, CheckedSandboxTreeV1,
-    DormantListContinuationV1, DormantSandboxOutputV1, DormantSandboxRequestKindV1,
-    DormantSandboxRequestV1, DormantSandboxTreePageConsumerV1,
+    DormantSandboxOutputV1, DormantSandboxRequestKindV1, DormantSandboxRequestV1,
+    DormantSandboxTreePageConsumerV1,
 };
+use aos_sandbox_protocol::public_api::proto_json::{
+    CheckedCacheStatusV1, CheckedListProtoJsonV1, CheckedPolicyPlanV1, CheckedSandboxTreeV1,
+};
+use aos_sandbox_protocol::public_api::continuation::DormantListContinuationV1;
 use aos_sandbox_protocol::public_api::client_state::{
     ImmutableListPageV1,
     MAXIMUM_COLLECTED_BYTES,

@@ -6,8 +6,9 @@ use aos_proto::aos::sandbox::v1::{
     ListAncestorsRequest, ListAncestorsResponse, ListChildrenRequest, ListChildrenResponse,
     ListDescendantsRequest, ListDescendantsResponse, SandboxTreeNode, SandboxTreePreorderState,
 };
-use aos_sandbox::cli_model::{
-    PublicApiAuditMethodV1, sandbox_tree_preorder_advance_v1, sandbox_tree_preorder_seed_v1,
+use aos_sandbox::cli_model::PublicApiAuditMethodV1;
+use aos_sandbox_protocol::public_api::proto_json::{
+    sandbox_tree_preorder_advance_v1, sandbox_tree_preorder_seed_v1,
 };
 use aos_sandbox::controller_service::public_projection::{
     PublicProjectionKindV1, PublicProjectionQueryV1, PublicProjectionRecordV1,

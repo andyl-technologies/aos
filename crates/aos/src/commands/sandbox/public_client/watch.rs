@@ -4,8 +4,8 @@ use anyhow::{Context as _, Result};
 use aos_proto::aos::sandbox::v1::{EventKind, OperationServiceClient};
 use aos_sandbox::cli_model::{
     DormantSandboxOutputV1, DormantSandboxRequestKindV1, DormantSandboxRequestV1,
-    DormantWatchContinuationV1,
 };
+use aos_sandbox_protocol::public_api::continuation::DormantWatchContinuationV1;
 use aos_sandbox_protocol::public_api::client_state::{WatchApplyOutcomeV1, WatchResumePointV1};
 use aos_sandbox_protocol::public_api::{
     AuthenticatedWatchReadBatchV1,

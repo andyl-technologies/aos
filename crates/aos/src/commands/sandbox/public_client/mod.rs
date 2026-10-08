@@ -12,9 +12,9 @@ use aos_proto::aos::sandbox::v1::{
     OperatorServiceClient, SandboxServiceClient, SnapshotServiceClient,
 };
 use aos_sandbox::cli_model::{
-    CheckedExecutionControlResultV1, DormantSandboxOutputV1, DormantSandboxRequestKindV1,
-    DormantSandboxRequestV1,
+    DormantSandboxOutputV1, DormantSandboxRequestKindV1, DormantSandboxRequestV1,
 };
+use aos_sandbox_protocol::public_api::proto_json::CheckedExecutionControlResultV1;
 use aos_sandbox_protocol::public_api::client_state::{
     MAXIMUM_WAIT_OBSERVATIONS,
     OperationWaitApplyOutcomeV1,
@@ -304,7 +304,7 @@ pub(super) async fn dispatch_mutation(
             .await?;
         }
         DormantSandboxRequestKindV1::Exec(message) => {
-            aos_sandbox::create_holder_proof::verify_create_holder_proof_v1(message)
+            aos_sandbox_protocol::public_api::create_holder_proof::verify_create_holder_proof_v1(message)
                 .context("execution creation proof does not match the final request")?;
             let response =
                 ExecutionServiceClient::new(endpoint.connection.clone(), endpoint.config()?)

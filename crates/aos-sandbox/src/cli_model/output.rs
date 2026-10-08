@@ -7,7 +7,7 @@ use super::grammar::{
     CacheCommandV1, CapabilitiesCommandV1, CliResourceKindV1, CliWaitV1, CreateCommandV1,
     CreateModeV1, SandboxCommandV1, ViewCommandV1,
 };
-use super::proto_json::{CheckedProtoJsonV1, StructuredOutputSchemaV1};
+use aos_sandbox_protocol::public_api::proto_json::{CheckedProtoJsonV1, StructuredOutputSchemaV1};
 use super::requests::{CapabilityCommandV1, ResolvedPublicMutationV1};
 use aos_sandbox_protocol::public_api::resource::CheckedOperationPhaseV1;
 

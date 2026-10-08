@@ -679,7 +679,7 @@ impl ExecutionService for CapabilityService {
         request: ServiceRequest<'_, CreateExecutionRequest>,
     ) -> ServiceResult<impl Encodable<CreateExecutionResponse> + Send + use<'a>> {
         require_execution_create_admission_ready()?;
-        aos_sandbox::create_holder_proof::verify_create_holder_proof_v1(
+        aos_sandbox_protocol::public_api::create_holder_proof::verify_create_holder_proof_v1(
             &request.to_owned_message(),
         )
         .map_err(|_| {
@@ -815,7 +815,7 @@ impl ExecutionService for CapabilityService {
         let execution_id = request.view().execution_id.to_vec();
         let action = request.view().action;
         if action.as_known() == Some(Action::EXECUTION_CONTROL_ACTION_ATTACH) {
-            aos_sandbox::attach_holder_proof::verify_attach_holder_proof_v1(
+            aos_sandbox_protocol::public_api::attach_holder_proof::verify_attach_holder_proof_v1(
                 &request.to_owned_message(),
             )
             .map_err(|_| {

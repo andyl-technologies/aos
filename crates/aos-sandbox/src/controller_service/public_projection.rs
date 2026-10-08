@@ -20,7 +20,8 @@ use aos_sandbox_core::{ObjectDigest, OperationId, ProjectId, SandboxId};
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
 
-use crate::cli_model::{AuditAuthorizationV1, CheckedCacheStatusV1};
+use crate::cli_model::AuditAuthorizationV1;
+use aos_sandbox_protocol::public_api::proto_json::CheckedCacheStatusV1;
 use aos_sandbox_protocol::public_api::{
     CheckedAttachmentResourceV1,
     CheckedCapabilityResourceV1,

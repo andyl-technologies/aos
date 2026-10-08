@@ -14,8 +14,8 @@ use aos_proto::aos::sandbox::v1::{
     ExecutionIoMode, ExecutionPhase, ExecutionServiceClient, GetExecutionRequest,
     OpenSshAccessEndpoint, OperationPhase,
 };
-use aos_sandbox::attach_holder_proof::verify_attach_holder_private_key_v1;
-use aos_sandbox::cli_model::CheckedExecutionControlResultV1;
+use aos_sandbox_protocol::public_api::attach_holder_proof::verify_attach_holder_private_key_v1;
+use aos_sandbox_protocol::public_api::proto_json::CheckedExecutionControlResultV1;
 use aos_sandbox_protocol::public_api::{CheckedExecutionResourceV1, PublicOperationMethodV1};
 use zeroize::Zeroizing;
 

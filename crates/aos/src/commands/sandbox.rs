@@ -9,10 +9,12 @@ use aos_proto::aos::sandbox::v1::{
     CapabilityServiceClient, DiscoveryServiceClient, OperationServiceClient,
 };
 use aos_sandbox::cli_model::{
-    CheckedProtoJsonV1, CheckedPublicFeatureRegistryV1, DormantCompletionShellV1,
-    DormantPublicApiAuthorizationV1, DormantPublicApiClientV1, DormantPublicApiWireTransportV1,
-    DormantSandboxCommandExecutorV1, DormantSandboxOutputV1, DormantSandboxRequestKindV1,
-    DormantSandboxRoutingErrorV1, DormantValidatedRequestSinkV1, EstablishedProtoJson,
+    DormantCompletionShellV1, DormantPublicApiAuthorizationV1, DormantPublicApiClientV1,
+    DormantPublicApiWireTransportV1, DormantSandboxCommandExecutorV1, DormantSandboxOutputV1,
+    DormantSandboxRequestKindV1, DormantSandboxRoutingErrorV1, DormantValidatedRequestSinkV1,
+};
+use aos_sandbox_protocol::public_api::proto_json::{
+    CheckedProtoJsonV1, CheckedPublicFeatureRegistryV1, EstablishedProtoJson,
 };
 use aos_sandbox_protocol::public_api::CheckedNodeCapabilitiesV1;
 use aos_sandbox_protocol::public_api::CheckedOperationObservationV1;

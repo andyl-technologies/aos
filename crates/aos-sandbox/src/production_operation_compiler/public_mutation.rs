@@ -53,7 +53,7 @@ fn authorized_attach_control(
     if lower_public_execution_control_v1(control)? != PublicExecutionControlDispatchV1::Attach {
         return Err(OperationCompilationError::Malformed);
     }
-    crate::attach_holder_proof::verify_attach_holder_proof_v1(control)
+    aos_sandbox_protocol::public_api::attach_holder_proof::verify_attach_holder_proof_v1(control)
         .map_err(|_| OperationCompilationError::Malformed)?;
     Ok(control)
 }
@@ -1083,7 +1083,7 @@ fn create_execution_projection(
     request_digest: [u8; 32],
     request: &aos_proto::aos::sandbox::v1::CreateExecutionRequest,
 ) -> Result<(Vec<u8>, Vec<u8>), OperationCompilationError> {
-    crate::create_holder_proof::verify_create_holder_proof_v1(request)
+    aos_sandbox_protocol::public_api::create_holder_proof::verify_create_holder_proof_v1(request)
         .map_err(|_| OperationCompilationError::Rejected)?;
     let sandbox = load_sandbox(journal, exact_id(&request.sandbox_id)?)?;
     ensure_sandbox_project(&sandbox, project)?;

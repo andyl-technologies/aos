@@ -11,10 +11,10 @@ use aos_proto::aos::sandbox::v1::{
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
 
-use aos_sandbox_protocol::public_api::audit_event::CheckedAuditWatchEventV1;
-use aos_sandbox_protocol::public_api::event::CheckedWatchEventV1;
-use aos_sandbox_protocol::public_api::model::MAXIMUM_OPAQUE_RESPONSE_BYTES;
-use aos_sandbox_protocol::public_api::portable_resource::{
+use crate::public_api::audit_event::CheckedAuditWatchEventV1;
+use crate::public_api::event::CheckedWatchEventV1;
+use crate::public_api::model::MAXIMUM_OPAQUE_RESPONSE_BYTES;
+use crate::public_api::portable_resource::{
     CheckedAttachmentResourceV1,
     CheckedCapabilityResourceV1,
     CheckedExecutionResourceV1,
@@ -23,7 +23,7 @@ use aos_sandbox_protocol::public_api::portable_resource::{
     CheckedSnapshotResourceV1,
     validate_execution_access_endpoint_v1,
 };
-use aos_sandbox_protocol::public_api::resource::{
+use crate::public_api::resource::{
     CheckedOperationResourceV1,
     CheckedSandboxResourceV1,
     InvalidPublicResource,
@@ -224,7 +224,7 @@ impl TryFrom<OperatorRecoveryResult> for CheckedOperatorRecoveryResultV1 {
         {
             return Err(InvalidProtoJson::InvalidResource);
         }
-        aos_sandbox_protocol::public_api::resource::validate_public_conditions_v1(&value.conditions)
+        crate::public_api::resource::validate_public_conditions_v1(&value.conditions)
             .map_err(|_| InvalidProtoJson::InvalidResource)?;
         let condition = &value.conditions[0];
         if condition.freshness.to_i32() != 1
@@ -771,8 +771,8 @@ impl TryFrom<PublicFeatureRegistry> for CheckedPublicFeatureRegistryV1 {
     fn try_from(value: PublicFeatureRegistry) -> Result<Self, Self::Error> {
         // Base v1 is a closed, complete registry. Accepting a validly digested
         // subset would let a responder silently hide required semantics.
-        if value.features.len() != aos_sandbox_protocol::public_api::BASE_V1_FEATURE_REGISTRY_ENTRIES
-            || value != aos_sandbox_protocol::public_api::public_feature_registry_v1()
+        if value.features.len() != crate::public_api::BASE_V1_FEATURE_REGISTRY_ENTRIES
+            || value != crate::public_api::public_feature_registry_v1()
         {
             return Err(InvalidProtoJson::InvalidResource);
         }
@@ -811,7 +811,7 @@ impl TryFrom<PolicyPlan> for CheckedPolicyPlanV1 {
         if value.compute_size(&mut buffa::SizeCache::new()) as usize > MAXIMUM_PROTO_JSON_BYTES
             || value.plan_digest.len() != 32
             || value.plan_digest.iter().all(|byte| *byte == 0)
-            || value.reasons.len() > aos_sandbox_protocol::public_api::MAXIMUM_RESOURCE_CONDITIONS
+            || value.reasons.len() > crate::public_api::MAXIMUM_RESOURCE_CONDITIONS
         {
             return Err(InvalidProtoJson::InvalidResource);
         }
@@ -822,14 +822,14 @@ impl TryFrom<PolicyPlan> for CheckedPolicyPlanV1 {
             .chain(value.effective_policy.as_option())
             .chain(value.input_commitments.iter())
         {
-            aos_sandbox_protocol::public_api::portable::CheckedObjectDescriptorV1::try_from(
+            crate::public_api::portable::CheckedObjectDescriptorV1::try_from(
                 descriptor.clone(),
             )
             .map_err(|_| InvalidProtoJson::InvalidResource)?;
         }
         if value.requested_policy.as_option().is_none()
             || value.effective_policy.as_option().is_none()
-            || aos_sandbox_protocol::public_api::portable::CheckedFeatureSetV1::try_from(
+            || crate::public_api::portable::CheckedFeatureSetV1::try_from(
                 value.required_features.clone(),
             )
             .is_err()
@@ -837,13 +837,13 @@ impl TryFrom<PolicyPlan> for CheckedPolicyPlanV1 {
             return Err(InvalidProtoJson::InvalidResource);
         }
         for reason in &value.reasons {
-            let code = aos_sandbox_protocol::public_api::PublicPolicyReasonCodeV1::from_proto(
+            let code = crate::public_api::PublicPolicyReasonCodeV1::from_proto(
                 reason.reason_code.to_i32(),
             )
             .map_err(|_| InvalidProtoJson::InvalidResource)?;
             if reason.code != code.stable_code()
                 || reason.safe_message.is_empty()
-                || reason.safe_message.len() > aos_sandbox_protocol::public_api::MAXIMUM_SAFE_MESSAGE_BYTES
+                || reason.safe_message.len() > crate::public_api::MAXIMUM_SAFE_MESSAGE_BYTES
                 || reason.safe_message.chars().any(char::is_control)
             {
                 return Err(InvalidProtoJson::InvalidResource);
@@ -853,7 +853,7 @@ impl TryFrom<PolicyPlan> for CheckedPolicyPlanV1 {
                 .as_option()
                 .ok_or(InvalidProtoJson::InvalidResource)?
                 .clone();
-            aos_sandbox_protocol::public_api::portable::CheckedObjectDescriptorV1::try_from(source)
+            crate::public_api::portable::CheckedObjectDescriptorV1::try_from(source)
                 .map_err(|_| InvalidProtoJson::InvalidResource)?;
         }
         if !value.reasons.windows(2).all(|pair| {

@@ -7,8 +7,9 @@ use anyhow::{Result, bail};
 use aos_proto::aos::sandbox::v1 as wire;
 use aos_sandbox::cli_model::{
     DormantClientStatePlanV1, DormantCompletionShellV1, DormantPublicApiAuthorizationV1,
-    DormantSandboxRequestKindV1, DormantSandboxRequestV1, DormantSandboxTreeContinuationV1,
+    DormantSandboxRequestKindV1, DormantSandboxRequestV1,
 };
+use aos_sandbox_protocol::public_api::proto_json::DormantSandboxTreeContinuationV1;
 use clap::{Args, Subcommand, ValueEnum};
 
 #[derive(Clone)]

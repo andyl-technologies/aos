@@ -10,24 +10,20 @@
 pub(crate) mod authorization_adapter;
 #[cfg(target_os = "linux")]
 pub use authorization_adapter::PublicApiAuditMethodV1;
-pub mod continuation;
 pub mod execution;
 pub mod grammar;
 pub mod observation_adapter;
 pub mod output;
-pub mod proto_json;
 pub mod provenance;
 #[cfg(target_os = "linux")]
 pub mod public_mutation;
 pub mod requests;
 pub mod routing;
 
-pub use continuation::*;
 pub use execution::*;
 pub use grammar::*;
 pub use observation_adapter::*;
 pub use output::*;
-pub use proto_json::*;
 pub use provenance::*;
 #[cfg(target_os = "linux")]
 pub use public_mutation::*;

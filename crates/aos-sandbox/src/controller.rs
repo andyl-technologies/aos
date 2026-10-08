@@ -25,8 +25,10 @@ use crate::RecordNamespace;
 
 #[cfg(target_os = "linux")]
 use crate::cli_model::{
-    AuditAuthorizationV1, CheckedPolicyPlanV1, PublicApiAuditMethodV1,
+    AuditAuthorizationV1, PublicApiAuditMethodV1,
 };
+#[cfg(target_os = "linux")]
+use aos_sandbox_protocol::public_api::proto_json::CheckedPolicyPlanV1;
 #[cfg(target_os = "linux")]
 use crate::public_policy_planner::{
     AuthorizedPublicPolicyPlanRequestV1, PublicPolicyPlanningErrorV1,

@@ -6,13 +6,20 @@
 //! query semantics. Structural checks do not authenticate a request, adopt its
 //! provenance, or grant mutation or effect authority. Terminal projection and
 //! the shared error vocabulary remain in [`execution_result`] and [`grammar_error`].
+//! [`proto_json`] and [`continuation`] retain checked output and bounded resume
+//! data. [`attach_holder_proof`] and [`create_holder_proof`] validate holder-key
+//! claims without granting admission, adoption, or effect authority.
 
+pub mod attach_holder_proof;
 pub mod audit_event;
+pub mod continuation;
+pub mod create_holder_proof;
 pub mod event;
 pub mod model;
 pub mod observation;
 pub mod portable;
 pub mod portable_resource;
+pub mod proto_json;
 mod proto_observation;
 pub mod registry;
 pub mod resource;

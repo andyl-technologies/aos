@@ -19,7 +19,7 @@ use sha2::{Digest as _, Sha256};
 use ssh_key::certificate::{Builder, CertType, Certificate};
 use ssh_key::{Algorithm, PrivateKey, PublicKey};
 
-use crate::attach_holder_proof::verify_attach_holder_proof_v1;
+use aos_sandbox_protocol::public_api::attach_holder_proof::verify_attach_holder_proof_v1;
 use crate::{Journal, JournalRecord, RecordNamespace};
 
 const NONCE_DOMAIN: &[u8] = b"aos.sandbox.execution.attach-certificate-nonce.v1\0";

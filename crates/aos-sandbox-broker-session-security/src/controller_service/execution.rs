@@ -738,7 +738,7 @@ impl ControllerExecutionIntentV1 {
                 "execution specification differs from its admitted Create request".to_owned(),
             ));
         }
-        aos_sandbox::create_holder_proof::verify_create_holder_proof_v1(&request).map_err(
+        aos_sandbox_protocol::public_api::create_holder_proof::verify_create_holder_proof_v1(&request).map_err(
             |_| EffectFailure::Permanent("execution holder proof is invalid".to_owned()),
         )?;
         read_execution_guest_identity_v1(journal, assignment, &specification)

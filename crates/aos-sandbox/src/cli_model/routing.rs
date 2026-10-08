@@ -13,7 +13,9 @@ use super::grammar::{MAXIMUM_CLI_EVENTS, MAXIMUM_CLI_PAGES, MAXIMUM_CLI_WAIT_NAN
 use super::grammar::{
     MAXIMUM_EXEC_ARGUMENT_BYTES, MAXIMUM_EXEC_ARGUMENT_VECTOR_BYTES, MAXIMUM_EXEC_ARGUMENTS,
 };
-use super::proto_json::StructuredOutputSchemaV1;
+use aos_sandbox_protocol::public_api::proto_json::{
+    CheckedSandboxTreeV1, StructuredOutputSchemaV1, validate_sandbox_tree_preorder_state_v1,
+};
 use super::provenance::AuthorizedResolvedMutationV1;
 use super::requests::{ResolvedLifecycleActionV1, ResolvedPublicMutationProtoV1};
 
@@ -164,7 +166,7 @@ impl DormantSandboxTreePageConsumerV1 {
     pub fn consume(
         &mut self,
         response: wire::ListDescendantsResponse,
-    ) -> Result<super::proto_json::CheckedSandboxTreeV1, DormantSandboxRoutingErrorV1> {
+    ) -> Result<CheckedSandboxTreeV1, DormantSandboxRoutingErrorV1> {
         if self.remaining_pages == 0 {
             return Err(DormantSandboxRoutingErrorV1::InvalidRequest);
         }
@@ -172,7 +174,7 @@ impl DormantSandboxTreePageConsumerV1 {
             .next_request
             .as_ref()
             .ok_or(DormantSandboxRoutingErrorV1::InvalidRequest)?;
-        let checked = super::proto_json::CheckedSandboxTreeV1::from_response(request, response)
+        let checked = CheckedSandboxTreeV1::from_response(request, response)
             .map_err(|_| DormantSandboxRoutingErrorV1::InvalidRequest)?;
         let continuation = checked.continuation().cloned();
         let next_request = continuation.map(|continuation| wire::ListDescendantsRequest {
@@ -1255,7 +1257,7 @@ fn valid_tree_request_v1(request: &wire::ListDescendantsRequest) -> bool {
                     .open_path
                     .first()
                     .is_some_and(|root| root == &request.sandbox_id)
-                && super::proto_json::validate_sandbox_tree_preorder_state_v1(state).is_ok()
+                && validate_sandbox_tree_preorder_state_v1(state).is_ok()
         }
         _ => false,
     };

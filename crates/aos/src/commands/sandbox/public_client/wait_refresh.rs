@@ -10,7 +10,7 @@ use aos_proto::aos::sandbox::v1::{
     GetAttachmentRequest, GetExecutionRequest, GetSandboxRequest, GetSnapshotRequest,
     GetViewRequest, InspectCapabilityRequest, SandboxServiceClient, SnapshotServiceClient,
 };
-use aos_sandbox::cli_model::EstablishedProtoJson;
+use aos_sandbox_protocol::public_api::proto_json::EstablishedProtoJson;
 use aos_sandbox_protocol::public_api::{
     CheckedAttachmentResourceV1,
     CheckedCapabilityResourceV1,

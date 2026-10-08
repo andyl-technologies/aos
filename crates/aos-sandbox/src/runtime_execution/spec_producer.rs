@@ -43,7 +43,7 @@ use crate::controller_service::public_projection::{
     PublicProjectionError, PublicProjectionKindV1, PublicProjectionResourceV1,
     PublicProjectionStoreV1,
 };
-use crate::create_holder_proof::{self, CreateHolderProofErrorV1};
+use aos_sandbox_protocol::public_api::create_holder_proof::{self, CreateHolderProofErrorV1};
 use crate::environment::{
     EnvironmentExecutionErrorV1, EnvironmentExecutionSourceV1, EnvironmentProtectedJournalOwnerV1,
 };

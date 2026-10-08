@@ -9,8 +9,8 @@
 //! bind their registration to the original live process without granting effects.
 //! [`cli_model`] owns client request assembly and Controller authorization binding.
 //! [`controller_query`] retains protected observation and operator projection;
-//! checked public models and reducers live in `aos_sandbox_protocol::public_api`. [`attach_holder_proof`] and
-//! [`create_holder_proof`] define the holder-key signature profiles. [`environment`],
+//! checked public models, reducers, and holder-key signature profiles live in
+//! `aos_sandbox_protocol::public_api`. [`environment`],
 //! [`git`], [`hierarchy`],
 //! [`lifecycle`], [`local_inventory`], [`policy_compiler`], and
 //! [`publisher_admission`] own inert RFC-0021 domain models and
@@ -34,7 +34,6 @@ compile_error!("the protected-journal test fixture is unavailable in release bui
 compile_error!("the Cache physical-join VM fixture is unavailable in release builds");
 
 mod attach_decision;
-pub mod attach_holder_proof;
 pub mod attach_route_issuer;
 #[cfg(target_os = "linux")]
 pub mod attachment_effect_owner;
@@ -72,7 +71,6 @@ mod controller_resource_reservation;
 #[cfg(target_os = "linux")]
 pub mod controller_service;
 pub mod controller_storage_output_reserve_attempt;
-pub mod create_holder_proof;
 #[cfg(target_os = "linux")]
 pub mod destination_slot_effect;
 #[cfg(target_os = "linux")]
