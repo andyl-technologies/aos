@@ -2215,12 +2215,28 @@ binds every successful literal to the actual executable and unchanged 6,098
 source contents and modes. The exactly-once unchanged ordinary 1,024-entry
 indexing witness then fails: its writer expires at 39.200033752 seconds against
 the original thirty-second maximum; the complete test fails in 65.116 seconds.
-The other five required populations remain unrun. A separately assigned
-owning-gate continuation checks read semantics without retrying or qualifying
-that failed deadline witness. A reviewed seven-file private feature-boundary
-correction addresses the existing portability diagnostics; its qualification
-is not yet run. These local commits remain unpushed pending qualification,
-and no deadline improvement, owning-gate result or task acceptance is claimed.
+The other five required populations remain unrun. The separate owning-gate
+continuation completes on unchanged `f2dd429256`: `runtime-agnostic` passes all
+thirteen cases, including six new recipe witnesses; `bucket-file-layout` passes
+all nineteen cases, including eight new consumer witnesses. Independent review
+binds both outputs to the actual workspace source and all 5,044 included tracked
+files, preserving the 1,054 excluded tracked paths and unchanged 6,098-file
+checkout. The required `rust.aos-test-targets` build compiles the configured
+twenty-nine Linux packages' unit and integration targets on that same source;
+it executes no tests and retains the existing compiler warnings. Both mandatory
+Rust and Nix format checks pass. These successes establish read semantics and
+compilation scope without retrying or qualifying the failed deadline witness.
+The reviewed seven-file private feature-boundary correction on `a91cf86221`
+fails its first strict no-default library check with two remaining unused
+imports: the provenance module qualifier and `SelectedReadInterpretation`
+reexport. Its later profiles and principal runtime tests remain unrun; a minimal
+correction is being prepared within the same file ownership, without lint
+exceptions or unchanged-source retries. Test-only native-check instrumentation
+on `772cf43ea7` passes source review: removing the reviewed diagnostic insertions
+restores both production files' exact original bytes. Its physical refusal,
+clock-sample and effect parity tests remain unrun. These local commits remain
+unpushed pending qualification; no deadline improvement or task acceptance is
+claimed.
 
 The sealed current floor contains 89 aggregate gates, including all 69 T0/T1
 plan-required names and twenty implemented supporting checks. Read-only evaluation
