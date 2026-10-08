@@ -121,6 +121,7 @@ executable implementation merely to use shared message types.
 | `aos-sandbox-cache` (**new**) | Residency, consumer/object pins, quota, eviction and physical currentness | Filesystem presentation, Controller lifecycle, shared writable cache semantics |
 | `aos-sandbox-publisher` (**new**) | Immutable publication, publisher policy, admission and protected catalog transitions | Guest execution and general Controller routing |
 | `aos-sandbox` | Local admission, desired state, lifecycle orchestration, reconciliation, public projections and local-control implementation | Privileged effects, coordinator placement, generic security/journal engines |
+| `aos-sandbox-controller-runtime` (**new**) | Concrete Controller session integration, retained operation flights, private Controller signing recipes and runtime startup composition | Generic peer/session mechanics, public client transport, other roles' signers |
 | `aos-sandbox-client` (**new**) | Public API client, credentials and observation/operation handling used by CLI | Controller/effect-owner dependencies and privileged runtime closure |
 
 The local ownership extraction follows the actual protected owners, not their
@@ -131,6 +132,16 @@ Resource-specific inventory authority remains with its physical owner.
 The existing broker facade becomes the owner of its common authority engine,
 not a reexport of Controller implementation. Physical role/namespace admission
 and semantic commit remain with the respective domain owner.
+
+Concrete Controller runtime integration belongs above session security, not
+inside its general-purpose library or the thin service-entry package. Moving
+this owner must not create a dependency back from security to the runtime.
+Startup authentication retains the original captured launch image and admitted
+role profile; no public constructor accepts a replacement profile or invented
+absence. Operation flights retain their original session and writer custody.
+Private signing recipes remain private to this concrete owner rather than
+becoming generic signing callbacks. Unconsumed speculative issuance recipes
+are removed instead of gaining new public ports merely to permit relocation.
 
 ### Effects, views, and application assembly
 
