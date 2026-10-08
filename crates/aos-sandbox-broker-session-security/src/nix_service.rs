@@ -74,6 +74,8 @@ enum OwnerFailureV1 {
     Protected(#[from] BrokerSessionSecurityError),
     #[error("original HELLO or deadline failed: {0}")]
     Handshake(#[from] DormantBrokerSessionHandshakeErrorV1),
+    #[error("original protected Session handshake failed: {0}")]
+    SessionHandshake(#[from] crate::handshake::DormantBrokerSessionHandshakeErrorV1),
     #[error("selected canonical HELLO failed: {0}")]
     Negotiation(#[from] aos_sandbox_broker_session_protocol::BrokerSessionNegotiationError),
     #[error("original direct deadline capture failed: {0}")]
@@ -391,7 +393,7 @@ impl PhysicalPhaseV1<'_> {
             return Err(OwnerFailureV1::Closed);
         }
         let mut expected = prior.wire().clone();
-        let mut header = prior.wire().header.as_ref().ok_or(OwnerFailureV1::Closed)?.clone();
+        let mut header = prior.wire().header.as_option().ok_or(OwnerFailureV1::Closed)?.clone();
         header.request_id = checked.header().request_id().to_vec();
         expected.header = Some(header).into();
         expected.build_transaction_digest = transaction.to_vec();

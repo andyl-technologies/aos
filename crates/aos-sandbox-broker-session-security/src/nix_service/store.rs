@@ -23,12 +23,12 @@ use aos_sandbox_core::model::{AclEntry, FilesystemMetadata};
 use aos_sandbox_core::{ObjectDescriptorVerifier, ObjectDescriptorVerificationError};
 use aos_sandbox_linux::immutable_file::{FsVerityBacking, FsVerityDigest, ImmutableFileError};
 use aos_sandbox_linux::path::{BeneathRoot, ResolveOptions, ResolvedPath};
+use aos_sandbox_linux::pidfd::{PidFd, PidFdInfo};
 use aos_sandbox_linux::process::{
     FixedProcessBoottimeCutV1, FixedProcessCaptureV1, FixedProcessDrivenInputsV1,
     FixedProcessDrivenProgressV1, FixedProcessDrivenSessionV1, FixedProcessRequest,
     FixedProcessRetainedSessionOutcome, prepare_fixed_process_driven_invocation_v1,
 };
-use aos_sandbox_linux::{PidFd, PidFdInfo};
 use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1;
 use aos_sandbox_protocol::nix_build::NixPreadmittedRecipeV2;
 use ed25519_dalek::{Signature, VerifyingKey};

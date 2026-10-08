@@ -58,6 +58,8 @@ pub(super) enum NixResolveFailureV1 {
     Protected(#[from] BrokerSessionSecurityError),
     #[error("original HELLO or deadline failed: {0}")]
     Handshake(#[from] DormantBrokerSessionHandshakeErrorV1),
+    #[error("original protected Session handshake failed: {0}")]
+    SessionHandshake(#[from] crate::handshake::DormantBrokerSessionHandshakeErrorV1),
     #[error("selected canonical HELLO failed: {0}")]
     Negotiation(#[from] aos_sandbox_broker_session_protocol::BrokerSessionNegotiationError),
     #[error("original selected transport failed: {0}")]
