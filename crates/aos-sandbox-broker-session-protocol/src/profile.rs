@@ -1442,7 +1442,7 @@ mod tests {
                 BrokerSessionProtocolV1::Storage,
                 git_coverage_storage_client_hello_v1().unwrap(),
                 git_coverage_storage_server_hello_v1().unwrap(),
-                vec![7, 18, 20, 21, 25, 31, 32, 55, 56],
+                vec![7, 18, 20, 21, 25, 31, 32, 46, 47, 55, 56],
             ),
         ];
 
@@ -1671,7 +1671,15 @@ mod tests {
             if is_nix_proxy_method(method) {
                 continue;
             }
-            let old_features = feature_refs(&production_features_for_methods(&[method])).unwrap();
+            // Provisional profiles also participate in this pure traffic predicate.
+            // Their namespaces need not be globally negotiable.
+            let old_features = production_features_for_methods(&[method])
+                .iter()
+                .map(|feature| {
+                    FeatureRef::new(feature.namespace.clone(), feature.major, feature.minor)
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
             let mut extra_proxy = old_features.clone();
             extra_proxy.push(FeatureRef::new(NIX_NARROWING_PROXY_FEATURE_NAMESPACE, 1, 0).unwrap());
             assert_eq!(method_has_required_traffic_features(method, &old_features),
@@ -2018,7 +2026,7 @@ mod tests {
             (
                 BrokerSessionProtocolV1::Storage,
                 Audience::AUDIENCE_NODE_CONTROLLER,
-                &[7, 18, 20, 21, 25, 31, 32],
+                &[7, 18, 20, 21, 25, 31, 32, 46, 47],
                 2,
             ),
             (

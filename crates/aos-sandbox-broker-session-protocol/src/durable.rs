@@ -1207,24 +1207,17 @@ mod profile_binding_tests {
 
     #[test]
     fn worker_preparation_has_a_distinct_complete_durable_profile() {
+        assert!(matches!(
+            profile_binding(BrokerMethod::BROKER_METHOD_UNSPECIFIED),
+            Err(BrokerSessionDurableError::InvalidClosedValue)
+        ));
+
         let worker =
             profile_binding(BrokerMethod::BROKER_METHOD_HOST_PREPARE_FUSE_WORKER_SESSION_V1)
                 .unwrap();
 
         for method in crate::AUTHENTICATED_BROKER_METHODS_V1 {
-            if matches!(
-                method,
-                BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
-                    | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT
-            ) {
-                // These registry IDs intentionally have no executable profile.
-                // Do not silently skip any newly missing profile here.
-                assert!(authenticated_broker_method_profile_v1(method).is_none());
-                assert!(matches!(
-                    profile_binding(method),
-                    Err(BrokerSessionDurableError::InvalidClosedValue)
-                ));
-            } else if method != BrokerMethod::BROKER_METHOD_HOST_PREPARE_FUSE_WORKER_SESSION_V1 {
+            if method != BrokerMethod::BROKER_METHOD_HOST_PREPARE_FUSE_WORKER_SESSION_V1 {
                 assert_ne!(worker, profile_binding(method).unwrap());
             }
         }
