@@ -21,7 +21,9 @@ pub(crate) fn capture_checked_start_authority(
 ) -> Result<CheckedStartAuthorityV2, PublicMutationAuthorizationErrorV1> {
     let rejected = || PublicMutationAuthorizationErrorV1::Rejected;
     peer.recheck().map_err(|_| rejected())?;
-    journal.validate_held_protected_names().map_err(|_| rejected())?;
+    journal
+        .validate_held_protected_names()
+        .map_err(|_| rejected())?;
     let coordinates = authorization.original_coordinates().ok_or_else(rejected)?;
     if decision.original_coordinates(coordinates.session_commitment()) != coordinates
         || decision.authorized_wall_seconds() != authorization.accepted_wall_seconds()
@@ -29,7 +31,9 @@ pub(crate) fn capture_checked_start_authority(
     {
         return Err(rejected());
     }
-    if original_request.len().checked_add(decision.policy().canonical_policy().len())
+    if original_request
+        .len()
+        .checked_add(decision.policy().canonical_policy().len())
         .is_none_or(|length| length > 1_048_576)
     {
         return Err(rejected());
@@ -48,6 +52,8 @@ pub(crate) fn capture_checked_start_authority(
     ));
     captured.validate().map_err(|_| rejected())?;
     peer.recheck().map_err(|_| rejected())?;
-    journal.validate_held_protected_names().map_err(|_| rejected())?;
+    journal
+        .validate_held_protected_names()
+        .map_err(|_| rejected())?;
     Ok(captured)
 }

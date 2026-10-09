@@ -1,8 +1,22 @@
 //! Shared historical DATA fixture compiled only in the two codec/native test modules.
-use aos_proto::aos::sandbox::v1::{Attachment, FilesystemView, AttachViewRequest, AttachmentPhase, Duration, MutationContext, ObjectDescriptor as WireDescriptor, Timestamp, ViewMutation, ViewPhase};
-use aos_sandbox_core::{AuditId, CapabilityDraft, CapabilityId, CapabilityRecord, ChannelBinding, DelegationLimits, Grant, GrantId, MediaType, ObjectDescriptor, ObjectDigest, Operation, OperationId, OperationSet, PrincipalId, ProjectId, ResourceId, ResourceKind, ResourceVector, Revision, RevocationScopeId, Selector, IncarnationId};
+use aos_proto::aos::sandbox::v1::{
+    Attachment, FilesystemView, AttachViewRequest, AttachmentPhase, Duration, MutationContext,
+    ObjectDescriptor as WireDescriptor, Timestamp, ViewMutation, ViewPhase,
+};
+use aos_sandbox_core::{
+    AuditId, CapabilityDraft, CapabilityId, CapabilityRecord, ChannelBinding, DelegationLimits,
+    Grant, GrantId, MediaType, ObjectDescriptor, ObjectDigest, Operation, OperationId,
+    OperationSet, PrincipalId, ProjectId, ResourceId, ResourceKind, ResourceVector, Revision,
+    RevocationScopeId, Selector, IncarnationId,
+};
 use buffa::Message as _;
-use super::protocol::public_api::{method::PublicApiAuditMethodV1, mutation::PublicMutationRequestV1, projection::{PublicProjectionPlanV1, PublicProjectionResourceV1}, public_mutation_context::PublicMutationContextV1, mutation_history::{AdmissionAuthorityV1, ControllerFuseAdmissionCarrierV1}};
+use super::protocol::public_api::{
+    method::PublicApiAuditMethodV1,
+    mutation::PublicMutationRequestV1,
+    projection::{PublicProjectionPlanV1, PublicProjectionResourceV1},
+    public_mutation_context::PublicMutationContextV1,
+    mutation_history::{AdmissionAuthorityV1, ControllerFuseAdmissionCarrierV1},
+};
 
 pub(super) fn historical_fixture() -> ControllerFuseAdmissionCarrierV1 {
     let project = ProjectId::from_bytes([1; 16]);

@@ -6,7 +6,10 @@
 //! ```
 
 use aos_proto::aos::sandbox::v1::{Attachment, FilesystemView};
-use aos_sandbox_core::{CapabilityRecord, ChannelBinding, IncarnationId, ObjectDescriptor, ObjectDigest, OperationId, PortableMediaType, PrincipalId, ProjectId};
+use aos_sandbox_core::{
+    CapabilityRecord, ChannelBinding, IncarnationId, ObjectDescriptor, ObjectDigest, OperationId,
+    PortableMediaType, PrincipalId, ProjectId,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use super::FuseHistoryDataError;
@@ -35,8 +38,32 @@ impl AdmissionAuthorityV1 {
     ///
     /// Native producers assemble these values in their original evaluation order.
     #[must_use]
-    pub fn from_historical_parts(parts: (CapabilityRecord, PrincipalId, ChannelBinding, ProjectId, i64, u64, ObjectDescriptor, u64, ObjectDigest, ObjectDigest)) -> Self {
-        let (capability, holder, key_binding, project, accepted_wall_seconds, policy_generation, policy_descriptor, controller_generation, authorization_revision, authenticated_request) = parts;
+    pub fn from_historical_parts(
+        parts: (
+            CapabilityRecord,
+            PrincipalId,
+            ChannelBinding,
+            ProjectId,
+            i64,
+            u64,
+            ObjectDescriptor,
+            u64,
+            ObjectDigest,
+            ObjectDigest,
+        ),
+    ) -> Self {
+        let (
+            capability,
+            holder,
+            key_binding,
+            project,
+            accepted_wall_seconds,
+            policy_generation,
+            policy_descriptor,
+            controller_generation,
+            authorization_revision,
+            authenticated_request,
+        ) = parts;
         Self {
             capability,
             holder,
@@ -128,8 +155,30 @@ impl ControllerFuseAdmissionCarrierV1 {
     /// # Errors
     /// Refuses inconsistent claims, context/projection joins or canonical bounds.
     #[must_use]
-    pub fn from_stored_parts(parts: (OperationId, ObjectDigest, AdmissionAuthorityV1, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, Option<IncarnationId>)) -> Result<Self, FuseHistoryDataError> {
-        let (operation, request_digest, authority, public_effect, attachment_key, attachment_value, original_view_key, original_view_value, incarnation) = parts;
+    pub fn from_stored_parts(
+        parts: (
+            OperationId,
+            ObjectDigest,
+            AdmissionAuthorityV1,
+            Vec<u8>,
+            Vec<u8>,
+            Vec<u8>,
+            Vec<u8>,
+            Vec<u8>,
+            Option<IncarnationId>,
+        ),
+    ) -> Result<Self, FuseHistoryDataError> {
+        let (
+            operation,
+            request_digest,
+            authority,
+            public_effect,
+            attachment_key,
+            attachment_value,
+            original_view_key,
+            original_view_value,
+            incarnation,
+        ) = parts;
         Self::from_stored(StoredCarrier {
             operation,
             request_digest,
@@ -246,14 +295,11 @@ impl ControllerFuseAdmissionCarrierV1 {
                 &context,
                 request.resource_kind(),
                 request.operation(),
-                request
-                    .selector()
-                    .ok_or(FuseHistoryDataError::Rejected)?,
+                request.selector().ok_or(FuseHistoryDataError::Rejected)?,
             )
             .map_err(|_| FuseHistoryDataError::Rejected)?;
 
-        let json =
-            serde_json::to_vec(&stored).map_err(|_| FuseHistoryDataError::Rejected)?;
+        let json = serde_json::to_vec(&stored).map_err(|_| FuseHistoryDataError::Rejected)?;
         if json
             .len()
             .checked_add(HEADER_BYTES + 32)

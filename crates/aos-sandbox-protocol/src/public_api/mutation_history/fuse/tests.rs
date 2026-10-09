@@ -1,8 +1,16 @@
 //! Retains the original five historical FUSE DATA regression cases.
 use super::*;
-use aos_proto::aos::sandbox::v1::{AttachmentPhase, Duration, MutationContext, ReplaceAttachmentRequest};
-use aos_sandbox_core::{CapabilityRecord, ChannelBinding, Grant, GrantId, ObjectDescriptor, ObjectDigest, PrincipalId, ProjectId, ResourceId, ResourceKind, Operation, OperationSet, Selector};
-use crate::public_api::{method::PublicApiAuditMethodV1, mutation::PublicMutationRequestV1, projection::PublicProjectionPlanV1};
+use aos_proto::aos::sandbox::v1::{
+    AttachmentPhase, Duration, MutationContext, ReplaceAttachmentRequest,
+};
+use aos_sandbox_core::{
+    CapabilityRecord, ChannelBinding, Grant, GrantId, ObjectDescriptor, ObjectDigest, PrincipalId,
+    ProjectId, ResourceId, ResourceKind, Operation, OperationSet, Selector,
+};
+use crate::public_api::{
+    method::PublicApiAuditMethodV1, mutation::PublicMutationRequestV1,
+    projection::PublicProjectionPlanV1,
+};
 use buffa::Message as _;
 
 use crate as protocol;
@@ -43,9 +51,21 @@ fn controller_fuse_carrier_roundtrip_keeps_ordinary_effect_bytes() {
     let context = PublicMutationContextV1::decode(carrier.ordinary_effect())
         .unwrap()
         .unwrap();
-    assert!(super::super::decode_history(carrier.ordinary_effect()).unwrap().unwrap().1.is_none());
+    assert!(
+        super::super::decode_history(carrier.ordinary_effect())
+            .unwrap()
+            .unwrap()
+            .1
+            .is_none()
+    );
     super::super::require_fuse_context(&context, None, &carrier).unwrap();
-    assert_eq!(super::super::decode_history(carrier.canonical_bytes()).unwrap().unwrap().1, Some(carrier.clone()));
+    assert_eq!(
+        super::super::decode_history(carrier.canonical_bytes())
+            .unwrap()
+            .unwrap()
+            .1,
+        Some(carrier.clone())
+    );
 }
 
 #[test]

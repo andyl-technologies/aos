@@ -192,9 +192,7 @@ fn original_attach_grant_current_policy_holder_scope_and_revocation_survive_reop
         selector,
     )
     .unwrap();
-    assert!(original.same_original_scope(
-        &retry.original_coordinates([38; 32])
-    ));
+    assert!(original.same_original_scope(&retry.original_coordinates([38; 32])));
     assert_eq!(original.session_commitment(), [37; 32]);
     assert!(
         evaluate(
@@ -275,9 +273,7 @@ fn original_attach_grant_current_policy_holder_scope_and_revocation_survive_reop
         selector,
     )
     .unwrap();
-    assert!(!original.same_original_scope(
-        &changed_policy.original_coordinates([37; 32])
-    ));
+    assert!(!original.same_original_scope(&changed_policy.original_coordinates([37; 32])));
     {
         let mut store =
             PublisherPolicyStore::load(&mut reopened, PublisherPolicyLimits::default()).unwrap();
@@ -301,9 +297,7 @@ fn original_attach_grant_current_policy_holder_scope_and_revocation_survive_reop
         selector,
     )
     .unwrap();
-    assert!(!original.same_original_scope(
-        &changed.original_coordinates([37; 32])
-    ));
+    assert!(!original.same_original_scope(&changed.original_coordinates([37; 32])));
     PublisherPolicyStore::load(&mut reopened, PublisherPolicyLimits::default())
         .unwrap()
         .advance_revocation_from_trusted_controller(

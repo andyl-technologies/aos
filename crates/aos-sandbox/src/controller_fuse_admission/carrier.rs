@@ -4,7 +4,10 @@ use aos_proto::aos::sandbox::v1::{Attachment, FilesystemView};
 use aos_sandbox_core::{IncarnationId, ObjectDigest, OperationId, PrincipalId, ProjectId};
 use aos_sandbox_protocol::public_api::mutation_history::ControllerFuseAdmissionCarrierV1 as HistoricalCarrier;
 use super::{ControllerFuseAdmissionErrorV1, exact_id};
-use crate::controller_service::public_projection::{PublicProjectionKindV1, PublicProjectionPlanV1, PublicProjectionResourceV1, PublicProjectionStoreV1, decode_checked_public_projection_v1};
+use crate::controller_service::public_projection::{
+    PublicProjectionKindV1, PublicProjectionPlanV1, PublicProjectionResourceV1,
+    PublicProjectionStoreV1, decode_checked_public_projection_v1,
+};
 use crate::public_mutation_compiler::AuthorizedPublicMutationRequestV1;
 use crate::{Journal, PublicMutationEffectV1};
 
@@ -98,7 +101,9 @@ impl ControllerFuseAdmissionCarrierV1 {
             view_plan.desired_value().to_vec(),
             incarnation,
         );
-        HistoricalCarrier::from_stored_parts(parts).map(Self).map_err(super::history_error)
+        HistoricalCarrier::from_stored_parts(parts)
+            .map(Self)
+            .map_err(super::history_error)
     }
 
     /// Decodes historical DATA without issuing a held Native owner.
@@ -106,7 +111,9 @@ impl ControllerFuseAdmissionCarrierV1 {
     /// # Errors
     /// Retains the original flat rejection or ledger context cause.
     pub(crate) fn decode(bytes: &[u8]) -> Result<Option<Self>, ControllerFuseAdmissionErrorV1> {
-        HistoricalCarrier::decode(bytes).map(|carrier| carrier.map(Self)).map_err(super::history_error)
+        HistoricalCarrier::decode(bytes)
+            .map(|carrier| carrier.map(Self))
+            .map_err(super::history_error)
     }
 
     /// Returns exact historical canonical bytes, not read authority.
@@ -170,5 +177,4 @@ impl ControllerFuseAdmissionCarrierV1 {
     pub(crate) fn ordinary_effect(&self) -> &[u8] {
         self.0.ordinary_effect()
     }
-
 }

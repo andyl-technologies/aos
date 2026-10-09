@@ -7,13 +7,19 @@
 
 mod nix;
 mod fuse;
-pub use nix::{AssignmentPreimagesV2, CheckedStartAuthorityV2, NixStartAdmissionCarrierV2, OriginalAssignmentV2, OriginalPublicMutationCoordinatesV2};
+pub use nix::{
+    AssignmentPreimagesV2, CheckedStartAuthorityV2, NixStartAdmissionCarrierV2,
+    OriginalAssignmentV2, OriginalPublicMutationCoordinatesV2,
+};
 pub use fuse::{AdmissionAuthorityV1, ControllerFuseAdmissionCarrierV1};
 pub use nix::MAXIMUM_BYTES as NIX_START_ADMISSION_MAXIMUM_BYTES_V2;
 
 use aos_sandbox_core::OperationId;
 use sha2::{Digest as _, Sha256};
-use super::{PublicOperationMethodV1, public_mutation_context::{InvalidPublicMutationContext, PublicMutationContextV1}};
+use super::{
+    PublicOperationMethodV1,
+    public_mutation_context::{InvalidPublicMutationContext, PublicMutationContextV1},
+};
 
 /// Refuses inconsistent historical Start DATA or preserves its original JSON cause.
 #[derive(Debug, thiserror::Error)]
@@ -50,7 +56,9 @@ pub fn compiler_resource_version(
     Sha256::new()
         .chain_update(PUBLIC_RESOURCE_VERSION_DOMAIN)
         .chain_update(operation.as_bytes())
-        .chain_update([crate::domain_ledger::public_operation::public_operation_method_record_code_v1(method)])
+        .chain_update([
+            crate::domain_ledger::public_operation::public_operation_method_record_code_v1(method),
+        ])
         .chain_update(generation.to_be_bytes())
         .chain_update(request_digest)
         .finalize()
@@ -84,9 +92,13 @@ pub fn encode_history(
 ) -> Result<Vec<u8>, PublicMutationHistoryErrorV1> {
     if let Some(carrier) = nix {
         if fuse.is_some() {
-            return Err(PublicMutationHistoryErrorV1("mixed public admission carriers"));
+            return Err(PublicMutationHistoryErrorV1(
+                "mixed public admission carriers",
+            ));
         }
-        return carrier.encode().map_err(|_| PublicMutationHistoryErrorV1("invalid Nix Start carrier"));
+        return carrier
+            .encode()
+            .map_err(|_| PublicMutationHistoryErrorV1("invalid Nix Start carrier"));
     }
     if let Some(carrier) = fuse {
         return Ok(carrier.canonical_bytes().to_vec());
@@ -104,7 +116,9 @@ pub fn require_fuse_context(
     carrier: &ControllerFuseAdmissionCarrierV1,
 ) -> Result<(), PublicMutationHistoryErrorV1> {
     if nix.is_some() || plain.encode().map_err(context_error)? != carrier.ordinary_effect() {
-        return Err(PublicMutationHistoryErrorV1("FUSE admission context mismatch"));
+        return Err(PublicMutationHistoryErrorV1(
+            "FUSE admission context mismatch",
+        ));
     }
     Ok(())
 }
@@ -120,12 +134,17 @@ pub fn require_nix_context(
 ) -> Result<(), PublicMutationHistoryErrorV1> {
     if fuse.is_some()
         || plain.encode().map_err(context_error)? != carrier.ordinary_effect()
-        || !matches!(plain.validated_request().map_err(context_error)?, crate::public_api::request::DormantSandboxRequestKindV1::Start(_))
+        || !matches!(
+            plain.validated_request().map_err(context_error)?,
+            crate::public_api::request::DormantSandboxRequestKindV1::Start(_)
+        )
     {
         return Err(PublicMutationHistoryErrorV1("Nix Start context mismatch"));
     }
     // Preflight the complete wrapper at the original context-binding stage.
-    carrier.encode().map_err(|_| PublicMutationHistoryErrorV1("Nix Start carrier exceeds bound"))?;
+    carrier
+        .encode()
+        .map_err(|_| PublicMutationHistoryErrorV1("Nix Start carrier exceeds bound"))?;
     Ok(())
 }
 
@@ -133,11 +152,21 @@ pub fn require_nix_context(
 ///
 /// # Errors
 /// Preserves selected framing, nested plain context, request and wrapper first causes.
-pub fn decode_history(bytes: &[u8]) -> Result<Option<(PublicMutationContextV1, Option<ControllerFuseAdmissionCarrierV1>, Option<NixStartAdmissionCarrierV2>)>, PublicMutationHistoryErrorV1> {
+pub fn decode_history(
+    bytes: &[u8],
+) -> Result<
+    Option<(
+        PublicMutationContextV1,
+        Option<ControllerFuseAdmissionCarrierV1>,
+        Option<NixStartAdmissionCarrierV2>,
+    )>,
+    PublicMutationHistoryErrorV1,
+> {
     if let Some(carrier) = NixStartAdmissionCarrierV2::decode(bytes)
         .map_err(|_| PublicMutationHistoryErrorV1("invalid Nix Start carrier"))?
     {
-        let context = PublicMutationContextV1::decode(carrier.ordinary_effect()).map_err(context_error)?
+        let context = PublicMutationContextV1::decode(carrier.ordinary_effect())
+            .map_err(context_error)?
             .ok_or(PublicMutationHistoryErrorV1("missing Nix Start context"))?;
         let (context, carrier) = bind_decoded_nix_context(context, carrier)?;
         return Ok(Some((context, None, Some(carrier))));
@@ -145,8 +174,11 @@ pub fn decode_history(bytes: &[u8]) -> Result<Option<(PublicMutationContextV1, O
     if let Some(carrier) = ControllerFuseAdmissionCarrierV1::decode(bytes)
         .map_err(|_| PublicMutationHistoryErrorV1("invalid FUSE admission carrier"))?
     {
-        let context = PublicMutationContextV1::decode(carrier.ordinary_effect()).map_err(context_error)?
-            .ok_or(PublicMutationHistoryErrorV1("missing FUSE admission context"))?;
+        let context = PublicMutationContextV1::decode(carrier.ordinary_effect())
+            .map_err(context_error)?
+            .ok_or(PublicMutationHistoryErrorV1(
+                "missing FUSE admission context",
+            ))?;
         return Ok(Some((context, Some(carrier), None)));
     }
     PublicMutationContextV1::decode(bytes)

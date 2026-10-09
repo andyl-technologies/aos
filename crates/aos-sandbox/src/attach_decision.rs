@@ -263,7 +263,9 @@ pub(crate) fn retained_decision_record(
     // The current request must independently authorize the same original cut.
     // Rotation/revocation/policy changes do not silently replace its coordinates.
     if retained.request != checked.request
-        || !retained.coordinates.same_original_scope(&checked.coordinates)
+        || !retained
+            .coordinates
+            .same_original_scope(&checked.coordinates)
         || retained.public_tls_trust != checked.public_tls_trust
         || retained.caller != checked.caller
         || retained.project != checked.project
@@ -540,8 +542,16 @@ mod tests {
         )
         .unwrap();
         let mut reconnected = coordinates();
-        reconnected = substitute_coordinate(reconnected, "session_commitment", serde_json::to_value([17; 32]).unwrap());
-        reconnected = substitute_coordinate(reconnected, "authorization_revision", serde_json::to_value([22; 32]).unwrap());
+        reconnected = substitute_coordinate(
+            reconnected,
+            "session_commitment",
+            serde_json::to_value([17; 32]).unwrap(),
+        );
+        reconnected = substitute_coordinate(
+            reconnected,
+            "authorization_revision",
+            serde_json::to_value([22; 32]).unwrap(),
+        );
         let replay =
             retained_decision_record(&reopened, operation, &current(reconnected, 150)).unwrap();
         assert_eq!(replay.value(), Some(original.as_slice()));
@@ -555,12 +565,17 @@ mod tests {
                 retained_decision_record(&reopened, operation, &current(reconnected, now)).is_err()
             );
         }
-        reconnected = substitute_coordinate(reconnected, "channel_binding", serde_json::to_value([18; 32]).unwrap());
+        reconnected = substitute_coordinate(
+            reconnected,
+            "channel_binding",
+            serde_json::to_value([18; 32]).unwrap(),
+        );
         assert!(
             retained_decision_record(&reopened, operation, &current(reconnected, 150)).is_err()
         );
         reconnected = coordinates();
-        reconnected = substitute_coordinate(reconnected, "revocation_generation", serde_json::json!(2));
+        reconnected =
+            substitute_coordinate(reconnected, "revocation_generation", serde_json::json!(2));
         assert!(
             retained_decision_record(&reopened, operation, &current(reconnected, 150)).is_err()
         );

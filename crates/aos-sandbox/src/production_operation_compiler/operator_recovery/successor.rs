@@ -81,12 +81,13 @@ fn next_repaired_sandbox(
         .checked_add(1)
         .ok_or(OperationCompilationError::Rejected)?;
     desired.generation = generation;
-    sandbox.resource_version = aos_sandbox_protocol::public_api::mutation_history::compiler_resource_version(
-        operation,
-        PublicOperationMethodV1::OperatorRecover,
-        generation,
-        request_digest,
-    );
+    sandbox.resource_version =
+        aos_sandbox_protocol::public_api::mutation_history::compiler_resource_version(
+            operation,
+            PublicOperationMethodV1::OperatorRecover,
+            generation,
+            request_digest,
+        );
 
     CheckedSandboxResourceV1::try_from(sandbox)
         .map(CheckedSandboxResourceV1::into_proto)

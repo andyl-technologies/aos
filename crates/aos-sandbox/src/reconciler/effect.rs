@@ -162,9 +162,12 @@ impl PublicMutationEffectV1 {
         #[cfg(target_os = "linux")]
         return aos_sandbox_protocol::public_api::mutation_history::encode_history(
             &self.plain,
-            self.fuse_admission.as_ref().map(|carrier| carrier.history()),
+            self.fuse_admission
+                .as_ref()
+                .map(|carrier| carrier.history()),
             self.nix_start.as_ref(),
-        ).map_err(|error| ReconcilerError::InvalidPlan(error.reason()));
+        )
+        .map_err(|error| ReconcilerError::InvalidPlan(error.reason()));
         #[cfg(not(target_os = "linux"))]
         self.encode_plain()
     }
@@ -192,8 +195,11 @@ impl PublicMutationEffectV1 {
         carrier: crate::controller_fuse_admission::ControllerFuseAdmissionCarrierV1,
     ) -> Result<Self, ReconcilerError> {
         aos_sandbox_protocol::public_api::mutation_history::require_fuse_context(
-            &self.plain, self.nix_start.as_ref(), carrier.history(),
-        ).map_err(|error| ReconcilerError::InvalidPlan(error.reason()))?;
+            &self.plain,
+            self.nix_start.as_ref(),
+            carrier.history(),
+        )
+        .map_err(|error| ReconcilerError::InvalidPlan(error.reason()))?;
         self.fuse_admission = Some(carrier);
         Ok(self)
     }
@@ -211,8 +217,13 @@ impl PublicMutationEffectV1 {
         carrier: crate::production_operation_compiler::NixStartAdmissionCarrierV2,
     ) -> Result<Self, ReconcilerError> {
         aos_sandbox_protocol::public_api::mutation_history::require_nix_context(
-            &self.plain, self.fuse_admission.as_ref().map(|carrier| carrier.history()), &carrier,
-        ).map_err(|error| ReconcilerError::InvalidPlan(error.reason()))?;
+            &self.plain,
+            self.fuse_admission
+                .as_ref()
+                .map(|carrier| carrier.history()),
+            &carrier,
+        )
+        .map_err(|error| ReconcilerError::InvalidPlan(error.reason()))?;
         self.nix_start = Some(carrier);
         Ok(self)
     }

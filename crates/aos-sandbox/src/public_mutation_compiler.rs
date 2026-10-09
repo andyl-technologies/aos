@@ -164,9 +164,15 @@ impl AuthorizedPublicMutationRequestV1 {
         let start_authority = if nix_start.is_some()
             && matches!(request.request(), DormantSandboxRequestKindV1::Start(_))
         {
-            Some(crate::production_operation_compiler::capture_checked_start_authority(
-                journal, peer, &checked_admission, authorization, encoded,
-            )?)
+            Some(
+                crate::production_operation_compiler::capture_checked_start_authority(
+                    journal,
+                    peer,
+                    &checked_admission,
+                    authorization,
+                    encoded,
+                )?,
+            )
         } else {
             None
         };

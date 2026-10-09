@@ -7,8 +7,12 @@
 
 use std::io::{self, Write};
 
-use aos_sandbox_core::{CapabilityRecord, ObjectDescriptor, ObjectDigest, OperationId, PrincipalId, ProjectId};
-use aos_sandbox_ownership_protocol::{SignedOwnershipLease, UnverifiedOwnershipLeaseResponse, OwnershipLeaseAcquisitionError};
+use aos_sandbox_core::{
+    CapabilityRecord, ObjectDescriptor, ObjectDigest, OperationId, PrincipalId, ProjectId,
+};
+use aos_sandbox_ownership_protocol::{
+    SignedOwnershipLease, UnverifiedOwnershipLeaseResponse, OwnershipLeaseAcquisitionError,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use super::NixHistoryDataError;
@@ -60,8 +64,40 @@ impl OriginalPublicMutationCoordinatesV2 {
     ///
     /// Native producers assemble these values in their original evaluation order.
     #[must_use]
-    pub fn from_historical_parts(parts: ([u8; 16], [u8; 16], u64, [u8; 32], u64, [u8; 16], u64, i64, i64, i64, i64, [u8; 32], [u8; 32], [u8; 32])) -> Self {
-        let (capability, revocation_scope, revocation_generation, policy_digest, policy_generation, controller, controller_generation, capability_not_before, capability_expires_at, policy_not_before, policy_expires_at, channel_binding, session_commitment, authorization_revision) = parts;
+    pub fn from_historical_parts(
+        parts: (
+            [u8; 16],
+            [u8; 16],
+            u64,
+            [u8; 32],
+            u64,
+            [u8; 16],
+            u64,
+            i64,
+            i64,
+            i64,
+            i64,
+            [u8; 32],
+            [u8; 32],
+            [u8; 32],
+        ),
+    ) -> Self {
+        let (
+            capability,
+            revocation_scope,
+            revocation_generation,
+            policy_digest,
+            policy_generation,
+            controller,
+            controller_generation,
+            capability_not_before,
+            capability_expires_at,
+            policy_not_before,
+            policy_expires_at,
+            channel_binding,
+            session_commitment,
+            authorization_revision,
+        ) = parts;
         Self {
             capability,
             revocation_scope,
@@ -157,7 +193,10 @@ impl OriginalPublicMutationCoordinatesV2 {
     ///
     /// # Errors
     /// Refuses changes to any other retained authority coordinate.
-    pub fn require_coordinate_identity(self, mut observed: Self) -> Result<(), NixHistoryDataError> {
+    pub fn require_coordinate_identity(
+        self,
+        mut observed: Self,
+    ) -> Result<(), NixHistoryDataError> {
         // The common evaluator advances the observation's protected time floor.
         // Every signed authority coordinate and historical session remains exact.
         observed.authorization_revision = self.authorization_revision;
@@ -188,8 +227,30 @@ impl CheckedStartAuthorityV2 {
     ///
     /// Native producers assemble these values in their original evaluation order.
     #[must_use]
-    pub fn from_historical_parts(parts: (CapabilityRecord, OriginalPublicMutationCoordinatesV2, PrincipalId, ProjectId, i64, ObjectDescriptor, Vec<u8>, Vec<u8>, [[u8; 32]; 4])) -> Self {
-        let (capability, coordinates, holder, project, accepted_wall_seconds, policy, canonical_policy, original_request, original_trust) = parts;
+    pub fn from_historical_parts(
+        parts: (
+            CapabilityRecord,
+            OriginalPublicMutationCoordinatesV2,
+            PrincipalId,
+            ProjectId,
+            i64,
+            ObjectDescriptor,
+            Vec<u8>,
+            Vec<u8>,
+            [[u8; 32]; 4],
+        ),
+    ) -> Self {
+        let (
+            capability,
+            coordinates,
+            holder,
+            project,
+            accepted_wall_seconds,
+            policy,
+            canonical_policy,
+            original_request,
+            original_trust,
+        ) = parts;
         Self {
             capability,
             coordinates,
@@ -262,12 +323,16 @@ impl CheckedStartAuthorityV2 {
             self.coordinates.policy_expires_at,
             &self.canonical_policy,
             aos_sandbox_core::DecodeLimits::default(),
-        ).map_err(|_| NixHistoryDataError::Invalid)?;
+        )
+        .map_err(|_| NixHistoryDataError::Invalid)?;
         let request = crate::public_api::request::ResolvedPublicMutationRequestV1::decode(
             &self.original_request,
-        ).map_err(|_| NixHistoryDataError::Invalid)?;
-        if !matches!(request.request(), crate::public_api::request::DormantSandboxRequestKindV1::Start(_))
-            || claims.holder != self.holder
+        )
+        .map_err(|_| NixHistoryDataError::Invalid)?;
+        if !matches!(
+            request.request(),
+            crate::public_api::request::DormantSandboxRequestKindV1::Start(_)
+        ) || claims.holder != self.holder
             || claims.project != self.project
             || claims.id.as_bytes() != &self.coordinates.capability
             || claims.channel_binding.as_bytes() != &self.coordinates.channel_binding
@@ -297,10 +362,7 @@ impl CheckedStartAuthorityV2 {
     ///
     /// # Errors
     /// Refuses original claim, policy, trust or acceptance-bound disagreement.
-    pub fn require_current_decision(
-        &self,
-        current: &Self,
-    ) -> Result<(), NixHistoryDataError> {
+    pub fn require_current_decision(&self, current: &Self) -> Result<(), NixHistoryDataError> {
         self.validate()?;
         current.validate()?;
         // A reconnect may change the historical exporter and protected clock
@@ -341,12 +403,16 @@ pub struct OriginalAssignmentV2 {
     receipt: Vec<u8>,
     receipt_signature: Vec<u8>,
 }
+
 impl OriginalAssignmentV2 {
     /// Requires all four exact canonical byte families from the borrowed lease.
     ///
     /// # Errors
     /// Refuses any historical lease, signature, receipt or receipt-signature mismatch.
-    pub fn require_original_lease(&self, lease: &SignedOwnershipLease) -> Result<(), NixHistoryDataError> {
+    pub fn require_original_lease(
+        &self,
+        lease: &SignedOwnershipLease,
+    ) -> Result<(), NixHistoryDataError> {
         if lease.canonical_lease() != self.lease
             || lease.canonical_signature() != self.signature
             || lease.canonical_receipt() != self.receipt
@@ -361,10 +427,14 @@ impl OriginalAssignmentV2 {
     ///
     /// # Errors
     /// Propagates the established ownership transport field bounds.
-    pub fn clone_unverified_response(&self) -> Result<UnverifiedOwnershipLeaseResponse, OwnershipLeaseAcquisitionError> {
+    pub fn clone_unverified_response(
+        &self,
+    ) -> Result<UnverifiedOwnershipLeaseResponse, OwnershipLeaseAcquisitionError> {
         UnverifiedOwnershipLeaseResponse::from_transport(
-            self.lease.clone(), self.signature.clone(),
-            self.receipt.clone(), self.receipt_signature.clone(),
+            self.lease.clone(),
+            self.signature.clone(),
+            self.receipt.clone(),
+            self.receipt_signature.clone(),
         )
     }
 }
@@ -378,8 +448,16 @@ pub struct AssignmentPreimagesV2<'original> {
 
 impl<'original> AssignmentPreimagesV2<'original> {
     /// Borrows the seven ordered original byte families and their two digests.
-    pub const fn from_historical_parts(bytes: [&'original [u8]; 7], binding_digest: ObjectDigest, publication_digest: ObjectDigest) -> Self {
-        Self { bytes, binding_digest, publication_digest }
+    pub const fn from_historical_parts(
+        bytes: [&'original [u8]; 7],
+        binding_digest: ObjectDigest,
+        publication_digest: ObjectDigest,
+    ) -> Self {
+        Self {
+            bytes,
+            binding_digest,
+            publication_digest,
+        }
     }
 
     /// Applies the complete checked aggregate bound without allocating.
@@ -392,8 +470,15 @@ impl<'original> AssignmentPreimagesV2<'original> {
 
     /// Copies all original byte families in their established field order.
     pub fn into_owned(self) -> OriginalAssignmentV2 {
-        let [binding, assignment, publication, lease, signature, receipt, receipt_signature] =
-            self.bytes;
+        let [
+            binding,
+            assignment,
+            publication,
+            lease,
+            signature,
+            receipt,
+            receipt_signature,
+        ] = self.bytes;
 
         OriginalAssignmentV2 {
             binding: binding.to_vec(),
@@ -410,22 +495,26 @@ impl<'original> AssignmentPreimagesV2<'original> {
 
     /// Compares all seven preimages before both historical digests.
     pub fn matches_original(&self, original: &OriginalAssignmentV2) -> bool {
-        self.bytes == [
-            original.binding.as_slice(),
-            original.assignment.as_slice(),
-            original.publication.as_slice(),
-            original.lease.as_slice(),
-            original.signature.as_slice(),
-            original.receipt.as_slice(),
-            original.receipt_signature.as_slice(),
-        ] && self.binding_digest == original.binding_digest
+        self.bytes
+            == [
+                original.binding.as_slice(),
+                original.assignment.as_slice(),
+                original.publication.as_slice(),
+                original.lease.as_slice(),
+                original.signature.as_slice(),
+                original.receipt.as_slice(),
+                original.receipt_signature.as_slice(),
+            ]
+            && self.binding_digest == original.binding_digest
             && self.publication_digest == original.publication_digest
     }
 }
 
 fn require_assignment_preimage_lengths(lengths: [usize; 7]) -> Result<(), NixHistoryDataError> {
     lengths.into_iter().try_fold(0_usize, |total, length| {
-        total.checked_add(length).filter(|length| *length <= MAXIMUM_BYTES)
+        total
+            .checked_add(length)
+            .filter(|length| *length <= MAXIMUM_BYTES)
             .ok_or(NixHistoryDataError::Invalid)
     })?;
     Ok(())
@@ -455,8 +544,38 @@ impl NixStartAdmissionCarrierV2 {
     ///
     /// Native producers assemble these values in their original evaluation order.
     #[must_use]
-    pub fn from_historical_parts(parts: (OperationId, [u8; 32], CheckedStartAuthorityV2, OriginalAssignmentV2, Vec<u8>, ObjectDigest, Vec<[u8; 32]>, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, u64)) -> Self {
-        let (operation, request_digest, authority, assignment, recipe, recipe_digest, credential_commitments, ordinary_effect, desired_key, desired_value, original_resource_version, original_incarnation, original_generation) = parts;
+    pub fn from_historical_parts(
+        parts: (
+            OperationId,
+            [u8; 32],
+            CheckedStartAuthorityV2,
+            OriginalAssignmentV2,
+            Vec<u8>,
+            ObjectDigest,
+            Vec<[u8; 32]>,
+            Vec<u8>,
+            Vec<u8>,
+            Vec<u8>,
+            Vec<u8>,
+            Vec<u8>,
+            u64,
+        ),
+    ) -> Self {
+        let (
+            operation,
+            request_digest,
+            authority,
+            assignment,
+            recipe,
+            recipe_digest,
+            credential_commitments,
+            ordinary_effect,
+            desired_key,
+            desired_value,
+            original_resource_version,
+            original_incarnation,
+            original_generation,
+        ) = parts;
         Self {
             operation,
             request_digest,
@@ -510,7 +629,8 @@ impl NixStartAdmissionCarrierV2 {
             .chain_update(&self.original_resource_version)
             .chain_update(&self.original_incarnation)
             .chain_update(self.original_generation.to_be_bytes())
-            .finalize().into()
+            .finalize()
+            .into()
     }
 
     /// Borrows the exact nested plain historical context bytes.
@@ -586,13 +706,20 @@ impl NixStartAdmissionCarrierV2 {
         {
             return Err(NixHistoryDataError::Invalid);
         }
-        let length_bytes = bytes[16..20].try_into()
+        let length_bytes = bytes[16..20]
+            .try_into()
             .map_err(|_| NixHistoryDataError::Invalid)?;
         let length = u32::from_be_bytes(length_bytes) as usize;
-        let end = HEADER_BYTES.checked_add(length)
+        let end = HEADER_BYTES
+            .checked_add(length)
             .ok_or(NixHistoryDataError::Invalid)?;
         if end.checked_add(DIGEST_BYTES) != Some(bytes.len())
-            || Sha256::new().chain_update(DOMAIN).chain_update(&bytes[..end]).finalize().as_slice() != &bytes[end..]
+            || Sha256::new()
+                .chain_update(DOMAIN)
+                .chain_update(&bytes[..end])
+                .finalize()
+                .as_slice()
+                != &bytes[end..]
         {
             return Err(NixHistoryDataError::Invalid);
         }
@@ -632,10 +759,17 @@ impl NixStartAdmissionCarrierV2 {
             || self.original_generation == 0
             || self.assignment.binding_digest.as_bytes() == &[0; 32]
             || self.assignment.publication_digest.as_bytes() == &[0; 32]
-            || [&self.assignment.binding, &self.assignment.assignment,
-                &self.assignment.publication, &self.assignment.lease,
-                &self.assignment.signature, &self.assignment.receipt,
-                &self.assignment.receipt_signature].iter().any(|bytes| bytes.is_empty())
+            || [
+                &self.assignment.binding,
+                &self.assignment.assignment,
+                &self.assignment.publication,
+                &self.assignment.lease,
+                &self.assignment.signature,
+                &self.assignment.receipt,
+                &self.assignment.receipt_signature,
+            ]
+            .iter()
+            .any(|bytes| bytes.is_empty())
         {
             return Err(NixHistoryDataError::Invalid);
         }
@@ -650,22 +784,36 @@ impl NixStartAdmissionCarrierV2 {
 
         let request = crate::public_api::request::ResolvedPublicMutationRequestV1::decode(
             &self.authority.original_request,
-        ).map_err(|_| NixHistoryDataError::Invalid)?;
-        let crate::public_api::request::DormantSandboxRequestKindV1::Start(request) = request.request() else {
+        )
+        .map_err(|_| NixHistoryDataError::Invalid)?;
+        let crate::public_api::request::DormantSandboxRequestKindV1::Start(request) =
+            request.request()
+        else {
             return Err(NixHistoryDataError::Invalid);
         };
-        let mutation = request.mutation.as_option().ok_or(NixHistoryDataError::Invalid)?;
-        let projection = decode_checked_public_projection_v1(&self.desired_key, &self.desired_value)
-            .map_err(|_| NixHistoryDataError::Invalid)?;
+        let mutation = request
+            .mutation
+            .as_option()
+            .ok_or(NixHistoryDataError::Invalid)?;
+        let projection =
+            decode_checked_public_projection_v1(&self.desired_key, &self.desired_value)
+                .map_err(|_| NixHistoryDataError::Invalid)?;
         let PublicProjectionResourceV1::Sandbox(sandbox) = projection.resource() else {
             return Err(NixHistoryDataError::Invalid);
         };
-        let desired = sandbox.desired.as_option().ok_or(NixHistoryDataError::Invalid)?;
-        let next_generation = self.original_generation.checked_add(1)
+        let desired = sandbox
+            .desired
+            .as_option()
+            .ok_or(NixHistoryDataError::Invalid)?;
+        let next_generation = self
+            .original_generation
+            .checked_add(1)
             .ok_or(NixHistoryDataError::Invalid)?;
         let expected_version = super::compiler_resource_version(
-            self.operation, crate::public_api::PublicOperationMethodV1::StartSandbox,
-            next_generation, self.request_digest,
+            self.operation,
+            crate::public_api::PublicOperationMethodV1::StartSandbox,
+            next_generation,
+            self.request_digest,
         );
         if mutation.expected_resource_version != self.original_resource_version
             || (!mutation.expected_incarnation_id.is_empty()
@@ -676,7 +824,8 @@ impl NixStartAdmissionCarrierV2 {
             || sandbox.project_id != self.authority.project.as_bytes()
             || sandbox.resource_version != expected_version
             || desired.generation != next_generation
-            || desired.lifecycle.as_known() != Some(aos_proto::aos::sandbox::v1::DesiredLifecycle::DESIRED_LIFECYCLE_RUNNING)
+            || desired.lifecycle.as_known()
+                != Some(aos_proto::aos::sandbox::v1::DesiredLifecycle::DESIRED_LIFECYCLE_RUNNING)
             || sandbox.updated_at.as_option().is_none_or(|time| {
                 time.seconds != self.authority.accepted_wall_seconds || time.nanoseconds != 0
             })
@@ -695,8 +844,15 @@ struct BoundedWriter {
 
 impl Write for BoundedWriter {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if self.bytes.len().checked_add(bytes.len()).is_none_or(|length| length > self.limit) {
-            return Err(io::Error::other("retained Nix Start carrier exceeds its fixed bound"));
+        if self
+            .bytes
+            .len()
+            .checked_add(bytes.len())
+            .is_none_or(|length| length > self.limit)
+        {
+            return Err(io::Error::other(
+                "retained Nix Start carrier exceeds its fixed bound",
+            ));
         }
         self.bytes.extend_from_slice(bytes);
         Ok(bytes.len())
@@ -713,7 +869,10 @@ mod tests {
 
     #[test]
     fn complete_json_writer_refuses_crossing_the_aggregate_bound() {
-        let mut writer = BoundedWriter { bytes: Vec::new(), limit: 4 };
+        let mut writer = BoundedWriter {
+            bytes: Vec::new(),
+            limit: 4,
+        };
         writer.write_all(b"1234").unwrap();
 
         assert!(writer.write_all(b"5").is_err());
@@ -731,7 +890,10 @@ mod tests {
         assert!(NixStartAdmissionCarrierV2::decode(MAGIC).is_err());
         bytes.resize(MAXIMUM_BYTES + 1, 0);
         assert!(NixStartAdmissionCarrierV2::decode(&bytes).is_err());
-        assert_eq!(NixStartAdmissionCarrierV2::decode(b"AOSPME01").unwrap(), None);
+        assert_eq!(
+            NixStartAdmissionCarrierV2::decode(b"AOSPME01").unwrap(),
+            None
+        );
     }
 }
 
@@ -843,12 +1005,14 @@ mod assignment_tests {
             let mut oversized = exact;
             oversized[index] += 1;
 
-            assert!(require_assignment_preimage_lengths(oversized).is_err(), "preimage {index}");
+            assert!(
+                require_assignment_preimage_lengths(oversized).is_err(),
+                "preimage {index}"
+            );
         }
         assert!(require_assignment_preimage_lengths([1, usize::MAX, 0, 0, 0, 0, 0]).is_err());
         assert!(require_assignment_preimage_lengths([usize::MAX, 0, 0, 0, 0, 0, 0]).is_err());
     }
-
 }
 
 #[cfg(test)]
@@ -859,11 +1023,20 @@ mod coordinate_tests {
     // They construct neither a decision, a selector nor a continuation owner.
     fn original_coordinates() -> OriginalPublicMutationCoordinatesV2 {
         OriginalPublicMutationCoordinatesV2 {
-            capability: [1; 16], revocation_scope: [2; 16], revocation_generation: 3,
-            policy_digest: [4; 32], policy_generation: 5, controller: [6; 16],
-            controller_generation: 7, capability_not_before: 8, capability_expires_at: 9,
-            policy_not_before: 10, policy_expires_at: 11, channel_binding: [12; 32],
-            session_commitment: [13; 32], authorization_revision: [14; 32],
+            capability: [1; 16],
+            revocation_scope: [2; 16],
+            revocation_generation: 3,
+            policy_digest: [4; 32],
+            policy_generation: 5,
+            controller: [6; 16],
+            controller_generation: 7,
+            capability_not_before: 8,
+            capability_expires_at: 9,
+            policy_not_before: 10,
+            policy_expires_at: 11,
+            channel_binding: [12; 32],
+            session_commitment: [13; 32],
+            authorization_revision: [14; 32],
         }
     }
 
@@ -871,7 +1044,8 @@ mod coordinate_tests {
     fn only_the_observation_revision_may_change() {
         let original = original_coordinates();
         let observed = OriginalPublicMutationCoordinatesV2 {
-            authorization_revision: [15; 32], ..original
+            authorization_revision: [15; 32],
+            ..original
         };
 
         assert!(original.require_coordinate_identity(original).is_ok());
@@ -883,19 +1057,58 @@ mod coordinate_tests {
     fn every_other_original_authority_coordinate_stays_exact() {
         let original = original_coordinates();
         let substitutions = [
-            OriginalPublicMutationCoordinatesV2 { capability: [15; 16], ..original },
-            OriginalPublicMutationCoordinatesV2 { revocation_scope: [15; 16], ..original },
-            OriginalPublicMutationCoordinatesV2 { revocation_generation: 15, ..original },
-            OriginalPublicMutationCoordinatesV2 { policy_digest: [15; 32], ..original },
-            OriginalPublicMutationCoordinatesV2 { policy_generation: 15, ..original },
-            OriginalPublicMutationCoordinatesV2 { controller: [15; 16], ..original },
-            OriginalPublicMutationCoordinatesV2 { controller_generation: 15, ..original },
-            OriginalPublicMutationCoordinatesV2 { capability_not_before: 15, ..original },
-            OriginalPublicMutationCoordinatesV2 { capability_expires_at: 15, ..original },
-            OriginalPublicMutationCoordinatesV2 { policy_not_before: 15, ..original },
-            OriginalPublicMutationCoordinatesV2 { policy_expires_at: 15, ..original },
-            OriginalPublicMutationCoordinatesV2 { channel_binding: [15; 32], ..original },
-            OriginalPublicMutationCoordinatesV2 { session_commitment: [15; 32], ..original },
+            OriginalPublicMutationCoordinatesV2 {
+                capability: [15; 16],
+                ..original
+            },
+            OriginalPublicMutationCoordinatesV2 {
+                revocation_scope: [15; 16],
+                ..original
+            },
+            OriginalPublicMutationCoordinatesV2 {
+                revocation_generation: 15,
+                ..original
+            },
+            OriginalPublicMutationCoordinatesV2 {
+                policy_digest: [15; 32],
+                ..original
+            },
+            OriginalPublicMutationCoordinatesV2 {
+                policy_generation: 15,
+                ..original
+            },
+            OriginalPublicMutationCoordinatesV2 {
+                controller: [15; 16],
+                ..original
+            },
+            OriginalPublicMutationCoordinatesV2 {
+                controller_generation: 15,
+                ..original
+            },
+            OriginalPublicMutationCoordinatesV2 {
+                capability_not_before: 15,
+                ..original
+            },
+            OriginalPublicMutationCoordinatesV2 {
+                capability_expires_at: 15,
+                ..original
+            },
+            OriginalPublicMutationCoordinatesV2 {
+                policy_not_before: 15,
+                ..original
+            },
+            OriginalPublicMutationCoordinatesV2 {
+                policy_expires_at: 15,
+                ..original
+            },
+            OriginalPublicMutationCoordinatesV2 {
+                channel_binding: [15; 32],
+                ..original
+            },
+            OriginalPublicMutationCoordinatesV2 {
+                session_commitment: [15; 32],
+                ..original
+            },
         ];
 
         for substitution in substitutions {
