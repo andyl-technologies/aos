@@ -14,6 +14,7 @@ mod implementation;
 mod input;
 mod lifecycle;
 mod lifecycle_resend;
+mod original_conflict;
 mod pending;
 mod preparation;
 mod preparation_adverse;
@@ -38,4 +39,8 @@ pub use preparation_probe::{CnpPreRealizationProbeBody, CnpPreRealizationProbeRe
 
 pub use preparation_adverse::{CnpPreparedAdverseBody, CnpPreparedAdverseRequest};
 
-pub use lifecycle_resend::{CnpCompletedLifecyclePhase, CnpCompletedLifecycleQualification, CnpCompletedLifecycleScope};
+pub use lifecycle_resend::{
+    CnpCompletedLifecyclePhase, CnpCompletedLifecycleQualification, CnpCompletedLifecycleScope,
+};
+
+pub use original_conflict::CnpOriginalConflictQualification;

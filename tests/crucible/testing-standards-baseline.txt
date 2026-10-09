@@ -354,3 +354,20 @@ crucible-node-provider	tests/gem5_arm_root_cold	std::thread::sleep	1
 crucible-node-provider	tests/gem5_arm_root_cold	thread::sleep	1
 crucible-node-provider	tests/gem5_arm_root_native	std::thread::sleep	1
 crucible-node-provider	tests/gem5_arm_root_native	thread::sleep	1
+
+# The exact original-conflict native fixture waits for one original private
+# provider socket and positively reclaimed guarded original process group.
+# run_original uses two fixed 300-by-10ms watchdogs, retains each first
+# failure, and never derives model Position/state or retries a failed test.
+# Source: crates/crucible/src/node_adapters/cnp/original_conflict_tests.rs
+# SHA-256: c4c433cb8bae452bf5116c23a97c3d2a55cc2907c45f2c1591fcb4e9472bb477
+crucible	src/node_adapters/cnp/original_conflict_tests	thread::sleep	1
+crucible	src/node_adapters/cnp/original_conflict_tests	std::thread::sleep	1
+
+# This exact provider-loss fixture attempts the same retained conflicting
+# control again and requires sticky refusal, no second transmission, and
+# unchanged original request/response bytes. The retry names protocol
+# behavior; it never repeats a failed case or assertion.
+# Source: crates/crucible-node-provider/tests/client_reference/original_conflict.rs
+# SHA-256: 759be2d4a03c185f7ec48fc7aaba24512369b3b01a70499655aa2ae385e332c7
+crucible-node-provider	tests/client_reference/original_conflict	retry	1

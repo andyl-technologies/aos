@@ -50,6 +50,10 @@ pub(super) struct PublicLaunchRequest {
     pub(super) lifecycle_policy:
         Rc<super::source_lifecycle_resend_policy::SourceLifecycleResendPolicy>,
     pub(super) observation_sink: Rc<RefCell<Option<ObservationHandle>>>,
+    pub(super) conflict_policy:
+        Rc<super::source_original_conflict_policy::SourceOriginalConflictPolicy>,
+    pub(super) conflict_sink:
+        Rc<RefCell<Option<crucible_node_provider::client::OriginalConflictObservationHandle>>>,
     pub(super) transmission_sink:
         Rc<RefCell<Option<crucible_node_provider::client::TransmissionObservationHandle>>>,
 }
@@ -308,6 +312,13 @@ pub(super) fn launch(
         Duration::from_secs(3),
         installed.qualifications.clone(),
     )?;
+    let conflicts = controller.observe_original_conflicts(
+        crucible_node_provider::client::OriginalConflictLimits {
+            maximum_transmissions: super::source_original_conflict_plan::MAXIMUM_CONFLICTS,
+            maximum_bytes: super::source_original_conflict_plan::MAXIMUM_ARCHIVE_BYTES,
+        },
+    )?;
+    *request.conflict_sink.borrow_mut() = Some(conflicts);
     let transmissions =
         controller.observe_resends(crucible_node_provider::client::TransmissionLimits {
             maximum_transmissions: 13,
@@ -324,6 +335,13 @@ pub(super) fn launch(
         .install_completed_lifecycle_qualification(
             request.lifecycle_policy.clone(),
             super::source_lifecycle_resend_plan::MAXIMUM_SELECTED_CONTROLS,
+        )
+        .map_err(|error| ProviderError::Io(std::io::Error::other(error.reason)))?;
+    guard
+        .install_original_conflict_qualification(
+            request.conflict_policy.clone(),
+            super::source_original_conflict_plan::MAXIMUM_CONFLICTS,
+            256 * 1024,
         )
         .map_err(|error| ProviderError::Io(std::io::Error::other(error.reason)))?;
     let (probe, original_snapshot) =

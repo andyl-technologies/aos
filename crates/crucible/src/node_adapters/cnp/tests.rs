@@ -484,3 +484,6 @@ fn actual_public_preparation_retains_original_ready_and_reclaims_both_native_pro
     assert!(retained.borrow_mut()[0].poll_reclamation().unwrap());
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+#[path = "original_conflict_tests.rs"]
+mod original_conflict;

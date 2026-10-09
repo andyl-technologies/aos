@@ -11,6 +11,9 @@ mod resend;
 #[path = "lifecycle_resend.rs"]
 mod lifecycle_resend;
 
+#[path = "original_conflict.rs"]
+mod original_conflict;
+
 fn observed_controller(
     maximum_requests: usize,
 ) -> (

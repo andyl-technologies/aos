@@ -24,10 +24,17 @@ pub use evidence::{
 #[path = "reference/resend.rs"]
 mod resend;
 
+#[path = "reference/conflict_transmissions.rs"]
+pub(crate) mod conflict_transmissions;
 #[path = "reference/lifecycle_resend.rs"]
 mod lifecycle_resend;
+#[path = "reference/original_conflict.rs"]
+mod original_conflict;
 #[path = "reference/transmissions.rs"]
 pub(crate) mod transmissions;
+pub use conflict_transmissions::{
+    OriginalConflictLimits, OriginalConflictObservation, OriginalConflictObservationHandle,
+};
 pub use transmissions::{
     TransmissionLimits, TransmissionObservation, TransmissionObservationHandle,
 };
@@ -48,6 +55,7 @@ pub struct ReferenceController {
     qualifications: Vec<ContentRef>,
     observer: Option<evidence::ObservationRecorder>,
     transmissions: Option<transmissions::TransmissionRecorder>,
+    conflicts: Option<conflict_transmissions::OriginalConflictRecorder>,
 }
 
 impl ReferenceController {
@@ -136,6 +144,7 @@ impl ReferenceController {
             qualifications,
             observer: None,
             transmissions: None,
+            conflicts: None,
         })
     }
 

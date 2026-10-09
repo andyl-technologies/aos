@@ -60,6 +60,15 @@ pub(super) struct SourceLifecycleResendPolicy {
     >,
 }
 
+/// Retains data authenticated from an actual completed original control.
+pub(super) struct OriginalLifecycleFacts {
+    pub(super) body: crucible_node_provider::bodies::RequestBody,
+    pub(super) request: ContentRef,
+    pub(super) response: ContentRef,
+    pub(super) connection: crucible_node_contract::Id,
+    pub(super) native: NativePublicEnrollment,
+}
+
 #[derive(serde::Serialize)]
 pub(super) struct OriginalLifecyclePremise {
     request: crucible_node_contract::Id,
@@ -363,6 +372,72 @@ impl SourceLifecycleResendPolicy {
         guard: &CnpLaunchGuard,
         scope: &CnpCompletedLifecycleScope,
     ) -> Result<bool, ProviderError> {
+        if self
+            .plan
+            .targets
+            .iter()
+            .find(|target| target.request == scope.request_id)
+            .is_some_and(|target| !target.selected)
+        {
+            // Excluded originals still need exact scope validation, but consume
+            // none of the ten evidence slots reserved for selected sends.
+            let mut unused_roots = Vec::new();
+            if self
+                .inspect_original(guard, scope, &mut unused_roots)?
+                .is_some()
+            {
+                return Err(ProviderError::Correlation(
+                    "excluded original selected evidence",
+                ));
+            }
+            return Ok(false);
+        }
+        if self
+            .selected
+            .borrow()
+            .iter()
+            .any(|row| row.request == scope.request_id)
+        {
+            return Err(ProviderError::Correlation(
+                "completed original population repeated",
+            ));
+        }
+        let mut roots =
+            self.root_slots
+                .borrow_mut()
+                .pop()
+                .ok_or(ProviderError::ResourceExhausted(
+                    "source lifecycle closure slot exhausted",
+                ))?;
+        let Some(facts) = self.inspect_original(guard, scope, &mut roots)? else {
+            self.root_slots.borrow_mut().push(roots);
+            return Ok(false);
+        };
+        self.selected.borrow_mut().push(OriginalLifecyclePremise {
+            request: scope.request_id.clone(),
+            original_request: facts.request,
+            original_response: facts.response,
+            evidence_roots: roots,
+            native: facts.native,
+        });
+        #[cfg(test)]
+        self.original_controls
+            .borrow_mut()
+            .push((scope.clone(), facts.body));
+        Ok(true)
+    }
+
+    /// Rechecks immutable originals and live enrollment for a distinct probe.
+    ///
+    /// # Errors
+    /// Refuses any changed scope, source recipe, typed closure or original native
+    /// group. The caller provides its separately reserved evidence slots.
+    pub(super) fn inspect_original(
+        &self,
+        guard: &CnpLaunchGuard,
+        scope: &CnpCompletedLifecycleScope,
+        evidence_roots: &mut Vec<ContentRef>,
+    ) -> Result<Option<OriginalLifecycleFacts>, ProviderError> {
         let target = self
             .plan
             .targets
@@ -382,19 +457,7 @@ impl SourceLifecycleResendPolicy {
             ));
         }
         if !target.selected {
-            return Ok(false);
-        }
-        if self.selected.borrow().len()
-            >= super::source_lifecycle_resend_plan::MAXIMUM_SELECTED_CONTROLS
-            || self
-                .selected
-                .borrow()
-                .iter()
-                .any(|row| row.request == scope.request_id)
-        {
-            return Err(ProviderError::Correlation(
-                "completed original population repeated",
-            ));
+            return Ok(None);
         }
         let keys = [ObservedRequestKey {
             origin: RequestOrigin::Controller,
@@ -543,13 +606,11 @@ impl SourceLifecycleResendPolicy {
                 original_companion_pids: &original_companion_pids,
             },
         )?;
-        let mut evidence_roots =
-            self.root_slots
-                .borrow_mut()
-                .pop()
-                .ok_or(ProviderError::ResourceExhausted(
-                    "source lifecycle closure slot exhausted",
-                ))?;
+        if !evidence_roots.is_empty() || evidence_roots.capacity() < 1024 {
+            return Err(ProviderError::ResourceExhausted(
+                "distinct original closure slots unavailable",
+            ));
+        }
         evidence_roots.extend_from_slice(verified);
         drop(reader);
         // Discover actual ancestry from the kernel, never from the supplied
@@ -572,18 +633,13 @@ impl SourceLifecycleResendPolicy {
                 "actual native enrollment changed from original realization",
             ));
         }
-        self.selected.borrow_mut().push(OriginalLifecyclePremise {
-            request: scope.request_id.clone(),
-            original_request: control.request.reference.clone(),
-            original_response: response.reference.clone(),
-            evidence_roots,
+        Ok(Some(OriginalLifecycleFacts {
+            body,
+            request: control.request.reference.clone(),
+            response: response.reference.clone(),
+            connection: expected_scope.connection_id.clone(),
             native,
-        });
-        #[cfg(test)]
-        self.original_controls
-            .borrow_mut()
-            .push((scope.clone(), body));
-        Ok(true)
+        }))
     }
 }
 

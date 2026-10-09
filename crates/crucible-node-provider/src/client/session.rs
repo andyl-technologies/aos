@@ -19,6 +19,8 @@ use crate::transport::{FrameReader, write_frame_with_limits};
 
 use super::{ClientContent, DeadlineStream, ExchangeDeadline};
 
+#[path = "session/original_conflict.rs"]
+pub(super) mod original_conflict;
 #[path = "session/resend.rs"]
 mod resend;
 

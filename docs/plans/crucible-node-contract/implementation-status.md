@@ -552,6 +552,34 @@ targets with their actual inventories. Broader package qualification will be
 recorded separately. No protocol schema, native callback or admission selector
 changes in this stage.
 
+## Original request conflicts and durable reply custody
+
+Two actual source-owned providers now exercise changed material under the same
+original request identity at preparation, second-window input and Begin. Each
+of the six authentic conflicts refuses before effects, preserves the original
+native journal and remains non-retryable. A third window independently checks
+the unchanged ordered-input checksum. Both original groups are reclaimed and
+their credit is released. Separate actual Ready tests cover adopted custody,
+error and unwind paths, native death and preservation of the original authority.
+
+Durable result publication encodes the original completion and retirement once
+before placement. Placement retries reuse those exact buffers and object IDs.
+An encoding failure or unwind parks the actor with its original context rather
+than reevaluating an uncertain snapshot or producing a substitute completion.
+
+Central verification passes 58 distinct selected cases: the actual two-provider
+conflict witness, actual Ready custody witness, eight legacy CNP cases, eleven
+SDK client cases and 37 source-quality cases. Strict all-target checks across
+nine crates also pass. The mandatory installed ARM root test separately passes
+against its genuine compiled profile. The original source witness completes in
+50.02 seconds; the runner's first Ready invocation selected an ignored test
+without enabling it, and its minimum-count check correctly stopped that cohort.
+Its original log is retained. The corrected invocation runs the actual test
+with the source-built provider and device paths. No failed semantic test is
+replaced. This stage does not qualify reconnect, loss during uncertain native
+execution, complete vendor conformance or ordinary provider Ready admission.
+Broader hermetic package qualification remains pending.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

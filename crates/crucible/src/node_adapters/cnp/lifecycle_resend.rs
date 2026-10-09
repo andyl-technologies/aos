@@ -158,6 +158,7 @@ impl CnpLaunchGuard {
     }
 
     pub(super) fn require_resolved_lifecycle_probes(&self) -> Result<(), ProviderError> {
+        self.require_resolved_conflict_probes()?;
         if self
             .custody
             .as_ref()
@@ -290,18 +291,22 @@ impl CnpControlledReference {
         evidence_roots: Vec<ContentRef>,
         original_result: MethodResult,
     ) -> Result<(), ProviderError> {
-        if self
-            .guard
-            .custody
-            .as_ref()
-            .is_none_or(|custody| custody.lifecycle_probes.is_none())
-        {
+        if self.guard.custody.as_ref().is_none_or(|custody| {
+            custody.lifecycle_probes.is_none() && custody.conflict_probes.is_none()
+        }) {
             return Ok(());
         }
         self.guard.require_resolved_lifecycle_probes()?;
         // Even a local encoding refusal after native adoption must prevent the
         // ordinary cached path from replacing this unfinished selected probe.
-        self.guard.probes_mut()?.unresolved = true;
+        if let Some(custody) = self.guard.custody.as_mut() {
+            if let Some(probes) = custody.lifecycle_probes.as_mut() {
+                probes.unresolved = true;
+            }
+            if let Some(probes) = custody.conflict_probes.as_mut() {
+                probes.unresolved = true;
+            }
+        }
         let activation = self
             .prepared
             .as_ref()
@@ -318,19 +323,36 @@ impl CnpControlledReference {
             CnpCompletedLifecyclePhase::PublicationClosed => Method::QuantumClose,
             CnpCompletedLifecyclePhase::PublicationConsumed => Method::Retire,
         };
-        self.guard
-            .probe_completed_lifecycle(CnpCompletedLifecycleScope {
-                phase,
-                request_id,
-                operation_id,
-                method,
-                binding_hash: self.binding.identity()?,
-                owner_binding_hash: self.owner_binding.identity()?,
-                activation,
-                grant,
-                native_status: self.status,
-                evidence_roots,
-                original_result,
-            })
+        let scope = CnpCompletedLifecycleScope {
+            phase,
+            request_id,
+            operation_id,
+            method,
+            binding_hash: self.binding.identity()?,
+            owner_binding_hash: self.owner_binding.identity()?,
+            activation,
+            grant,
+            native_status: self.status,
+            evidence_roots,
+            original_result,
+        };
+        let has_lifecycle = self
+            .guard
+            .custody
+            .as_ref()
+            .is_some_and(|custody| custody.lifecycle_probes.is_some());
+        let has_conflict = self
+            .guard
+            .custody
+            .as_ref()
+            .is_some_and(|custody| custody.conflict_probes.is_some());
+        if has_lifecycle {
+            if has_conflict {
+                self.guard.probe_completed_lifecycle(scope.clone())?;
+            } else {
+                return self.guard.probe_completed_lifecycle(scope);
+            }
+        }
+        self.guard.probe_completed_conflict(scope)
     }
 }

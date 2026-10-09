@@ -4,6 +4,9 @@
 //! A run result is observational evidence; it does not accept the full normative
 //! population or supply an ordinary factory qualification token.
 
+#[path = "harness_failure.rs"]
+mod failure;
+
 use crucible::{
     node_contract::{
         ActivationPublisher, ActivationRecord, NodeRuntime, PreparedWorldPublication,
@@ -172,6 +175,10 @@ struct Actor {
     probes: Vec<serde_json::Value>,
     prepared_probes: Vec<serde_json::Value>,
     resends: Vec<serde_json::Value>,
+    conflict_observers:
+        Vec<Rc<RefCell<Option<crucible_node_provider::client::OriginalConflictObservationHandle>>>>,
+    conflict_policies:
+        Vec<Rc<super::source_original_conflict_policy::SourceOriginalConflictPolicy>>,
     lifecycle_policies: Vec<Rc<super::source_lifecycle_resend_policy::SourceLifecycleResendPolicy>>,
     lifecycle_native_origins: Vec<Rc<RefCell<Option<super::native::NativePublicEnrollment>>>>,
     phase: &'static str,
@@ -210,6 +217,8 @@ fn run_actor(
         probes: Vec::with_capacity(2),
         prepared_probes: Vec::with_capacity(2),
         resends: Vec::with_capacity(2),
+        conflict_observers: (0..2).map(|_| Rc::new(RefCell::new(None))).collect(),
+        conflict_policies: Vec::with_capacity(2),
         lifecycle_policies: Vec::with_capacity(2),
         lifecycle_native_origins: (0..2).map(|_| Rc::new(RefCell::new(None))).collect(),
         phase: "source-enrollment",
@@ -254,47 +263,67 @@ fn run_actor(
         let _ = native;
         std::thread::sleep(Duration::from_millis(10));
     }
-    // A permanent storage failure leaves this same owning actor alive with the
-    // original journals. A lost storage acknowledgement retries the identical
-    // write-once identities; it cannot replace failed evidence with a new run.
-    let (original_result, original_bytes, retirement_result, retirement_bytes) = loop {
-        let retained = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let failed_original;
-            let original = match &result {
-                Ok(original) => original,
-                Err(error) => {
-                    failed_original = actor.failed_original(error);
-                    &failed_original
-                }
-            };
-            let original_bytes = canonical::canonical_json(original)?;
-            let original_result = actor.persist(&original_bytes, "qualification/original")?;
-            let retirement_bytes = canonical::canonical_json(&serde_json::json!({
-                "schema":"crucible.reference.candidate-retirement.v1", "original_result":original_result.encode(),
-                "reclaimed_original_peers": original_peers.len(), "world_reservations":actor.worlds.reserved_worlds(),
-                "original_source_roots":source_roots,
-                "original_scopes":original_peers.iter().map(|peer| serde_json::json!({
-                    "activation":crucible::node_contract::SavedRuntimeActivation::from(&peer.scope.activation),
-                    "owner":peer.scope.owner,"implementation":peer.scope.implementation,
-                    "original_provider_pid":peer.custody.provider_pid(),
-                    "publication":publication_name(peer.scope.publication),
-                    "original_private_launch_bytes":peer.scope.private_launch.len(),
-                    "original_private_hello_bytes":peer.scope.original_hello.len(),
-                })).collect::<Vec<_>>()
-            }))?;
-            let retirement_result = actor.persist(&retirement_bytes, "qualification/retirement")?;
-            Ok::<_, ProviderError>((
-                original_result,
-                original_bytes,
-                retirement_result,
-                retirement_bytes,
-            ))
+    // Seal original observations once. Placement may lose its acknowledgement,
+    // but that cannot authorize a fresh snapshot or replace an original failure.
+    let sealed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let failed_original;
+        let original = match &result {
+            Ok(original) => original,
+            Err(error) => {
+                failed_original = actor.failed_original(error);
+                &failed_original
+            }
+        };
+        let original_bytes = canonical::canonical_json(original)?;
+        let original_result = ContentId::for_bytes(ObjectKind::Trace, 1, &original_bytes);
+        let retirement_bytes = canonical::canonical_json(&serde_json::json!({
+            "schema":"crucible.reference.candidate-retirement.v1", "original_result":original_result.encode(),
+            "reclaimed_original_peers": original_peers.len(), "world_reservations":actor.worlds.reserved_worlds(),
+            "original_source_roots":source_roots,
+            "original_scopes":original_peers.iter().map(|peer| serde_json::json!({
+                "activation":crucible::node_contract::SavedRuntimeActivation::from(&peer.scope.activation),
+                "owner":peer.scope.owner,"implementation":peer.scope.implementation,
+                "original_provider_pid":peer.custody.provider_pid(),
+                "publication":publication_name(peer.scope.publication),
+                "original_private_launch_bytes":peer.scope.private_launch.len(),
+                "original_private_hello_bytes":peer.scope.original_hello.len(),
+            })).collect::<Vec<_>>()
+        }))?;
+        let retirement_result = ContentId::for_bytes(ObjectKind::Trace, 1, &retirement_bytes);
+        Ok::<_, ProviderError>((
+            original_result,
+            original_bytes,
+            retirement_result,
+            retirement_bytes,
+        ))
+    }));
+    let (original_result, original_bytes, retirement_result, retirement_bytes) = match sealed {
+        Ok(Ok(sealed)) => sealed,
+        // Notification contains no native permission. The parked actor keeps
+        // every original journal, peer and context; encoding is never retried.
+        Ok(Err(_)) | Err(_) => {
+            unavailable();
+            loop {
+                std::thread::park_timeout(Duration::from_secs(1));
+            }
+        }
+    };
+    loop {
+        let stored = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let stored_original = actor.persist(&original_bytes, "qualification/original")?;
+            let stored_retirement = actor.persist(&retirement_bytes, "qualification/retirement")?;
+            if stored_original != original_result || stored_retirement != retirement_result {
+                return Err(ProviderError::Correlation(
+                    "original placement identity changed",
+                ));
+            }
+            Ok::<_, ProviderError>(())
         }));
-        if let Ok(Ok(retained)) = retained {
-            break retained;
+        if matches!(stored, Ok(Ok(()))) {
+            break;
         }
         std::thread::sleep(Duration::from_millis(100));
-    };
+    }
     let mut original = CandidateHarnessResult {
         original_result,
         retirement_result,
@@ -508,48 +537,6 @@ impl Actor {
     }
 
     /// Retains the original failed or incomplete population without retry labels.
-    fn failed_original(&self, error: &str) -> serde_json::Value {
-        let observations=self.observers.iter().map(|slot| {
-            let slot=slot.borrow();
-            let Some(observer)=slot.as_ref() else {
-                return serde_json::json!({"recording_complete":false,"reason":"native observer not reached"});
-            };
-            let snapshot=(|| {
-                let keys=observer.request_keys()?;
-                let refs=observer.content_references()?;
-                observer.snapshot(&keys,&refs,ObservationLimits {
-                    maximum_requests:1024,maximum_objects:1024,maximum_bytes:8*1024*1024,
-                })
-            })();
-            match snapshot {
-                Ok(snapshot)=>serde_json::to_value(snapshot).unwrap_or_else(|_|serde_json::json!({"recording_complete":false,"reason":"original observation encoding refused"})),
-                Err(_)=>serde_json::json!({"recording_complete":false,"reason":"original observation unavailable"}),
-            }
-        }).collect::<Vec<_>>();
-        let transmission_observations = self.transmission_observers.iter().map(|slot| {
-            let slot = slot.borrow();
-            let Some(observer) = slot.as_ref() else {
-                return serde_json::json!({"incomplete": true, "reason": "wire observation not reached"});
-            };
-            match observer.snapshot(1024 * 1024) {
-                Ok(snapshot) => serde_json::to_value(snapshot).unwrap_or_else(|_| {
-                    serde_json::json!({"incomplete": true, "reason": "original wire observation encoding refused"})
-                }),
-                Err(_) => serde_json::json!({"incomplete": true, "reason": "original wire observation unavailable"}),
-            }
-        }).collect::<Vec<_>>();
-        let candidate=self.candidate.as_ref().map(|candidate| serde_json::json!({
-            "world":candidate.definition.world,
-            "activation":crucible::node_contract::SavedRuntimeActivation::from(&candidate.activation),
-            "predeclared_cases":self.planned.iter().map(|cases|cases.iter().map(|case|
-                serde_json::json!({"stage":case.stage,"batch":case.batch,"operation":case.operation,"grant":case.grant,"input_cut":case.input_cut})
-            ).collect::<Vec<_>>()).collect::<Vec<_>>(),
-        }));
-        serde_json::json!({"schema":"crucible.reference.candidate-failure.v1","phase":self.phase,
-            "error":error,"candidate":candidate,"original_observations":observations,"original_transmission_observations":transmission_observations,
-            "original_completed_windows":self.windows,"original_runtime_retries":self.runtime_retries,"source_probes":self.probes,"prepared_probes":self.prepared_probes,"wire_resends":self.resends,"lifecycle_resend_premises":self.lifecycle_policies.iter().map(|policy|policy.retained_premises()).collect::<Vec<_>>(),"qualification_accepted":false})
-    }
-
     fn persist(&self, bytes: &[u8], name: &str) -> Result<ContentId, ProviderError> {
         let id = ContentId::for_bytes(ObjectKind::Trace, 1, bytes);
         let _guard = self.refs.acquire_publication_guard().map_err(failure)?;
@@ -638,6 +625,28 @@ impl Actor {
                 )?,
             ));
         }
+        for (index, (installed, cases)) in candidate
+            .installations
+            .iter()
+            .zip(&self.planned)
+            .enumerate()
+        {
+            let lifecycle = super::source_lifecycle_resend_plan::SourceLifecycleResendPlan::build(
+                installed,
+                &candidate.activation,
+                cases,
+            )?;
+            let plan = super::source_original_conflict_plan::SourceOriginalConflictPlan::build(
+                installed, &lifecycle,
+            )?;
+            self.conflict_policies.push(Rc::new(
+                super::source_original_conflict_policy::SourceOriginalConflictPolicy::new(
+                    plan,
+                    installed.bootstrap.owner_id.clone(),
+                    Rc::clone(&self.lifecycle_policies[index]),
+                )?,
+            ));
+        }
         self.phase = "native-preparation";
         let slot = self
             .worlds
@@ -663,6 +672,8 @@ impl Actor {
                     observation_sink: Rc::clone(&self.observers[index]),
                     transmission_sink: Rc::clone(&self.transmission_observers[index]),
                     lifecycle_policy: Rc::clone(&self.lifecycle_policies[index]),
+                    conflict_policy: Rc::clone(&self.conflict_policies[index]),
+                    conflict_sink: Rc::clone(&self.conflict_observers[index]),
                     observation_limits: ObservationLimits {
                         maximum_requests: 1024,
                         maximum_objects: 1024,
@@ -803,13 +814,21 @@ impl Actor {
             };
             lifecycle_resends.push(cohort);
         }
+        let mut wire_conflicts = Vec::with_capacity(2);
+        for (index, policy) in self.conflict_policies.iter().enumerate() {
+            let observer = self.conflict_observers[index].borrow();
+            let observer = observer.as_ref().ok_or(ProviderError::Correlation(
+                "original conflict archive absent",
+            ))?;
+            wire_conflicts.push(policy.collect(observer)?);
+        }
         let original = publisher
             .original
             .ok_or(ProviderError::Frame("actual complete publication absent"))?;
         Ok(
             serde_json::json!({"schema":"crucible.reference.candidate-original.v1","implementation":package.identity(),
                 "activation":crucible::node_contract::SavedRuntimeActivation::from(activation.record()),
-                "source_probes":self.probes,"prepared_probes":self.prepared_probes,"wire_resends":self.resends,"lifecycle_resend_premises":self.lifecycle_policies.iter().map(|policy|policy.retained_premises()).collect::<Vec<_>>(),"lifecycle_resends":lifecycle_resends,"runtime_cached_recovery":self.runtime_retries,"prepared_nodes":original.nodes(),"prepared_owners":original.prepared_owners(),"coordinator":coordinator,"windows":witnesses.iter().map(|witness|serde_json::json!({
+                "source_probes":self.probes,"prepared_probes":self.prepared_probes,"wire_resends":self.resends,"lifecycle_resend_premises":self.lifecycle_policies.iter().map(|policy|policy.retained_premises()).collect::<Vec<_>>(),"lifecycle_resends":lifecycle_resends,"wire_conflicts":wire_conflicts,"runtime_cached_recovery":self.runtime_retries,"prepared_nodes":original.nodes(),"prepared_owners":original.prepared_owners(),"coordinator":coordinator,"windows":witnesses.iter().map(|witness|serde_json::json!({
                     "reference":witness.reference,"bytes":witness.bytes})).collect::<Vec<_>>()
             }),
         )
@@ -1306,6 +1325,66 @@ mod completed_lifecycle_resend_native_test {
         );
         eprintln!(
             "actual original lifecycle duplicates: two Ready/world controls and two native Input/Begin/Close/Consumed cycles per provider, thirteen real transmissions per archive; three-window independent checksum/input oracle and original process reclamation; partial original {} at {}",
+            original.original_result().encode(),
+            path.display()
+        );
+    }
+
+    #[test]
+    #[ignore = "requires compiled installed source-built reference implementation package"]
+    fn actual_same_id_changed_material_preserves_original_native_progress() {
+        let nonce = super::super::candidate::entropy().unwrap();
+        let short = nonce
+            .as_slice()
+            .iter()
+            .take(8)
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let path = PathBuf::from(format!("/tmp/id-conflicts-{short}"));
+        let original = super::start(path.clone()).unwrap().recv().unwrap().unwrap();
+        assert!(
+            original.succeeded(),
+            "original failed attempt retained at {}",
+            path.display()
+        );
+        let value = canonical::parse_json(original.original_bytes(), 16 * 1024 * 1024).unwrap();
+        let cohorts = value["wire_conflicts"].as_array().unwrap();
+        assert_eq!(cohorts.len(), 2);
+        for cohort in cohorts {
+            assert_eq!(cohort["original_premises"].as_array().unwrap().len(), 3);
+            assert_eq!(cohort["wire"]["incomplete"], false);
+            let rows = cohort["wire"]["rows"].as_array().unwrap();
+            assert_eq!(rows.len(), 3);
+            assert!(rows.iter().all(|row| row["write_completed"] == true
+                && row["conflict_refusal_verified"] == true
+                && row["original_identity"] != row["attempted_identity"]));
+        }
+        assert_eq!(value["windows"].as_array().unwrap().len(), 2);
+        assert_eq!(value["lifecycle_resends"].as_array().unwrap().len(), 2);
+        let issued = super::super::issuer::issue_report(&original).unwrap();
+        let report: crate::node_qualification::QualificationClaim =
+            serde_json::from_value(canonical::parse_json(issued.bytes(), 4 * 1024 * 1024).unwrap())
+                .unwrap();
+        assert_eq!(
+            report
+                .requirements
+                .iter()
+                .filter(|row| row.disposition
+                    == crate::node_qualification::RequirementDisposition::Passed)
+                .count(),
+            4
+        );
+        assert_eq!(
+            report
+                .requirements
+                .iter()
+                .filter(|row| row.disposition
+                    == crate::node_qualification::RequirementDisposition::NotExecuted)
+                .count(),
+            368
+        );
+        eprintln!(
+            "six actual same-ID changed-material refusals retain original receipts, input prefixes and three-window native checksum oracle; original {} at {}",
             original.original_result().encode(),
             path.display()
         );

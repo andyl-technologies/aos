@@ -72,6 +72,14 @@ pub(super) fn measure(
             ["source_lifecycle_world",include_str!("source_lifecycle_world.rs")],
             ["source_lifecycle_evidence",include_str!("source_lifecycle_evidence.rs")],
             ["source_lifecycle_evidence_tests",include_str!("source_lifecycle_evidence_tests.rs")],
+            ["harness_failure",include_str!("harness_failure.rs")],
+            ["source_original_conflict_plan",include_str!("source_original_conflict_plan.rs")],
+            ["source_original_conflict_policy",include_str!("source_original_conflict_policy.rs")],
+            ["source_original_conflict_wire",include_str!("source_original_conflict_wire.rs")],
+            ["sdk_original_conflict",include_str!("../../../../../crucible-node-provider/src/client/session/original_conflict.rs")],
+            ["sdk_reference_original_conflict",include_str!("../../../../../crucible-node-provider/src/client/reference/original_conflict.rs")],
+            ["sdk_conflict_transmissions",include_str!("../../../../../crucible-node-provider/src/client/reference/conflict_transmissions.rs")],
+            ["cnp_original_conflict",include_str!("../../../../../crucible/src/node_adapters/cnp/original_conflict.rs")],
             ["sdk_session_lifecycle_resend",include_str!("../../../../../crucible-node-provider/src/client/session/lifecycle_resend.rs")],
             ["sdk_reference_lifecycle_resend",include_str!("../../../../../crucible-node-provider/src/client/reference/lifecycle_resend.rs")],
             ["cnp_lifecycle_resend",include_str!("../../../../../crucible/src/node_adapters/cnp/lifecycle_resend.rs")],
@@ -118,7 +126,18 @@ pub(super) fn measure(
             )
         })
         .collect::<Result<Vec<_>, ProviderError>>()?;
+    let conflict_plans = candidate
+        .installations
+        .iter()
+        .zip(&lifecycle_plans)
+        .map(|(installed, lifecycle)| {
+            super::source_original_conflict_plan::SourceOriginalConflictPlan::build(
+                installed, lifecycle,
+            )
+        })
+        .collect::<Result<Vec<_>, ProviderError>>()?;
     let fixtures = canonical::canonical_json(&serde_json::json!({
+        "original_conflict_plans":conflict_plans.iter().map(|plan|serde_json::json!({"reference":plan.reference,"bytes":plan.bytes,"objects":plan.objects.iter().map(|(reference,bytes)|serde_json::json!({"reference":reference,"bytes":bytes})).collect::<Vec<_>>() })).collect::<Vec<_>>(),
         "lifecycle_resend_plans":lifecycle_plans.iter().map(|plan|serde_json::json!({"reference":plan.fixture,"bytes":plan.bytes,"objects":plan.objects.iter().map(|(reference,bytes)|serde_json::json!({"reference":reference,"bytes":bytes})).collect::<Vec<_>>() })).collect::<Vec<_>>(),
         "transmission_archive":{"maximum_transmissions":13,"maximum_bytes":16777216,"before_original_control":true},
         "source_resend_plans":resend_plans.iter().map(|plan|serde_json::json!({"reference":plan.reference,"bytes":plan.bytes,"objects":plan.objects.iter().map(|(reference,bytes)|serde_json::json!({"reference":reference,"bytes":bytes})).collect::<Vec<_>>() })).collect::<Vec<_>>(),

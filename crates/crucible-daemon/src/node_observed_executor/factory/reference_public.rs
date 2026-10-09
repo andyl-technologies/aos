@@ -49,3 +49,7 @@ mod source_lifecycle_resend_policy;
 mod source_lifecycle_world;
 mod source_resend_execution;
 mod source_resend_plan;
+
+mod source_original_conflict_plan;
+mod source_original_conflict_policy;
+mod source_original_conflict_wire;
