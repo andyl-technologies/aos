@@ -5,19 +5,49 @@
   packages,
 }: let
   system = pkgs.stdenv.hostPlatform.system;
-  names = builtins.attrNames packages;
+  # APR publishes all ordinary packages declared by one source build. Retain
+  # the real named output packages, including their own native metadata.
+  publicationClosure = builtins.genericClosure {
+    startSet =
+      lib.mapAttrsToList (name: package: {
+        key = name;
+        inherit package;
+      })
+      packages;
+    operator = record:
+      lib.mapAttrsToList (name: definition: let
+        package = packages.${name} or pkgs.${name}
+        or (throw "Fixture source build declares unavailable subpackage '${name}'.");
+        output = record.package.${definition.output};
+      in
+        if package.drvPath != record.package.drvPath || builtins.toString package != builtins.toString output
+        then throw "Fixture subpackage '${name}' differs from its declared source build output."
+        else {
+          key = name;
+          inherit package;
+        })
+      (record.package.outputPackages or {});
+  };
+  publicationPackages = builtins.listToAttrs (map (record: {
+      name = record.key;
+      value = record.package;
+    })
+    publicationClosure);
+  names = builtins.attrNames publicationPackages;
   policy = import ../../pkgs/_target-policy.nix {
-    inherit lib packages;
+    inherit lib;
+    packages = publicationPackages;
     releasePlatforms = [system];
   };
   inventory = policy.releaseDerivations {
-    inherit system packages names;
+    inherit system names;
+    packages = publicationPackages;
   };
   # Recipe paths retain source evidence without requesting every compiler or
   # sibling output that the recipe's original evaluation made available.
   retainArtifact = artifact: [artifact (builtins.unsafeDiscardOutputDependency artifact.drvPath)];
   nativeRoots = lib.concatMap (name: let
-    package = packages.${name};
+    package = publicationPackages.${name};
     artifacts =
       [package package.deploymentArtifact package.documentationArtifact]
       ++ lib.optional (package ? qualificationArtifact && package.qualificationArtifact != null) package.qualificationArtifact;
