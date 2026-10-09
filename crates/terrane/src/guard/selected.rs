@@ -29,9 +29,14 @@ use std::rc::Rc as SharedCheck;
 #[cfg(feature = "send")]
 use std::sync::Arc as SharedCheck;
 
-// Only actual successful authorization snapshots can populate this owned check.
-// It remains separate from the held physical/control evidence required below.
-fn retain_final_check<S: crate::store::Store, C: Clock>(
+/// Retains checks from actual successful authenticated authorization snapshots.
+///
+/// This check remains separate from the held physical and control evidence.
+///
+/// # Errors
+/// Refuses mismatched or invalid request snapshots and unsupported retained
+/// clocks; later checks preserve the original token and operation deadlines.
+pub(crate) fn retain_final_check<S: crate::store::Store, C: Clock>(
     guard: &Guard<S, C>,
     requests: &[crate::guard::AuthorizedRef],
     started: std::time::Duration,
