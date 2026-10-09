@@ -26,6 +26,7 @@ use buffa::Enumeration as _;
 use sha2::{Digest as _, Sha256};
 
 use aos_proto::aos::sandbox::local::v1::{MountLifecycle, MountSourceAcquisitionPhase};
+use aos_sandbox_core::bounded_codec::BoundedReader;
 
 use super::custody::{AttachmentSourceAttemptKindV1, AttemptRecord, CompletionRecord};
 use super::planning::AttachmentSourceError;
@@ -124,40 +125,42 @@ impl AttemptRecord {
         bytes
     }
 
-    pub(super) fn decode(mut bytes: &[u8]) -> Result<Self, AttachmentSourceError> {
+    pub(super) fn decode(bytes: &[u8]) -> Result<Self, AttachmentSourceError> {
+        let mut reader = BoundedReader::new(bytes, |_| AttachmentSourceError::CorruptState);
+
         if bytes.len() < ATTEMPT_FIXED_BYTES
             || bytes.len() > MAXIMUM_ATTEMPT_BYTES
-            || take::<8>(&mut bytes)? != *ATTEMPT_MAGIC
+            || reader.array::<8>()? != *ATTEMPT_MAGIC
         {
             return Err(AttachmentSourceError::CorruptState);
         }
-        let kind = AttachmentSourceAttemptKindV1::from_byte(take::<1>(&mut bytes)?[0])?;
-        let flags = take::<1>(&mut bytes)?[0];
+        let kind = AttachmentSourceAttemptKindV1::from_byte(reader.array::<1>()?[0])?;
+        let flags = reader.array::<1>()?[0];
         if flags & !(FLAG_PREDECESSOR | FLAG_MOUNT_COMPLETION) != 0
-            || take::<2>(&mut bytes)? != [0; 2]
+            || reader.array::<2>()? != [0; 2]
         {
             return Err(AttachmentSourceError::CorruptState);
         }
-        let operation_id = take(&mut bytes)?;
-        let request_digest = take(&mut bytes)?;
-        let attachment_id = take(&mut bytes)?;
-        let desired_generation = u64::from_be_bytes(take(&mut bytes)?);
-        let desired_digest = take(&mut bytes)?;
-        let acquisition_id = take(&mut bytes)?;
-        let predecessor = optional_digest(flags, FLAG_PREDECESSOR, take(&mut bytes)?)?;
+        let operation_id = reader.array()?;
+        let request_digest = reader.array()?;
+        let attachment_id = reader.array()?;
+        let desired_generation = u64::from_be_bytes(reader.array()?);
+        let desired_digest = reader.array()?;
+        let acquisition_id = reader.array()?;
+        let predecessor = optional_digest(flags, FLAG_PREDECESSOR, reader.array()?)?;
         let mount_completion_digest =
-            optional_digest(flags, FLAG_MOUNT_COMPLETION, take(&mut bytes)?)?;
-        let plan_digest = take(&mut bytes)?;
-        let request_len = usize_len(take(&mut bytes)?)?;
-        let plan_len = usize_len(take(&mut bytes)?)?;
+            optional_digest(flags, FLAG_MOUNT_COMPLETION, reader.array()?)?;
+        let plan_digest = reader.array()?;
+        let request_len = usize_len(reader.array()?)?;
+        let plan_len = usize_len(reader.array()?)?;
         if plan_len != PLAN_BYTES
-            || bytes.len() != request_len.saturating_add(plan_len).saturating_add(32)
+            || reader.remaining() != request_len.saturating_add(plan_len).saturating_add(32)
         {
             return Err(AttachmentSourceError::CorruptState);
         }
-        let request_body = take_vec(&mut bytes, request_len)?;
-        let plan_bytes = take_vec(&mut bytes, plan_len)?;
-        let digest = take(&mut bytes)?;
+        let request_body = reader.bytes(request_len)?.to_vec();
+        let plan_bytes = reader.bytes(plan_len)?.to_vec();
+        let digest = reader.array()?;
         let record = Self {
             kind,
             operation_id,
@@ -173,7 +176,7 @@ impl AttemptRecord {
             plan_bytes,
             digest,
         };
-        if !bytes.is_empty() {
+        if !reader.is_empty() {
             return Err(AttachmentSourceError::CorruptState);
         }
         record.validate()?;
@@ -329,34 +332,36 @@ impl CompletionRecord {
         bytes
     }
 
-    pub(super) fn decode(mut bytes: &[u8]) -> Result<Self, AttachmentSourceError> {
-        if bytes.len() != COMPLETION_FIXED_BYTES || take::<8>(&mut bytes)? != *COMPLETION_MAGIC {
+    pub(super) fn decode(bytes: &[u8]) -> Result<Self, AttachmentSourceError> {
+        let mut reader = BoundedReader::new(bytes, |_| AttachmentSourceError::CorruptState);
+
+        if bytes.len() != COMPLETION_FIXED_BYTES || reader.array::<8>()? != *COMPLETION_MAGIC {
             return Err(AttachmentSourceError::CorruptState);
         }
-        let kind = AttachmentSourceAttemptKindV1::from_byte(take::<1>(&mut bytes)?[0])?;
-        let flags = take::<1>(&mut bytes)?[0];
+        let kind = AttachmentSourceAttemptKindV1::from_byte(reader.array::<1>()?[0])?;
+        let flags = reader.array::<1>()?[0];
         if flags & !(FLAG_PREDECESSOR | FLAG_MOUNT_COMPLETION | FLAG_VERIFICATION | FLAG_RESOURCE)
             != 0
-            || take::<2>(&mut bytes)? != [0; 2]
+            || reader.array::<2>()? != [0; 2]
         {
             return Err(AttachmentSourceError::CorruptState);
         }
-        let operation_id = take(&mut bytes)?;
-        let attempt_digest = take(&mut bytes)?;
-        let predecessor = optional_digest(flags, FLAG_PREDECESSOR, take(&mut bytes)?)?;
-        let attachment_id = take(&mut bytes)?;
-        let desired_generation = u64::from_be_bytes(take(&mut bytes)?);
-        let acquisition_id = take(&mut bytes)?;
-        let acquisition_revision = u64::from_be_bytes(take(&mut bytes)?);
-        let acquisition_record_digest = take(&mut bytes)?;
+        let operation_id = reader.array()?;
+        let attempt_digest = reader.array()?;
+        let predecessor = optional_digest(flags, FLAG_PREDECESSOR, reader.array()?)?;
+        let attachment_id = reader.array()?;
+        let desired_generation = u64::from_be_bytes(reader.array()?);
+        let acquisition_id = reader.array()?;
+        let acquisition_revision = u64::from_be_bytes(reader.array()?);
+        let acquisition_record_digest = reader.array()?;
         let acquisition_phase =
-            MountSourceAcquisitionPhase::from_i32(i32::from(take::<1>(&mut bytes)?[0]))
+            MountSourceAcquisitionPhase::from_i32(i32::from(reader.array::<1>()?[0]))
                 .ok_or(AttachmentSourceError::CorruptState)?;
-        let resource_snapshot_digest = take(&mut bytes)?;
-        let source_snapshot_digest = take(&mut bytes)?;
-        let mount_handle = optional_digest(flags, FLAG_RESOURCE, take(&mut bytes)?)?;
-        let raw_resource_revision = u64::from_be_bytes(take(&mut bytes)?);
-        let raw_resource_lifecycle = take::<1>(&mut bytes)?[0];
+        let resource_snapshot_digest = reader.array()?;
+        let source_snapshot_digest = reader.array()?;
+        let mount_handle = optional_digest(flags, FLAG_RESOURCE, reader.array()?)?;
+        let raw_resource_revision = u64::from_be_bytes(reader.array()?);
+        let raw_resource_lifecycle = reader.array::<1>()?[0];
         let (resource_revision, resource_lifecycle) = if flags & FLAG_RESOURCE != 0 {
             (
                 Some(raw_resource_revision),
@@ -389,12 +394,12 @@ impl CompletionRecord {
             mount_completion_digest: optional_digest(
                 flags,
                 FLAG_MOUNT_COMPLETION,
-                take(&mut bytes)?,
+                reader.array()?,
             )?,
-            verification_digest: optional_digest(flags, FLAG_VERIFICATION, take(&mut bytes)?)?,
-            digest: take(&mut bytes)?,
+            verification_digest: optional_digest(flags, FLAG_VERIFICATION, reader.array()?)?,
+            digest: reader.array()?,
         };
-        if !bytes.is_empty() {
+        if !reader.is_empty() {
             return Err(AttachmentSourceError::CorruptState);
         }
         record.validate()?;
@@ -420,25 +425,6 @@ fn u32_len(value: usize) -> u32 {
 
 fn usize_len(value: [u8; 4]) -> Result<usize, AttachmentSourceError> {
     usize::try_from(u32::from_be_bytes(value)).map_err(|_| AttachmentSourceError::CorruptState)
-}
-
-fn take_vec(bytes: &mut &[u8], length: usize) -> Result<Vec<u8>, AttachmentSourceError> {
-    let (value, remaining) = bytes
-        .split_at_checked(length)
-        .ok_or(AttachmentSourceError::CorruptState)?;
-    *bytes = remaining;
-    Ok(value.to_vec())
-}
-
-fn take<const N: usize>(bytes: &mut &[u8]) -> Result<[u8; N], AttachmentSourceError> {
-    let (value, remaining) = bytes
-        .split_at_checked(N)
-        .ok_or(AttachmentSourceError::CorruptState)?;
-    *bytes = remaining;
-    let value = value
-        .try_into()
-        .map_err(|_| AttachmentSourceError::CorruptState)?;
-    Ok(value)
 }
 
 #[cfg(test)]
