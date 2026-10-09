@@ -180,6 +180,7 @@ pub struct RootProjectAdmissionOutcomeV1 {
 
 impl RootProjectAdmissionOutcomeV1 {
     /// Assembles unchecked historical fields without deciding a native Root outcome.
+    #[allow(clippy::too_many_arguments)]
     pub const fn from_historical_fields(
         stage: ObjectDigest,
         kind: RootProjectAdmissionOutcomeKindV1,
@@ -426,6 +427,7 @@ pub struct RootProjectHistoryFloorV1 {
 
 impl RootProjectHistoryFloorV1 {
     /// Assembles unchecked historical fields without validating joins or custody.
+    #[allow(clippy::too_many_arguments)]
     pub const fn from_historical_fields(
         kind: RootProjectHistoryTerminalKindV1,
         issue: u64,
