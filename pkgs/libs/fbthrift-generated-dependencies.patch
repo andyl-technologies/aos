@@ -1,0 +1,19 @@
+--- a/thrift/lib/cpp2/CMakeLists.txt
++++ b/thrift/lib/cpp2/CMakeLists.txt
+@@ -93,9 +93,16 @@ add_library(
+   ${syntax_graph-cpp2-SOURCES}
+   ${service_catalog-cpp2-SOURCES})
++# Metadata consumers include the type schema and its transitive schema
++# headers. These are generation dependencies, not library link dependencies.
++# Explicit ordering also covers compilation restored from a compiler cache.
+ add_dependencies(
+   thriftmetadata
+   metadata-cpp2-target
+   any_rep-cpp2-target
++  type-cpp2-target
++  type_rep-cpp2-target
++  standard-cpp2-target
++  id-cpp2-target
+   protocol-cpp2-target
+   protocol_detail-cpp2-target
+   type_id-cpp2-target
