@@ -1,3 +1,20 @@
+//! Complete historical AOSPME01 public mutation context DATA.
+//!
+//! Caller, project and acceptance time are retained claims. Construction and
+//! decoding do not authenticate them, establish currentness, or grant effects.
+//! Native owners retain protected admission and FUSE/Nix carrier selection.
+//! Request validation remains a separate explicit call through the canonical
+//! public mutation validator.
+//!
+//! The fixed envelope uses big-endian integers and a domain-separated digest:
+//!
+//! ```text
+//! AOSPME01 | version:u16 | reserved:6 | caller:16 | project:16
+//! accepted_seconds:i64 | request_length:u32 | request | SHA-256:32
+//! ```
+//! The complete encoded envelope is bounded to one MiB. The request remains
+//! opaque during envelope construction and decoding.
+
 use aos_sandbox_core::{PrincipalId, ProjectId};
 use sha2::{Digest as _, Sha256};
 
@@ -8,10 +25,12 @@ const PUBLIC_MUTATION_EFFECT_HEADER_BYTES: usize = 60;
 const PUBLIC_MUTATION_EFFECT_DIGEST_BYTES: usize = 32;
 const PUBLIC_MUTATION_EFFECT_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.public-mutation-effect.v1\0";
 
+/// Reports an invalid historical context without native authority or a source chain.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct InvalidPublicMutationContext(&'static str);
 
 impl InvalidPublicMutationContext {
+    /// Returns the original static validation reason.
     pub const fn reason(self) -> &'static str {
         self.0
     }
@@ -25,6 +44,10 @@ impl std::fmt::Display for InvalidPublicMutationContext {
 
 impl std::error::Error for InvalidPublicMutationContext {}
 
+/// Retains four immutable historical public mutation claims and exact request bytes.
+///
+/// Private fields preserve the checked envelope invariants. Neither this value
+/// nor its claimed caller, project or time proves authenticated admission.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PublicMutationContextV1 {
     caller: PrincipalId,
@@ -34,6 +57,14 @@ pub struct PublicMutationContextV1 {
 }
 
 impl PublicMutationContextV1 {
+    /// Constructs a structurally bounded historical context from retained claims.
+    ///
+    /// The request is retained by move and is not decoded by this constructor.
+    ///
+    /// # Errors
+    ///
+    /// Refuses sentinel identities, nonpositive time, empty request bytes, or
+    /// an encoded envelope exceeding its bound.
     pub fn new(
         caller: PrincipalId,
         project: ProjectId,
@@ -62,22 +93,35 @@ impl PublicMutationContextV1 {
         })
     }
 
+    /// Returns the retained caller claim.
     pub const fn caller(&self) -> PrincipalId {
         self.caller
     }
 
+    /// Returns the retained project claim.
     pub const fn project(&self) -> ProjectId {
         self.project
     }
 
+    /// Returns the retained acceptance time in Unix seconds.
     pub const fn accepted_wall_seconds(&self) -> i64 {
         self.accepted_wall_seconds
     }
 
+    /// Borrows the exact retained request bytes.
     pub fn canonical_request(&self) -> &[u8] {
         &self.canonical_request
     }
 
+    /// Decodes the retained request through the complete canonical mutation validator.
+    ///
+    /// Validation checks request DATA and does not authenticate the context's
+    /// retained caller, project or acceptance-time claims.
+    ///
+    /// # Errors
+    ///
+    /// Refuses malformed or noncanonical envelopes and invalid method-selected
+    /// protobuf requests at this explicit validation step.
     pub fn validated_request(
         &self,
     ) -> Result<crate::public_api::request::DormantSandboxRequestKindV1, InvalidPublicMutationContext> {
@@ -86,6 +130,11 @@ impl PublicMutationContextV1 {
             .map_err(|_| InvalidPublicMutationContext("invalid controller effect request"))
     }
 
+    /// Encodes the complete plain historical envelope and its digest.
+    ///
+    /// # Errors
+    ///
+    /// Refuses request-length conversion or encoded-capacity overflow.
     pub fn encode(&self) -> Result<Vec<u8>, InvalidPublicMutationContext> {
         let request_length = u32::try_from(self.canonical_request.len()).map_err(|_| {
             InvalidPublicMutationContext("public mutation effect request exceeds its bound")
@@ -114,6 +163,15 @@ impl PublicMutationContextV1 {
         Ok(bytes)
     }
 
+    /// Decodes a recognized plain historical envelope, returning `None` for other magic.
+    ///
+    /// The checksum is checked before request allocation and construction.
+    /// Decoding preserves opaque request bytes without invoking request validation.
+    ///
+    /// # Errors
+    ///
+    /// Refuses malformed headers, nonzero reserved bytes, inconsistent extents,
+    /// checksum mismatch, or invalid scalar/body invariants after checksum validation.
     pub fn decode(bytes: &[u8]) -> Result<Option<Self>, InvalidPublicMutationContext> {
         if !bytes.starts_with(PUBLIC_MUTATION_EFFECT_MAGIC) {
             return Ok(None);

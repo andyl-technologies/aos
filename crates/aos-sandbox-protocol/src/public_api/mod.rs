@@ -15,6 +15,8 @@
 //! historical endpoint selectors without adopting current native authority.
 //! [`projection`] owns canonical historical public-resource DATA while native
 //! owners retain journal query authorization and effect admission.
+//! [`public_mutation_context`] owns the complete plain historical envelope;
+//! native owners retain authenticated admission and mixed carrier selection.
 
 pub mod attach_holder_proof;
 pub mod audit_event;

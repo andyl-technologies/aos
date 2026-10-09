@@ -48,6 +48,7 @@ const BODY_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.effect-body.v1\0";
 const BINDING_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.effect-binding.v1\0";
 const ATTEMPT_TOKEN_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.effect-attempt-token.v1\0";
 #[cfg(test)]
+// The original golden vector remains independent of the relocated encoder.
 const PUBLIC_MUTATION_EFFECT_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.public-mutation-effect.v1\0";
 
 /// Carries authenticated admission identity with one exact public mutation.
@@ -56,6 +57,8 @@ const PUBLIC_MUTATION_EFFECT_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.public-mutatio
 /// its project authority. Production lowering therefore persists those facts
 /// beside the exact envelope instead of attempting to reconstruct them from a
 /// target resource after admission.
+/// Protocol owns its plain historical DATA and codec; this native wrapper
+/// retains the original FUSE/Nix carrier selection and admission recipes.
 #[derive(Clone, Eq, PartialEq)]
 pub struct PublicMutationEffectV1 {
     plain: PublicMutationContextV1,
@@ -67,6 +70,7 @@ pub struct PublicMutationEffectV1 {
 
 impl std::fmt::Debug for PublicMutationEffectV1 {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Keep the original flat diagnostic fields despite nested DATA storage.
         let mut fields = formatter.debug_struct("PublicMutationEffectV1");
         fields.field("caller", &self.plain.caller());
         fields.field("project", &self.plain.project());
@@ -81,6 +85,7 @@ impl std::fmt::Debug for PublicMutationEffectV1 {
 }
 
 fn invalid_public_mutation_context(error: InvalidPublicMutationContext) -> ReconcilerError {
+    // Project before native callers retain or wrap the original Reconciler cause.
     ReconcilerError::InvalidPlan(error.reason())
 }
 
