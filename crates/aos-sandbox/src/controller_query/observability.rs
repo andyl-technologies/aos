@@ -1417,8 +1417,10 @@ fn decode_observability_effect_content(
     let mut audit = Vec::with_capacity(audit_count);
     for _ in 0..audit_count {
         let binding = decode_query_binding(&mut reader)?;
-        let wire = aos_proto::aos::sandbox::v1::Event::decode_from_slice(read_length_prefixed(&mut reader)?)
-            .map_err(|_| DormantObservabilityErrorV1::NotCanonical)?;
+        let wire = aos_proto::aos::sandbox::v1::Event::decode_from_slice(read_length_prefixed(
+            &mut reader,
+        )?)
+        .map_err(|_| DormantObservabilityErrorV1::NotCanonical)?;
         audit.push(
             CheckedAuditWatchEventV1::from_response(binding, wire)
                 .map_err(|_| DormantObservabilityErrorV1::NotCanonical)?,

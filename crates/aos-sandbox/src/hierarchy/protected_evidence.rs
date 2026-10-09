@@ -973,7 +973,8 @@ impl<'a> Cursor<'a> {
             return None;
         }
         let media_type =
-            MediaType::new(std::str::from_utf8(self.reader.bytes(media_length).ok()?).ok()?).ok()?;
+            MediaType::new(std::str::from_utf8(self.reader.bytes(media_length).ok()?).ok()?)
+                .ok()?;
         Some(ObjectDescriptor::new(
             media_type,
             self.reader.digest().ok()?,
