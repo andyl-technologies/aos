@@ -268,6 +268,54 @@ fn planning_is_metadata_bound_and_rejects_an_unknown_subject() -> Result<()> {
 }
 
 #[tokio::test]
+async fn newly_acquired_positive_records_survive_a_later_failed_retrieval_batch() -> Result<()> {
+    let mut data = common::fixture("1.2.0")?;
+    data.advisory_snapshot = None;
+    data.advisories.clear();
+    let modified = "2026-10-09T01:00:00Z";
+    let ids = (0..11)
+        .map(|index| format!("GHSA-fixture-{index:02}"))
+        .collect::<Vec<_>>();
+    let mut responses = vec![json!({"results":[{"vulns":ids.iter()
+        .map(|id| json!({"id":id,"modified":modified})).collect::<Vec<_>>()}]})];
+    for id in ids.iter().take(10) {
+        let mut record = osv_record(modified);
+        record["id"] = json!(id);
+        responses.push(record);
+    }
+    let port = Port::new(responses)?;
+    let subjects = vec!["subject".into()];
+    let profiles = vec![Profile::Vulnerabilities];
+    let diagnostics = acquire(
+        &port,
+        &port.custody,
+        "fixture",
+        &mut data,
+        &subjects,
+        &profiles,
+    )
+    .await?;
+    assert_eq!(diagnostics, vec!["source-acquisition-incomplete"]);
+    assert_eq!(data.advisories.len(), 10);
+    assert!(
+        !data.advisory_snapshot.as_ref().context("snapshot")?.sources[0]
+            .observation
+            .coverage
+            .is_complete()
+    );
+    let input = data.freeze_selected(profiles, subjects, FixedClock.now()?)?;
+    let result = aos_assessment::evaluator::evaluate(&input, &data)?;
+    assert!(!result.subject_results[0].findings.is_empty());
+    assert!(
+        result.subject_results[0]
+            .findings
+            .iter()
+            .any(|finding| finding.advisory_ids.contains(&"CVE-2026-10001".into()))
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn refresh_stale_skips_complete_fresh_queries_and_refreshes_expired_evidence() -> Result<()> {
     let mut data = common::fixture("1.2.0")?;
     let port = Port::new(vec![])?;

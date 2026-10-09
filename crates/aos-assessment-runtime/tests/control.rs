@@ -1,6 +1,6 @@
 //! Authority injection, selector ambiguity and lifecycle document boundary tests.
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use aos_assessment_runtime::control::{ScanCancellationV1, ScanSubmissionV1};
 use aos_assessment_runtime::scan::ScanLimits;
 use aos_contract::Sha256Digest;
@@ -38,7 +38,10 @@ fn authority_is_bound_by_the_host_and_cannot_be_injected_through_selection() -> 
     ] {
         value[name] = json!("forged-authority");
         assert!(ScanSubmissionV1::from_slice(&serde_json::to_vec(&value)?).is_err());
-        value.as_object_mut().unwrap().remove(name);
+        value
+            .as_object_mut()
+            .context("submission object")?
+            .remove(name);
     }
     Ok(())
 }

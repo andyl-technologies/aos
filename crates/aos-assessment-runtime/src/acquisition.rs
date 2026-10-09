@@ -335,26 +335,28 @@ async fn acquire_jobs<P: AcquisitionPort, E: EvidenceStore>(
             ProviderOperation::QueryOsv { .. } | ProviderOperation::QueryNvd { .. }
         );
         let chain = collect_chain(port, &job.operation).await;
-        match chain {
-            Ok(chain) if advisory => install_advisories(data, chain)?,
-            Ok(chain) => install_upstream(data, evidence, partition, &job, chain).await?,
-            Err(_) => {
-                diagnostics.insert("source-acquisition-incomplete".into());
-                if advisory {
-                    mark_cached_advisory_incomplete(data, &job.operation);
-                } else {
-                    for binding in &mut data.upstream {
-                        if job.component_refs.contains(&binding.component_ref)
-                            && matches_upstream(
-                                &job.operation,
-                                &binding.observation.provider,
-                                &binding.observation.project,
-                            )
-                        {
-                            binding.observation.coverage = ObservationCoverage::Truncated {
-                                reason: "source-acquisition-incomplete".into(),
-                            };
-                        }
+        if !chain.complete {
+            diagnostics.insert("source-acquisition-incomplete".into());
+        }
+        if advisory && !chain.observations.is_empty() {
+            install_advisories(data, chain)?;
+        } else if chain.complete {
+            install_upstream(data, evidence, partition, &job, chain).await?;
+        } else {
+            if advisory {
+                mark_cached_advisory_incomplete(data, &job.operation);
+            } else {
+                for binding in &mut data.upstream {
+                    if job.component_refs.contains(&binding.component_ref)
+                        && matches_upstream(
+                            &job.operation,
+                            &binding.observation.provider,
+                            &binding.observation.project,
+                        )
+                    {
+                        binding.observation.coverage = ObservationCoverage::Truncated {
+                            reason: "source-acquisition-incomplete".into(),
+                        };
                     }
                 }
             }
@@ -383,22 +385,35 @@ struct SourceChain {
     observations: Vec<ProviderObservationV1>,
     objects: Vec<NormalizedObject>,
     revisions: BTreeMap<String, String>,
+    complete: bool,
+    normalized_bytes: usize,
 }
 
-async fn collect_chain<P: AcquisitionPort>(
-    port: &P,
-    initial: &ProviderOperation,
-) -> Result<SourceChain> {
+async fn collect_chain<P: AcquisitionPort>(port: &P, initial: &ProviderOperation) -> SourceChain {
     let mut chain = SourceChain {
         initial: initial.clone(),
         observations: vec![],
         objects: vec![],
         revisions: BTreeMap::new(),
+        complete: false,
+        normalized_bytes: 0,
     };
+    // Retain independently admitted positive evidence even when a later page
+    // or full-record request fails. Such evidence cannot prove a clean answer.
+    chain.complete = collect_chain_into(port, initial, &mut chain).await.is_ok();
+    chain
+}
+
+async fn collect_chain_into<P: AcquisitionPort>(
+    port: &P,
+    initial: &ProviderOperation,
+    chain: &mut SourceChain,
+) -> Result<()> {
     let mut operation = initial.clone();
     let mut previous = None;
     for position in 0..64 {
         let result = port.invoke(&operation, previous.as_ref()).await?;
+        account_result(chain, &result)?;
         let mut page = None;
         for projection in result.normalized_objects {
             if projection.object.digest()? != projection.digest {
@@ -423,11 +438,14 @@ async fn collect_chain<P: AcquisitionPort>(
             for record in &source_page.records {
                 if chain
                     .revisions
-                    .insert(record.id.clone(), record.modified.clone())
-                    .is_some_and(|previous| previous != record.modified)
+                    .get(&record.id)
+                    .is_some_and(|previous| previous != &record.modified)
                 {
                     bail!("source changed an advisory revision during enumeration");
                 }
+                chain
+                    .revisions
+                    .insert(record.id.clone(), record.modified.clone());
             }
         }
         let next = page.as_ref().and_then(|page| page.next.clone());
@@ -462,9 +480,7 @@ async fn collect_chain<P: AcquisitionPort>(
                 ids: ids.to_vec(),
             };
             let result = port.invoke(&operation, None).await?;
-            if !result.coverage.is_complete() {
-                bail!("OSV full-record retrieval is incomplete");
-            }
+            account_result(chain, &result)?;
             for projection in result.normalized_objects {
                 if projection.object.digest()? != projection.digest {
                     bail!("retrieved OSV object identity changed");
@@ -484,9 +500,49 @@ async fn collect_chain<P: AcquisitionPort>(
                     _ => bail!("OSV record retrieval returned an incompatible object"),
                 }
             }
+            if !result.coverage.is_complete() {
+                bail!("OSV full-record retrieval is incomplete");
+            }
         }
     }
-    Ok(chain)
+    Ok(())
+}
+
+fn account_result(chain: &mut SourceChain, result: &ProviderWorkResultV1) -> Result<()> {
+    let bytes = crate::validation::encoded(result)?;
+    chain.normalized_bytes = chain
+        .normalized_bytes
+        .checked_add(bytes.len())
+        .filter(|length| *length <= 16 * 1024 * 1024)
+        .context("source chain exceeds its aggregate compact byte ceiling")?;
+    // Validate every object before accepting any member of this invocation.
+    for projection in &result.normalized_objects {
+        if projection.object.digest()? != projection.digest {
+            bail!("source chain received an inconsistent object projection");
+        }
+    }
+    let sources = chain
+        .observations
+        .iter()
+        .flat_map(|observation| observation.source_refs.iter().map(|source| source.digest))
+        .chain(
+            result
+                .normalized_objects
+                .iter()
+                .filter_map(|projection| {
+                    if let NormalizedObject::Observation(observation) = &projection.object {
+                        Some(observation)
+                    } else {
+                        None
+                    }
+                })
+                .flat_map(|observation| observation.source_refs.iter().map(|source| source.digest)),
+        )
+        .collect::<BTreeSet<_>>();
+    if sources.len() > 128 {
+        bail!("source chain exceeds its aggregate custody reference ceiling");
+    }
+    Ok(())
 }
 
 fn merge_observations(chain: &SourceChain, payload: Sha256Digest) -> Result<ProviderObservationV1> {
@@ -520,8 +576,15 @@ fn merge_observations(chain: &SourceChain, payload: Sha256Digest) -> Result<Prov
     observation.payload_digest = payload;
     observation.validators = None;
     observation.request_identity_digest = chain.initial.digest()?;
-    observation.coverage = ProviderCoverage::Complete {
-        proof: "exhausted-source-chain-and-full-revisions".into(),
+    observation.coverage = if chain.complete {
+        ProviderCoverage::Complete {
+            proof: "exhausted-source-chain-and-full-revisions".into(),
+        }
+    } else {
+        ProviderCoverage::Partial {
+            reason: "source-acquisition-incomplete".into(),
+            continuation: None,
+        }
     };
     observation.validate()?;
     Ok(observation)
@@ -539,18 +602,52 @@ fn install_advisories(data: &mut EvaluationData, chain: SourceChain) -> Result<(
             bail!("full advisory records conflict with the enumerated source revisions");
         }
     }
-    if !records.keys().eq(chain.revisions.keys()) {
+    if chain.complete && !records.keys().eq(chain.revisions.keys()) {
         bail!("advisory enumeration lacks one or more exact full records");
     }
+    let previous = data
+        .advisory_snapshot
+        .as_ref()
+        .and_then(|snapshot| {
+            snapshot.sources.iter().find(|source| {
+                chain.observations.first().is_some_and(|observation| {
+                    source.provider == observation.provider && source.project == observation.project
+                })
+            })
+        })
+        .cloned();
     let mut digests = records
         .values()
         .map(AdvisoryRecordV1::digest)
         .collect::<Result<Vec<_>>>()?;
+    if !chain.complete
+        && let Some(previous) = &previous
+    {
+        digests.extend(previous.record_digests.iter().copied());
+    }
     digests.sort();
-    let observation = merge_observations(
+    digests.dedup();
+    let mut observation = merge_observations(
         &chain,
         Sha256Digest::of_canonical("aos.advisory-record-set/v1", &digests)?,
     )?;
+    if !chain.complete
+        && let Some(previous) = previous
+    {
+        observation
+            .source_refs
+            .extend(previous.observation.source_refs);
+        observation.source_refs.sort();
+        observation.source_refs.dedup();
+        observation.retrieved_at = observation
+            .retrieved_at
+            .min(previous.observation.retrieved_at);
+        observation.validated_at = observation
+            .validated_at
+            .min(previous.observation.validated_at);
+        observation.expires_at = observation.expires_at.min(previous.observation.expires_at);
+        observation.validate()?;
+    }
     let source = AdvisorySnapshotSource {
         provider: observation.provider.clone(),
         project: observation.project.clone(),
