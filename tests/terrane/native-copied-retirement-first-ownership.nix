@@ -1,5 +1,7 @@
 {sourceGate}: let
   selectors = [
+    "gc::copied_retirement_effects::pair_bracketing_tests::collector_pairs_refuse_earlier_replacement_during_later_native_observation"
+    "gc::copied_retirement_effects::pair_bracketing_tests::collector_pairs_cancelled_later_worker_keeps_earlier_receipt_and_exclusion"
     "gc::runner::copied_retirement_tests::gc_copied_retirement_native_pack_only_selects_new_destination_owner"
     "gc::runner::copied_retirement_tests::gc_copied_retirement_native_index_only_selects_new_destination_owner"
     "gc::runner::copied_retirement_tests::gc_copied_retirement_native_trash_only_selects_new_destination_owner"
@@ -44,6 +46,6 @@ in
       python3 ../tests/terrane/check_native_gate.py execution \
         "$TMPDIR/copied-retirement-test.log" "[\"$test_name\"]"
     done
-    printf 'PASS: local copied-destination first ownership (23 exact cases)\n' \
+    printf 'PASS: local copied-destination first ownership and retained-pair prerequisites (25 exact cases)\n' \
       > "$out/result"
   ''
