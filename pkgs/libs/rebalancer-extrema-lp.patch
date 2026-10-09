@@ -1,0 +1,118 @@
+--- a/algopt/rebalancer/materializer/spec_builder/MinimizeNthLargestUtilizationSpecBuilder.cpp
++++ b/algopt/rebalancer/materializer/spec_builder/MinimizeNthLargestUtilizationSpecBuilder.cpp
+@@ -65,7 +65,17 @@
+     co_return const_expr(0, *universe_);
+   }
+ 
+-  auto nthLargestUtil = nth_largest(scopeItemRelativeUtils, n, *universe_);
++  // Endpoint order statistics are exactly extrema. Their existing LP
++  // representations support optimal solvers as well as local evaluation.
++  ExprPtr nthLargestUtil;
++  if (n == 0) {
++    nthLargestUtil = max(scopeItemRelativeUtils, *universe_);
++  } else if (
++      n >= 0 && static_cast<std::size_t>(n) >= scopeItemRelativeUtils.size() - 1) {
++    nthLargestUtil = min(scopeItemRelativeUtils, *universe_);
++  } else {
++    nthLargestUtil = nth_largest(scopeItemRelativeUtils, n, *universe_);
++  }
+ 
+   if (targetUtilization > 0) {
+     // if 'targetUtilization' > 0, this ensures that there is no incentive to
+--- a/algopt/rebalancer/materializer/spec_builder/tests/MinimizeNthLargestUtilizationSpecBuilderTest.cpp
++++ b/algopt/rebalancer/materializer/spec_builder/tests/MinimizeNthLargestUtilizationSpecBuilderTest.cpp
+@@ -149,6 +149,94 @@
+       1e-8);
+ }
+ 
++CO_TEST_F(MinimizeNthLargestUtilizationSpecBuilderTest, MaximumSupportsLp) {
++  interface::MinimizeNthLargestUtilizationSpec spec;
++  spec.scope() = "host";
++  spec.dimension() = "cpu";
++  spec.n() = 0;
++
++  const MinimizeNthLargestUtilizationSpecBuilder specBuilder(
++      buildUniverse(), spec);
++  auto goal = co_await specBuilder.goalCoro(expressionBuilder());
++
++  EXPECT_NEAR(
++      4.0 / 14,
++      SpecBuilderTestBase<>::evaluate(goal, deltaFromInitial({})),
++      1e-8);
++  EXPECT_NEAR(
++      3.0 / 10,
++      SpecBuilderTestBase<>::evaluate(
++          goal, deltaFromInitial({{"task0", "host3"}})),
++      1e-8);
++}
++
++CO_TEST_F(MinimizeNthLargestUtilizationSpecBuilderTest, MinimumSupportsLp) {
++  interface::MinimizeNthLargestUtilizationSpec spec;
++  spec.scope() = "host";
++  spec.dimension() = "cpu";
++  spec.n() = 3;
++
++  const MinimizeNthLargestUtilizationSpecBuilder specBuilder(
++      buildUniverse(), spec);
++  auto goal = co_await specBuilder.goalCoro(expressionBuilder());
++
++  EXPECT_NEAR(
++      0,
++      SpecBuilderTestBase<>::evaluate(goal, deltaFromInitial({})),
++      1e-8);
++  // Moving to the empty host creates equal minimum utilizations on two hosts.
++  EXPECT_NEAR(
++      1.0 / 10,
++      SpecBuilderTestBase<>::evaluate(
++          goal, deltaFromInitial({{"task0", "host1"}})),
++      1e-8);
++}
++
++CO_TEST_F(MinimizeNthLargestUtilizationSpecBuilderTest, FilteredMinimumSupportsLp) {
++  interface::MinimizeNthLargestUtilizationSpec spec;
++  spec.scope() = "host";
++  spec.dimension() = "cpu";
++  spec.n() = 3;
++  spec.filter()->itemsBlacklist() = {"host1"};
++
++  const MinimizeNthLargestUtilizationSpecBuilder specBuilder(
++      buildUniverse(), spec);
++  auto goal = co_await specBuilder.goalCoro(expressionBuilder());
++
++  // A rank beyond the filtered size retains the smallest utilization.
++  EXPECT_NEAR(
++      1.0 / 10,
++      SpecBuilderTestBase<>::evaluate(goal, deltaFromInitial({})),
++      1e-8);
++  EXPECT_NEAR(
++      0,
++      SpecBuilderTestBase<>::evaluate(
++          goal, deltaFromInitial({{"task6", "host3"}})),
++      1e-8);
++}
++
++CO_TEST_F(MinimizeNthLargestUtilizationSpecBuilderTest, MaximumTargetSupportsLp) {
++  interface::MinimizeNthLargestUtilizationSpec spec;
++  spec.scope() = "host";
++  spec.dimension() = "cpu";
++  spec.n() = 0;
++  spec.targetUtilization() = 0.3;
++
++  const MinimizeNthLargestUtilizationSpecBuilder specBuilder(
++      buildUniverse(), spec);
++  auto goal = co_await specBuilder.goalCoro(expressionBuilder());
++
++  EXPECT_NEAR(
++      0,
++      SpecBuilderTestBase<>::evaluate(goal, deltaFromInitial({})),
++      1e-8);
++  EXPECT_NEAR(
++      0.1,
++      SpecBuilderTestBase<>::evaluate(
++          goal, deltaFromInitial({{"task0", "host3"}, {"task1", "host3"}})),
++      1e-8);
++}
++
+ TEST_F(MinimizeNthLargestUtilizationSpecBuilderTest, SpecInfo) {
+   // same example as in 'Basic', but where targetUtilization is 0.1
+   interface::MinimizeNthLargestUtilizationSpec spec;

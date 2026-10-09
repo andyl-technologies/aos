@@ -1,0 +1,275 @@
+--- a/algopt/lp/test/DecompositionTest.cpp
++++ b/algopt/lp/test/DecompositionTest.cpp
+@@ -19,7 +19,7 @@
+ #include "algopt/lp/generic/Operators.h"
+ #include "algopt/rebalancer/tests/SolverTestUtils.h"
+ 
+-#include <fmt/core.h>
++#include <fmt/format.h>
+ #include <folly/container/F14Map.h>
+ #include <folly/container/F14Set.h>
+ #include <folly/container/irange.h>
+--- a/algopt/lp/test/GenericExpressionTest.cpp
++++ b/algopt/lp/test/GenericExpressionTest.cpp
+@@ -20,7 +20,7 @@
+ #include "algopt/lp/generic/Problem.h"
+ #include "algopt/rebalancer/tests/SolverTestUtils.h"
+ 
+-#include <fmt/core.h>
++#include <fmt/format.h>
+ #include <folly/container/irange.h>
+ #include <gtest/gtest.h>
+ 
+--- a/algopt/rebalancer/algopt_common/tests/AssociativeFixedMapTest.cpp
++++ b/algopt/rebalancer/algopt_common/tests/AssociativeFixedMapTest.cpp
+@@ -14,7 +14,7 @@
+ 
+ #include "algopt/rebalancer/algopt_common/AssociativeFixedMap.h"
+ 
+-#include <fmt/core.h>
++#include <fmt/format.h>
+ #include <folly/container/irange.h>
+ #include <gtest/gtest.h>
+ 
+--- a/algopt/rebalancer/algopt_common/tests/AssociativeHybridMapTest.cpp
++++ b/algopt/rebalancer/algopt_common/tests/AssociativeHybridMapTest.cpp
+@@ -14,7 +14,7 @@
+ 
+ #include "algopt/rebalancer/algopt_common/AssociativeHybridMap.h"
+ 
+-#include <fmt/core.h>
++#include <fmt/format.h>
+ #include <folly/container/irange.h>
+ #include <gtest/gtest.h>
+ 
+--- a/algopt/rebalancer/benchmarks/interface_benchmarks/ProblemSolverBenchmark.cpp
++++ b/algopt/rebalancer/benchmarks/interface_benchmarks/ProblemSolverBenchmark.cpp
+@@ -14,7 +14,7 @@
+ 
+ #include "algopt/rebalancer/interface/tests/utils.h"
+ 
+-#include <fmt/core.h>
++#include <fmt/format.h>
+ #include <folly/Benchmark.h>
+ #include <folly/container/irange.h>
+ #include <folly/init/Init.h>
+--- a/algopt/rebalancer/benchmarks/materializer_benchmarks/InvalidMoveFilterBenchmark.cpp
++++ b/algopt/rebalancer/benchmarks/materializer_benchmarks/InvalidMoveFilterBenchmark.cpp
+@@ -15,7 +15,7 @@
+ #include "algopt/rebalancer/interface/ProblemSolver.h"
+ #include "algopt/rebalancer/interface/ProblemSolverFactory.h"
+ 
+-#include <fmt/core.h>
++#include <fmt/format.h>
+ #include <folly/Benchmark.h>
+ #include <folly/container/irange.h>
+ #include <folly/init/Init.h>
+--- a/algopt/rebalancer/benchmarks/utils/BenchmarkReplayer.cpp
++++ b/algopt/rebalancer/benchmarks/utils/BenchmarkReplayer.cpp
+@@ -20,7 +20,7 @@
+ #include "algopt/rebalancer/interface/fb/Manifold.h"
+ #endif
+ 
+-#include <fmt/core.h>
++#include <fmt/format.h>
+ #include <folly/Benchmark.h>
+ #include <folly/container/Enumerate.h>
+ #include <folly/logging/xlog.h>
+--- a/algopt/rebalancer/benchmarks/utils/LpInstanceGenerator.cpp
++++ b/algopt/rebalancer/benchmarks/utils/LpInstanceGenerator.cpp
+@@ -19,7 +19,7 @@
+ #include "algopt/lp/generic/Operators.h"
+ #include "algopt/lp/generic/Variable.h"
+ 
+-#include <fmt/core.h>
++#include <fmt/format.h>
+ #include <folly/container/irange.h>
+ #include <folly/logging/xlog.h>
+ #include <folly/Random.h>
+--- a/algopt/rebalancer/entities/tests/UniverseTest.cpp
++++ b/algopt/rebalancer/entities/tests/UniverseTest.cpp
+@@ -20,7 +20,7 @@
+ #include "algopt/rebalancer/interface/thrift/gen-cpp2/ProblemSolver_types.h"
+ #include "algopt/rebalancer/interface/thrift/gen-cpp2/ProblemSpecs_types.h"
+ 
+-#include <fmt/core.h>
++#include <fmt/format.h>
+ #include <folly/coro/BlockingWait.h>
+ #include <folly/coro/GtestHelpers.h>
+ #include <gtest/gtest.h>
+--- a/algopt/rebalancer/interface/tests/BalanceTest.cpp
++++ b/algopt/rebalancer/interface/tests/BalanceTest.cpp
+@@ -18,7 +18,7 @@
+ #include <algopt/rebalancer/interface/thrift/gen-cpp2/ProblemSolver_types.h>
+ #include <algopt/rebalancer/interface/thrift/gen-cpp2/ProblemSpecs_types.h>
+ 
+-#include <fmt/core.h>
++#include <fmt/format.h>
+ #include <folly/container/irange.h>
+ #include <folly/logging/Init.h>
+ #include <gtest/gtest.h>
+--- a/algopt/rebalancer/interface/tests/BalanceTwoResourcesTest.cpp
++++ b/algopt/rebalancer/interface/tests/BalanceTwoResourcesTest.cpp
+@@ -16,7 +16,7 @@
+ #include "algopt/rebalancer/interface/thrift/gen-cpp2/SolverSpecs_types.h"
+ #include "algopt/rebalancer/tests/SolverTestUtils.h"
+ 
+-#include <fmt/core.h>
++#include <fmt/format.h>
+ #include <folly/container/irange.h>
+ #include <folly/Random.h>
+ #include <gtest/gtest.h>
+--- a/algopt/rebalancer/interface/tests/BipartiteSwapsTest.cpp
++++ b/algopt/rebalancer/interface/tests/BipartiteSwapsTest.cpp
+@@ -15,7 +15,7 @@
+ #include "algopt/rebalancer/interface/tests/utils.h"
+ #include "algopt/rebalancer/tests/SolverTestUtils.h"
+ 
+-#include <fmt/core.h>
++#include <fmt/format.h>
+ #include <folly/container/irange.h>
+ #include <gtest/gtest.h>
+ 
+--- a/algopt/rebalancer/interface/tests/CapacityWithGroupPresenceTest.cpp
++++ b/algopt/rebalancer/interface/tests/CapacityWithGroupPresenceTest.cpp
+@@ -15,7 +15,7 @@
+ #include "algopt/rebalancer/interface/tests/utils.h"
+ #include "algopt/rebalancer/tests/SolverTestUtils.h"
+ 
+-#include <fmt/core.h>
++#include <fmt/format.h>
+ #include <folly/container/irange.h>
+ #include <gtest/gtest.h>
+ 
+--- a/algopt/rebalancer/interface/tests/ColocateGroupsTest.cpp
++++ b/algopt/rebalancer/interface/tests/ColocateGroupsTest.cpp
+@@ -15,7 +15,7 @@
+ #include "algopt/rebalancer/interface/tests/utils.h"
+ #include "algopt/rebalancer/tests/SolverTestUtils.h"
+ 
+-#include <fmt/core.h>
++#include <fmt/format.h>
+ #include <folly/container/irange.h>
+ #include <folly/Portability.h>
+ #include <folly/Random.h>
+--- a/algopt/rebalancer/interface/tests/ExclusiveSwapsTest.cpp
++++ b/algopt/rebalancer/interface/tests/ExclusiveSwapsTest.cpp
+@@ -15,7 +15,7 @@
+ #include "algopt/rebalancer/interface/tests/utils.h"
+ #include "algopt/rebalancer/tests/SolverTestUtils.h"
+ 
+-#include <fmt/core.h>
++#include <fmt/format.h>
+ #include <gtest/gtest.h>
+ 
+ #include <map>
+--- a/algopt/rebalancer/interface/tests/GroupCountCustomDimensionBase.cpp
++++ b/algopt/rebalancer/interface/tests/GroupCountCustomDimensionBase.cpp
+@@ -16,7 +16,7 @@
+ 
+ #include "algopt/rebalancer/interface/tests/utils.h"
+ 
+-#include <fmt/core.h>
++#include <fmt/format.h>
+ #include <folly/container/irange.h>
+ 
+ using namespace facebook::rebalancer::interface;
+--- a/algopt/rebalancer/interface/tests/GroupDiversityTest.cpp
++++ b/algopt/rebalancer/interface/tests/GroupDiversityTest.cpp
+@@ -18,7 +18,7 @@
+ #include <algopt/rebalancer/interface/thrift/gen-cpp2/ProblemSolver_types.h>
+ #include <algopt/rebalancer/interface/thrift/gen-cpp2/ProblemSpecs_types.h>
+ 
+-#include <fmt/core.h>
++#include <fmt/format.h>
+ #include <folly/container/irange.h>
+ #include <folly/logging/Init.h>
+ #include <gtest/gtest.h>
+--- a/algopt/rebalancer/interface/tests/MinimizeNthLargestUtilizationTest.cpp
++++ b/algopt/rebalancer/interface/tests/MinimizeNthLargestUtilizationTest.cpp
+@@ -15,7 +15,7 @@
+ #include "algopt/rebalancer/algopt_common/TestUtils.h"
+ #include "algopt/rebalancer/interface/tests/utils.h"
+ 
+-#include <fmt/core.h>
++#include <fmt/format.h>
+ #include <folly/container/irange.h>
+ #include <folly/Random.h>
+ #include <gtest/gtest.h>
+--- a/algopt/rebalancer/solver/moves/tests/SwapMoveTypeTest.cpp
++++ b/algopt/rebalancer/solver/moves/tests/SwapMoveTypeTest.cpp
+@@ -21,7 +21,7 @@
+ #include "algopt/rebalancer/solver/moves/tests/MoveTestBase.h"
+ #include "algopt/rebalancer/solver/tests/ExprProblemCreation.h"
+ 
+-#include <fmt/core.h>
++#include <fmt/format.h>
+ #include <folly/container/irange.h>
+ #include <folly/coro/BlockingWait.h>
+ #include <gtest/gtest.h>
+--- a/algopt/rebalancer/solver/tests/ContainerPotentialsComputationTest.cpp
++++ b/algopt/rebalancer/solver/tests/ContainerPotentialsComputationTest.cpp
+@@ -35,7 +35,7 @@
+ #include "multifeed/hash/HeterogeneousAccess.h"
+ 
+ #include <boost/iterator/iterator_facade.hpp>
+-#include <fmt/core.h>
++#include <fmt/format.h>
+ #include <folly/container/irange.h>
+ #include <folly/container/MapUtil.h>
+ #include <folly/coro/BlockingWait.h>
+--- a/algopt/rebalancer/solver/tests/NativeOperatorGurobiTests.cpp
++++ b/algopt/rebalancer/solver/tests/NativeOperatorGurobiTests.cpp
+@@ -39,7 +39,7 @@
+ #include "multifeed/hash/HeterogeneousAccess.h"
+ 
+ #include <boost/iterator/iterator_facade.hpp>
+-#include <fmt/core.h>
++#include <fmt/format.h>
+ #include <folly/container/irange.h>
+ #include <folly/container/MapUtil.h>
+ #include <folly/ExceptionWrapper.h>
+--- a/algopt/rebalancer/solver/tests/PackerTests.cpp
++++ b/algopt/rebalancer/solver/tests/PackerTests.cpp
+@@ -51,7 +51,7 @@
+ 
+ #include "gtest/gtest.h"
+ #include <boost/iterator/iterator_facade.hpp>
+-#include <fmt/core.h>
++#include <fmt/format.h>
+ #include <folly/container/irange.h>
+ #include <folly/container/MapUtil.h>
+ #include <folly/coro/BlockingWait.h>
+--- a/algopt/rebalancer/solver/utils/tests/EquivalenceSetsTest.cpp
++++ b/algopt/rebalancer/solver/utils/tests/EquivalenceSetsTest.cpp
+@@ -35,7 +35,7 @@
+ #include "multifeed/hash/QuickHashSet.h"
+ 
+ #include <boost/iterator/iterator_facade.hpp>
+-#include <fmt/core.h>
++#include <fmt/format.h>
+ #include <folly/container/irange.h>
+ #include <folly/container/MapUtil.h>
+ #include <folly/coro/GtestHelpers.h>
+--- a/algopt/rebalancer/solver/utils/tests/OneObjectPerGroupTest.cpp
++++ b/algopt/rebalancer/solver/utils/tests/OneObjectPerGroupTest.cpp
+@@ -26,7 +26,7 @@
+ 
+ #include "gtest/gtest.h"
+ #include <boost/iterator/iterator_facade.hpp>
+-#include <fmt/core.h>
++#include <fmt/format.h>
+ #include <folly/container/irange.h>
+ #include <folly/container/MapUtil.h>
+ #include <folly/coro/BlockingWait.h>
+--- a/algopt/rebalancer/treeprof/test/VisualizationFilterTest.cpp
++++ b/algopt/rebalancer/treeprof/test/VisualizationFilterTest.cpp
+@@ -17,7 +17,7 @@
+ #include "algopt/rebalancer/treeprof/visualizer/EventTreeVisualizer.h"
+ #include "algopt/rebalancer/treeprof/visualizer/VisualizationFilter.h"
+ 
+-#include <fmt/core.h>
++#include <fmt/format.h>
+ #include <folly/container/irange.h>
+ #include <gtest/gtest.h>
+ 

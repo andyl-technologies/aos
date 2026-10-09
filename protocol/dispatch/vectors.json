@@ -1,0 +1,24 @@
+{
+  "version": "1",
+  "empty_model": {
+    "model_version": "1",
+    "observation_basis": {},
+    "items": {},
+    "targets": {},
+    "dimensions": {},
+    "domains": {},
+    "groups": {},
+    "target_sets": {},
+    "scope_families": {},
+    "observed": {},
+    "holdings": [],
+    "constraints": [],
+    "objectives": []
+  },
+  "empty_model_cbor_hex": "ad0101028003800480058006800780088009800a800b800c800d80",
+  "empty_model_sha256_hex": "30d145d6a8d3f4408544d64e734bcb85bfa880cc9de51bbd772725f6785824a3",
+  "hello_frame_hex": "0000000c0a0208011001180220035200",
+  "hello_session_generation": "1",
+  "hello_worker_generation": "2",
+  "hello_request_id": "3"
+}

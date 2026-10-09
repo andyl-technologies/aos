@@ -1,0 +1,244 @@
+syntax = "proto3";
+
+package dispatch.session.v1;
+
+// Optional authenticated remote-provider contract, independently versioned.
+// Publishing this schema does not advertise a deployed service or durability.
+// Access control derives from authenticated transport, never a caller ID field.
+service DispatchSessions {
+  rpc Initialize(InitializeRequest) returns (InitializeResponse);
+  rpc ValidateProblem(ValidateRequest) returns (ValidateResponse);
+  rpc EvaluateAssignment(EvaluateRequest) returns (EvaluateResponse);
+  rpc Prepare(PrepareRequest) returns (PrepareResponse);
+  rpc Release(ReleaseRequest) returns (ReleaseResponse);
+  rpc SubmitSolve(SubmitRequest) returns (SubmitResponse);
+  rpc GetSolve(JobRequest) returns (JobState);
+  rpc WatchSolve(WatchRequest) returns (stream JobEvent);
+  rpc CancelSolve(JobRequest) returns (JobState);
+  rpc GetResult(JobRequest) returns (ResultResponse);
+  rpc Close(CloseRequest) returns (CloseResponse);
+}
+
+message Version { uint32 major = 1; uint32 minor = 2; }
+
+message InitializeRequest {
+  repeated Version public_versions = 1;
+  repeated Version model_versions = 2;
+  string authorized_profile = 3;
+  ExecutionProfile execution_profile = 4;
+  RequiredGuarantees required_guarantees = 5;
+  ComputeRequest resources = 6;
+}
+
+enum ExecutionProfile {
+  EXECUTION_PROFILE_UNSPECIFIED = 0;
+  EXECUTION_PROFILE_WARM = 1;
+  EXECUTION_PROFILE_FRESH = 2;
+}
+
+message RequiredGuarantees {
+  bool hard_cancellation = 1;
+  bool independent_memory = 2;
+  bool aggregate_accounting = 3;
+  bool owner_cleanup = 4;
+}
+
+message ComputeRequest {
+  uint32 maximum_workers = 1;
+  uint32 maximum_pending = 2;
+  uint64 memory_bytes = 3;
+  uint64 maximum_retained_bytes = 4;
+  uint64 maximum_wall_time_millis = 5;
+}
+
+message InitializeResponse {
+  Version public_version = 1;
+  Version model_version = 2;
+  SessionRef session = 3;
+  ComputeGrant grant = 4;
+  repeated BackendCapabilities backends = 5;
+  ModelLimits limits = 6;
+  uint64 lease_duration_millis = 7;
+  uint64 result_retention_millis = 8;
+  bool durable_retention = 9;
+  bool idempotency_supported = 10;
+  uint64 idempotency_retention_millis = 11;
+}
+
+message SessionRef { bytes session_id = 1; uint64 generation = 2; }
+
+message ComputeGrant {
+  string authorized_profile = 1;
+  ComputeRequest granted = 2;
+  Guarantee hard_cancellation = 3;
+  Guarantee independent_memory = 4;
+  Guarantee aggregate_accounting = 5;
+  Guarantee owner_cleanup = 6;
+}
+
+message Guarantee {
+  EnforcementStatus status = 1;
+  string mechanism = 2;
+}
+
+enum EnforcementStatus {
+  ENFORCEMENT_STATUS_UNSPECIFIED = 0;
+  ENFORCEMENT_STATUS_ENFORCED = 1;
+  ENFORCEMENT_STATUS_BEST_EFFORT = 2;
+  ENFORCEMENT_STATUS_UNAVAILABLE = 3;
+}
+
+message BackendCapabilities {
+  string name = 1;
+  string build_id = 2;
+  repeated string supported_features = 3;
+  repeated string constraint_kinds = 4;
+  repeated string objective_kinds = 5;
+  repeated SearchMode search_modes = 6;
+  uint64 maximum_exact_integer = 7;
+  bool seed_supported = 8;
+}
+
+message ModelLimits {
+  uint64 maximum_message_bytes = 1;
+  uint64 maximum_problem_bytes = 2;
+  uint64 maximum_decoded_bytes = 3;
+  uint64 maximum_items = 4;
+  uint64 maximum_targets = 5;
+  uint64 maximum_dimensions = 6;
+  uint64 maximum_memberships = 7;
+  uint64 maximum_domain_entries = 8;
+  uint64 maximum_overrides = 9;
+  uint64 maximum_constraints = 10;
+  uint64 maximum_objectives = 11;
+  uint32 maximum_nesting = 12;
+  uint32 maximum_string_bytes = 13;
+  uint32 maximum_prepared = 14;
+  uint64 maximum_prepared_bytes = 15;
+  uint32 maximum_diagnostic_bytes = 16;
+}
+
+message ValidateRequest { SessionRef session = 1; bytes problem_json = 2; }
+message ValidateResponse { bytes model_digest = 1; }
+message EvaluateRequest {
+  SessionRef session = 1;
+  bytes problem_json = 2;
+  bytes assignment_json = 3;
+}
+message EvaluateResponse { bytes model_digest = 1; bytes evaluation_json = 2; }
+message PrepareRequest { SessionRef session = 1; bytes problem_json = 2; }
+message PrepareResponse {
+  bytes prepared_handle = 1;
+  bytes model_digest = 2;
+  uint64 remaining_lease_millis = 3;
+}
+message ReleaseRequest { SessionRef session = 1; bytes prepared_handle = 2; }
+message ReleaseResponse {}
+
+message SubmitRequest {
+  SessionRef session = 1;
+  oneof input {
+    bytes problem_json = 2;
+    bytes prepared_handle = 3;
+  }
+  string backend = 4;
+  SearchOptions options = 5;
+  bytes assignment_hint_json = 6;
+  // Optional and bounded; scoped to authenticated caller and session generation.
+  bytes idempotency_token = 7;
+}
+
+message SearchOptions {
+  SearchMode mode = 1;
+  uint64 wall_time_millis = 2;
+  uint32 threads = 3;
+  optional uint64 seed = 4;
+  uint64 memory_bytes = 5;
+  uint64 cpu_time_millis = 6;
+  uint64 maximum_iterations = 7;
+}
+
+enum SearchMode {
+  SEARCH_MODE_UNSPECIFIED = 0;
+  SEARCH_MODE_LOCAL_SEARCH = 1;
+  SEARCH_MODE_MIP = 2;
+}
+
+message SubmitResponse {
+  JobRef job = 1;
+  bytes model_digest = 2;
+  bytes request_digest = 3;
+  uint64 accepted_wall_time_millis = 4;
+}
+
+message JobRef { SessionRef session = 1; bytes job_id = 2; }
+message JobRequest { JobRef job = 1; }
+message WatchRequest { JobRef job = 1; uint64 after_event_sequence = 2; }
+
+message JobState {
+  JobRef job = 1;
+  Lifecycle lifecycle = 2;
+  uint64 remaining_lease_millis = 3;
+  bool cancellation_accepted = 4;
+}
+
+enum Lifecycle {
+  LIFECYCLE_UNSPECIFIED = 0;
+  LIFECYCLE_QUEUED = 1;
+  LIFECYCLE_RUNNING = 2;
+  LIFECYCLE_VERIFYING = 3;
+  LIFECYCLE_TERMINAL = 4;
+}
+
+message JobEvent {
+  uint64 sequence = 1;
+  JobState state = 2;
+  string progress_detail = 3;
+  bool earlier_progress_lost = 4;
+}
+
+message ResultResponse {
+  // Published result.schema.json, including independent verification/provenance.
+  bytes result_json = 1;
+  uint64 remaining_retention_millis = 2;
+}
+
+message CloseRequest {
+  SessionRef session = 1;
+  CloseMode mode = 2;
+  uint64 timeout_millis = 3;
+}
+
+enum CloseMode {
+  CLOSE_MODE_UNSPECIFIED = 0;
+  CLOSE_MODE_DRAIN = 1;
+  CLOSE_MODE_CANCEL = 2;
+}
+
+message CloseResponse {
+  uint64 completed = 1;
+  uint64 unconfirmed = 2;
+  uint64 workers_unconfirmed = 3;
+}
+
+// Typed bounded error detail; RPC bindings carry it in dispatch-error-bin metadata.
+message SessionError {
+  SessionErrorCode code = 1;
+  string detail = 2;
+  repeated string unsupported_features = 3;
+}
+
+enum SessionErrorCode {
+  SESSION_ERROR_CODE_UNSPECIFIED = 0;
+  SESSION_ERROR_CODE_INVALID_INPUT = 1;
+  SESSION_ERROR_CODE_UNSUPPORTED_VERSION = 2;
+  SESSION_ERROR_CODE_UNSUPPORTED_MODEL = 3;
+  SESSION_ERROR_CODE_RESOURCE_LIMIT = 4;
+  SESSION_ERROR_CODE_STALE_HANDLE = 5;
+  SESSION_ERROR_CODE_EXPIRED_HANDLE = 6;
+  SESSION_ERROR_CODE_UNAUTHORIZED = 7;
+  SESSION_ERROR_CODE_UNAVAILABLE = 8;
+  SESSION_ERROR_CODE_NOT_FOUND = 9;
+  SESSION_ERROR_CODE_COMMITMENT_MISMATCH = 10;
+  SESSION_ERROR_CODE_IDEMPOTENCY_CONFLICT = 11;
+}

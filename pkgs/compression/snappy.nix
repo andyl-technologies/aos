@@ -25,8 +25,24 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -180,10 +196,15 @@ in
         {
           name = "configure";
           script = ''
+            # Source/Sink are public polymorphic interfaces. Keep their typeinfo
+            # available to consumers; the per-config flag follows Snappy's
+            # unconditional -fno-rtti in the generated compiler command.
             cmake -S . -B build \
               $cmakeFlags \
               -DCMAKE_INSTALL_PREFIX=$out \
               -DCMAKE_INSTALL_LIBDIR=lib \
+              -DCMAKE_BUILD_TYPE=Release \
+              "-DCMAKE_CXX_FLAGS_RELEASE=-O3 -DNDEBUG -frtti" \
               -DBUILD_SHARED_LIBS=ON \
               -DSNAPPY_BUILD_TESTS=ON \
               -DSNAPPY_BUILD_BENCHMARKS=ON \
@@ -206,6 +227,12 @@ in
           name = "build";
           script = ''
             cmake --build build -j$NIX_BUILD_CORES
+          '';
+        }
+        {
+          name = "check";
+          script = ''
+            ctest --test-dir build --output-on-failure
           '';
         }
         {

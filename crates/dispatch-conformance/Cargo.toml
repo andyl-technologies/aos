@@ -1,0 +1,27 @@
+[package]
+name = "dispatch-conformance"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish = false
+description = "Independent assignment and execution conformance checks"
+
+[[bin]]
+name = "dispatch-systemd-probe"
+path = "src/bin/dispatch-systemd-probe.rs"
+
+[dependencies]
+dispatch-model = { path = "../dispatch-model" }
+dispatch-protocol = { path = "../dispatch-protocol" }
+dispatch-runtime = { path = "../dispatch-runtime", features = ["systemd"] }
+serde_json.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+async-trait.workspace = true
+hex.workspace = true
+tempfile.workspace = true
+rustix = { workspace = true, features = ["process"] }
+
+[lints]
+workspace = true

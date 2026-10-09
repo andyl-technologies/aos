@@ -1,0 +1,206 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:dispatch:schema:v1:evaluation",
+  "title": "Dispatch Evaluation version 1",
+  "$ref": "#/$defs/Evaluation",
+  "$defs": {
+    "Evaluation": {
+      "type": "object",
+      "properties": {
+        "resource_loads": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ResourceLoad"
+          },
+          "uniqueItems": true
+        },
+        "violations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Violation"
+          },
+          "uniqueItems": true
+        },
+        "repair_debt": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ComponentDebt"
+          },
+          "uniqueItems": true,
+          "description": "Sparse; omitted valid zero-debt/zero-baseline components mean exact zero. Unknown components are never implied."
+        },
+        "objectives": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Rational"
+          }
+        },
+        "term_values": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/Rational"
+          },
+          "propertyNames": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "term_contributions": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/Rational"
+          },
+          "propertyNames": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "movements": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/MovementCategory"
+          },
+          "propertyNames": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        }
+      },
+      "required": [
+        "resource_loads",
+        "violations",
+        "repair_debt",
+        "objectives",
+        "term_values",
+        "term_contributions",
+        "movements"
+      ],
+      "additionalProperties": false
+    },
+    "ResourceLoad": {
+      "type": "object",
+      "properties": {
+        "target": {
+          "type": "string"
+        },
+        "dimension": {
+          "type": "string"
+        },
+        "phase": {
+          "$ref": "#/$defs/AccountingPhase"
+        },
+        "quantity": {
+          "$ref": "#/$defs/Integer"
+        }
+      },
+      "required": [
+        "target",
+        "dimension",
+        "phase",
+        "quantity"
+      ],
+      "additionalProperties": false
+    },
+    "AccountingPhase": {
+      "type": "string",
+      "enum": [
+        "final",
+        "overlap"
+      ]
+    },
+    "Integer": {
+      "type": "string",
+      "pattern": "^(0|-?[1-9][0-9]*)$"
+    },
+    "Violation": {
+      "type": "object",
+      "properties": {
+        "component": {
+          "$ref": "#/$defs/ComponentId"
+        },
+        "actual_debt": {
+          "$ref": "#/$defs/Rational"
+        },
+        "allowed_debt": {
+          "$ref": "#/$defs/Rational"
+        },
+        "repair": {
+          "type": "boolean"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "component",
+        "actual_debt",
+        "allowed_debt",
+        "repair",
+        "message"
+      ],
+      "additionalProperties": false
+    },
+    "ComponentId": {
+      "type": "object",
+      "properties": {
+        "constraint": {
+          "type": "string"
+        },
+        "component": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "constraint",
+        "component"
+      ],
+      "additionalProperties": false
+    },
+    "Rational": {
+      "type": "object",
+      "properties": {
+        "numerator": {
+          "$ref": "#/$defs/Integer"
+        },
+        "denominator": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$"
+        }
+      },
+      "required": [
+        "numerator",
+        "denominator"
+      ],
+      "additionalProperties": false,
+      "description": "Reduced exact rational; zero denominator is forbidden and zero has denominator one."
+    },
+    "ComponentDebt": {
+      "type": "object",
+      "properties": {
+        "component": {
+          "$ref": "#/$defs/ComponentId"
+        },
+        "debt": {
+          "$ref": "#/$defs/Integer"
+        },
+        "baseline": {
+          "$ref": "#/$defs/Integer"
+        }
+      },
+      "required": [
+        "component",
+        "debt",
+        "baseline"
+      ],
+      "additionalProperties": false
+    },
+    "MovementCategory": {
+      "type": "string",
+      "enum": [
+        "new_placement",
+        "relocation",
+        "retirement"
+      ]
+    }
+  }
+}

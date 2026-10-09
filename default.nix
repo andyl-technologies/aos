@@ -1725,6 +1725,7 @@ in rec {
       cargo-artifacts = import ./tests/cargo-artifacts {inherit pkgs;};
       aos = pkgs.aos.passthru.tests;
       aos-test-targets = pkgs.aos.passthru.testTargets;
+      dispatch = pkgs.dispatch.passthru.tests;
       systemd-native-unit-parser = import ./tests/abilities/systemd-native-unit-parser.nix {inherit pkgs;};
       crucible-controller = pkgs.crucible-controller;
       crucible-qemu-plugin = pkgs.crucible-qemu-plugin;
@@ -2206,6 +2207,17 @@ in rec {
       serverVmSystem.config.system.build.checks
       // {
         apm = apmTests;
+        dispatch-systemd = import ./tests/dispatch/systemd-vm.nix {
+          inherit pkgs lib testing;
+          system = serverVmSystem;
+          probePackage = pkgs.dispatch.passthru.tests;
+        };
+        dispatch-systemd-tcg = import ./tests/dispatch/systemd-vm.nix {
+          inherit pkgs lib testing;
+          system = serverVmSystem;
+          probePackage = pkgs.dispatch.passthru.tests;
+          allowTcg = true;
+        };
         hub-native-operations = hubNativeOperationsTest;
         native-configuration-lower = import ./tests/vm/configuration-lower.nix {inherit pkgs testing;};
         hub-settings = hubSettingsTest;

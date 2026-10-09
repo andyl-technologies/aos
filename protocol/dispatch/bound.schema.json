@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:dispatch:schema:v1:bound",
+  "title": "Dispatch BoundReport version 1",
+  "$ref": "#/$defs/BoundReport",
+  "$defs": {
+    "BoundReport": {
+      "type": "object",
+      "properties": {
+        "lower_bound": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Rational"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "incumbent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Rational"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "absolute_gap": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Rational"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "relative_gap": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Rational"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "units": {
+          "type": "string"
+        },
+        "compilation": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "units",
+        "compilation"
+      ],
+      "additionalProperties": false
+    },
+    "Rational": {
+      "type": "object",
+      "properties": {
+        "numerator": {
+          "$ref": "#/$defs/Integer"
+        },
+        "denominator": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$"
+        }
+      },
+      "required": [
+        "numerator",
+        "denominator"
+      ],
+      "additionalProperties": false,
+      "description": "Reduced exact rational; zero denominator is forbidden and zero has denominator one."
+    },
+    "Integer": {
+      "type": "string",
+      "pattern": "^(0|-?[1-9][0-9]*)$"
+    }
+  }
+}

@@ -131,7 +131,7 @@
     )
     workspaceManifest.workspace.members;
   applicationTestPackages = builtins.sort builtins.lessThan (lib.unique (
-    builtins.filter (name: name == "aos" || lib.hasPrefix "aos-" name) workspacePackageNames
+    builtins.filter (name: name == "aos" || lib.hasPrefix "aos-" name || name == "dispatch" || lib.hasPrefix "dispatch-" name) workspacePackageNames
   ));
   applicationTestFlags =
     "--features aos/release-fleet-fixture "
