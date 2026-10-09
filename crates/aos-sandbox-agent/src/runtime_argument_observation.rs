@@ -480,4 +480,50 @@ mod tests {
             Err(GuestRuntimeArgumentObservationErrorV1::InvalidProfile)
         );
     }
+
+    #[test]
+    fn mismatched_complete_request_precedes_missing_measurement_and_signature() {
+        let expected = request();
+        let mut different = expected.clone();
+        different.challenge = [13; 32];
+        let signing_key = SigningKey::from_bytes(&[12; 32]);
+        let mut packet = sign_readback_with_limit(&different, 131_072, &signing_key)
+            .expect("valid signed measurement");
+        packet.truncate(10 + different.encode().len());
+
+        assert_eq!(
+            verify_guest_runtime_argument_readback_v1(
+                &packet,
+                &expected,
+                &signing_key.verifying_key(),
+            ),
+            Err(GuestRuntimeArgumentObservationErrorV1::CurrentMismatch)
+        );
+        assert_eq!(
+            verify_guest_runtime_argument_readback_v1(
+                &packet,
+                &different,
+                &signing_key.verifying_key(),
+            ),
+            Err(GuestRuntimeArgumentObservationErrorV1::InvalidPacket)
+        );
+    }
+
+    #[test]
+    fn trailing_bytes_precede_unsupported_profile_validation() {
+        let mut unsupported = request();
+        unsupported.profile = FeatureRef::new("aos.sandbox.runtime.not-registered", 1, 1)
+            .expect("syntactically valid profile");
+        let mut encoded = unsupported.encode();
+
+        assert_eq!(
+            GuestRuntimeArgumentObserveRequestV1::decode(&encoded),
+            Err(GuestRuntimeArgumentObservationErrorV1::InvalidProfile)
+        );
+        encoded.push(0);
+        assert_eq!(
+            GuestRuntimeArgumentObserveRequestV1::decode(&encoded),
+            Err(GuestRuntimeArgumentObservationErrorV1::InvalidPacket)
+        );
+    }
 }
