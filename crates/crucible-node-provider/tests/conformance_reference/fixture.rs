@@ -34,7 +34,7 @@ pub(super) struct NativeService {
 
 impl NativeService {
     pub(super) fn launch(provider: &Path, device: &Path, maximum_operations: u64) -> Self {
-        Self::launch_selected(provider, device, maximum_operations, None)
+        Self::launch_selected(provider, device, maximum_operations, None, Vec::new())
     }
 
     pub(super) fn launch_public_linked(
@@ -48,6 +48,26 @@ impl NativeService {
             device,
             maximum_operations,
             Some(PublicReferenceProfile::ByteLinkedV1 { closed_ingress }),
+            Vec::new(),
+        )
+    }
+
+    // crucible-lint: allow rust-allow -- shared fixture helper is exercised by the separate actual installed-client target.
+    #[allow(dead_code)]
+    pub(super) fn launch_installed(
+        provider: &Path,
+        device: &Path,
+        maximum_operations: u64,
+        closed_ingress: bool,
+        qualifications: Vec<InstalledContent>,
+    ) -> Self {
+        assert!(!qualifications.is_empty());
+        Self::launch_selected(
+            provider,
+            device,
+            maximum_operations,
+            Some(PublicReferenceProfile::ByteLinkedV1 { closed_ingress }),
+            qualifications,
         )
     }
 
@@ -56,6 +76,7 @@ impl NativeService {
         device: &Path,
         maximum_operations: u64,
         selection: Option<PublicReferenceProfile>,
+        qualifications: Vec<InstalledContent>,
     ) -> Self {
         let directory = std::env::temp_dir().join(format!(
             "cnp-native-conformance-{}-{}",
@@ -103,7 +124,13 @@ impl NativeService {
             host_receipt: placeholder,
             extensions: Extensions::new(),
         };
-        let (binding, owner_binding) = profile.bind(authority.clone()).unwrap();
+        let qualification_refs = qualifications
+            .iter()
+            .map(|content| content.reference.clone())
+            .collect::<Vec<_>>();
+        let (binding, owner_binding) = profile
+            .bind_qualified(authority.clone(), &qualification_refs)
+            .unwrap();
         let mut installed = Vec::new();
         let scenario = install_json(
             &mut installed,
@@ -168,6 +195,15 @@ impl NativeService {
         )
         .unwrap();
         bootstrap.installed_content.extend(installed);
+        let installed_launch = if qualifications.is_empty() {
+            None
+        } else {
+            let launch = bootstrap
+                .install_qualifications(&profile, qualifications)
+                .unwrap();
+            bootstrap = launch.bootstrap.clone();
+            Some(launch)
+        };
         bootstrap.validate().unwrap();
         let private_bindings = BTreeMap::from([
             ("launch-token".into(), serde_json::to_value(token).unwrap()),
@@ -196,14 +232,18 @@ impl NativeService {
             bootstrap,
             private_bindings,
         };
-        let private_launch = match selection {
-            Some(profile) => serde_json::to_value(ReferenceServiceLaunchBootstrap {
-                schema_version: 2,
-                profile,
-                bootstrap: service.bootstrap.clone(),
-            })
-            .unwrap(),
-            None => serde_json::to_value(&service.bootstrap).unwrap(),
+        let private_launch = if let Some(launch) = installed_launch {
+            serde_json::to_value(launch).unwrap()
+        } else {
+            match selection {
+                Some(profile) => serde_json::to_value(ReferenceServiceLaunchBootstrap {
+                    schema_version: 2,
+                    profile,
+                    bootstrap: service.bootstrap.clone(),
+                })
+                .unwrap(),
+                None => serde_json::to_value(&service.bootstrap).unwrap(),
+            }
         };
         crucible_node_provider::transport::write_frame(
             &mut service.process.stdin.take().unwrap(),

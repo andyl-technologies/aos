@@ -65,6 +65,40 @@ pub fn serve_selected(
     bootstrap: ReferenceServiceBootstrap,
     selection: PublicReferenceProfile,
 ) -> Result<(), ProviderError> {
+    serve_bound(socket, child, bootstrap, selection, &[])
+}
+
+/// Serves a privately installed qualified binding without minting provider proof.
+///
+/// The private edition-three record supplies exact host-selected evidence. Its
+/// immutable bindings and host admission must agree before opening the socket;
+/// genuine evidence acceptance remains exclusively in the host registry.
+///
+/// # Errors
+/// Refuses malformed installed launch, absent evidence bytes, changed binding
+/// identity or unavailable native custody and resource enforcement.
+pub fn serve_installed(
+    socket: &Path,
+    child: &Path,
+    launch: super::ReferenceServiceInstalledLaunchBootstrap,
+) -> Result<(), ProviderError> {
+    launch.validate()?;
+    serve_bound(
+        socket,
+        child,
+        launch.bootstrap,
+        launch.profile,
+        &launch.qualification_refs,
+    )
+}
+
+fn serve_bound(
+    socket: &Path,
+    child: &Path,
+    bootstrap: ReferenceServiceBootstrap,
+    selection: PublicReferenceProfile,
+    qualifications: &[ContentRef],
+) -> Result<(), ProviderError> {
     bootstrap.validate()?;
     super::limits::enforce(&bootstrap)?;
     let parent = socket
@@ -102,7 +136,8 @@ pub fn serve_selected(
             )
         }
     }?;
-    let (binding, owner_binding) = profile.bind(bootstrap.authority.clone())?;
+    let (binding, owner_binding) =
+        profile.bind_qualified(bootstrap.authority.clone(), qualifications)?;
     let supervisor = Supervisor::new();
     let blobs = BlobReceiver::new(
         bootstrap.authority.session_id.clone(),
@@ -155,6 +190,7 @@ pub fn serve_selected(
         || admitted.world_binding_hash != bootstrap.world_binding_hash
         || admitted.measured_artifacts != profile.implementation.artifacts
         || admitted.resource_limits != bootstrap.resource_limits
+        || admitted.qualification_refs != qualifications
     {
         return Err(ProviderError::Correlation(
             "private bootstrap admission differs from measured installation",

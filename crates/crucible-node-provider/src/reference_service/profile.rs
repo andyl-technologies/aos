@@ -662,6 +662,25 @@ impl ReferenceProfile {
         &self,
         authority: LiveAuthority,
     ) -> Result<(NodeBinding, OwnerBinding), ProviderError> {
+        self.bind_qualified(authority, &[])
+    }
+
+    /// Commits caller-supplied host qualification references to immutable bindings.
+    ///
+    /// This method validates data only. The installation registry must separately
+    /// authenticate the exact evidence, actual native custody and permitted
+    /// claims; a provider cannot qualify itself by constructing these references.
+    /// Empty references retain the original unqualified binding exactly.
+    ///
+    /// # Errors
+    /// Rejects invalid authority, unsorted or duplicate references, excessive
+    /// qualification bounds or invalid resulting portable bindings.
+    pub fn bind_qualified(
+        &self,
+        authority: LiveAuthority,
+        qualifications: &[ContentRef],
+    ) -> Result<(NodeBinding, OwnerBinding), ProviderError> {
+        validate_qualifications(qualifications)?;
         authority.validate()?;
         let binding = NodeBinding {
             compatibility: BindingCompatibility {
@@ -676,7 +695,7 @@ impl ReferenceProfile {
                 capture_owner: self.owner.clone(),
                 capabilities_ref: self.capabilities_ref.clone(),
                 guarantees_ref: self.guarantees_ref.clone(),
-                qualification_refs: Vec::new(),
+                qualification_refs: qualifications.to_vec(),
                 extensions: Extensions::new(),
             },
             authority,
@@ -698,6 +717,23 @@ impl ReferenceProfile {
         owner.validate()?;
         Ok((binding, owner))
     }
+}
+
+pub(super) fn validate_qualifications(qualifications: &[ContentRef]) -> Result<(), ProviderError> {
+    if qualifications.len() > 4096
+        || qualifications.windows(2).any(|pair| {
+            (&pair[0].hash.domain, &pair[0].hash.digest)
+                >= (&pair[1].hash.domain, &pair[1].hash.digest)
+        })
+    {
+        return Err(ProviderError::Frame(
+            "installed qualifications exceed bounds or change canonical order",
+        ));
+    }
+    for reference in qualifications {
+        reference.validate()?;
+    }
+    Ok(())
 }
 
 fn id(value: &str) -> Result<Id, ProviderError> {

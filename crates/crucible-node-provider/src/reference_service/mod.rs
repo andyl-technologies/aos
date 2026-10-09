@@ -7,6 +7,7 @@
 mod bootstrap;
 mod control;
 mod effects;
+mod installed;
 mod limits;
 pub mod profile;
 mod resources;
@@ -19,9 +20,10 @@ pub use bootstrap::{
     InstalledContent, PublicReferenceProfile, ReferenceServiceBootstrap,
     ReferenceServiceLaunchBootstrap,
 };
+pub use installed::ReferenceServiceInstalledLaunchBootstrap;
 pub use profile::{ProfileContent, ReferenceProfile};
 pub use resources::{ConsumedRequest, PublicationConsumption, RequestConsumption};
-pub use server::{serve, serve_selected};
+pub use server::{serve, serve_installed, serve_selected};
 
 use crucible_node_contract::ContractError;
 use serde::Serialize;

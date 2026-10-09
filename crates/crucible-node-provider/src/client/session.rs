@@ -112,6 +112,8 @@ pub struct ClientSession {
     authority: ConnectionAuthority,
     deadline: ExchangeDeadline,
     sequence: U64,
+    peer_pid: u32,
+    peer_executable: ContentRef,
 }
 
 impl ClientSession {
@@ -186,12 +188,26 @@ impl ClientSession {
             authority,
             deadline,
             sequence: U64::new(2),
+            peer_pid: peer.pid,
+            peer_executable: peer.executable.clone(),
         })
     }
 
     /// Returns the original opaque registration lease for separately checked host routing.
     pub fn authority(&self) -> &ConnectionAuthority {
         &self.authority
+    }
+
+    /// Returns the actual kernel peer PID checked during this original connection.
+    ///
+    /// The scalar is diagnostic evidence, not native effect or reclamation authority.
+    pub fn peer_pid(&self) -> u32 {
+        self.peer_pid
+    }
+
+    /// Returns independently measured peer executable bytes committed at negotiation.
+    pub fn peer_executable(&self) -> &ContentRef {
+        &self.peer_executable
     }
 
     /// Sends one original request or returns its unchanged retained response.

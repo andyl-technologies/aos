@@ -262,7 +262,7 @@ impl Resources {
             || record.world_binding_hash != self.bootstrap.world_binding_hash
             || record.measured_artifacts != self.profile.implementation.artifacts
             || record.resource_limits != self.bootstrap.resource_limits
-            || !record.qualification_refs.is_empty()
+            || record.qualification_refs != self.binding.compatibility.qualification_refs
         {
             return Err(ProviderError::Correlation(
                 "host admission content differs from actual installed native profile",

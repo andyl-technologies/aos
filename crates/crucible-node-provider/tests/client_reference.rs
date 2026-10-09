@@ -151,11 +151,47 @@ fn request(
 #[test]
 fn real_public_client_receives_native_gate_record_before_admitting_readiness_and_reaps_original_child()
  {
+    run_native_client(false);
+}
+
+#[test]
+fn actual_installed_launch_preserves_qualified_binding_identity_through_native_realize_and_admit() {
+    run_native_client(true);
+}
+
+fn run_native_client(installed_qualification: bool) {
     let provider = Path::new(env!("CARGO_BIN_EXE_crucible-reference-provider"));
     let device = Path::new(env!("CARGO_BIN_EXE_crucible-reference-device"));
-    let service = fixture::NativeService::launch_public_linked(provider, device, 32, true);
+    let evidence =
+        b"private host-selected CNP integration fixture; not native fidelity qualification"
+            .to_vec();
+    let evidence_ref = canonical::content_ref(&evidence, "text/plain").unwrap();
+    let qualifications = if installed_qualification {
+        vec![evidence_ref.clone()]
+    } else {
+        Vec::new()
+    };
+    let service = if installed_qualification {
+        fixture::NativeService::launch_installed(
+            provider,
+            device,
+            32,
+            true,
+            vec![
+                crucible_node_provider::reference_service::InstalledContent {
+                    reference: evidence_ref,
+                    bytes: Bytes::new(evidence),
+                },
+            ],
+        )
+    } else {
+        fixture::NativeService::launch_public_linked(provider, device, 32, true)
+    };
     let bootstrap = &service.bootstrap;
-    let (binding, _) = service.profile.bind(bootstrap.authority.clone()).unwrap();
+    let (binding, owner_binding) = service
+        .profile
+        .bind_qualified(bootstrap.authority.clone(), &qualifications)
+        .unwrap();
     let features = vec![
         fixture::id("cnp.control-evidence/1"),
         fixture::id("cnp.core/1"),
@@ -252,6 +288,17 @@ fn real_public_client_receives_native_gate_record_before_admitting_readiness_and
     let Some(MethodResult::Realize(result)) = decoded.result else {
         panic!("real realization refused");
     };
+    assert_eq!(result.realization_manifest.bindings, vec![binding.clone()]);
+    assert_eq!(
+        result.realization_manifest.owner_bindings,
+        vec![owner_binding]
+    );
+    assert_eq!(
+        result.realization_manifest.bindings[0]
+            .compatibility
+            .qualification_refs,
+        qualifications
+    );
     session
         .receive_content(
             &mut custody,
@@ -306,6 +353,39 @@ fn real_public_client_receives_native_gate_record_before_admitting_readiness_and
             .is_err()
     );
 
+    let mut controller = ReferenceController::new_qualified(
+        service.profile.clone(),
+        bootstrap.clone(),
+        session,
+        custody,
+        Duration::from_secs(3),
+        qualifications,
+    )
+    .unwrap();
+    let admitted = controller
+        .call(
+            fixture::id("original-qualified-admit"),
+            None,
+            Method::Admit,
+            false,
+            AdmitRequest {
+                bindings: vec![binding.clone()],
+                world_binding_hash: bootstrap.world_binding_hash.clone(),
+                admission_receipt: bootstrap.admission_receipt.clone(),
+                extensions: Extensions::new(),
+            },
+        )
+        .unwrap();
+    let Some(MethodResult::Admit(admitted)) = admitted.result else {
+        panic!("original host binding was not admitted");
+    };
+    assert_eq!(
+        admitted.accepted_binding_hashes,
+        vec![binding.identity().unwrap()]
+    );
+    let inert = canonical::content_ref(&[1, 2], "application/octet-stream").unwrap();
+    controller.upload(&inert, &[1, 2]).unwrap();
+    assert_eq!(controller.content(&inert).unwrap(), &[1, 2]);
     let abort = request(
         &service,
         Method::Abort,
@@ -314,25 +394,22 @@ fn real_public_client_receives_native_gate_record_before_admitting_readiness_and
             "transaction_id":bootstrap.transaction_id,"reason":"test-complete","extensions":{}
         }),
     );
-    let response = session
-        .exchange(&mut custody, abort.clone(), Duration::from_secs(3))
-        .unwrap();
-    let Some(MethodResult::Abort(result)) = decode_response(
-        &decode_request(Method::Abort, &abort.body).unwrap(),
-        &response.body,
-    )
-    .unwrap()
-    .result
-    else {
-        panic!("original native cleanup refused");
-    };
-    session
-        .receive_content(
-            &mut custody,
-            &[result.cleanup_receipt],
-            Duration::from_secs(3),
+    let response = controller
+        .call(
+            fixture::id("original-abort"),
+            None,
+            Method::Abort,
+            false,
+            abort.body,
         )
         .unwrap();
+    let Some(MethodResult::Abort(result)) = response.result else {
+        panic!("original native cleanup refused");
+    };
+    let receipt: ControlReceipt = controller.record(&result.cleanup_receipt).unwrap();
+    let cleanup: CleanupRecord = controller.record(&receipt.record_ref).unwrap();
+    assert_eq!(receipt.request_id, fixture::id("original-abort"));
+    assert_eq!(cleanup.disposition, CleanupDisposition::Retained);
     assert!(!Path::new(&format!("/proc/{}", native_pid.get())).exists());
-    session.close();
+    controller.fence();
 }

@@ -4,7 +4,10 @@ use std::path::PathBuf;
 
 use crucible_node_contract::{Validate, canonical};
 use crucible_node_provider::{
-    reference_service::{ReferenceServiceBootstrap, ReferenceServiceLaunchBootstrap},
+    reference_service::{
+        ReferenceServiceBootstrap, ReferenceServiceInstalledLaunchBootstrap,
+        ReferenceServiceLaunchBootstrap,
+    },
     transport::FrameReader,
 };
 
@@ -32,7 +35,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .read()?
         .ok_or("private bootstrap missing")?;
     let bytes = canonical::canonical_json(&value)?;
-    if value.get("schema_version").is_some() {
+    if value.get("schema_version") == Some(&serde_json::json!(3)) {
+        let launch: ReferenceServiceInstalledLaunchBootstrap =
+            canonical::decode(&bytes, 16 * 1024 * 1024)?;
+        crucible_node_provider::reference_service::serve_installed(&socket, &child, launch)?;
+    } else if value.get("schema_version").is_some() {
         let launch: ReferenceServiceLaunchBootstrap = canonical::decode(&bytes, 16 * 1024 * 1024)?;
         launch.validate()?;
         crucible_node_provider::reference_service::serve_selected(
