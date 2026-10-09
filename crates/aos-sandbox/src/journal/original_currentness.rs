@@ -44,7 +44,7 @@ pub(crate) enum Q04CacheTerminalPhaseV1 {
 
 #[cfg(target_os = "linux")]
 impl Q04CacheTerminalPhaseV1 {
-    fn prefix(self) -> usize {
+    pub(super) fn prefix(self) -> usize {
         match self {
             Self::Held => 1,
             Self::Released => 2,
