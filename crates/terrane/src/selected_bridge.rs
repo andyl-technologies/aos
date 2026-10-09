@@ -41,6 +41,8 @@ pub(crate) mod effect_test_checks;
 
 use crate::bucket::publication::SelectedObservation;
 use crate::store::StoreFailure;
+use crate::store::native_publication_effects::collection_permanent_local::NativePermanentObservation;
+use std::sync::Arc;
 use terrane_core::gc::publication::{
     LogicalChange, PublicationProof, PublicationState, SourceLineage,
 };
@@ -73,13 +75,54 @@ pub(crate) struct OwnedFinalCheck {
     check: SharedOwnedCheck,
 }
 
+#[cfg(not(feature = "send"))]
+use std::rc::Rc as SharedOwned;
+#[cfg(feature = "send")]
+use std::sync::Arc as SharedOwned;
+
 impl OwnedFinalCheck {
+    /// Retains actual collector extraction descriptors beside genuine current authority.
+    ///
+    /// The closed worker receipt preserves physical source continuity through
+    /// subsequent effects and waiter cancellation. It does not supply serving
+    /// eligibility, replace complete body verification, or retain stale selected
+    /// operation-cache preimages after this producer's own publication.
+    pub(crate) fn with_permanent_source(&self, source: &Arc<NativePermanentObservation>) -> Self {
+        let current = self.clone();
+        let source = Arc::clone(source);
+        Self {
+            check: SharedOwned::new(move || {
+                current.recheck()?;
+                source.recheck_source().map_err(native_restore_failure)?;
+                current.recheck()
+            }),
+        }
+    }
+
     /// Refreshes genuine requests against their retained clock, keys and limits.
     ///
     /// # Errors
     /// Preserves current request or deadline rejection from the checked producer.
     pub(crate) fn recheck(&self) -> Result<(), StoreFailure> {
         (self.check)()
+    }
+}
+
+/// Preserves the original native restore failure and its I/O cause.
+pub(crate) fn native_restore_failure(error: crate::store::NativeEffectFailure) -> StoreFailure {
+    match error {
+        crate::store::NativeEffectFailure::Rejected(error) => error,
+        crate::store::NativeEffectFailure::Io(error) => {
+            let kind = match error.kind() {
+                std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem => {
+                    crate::store::StoreErrorKind::ReadOnly
+                }
+                std::io::ErrorKind::StorageFull => crate::store::StoreErrorKind::Capacity,
+                std::io::ErrorKind::Unsupported => crate::store::StoreErrorKind::Unsupported,
+                _ => crate::store::StoreErrorKind::Unavailable { retry_after: None },
+            };
+            StoreFailure::with_source(kind, error)
+        }
     }
 }
 

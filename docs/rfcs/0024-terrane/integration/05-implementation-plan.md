@@ -5060,8 +5060,23 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   ownership and independently qualified optional lineage. Original preparation,
   barrier and valid continuous G/D observations remain fixed while genuinely
   changed current roots use fresh checkpoints. Preparation-initial and ordinary
-  sweep associations remain unchanged. Pure later-cycle and refusal coverage is
-  added; compilation, owning gates and native qualification remain pending.
+  sweep associations remain unchanged. On private prerequisite composition
+  `f7a9820a31`, the complete no-default-features Core library suite passes all
+  631 tests with no skips, and strict all-target Clippy passes. The owning
+  `core-no-std` Nix gate also passes; its actual source matches the complete Core
+  directory and both workspace Cargo files byte-for-byte. These results qualify
+  that Core source only; native composition and runtime qualification remain
+  pending.
+  The parent-owned native DATA retention prerequisite adds a private observation
+  path to the existing neutral restore-pair executor without creator journals or
+  a synthetic Trash identity. Ordinary restore and cancellation constructors
+  preserve their actual optional journal preimages and refusal rules. A concrete
+  owned-source combiner retains executor-produced extraction descriptors beside
+  the producer's genuine current check through subsequent effects and waiter
+  cancellation, without carrying stale selected cache bodies or granting serving
+  permission. These shared prerequisites are source-only; their complete native
+  dependencies, compilation and genuine journal-less/restoration fixtures remain
+  pending. No task is accepted by introducing them.
   Actual remote provider qualification belongs to T3. No remote conformance
   or full `gc-two-phase-delete` pass is claimed. D-78
   registers physical creation journals and recoverable deletion intent.
