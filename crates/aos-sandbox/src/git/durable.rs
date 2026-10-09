@@ -1318,7 +1318,9 @@ pub fn decode_git_projection_checkpoint_v1(
     if !preflight.is_empty() {
         return Err(GitModelError::CorruptEncoding);
     }
-    let mut bytes = BoundedReader::new(&body[CHECKPOINT_HEADER_BYTES..], |_| GitModelError::CorruptEncoding);
+    let mut bytes = BoundedReader::new(&body[CHECKPOINT_HEADER_BYTES..], |_| {
+        GitModelError::CorruptEncoding
+    });
     let mut records = Vec::new();
     records
         .try_reserve_exact(count)

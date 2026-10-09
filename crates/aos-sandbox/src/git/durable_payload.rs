@@ -322,10 +322,10 @@ pub fn decode_git_durable_payload_v1(
             let target = decode_repository(&mut bytes, trusted_validator)?;
             let source_repository = ResourceId::from_bytes(bytes.array()?);
             let source_revision = Revision::new(u64::from_be_bytes(bytes.array()?));
-            let source_export = GitExportGenerationDigestV1::from_stored(
-                ObjectDigest::from_bytes(bytes.array()?),
-            )?;
-            let pack = GitPackGenerationDigestV1::from_stored(ObjectDigest::from_bytes(bytes.array()?))?;
+            let source_export =
+                GitExportGenerationDigestV1::from_stored(ObjectDigest::from_bytes(bytes.array()?))?;
+            let pack =
+                GitPackGenerationDigestV1::from_stored(ObjectDigest::from_bytes(bytes.array()?))?;
             let lease = decode_pack_lease(&mut bytes)?;
             let observed_at = GitBoottimeV1::from_stored(u64::from_be_bytes(bytes.array()?))?;
             let record_revision = Revision::new(u64::from_be_bytes(bytes.array()?));
@@ -450,7 +450,9 @@ fn encode_pack_lease(bytes: &mut Vec<u8>, value: GitPackLeaseV1) {
     );
 }
 
-fn decode_pack_lease(bytes: &mut BoundedReader<'_, GitModelError>) -> Result<GitPackLeaseV1, GitModelError> {
+fn decode_pack_lease(
+    bytes: &mut BoundedReader<'_, GitModelError>,
+) -> Result<GitPackLeaseV1, GitModelError> {
     let project = ProjectId::from_bytes(bytes.array()?);
     let repository = ResourceId::from_bytes(bytes.array()?);
     let pack_generation = ResourceId::from_bytes(bytes.array()?);
@@ -571,7 +573,9 @@ fn encode_optional_digest(bytes: &mut Vec<u8>, value: Option<ObjectDigest>) {
     );
 }
 
-fn decode_optional_digest(bytes: &mut BoundedReader<'_, GitModelError>) -> Result<Option<ObjectDigest>, GitModelError> {
+fn decode_optional_digest(
+    bytes: &mut BoundedReader<'_, GitModelError>,
+) -> Result<Option<ObjectDigest>, GitModelError> {
     let present = bytes.array::<1>()?[0];
     if bytes.array::<7>()? != [0; 7] {
         return Err(GitModelError::CorruptEncoding);
@@ -584,7 +588,9 @@ fn decode_optional_digest(bytes: &mut BoundedReader<'_, GitModelError>) -> Resul
     }
 }
 
-fn decode_optional_raw_digest(bytes: &mut BoundedReader<'_, GitModelError>) -> Result<Option<ObjectDigest>, GitModelError> {
+fn decode_optional_raw_digest(
+    bytes: &mut BoundedReader<'_, GitModelError>,
+) -> Result<Option<ObjectDigest>, GitModelError> {
     let digest = ObjectDigest::from_bytes(bytes.array()?);
     Ok((digest.as_bytes() != &[0; 32]).then_some(digest))
 }
