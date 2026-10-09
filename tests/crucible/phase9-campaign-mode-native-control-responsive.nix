@@ -14,7 +14,7 @@ in
       sqliteRequired = true;
       cargoBuildCommands = [
         "test --frozen --offline --no-run -p crucible-session --test gate_control_responsive"
-        "test --frozen --offline --no-run -p crucible-api --test gate_control_responsive"
+        "test --frozen --offline --no-run -p crucible-control-server --test gate_control_responsive"
         "test --frozen --offline --no-run -p crucible-daemon --test gate_control_responsive"
       ];
       installedTests = [

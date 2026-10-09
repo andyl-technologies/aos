@@ -4,9 +4,9 @@
 }: let
   root = ../..;
   engineModel = import ./_crucible-model-source.nix {inherit lib;};
-  engineModelCanonical = builtins.readFile ../../crates/crucible/src/model/canonical.rs;
-  engineModelTests = builtins.readFile ../../crates/crucible/src/tests/model_core.rs;
-  qemuCargo = builtins.readFile ../../crates/crucible-qemu/Cargo.toml;
+  engineModelCanonical = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/model/canonical.rs;
+  engineModelTests = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/tests/model_core.rs;
+  qemuCargo = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/Cargo.toml;
   rustFilesUnder = relativeRoot: let
     absoluteRoot = root + "/${relativeRoot}";
     entries = builtins.readDir absoluteRoot;
@@ -26,10 +26,10 @@
   launchRust =
     builtins.concatStringsSep "\n"
     (map (relative: builtins.readFile (root + "/${relative}"))
-      (["crates/crucible-qemu/src/launch.rs"] ++ rustFilesUnder "crates/crucible-qemu/src/launch"));
+      (["crates/crucible/qemu/crucible-qemu-host/src/launch.rs"] ++ rustFilesUnder "crates/crucible/qemu/crucible-qemu-host/src/launch"));
   launchTest =
-    builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch.rs
-    + builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch/launch_artifacts.rs;
+    builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/tests/deterministic_launch.rs
+    + builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/tests/deterministic_launch/launch_artifacts.rs;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
@@ -647,13 +647,13 @@
   ];
 
   failures =
-    failuresFor "crates/crucible/src/model.rs" engineModel engineModelRequirements
-    ++ failuresFor "crates/crucible/src/model/canonical.rs" engineModelCanonical engineModelCanonicalRequirements
-    ++ failuresFor "crates/crucible/src/tests/model_core.rs" engineModelTests engineModelTestRequirements
-    ++ failuresFor "crates/crucible-qemu/Cargo.toml" qemuCargo qemuCargoRequirements
-    ++ failuresFor "crates/crucible-qemu/src/launch*.rs" launchRust sourceRequirements
-    ++ forbiddenFor "crates/crucible-qemu/src/launch*.rs" launchRust forbiddenSourceRequirements
-    ++ failuresFor "crates/crucible-qemu/tests/deterministic_launch.rs" launchTest testRequirements;
+    failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" engineModel engineModelRequirements
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model/canonical.rs" engineModelCanonical engineModelCanonicalRequirements
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/tests/model_core.rs" engineModelTests engineModelTestRequirements
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/Cargo.toml" qemuCargo qemuCargoRequirements
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/launch*.rs" launchRust sourceRequirements
+    ++ forbiddenFor "crates/crucible/qemu/crucible-qemu-host/src/launch*.rs" launchRust forbiddenSourceRequirements
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/tests/deterministic_launch.rs" launchTest testRequirements;
 in
   if failures != []
   then throw "crucible phase1 deterministic launch check failed:\n${builtins.concatStringsSep "\n" failures}"

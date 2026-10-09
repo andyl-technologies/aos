@@ -8,8 +8,8 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
-  resolveTest = builtins.readFile ../../crates/crucible/tests/scheduler_resolve.rs;
+  libSource = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/lib.rs;
+  resolveTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/scheduler_resolve.rs;
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -31,7 +31,7 @@
         needle = "transport-timing-independent";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "resolve class enum";
         needle = "pub enum ScheduledEventResolveClass";
@@ -77,7 +77,7 @@
         needle = "resolve_due_scheduled_events(\n            &mut self.pending_events";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" libSource [
       {
         label = "resolve class export";
         needle = "ScheduledEventResolveClass";
@@ -95,7 +95,7 @@
         needle = "scheduled_event_resolve_class";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/scheduler_resolve.rs" resolveTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/scheduler_resolve.rs" resolveTest [
       {
         label = "mixed class quantum test";
         needle = "resolve_quantum_processes_frame_and_io_at_exact_delivery_icount_in_total_order";
@@ -131,7 +131,7 @@
         needle = "schedulerResolve = import ./phase3-scheduler-resolve.nix";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/scheduler_resolve.rs" resolveTest [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/scheduler_resolve.rs" resolveTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -202,21 +202,21 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-scheduler-resolve-target" \
-              -p crucible \
+              -p crucible-engine \
               --test scheduler_resolve \
               -- --test-threads=1
             cargo test \
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-scheduler-resolve-target" \
-              -p crucible \
+              -p crucible-engine \
               --test scheduler_exact_local_event \
               -- --test-threads=1
             cargo test \
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-scheduler-resolve-target" \
-              -p crucible \
+              -p crucible-engine \
               --features test-double \
               --test gate_scheduler_liveness \
               -- --test-threads=1

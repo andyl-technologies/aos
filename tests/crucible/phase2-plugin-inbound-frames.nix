@@ -10,32 +10,32 @@
 
   pluginLib = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/lib.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs;
   };
   pluginInbound = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/inbound.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/inbound.rs;
   };
   pluginIdleLoop = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/idle_loop.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/idle_loop.rs;
   };
   pluginIdleLoopInboundTests = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/idle_loop/tests/inbound_cases.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/idle_loop/tests/inbound_cases.rs;
   };
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   shmemDeliveryErrors = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-shmem/src/shmem/delivery_errors.rs;
+    entry = ../../crates/crucible/protocol/crucible-qemu-shmem/src/shmem/delivery_errors.rs;
   };
   shmemFrameNode = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-shmem/src/shmem/frame_node.rs;
+    entry = ../../crates/crucible/protocol/crucible-qemu-shmem/src/shmem/frame_node.rs;
   };
   shmemRingCoverage = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-shmem/src/shmem/ring_coverage.rs;
+    entry = ../../crates/crucible/protocol/crucible-qemu-shmem/src/shmem/ring_coverage.rs;
   };
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -61,11 +61,11 @@
 
   hotPathSources = [
     {
-      label = "crates/crucible-qemu-plugin/src/inbound.rs";
+      label = "crates/crucible/qemu/crucible-qemu-plugin/src/inbound.rs";
       content = pluginInbound;
     }
     {
-      label = "crates/crucible-qemu-plugin/src/idle_loop.rs";
+      label = "crates/crucible/qemu/crucible-qemu-plugin/src/idle_loop.rs";
       content = pluginIdleLoop;
     }
   ];
@@ -94,7 +94,7 @@
         needle = "fail loudly on an already-passed";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/lib.rs" pluginLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs" pluginLib [
       {
         label = "inbound module exported";
         needle = "pub mod inbound;";
@@ -116,7 +116,7 @@
         needle = "InboundFrameError";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/inbound.rs" pluginInbound [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/inbound.rs" pluginInbound [
       {
         label = "ring view type";
         needle = "pub struct InboundFrameRing";
@@ -190,7 +190,7 @@
         needle = "inbound_frame_select_rejects_late_candidate_frame";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/idle_loop.rs" pluginIdleLoop [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/idle_loop.rs" pluginIdleLoop [
       {
         label = "begin idle peeks inbound rings";
         needle = "begin_idle_with_inbound_rings";
@@ -212,7 +212,7 @@
         needle = "IdleHotLoopError::InboundFrames";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/idle_loop/tests/inbound_cases.rs" pluginIdleLoopInboundTests [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/idle_loop/tests/inbound_cases.rs" pluginIdleLoopInboundTests [
       {
         label = "ring-backed idle test";
         needle = "idle_loop_with_inbound_rings_does_not_consume_before_qemu_completion";
@@ -234,7 +234,7 @@
         needle = "idle_loop_rejects_raw_late_inbound_delivery_before_publishing";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/src/shmem/ring_coverage.rs" shmemRingCoverage [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/ring_coverage.rs" shmemRingCoverage [
       {
         label = "SPSC head delivery peek";
         needle = "pub fn peek_delivery_icount";
@@ -244,13 +244,13 @@
         needle = "pub fn dequeue";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/src/shmem/delivery_errors.rs" shmemDeliveryErrors [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/delivery_errors.rs" shmemDeliveryErrors [
       {
         label = "frame delivery key";
         needle = "pub struct FrameDeliveryKey";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/src/shmem/frame_node.rs" shmemFrameNode [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/frame_node.rs" shmemFrameNode [
       {
         label = "frame delivery predicate";
         needle = "pub fn is_deliverable_at";

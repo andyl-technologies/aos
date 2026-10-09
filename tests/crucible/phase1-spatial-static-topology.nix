@@ -9,8 +9,8 @@
 
   model = import ./_crucible-model-source.nix {inherit lib;};
   crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
-  qemuCargo = builtins.readFile ../../crates/crucible-qemu/Cargo.toml;
-  qemuRealization = builtins.readFile ../../crates/crucible-qemu/src/realization.rs;
+  qemuCargo = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/Cargo.toml;
+  qemuRealization = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/src/realization.rs;
   defaultChecks = builtins.readFile ./default.nix;
   spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
 
@@ -31,7 +31,7 @@
         needle = "`checks.crucible.phase1.spatialStaticTopology`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
       {
         label = "world id accessor";
         needle = "pub fn id(&self) -> ContentHash";
@@ -93,7 +93,7 @@
         needle = "pub fn from_recorded_parts(";
       }
     ]
-    ++ forbiddenFor "crates/crucible/src/model.rs" model [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
       {
         label = "public mutable node vector";
         needle = "pub nodes: Vec<WorldNode>";
@@ -131,7 +131,7 @@
         needle = "from_unchecked_recorded_parts";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" crateRoot [
       {
         label = "static topology type exported";
         needle = "WorldStaticTopology";
@@ -161,13 +161,13 @@
         needle = "compact_world.static_topology()";
       }
     ]
-    ++ forbiddenFor "crates/crucible-qemu/Cargo.toml" qemuCargo [
+    ++ forbiddenFor "crates/crucible/qemu/crucible-qemu-host/Cargo.toml" qemuCargo [
       {
         label = "production QEMU enables unchecked world feature";
         needle = "crucible = { path = \"../crucible\", features = [\"qemu-backend\"] }";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/realization.rs" qemuRealization [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/realization.rs" qemuRealization [
       {
         label = "QEMU reads world nodes immutably";
         needle = "for node in world.vm_nodes()";
@@ -232,7 +232,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-spatial-static-topology-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --lib \
               world_static_topology \
               -- --test-threads=1

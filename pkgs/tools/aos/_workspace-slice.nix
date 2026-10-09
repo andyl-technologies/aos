@@ -55,8 +55,15 @@
         })
       );
   selectedCrates = map (name: members.${name}.path) selectedPackages;
+  includesTests = includeIntegrationInputs || cargoTestFlags != ""
+    || builtins.any (command: lib.hasInfix " test " " ${command} " || lib.hasInfix "--tests" command || lib.hasInfix "--all-targets" command) cargoBuildCommands;
   extraPaths = lib.unique (builtins.concatLists (
-    map (name: members.${name}.manifest.package.metadata.aos.source_inputs or []) selectedPackages
+    map (name: let
+      metadata = members.${name}.manifest.package.metadata.aos or {};
+    in
+      (metadata.source_inputs or [])
+      ++ lib.optionals includesTests (metadata.test_source_inputs or []))
+    selectedPackages
   ));
 in {
   src = import ./_workspace-source.nix {

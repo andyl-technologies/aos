@@ -10,36 +10,36 @@
 
   pluginLib = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/lib.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs;
   };
   pluginInbound = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/inbound.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/inbound.rs;
   };
   pluginNetworkRx = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/network_rx.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/network_rx.rs;
   };
   pluginIdleLoop = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/idle_loop.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/idle_loop.rs;
   };
   pluginIdleLoopInboundTests = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/idle_loop/tests/inbound_cases.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/idle_loop/tests/inbound_cases.rs;
   };
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   shmemDeliveryErrors = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-shmem/src/shmem/delivery_errors.rs;
+    entry = ../../crates/crucible/protocol/crucible-qemu-shmem/src/shmem/delivery_errors.rs;
   };
   shmemFrameNode = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-shmem/src/shmem/frame_node.rs;
+    entry = ../../crates/crucible/protocol/crucible-qemu-shmem/src/shmem/frame_node.rs;
   };
   shmemRingCoverage = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-shmem/src/shmem/ring_coverage.rs;
+    entry = ../../crates/crucible/protocol/crucible-qemu-shmem/src/shmem/ring_coverage.rs;
   };
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -68,11 +68,11 @@
 
   hotPathSources = [
     {
-      label = "crates/crucible-qemu-plugin/src/network_rx.rs";
+      label = "crates/crucible/qemu/crucible-qemu-plugin/src/network_rx.rs";
       content = pluginNetworkRx;
     }
     {
-      label = "crates/crucible-qemu-plugin/src/idle_loop.rs";
+      label = "crates/crucible/qemu/crucible-qemu-plugin/src/idle_loop.rs";
       content = pluginIdleLoop;
     }
   ];
@@ -101,7 +101,7 @@
         needle = "after the idle jump, gated by the delivery-icount rule";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/lib.rs" pluginLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs" pluginLib [
       {
         label = "network RX module exported";
         needle = "pub mod network_rx;";
@@ -135,7 +135,7 @@
         needle = "QEMU_PLUGIN_NET_INJECT_SYMBOL";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/network_rx.rs" pluginNetworkRx [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/network_rx.rs" pluginNetworkRx [
       {
         label = "QEMU net-inject symbol";
         needle = "QEMU_PLUGIN_NET_INJECT_SYMBOL";
@@ -269,7 +269,7 @@
         needle = "network_rx_qemu_direct_injection_transfers_delivered_frame";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/inbound.rs" pluginInbound [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/inbound.rs" pluginInbound [
       {
         label = "non-consuming delivery preview";
         needle = "pub fn preview_deliverable_since";
@@ -307,7 +307,7 @@
         needle = "inbound_retained_head_authorizes_blocked_fifo_backlog";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/idle_loop.rs" pluginIdleLoop [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/idle_loop.rs" pluginIdleLoop [
       {
         label = "idle RX completion method";
         needle = "complete_after_scheduler_wake_from_inbound_rings_with_rx_injection";
@@ -349,7 +349,7 @@
         needle = "IdleHotLoopError::NetworkRxInjection";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/idle_loop/tests/inbound_cases.rs" pluginIdleLoopInboundTests [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/idle_loop/tests/inbound_cases.rs" pluginIdleLoopInboundTests [
       {
         label = "idle RX ordering test";
         needle = "idle_loop_rx_injection_waits_for_qemu_completion";
@@ -375,19 +375,19 @@
         needle = "ring.read_index(), 0";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/src/shmem/frame_node.rs" shmemFrameNode [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/frame_node.rs" shmemFrameNode [
       {
         label = "frame payload accessor";
         needle = "pub fn payload(&self)";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/src/shmem/delivery_errors.rs" shmemDeliveryErrors [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/delivery_errors.rs" shmemDeliveryErrors [
       {
         label = "frame delivery key";
         needle = "pub struct FrameDeliveryKey";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/src/shmem/ring_coverage.rs" shmemRingCoverage [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/ring_coverage.rs" shmemRingCoverage [
       {
         label = "SPSC frame dequeue";
         needle = "pub fn dequeue";

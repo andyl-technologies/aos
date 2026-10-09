@@ -27,10 +27,10 @@
   modelSource = import ./_crucible-model-source.nix {inherit lib;};
   libSource = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/src/lib.rs;
+    entry = ../../crates/crucible/engine/crucible-engine/src/lib.rs;
   };
   cliSource = import ./_cli-source.nix {inherit lib;};
-  signatureTest = builtins.readFile ../../crates/crucible/tests/gate_failure_signature.rs;
+  signatureTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/gate_failure_signature.rs;
   defaultChecks = builtins.readFile ./default.nix;
   taskList = builtins.concatStringsSep "," taskIds;
 
@@ -59,7 +59,7 @@
         needle = "checks.crucible.phase6.triageCliSurface";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" modelSource [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" modelSource [
       {
         label = "findings ledger domain";
         needle = "FAILURE_FINDINGS_LEDGER_DOMAIN";
@@ -181,7 +181,7 @@
         needle = "pub struct FailureTriageChangedCluster";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" libSource [
       {
         label = "ledger export";
         needle = "FailureFindingsLedger";
@@ -199,7 +199,7 @@
         needle = "FailureTriageSignatureSelfCheck";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/src/main.rs" cliSource [
+    ++ failuresFor "crates/crucible/control/crucible-cli/src/main.rs" cliSource [
       {
         label = "triage findings argument";
         needle = "struct TriageArgs";
@@ -305,7 +305,7 @@
         needle = "Self::Triage(_) => 1";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/gate_failure_signature.rs" signatureTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/gate_failure_signature.rs" signatureTest [
       {
         label = "triage result regression";
         needle = "triage_result_artifact_dedups_diffs_and_self_checks_offline";
@@ -347,7 +347,7 @@
         needle = "changed_diff.content_diff()";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/src/main.rs" cliSource [
+    ++ failuresFor "crates/crucible/control/crucible-cli/src/main.rs" cliSource [
       {
         label = "triage CLI surface regression";
         needle = "cli_triage_surface_parses_full_t_tri_7_flags_and_pipeline";
@@ -379,7 +379,7 @@
         needle = "phase6.perClusterReports.rawGate";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible-cli/src/main.rs" cliSource [
+    ++ forbiddenFailuresFor "crates/crucible/control/crucible-cli/src/main.rs" cliSource [
       {
         label = "ignored triage test";
         needle = "#[ignore]";

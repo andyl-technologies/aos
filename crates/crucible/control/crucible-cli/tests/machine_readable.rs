@@ -1,0 +1,1049 @@
+//! Process-level checks for machine-readable CLI stdout.
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+use std::collections::BTreeMap;
+use std::error::Error;
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use crucible_session::engine as crucible;
+use serde_json::Value;
+use tempfile::TempDir;
+
+#[path = "support/machine.rs"]
+mod machine_support;
+use machine_support::*;
+
+#[test]
+fn cli_exit_machine_readable_process_stdout_is_pure_json() -> Result<(), Box<dyn Error>> {
+    let temp = TempDir::new()?;
+    let fixture = crucible_engine::happy_path_scenario()?;
+    let scenario = temp.path().join("scenario.toml");
+    fs::write(&scenario, fixture.scenario.to_canonical_toml()?)?;
+
+    let jsonl_stdout = run_machine_readable("jsonl", &scenario, &temp.path().join("run-jsonl"))?;
+    assert_machine_readable_jsonl(&jsonl_stdout, &["run_scenario"])?;
+
+    let json_stdout = run_machine_readable("json", &scenario, &temp.path().join("run-json"))?;
+    assert!(
+        json_stdout.starts_with('['),
+        "json stdout must start with a JSON array, got `{json_stdout}`",
+    );
+    assert!(
+        !json_stdout.contains("crucible:"),
+        "json stdout must not contain human text, got `{json_stdout}`",
+    );
+    assert!(
+        json_stdout.trim_end().ends_with(']'),
+        "json stdout must end with a JSON array, got `{json_stdout}`",
+    );
+    assert_machine_readable_json(&json_stdout, &["run_scenario"])?;
+
+    Ok(())
+}
+
+#[test]
+fn cli_selftest_honors_machine_output_trace_and_quiet() -> Result<(), Box<dyn Error>> {
+    let temp = TempDir::new()?;
+    let trace = temp.path().join("selftest.jsonl");
+    let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+        .args(["--backend", "double", "--format", "jsonl", "--trace"])
+        .arg(&trace)
+        .arg("selftest")
+        .output()?;
+    assert!(
+        output.status.success(),
+        "selftest should pass; stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout)?;
+    assert_machine_readable_jsonl(
+        &stdout,
+        &["selftest_gate", "selftest_scenario", "final_outcome"],
+    )?;
+    assert_eq!(stdout.as_bytes(), fs::read(&trace)?);
+
+    let quiet_trace = temp.path().join("selftest-quiet.jsonl");
+    let quiet = Command::new(env!("CARGO_BIN_EXE_crucible"))
+        .args([
+            "--backend",
+            "double",
+            "--format",
+            "jsonl",
+            "--quiet",
+            "--trace",
+        ])
+        .arg(&quiet_trace)
+        .arg("selftest")
+        .output()?;
+    assert!(quiet.status.success());
+    assert!(quiet.stdout.is_empty());
+    let quiet_trace = fs::read_to_string(quiet_trace)?;
+    assert_machine_readable_jsonl(
+        &quiet_trace,
+        &["selftest_gate", "selftest_scenario", "final_outcome"],
+    )?;
+    Ok(())
+}
+
+#[test]
+fn cli_save_machine_readable_jsonl_rejects_session_owned_export() -> Result<(), Box<dyn Error>> {
+    let temp = TempDir::new()?;
+    let fixture = crucible_engine::happy_path_scenario()?;
+    let scenario = temp.path().join("scenario.toml");
+    let artifact_dir = temp.path().join("artifacts");
+    let save_store = temp.path().join("save-store");
+    fs::write(&scenario, fixture.scenario.to_canonical_toml()?)?;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+        .args([
+            "--format",
+            "jsonl",
+            "--backend",
+            "double",
+            "--seed",
+            "2",
+            "--artifact-dir",
+        ])
+        .arg(&artifact_dir)
+        .arg("--store")
+        .arg(&save_store)
+        .arg("save")
+        .arg(&scenario)
+        .args(["--at", "quiescence", "--label", "jsonl"])
+        .output()?;
+    assert_eq!(output.status.code(), Some(4));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(stderr.contains(
+        "savepoint export requires Campaign-owned execution with an authenticated portable replay closure"
+    ));
+    assert!(!artifact_dir.exists());
+
+    Ok(())
+}
+
+#[test]
+fn cli_exit_machine_readable_search_fuzz_jsonl_reports_final_outcome() -> Result<(), Box<dyn Error>>
+{
+    let temp = TempDir::new()?;
+    let fixture = crucible_engine::happy_path_scenario()?;
+    let scenario = temp.path().join("scenario.toml");
+    let family = temp.path().join("family.toml");
+    let search_artifact_dir = temp.path().join("search-artifacts");
+    let fuzz_artifact_dir = temp.path().join("fuzz-artifacts");
+    fs::write(&scenario, fixture.scenario.to_canonical_toml()?)?;
+    fs::write(&family, valid_fuzz_family_toml())?;
+
+    let search_output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+        .args([
+            "--format",
+            "jsonl",
+            "--backend",
+            "double",
+            "--seed",
+            "3",
+            "--artifact-dir",
+        ])
+        .arg(&search_artifact_dir)
+        .arg("search")
+        .arg(&scenario)
+        .args(["--max-states", "1"])
+        .output()?;
+    assert!(
+        search_output.status.success(),
+        "crucible search --format jsonl should exit 0; stdout=`{}` stderr=`{}`",
+        String::from_utf8_lossy(&search_output.stdout),
+        String::from_utf8_lossy(&search_output.stderr),
+    );
+    let search_stdout = String::from_utf8(search_output.stdout)?;
+    assert_machine_readable_jsonl(&search_stdout, &["search_strategy_run"])?;
+
+    let fuzz_output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+        .args([
+            "--format",
+            "jsonl",
+            "--backend",
+            "double",
+            "--seed",
+            "4",
+            "--artifact-dir",
+        ])
+        .arg(&fuzz_artifact_dir)
+        .arg("fuzz")
+        .arg(&family)
+        .args(["--runs", "1"])
+        .output()?;
+    assert!(
+        fuzz_output.status.success(),
+        "crucible fuzz --format jsonl should exit 0; stdout=`{}` stderr=`{}`",
+        String::from_utf8_lossy(&fuzz_output.stdout),
+        String::from_utf8_lossy(&fuzz_output.stderr),
+    );
+    let fuzz_stdout = String::from_utf8(fuzz_output.stdout)?;
+    assert_machine_readable_jsonl(&fuzz_stdout, &["coverage_guided_fuzz_run"])?;
+
+    Ok(())
+}
+
+#[test]
+fn cli_exit_machine_readable_search_retained_evidence_failure_jsonl_reports_final_outcome()
+-> Result<(), Box<dyn Error>> {
+    let temp = TempDir::new()?;
+    let scenario = temp.path().join("retained-search-scenario.toml");
+    let retained_evidence = temp.path().join("retained-evidence.toml");
+    let artifact_dir = temp.path().join("retained-search-artifacts");
+    fs::write(
+        &scenario,
+        search_retained_evidence_scenario()?.to_canonical_toml()?,
+    )?;
+    fs::write(&retained_evidence, valid_search_retained_evidence_toml())?;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+        .args([
+            "--format",
+            "jsonl",
+            "--backend",
+            "double",
+            "--seed",
+            "5",
+            "--artifact-dir",
+        ])
+        .arg(&artifact_dir)
+        .arg("search")
+        .arg(&scenario)
+        .args(["--max-states", "1", "--retained-evidence"])
+        .arg(&retained_evidence)
+        .output()?;
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "crucible retained-evidence search --format jsonl should exit 1; stdout=`{}` stderr=`{}`",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stdout = String::from_utf8(output.stdout)?;
+    assert_machine_readable_jsonl_with_exit(&stdout, &["search_strategy_run"], 1)?;
+    assert!(stdout.contains("scenario-assertions+retained-evidence"));
+    assert!(stdout.contains("retained_evidence_digest=crucible-hash:"));
+
+    Ok(())
+}
+
+#[test]
+fn cli_exit_machine_readable_replay_check_jsonl_reports_final_outcome() -> Result<(), Box<dyn Error>>
+{
+    let temp = TempDir::new()?;
+    let fixture = crucible_engine::happy_path_scenario()?;
+    let scenario = temp.path().join("scenario.toml");
+    let artifact_dir = temp.path().join("replay-artifacts");
+    let check_path = temp.path().join("original.jsonl");
+    let mismatch_check_path = temp.path().join("mismatch.jsonl");
+    fs::write(&scenario, fixture.scenario.to_canonical_toml()?)?;
+
+    let failure_output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+        .args([
+            "--format",
+            "jsonl",
+            "--backend",
+            "double",
+            "--seed",
+            "6",
+            "--artifact-dir",
+        ])
+        .arg(&artifact_dir)
+        .arg("run")
+        .arg(&scenario)
+        .arg("--emit-mock-failure-artifact")
+        .output()?;
+    assert_eq!(
+        failure_output.status.code(),
+        Some(1),
+        "mock failure run should exit 1; stdout=`{}` stderr=`{}`",
+        String::from_utf8_lossy(&failure_output.stdout),
+        String::from_utf8_lossy(&failure_output.stderr),
+    );
+    let failure_stdout = String::from_utf8(failure_output.stdout)?;
+    assert_machine_readable_jsonl_with_exit(&failure_stdout, &["run_scenario"], 1)?;
+
+    let artifact_path = single_reproduction_artifact(&artifact_dir)?;
+    fs::write(
+        &check_path,
+        canonical_jsonl_from_reproduction_artifact(&artifact_path)?,
+    )?;
+
+    let replay_output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+        .args(["--format", "jsonl", "--backend", "double", "--artifact-dir"])
+        .arg(&artifact_dir)
+        .arg("replay")
+        .arg(&artifact_path)
+        .arg("--check")
+        .arg(&check_path)
+        .output()?;
+    assert!(
+        replay_output.status.success(),
+        "crucible replay --check --format jsonl should exit 0; stdout=`{}` stderr=`{}`",
+        String::from_utf8_lossy(&replay_output.stdout),
+        String::from_utf8_lossy(&replay_output.stderr),
+    );
+    let replay_stdout = String::from_utf8(replay_output.stdout)?;
+    assert_machine_readable_jsonl(&replay_stdout, &["replay_artifact", "replay_check"])?;
+    assert!(replay_stdout.contains("subcommand=replay"));
+    assert!(replay_stdout.contains("status=passed"));
+    assert!(replay_stdout.contains("artifact=crucible-hash:"));
+    assert!(!replay_stdout.contains("crucible: replay artifact"));
+
+    let mut mismatch_check = fs::read(&check_path)?;
+    let first_byte = mismatch_check
+        .first_mut()
+        .ok_or_else(|| invalid_data("replay check fixture must not be empty"))?;
+    *first_byte = first_byte.wrapping_add(1);
+    fs::write(&mismatch_check_path, mismatch_check)?;
+
+    let mismatch_output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+        .args(["--format", "jsonl", "--backend", "double", "--artifact-dir"])
+        .arg(&artifact_dir)
+        .arg("replay")
+        .arg(&artifact_path)
+        .arg("--check")
+        .arg(&mismatch_check_path)
+        .output()?;
+    assert_eq!(
+        mismatch_output.status.code(),
+        Some(1),
+        "crucible replay --check mismatch --format jsonl should exit 1; stdout=`{}` stderr=`{}`",
+        String::from_utf8_lossy(&mismatch_output.stdout),
+        String::from_utf8_lossy(&mismatch_output.stderr),
+    );
+    let mismatch_stdout = String::from_utf8(mismatch_output.stdout)?;
+    assert_machine_readable_jsonl_with_exit(
+        &mismatch_stdout,
+        &["replay_artifact", "replay_check"],
+        1,
+    )?;
+    assert!(mismatch_stdout.contains("subcommand=replay"));
+    assert!(mismatch_stdout.contains("status=failed"));
+    assert!(mismatch_stdout.contains("status=mismatch"));
+    assert!(mismatch_stdout.contains("first_diff_byte=0"));
+    assert!(!mismatch_stdout.contains("crucible: replay artifact"));
+
+    Ok(())
+}
+
+#[test]
+fn cli_exit_machine_readable_replay_error_reports_one_failed_outcome() -> Result<(), Box<dyn Error>>
+{
+    let temp = TempDir::new()?;
+    let artifact = temp.path().join("malformed.crucible");
+    fs::write(&artifact, "not a reproduction artifact")?;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+        .args(["--format", "jsonl", "--backend", "double", "replay"])
+        .arg(&artifact)
+        .output()?;
+
+    assert_eq!(output.status.code(), Some(5));
+    let stdout = String::from_utf8(output.stdout)?;
+    assert_machine_readable_jsonl_with_exit(&stdout, &["replay_error"], 5)?;
+    assert!(stdout.contains("status=failed"));
+    assert!(!stdout.contains("status=passed"));
+    Ok(())
+}
+
+#[test]
+fn cli_exit_machine_readable_replay_to_savepoint_jsonl_reports_final_outcome()
+-> Result<(), Box<dyn Error>> {
+    let temp = TempDir::new()?;
+    let artifact_dir = temp.path().join("replay-to-artifacts");
+    let fixture = replay_to_savepoint_process_fixture(temp.path())?;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+        .args(["--format", "jsonl", "--backend", "double", "--artifact-dir"])
+        .arg(&artifact_dir)
+        .arg("replay")
+        .arg(&fixture.artifact)
+        .arg("--to")
+        .arg(&fixture.savepoint)
+        .output()?;
+    assert!(
+        output.status.success(),
+        "crucible replay --to --format jsonl should exit 0; stdout=`{}` stderr=`{}`",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stdout = String::from_utf8(output.stdout)?;
+    assert_machine_readable_jsonl(&stdout, &["replay_artifact", "replay_to_savepoint"])?;
+    assert!(stdout.contains("subcommand=replay"));
+    assert!(stdout.contains("status=target-validated"));
+    assert!(stdout.contains("schedule_prefix=typed"));
+    assert!(stdout.contains("materialization=model-temporal-graph"));
+    assert!(stdout.contains("unified_operation=replay"));
+    assert!(stdout.contains("single_vm_fingerprint=blake3:"));
+    assert!(stdout.contains("exit_code=0"));
+    assert!(!stdout.contains("crucible: replay --to"));
+
+    Ok(())
+}
+
+fn run_machine_readable(
+    format: &str,
+    scenario: &Path,
+    artifact_dir: &Path,
+) -> Result<String, Box<dyn Error>> {
+    let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+        .args([
+            "--format",
+            format,
+            "--backend",
+            "double",
+            "--seed",
+            "1",
+            "--artifact-dir",
+        ])
+        .arg(artifact_dir)
+        .arg("run")
+        .arg(scenario)
+        .output()?;
+    assert!(
+        output.status.success(),
+        "crucible run --format {format} should exit 0; stdout=`{}` stderr=`{}`",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    Ok(String::from_utf8(output.stdout)?)
+}
+
+fn assert_machine_readable_jsonl(
+    stdout: &str,
+    expected_kinds: &[&str],
+) -> Result<(), Box<dyn Error>> {
+    assert_machine_readable_jsonl_with_exit(stdout, expected_kinds, 0)
+}
+
+fn assert_machine_readable_jsonl_with_exit(
+    stdout: &str,
+    expected_kinds: &[&str],
+    expected_exit_code: i32,
+) -> Result<(), Box<dyn Error>> {
+    let lines = stdout.lines().collect::<Vec<_>>();
+    assert!(!lines.is_empty(), "jsonl stdout must not be empty");
+    let mut entries = Vec::new();
+    for line in lines {
+        assert!(
+            !line.starts_with("crucible:"),
+            "jsonl stdout must not contain human text, got `{line}`",
+        );
+        let value = serde_json::from_str::<Value>(line).map_err(|error| {
+            invalid_data(format!(
+                "jsonl stdout line must parse as a JSON object: {error}; line=`{line}`"
+            ))
+        })?;
+        assert!(
+            value.as_object().is_some(),
+            "jsonl stdout must contain only JSON object lines, got `{line}`",
+        );
+        entries.push(value);
+    }
+    assert_machine_readable_entries(&entries, expected_kinds, "jsonl stdout", expected_exit_code)?;
+    Ok(())
+}
+
+fn assert_machine_readable_json(
+    stdout: &str,
+    expected_kinds: &[&str],
+) -> Result<(), Box<dyn Error>> {
+    let value = serde_json::from_str::<Value>(stdout)
+        .map_err(|error| invalid_data(format!("json stdout must parse as JSON: {error}")))?;
+    let entries = value
+        .as_array()
+        .ok_or_else(|| invalid_data("json stdout must be a JSON array"))?;
+    assert_machine_readable_entries(entries, expected_kinds, "json stdout", 0)
+}
+
+fn assert_machine_readable_entries(
+    entries: &[Value],
+    expected_kinds: &[&str],
+    context: &str,
+    expected_exit_code: i32,
+) -> Result<(), Box<dyn Error>> {
+    assert!(!entries.is_empty(), "{context} must not be empty");
+    let mut kinds = Vec::new();
+    for entry in entries {
+        let kind = entry
+            .get("kind")
+            .and_then(Value::as_str)
+            .ok_or_else(|| invalid_data(format!("{context} entry must contain a string kind")))?;
+        kinds.push(kind.to_owned());
+    }
+    for expected_kind in expected_kinds {
+        assert!(
+            kinds.iter().any(|kind| kind == expected_kind),
+            "{context} kinds {kinds:?} must contain `{expected_kind}`",
+        );
+    }
+    assert_eq!(
+        kinds
+            .iter()
+            .filter(|kind| kind.as_str() == "final_outcome")
+            .count(),
+        1,
+        "{context} must contain exactly one final_outcome record, got {kinds:?}",
+    );
+    let final_entry = entries
+        .last()
+        .ok_or_else(|| invalid_data(format!("{context} must include a final outcome line")))?;
+    assert_eq!(
+        final_entry.get("kind").and_then(Value::as_str),
+        Some("final_outcome"),
+        "final_outcome should be the last machine-readable record in {context}",
+    );
+    let final_summary = final_entry
+        .get("summary")
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid_data(format!("{context} final outcome must include a summary")))?;
+    let expected = format!("exit_code={expected_exit_code}");
+    assert!(
+        final_summary.contains(&expected),
+        "{context} final outcome summary must include {expected}, got `{final_summary}`",
+    );
+    Ok(())
+}
+
+fn invalid_data(message: impl Into<String>) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message.into())
+}
+
+fn valid_fuzz_family_toml() -> &'static str {
+    r#"schema = "crucible.scenario-family.v3"
+topology_shapes = ["ring"]
+fault_densities = [0]
+
+[seed_space]
+kind = "generated"
+meta_seed = "0x55"
+count = 2
+
+[topology_size]
+min = 1
+max = 2
+
+[node_template]
+fixed_icount = 17
+cmdline = "cli-fuzz-family"
+"#
+}
+
+fn search_retained_evidence_scenario() -> Result<crucible_engine::ScenarioDefForm, Box<dyn Error>> {
+    let world = crucible_engine::World::from_nodes(vec![crucible_engine::WorldNode {
+        id: crucible_engine::NodeId {
+            name: String::from("cli-search-retained-node"),
+        },
+        arch: crucible_engine::NodeTemplate::DEFAULT_ARCH,
+        memory_mib: crucible_engine::NodeTemplate::DEFAULT_MEMORY_MIB,
+        cmdline: String::from("crucible-cli-search-retained"),
+        ready_point: crucible_engine::ReadyPoint::FixedIcount {
+            icount: crucible_engine::Icount { retired: 100 },
+        },
+        white_box: crucible_engine::WhiteBoxPolicy::Enabled,
+        smp_vcpus: crucible_engine::NodeTemplate::DEFAULT_SMP_VCPUS,
+        kernel: None,
+        root_image: None,
+        initrd: None,
+    }])?;
+    let properties = crucible_engine::Properties::from_assertions_for_world(
+        &world,
+        vec![crucible_engine::AssertionDef {
+            id: crucible_engine::AssertionId::from_name("cli-search-retained-evidence"),
+            message: String::from("CLI search retained evidence marker must not appear"),
+            property: crucible_engine::Property::Always {
+                predicate: crucible_engine::Predicate::not(
+                    crucible_engine::Predicate::guest_marker(crucible_engine::MarkerId::from_name(
+                        "forbidden-search-marker",
+                    )),
+                ),
+            },
+        }],
+    )?;
+    Ok(crucible_engine::ScenarioDefForm::from_components(
+        &world,
+        &crucible_engine::Plan::empty(),
+        &properties,
+        crucible_engine::Seed::from_u64(0x5252),
+    )?)
+}
+
+fn valid_search_retained_evidence_toml() -> &'static str {
+    r#"schema = "crucible.search-retained-evidence.v1"
+
+[[evidence]]
+configuration = "root"
+kind = "guest-marker"
+node = "cli-search-retained-node"
+marker = "forbidden-search-marker"
+retired_icount = 7
+"#
+}
+
+#[derive(Debug)]
+struct ArtifactDecision {
+    sequence: u64,
+    virtual_time_ticks: u64,
+    node: String,
+    kind: String,
+    payload_digest: String,
+}
+
+#[derive(Debug)]
+struct ReplayToSavepointProcessFixture {
+    artifact: PathBuf,
+    savepoint: PathBuf,
+}
+
+#[derive(Debug)]
+struct ReplayToSavepointDecisionFixture {
+    sequence: u64,
+    virtual_time_ticks: u64,
+    node: String,
+    kind: String,
+    payload: String,
+    payload_digest: String,
+}
+
+fn replay_to_savepoint_process_fixture(
+    dir: &Path,
+) -> Result<ReplayToSavepointProcessFixture, Box<dyn Error>> {
+    let fixture = crucible_engine::happy_path_scenario()?;
+    let form = fixture.scenario;
+    let scenario = form.scenario_def();
+    let schedule = replay_to_savepoint_schedule();
+    let configuration = crucible_engine::Configuration {
+        def: scenario.clone(),
+        schedule: schedule.clone(),
+    };
+    let checkpoint = checkpoint_for_process_fixture(&configuration)?;
+    let artifact = dir.join("process-replay-to.crucible");
+    let savepoint = dir.join("process-replay-to.crucible-savepoint");
+    fs::write(
+        &artifact,
+        replay_to_savepoint_artifact_text(&scenario, &schedule)?.into_bytes(),
+    )?;
+    fs::write(
+        &savepoint,
+        savepoint_handle_text(&form, &schedule, &checkpoint)?,
+    )?;
+    Ok(ReplayToSavepointProcessFixture {
+        artifact,
+        savepoint,
+    })
+}
+
+fn replay_to_savepoint_schedule() -> crucible_engine::Schedule {
+    crucible_engine::Schedule::from_decisions([crucible_engine::Decision::DeliveryOrder(
+        crucible_engine::DeliveryOrderDecision {
+            at: crucible_engine::VirtualTime { ticks: 1 },
+            order: Vec::new(),
+        },
+    )])
+}
+
+fn checkpoint_for_process_fixture(
+    configuration: &crucible_engine::Configuration,
+) -> Result<crucible_engine::Checkpoint, Box<dyn Error>> {
+    let parent = if configuration.schedule.is_empty() {
+        None
+    } else {
+        let prefix = configuration
+            .schedule
+            .prefix(configuration.schedule.len().saturating_sub(1))?;
+        Some(crucible_engine::Configuration {
+            def: configuration.def.clone(),
+            schedule: prefix,
+        })
+    };
+    Ok(crucible_engine::Checkpoint::from_recorded_configuration(
+        configuration,
+        parent.as_ref(),
+        crucible_engine::VirtualTime {
+            ticks: configuration.schedule.len() as u64,
+        },
+        BTreeMap::new(),
+        crucible_engine::CheckpointKind::Fat,
+        BTreeMap::new(),
+    )?)
+}
+
+fn replay_to_savepoint_artifact_text(
+    scenario: &crucible_engine::ScenarioDef,
+    schedule: &crucible_engine::Schedule,
+) -> Result<String, Box<dyn Error>> {
+    let scenario_bytes = scenario_identity_bytes(scenario);
+    let scenario_digest = content_address_bytes(&scenario_bytes);
+    let store_uri = format!("cas:{scenario_digest}");
+    let decisions = replay_to_savepoint_decision_fixtures(schedule);
+    let mut text = String::new();
+    artifact_line(&mut text, &["schema", "crucible.reproduction-artifact.v4"]);
+    artifact_line(&mut text, &["seed", "111"]);
+    artifact_line(
+        &mut text,
+        &[
+            "identity",
+            env!("CARGO_PKG_VERSION"),
+            "crucible-harness-e2e-v2",
+            "crucible.reproduction-artifact.v4",
+            &content_address_bytes(b"mock-backend-source-v1"),
+            &content_address_bytes(b"mock-qemu-atomic-patch-v1"),
+            &crucible_engine::SHMEM_ABI_VERSION.to_string(),
+            &crucible_control_api::CONTROL_PROTOCOL_VERSION.to_string(),
+            &format!(
+                "{}.{}.{}",
+                crucible_control_api::RPC_PROTOCOL_MAJOR,
+                crucible_control_api::RPC_PROTOCOL_MINOR,
+                crucible_control_api::RPC_PROTOCOL_PATCH
+            ),
+            crucible_control_api::RPC_PROTOCOL_BUILD,
+            "simdouble-mock-plugin-abi",
+        ],
+    );
+    artifact_line(
+        &mut text,
+        &[
+            "scenario",
+            "scenario_def",
+            "process-replay-to.scn",
+            &scenario_digest,
+            &store_uri,
+            "application/vnd.crucible.scenario+text",
+            &scenario_bytes.len().to_string(),
+        ],
+    );
+    artifact_line(
+        &mut text,
+        &[
+            "component",
+            "scenario_def",
+            "process-replay-to.scn",
+            &scenario_digest,
+            &store_uri,
+            "application/vnd.crucible.scenario+text",
+            &scenario_bytes.len().to_string(),
+        ],
+    );
+    for decision in &decisions {
+        artifact_line(
+            &mut text,
+            &[
+                "component",
+                "other",
+                &format!("decision-{}-payload", decision.sequence),
+                &decision.payload_digest,
+                &format!("cas:{}", decision.payload_digest),
+                "application/vnd.crucible.recorded-decision-payload+text",
+                &decision.payload.len().to_string(),
+            ],
+        );
+    }
+    artifact_line(
+        &mut text,
+        &["payload", &scenario_digest, &hex_bytes(&scenario_bytes)],
+    );
+    for decision in &decisions {
+        artifact_line(
+            &mut text,
+            &[
+                "payload",
+                &decision.payload_digest,
+                &hex_bytes(decision.payload.as_bytes()),
+            ],
+        );
+    }
+    artifact_line(
+        &mut text,
+        &[
+            "schedule",
+            &replay_to_savepoint_schedule_digest(&decisions),
+            &decisions.len().to_string(),
+        ],
+    );
+    for decision in &decisions {
+        artifact_line(
+            &mut text,
+            &[
+                "decision",
+                &decision.sequence.to_string(),
+                &decision.virtual_time_ticks.to_string(),
+                &decision.node,
+                &decision.kind,
+                &decision.payload_digest,
+            ],
+        );
+    }
+    artifact_line(
+        &mut text,
+        &[
+            "fingerprint",
+            "0",
+            "0",
+            "process-replay-to",
+            &content_address_bytes(b"process-replay-to"),
+        ],
+    );
+    artifact_line(
+        &mut text,
+        &[
+            "sampling",
+            "every-fingerprint-sample",
+            "final",
+            "1",
+            "execution-fingerprint-stream",
+        ],
+    );
+    Ok(text)
+}
+
+fn replay_to_savepoint_decision_fixtures(
+    schedule: &crucible_engine::Schedule,
+) -> Vec<ReplayToSavepointDecisionFixture> {
+    schedule
+        .decisions()
+        .iter()
+        .enumerate()
+        .map(|(index, decision)| {
+            let payload = format!("{decision:?}");
+            let kind = match decision {
+                crucible_engine::Decision::DeliveryOrder(_) => "delivery-order",
+                crucible_engine::Decision::RngDraw(_) => "rng-draw",
+                crucible_engine::Decision::Override(_) => "override",
+                crucible_engine::Decision::Preemption(_) => "preemption",
+                crucible_engine::Decision::Selection(_) => "selection",
+            };
+            ReplayToSavepointDecisionFixture {
+                sequence: index as u64,
+                virtual_time_ticks: index as u64 + 1,
+                node: String::from("search"),
+                kind: kind.to_owned(),
+                payload_digest: content_address_bytes(payload.as_bytes()),
+                payload,
+            }
+        })
+        .collect()
+}
+
+fn replay_to_savepoint_schedule_digest(decisions: &[ReplayToSavepointDecisionFixture]) -> String {
+    let mut material = String::new();
+    for decision in decisions {
+        artifact_line(
+            &mut material,
+            &[
+                "decision",
+                &decision.sequence.to_string(),
+                &decision.virtual_time_ticks.to_string(),
+                &decision.node,
+                &decision.kind,
+                &decision.payload_digest,
+            ],
+        );
+    }
+    content_address_bytes(material.as_bytes())
+}
+
+fn scenario_identity_bytes(scenario: &crucible_engine::ScenarioDef) -> Vec<u8> {
+    format!(
+        "scenario_id={}\nseed={}\napp_random_draw_cap={}\n",
+        scenario.id().to_hex(),
+        scenario.seed().to_hex(),
+        scenario.app_random_draw_cap()
+    )
+    .into_bytes()
+}
+
+fn content_address_bytes(bytes: &[u8]) -> String {
+    format!("crucible-hash:{}", hex_bytes(&stable_digest(bytes)))
+}
+
+fn stable_digest(material: &[u8]) -> [u8; 32] {
+    let mut output = [0u8; 32];
+    for lane in 0..4 {
+        let mut state = 0xcbf2_9ce4_8422_2325u64 ^ lane;
+        for byte in b"crucible.reproduction.hash.v1"
+            .iter()
+            .copied()
+            .chain([0xff])
+            .chain(material.iter().copied())
+        {
+            state ^= u64::from(byte);
+            state = state.wrapping_mul(0x0000_0100_0000_01b3);
+            state ^= state.rotate_left(17);
+        }
+        output[lane as usize * 8..lane as usize * 8 + 8].copy_from_slice(&state.to_be_bytes());
+    }
+    output
+}
+
+fn artifact_line(text: &mut String, fields: &[&str]) {
+    for (index, field) in fields.iter().enumerate() {
+        if index > 0 {
+            text.push('\t');
+        }
+        text.push_str(&escape_artifact_field(field));
+    }
+    text.push('\n');
+}
+
+fn escape_artifact_field(value: &str) -> String {
+    let mut escaped = String::new();
+    for byte in value.bytes() {
+        match byte {
+            b'%' => escaped.push_str("%25"),
+            b'\t' => escaped.push_str("%09"),
+            b'\n' => escaped.push_str("%0A"),
+            b'\r' => escaped.push_str("%0D"),
+            _ => escaped.push(char::from(byte)),
+        }
+    }
+    escaped
+}
+
+fn single_reproduction_artifact(artifact_dir: &Path) -> Result<PathBuf, Box<dyn Error>> {
+    let mut paths = fs::read_dir(artifact_dir)?
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let path = entry.path();
+            let file_name = path.file_name()?.to_str()?;
+            (file_name.starts_with("repro-failed-") && file_name.ends_with(".crucible"))
+                .then_some(path)
+        })
+        .collect::<Vec<_>>();
+    paths.sort();
+    match paths.as_slice() {
+        [path] => Ok(path.clone()),
+        _ => Err(invalid_data(format!(
+            "expected one failed reproduction artifact in `{}`, found {}",
+            artifact_dir.display(),
+            paths.len()
+        ))
+        .into()),
+    }
+}
+
+fn canonical_jsonl_from_reproduction_artifact(path: &Path) -> Result<String, Box<dyn Error>> {
+    let text = fs::read_to_string(path)?;
+    let mut payloads = BTreeMap::new();
+    let mut decisions = Vec::new();
+    for line in text.lines() {
+        let fields = parse_artifact_fields(line)?;
+        let Some(tag) = fields.first().map(String::as_str) else {
+            continue;
+        };
+        match tag {
+            "payload" if fields.len() == 3 => {
+                payloads.insert(fields[1].clone(), hex_to_bytes(&fields[2])?);
+            }
+            "decision" if fields.len() == 6 => {
+                decisions.push(ArtifactDecision {
+                    sequence: fields[1].parse()?,
+                    virtual_time_ticks: fields[2].parse()?,
+                    node: fields[3].clone(),
+                    kind: fields[4].clone(),
+                    payload_digest: fields[5].clone(),
+                });
+            }
+            _ => {}
+        }
+    }
+    if decisions.is_empty() {
+        return Err(invalid_data(format!(
+            "artifact `{}` did not encode any replay decisions",
+            path.display()
+        ))
+        .into());
+    }
+
+    let mut jsonl = String::new();
+    for decision in decisions {
+        let payload = payloads.get(&decision.payload_digest).ok_or_else(|| {
+            invalid_data(format!(
+                "artifact `{}` is missing payload `{}`",
+                path.display(),
+                decision.payload_digest
+            ))
+        })?;
+        let summary = std::str::from_utf8(payload)?;
+        jsonl.push_str(&format!(
+            "{{\"seq\":{},\"virtual_time\":{},\"node\":{},\"kind\":{},\"summary\":{}}}\n",
+            decision.sequence,
+            decision.virtual_time_ticks,
+            serde_json::to_string(&decision.node)?,
+            serde_json::to_string(&decision.kind)?,
+            serde_json::to_string(summary)?
+        ));
+    }
+    Ok(jsonl)
+}
+
+fn parse_artifact_fields(line: &str) -> Result<Vec<String>, Box<dyn Error>> {
+    line.split('\t').map(unescape_artifact_field).collect()
+}
+
+fn unescape_artifact_field(value: &str) -> Result<String, Box<dyn Error>> {
+    let mut output = String::new();
+    let mut chars = value.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '%' {
+            output.push(ch);
+            continue;
+        }
+        let high = chars
+            .next()
+            .ok_or_else(|| invalid_data(format!("truncated artifact escape in `{value}`")))?;
+        let low = chars
+            .next()
+            .ok_or_else(|| invalid_data(format!("truncated artifact escape in `{value}`")))?;
+        match (high, low) {
+            ('2', '5') => output.push('%'),
+            ('0', '9') => output.push('\t'),
+            ('0', 'A') => output.push('\n'),
+            ('0', 'D') => output.push('\r'),
+            _ => {
+                return Err(invalid_data(format!(
+                    "unknown artifact escape %{high}{low} in `{value}`"
+                ))
+                .into());
+            }
+        }
+    }
+    Ok(output)
+}
+
+fn hex_bytes(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(char::from(HEX[(byte >> 4) as usize]));
+        output.push(char::from(HEX[(byte & 0x0f) as usize]));
+    }
+    output
+}
+
+fn hex_to_bytes(hex: &str) -> Result<Vec<u8>, Box<dyn Error>> {
+    if !hex.len().is_multiple_of(2) {
+        return Err(invalid_data("hex payload has odd length").into());
+    }
+    let mut bytes = Vec::with_capacity(hex.len() / 2);
+    for chunk in hex.as_bytes().chunks(2) {
+        let high = hex_nibble(chunk[0]).ok_or_else(|| invalid_data("malformed hex payload"))?;
+        let low = hex_nibble(chunk[1]).ok_or_else(|| invalid_data("malformed hex payload"))?;
+        bytes.push((high << 4) | low);
+    }
+    Ok(bytes)
+}
+
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}

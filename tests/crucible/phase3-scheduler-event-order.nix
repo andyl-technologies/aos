@@ -9,9 +9,9 @@
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   model = import ./_crucible-model-source.nix {inherit lib;};
-  canonical = builtins.readFile ../../crates/crucible/src/model/canonical.rs;
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
-  eventOrderTest = builtins.readFile ../../crates/crucible/tests/scheduler_event_order.rs;
+  canonical = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/model/canonical.rs;
+  libSource = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/lib.rs;
+  eventOrderTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/scheduler_event_order.rs;
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -33,7 +33,7 @@
         needle = "The four key fields, precisely:";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "full scheduled-event key doc";
         needle = "(virtual_time, consumer node, producer node, sequence)";
@@ -79,7 +79,7 @@
         needle = "producer: event.key.producer().clone()";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
       {
         label = "scheduler node identity in model";
         needle = "pub struct SchedulerNodeId";
@@ -141,7 +141,7 @@
         needle = "{prefix}.event.consumer={}";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model/canonical.rs" canonical [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model/canonical.rs" canonical [
       {
         label = "canonical sequence state writer";
         needle = "fn write_event_sequence_state";
@@ -171,7 +171,7 @@
         needle = "hasher.write_u64(*next)";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" libSource [
       {
         label = "event sequence key export";
         needle = "EventSequenceKey";
@@ -185,7 +185,7 @@
         needle = "next_scheduled_event_key";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/scheduler_event_order.rs" eventOrderTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/scheduler_event_order.rs" eventOrderTest [
       {
         label = "tuple ordering test";
         needle = "scheduled_event_keys_order_by_virtual_consumer_producer_sequence";
@@ -211,7 +211,7 @@
         needle = "single_scheduler_allocates_control_event_keys_from_saved_sequence_state";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/scheduler_event_order.rs" eventOrderTest [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/scheduler_event_order.rs" eventOrderTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -282,7 +282,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-scheduler-event-order-target" \
-              -p crucible \
+              -p crucible-engine \
               --test scheduler_event_order \
               -- --test-threads=1
           '';

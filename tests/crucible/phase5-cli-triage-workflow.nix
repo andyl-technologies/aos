@@ -11,7 +11,7 @@
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliMain = import ./_cli-source.nix {inherit lib;};
-  portableArtifacts = builtins.readFile ../../crates/crucible-cli/src/portable_artifact_constants.rs;
+  portableArtifacts = builtins.readFile ../../crates/crucible/control/crucible-cli/src/portable_artifact_constants.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
@@ -33,7 +33,7 @@
         needle = "`T-CLI-17` is complete under `checks.crucible.phase5.cliTriageWorkflow`";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
+    ++ failuresFor "crates/crucible/control/crucible-cli/src/main.rs" cliMain [
       {
         label = "triage arguments";
         needle = "struct TriageArgs";
@@ -99,7 +99,7 @@
         needle = "cli_triage_is_offline_and_uses_uniform_failure_exit_code";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/src/portable_artifact_constants.rs" portableArtifacts [
+    ++ failuresFor "crates/crucible/control/crucible-cli/src/portable_artifact_constants.rs" portableArtifacts [
       {
         label = "signed findings schema";
         needle = "crucible.failure-triage.findings-ledger.v4";

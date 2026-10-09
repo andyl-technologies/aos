@@ -14,7 +14,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "crates/crucible/src/model.rs" model [
+    failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
       {
         label = "icount type";
         needle = "pub struct Icount";
@@ -84,7 +84,7 @@
         needle = "pub enum TimeConversionError";
       }
     ]
-    ++ forbiddenFor "crates/crucible/src/model.rs" model [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
       {
         label = "point plus point implementation";
         needle = "impl ops::Add<VirtualInstant> for VirtualInstant";
@@ -102,7 +102,7 @@
         needle = "f32";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" crateRoot [
       {
         label = "SimDuration export";
         needle = "SimDuration,";
@@ -187,7 +187,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-time-vocabulary-target" \
-              -p crucible \
+              -p crucible-engine \
               --lib \
               -- --test-threads=1
           '';

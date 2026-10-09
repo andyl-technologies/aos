@@ -897,7 +897,7 @@ spike:  guest HLT vs busy-poll during I/O — busy-poll stays correct but defeat
   as a `Decision`; route through `gate:harness-lint` (no unordered iteration /
   default hasher on response paths). — satisfies [IO-21], [IO-24]; spec §15.5;
   cross-ref 04, 08.
-  Completed by `cargo test --manifest-path crates/Cargo.toml -p crucible --lib
+  Completed by `cargo test --manifest-path crates/Cargo.toml -p crucible-engine --lib
   device`, `cargo test --manifest-path crates/Cargo.toml -p crucible-device`,
   `cargo test --manifest-path crates/Cargo.toml -p crucible`, and
   the focused `crucible-harness` `harness_lint`
@@ -919,7 +919,7 @@ spike:  guest HLT vs busy-poll during I/O — busy-poll stays correct but defeat
   of `MaterializedState`, proving a snapshot that omits RNG position or active
   faults fails the replay oracle. — satisfies [IO-23], [IO-26]; spec §15.5,
   §15.6; cross-ref 07 §3, §6.
-  Completed by `cargo test --manifest-path crates/Cargo.toml -p crucible --lib
+  Completed by `cargo test --manifest-path crates/Cargo.toml -p crucible-engine --lib
   device` and `cargo test --manifest-path crates/Cargo.toml -p crucible-device`.
   `DeviceOverlayDelta` carries a `DeviceRngState` keyed by the canonical device
   RNG stream, and `with_active_io_faults` folds the active I/O fault table into
@@ -938,7 +938,7 @@ spike:  guest HLT vs busy-poll during I/O — busy-poll stays correct but defeat
   mechanism with network faults. — satisfies [IO-25], [IO-26]; spec §15.6;
   cross-ref 17.
   Completed by `cargo test --manifest-path crates/Cargo.toml -p crucible-device`
-  and `cargo test --manifest-path crates/Cargo.toml -p crucible --lib
+  and `cargo test --manifest-path crates/Cargo.toml -p crucible-engine --lib
   device_subnode`.
   `IoFaults` is the shared block/9p completion fault table using the same
   integer-only taxonomy as `LinkFaults`: latency and bandwidth add deterministic
@@ -1020,7 +1020,7 @@ spike:  guest HLT vs busy-poll during I/O — busy-poll stays correct but defeat
   the consumer's past. — satisfies [IO-33], [IO-34]; spec §15.4.2; cross-ref 08
   §8.7, §8.11, 13 §13.9.
   Completed by `cargo test --manifest-path crates/Cargo.toml -p crucible-device`
-  and `cargo test --manifest-path crates/Cargo.toml -p crucible --test
+  and `cargo test --manifest-path crates/Cargo.toml -p crucible-engine --test
   scheduler_topology_change`.
   `NetLink` rejects zero/sub-floor base latency, clamps effective latency to its
   strictly-positive floor, raises a one-shot recompute flag when the conservative

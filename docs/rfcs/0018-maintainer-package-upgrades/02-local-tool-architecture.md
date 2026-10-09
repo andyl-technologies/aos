@@ -79,7 +79,7 @@ commands/maintain/presentation.rs
 ```
 
 Network transfer and SRI hashing should reuse/refactor the AOS machinery behind
-[`aos prefetch`](../../../crates/aos/src/commands/prefetch.rs). Nix and Git
+[`aos prefetch`](../../../crates/aos/cli/aos-cli/src/commands/prefetch.rs). Nix and Git
 operations reuse existing AOS process/repository abstractions where their
 contracts are strong enough.
 

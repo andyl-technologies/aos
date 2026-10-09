@@ -22,10 +22,10 @@
   launchRust =
     builtins.concatStringsSep "\n"
     (map (relative: builtins.readFile (root + "/${relative}"))
-      (["crates/crucible-qemu/src/launch.rs"] ++ rustFilesUnder "crates/crucible-qemu/src/launch"));
+      (["crates/crucible/qemu/crucible-qemu-host/src/launch.rs"] ++ rustFilesUnder "crates/crucible/qemu/crucible-qemu-host/src/launch"));
   launchTest =
-    builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch.rs
-    + builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch/launch_artifacts.rs;
+    builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/tests/deterministic_launch.rs
+    + builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/tests/deterministic_launch/launch_artifacts.rs;
   deterministicLaunchCheck = builtins.readFile ./phase1-deterministic-launch.nix;
   determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
   risksSpikes = builtins.readFile ../../docs/rfcs/0010-crucible/30-risks-spikes.md;
@@ -71,14 +71,14 @@
   ];
 
   failures =
-    failuresFor "crates/crucible-qemu/src/launch*.rs" launchRust [
+    failuresFor "crates/crucible/qemu/crucible-qemu-host/src/launch*.rs" launchRust [
       {
         label = "stock guest kernel cmdline default (no entropy suppression)";
         needle = "const DEFAULT_KERNEL_CMDLINE: &str = \"console=ttyS0 reboot=k panic=1 quiet\";";
       }
     ]
-    ++ forbiddenFor "crates/crucible-qemu/src/launch*.rs" launchRust forbiddenLaunchSource
-    ++ failuresFor "crates/crucible-qemu/tests/deterministic_launch.rs" launchTest [
+    ++ forbiddenFor "crates/crucible/qemu/crucible-qemu-host/src/launch*.rs" launchRust forbiddenLaunchSource
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/tests/deterministic_launch.rs" launchTest [
       {
         label = "any-guest cmdline pass-through test";
         needle = "fn launch_profile_accepts_any_guest_kernel_cmdline()";

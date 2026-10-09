@@ -60,8 +60,19 @@ in
       AOS_TPM2_FLUSHCONTEXT = "${tpm2-tools}/bin/tpm2_flushcontext";
     };
     cargoRoot = "crates";
-    cargoFlags = "-p aos-systemd-provider";
-    cargoTestFlags = "-p aos-systemd-provider";
+    # Keep the installed systemd package's command set while separating boot
+    # implementation from service and credential activation handlers.
+    cargoFlags = lib.concatStringsSep " " [
+      "-p aos-activation-systemd"
+      "-p aos-boot-runtime"
+      "--bin aos-systemd-native-resource-provider"
+      "--bin aos-systemd-credential-encrypt"
+      "--bin aos-systemd-boot-platform"
+      "--bin aos-systemd-image-stage"
+      "--bin aos-systemd-image-evidence"
+      "--bin aos-systemd-initrd-store"
+    ];
+    cargoTestFlags = "-p aos-activation-systemd -p aos-boot-runtime";
     doCheck = true;
 
     buildDeps = [cmake perl pkg-config protobuf];

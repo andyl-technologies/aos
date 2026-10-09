@@ -11,6 +11,17 @@ across which the CLI ([`23-cli.md`](23-cli.md)), the search/fuzzing driver
 ([`22-advanced-features.md`](22-advanced-features.md)), and external tooling reach
 a running scenario.
 
+The Rust implementation separates this shared surface from its realizations:
+`crucible-control-api` owns portable request/response values, capability models,
+and frozen RPC encodings; `crucible-control-client` owns the `ControlClient`
+interface and HTTP/2 client; `crucible-control-server` owns in-process actor
+adapters, lifecycle registries, authentication, and HTTP/2 dispatch. Server-owned
+streams implement typed local transport interfaces without making remote clients
+depend on the server implementation. Production VM lifecycle composition belongs
+to `crucible-daemon`; remote clients and API messages do not depend on the QEMU
+host crate. Package and directory names do not change wire identifiers, version
+negotiation, or golden vectors.
+
 Crucible has **no web UI** ([INV/NG-4], [`01-goals-nongoals-invariants.md`](01-goals-nongoals-invariants.md)).
 This file specifies a programmatic API plus a machine-to-machine RPC surface, and
 nothing about a browser front-end. Where the reference service shape uses

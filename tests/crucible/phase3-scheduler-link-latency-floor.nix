@@ -41,7 +41,7 @@
         needle = "a link MUST have a strictly positive latency";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
       {
         label = "minimum latency constant";
         needle = "pub const MIN_LINK_LATENCY: SimDuration";
@@ -103,7 +103,7 @@
         needle = "LinkDef::with_transport(\n        NodeId";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" libSource [
       {
         label = "minimum latency exported";
         needle = "MIN_LINK_LATENCY";
@@ -208,7 +208,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-scheduler-link-latency-floor-target" \
-              -p crucible \
+              -p crucible-engine \
               --lib \
               scheduler_link_latency_floor \
               -- --test-threads=1
@@ -216,7 +216,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-scheduler-link-latency-floor-target" \
-              -p crucible \
+              -p crucible-engine \
               --lib \
               world_link_transport \
               -- --test-threads=1
@@ -224,7 +224,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-scheduler-link-latency-floor-target" \
-              -p crucible \
+              -p crucible-engine \
               --lib \
               canonicalization_hashes_meaning_not_authoring_spelling \
               -- --test-threads=1

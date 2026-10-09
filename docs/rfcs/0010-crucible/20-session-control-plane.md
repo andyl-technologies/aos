@@ -1048,7 +1048,7 @@ pub enum SessionError {
   inter-quantum mailbox polls and a quanta-measured acknowledgement bound; wire
   `gate:control-responsive`. — satisfies [SESS-2], [SESS-3], [SESS-9];
   spec §3.
-  - Completed by `crates/crucible-session/src/lib.rs`: `SessionActor::run`
+  - Completed by `crates/crucible/control/crucible-session/src/lib.rs`: `SessionActor::run`
     delegates to a bounded `run_once` loop that polls
     `mpsc::Receiver::try_recv` before each running quantum, applies at most one
     mailbox command or calls `Engine::step_quantum` once, publishes the

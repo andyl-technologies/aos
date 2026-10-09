@@ -8,8 +8,8 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  libRs = builtins.readFile ../../crates/crucible/src/lib.rs;
-  verdictTest = builtins.readFile ../../crates/crucible/tests/trigger_verdict_composition.rs;
+  libRs = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/lib.rs;
+  verdictTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/trigger_verdict_composition.rs;
   triggerDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17a-conditions-and-triggers.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -32,7 +32,7 @@
         needle = "Completed by `checks.crucible.phase4.gates.replayOracle`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "assertion run verdict type";
         needle = "pub enum AssertionRunVerdict";
@@ -90,7 +90,7 @@
         needle = "ComposedRunVerdictFailure::Trigger";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libRs [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" libRs [
       {
         label = "assertion run verdict exported";
         needle = "AssertionRunVerdict";
@@ -104,7 +104,7 @@
         needle = "ComposedRunVerdictFailure";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/trigger_verdict_composition.rs" verdictTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/trigger_verdict_composition.rs" verdictTest [
       {
         label = "sticky explicit failure test";
         needle = "explicit_fail_is_sticky_over_later_pass";
@@ -220,7 +220,7 @@ in
           script = ''
             cargo test \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --test trigger_verdict_composition \
               -- --test-threads=1
           '';

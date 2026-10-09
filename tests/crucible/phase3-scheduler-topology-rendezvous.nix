@@ -8,7 +8,7 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  topologyRendezvousTest = builtins.readFile ../../crates/crucible/tests/scheduler_topology_rendezvous.rs;
+  topologyRendezvousTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/scheduler_topology_rendezvous.rs;
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -34,7 +34,7 @@
         needle = "never applies the topology mutation mid-RUN";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "change activation time";
         needle = "pub activation_time: Option<SimInstant>";
@@ -76,7 +76,7 @@
         needle = "topology_change_activation_time_ns";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/scheduler_topology_rendezvous.rs" topologyRendezvousTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/scheduler_topology_rendezvous.rs" topologyRendezvousTest [
       {
         label = "exact activation cap test";
         needle = "activation_rendezvous_caps_at_fault_time_not_fixed_tick";
@@ -122,7 +122,7 @@
         needle = "NetworkLookahead::Infinite";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/scheduler_topology_rendezvous.rs" topologyRendezvousTest [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/scheduler_topology_rendezvous.rs" topologyRendezvousTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -191,7 +191,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-scheduler-topology-rendezvous-target" \
-              -p crucible \
+              -p crucible-engine \
               --test scheduler_topology_rendezvous \
               -- --test-threads=1
           '';

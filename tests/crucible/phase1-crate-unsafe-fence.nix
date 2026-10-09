@@ -2,9 +2,10 @@
   pkgs,
   lib,
 }: let
+  inherit (import ./_workspace-packages.nix {inherit lib;}) packageDir packageNames cruciblePackages;
   cratesDir = ../../crates;
-  crateUnsafeFenceRust = builtins.readFile ../../crates/crucible-harness/tests/crate_unsafe_fence.rs;
-  crateUnsafeFenceSupport = builtins.readFile ../../crates/crucible-harness/tests/support/crate_unsafe_fence.rs;
+  crateUnsafeFenceRust = builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/crate_unsafe_fence.rs;
+  crateUnsafeFenceSupport = builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/support/crate_unsafe_fence.rs;
   crateUnsafeFenceHarness = crateUnsafeFenceRust + "\n" + crateUnsafeFenceSupport;
   safeFence = "#![forbid(unsafe_code)]";
   unsafeFence = "#![deny(unsafe_op_in_unsafe_fn)]";
@@ -293,29 +294,23 @@
     lib.concatMap (
       source:
         unsafeSourceFailuresForContent spec source.display (builtins.readFile source.path)
-    ) (rustSources (cratesDir + "/${spec.package}/src") "crates/${spec.package}/src");
+    ) (rustSources (packageDir spec.package + "/src") "crates/${spec.package}/src");
 
   specs = [
     {
-      package = "crucible-cas";
+      package = "crucible-store";
       root = "src/lib.rs";
       unsafeBoundary = false;
       safeWrapperContract = [];
     }
     {
-      package = "crucible-sim";
+      package = "crucible-determinism";
       root = "src/lib.rs";
       unsafeBoundary = false;
       safeWrapperContract = [];
     }
     {
-      package = "crucible-assert";
-      root = "src/lib.rs";
-      unsafeBoundary = false;
-      safeWrapperContract = [];
-    }
-    {
-      package = "crucible-shmem";
+      package = "crucible-qemu-shmem";
       root = "src/lib.rs";
       unsafeBoundary = true;
       safeWrapperContract = [
@@ -326,7 +321,7 @@
       ];
     }
     {
-      package = "crucible-protocol";
+      package = "crucible-qemu-protocol";
       root = "src/lib.rs";
       unsafeBoundary = true;
       safeWrapperContract = [
@@ -342,7 +337,7 @@
       safeWrapperContract = [];
     }
     {
-      package = "crucible-qemu";
+      package = "crucible-qemu-host";
       root = "src/lib.rs";
       unsafeBoundary = true;
       safeWrapperContract = [
@@ -362,7 +357,7 @@
       ];
     }
     {
-      package = "crucible-debug-gateway";
+      package = "crucible-qemu-debug-gateway";
       root = "src/lib.rs";
       unsafeBoundary = false;
       safeWrapperContract = [];
@@ -378,7 +373,7 @@
       ];
     }
     {
-      package = "crucible";
+      package = "crucible-engine";
       root = "src/lib.rs";
       unsafeBoundary = false;
       safeWrapperContract = [];
@@ -390,7 +385,19 @@
       safeWrapperContract = [];
     }
     {
-      package = "crucible-api";
+      package = "crucible-control-client";
+      root = "src/lib.rs";
+      unsafeBoundary = false;
+      safeWrapperContract = [];
+    }
+    {
+      package = "crucible-control-server";
+      root = "src/lib.rs";
+      unsafeBoundary = false;
+      safeWrapperContract = [];
+    }
+    {
+      package = "crucible-control-api";
       root = "src/lib.rs";
       unsafeBoundary = false;
       safeWrapperContract = [];
@@ -408,7 +415,7 @@
       safeWrapperContract = [];
     }
     {
-      package = "crucible-harness";
+      package = "crucible-test-support";
       root = "src/lib.rs";
       unsafeBoundary = false;
       safeWrapperContract = [];
@@ -420,17 +427,7 @@
       safeWrapperContract = [];
     }
     {
-      package = "crucible-linux-resource";
-      root = "src/lib.rs";
-      unsafeBoundary = true;
-      safeWrapperContract = [
-        "Unsafe boundary discipline:"
-        "public callers use safe quota capability types"
-        "validate pinned filesystem and syscall invariants"
-      ];
-    }
-    {
-      package = "crucible-s3-store";
+      package = "crucible-store-s3";
       root = "src/lib.rs";
       unsafeBoundary = false;
       safeWrapperContract = [];
@@ -439,11 +436,7 @@
 
   expectedPackages = lib.sort builtins.lessThan (map (spec: spec.package) specs);
   foundPackages = lib.sort builtins.lessThan (
-    builtins.filter (
-      name:
-        lib.hasPrefix "crucible" name
-        && builtins.pathExists (cratesDir + "/${name}/Cargo.toml")
-    ) (builtins.attrNames (builtins.readDir cratesDir))
+    cruciblePackages
   );
 
   packageSetFailures =
@@ -473,7 +466,7 @@
     ];
 
   checkSpec = spec: let
-    rootPath = cratesDir + "/${spec.package}/${spec.root}";
+    rootPath = packageDir spec.package + "/${spec.root}";
     content = builtins.readFile rootPath;
     activeAttrs = crateRootInnerAttributes content;
     required =
@@ -531,7 +524,7 @@
     lib.concatMap (
       required:
         lib.optionals (!(hasInfix required crateUnsafeFenceHarness)) [
-          "crates/crucible-harness/tests/crate_unsafe_fence.rs: missing unsafe-fence scanner wiring `${required}`"
+          "crates/crucible/testing/crucible-test-support/tests/crate_unsafe_fence.rs: missing unsafe-fence scanner wiring `${required}`"
         ]
     )
     requiredRustText;
@@ -541,7 +534,7 @@
   unsafeSourceRegressionFailures = let
     safeCrateFindings =
       unsafeSourceFailuresForContent {
-        package = "crucible";
+        package = "crucible-engine";
         unsafeBoundary = false;
       } "safe-regression.rs" ''
         fn bad() {
@@ -550,7 +543,7 @@
       '';
     unsafeBoundaryFindings =
       unsafeSourceFailuresForContent {
-        package = "crucible-shmem";
+        package = "crucible-qemu-shmem";
         unsafeBoundary = true;
       } "unsafe-boundary-regression.rs" ''
         pub unsafe fn leaky_public_api() {}
@@ -568,7 +561,7 @@
       '';
     allowedBoundaryFindings =
       unsafeSourceFailuresForContent {
-        package = "crucible-shmem";
+        package = "crucible-qemu-shmem";
         unsafeBoundary = true;
       } "allowed-boundary-regression.rs" ''
         pub fn safe_wrapper() {

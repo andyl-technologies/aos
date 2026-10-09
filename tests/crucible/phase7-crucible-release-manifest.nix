@@ -14,8 +14,8 @@
   cargoSourceNix = builtins.readFile ../../pkgs/tools/crucible/_cargo-source.nix;
   defaultChecks = builtins.readFile ./default.nix;
   shmemLib = import ./_crucible-shmem-source.nix {inherit lib;};
-  doorbellAbi = builtins.readFile ../../crates/crucible-protocol/src/doorbell_abi.rs;
-  apiRpcAbi = builtins.readFile ../../crates/crucible-api/src/rpc_abi.rs;
+  doorbellAbi = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-protocol/src/doorbell_abi.rs;
+  apiRpcAbi = builtins.readFile ../../crates/crucible/control/crucible-control-api/src/rpc_abi.rs;
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   crucibleCargoDepsHash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
 

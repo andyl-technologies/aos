@@ -1,0 +1,18 @@
+[package]
+name = "aos-nix-docs"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+aos-nix.workspace = true
+aos-cli-ui.workspace = true
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+tokio = { workspace = true }
+regex = { workspace = true }
+glob = { workspace = true }
+ignore = { workspace = true }

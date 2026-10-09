@@ -8,7 +8,7 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   model = import ./_crucible-model-source.nix {inherit lib;};
-  planTest = builtins.readFile ../../crates/crucible/tests/event_graph_serialization.rs;
+  planTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/event_graph_serialization.rs;
   defaultChecks = builtins.readFile ./default.nix;
   spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
 
@@ -29,7 +29,7 @@
         needle = "`checks.crucible.phase7.gates.signalFaultSystem`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
       {
         label = "private plan identity field";
         needle = "pub(super) id: ContentHash,";
@@ -89,9 +89,9 @@
         pub id: ContentHash,
       ''
       model) [
-      "crates/crucible/src/model.rs: plan identity field must not be public"
+      "crates/crucible/engine/crucible-engine/src/model.rs: plan identity field must not be public"
     ]
-    ++ failuresFor "crates/crucible/tests/event_graph_serialization.rs" planTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/event_graph_serialization.rs" planTest [
       {
         label = "plan content-address test";
         needle = "fn event_graph_plan_round_trips_through_toml_and_binary()";
@@ -117,7 +117,7 @@
         needle = "fault_signal_semantic_version = 2";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
       {
         label = "signal layer changes plan identity";
         needle = "fn outer_plan_identity_commits_to_the_complete_fault_layer()";
@@ -186,7 +186,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-spatial-plan-component-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --test event_graph_serialization \
               event_graph_plan_round_trips_through_toml_and_binary \
               -- --test-threads=1
@@ -195,7 +195,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-spatial-plan-component-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --test event_graph_serialization \
               graph_plan_is_the_scenario_plan_component \
               -- --test-threads=1

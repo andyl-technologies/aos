@@ -8,19 +8,19 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
+  pluginLib = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs;
   pluginSetup = import ./_qemu-plugin-setup-source.nix {inherit lib;};
   pluginRegistration = import ./_qemu-plugin-registration-source.nix {inherit lib;};
-  pluginHandshake = builtins.readFile ../../crates/crucible-qemu-plugin/src/handshake.rs;
-  protocol = builtins.readFile ../../crates/crucible-protocol/src/lib.rs;
+  pluginHandshake = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/handshake.rs;
+  protocol = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs;
   # The setup-region mmap surface was split out of lib.rs into
   # mapped_setup_region.rs; scan both so the needles survive file moves.
   shmem =
     import ./_crucible-shmem-source.nix {inherit lib;}
-    + builtins.readFile ../../crates/crucible-shmem/src/mapped_setup_region.rs
+    + builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/src/mapped_setup_region.rs
     + import ./_rust-module-source.nix {
       inherit lib;
-      entry = ../../crates/crucible-shmem/src/shmem/region.rs;
+      entry = ../../crates/crucible/protocol/crucible-qemu-shmem/src/shmem/region.rs;
     };
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   protocolSpec = builtins.readFile ../../docs/rfcs/0010-crucible/14-protocol.md;
@@ -33,10 +33,10 @@
 
   failures =
     lib.optionals (hasInfix "prepare_setup_completion_for_handshake" pluginSetup) [
-      "crates/crucible-qemu-plugin/src/setup.rs: forbidden no-longer-used handshake setup helper: `prepare_setup_completion_for_handshake`"
+      "crates/crucible/qemu/crucible-qemu-plugin/src/setup.rs: forbidden no-longer-used handshake setup helper: `prepare_setup_completion_for_handshake`"
     ]
     ++ lib.optionals (hasInfix "prepare_setup_completion_inner" pluginSetup) [
-      "crates/crucible-qemu-plugin/src/setup.rs: forbidden optional-handshake setup path: `prepare_setup_completion_inner`"
+      "crates/crucible/qemu/crucible-qemu-plugin/src/setup.rs: forbidden optional-handshake setup path: `prepare_setup_completion_inner`"
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
       {
@@ -62,7 +62,7 @@
         needle = "SetupAck` with `status == 0`";
       }
     ]
-    ++ failuresFor "crates/crucible-protocol/src/lib.rs" protocol [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs" protocol [
       {
         label = "setup descriptor count";
         needle = "pub const SETUP_DESCRIPTOR_COUNT: usize = 3;";
@@ -84,7 +84,7 @@
         needle = "pub fn plugin_send_setup_ack";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/src/lib.rs" shmem [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/src/lib.rs" shmem [
       {
         label = "exact setup mmap";
         needle = "pub fn mmap_setup_region";
@@ -102,7 +102,7 @@
         needle = "snapshot.node_count != layout.node_count";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/handshake.rs" pluginHandshake [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/handshake.rs" pluginHandshake [
       {
         label = "handshake slot getter";
         needle = "pub const fn slot_index";
@@ -112,7 +112,7 @@
         needle = "pub const fn node_count";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/lib.rs" pluginLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs" pluginLib [
       {
         label = "setup receive exported";
         needle = "receive_setup_with_descriptors";
@@ -126,7 +126,7 @@
         needle = "receive_and_prepare_setup_completion";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/setup.rs" pluginSetup [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/setup.rs" pluginSetup [
       {
         label = "plugin receives setup descriptors";
         needle = "pub fn receive_setup_with_descriptors";
@@ -216,7 +216,7 @@
         needle = "prepare_setup_sends_nonzero_ack_when_handshake_node_count_disagrees";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/registration.rs" pluginRegistration [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/registration.rs" pluginRegistration [
       {
         label = "registration receives setup descriptors";
         needle = "pub fn receive_setup_with_descriptors";

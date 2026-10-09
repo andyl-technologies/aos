@@ -4,9 +4,9 @@
   attrPath ? "checks.crucible.phase1.decisionRng",
   taskIds ? ["T-DET-15" "T-PAT-5"],
 }: let
-  simLib = builtins.readFile ../../crates/crucible-sim/src/lib.rs;
-  decisionRngTest = builtins.readFile ../../crates/crucible-sim/tests/decision_rng.rs;
-  layer0Gate = builtins.readFile ../../crates/crucible-sim/tests/gate_layer0_determinism.rs;
+  simLib = builtins.readFile ../../crates/crucible/engine/crucible-determinism/src/lib.rs;
+  decisionRngTest = builtins.readFile ../../crates/crucible/engine/crucible-determinism/tests/decision_rng.rs;
+  layer0Gate = builtins.readFile ../../crates/crucible/engine/crucible-determinism/tests/gate_layer0_determinism.rs;
   determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
   patternsAndSketches = builtins.readFile ../../docs/rfcs/0010-crucible/29-patterns-and-sketches.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -14,7 +14,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "crates/crucible-sim/src/lib.rs" simLib [
+    failuresFor "crates/crucible/engine/crucible-determinism/src/lib.rs" simLib [
       {
         label = "decision RNG type";
         needle = "pub struct DecisionRng";
@@ -80,7 +80,7 @@
         needle = "fn splitmix64";
       }
     ]
-    ++ forbiddenFor "crates/crucible-sim/src/lib.rs" simLib [
+    ++ forbiddenFor "crates/crucible/engine/crucible-determinism/src/lib.rs" simLib [
       {
         label = "default randomized hasher";
         needle = "DefaultHasher";
@@ -94,7 +94,7 @@
         needle = "rand::random";
       }
     ]
-    ++ failuresFor "crates/crucible-sim/tests/decision_rng.rs" decisionRngTest [
+    ++ failuresFor "crates/crucible/engine/crucible-determinism/tests/decision_rng.rs" decisionRngTest [
       {
         label = "seed XOR stable hash test";
         needle = "decision_rng_forks_by_seed_xor_stable_name_hash";
@@ -160,7 +160,7 @@
         needle = "0xc7dd_aa47_1d78_feaf";
       }
     ]
-    ++ failuresFor "crates/crucible-sim/tests/gate_layer0_determinism.rs" layer0Gate [
+    ++ failuresFor "crates/crucible/engine/crucible-determinism/tests/gate_layer0_determinism.rs" layer0Gate [
       {
         label = "layer0 gate uses real decision RNG";
         needle = "DecisionRng::new";

@@ -13,13 +13,13 @@
     (import ./_crucible-shmem-source.nix {inherit lib;})
     (import ./_rust-module-source.nix {
       inherit lib;
-      entry = ../../crates/crucible-shmem/src/shmem/frame_node.rs;
+      entry = ../../crates/crucible/protocol/crucible-qemu-shmem/src/shmem/frame_node.rs;
     })
-    (builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node/frame_entry.rs)
-    (builtins.readFile ../../crates/crucible-shmem/src/shmem/region.rs)
-    (builtins.readFile ../../crates/crucible-shmem/src/shmem/ring_coverage.rs)
+    (builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/src/shmem/frame_node/frame_entry.rs)
+    (builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/src/shmem/region.rs)
+    (builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/src/shmem/ring_coverage.rs)
   ];
-  regionTest = builtins.readFile ../../crates/crucible-shmem/tests/region_layout.rs;
+  regionTest = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/tests/region_layout.rs;
   shmemSpec = builtins.readFile ../../docs/rfcs/0010-crucible/13-shmem-abi.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -83,7 +83,7 @@
     nonShmemSources;
 
   failures =
-    failuresFor "crates/crucible-shmem source modules" shmemContract [
+    failuresFor "crates/crucible/protocol/crucible-qemu-shmem source modules" shmemContract [
       {
         label = "region magic";
         needle = "pub const REGION_MAGIC: u64 = u64::from_le_bytes(*b\"CRUCSHM1\");";
@@ -289,7 +289,7 @@
         needle = "pub fn padding_bytes_are_zero(&self) -> bool";
       }
     ]
-    ++ forbiddenFor "crates/crucible-shmem source modules" shmemContract [
+    ++ forbiddenFor "crates/crucible/protocol/crucible-qemu-shmem source modules" shmemContract [
       {
         label = "public raw header magic";
         needle = "pub magic: AtomicU64";
@@ -299,7 +299,7 @@
         needle = "pub node_count: AtomicU32";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/tests/region_layout.rs" regionTest [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/tests/region_layout.rs" regionTest [
       {
         label = "header layout test";
         needle = "region_header_layout_matches_wire_contract";
@@ -333,7 +333,7 @@
         needle = "reserved_executor_slot_constants_are_stable";
       }
     ]
-    ++ forbiddenFor "crates/crucible-shmem/tests/region_layout.rs" regionTest [
+    ++ forbiddenFor "crates/crucible/protocol/crucible-qemu-shmem/tests/region_layout.rs" regionTest [
       {
         label = "ignored region layout test";
         needle = "#[ignore";
@@ -401,7 +401,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-shmem-region-layout-target" \
-              -p crucible-shmem \
+              -p crucible-qemu-shmem \
               --test region_layout \
               -- --test-threads=1
           '';

@@ -9,8 +9,8 @@
 
   model = import ./_crucible-model-source.nix {inherit lib;};
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
-  memoryTest = builtins.readFile ../../crates/crucible/tests/memory_condition_leaf.rs;
+  libSource = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/lib.rs;
+  memoryTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/memory_condition_leaf.rs;
   triggerDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17a-conditions-and-triggers.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -28,7 +28,7 @@
         needle = "Completed by `checks.crucible.phase4.gates.replayOracle`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
       {
         label = "MemoryPredicate predicate";
         needle = "MemoryPredicate {\n        /// Node whose memory or register is sampled.";
@@ -74,7 +74,7 @@
         needle = "Predicate::MemoryPredicate { node, .. }";
       }
     ]
-    ++ failuresFor "crates/crucible/src/trigger.rs" trigger [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/trigger.rs" trigger [
       {
         label = "resolved memory place";
         needle = "pub enum ResolvedMemPlace";
@@ -124,7 +124,7 @@
         needle = "MemPlace::VirtualAddress { .. } | MemPlace::Symbol { .. }";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" libSource [
       {
         label = "MemPlace export";
         needle = "MemPlace";
@@ -138,7 +138,7 @@
         needle = "ResolvedMemPlace";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/memory_condition_leaf.rs" memoryTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/memory_condition_leaf.rs" memoryTest [
       {
         label = "physical sample test";
         needle = "memory_predicate_observes_current_physical_sample";
@@ -186,7 +186,7 @@
         needle = "memoryConditionLeaf = import ./phase4-memory-condition-leaf.nix";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/memory_condition_leaf.rs" memoryTest [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/memory_condition_leaf.rs" memoryTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -253,7 +253,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-memory-condition-leaf-target" \
-              -p crucible \
+              -p crucible-engine \
               --test memory_condition_leaf \
               -- --test-threads=1
           '';

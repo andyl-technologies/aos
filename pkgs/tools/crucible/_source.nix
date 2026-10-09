@@ -27,6 +27,8 @@ in
         || pathString == "${repoRootString}/README.md"
         || pathString == "${repoRootString}/CONTRIBUTING.md"
         || lib.hasPrefix "${repoRootString}/crates" pathString
+        || pathString == "${repoRootString}/api"
+        || lib.hasPrefix "${repoRootString}/api/proto" pathString
         || lib.hasPrefix "${repoRootString}/docs" pathString
         || pathString == "${repoRootString}/pkgs"
         || pathString == "${repoRootString}/pkgs/default.nix"

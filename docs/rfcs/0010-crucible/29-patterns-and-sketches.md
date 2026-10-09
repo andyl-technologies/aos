@@ -1107,7 +1107,7 @@ check, precisely because the model collapsed them into one ([EXEC-31]).
 - [x] **T-PAT-1** Ensure the session/engine driver is built to the §29.1
   enum-of-states + bounded-quantum actor-loop shape. — satisfies [PAT-1],
   [PAT-2]; realized by **T-EXEC-14**, **T-SESS-2** (spec 05 §10, 20 §3).
-  - Completed by `crates/crucible-session/src/lib.rs`: `EngineState` is the
+  - Completed by `crates/crucible/control/crucible-session/src/lib.rs`: `EngineState` is the
     closed Loaded/Running/Paused/Stopped run-state enum with typed
     `PauseReason` and `Outcome`, `Engine` keeps `Configuration` as the source of
     truth and `RuntimeState` as a rebuildable cache, and `SessionActor::run`
@@ -1177,8 +1177,8 @@ check, precisely because the model collapsed them into one ([EXEC-31]).
   - Completed by `cargo test --manifest-path crates/Cargo.toml -p
     crucible-shmem`, `cargo test --manifest-path crates/Cargo.toml -p
     crucible-shmem --test gate_layer1_injection`, `cargo test --manifest-path
-    crates/Cargo.toml -p crucible-shmem --test advance_ceiling_handoff`, and
-    `cargo test --manifest-path crates/Cargo.toml -p crucible-shmem --test
+    crates/Cargo.toml -p crucible-qemu-shmem --test advance_ceiling_handoff`, and
+    `cargo test --manifest-path crates/Cargo.toml -p crucible-qemu-shmem --test
     icount_stamped_injection`. `crucible_shmem::RingHeader` is the
     cache-line-separated Lamport SPSC queue with release-published frame writes
     and acquire-observed peer indices; `NodeSlot` exposes the scheduler ceiling

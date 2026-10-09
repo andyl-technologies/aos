@@ -30,7 +30,7 @@
         needle = "`T-CLI-4` is green through `checks.crucible.phase5.cliDeterminismErgonomics`";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
+    ++ failuresFor "crates/crucible/control/crucible-cli/src/main.rs" cliMain [
       {
         label = "explicit seed environment constant";
         needle = "const CRUCIBLE_SEED_ENV: &str = \"CRUCIBLE_SEED\";";
@@ -314,7 +314,7 @@
         needle = "cliDeterminismErgonomics = import ./phase5-cli-determinism-ergonomics.nix";
       }
     ]
-    ++ forbiddenFor "crates/crucible-cli/src/main.rs" cliMain [
+    ++ forbiddenFor "crates/crucible/control/crucible-cli/src/main.rs" cliMain [
       {
         label = "Clap env hides seed source precedence";
         needle = "env = \"CRUCIBLE_SEED\"";

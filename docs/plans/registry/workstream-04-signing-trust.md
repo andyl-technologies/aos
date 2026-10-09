@@ -60,7 +60,7 @@ objects, name-binding, and the two-hop chain.
 
 ### 2.1 What exists
 
-- **Key model & TOFU.** `crates/aos-package/src/security.rs:30-41` defines
+- **Key model & TOFU.** `crates/aos/packages/aos-package-manager/src/security.rs:30-41` defines
   `TrustedKey { registry, algorithm, public_key, fingerprint, source }`;
   `security.rs:52-131` is the `KeyStore` over `trusted-keys.d/<registry>.pub`
   (first dir writable for TOFU, rest read-only pre-installed);
@@ -268,13 +268,13 @@ its floor, even if a partition legitimately points there (brief §6).
   the commit-ancestry check before install.
 
 Implementation. The floor is a `semver::Version` persisted in registry install
-state (`crates/aos-package/src/registry/state.rs`, alongside the existing token
+state (`crates/aos/packages/aos-package-manager/src/registry/state.rs`, alongside the existing token
 state — coordinate location with [workstream-05](./workstream-05-consumer.md)).
 The check is a new free function next to `check_monotonic` (`state.rs:104`, which
 guards a `u64` token monotonically):
 
 ```rust
-// crates/aos-package/src/registry/state.rs
+// crates/aos/packages/aos-package-manager/src/registry/state.rs
 use semver::Version;
 
 /// Refuse a candidate older than the persisted floor. Mirrors the shape of
@@ -334,11 +334,11 @@ git -c gpg.format=ssh -c user.signingkey=<key> \
   `keys.toml` roster (§7.5; a single-key registry uses its sole key, brief §11);
   `apr sign`'s today-unused `_key: Option<&str>` arg (`registry_ops.rs:1750`)
   becomes live and is renamed `key`. Concretely, the rewrite lives in
-  `crates/aos-package/src/registry_ops.rs` and threads the key through a new
+  `crates/aos/packages/aos-package-manager/src/registry_ops.rs` and threads the key through a new
   signing helper:
 
   ```rust
-  // crates/aos-package/src/registry_ops.rs
+  // crates/aos/packages/aos-package-manager/src/registry_ops.rs
   /// Sign a tag object with an SSH/Ed25519 key. `tag_name` is the embedded
   /// name (channel name for HOP-1, semver for HOP-2); `target` is the ref the
   /// tag points at (a commit-ish for the release tag, `refs/tags/<semver>` for
@@ -430,11 +430,11 @@ Producer-side implementation:
   the committed tree next to `registry.toml` (the same write site as the default
   `registry.toml` write in `create`, `registry_ops.rs:443-450`, immediately
   before the initial `git add -A`/`commit` at `registry_ops.rs:453-454`). The
-  roster lives in a new module `crates/aos-package/src/registry/keys.rs` with
+  roster lives in a new module `crates/aos/packages/aos-package-manager/src/registry/keys.rs` with
   serde types mirroring the roster shape:
 
   ```rust
-  // crates/aos-package/src/registry/keys.rs  (new)
+  // crates/aos/packages/aos-package-manager/src/registry/keys.rs  (new)
   #[derive(Debug, Clone, Serialize, Deserialize)]
   pub struct KeysToml {
       pub schema: u32,                       // = 1
@@ -546,10 +546,10 @@ verify_and_select(channel, bucket):
 ```
 
 Concrete implementation. The chain walk and its primitives land in a new module
-`crates/aos-package/src/registry/verify.rs`, reusing `security.rs` where noted:
+`crates/aos/packages/aos-package-manager/src/registry/verify.rs`, reusing `security.rs` where noted:
 
 ```rust
-// crates/aos-package/src/registry/verify.rs  (new)
+// crates/aos/packages/aos-package-manager/src/registry/verify.rs  (new)
 use semver::Version;
 use std::path::Path;
 use anyhow::Result;
@@ -669,7 +669,7 @@ operates on the `KeysToml` parsed in §8.1, given the `id`/key the roster itself
 verified against (`vouching_key`):
 
 ```rust
-// crates/aos-package/src/registry/keys.rs
+// crates/aos/packages/aos-package-manager/src/registry/keys.rs
 /// Pin every active `[[keys]]` entry into the writable trusted-keys dir via
 /// KeyStore::store (security.rs:97), so a later tag signed by any of them
 /// verifies without a KeyMismatch prompt.

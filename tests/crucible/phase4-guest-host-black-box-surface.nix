@@ -7,10 +7,10 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
+  libSource = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/lib.rs;
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
   model = import ./_crucible-model-source.nix {inherit lib;};
-  surfaceTest = builtins.readFile ../../crates/crucible/tests/guest_host_black_box_surface.rs;
+  surfaceTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/guest_host_black_box_surface.rs;
   guestHostDoc = builtins.readFile ../../docs/rfcs/0010-crucible/16-guest-host-channel.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -31,7 +31,7 @@
         needle = "Guest↔host channel + optional agent";
       }
     ]
-    ++ failuresFor "crates/crucible/src/trigger.rs" trigger [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/trigger.rs" trigger [
       {
         label = "black-box observation enum";
         needle = "pub enum BlackBoxObservationKind";
@@ -89,7 +89,7 @@
         needle = "Self::GuestMarker { .. }";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
       {
         label = "hung lifecycle variant";
         needle = "Hung,";
@@ -107,7 +107,7 @@
         needle = "NodeLifecycle::Hung => \"hung\"";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" libSource [
       {
         label = "black-box observation kind export";
         needle = "BlackBoxObservationKind";
@@ -117,7 +117,7 @@
         needle = "BLACK_BOX_OBSERVATION_KINDS";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/guest_host_black_box_surface.rs" surfaceTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/guest_host_black_box_surface.rs" surfaceTest [
       {
         label = "closed catalog test";
         needle = "black_box_surface_catalog_is_closed_and_complete";
@@ -169,7 +169,7 @@
         needle = "taskIds = [\"T-GHC-1\"]";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/guest_host_black_box_surface.rs" surfaceTest [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/guest_host_black_box_surface.rs" surfaceTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -235,7 +235,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-guest-host-black-box-surface-target" \
-              -p crucible \
+              -p crucible-engine \
               --test guest_host_black_box_surface \
               --test observable_condition_leaves \
               -- --test-threads=1

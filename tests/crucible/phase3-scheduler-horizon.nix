@@ -8,8 +8,8 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
-  schedulerHorizonTest = builtins.readFile ../../crates/crucible/tests/scheduler_horizon.rs;
+  libSource = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/lib.rs;
+  schedulerHorizonTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/scheduler_horizon.rs;
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -23,7 +23,7 @@
         needle = "Completed by `checks.crucible.phase3.schedulerHorizon`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "horizon limit type";
         needle = "pub enum SchedulerHorizonLimit";
@@ -57,7 +57,7 @@
         needle = "network_lookahead: NetworkLookahead";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" libSource [
       {
         label = "horizon limit export";
         needle = "SchedulerHorizonLimit";
@@ -71,7 +71,7 @@
         needle = "network_horizon_from_lookahead";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/scheduler_horizon.rs" schedulerHorizonTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/scheduler_horizon.rs" schedulerHorizonTest [
       {
         label = "current plus lookahead unit";
         needle = "scheduler_horizon_adds_network_lookahead_to_current_time";
@@ -97,7 +97,7 @@
         needle = "single_scheduler_caps_unbounded_network_horizon_at_time_limit";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/scheduler_horizon.rs" schedulerHorizonTest [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/scheduler_horizon.rs" schedulerHorizonTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -162,7 +162,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-scheduler-horizon-target" \
-              -p crucible \
+              -p crucible-engine \
               --test scheduler_horizon \
               -- --test-threads=1
           '';

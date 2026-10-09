@@ -32,7 +32,7 @@ to that TOML makes them tamper-evident as registry data for free.
 
 ## Schema extension
 
-`crates/aos-package/src/types.rs`. The natural home is `SysrootImageEntry`
+`crates/aos/packages/aos-package-manager/src/types.rs`. The natural home is `SysrootImageEntry`
 (`:1267` — where a UKI/image already lives) for per-image facts, with a small
 addition on `PackageMeta` (`:447`) for the signer identity. New optional
 fields (optional so unsigned/legacy publishes still parse). A registry that is
@@ -59,7 +59,7 @@ On `PackageMeta` / registry root: a reference to the **active db cert set**
 and the **SBAT revocation floor** (minimum acceptable generation per
 component), modeled like the existing signing-key roster — `KeysToml` with
 `active: Vec<RosterKey>` / `revoked: Vec<RevokedKey>`
-(`crates/aos-package/src/registry/keys.rs:58-67`, the `[[keys]]` / `[[revoked]]`
+(`crates/aos/packages/aos-package-manager/src/registry/keys.rs:58-67`, the `[[keys]]` / `[[revoked]]`
 file format) — so db-cert rotation reuses roster machinery that already
 exists. (Not to be confused with `SigningConfig` at `types.rs:765`, which is
 only the bootstrap anchor — `required` + `public_key` — or `signing_keys` at
@@ -67,7 +67,7 @@ only the bootstrap anchor — `required` + `public_key` — or `signing_keys` at
 
 ## `apr publish` — derive facts from the artifact
 
-`crates/aos-package/src/registry_ops.rs` (the `--sysroot` path that already
+`crates/aos/packages/aos-package-manager/src/registry_ops.rs` (the `--sysroot` path that already
 records `[[images]]`). For each signed image, **extract the facts from the
 real binary** rather than trusting hand-entry:
 
@@ -91,7 +91,7 @@ component it can't itself verify is signed.
 
 ## `apm` — validate at download time
 
-`crates/aos-package/src/sysroot.rs` `install_system` already walks: signed
+`crates/aos/packages/aos-package-manager/src/sysroot.rs` `install_system` already walks: signed
 tag → narinfo → download hash → NAR hash → store path
 ([`current-state.md`](current-state.md)). Add an SB-validation step **after**
 the closure is verified, **before** activation/reboot:

@@ -86,8 +86,8 @@ in
     cargoRoot = "crates";
     cargoNextest = true;
 
-    cargoFlags = "-p crucible-cas --bin crucible-fleet-store";
-    cargoTestFlags = "-p crucible-cas";
+    cargoFlags = "-p crucible-store --bin crucible-fleet-store";
+    cargoTestFlags = "-p crucible-store";
     doCheck = true;
     buildDeps =
       [buildPackages.grep buildPackages.pkg-config sqlite]

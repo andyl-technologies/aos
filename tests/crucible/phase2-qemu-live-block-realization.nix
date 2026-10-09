@@ -65,7 +65,7 @@
           --offline \
           --target-dir "$TMPDIR/live-block-realization-target" \
           --manifest-path crates/Cargo.toml \
-          -p crucible-qemu \
+          -p crucible-qemu-host \
           --example crucible-qemu-live-block-realization
 
         run_dir="$TMPDIR/live-block-realization-run"

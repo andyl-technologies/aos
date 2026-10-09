@@ -10,43 +10,43 @@
 
   pluginLib = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/lib.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs;
   };
   pluginTeardown = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/teardown.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/teardown.rs;
   };
   pluginIdleLoop = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/idle_loop.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/idle_loop.rs;
   };
   pluginRuntime = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/runtime.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/runtime.rs;
   };
   pluginRuntimeTests = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/runtime/tests.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/runtime/tests.rs;
   };
   pluginLiveCallbacks = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/runtime/live_callbacks.rs;
   };
   pluginLiveCallbacksTests = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/runtime/live_callbacks/tests.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/runtime/live_callbacks/tests.rs;
   };
   protocol = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-protocol/src/lib.rs;
+    entry = ../../crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs;
   };
   shmemRegion = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-shmem/src/shmem/region.rs;
+    entry = ../../crates/crucible/protocol/crucible-qemu-shmem/src/shmem/region.rs;
   };
   shmemFrameNode = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-shmem/src/shmem/frame_node.rs;
+    entry = ../../crates/crucible/protocol/crucible-qemu-shmem/src/shmem/frame_node.rs;
   };
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   protocolSpec = builtins.readFile ../../docs/rfcs/0010-crucible/14-protocol.md;
@@ -67,7 +67,7 @@
   ];
 
   failures =
-    forbiddenFor "crates/crucible-qemu-plugin/src/teardown.rs" pluginTeardown
+    forbiddenFor "crates/crucible/qemu/crucible-qemu-plugin/src/teardown.rs" pluginTeardown
     (map (needle: {
         label = "wall-clock wait or sleep fallback";
         inherit needle;
@@ -101,7 +101,7 @@
         needle = "Quit         host -> plugin";
       }
     ]
-    ++ failuresFor "crates/crucible-protocol/src/lib.rs" protocol [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs" protocol [
       {
         label = "host Quit message";
         needle = "HostMsg::Quit";
@@ -115,7 +115,7 @@
         needle = "ControlLifecycleState::QuitSent";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/src/shmem/region.rs" shmemRegion [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/region.rs" shmemRegion [
       {
         label = "shutdown request API";
         needle = "pub fn request_shutdown";
@@ -125,13 +125,13 @@
         needle = "pub fn shutdown_requested";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/src/shmem/frame_node.rs" shmemFrameNode [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/frame_node.rs" shmemFrameNode [
       {
         label = "done marker";
         needle = "pub fn mark_done";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/lib.rs" pluginLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs" pluginLib [
       {
         label = "teardown module";
         needle = "pub mod teardown;";
@@ -149,7 +149,7 @@
         needle = "PluginShutdownRequested";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/teardown.rs" pluginTeardown [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/teardown.rs" pluginTeardown [
       {
         label = "teardown trigger enum";
         needle = "pub enum PluginTeardownTrigger";
@@ -223,7 +223,7 @@
         needle = "teardown_is_single_shot_and_does_not_touch_shmem_again";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/idle_loop.rs" pluginIdleLoop [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/idle_loop.rs" pluginIdleLoop [
       {
         label = "parked shutdown wake marks done";
         needle = "idle_loop_shutdown_wake_marks_done_and_returns_teardown_outcome";
@@ -233,7 +233,7 @@
         needle = "IdleWaitOutcome::ShutdownRequested";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/runtime.rs" pluginRuntime [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/runtime.rs" pluginRuntime [
       {
         label = "unified production teardown trigger channel";
         needle = "pub(super) enum LiveRuntimeTeardownTrigger";
@@ -259,7 +259,7 @@
         needle = "run_runtime_thread_fail_loud";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/runtime/tests.rs" pluginRuntimeTests [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/runtime/tests.rs" pluginRuntimeTests [
       {
         label = "shared shutdown worker drain proof";
         needle = "shared_shutdown_worker_defers_done_and_clean_qemu_shutdown_until_callback_drain";
@@ -273,7 +273,7 @@
         needle = "shared_selected_first_keeps_receiver_live_for_subsequent_quit_delivery";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs" pluginLiveCallbacks [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/runtime/live_callbacks.rs" pluginLiveCallbacks [
       {
         label = "one-shot shared shutdown callback signal";
         needle = "shared_shutdown_signaled";
@@ -283,7 +283,7 @@
         needle = "signal_shared_shutdown";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/runtime/live_callbacks/tests.rs" pluginLiveCallbacksTests [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/runtime/live_callbacks/tests.rs" pluginLiveCallbacksTests [
       {
         label = "busy exact-ceiling shutdown observation proof";
         needle = "busy_at_ceiling_publish_callback_signals_shared_shutdown_without_publication";

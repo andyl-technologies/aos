@@ -5,7 +5,7 @@
 > state and removed concepts), with risk and migration detail expanded for
 > implementers. Where this doc describes **CURRENT** behavior it cites code as
 > `path:line` (paths relative to the repo root; the registry crate is
-> `crates/aos-package/`). Where it describes **TARGET** behavior it draws from
+> `crates/aos/packages/aos-package-manager/`). Where it describes **TARGET** behavior it draws from
 > the brief's §3–§14 decisions.
 >
 > **Target model in one line:** the registry is a **bare git repository (sha256
@@ -471,10 +471,10 @@ registry never runs that server.**
    and from the on-disk `PlatformEntry` (`registry/parse.rs:45-51`); the consumer
    reads `FileHash` / `FileSize` from the narinfo, not from the package TOML. The
    server **already computes them at emit time** from the compressed bytes:
-   `format_narinfo` (`crates/aos-server/src/narinfo.rs:27`) emits `FileHash:` /
+   `format_narinfo` (`crates/aos/packages/aos-build-server/src/narinfo.rs:27`) emits `FileHash:` /
    `FileSize:` unconditionally — for `Compression::None` they coincide with
    `NarHash` / `NarSize`, and for zstd / xz they are computed by
-   `compute_file_hash_size` (`crates/aos-server/src/compress.rs:143`,
+   `compute_file_hash_size` (`crates/aos/packages/aos-build-server/src/compress.rs:143`,
    `narinfo.rs:48`). **Consequence for WS-06:** the §5.2 open question is *resolved
    to emit-time compute* — this is the option-2 behavior that already ships, not a
    thing to build; the emitter does **not** read `FileHash` / `FileSize` off
@@ -487,40 +487,40 @@ registry never runs that server.**
    as a generation library — so WS-06 reuses it, it does not build an emitter from
    scratch (and it does not stand up a server).** The pieces the AOT producer will
    call to *emit static files at publish* all ship today:
-   - **Shared narinfo type** — `NarInfo` (`crates/aos-core/src/nar/info.rs:5`) with
+   - **Shared narinfo type** — `NarInfo` (`crates/shared/aos-nar/src/info.rs:5`) with
      `parse()` (`:19`) / `format()` (`:81`) and `store_hash()` / `basename()`
      helpers, shared between server and consumer. The producer reuses this type +
      `format()` to serialize the static `<storehash>.narinfo` files.
    - **narinfo formatting** — `format_narinfo(&DbPathInfo, store_dir,
-     &CompressionConfig, Option<&NarInfoSigner>)` (`crates/aos-server/src/narinfo.rs:27`)
+     &CompressionConfig, Option<&NarInfoSigner>)` (`crates/aos/packages/aos-build-server/src/narinfo.rs:27`)
      writes the full narinfo body; `URL: nar/{store_hash}-{nar_hash colon→dash}.{ext}`
      (`narinfo.rs:37`), `References:`/`Deriver:` as basenames, `Sig:` lines. This is
      the format/sign **routine the producer reuses** to generate each static narinfo
      — not a handler the registry serves at request time.
-   - **Ed25519 narinfo signing** — `NarInfoSigner` (`crates/aos-server/src/sign.rs`):
+   - **Ed25519 narinfo signing** — `NarInfoSigner` (`crates/aos/packages/aos-build-server/src/sign.rs`):
      `load(key_file)` (`:14`), `sign(fingerprint) → "name:base64"` (`:44`), and the
      exact Nix narinfo `fingerprint(store_path, nar_hash, nar_size, refs)` (`:57`),
      applied at `narinfo.rs:87-93`. This is the "one Ed25519 key, reused for the
      narinfo `Sig:`" the brief calls for — the producer reuses it to sign the static
      narinfo files at publish.
    - **FileHash / FileSize compute** — `compute_file_hash_size`
-     (`crates/aos-server/src/compress.rs:143`, called at `narinfo.rs:48`) computes
+     (`crates/aos/packages/aos-build-server/src/compress.rs:143`, called at `narinfo.rs:48`) computes
      `FileHash:` / `FileSize:` over the compressed bytes (for `Compression::None`
      they coincide with `NarHash` / `NarSize`). The producer reuses this (or captures
      the values at build time) when generating each static narinfo.
    - **Live nix-cache routes are a *different use case*, NOT what the registry runs** —
-     `crates/aos-server/src/routes.rs:80-89` (`cache_info_handler` `:123` emitting
+     `crates/aos/packages/aos-build-server/src/routes.rs:80-89` (`cache_info_handler` `:123` emitting
      `Priority: 30` at `:145`, `narinfo_handler` `:157`, `nar_handler` `:223`) serve a
      host's **own** Nix store dynamically, nix-serve-style. The registry **does not run
      this server**; it reuses the format/sign *library* above to pre-generate dumb
      static files. They are cited here only as the home of the reusable code and to
      reconcile the `Priority` value (below), not as a serving surface the registry
      stands up.
-   - **Cache backends** — `crates/aos-cache/src/backend/{s3,sftp,http,fs}.rs` have
+   - **Cache backends** — `crates/aos/packages/aos-nix-cache/src/backend/{s3,sftp,http,fs}.rs` have
      `has`/`get`/`put_narinfo`; the backends write `Priority: 40`
      (`backend/sftp.rs:143`, `backend/fs.rs:126`).
-   - **Narinfo-driven consumer (DONE)** — `crates/aos-package/src/download.rs` (commit
-     `7149acf6`) uses `aos_core::nar::info`; `fetch_narinfos` fetches the narinfo
+   - **Narinfo-driven consumer (DONE)** — `crates/aos/packages/aos-package-manager/src/download.rs` (commit
+     `7149acf6`) uses `aos_nar::info`; `fetch_narinfos` fetches the narinfo
      and `download_nars` consumes it; `DownloadRequest` carries the `NarInfo`;
      `FileHash` / `NarHash` / `References` / `Deriver` all come **from** the narinfo;
      `narinfo_url(mirror_url, store_path)` (`:74`). The consumer already reads a
@@ -617,7 +617,7 @@ rollout*").
 
 | Layer | Retired bundle model | Git-native model | Survives? |
 |---|---|---|---|
-| Package metadata | nested package TOMLs (`PackageToml`, `crates/aos-package/src/registry/parse.rs:14`) + `closures/<hash>` adjacency | **same TOML tree content**, now living as git tree objects in a sha256 bare repo (brief §3, §8) | **Yes** (content), repackaged as git objects |
+| Package metadata | nested package TOMLs (`PackageToml`, `crates/aos/packages/aos-package-manager/src/registry/parse.rs:14`) + `closures/<hash>` adjacency | **same TOML tree content**, now living as git tree objects in a sha256 bare repo (brief §3, §8) | **Yes** (content), repackaged as git objects |
 | Root / manifest | `bundle-list.toml` manifest | **removed** — replaced by git refs + signed tag objects + relative `objects/info/alternates` (brief §15) | **No** |
 | Distribution unit | **git bundles** + `bundle-list.toml` | **removed** — full packs `pack-<sha256>.pack(.idx)` + thin `delta-<from>.pack.zst` over dumb HTTP (brief §9, §10, §15) | **No** |
 | Versioning / ordering | **calendar tags** `vYYYY.MM[.P]` ordered by `creation_token` | **standard semver, no `v`**; ordering by semver + git ancestry (brief §7, §15) | **No** |

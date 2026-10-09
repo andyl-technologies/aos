@@ -23,13 +23,13 @@
     listing=$(cargo test --frozen --offline \
       --manifest-path crates/Cargo.toml \
       --target-dir "$TMPDIR/target" \
-      -p crucible-qemu --lib "$exact_test" \
+      -p crucible-qemu-host --lib "$exact_test" \
       -- --list)
     test "$(printf '%s\n' "$listing" | grep -Fxc "$exact_test: test")" -eq 1
     cargo test --frozen --offline \
       --manifest-path crates/Cargo.toml \
       --target-dir "$TMPDIR/target" \
-      -p crucible-qemu --lib "$exact_test" \
+      -p crucible-qemu-host --lib "$exact_test" \
       -- --exact --nocapture
 
     mkdir -p "$out"

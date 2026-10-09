@@ -7,28 +7,28 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
+  qemuLib = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/src/lib.rs;
   asyncDriver = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu/src/async_driver.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-host/src/async_driver.rs;
     siblingTests = true;
   };
-  crashDetection = builtins.readFile ../../crates/crucible-qemu/src/crash_detection.rs;
+  crashDetection = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/src/crash_detection.rs;
   nodeLib = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu/src/node.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-host/src/node.rs;
   };
   quantumLib = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu/src/quantum.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-host/src/quantum.rs;
   };
   qmpLib = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu/src/qmp.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-host/src/qmp.rs;
   };
   qmpTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu/tests/qmp.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-host/tests/qmp.rs;
   };
   qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -77,7 +77,7 @@
         needle = "timeout-capable stream";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/lib.rs" qemuLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/lib.rs" qemuLib [
       {
         label = "async driver module";
         needle = "mod async_driver;";
@@ -103,7 +103,7 @@
         needle = "QmpIoTimeoutPolicy";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/crash_detection.rs" crashDetection [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/crash_detection.rs" crashDetection [
       {
         label = "bounded await timeout crash cause";
         needle = "BoundedAwaitTimeout";
@@ -113,7 +113,7 @@
         needle = "pub fn bounded_await_timeout";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/async_driver.rs" asyncDriver [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/async_driver.rs" asyncDriver [
       {
         label = "module docs";
         needle = "Bounded host-I/O bridge";
@@ -219,7 +219,7 @@
         needle = "async_driver_lifecycle_timeouts_crash_and_shutdown_for_each_wait_class";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/node.rs" nodeLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/node.rs" nodeLib [
       {
         label = "QMP save timeout reaps the indeterminate process";
         needle = "qemu_node_qmp_timeout_terminates_indeterminate_save_job";
@@ -261,7 +261,7 @@
         needle = "source.bounded_timeout()";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/quantum.rs" quantumLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/quantum.rs" quantumLib [
       {
         label = "quantum channel start adapter";
         needle = "QemuQuantumShmemHotPath::start_quantum";
@@ -279,7 +279,7 @@
         needle = "QemuAsyncQuantumCompletion::from";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/qmp.rs" qmpLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/qmp.rs" qmpLib [
       {
         label = "QMP timeout stream trait";
         needle = "pub trait QmpTimeoutStream";
@@ -325,7 +325,7 @@
         needle = "connect_with_policies";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/tests/qmp.rs" qmpTest [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/tests/qmp.rs" qmpTest [
       {
         label = "QMP explicit timeout test";
         needle = "qmp_client_installs_explicit_stream_timeouts";
@@ -339,7 +339,7 @@
         needle = "qmp_timeout_errors_classify_node_channel_timeouts";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/qmp.rs" qmpLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/qmp.rs" qmpLib [
       {
         label = "QMP event flood bound test";
         needle = "command_response_rejects_excess_async_events";
@@ -349,14 +349,14 @@
         needle = "greeting_rejects_an_oversized_partial_line";
       }
     ]
-    ++ forbiddenFor "crates/crucible-qemu/src/async_driver.rs" asyncDriver (
+    ++ forbiddenFor "crates/crucible/qemu/crucible-qemu-host/src/async_driver.rs" asyncDriver (
       map (api: {
         label = "host-time, random, or nondeterministic select API";
         needle = api;
       })
       forbiddenHostTimingApis
     )
-    ++ forbiddenFor "crates/crucible-qemu/src/async_driver.rs" asyncDriver [
+    ++ forbiddenFor "crates/crucible/qemu/crucible-qemu-host/src/async_driver.rs" asyncDriver [
       {
         label = "production unwrap";
         needle = ".unwrap()";
@@ -430,7 +430,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-qemu-async-driver-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible-qemu \
+              -p crucible-qemu-host \
               --lib \
               async_driver::tests \
               -- --test-threads=1
@@ -439,7 +439,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-qemu-async-driver-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible-qemu \
+              -p crucible-qemu-host \
               --lib \
               node::tests \
               -- --test-threads=1
@@ -448,7 +448,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-qemu-async-driver-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible-qemu \
+              -p crucible-qemu-host \
               --test qmp \
               -- --test-threads=1
           '';

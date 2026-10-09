@@ -23,8 +23,8 @@
     };
     cargoRoot = "crates";
     cargoBuildCommands = [
-      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-kubernetes-provider"
-      "test --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-kubernetes-provider"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-activation-kubernetes"
+      "test --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-activation-kubernetes"
     ];
   };
 in
@@ -54,8 +54,8 @@ in
 
     inherit version cargoDeps cargoArtifacts cargoArtifactContract;
     cargoRoot = "crates";
-    cargoFlags = "-p aos-kubernetes-provider";
-    cargoTestFlags = "-p aos-kubernetes-provider";
+    cargoFlags = "-p aos-activation-kubernetes";
+    cargoTestFlags = "-p aos-activation-kubernetes";
     cargoNextest = true;
     doCheck = true;
     runtimeDeps = [];

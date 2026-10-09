@@ -611,9 +611,9 @@ health, tag history, retention, and GC. Browser uploads are out of scope.
 Adding the OCI data and control planes requires updating every checked surface,
 not only the primary protobuf and router:
 
-- `crates/aos-proto/src/proto/aos/hub/v1/hub.proto`;
-- `crates/aos-proto/build.rs` and `crates/aos-proto-types/build.rs`;
-- the manual remote method/path map in `crates/aos-remote/src/hub.rs`;
+- `api/proto/aos/hub/v1/hub.proto`;
+- `crates/aos/packages/aos-build-api/build.rs` and `crates/hub/aos-hub-api/build.rs`;
+- the manual remote method/path map in `crates/aos/packages/aos-build-client/src/hub.rs`;
 - native Connect route registration and its proto-coverage test;
 - RFC-0012 API and route-capability manifests;
 - the retained-control classification fixture and coverage test;

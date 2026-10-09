@@ -10,10 +10,10 @@
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   model = import ./_crucible-model-source.nix {inherit lib;};
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
-  contentAddressTest = builtins.readFile ../../crates/crucible/tests/event_log_content_address.rs;
-  gateContentAddressTest = builtins.readFile ../../crates/crucible/tests/gate_content_address.rs;
-  schemaTest = builtins.readFile ../../crates/crucible/tests/event_log_schema.rs;
-  payloadTest = builtins.readFile ../../crates/crucible/tests/event_log_payload.rs;
+  contentAddressTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/event_log_content_address.rs;
+  gateContentAddressTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/gate_content_address.rs;
+  schemaTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/event_log_schema.rs;
+  payloadTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/event_log_payload.rs;
   observabilityDoc = builtins.readFile ../../docs/rfcs/0010-crucible/19-observability-event-log.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -31,7 +31,7 @@
         needle = "versioned binary event-log segments";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "binary segment magic";
         needle = "EVENT_LOG_SEGMENT_BINARY_MAGIC";
@@ -93,7 +93,7 @@
         needle = "pub event_log_segment_text: String";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
       {
         label = "runtime carries event-log offset";
         needle = "pub event_log: EventLogOffset";
@@ -127,7 +127,7 @@
         needle = "keys.insert(cow_ref.content)";
       }
     ]
-    ++ failuresFor "crates/crucible/src/trigger.rs" trigger [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/trigger.rs" trigger [
       {
         label = "condition prefix supports resumed base sequence";
         needle = "from_scheduler_event_log_entries_with_base";
@@ -145,7 +145,7 @@
         needle = "EventLogOffset::with_appended_segment";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/event_log_content_address.rs" contentAddressTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/event_log_content_address.rs" contentAddressTest [
       {
         label = "binary canonical segment test";
         needle = "event_log_segments_are_binary_canonical_with_derived_text_view";
@@ -219,7 +219,7 @@
         needle = "CowDeltaKind::EventLogSegment";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/gate_content_address.rs" gateContentAddressTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/gate_content_address.rs" gateContentAddressTest [
       {
         label = "graph store test stores event-log bytes";
         needle = "event-log segment bytes should store";
@@ -239,19 +239,19 @@
         needle = "eventLogContentAddress = import ./phase4-event-log-content-address.nix";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/event_log_schema.rs" schemaTest [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/event_log_schema.rs" schemaTest [
       {
         label = "schema test decodes canonical segment as UTF-8";
         needle = "String::from_utf8(append.segment_bytes)";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/event_log_payload.rs" payloadTest [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/event_log_payload.rs" payloadTest [
       {
         label = "payload test decodes canonical segment as UTF-8";
         needle = "String::from_utf8(append.segment_bytes)";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/event_log_content_address.rs" contentAddressTest [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/event_log_content_address.rs" contentAddressTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -314,28 +314,28 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-event-log-content-address-target" \
-              -p crucible \
+              -p crucible-engine \
               --test event_log_content_address \
               -- --test-threads=1
             cargo test \
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-event-log-content-address-target" \
-              -p crucible \
+              -p crucible-engine \
               --lib event_log_segment_binary_round_trips_to_same_bytes \
               -- --test-threads=1
             cargo test \
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-event-log-content-address-target" \
-              -p crucible \
+              -p crucible-engine \
               --lib facts_through_point_preserves_resumed_event_log_base_sequence \
               -- --test-threads=1
             cargo test \
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-event-log-content-address-target" \
-              -p crucible \
+              -p crucible-engine \
               --features test-double \
               --test gate_content_address \
               gate_content_address_temporal_graph_persists_checkpoint_closure_in_dag_store \
@@ -344,7 +344,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-event-log-content-address-target" \
-              -p crucible \
+              -p crucible-engine \
               --features test-double \
               --test gate_content_address \
               gate_content_address_gc_refcounts_abandoned_branch_unique_objects \

@@ -1,9 +1,9 @@
 {lib}:
 import ./_rust-source.nix {
   inherit lib;
-  entry = ../../crates/crucible-shmem/src/lib.rs;
+  entry = ../../crates/crucible/protocol/crucible-qemu-shmem/src/lib.rs;
   fragmentDirs = [
-    ../../crates/crucible-shmem/src/abi_header
-    ../../crates/crucible-shmem/src/shmem
+    ../../crates/crucible/protocol/crucible-qemu-shmem/src/abi_header
+    ../../crates/crucible/protocol/crucible-qemu-shmem/src/shmem
   ];
 }

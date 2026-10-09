@@ -48,8 +48,8 @@ in
           [workspace]
 
           [dependencies]
-          crucible-protocol = { path = "../crates/crucible-protocol" }
-          crucible-shmem = { path = "../crates/crucible-shmem" }
+          crucible-protocol = { path = "../crates/crucible/protocol/crucible-qemu-protocol" }
+          crucible-shmem = { path = "../crates/crucible/protocol/crucible-qemu-shmem" }
           libc = "0.2"
           serde_json = "1"
           sha2 = "0.10"

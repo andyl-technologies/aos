@@ -248,7 +248,7 @@ and the selected implementation; documentation changes do not trigger updates.
 When multiple packages extend shared domain configuration, its manager derives
 the resulting effects and owns their lifecycle.
 
-`aos-ability-plan::module_graph` checks hashes, native option type projections,
+`aos-module-format::graph` checks hashes, native option type projections,
 references, composition exports, ordering, and bound handlers. Arbitrary Nix
 predicates without a portable validator cannot cross this boundary. The original
 JSON representation is retained for stable hashing and replay. Declared sets

@@ -19,6 +19,18 @@ improve it where that is safe and proportionate. Keep formatting,
 documentation-only work, behavior-preserving refactors, and behavior changes
 reviewable as distinct changes whenever practical.
 
+## Rust workspace ownership
+
+Before adding or splitting a crate, read the
+[workspace organization](docs/architecture/crate-workspace.md) and check the
+[active](docs/architecture/crate-inventory.md) and
+[unmerged](docs/architecture/unmerged-crates.md) inventories for existing reusable
+code and name collisions. A directory hierarchy does not scope Cargo names.
+Use a full package name that identifies its capability or owning subsystem, and
+keep its leaf directory consistent with that name. Add a crate for a justified
+consumer, dependency, platform, packaging, or license boundary; otherwise use
+modules in the existing owner.
+
 ## Contributor agreement
 
 Every external human contributor must accept the

@@ -7,12 +7,12 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
-  launchLib = builtins.readFile ../../crates/crucible-qemu/src/launch.rs;
-  launchValidation = builtins.readFile ../../crates/crucible-qemu/src/launch/validation.rs;
+  qemuLib = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/src/lib.rs;
+  launchLib = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/src/launch.rs;
+  launchValidation = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/src/launch/validation.rs;
   launchTest =
-    builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch.rs
-    + builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch/launch_artifacts.rs;
+    builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/tests/deterministic_launch.rs
+    + builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/tests/deterministic_launch/launch_artifacts.rs;
   qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -31,7 +31,7 @@
         needle = "Round-robin single-thread launch validation";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/lib.rs" qemuLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/lib.rs" qemuLib [
       {
         label = "pre-spawn validator export";
         needle = "validate_pre_spawn_qemu_launch_args";
@@ -41,7 +41,7 @@
         needle = "QemuPreSpawnLaunchValidationError";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/launch.rs" launchLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/launch.rs" launchLib [
       {
         label = "default RR switch quantum";
         needle = "const DEFAULT_RR_SWITCH_QUANTUM: u64 = 4096;";
@@ -67,7 +67,7 @@
         needle = "\"rr_switch_quantum_units=retired-instructions\".to_owned(),";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/launch/validation.rs" launchValidation [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/launch/validation.rs" launchValidation [
       {
         label = "pre-spawn validator";
         needle = "pub fn validate_pre_spawn_qemu_launch_args";
@@ -145,7 +145,7 @@
         needle = "Some(\"utc\") | None";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/tests/deterministic_launch.rs" launchTest [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/tests/deterministic_launch.rs" launchTest [
       {
         label = "canonical validator accept test";
         needle = "pre_spawn_launch_validation_accepts_canonical_arguments";
@@ -249,7 +249,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-qemu-launch-validation-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible-qemu \
+              -p crucible-qemu-host \
               --test deterministic_launch \
               -- --test-threads=1
           '';

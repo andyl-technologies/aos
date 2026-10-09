@@ -10,7 +10,7 @@
   shmemLib = import ./_crucible-shmem-source.nix {inherit lib;};
   snapshotTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-shmem/tests/snapshot_restore.rs;
+    entry = ../../crates/crucible/protocol/crucible-qemu-shmem/tests/snapshot_restore.rs;
   };
   shmemSpec = builtins.readFile ../../docs/rfcs/0010-crucible/13-shmem-abi.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -20,7 +20,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "crates/crucible-shmem/src/lib.rs" shmemLib [
+    failuresFor "crates/crucible/protocol/crucible-qemu-shmem/src/lib.rs" shmemLib [
       {
         label = "quiescent snapshot API";
         needle = "pub fn snapshot(&self, entries: &[FrameEntry]) -> Result<SpscRingSnapshot, SpscRingError>";
@@ -78,7 +78,7 @@
         needle = "SnapshotTooLarge";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/tests/snapshot_restore.rs" snapshotTest [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/tests/snapshot_restore.rs" snapshotTest [
       {
         label = "FIFO snapshot canonicalization test";
         needle = "snapshot_captures_fifo_after_wraparound_and_canonicalizes_entries";
@@ -108,7 +108,7 @@
         needle = "canonical_decoder_keeps_minimal_frames_compact";
       }
     ]
-    ++ forbiddenFor "crates/crucible-shmem/tests/snapshot_restore.rs" snapshotTest [
+    ++ forbiddenFor "crates/crucible/protocol/crucible-qemu-shmem/tests/snapshot_restore.rs" snapshotTest [
       {
         label = "ignored snapshot/restore test";
         needle = "#[ignore";
@@ -179,7 +179,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-shmem-snapshot-restore-target" \
-              -p crucible-shmem \
+              -p crucible-qemu-shmem \
               --test snapshot_restore \
               -- --test-threads=1
           '';

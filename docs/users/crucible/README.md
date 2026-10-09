@@ -217,7 +217,7 @@ For deeper work:
 | Declare fault-addressable objects | [Fault topology reference](topology.md) | [Canonical scenario reference](reference.md#canonical-scenario-document) |
 | Simulate network failures | [Network faults](network-faults.md) | [Effect registry](reference.md#exhaustive-effect-registry) |
 | Simulate storage, VM, or hardware failures | [Storage, node, and hardware faults](storage-node-faults.md) | [Effect registry](reference.md#exhaustive-effect-registry) |
-| Use recorded physical or packet data | [Recorded signal inputs](recorded-signals.md) | [Trace API](../../../crates/crucible/src/model/fault_signal/trace_import.rs) |
+| Use recorded physical or packet data | [Recorded signal inputs](recorded-signals.md) | [Trace API](../../../crates/crucible/engine/crucible-engine/src/model/fault_signal/trace_import.rs) |
 | Reproduce or explore a failure | [Reproduction and branching](reproduction.md), [Exploration](exploration.md) | [Command reference](reference.md#command-line-interface) |
 | Find a production-backed example | [Certification examples](examples.md) | Repository Nix checks and crate rustdoc |
 

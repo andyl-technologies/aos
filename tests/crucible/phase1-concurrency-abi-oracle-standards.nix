@@ -2,9 +2,10 @@
   pkgs,
   lib,
 }: let
+  inherit (import ./_workspace-packages.nix {inherit lib;}) packageDir packageNames cruciblePackages;
   cratesDir = ../../crates;
-  standardsRust = builtins.readFile ../../crates/crucible-harness/tests/concurrency_abi_oracle_standards.rs;
-  standardsSupport = builtins.readFile ../../crates/crucible-harness/tests/support/concurrency_abi_oracle_standards.rs;
+  standardsRust = builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/concurrency_abi_oracle_standards.rs;
+  standardsSupport = builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/support/concurrency_abi_oracle_standards.rs;
   standardsCode = standardsRust + "\n" + standardsSupport;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix;
@@ -20,31 +21,31 @@
   targets = [
     {
       gate = "gate:abi-conformance";
-      package = "crucible-harness";
+      package = "crucible-test-support";
       testTarget = "gate_abi_conformance";
       requiredFeatures = [];
     }
     {
       gate = "gate:abi-conformance";
-      package = "crucible-shmem";
+      package = "crucible-qemu-shmem";
       testTarget = "gate_abi_conformance";
       requiredFeatures = [];
     }
     {
       gate = "gate:layer1-injection";
-      package = "crucible-shmem";
+      package = "crucible-qemu-shmem";
       testTarget = "gate_layer1_injection";
       requiredFeatures = [];
     }
     {
       gate = "gate:abi-conformance";
-      package = "crucible-protocol";
+      package = "crucible-qemu-protocol";
       testTarget = "gate_abi_conformance";
       requiredFeatures = [];
     }
     {
       gate = "gate:abi-conformance";
-      package = "crucible-api";
+      package = "crucible-control-api";
       testTarget = "gate_abi_conformance";
       requiredFeatures = [];
     }
@@ -56,7 +57,7 @@
     }
     {
       gate = "gate:replay-oracle";
-      package = "crucible";
+      package = "crucible-engine";
       testTarget = "gate_replay_oracle";
       requiredFeatures = ["test-double"];
     }
@@ -126,7 +127,7 @@
     {
       id = "all-boundary-abi-conformance";
       gate = "gate:abi-conformance";
-      package = "crucible-harness";
+      package = "crucible-test-support";
       testTarget = "gate_abi_conformance";
       requiredFeatures = [];
       kind = "boundary-abi";
@@ -135,7 +136,7 @@
     {
       id = "spsc-ring-concurrency";
       gate = "gate:layer1-injection";
-      package = "crucible-shmem";
+      package = "crucible-qemu-shmem";
       testTarget = "gate_layer1_injection";
       requiredFeatures = [];
       kind = "spsc-concurrency";
@@ -144,7 +145,7 @@
     {
       id = "shmem-layout-abi";
       gate = "gate:abi-conformance";
-      package = "crucible-shmem";
+      package = "crucible-qemu-shmem";
       testTarget = "gate_abi_conformance";
       requiredFeatures = [];
       kind = "boundary-abi";
@@ -153,7 +154,7 @@
     {
       id = "guest-host-protocol-abi";
       gate = "gate:abi-conformance";
-      package = "crucible-protocol";
+      package = "crucible-qemu-protocol";
       testTarget = "gate_abi_conformance";
       requiredFeatures = [];
       kind = "boundary-abi";
@@ -162,7 +163,7 @@
     {
       id = "control-plane-rpc-abi";
       gate = "gate:abi-conformance";
-      package = "crucible-api";
+      package = "crucible-control-api";
       testTarget = "gate_abi_conformance";
       requiredFeatures = [];
       kind = "boundary-abi";
@@ -171,7 +172,7 @@
     {
       id = "protocol-codec-fuzzing";
       gate = "gate:abi-conformance";
-      package = "crucible-protocol";
+      package = "crucible-qemu-protocol";
       testTarget = "gate_abi_conformance";
       requiredFeatures = [];
       kind = "wire-fuzzing";
@@ -189,7 +190,7 @@
     {
       id = "replay-oracle-fixed-corpus";
       gate = "gate:replay-oracle";
-      package = "crucible";
+      package = "crucible-engine";
       testTarget = "gate_replay_oracle";
       requiredFeatures = ["test-double"];
       kind = "replay-oracle";
@@ -227,8 +228,8 @@
     ) (lib.sort builtins.lessThan (builtins.attrNames entries));
 
   sourceFor = target: let
-    path = cratesDir + "/${target.package}/tests/${target.testTarget}.rs";
-    moduleDir = cratesDir + "/${target.package}/tests/${target.testTarget}";
+    path = packageDir target.package + "/tests/${target.testTarget}.rs";
+    moduleDir = packageDir target.package + "/tests/${target.testTarget}";
     paths = lib.optionals (builtins.pathExists path) [path] ++ rustSourcePaths moduleDir;
   in
     builtins.concatStringsSep "\n" (map builtins.readFile paths);
@@ -269,7 +270,7 @@
 
   abiOwners =
     lib.sort builtins.lessThan (map (target: target.package) (builtins.filter (target: target.gate == "gate:abi-conformance") targets));
-  expectedAbiOwners = ["crucible-api" "crucible-harness" "crucible-protocol" "crucible-shmem"];
+  expectedAbiOwners = ["crucible-control-api" "crucible-test-support" "crucible-qemu-protocol" "crucible-qemu-shmem"];
   abiOwnerFailures = lib.optionals (abiOwners != expectedAbiOwners) [
     "gate:abi-conformance owner package mismatch: expected [${builtins.concatStringsSep ", " expectedAbiOwners}], found [${builtins.concatStringsSep ", " abiOwners}]"
   ];
@@ -304,7 +305,7 @@
     lib.concatMap (
       required:
         lib.optionals (!(hasInfix required standardsCode)) [
-          "crates/crucible-harness/tests/concurrency_abi_oracle_standards.rs: missing advanced-standard wiring `${required}`"
+          "crates/crucible/testing/crucible-test-support/tests/concurrency_abi_oracle_standards.rs: missing advanced-standard wiring `${required}`"
         ]
     )
     requiredRustText;
@@ -312,7 +313,7 @@
   regressionFailures = let
     badTarget = {
       gate = "gate:abi-conformance";
-      package = "crucible-shmem";
+      package = "crucible-qemu-shmem";
       testTarget = "gate_abi_conformance";
       requiredFeatures = [];
     };
@@ -327,7 +328,7 @@
       ''
       ++ targetStandardFailures replayStandard {
         gate = "gate:replay-oracle";
-        package = "crucible";
+        package = "crucible-engine";
         testTarget = "gate_replay_oracle";
         requiredFeatures = [];
       };

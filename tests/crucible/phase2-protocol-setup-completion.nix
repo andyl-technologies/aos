@@ -9,11 +9,11 @@
 
   protocolLib = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-protocol/src/lib.rs;
+    entry = ../../crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs;
   };
   protocolTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-protocol/tests/setup_completion.rs;
+    entry = ../../crates/crucible/protocol/crucible-qemu-protocol/tests/setup_completion.rs;
   };
   # The setup-region mmap surface was split out of lib.rs into
   # mapped_setup_region.rs; scan both so the needles survive file moves.
@@ -21,16 +21,16 @@
     (import ./_crucible-shmem-source.nix {inherit lib;})
     + (import ./_rust-module-source.nix {
       inherit lib;
-      entry = ../../crates/crucible-shmem/src/mapped_setup_region.rs;
+      entry = ../../crates/crucible/protocol/crucible-qemu-shmem/src/mapped_setup_region.rs;
     });
   shmemTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-shmem/tests/setup_validation.rs;
+    entry = ../../crates/crucible/protocol/crucible-qemu-shmem/tests/setup_validation.rs;
   };
-  pluginCargo = builtins.readFile ../../crates/crucible-qemu-plugin/Cargo.toml;
+  pluginCargo = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/Cargo.toml;
   pluginLib = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/lib.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs;
   };
   pluginSetup = import ./_qemu-plugin-setup-source.nix {inherit lib;};
   pluginTimeControl = import ./_qemu-plugin-time-control-source.nix {inherit lib;};
@@ -42,7 +42,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "crates/crucible-protocol/src/lib.rs" protocolLib [
+    failuresFor "crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs" protocolLib [
       {
         label = "ready setup-ack status constant";
         needle = "pub const SETUP_ACK_STATUS_READY: u8 = 0;";
@@ -88,7 +88,7 @@
         needle = "pub const fn can_schedule";
       }
     ]
-    ++ failuresFor "crates/crucible-protocol/tests/setup_completion.rs" protocolTest [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-protocol/tests/setup_completion.rs" protocolTest [
       {
         label = "plugin sends flushed setup ack";
         needle = "plugin_sends_setup_ack_status_and_flushes";
@@ -102,7 +102,7 @@
         needle = "host_refuses_nonzero_setup_ack_before_scheduling";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/src/lib.rs" shmemLib [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/src/lib.rs" shmemLib [
       {
         label = "setup mmap wrapper";
         needle = "pub fn mmap_setup_region";
@@ -148,7 +148,7 @@
         needle = "LayoutRegionLengthMismatch";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/tests/setup_validation.rs" shmemTest [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/tests/setup_validation.rs" shmemTest [
       {
         label = "valid setup header test";
         needle = "setup_region_header_validation_accepts_magic_abi_and_region_len";
@@ -170,7 +170,7 @@
         needle = "mmap_setup_region_maps_exact_region_len_before_header_validation";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/Cargo.toml" pluginCargo [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/Cargo.toml" pluginCargo [
       {
         label = "plugin depends on protocol";
         needle = "crucible-protocol = { path = \"../crucible-protocol\" }";
@@ -180,7 +180,7 @@
         needle = "crucible-shmem = { path = \"../crucible-shmem\" }";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/lib.rs" pluginLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs" pluginLib [
       {
         label = "plugin exposes setup module";
         needle = "pub mod setup;";
@@ -190,7 +190,7 @@
         needle = "prepare_setup_completion";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/setup.rs" pluginSetup [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/setup.rs" pluginSetup [
       {
         label = "coupled setup preparation function";
         needle = "pub fn prepare_setup_completion";
@@ -252,7 +252,7 @@
         needle = "wake_fd_arm_sets_nonblocking_on_descriptor";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/time_control.rs" pluginTimeControl [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/time_control.rs" pluginTimeControl [
       {
         label = "wake fd arming registration step";
         needle = "PluginRegistrationStep::ArmWakeFd";
@@ -339,7 +339,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-protocol-setup-completion-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible-protocol \
+              -p crucible-qemu-protocol \
               --test setup_completion \
               -- --test-threads=1
             cargo test \
@@ -347,7 +347,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-protocol-setup-completion-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible-shmem \
+              -p crucible-qemu-shmem \
               --test setup_validation \
               -- --test-threads=1
             cargo test \

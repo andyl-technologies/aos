@@ -10,7 +10,7 @@
   util-linux,
   stdenv,
 }: let
-  source = ../../crates/aos-boot-identity;
+  source = ../../crates/aos/boot/aos-boot-identity;
 
   # The build compiler carries the target standard library; rustc still needs
   # an explicit target and linker because these recipes do not use Cargo.

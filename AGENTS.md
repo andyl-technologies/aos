@@ -52,7 +52,7 @@ normative policy is
   `qemu-crucible-source` output. Publication checks scan the full closure, so
   plugin or unmarked wrapper roots are not valid bypasses. Keep generic
   unpatched QEMU unrestricted.
-- `crucible-protocol` and `crucible-shmem` are permissive boundary components;
+- `crucible-qemu-protocol` and `crucible-qemu-shmem` are permissive boundary components;
   neither may acquire a dependency on a QEMU implementation or QEMU headers.
 - Boundary changes MUST pass `gate:abi-conformance` and
   `gate:license-boundary`. A distributed patched-QEMU binary MUST have a

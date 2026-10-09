@@ -1633,7 +1633,7 @@ last-writer-wins race resolves to different observable outcomes under different
 commanded `Decision::Preemption` values (the race manifests under one choice,
 is absent under another), and a single-vCPU interrupt-timing variation yields
 distinct replayable schedules. The model witness is
-`crates/crucible/tests/preemption_discrimination.rs::commanded_preemption_discriminates_a_known_two_vcpu_race`
+`crates/crucible/engine/crucible-engine/tests/preemption_discrimination.rs::commanded_preemption_discriminates_a_known_two_vcpu_race`
 and the production command-application witness is
 `gate:single-vm-fingerprint`. Together they demonstrate that the discriminating
 model decisions map to exact, acknowledged live vCPU-switch and interrupt

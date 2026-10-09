@@ -12,20 +12,17 @@
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliMain = import ./_cli-source.nix {inherit lib;};
-  cliMachineReadable = builtins.readFile ../../crates/crucible-cli/tests/machine_readable.rs;
-  campaignProcessTest = builtins.readFile ../../crates/crucible-cli/tests/campaign_process.rs;
+  cliMachineReadable = builtins.readFile ../../crates/crucible/control/crucible-cli/tests/machine_readable.rs;
+  campaignProcessTest = builtins.readFile ../../crates/crucible/control/crucible-cli/tests/campaign_process.rs;
   cliCampaignRun = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-cli/src/cli/campaign_run.rs;
+    entry = ../../crates/crucible/control/crucible-cli/src/cli/campaign_run.rs;
   };
   daemonCampaignLifecycle = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-daemon/src/qemu_campaign_lifecycle.rs;
+    entry = ../../crates/crucible/control/crucible-daemon/src/qemu_campaign_lifecycle.rs;
   };
-  apiVmLifecycle = import ./_rust-module-source.nix {
-    inherit lib;
-    entry = ../../crates/crucible-api/src/vm_lifecycle.rs;
-  };
+  apiVmLifecycle = import ./_crucible-control-source.nix { inherit lib; component = "vm_lifecycle"; };
   defaultChecks = builtins.readFile ./default.nix;
 
   hasInfix = needle: haystack:
@@ -92,7 +89,7 @@
         needle = "model-only fallbacks are rejected";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
+    ++ failuresFor "crates/crucible/control/crucible-cli/src/main.rs" cliMain [
       {
         label = "resume arguments";
         needle = "struct ResumeArgs";
@@ -114,7 +111,7 @@
         needle = "cli_resume_workflow_rejects_bare_hash_without_authenticated_handle";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/src/cli/campaign_run.rs" cliCampaignRun [
+    ++ failuresFor "crates/crucible/control/crucible-cli/src/cli/campaign_run.rs" cliCampaignRun [
       {
         label = "campaign resume admission";
         needle = "fn guarded_campaign_resume_eligible";
@@ -132,7 +129,7 @@
         needle = "fn complete_transient_checkpoint_workflow";
       }
     ]
-    ++ failuresFor "crates/crucible-daemon/src/qemu_campaign_lifecycle.rs" daemonCampaignLifecycle [
+    ++ failuresFor "crates/crucible/control/crucible-daemon/src/qemu_campaign_lifecycle.rs" daemonCampaignLifecycle [
       {
         label = "exact resume entry";
         needle = "pub fn begin_resume";
@@ -146,7 +143,7 @@
         needle = "build_production_vm_exact_resume_lifecycle(";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/vm_lifecycle.rs" apiVmLifecycle [
+    ++ failuresFor "crates/crucible/control/crucible-daemon/src/vm_lifecycle.rs" apiVmLifecycle [
       {
         label = "authenticated exact-resume lifecycle";
         needle = "pub fn build_production_vm_exact_resume_lifecycle";
@@ -156,9 +153,9 @@
         needle = "decoded: DecodedProductionExactCheckpoint";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/tests/machine_readable.rs" cliMachineReadable [
+    ++ failuresFor "crates/crucible/control/crucible-cli/tests/machine_readable.rs" cliMachineReadable [
     ]
-    ++ failuresFor "crates/crucible-cli/tests/campaign_process.rs" campaignProcessTest [
+    ++ failuresFor "crates/crucible/control/crucible-cli/tests/campaign_process.rs" campaignProcessTest [
       {
         label = "packaged Campaign save and native resume regression";
         needle = "campaign_virtual_time_save_feeds_native_resume";

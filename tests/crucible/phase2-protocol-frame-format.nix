@@ -7,9 +7,9 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  protocolLib = builtins.readFile ../../crates/crucible-protocol/src/lib.rs;
-  frameFormatTest = builtins.readFile ../../crates/crucible-protocol/tests/frame_format.rs;
-  protocolAbiGate = builtins.readFile ../../crates/crucible-protocol/tests/gate_abi_conformance.rs;
+  protocolLib = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs;
+  frameFormatTest = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-protocol/tests/frame_format.rs;
+  protocolAbiGate = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-protocol/tests/gate_abi_conformance.rs;
   protocolSpec = builtins.readFile ../../docs/rfcs/0010-crucible/14-protocol.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -18,7 +18,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "crates/crucible-protocol/src/lib.rs" protocolLib [
+    failuresFor "crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs" protocolLib [
       {
         label = "length prefix size";
         needle = "pub const FRAME_LENGTH_PREFIX_SIZE: usize = 4;";
@@ -80,7 +80,7 @@
         needle = "pub const fn payload_len(self) -> usize";
       }
     ]
-    ++ failuresFor "crates/crucible-protocol/tests/frame_format.rs" frameFormatTest [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-protocol/tests/frame_format.rs" frameFormatTest [
       {
         label = "frame format test";
         needle = "frame_format_uses_big_endian_length_tag_and_payload";
@@ -102,7 +102,7 @@
         needle = "FRAME_TAG_SIZE + tag.payload_len() <= MAX_FRAME_SIZE as usize";
       }
     ]
-    ++ failuresFor "crates/crucible-protocol/tests/gate_abi_conformance.rs" protocolAbiGate [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-protocol/tests/gate_abi_conformance.rs" protocolAbiGate [
       {
         label = "canonical protocol ABI gate implemented";
         needle = "protocol_golden_vectors_match_live_codec_bytes";
@@ -181,7 +181,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-protocol-frame-format-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible-protocol \
+              -p crucible-qemu-protocol \
               --test frame_format \
               -- --test-threads=1
           '';

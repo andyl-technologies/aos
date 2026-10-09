@@ -9,8 +9,8 @@
 
   model = import ./_crucible-model-source.nix {inherit lib;};
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
-  timeTest = builtins.readFile ../../crates/crucible/tests/condition_time_leaves.rs;
+  libSource = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/lib.rs;
+  timeTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/condition_time_leaves.rs;
   triggerDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17a-conditions-and-triggers.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -28,7 +28,7 @@
         needle = "Completed by `checks.crucible.phase4.gates.replayOracle`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
       {
         label = "event id moved into shared model";
         needle = "pub struct EventId";
@@ -102,7 +102,7 @@
         needle = "Predicate::Timer { .. } => Err(EngineError::PropertyPredicateTriggerOnly";
       }
     ]
-    ++ failuresFor "crates/crucible/src/trigger.rs" trigger [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/trigger.rs" trigger [
       {
         label = "At evaluated from virtual time";
         needle = "Condition::At { at } => evaluator.evaluation_point().at() == *at";
@@ -172,7 +172,7 @@
         needle = "fn validate_condition_references";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" libSource [
       {
         label = "EventId re-export";
         needle = "EventId";
@@ -190,7 +190,7 @@
         needle = "EventGraphError";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/condition_time_leaves.rs" timeTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/condition_time_leaves.rs" timeTest [
       {
         label = "At exact-time test";
         needle = "at_leaf_is_true_only_at_the_exact_virtual_time";
@@ -262,7 +262,7 @@
         needle = "timeConditionLeaves = import ./phase4-time-condition-leaves.nix";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/condition_time_leaves.rs" timeTest [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/condition_time_leaves.rs" timeTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -329,7 +329,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-time-condition-leaves-target" \
-              -p crucible \
+              -p crucible-engine \
               --test condition_time_leaves \
               -- --test-threads=1
           '';

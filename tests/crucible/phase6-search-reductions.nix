@@ -11,8 +11,8 @@
   advancedDoc = builtins.readFile ../../docs/rfcs/0010-crucible/22-advanced-features.md;
   temporalDoc = builtins.readFile ../../docs/rfcs/0010-crucible/07-temporal-graph.md;
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
-  reductionGateTest = builtins.readFile ../../crates/crucible/tests/gate_search_reductions.rs;
-  contentAddressGateTest = builtins.readFile ../../crates/crucible/tests/gate_content_address.rs;
+  reductionGateTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/gate_search_reductions.rs;
+  contentAddressGateTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/gate_content_address.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -87,7 +87,7 @@
         needle = "after recording that\n    canonical representative on demand";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" temporalGraph [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" temporalGraph [
       {
         label = "reduced strategy API";
         needle = "pub fn search_with_strategy_reduced(";
@@ -125,7 +125,7 @@
         needle = "FrontierReductionReason::Symmetry";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/gate_search_reductions.rs" reductionGateTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/gate_search_reductions.rs" reductionGateTest [
       {
         label = "POR on-demand representative gate";
         needle = "gate_search_reductions_partial_order_records_canonical_representative_on_demand";
@@ -155,13 +155,13 @@
         needle = "assert_eq!(report.covered[0].representative, representative.id());";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/gate_content_address.rs" contentAddressGateTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/gate_content_address.rs" contentAddressGateTest [
       {
         label = "content-address POR records missing representative";
         needle = "gate_content_address_temporal_graph_partial_order_reduction_records_missing_representative";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible/tests/gate_search_reductions.rs" reductionGateTest [
+    ++ forbiddenFailuresFor "crates/crucible/engine/crucible-engine/tests/gate_search_reductions.rs" reductionGateTest [
       {
         label = "ignored red placeholder";
         needle = "#[ignore";
@@ -286,7 +286,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-search-reductions-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --test gate_search_reductions \
               -- --test-threads=1
           '';

@@ -7,8 +7,8 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  protocolLib = builtins.readFile ../../crates/crucible-protocol/src/lib.rs;
-  handshakeTest = builtins.readFile ../../crates/crucible-protocol/tests/handshake.rs;
+  protocolLib = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs;
+  handshakeTest = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-protocol/tests/handshake.rs;
   protocolSpec = builtins.readFile ../../docs/rfcs/0010-crucible/14-protocol.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -17,7 +17,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "crates/crucible-protocol/src/lib.rs" protocolLib [
+    failuresFor "crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs" protocolLib [
       {
         label = "current protocol version";
         needle = "pub const CONTROL_PROTOCOL_VERSION";
@@ -83,7 +83,7 @@
         needle = "writer.flush()";
       }
     ]
-    ++ failuresFor "crates/crucible-protocol/tests/handshake.rs" handshakeTest [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-protocol/tests/handshake.rs" handshakeTest [
       {
         label = "host happy path";
         needle = "host_accepts_exact_hello_and_writes_hello_ack";
@@ -194,7 +194,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-protocol-handshake-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible-protocol \
+              -p crucible-qemu-protocol \
               --test handshake \
               -- --test-threads=1
           '';

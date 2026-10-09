@@ -2,12 +2,13 @@
   pkgs,
   lib,
 }: let
+  inherit (import ./_workspace-packages.nix {inherit lib;}) packageDir packageNames cruciblePackages;
   cratesDir = ../../crates;
   engineLib = builtins.readFile (cratesDir + "/crucible/src/lib.rs");
   model = import ./_crucible-model-source.nix {inherit lib;};
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   sessionLib = import ./_crucible-session-source.nix {inherit lib;};
-  apiSource = sourceFor "crucible-api";
+  apiSource = sourceFor "crucible-control-api";
   sessionManifest = builtins.fromTOML (builtins.readFile (cratesDir + "/crucible-session/Cargo.toml"));
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix;
@@ -28,7 +29,7 @@
     ) (builtins.attrNames entries);
 
   sourceFor = package: let
-    srcDir = cratesDir + "/${package}/src";
+    srcDir = packageDir package + "/src";
     paths =
       if builtins.pathExists srcDir
       then rustFilesUnder srcDir
@@ -37,12 +38,12 @@
     builtins.concatStringsSep "\n" (map builtins.readFile paths);
 
   lowerPackages = [
-    "crucible-sim"
-    "crucible-assert"
-    "crucible-shmem"
-    "crucible-protocol"
+    "crucible-determinism"
+    "crucible-test-support"
+    "crucible-qemu-shmem"
+    "crucible-qemu-protocol"
     "crucible-device"
-    "crucible-qemu"
+    "crucible-qemu-host"
     "crucible-qemu-plugin"
     "crucible-guest"
     "crucible-cli"

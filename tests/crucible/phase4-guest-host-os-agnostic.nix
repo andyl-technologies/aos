@@ -7,9 +7,9 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
+  libSource = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/lib.rs;
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
-  osAgnosticTest = builtins.readFile ../../crates/crucible/tests/guest_host_os_agnostic.rs;
+  osAgnosticTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/guest_host_os_agnostic.rs;
   guestHostDoc = builtins.readFile ../../docs/rfcs/0010-crucible/16-guest-host-channel.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -30,7 +30,7 @@
         needle = "Guest↔host channel + optional agent";
       }
     ]
-    ++ failuresFor "crates/crucible/src/trigger.rs" trigger [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/trigger.rs" trigger [
       {
         label = "black-box observation contract type";
         needle = "pub struct BlackBoxObservationContract";
@@ -76,7 +76,7 @@
         needle = "black_box_observation_contract";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" libSource [
       {
         label = "black-box observation contracts export";
         needle = "BLACK_BOX_OBSERVATION_CONTRACTS";
@@ -90,7 +90,7 @@
         needle = "BlackBoxObservationSource";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/guest_host_os_agnostic.rs" osAgnosticTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/guest_host_os_agnostic.rs" osAgnosticTest [
       {
         label = "contract catalog assumption test";
         needle = "black_box_contract_catalog_has_no_guest_software_assumptions";
@@ -182,7 +182,7 @@
         needle = "taskIds = [\"T-GHC-2\"]";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/guest_host_os_agnostic.rs" osAgnosticTest [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/guest_host_os_agnostic.rs" osAgnosticTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -248,7 +248,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-guest-host-os-agnostic-target" \
-              -p crucible \
+              -p crucible-engine \
               --test guest_host_os_agnostic \
               --test guest_host_black_box_surface \
               -- --test-threads=1

@@ -10,7 +10,7 @@
   shmemLib = import ./_crucible-shmem-source.nix {inherit lib;};
   controlTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-shmem/tests/control_flags.rs;
+    entry = ../../crates/crucible/protocol/crucible-qemu-shmem/tests/control_flags.rs;
   };
   shmemSpec = builtins.readFile ../../docs/rfcs/0010-crucible/13-shmem-abi.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -20,7 +20,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "crates/crucible-shmem/src/lib.rs" shmemLib [
+    failuresFor "crates/crucible/protocol/crucible-qemu-shmem/src/lib.rs" shmemLib [
       {
         label = "pause request API";
         needle = "pub fn request_pause";
@@ -90,7 +90,7 @@
         needle = "pub enum RegionControlError";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/tests/control_flags.rs" controlTest [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/tests/control_flags.rs" controlTest [
       {
         label = "pause flag wake-all test";
         needle = "pause_request_sets_flag_and_wakes_every_slot";
@@ -112,7 +112,7 @@
         needle = "off_linux_control_wake_all_uses_noop_futex_results";
       }
     ]
-    ++ forbiddenFor "crates/crucible-shmem/tests/control_flags.rs" controlTest [
+    ++ forbiddenFor "crates/crucible/protocol/crucible-qemu-shmem/tests/control_flags.rs" controlTest [
       {
         label = "ignored control flag test";
         needle = "#[ignore";
@@ -183,7 +183,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-shmem-control-flags-target" \
-              -p crucible-shmem \
+              -p crucible-qemu-shmem \
               --test control_flags \
               -- --test-threads=1
           '';

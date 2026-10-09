@@ -9,7 +9,7 @@ over the defaults below. Third-party files retain their existing licenses.
 | Scope | License |
 | --- | --- |
 | Original AOS code without a more specific notice | Apache-2.0 |
-| `crucible-protocol` and `crucible-shmem` | MIT OR Apache-2.0 |
+| `crucible-qemu-protocol` and `crucible-qemu-shmem` | MIT OR Apache-2.0 |
 | `crucible-qemu-plugin` | GPL-2.0-only |
 | `crucible-debug-gateway` | GPL-2.0-only |
 | `crucible-qemu-trace-plugin` | GPL-2.0-only |
@@ -31,7 +31,7 @@ communicate through a public, versioned protocol: a Unix-domain socket is the
 setup and control plane, and shared memory is the high-throughput data plane.
 The protocol is an interoperability contract, not a shared implementation.
 
-`crucible-protocol` and `crucible-shmem` contain protocol and transport
+`crucible-qemu-protocol` and `crucible-qemu-shmem` contain protocol and transport
 definitions used on both sides of that process boundary. Their permissive
 `MIT OR Apache-2.0` license lets independently licensed peers implement the same
 contract. This does not change the license of either peer.
@@ -51,7 +51,7 @@ corresponding-source artifacts must preserve and inventory both GPL scopes.
 `crucible-debug-gateway` is a GPL-2.0-only standalone process. It owns the
 persistent debugger session and connects to QEMU's private RSP socket. The
 Apache controller communicates with it only through versioned Unix-socket
-frames defined by the dual-licensed `crucible-protocol` crate; neither process
+frames defined by the dual-licensed `crucible-qemu-protocol` crate; neither process
 links or dynamically loads the other.
 
 Shared memory must remain protocol-shaped. It may contain fixed-width fields,

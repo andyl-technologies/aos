@@ -9,7 +9,7 @@
 
   model = import ./_crucible-model-source.nix {inherit lib;};
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
-  orderTest = builtins.readFile ../../crates/crucible/tests/assertion_evaluation_order.rs;
+  orderTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/assertion_evaluation_order.rs;
   assertionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -23,7 +23,7 @@
         needle = "Completed by `checks.crucible.phase4.assertionEvaluationOrder`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
       {
         label = "canonical assertion ordering helper";
         needle = "fn canonical_assertions";
@@ -41,7 +41,7 @@
         needle = "Returns property assertions in their canonical order.";
       }
     ]
-    ++ failuresFor "crates/crucible/src/trigger.rs" trigger [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/trigger.rs" trigger [
       {
         label = "evaluator state vector";
         needle = "states: Vec<HostAssertionState>";
@@ -95,7 +95,7 @@
         needle = "binary_search_by";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/assertion_evaluation_order.rs" orderTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/assertion_evaluation_order.rs" orderTest [
       {
         label = "stable id evaluation order test";
         needle = "properties_are_evaluated_by_stable_id_and_each_named_predicate_once_per_point";
@@ -147,7 +147,7 @@
         needle = "attrPath = \"checks.crucible.phase4.assertionEvaluationOrder\"";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/assertion_evaluation_order.rs" orderTest [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/assertion_evaluation_order.rs" orderTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -214,7 +214,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-assertion-evaluation-order-target" \
-              -p crucible \
+              -p crucible-engine \
               --test assertion_evaluation_order \
               --test assertion_evaluation_timing \
               --test offline_assertion_checker \

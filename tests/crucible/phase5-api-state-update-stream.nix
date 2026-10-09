@@ -10,15 +10,15 @@
 
   apiDoc = builtins.readFile ../../docs/rfcs/0010-crucible/21-api.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
-  apiLib = builtins.readFile ../../crates/crucible-api/src/lib.rs;
-  streaming = builtins.readFile ../../crates/crucible-api/src/streaming.rs;
-  client = builtins.readFile ../../crates/crucible-api/src/client.rs;
-  lifecycle = builtins.readFile ../../crates/crucible-api/src/lifecycle.rs;
+  apiLib = import ./_crucible-control-source.nix { inherit lib; component = "exports"; };
+  streaming = import ./_crucible-control-source.nix { inherit lib; component = "streaming"; };
+  client = import ./_crucible-control-source.nix { inherit lib; component = "client"; };
+  lifecycle = import ./_crucible-control-source.nix { inherit lib; component = "lifecycle"; };
   session = import ./_crucible-session-source.nix {inherit lib;};
-  streamingEquivalenceTest = builtins.readFile ../../crates/crucible-api/tests/gate_streaming_equivalence.rs;
+  streamingEquivalenceTest = builtins.readFile ../../crates/crucible/control/crucible-control-server/tests/gate_streaming_equivalence.rs;
   controlClientTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-api/tests/gate_control_client.rs;
+    entry = ../../crates/crucible/control/crucible-control-client/tests/gate_control_client.rs;
   };
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -43,7 +43,7 @@
         needle = "`T-API-7` is green through `checks.crucible.phase5.apiStateUpdateStream`";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/lib.rs" apiLib [
+    ++ failuresFor "crates/crucible/control/crucible-control-api/src/lib.rs" apiLib [
       {
         label = "streaming state update frame re-exported";
         needle = "StreamingStateUpdateFrame";
@@ -53,7 +53,7 @@
         needle = "StreamingFrame";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/streaming.rs" streaming [
+    ++ failuresFor "crates/crucible/control/crucible-control-api/src/streaming.rs" streaming [
       {
         label = "state update frame type";
         needle = "pub struct StreamingStateUpdateFrame";
@@ -75,7 +75,7 @@
         needle = "pub async fn recv_state_update(&mut self) -> Option<StreamingStateUpdateFrame>";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/client.rs" client [
+    ++ failuresFor "crates/crucible/control/crucible-control-client/src/client.rs" client [
       {
         label = "RPC state update frame decoder";
         needle = "decode_streaming_state_update_frame";
@@ -97,7 +97,7 @@
         needle = "crucible.rpc/state-update-frame";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/lifecycle.rs" lifecycle [
+    ++ failuresFor "crates/crucible/control/crucible-control-api/src/lifecycle.rs" lifecycle [
       {
         label = "lifecycle stores state transition bus";
         needle = "state_transitions";
@@ -107,7 +107,7 @@
         needle = "runtime.state_transitions.clone";
       }
     ]
-    ++ failuresFor "crates/crucible-session/src/lib.rs" session [
+    ++ failuresFor "crates/crucible/control/crucible-session/src/lib.rs" session [
       {
         label = "state transition bus";
         needle = "pub struct SessionStateTransitionBus";
@@ -121,7 +121,7 @@
         needle = "state_transitions.publish";
       }
     ]
-    ++ failuresFor "crates/crucible-api/tests/gate_streaming_equivalence.rs" streamingEquivalenceTest [
+    ++ failuresFor "crates/crucible/control/crucible-control-server/tests/gate_streaming_equivalence.rs" streamingEquivalenceTest [
       {
         label = "Watch-only state update test";
         needle = "watch_only_state_updates_are_monotone_and_not_event_log_entries";
@@ -135,7 +135,7 @@
         needle = "StateUpdate delivery must remain distinct from event-log entries";
       }
     ]
-    ++ failuresFor "crates/crucible-api/tests/gate_control_client*.rs" controlClientTest [
+    ++ failuresFor "crates/crucible/control/crucible-control-client/tests/gate_control_client*.rs" controlClientTest [
       {
         label = "RPC Control state update coverage";
         needle = "recv_rpc_control_state_update";
@@ -230,7 +230,7 @@ in
             --frozen \
             --offline \
             --target-dir "$TMPDIR/crucible-api-state-update-stream-target" \
-            -p crucible-api \
+            -p crucible-control-server \
             --test gate_streaming_equivalence \
             watch_only_state_updates_are_monotone_and_not_event_log_entries \
             -- --test-threads=1

@@ -8,11 +8,11 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   workloadDoc = builtins.readFile ../../docs/rfcs/0010-crucible/33-examples-and-workloads.md;
-  engineBackend = builtins.readFile ../../crates/crucible/src/backend.rs;
-  engineDevice = builtins.readFile ../../crates/crucible/src/device.rs;
+  engineBackend = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/backend.rs;
+  engineDevice = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/device.rs;
   engineModel = import ./_crucible-model-source.nix {inherit lib;};
-  engineLib = builtins.readFile ../../crates/crucible/src/lib.rs;
-  workloadTest = builtins.readFile ../../crates/crucible/tests/workload_model.rs;
+  engineLib = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/lib.rs;
+  workloadTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/workload_model.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -50,7 +50,7 @@
         needle = "application-traffic origination path exists in the engine";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" engineModel [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" engineModel [
       {
         label = "workload scenario parameter";
         needle = "pub const WORKLOAD_SCENARIO_PARAMETER: &str = \"crucible.workload\";";
@@ -116,7 +116,7 @@
         needle = "fn validate_world_node_workload";
       }
     ]
-    ++ failuresFor "crates/crucible/src/backend.rs" engineBackend [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/backend.rs" engineBackend [
       {
         label = "backend input not workload generator";
         needle = "not a host-side workload generator";
@@ -130,7 +130,7 @@
         needle = "already-scheduled model events";
       }
     ]
-    ++ failuresFor "crates/crucible/src/device.rs" engineDevice [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/device.rs" engineDevice [
       {
         label = "device frame already emitted";
         needle = "already emitted by a modeled guest/device endpoint";
@@ -144,7 +144,7 @@
         needle = "generator and MUST NOT be used to originate application traffic";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" engineLib [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" engineLib [
       {
         label = "workload enum re-export";
         needle = "GuestWorkloadBinary";
@@ -158,7 +158,7 @@
         needle = "WORKLOAD_SCENARIO_PARAMETER";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/workload_model.rs" workloadTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/workload_model.rs" workloadTest [
       {
         label = "supported binaries test";
         needle = "workload_model_declares_supported_in_guest_binaries";
@@ -196,28 +196,28 @@
         needle = "fs::read_dir";
       }
     ]
-    ++ forbiddenFor "crates/crucible/src/model.rs" engineModel (
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/src/model.rs" engineModel (
       builtins.map (needle: {
         label = "host-side workload origination API";
         inherit needle;
       })
       forbiddenOriginationApis
     )
-    ++ forbiddenFor "crates/crucible/src/backend.rs" engineBackend (
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/src/backend.rs" engineBackend (
       builtins.map (needle: {
         label = "host-side workload origination API";
         inherit needle;
       })
       forbiddenOriginationApis
     )
-    ++ forbiddenFor "crates/crucible/src/device.rs" engineDevice (
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/src/device.rs" engineDevice (
       builtins.map (needle: {
         label = "host-side workload origination API";
         inherit needle;
       })
       forbiddenOriginationApis
     )
-    ++ forbiddenFor "crates/crucible/src/lib.rs" engineLib (
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/src/lib.rs" engineLib (
       builtins.map (needle: {
         label = "host-side workload origination API";
         inherit needle;
@@ -298,7 +298,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-workload-model-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --test workload_model \
               -- --list > "$TMPDIR/workload-model-tests"
             require_listed \
@@ -327,7 +327,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-workload-model-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --test workload_model \
               workload_model_declares_supported_in_guest_binaries \
               -- --exact --test-threads=1
@@ -336,7 +336,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-workload-model-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --test workload_model \
               workload_selection_is_a_scenario_cmdline_parameter \
               -- --exact --test-threads=1
@@ -345,7 +345,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-workload-model-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --test workload_model \
               workload_selection_changes_scenario_identity \
               -- --exact --test-threads=1
@@ -354,7 +354,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-workload-model-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --test workload_model \
               workload_reserved_parameter_rejects_unknown_and_duplicate_values \
               -- --exact --test-threads=1
@@ -363,7 +363,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-workload-model-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --test workload_model \
               workload_reserved_parameter_rejects_malformed_toml_and_binary_forms \
               -- --exact --test-threads=1
@@ -372,7 +372,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-workload-model-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --test workload_model \
               engine_source_has_no_application_traffic_origination_path \
               -- --exact --test-threads=1
@@ -381,7 +381,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-workload-model-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --test workload_model \
               backend_and_device_delivery_surfaces_are_documented_as_non_originators \
               -- --exact --test-threads=1

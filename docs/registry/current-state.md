@@ -1,7 +1,7 @@
 # AOS Registry — Current State
 
 > **Status:** Reference / as-built. This document describes the registry
-> behavior implemented in `crates/aos-package` after the git-native registry
+> behavior implemented in `crates/aos/packages/aos-package-manager` after the git-native registry
 > cutover work. For target intent, see
 > [`architecture.md`](architecture.md), [`http-layout.md`](http-layout.md),
 > [`versioning-and-channels.md`](versioning-and-channels.md),
@@ -44,7 +44,7 @@ Consumer registry configuration is available below `apm registry`; producer
 operations are available only through `apr`. `aos` has no package subcommand,
 and private on-host lifecycle operations run through `aos-package-runtime`.
 Registry producer implementations are in
-`crates/aos-package/src/registry_ops/`. AOS-specific release planning and
+`crates/aos/packages/aos-package-manager/src/registry_ops/`. AOS-specific release planning and
 qualification run through `aos maintain release`, using shared libraries;
 `aos release` has no compatibility alias.
 
@@ -274,7 +274,7 @@ The `apm` NAR downloader is narinfo-driven today:
 - It verifies the compressed file against `FileHash` when present, falling back
   to `NarHash` for uncompressed NARs.
 
-Shared formatting and signing logic now lives in `aos-core::nar::cache`:
+Shared formatting and signing logic now lives in `aos-nar::cache`:
 `render_static_narinfo`, `nix_cache_info`, `nar_url`, and `NarInfoSigner`.
 `aos-server` calls that shared library for its live cache responses, while
 `apr cache generate` calls the same library offline to write the static cache.

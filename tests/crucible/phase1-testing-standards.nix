@@ -5,11 +5,11 @@
   cratesDir = ../../crates;
   testingStandardsRust = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-harness/tests/testing_standards.rs;
+    entry = ../../crates/crucible/testing/crucible-test-support/tests/testing_standards.rs;
   };
-  testingStandardsSupport = builtins.readFile ../../crates/crucible-harness/tests/support/testing_standards.rs;
+  testingStandardsSupport = builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/support/testing_standards.rs;
   testingStandardsSourceInventory =
-    builtins.readFile ../../crates/crucible-harness/tests/support/testing_standards/source_inventory.rs;
+    builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/support/testing_standards/source_inventory.rs;
   testingStandardsCode =
     testingStandardsRust
     + "\n"
@@ -146,19 +146,19 @@
   targets = [
     {
       gate = "gate:harness-lint";
-      package = "crucible-harness";
+      package = "crucible-test-support";
       testTarget = "harness_lint";
       requiredFeatures = [];
     }
     {
       gate = "gate:layer0-determinism";
-      package = "crucible-qemu";
+      package = "crucible-qemu-host";
       testTarget = "deterministic_launch";
       requiredFeatures = [];
     }
     {
       gate = "gate:single-vm-fingerprint";
-      package = "crucible-qemu";
+      package = "crucible-qemu-host";
       testTarget = "deterministic_launch";
       requiredFeatures = [];
     }
@@ -182,37 +182,37 @@
     }
     {
       gate = "gate:layer1-injection";
-      package = "crucible-protocol";
+      package = "crucible-qemu-protocol";
       testTarget = "gate_layer1_injection";
       requiredFeatures = [];
     }
     {
       gate = "gate:layer1-injection";
-      package = "crucible-shmem";
+      package = "crucible-qemu-shmem";
       testTarget = "gate_layer1_injection";
       requiredFeatures = [];
     }
     {
       gate = "gate:abi-conformance";
-      package = "crucible-harness";
+      package = "crucible-test-support";
       testTarget = "gate_abi_conformance";
       requiredFeatures = [];
     }
     {
       gate = "gate:abi-conformance";
-      package = "crucible-shmem";
+      package = "crucible-qemu-shmem";
       testTarget = "gate_abi_conformance";
       requiredFeatures = [];
     }
     {
       gate = "gate:abi-conformance";
-      package = "crucible-protocol";
+      package = "crucible-qemu-protocol";
       testTarget = "gate_abi_conformance";
       requiredFeatures = [];
     }
     {
       gate = "gate:abi-conformance";
-      package = "crucible-api";
+      package = "crucible-control-api";
       testTarget = "gate_abi_conformance";
       requiredFeatures = [];
     }
@@ -230,31 +230,31 @@
     }
     {
       gate = "gate:abi-conformance";
-      package = "crucible";
+      package = "crucible-engine";
       testTarget = "gate_abi_conformance";
       requiredFeatures = ["test-double"];
     }
     {
       gate = "gate:replay-oracle";
-      package = "crucible";
+      package = "crucible-engine";
       testTarget = "gate_replay_oracle";
       requiredFeatures = ["test-double"];
     }
     {
       gate = "gate:content-address";
-      package = "crucible";
+      package = "crucible-engine";
       testTarget = "gate_content_address";
       requiredFeatures = [];
     }
     {
       gate = "gate:content-address";
-      package = "crucible-sim";
+      package = "crucible-determinism";
       testTarget = "gate_content_address";
       requiredFeatures = [];
     }
     {
       gate = "gate:scheduler-liveness";
-      package = "crucible-qemu";
+      package = "crucible-qemu-host";
       testTarget = "deterministic_launch";
       requiredFeatures = [];
     }
@@ -266,7 +266,7 @@
     }
     {
       gate = "gate:control-responsive";
-      package = "crucible-api";
+      package = "crucible-control-api";
       testTarget = "gate_control_responsive";
       requiredFeatures = [];
     }
@@ -278,13 +278,13 @@
     }
     {
       gate = "gate:any-guest";
-      package = "crucible-qemu";
+      package = "crucible-qemu-host";
       testTarget = "deterministic_launch";
       requiredFeatures = [];
     }
     {
       gate = "gate:qemu-inert";
-      package = "crucible-qemu";
+      package = "crucible-qemu-host";
       testTarget = "gate_qemu_inert";
       requiredFeatures = [];
     }
@@ -302,19 +302,19 @@
     }
     {
       gate = "gate:divergence-bisect";
-      package = "crucible-harness";
+      package = "crucible-test-support";
       testTarget = "gate_divergence_bisect";
       requiredFeatures = [];
     }
     {
       gate = "gate:adversarial-determinism";
-      package = "crucible";
+      package = "crucible-engine";
       testTarget = "gate_adversarial_determinism";
       requiredFeatures = [];
     }
     {
       gate = "gate:e2e-determinism";
-      package = "crucible";
+      package = "crucible-engine";
       testTarget = "gate_e2e_determinism_concurrency";
       requiredFeatures = ["test-double"];
     }
@@ -326,13 +326,13 @@
     }
     {
       gate = "gate:fleet-equivalence";
-      package = "crucible";
+      package = "crucible-engine";
       testTarget = "gate_fleet_equivalence";
       requiredFeatures = [];
     }
     {
       gate = "gate:campaign-continuity";
-      package = "crucible-cas";
+      package = "crucible-store";
       testTarget = "gate_campaign_continuity";
       requiredFeatures = [];
     }
@@ -341,77 +341,77 @@
   standards = [
     {
       gate = "gate:harness-lint";
-      ownerPackages = ["crucible-harness"];
+      ownerPackages = ["crucible-test-support"];
       layers = ["CrossCutting"];
       shape = "static-lint";
       backend = "static-lint";
     }
     {
       gate = "gate:layer0-determinism";
-      ownerPackages = ["crucible-qemu"];
+      ownerPackages = ["crucible-qemu-host"];
       layers = ["L2"];
       shape = "fingerprint-compare";
       backend = "real-qemu";
     }
     {
       gate = "gate:single-vm-fingerprint";
-      ownerPackages = ["crucible-qemu" "crucible-qemu-plugin" "crucible-guest"];
+      ownerPackages = ["crucible-qemu-host" "crucible-qemu-plugin" "crucible-guest"];
       layers = ["L2" "L3"];
       shape = "fingerprint-compare";
       backend = "mixed";
     }
     {
       gate = "gate:layer1-injection";
-      ownerPackages = ["crucible-device" "crucible-protocol" "crucible-shmem"];
+      ownerPackages = ["crucible-device" "crucible-qemu-protocol" "crucible-qemu-shmem"];
       layers = ["L1"];
       shape = "observed-injection-icount-vectors";
       backend = "in-process";
     }
     {
       gate = "gate:abi-conformance";
-      ownerPackages = ["crucible-harness" "crucible-shmem" "crucible-protocol" "crucible-api" "crucible-qemu-plugin" "crucible-guest" "crucible"];
+      ownerPackages = ["crucible-test-support" "crucible-qemu-shmem" "crucible-qemu-protocol" "crucible-control-api" "crucible-qemu-plugin" "crucible-guest" "crucible-engine"];
       layers = ["L1" "L2" "L3" "L4" "CrossCutting"];
       shape = "abi-golden-vectors";
       backend = "in-process";
     }
     {
       gate = "gate:replay-oracle";
-      ownerPackages = ["crucible"];
+      ownerPackages = ["crucible-engine"];
       layers = ["L3"];
       shape = "twice-reduce-compare-by-hash";
       backend = "sim-double";
     }
     {
       gate = "gate:content-address";
-      ownerPackages = ["crucible" "crucible-sim"];
+      ownerPackages = ["crucible-engine" "crucible-determinism"];
       layers = ["L0" "L3"];
       shape = "twice-reduce-compare-by-hash";
       backend = "in-process";
     }
     {
       gate = "gate:scheduler-liveness";
-      ownerPackages = ["crucible-qemu"];
+      ownerPackages = ["crucible-qemu-host"];
       layers = ["L2"];
       shape = "responsiveness-bound";
       backend = "real-qemu";
     }
     {
       gate = "gate:control-responsive";
-      ownerPackages = ["crucible-session" "crucible-api" "crucible-daemon"];
+      ownerPackages = ["crucible-session" "crucible-control-api" "crucible-daemon"];
       layers = ["L4"];
       shape = "responsiveness-bound";
       backend = "sim-double";
     }
     {
       gate = "gate:any-guest";
-      ownerPackages = ["crucible-qemu"];
+      ownerPackages = ["crucible-qemu-host"];
       layers = ["L2"];
       shape = "fingerprint-compare";
       backend = "real-qemu";
     }
     {
       gate = "gate:qemu-inert";
-      ownerPackages = ["crucible-qemu" "crucible-qemu-plugin"];
+      ownerPackages = ["crucible-qemu-host" "crucible-qemu-plugin"];
       layers = ["L2"];
       shape = "qemu-inert-compare";
       backend = "real-qemu";
@@ -425,35 +425,35 @@
     }
     {
       gate = "gate:divergence-bisect";
-      ownerPackages = ["crucible-harness"];
+      ownerPackages = ["crucible-test-support"];
       layers = ["CrossCutting"];
       shape = "divergence-bisect";
       backend = "mixed";
     }
     {
       gate = "gate:adversarial-determinism";
-      ownerPackages = ["crucible"];
+      ownerPackages = ["crucible-engine"];
       layers = ["L3"];
       shape = "adversarial-compare";
       backend = "mixed";
     }
     {
       gate = "gate:e2e-determinism";
-      ownerPackages = ["crucible" "crucible-cli"];
+      ownerPackages = ["crucible-engine" "crucible-cli"];
       layers = ["L3" "L4"];
       shape = "e2e-determinism";
       backend = "mixed";
     }
     {
       gate = "gate:fleet-equivalence";
-      ownerPackages = ["crucible"];
+      ownerPackages = ["crucible-engine"];
       layers = ["L3"];
       shape = "fleet-equivalence";
       backend = "mixed";
     }
     {
       gate = "gate:campaign-continuity";
-      ownerPackages = ["crucible-cas"];
+      ownerPackages = ["crucible-store"];
       layers = ["L3"];
       shape = "campaign-continuity";
       backend = "in-process";
@@ -475,19 +475,19 @@
 
   crateOwnership = [
     {
-      package = "crucible-sim";
+      package = "crucible-determinism";
       gates = ["gate:content-address"];
     }
     {
-      package = "crucible-assert";
+      package = "crucible-test-support";
       gates = [];
     }
     {
-      package = "crucible-shmem";
+      package = "crucible-qemu-shmem";
       gates = ["gate:abi-conformance" "gate:layer1-injection"];
     }
     {
-      package = "crucible-protocol";
+      package = "crucible-qemu-protocol";
       gates = ["gate:layer1-injection" "gate:abi-conformance"];
     }
     {
@@ -495,7 +495,7 @@
       gates = ["gate:layer1-injection"];
     }
     {
-      package = "crucible-qemu";
+      package = "crucible-qemu-host";
       gates = ["gate:layer0-determinism" "gate:single-vm-fingerprint" "gate:scheduler-liveness" "gate:any-guest" "gate:qemu-inert"];
     }
     {
@@ -507,11 +507,11 @@
       gates = ["gate:single-vm-fingerprint" "gate:abi-conformance"];
     }
     {
-      package = "crucible";
+      package = "crucible-engine";
       gates = ["gate:abi-conformance" "gate:replay-oracle" "gate:content-address" "gate:adversarial-determinism" "gate:e2e-determinism" "gate:fleet-equivalence"];
     }
     {
-      package = "crucible-cas";
+      package = "crucible-store";
       gates = ["gate:campaign-continuity"];
     }
     {
@@ -519,7 +519,7 @@
       gates = ["gate:control-responsive"];
     }
     {
-      package = "crucible-api";
+      package = "crucible-control-api";
       gates = ["gate:control-responsive" "gate:abi-conformance"];
     }
     {
@@ -531,23 +531,23 @@
       gates = ["gate:e2e-determinism"];
     }
     {
-      package = "crucible-harness";
+      package = "crucible-test-support";
       gates = ["gate:harness-lint" "gate:abi-conformance" "gate:divergence-bisect"];
     }
   ];
 
   packageLayer = package:
-    if builtins.elem package ["crucible-sim" "crucible-assert"]
+    if builtins.elem package ["crucible-determinism" "crucible-test-support"]
     then "L0"
-    else if builtins.elem package ["crucible-shmem" "crucible-protocol" "crucible-device"]
+    else if builtins.elem package ["crucible-qemu-shmem" "crucible-qemu-protocol" "crucible-device"]
     then "L1"
-    else if builtins.elem package ["crucible-qemu" "crucible-qemu-plugin" "crucible-guest"]
+    else if builtins.elem package ["crucible-qemu-host" "crucible-qemu-plugin" "crucible-guest"]
     then "L2"
-    else if builtins.elem package ["crucible" "crucible-cas"]
+    else if builtins.elem package ["crucible-engine" "crucible-store"]
     then "L3"
-    else if builtins.elem package ["crucible-session" "crucible-api" "crucible-daemon" "crucible-cli"]
+    else if builtins.elem package ["crucible-session" "crucible-control-api" "crucible-daemon" "crucible-cli"]
     then "L4"
-    else if package == "crucible-harness"
+    else if package == "crucible-test-support"
     then "CrossCutting"
     else null;
 
@@ -569,7 +569,7 @@
     code = scrubCommentsAndStrings content;
     lower = lowerAscii code;
     placeholder = hasInfix "#[ignore" content && hasInfix "panic!" content;
-    protocolDataPlaneTarget = target.package == "crucible-protocol" && target.gate == "gate:layer1-injection";
+    protocolDataPlaneTarget = target.package == "crucible-qemu-protocol" && target.gate == "gate:layer1-injection";
   in
     lib.optionals (!placeholder && standard.shape == "twice-reduce-compare-by-hash" && !(hasInfix twiceReduceHelper code)) [
       "${target.package}:${target.testTarget} must call ${twiceReduceHelper} to drive twice and compare canonical digests"
@@ -635,7 +635,7 @@
     ++ lib.optionals (standard != null && standard.backend == "real-qemu" && layer != "L2") [
       "${target.package}:${target.testTarget} is a real-QEMU-only gate but is not owned by an L2 crate"
     ]
-    ++ lib.optionals (standard != null && standard.backend == "sim-double" && target.package == "crucible" && !(builtins.elem "test-double" target.requiredFeatures)) [
+    ++ lib.optionals (standard != null && standard.backend == "sim-double" && target.package == "crucible-engine" && !(builtins.elem "test-double" target.requiredFeatures)) [
       "${target.package}:${target.testTarget} must run with --features test-double for SimDouble coverage"
     ];
 
@@ -726,7 +726,7 @@
       );
   in
     builtins.filter (
-      source: !(source.package == "crucible-harness" && builtins.elem source.testTarget ["testing_standards" "support/testing_standards"])
+      source: !(source.package == "crucible-test-support" && builtins.elem source.testTarget ["testing_standards" "support/testing_standards"])
     ) (integrationSources ++ unitSources);
 
   testSources = lib.concatMap (ownership: testSourcesForPackage ownership.package) crateOwnership;
@@ -760,7 +760,7 @@
     lib.concatMap (
       required:
         lib.optionals (!(hasInfix required testingStandardsCode)) [
-          "crates/crucible-harness/tests/testing_standards.rs: missing testing-standard wiring `${required}`"
+          "crates/crucible/testing/crucible-test-support/tests/testing_standards.rs: missing testing-standard wiring `${required}`"
         ]
     )
     requiredRustText;
@@ -775,19 +775,19 @@
   regressionFailures = let
     wrongLayerTarget = {
       gate = "gate:replay-oracle";
-      package = "crucible-qemu";
+      package = "crucible-qemu-host";
       testTarget = "gate_replay_oracle";
       requiredFeatures = [];
     };
     unknownTarget = {
       gate = "gate:unknown";
-      package = "crucible-harness";
+      package = "crucible-test-support";
       testTarget = "unknown_gate";
       requiredFeatures = [];
     };
     unshapedTarget = {
       gate = "gate:replay-oracle";
-      package = "crucible";
+      package = "crucible-engine";
       testTarget = "gate_replay_oracle";
       requiredFeatures = ["test-double"];
     };
@@ -833,7 +833,7 @@
     ++ lib.concatMap (
       target: let
         standard = standardForGate target.gate;
-        path = cratesDir + "/${target.package}/tests/${target.testTarget}.rs";
+        path = packageDir target.package + "/tests/${target.testTarget}.rs";
       in
         if standard == null || !(builtins.pathExists path)
         then []

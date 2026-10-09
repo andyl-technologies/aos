@@ -28,7 +28,7 @@ registry" a first-class operation rather than a migration.
 Corollary: the hub displays *verified* state, never trusted state. The
 indexer performs the same checks an `apm` client performs — tag
 signature verification, name-binding, roster walks, anti-rollback
-floors (`crates/aos-package/src/registry/verify.rs`,
+floors (`crates/aos/packages/aos-package-manager/src/registry/verify.rs`,
 `channel.rs`) — and surfaces verification failures as first-class
 health states rather than hiding them.
 
@@ -99,7 +99,7 @@ crates/aos-registry-hub/
   object parsing with SSH-format Ed25519 verification (`ed25519-dalek`
   is wasm-clean), package TOML, narinfo, and channel partition
   resolution with name-binding checks. It reimplements the *read half*
-  of `crates/aos-package/src/registry/` without the git CLI (which
+  of `crates/aos/packages/aos-package-manager/src/registry/` without the git CLI (which
   `apm` shells out to and which does not exist on Workers). The pure
   parsing types (`types.rs`, `registry/parse.rs`) should be shared with
   `aos-package` — day one by direct reuse if they prove wasm-clean,

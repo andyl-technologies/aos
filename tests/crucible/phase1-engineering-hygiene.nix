@@ -2,10 +2,11 @@
   pkgs,
   lib,
 }: let
+  inherit (import ./_workspace-packages.nix {inherit lib;}) packageDir packageNames cruciblePackages;
   root = ../..;
   cratesDir = ../../crates;
   defaultNix = builtins.readFile ./default.nix;
-  hygieneRust = builtins.readFile ../../crates/crucible-harness/tests/engineering_hygiene.rs;
+  hygieneRust = builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/engineering_hygiene.rs;
   hygieneBaselineText = builtins.readFile ./engineering-hygiene-baseline.txt;
 
   responsibilityReviewThreshold = 1000;
@@ -14,24 +15,24 @@
   cohesionNotRequired = "threshold-not-reached";
 
   cruciblePackages = [
-    "crucible-sim"
-    "crucible-assert"
-    "crucible-shmem"
-    "crucible-protocol"
+    "crucible-determinism"
+    "crucible-test-support"
+    "crucible-qemu-shmem"
+    "crucible-qemu-protocol"
     "crucible-device"
-    "crucible-qemu"
+    "crucible-qemu-host"
     "crucible-qemu-plugin"
     "crucible-guest"
-    "crucible-cas"
+    "crucible-store"
     "crucible-campaign"
-    "crucible"
+    "crucible-engine"
     "crucible-session"
-    "crucible-api"
+    "crucible-control-api"
     "crucible-daemon"
     "crucible-cli"
-    "crucible-harness"
+    "crucible-test-support"
   ];
-  qemuBoundaryPackages = ["crucible-debug-gateway" "crucible-daemon" "crucible-qemu" "crucible-qemu-plugin"];
+  qemuBoundaryPackages = ["crucible-qemu-debug-gateway" "crucible-daemon" "crucible-qemu-host" "crucible-qemu-plugin"];
   qemuSpecificTokens = [
     "qemu"
     "Qemu"
@@ -703,7 +704,7 @@
   qemuManifestRegressionFailures = let
     rootManifest = ''
       [dependencies]
-      vm_driver = { package = "crucible-qemu", path = "../crucible-qemu" }
+      vm_driver = { package = "crucible-qemu-host", path = "../crucible-qemu" }
     '';
 
     targetManifest = ''
@@ -712,7 +713,7 @@
     '';
     rootRejected = qemuManifestFailuresForContent "crucible-session" "Cargo.toml" rootManifest;
     targetRejected = qemuManifestFailuresForContent "crucible-session" "Cargo.toml" targetManifest;
-    allowed = qemuManifestFailuresForContent "crucible-qemu" "Cargo.toml" targetManifest;
+    allowed = qemuManifestFailuresForContent "crucible-qemu-host" "Cargo.toml" targetManifest;
   in
     lib.optionals (!(builtins.any (finding: hasInfix "QEMU boundary dependency" finding) rootRejected)) [
       "manifest regression: renamed root QEMU dependency should be rejected"

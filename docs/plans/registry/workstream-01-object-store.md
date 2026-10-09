@@ -246,7 +246,7 @@ content.
 ## 4. Implementation steps
 
 The work decomposes into a small set of object-store primitives, packaged as a
-new module `crates/aos-package/src/registry/objectstore.rs` plus targeted edits
+new module `crates/aos/packages/aos-package-manager/src/registry/objectstore.rs` plus targeted edits
 to existing init/commit paths.
 
 ### Step 1 — sha256 bare-repo init
@@ -431,7 +431,7 @@ no host tools). The static HTTP server should be an AOS-built minimal server
 (e.g. reuse the cache server crate or `pkgs.socat`/an AOS http server) — never a
 host binary.
 
-### 6.1 Eval / unit (Rust, `crates/aos-package`)
+### 6.1 Eval / unit (Rust, `crates/aos/packages/aos-package-manager`)
 
 All in `#[cfg(test)] mod tests` inside `registry/objectstore.rs` (same pattern as
 the `version_to_token_*` tests in `registry/state.rs:197-227`):
@@ -477,8 +477,8 @@ A scripted test (CI check, analogous to `nix-build -A checks.eval`):
 
 ### 7.1 New module
 
-**New module** `crates/aos-package/src/registry/objectstore.rs` (registered in
-`crates/aos-package/src/registry/mod.rs` alongside the existing `bundle`,
+**New module** `crates/aos/packages/aos-package-manager/src/registry/objectstore.rs` (registered in
+`crates/aos/packages/aos-package-manager/src/registry/mod.rs` alongside the existing `bundle`,
 `git`, `state`, `closures`, `parse` submodules). It owns the following functions
 (real types — `&Path`, `semver::Version`, `anyhow::Result`):
 
@@ -535,7 +535,7 @@ object-store primitives are invoked by the publish pipeline. Per
 pack/delta/zstd → `update-server-info` → advance partitions → upload); this
 workstream contributes the `update-server-info` + `info/alternates` steps to
 that command. The `apr` subcommands are the `RegistryCommand` enum
-(`crates/aos-package/src/lib.rs:349`, dispatched in its `run`/`execute` arm at
+(`crates/aos/packages/aos-package-manager/src/lib.rs:349`, dispatched in its `run`/`execute` arm at
 `lib.rs:1215+`). The existing `RegistryCommand::Bundle` variant (`lib.rs:620`,
 dispatched at `:1231` → `registry_ops::bundle` at `registry_ops.rs:1706`,
 = `git bundle create`) and the `bundle.rs` writer are **removed** as part of

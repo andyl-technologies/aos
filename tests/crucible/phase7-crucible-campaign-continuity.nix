@@ -11,20 +11,20 @@
   dceDoc = builtins.readFile ../../docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md;
   harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
   casSource =
-    builtins.readFile ../../crates/crucible-cas/src/lib.rs
-    + builtins.readFile ../../crates/crucible-cas/src/cas/campaign_codec.rs
-    + builtins.readFile ../../crates/crucible-cas/src/cas/campaign_model.rs
-    + builtins.readFile ../../crates/crucible-cas/src/cas/campaign_store.rs
-    + builtins.readFile ../../crates/crucible-cas/src/cas/invalidation.rs
-    + builtins.readFile ../../crates/crucible-cas/src/cas/tests.rs;
-  fleetStoreProbe = builtins.readFile ../../crates/crucible-cas/src/bin/crucible-fleet-store.rs;
-  gateTest = builtins.readFile ../../crates/crucible-cas/tests/gate_campaign_continuity.rs;
-  gateCatalog = builtins.readFile ../../crates/crucible-harness/src/lib.rs;
-  gateCatalogTest = builtins.readFile ../../crates/crucible-harness/tests/gate_catalog.rs;
-  gateTargets = builtins.readFile ../../crates/crucible-harness/src/gate_targets.rs;
-  gateTargetMappingTest = builtins.readFile ../../crates/crucible-harness/tests/gate_target_mapping.rs;
-  testingStandards = builtins.readFile ../../crates/crucible-harness/tests/testing_standards.rs;
-  testingStandardsSupport = builtins.readFile ../../crates/crucible-harness/tests/support/testing_standards.rs;
+    builtins.readFile ../../crates/crucible/storage/crucible-store/src/lib.rs
+    + builtins.readFile ../../crates/crucible/storage/crucible-store/src/cas/campaign_codec.rs
+    + builtins.readFile ../../crates/crucible/storage/crucible-store/src/cas/campaign_model.rs
+    + builtins.readFile ../../crates/crucible/storage/crucible-store/src/cas/campaign_store.rs
+    + builtins.readFile ../../crates/crucible/storage/crucible-store/src/cas/invalidation.rs
+    + builtins.readFile ../../crates/crucible/storage/crucible-store/src/cas/tests.rs;
+  fleetStoreProbe = builtins.readFile ../../crates/crucible/storage/crucible-store/src/bin/crucible-fleet-store.rs;
+  gateTest = builtins.readFile ../../crates/crucible/storage/crucible-store/tests/gate_campaign_continuity.rs;
+  gateCatalog = builtins.readFile ../../crates/crucible/testing/crucible-test-support/src/lib.rs;
+  gateCatalogTest = builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/gate_catalog.rs;
+  gateTargets = builtins.readFile ../../crates/crucible/testing/crucible-test-support/src/gate_targets.rs;
+  gateTargetMappingTest = builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/gate_target_mapping.rs;
+  testingStandards = builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/testing_standards.rs;
+  testingStandardsSupport = builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/support/testing_standards.rs;
   gateTargetMapping = builtins.readFile ./phase1-gate-target-mapping.nix;
   phase1TestingStandards = builtins.readFile ./phase1-testing-standards.nix;
   defaultChecks = builtins.readFile ./default.nix;
@@ -76,7 +76,7 @@
         needle = "`gate:campaign-continuity`";
       }
     ]
-    ++ failuresFor "crates/crucible-cas/src/lib.rs" casSource [
+    ++ failuresFor "crates/crucible/storage/crucible-store/src/lib.rs" casSource [
       {
         label = "campaign provenance schema";
         needle = "CAMPAIGN_PROVENANCE_SCHEMA";
@@ -162,7 +162,7 @@
         needle = "fresh campaign lineage requires prior manifest to be current head";
       }
     ]
-    ++ failuresFor "crates/crucible-cas/src/bin/crucible-fleet-store.rs" fleetStoreProbe [
+    ++ failuresFor "crates/crucible/storage/crucible-store/src/bin/crucible-fleet-store.rs" fleetStoreProbe [
       {
         label = "campaign continuity probe";
         needle = "prove_campaign_continuity_gate";
@@ -208,7 +208,7 @@
         needle = "campaign continuity fresh lineage was not installed as head";
       }
     ]
-    ++ failuresFor "crates/crucible-cas/tests/gate_campaign_continuity.rs" gateTest [
+    ++ failuresFor "crates/crucible/storage/crucible-store/tests/gate_campaign_continuity.rs" gateTest [
       {
         label = "seed and coverage positive test";
         needle = "gate_campaign_continuity_seeds_prior_corpus_and_ratchets_coverage";
@@ -270,7 +270,7 @@
         needle = "assert_eq!(fresh_head.manifest_hash, event.fresh_manifest_hash);";
       }
     ]
-    ++ forbiddenFor "crates/crucible-cas/tests/gate_campaign_continuity.rs" gateTest [
+    ++ forbiddenFor "crates/crucible/storage/crucible-store/tests/gate_campaign_continuity.rs" gateTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -280,31 +280,31 @@
         needle = "implementation is pending";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/src/lib.rs" gateCatalog [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/src/lib.rs" gateCatalog [
       {
         label = "campaign-continuity gate catalog implemented";
         needle = "name: \"gate:campaign-continuity\",\n        phase: GatePhase::Phase7,\n        owner: \"crucible-harness\",\n        status: GateStatus::Implemented,";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/tests/gate_catalog.rs" gateCatalogTest [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/tests/gate_catalog.rs" gateCatalogTest [
       {
         label = "campaign-continuity implemented status assertion";
         needle = "find_gate(\"gate:campaign-continuity\").map(|spec| spec.status),\n        Some(GateStatus::Implemented)";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/src/gate_targets.rs" gateTargets [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/src/gate_targets.rs" gateTargets [
       {
         label = "campaign-continuity gate target implemented";
         needle = "gate: \"gate:campaign-continuity\",\n        package: \"crucible-cas\",\n        test_target: \"gate_campaign_continuity\",\n        required_features: &[],";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/tests/gate_target_mapping.rs" gateTargetMappingTest [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/tests/gate_target_mapping.rs" gateTargetMappingTest [
       {
         label = "campaign-continuity target mapping assertion";
         needle = "\"gate:campaign-continuity\",\n                \"crucible-cas\",\n                \"gate_campaign_continuity\"";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/tests/testing_standards.rs" testingStandards [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/tests/testing_standards.rs" testingStandards [
       {
         label = "campaign-continuity testing standard";
         needle = "gate: \"gate:campaign-continuity\",\n        owner_packages: &[\"crucible-cas\"],\n        layers: &[Layer::L3],\n        shape: TestShape::CampaignContinuity,\n        backend: TestBackend::InProcess,";
@@ -314,7 +314,7 @@
         needle = "package: \"crucible-cas\",\n        gates: &[\"gate:campaign-continuity\"],";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/tests/support/testing_standards.rs" testingStandardsSupport [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/tests/support/testing_standards.rs" testingStandardsSupport [
       {
         label = "campaign-continuity source shape";
         needle = "TestShape::CampaignContinuity";
@@ -498,7 +498,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-phase7-campaign-continuity-target" \
-              -p crucible-cas \
+              -p crucible-store \
               --test gate_campaign_continuity \
               -- --test-threads=1
           '';

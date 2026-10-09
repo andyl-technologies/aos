@@ -13,8 +13,8 @@ in
       name = "native-adversarial-determinism";
       sqliteRequired = true;
       cargoBuildCommands = [
-        "test --frozen --offline --no-run -p crucible-harness --test gate_adversarial_determinism"
-        "test --frozen --offline --no-run -p crucible --test gate_adversarial_determinism"
+        "test --frozen --offline --no-run -p crucible-test-support --test gate_adversarial_determinism"
+        "test --frozen --offline --no-run -p crucible-engine --test gate_adversarial_determinism"
       ];
       installedTests = [
         {

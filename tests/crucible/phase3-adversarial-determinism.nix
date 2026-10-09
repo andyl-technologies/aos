@@ -9,12 +9,12 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  adversarial = builtins.readFile ../../crates/crucible-harness/src/adversarial.rs;
-  gateTest = builtins.readFile ../../crates/crucible-harness/tests/gate_adversarial_determinism.rs;
-  engineGateTest = builtins.readFile ../../crates/crucible/tests/gate_adversarial_determinism.rs;
-  gateTargets = builtins.readFile ../../crates/crucible-harness/src/gate_targets.rs;
-  gateCatalog = builtins.readFile ../../crates/crucible-harness/src/lib.rs;
-  gateCatalogTest = builtins.readFile ../../crates/crucible-harness/tests/gate_catalog.rs;
+  adversarial = builtins.readFile ../../crates/crucible/testing/crucible-test-support/src/adversarial.rs;
+  gateTest = builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/gate_adversarial_determinism.rs;
+  engineGateTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/gate_adversarial_determinism.rs;
+  gateTargets = builtins.readFile ../../crates/crucible/testing/crucible-test-support/src/gate_targets.rs;
+  gateCatalog = builtins.readFile ../../crates/crucible/testing/crucible-test-support/src/lib.rs;
+  gateCatalogTest = builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/gate_catalog.rs;
   gateTargetMapping = builtins.readFile ./phase1-gate-target-mapping.nix;
   defaultChecks = builtins.readFile ./default.nix;
   harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
@@ -42,7 +42,7 @@
         needle = "remains the fast diagnostic layer for isolating scheduler drift";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/src/adversarial.rs" adversarial [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/src/adversarial.rs" adversarial [
       {
         label = "scenario type";
         needle = "pub struct AdversarialScenario";
@@ -112,7 +112,7 @@
         needle = "compare_adversarial_runs(&runs)";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/tests/gate_adversarial_determinism.rs" gateTest [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/tests/gate_adversarial_determinism.rs" gateTest [
       {
         label = "implemented success gate test";
         needle = "gate_adversarial_determinism_compares_canonical_bytes_under_hostile_profiles";
@@ -154,7 +154,7 @@
         needle = "assert_eq!(run.final_fingerprint, baseline.final_fingerprint)";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/gate_adversarial_determinism.rs" engineGateTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/gate_adversarial_determinism.rs" engineGateTest [
       {
         label = "engine adversarial gate target";
         needle = "Checks `gate:adversarial-determinism` (the Phase-3 exit gate) on the REAL";
@@ -172,7 +172,7 @@
         needle = "gate-adversarial-determinism-corpus";
       }
     ]
-    ++ forbiddenFor "crates/crucible-harness/tests/gate_adversarial_determinism.rs" gateTest [
+    ++ forbiddenFor "crates/crucible/testing/crucible-test-support/tests/gate_adversarial_determinism.rs" gateTest [
       {
         label = "ignored red placeholder";
         needle = "#[ignore";
@@ -188,19 +188,19 @@
         needle = "gate:adversarial-determinism       (2-VM hostile-condition matrix)";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/src/lib.rs" gateCatalog [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/src/lib.rs" gateCatalog [
       {
         label = "adversarial gate catalog implemented";
         needle = "name: \"gate:adversarial-determinism\",\n        phase: GatePhase::Phase3,\n        owner: \"crucible-harness\",\n        status: GateStatus::Implemented,";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/src/gate_targets.rs" gateTargets [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/src/gate_targets.rs" gateTargets [
       {
         label = "adversarial target implemented";
         needle = "gate: \"gate:adversarial-determinism\",\n        package: \"crucible\",\n        test_target: \"gate_adversarial_determinism\",\n        required_features: &[],";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/tests/gate_catalog.rs" gateCatalogTest [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/tests/gate_catalog.rs" gateCatalogTest [
       {
         label = "adversarial implemented status assertion";
         needle = "find_gate(\"gate:adversarial-determinism\").map(|spec| spec.status),\n        Some(GateStatus::Implemented)";
@@ -295,14 +295,14 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-adversarial-determinism-target" \
-              -p crucible-harness \
+              -p crucible-test-support \
               --test gate_adversarial_determinism \
               -- --test-threads=1
             cargo test \
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-adversarial-determinism-target" \
-              -p crucible \
+              -p crucible-engine \
               --test gate_adversarial_determinism \
               -- --test-threads=1
           '';

@@ -13,9 +13,9 @@
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
   libRs = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/src/lib.rs;
+    entry = ../../crates/crucible/engine/crucible-engine/src/lib.rs;
   };
-  coverageFeedbackTest = builtins.readFile ../../crates/crucible/tests/gate_coverage_feedback.rs;
+  coverageFeedbackTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/gate_coverage_feedback.rs;
   eventLogCoverageGate = builtins.readFile ./phase4-event-log-coverage.nix;
   searchStrategiesGate = builtins.readFile ./phase6-search-strategies.nix;
   basicBlockCoverageGate = builtins.readFile ./phase6-basic-block-coverage.nix;
@@ -109,7 +109,7 @@
         needle = "gate=gate:basic-block-coverage";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "coverage feedback consumer enum";
         needle = "pub enum EventLogCoverageFeedbackConsumer";
@@ -147,7 +147,7 @@
         needle = ".collect::<BTreeSet<_>>()";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" temporalGraph [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" temporalGraph [
       {
         label = "checkpoint derives coverage from event log";
         needle = "pub fn with_coverage_from_event_log";
@@ -173,7 +173,7 @@
         needle = "pub fn reduce(def: &ScenarioDef, schedule: &Schedule) -> Result<State, EngineError>";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libRs [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" libRs [
       {
         label = "coverage feedback export";
         needle = "EventLogCoverageFeedback";
@@ -195,7 +195,7 @@
         needle = "SearchStrategy";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/gate_coverage_feedback.rs" coverageFeedbackTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/gate_coverage_feedback.rs" coverageFeedbackTest [
       {
         label = "event log to search gate";
         needle = "gate_coverage_feedback_flows_from_event_log_projection_to_search";
@@ -245,7 +245,7 @@
         needle = "compare_event_log_determinism(&baseline, &with_coverage).passes()";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible/tests/gate_coverage_feedback.rs" coverageFeedbackTest [
+    ++ forbiddenFailuresFor "crates/crucible/engine/crucible-engine/tests/gate_coverage_feedback.rs" coverageFeedbackTest [
       {
         label = "ignored red placeholder";
         needle = "#[ignore";
@@ -378,7 +378,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-coverage-feedback-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --test gate_coverage_feedback \
               -- --test-threads=1
           '';

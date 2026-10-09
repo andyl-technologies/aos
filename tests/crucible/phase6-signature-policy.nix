@@ -44,9 +44,9 @@
   modelSource = import ./_crucible-model-source.nix {inherit lib;};
   libSource = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/src/lib.rs;
+    entry = ../../crates/crucible/engine/crucible-engine/src/lib.rs;
   };
-  signatureTest = builtins.readFile ../../crates/crucible/tests/gate_failure_signature.rs;
+  signatureTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/gate_failure_signature.rs;
   defaultChecks = builtins.readFile ./default.nix;
   taskList = builtins.concatStringsSep "," taskIds;
 
@@ -71,7 +71,7 @@
         needle = "checks.crucible.phase6.signaturePolicy";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" modelSource [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" modelSource [
       {
         label = "policy level enum";
         needle = "pub enum SignaturePolicyLevel";
@@ -157,7 +157,7 @@
         needle = "at_icount_key";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" libSource [
       {
         label = "policy export";
         needle = "SignaturePolicy";
@@ -179,7 +179,7 @@
         needle = "FailureCausalCone";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/gate_failure_signature.rs" signatureTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/gate_failure_signature.rs" signatureTest [
       {
         label = "policy projection regression";
         needle = "failure_signature_policy_projects_versioned_keys_and_result_identity";
@@ -251,7 +251,7 @@
         needle = "phase6.failureNormalization";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible/tests/gate_failure_signature.rs" signatureTest [
+    ++ forbiddenFailuresFor "crates/crucible/engine/crucible-engine/tests/gate_failure_signature.rs" signatureTest [
       {
         label = "ignored test";
         needle = "#[ignore]";
@@ -265,7 +265,7 @@
         needle = "unimplemented!";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible/src/model.rs" modelSource [
+    ++ forbiddenFailuresFor "crates/crucible/engine/crucible-engine/src/model.rs" modelSource [
       {
         label = "stringly policy level";
         needle = "level: String";
@@ -321,7 +321,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-signature-policy-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --test gate_failure_signature \
               -- --test-threads=1
           '';

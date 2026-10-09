@@ -203,7 +203,7 @@ into QEMU via `-plugin`; it owns virtual time and the device/channel callbacks. 
 is the *only* thing that activates sim mode ([PATCH-1]).
 
 - **[PKG-17]** `crucible-qemu-plugin` MUST be built as an AOS `mkCargoPackage`
-  Rust `cdylib` from the `crates/crucible-qemu-plugin` crate ([PKG-4]), linking
+  Rust `cdylib` from the `crates/crucible/qemu/crucible-qemu-plugin` crate ([PKG-4]), linking
   only AOS-built dependencies. It MUST be built against the **same pinned QEMU
   plugin-API headers** as `qemu-crucible` so the plugin ABI version it advertises
   matches the patched binary's exported surface ([PATCH-40], §11.5–§11.6). *Gate:*

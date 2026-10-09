@@ -5,7 +5,7 @@
   root = ../..;
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
-  coverageRust = builtins.readFile ../../crates/crucible-harness/tests/determinism_core_coverage.rs;
+  coverageRust = builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/determinism_core_coverage.rs;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix;
 
@@ -110,7 +110,7 @@
             --frozen \
             --offline \
             --target-dir "$target_dir" \
-            -p crucible-harness \
+            -p crucible-test-support \
             --lib \
             --test determinism_core_coverage \
             -- --test-threads=1
@@ -118,7 +118,7 @@
             --frozen \
             --offline \
             --target-dir "$target_dir" \
-            -p crucible \
+            -p crucible-engine \
             --lib \
             --features test-double \
             -- --test-threads=1
@@ -126,14 +126,14 @@
             --frozen \
             --offline \
             --target-dir "$target_dir" \
-            -p crucible-sim \
+            -p crucible-determinism \
             --lib \
             -- --test-threads=1
           cargo test \
             --frozen \
             --offline \
             --target-dir "$target_dir" \
-            -p crucible-shmem \
+            -p crucible-qemu-shmem \
             --test gate_layer1_injection \
             -- --test-threads=1
 
@@ -498,8 +498,8 @@
   activeSurfaces = [
     {
       id = "scheduler-quantum-loop";
-      sourcePath = "crates/crucible/src/scheduler.rs";
-      testPath = "crates/crucible/src/scheduler";
+      sourcePath = "crates/crucible/engine/crucible-engine/src/scheduler.rs";
+      testPath = "crates/crucible/engine/crucible-engine/src/scheduler";
       status = "active";
       instrumentation = "separate-deterministic-build";
       activationMarkers = [];
@@ -512,8 +512,8 @@
     }
     {
       id = "scheduler-ordering-keys";
-      sourcePath = "crates/crucible/src/scheduler.rs";
-      testPath = "crates/crucible/src/scheduler";
+      sourcePath = "crates/crucible/engine/crucible-engine/src/scheduler.rs";
+      testPath = "crates/crucible/engine/crucible-engine/src/scheduler";
       status = "active";
       instrumentation = "separate-deterministic-build";
       activationMarkers = [];
@@ -525,8 +525,8 @@
     }
     {
       id = "error-variant-floor";
-      sourcePath = "crates/crucible/src/model.rs";
-      testPath = "crates/crucible/src/tests";
+      sourcePath = "crates/crucible/engine/crucible-engine/src/model.rs";
+      testPath = "crates/crucible/engine/crucible-engine/src/tests";
       status = "active";
       instrumentation = "separate-deterministic-build";
       activationMarkers = [];
@@ -538,8 +538,8 @@
     }
     {
       id = "instantiate-recursion";
-      sourcePath = "crates/crucible/src/model.rs";
-      testPath = "crates/crucible/src/tests";
+      sourcePath = "crates/crucible/engine/crucible-engine/src/model.rs";
+      testPath = "crates/crucible/engine/crucible-engine/src/tests";
       status = "active";
       instrumentation = "separate-deterministic-build";
       activationMarkers = [];
@@ -557,8 +557,8 @@
     }
     {
       id = "sim-backend-error-variants";
-      sourcePath = "crates/crucible/src/sim_backend.rs";
-      testPath = "crates/crucible/src/sim_backend.rs";
+      sourcePath = "crates/crucible/engine/crucible-engine/src/sim_backend.rs";
+      testPath = "crates/crucible/engine/crucible-engine/src/sim_backend.rs";
       status = "active";
       instrumentation = "separate-deterministic-build";
       activationMarkers = [];
@@ -570,8 +570,8 @@
     }
     {
       id = "decision-rng-and-forking";
-      sourcePath = "crates/crucible/src/decision.rs";
-      testPath = "crates/crucible/src/decision.rs";
+      sourcePath = "crates/crucible/engine/crucible-engine/src/decision.rs";
+      testPath = "crates/crucible/engine/crucible-engine/src/decision.rs";
       status = "active";
       instrumentation = "separate-deterministic-build";
       activationMarkers = [];
@@ -585,8 +585,8 @@
     }
     {
       id = "content-addressed-digest";
-      sourcePath = "crates/crucible-sim/src/lib.rs";
-      testPath = "crates/crucible-sim/src/lib.rs";
+      sourcePath = "crates/crucible/engine/crucible-determinism/src/lib.rs";
+      testPath = "crates/crucible/engine/crucible-determinism/src/lib.rs";
       status = "active";
       instrumentation = "separate-deterministic-build";
       activationMarkers = [];
@@ -599,8 +599,8 @@
     }
     {
       id = "replay-oracle-path";
-      sourcePath = "crates/crucible-harness/src/replay_oracle.rs";
-      testPath = "crates/crucible-harness/src/replay_oracle.rs";
+      sourcePath = "crates/crucible/testing/crucible-test-support/src/replay_oracle.rs";
+      testPath = "crates/crucible/testing/crucible-test-support/src/replay_oracle.rs";
       status = "active";
       instrumentation = "separate-deterministic-build";
       activationMarkers = [];
@@ -612,8 +612,8 @@
     }
     {
       id = "spsc-ring";
-      sourcePath = "crates/crucible-shmem/src/lib.rs";
-      testPath = "crates/crucible-shmem/tests/gate_layer1_injection.rs";
+      sourcePath = "crates/crucible/protocol/crucible-qemu-shmem/src/lib.rs";
+      testPath = "crates/crucible/protocol/crucible-qemu-shmem/tests/gate_layer1_injection.rs";
       status = "active";
       instrumentation = "separate-deterministic-build";
       activationMarkers = [];
@@ -625,8 +625,8 @@
     }
     {
       id = "protocol-codec";
-      sourcePath = "crates/crucible-protocol/src/lib.rs";
-      testPath = "crates/crucible-protocol/tests/gate_abi_conformance.rs";
+      sourcePath = "crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs";
+      testPath = "crates/crucible/protocol/crucible-qemu-protocol/tests/gate_abi_conformance.rs";
       status = "active";
       instrumentation = "separate-deterministic-build";
       activationMarkers = [];
@@ -638,8 +638,8 @@
     }
     {
       id = "reproduction-artifact-serializer";
-      sourcePath = "crates/crucible/src/lib.rs";
-      testPath = "crates/crucible/tests/gate_replay_oracle.rs";
+      sourcePath = "crates/crucible/engine/crucible-engine/src/lib.rs";
+      testPath = "crates/crucible/engine/crucible-engine/tests/gate_replay_oracle.rs";
       status = "active";
       instrumentation = "separate-deterministic-build";
       activationMarkers = [];
@@ -842,7 +842,7 @@
     lib.concatMap (
       required:
         lib.optionals (!(hasInfix required coverageRust)) [
-          "crates/crucible-harness/tests/determinism_core_coverage.rs: missing coverage-floor wiring `${required}`"
+          "crates/crucible/testing/crucible-test-support/tests/determinism_core_coverage.rs: missing coverage-floor wiring `${required}`"
         ]
     )
     requiredRustText;
@@ -850,7 +850,7 @@
   regressionFailures = let
     syntheticDigestSurface = {
       id = "content-addressed-digest";
-      sourcePath = "crates/crucible-sim/src/lib.rs";
+      sourcePath = "crates/crucible/engine/crucible-determinism/src/lib.rs";
       testPath = "synthetic.rs";
       status = "active";
       instrumentation = "separate-deterministic-build";

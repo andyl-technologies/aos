@@ -1,0 +1,20 @@
+[package]
+name = "crucible-control-api"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish = false
+description = "Portable Crucible control messages, canonical codecs, and compatibility contracts"
+
+[lints]
+workspace = true
+
+[dependencies]
+crucible-engine = { path = "../../engine/crucible-engine" }
+crucible-qemu-protocol = { path = "../../protocol/crucible-qemu-protocol" }
+crucible-session = { path = "../crucible-session" }
+thiserror = { workspace = true }
+blake3 = { workspace = true }
+ciborium = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

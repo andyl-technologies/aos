@@ -10,9 +10,9 @@
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   catalog = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/src/event_catalog.rs;
+    entry = ../../crates/crucible/engine/crucible-engine/src/event_catalog.rs;
   };
-  catalogTest = builtins.readFile ../../crates/crucible/tests/event_log_class_catalog.rs;
+  catalogTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/event_log_class_catalog.rs;
   observabilityDoc = builtins.readFile ../../docs/rfcs/0010-crucible/19-observability-event-log.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -34,7 +34,7 @@
         needle = "class is a\n  function of the payload kind";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "entry class schema field";
         needle = "class: SchedulerEventLogClass";
@@ -84,7 +84,7 @@
         needle = "event_log_append_rejects_unknown_typed_kind";
       }
     ]
-    ++ failuresFor "crates/crucible/src/event_catalog.rs" catalog [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/event_catalog.rs" catalog [
       {
         label = "versioned catalog";
         needle = "EVENT_KIND_CATALOG_VERSION";
@@ -114,7 +114,7 @@
         needle = "class: SchedulerEventLogClass::Observational";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/event_log_class_catalog.rs" catalogTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/event_log_class_catalog.rs" catalogTest [
       {
         label = "catalog derivation test";
         needle = "event_class_is_derived_from_payload_kind_catalog";
@@ -130,7 +130,7 @@
         needle = "eventLogClassCatalog = import ./phase4-event-log-class-catalog.nix";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/event_log_class_catalog.rs" catalogTest [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/event_log_class_catalog.rs" catalogTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -144,7 +144,7 @@
         needle = "condition_entry_with_class_for_test";
       }
     ]
-    ++ forbiddenFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "enum payload catalog lookup";
         needle = "event_kind_catalog_class(entry.payload())";
@@ -211,14 +211,14 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-event-log-class-catalog-target" \
-              -p crucible \
+              -p crucible-engine \
               --test event_log_class_catalog \
               -- --test-threads=1
             cargo test \
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-event-log-class-catalog-target" \
-              -p crucible \
+              -p crucible-engine \
               --lib event_log_append_rejects \
               -- --test-threads=1
           '';

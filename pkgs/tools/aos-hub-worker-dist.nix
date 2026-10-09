@@ -1,7 +1,7 @@
 ##! aos-hub-worker-dist — the deployable Cloudflare Worker artifact, built
 ##! hermetically from source (RFC-0004).
 ##!
-##! Compiles `crates/aos-hub-worker` to `wasm32-unknown-unknown` and emits
+##! Compiles `crates/hub/aos-hub-worker` to `wasm32-unknown-unknown` and emits
 ##! the `build/worker/` bundle (the `shim.mjs` ES-module entry plus the
 ##! `index.wasm` binary) that `wrangler deploy` uploads. The sibling
 ##! `aos-hub-worker-do-e2e` package boots this artifact under workerd with the
@@ -57,7 +57,7 @@
 ##! edge with no wasm instantiation — eliminating the per-request Worker spin-up
 ##! that an embedded-bytes handler would pay. The same bytes are embedded in the
 ##! native hub via `aos_hub_core::web::assets`, so the files in
-##! `crates/aos-hub-core/src/web/static_assets/` are the single source of truth;
+##! `crates/hub/aos-hub-service/src/web/static_assets/` are the single source of truth;
 ##! only the delivery differs (the native hub has no CDN and serves them itself).
 {
   lib,

@@ -1492,7 +1492,7 @@ branch on the verdict without parsing output:
     an ELF with the names only in `.strtab`, an ELF with both symbols undefined,
     and a non-ELF file containing the names — each of which MUST be rejected.
   - Completed by the ELF64 section-table parser in
-    `crates/crucible-cli/src/cli/backend.rs`. It resolves `.dynsym` through its
+    `crates/crucible/control/crucible-cli/src/cli/backend.rs`. It resolves `.dynsym` through its
     linked string table, accepts only defined globally visible symbols, and the
     backend-selection gate executes all three specified negative controls.
 

@@ -1,0 +1,1132 @@
+//! Owned mapped shared-memory adapter for QEMU quantum channels.
+
+use std::collections::VecDeque;
+use std::sync::Arc;
+
+use crucible_engine::{
+    BackendInput, BackendRngEvidence, ExecutionFingerprint, ExecutionHorizon, Icount,
+    ObservableEvent, RngStreamId, SchedulerSendAuthorizer,
+    observable_event_from_whitebox_marker_payload,
+};
+use crucible_qemu_protocol::app_random_transport::{
+    BackendRngEvidenceTransportRecord, WHITEBOX_SHMEM_KIND_APP_RANDOM_DECISION,
+    app_random_stream_name,
+};
+use crucible_qemu_protocol::guest_introspection::GuestIntrospectionRecord;
+use crucible_qemu_protocol::selectable_catalog_plan::{
+    SELECTABLE_NATIVE_HANDOFF_INSTRUCTIONS, SELECTABLE_NATIVE_HANDOFF_TICKS_PS,
+    SelectableCatalogPlan, SelectablePlanPendingRequest,
+};
+const _: () = assert!(SELECTABLE_NATIVE_HANDOFF_TICKS_PS == crucible_qemu_shmem::TICKS_PER_INSTRUCTION);
+use crucible_qemu_protocol::selectable_transport::{
+    SelectablePendingTransportRecord, WHITEBOX_SHMEM_KIND_SELECTABLE_COMPLETED,
+    WHITEBOX_SHMEM_KIND_SELECTABLE_PENDING, WHITEBOX_SHMEM_KIND_SELECTABLE_REGISTERED,
+    WHITEBOX_SHMEM_KIND_SELECTABLE_REPLY,
+};
+use crucible_qemu_protocol::{
+    PluginBasicBlockCoverageObservation, SelectableRegister, SelectionReply, WhiteboxDoorbellFrame,
+    WhiteboxLifecycleMarkerEvent, WhiteboxMarkerPayload, decode_whitebox_marker_payload,
+};
+use crucible_qemu_shmem::{
+    FingerprintSample, FrameDeliveryKey, GuestIntrospectionEntry, MappedDirectedRingMut,
+    MappedNodeRingPairMut, MappedSetupRegion, NodeSlotSnapshot, SLOT_NET_ROUTER, STATUS_DONE,
+    STATUS_IDLE, WhiteboxMarkerEntry,
+};
+
+use crate::{
+    QemuAsyncQuantumCompletion, QemuBasicBlockCoverageBridge, QemuCoverageError, QemuInboundFrame,
+    QemuNodeChannelError, QemuNodeEmittedFrame, QemuNodeIdleState, QemuNodePendingQuantum,
+    QemuPendingQuantum, QemuQuantumError, QemuQuantumOperation, QemuQuantumShmemConfig,
+    QemuQuantumShmemHotPath, QemuQuantumShmemView, QemuShmemHotPathChannel,
+    assert_qemu_quantum_hot_path_is_shmem_only,
+};
+
+#[path = "mapped_quantum/error.rs"]
+mod error;
+#[path = "mapped_quantum/fault_commands.rs"]
+mod fault_commands;
+#[path = "mapped_quantum/fingerprint.rs"]
+mod fingerprint;
+#[path = "mapped_quantum/marker_drain.rs"]
+mod marker_drain;
+#[path = "mapped_quantum/preemption.rs"]
+mod preemption;
+#[path = "mapped_quantum/restore.rs"]
+mod restore;
+pub use error::QemuMappedQuantumShmemHotPathError;
+pub(crate) use fingerprint::black_box_execution_fingerprint;
+
+/// An owned, mapped shared-memory hot-path channel for one QEMU node.
+pub struct QemuMappedQuantumShmemHotPath {
+    config: QemuQuantumShmemConfig,
+    region: MappedSetupRegion,
+    next_router_inbound_sequence: u64,
+    inbound_delivery_ledger: VecDeque<FrameDeliveryKey>,
+    coverage_bridge: Option<QemuBasicBlockCoverageBridge>,
+    next_coverage_sequence: u64,
+    last_coverage_icount: Option<u64>,
+    seen_coverage_map_indices: Vec<bool>,
+    next_marker_sequence: u64,
+    next_guest_introspection_request_sequence: u64,
+    next_guest_introspection_response_sequence: u64,
+    last_marker_tick_ps: Option<u64>,
+    pending_marker_events: Vec<ObservableEvent>,
+    // crucible-lint: allow host-nondeterminism-state -- pending values cross only to the authoritative scheduler validator.
+    pending_rng_evidence: Vec<BackendRngEvidence>,
+    pending_selectable_requests: Vec<SelectablePlanPendingRequest>,
+    selectable_catalog_plan: Option<SelectableCatalogPlan>,
+    queued_selectable_reply: Option<SelectionReply>,
+    send_authorizer: Arc<dyn SchedulerSendAuthorizer>,
+}
+
+impl QemuMappedQuantumShmemHotPath {
+    /// Returns this VM's most recent plugin-published fingerprint sample.
+    ///
+    /// Reads the per-node fingerprint sample slot after the host requests a
+    /// capture generation and the plugin acknowledges it from the BQL-held,
+    /// device-quiesced control boundary. The returned snapshot is tear-free.
+    /// Returns `None` when the plugin has published no requested sample yet,
+    /// for example when fingerprint sampling was left disabled. The read
+    /// borrows `&self` and mutates nothing, so it is safe to call after
+    /// `finish_quantum` while the slot is quiescent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuMappedQuantumShmemHotPathError`] when the retained mapping
+    /// no longer validates or the configured VM slot has no fingerprint segment.
+    pub fn fingerprint_sample(
+        &self,
+    ) -> Result<Option<FingerprintSample>, QemuMappedQuantumShmemHotPathError> {
+        self.region
+            .fingerprint_sample(self.config.vm_slot)
+            .map(|slot| slot.snapshot())
+            .map_err(|source| QemuMappedQuantumShmemHotPathError::RegionAccess { source })
+    }
+
+    /// Returns whether the plugin published terminal `Done` for this VM slot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuMappedQuantumShmemHotPathError`] when the retained mapping
+    /// no longer validates or the configured slot is absent.
+    pub fn plugin_teardown_done(&self) -> Result<bool, QemuMappedQuantumShmemHotPathError> {
+        self.region
+            .node_slot(self.config.vm_slot)
+            .map(|slot| slot.snapshot().status == STATUS_DONE)
+            .map_err(|source| QemuMappedQuantumShmemHotPathError::RegionAccess { source })
+    }
+
+    /// Binds one QEMU quantum channel to an owned mapped shared-memory region.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuMappedQuantumShmemHotPathError`] when the config uses an
+    /// invalid fixed icount shift, the mapped region header or directed-ring
+    /// topology is invalid, or the selected ring capacities cannot back the
+    /// hot-path adapter.
+    pub fn new(
+        config: QemuQuantumShmemConfig,
+        region: MappedSetupRegion,
+        send_authorizer: impl SchedulerSendAuthorizer + 'static,
+    ) -> Result<Self, QemuMappedQuantumShmemHotPathError> {
+        Self::new_with_optional_selectable_catalog_plan(config, region, send_authorizer, None)
+    }
+
+    /// Binds one mapped channel to the exact selectable catalog launch plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::new`].
+    pub fn new_with_selectable_catalog_plan(
+        config: QemuQuantumShmemConfig,
+        region: MappedSetupRegion,
+        send_authorizer: impl SchedulerSendAuthorizer + 'static,
+        selectable_catalog_plan: SelectableCatalogPlan,
+    ) -> Result<Self, QemuMappedQuantumShmemHotPathError> {
+        Self::new_with_optional_selectable_catalog_plan(
+            config,
+            region,
+            send_authorizer,
+            Some(selectable_catalog_plan),
+        )
+    }
+
+    fn new_with_optional_selectable_catalog_plan(
+        config: QemuQuantumShmemConfig,
+        mut region: MappedSetupRegion,
+        send_authorizer: impl SchedulerSendAuthorizer + 'static,
+        selectable_catalog_plan: Option<SelectableCatalogPlan>,
+    ) -> Result<Self, QemuMappedQuantumShmemHotPathError> {
+        {
+            let _view = mapped_view(&mut region, &config)?;
+        }
+        let coverage_bridge = match config.coverage.registration_plan() {
+            Ok(plan) if plan.requests_tcg_exec_coverage() => {
+                let bridge =
+                    QemuBasicBlockCoverageBridge::from_registration_plan(config.node.clone(), plan)
+                        .map_err(|source| QemuMappedQuantumShmemHotPathError::Coverage {
+                            source,
+                        })?;
+                let ring = region.coverage_ring_mut(config.vm_slot).map_err(|source| {
+                    QemuMappedQuantumShmemHotPathError::RegionAccess { source }
+                })?;
+                if ring.entries.len() != bridge.consumer().map_entries() {
+                    return Err(QemuMappedQuantumShmemHotPathError::CoverageQueueCapacity {
+                        map_entries: bridge.consumer().map_entries(),
+                        queue_capacity: ring.entries.len(),
+                    });
+                }
+                Some(bridge)
+            }
+            Ok(_disabled) => None,
+            Err(source) => {
+                return Err(QemuMappedQuantumShmemHotPathError::Coverage {
+                    source: QemuCoverageError::Engine { source },
+                });
+            }
+        };
+        let next_coverage_sequence = if coverage_bridge.is_some() {
+            region
+                .coverage_ring_mut(config.vm_slot)
+                .map_err(|source| QemuMappedQuantumShmemHotPathError::RegionAccess { source })?
+                .header
+                .read_index()
+        } else {
+            0
+        };
+        let seen_coverage_map_indices = coverage_bridge.as_ref().map_or_else(Vec::new, |bridge| {
+            vec![false; bridge.consumer().map_entries()]
+        });
+        let next_marker_sequence = region
+            .whitebox_marker_ring_mut(config.vm_slot)
+            .map_err(|source| QemuMappedQuantumShmemHotPathError::RegionAccess { source })?
+            .header
+            .read_index();
+        let pending_selectable_requests = selectable_catalog_plan
+            .as_ref()
+            .and_then(|plan| plan.continuation().pending().cloned())
+            .into_iter()
+            .collect();
+        Ok(Self {
+            config,
+            region,
+            next_router_inbound_sequence: 0,
+            inbound_delivery_ledger: VecDeque::new(),
+            coverage_bridge,
+            next_coverage_sequence,
+            last_coverage_icount: None,
+            seen_coverage_map_indices,
+            next_marker_sequence,
+            next_guest_introspection_request_sequence: 1,
+            next_guest_introspection_response_sequence: 1,
+            last_marker_tick_ps: None,
+            pending_marker_events: Vec::new(),
+            pending_rng_evidence: Vec::new(),
+            pending_selectable_requests,
+            selectable_catalog_plan,
+            queued_selectable_reply: None,
+            send_authorizer: Arc::new(send_authorizer),
+        })
+    }
+
+    /// Clones the scheduler-owned continuation onto one authenticated private ring.
+    ///
+    /// The ring contents were copied while both endpoints were held. This method
+    /// clones only host-owned cursors, pending values, coverage state, selectable
+    /// continuation, and the topology authorizer. The source channel remains
+    /// unchanged and usable as the retained template continuation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuMappedQuantumShmemHotPathError`] when the private mapping no
+    /// longer has the exact configured layout or slot topology.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn clone_onto_hot_fork_region(
+        &self,
+        mut region: MappedSetupRegion,
+    ) -> Result<Self, QemuMappedQuantumShmemHotPathError> {
+        {
+            let _view = mapped_view(&mut region, &self.config)?;
+        }
+
+        Ok(Self {
+            config: self.config.clone(),
+            region,
+            next_router_inbound_sequence: self.next_router_inbound_sequence,
+            inbound_delivery_ledger: self.inbound_delivery_ledger.clone(),
+            coverage_bridge: self.coverage_bridge.clone(),
+            next_coverage_sequence: self.next_coverage_sequence,
+            last_coverage_icount: self.last_coverage_icount,
+            seen_coverage_map_indices: self.seen_coverage_map_indices.clone(),
+            next_marker_sequence: self.next_marker_sequence,
+            next_guest_introspection_request_sequence: self
+                .next_guest_introspection_request_sequence,
+            next_guest_introspection_response_sequence: self
+                .next_guest_introspection_response_sequence,
+            last_marker_tick_ps: self.last_marker_tick_ps,
+            pending_marker_events: self.pending_marker_events.clone(),
+            pending_rng_evidence: self.pending_rng_evidence.clone(),
+            pending_selectable_requests: self.pending_selectable_requests.clone(),
+            selectable_catalog_plan: self.selectable_catalog_plan.clone(),
+            queued_selectable_reply: self.queued_selectable_reply.clone(),
+            send_authorizer: Arc::clone(&self.send_authorizer),
+        })
+    }
+
+    fn with_hot_path<T>(
+        &mut self,
+        operation: &'static str,
+        run: impl FnOnce(&mut QemuQuantumShmemHotPath<'_>) -> Result<T, QemuNodeChannelError>,
+    ) -> Result<T, QemuNodeChannelError> {
+        let Self {
+            config,
+            region,
+            inbound_delivery_ledger,
+            send_authorizer,
+            ..
+        } = self;
+        let view =
+            mapped_view(region, config).map_err(|source| source.into_channel_error(operation))?;
+        let mut hot_path = QemuQuantumShmemHotPath::new_with_inbound_delivery_ledger(
+            config.clone(),
+            view,
+            inbound_delivery_ledger,
+            send_authorizer.as_ref(),
+        )
+        .map_err(QemuNodeChannelError::from)?;
+        run(&mut hot_path)
+    }
+
+    fn next_router_inbound_sequence(&self) -> Result<u32, QemuNodeChannelError> {
+        u32::try_from(self.next_router_inbound_sequence)
+            .map_err(|_| QemuQuantumError::InboundSequenceOverflow {
+                next_sequence: self.next_router_inbound_sequence,
+            })
+            .map_err(QemuNodeChannelError::from)
+    }
+
+    fn commit_router_inbound_sequence(&mut self) -> Result<(), QemuNodeChannelError> {
+        self.next_router_inbound_sequence = self
+            .next_router_inbound_sequence
+            .checked_add(1)
+            .ok_or(QemuQuantumError::InboundSequenceOverflow {
+                next_sequence: self.next_router_inbound_sequence,
+            })
+            .map_err(QemuNodeChannelError::from)?;
+        Ok(())
+    }
+
+    fn drain_coverage_at_quantum_boundary(
+        &mut self,
+        boundary_icount: u64,
+    ) -> Result<Vec<ObservableEvent>, QemuNodeChannelError> {
+        let Some(bridge) = self.coverage_bridge.as_ref() else {
+            return Ok(Vec::new());
+        };
+        let ring = self
+            .region
+            .coverage_ring_mut(self.config.vm_slot)
+            .map_err(|error| QemuNodeChannelError::new("drain coverage", error.to_string()))?;
+        if ring.header.read_index() != self.next_coverage_sequence {
+            return Err(QemuNodeChannelError::new(
+                "drain coverage",
+                format!(
+                    "coverage read sequence changed: expected {}, observed {}",
+                    self.next_coverage_sequence,
+                    ring.header.read_index()
+                ),
+            ));
+        }
+
+        let mut events = Vec::new();
+        while let Some(entry) = ring
+            .header
+            .dequeue_coverage(ring.entries)
+            .map_err(|error| QemuNodeChannelError::new("drain coverage", error.to_string()))?
+        {
+            let entry = entry
+                .validate()
+                .map_err(|error| QemuNodeChannelError::new("drain coverage", error.to_string()))?;
+            if entry.current_icount() > boundary_icount {
+                return Err(QemuNodeChannelError::new(
+                    "drain coverage",
+                    format!(
+                        "coverage icount {} exceeds completed quantum boundary {}",
+                        entry.current_icount(),
+                        boundary_icount
+                    ),
+                ));
+            }
+            if let Some(previous) = self.last_coverage_icount
+                && entry.current_icount() < previous
+            {
+                return Err(QemuNodeChannelError::new(
+                    "drain coverage",
+                    format!(
+                        "coverage icount regressed from {previous} to {}",
+                        entry.current_icount()
+                    ),
+                ));
+            }
+            let observation = PluginBasicBlockCoverageObservation::new(
+                entry.current_icount(),
+                entry.vcpu_index(),
+                entry.guest_pc(),
+                entry.block_len(),
+                entry.map_index(),
+                true,
+            )
+            .map_err(|error| QemuNodeChannelError::new("drain coverage", error.to_string()))?;
+            let map_index = usize::try_from(entry.map_index()).map_err(|_error| {
+                QemuNodeChannelError::new(
+                    "drain coverage",
+                    format!(
+                        "coverage map index {} does not fit usize",
+                        entry.map_index()
+                    ),
+                )
+            })?;
+            let host_map_entries = self.seen_coverage_map_indices.len();
+            let Some(was_seen) = self.seen_coverage_map_indices.get_mut(map_index) else {
+                return Err(QemuNodeChannelError::new(
+                    "drain coverage",
+                    format!(
+                        "coverage map index {map_index} is outside {} host entries",
+                        host_map_entries
+                    ),
+                ));
+            };
+            if *was_seen {
+                return Err(QemuNodeChannelError::new(
+                    "drain coverage",
+                    format!("coverage map index {map_index} was published more than once"),
+                ));
+            }
+            let consumed = bridge
+                .consume_plugin_observation(observation)
+                .map_err(|error| QemuNodeChannelError::new("drain coverage", error.to_string()))?;
+            events.push(consumed.into_event());
+            *was_seen = true;
+            self.last_coverage_icount = Some(entry.current_icount());
+            self.next_coverage_sequence =
+                self.next_coverage_sequence.checked_add(1).ok_or_else(|| {
+                    QemuNodeChannelError::new("drain coverage", "coverage sequence overflowed")
+                })?;
+        }
+        Ok(events)
+    }
+
+    /// Commits the host half of one acknowledged coverage restore generation.
+    ///
+    /// The plugin resets its per-vCPU novelty scoreboard, local coverage map,
+    /// and producer cursor before release-publishing the logical-time restore
+    /// acknowledgement. The host invokes this method while native QEMU remains
+    /// paused, verifies the exact acknowledgement and empty ring, and only then
+    /// clears its own novelty and monotonic-coordinate state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the restore generation is not
+    /// acknowledged exactly, the mapped ring is malformed, or setup-era
+    /// coverage remains queued after the plugin acknowledgement.
+    pub(crate) fn commit_coverage_restore_generation(
+        &mut self,
+        generation: u32,
+    ) -> Result<(), QemuNodeChannelError> {
+        if self.coverage_bridge.is_none() {
+            return Ok(());
+        }
+        let slot = self
+            .region
+            .node_slot(self.config.vm_slot)
+            .map_err(|error| {
+                QemuNodeChannelError::new("reset coverage generation", error.to_string())
+            })?;
+        let snapshot = slot.snapshot();
+        if snapshot.logical_time_restore_request != generation
+            || snapshot.logical_time_restore_ack != generation
+        {
+            return Err(QemuNodeChannelError::new(
+                "reset coverage generation",
+                format!(
+                    "restore generation {generation} is not exactly acknowledged: request={}, ack={}",
+                    snapshot.logical_time_restore_request, snapshot.logical_time_restore_ack
+                ),
+            ));
+        }
+        let ring = self
+            .region
+            .coverage_ring_mut(self.config.vm_slot)
+            .map_err(|error| {
+                QemuNodeChannelError::new("reset coverage generation", error.to_string())
+            })?;
+        let read_index = ring.header.read_index();
+        let write_index = ring.header.write_index();
+        if write_index != read_index {
+            return Err(QemuNodeChannelError::new(
+                "reset coverage generation",
+                format!(
+                    "plugin acknowledged restore with coverage cursors read={read_index}, write={write_index}"
+                ),
+            ));
+        }
+        self.next_coverage_sequence = read_index;
+        self.last_coverage_icount = None;
+        self.seen_coverage_map_indices.fill(false);
+        Ok(())
+    }
+}
+
+impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
+    fn hot_fork_setup_region_identity(
+        &mut self,
+    ) -> Result<crucible_qemu_shmem::SetupRegionBackingIdentity, QemuNodeChannelError> {
+        Ok(self.region.backing_identity())
+    }
+
+    fn hot_fork_ring_io_snapshot(
+        &mut self,
+    ) -> Result<crucible_qemu_shmem::MappedRingIoBarrierSnapshot, QemuNodeChannelError> {
+        self.region.hot_fork_ring_io_snapshot().map_err(|source| {
+            QemuNodeChannelError::new("query hot-fork ring I/O barrier", source.to_string())
+        })
+    }
+
+    fn capture_hot_fork_ring_image(
+        &mut self,
+        maximum_bytes: usize,
+    ) -> Result<crucible_qemu_shmem::HotForkRingImage, QemuNodeChannelError> {
+        self.region
+            .capture_hot_fork_ring_image(maximum_bytes)
+            .map_err(|source| {
+                QemuNodeChannelError::new("capture hot-fork ring image", source.to_string())
+            })
+    }
+
+    fn clone_hot_fork_host_continuation(
+        &self,
+        mapping: &crate::QemuHotForkPrivateRingMapping,
+    ) -> Result<Box<dyn QemuShmemHotPathChannel>, QemuNodeChannelError> {
+        let region = mapping.map_host_view()?;
+        let continuation = self.clone_onto_hot_fork_region(region).map_err(|source| {
+            QemuNodeChannelError::new(
+                "clone hot-fork shared-memory host continuation",
+                source.to_string(),
+            )
+        })?;
+        Ok(Box::new(continuation))
+    }
+
+    fn arm_hot_fork_child_ceiling(
+        &mut self,
+        inherited_icount: u64,
+    ) -> Result<(), QemuNodeChannelError> {
+        // The same quiesced-executor arming an exact VMState restore uses:
+        // the child is a stopped executor whose first published counter is
+        // ahead of its fresh slot.
+        self.arm_vmstate_restore_ceiling(inherited_icount)
+    }
+
+    fn checkpoint_network_transport(
+        &mut self,
+    ) -> Result<crate::QemuNetworkTransportCheckpoint, QemuNodeChannelError> {
+        let router_slot = SLOT_NET_ROUTER as u32;
+        let pair = self
+            .region
+            .node_directed_ring_pair_mut(
+                self.config.vm_slot,
+                self.config.vm_slot,
+                router_slot,
+                router_slot,
+                self.config.vm_slot,
+            )
+            .map_err(|error| {
+                QemuNodeChannelError::new("checkpoint network transport", error.to_string())
+            })?;
+        let outbound = pair
+            .first
+            .header
+            .snapshot(pair.first.entries)
+            .map_err(|error| {
+                QemuNodeChannelError::new("checkpoint network outbound ring", error.to_string())
+            })?;
+        let inbound = pair
+            .second
+            .header
+            .snapshot(pair.second.entries)
+            .map_err(|error| {
+                QemuNodeChannelError::new("checkpoint network inbound ring", error.to_string())
+            })?;
+        Ok(crate::QemuNetworkTransportCheckpoint {
+            inbound,
+            outbound,
+            queue_capacity: pair.second.entries.len() as u32,
+            router_slot,
+            next_router_inbound_sequence: self.next_router_inbound_sequence,
+            next_host_outbound_sequence: 0,
+            next_plugin_outbound_sequence: 0,
+        })
+    }
+
+    fn restore_network_transport(
+        &mut self,
+        checkpoint: &crate::QemuNetworkTransportCheckpoint,
+    ) -> Result<(), QemuNodeChannelError> {
+        let router_slot = SLOT_NET_ROUTER as u32;
+        let pair = self
+            .region
+            .node_directed_ring_pair_mut(
+                self.config.vm_slot,
+                self.config.vm_slot,
+                router_slot,
+                router_slot,
+                self.config.vm_slot,
+            )
+            .map_err(|error| {
+                QemuNodeChannelError::new("restore network transport", error.to_string())
+            })?;
+        if checkpoint.queue_capacity as usize != pair.first.entries.len()
+            || checkpoint.queue_capacity as usize != pair.second.entries.len()
+            || checkpoint.router_slot != router_slot
+        {
+            return Err(QemuNodeChannelError::new(
+                "restore network transport",
+                "checkpoint network ring shape does not match mapped runtime",
+            ));
+        }
+        let prior_outbound = pair
+            .first
+            .header
+            .snapshot(pair.first.entries)
+            .map_err(|error| {
+                QemuNodeChannelError::new("snapshot prior network outbound ring", error.to_string())
+            })?;
+        pair.first
+            .header
+            .restore(pair.first.entries, &checkpoint.outbound)
+            .map_err(|error| {
+                QemuNodeChannelError::new("restore network outbound ring", error.to_string())
+            })?;
+        if let Err(error) = pair
+            .second
+            .header
+            .restore(pair.second.entries, &checkpoint.inbound)
+        {
+            pair.first
+                .header
+                .restore(pair.first.entries, &prior_outbound)
+                .map_err(|rollback| {
+                    QemuNodeChannelError::new(
+                        "roll back network outbound ring",
+                        rollback.to_string(),
+                    )
+                })?;
+            return Err(QemuNodeChannelError::new(
+                "restore network inbound ring",
+                error.to_string(),
+            ));
+        }
+        self.next_router_inbound_sequence = checkpoint.next_router_inbound_sequence;
+        self.inbound_delivery_ledger = checkpoint
+            .inbound
+            .frames
+            .iter()
+            .map(crucible_qemu_shmem::SnapshotFrameEntry::delivery_key)
+            .collect();
+        Ok(())
+    }
+
+    fn send_guest_introspection(
+        &mut self,
+        record: GuestIntrospectionRecord,
+    ) -> Result<(), QemuNodeChannelError> {
+        record.validate_host_request().map_err(|error| {
+            QemuNodeChannelError::new("validate guest introspection request", error.to_string())
+        })?;
+        let encoded = record.encode().map_err(|error| {
+            QemuNodeChannelError::new("encode guest introspection request", error.to_string())
+        })?;
+        let following_sequence = self
+            .next_guest_introspection_request_sequence
+            .checked_add(1)
+            .ok_or_else(|| {
+                QemuNodeChannelError::new(
+                    "enqueue guest introspection request",
+                    "request sequence overflow",
+                )
+            })?;
+        let entry =
+            GuestIntrospectionEntry::new(self.next_guest_introspection_request_sequence, &encoded)
+                .map_err(|error| {
+                    QemuNodeChannelError::new("encode guest introspection entry", error.to_string())
+                })?;
+        self.region
+            .host_guest_introspection_rings_mut(self.config.vm_slot)
+            .map_err(|error| {
+                QemuNodeChannelError::new("map guest introspection request ring", error.to_string())
+            })?
+            .requests
+            .enqueue(entry)
+            .map_err(|error| {
+                QemuNodeChannelError::new("enqueue guest introspection request", error.to_string())
+            })?;
+        self.next_guest_introspection_request_sequence = following_sequence;
+        Ok(())
+    }
+
+    fn receive_guest_introspection(
+        &mut self,
+    ) -> Result<Option<GuestIntrospectionRecord>, QemuNodeChannelError> {
+        let entry = self
+            .region
+            .host_guest_introspection_rings_mut(self.config.vm_slot)
+            .map_err(|error| {
+                QemuNodeChannelError::new(
+                    "map guest introspection response ring",
+                    error.to_string(),
+                )
+            })?
+            .responses
+            .dequeue()
+            .map_err(|error| {
+                QemuNodeChannelError::new("dequeue guest introspection response", error.to_string())
+            })?;
+        let Some(entry) = entry else {
+            return Ok(None);
+        };
+        if entry.sequence() != self.next_guest_introspection_response_sequence {
+            return Err(QemuNodeChannelError::new(
+                "dequeue guest introspection response",
+                format!(
+                    "response sequence mismatch: expected {}, actual {}",
+                    self.next_guest_introspection_response_sequence,
+                    entry.sequence()
+                ),
+            ));
+        }
+        let following_sequence = self
+            .next_guest_introspection_response_sequence
+            .checked_add(1)
+            .ok_or_else(|| {
+                QemuNodeChannelError::new(
+                    "dequeue guest introspection response",
+                    "response sequence overflow",
+                )
+            })?;
+        let record = GuestIntrospectionRecord::decode(entry.record().map_err(|error| {
+            QemuNodeChannelError::new("decode guest introspection entry", error.to_string())
+        })?)
+        .map_err(|error| {
+            QemuNodeChannelError::new("decode guest introspection response", error.to_string())
+        })?;
+        record.validate_guest_response().map_err(|error| {
+            QemuNodeChannelError::new("validate guest introspection response", error.to_string())
+        })?;
+        self.next_guest_introspection_response_sequence = following_sequence;
+        Ok(Some(record))
+    }
+
+    fn current_icount(&mut self) -> Result<Icount, QemuNodeChannelError> {
+        self.with_hot_path("current_icount", |hot_path| {
+            QemuShmemHotPathChannel::current_icount(hot_path)
+        })
+    }
+
+    fn logical_time_calibration(
+        &mut self,
+    ) -> Result<crate::QemuLogicalTimeCalibration, QemuNodeChannelError> {
+        self.with_hot_path("logical-time calibration", |hot_path| {
+            QemuShmemHotPathChannel::logical_time_calibration(hot_path)
+        })
+    }
+
+    fn virtual_timer_fire_witness(
+        &mut self,
+    ) -> Result<Option<crate::node::QemuVirtualTimerFireWitness>, QemuNodeChannelError> {
+        self.with_hot_path("virtual-timer fire witness", |hot_path| {
+            QemuShmemHotPathChannel::virtual_timer_fire_witness(hot_path)
+        })
+    }
+
+    fn start_quantum(
+        &mut self,
+        horizon: ExecutionHorizon,
+        stop_condition: crate::QemuQuantumStopCondition,
+    ) -> Result<QemuNodePendingQuantum, QemuNodeChannelError> {
+        self.with_hot_path("start_quantum", |hot_path| {
+            let pending = QemuQuantumShmemHotPath::start_quantum(hot_path, horizon, stop_condition)
+                .map_err(QemuNodeChannelError::from)?;
+            let start_operations = hot_path.operation_log().to_vec();
+            assert_qemu_quantum_hot_path_is_shmem_only(&start_operations)
+                .map_err(QemuNodeChannelError::from)?;
+            let completion_fence = pending.completion_fence;
+            let mapped = QemuMappedPendingQuantum {
+                pending,
+                start_operations,
+            };
+            Ok(match completion_fence {
+                Some(fence) => QemuNodePendingQuantum::new_with_completion_fence(mapped, fence),
+                None => QemuNodePendingQuantum::new(mapped),
+            })
+        })
+    }
+
+    fn poll_quantum(
+        &mut self,
+        pending: &mut QemuNodePendingQuantum,
+    ) -> Result<QemuAsyncQuantumCompletion, QemuNodeChannelError> {
+        let pending = pending.downcast_mut::<QemuMappedPendingQuantum>("finish_quantum")?;
+        self.with_hot_path("finish_quantum", |hot_path| {
+            let mut report = QemuQuantumShmemHotPath::poll_quantum(hot_path, &pending.pending)
+                .map_err(QemuNodeChannelError::from)?;
+            let mut operations = pending.start_operations.clone();
+            operations.extend(report.operations);
+            report.operations = operations;
+            assert_qemu_quantum_hot_path_is_shmem_only(&report.operations)
+                .map_err(QemuNodeChannelError::from)?;
+            Ok(QemuAsyncQuantumCompletion::from(report))
+        })
+    }
+
+    fn publish_preemption_command(
+        &mut self,
+        command: crucible_qemu_shmem::SchedulerPreemptionCommand,
+    ) -> Result<(), QemuNodeChannelError> {
+        QemuMappedQuantumShmemHotPath::publish_preemption_command(self, command)
+            .map(|_| ())
+            .map_err(|source| source.into_channel_error("publish_preemption_command"))
+    }
+
+    fn enqueue_fault_command(
+        &mut self,
+        header: crucible_qemu_shmem::FaultCommandHeaderV1,
+        payload: &[u8],
+    ) -> Result<(), QemuNodeChannelError> {
+        QemuMappedQuantumShmemHotPath::enqueue_fault_command(self, header, payload)
+            .map_err(|source| source.into_channel_error("enqueue_fault_command"))
+    }
+
+    fn dequeue_fault_result(
+        &mut self,
+    ) -> Result<Option<crucible_qemu_shmem::DequeuedFaultResult>, QemuNodeChannelError> {
+        QemuMappedQuantumShmemHotPath::dequeue_fault_result(self)
+            .map_err(|source| source.into_channel_error("dequeue_fault_result"))
+    }
+
+    fn dequeue_fault_event(
+        &mut self,
+    ) -> Result<Option<crucible_qemu_shmem::DequeuedFaultEvent>, QemuNodeChannelError> {
+        QemuMappedQuantumShmemHotPath::dequeue_fault_event(self)
+            .map_err(|source| source.into_channel_error("dequeue_fault_event"))
+    }
+
+    fn fault_event_pending(&mut self) -> Result<bool, QemuNodeChannelError> {
+        QemuMappedQuantumShmemHotPath::fault_event_pending(self)
+            .map_err(|source| source.into_channel_error("fault_event_pending"))
+    }
+
+    fn fault_event_count(&mut self) -> Result<usize, QemuNodeChannelError> {
+        QemuMappedQuantumShmemHotPath::fault_event_count(self)
+            .map_err(|source| source.into_channel_error("fault_event_count"))
+    }
+
+    fn snapshot_fault_events(
+        &mut self,
+        destination: &mut Vec<crucible_qemu_shmem::DequeuedFaultEvent>,
+        canonical_payload_bytes: &mut usize,
+        configured_payload_bytes: usize,
+        configured_inline_payload_bytes: usize,
+    ) -> Result<(), crate::QemuNodeError> {
+        QemuMappedQuantumShmemHotPath::snapshot_fault_events(
+            self,
+            destination,
+            canonical_payload_bytes,
+            configured_payload_bytes,
+            configured_inline_payload_bytes,
+        )
+        .map_err(|error| match error {
+            QemuMappedQuantumShmemHotPathError::FaultEvent {
+                source:
+                    crucible_qemu_shmem::FaultEventError::PreviewPayloadCapacity {
+                        current,
+                        requested,
+                        configured,
+                    },
+            } => crate::QemuNodeError::FaultEventPayloadStorage {
+                current,
+                requested,
+                configured,
+            },
+            QemuMappedQuantumShmemHotPathError::FaultEvent {
+                source:
+                    crucible_qemu_shmem::FaultEventError::PreviewInlinePayloadCapacity {
+                        requested,
+                        configured,
+                    },
+            } => crate::QemuNodeError::FaultEventInlinePayloadStorage {
+                requested,
+                configured,
+            },
+            error => crate::QemuNodeError::from_channel(
+                crate::QemuNodeChannelPlane::ShmemHotPath,
+                error.into_channel_error("snapshot_fault_events"),
+            ),
+        })
+    }
+
+    fn coverage_enabled(&self) -> bool {
+        self.coverage_bridge.is_some()
+    }
+
+    fn drain_observable_events(&mut self) -> Result<Vec<ObservableEvent>, QemuNodeChannelError> {
+        let boundary = self.with_hot_path("observation boundary", |hot_path| {
+            Ok(hot_path.node_snapshot())
+        })?;
+        let mut events = self.drain_coverage_at_quantum_boundary(boundary.current_icount)?;
+        self.drain_markers_at_quantum_boundary(boundary)?;
+        events.append(&mut self.pending_marker_events);
+        events.sort_by_key(ObservableEvent::at);
+        Ok(events)
+    }
+
+    // crucible-lint: allow host-nondeterminism-state -- callers must validate this untrusted causal batch before another quantum.
+    fn drain_rng_evidence(&mut self) -> Result<Vec<BackendRngEvidence>, QemuNodeChannelError> {
+        let boundary =
+            self.with_hot_path("causal boundary", |hot_path| Ok(hot_path.node_snapshot()))?;
+        self.drain_markers_at_quantum_boundary(boundary)?;
+        Ok(std::mem::take(&mut self.pending_rng_evidence))
+    }
+
+    fn drain_pending_selectable_requests(
+        &mut self,
+    ) -> Result<Vec<SelectablePlanPendingRequest>, QemuNodeChannelError> {
+        let boundary = self.with_hot_path("selectable boundary", |hot_path| {
+            Ok(hot_path.node_snapshot())
+        })?;
+        self.drain_markers_at_quantum_boundary(boundary)?;
+        Ok(std::mem::take(&mut self.pending_selectable_requests))
+    }
+
+    fn enqueue_selectable_reply(
+        &mut self,
+        pending: &SelectablePlanPendingRequest,
+        reply: &SelectionReply,
+    ) -> Result<(), QemuNodeChannelError> {
+        if self.queued_selectable_reply.is_some() {
+            return Err(QemuNodeChannelError::new(
+                "enqueue selectable reply",
+                "one selectable reply is already queued",
+            ));
+        }
+        if self
+            .selectable_catalog_plan
+            .as_ref()
+            .is_some_and(|plan| plan.continuation().pending() != Some(pending))
+        {
+            return Err(QemuNodeChannelError::new(
+                "enqueue selectable reply",
+                "pending request differs from the mirrored selectable catalog",
+            ));
+        }
+        if reply.sequence() != pending.request().sequence() {
+            return Err(QemuNodeChannelError::new(
+                "enqueue selectable reply",
+                format!(
+                    "reply sequence {} differs from pending request {}",
+                    reply.sequence(),
+                    pending.request().sequence()
+                ),
+            ));
+        }
+        let payload = reply.encode().map_err(|error| {
+            QemuNodeChannelError::new("encode selectable reply", error.to_string())
+        })?;
+        if payload.len() > pending.request().reply_capacity() {
+            return Err(QemuNodeChannelError::new(
+                "enqueue selectable reply",
+                format!(
+                    "reply has {} bytes but guest reserved {}",
+                    payload.len(),
+                    pending.request().reply_capacity()
+                ),
+            ));
+        }
+        let boundary_tick_ps = self.with_hot_path("selectable reply boundary", |hot_path| {
+            Ok(hot_path.node_snapshot().current_icount)
+        })?;
+        let stopped_tick_ps = pending
+            .trap_tick_ps()
+            .checked_add(SELECTABLE_NATIVE_HANDOFF_TICKS_PS)
+            .ok_or_else(|| {
+                QemuNodeChannelError::new(
+                    "enqueue selectable reply",
+                    format!(
+                        "pending request trap tick {} cannot represent its stopped boundary",
+                        pending.trap_tick_ps()
+                    ),
+                )
+            })?;
+        if boundary_tick_ps != stopped_tick_ps {
+            return Err(QemuNodeChannelError::new(
+                "enqueue selectable reply",
+                format!(
+                    "pending request trap tick {} requires stopped boundary {stopped_tick_ps}, observed {boundary_tick_ps}",
+                    pending.trap_tick_ps(),
+                ),
+            ));
+        }
+        let entry = WhiteboxMarkerEntry::new(
+            stopped_tick_ps,
+            pending.vcpu_index(),
+            WHITEBOX_SHMEM_KIND_SELECTABLE_REPLY,
+            &payload,
+        )
+        .map_err(|error| {
+            QemuNodeChannelError::new("encode selectable reply entry", error.to_string())
+        })?;
+        let ring = self
+            .region
+            .selectable_reply_ring_mut(self.config.vm_slot)
+            .map_err(|error| {
+                QemuNodeChannelError::new("map selectable reply ring", error.to_string())
+            })?;
+        ring.header
+            .enqueue_whitebox_marker(ring.entries, entry)
+            .map_err(|error| {
+                QemuNodeChannelError::new("enqueue selectable reply ring", error.to_string())
+            })?;
+        self.queued_selectable_reply = Some(reply.clone());
+        Ok(())
+    }
+
+    fn selectable_catalog_plan(&self) -> Option<&SelectableCatalogPlan> {
+        self.selectable_catalog_plan.as_ref()
+    }
+
+    fn selectable_reply_is_checkpoint_quiescent(&self) -> bool {
+        self.queued_selectable_reply.is_none()
+    }
+
+    fn deliver_frame(&mut self, input: BackendInput) -> Result<(), QemuNodeChannelError> {
+        let delivery_icount = self.with_hot_path("delivery icount", |hot_path| {
+            Ok(Icount {
+                retired: hot_path.node_snapshot().current_icount.saturating_add(1),
+            })
+        })?;
+        self.deliver_frame_at(input, delivery_icount)
+    }
+
+    fn deliver_frame_at(
+        &mut self,
+        // crucible-lint: allow host-nondeterminism-state -- the scheduler-selected timestamp is validated before this untrusted transport write.
+        input: BackendInput,
+        delivery_icount: Icount,
+    ) -> Result<(), QemuNodeChannelError> {
+        let sequence = self.next_router_inbound_sequence()?;
+        let router_slot = self.config.router_slot;
+        let payload = input.payload;
+        self.with_hot_path("deliver_frame", move |hot_path| {
+            hot_path
+                .enqueue_inbound_frame(QemuInboundFrame {
+                    delivery_icount,
+                    src_node: router_slot,
+                    sequence,
+                    payload,
+                })
+                .map_err(QemuNodeChannelError::from)
+        })?;
+        self.commit_router_inbound_sequence()
+    }
+
+    fn emit_frame(&mut self) -> Result<Option<QemuNodeEmittedFrame>, QemuNodeChannelError> {
+        self.with_hot_path("emit_frame", |hot_path| {
+            QemuShmemHotPathChannel::emit_frame(hot_path)
+        })
+    }
+
+    fn idle_state(&mut self) -> Result<QemuNodeIdleState, QemuNodeChannelError> {
+        self.with_hot_path("idle_state", |hot_path| {
+            QemuShmemHotPathChannel::idle_state(hot_path)
+        })
+    }
+
+    fn execution_fingerprint(&mut self) -> Result<ExecutionFingerprint, QemuNodeChannelError> {
+        let current_icount = self.with_hot_path("execution_fingerprint", |hot_path| {
+            Ok(hot_path.node_snapshot().current_icount)
+        })?;
+        let sample = QemuMappedQuantumShmemHotPath::fingerprint_sample(self)
+            .map_err(|source| {
+                QemuNodeChannelError::new("execution_fingerprint", source.to_string())
+            })?
+            .ok_or_else(|| {
+                QemuNodeChannelError::retryable(
+                    "execution_fingerprint",
+                    "the plugin has not published a black-box fingerprint sample",
+                )
+            })?;
+        if sample.sample_icount < current_icount {
+            return Err(QemuNodeChannelError::retryable(
+                "execution_fingerprint",
+                format!(
+                    "black-box fingerprint sample at icount {} is behind current boundary {current_icount}",
+                    sample.sample_icount
+                ),
+            ));
+        }
+        if sample.sample_icount != current_icount {
+            return Err(QemuNodeChannelError::new(
+                "execution_fingerprint",
+                format!(
+                    "black-box fingerprint sample at icount {} is ahead of current boundary {current_icount}",
+                    sample.sample_icount
+                ),
+            ));
+        }
+        black_box_execution_fingerprint(&self.config.node, &sample)
+    }
+
+    fn fingerprint_sample(&mut self) -> Result<FingerprintSample, QemuNodeChannelError> {
+        QemuMappedQuantumShmemHotPath::fingerprint_sample(self)
+            .map_err(|source| QemuNodeChannelError::new("fingerprint_sample", source.to_string()))?
+            .ok_or_else(|| {
+                QemuNodeChannelError::retryable(
+                    "fingerprint_sample",
+                    "the plugin has not published a black-box fingerprint sample",
+                )
+            })
+    }
+}
+
+#[derive(Debug)]
+struct QemuMappedPendingQuantum {
+    pending: QemuPendingQuantum,
+    start_operations: Vec<QemuQuantumOperation>,
+}
+
+mod support;
+
+use support::*;
+
+#[cfg(test)]
+#[path = "mapped_quantum/fault_event_tests.rs"]
+mod fault_event_tests;
+
+#[cfg(test)]
+#[path = "mapped_quantum/coverage_tests.rs"]
+mod coverage_tests;
+
+#[cfg(test)]
+#[path = "mapped_quantum/restore_tests.rs"]
+mod restore_tests;
+
+#[cfg(test)]
+#[path = "mapped_quantum/fingerprint_tests.rs"]
+mod fingerprint_tests;
+
+#[cfg(test)]
+#[path = "mapped_quantum/selectable_tests.rs"]
+mod selectable_tests;
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "mapped_quantum/hot_fork_continuation_tests.rs"]
+mod hot_fork_continuation_tests;

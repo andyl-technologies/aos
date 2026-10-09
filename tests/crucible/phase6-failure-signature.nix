@@ -14,11 +14,11 @@
   triggers = import ./_crucible-trigger-source.nix {inherit lib;};
   engineLib = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/src/lib.rs;
+    entry = ../../crates/crucible/engine/crucible-engine/src/lib.rs;
   };
   signatureTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/tests/gate_failure_signature.rs;
+    entry = ../../crates/crucible/engine/crucible-engine/tests/gate_failure_signature.rs;
   };
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -56,7 +56,7 @@
         needle = "`T-TRI-1` is green through `checks.crucible.phase6.failureSignature`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" temporalGraph [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" temporalGraph [
       {
         label = "failure signature tuple";
         needle = "pub struct FailureSignature";
@@ -142,7 +142,7 @@
         needle = "omits discovery path";
       }
     ]
-    ++ failuresFor "crates/crucible/src/trigger.rs" triggers [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/trigger.rs" triggers [
       {
         label = "host assertion violation record";
         needle = "pub struct HostAssertionViolation";
@@ -156,7 +156,7 @@
         needle = "event_kind: String::from(\"assertion_state_changed\")";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" engineLib [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" engineLib [
       {
         label = "failure signature export";
         needle = "FailureSignature";
@@ -182,7 +182,7 @@
         needle = "FailureCoverageClass";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/gate_failure_signature.rs" signatureTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/gate_failure_signature.rs" signatureTest [
       {
         label = "recorded tuple test";
         needle = "failure_signature_uses_recorded_tuple_not_discovery_campaign";
@@ -270,7 +270,7 @@
         needle = "phase4.eventLogUnified";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible/tests/gate_failure_signature.rs" signatureTest [
+    ++ forbiddenFailuresFor "crates/crucible/engine/crucible-engine/tests/gate_failure_signature.rs" signatureTest [
       {
         label = "ignored test";
         needle = "#[ignore]";
@@ -284,7 +284,7 @@
         needle = "unimplemented!";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible/src/model.rs" temporalGraph [
+    ++ forbiddenFailuresFor "crates/crucible/engine/crucible-engine/src/model.rs" temporalGraph [
       {
         label = "stubbed failure signature";
         needle = "NotImplemented { operation: \"failure-signature";
@@ -351,7 +351,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-failure-signature-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --test gate_failure_signature \
               -- --test-threads=1
           '';

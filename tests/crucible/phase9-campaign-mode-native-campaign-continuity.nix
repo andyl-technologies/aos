@@ -13,7 +13,7 @@ in
       name = "native-campaign-continuity";
       sqliteRequired = true;
       cargoBuildCommands = [
-        "test --frozen --offline --no-run -p crucible-cas --test gate_campaign_continuity"
+        "test --frozen --offline --no-run -p crucible-store --test gate_campaign_continuity"
       ];
       installedTests = [
         {

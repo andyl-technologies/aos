@@ -1,0 +1,47 @@
+[package]
+name = "aos-hub-db"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+description = "Hub migrations, persistence queries, and portable SQL backend abstractions"
+[dependencies]
+hmac = { workspace = true }
+unicode-normalization = { workspace = true }
+aos-hub-api = { workspace = true }
+rand = { workspace = true }
+semver = { workspace = true }
+aos-hub-model = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+aos-registry-format = { workspace = true }
+aos-oci-types = { workspace = true }
+aos-module-docs = { workspace = true }
+aos-release-format = { workspace = true }
+base64 = { workspace = true }
+ed25519-dalek = { workspace = true }
+hex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+uuid = { workspace = true }
+[features]
+default = []
+postgres = ["sqlx/postgres"]
+mysql = ["sqlx/mysql"]
+query-timing = []
+do-e2e-test-support = []
+test-fixtures = []
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+sqlx = { workspace = true, features = ["sqlite"] }
+tokio = { workspace = true }
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+rusqlite = { workspace = true }
+tempfile = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+uuid = { workspace = true, features = ["js"] }

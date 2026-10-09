@@ -25,7 +25,7 @@
         needle = "endpoint order and rejects self-loops";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
       {
         label = "world link accessor";
         needle = "pub fn links(&self) -> &[LinkDef]";
@@ -79,7 +79,7 @@
         needle = "DuplicateWorldLink";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" crateRoot [
       {
         label = "Icount exported";
         needle = "Icount,";
@@ -164,7 +164,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-spatial-world-topology-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --lib \
               world_topology \
               -- --test-threads=1

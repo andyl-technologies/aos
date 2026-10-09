@@ -141,7 +141,7 @@ rather than re-deriving it.
 
 ## Registry / metadata
 
-- `crates/aos-package/src/types.rs`: `PackageMeta` (`:447`) — name, version,
+- `crates/aos/packages/aos-package-manager/src/types.rs`: `PackageMeta` (`:447`) — name, version,
   description, homepage, license, maintainer, platform, store_path,
   `nar_hash`, nar_size, references, source_drv, source_nar_hash,
   closure_size, `sysroot: bool`, previous, `images: Vec<SysrootImageEntry>`.
@@ -152,11 +152,11 @@ rather than re-deriving it.
   metadata is TOML in the git tree; the signed tag covers the tree state.
 - narinfo: `apm` verifies `file_hash` (compressed) and `nar_hash`
   (decompressed) + store-path integrity on import
-  (`crates/aos-package/src/{download,verify,sysroot}.rs`); it does **not**
+  (`crates/aos/packages/aos-package-manager/src/{download,verify,sysroot}.rs`); it does **not**
   verify narinfo `signatures:` — provenance comes from the signed tag, not
   per-NAR sigs.
 - `apr publish --sysroot` records `sysroot = true` + `[[images]]` entries
-  (`crates/aos-package/src/registry_ops.rs`).
+  (`crates/aos/packages/aos-package-manager/src/registry_ops.rs`).
 
 ## Existing docs to align with (not duplicate)
 

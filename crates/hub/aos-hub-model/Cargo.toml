@@ -1,0 +1,40 @@
+[package]
+name = "aos-hub-model"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+description = "Portable Hub domain values, credential primitives, and delivery policies"
+
+[features]
+default = []
+test-fixtures = []
+
+[dependencies]
+aos-registry-format = { workspace = true }
+aes-gcm = { workspace = true }
+zeroize = { workspace = true }
+anyhow = { workspace = true }
+argon2 = { workspace = true }
+base64 = { workspace = true }
+hex = { workspace = true }
+hmac = { workspace = true }
+rand = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+url = { workspace = true }
+unicode-normalization = { workspace = true }
+aos-oci-types = { workspace = true }
+async-trait = { workspace = true }
+password-hash = { version = "0.5", features = ["getrandom"] }
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { workspace = true }
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
+getrandom_03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

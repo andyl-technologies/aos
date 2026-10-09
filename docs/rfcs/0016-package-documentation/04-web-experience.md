@@ -15,7 +15,7 @@ option rows. It must answer, with minimal navigation:
 - Which exact signed objects and source produced this page?
 
 The public registry browser and authenticated producer console share page/view
-models and components in `aos-hub-core`. The console may add authorized actions;
+models and components in `aos-hub-service`. The console may add authorized actions;
 it may not render a different documentation interpretation.
 
 ## Information architecture

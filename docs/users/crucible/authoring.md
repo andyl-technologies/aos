@@ -60,7 +60,7 @@ realize.
 
 The representative scenario generator shows a complete network, block-storage,
 and 9p topology in
-[`representative_scenario()`](../../../crates/crucible-api/examples/crucible-e2e-determinism-scenario.rs).
+[`representative_scenario()`](../../../crates/crucible/control/crucible-control-api/examples/crucible-e2e-determinism-scenario.rs).
 
 ## 3. Build the signal program
 
@@ -129,7 +129,7 @@ identity and target contracts are world-specific.
 
 The representative scenario generator provides an implementation-backed signal
 plan in
-[`representative_fault_plan()`](../../../crates/crucible-api/examples/crucible-e2e-determinism-scenario.rs).
+[`representative_fault_plan()`](../../../crates/crucible/control/crucible-control-api/examples/crucible-e2e-determinism-scenario.rs).
 
 ## 6. Declare application properties
 

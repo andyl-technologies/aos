@@ -13,8 +13,8 @@ in
       name = "native-content-address";
       sqliteRequired = true;
       cargoBuildCommands = [
-        "test --frozen --offline --no-run -p crucible --test predicate_dsl --test gate_content_address"
-        "test --frozen --offline --no-run -p crucible-sim --test gate_content_address"
+        "test --frozen --offline --no-run -p crucible-engine --test predicate_dsl --test gate_content_address"
+        "test --frozen --offline --no-run -p crucible-determinism --test gate_content_address"
       ];
       installedTests = [
         {

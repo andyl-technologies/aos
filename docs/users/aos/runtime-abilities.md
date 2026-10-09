@@ -883,7 +883,7 @@ reported desired graph and observed state are separate assertions; a document
 digest alone is not evidence that a handler ran.
 
 The executable integration example is
-[`package_deployment_check`](../../../crates/aos-package/examples/package_deployment_check.rs),
+[`package_deployment_check`](../../../crates/aos/packages/aos-package-manager/examples/package_deployment_check.rs),
 using the source-built [`checks.effects` fixture](../../../tests/effects/deployment-fixture.nix).
 It exercises artifact publication, deployment-time evaluation, real handler
 execution, generation reopening, reconfiguration, and pruning. It provides a

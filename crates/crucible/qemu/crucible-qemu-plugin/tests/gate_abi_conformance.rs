@@ -1,0 +1,171 @@
+//! Plugin I/O-wire evidence for `gate:abi-conformance`.
+
+#![forbid(unsafe_code)]
+
+use std::error::Error;
+use std::fs;
+use std::path::PathBuf;
+
+#[test]
+fn gate_abi_conformance_covers_plugin_io_wire_fuzzing() -> Result<(), Box<dyn Error>> {
+    let root = workspace_root()?;
+    let plugin_lib = fs::read_to_string(root.join("crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs"))?;
+    let io_wire_fuzz =
+        fs::read_to_string(root.join("crates/crucible/qemu/crucible-qemu-plugin/src/io_wire_fuzz.rs"))?;
+    let block_wire =
+        fs::read_to_string(root.join("crates/crucible/qemu/crucible-qemu-plugin/src/block_io/wire.rs"))?;
+    let block_errors =
+        fs::read_to_string(root.join("crates/crucible/qemu/crucible-qemu-plugin/src/block_io/errors.rs"))?;
+    let ninep_io = fs::read_to_string(root.join("crates/crucible/qemu/crucible-qemu-plugin/src/ninep_io.rs"))?;
+    let phase_check =
+        fs::read_to_string(root.join("tests/crucible/phase2-protocol-codec-fuzz.nix"))?;
+    let canonical_gate =
+        fs::read_to_string(root.join("tests/crucible/phase2-abi-conformance.nix"))?;
+    let harness_spec =
+        fs::read_to_string(root.join("docs/rfcs/0010-crucible/24-determinism-harness-testing.md"))?;
+
+    assert_contains(&plugin_lib, "pub mod io_wire_fuzz;");
+    assert_contains(&plugin_lib, "run_io_wire_fuzz_target");
+    assert_contains(&plugin_lib, "IO_WIRE_FUZZ_REGRESSION_CORPUS");
+    assert_contains(&plugin_lib, "handle_ninep_wire_fuzz_message");
+
+    assert_contains(
+        &block_wire,
+        "pub fn decode(payload: &[u8]) -> Result<(BlockRequestIdentity, Self), BlockWireError>",
+    );
+    assert_contains(&block_errors, "UnknownOperation");
+    assert_contains(&block_errors, "RequestCountExceedsPayload");
+
+    assert_contains(&ninep_io, "pub struct NinePWireMessage");
+    assert_contains(&ninep_io, "pub struct NinePWireHandlerOutcome");
+    assert_contains(
+        &ninep_io,
+        "pub fn decode_with_msize(frame: &[u8], msize: u32)",
+    );
+    assert_contains(&ninep_io, "pub fn handle_ninep_wire_fuzz_message");
+    assert_contains(&ninep_io, "ninep_lerror");
+
+    assert_contains(&io_wire_fuzz, "pub const NINEP_FUZZ_MSIZE");
+    assert_contains(&io_wire_fuzz, "pub const IO_WIRE_FUZZ_REGRESSION_CORPUS");
+    assert_contains(&io_wire_fuzz, "run_io_wire_fuzz_target_with_msize");
+    assert_contains(&io_wire_fuzz, "assert_io_wire_fuzz_corpus");
+    assert_contains(&io_wire_fuzz, "assert_decode_encode_roundtrip");
+    assert_contains(&io_wire_fuzz, "assert_clean_reject_or_deterministic_decode");
+    assert_contains(&io_wire_fuzz, "assert_well_formed_9p_error_response");
+    assert_contains(&io_wire_fuzz, "regression_corpus");
+
+    assert_contains(&phase_check, "run-qemu-plugin-io-wire-fuzz");
+    assert_contains(&phase_check, "crucible-qemu-plugin::io_wire_fuzz");
+    assert_contains(&harness_spec, "- [x] **T-HARN-19**");
+    assert_contains(&harness_spec, "filesystem semantics");
+
+    assert_plugin_io_wire_fuzz_unit_target_is_gate_wired(&canonical_gate);
+
+    Ok(())
+}
+
+#[test]
+fn gate_abi_conformance_covers_whitebox_doorbell_instruction_abi() -> Result<(), Box<dyn Error>> {
+    let root = workspace_root()?;
+    let protocol_lib = fs::read_to_string(root.join("crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs"))?;
+    let protocol_doorbell =
+        fs::read_to_string(root.join("crates/crucible/protocol/crucible-qemu-protocol/src/doorbell_abi.rs"))?;
+    let plugin_lib = fs::read_to_string(root.join("crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs"))?;
+    let plugin_whitebox =
+        fs::read_to_string(root.join("crates/crucible/qemu/crucible-qemu-plugin/src/whitebox_doorbell.rs"))?;
+    let guest_lib = fs::read_to_string(root.join("crates/crucible/guest/crucible-guest/src/lib.rs"))?;
+    let phase_check =
+        fs::read_to_string(root.join("tests/crucible/phase4-guest-host-doorbell-abi.nix"))?;
+    let canonical_gate =
+        fs::read_to_string(root.join("tests/crucible/phase2-abi-conformance.nix"))?;
+    let guest_host_spec =
+        fs::read_to_string(root.join("docs/rfcs/0010-crucible/16-guest-host-channel.md"))?;
+
+    assert_contains(&protocol_lib, "mod doorbell_abi;");
+    assert_contains(&protocol_lib, "WhiteboxDoorbellTrapAbi");
+    assert_contains(
+        &protocol_doorbell,
+        "pub const WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION: u16 = 4;",
+    );
+    assert_contains(
+        &protocol_doorbell,
+        "pub const WHITEBOX_DOORBELL_X86_64_RESERVED_PORT: u16 = 0x00e7;",
+    );
+    assert_contains(
+        &protocol_doorbell,
+        "pub const WHITEBOX_DOORBELL_AARCH64_RESERVED_HINT: u8 = 0x4c;",
+    );
+    assert_contains(&protocol_doorbell, "WhiteboxDoorbellTrapAbi::Aarch64Hint");
+    assert_contains(
+        &protocol_doorbell,
+        "doorbell_abi_x86_64_vector_freezes_out_imm8_al",
+    );
+    assert_contains(
+        &protocol_doorbell,
+        "doorbell_abi_aarch64_vector_freezes_inert_hint",
+    );
+
+    assert_contains(&plugin_lib, "WHITEBOX_DOORBELL_ABIS");
+    assert_contains(&plugin_whitebox, "pub use crucible_protocol");
+    assert_contains(
+        &plugin_whitebox,
+        "pub const fn from_abi(trap: WhiteboxDoorbellTrapAbi)",
+    );
+    assert_contains(&plugin_whitebox, "WhiteboxDoorbellTrap::Aarch64Hint");
+    assert!(
+        !plugin_whitebox.contains("pub const fn new(\n        mode: PluginSwitch"),
+        "doorbell state must not expose an arbitrary public trap constructor"
+    );
+
+    assert_contains(&guest_lib, "WHITEBOX_DOORBELL_ABIS");
+    assert_contains(&guest_lib, "WhiteboxDoorbellTrapAbi");
+
+    assert_contains(&phase_check, "checks.crucible.phase4.guestHostDoorbellAbi");
+    assert_contains(&phase_check, "gate=gate:abi-conformance");
+    assert_contains(&guest_host_spec, "- [x] **T-GHC-5**");
+    assert_contains(&guest_host_spec, "x86_64   out 0xe7,al");
+    assert_contains(&guest_host_spec, "aarch64  hint #0x4c");
+
+    assert_doorbell_abi_unit_targets_are_gate_wired(&canonical_gate);
+
+    Ok(())
+}
+
+fn assert_contains(haystack: &str, needle: &str) {
+    assert!(
+        haystack.contains(needle),
+        "expected to find `{needle}` in checked source"
+    );
+}
+
+fn workspace_root() -> Result<PathBuf, Box<dyn Error>> {
+    let mut current = std::env::current_dir()?;
+    loop {
+        if current.join("crates/Cargo.toml").is_file()
+            && current.join("tests/crucible/default.nix").is_file()
+        {
+            return Ok(current);
+        }
+        if !current.pop() {
+            return Err("could not locate workspace root".into());
+        }
+    }
+}
+
+fn assert_doorbell_abi_unit_targets_are_gate_wired(phase_check: &str) {
+    // The focused Nix gate executes these targets. Recursively invoking Cargo
+    // from an integration test contends on Cargo's package and artifact locks
+    // when the package test suite runs in parallel.
+    assert_contains(phase_check, "-p crucible-qemu-protocol");
+    assert_contains(phase_check, "doorbell_abi \\");
+    assert_contains(phase_check, "-p crucible-qemu-plugin");
+    assert_contains(phase_check, "--lib whitebox_doorbell");
+}
+
+fn assert_plugin_io_wire_fuzz_unit_target_is_gate_wired(phase_check: &str) {
+    // The gate owns the hermetic Cargo invocation; this integration test owns
+    // the cross-file proof that the executable target remains attached to it.
+    assert_contains(phase_check, "-p crucible-qemu-plugin");
+    assert_contains(phase_check, "--lib io_wire_fuzz \\");
+    assert_contains(phase_check, "plugin_io_wire_fuzz_executed=true");
+}

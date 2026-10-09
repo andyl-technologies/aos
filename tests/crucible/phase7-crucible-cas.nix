@@ -7,14 +7,14 @@
   packagingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/26-packaging-aos-integration.md;
   workspaceManifest = builtins.fromTOML (builtins.readFile ../../crates/Cargo.toml);
   packageInventory = import ../../pkgs/tools/crucible/_packages.nix;
-  casManifest = builtins.fromTOML (builtins.readFile ../../crates/crucible-cas/Cargo.toml);
+  casManifest = builtins.fromTOML (builtins.readFile ../../crates/crucible/storage/crucible-store/Cargo.toml);
   casSource =
-    builtins.readFile ../../crates/crucible-cas/src/lib.rs
-    + builtins.readFile ../../crates/crucible-cas/src/cas/campaign_codec.rs
-    + builtins.readFile ../../crates/crucible-cas/src/cas/campaign_model.rs
-    + builtins.readFile ../../crates/crucible-cas/src/cas/campaign_store.rs
-    + builtins.readFile ../../crates/crucible-cas/src/cas/invalidation.rs
-    + builtins.readFile ../../crates/crucible-cas/src/cas/tests.rs;
+    builtins.readFile ../../crates/crucible/storage/crucible-store/src/lib.rs
+    + builtins.readFile ../../crates/crucible/storage/crucible-store/src/cas/campaign_codec.rs
+    + builtins.readFile ../../crates/crucible/storage/crucible-store/src/cas/campaign_model.rs
+    + builtins.readFile ../../crates/crucible/storage/crucible-store/src/cas/campaign_store.rs
+    + builtins.readFile ../../crates/crucible/storage/crucible-store/src/cas/invalidation.rs
+    + builtins.readFile ../../crates/crucible/storage/crucible-store/src/cas/tests.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
@@ -53,7 +53,7 @@
         needle = "\"crucible-cas\"";
       }
     ]
-    ++ failuresFor "crates/crucible-cas/Cargo.toml" (builtins.readFile ../../crates/crucible-cas/Cargo.toml) [
+    ++ failuresFor "crates/crucible/storage/crucible-store/Cargo.toml" (builtins.readFile ../../crates/crucible/storage/crucible-store/Cargo.toml) [
       {
         label = "crucible-cas package name";
         needle = "name = \"crucible-cas\"";
@@ -67,7 +67,7 @@
         needle = "thiserror = { workspace = true }";
       }
     ]
-    ++ failuresFor "crates/crucible-cas/src/lib.rs" casSource [
+    ++ failuresFor "crates/crucible/storage/crucible-store/src/lib.rs" casSource [
       {
         label = "crate-level standalone docs";
         needle = "no dependency on RFC-0007 `ratchet` crates";
@@ -135,7 +135,7 @@
         needle = "crucibleCas = import ./phase7-crucible-cas.nix";
       }
     ]
-    ++ forbiddenFor "crates/crucible-cas/Cargo.toml" (builtins.readFile ../../crates/crucible-cas/Cargo.toml) [
+    ++ forbiddenFor "crates/crucible/storage/crucible-store/Cargo.toml" (builtins.readFile ../../crates/crucible/storage/crucible-store/Cargo.toml) [
       {
         label = "ratchet dependency";
         needle = "ratchet-";
@@ -145,7 +145,7 @@
         needle = "aos-nix-";
       }
     ]
-    ++ forbiddenFor "crates/crucible-cas/src/lib.rs" casSource [
+    ++ forbiddenFor "crates/crucible/storage/crucible-store/src/lib.rs" casSource [
       {
         label = "ratchet import";
         needle = "use ratchet";
@@ -155,7 +155,7 @@
         needle = "use aos_nix";
       }
     ]
-    ++ map (name: "crates/crucible-cas/Cargo.toml: forbidden RFC-0007 dependency ${name}")
+    ++ map (name: "crates/crucible/storage/crucible-store/Cargo.toml: forbidden RFC-0007 dependency ${name}")
     forbiddenDependencyNames;
 in
   if failures != []

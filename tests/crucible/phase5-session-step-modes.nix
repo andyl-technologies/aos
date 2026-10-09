@@ -30,7 +30,7 @@
         needle = "`T-SESS-5` is green through `checks.crucible.phase5.sessionStepModes`";
       }
     ]
-    ++ failuresFor "crates/crucible-session/src/lib.rs" sessionLib [
+    ++ failuresFor "crates/crucible/control/crucible-session/src/lib.rs" sessionLib [
       {
         label = "duration step mode";
         needle = "Duration(SimDuration)";

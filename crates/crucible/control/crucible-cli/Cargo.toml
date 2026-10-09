@@ -1,0 +1,66 @@
+[package]
+name = "crucible-cli"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish = false
+
+[features]
+default = []
+destructive-recovery-faults = ["crucible-daemon/destructive-recovery-faults"]
+packaged-midpoint-flight = []
+test-double = ["crucible-session/test-double"]
+
+[[bin]]
+name = "crucible"
+path = "src/main.rs"
+
+[[test]]
+name = "machine_readable"
+path = "tests/machine_readable.rs"
+required-features = ["test-double"]
+
+[[test]]
+name = "gate_campaign_store_composition"
+path = "tests/gate_campaign_store_composition.rs"
+required-features = ["test-double"]
+
+[lints]
+workspace = true
+
+[dependencies]
+crucible-control-client = { path = "../crucible-control-client" }
+crucible-control-server = { path = "../crucible-control-server" }
+aws-credential-types = { workspace = true }
+aws-sdk-s3 = { workspace = true }
+clap = { workspace = true }
+clap_complete = { workspace = true }
+crucible-control-api = { path = "../crucible-control-api" }
+crucible-campaign = { path = "../../engine/crucible-campaign" }
+crucible-daemon = { path = "../crucible-daemon" }
+crucible-session = { path = "../crucible-session" }
+hex = { workspace = true }
+rcgen = { workspace = true }
+rustix = { workspace = true, features = ["process", "termios"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tokio-rustls = { workspace = true }
+toml = { workspace = true }
+tempfile = { workspace = true }
+url = { workspace = true }
+zeroize = { workspace = true }
+
+[dev-dependencies]
+crucible-control-api = { path = "../crucible-control-api" }
+crucible-store = { path = "../../storage/crucible-store" }
+crucible-core = { package = "crucible-engine", path = "../../engine/crucible-engine", features = ["test-support"] }
+crucible-daemon = { path = "../crucible-daemon", features = ["test-support"] }
+crucible-device = { path = "../../engine/crucible-device" }
+crucible-test-support = { path = "../../testing/crucible-test-support" }
+crucible-guest = { path = "../../guest/crucible-guest" }
+crucible-qemu-protocol = { path = "../../protocol/crucible-qemu-protocol" }
+crucible-qemu-host = { path = "../../qemu/crucible-qemu-host" }
+crucible-qemu-shmem = { path = "../../protocol/crucible-qemu-shmem" }
+libc = { workspace = true }
+sha2 = { workspace = true }

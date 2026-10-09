@@ -48,7 +48,7 @@ maintains that roster through supported rotation/revocation workflows.
 ## 2. `registry.toml` — registry-level config (root of the tree)
 
 The git-repo-**root** `registry.toml` is the existing `RegistryRootConfig`
-(`crates/aos-package/src/types.rs:737`), read by `read_registry_toml`
+(`crates/aos/packages/aos-package-manager/src/types.rs:737`), read by `read_registry_toml`
 (`registry_ops.rs`) and written with a default during `apr create`.
 
 > **Do not confuse this with the removed signed-HTTP-root `registry.toml`.** An
@@ -111,7 +111,7 @@ members = [
 
 A dedicated committed file holding the **active signing key(s)** and a **revoked
 list**, authenticated via the signed tag like everything else. Clients **consume
-it during sync** (`pin_rotated_keys`, `crates/aos-package/src/registry/keys.rs`):
+it during sync** (`pin_rotated_keys`, `crates/aos/packages/aos-package-manager/src/registry/keys.rs`):
 it is the **authoritative trusted-key set** once the consumer is anchored. It does
 **not** bootstrap trust — initial trust is delivered **out-of-band**, either
 baked into the image (`aos.apm.registries` → `trusted-keys.d/<registry>.pub`) or
@@ -179,7 +179,7 @@ without touching the image-baked file.
 > **Defence-in-depth note:** even an authenticated-but-wrong cache pointer can't serve
 > bad bytes - every downloaded NAR's decompressed SHA-256 and size must match a
 > blessed NAR in the signed `store/` graph (§5; `verify_downloads`,
-> `crates/aos-package/src/verify.rs`). So the trust that matters is the
+> `crates/aos/packages/aos-package-manager/src/verify.rs`). So the trust that matters is the
 > *tag/commit* chain (which `keys.toml` governs), not the cache list.
 
 ---
@@ -243,7 +243,7 @@ dependencies. The node is a Nix-style realisation, so the realisation graph
 *is* the closure graph - content addresses on the nodes, dependency CA pins
 on the edges - and consumers validate exact bytes against the signed tree
 instead of trusting cache-served narinfos
-(`crates/aos-package/src/registry/store.rs`; design record:
+(`crates/aos/packages/aos-package-manager/src/registry/store.rs`; design record:
 [RFC-0005](../rfcs/0005-ca-trust-map.md)).
 
 One file per IA store path, named by the IA hash, sharded git-style
@@ -271,7 +271,7 @@ blank lines and `#` comments are ignored.
   directly.
 - **Consumer**: `apm` verifies each downloaded NAR's decompressed SHA-256
   and size against the record's blessed set (`verify_downloads`,
-  `crates/aos-package/src/verify.rs`), and checks coverage over the **whole
+  `crates/aos/packages/aos-package-manager/src/verify.rs`), and checks coverage over the **whole
   closure** before downloading (`enforce_totality`), so a stripped graph is
   caught even for members already in the local store. Enforcement is **per
   source registry**: when a path's registry publishes a graph, an unmapped

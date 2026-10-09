@@ -15,7 +15,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "crates/crucible/src/model.rs" model [
+    failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
       {
         label = "save checkpoint operation";
         needle = "pub fn save_checkpoint(";
@@ -69,7 +69,7 @@
         needle = "pub struct ReplayOracleCheck";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" crateRoot [
       {
         label = "save checkpoint model-operation test";
         needle = "temporal_graph_save_materializes_fat_checkpoint_keyed_by_configuration";
@@ -104,7 +104,7 @@
     ++ failuresFor "docs/rfcs/0010-crucible/05-execution-model.md" rfc [
       {
         label = "T-EXEC-13 completion note";
-        needle = "Completed by `crates/crucible/src/model.rs`: `TemporalGraph::save_checkpoint`";
+        needle = "Completed by `crates/crucible/engine/crucible-engine/src/model.rs`: `TemporalGraph::save_checkpoint`";
       }
     ];
 in
@@ -160,7 +160,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-execution-graph-operations-target" \
-              -p crucible \
+              -p crucible-engine \
               --lib \
               temporal_graph_ \
               -- --test-threads=1

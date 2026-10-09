@@ -2,9 +2,10 @@
   pkgs,
   lib,
 }: let
+  inherit (import ./_workspace-packages.nix {inherit lib;}) packageDir packageNames cruciblePackages;
   cratesDir = ../../crates;
 
-  readManifest = package: builtins.fromTOML (builtins.readFile (cratesDir + "/${package}/Cargo.toml"));
+  readManifest = package: builtins.fromTOML (builtins.readFile (packageDir package + "/Cargo.toml"));
 
   manifestFeatures = package: let
     manifest = readManifest package;
@@ -117,17 +118,17 @@
     packages;
 
   corePackages = [
-    "crucible-sim"
-    "crucible-assert"
-    "crucible-shmem"
-    "crucible-protocol"
+    "crucible-determinism"
+    "crucible-test-support"
+    "crucible-qemu-shmem"
+    "crucible-qemu-protocol"
     "crucible-device"
-    "crucible"
+    "crucible-engine"
     "crucible-session"
-    "crucible-api"
+    "crucible-control-api"
     "crucible-daemon"
     "crucible-cli"
-    "crucible-qemu"
+    "crucible-qemu-host"
     "crucible-qemu-plugin"
   ];
 
@@ -166,7 +167,7 @@
     lib.concatMap (
       package: let
         features = builtins.attrNames (manifestFeatures package);
-        sourcePath = cratesDir + "/${package}/src";
+        sourcePath = packageDir package + "/src";
         source =
           if builtins.pathExists sourcePath
           then readRustTree sourcePath
@@ -210,7 +211,7 @@
           with-guest = ["dep:guest-double"];
         };
       };
-    } ["crucible"];
+    } ["crucible-engine"];
   in
     if findings != []
     then []
@@ -224,7 +225,7 @@
         dependencies.crucible-guest = {};
         features.default = [];
       };
-    } ["crucible"];
+    } ["crucible-engine"];
   in
     if findings != []
     then []
@@ -233,12 +234,12 @@
     ];
 
   featureFailures =
-    assertFeatureSet "crucible" {
+    assertFeatureSet "crucible-engine" {
       default = [];
       test-support = [];
       test-double = ["dep:crucible-shmem"];
     }
-    ++ assertFeatureSet "crucible-qemu" {
+    ++ assertFeatureSet "crucible-qemu-host" {
       default = [];
       test-support = ["crucible/test-double"];
     }

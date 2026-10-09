@@ -21,25 +21,25 @@
     startAps = false;
   };
   blockInitramfs = import ./phase2-qemu-live-block-io-guest.nix {inherit pkgs;};
-  qemuCheckpoint = builtins.readFile ../../crates/crucible-qemu/src/checkpoint.rs;
-  qemuNode = builtins.readFile ../../crates/crucible-qemu/src/node.rs;
-  qemuNodeExactSnapshot = builtins.readFile ../../crates/crucible-qemu/src/node/exact_snapshot.rs;
+  qemuCheckpoint = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/src/checkpoint.rs;
+  qemuNode = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/src/node.rs;
+  qemuNodeExactSnapshot = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/src/node/exact_snapshot.rs;
   qemuNodeExactSnapshotCapture =
-    builtins.readFile ../../crates/crucible-qemu/src/node/exact_snapshot/capture.rs;
-  qemuNodeFactory = builtins.readFile ../../crates/crucible-qemu/src/node_factory.rs;
+    builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/src/node/exact_snapshot/capture.rs;
+  qemuNodeFactory = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/src/node_factory.rs;
   qemuExactRestoreAdmission = builtins.concatStringsSep "\n" [
-    (builtins.readFile ../../crates/crucible-qemu/src/realization.rs)
-    (builtins.readFile ../../crates/crucible-qemu/src/realization/node_executor.rs)
-    (builtins.readFile ../../crates/crucible-qemu/src/realization/node_executor/admission.rs)
+    (builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/src/realization.rs)
+    (builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/src/realization/node_executor.rs)
+    (builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/src/realization/node_executor/admission.rs)
   ];
   smpGuestSource = builtins.readFile ./phase2-qemu-live-plugin-quantum-smp-guest.nix;
-  productionLoop = builtins.readFile ../../crates/crucible-api/src/vm_lifecycle/quantum_loop.rs;
-  productionRuntime = builtins.readFile ../../crates/crucible-api/src/vm_lifecycle.rs;
-  productionConstruction = builtins.readFile ../../crates/crucible-api/src/vm_lifecycle/construction.rs;
+  productionLoop = builtins.readFile ../../crates/crucible/control/crucible-daemon/src/vm_lifecycle/quantum_loop.rs;
+  productionRuntime = import ./_crucible-control-source.nix { inherit lib; component = "vm_lifecycle"; };
+  productionConstruction = builtins.readFile ../../crates/crucible/control/crucible-daemon/src/vm_lifecycle/construction.rs;
   taskList = builtins.concatStringsSep "," taskIds;
   inherit (import ./_lib.nix {inherit lib;}) failuresFor forbiddenFor;
   failures =
-    failuresFor "crates/crucible-qemu/src/checkpoint.rs" qemuCheckpoint [
+    failuresFor "crates/crucible/qemu/crucible-qemu-host/src/checkpoint.rs" qemuCheckpoint [
       {
         label = "host-I/O checkpoint";
         needle = "pub struct QemuHostIoCheckpoint";
@@ -53,7 +53,7 @@
         needle = "pub struct QemuNodeContinuationCheckpoint";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/node/exact_snapshot.rs" qemuNodeExactSnapshot [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/node/exact_snapshot.rs" qemuNodeExactSnapshot [
       {
         label = "descriptor-retaining exact capture result";
         needle = "pub struct QemuExactCheckpointCaptureResult";
@@ -63,7 +63,7 @@
         needle = "pub fn output_files_mut";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/node/exact_snapshot/capture.rs" qemuNodeExactSnapshotCapture [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/node/exact_snapshot/capture.rs" qemuNodeExactSnapshotCapture [
       {
         label = "admission-bound coordinated capture";
         needle = "fn capture_admitted_exact_checkpoint";
@@ -89,13 +89,13 @@
         needle = "QemuVmSnapshot::from_live_capture";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/node.rs" qemuNode [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/node.rs" qemuNode [
       {
         label = "forced crash gate";
         needle = "force_crash_and_reap_for_gate";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/node_factory.rs" qemuNodeFactory [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/node_factory.rs" qemuNodeFactory [
       {
         label = "host prevalidation";
         needle = ".validate_host_io_checkpoint(checkpoint.id, host_io_checkpoint)";
@@ -135,7 +135,7 @@
         needle = ''else "bsp-busy-aps-halted";'';
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/vm_lifecycle/quantum_loop.rs" productionLoop [
+    ++ failuresFor "crates/crucible/control/crucible-daemon/src/vm_lifecycle/quantum_loop.rs" productionLoop [
       {
         label = "snapshot control boundary capture";
         needle = "self.capture_exact_checkpoint_set(&configuration)?";
@@ -161,19 +161,19 @@
         needle = "let (ram_file, device_file) = exact_capture.output_files_mut();";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/vm_lifecycle.rs" productionRuntime [
+    ++ failuresFor "crates/crucible/control/crucible-daemon/src/vm_lifecycle.rs" productionRuntime [
       {
         label = "artifact authentication";
         needle = "failed content authentication";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/vm_lifecycle/construction.rs" productionConstruction [
+    ++ failuresFor "crates/crucible/control/crucible-daemon/src/vm_lifecycle/construction.rs" productionConstruction [
       {
         label = "restored fingerprint check";
         needle = "restored_fingerprint != expected_fingerprint";
       }
     ]
-    ++ forbiddenFor "crates/crucible-qemu exact-restore admission sources" qemuExactRestoreAdmission [
+    ++ forbiddenFor "crates/crucible/qemu/crucible-qemu-host exact-restore admission sources" qemuExactRestoreAdmission [
       {
         label = "public exact-runtime minting";
         needle = "pub const fn authorize_exact_checkpoint_runtime";
@@ -242,14 +242,14 @@ in
             qemu_lib_tests="$TMPDIR/crucible-qemu-lib-tests"
             cargo test --frozen --offline \
               --target-dir "$TMPDIR/exact-snapshot-target" \
-              --manifest-path crates/Cargo.toml -p crucible-qemu --lib \
+              --manifest-path crates/Cargo.toml -p crucible-qemu-host --lib \
               -- --list > "$qemu_lib_tests"
             run_exact_qemu_test() {
               test_name="$1"
               grep -Fqx "$test_name: test" "$qemu_lib_tests"
               cargo test --frozen --offline \
                 --target-dir "$TMPDIR/exact-snapshot-target" \
-                --manifest-path crates/Cargo.toml -p crucible-qemu --lib \
+                --manifest-path crates/Cargo.toml -p crucible-qemu-host --lib \
                 "$test_name" -- --exact --include-ignored --test-threads=1
             }
             run_exact_qemu_test \

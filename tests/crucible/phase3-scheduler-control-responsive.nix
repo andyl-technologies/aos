@@ -8,8 +8,8 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
-  controlResponsiveTest = builtins.readFile ../../crates/crucible/tests/scheduler_control_responsive.rs;
+  libSource = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/lib.rs;
+  controlResponsiveTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/scheduler_control_responsive.rs;
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -35,7 +35,7 @@
         needle = "scheduler half of `gate:control-responsive`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "scheduler control bound";
         needle = "pub const SCHEDULER_CONTROL_RESPONSE_BOUND_QUANTA: u64 = 1;";
@@ -57,7 +57,7 @@
         needle = "application_delta_quanta > SCHEDULER_CONTROL_RESPONSE_BOUND_QUANTA";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" libSource [
       {
         label = "bound exported";
         needle = "SCHEDULER_CONTROL_RESPONSE_BOUND_QUANTA";
@@ -67,7 +67,7 @@
         needle = "SchedulerControlApplication";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/scheduler_control_responsive.rs" controlResponsiveTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/scheduler_control_responsive.rs" controlResponsiveTest [
       {
         label = "focused scheduler control-responsive test";
         needle = "scheduler-side control responsiveness";
@@ -89,7 +89,7 @@
         needle = "resolved_events";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/scheduler_control_responsive.rs" controlResponsiveTest [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/scheduler_control_responsive.rs" controlResponsiveTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -158,7 +158,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-scheduler-control-responsive-target" \
-              -p crucible \
+              -p crucible-engine \
               --test scheduler_control_responsive \
               -- --test-threads=1
           '';

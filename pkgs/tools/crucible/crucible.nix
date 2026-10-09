@@ -75,9 +75,12 @@
     hash = cargoDepsHash;
   };
   packages = import ./_packages.nix;
-  workspacePackages = (builtins.fromTOML (builtins.readFile ../../../crates/Cargo.toml)).workspace.members;
+  workspaceMembers = (builtins.fromTOML (builtins.readFile ../../../crates/Cargo.toml)).workspace.members;
+  workspacePackages = map (member:
+    (builtins.fromTOML (builtins.readFile (../../../crates + "/${member}/Cargo.toml"))).package.name
+  ) workspaceMembers;
   nonCrucibleWorkspacePackages = builtins.filter (package: !(builtins.elem package packages)) workspacePackages;
-  gplSidePackages = ["crucible-qemu-plugin" "crucible-debug-gateway"];
+  gplSidePackages = ["crucible-qemu-plugin" "crucible-qemu-debug-gateway"];
   controllerPackages = builtins.filter (package: !(builtins.elem package gplSidePackages)) packages;
   workspaceCargoFlags = builtins.concatStringsSep " " (
     ["--workspace"] ++ map (package: "--exclude ${package}") (nonCrucibleWorkspacePackages ++ gplSidePackages)
@@ -105,9 +108,9 @@
     map
     (package: builtins.unsafeDiscardStringContext (toString package))
     ([debugGateway] ++ forbiddenControllerRuntimePackages);
-  shmemLib = builtins.readFile ../../../crates/crucible-shmem/src/lib.rs;
-  doorbellAbi = builtins.readFile ../../../crates/crucible-protocol/src/doorbell_abi.rs;
-  apiRpcAbi = builtins.readFile ../../../crates/crucible-api/src/rpc_abi.rs;
+  shmemLib = builtins.readFile ../../../crates/crucible/protocol/crucible-qemu-shmem/src/lib.rs;
+  doorbellAbi = builtins.readFile ../../../crates/crucible/protocol/crucible-qemu-protocol/src/doorbell_abi.rs;
+  apiRpcAbi = builtins.readFile ../../../crates/crucible/control/crucible-control-api/src/rpc_abi.rs;
   firstLineWith = label: prefix: content: let
     matches = builtins.filter (line: lib.hasPrefix prefix line) (lib.splitString "\n" content);
   in
@@ -176,8 +179,8 @@
     };
     cargoRoot = "crates";
     cargoBuildCommands = [
-      "build --release --frozen --offline -j$NIX_BUILD_CORES -p crucible-debug-gateway"
-      "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p crucible-debug-gateway"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p crucible-qemu-debug-gateway"
+      "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p crucible-qemu-debug-gateway"
     ];
     buildDeps = [buildRustDev buildPkgConfig sqlite];
     runtimeDeps = [sqlite];
@@ -301,7 +304,7 @@
             --frozen \
             --offline \
             -j$NIX_BUILD_CORES \
-            -p crucible-harness \
+            -p crucible-test-support \
             --test gate_license_boundary
           cargo clippy \
             --all-targets \
@@ -362,7 +365,7 @@
         --frozen \
         --offline \
         -j$NIX_BUILD_CORES \
-        -p crucible \
+        -p crucible-engine \
         --example crucible-debugger-live-fixture \
         --message-format=json-render-diagnostics \
         > "$NIX_BUILD_TOP/crucible-debugger-example.jsonl"
@@ -373,7 +376,7 @@
         --frozen \
         --offline \
         -j$NIX_BUILD_CORES \
-        -p crucible-api \
+        -p crucible-control-api \
         --example crucible-e2e-determinism-scenario \
         --message-format=json-render-diagnostics \
         > "$NIX_BUILD_TOP/crucible-scenario-example.jsonl"
@@ -467,8 +470,8 @@
     cargoRoot = "crates";
     cargoNextest = true;
 
-    cargoFlags = "-p crucible-debug-gateway";
-    cargoTestFlags = "-p crucible-debug-gateway";
+    cargoFlags = "-p crucible-qemu-debug-gateway";
+    cargoTestFlags = "-p crucible-qemu-debug-gateway";
     doCheck = true;
     buildDeps = [buildRustDev buildPkgConfig sqlite];
     runtimeDeps = [sqlite];

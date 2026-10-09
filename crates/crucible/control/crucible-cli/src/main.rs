@@ -1,0 +1,2800 @@
+//! `crucible` is the CLI entry point for the Crucible control plane.
+//! Spec index: RFC-0010 files 23.
+//! This L4 binary crate remains a thin client over the control, session, and
+//! campaign-service APIs specified by RFC-0010 and RFC-0020.
+//!
+//! Module map: the binary root owns argument dispatch, while command modules
+//! remain transport clients over the session, API, and campaign-service crates.
+
+#![forbid(unsafe_code)]
+#![deny(missing_docs)]
+#![deny(rustdoc::broken_intra_doc_links)]
+
+#[macro_use]
+#[cfg(any(test, feature = "test-double"))]
+mod quantum_loop_method;
+mod host_boundary;
+mod portable_artifact_constants;
+
+use portable_artifact_constants::*;
+
+use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
+use std::error::Error;
+use std::fmt;
+use std::fs;
+use std::future::Future;
+use std::io::{self, BufRead, IsTerminal, Read, Write};
+use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use std::sync::Arc;
+use std::time::Duration;
+
+use clap::{ArgAction, ArgGroup, Args, CommandFactory, Parser, Subcommand, ValueEnum};
+use clap_complete::Shell;
+use crucible_control_api::{
+    AttachRequest, CONTROL_PROTOCOL_VERSION, CommandResultStatus, CreateSessionRequest,
+    DestroySessionRequest, RPC_PROTOCOL_BUILD, RPC_PROTOCOL_MAJOR, RPC_PROTOCOL_MINOR,
+    RPC_PROTOCOL_PATCH, ResumeSessionRequest, SendRequest, SessionRef,
+};
+use crucible_control_client::{ControlClient, RpcControlClient, RpcEndpoint, RpcMutualTlsConfig};
+use crucible_control_server::{
+    DebugAuthorizationPolicy, InProcessLifecycleClient, LifecycleControlPlane, LifecycleServerMode,
+    QuiescentLifecycleLoop, mutual_tls_acceptor_from_pem,
+    serve_shared_lifecycle_http2_mtls_with_mode_until_shutdown,
+    serve_shared_lifecycle_http2_with_debug_policy_until_shutdown,
+};
+use crucible_session::engine as crucible_model;
+#[cfg(test)]
+use crucible_session::engine::QuantumLoop as EngineLoop;
+#[cfg(any(test, feature = "test-double"))]
+use crucible_session::engine::SearchDiscoveredFailure;
+#[cfg(any(test, feature = "test-double"))]
+use crucible_session::engine::{MaterializationPolicy, MaterializationTrigger};
+use crucible_session::validation::{
+    ValidationDag, ValidationDagStoreError, recorded_checkpoint_for_configuration,
+    validation_dag_with_baked_genesis,
+};
+use crucible_session::{
+    BreakpointDisposition, BreakpointId, BreakpointSpec, CommandReply, DebugCapability, DebugRole,
+    EngineSnapshot, LiveStateKind, OutcomeKind, QueryKind, QueryResult, SessionCommand,
+    SessionCommandKind, StepMode,
+    engine::{
+        self as crucible_engine, Checkpoint, CheckpointKind, DagStore, MemoryDagStore,
+        RecordedAssertionLog, Schedule, SearchRetainedLogAssertionEvidence, SimDuration,
+        VirtualTime,
+    },
+};
+#[cfg(test)]
+use crucible_session::{BreakpointFiring, EngineState, Outcome};
+#[cfg(any(test, feature = "test-double"))]
+mod test_double_imports;
+use serde::Deserialize;
+#[cfg(any(test, feature = "test-double"))]
+use test_double_imports::*;
+#[cfg(any(test, feature = "test-double"))]
+use tokio::sync::{mpsc, oneshot};
+
+const REPRODUCTION_ARTIFACT_SCHEMA: &str = "crucible.reproduction-artifact.v4";
+const REPRODUCTION_ARTIFACT_MEDIA_TYPE: &str = "application/vnd.crucible.reproduction+text";
+const MODEL_REPRODUCTION_ARTIFACT_MEDIA_TYPE: &str =
+    "application/vnd.crucible.model-reproduction+binary";
+const MODEL_REPLAY_STATE_MEDIA_TYPE: &str = "application/vnd.crucible.model-replay-state+text";
+const LIVE_QEMU_REPLAY_CONTRACT_MEDIA_TYPE: &str =
+    "application/vnd.crucible.live-qemu-replay-contract.v5+text";
+const LIVE_QEMU_EVENT_STREAM_MEDIA_TYPE: &str =
+    "application/vnd.crucible.live-qemu-event-stream.v1+bytes";
+const LIVE_QEMU_FINGERPRINT_STREAM_MEDIA_TYPE: &str =
+    "application/vnd.crucible.live-qemu-fingerprint-stream.v1+bytes";
+const LIVE_QEMU_RESOLVED_EFFECT_TRACE_MEDIA_TYPE: &str =
+    "application/vnd.crucible.resolved-effect-trace.v1+cbor";
+const CAMPAIGN_REPLAY_CLOSURE_MEDIA_TYPE: &str =
+    "application/vnd.crucible.campaign-replay-closure.v1+binary";
+const LIFECYCLE_ARTIFACT_BUNDLE_MEDIA_TYPE: &str =
+    "application/vnd.crucible.lifecycle-artifact-bundle.v1+binary";
+const SIGNAL_MUTATION_PROVENANCE_MEDIA_TYPE: &str =
+    "application/vnd.crucible.signal-mutation-provenance.v1+json";
+const REPLAY_SCHEDULE_PREFIX_PROOF_SCHEMA: &str = "crucible.replay.schedule-prefix-proof.v1";
+const SEARCH_SCHEDULE_NAMED_TRUTHS_SCHEMA: &str = "crucible.search-schedule-named-truths.v1";
+const SEARCH_SCHEDULE_NAMED_TRUTHS_MEDIA_TYPE: &str =
+    "application/vnd.crucible.search-schedule-named-truths+toml";
+const SEARCH_RETAINED_EVIDENCE_SCHEMA: &str = "crucible.search-retained-evidence.v1";
+const SEARCH_RETAINED_EVIDENCE_MEDIA_TYPE: &str =
+    "application/vnd.crucible.search-retained-evidence+toml";
+const CRUCIBLE_SEED_ENV: &str = "CRUCIBLE_SEED";
+const CRUCIBLE_QEMU_ENV: &str = "CRUCIBLE_QEMU";
+const CRUCIBLE_PLUGIN_ENV: &str = "CRUCIBLE_PLUGIN";
+const CRUCIBLE_AOS_QEMU_ENV: &str = "CRUCIBLE_AOS_QEMU";
+const CRUCIBLE_AOS_PLUGIN_ENV: &str = "CRUCIBLE_AOS_PLUGIN";
+const CRUCIBLE_QEMU_PLUGIN_ABI_PREFIX: &str = "crucible-shmem-abi-v";
+const OS_ENTROPY_DEVICE: &str = "/dev/urandom";
+const DEFAULT_SELFTEST_RUNS: usize = 5;
+#[cfg(any(test, feature = "test-double"))]
+const BACKEND_VALUE_NAME: &str = "auto|qemu|double";
+#[cfg(not(any(test, feature = "test-double")))]
+const BACKEND_VALUE_NAME: &str = "auto|qemu";
+#[cfg(test)]
+const SAVE_DOUBLE_ASSERTION_VIOLATION: &str = "no-split-brain";
+#[cfg(test)]
+const SAVE_DOUBLE_GUEST_MARKER: &str = "compaction-started";
+const REAL_QEMU_SELFTEST_GATES: &[&str] = &[
+    "gate:single-vm-fingerprint",
+    "gate:any-guest",
+    "gate:qemu-inert",
+];
+const CANONICAL_GATE_NAMES: &[&str] = &[
+    "gate:harness-lint",
+    "gate:license-boundary",
+    "gate:layer0-determinism",
+    "gate:single-vm-fingerprint",
+    "gate:layer1-injection",
+    "gate:content-address",
+    "gate:campaign-model",
+    "gate:replay-oracle",
+    "gate:divergence-bisect",
+    "gate:scheduler-liveness",
+    "gate:control-responsive",
+    "gate:any-guest",
+    "gate:qemu-inert",
+    "gate:abi-conformance",
+    "gate:typed-choice",
+    "gate:patch-microtests",
+    "gate:adversarial-determinism",
+    "gate:e2e-determinism",
+    "gate:campaign-statistics",
+    "gate:basic-block-coverage",
+    "gate:checkpoint-materialization",
+    "gate:state-space-search",
+    "gate:perf-bench",
+    "gate:fleet-equivalence",
+    "gate:campaign-continuity",
+    "gate:production-rust-plugin-flight",
+    "gate:signal-fault-system",
+];
+
+#[derive(Parser, Debug, PartialEq, Eq)]
+#[command(
+    name = "crucible",
+    version,
+    about = "Run and inspect Crucible simulations.",
+    disable_help_subcommand = true
+)]
+struct Cli {
+    /// Root entropy (06 §5.3). Overrides CRUCIBLE_SEED.
+    #[arg(long, value_name = "u64|hex", global = true)]
+    seed: Option<String>,
+    /// Local backend (20 §10). Default: auto.
+    #[arg(
+        long,
+        value_enum,
+        value_name = BACKEND_VALUE_NAME,
+        default_value_t = Backend::Auto,
+        global = true
+    )]
+    backend: Backend,
+    /// Talk to a daemon (21) instead of running in-process.
+    #[arg(long, value_name = "addr", global = true)]
+    daemon: Option<String>,
+    /// CA certificate used to authenticate an HTTPS daemon.
+    #[arg(long, value_name = "path", global = true, requires = "daemon")]
+    daemon_ca: Option<PathBuf>,
+    /// Client certificate chain presented to an HTTPS daemon.
+    #[arg(long, value_name = "path", global = true, requires = "daemon")]
+    daemon_cert: Option<PathBuf>,
+    /// Client private key presented to an HTTPS daemon.
+    #[arg(long, value_name = "path", global = true, requires = "daemon")]
+    daemon_key: Option<PathBuf>,
+    /// Permit an unauthenticated daemon endpoint on a trusted network.
+    #[arg(long, action = ArgAction::SetTrue, global = true, requires = "daemon")]
+    trusted_unauthenticated_daemon: bool,
+    /// Patched QEMU system binary (26). Else discovered.
+    #[arg(long, value_name = "path", global = true)]
+    qemu: Option<PathBuf>,
+    /// crucible-qemu-plugin cdylib (12, 26). Else discovered.
+    #[arg(long, value_name = "path", global = true)]
+    plugin: Option<PathBuf>,
+    /// Content-addressed store root (06, 07). Else default.
+    #[arg(long, value_name = "path", global = true)]
+    store: Option<PathBuf>,
+    /// Guarded local campaign-executor deployment capability.
+    #[arg(long, value_name = "PATH", global = true)]
+    campaign_deployment: Option<PathBuf>,
+    /// Trace/report render format. Default: table on a terminal, otherwise jsonl.
+    #[arg(
+        long,
+        value_enum,
+        value_name = "jsonl|json|table|markdown",
+        global = true
+    )]
+    format: Option<OutputFormat>,
+    /// Write the event-log stream here. Default: stdout.
+    #[arg(long, value_name = "path", global = true)]
+    trace: Option<PathBuf>,
+    /// Where failure artifacts are written. Default: ./.crucible.
+    #[arg(
+        long,
+        value_name = "path",
+        default_value = "./.crucible",
+        global = true
+    )]
+    artifact_dir: PathBuf,
+    /// Increase log verbosity (repeatable: -vv).
+    #[arg(short = 'v', long, action = ArgAction::Count, global = true)]
+    verbose: u8,
+    /// Suppress non-essential output.
+    #[arg(short = 'q', long, action = ArgAction::SetTrue, global = true)]
+    quiet: bool,
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum Backend {
+    /// Discover the best local backend.
+    #[default]
+    Auto,
+    /// Use patched QEMU locally.
+    Qemu,
+    /// Use the in-process test double.
+    #[cfg(any(test, feature = "test-double"))]
+    Double,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum OutputFormat {
+    /// Emit newline-delimited JSON.
+    #[default]
+    Jsonl,
+    /// Emit one JSON document.
+    Json,
+    /// Emit a human-readable table.
+    Table,
+    /// Emit Markdown.
+    Markdown,
+}
+
+impl OutputFormat {
+    fn is_machine_readable(self) -> bool {
+        matches!(self, Self::Jsonl | Self::Json)
+    }
+
+    fn triage_report_format(self) -> crucible_engine::FailureClusterReportFormat {
+        match self {
+            Self::Jsonl => crucible_engine::FailureClusterReportFormat::JsonLines,
+            Self::Json => crucible_engine::FailureClusterReportFormat::Json,
+            Self::Table => crucible_engine::FailureClusterReportFormat::Table,
+            Self::Markdown => crucible_engine::FailureClusterReportFormat::Markdown,
+        }
+    }
+}
+
+#[derive(Subcommand, Debug, PartialEq, Eq)]
+enum Commands {
+    /// Run a scenario to completion (local or via a daemon).
+    Run(RunArgs),
+    /// Prove determinism: run N times, diff fingerprints + causal logs.
+    Verify(VerifyArgs),
+    /// Run the packaged determinism gates.
+    Selftest(SelftestArgs),
+    /// Run to a savepoint and export it as a resumable checkpoint.
+    Save(SaveArgs),
+    /// Resume a run from a checkpoint or savepoint.
+    Resume(ResumeArgs),
+    /// Replay a reproduction artifact, bit-identically.
+    Replay(ReplayArgs),
+    /// Drive state-space search over the schedule space (22).
+    Search(SearchArgs),
+    /// Coverage-guided fuzzing over a scenario family (22).
+    Fuzz(FuzzArgs),
+    /// Cluster, dedup, and minimize discovered failures.
+    Triage(CampaignTriageRouteArgs),
+    /// Open the time-travel debugger.
+    Debug(DebugArgs),
+    /// Run the daemon hosting the API (21).
+    Serve(ServeArgs),
+    /// Inspect and control a lazy campaign through the local daemon.
+    Campaign(CampaignArgs),
+    /// Inspect or maintain a configured content store.
+    Store(StoreArgs),
+    /// Generate shell completions.
+    Completions(CompletionsArgs),
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignArgs {
+    /// Connected daemon socket; omitted for offline authoring, validation, and archival.
+    #[arg(long, value_name = "path")]
+    socket: Option<PathBuf>,
+    /// Authenticated principal; omitted for offline authoring, validation, and archival.
+    #[arg(long, value_name = "principal")]
+    principal: Option<String>,
+    #[command(subcommand)]
+    command: CampaignCommand,
+}
+
+#[derive(Subcommand, Debug, PartialEq, Eq)]
+enum CampaignCommand {
+    /// Generate executable, verifier-backed campaign reference fixtures.
+    Fixture(CampaignFixtureArgs),
+    /// Validate strict campaign import manifests without opening repository state.
+    ValidateImport(CampaignValidateImportArgs),
+    /// Authenticate a named campaign or validate one canonical policy file.
+    Validate(CampaignValidateArgs),
+    /// Compile canonical scenario TOML into an importable genesis bundle.
+    Scenario(CampaignScenarioArgs),
+    /// Compile a canonical non-genesis schedule into an importable configuration bundle.
+    Configuration(CampaignConfigurationArgs),
+    /// Compile strict human-authored decisions into canonical Schedule V4 bytes.
+    Schedule(CampaignScheduleArgs),
+    /// Compile strict human-authored campaign policy manifests.
+    Policy(CampaignPolicyArgs),
+    /// Compile strict human-authored campaign lineage manifests.
+    Lineage(CampaignLineageArgs),
+    /// Plan, transfer, or inspect one authenticated offline campaign archive.
+    Archive(CampaignArchiveArgs),
+    /// Create a named campaign from canonical imported lineage and policy records.
+    Create(CampaignCreateArgs),
+    /// List authenticated current campaign heads.
+    List(CampaignListArgs),
+    /// Attach one live runtime to a local executor endpoint.
+    Attach(CampaignAttachArgs),
+    /// Derive a new named campaign from one exact source snapshot.
+    Derive(CampaignDeriveArgs),
+    /// Submit one finite additive operator branch request.
+    Branch(CampaignBranchArgs),
+    /// Print the current authenticated campaign head and lifecycle state.
+    Status(CampaignStatusArgs),
+    /// Report snapshot-bound outcomes, exploration state, and estimator evidence.
+    Report(CampaignReportArgs),
+    /// Return the latest coalesced head after an optional snapshot cursor.
+    Watch(CampaignWatchArgs),
+    /// Inspect one exact historical campaign snapshot.
+    Snapshot(CampaignSnapshotArgs),
+    /// Compare two exact historical campaign snapshots.
+    Compare(CampaignCompareArgs),
+    /// Explain one exact choice and frontier-request basis.
+    Explain(CampaignExplainArgs),
+    /// Explain one exact finding and its reproduction basis.
+    ExplainFinding(CampaignFindingExplainArgs),
+    /// Explain one exact attempt, proposal, and completion basis.
+    ExplainAttempt(CampaignAttemptExplainArgs),
+    /// Replay a completed next-choice attempt to an exact pending-choice checkpoint.
+    CaptureAttempt(CampaignCaptureAttemptArgs),
+    /// Inspect the authenticated outcome and retained root of one capture.
+    CaptureStatus(CampaignCaptureStatusArgs),
+    /// Admit an exact-source continuation from a Ready capture.
+    SelectCapture(CampaignSelectCaptureArgs),
+    /// Rank candidates or policy epochs across an authenticated planner-step chain.
+    Rankings(CampaignRankingsArgs),
+    /// Read one authenticated page from the temporal graph.
+    Graph(CampaignPageArgs),
+    /// Inspect one exact object named by the authenticated graph.
+    GraphObject(CampaignGraphObjectArgs),
+    /// Read one authenticated page of discovered choice opportunities.
+    Choices(CampaignPageArgs),
+    /// Read authenticated execution bases and additional causes for one branch request.
+    RequestAttempts(CampaignRequestAttemptsArgs),
+    /// Inspect one declaration or domain named by an authenticated choice.
+    ChoiceObject(CampaignChoiceObjectArgs),
+    /// Encode a complete named atomic group tuple for `campaign branch --value`.
+    ChoiceValue(CampaignChoiceValueArgs),
+    /// Read one authenticated page of continuation states.
+    Frontier(CampaignPageArgs),
+    /// Read one authenticated page of canonical failure findings.
+    Findings(CampaignPageArgs),
+    /// Inspect one exact branch request and its current continuation state.
+    FrontierObject(CampaignFrontierObjectArgs),
+    /// Replay one authenticated finding reproduction through its pure oracle.
+    Replay(CampaignReplayArgs),
+    /// Export or verify one authenticated finding and its native replay evidence.
+    FindingBundle(CampaignFindingBundleArgs),
+    /// Project and minimize the authenticated findings retained by one snapshot.
+    Triage(CampaignTriageArgs),
+    /// Open an authenticated retained finding checkpoint in the debug relay.
+    Debug(CampaignDebugArgs),
+    /// Begin issuing work for a newly created campaign.
+    Start(CampaignMutationBasisArgs),
+    /// Begin or resume issuing campaign work.
+    Resume(CampaignMutationBasisArgs),
+    /// Pause new work under an explicit active-attempt policy.
+    Pause(CampaignPauseArgs),
+    /// Complete or seal a campaign.
+    Stop(CampaignStopArgs),
+    /// Re-enable mutation of a sealed campaign.
+    Unseal(CampaignMutationBasisArgs),
+    /// Grant additive proposal and attempt budget.
+    Budget(CampaignBudgetArgs),
+    /// Activate an imported compatible policy for future work.
+    Steer(CampaignSteerArgs),
+    /// Add or update one semantic configuration pin.
+    Pin(CampaignPinArgs),
+    /// Remove one semantic configuration pin.
+    Unpin(CampaignUnpinArgs),
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignReplayArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Exact authenticated campaign snapshot.
+    #[arg(long, value_name = "SNAPSHOT", required = true)]
+    snapshot: String,
+    /// Exact finding identity retained by the snapshot.
+    #[arg(long, value_name = "FINDING", required = true)]
+    finding: String,
+    /// Replay the authenticated minimized reproduction when present.
+    #[arg(long, action = ArgAction::SetTrue)]
+    minimized: bool,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignFindingBundleArgs {
+    #[command(subcommand)]
+    command: CampaignFindingBundleCommand,
+}
+
+#[derive(Subcommand, Debug, PartialEq, Eq)]
+enum CampaignFindingBundleCommand {
+    /// Export one finding and its complete executable archive from a stopped owner.
+    Export(CampaignFindingBundleExportArgs),
+    /// Verify archived evidence offline; optionally reproduce in local QEMU.
+    Verify(CampaignFindingBundleVerifyArgs),
+    /// Open an archived exact checkpoint in a private read-only QEMU session.
+    Midpoint(CampaignFindingBundleMidpointArgs),
+    /// Fork a second private midpoint and prove one non-canonical register write.
+    ForkWrite(CampaignFindingBundleForkWriteArgs),
+    /// Execute a declared alternate choice from the imported executable archive.
+    Branch(CampaignFindingBundleBranchArgs),
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignFindingBundleExportArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Exact authenticated campaign snapshot.
+    #[arg(long, value_name = "SNAPSHOT", required = true)]
+    snapshot: String,
+    /// Exact finding identity retained by the snapshot.
+    #[arg(long, value_name = "FINDING", required = true)]
+    finding: String,
+    /// Exact durable source campaign state directory.
+    #[arg(long, value_name = "PATH", required = true)]
+    source_state: PathBuf,
+    /// Strict source peer-policy file.
+    #[arg(long, value_name = "PATH", required = true)]
+    source_policy: PathBuf,
+    /// Strict source composed-store deployment file.
+    #[arg(long, value_name = "PATH", required = true)]
+    source_store: PathBuf,
+    /// Maximum authenticated bytes admitted for one exact checkpoint closure.
+    #[arg(long, default_value_t = 1_073_741_824, value_name = "BYTES")]
+    maximum_checkpoint_bytes: u64,
+    /// New directory for the portable finding bundle.
+    #[arg(long, value_name = "DIR", required = true)]
+    output: PathBuf,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignFindingBundleVerifyArgs {
+    /// Exported finding bundle directory.
+    #[arg(value_name = "DIR")]
+    input: PathBuf,
+    /// Retained replay pass and original or selected reproduction.
+    #[arg(long, value_enum, default_value_t = CampaignFindingBundleRole::VerificationOriginal)]
+    role: CampaignFindingBundleRole,
+    /// Repeat the retained production boundary in a fresh local QEMU lifecycle.
+    #[arg(long, action = ArgAction::SetTrue)]
+    exact: bool,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignFindingBundleMidpointArgs {
+    /// Exported finding bundle directory.
+    #[arg(value_name = "DIR")]
+    input: PathBuf,
+    /// Retained replay pass used for packaged guest and fault evidence.
+    #[arg(long, value_enum, default_value_t = CampaignFindingBundleRole::VerificationOriginal)]
+    role: CampaignFindingBundleRole,
+    /// Attach this node's gdbstub at the retained midpoint.
+    #[arg(long, value_name = "ID", required = true)]
+    node: String,
+    /// Maximum authenticated bytes admitted for one exact checkpoint closure.
+    #[arg(long, default_value_t = 1_073_741_824, value_name = "BYTES")]
+    maximum_checkpoint_bytes: u64,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignFindingBundleForkWriteArgs {
+    #[command(flatten)]
+    midpoint: CampaignFindingBundleMidpointArgs,
+    /// GDB register number whose low byte is changed on the private branch.
+    #[arg(long, default_value_t = 0, value_name = "N")]
+    register: u32,
+    /// Bit mask applied to the low register byte before the write.
+    #[arg(long, default_value_t = 1, value_name = "MASK")]
+    xor_mask: u8,
+    /// Keep serving the proven writable branch to a local GDB client.
+    #[arg(long, action = ArgAction::SetTrue)]
+    serve: bool,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignFindingBundleBranchArgs {
+    /// Exported finding bundle directory.
+    #[arg(value_name = "DIR")]
+    input: PathBuf,
+    /// Alternate label or typed value for the first retained declared choice.
+    #[arg(long, value_name = "VALUE", required = true)]
+    value: String,
+    /// New owner-only directory for the executed branch and provenance.
+    #[arg(long, value_name = "DIR", required = true)]
+    output: PathBuf,
+    /// Maximum time allowed for the packaged QEMU branch to complete.
+    #[arg(long, value_name = "SECONDS", default_value_t = 300)]
+    timeout_seconds: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum CampaignFindingBundleRole {
+    MinimizationOriginal,
+    MinimizationSelected,
+    #[default]
+    VerificationOriginal,
+    VerificationSelected,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignTriageArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Exact authenticated campaign snapshot.
+    #[arg(long, value_name = "SNAPSHOT", required = true)]
+    snapshot: String,
+    /// Select the failure-signature policy.
+    #[arg(
+        long,
+        value_enum,
+        value_name = "coarse|default|fine|exact",
+        default_value_t = TriagePolicyArg::Default
+    )]
+    policy: TriagePolicyArg,
+    /// Select representative minimization mode.
+    #[arg(
+        long,
+        value_enum,
+        value_name = "none|representative|all",
+        default_value_t = TriageMinimizeArg::Representative
+    )]
+    minimize: TriageMinimizeArg,
+    /// Write per-cluster reports here.
+    #[arg(long, value_name = "dir")]
+    report: Option<PathBuf>,
+    /// Recompute signatures and fail if retained evidence drifts.
+    #[arg(long, action = ArgAction::SetTrue)]
+    recompute_signatures: bool,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignDebugArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Exact historical snapshot retaining the finding and checkpoint pins.
+    #[arg(long, value_name = "SNAPSHOT", required = true)]
+    snapshot: String,
+    /// Exact finding whose retained state is opened.
+    #[arg(long, value_name = "FINDING", required = true)]
+    finding: String,
+    /// Attach this node's gdbstub.
+    #[arg(long, value_name = "ID", required = true)]
+    node: String,
+    /// Listen for gdb-protocol clients here.
+    #[arg(long, value_name = "ADDR", default_value = "127.0.0.1:0")]
+    gdb_listen: String,
+    /// Fork a private non-canonical branch before exposing the GDB relay.
+    #[arg(long, action = ArgAction::SetTrue)]
+    writable: bool,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignArchiveArgs {
+    #[command(subcommand)]
+    command: CampaignArchiveCommand,
+}
+
+#[derive(Subcommand, Debug, PartialEq, Eq)]
+enum CampaignArchiveCommand {
+    /// Transfer one exact snapshot between stopped deployment owners.
+    Transfer(CampaignArchiveTransferArgs),
+    /// Authenticate one named archive in a stopped deployment.
+    Inspect(CampaignArchiveInspectArgs),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum CampaignArchiveMode {
+    Metadata,
+    Findings,
+    Debug,
+    Executable,
+    Mirror,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignArchiveTransferArgs {
+    /// Exact durable source campaign state directory.
+    #[arg(long, value_name = "path")]
+    source_state: PathBuf,
+    /// Strict source peer-policy file.
+    #[arg(long, value_name = "path")]
+    source_policy: PathBuf,
+    /// Strict source composed-store deployment file.
+    #[arg(long, value_name = "path")]
+    source_store: PathBuf,
+    /// Source campaign whose exact-pin selections authorize executable export.
+    #[arg(long, value_name = "name")]
+    source_campaign: String,
+    /// Exact authenticated source snapshot.
+    #[arg(long, value_name = "snapshot-id")]
+    snapshot: String,
+    /// Closed archive selection policy.
+    #[arg(long, value_enum)]
+    mode: CampaignArchiveMode,
+    /// Additional canonical retained root; valid only for mirror archives.
+    #[arg(long = "retain", value_name = "content-id")]
+    retained_roots: Vec<String>,
+    /// Exact durable destination campaign state directory.
+    #[arg(long, value_name = "path")]
+    destination_state: PathBuf,
+    /// Strict destination peer-policy file.
+    #[arg(long, value_name = "path")]
+    destination_policy: PathBuf,
+    /// Strict destination composed-store deployment file.
+    #[arg(long, value_name = "path")]
+    destination_store: PathBuf,
+    /// Destination archive ref name.
+    #[arg(long, value_name = "name")]
+    archive: String,
+    /// Optional ordinary destination campaign name for an executable archive.
+    #[arg(long, value_name = "name")]
+    campaign: Option<String>,
+    /// Minimum independently named durable destination placements.
+    #[arg(long, default_value_t = 1, value_name = "n")]
+    minimum_durable_placements: u16,
+    /// Permit acknowledged deferred downstream destination writes.
+    #[arg(long)]
+    allow_deferred_write: bool,
+    /// Maximum authenticated bytes admitted for one exact checkpoint closure.
+    #[arg(long, default_value_t = 1_073_741_824, value_name = "bytes")]
+    maximum_checkpoint_bytes: u64,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignArchiveInspectArgs {
+    /// Exact durable campaign state directory.
+    #[arg(long, value_name = "path")]
+    state: PathBuf,
+    /// Strict peer-policy file.
+    #[arg(long, value_name = "path")]
+    policy: PathBuf,
+    /// Strict composed-store deployment file.
+    #[arg(long, value_name = "path")]
+    store: PathBuf,
+    /// Destination archive ref name.
+    #[arg(long, value_name = "name")]
+    archive: String,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct StoreArgs {
+    #[command(subcommand)]
+    command: StoreCommand,
+}
+
+#[derive(Subcommand, Debug, PartialEq, Eq)]
+enum StoreCommand {
+    /// Describe one exact admitted store graph without accessing object bytes.
+    Status(StoreStatusArgs),
+    /// Read and authenticate one complete object without repair or promotion.
+    Ensure(StoreEnsureArgs),
+    /// Authenticate every bounded physical placement in one stable generation.
+    Verify(StoreVerifyArgs),
+    /// Plan, cancel, or apply stopped-owner campaign-store garbage collection.
+    Gc(CampaignStoreGcArgs),
+    /// Plan or apply one exact physical storage transformation.
+    Transform(CampaignStoreTransformArgs),
+    /// Reload and validate deployment credential capabilities.
+    Credentials(StoreCredentialsArgs),
+    /// Reclaim unreachable incomplete physical material under a stopped owner.
+    Cleanup(StoreCleanupArgs),
+    /// Repair one physical copy from an independently authenticated peer.
+    Repair(StoreRepairArgs),
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct StoreCredentialsArgs {
+    #[command(subcommand)]
+    operation: StoreCredentialsCommand,
+}
+
+#[derive(Subcommand, Debug, PartialEq, Eq)]
+enum StoreCredentialsCommand {
+    /// Reload current credential files and validate every bound capability.
+    Refresh(StoreCredentialRefreshArgs),
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct StoreCredentialRefreshArgs {
+    /// Strict composed repository-store deployment file.
+    #[arg(value_name = "STORE")]
+    deployment: PathBuf,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct StoreCleanupArgs {
+    #[command(subcommand)]
+    operation: StoreCleanupCommand,
+}
+
+#[derive(Subcommand, Debug, PartialEq, Eq)]
+enum StoreCleanupCommand {
+    /// Reclaim complete and staging packs absent from the authenticated index.
+    IncompletePacks(StoreIncompletePackCleanupArgs),
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct StoreIncompletePackCleanupArgs {
+    /// Exact durable campaign state directory whose owner lock must be free.
+    #[arg(long, value_name = "path")]
+    state: PathBuf,
+    /// Strict owner-only campaign peer policy used by this deployment.
+    #[arg(long, value_name = "path")]
+    policy: PathBuf,
+    /// Strict composed repository-store deployment file.
+    #[arg(long, value_name = "path")]
+    store: PathBuf,
+    /// Exact packed graph node; optional only when exactly one exists.
+    #[arg(long, value_name = "node")]
+    node: Option<String>,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct StoreVerifyArgs {
+    /// Strict composed repository-store deployment file.
+    #[arg(value_name = "STORE")]
+    deployment: PathBuf,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct StoreStatusArgs {
+    /// Strict composed repository-store deployment file.
+    #[arg(value_name = "STORE")]
+    deployment: PathBuf,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct StoreEnsureArgs {
+    /// Exact canonical content ID to authenticate through the logical root.
+    #[arg(value_name = "CONTENT_ID")]
+    content: String,
+    /// Strict composed repository-store deployment file.
+    #[arg(long = "in", value_name = "STORE")]
+    deployment: PathBuf,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct StoreRepairArgs {
+    #[command(subcommand)]
+    command: StoreRepairCommand,
+}
+
+#[derive(Subcommand, Debug, PartialEq, Eq)]
+enum StoreRepairCommand {
+    /// Restore one physical placement from an authenticated peer.
+    Placement(StorePlacementRepairArgs),
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct StorePlacementRepairArgs {
+    /// Exact canonical content ID to repair.
+    #[arg(value_name = "CONTENT_ID")]
+    content: String,
+    /// Strict composed repository-store deployment file.
+    #[arg(long = "in", value_name = "STORE")]
+    deployment: PathBuf,
+    /// Exact physical node that supplies authenticated bytes.
+    #[arg(long, value_name = "NODE")]
+    source: String,
+    /// Exact physical node whose placement may be replaced.
+    #[arg(long, value_name = "NODE")]
+    target: String,
+    /// Maximum logical bytes admitted into the bounded repair buffer.
+    #[arg(long, value_name = "BYTES", default_value_t = 1_073_741_824)]
+    maximum_bytes: u64,
+    /// Require this campaign owner lock to be free; refuse a running service.
+    #[arg(long, value_name = "PATH")]
+    state: PathBuf,
+    /// Strict owner-only campaign peer policy used by this deployment.
+    #[arg(long, value_name = "PATH")]
+    policy: PathBuf,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignStoreGcArgs {
+    /// Exact durable campaign state directory whose owner lock must be free.
+    #[arg(long, value_name = "path")]
+    state: PathBuf,
+    /// Strict owner-only campaign peer policy used by this deployment.
+    #[arg(long, value_name = "path")]
+    policy: PathBuf,
+    /// Strict composed repository-store deployment file.
+    #[arg(long, value_name = "path")]
+    store: PathBuf,
+    /// Durable external plan and recovery journal directory.
+    #[arg(long, value_name = "path")]
+    journal: PathBuf,
+    #[command(subcommand)]
+    operation: CampaignStoreGcCommand,
+}
+
+#[derive(Subcommand, Debug, PartialEq, Eq)]
+enum CampaignStoreGcCommand {
+    /// Inventory exact roots and persist a non-destructive deletion plan.
+    Plan,
+    /// Durably cancel a planned journal before deletion begins.
+    Cancel,
+    /// Revalidate every generation and apply one persisted deletion plan.
+    Apply,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignStoreTransformArgs {
+    #[command(subcommand)]
+    transform: CampaignStoreTransformCommand,
+}
+
+#[derive(Subcommand, Debug, PartialEq, Eq)]
+enum CampaignStoreTransformCommand {
+    /// Repack one exact packed-leaf generation.
+    Packed(CampaignStorePackedTransformArgs),
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignStorePackedTransformArgs {
+    /// Strict composed repository-store deployment file.
+    #[arg(long, value_name = "path")]
+    store: PathBuf,
+    /// Durable external plan and recovery journal directory.
+    #[arg(long, value_name = "path")]
+    journal: PathBuf,
+    /// Exact packed graph node; optional only when exactly one exists.
+    #[arg(long, value_name = "node")]
+    node: Option<String>,
+    #[command(subcommand)]
+    operation: CampaignStorePackedTransformCommand,
+}
+
+#[derive(Subcommand, Debug, PartialEq, Eq)]
+enum CampaignStorePackedTransformCommand {
+    /// Persist a non-destructive exact-generation repack plan.
+    Plan,
+    /// Revalidate and apply one persisted exact-generation repack plan.
+    Apply,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignListArgs {
+    /// Exclusive campaign-name cursor returned by the preceding page.
+    #[arg(long, value_name = "NAME")]
+    after: Option<String>,
+    /// Maximum campaign heads returned in each page.
+    #[arg(long, value_name = "COUNT", default_value_t = 32)]
+    limit: u32,
+    /// Maximum authenticated pages followed from the supplied cursor.
+    #[arg(long, value_name = "COUNT", default_value_t = 1)]
+    pages: u32,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignAttachArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Absolute pathname of the authenticated local executor socket.
+    #[arg(long, value_name = "PATH", required = true)]
+    executor_socket: PathBuf,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignFixtureArgs {
+    #[command(subcommand)]
+    fixture: CampaignFixtureCommand,
+}
+
+#[derive(Subcommand, Debug, PartialEq, Eq)]
+enum CampaignFixtureCommand {
+    /// Generate the adaptive network-recovery campaign from RFC-0020.
+    WorkedNetwork(CampaignWorkedNetworkFixtureArgs),
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignWorkedNetworkFixtureArgs {
+    /// New directory that will receive the complete fixture.
+    #[arg(long, value_name = "DIR", required = true)]
+    output: PathBuf,
+    /// AOS-built Linux kernel for the executable Envoy network fixture.
+    #[arg(long, value_name = "FILE", requires_all = ["root_image", "qemu", "plugin"])]
+    kernel: Option<PathBuf>,
+    /// Immutable root.ext4 from the AOS Envoy network guest package.
+    #[arg(long, value_name = "FILE", requires_all = ["kernel", "qemu", "plugin"])]
+    root_image: Option<PathBuf>,
+    /// Packaged Crucible QEMU executable for the executable fixture.
+    #[arg(long, value_name = "FILE", requires_all = ["kernel", "root_image", "plugin"])]
+    qemu: Option<PathBuf>,
+    /// Matching packaged Crucible QEMU plugin for the executable fixture.
+    #[arg(long, value_name = "FILE", requires_all = ["kernel", "root_image", "qemu"])]
+    plugin: Option<PathBuf>,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignValidateImportArgs {
+    /// Strict import manifest to validate; repeated manifests share one bound.
+    #[arg(value_name = "MANIFEST", required = true)]
+    manifests: Vec<PathBuf>,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignValidateArgs {
+    /// Canonical campaign name to authenticate through the connected service.
+    #[arg(
+        value_name = "NAME",
+        required_unless_present = "policy",
+        conflicts_with = "policy"
+    )]
+    name: Option<String>,
+    /// Canonical binary CampaignPolicy record to validate offline.
+    #[arg(long, value_name = "FILE", required_unless_present = "name")]
+    policy: Option<PathBuf>,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignScenarioArgs {
+    #[command(subcommand)]
+    command: CampaignScenarioCommand,
+}
+
+#[derive(Subcommand, Debug, PartialEq, Eq)]
+enum CampaignScenarioCommand {
+    /// Compile canonical scenario TOML and an empty genesis schedule.
+    Compile(CampaignScenarioCompileArgs),
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignScenarioCompileArgs {
+    /// Canonical Crucible scenario TOML using the current scenario schema.
+    #[arg(value_name = "INPUT")]
+    input: PathBuf,
+    /// New directory that will receive scenario.bin, schedule.bin, and import.toml.
+    #[arg(long, value_name = "DIR", required = true)]
+    output: PathBuf,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignConfigurationArgs {
+    #[command(subcommand)]
+    command: CampaignConfigurationCommand,
+}
+
+#[derive(Subcommand, Debug, PartialEq, Eq)]
+enum CampaignConfigurationCommand {
+    /// Compile a canonical current-schema schedule against one scenario.
+    Compile(CampaignConfigurationCompileArgs),
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignConfigurationCompileArgs {
+    /// Canonical Crucible scenario TOML using the current scenario schema.
+    #[arg(value_name = "SCENARIO")]
+    scenario: PathBuf,
+    /// Nonempty canonical Crucible Schedule V4 compact binary.
+    #[arg(value_name = "SCHEDULE")]
+    schedule: PathBuf,
+    /// New directory that will receive scenario.bin, schedule.bin, and import.toml.
+    #[arg(long, value_name = "DIR", required = true)]
+    output: PathBuf,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignScheduleArgs {
+    #[command(subcommand)]
+    command: CampaignScheduleCommand,
+}
+
+#[derive(Subcommand, Debug, PartialEq, Eq)]
+enum CampaignScheduleCommand {
+    /// Compile a strict TOML decision list into canonical Schedule V4 bytes.
+    Compile(CampaignScheduleCompileArgs),
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignScheduleCompileArgs {
+    /// Strict version-one campaign decision TOML.
+    #[arg(value_name = "INPUT")]
+    input: PathBuf,
+    /// New file that will receive the canonical Schedule V4 body.
+    #[arg(long, value_name = "OUTPUT", required = true)]
+    output: PathBuf,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignPolicyArgs {
+    #[command(subcommand)]
+    command: CampaignPolicyCommand,
+}
+
+#[derive(Subcommand, Debug, PartialEq, Eq)]
+enum CampaignPolicyCommand {
+    /// Compile a strict TOML policy into its canonical binary record.
+    Compile(CampaignPolicyCompileArgs),
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignPolicyCompileArgs {
+    /// Strict current version-three campaign policy TOML.
+    #[arg(value_name = "INPUT")]
+    input: PathBuf,
+    /// Canonical scenario TOML used to resolve selectable IDs and tag predicates.
+    #[arg(long, value_name = "SCENARIO")]
+    scenario: Option<PathBuf>,
+    /// New file that will receive the canonical binary policy record.
+    #[arg(long, value_name = "OUTPUT", required = true)]
+    output: PathBuf,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignLineageArgs {
+    #[command(subcommand)]
+    command: CampaignLineageCommand,
+}
+
+#[derive(Subcommand, Debug, PartialEq, Eq)]
+enum CampaignLineageCommand {
+    /// Compile a strict TOML lineage into its canonical binary record.
+    Compile(CampaignLineageCompileArgs),
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignLineageCompileArgs {
+    /// Strict version-one campaign lineage TOML.
+    #[arg(value_name = "INPUT")]
+    input: PathBuf,
+    /// New file that will receive the canonical binary lineage record.
+    #[arg(long, value_name = "OUTPUT", required = true)]
+    output: PathBuf,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignCreateArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Canonical binary CampaignLineage record whose artifacts are already imported.
+    #[arg(long, value_name = "FILE", required = true)]
+    lineage: PathBuf,
+    /// Canonical binary CampaignPolicy record whose generators are already imported.
+    #[arg(long, value_name = "FILE", required = true)]
+    policy: PathBuf,
+    /// Resume the new campaign immediately after creation with this idempotency key.
+    #[arg(long, value_name = "COMMAND")]
+    start_command: Option<String>,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignDeriveArgs {
+    /// Existing source campaign name.
+    #[arg(value_name = "SOURCE")]
+    source: String,
+    /// Exact authenticated source snapshot.
+    #[arg(long, value_name = "SNAPSHOT", required = true)]
+    snapshot: String,
+    /// New target campaign name.
+    #[arg(value_name = "TARGET")]
+    target: String,
+    /// Optional canonical binary CampaignPolicy to activate in the derived campaign.
+    #[arg(long, value_name = "FILE")]
+    policy: Option<PathBuf>,
+}
+
+#[derive(Args, Clone, Debug, PartialEq, Eq)]
+struct CampaignBranchArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Snapshot this additive request expects to advance.
+    #[arg(long, value_name = "SNAPSHOT", required = true)]
+    expected: String,
+    /// Exact operator idempotency key; omitted for exhaustive-policy `--all`.
+    #[arg(
+        long,
+        value_name = "COMMAND",
+        required_unless_present = "all",
+        conflicts_with = "all"
+    )]
+    command: Option<String>,
+    /// Semantic branch-point ID.
+    #[arg(long, value_name = "BRANCH_POINT", required = true)]
+    branch_point: String,
+    /// Exact parent configuration-artifact ID.
+    #[arg(long, value_name = "CONFIGURATION_ARTIFACT", required = true)]
+    parent: String,
+    /// Exact choice-opportunity ID reached at the parent.
+    #[arg(
+        long,
+        value_name = "OPPORTUNITY",
+        required_unless_present = "selector",
+        requires = "domain",
+        conflicts_with = "selector"
+    )]
+    opportunity: Option<String>,
+    /// Exact effective choice-domain ID.
+    #[arg(
+        long,
+        value_name = "DOMAIN",
+        required_unless_present = "selector",
+        requires = "opportunity",
+        conflicts_with = "selector"
+    )]
+    domain: Option<String>,
+    /// Resolve one opportunity by conjunctive declaration names, IDs, or tags.
+    #[arg(long, value_name = "SELECTOR", action = ArgAction::Append)]
+    selector: Vec<String>,
+    /// Optional exact opportunity instance filter used with --selector.
+    #[arg(long, value_name = "INSTANCE", requires = "selector")]
+    instance: Option<String>,
+    /// Maximum authenticated opportunities examined during selector resolution.
+    #[arg(long, value_name = "COUNT", default_value_t = 256)]
+    selector_scan_limit: u32,
+    /// Finite value: true, false, i64:N, u64:N, discrete:ID, or group:HEX.
+    #[arg(
+        long = "value",
+        value_name = "VALUE",
+        required_unless_present_any = ["generator", "all"],
+        conflicts_with_all = ["generator", "all"],
+        action = ArgAction::Append
+    )]
+    values: Vec<String>,
+    /// Deterministic candidate-generator ID instead of finite values.
+    #[arg(
+        long,
+        value_name = "GENERATOR",
+        conflicts_with_all = ["values", "all"]
+    )]
+    generator: Option<String>,
+    /// Exhaust the authenticated finite domain under the active exhaustive policy.
+    #[arg(long, conflicts_with_all = ["values", "generator", "proposals"])]
+    all: bool,
+    /// Maximum proposals; required for a generator, otherwise defaults to value count.
+    #[arg(long, value_name = "COUNT")]
+    proposals: Option<u64>,
+    /// Maximum newly admitted attempts.
+    #[arg(long, value_name = "COUNT", default_value_t = 1)]
+    attempts: u64,
+    /// Primary stop: next-choice, terminal, boundary:NAME, virtual-time-ps:N, events:N, execution-quanta:N, or virtual-time-or-execution-quanta:TIME:QUANTA.
+    /// The active policy's attempt deadlines also apply.
+    #[arg(long, value_name = "CONDITION", default_value = "next-choice")]
+    stop: String,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignStatusArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignReportArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Exact current snapshot that anchors every reported fact.
+    #[arg(long, value_name = "SNAPSHOT", required = true)]
+    snapshot: String,
+    /// Exclusive one-based endpoint cursor returned by the preceding page.
+    #[arg(long, value_name = "CURSOR")]
+    after: Option<u32>,
+    /// Maximum estimator endpoints returned per page.
+    #[arg(long, value_name = "COUNT", default_value_t = 8)]
+    limit: u32,
+    /// Maximum authenticated estimator pages followed from the supplied cursor.
+    #[arg(long, value_name = "COUNT", default_value_t = 1)]
+    pages: u32,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignWatchArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Last observed campaign snapshot cursor.
+    #[arg(long, value_name = "SNAPSHOT")]
+    after: Option<String>,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignSnapshotArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Exact historical snapshot to inspect.
+    #[arg(long, value_name = "SNAPSHOT", required = true)]
+    snapshot: String,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignCompareArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// First exact historical snapshot.
+    #[arg(long, value_name = "SNAPSHOT", required = true)]
+    left: String,
+    /// Second exact historical snapshot.
+    #[arg(long, value_name = "SNAPSHOT", required = true)]
+    right: String,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignExplainArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Exact historical snapshot containing both records.
+    #[arg(long, value_name = "SNAPSHOT", required = true)]
+    snapshot: String,
+    /// Exact choice opportunity whose legality is explained.
+    #[arg(long, value_name = "OPPORTUNITY", required = true)]
+    opportunity: String,
+    /// Exact frontier request whose cause is explained.
+    #[arg(long, value_name = "REQUEST", required = true)]
+    request: String,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignFindingExplainArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Exact historical snapshot containing the finding.
+    #[arg(long, value_name = "SNAPSHOT", required = true)]
+    snapshot: String,
+    /// Exact finding whose evidence and reproduction basis are explained.
+    #[arg(long, value_name = "FINDING", required = true)]
+    finding: String,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignAttemptExplainArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Exact historical snapshot containing the attempt.
+    #[arg(long, value_name = "SNAPSHOT", required = true)]
+    snapshot: String,
+    /// Exact semantic attempt whose execution basis is explained.
+    #[arg(long, value_name = "ATTEMPT", required = true)]
+    attempt: String,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignCaptureAttemptArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Exact current snapshot containing a completed next-choice attempt.
+    #[arg(long, value_name = "SNAPSHOT", required = true)]
+    snapshot: String,
+    /// Completed attempt to replay at its pending-choice stop.
+    #[arg(long, value_name = "ATTEMPT", required = true)]
+    attempt: String,
+    /// Stable idempotency command identity.
+    #[arg(long, value_name = "COMMAND", required = true)]
+    command: String,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignCaptureStatusArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Exact current snapshot containing the capture request.
+    #[arg(long, value_name = "SNAPSHOT", required = true)]
+    snapshot: String,
+    /// Immutable capture request fact.
+    #[arg(long, value_name = "REQUEST", required = true)]
+    request: String,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignSelectCaptureArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Exact current snapshot containing a Ready capture.
+    #[arg(long, value_name = "SNAPSHOT", required = true)]
+    snapshot: String,
+    /// Immutable Ready capture request fact.
+    #[arg(long, value_name = "REQUEST", required = true)]
+    request: String,
+    /// Stable idempotency command identity.
+    #[arg(long, value_name = "COMMAND", required = true)]
+    command: String,
+    /// Later stop reached after restoring and answering the pending choice.
+    #[arg(long, value_name = "CONDITION", required = true)]
+    stop: String,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignRankingsArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Exact current snapshot that authenticates every planner step.
+    #[arg(long, value_name = "SNAPSHOT", required = true)]
+    snapshot: String,
+    /// Newest accepted planner step included in the ranking chain.
+    #[arg(long, value_name = "STEP", required = true)]
+    step: String,
+    /// Maximum planner-step pages followed through parent links.
+    #[arg(long, value_name = "COUNT", default_value_t = 16)]
+    pages: u32,
+    /// Continue across policy boundaries and rank each exact basis separately.
+    #[arg(long)]
+    policy_groups: bool,
+    /// Keep only candidates for this exact semantic branch point.
+    #[arg(long, value_name = "BRANCH_POINT")]
+    branch_point: Option<String>,
+    /// Keep only candidates produced from this exact branch request.
+    #[arg(long, value_name = "REQUEST")]
+    source: Option<String>,
+    /// Return this many matches globally, or per exact basis with --policy-groups.
+    #[arg(long, value_name = "COUNT")]
+    top: Option<u32>,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignPageArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Exact campaign snapshot that anchors the immutable page.
+    #[arg(long, value_name = "SNAPSHOT", required = true)]
+    snapshot: String,
+    /// Exclusive cursor returned by the preceding page.
+    #[arg(long, value_name = "CURSOR")]
+    after: Option<String>,
+    /// Maximum entries returned in this page.
+    #[arg(long, value_name = "COUNT", default_value_t = 8)]
+    limit: u32,
+    /// Maximum authenticated pages followed from the supplied cursor.
+    #[arg(long, value_name = "COUNT", default_value_t = 1)]
+    pages: u32,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignRequestAttemptsArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Exact campaign snapshot that anchors the immutable page.
+    #[arg(long, value_name = "SNAPSHOT", required = true)]
+    snapshot: String,
+    /// Accepted branch request whose admissions are queried.
+    #[arg(long, value_name = "REQUEST", required = true)]
+    request: String,
+    /// Exclusive proposal cursor returned by the preceding page.
+    #[arg(long, value_name = "PROPOSAL")]
+    after: Option<String>,
+    /// Maximum admissions returned in this page.
+    #[arg(long, value_name = "COUNT", default_value_t = 8)]
+    limit: u32,
+    /// Maximum authenticated pages followed from the supplied cursor.
+    #[arg(long, value_name = "COUNT", default_value_t = 1)]
+    pages: u32,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignGraphObjectArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Exact campaign snapshot that authenticates the graph object.
+    #[arg(long, value_name = "SNAPSHOT", required = true)]
+    snapshot: String,
+    /// Exact graph key returned by `campaign graph`.
+    #[arg(long, value_name = "KEY", required = true)]
+    key: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum CampaignChoiceObjectKindArg {
+    /// Inspect the reusable selectable declaration.
+    Declaration,
+    /// Inspect the exact effective choice domain.
+    Domain,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignChoiceObjectArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Exact campaign snapshot that authenticates the opportunity.
+    #[arg(long, value_name = "SNAPSHOT", required = true)]
+    snapshot: String,
+    /// Exact choice-opportunity ID returned by `campaign choices`.
+    #[arg(long, value_name = "OPPORTUNITY", required = true)]
+    opportunity: String,
+    /// Selects the referenced object body to inspect.
+    #[arg(long, value_enum, value_name = "declaration|domain", required = true)]
+    kind: CampaignChoiceObjectKindArg,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignChoiceValueArgs {
+    #[command(subcommand)]
+    command: CampaignChoiceValueCommand,
+}
+
+#[derive(Subcommand, Debug, PartialEq, Eq)]
+enum CampaignChoiceValueCommand {
+    /// Resolve named members against an authenticated group domain.
+    Encode(CampaignChoiceValueEncodeArgs),
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignChoiceValueEncodeArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Exact campaign snapshot that authenticates the opportunity.
+    #[arg(long, value_name = "SNAPSHOT", required = true)]
+    snapshot: String,
+    /// Exact choice-opportunity ID returned by `campaign choices`.
+    #[arg(long, value_name = "OPPORTUNITY", required = true)]
+    opportunity: String,
+    /// Complete member assignment, such as fault.kind=packet_loss.
+    #[arg(long, value_name = "NAME=VALUE", action = ArgAction::Append, required = true)]
+    member: Vec<String>,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignFrontierObjectArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Exact campaign snapshot that authenticates the continuation.
+    #[arg(long, value_name = "SNAPSHOT", required = true)]
+    snapshot: String,
+    /// Exact branch-request ID returned by `campaign frontier`.
+    #[arg(long, value_name = "REQUEST", required = true)]
+    request: String,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignMutationBasisArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Snapshot this mutation expects to advance.
+    #[arg(long, value_name = "SNAPSHOT", required = true)]
+    expected: String,
+    /// Stable lowercase hexadecimal idempotency key.
+    #[arg(long, value_name = "COMMAND", required = true)]
+    command: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum CampaignPausePolicyArg {
+    /// Let accepted attempts drain before durable pause.
+    #[default]
+    Drain,
+    /// Capture exact checkpoints for accepted attempts before durable pause.
+    Checkpoint,
+    /// Cancel accepted attempts and leave their semantic work retryable.
+    Retry,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignPauseArgs {
+    #[command(flatten)]
+    basis: CampaignMutationBasisArgs,
+    /// Select how accepted attempts reach the paused boundary.
+    #[arg(
+        long,
+        value_enum,
+        value_name = "drain|checkpoint|retry",
+        default_value_t = CampaignPausePolicyArg::Drain
+    )]
+    active: CampaignPausePolicyArg,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignStopArgs {
+    #[command(flatten)]
+    basis: CampaignMutationBasisArgs,
+    /// Seal the campaign against accidental future mutation.
+    #[arg(long)]
+    seal: bool,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignBudgetArgs {
+    /// Canonical campaign name.
+    #[arg(value_name = "NAME")]
+    name: String,
+    /// Snapshot this mutation expects to advance.
+    #[arg(long, value_name = "SNAPSHOT", required = true)]
+    expected: String,
+    /// Stable lowercase hexadecimal idempotency key.
+    #[arg(long, value_name = "COMMAND", required = true)]
+    command: String,
+    #[command(subcommand)]
+    operation: CampaignBudgetCommand,
+}
+
+#[derive(Subcommand, Debug, PartialEq, Eq)]
+enum CampaignBudgetCommand {
+    /// Add bounded proposal and semantic-attempt allowances.
+    Add(CampaignBudgetAddArgs),
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignBudgetAddArgs {
+    /// Additional semantic attempts permitted.
+    #[arg(value_name = "ATTEMPTS")]
+    attempts: u64,
+    /// Additional planner proposals permitted.
+    #[arg(long, value_name = "PROPOSALS", default_value_t = 0)]
+    proposals: u64,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignSteerArgs {
+    #[command(flatten)]
+    basis: CampaignMutationBasisArgs,
+    /// Imported compatible policy to activate.
+    #[arg(long, value_name = "POLICY", required = true)]
+    policy: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum CampaignPinRetentionArg {
+    /// Retain semantic replay inputs.
+    #[default]
+    Thin,
+    /// Retain the complete portable exact closure.
+    Exact,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignPinArgs {
+    #[command(flatten)]
+    basis: CampaignMutationBasisArgs,
+    /// Semantic configuration ID to retain.
+    #[arg(value_name = "CONFIGURATION")]
+    configuration: String,
+    /// Semantic retention tier.
+    #[arg(long, value_enum, value_name = "thin|exact", default_value_t)]
+    tier: CampaignPinRetentionArg,
+    /// Bounded operator-facing history reason.
+    #[arg(long, value_name = "TEXT", default_value = "")]
+    reason: String,
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignUnpinArgs {
+    #[command(flatten)]
+    basis: CampaignMutationBasisArgs,
+    /// Semantic configuration ID whose current pin is removed.
+    #[arg(value_name = "CONFIGURATION")]
+    configuration: String,
+    /// Bounded operator-facing history reason.
+    #[arg(long, value_name = "TEXT", default_value = "")]
+    reason: String,
+}
+
+#[derive(Args, Debug, Default, PartialEq, Eq)]
+struct RunArgs {
+    /// Scenario file (the canonical TOML form, 06 §6.1) or its content hash.
+    #[arg(value_name = "SCENARIO", required = true)]
+    scenario: Option<String>,
+    /// Terminal condition. Default: quiescence.
+    #[arg(
+        long,
+        value_enum,
+        value_name = "quiescence|virtual-time|property|stopped",
+        default_value_t = RunUntilArg::Quiescence
+    )]
+    until: RunUntilArg,
+    /// Stop with Timeout past this virtual time (20 §2).
+    #[arg(long, value_name = "dur", required_if_eq("until", "virtual-time"))]
+    max_virtual_time: Option<String>,
+    /// Stop with Timeout at this scheduler-quantum boundary.
+    #[arg(long, value_name = "n")]
+    max_quanta: Option<u64>,
+    /// Pause at genesis and drive the session interactively.
+    #[arg(long, action = ArgAction::SetTrue)]
+    interactive: bool,
+    /// Materialize a savepoint at the outcome. Default: never.
+    #[arg(
+        long,
+        value_enum,
+        value_name = "fail|always|never",
+        default_value_t = RunSaveOnArg::Never
+    )]
+    save_on: RunSaveOnArg,
+    /// Stream the live status line (20 §9) alongside the trace.
+    #[arg(long, action = ArgAction::SetTrue)]
+    watch: bool,
+    /// Emit a mock failure artifact for gate testing.
+    #[cfg(any(test, feature = "test-double"))]
+    #[arg(long, hide = true, action = ArgAction::SetTrue)]
+    emit_mock_failure_artifact: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum RunUntilArg {
+    /// Stop at scheduler quiescence.
+    #[default]
+    Quiescence,
+    /// Stop at a virtual-time budget.
+    VirtualTime,
+    /// Stop at a property verdict.
+    Property,
+    /// Stop only on an explicit stopped state.
+    Stopped,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum RunSaveOnArg {
+    /// Save only on failure.
+    Fail,
+    /// Always save at outcome.
+    Always,
+    /// Do not save at outcome.
+    #[default]
+    Never,
+}
+
+#[derive(Args, Debug, Default, PartialEq, Eq)]
+#[command(group(
+    ArgGroup::new("verify_input")
+        .args(["scenario", "compare"])
+        .required(true)
+        .multiple(false)
+))]
+struct VerifyArgs {
+    /// Scenario file (the canonical TOML form, 06 §6.1) or its content hash.
+    #[arg(value_name = "SCENARIO")]
+    scenario: Option<String>,
+    /// Number of runs to compare. Default: 2.
+    #[arg(long, value_name = "n", default_value_t = 2)]
+    runs: usize,
+    /// Run the full hostile host scheduling, clock, core, and I/O matrix.
+    #[arg(long, action = ArgAction::SetTrue)]
+    adversarial: bool,
+    /// On divergence, run divergence-bisection (24 §5) and print the report.
+    #[arg(long, action = ArgAction::SetTrue)]
+    bisect: bool,
+    /// Diff two existing reproduction artifacts instead of running.
+    #[arg(long, value_names = ["a", "b"], num_args = 2)]
+    compare: Vec<PathBuf>,
+}
+
+#[derive(Args, Debug, Default, PartialEq, Eq)]
+struct SelftestArgs {
+    /// Gate subset to run.
+    #[arg(long, value_name = "list")]
+    gates: Option<String>,
+    /// Execute the QEMU-backed gates.
+    #[cfg(any(test, feature = "test-double"))]
+    #[arg(long, action = ArgAction::SetTrue)]
+    with_qemu: bool,
+    /// Test-only manifest of built-in fixture names.
+    #[cfg(any(test, feature = "test-double"))]
+    #[arg(long, value_name = "path")]
+    corpus: Option<PathBuf>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum SaveAtArg {
+    /// Stop at a virtual-time coordinate.
+    VirtualTime,
+    /// Stop at scheduler quiescence.
+    Quiescence,
+    /// Stop at a property verdict.
+    Property,
+    /// Stop at a named guest marker.
+    Marker,
+}
+
+impl SaveAtArg {
+    fn label(self) -> &'static str {
+        match self {
+            Self::VirtualTime => "virtual-time",
+            Self::Quiescence => "quiescence",
+            Self::Property => "property",
+            Self::Marker => "marker",
+        }
+    }
+}
+
+#[derive(Args, Debug, Default, PartialEq, Eq)]
+struct SaveArgs {
+    /// Scenario file (the canonical TOML form, 06 §6.1) or its content hash.
+    #[arg(value_name = "SCENARIO", required = true)]
+    scenario: Option<String>,
+    /// Where to stop and save. Required.
+    #[arg(
+        long,
+        value_enum,
+        value_name = "virtual-time|quiescence|property|marker",
+        required = true
+    )]
+    at: Option<SaveAtArg>,
+    /// Human label for the savepoint (07).
+    #[arg(long, value_name = "name")]
+    label: Option<String>,
+    /// Coordinate for --at virtual-time.
+    #[arg(long, value_name = "dur", required_if_eq("at", "virtual-time"))]
+    max_virtual_time: Option<String>,
+    /// Assertion selector for --at property.
+    #[arg(long, value_name = "assertion", required_if_eq("at", "property"))]
+    property: Option<String>,
+    /// Guest marker selector for --at marker.
+    #[arg(long, value_name = "name", required_if_eq("at", "marker"))]
+    marker: Option<String>,
+    /// Write the exported savepoint handle here. Default: --artifact-dir.
+    #[arg(long, value_name = "path")]
+    out: Option<PathBuf>,
+}
+
+#[derive(Args, Debug, Default, PartialEq, Eq)]
+struct ResumeArgs {
+    /// A current portable savepoint handle (07).
+    #[arg(value_name = "SAVEPOINT", required = true)]
+    savepoint: Option<String>,
+    /// Terminal condition, as in `run` (§6).
+    #[arg(
+        long,
+        value_enum,
+        value_name = "quiescence|virtual-time|property|stopped",
+        default_value_t = RunUntilArg::Quiescence
+    )]
+    until: RunUntilArg,
+    /// Stop with Timeout past this virtual time (20 §2).
+    #[arg(long, value_name = "dur", required_if_eq("until", "virtual-time"))]
+    max_virtual_time: Option<String>,
+    /// Drive the resumed session interactively (as in `run`).
+    #[arg(long, action = ArgAction::SetTrue)]
+    interactive: bool,
+    /// Stream the live status line (20 §9).
+    #[arg(long, action = ArgAction::SetTrue)]
+    watch: bool,
+}
+
+#[derive(Args, Debug, Default, PartialEq, Eq)]
+struct ReplayArgs {
+    /// A reproduction artifact (06 §7.1) or its content hash.
+    #[arg(value_name = "ARTIFACT")]
+    artifact: PathBuf,
+    /// Assert the replayed canonical log is byte-identical to this one.
+    #[arg(long, value_name = "original-log")]
+    check: Option<PathBuf>,
+    /// Validate a target savepoint handle.
+    #[arg(long, value_name = "savepoint")]
+    to: Option<String>,
+    /// Bisect this artifact against another (24 §5).
+    #[arg(long, value_name = "other-artifact")]
+    bisect: Option<PathBuf>,
+    /// Inject and require authenticated bounded host scheduler preemption during live QEMU replay.
+    #[arg(long, action = ArgAction::SetTrue)]
+    bounded_scheduler_preemption: bool,
+}
+
+#[derive(Args, Debug, Default, PartialEq, Eq)]
+struct SearchArgs {
+    /// Scenario file (the canonical TOML form, 06 §6.1) or its content hash.
+    #[arg(value_name = "SCENARIO", required = true)]
+    scenario: Option<String>,
+    /// Frontier expansion strategy (22).
+    #[arg(
+        long,
+        value_enum,
+        value_name = "bfs|dfs|guided",
+        default_value_t = SearchStrategyArg::Bfs
+    )]
+    strategy: SearchStrategyArg,
+    /// Decision-depth bound.
+    #[arg(long, value_name = "n")]
+    max_depth: Option<u64>,
+    /// Budget on materialized states.
+    #[arg(long, value_name = "n", default_value_t = 1)]
+    max_states: u64,
+    /// Stop at the first finding, or collect findings within the search bound.
+    #[arg(long, value_enum, value_name = "stop|collect")]
+    on_violation: Option<SearchOnViolationArg>,
+    /// Write the signed findings ledger to this path.
+    #[arg(long, value_name = "path")]
+    findings_out: Option<PathBuf>,
+    /// Load schedule-named assertion truth data.
+    #[arg(long, value_name = "path")]
+    schedule_named_truths: Option<PathBuf>,
+    /// Load backend-retained assertion evidence.
+    #[arg(long, value_name = "path")]
+    retained_evidence: Option<PathBuf>,
+}
+
+#[derive(Args, Debug, Default, PartialEq, Eq)]
+#[command(group(
+    ArgGroup::new("fuzz_family")
+        .args(["family", "family_flag"])
+        .required(true)
+        .multiple(false)
+))]
+struct FuzzArgs {
+    /// A ScenarioFamily (06 §7) to sample.
+    #[arg(value_name = "FAMILY")]
+    family: Option<String>,
+    /// A ScenarioFamily (06 §7) to sample.
+    #[arg(long = "family", value_name = "path|hash")]
+    family_flag: Option<String>,
+    /// Number of family instances to run.
+    #[arg(long, value_name = "n", default_value_t = 1)]
+    runs: u64,
+    /// Coverage signal guiding sampling (22).
+    #[arg(
+        long,
+        value_enum,
+        value_name = "basic-block",
+        default_value_t = FuzzCoverageArg::BasicBlock
+    )]
+    coverage: FuzzCoverageArg,
+    /// Seed/regression corpus directory.
+    #[arg(long, value_name = "path")]
+    corpus: Option<PathBuf>,
+    /// Stop at the first finding, or collect findings within the run bound.
+    #[arg(long, value_enum, value_name = "stop|collect")]
+    on_violation: Option<SearchOnViolationArg>,
+    /// Write the signed findings ledger to this path.
+    #[arg(long, value_name = "path")]
+    findings_out: Option<PathBuf>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum SearchStrategyArg {
+    /// Breadth-first frontier expansion.
+    #[default]
+    Bfs,
+    /// Depth-first frontier expansion.
+    Dfs,
+    /// Coverage-guided frontier expansion.
+    Guided,
+}
+
+impl SearchStrategyArg {
+    fn engine_strategy(self) -> crucible_engine::SearchStrategy {
+        match self {
+            Self::Bfs => crucible_engine::SearchStrategy::BreadthFirst,
+            Self::Dfs => crucible_engine::SearchStrategy::DepthFirst,
+            Self::Guided => crucible_engine::SearchStrategy::CoverageGuided,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Bfs => "bfs",
+            Self::Dfs => "dfs",
+            Self::Guided => "guided",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum SearchOnViolationArg {
+    /// Stop at the first counterexample.
+    #[default]
+    Stop,
+    /// Collect counterexamples within the budget.
+    Collect,
+}
+
+impl SearchOnViolationArg {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Stop => "stop",
+            Self::Collect => "collect",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum FuzzCoverageArg {
+    /// Use black-box basic-block coverage feedback.
+    #[default]
+    BasicBlock,
+}
+
+impl FuzzCoverageArg {
+    fn label(self) -> &'static str {
+        match self {
+            Self::BasicBlock => "basic-block",
+        }
+    }
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CampaignTriageRouteArgs {
+    /// Connected campaign service socket.
+    #[arg(long, value_name = "path", required = true)]
+    campaign_socket: PathBuf,
+    /// Authenticated campaign principal.
+    #[arg(long, value_name = "principal", required = true)]
+    principal: String,
+    #[command(flatten)]
+    campaign: CampaignTriageArgs,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum TriagePolicyArg {
+    /// Coarse failure-signature grouping.
+    Coarse,
+    /// Default failure-signature grouping.
+    #[default]
+    Default,
+    /// Fine failure-signature grouping.
+    Fine,
+    /// Exact failure-signature grouping.
+    Exact,
+}
+
+impl TriagePolicyArg {
+    fn policy(self) -> crucible_engine::SignaturePolicy {
+        match self {
+            Self::Coarse => crucible_engine::SignaturePolicy::coarse(),
+            Self::Default => crucible_engine::SignaturePolicy::default_policy(),
+            Self::Fine => crucible_engine::SignaturePolicy::fine(),
+            Self::Exact => crucible_engine::SignaturePolicy::exact(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum TriageMinimizeArg {
+    /// Skip minimization and report representatives unchanged.
+    None,
+    /// Minimize the content-address-least representative per cluster.
+    #[default]
+    Representative,
+    /// Minimize the selected representative for every cluster.
+    All,
+}
+
+#[derive(Args, Debug, Default, PartialEq, Eq)]
+#[command(group(
+    ArgGroup::new("debug_coordinate")
+        .args(["at", "at_event", "at_failure", "at_checkpoint"])
+        .multiple(false)
+), group(
+    ArgGroup::new("debug_target")
+        .args(["target", "session"])
+        .required(true)
+        .multiple(false)
+))]
+struct DebugArgs {
+    /// Attach to this artifact or savepoint.
+    #[arg(value_name = "ARTIFACT|SAVEPOINT", conflicts_with = "session")]
+    target: Option<String>,
+    /// Attach to a running daemon session by id:epoch:64-lowercase-hex-seed.
+    #[arg(long, value_name = "SESSION")]
+    session: Option<String>,
+    /// Open at a virtual-time or node-icount coordinate.
+    #[arg(long, value_name = "COORD")]
+    at: Option<String>,
+    /// Open at this event-log sequence.
+    #[arg(long, value_name = "SEQ")]
+    at_event: Option<u64>,
+    /// Open at the recorded failure point.
+    #[arg(long, action = ArgAction::SetTrue)]
+    at_failure: bool,
+    /// Open at this checkpoint content address.
+    #[arg(long, value_name = "HASH")]
+    at_checkpoint: Option<String>,
+    /// Attach this node's gdbstub.
+    #[arg(long, value_name = "ID")]
+    node: Option<String>,
+    /// Listen for gdb-protocol clients here.
+    #[arg(long, value_name = "ADDR")]
+    gdb_listen: Option<String>,
+    /// Keep the canonical run read-only.
+    #[arg(long, action = ArgAction::SetTrue, conflicts_with = "allow_mutate")]
+    read_only: bool,
+    /// Authorize an explicit non-canonical debug fork.
+    #[arg(long, action = ArgAction::SetTrue)]
+    allow_mutate: bool,
+    /// Bound reverse-step replay distance.
+    #[arg(long, value_name = "N")]
+    checkpoint_stride: Option<u64>,
+    /// Record the non-canonical guest channel to a new transcript file.
+    #[arg(long, value_name = "PATH")]
+    record_transcript: Option<PathBuf>,
+    /// Fail when the guest agent produces no response for this duration.
+    #[arg(long, value_name = "dur")]
+    guest_idle_timeout: Option<String>,
+    #[command(subcommand)]
+    verb: Option<DebugVerbArgs>,
+}
+
+#[derive(Subcommand, Debug, PartialEq, Eq)]
+enum DebugVerbArgs {
+    /// Open the mediated gdbstub channel.
+    AttachGdb,
+    /// Explicitly fork a non-canonical whole-world debug branch.
+    ForkDebug,
+    /// Move to another debug coordinate.
+    Goto {
+        /// Virtual-time, event-log, or node-icount coordinate.
+        coord: String,
+    },
+    /// Step backward by one deterministic grain.
+    ReverseStep {
+        /// Reverse-step grain.
+        #[arg(value_enum)]
+        grain: DebugStepGrainArg,
+    },
+    /// Continue backward to a matching condition.
+    ReverseContinue {
+        /// Condition expression.
+        condition: String,
+    },
+    /// Execute an argv-based command through the guest debug agent.
+    Exec {
+        /// Program and arguments, without shell parsing.
+        #[arg(required = true, trailing_var_arg = true)]
+        argv: Vec<String>,
+    },
+    /// Open an interactive command on a guest PTY.
+    Pty {
+        /// Initial terminal columns.
+        #[arg(long, default_value_t = 80)]
+        columns: u16,
+        /// Initial terminal rows.
+        #[arg(long, default_value_t = 24)]
+        rows: u16,
+        /// Program and arguments, without shell parsing.
+        #[arg(required = true, trailing_var_arg = true)]
+        argv: Vec<String>,
+    },
+    /// Bridge stdin/stdout to the guest agent's configured SSH server.
+    Ssh,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum DebugStepGrainArg {
+    /// Instruction-scale coordinate.
+    Instruction,
+    /// Scheduler quantum.
+    Quantum,
+    /// Event-log entry.
+    Event,
+    /// Assertion-state transition.
+    Assertion,
+    /// Timer event.
+    Timer,
+}
+
+impl DebugStepGrainArg {
+    fn reverse_grain(self) -> crucible_engine::DebugReverseStepGrain {
+        match self {
+            Self::Instruction => crucible_engine::DebugReverseStepGrain::Instruction,
+            Self::Quantum => crucible_engine::DebugReverseStepGrain::Quantum,
+            Self::Event => crucible_engine::DebugReverseStepGrain::Event,
+            Self::Assertion => crucible_engine::DebugReverseStepGrain::Assertion,
+            Self::Timer => crucible_engine::DebugReverseStepGrain::Timer,
+        }
+    }
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct ServeArgs {
+    /// Address to bind the API (21) on. Required.
+    #[arg(long, value_name = "addr", required = true)]
+    listen: String,
+    /// Concurrency cap on live sessions.
+    #[arg(long, value_name = "n")]
+    max_sessions: Option<usize>,
+    /// Host sessions with the packaged production QEMU lifecycle.
+    #[arg(long, action = ArgAction::SetTrue)]
+    production_qemu: bool,
+    /// Cap production-QEMU RUNs at this exact simulation-tick interval.
+    #[arg(long, value_name = "ticks")]
+    qemu_rendezvous_ticks: Option<u64>,
+    /// Limit the number of scheduler quanta in a production-QEMU session.
+    #[arg(long, value_name = "n")]
+    qemu_quantum_budget: Option<u64>,
+    /// Accept only read-only API calls (query/watch); no mutate.
+    #[arg(long, action = ArgAction::SetTrue)]
+    read_only: bool,
+    /// Server certificate chain for authenticated remote access.
+    #[arg(long, value_name = "path")]
+    tls_cert: Option<PathBuf>,
+    /// Server private key for authenticated remote access.
+    #[arg(long, value_name = "path")]
+    tls_key: Option<PathBuf>,
+    /// CA certificate used to authenticate remote clients.
+    #[arg(long, value_name = "path")]
+    client_ca: Option<PathBuf>,
+    /// Permit cleartext access on this explicitly trusted bind address.
+    #[arg(long, action = ArgAction::SetTrue)]
+    trusted_unauthenticated_bind: bool,
+    /// Map a client certificate fingerprint to debugger capabilities.
+    #[arg(long, value_name = "sha256=capability,...")]
+    debug_role: Vec<String>,
+    /// Host the local CampaignService on this managed Unix socket.
+    #[arg(long, value_name = "path")]
+    campaign_socket: Option<PathBuf>,
+    /// Retain local campaign objects and refs below this existing directory.
+    #[arg(long, value_name = "path", requires = "campaign_socket")]
+    campaign_state: Option<PathBuf>,
+    /// Load the strict local campaign peer policy from this file.
+    #[arg(long, value_name = "path", requires = "campaign_socket")]
+    campaign_policy: Option<PathBuf>,
+    /// Load a strict composed campaign repository-store deployment.
+    #[arg(long, value_name = "path", requires = "campaign_socket")]
+    campaign_store: Option<PathBuf>,
+    /// Run bounded campaign-store maintenance at this fixed cadence.
+    #[arg(
+        long,
+        value_name = "milliseconds",
+        requires = "campaign_store",
+        conflicts_with = "read_only"
+    )]
+    campaign_maintenance_interval_ms: Option<u64>,
+    /// Complete at most this many write-back transfers per maintenance pass.
+    #[arg(long, value_name = "n", requires = "campaign_maintenance_interval_ms")]
+    campaign_maintenance_write_back_transfers: Option<u32>,
+    /// Visit at most this many S3 leaves per maintenance pass.
+    #[arg(long, value_name = "n", requires = "campaign_maintenance_interval_ms")]
+    campaign_maintenance_s3_nodes: Option<u16>,
+    /// Abort at most this many unfinished uploads per visited S3 leaf.
+    #[arg(long, value_name = "n", requires = "campaign_maintenance_interval_ms")]
+    campaign_maintenance_s3_uploads: Option<u16>,
+    /// Load distinct planner/debugger component authority keys from this file.
+    #[arg(long, value_name = "path", requires = "campaign_socket")]
+    campaign_component_authority: Option<PathBuf>,
+    /// Import verified campaign creation artifacts before binding the socket.
+    #[arg(
+        long,
+        value_name = "path",
+        requires = "campaign_socket",
+        conflicts_with = "read_only"
+    )]
+    campaign_import_manifest: Vec<PathBuf>,
+    /// Attach the packaged planner and an authenticated local executor to a campaign.
+    #[arg(
+        long,
+        value_name = "name",
+        requires_all = [
+            "campaign_socket",
+            "campaign_component_authority",
+            "campaign_executor_socket"
+        ],
+        conflicts_with = "read_only"
+    )]
+    campaign_runtime: Vec<String>,
+    /// Attach every authenticated campaign in the bounded local catalog.
+    #[arg(
+        long,
+        requires_all = [
+            "campaign_socket",
+            "campaign_component_authority",
+            "campaign_executor_socket",
+            "campaign_packaged_executor"
+        ],
+        conflicts_with_all = ["campaign_runtime", "read_only"]
+    )]
+    campaign_runtime_all: bool,
+    /// Connect one attached campaign runtime to this owner-only Unix socket;
+    /// repeat in runtime order unless a packaged pool shares one endpoint.
+    #[arg(
+        long,
+        value_name = "path",
+        requires = "campaign_socket",
+        conflicts_with = "read_only"
+    )]
+    campaign_executor_socket: Vec<PathBuf>,
+    /// Start one scenario-catalogued packaged QEMU pool from this deployment file.
+    #[arg(
+        long,
+        value_name = "path",
+        requires_all = [
+            "campaign_socket",
+            "campaign_component_authority",
+            "campaign_executor_socket",
+            "production_qemu"
+        ],
+        conflicts_with = "read_only"
+    )]
+    campaign_packaged_executor: Option<PathBuf>,
+    /// Set the managed campaign socket's Unix permission bits in octal.
+    #[arg(
+        long,
+        value_name = "octal",
+        default_value = "600",
+        requires = "campaign_socket",
+        value_parser = parse_campaign_socket_mode
+    )]
+    campaign_socket_mode: u32,
+}
+
+fn parse_campaign_socket_mode(value: &str) -> Result<u32, String> {
+    let digits = value.strip_prefix("0o").unwrap_or(value);
+    u32::from_str_radix(digits, 8)
+        .map_err(|_| String::from("campaign socket mode must be an octal integer"))
+}
+
+#[derive(Args, Debug, PartialEq, Eq)]
+struct CompletionsArgs {
+    /// Select completion shell.
+    #[arg(value_enum)]
+    shell: Shell,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum CliSubcommand {
+    Run,
+    Verify,
+    Selftest,
+    Save,
+    Resume,
+    Replay,
+    Search,
+    Fuzz,
+    Triage,
+    Debug,
+    Serve,
+    Campaign,
+    Store,
+    Completions,
+}
+
+impl CliSubcommand {
+    fn from_command(command: &Commands) -> Self {
+        match command {
+            Commands::Run(_) => Self::Run,
+            Commands::Verify(_) => Self::Verify,
+            Commands::Selftest(_) => Self::Selftest,
+            Commands::Save(_) => Self::Save,
+            Commands::Resume(_) => Self::Resume,
+            Commands::Replay(_) => Self::Replay,
+            Commands::Search(_) => Self::Search,
+            Commands::Fuzz(_) => Self::Fuzz,
+            Commands::Triage(_) => Self::Triage,
+            Commands::Debug(_) => Self::Debug,
+            Commands::Serve(_) => Self::Serve,
+            Commands::Campaign(_) => Self::Campaign,
+            Commands::Store(_) => Self::Store,
+            Commands::Completions(_) => Self::Completions,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Run => "run",
+            Self::Verify => "verify",
+            Self::Selftest => "selftest",
+            Self::Save => "save",
+            Self::Resume => "resume",
+            Self::Replay => "replay",
+            Self::Search => "search",
+            Self::Fuzz => "fuzz",
+            Self::Triage => "triage",
+            Self::Debug => "debug",
+            Self::Serve => "serve",
+            Self::Campaign => "campaign",
+            Self::Store => "store",
+            Self::Completions => "completions",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum CliApiCall {
+    Hello,
+    ListScenarios,
+    CreateSession,
+    ListSessions,
+    DestroySession,
+    ControlAttach,
+    ControlSend,
+    WatchAttach,
+    SendCommand,
+    GetReproduction,
+}
+
+impl CliApiCall {
+    const ALL: &'static [Self] = &[
+        Self::Hello,
+        Self::ListScenarios,
+        Self::CreateSession,
+        Self::ListSessions,
+        Self::DestroySession,
+        Self::ControlAttach,
+        Self::ControlSend,
+        Self::WatchAttach,
+        Self::SendCommand,
+        Self::GetReproduction,
+    ];
+
+    const fn control_client_method(self) -> &'static str {
+        match self {
+            Self::Hello => "hello",
+            Self::ListScenarios => "list_scenarios",
+            Self::CreateSession => "create_session",
+            Self::ListSessions => "list_sessions",
+            Self::DestroySession => "destroy_session",
+            Self::ControlAttach => "control_attach",
+            Self::ControlSend => "control_send",
+            Self::WatchAttach => "watch_attach",
+            Self::SendCommand => "send_command",
+            Self::GetReproduction => "get_reproduction",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum CliDelegatedDriver {
+    SessionControlPlane,
+    ControlApi,
+    HarnessGateCatalog,
+    ReplayOracle,
+    ExplorationEngine,
+    TriageEngine,
+    TimeTravelDebugger,
+    DaemonHost,
+    CampaignService,
+    StoreMaintenance,
+    ShellCompletionGenerator,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum CliStateReferenceKind {
+    LocalSessionHandle,
+    DaemonConnection,
+    ContentAddressedStore,
+    ReproductionArtifact,
+    SavepointHandle,
+    FindingsLedger,
+    DebugCoordinate,
+}
+
+impl CliStateReferenceKind {
+    const fn is_non_canonical_reference(self) -> bool {
+        matches!(
+            self,
+            Self::LocalSessionHandle
+                | Self::DaemonConnection
+                | Self::ContentAddressedStore
+                | Self::ReproductionArtifact
+                | Self::SavepointHandle
+                | Self::FindingsLedger
+                | Self::DebugCoordinate
+        )
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CliThinWrapperPlan {
+    subcommand: CliSubcommand,
+    session_commands: Vec<SessionCommandKind>,
+    api_calls: Vec<CliApiCall>,
+    delegated_drivers: Vec<CliDelegatedDriver>,
+    state_references: Vec<CliStateReferenceKind>,
+    thin_wrapper: bool,
+    owns_canonical_run_state: bool,
+    implements_scheduler: bool,
+    implements_checkpoint_materialization: bool,
+    extra_control_capabilities: Vec<&'static str>,
+}
+
+impl CliThinWrapperPlan {
+    fn proves_t_cli_2(&self) -> bool {
+        self.thin_wrapper
+            && !self.owns_canonical_run_state
+            && !self.implements_scheduler
+            && !self.implements_checkpoint_materialization
+            && self.extra_control_capabilities.is_empty()
+            && !self.delegated_drivers.is_empty()
+            && self
+                .state_references
+                .iter()
+                .copied()
+                .all(CliStateReferenceKind::is_non_canonical_reference)
+            && self
+                .session_commands
+                .iter()
+                .all(|command| SessionCommandKind::ALL.contains(command))
+            && self.api_calls.iter().all(|call| {
+                CliApiCall::ALL.contains(call) && !call.control_client_method().is_empty()
+            })
+            && self.has_valid_decomposition()
+    }
+
+    fn has_valid_decomposition(&self) -> bool {
+        !self.session_commands.is_empty()
+            || !self.api_calls.is_empty()
+            || matches!(
+                self.subcommand,
+                CliSubcommand::Triage
+                    | CliSubcommand::Campaign
+                    | CliSubcommand::Store
+                    | CliSubcommand::Completions
+            )
+    }
+}
+
+fn plan_cli_invocation(cli: &Cli) -> CliThinWrapperPlan {
+    let subcommand = CliSubcommand::from_command(&cli.command);
+    let mut plan = match &cli.command {
+        Commands::Run(_) => CliThinWrapperPlan {
+            subcommand,
+            session_commands: vec![
+                SessionCommandKind::Start,
+                SessionCommandKind::Continue,
+                SessionCommandKind::Query,
+                SessionCommandKind::Stop,
+            ],
+            api_calls: vec![
+                CliApiCall::Hello,
+                CliApiCall::CreateSession,
+                CliApiCall::WatchAttach,
+                CliApiCall::SendCommand,
+                CliApiCall::GetReproduction,
+            ],
+            delegated_drivers: vec![CliDelegatedDriver::SessionControlPlane],
+            state_references: vec![CliStateReferenceKind::LocalSessionHandle],
+            thin_wrapper: true,
+            owns_canonical_run_state: false,
+            implements_scheduler: false,
+            implements_checkpoint_materialization: false,
+            extra_control_capabilities: Vec::new(),
+        },
+        Commands::Verify(_) => CliThinWrapperPlan {
+            subcommand,
+            session_commands: vec![
+                SessionCommandKind::Start,
+                SessionCommandKind::Continue,
+                SessionCommandKind::Query,
+            ],
+            api_calls: vec![CliApiCall::Hello, CliApiCall::CreateSession],
+            delegated_drivers: vec![
+                CliDelegatedDriver::SessionControlPlane,
+                CliDelegatedDriver::ReplayOracle,
+            ],
+            state_references: vec![
+                CliStateReferenceKind::ContentAddressedStore,
+                CliStateReferenceKind::ReproductionArtifact,
+            ],
+            thin_wrapper: true,
+            owns_canonical_run_state: false,
+            implements_scheduler: false,
+            implements_checkpoint_materialization: false,
+            extra_control_capabilities: Vec::new(),
+        },
+        Commands::Selftest(_) => CliThinWrapperPlan {
+            subcommand,
+            session_commands: vec![
+                SessionCommandKind::Start,
+                SessionCommandKind::Continue,
+                SessionCommandKind::Query,
+            ],
+            api_calls: Vec::new(),
+            delegated_drivers: vec![CliDelegatedDriver::HarnessGateCatalog],
+            state_references: vec![CliStateReferenceKind::ContentAddressedStore],
+            thin_wrapper: true,
+            owns_canonical_run_state: false,
+            implements_scheduler: false,
+            implements_checkpoint_materialization: false,
+            extra_control_capabilities: Vec::new(),
+        },
+        Commands::Save(_) => CliThinWrapperPlan {
+            subcommand,
+            session_commands: vec![
+                SessionCommandKind::Start,
+                SessionCommandKind::StepQuantum,
+                SessionCommandKind::StepDuration,
+                SessionCommandKind::SetBreakpoint,
+                SessionCommandKind::CreateSavepoint,
+                SessionCommandKind::Stop,
+                SessionCommandKind::Query,
+            ],
+            api_calls: vec![
+                CliApiCall::Hello,
+                CliApiCall::CreateSession,
+                CliApiCall::SendCommand,
+            ],
+            delegated_drivers: vec![
+                CliDelegatedDriver::SessionControlPlane,
+                CliDelegatedDriver::ReplayOracle,
+            ],
+            state_references: vec![
+                CliStateReferenceKind::LocalSessionHandle,
+                CliStateReferenceKind::ContentAddressedStore,
+                CliStateReferenceKind::SavepointHandle,
+            ],
+            thin_wrapper: true,
+            owns_canonical_run_state: false,
+            implements_scheduler: false,
+            implements_checkpoint_materialization: false,
+            extra_control_capabilities: Vec::new(),
+        },
+        Commands::Resume(_) => CliThinWrapperPlan {
+            subcommand,
+            session_commands: vec![
+                SessionCommandKind::StepQuantum,
+                SessionCommandKind::StepDuration,
+                SessionCommandKind::Continue,
+                SessionCommandKind::Stop,
+                SessionCommandKind::Query,
+            ],
+            api_calls: vec![
+                CliApiCall::Hello,
+                CliApiCall::CreateSession,
+                CliApiCall::SendCommand,
+            ],
+            delegated_drivers: vec![CliDelegatedDriver::SessionControlPlane],
+            state_references: vec![
+                CliStateReferenceKind::SavepointHandle,
+                CliStateReferenceKind::ContentAddressedStore,
+            ],
+            thin_wrapper: true,
+            owns_canonical_run_state: false,
+            implements_scheduler: false,
+            implements_checkpoint_materialization: false,
+            extra_control_capabilities: Vec::new(),
+        },
+        Commands::Replay(_) => CliThinWrapperPlan {
+            subcommand,
+            session_commands: vec![SessionCommandKind::Start, SessionCommandKind::Continue],
+            api_calls: Vec::new(),
+            delegated_drivers: vec![
+                CliDelegatedDriver::SessionControlPlane,
+                CliDelegatedDriver::ReplayOracle,
+            ],
+            state_references: vec![
+                CliStateReferenceKind::ReproductionArtifact,
+                CliStateReferenceKind::ContentAddressedStore,
+            ],
+            thin_wrapper: true,
+            owns_canonical_run_state: false,
+            implements_scheduler: false,
+            implements_checkpoint_materialization: false,
+            extra_control_capabilities: Vec::new(),
+        },
+        Commands::Search(_) | Commands::Fuzz(_) => CliThinWrapperPlan {
+            subcommand,
+            session_commands: vec![
+                SessionCommandKind::Start,
+                SessionCommandKind::Continue,
+                SessionCommandKind::Fork,
+                SessionCommandKind::Query,
+            ],
+            api_calls: vec![
+                CliApiCall::Hello,
+                CliApiCall::CreateSession,
+                CliApiCall::SendCommand,
+            ],
+            delegated_drivers: vec![
+                CliDelegatedDriver::ExplorationEngine,
+                CliDelegatedDriver::ReplayOracle,
+            ],
+            state_references: vec![
+                CliStateReferenceKind::LocalSessionHandle,
+                CliStateReferenceKind::ContentAddressedStore,
+                CliStateReferenceKind::ReproductionArtifact,
+            ],
+            thin_wrapper: true,
+            owns_canonical_run_state: false,
+            implements_scheduler: false,
+            implements_checkpoint_materialization: false,
+            extra_control_capabilities: Vec::new(),
+        },
+        Commands::Triage(_) => CliThinWrapperPlan {
+            subcommand,
+            session_commands: Vec::new(),
+            api_calls: Vec::new(),
+            delegated_drivers: vec![CliDelegatedDriver::TriageEngine],
+            state_references: vec![
+                CliStateReferenceKind::FindingsLedger,
+                CliStateReferenceKind::ContentAddressedStore,
+                CliStateReferenceKind::ReproductionArtifact,
+            ],
+            thin_wrapper: true,
+            owns_canonical_run_state: false,
+            implements_scheduler: false,
+            implements_checkpoint_materialization: false,
+            extra_control_capabilities: Vec::new(),
+        },
+        Commands::Debug(_) => CliThinWrapperPlan {
+            subcommand,
+            session_commands: vec![
+                SessionCommandKind::Query,
+                SessionCommandKind::AttachGdb,
+                SessionCommandKind::DebugGoto,
+                SessionCommandKind::DebugReverseStep,
+                SessionCommandKind::DebugReverseContinue,
+                SessionCommandKind::DebugForkNonCanonical,
+            ],
+            api_calls: vec![
+                CliApiCall::Hello,
+                CliApiCall::ListSessions,
+                CliApiCall::SendCommand,
+            ],
+            delegated_drivers: vec![
+                CliDelegatedDriver::SessionControlPlane,
+                CliDelegatedDriver::TimeTravelDebugger,
+            ],
+            state_references: vec![
+                CliStateReferenceKind::ReproductionArtifact,
+                CliStateReferenceKind::SavepointHandle,
+                CliStateReferenceKind::DaemonConnection,
+                CliStateReferenceKind::DebugCoordinate,
+            ],
+            thin_wrapper: true,
+            owns_canonical_run_state: false,
+            implements_scheduler: false,
+            implements_checkpoint_materialization: false,
+            extra_control_capabilities: Vec::new(),
+        },
+        Commands::Serve(_) => CliThinWrapperPlan {
+            subcommand,
+            session_commands: vec![
+                SessionCommandKind::Start,
+                SessionCommandKind::Continue,
+                SessionCommandKind::Stop,
+                SessionCommandKind::Query,
+            ],
+            api_calls: CliApiCall::ALL.to_vec(),
+            delegated_drivers: vec![
+                CliDelegatedDriver::DaemonHost,
+                CliDelegatedDriver::ControlApi,
+            ],
+            state_references: vec![
+                CliStateReferenceKind::DaemonConnection,
+                CliStateReferenceKind::LocalSessionHandle,
+            ],
+            thin_wrapper: true,
+            owns_canonical_run_state: false,
+            implements_scheduler: false,
+            implements_checkpoint_materialization: false,
+            extra_control_capabilities: Vec::new(),
+        },
+        Commands::Campaign(_) => CliThinWrapperPlan {
+            subcommand,
+            session_commands: Vec::new(),
+            api_calls: Vec::new(),
+            delegated_drivers: vec![CliDelegatedDriver::CampaignService],
+            state_references: vec![CliStateReferenceKind::DaemonConnection],
+            thin_wrapper: true,
+            owns_canonical_run_state: false,
+            implements_scheduler: false,
+            implements_checkpoint_materialization: false,
+            extra_control_capabilities: Vec::new(),
+        },
+        Commands::Store(_) => CliThinWrapperPlan {
+            subcommand,
+            session_commands: Vec::new(),
+            api_calls: Vec::new(),
+            delegated_drivers: vec![CliDelegatedDriver::StoreMaintenance],
+            state_references: vec![CliStateReferenceKind::ContentAddressedStore],
+            thin_wrapper: true,
+            owns_canonical_run_state: false,
+            implements_scheduler: false,
+            implements_checkpoint_materialization: false,
+            extra_control_capabilities: Vec::new(),
+        },
+        Commands::Completions(_) => CliThinWrapperPlan {
+            subcommand,
+            session_commands: Vec::new(),
+            api_calls: Vec::new(),
+            delegated_drivers: vec![CliDelegatedDriver::ShellCompletionGenerator],
+            state_references: Vec::new(),
+            thin_wrapper: true,
+            owns_canonical_run_state: false,
+            implements_scheduler: false,
+            implements_checkpoint_materialization: false,
+            extra_control_capabilities: Vec::new(),
+        },
+    };
+
+    if cli.daemon.is_some() && subcommand_uses_backend_selection(&cli.command) {
+        plan.delegated_drivers.push(CliDelegatedDriver::ControlApi);
+        plan.state_references
+            .push(CliStateReferenceKind::DaemonConnection);
+    }
+
+    plan
+}
+
+trait CliOperationRecorder {
+    fn record_session_command(&mut self, command: SessionCommandKind);
+
+    fn record_api_call(&mut self, call: CliApiCall);
+
+    fn record_driver(&mut self, driver: CliDelegatedDriver);
+
+    fn record_state_reference(&mut self, reference: CliStateReferenceKind);
+}
+
+#[path = "cli/artifact.rs"]
+mod cli_artifact;
+#[path = "cli/backend.rs"]
+mod cli_backend;
+#[path = "cli/campaign.rs"]
+mod cli_campaign;
+#[path = "cli/verify_serve/campaign_import.rs"]
+mod cli_campaign_import;
+#[path = "cli/verify_serve/campaign_store.rs"]
+mod cli_campaign_store;
+#[path = "cli/control.rs"]
+mod cli_control;
+#[path = "cli/dispatch.rs"]
+mod cli_dispatch;
+#[path = "cli/exploration.rs"]
+mod cli_exploration;
+#[path = "cli/planning.rs"]
+mod cli_planning;
+#[path = "cli/replay.rs"]
+mod cli_replay;
+#[path = "cli/report.rs"]
+mod cli_report;
+#[path = "cli/resume.rs"]
+mod cli_resume;
+#[path = "cli/run_save.rs"]
+mod cli_run_save;
+#[path = "cli/campaign/gc.rs"]
+mod cli_store;
+#[path = "cli/campaign/maintenance.rs"]
+mod cli_store_maintenance;
+#[path = "cli/store_repair.rs"]
+mod cli_store_repair;
+#[path = "cli/campaign/transform.rs"]
+mod cli_store_transform;
+#[path = "cli/triage_debug.rs"]
+mod cli_triage_debug;
+#[path = "cli/verify_serve.rs"]
+mod cli_verify_serve;
+
+use cli_artifact::*;
+use cli_backend::*;
+use cli_campaign::*;
+use cli_control::*;
+use cli_dispatch::*;
+use cli_exploration::*;
+use cli_planning::*;
+use cli_replay::*;
+use cli_report::*;
+use cli_resume::*;
+use cli_run_save::*;
+use cli_store::*;
+use cli_triage_debug::*;
+use cli_verify_serve::*;
+
+mod null_operation_recorder;
+use null_operation_recorder::*;
+#[cfg(test)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
+mod tests;

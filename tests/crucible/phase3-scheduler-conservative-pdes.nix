@@ -8,8 +8,8 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
-  schedulerPdesTest = builtins.readFile ../../crates/crucible/tests/scheduler_conservative_pdes.rs;
+  libSource = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/lib.rs;
+  schedulerPdesTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/scheduler_conservative_pdes.rs;
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -23,7 +23,7 @@
         needle = "Completed by `checks.crucible.phase3.schedulerConservativePdes`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "unresolved cross-node dependency type";
         needle = "pub struct UnresolvedCrossNodeDependency";
@@ -69,7 +69,7 @@
         needle = "conservative_dependency: window.conservative_dependency";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" libSource [
       {
         label = "authorization export";
         needle = "ConservativeAdvanceAuthorization";
@@ -87,7 +87,7 @@
         needle = "unresolved_cross_node_dependencies";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/scheduler_conservative_pdes.rs" schedulerPdesTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/scheduler_conservative_pdes.rs" schedulerPdesTest [
       {
         label = "clamp test";
         needle = "conservative_pdes_authorization_clamps_at_unresolved_cross_node_dependency";
@@ -117,7 +117,7 @@
         needle = "single_scheduler_rejects_due_cross_node_dependency_before_advance";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/scheduler_conservative_pdes.rs" schedulerPdesTest [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/scheduler_conservative_pdes.rs" schedulerPdesTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -182,7 +182,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-scheduler-conservative-pdes-target" \
-              -p crucible \
+              -p crucible-engine \
               --test scheduler_conservative_pdes \
               -- --test-threads=1
           '';

@@ -53,6 +53,10 @@ A shared domain format can remain under its owning project's directory while
 being consumed by another project. Dependencies establish reuse; directory
 placement establishes ownership.
 
+The [active inventory](crate-inventory.md) lists every package and the implemented
+merge and extraction boundaries. Future packages in open PRs are classified in
+[the unmerged inventory](unmerged-crates.md).
+
 ## Dependency direction
 
 Applications and deployment adapters depend on reusable domain libraries, which
@@ -76,3 +80,26 @@ The migration is implemented in reviewable stages: names and locations; small
 merges; reusable library extraction; application separation; and large project
 refactors. Open pull requests receive separate handoff instructions rather than
 edits to their owning checkouts.
+
+## Portable data and native effects
+
+`aos-core` is deliberately small and portable. Shared code is classified by
+capability rather than being accumulated into a universal core. `aos-nar` owns
+NAR/narinfo and cache signing, while `aos-nix` owns native Nix execution. OCI JSON
+retains its own dialect because its accepted inputs differ from strict canonical
+AOS JSON; exact validation behavior is part of the format contract.
+
+`aos-deployment-format` owns immutable inventory records and deployment schemas.
+`aos-deployment` evaluates inputs, retains store references, and performs
+activation, accepting inventory data from callers. Registry authoring and release
+coordination are independently consumable without importing package installation
+or a CLI parser. Format libraries remain separate from native signing processes.
+
+`aos-linux-project-quota` is shared for its implemented quota capability. Crucible
+storage retains its project scope: its object kinds and persisted identities are
+Crucible domain concepts. Future host supervision, RAM authority, sandbox journals,
+and descriptor wrappers require API review before promotion to shared libraries.
+
+Prefer direct dependencies on the owning crate. Compatibility facades that retain
+an application dependency undermine extraction and should not become permanent.
+Large coherent domains use capability modules and focused tests within their crate.

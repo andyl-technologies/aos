@@ -221,7 +221,7 @@ in
           qemu_created_source_license=GPL-2.0-or-later
           qemu_generated_boundary_header_license_option=MIT
           qemu_patch_license_inventory=licenses/AOS-QEMU-PATCHES.md
-          plugin_source_root=plugin/workspace/crates/crucible-qemu-plugin
+          plugin_source_root=plugin/workspace/crates/crucible/qemu/crucible-qemu-plugin
           plugin_workspace_root=plugin/workspace/crates
           plugin_cargo_vendor=plugin/cargo-vendor
           plugin_cargo_deps_hash=${cargoDepsHash}
@@ -281,11 +281,11 @@ in
           test -f "$source_root/build/aos/stdenv/phases.nix"
           test -f "$source_root/build/aos/pkgs/default.nix"
           test -f "$source_root/build/aos/pkgs/emulation/qemu.nix"
-          test -f "$source_root/build/aos/crates/crucible-shmem/include/crucible_shmem_abi.h"
+          test -f "$source_root/build/aos/crates/crucible/protocol/crucible-qemu-shmem/include/crucible_shmem_abi.h"
           test -f "$source_root/build/aos/LICENSES/GPL-2.0-or-later.txt"
           test -z "$(find "$source_root/build/aos" -type f -regex '.*/core[.][0-9]+' -print -quit)"
           test -f "$source_root/plugin/workspace/crates/Cargo.lock"
-          test -f "$source_root/plugin/workspace/crates/crucible-qemu-plugin/Cargo.toml"
+          test -f "$source_root/plugin/workspace/crates/crucible/qemu/crucible-qemu-plugin/Cargo.toml"
           test -f "$source_root/plugin/workspace/pkgs/emulation/crucible-qemu-plugin.nix"
           test -n "$(find "$source_root/plugin/cargo-vendor" -mindepth 1 -maxdepth 1 -type d -print -quit)"
 

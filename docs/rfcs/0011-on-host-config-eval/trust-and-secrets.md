@@ -9,10 +9,10 @@ secret-management system.
 ## Trust root (terminology)
 
 Trust is rooted at a **signed annotated git tag → blessed realization graph**,
-not at the narinfo. `verify_tag_chain` (`crates/aos-package/src/registry/verify.rs:99`)
+not at the narinfo. `verify_tag_chain` (`crates/aos/packages/aos-package-manager/src/registry/verify.rs:99`)
 checks a chain of signed tags (channel → release → commit) against the trusted
 key set with name-binding against replay. The narinfo is **explicitly
-unauthenticated** (`crates/aos-package/src/verify.rs:1-24`); only
+unauthenticated** (`crates/aos/packages/aos-package-manager/src/verify.rs:1-24`); only
 `verify_nar_blessed` re-roots the bytes against a blessed entry in the **signed
 `store/` realization graph (RFC-0005)** that the tag covers. The chain is:
 *signed tag → blessed realization graph → NAR bytes → store path*. RFC-0011

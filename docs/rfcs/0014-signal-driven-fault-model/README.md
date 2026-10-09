@@ -189,22 +189,22 @@ The system has four separate concepts:
 
 The implementation uses one deterministic spine:
 
-- [`FaultSignalPlan`](../../../crates/crucible/src/model/fault_signal/plan.rs)
+- [`FaultSignalPlan`](../../../crates/crucible/engine/crucible-engine/src/model/fault_signal/plan.rs)
   is the sole admitted fault-program representation. It owns validated signal
   programs, bindings, resource limits, and their canonical identity.
-- [`TransactionalFaultAdapters`](../../../crates/crucible/src/model/fault_signal/adapter_runtime.rs)
+- [`TransactionalFaultAdapters`](../../../crates/crucible/engine/crucible-engine/src/model/fault_signal/adapter_runtime.rs)
   owns deterministic composition and transactional commit for the network,
   storage, and node domains.
-- [`ResolvedBindingAction`](../../../crates/crucible/src/model/fault_signal/binding_runtime.rs)
+- [`ResolvedBindingAction`](../../../crates/crucible/engine/crucible-engine/src/model/fault_signal/binding_runtime.rs)
   is the typed application contract between evaluated bindings and those
   adapters.
 - The former fault-plan authoring and runtime hierarchy is removed completely;
   it creates no compatibility obligation for the replacement schema.
-- [`LinkFaults`](../../../crates/crucible-device/src/netlink/fault.rs) and
-  [`NetLink`](../../../crates/crucible-device/src/netlink/link.rs) already apply
+- [`LinkFaults`](../../../crates/crucible/engine/crucible-device/src/netlink/fault.rs) and
+  [`NetLink`](../../../crates/crucible/engine/crucible-device/src/netlink/link.rs) already apply
   deterministic per-frame timing, capacity, loss, duplication, reordering, and
   corruption transforms.
-- [`SchedulerState`](../../../crates/crucible/src/model/materialized.rs) captures
+- [`SchedulerState`](../../../crates/crucible/engine/crucible-engine/src/model/materialized.rs) captures
   deterministic device cursors, pending work, and finite search frontiers in
   checkpoint state; fault-runtime state is authenticated alongside it.
 - The unified event log and schedule record raw decisions and resolved fault

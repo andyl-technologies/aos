@@ -8,7 +8,7 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   cliMain = import ./_cli-source.nix {inherit lib;};
-  cliManifest = builtins.readFile ../../crates/crucible-cli/Cargo.toml;
+  cliManifest = builtins.readFile ../../crates/crucible/control/crucible-cli/Cargo.toml;
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -21,13 +21,13 @@
         needle = "Completed by `checks.crucible.phase5.cliSkeleton`";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/Cargo.toml" cliManifest [
+    ++ failuresFor "crates/crucible/control/crucible-cli/Cargo.toml" cliManifest [
       {
         label = "clap dependency";
         needle = "clap = { workspace = true }";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
+    ++ failuresFor "crates/crucible/control/crucible-cli/src/main.rs" cliMain [
       {
         label = "derive parser";
         needle = "#[derive(Parser";

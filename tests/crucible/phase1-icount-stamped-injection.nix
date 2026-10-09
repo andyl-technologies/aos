@@ -10,18 +10,18 @@
 
   shmemSource = builtins.concatStringsSep "\n" [
     (import ./_crucible-shmem-source.nix {inherit lib;})
-    (builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs)
-    (builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node/frame_entry.rs)
-    (builtins.readFile ../../crates/crucible-shmem/src/shmem/delivery_errors.rs)
+    (builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/src/shmem/frame_node.rs)
+    (builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/src/shmem/frame_node/frame_entry.rs)
+    (builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/src/shmem/delivery_errors.rs)
   ];
-  shmemTest = builtins.readFile ../../crates/crucible-shmem/tests/icount_stamped_injection.rs;
+  shmemTest = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/tests/icount_stamped_injection.rs;
   determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "crates/crucible-shmem/src/lib.rs + shmem/frame_node.rs + shmem/delivery_errors.rs" shmemSource [
+    failuresFor "crates/crucible/protocol/crucible-qemu-shmem/src/lib.rs + shmem/frame_node.rs + shmem/delivery_errors.rs" shmemSource [
       {
         label = "frame payload capacity";
         needle = "pub const MAX_FRAME_DATA: usize = 4608;";
@@ -95,7 +95,7 @@
         needle = "assert!(core::mem::align_of::<FrameEntry>() == 8);";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/tests/icount_stamped_injection.rs" shmemTest [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/tests/icount_stamped_injection.rs" shmemTest [
       {
         label = "in-band delivery-icount test";
         needle = "frame_entry_carries_delivery_icount_in_band";
@@ -113,7 +113,7 @@
         needle = "frame_entry_rejects_malformed_payload_length";
       }
     ]
-    ++ forbiddenFor "crates/crucible-shmem/tests/icount_stamped_injection.rs" shmemTest [
+    ++ forbiddenFor "crates/crucible/protocol/crucible-qemu-shmem/tests/icount_stamped_injection.rs" shmemTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";

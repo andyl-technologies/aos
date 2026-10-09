@@ -4,7 +4,7 @@
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   requiredAttrs = [
-    "crucible"
+    "crucible-engine"
     "crucible-controller"
     "crucible-qemu-plugin"
     "qemu-crucible"

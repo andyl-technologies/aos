@@ -17,8 +17,8 @@ mkAosCargoPackage {
   moduleDeps = [service-management];
   cargoDeps = aosWorkspaceVendor;
   cargoRoot = "crates";
-  cargoFlags = "-p aos-configuration-provider";
-  cargoTestFlags = "-p aos-configuration-provider";
+  cargoFlags = "-p aos-activation-config-files";
+  cargoTestFlags = "-p aos-activation-config-files";
   preBuild = ''
     mkdir -p "$out/bin"
     cc -std=c11 -O2 -Wall -Wextra -Werror \

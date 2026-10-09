@@ -2,9 +2,10 @@
   pkgs,
   lib,
 }: let
+  inherit (import ./_workspace-packages.nix {inherit lib;}) packageDir packageNames cruciblePackages;
   cratesDir = ../../crates;
-  harnessPackage = "crucible-harness";
-  harnessSrc = cratesDir + "/${harnessPackage}/src";
+  harnessPackage = "crucible-test-support";
+  harnessSrc = packageDir harnessPackage + "/src";
   harnessLib = builtins.readFile (harnessSrc + "/lib.rs");
 
   componentSpecs = [
@@ -57,7 +58,7 @@
     if workspaceManifest ? workspace && workspaceManifest.workspace ? dependencies
     then workspaceManifest.workspace.dependencies
     else {};
-  harnessManifest = builtins.fromTOML (builtins.readFile (cratesDir + "/${harnessPackage}/Cargo.toml"));
+  harnessManifest = builtins.fromTOML (builtins.readFile (packageDir harnessPackage + "/Cargo.toml"));
 
   harnessNormalDependencyFailures =
     if harnessManifest ? dependencies && harnessManifest.dependencies != {}
@@ -70,8 +71,8 @@
     name:
       name
       != harnessPackage
-      && builtins.pathExists (cratesDir + "/${name}/Cargo.toml")
-  ) (builtins.attrNames (builtins.readDir cratesDir));
+      && builtins.pathExists (packageDir name + "/Cargo.toml")
+  ) packageNames;
 
   dependencyPackageName = workspaceDeps: name: value:
     if builtins.isAttrs value && value ? workspace && value.workspace == true
@@ -128,7 +129,7 @@
   realManifests = builtins.listToAttrs (
     map (package: {
       name = package;
-      value = builtins.fromTOML (builtins.readFile (cratesDir + "/${package}/Cargo.toml"));
+      value = builtins.fromTOML (builtins.readFile (packageDir package + "/Cargo.toml"));
     })
     workspacePackages
   );

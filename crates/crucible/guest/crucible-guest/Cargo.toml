@@ -1,0 +1,21 @@
+[package]
+name = "crucible-guest"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+crucible-qemu-protocol = { path = "../../protocol/crucible-qemu-protocol" }
+libc = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+crucible-campaign = { path = "../../engine/crucible-campaign" }
+
+[[bin]]
+name = "crucible-guest"
+path = "src/main.rs"

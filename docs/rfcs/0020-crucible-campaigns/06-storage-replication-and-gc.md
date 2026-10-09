@@ -527,7 +527,7 @@ removes it after success:
 
 ```text
 nix develop -c cargo test --manifest-path crates/Cargo.toml \
-  -p crucible-s3-store --test live_conformance \
+  -p crucible-store-s3 --test live_conformance \
   -- --ignored --exact live_s3_service_passes_blob_and_ref_conformance
 ```
 

@@ -13,7 +13,7 @@ in
       name = "native-state-space-search";
       sqliteRequired = true;
       cargoBuildCommands = [
-        "test --frozen --offline --no-run -p crucible --lib --test gate_state_space_search"
+        "test --frozen --offline --no-run -p crucible-engine --lib --test gate_state_space_search"
       ];
       installedTests = [
         {

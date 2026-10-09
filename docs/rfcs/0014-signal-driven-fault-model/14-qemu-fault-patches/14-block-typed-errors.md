@@ -4,9 +4,9 @@ The atomic patch `crucible-qemu-11.1.1.patch` carries a
 closed storage result from
 the Crucible block worker through the GPL plugin callback and returns the exact
 Linux errno from QEMU's `crucible-shmem` block driver. The executable protocol
-definitions are [`BlockErrorCode`](../../../../../crates/crucible-device/src/block/codec.rs)
+definitions are [`BlockErrorCode`](../../../../../crates/crucible/engine/crucible-device/src/block/codec.rs)
 on the host side and `BlockResponseErrorCode` in
-[`block_io.rs`](../../../../../crates/crucible-qemu-plugin/src/block_io.rs) on
+[`block_io.rs`](../../../../../crates/crucible/qemu/crucible-qemu-plugin/src/block_io.rs) on
 the plugin side. The two definitions are intentionally independent across the
 process/license boundary and are checked for byte-for-byte semantic agreement.
 

@@ -9,7 +9,7 @@
 > and garbage-collects cache files itself under a platform cache directory.
 > Incoherent flag combinations are rejected before any work begins.
 >
-> **Audience:** `apr`/`apm` implementers (`crates/aos-package/`, `crates/aos-cache/`).
+> **Audience:** `apr`/`apm` implementers (`crates/aos/packages/aos-package-manager/`, `crates/aos/packages/aos-nix-cache/`).
 >
 > **Scope:** the producer release pipeline — `apr release`, `apr cache
 > generate`, and the static-cache/origin upload path. It does **not** change
@@ -136,7 +136,7 @@ the lower-level `apr cache generate` primitive (`run_cache`,
 
 ### 2.3 Backend and scope
 
-- Cache backend trait `CacheBackend` — `crates/aos-cache/src/backend/mod.rs:36`,
+- Cache backend trait `CacheBackend` — `crates/aos/packages/aos-nix-cache/src/backend/mod.rs:36`,
   with `put_narinfo` (`:61`), `put_nar` (`:78`), `put_cache_info` (`:104`),
   `put_static_file` (`:117`); constructor `from_url` (`:327`); `AuthOptions`
   (`:173`). Implemented in `backend/{fs,http,s3,sftp}.rs`. There is **no**
@@ -358,7 +358,7 @@ purely by string — no store access — exactly as
 
 ### 7.2 Backend `exists` op
 
-Add to `CacheBackend` (`crates/aos-cache/src/backend/mod.rs:36`), beside the
+Add to `CacheBackend` (`crates/aos/packages/aos-nix-cache/src/backend/mod.rs:36`), beside the
 `put_*` methods:
 
 ```text
@@ -525,12 +525,12 @@ to the `Release`/`CacheCommand` enums.
 
 ## 11. Implementation map
 
-### 11.1 `crates/aos-cache`
+### 11.1 `crates/aos/packages/aos-nix-cache`
 
 - `backend/mod.rs:36` — add `exists` to `CacheBackend` (§7.2).
 - `backend/{http,s3,sftp,fs}.rs` — implement `exists` beside each `put_*`.
 
-### 11.2 `crates/aos-package` — generation
+### 11.2 `crates/aos/packages/aos-package-manager` — generation
 
 - `nixcache.rs:596` — split `collect_store_paths` into `collect_store_roots`
   (TOML only) + closure expansion, so roots can be checked before expansion
@@ -541,9 +541,9 @@ to the `Release`/`CacheCommand` enums.
   bail (`nixcache.rs:119`) is retained for the standalone command but the
   release path checks `has_store_paths` first (§5.2) so it never reaches it.
 - New `CacheMembership` trait + `HeadMembership` impl (§7.3), in a new
-  `crates/aos-package/src/registry/membership.rs`.
+  `crates/aos/packages/aos-package-manager/src/registry/membership.rs`.
 
-### 11.3 `crates/aos-package` — upload
+### 11.3 `crates/aos/packages/aos-package-manager` — upload
 
 - `static_upload.rs:84`/`:187` — enforce the §8 ordering (NARs → member
   narinfos → root narinfos) and add per-destination `exists`-based `PUT`
@@ -551,7 +551,7 @@ to the `Release`/`CacheCommand` enums.
 - `nixcache.rs:415` — `upload_static_cache` gains per-destination `PUT`
   skipping (it already orders NARs first).
 
-### 11.4 `crates/aos-package` — release orchestration
+### 11.4 `crates/aos/packages/aos-package-manager` — release orchestration
 
 - `registry_ops.rs:7281` — `ReleaseTreeOptions`: replace
   `cache_output: Option<PathBuf>` with `cache_dir: PathBuf` (always the internal
@@ -572,7 +572,7 @@ to the `Release`/`CacheCommand` enums.
 - `registry_ops.rs:4774` — `run_cache`: default `output` to the staging dir;
   thread `no_skip` and membership; add the `Gc` arm.
 
-### 11.5 `crates/aos-package` — scope & config
+### 11.5 `crates/aos/packages/aos-package-manager` — scope & config
 
 - `types.rs:1118` — add `ProfileScope::registry_cache_path`.
 - `config.rs:325` — add the `ApmConfig` wrapper.
@@ -610,7 +610,7 @@ A correct implementation guarantees, for every `apr release` run:
 - **Backend.** `exists` against `fs`/`http`/`s3`/`sftp` for present and absent
   objects (mirror the existing `upload_static_cache_to_all` filesystem tests,
   `nixcache.rs` test module).
-- **Integration.** Extend the end-to-end suite `crates/aos/tests/apr_cache_cli.rs`:
+- **Integration.** Extend the end-to-end suite `crates/aos/cli/aos-cli/tests/apr_cache_cli.rs`:
   1. publishing release → narinfos + NARs at the destination, pointer committed,
      consumer-visible;
   2. second release of an overlapping closure → only new paths transferred

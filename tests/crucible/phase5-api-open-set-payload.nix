@@ -10,18 +10,18 @@
 
   apiDoc = builtins.readFile ../../docs/rfcs/0010-crucible/21-api.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
-  apiLib = builtins.readFile ../../crates/crucible-api/src/lib.rs;
-  apiClient = builtins.readFile ../../crates/crucible-api/src/client.rs;
-  openSet = builtins.readFile ../../crates/crucible-api/src/open_set.rs;
+  apiLib = import ./_crucible-control-source.nix { inherit lib; component = "exports"; };
+  apiClient = import ./_crucible-control-source.nix { inherit lib; component = "client"; };
+  openSet = builtins.readFile ../../crates/crucible/control/crucible-control-api/src/open_set.rs;
   rpcAbi = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-api/src/rpc_abi.rs;
+    entry = ../../crates/crucible/control/crucible-control-api/src/rpc_abi.rs;
   };
-  abiTest = builtins.readFile ../../crates/crucible-api/tests/gate_abi_conformance.rs;
-  openSetTest = builtins.readFile ../../crates/crucible-api/tests/gate_open_set_payload.rs;
+  abiTest = builtins.readFile ../../crates/crucible/control/crucible-control-api/tests/gate_abi_conformance.rs;
+  openSetTest = builtins.readFile ../../crates/crucible/control/crucible-control-api/tests/gate_open_set_payload.rs;
   controlClientTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-api/tests/gate_control_client.rs;
+    entry = ../../crates/crucible/control/crucible-control-client/tests/gate_control_client.rs;
   };
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -46,7 +46,7 @@
         needle = "`T-API-5` is green through `checks.crucible.phase5.apiOpenSetPayload`";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/lib.rs" apiLib [
+    ++ failuresFor "crates/crucible/control/crucible-control-api/src/lib.rs" apiLib [
       {
         label = "open-set module exported";
         needle = "pub mod open_set";
@@ -60,7 +60,7 @@
         needle = "validate_open_set_send_payload";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/open_set.rs" openSet [
+    ++ failuresFor "crates/crucible/control/crucible-control-api/src/open_set.rs" openSet [
       {
         label = "open-set payload type";
         needle = "pub struct OpenSetPayload";
@@ -94,7 +94,7 @@
         needle = "session_command_for_open_set_command_kind";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/client.rs" apiClient [
+    ++ failuresFor "crates/crucible/control/crucible-control-client/src/client.rs" apiClient [
       {
         label = "RPC send emits open-set command kind";
         needle = "open_set_command_kind(command_kind)";
@@ -108,7 +108,7 @@
         needle = "command_name_from_open_set_kind";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/rpc_abi.rs" rpcAbi [
+    ++ failuresFor "crates/crucible/control/crucible-control-api/src/rpc_abi.rs" rpcAbi [
       {
         label = "Hello advertises command category";
         needle = "crucible.cmd.*";
@@ -126,7 +126,7 @@
         needle = "crucible.event.effect_applied";
       }
     ]
-    ++ failuresFor "crates/crucible-api/tests/gate_abi_conformance.rs" abiTest [
+    ++ failuresFor "crates/crucible/control/crucible-control-api/tests/gate_abi_conformance.rs" abiTest [
       {
         label = "ABI test expects the active non-imperative open-set categories";
         needle = ''&["crucible.cmd.*", "crucible.bp.*", "crucible.event.*",]'';
@@ -136,7 +136,7 @@
         needle = "event-effect-applied";
       }
     ]
-    ++ failuresFor "crates/crucible-api/tests/gate_open_set_payload.rs" openSetTest [
+    ++ failuresFor "crates/crucible/control/crucible-control-api/tests/gate_open_set_payload.rs" openSetTest [
       {
         label = "capability coverage";
         needle = "assert_capabilities_advertise_dotted_categories_and_kinds";
@@ -158,7 +158,7 @@
         needle = "session_command_for_open_set_command_kind(\"crucible.cmd.continue\")";
       }
     ]
-    ++ failuresFor "crates/crucible-api/tests/gate_control_client*.rs" controlClientTest [
+    ++ failuresFor "crates/crucible/control/crucible-control-client/tests/gate_control_client*.rs" controlClientTest [
       {
         label = "test server emits open-set command kinds";
         needle = "open_set_command_kind(capability.command_kind)";
@@ -245,7 +245,7 @@ in
             --frozen \
             --offline \
             --target-dir "$TMPDIR/crucible-api-open-set-payload-target" \
-            -p crucible-api \
+            -p crucible-control-api \
             --test gate_open_set_payload \
             -- --test-threads=1
         '';

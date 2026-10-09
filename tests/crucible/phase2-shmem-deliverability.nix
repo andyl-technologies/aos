@@ -11,11 +11,11 @@
   shmemLib = import ./_crucible-shmem-source.nix {inherit lib;};
   icountTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-shmem/tests/icount_stamped_injection.rs;
+    entry = ../../crates/crucible/protocol/crucible-qemu-shmem/tests/icount_stamped_injection.rs;
   };
   lookaheadTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-shmem/tests/lookahead_gate.rs;
+    entry = ../../crates/crucible/protocol/crucible-qemu-shmem/tests/lookahead_gate.rs;
   };
   shmemSpec = builtins.readFile ../../docs/rfcs/0010-crucible/13-shmem-abi.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -25,7 +25,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "crates/crucible-shmem/src/lib.rs" shmemLib [
+    failuresFor "crates/crucible/protocol/crucible-qemu-shmem/src/lib.rs" shmemLib [
       {
         label = "frame entry ABI";
         needle = "pub struct FrameEntry";
@@ -75,7 +75,7 @@
         needle = "LookaheadGateError::DeliveryAlreadyPassed";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/tests/icount_stamped_injection.rs" icountTest [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/tests/icount_stamped_injection.rs" icountTest [
       {
         label = "in-band delivery icount test";
         needle = "frame_entry_carries_delivery_icount_in_band";
@@ -89,7 +89,7 @@
         needle = "same_icount_frames_resolve_by_source_node_then_sequence";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/tests/lookahead_gate.rs" lookaheadTest [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/tests/lookahead_gate.rs" lookaheadTest [
       {
         label = "exact-current delivery admission test";
         needle = "lookahead_gate_allows_exact_current_delivery_icount";
@@ -103,13 +103,13 @@
         needle = "lookahead_gate_allows_future_frame_to_deliver_at_exact_icount";
       }
     ]
-    ++ forbiddenFor "crates/crucible-shmem/tests/icount_stamped_injection.rs" icountTest [
+    ++ forbiddenFor "crates/crucible/protocol/crucible-qemu-shmem/tests/icount_stamped_injection.rs" icountTest [
       {
         label = "ignored icount-stamped test";
         needle = "#[ignore";
       }
     ]
-    ++ forbiddenFor "crates/crucible-shmem/tests/lookahead_gate.rs" lookaheadTest [
+    ++ forbiddenFor "crates/crucible/protocol/crucible-qemu-shmem/tests/lookahead_gate.rs" lookaheadTest [
       {
         label = "ignored lookahead test";
         needle = "#[ignore";
@@ -186,14 +186,14 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-shmem-deliverability-target" \
-              -p crucible-shmem \
+              -p crucible-qemu-shmem \
               --test icount_stamped_injection \
               -- --test-threads=1
             cargo test \
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-shmem-deliverability-target" \
-              -p crucible-shmem \
+              -p crucible-qemu-shmem \
               --test lookahead_gate \
               -- --test-threads=1
           '';

@@ -14,19 +14,22 @@
   harnessDoc = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
   patternsDoc = builtins.readFile ../../docs/rfcs/0010-crucible/29-patterns-and-sketches.md;
   defaultChecks = builtins.readFile ./default.nix;
-  sessionManifest = builtins.readFile ../../crates/crucible-session/Cargo.toml;
+  sessionManifest = builtins.readFile ../../crates/crucible/control/crucible-session/Cargo.toml;
   sessionLib = import ./_crucible-session-source.nix {inherit lib;};
   sessionGateTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-session/tests/gate_control_responsive.rs;
+    entry = ../../crates/crucible/control/crucible-session/tests/gate_control_responsive.rs;
   };
-  sessionExplorationForkTest = builtins.readFile ../../crates/crucible-session/tests/gate_exploration_fork.rs;
-  sessionExplorationLifecycleTest = builtins.readFile ../../crates/crucible-session/tests/gate_exploration_lifecycle.rs;
-  apiManifest = builtins.readFile ../../crates/crucible-api/Cargo.toml;
-  apiGateTest = builtins.readFile ../../crates/crucible-api/tests/gate_control_responsive.rs;
-  daemonManifest = builtins.readFile ../../crates/crucible-daemon/Cargo.toml;
-  daemonGateTest = builtins.readFile ../../crates/crucible-daemon/tests/gate_control_responsive.rs;
-  schedulerGateTest = builtins.readFile ../../crates/crucible/tests/gate_scheduler_liveness.rs;
+  sessionExplorationForkTest = builtins.readFile ../../crates/crucible/control/crucible-session/tests/gate_exploration_fork.rs;
+  sessionExplorationLifecycleTest = builtins.readFile ../../crates/crucible/control/crucible-session/tests/gate_exploration_lifecycle.rs;
+  apiManifest = builtins.concatStringsSep "\n" [
+    (builtins.readFile ../../crates/crucible/control/crucible-control-client/Cargo.toml)
+    (builtins.readFile ../../crates/crucible/control/crucible-control-server/Cargo.toml)
+  ];
+  apiGateTest = builtins.readFile ../../crates/crucible/control/crucible-control-server/tests/gate_control_responsive.rs;
+  daemonManifest = builtins.readFile ../../crates/crucible/control/crucible-daemon/Cargo.toml;
+  daemonGateTest = builtins.readFile ../../crates/crucible/control/crucible-daemon/tests/gate_control_responsive.rs;
+  schedulerGateTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/gate_scheduler_liveness.rs;
   lifecycleCheck = builtins.readFile ./phase5-session-lifecycle.nix;
   commandCheck = builtins.readFile ./phase5-session-command-set.nix;
   controlResponsiveCheck = builtins.readFile ./phase5-control-responsive.nix;
@@ -120,7 +123,7 @@
         needle = "patch inertness                    NO";
       }
     ]
-    ++ failuresFor "crates/crucible-session/src/lib.rs" sessionLib [
+    ++ failuresFor "crates/crucible/control/crucible-session/src/lib.rs" sessionLib [
       {
         label = "generic session engine";
         needle = "pub struct Engine<L>";
@@ -134,8 +137,8 @@
         needle = "It contains no raw QEMU or shared-memory access.";
       }
     ]
-    ++ forbiddenFor "crates/crucible-session/src/lib.rs" sessionLib qemuBackendForbidden
-    ++ failuresFor "crates/crucible-session/Cargo.toml" sessionManifest [
+    ++ forbiddenFor "crates/crucible/control/crucible-session/src/lib.rs" sessionLib qemuBackendForbidden
+    ++ failuresFor "crates/crucible/control/crucible-session/Cargo.toml" sessionManifest [
       {
         label = "session test-double and test-support dev features";
         needle = "crucible = { path = \"../crucible\", features = [\"test-double\", \"test-support\"] }";
@@ -145,7 +148,7 @@
         needle = "crucible-protocol = { path = \"../crucible-protocol\" }";
       }
     ]
-    ++ failuresFor "crates/crucible-session/tests/gate_control_responsive.rs" sessionGateTest [
+    ++ failuresFor "crates/crucible/control/crucible-session/tests/gate_control_responsive.rs" sessionGateTest [
       {
         label = "session gate declares SimDouble adapter";
         needle = "const CONTROL_RESPONSIVE_BACKEND: &str = \"crucible::SimDouble quantum-loop adapter\";";
@@ -207,16 +210,16 @@
         needle = "SessionCommand::Stop";
       }
     ]
-    ++ failuresFor "crates/crucible-session/src" sessionLib [
+    ++ failuresFor "crates/crucible/control/crucible-session/src" sessionLib [
       {
         label = "session loop retains typed backend input control";
         needle = "ScheduledEventPayload::BackendInput(BackendInput {";
       }
     ]
-    ++ forbiddenFor "crates/crucible-session/tests/gate_control_responsive.rs" sessionGateTest qemuBackendForbidden
-    ++ forbiddenFor "crates/crucible-session/tests/gate_exploration_fork.rs" sessionExplorationForkTest qemuBackendForbidden
-    ++ forbiddenFor "crates/crucible-session/tests/gate_exploration_lifecycle.rs" sessionExplorationLifecycleTest qemuBackendForbidden
-    ++ failuresFor "crates/crucible-api/Cargo.toml" apiManifest [
+    ++ forbiddenFor "crates/crucible/control/crucible-session/tests/gate_control_responsive.rs" sessionGateTest qemuBackendForbidden
+    ++ forbiddenFor "crates/crucible/control/crucible-session/tests/gate_exploration_fork.rs" sessionExplorationForkTest qemuBackendForbidden
+    ++ forbiddenFor "crates/crucible/control/crucible-session/tests/gate_exploration_lifecycle.rs" sessionExplorationLifecycleTest qemuBackendForbidden
+    ++ failuresFor "crates/crucible/control/crucible-control-api/Cargo.toml" apiManifest [
       {
         label = "API test-double and test-support dev features";
         needle = "crucible = { path = \"../crucible\", features = [\"test-double\", \"test-support\"] }";
@@ -230,7 +233,7 @@
         needle = "crucible-protocol = { path = \"../crucible-protocol\" }";
       }
     ]
-    ++ failuresFor "crates/crucible-api/tests/gate_control_responsive.rs" apiGateTest [
+    ++ failuresFor "crates/crucible/control/crucible-control-server/tests/gate_control_responsive.rs" apiGateTest [
       {
         label = "API gate declares SimDouble adapter";
         needle = "const CONTROL_RESPONSIVE_BACKEND: &str = \"crucible::SimDouble quantum-loop adapter\";";
@@ -256,8 +259,8 @@
         needle = "SimDoubleQuantumLoop::new";
       }
     ]
-    ++ forbiddenFor "crates/crucible-api/tests/gate_control_responsive.rs" apiGateTest qemuBackendForbidden
-    ++ failuresFor "crates/crucible-daemon/Cargo.toml" daemonManifest [
+    ++ forbiddenFor "crates/crucible/control/crucible-control-server/tests/gate_control_responsive.rs" apiGateTest qemuBackendForbidden
+    ++ failuresFor "crates/crucible/control/crucible-daemon/Cargo.toml" daemonManifest [
       {
         label = "daemon test-double dev feature";
         needle = "crucible = { path = \"../crucible\", features = [\"test-double\"] }";
@@ -267,7 +270,7 @@
         needle = "crucible-protocol = { path = \"../crucible-protocol\" }";
       }
     ]
-    ++ failuresFor "crates/crucible-daemon/tests/gate_control_responsive.rs" daemonGateTest [
+    ++ failuresFor "crates/crucible/control/crucible-daemon/tests/gate_control_responsive.rs" daemonGateTest [
       {
         label = "daemon gate declares SimDouble adapter";
         needle = "const CONTROL_RESPONSIVE_BACKEND: &str = \"crucible::SimDouble quantum-loop adapter\";";
@@ -293,8 +296,8 @@
         needle = "SimDoubleQuantumLoop::new";
       }
     ]
-    ++ forbiddenFor "crates/crucible-daemon/tests/gate_control_responsive.rs" daemonGateTest qemuBackendForbidden
-    ++ failuresFor "crates/crucible/tests/gate_scheduler_liveness.rs" schedulerGateTest [
+    ++ forbiddenFor "crates/crucible/control/crucible-daemon/tests/gate_control_responsive.rs" daemonGateTest qemuBackendForbidden
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/gate_scheduler_liveness.rs" schedulerGateTest [
       {
         label = "scheduler liveness declares SimDouble initialized test-double path";
         needle = "const SCHEDULER_LIVENESS_BACKEND: &str = \"crucible::SimDouble liveness harness\";";
@@ -320,7 +323,7 @@
         needle = "SimulationBackend::step_to";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/gate_scheduler_liveness.rs" schedulerGateTest qemuBackendForbidden
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/gate_scheduler_liveness.rs" schedulerGateTest qemuBackendForbidden
     ++ failuresFor "tests/crucible/phase5-session-lifecycle.nix" lifecycleCheck [
       {
         label = "lifecycle suite command";
@@ -348,7 +351,7 @@
       }
       {
         label = "control-responsive API target";
-        needle = "-p crucible-api";
+        needle = "-p crucible-control-api -p crucible-control-client -p crucible-control-server";
       }
       {
         label = "control-responsive daemon target";
@@ -458,7 +461,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-session-sim-double-suite-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible-api \
+              -p crucible-control-server \
               --test gate_control_responsive \
               -- --test-threads=1
 
@@ -476,7 +479,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-session-sim-double-suite-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --features test-double \
               --test gate_scheduler_liveness \
               -- --test-threads=1

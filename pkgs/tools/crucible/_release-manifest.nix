@@ -13,9 +13,16 @@
 }: let
   packages = import ./_packages.nix;
   crateRoot = ../../../crates;
-  shmemLib = builtins.readFile (crateRoot + "/crucible-shmem/src/lib.rs");
-  doorbellAbi = builtins.readFile (crateRoot + "/crucible-protocol/src/doorbell_abi.rs");
-  apiRpcAbi = builtins.readFile (crateRoot + "/crucible-api/src/rpc_abi.rs");
+  workspaceMembers = (builtins.fromTOML (builtins.readFile (crateRoot + "/Cargo.toml"))).workspace.members;
+  packageManifests = builtins.listToAttrs (map (member: let
+    manifest = builtins.fromTOML (builtins.readFile (crateRoot + "/${member}/Cargo.toml"));
+  in {
+    name = manifest.package.name;
+    value = manifest;
+  }) workspaceMembers);
+  shmemLib = builtins.readFile (crateRoot + "/crucible/protocol/crucible-qemu-shmem/src/lib.rs");
+  doorbellAbi = builtins.readFile (crateRoot + "/crucible/protocol/crucible-qemu-protocol/src/doorbell_abi.rs");
+  apiRpcAbi = builtins.readFile (crateRoot + "/crucible/control/crucible-control-api/src/rpc_abi.rs");
   firstLineWith = label: prefix: content: let
     matches = builtins.filter (line: lib.hasPrefix prefix line) (lib.splitString "\n" content);
   in
@@ -31,11 +38,7 @@
   tomlStringConst = label: prefix: content:
     lib.removeSuffix "\""
     (lib.removePrefix prefix (firstLineWith label prefix content));
-  packageVersion = package:
-    tomlStringConst
-    "crate ${package} version"
-    "version = \""
-    (builtins.readFile (crateRoot + "/${package}/Cargo.toml"));
+  packageVersion = package: packageManifests.${package}.package.version;
   packageVersions =
     builtins.listToAttrs
     (map (package: {
@@ -156,7 +159,7 @@
         boundary = "operator-guest-bridge-client";
       };
       boundaryCrates = {
-        packages = ["crucible-protocol" "crucible-shmem"];
+        packages = ["crucible-qemu-protocol" "crucible-qemu-shmem"];
         license = "MIT";
         selection = "gpl-plugin-consumption";
       };

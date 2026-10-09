@@ -1,0 +1,23 @@
+[package]
+name = "crucible-session"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish = false
+
+[features]
+default = []
+test-support = []
+test-double = ["crucible-engine/test-double"]
+
+[lints]
+workspace = true
+
+[dependencies]
+crucible-engine = { path = "../../engine/crucible-engine" }
+crucible-qemu-protocol = { path = "../../protocol/crucible-qemu-protocol" }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+crucible-engine = { path = "../../engine/crucible-engine", features = ["test-double", "test-support"] }

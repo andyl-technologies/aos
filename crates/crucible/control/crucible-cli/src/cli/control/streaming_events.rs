@@ -1,0 +1,570 @@
+//! Terminal event-stream draining and canonical coverage reconstruction.
+
+use super::*;
+use crucible_session::{EngineState, Outcome};
+
+pub(crate) async fn observe_next_event(
+    control: &mut crucible_control_client::ClientControlStream,
+    timeout_ms: u64,
+    streamed_events: &mut Vec<String>,
+    streamed_event_frames: &mut Vec<Vec<u8>>,
+    coverage_events: &mut Vec<crucible_engine::ObservableEvent>,
+    streamed_event_cursor: &mut u64,
+) -> Result<bool, CliError> {
+    match tokio::time::timeout(Duration::from_millis(timeout_ms), control.recv_event()).await {
+        Ok(Ok(Some(frame))) => {
+            if let Some(event) = coverage_event_from_streaming_frame(&frame)? {
+                coverage_events.push(event);
+            }
+            *streamed_event_cursor = frame.next_cursor.next_sequence;
+            streamed_event_frames.push(canonical_streaming_event_frame_bytes(&frame));
+            streamed_events.push(streaming_event_summary(&frame));
+            Ok(false)
+        }
+        Ok(Ok(None)) => Ok(true),
+        Ok(Err(error)) => Err(control_client_error(error)),
+        Err(_) => Ok(false),
+    }
+}
+
+// crucible-lint: allow rust-allow -- the terminal drain carries the control stream, terminal extent, timeout, decoded events, exact frames, coverage events, and cursor as distinct ownership domains.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn drain_terminal_event_log(
+    control: &mut crucible_control_client::ClientControlStream,
+    terminal_event_log_len: u64,
+    timeout_ms: u64,
+    streamed_events: &mut Vec<String>,
+    streamed_event_frames: &mut Vec<Vec<u8>>,
+    coverage_events: &mut Vec<crucible_engine::ObservableEvent>,
+    streamed_event_cursor: &mut u64,
+) -> Result<(), CliError> {
+    while *streamed_event_cursor < terminal_event_log_len {
+        let received = tokio::time::timeout(
+            Duration::from_millis(timeout_ms.max(1)),
+            control.recv_event(),
+        )
+        .await
+        .map_err(|_| {
+            backend_error(format!(
+                "terminal event-log drain timed out at cursor {} before retained tail {terminal_event_log_len}",
+                *streamed_event_cursor
+            ))
+        })?
+        .map_err(control_client_error)?;
+        let Some(frame) = received else {
+            return Err(backend_error(format!(
+                "terminal event-log stream closed at cursor {} before retained tail {terminal_event_log_len}",
+                *streamed_event_cursor
+            )));
+        };
+        if let Some(event) = coverage_event_from_streaming_frame(&frame)? {
+            coverage_events.push(event);
+        }
+        *streamed_event_cursor = frame.next_cursor.next_sequence;
+        streamed_event_frames.push(canonical_streaming_event_frame_bytes(&frame));
+        streamed_events.push(streaming_event_summary(&frame));
+    }
+    Ok(())
+}
+
+// crucible-lint: allow rust-allow -- the bounded stop carries distinct control, status, and event-stream ownership domains.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn stop_budget_timed_out_session<C>(
+    client: &C,
+    // crucible-lint: allow host-nondeterminism-state -- the typed client stream is observation transport; the session engine remains authoritative.
+    control: &mut crucible_control_client::ClientControlStream,
+    command_id: &mut u64,
+    acknowledged_commands: &mut Vec<SessionCommandKind>,
+    final_state: String,
+    initial: crucible_control_api::SessionSummary,
+    mut watch_statuses: Vec<String>,
+    watch_streams_live_status: bool,
+    event_timeout_ms: u64,
+    streamed_events: &mut Vec<String>,
+    streamed_event_frames: &mut Vec<Vec<u8>>,
+    coverage_events: &mut Vec<crucible_engine::ObservableEvent>,
+    streamed_event_cursor: &mut u64,
+) -> Result<RunObservation, CliError>
+where
+    // crucible-lint: allow host-nondeterminism-state -- the typed client only transports authoritative session summaries and commands.
+    C: ControlClient + Sync,
+{
+    let stopped = if initial.state == LiveStateKind::Stopped {
+        initial
+    } else {
+        acknowledge_stream_command(
+            control,
+            command_id,
+            SessionCommandKind::ExhaustBudget,
+            acknowledged_commands,
+        )
+        .await?;
+        let mut stopped = initial;
+        for _ in 0..RUN_INTERACTIVE_ACK_QUANTA_BOUND {
+            let sessions = client.list_sessions().await.map_err(control_client_error)?;
+            let Some(session) = sessions
+                .sessions
+                .iter()
+                .find(|summary| summary.session == stopped.session)
+            else {
+                break;
+            };
+            stopped = session.clone();
+            if watch_streams_live_status {
+                watch_statuses.push(run_watch_status(session));
+            }
+            if session.state == LiveStateKind::Stopped {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        stopped
+    };
+
+    drain_terminal_event_log(
+        control,
+        stopped.event_log_len,
+        event_timeout_ms,
+        streamed_events,
+        streamed_event_frames,
+        coverage_events,
+        streamed_event_cursor,
+    )
+    .await?;
+
+    Ok(RunObservation {
+        final_state,
+        outcome: stopped.outcome,
+        terminal_savepoint: stopped.terminal_savepoint,
+        terminal_configuration: query_run_terminal_configuration(
+            control,
+            command_id,
+            acknowledged_commands,
+        )
+        .await?,
+        frontier_ticks: stopped.frontier.ticks,
+        quanta: stopped.quanta_stepped,
+        budget_timed_out: stopped.outcome == Some(OutcomeKind::Timeout),
+        watch_statuses,
+    })
+}
+
+fn streaming_event_summary(frame: &crucible_control_api::StreamingEventFrame) -> String {
+    use crucible_control_api::{OpenSetAttributeValue, OpenSetEventSource};
+
+    const DIAGNOSTIC_ATTRIBUTES: &[&str] = &[
+        "action",
+        "assertion",
+        "at",
+        "boundary",
+        "cause",
+        "condition",
+        "consumer",
+        "description",
+        "disposition",
+        "distance",
+        "event",
+        "fault",
+        "fired",
+        "flavor",
+        "from_state",
+        "id",
+        "kind",
+        "location",
+        "marker",
+        "marker_kind",
+        "message",
+        "must_hit",
+        "name",
+        "new_state",
+        "node",
+        "outcome",
+        "policy",
+        "predicate",
+        "producer",
+        "quantifier",
+        "ready_point",
+        "reason",
+        "retired_icount",
+        "sequence",
+        "state",
+        "summary",
+        "tag",
+        "targets",
+        "to_state",
+        "virtual_time",
+    ];
+
+    let mut summary = frame.event.payload.kind.clone();
+    summary.push_str(" sequence=");
+    summary.push_str(&frame.event.sequence.to_string());
+    summary.push_str(" virtual_time=");
+    summary.push_str(&frame.event.at.virtual_time_ticks.to_string());
+    summary.push_str(" stamp_tick=");
+    summary.push_str(&frame.event.at.stamp_tick.to_string());
+    if let Some(retired) = frame.event.at.stamp_retired {
+        summary.push_str(" stamp_retired=");
+        summary.push_str(&retired.to_string());
+    }
+    if let Some(node) = &frame.event.at.stamp_node {
+        summary.push_str(" stamp_node=");
+        summary.push_str(&escape_event_summary_field(node));
+    }
+    summary.push_str(" source=");
+    let (source, source_detail) = match &frame.event.source {
+        OpenSetEventSource::Scenario { event } => ("scenario", Some(event.as_str())),
+        OpenSetEventSource::Engine => ("engine", None),
+        OpenSetEventSource::Node { node } => ("node", Some(node.as_str())),
+        OpenSetEventSource::Guest { node } => ("guest", Some(node.as_str())),
+        OpenSetEventSource::Command { command_id } => {
+            summary.push_str("command:");
+            summary.push_str(&command_id.to_string());
+            ("", None)
+        }
+    };
+    summary.push_str(source);
+    if let Some(detail) = source_detail {
+        summary.push(':');
+        summary.push_str(&escape_event_summary_field(detail));
+    }
+    summary.push_str(if frame.event.observational {
+        " class=observational"
+    } else {
+        " class=causal"
+    });
+    for name in DIAGNOSTIC_ATTRIBUTES {
+        let Some(value) = frame.event.payload.attribute(name) else {
+            continue;
+        };
+        let value = match value {
+            OpenSetAttributeValue::Bool(value) => value.to_string(),
+            OpenSetAttributeValue::Int(value) => value.to_string(),
+            OpenSetAttributeValue::Uint(value) => value.to_string(),
+            OpenSetAttributeValue::Uint128(value) => value.to_string(),
+            OpenSetAttributeValue::Float64Bits(value) => format!("bits:{value}"),
+            OpenSetAttributeValue::String(value) => escape_event_summary_field(value),
+            OpenSetAttributeValue::Bytes(value) => format!("<{} bytes>", value.len()),
+        };
+        summary.push(' ');
+        summary.push_str(name);
+        summary.push('=');
+        summary.push_str(&value);
+    }
+    if let Some(OpenSetAttributeValue::Bytes(bytes)) = frame.event.payload.attribute("bytes") {
+        summary.push_str(" bytes_len=");
+        summary.push_str(&bytes.len().to_string());
+        summary.push_str(" bytes_content=redacted");
+    }
+    summary
+}
+
+fn escape_event_summary_field(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('\t', "\\t")
+        .replace('\r', "\\r")
+        .replace('\n', "\\n")
+        .replace(' ', "\\s")
+        .replace('=', "\\=")
+}
+
+pub(crate) fn coverage_event_from_streaming_frame(
+    frame: &crucible_control_api::StreamingEventFrame,
+) -> Result<Option<crucible_engine::ObservableEvent>, CliError> {
+    use crucible_control_api::OpenSetAttributeValue;
+
+    if frame.event.payload.kind != "crucible.event.coverage" {
+        return Ok(None);
+    }
+    let string = |name: &str| match frame.event.payload.attribute(name) {
+        Some(OpenSetAttributeValue::String(value)) => Ok(value.clone()),
+        _ => Err(backend_error(format!(
+            "coverage event {} has missing or non-string `{name}` attribute",
+            frame.event.sequence
+        ))),
+    };
+    let uint = |name: &str| match frame.event.payload.attribute(name) {
+        Some(OpenSetAttributeValue::Uint(value)) => Ok(*value),
+        _ => Err(backend_error(format!(
+            "coverage event {} has missing or non-unsigned `{name}` attribute",
+            frame.event.sequence
+        ))),
+    };
+    let node = crucible_engine::NodeId {
+        name: string("node")?,
+    };
+    match string("kind")?.as_str() {
+        "basic_block" => {
+            let block_len = u32::try_from(uint("block_len")?).map_err(|_| {
+                backend_error(format!(
+                    "coverage event {} block length exceeds u32",
+                    frame.event.sequence
+                ))
+            })?;
+            Ok(Some(crucible_engine::ObservableEvent::coverage_block(
+                crucible_engine::Icount {
+                    retired: uint("execution_icount")?,
+                },
+                node,
+                uint("guest_pc")?,
+                block_len,
+            )))
+        }
+        "named" => Ok(Some(crucible_engine::ObservableEvent::coverage_marker(
+            crucible_engine::Icount {
+                retired: uint("retired_icount")?,
+            },
+            node,
+            crucible_engine::MarkerId::from_name(string("id")?),
+        ))),
+        kind => Err(backend_error(format!(
+            "coverage event {} has unsupported coverage kind `{kind}`",
+            frame.event.sequence
+        ))),
+    }
+}
+
+pub(crate) fn coverage_feedback_from_streamed_events(
+    events: Vec<crucible_engine::ObservableEvent>,
+) -> Result<crucible_engine::EventLogCoverageFeedback, CliError> {
+    if events.is_empty() {
+        return Ok(crucible_engine::EventLogCoverageFeedback::from_event_log(
+            &[],
+        ));
+    }
+    let boundary = events
+        .iter()
+        .map(crucible_engine::ObservableEvent::at)
+        .max_by_key(|at| at.ticks)
+        .unwrap_or_default();
+    let mut event_log = crucible_engine::EventLog::new();
+    let append = event_log
+        .append_observations_at_boundary(
+            events,
+            boundary,
+            crucible_engine::SchedulerEvaluationBoundaryKind::Quantum,
+        )
+        .map_err(|error| {
+            backend_error(format!(
+                "streamed coverage could not rebuild canonical feedback: {error}"
+            ))
+        })?;
+    Ok(crucible_engine::EventLogCoverageFeedback::from_event_log(
+        &append.entries,
+    ))
+}
+
+pub(crate) async fn query_run_terminal_configuration(
+    // crucible-lint: allow host-nondeterminism-state -- the typed stream returns an engine-owned canonical configuration snapshot.
+    control: &crucible_control_client::ClientControlStream,
+    command_id: &mut u64,
+    acknowledged_commands: &mut Vec<SessionCommandKind>,
+) -> Result<crucible_engine::Configuration, CliError> {
+    let response = control
+        .send_command(*command_id, SessionCommand::query_snapshot())
+        .await
+        .map_err(control_client_error)?;
+    *command_id = command_id.saturating_add(1);
+    match response.result.status {
+        CommandResultStatus::Accepted => {
+            acknowledged_commands.push(SessionCommandKind::Query);
+        }
+        CommandResultStatus::Rejected { reason } => {
+            return Err(backend_error(format!(
+                "terminal configuration snapshot was rejected: {reason:?}"
+            )));
+        }
+    }
+    match response.query_result {
+        Some(QueryResult::Snapshot(snapshot)) => {
+            if let EngineState::Stopped {
+                outcome: Outcome::Crashed { detail },
+            } = &snapshot.state
+            {
+                eprintln!("crucible: terminal backend crash: {detail}");
+            }
+            Ok(snapshot.configuration)
+        }
+        Some(other) => Err(backend_error(format!(
+            "terminal configuration snapshot returned unexpected payload: {other:?}"
+        ))),
+        None => Err(backend_error(
+            "terminal configuration snapshot returned no payload",
+        )),
+    }
+}
+
+pub(crate) fn run_status_from_observation(
+    _run_plan: &RunInvocationPlan,
+    observation: &RunObservation,
+) -> Result<BackendCommandStatus, CliError> {
+    if observation.budget_timed_out != (observation.outcome == Some(OutcomeKind::Timeout)) {
+        return Err(backend_error(
+            "budget observation did not match the session engine terminal outcome",
+        ));
+    }
+    status_from_outcome(observation.outcome)
+}
+
+pub(crate) fn status_from_outcome(
+    outcome: Option<OutcomeKind>,
+) -> Result<BackendCommandStatus, CliError> {
+    match outcome {
+        Some(OutcomeKind::Passed | OutcomeKind::Stopped) => Ok(BackendCommandStatus::Passed),
+        Some(OutcomeKind::Failed) => Ok(BackendCommandStatus::Failed),
+        Some(OutcomeKind::Timeout) => Ok(BackendCommandStatus::Timeout),
+        Some(OutcomeKind::Crashed) => Ok(BackendCommandStatus::Crashed),
+        None => Err(backend_error(
+            "session reached a terminal observation without an engine outcome",
+        )),
+    }
+}
+
+#[cfg(test)]
+mod summary_tests {
+    use super::*;
+
+    #[test]
+    fn assertion_summary_preserves_agent_diagnostic_fields() {
+        let frame = crucible_control_api::StreamingEventFrame {
+            generation: 0,
+            cursor: crucible_control_api::EventLogCursor::new(3),
+            next_cursor: crucible_control_api::EventLogCursor::new(4),
+            event: crucible_control_api::OpenSetEventEnvelope {
+                sequence: 3,
+                at: crucible_control_api::OpenSetEventTime {
+                    virtual_time_ticks: 40,
+                    stamp_tick: 40,
+                    stamp_retired: Some(40),
+                    stamp_node: None,
+                },
+                source: crucible_control_api::OpenSetEventSource::Engine,
+                level: crucible_engine::EventLevel::Info,
+                observational: false,
+                payload: crucible_control_api::OpenSetPayload::new(
+                    "crucible.event.assertion_state_changed",
+                    [
+                        (
+                            String::from("id"),
+                            crucible_control_api::OpenSetAttributeValue::String(String::from(
+                                "suspect-must-crash",
+                            )),
+                        ),
+                        (
+                            String::from("new_state"),
+                            crucible_control_api::OpenSetAttributeValue::String(String::from(
+                                "Violated",
+                            )),
+                        ),
+                    ]
+                    .into_iter()
+                    .collect(),
+                ),
+            },
+        };
+
+        assert_eq!(
+            streaming_event_summary(&frame),
+            "crucible.event.assertion_state_changed sequence=3 virtual_time=40 stamp_tick=40 stamp_retired=40 source=engine class=causal id=suspect-must-crash new_state=Violated"
+        );
+    }
+
+    #[test]
+    fn effect_summary_preserves_coordinate_source_and_effect_fields() {
+        let frame = crucible_control_api::StreamingEventFrame {
+            generation: 0,
+            cursor: crucible_control_api::EventLogCursor::new(7),
+            next_cursor: crucible_control_api::EventLogCursor::new(8),
+            event: crucible_control_api::OpenSetEventEnvelope {
+                sequence: 7,
+                at: crucible_control_api::OpenSetEventTime {
+                    virtual_time_ticks: 91,
+                    stamp_tick: 91,
+                    stamp_retired: Some(27),
+                    stamp_node: Some(String::from("server")),
+                },
+                source: crucible_control_api::OpenSetEventSource::Scenario {
+                    event: String::from("partition-server"),
+                },
+                level: crucible_engine::EventLevel::Info,
+                observational: false,
+                payload: crucible_control_api::OpenSetPayload::new(
+                    "crucible.event.effect_applied",
+                    [
+                        (
+                            String::from("description"),
+                            crucible_control_api::OpenSetAttributeValue::String(String::from(
+                                "partition client to server",
+                            )),
+                        ),
+                        (
+                            String::from("kind"),
+                            crucible_control_api::OpenSetAttributeValue::String(String::from(
+                                "partition",
+                            )),
+                        ),
+                        (
+                            String::from("tag"),
+                            crucible_control_api::OpenSetAttributeValue::String(String::from(
+                                "network-cut",
+                            )),
+                        ),
+                        (
+                            String::from("targets"),
+                            crucible_control_api::OpenSetAttributeValue::String(String::from(
+                                "client,server",
+                            )),
+                        ),
+                    ]
+                    .into_iter()
+                    .collect(),
+                ),
+            },
+        };
+
+        assert_eq!(
+            streaming_event_summary(&frame),
+            "crucible.event.effect_applied sequence=7 virtual_time=91 stamp_tick=91 stamp_retired=27 stamp_node=server source=scenario:partition-server class=causal description=partition\\sclient\\sto\\sserver kind=partition tag=network-cut targets=client,server"
+        );
+    }
+
+    #[test]
+    fn console_summary_redacts_guest_bytes() {
+        let secret = b"token=super-secret".to_vec();
+        let frame = crucible_control_api::StreamingEventFrame {
+            generation: 0,
+            cursor: crucible_control_api::EventLogCursor::new(1),
+            next_cursor: crucible_control_api::EventLogCursor::new(2),
+            event: crucible_control_api::OpenSetEventEnvelope {
+                sequence: 1,
+                at: crucible_control_api::OpenSetEventTime {
+                    virtual_time_ticks: 1,
+                    stamp_tick: 1,
+                    stamp_retired: Some(1),
+                    stamp_node: Some(String::from("suspect")),
+                },
+                source: crucible_control_api::OpenSetEventSource::Node {
+                    node: String::from("suspect"),
+                },
+                level: crucible_engine::EventLevel::Info,
+                observational: true,
+                payload: crucible_control_api::OpenSetPayload::new(
+                    "crucible.event.console_output",
+                    [(
+                        String::from("bytes"),
+                        crucible_control_api::OpenSetAttributeValue::Bytes(secret),
+                    )]
+                    .into_iter()
+                    .collect(),
+                ),
+            },
+        };
+
+        let summary = streaming_event_summary(&frame);
+        assert_eq!(
+            summary,
+            "crucible.event.console_output sequence=1 virtual_time=1 stamp_tick=1 stamp_retired=1 stamp_node=suspect source=node:suspect class=observational bytes_len=18 bytes_content=redacted"
+        );
+        assert!(!summary.contains("super-secret"));
+    }
+}

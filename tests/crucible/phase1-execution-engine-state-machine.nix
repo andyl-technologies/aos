@@ -8,7 +8,7 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   session = import ./_crucible-session-source.nix {inherit lib;};
-  sessionManifest = builtins.readFile ../../crates/crucible-session/Cargo.toml;
+  sessionManifest = builtins.readFile ../../crates/crucible/control/crucible-session/Cargo.toml;
   defaultChecks = builtins.readFile ./default.nix;
   rfc = builtins.readFile ../../docs/rfcs/0010-crucible/05-execution-model.md;
   sessionControlPlane = builtins.readFile ../../docs/rfcs/0010-crucible/20-session-control-plane.md;
@@ -17,7 +17,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "crates/crucible-session/src/lib.rs" session [
+    failuresFor "crates/crucible/control/crucible-session/src/lib.rs" session [
       {
         label = "closed engine state enum";
         needle = "pub enum EngineState";
@@ -123,7 +123,7 @@
         needle = "session_actor_yields_after_command_driven_accepted_step";
       }
     ]
-    ++ failuresFor "crates/crucible-session/Cargo.toml" sessionManifest [
+    ++ failuresFor "crates/crucible/control/crucible-session/Cargo.toml" sessionManifest [
       {
         label = "tokio actor dependency";
         needle = "tokio = { workspace = true }";
@@ -138,7 +138,7 @@
     ++ failuresFor "docs/rfcs/0010-crucible/05-execution-model.md" rfc [
       {
         label = "T-EXEC-14 completion note";
-        needle = "Completed by `crates/crucible-session/src/lib.rs`: `Engine` now owns";
+        needle = "Completed by `crates/crucible/control/crucible-session/src/lib.rs`: `Engine` now owns";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/20-session-control-plane.md" sessionControlPlane [

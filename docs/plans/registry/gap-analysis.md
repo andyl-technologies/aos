@@ -153,7 +153,7 @@ and `unbundle` (`bundle.rs:376`) — all replaced by `pack-objects` /
 strategies (`update.rs:394-417`).
 
 **Concrete replacement (DEEPEN).** A new module
-`crates/aos-package/src/registry/rollout.rs` owns bucket + partition selection,
+`crates/aos/packages/aos-package-manager/src/registry/rollout.rs` owns bucket + partition selection,
 and `registry/git.rs` (which already grew `resolve_best_version_tag` /
 `parse_tag_as_semver`, `git.rs:301,365`) grows the partition-tag resolver:
 
@@ -229,7 +229,7 @@ break and are replaced by `#[test] fn resolve_partition_tag_probes_forward` /
   (`registry_ops.rs:1758`).
 - **Trust roster.** **Drop** `RegistrySigningConfig` and the `signing` field from
   `RegistryRootConfig` (`types.rs:564-570`, struct `types.rs:594-596`); add a new
-  `crates/aos-package/src/registry/keys.rs` with
+  `crates/aos/packages/aos-package-manager/src/registry/keys.rs` with
   `#[derive(Deserialize)] pub struct TrustRoster { pub active: Vec<String>, #[serde(default)] pub revoked: Vec<String> }`
   (each entry the `name:Ed25519:<base64>` form parsed by `parse_signing_key`) and
   `pub fn load_keys_toml(repo: &Path) -> anyhow::Result<TrustRoster>` reading the
@@ -267,7 +267,7 @@ download (`download_one`, `download.rs:178`; the `with_hash(Sha256, …)` check 
 
 **Concurrent-publish serialization — F351 (DEEPEN, now COVERED).** Two publishers
 that flip the same channel must not lose a pointer update. Owned by a new
-`crates/aos-package/src/registry/publish.rs`:
+`crates/aos/packages/aos-package-manager/src/registry/publish.rs`:
 
 - `pub fn cas_ref(repo: &Path, refname: &str, old: Option<&str>, new: &str) -> anyhow::Result<bool>` —
   wraps `git update-ref <refname> <new> <old>` (git's built-in compare-and-swap;
@@ -304,7 +304,7 @@ nix-cache cluster.
 
 **Consumer resolution + retention (DEEPEN).** WS-05 rewrites `sync_bundle`
 (`update.rs:209-418`) and deletes `pick_bundles` (`update.rs:319-418`). The
-replacement lives in `crates/aos-package/src/registry/resolve.rs` (new), driven
+replacement lives in `crates/aos/packages/aos-package-manager/src/registry/resolve.rs` (new), driven
 by the `registry/rollout.rs` resolver from §3.3:
 
 - `pub struct ResolvePlan { pub target: semver::Version, pub steps: Vec<FetchStep> }`
@@ -434,7 +434,7 @@ load-bearing in the pre-cutover code and must be deleted, not merely bypassed:
   (`{cache-base}/nix-cache-info`, `{cache-base}/<storehash>.narinfo`,
   `{cache-base}/nar/<…>.nar.zst`), so serving scales as dumb static distribution
   (brief §13). What already exists and is **reused as a library** is the narinfo
-  **format/sign/FileHash logic** — `NarInfo` format/parse (`aos-core/src/nar/info.rs`),
+  **format/sign/FileHash logic** — `NarInfo` format/parse (`aos-nar/src/info.rs`),
   `format_narinfo` (`aos-server/src/narinfo.rs:27`), `compute_file_hash_size`
   (`FileHash`/`FileSize`, `aos-server/src/compress.rs:143`), and the per-narinfo
   Ed25519 `Sig:` (`NarInfoSigner` fingerprint+sign, `aos-server/src/sign.rs:7,44,57`)

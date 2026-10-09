@@ -7,28 +7,28 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
+  pluginLib = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs;
   pluginAbi = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/abi.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/abi.rs;
   };
   pluginSetup = import ./_qemu-plugin-setup-source.nix {inherit lib;};
   pluginWhitebox =
     import ./_rust-module-source.nix {
       inherit lib;
-      entry = ../../crates/crucible-qemu-plugin/src/whitebox_doorbell.rs;
+      entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/whitebox_doorbell.rs;
     }
-    + builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs;
-  pluginNetworkTx = builtins.readFile ../../crates/crucible-qemu-plugin/src/network_tx.rs;
-  pluginNetworkRx = builtins.readFile ../../crates/crucible-qemu-plugin/src/network_rx.rs;
+    + builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs;
+  pluginNetworkTx = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/network_tx.rs;
+  pluginNetworkRx = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/network_rx.rs;
   pluginNetworkRxSymbols =
-    builtins.readFile ../../crates/crucible-qemu-plugin/src/network_rx/qemu_symbols.rs;
+    builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/network_rx/qemu_symbols.rs;
   pluginBlockIo = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/block_io.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/block_io.rs;
     siblingTests = true;
   };
-  pluginNinePIo = builtins.readFile ../../crates/crucible-qemu-plugin/src/ninep_io.rs;
+  pluginNinePIo = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/ninep_io.rs;
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -47,7 +47,7 @@
         needle = "Guest memory MUST be read only through the QEMU plugin memory API";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/lib.rs" pluginLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs" pluginLib [
       {
         label = "unsafe operation lint";
         needle = "#![deny(unsafe_op_in_unsafe_fn)]";
@@ -61,7 +61,7 @@
         needle = "read or written only through QEMU plugin API adapters";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/abi.rs" pluginAbi [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/abi.rs" pluginAbi [
       {
         label = "single-threaded RR callback serialization";
         needle = "QEMU serializes\n//! registered vCPU-thread callbacks";
@@ -111,7 +111,7 @@
         needle = "int qemu_plugin_advance_time_ticks(int64_t)";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/setup.rs" pluginSetup [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/setup.rs" pluginSetup [
       {
         # The doc sentence wraps across comment lines; anchor on the unwrapped
         # prefix of each clause.
@@ -151,7 +151,7 @@
         needle = "`fcntl(F_SETFL)` updates only descriptor status flags";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhitebox [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhitebox [
       {
         label = "guest memory read API";
         needle = "read_guest_memory";
@@ -189,7 +189,7 @@
         needle = "whitebox_guest_input_rejects_oversized_payload_before_guest_memory_write";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/network_tx.rs" pluginNetworkTx [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/network_tx.rs" pluginNetworkTx [
       {
         label = "network TX frame constructor";
         needle = "FrameEntry::new(emit_icount, self.src_slot, seq, payload)";
@@ -203,7 +203,7 @@
         needle = "network_tx_rejects_oversized_payload_without_truncation_or_sequence_advance";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/network_rx.rs" pluginNetworkRx [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/network_rx.rs" pluginNetworkRx [
       {
         label = "network RX payload accessor validation";
         needle = "frame.payload().map_err";
@@ -213,7 +213,7 @@
         needle = "network_rx_rejects_invalid_payload_before_delivery";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/network_rx/qemu_symbols.rs" pluginNetworkRxSymbols [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/network_rx/qemu_symbols.rs" pluginNetworkRxSymbols [
       {
         label = "network RX inject symbol";
         needle = "qemu_plugin_net_inject";
@@ -227,7 +227,7 @@
         needle = "whose patched QEMU declaration matches `QemuPluginNetInjectFn`";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/block_io.rs" pluginBlockIo [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/block_io.rs" pluginBlockIo [
       {
         label = "block request frame constructor";
         needle = "FrameEntry::new(submit_icount, self.vm_slot, request_id, &payload)";
@@ -253,7 +253,7 @@
         needle = "usize::from(frame.len) <= MAX_FRAME_DATA";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/ninep_io.rs" pluginNinePIo [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/ninep_io.rs" pluginNinePIo [
       {
         label = "9p request frame constructor";
         needle = "FrameEntry::new(submit_icount, self.vm_slot, request_id, request.payload())";
@@ -323,45 +323,45 @@ in
             fi
 
             grep -RnlE 'unsafe[[:space:]]*(\{|fn|extern|impl|trait)' \
-              crates/crucible-qemu-plugin/src > "$TMPDIR/plugin-unsafe-files" || true
+              crates/crucible/qemu/crucible-qemu-plugin/src > "$TMPDIR/plugin-unsafe-files" || true
             while IFS= read -r file; do
               case "$file" in
-                crates/crucible-qemu-plugin/src/abi.rs|\
-                crates/crucible-qemu-plugin/src/abi/tests.rs|\
-                crates/crucible-qemu-plugin/src/coverage/live.rs|\
-                crates/crucible-qemu-plugin/src/coverage/tests.rs|\
-                crates/crucible-qemu-plugin/src/coverage/tests/live_callback_cases.rs|\
-                crates/crucible-qemu-plugin/src/fault_command/qemu_api.rs|\
-                crates/crucible-qemu-plugin/src/fault_command/qemu_api/manifests.rs|\
-                crates/crucible-qemu-plugin/src/fault_command/test_support.rs|\
-                crates/crucible-qemu-plugin/src/fault_command/transport.rs|\
-                crates/crucible-qemu-plugin/src/fault_command_test.rs|\
-                crates/crucible-qemu-plugin/src/fingerprint_sampler.rs|\
-                crates/crucible-qemu-plugin/src/fingerprint_sampler/tests.rs|\
-                crates/crucible-qemu-plugin/src/network_rx/qemu_symbols.rs|\
-                crates/crucible-qemu-plugin/src/network_tx.rs|\
-                crates/crucible-qemu-plugin/src/registration/tests.rs|\
-                crates/crucible-qemu-plugin/src/runtime.rs|\
-                crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs|\
-                crates/crucible-qemu-plugin/src/runtime/live_callbacks/devices.rs|\
-                crates/crucible-qemu-plugin/src/runtime/live_callbacks/devices/tests.rs|\
-                crates/crucible-qemu-plugin/src/runtime/live_callbacks/test_support.rs|\
-                crates/crucible-qemu-plugin/src/runtime/live_callbacks/tests.rs|\
-                crates/crucible-qemu-plugin/src/runtime/live_callbacks/tests/registration_stubs.rs|\
-                crates/crucible-qemu-plugin/src/runtime/live_whitebox.rs|\
-                crates/crucible-qemu-plugin/src/runtime/live_whitebox/api.rs|\
-                crates/crucible-qemu-plugin/src/runtime/live_whitebox/error.rs|\
-                crates/crucible-qemu-plugin/src/runtime/live_whitebox/marker.rs|\
-                crates/crucible-qemu-plugin/src/runtime/live_whitebox/selectable.rs|\
-                crates/crucible-qemu-plugin/src/runtime/live_whitebox/selectable/tests.rs|\
-                crates/crucible-qemu-plugin/src/runtime/live_whitebox/tests.rs|\
-                crates/crucible-qemu-plugin/src/runtime/tests.rs|\
-                crates/crucible-qemu-plugin/src/runtime/tests/support.rs|\
-                crates/crucible-qemu-plugin/src/setup.rs|\
-                crates/crucible-qemu-plugin/src/setup/tests.rs|\
-                crates/crucible-qemu-plugin/src/time_control.rs|\
-                crates/crucible-qemu-plugin/src/vcpu_introspection.rs|\
-                crates/crucible-qemu-plugin/src/virtual_timer_witness.rs)
+                crates/crucible/qemu/crucible-qemu-plugin/src/abi.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/abi/tests.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/coverage/live.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/coverage/tests.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/coverage/tests/live_callback_cases.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/fault_command/qemu_api.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/fault_command/qemu_api/manifests.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/fault_command/test_support.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/fault_command/transport.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/fault_command_test.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/fingerprint_sampler.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/fingerprint_sampler/tests.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/network_rx/qemu_symbols.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/network_tx.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/registration/tests.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/runtime.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/runtime/live_callbacks.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/runtime/live_callbacks/devices.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/runtime/live_callbacks/devices/tests.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/runtime/live_callbacks/test_support.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/runtime/live_callbacks/tests.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/runtime/live_callbacks/tests/registration_stubs.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/runtime/live_whitebox.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/runtime/live_whitebox/api.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/runtime/live_whitebox/error.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/runtime/live_whitebox/marker.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/runtime/live_whitebox/selectable.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/runtime/live_whitebox/selectable/tests.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/runtime/live_whitebox/tests.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/runtime/tests.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/runtime/tests/support.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/setup.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/setup/tests.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/time_control.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/vcpu_introspection.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/virtual_timer_witness.rs)
                   ;;
                 *)
                   echo "$file: unexpected unsafe boundary outside audited FFI/setup adapters" >&2
@@ -400,18 +400,18 @@ in
               done < "$TMPDIR/plugin-unsafe-lines"
             done < "$TMPDIR/plugin-unsafe-files"
 
-            grep -Rnl 'transmute' crates/crucible-qemu-plugin/src \
+            grep -Rnl 'transmute' crates/crucible/qemu/crucible-qemu-plugin/src \
               > "$TMPDIR/plugin-transmute-files" || true
             while IFS= read -r file; do
               case "$file" in
-                crates/crucible-qemu-plugin/src/abi.rs|\
-                crates/crucible-qemu-plugin/src/coverage/tests/live_callback_cases.rs|\
-                crates/crucible-qemu-plugin/src/fault_command/qemu_api.rs|\
-                crates/crucible-qemu-plugin/src/fingerprint_sampler.rs|\
-                crates/crucible-qemu-plugin/src/network_rx/qemu_symbols.rs|\
-                crates/crucible-qemu-plugin/src/network_tx.rs|\
-                crates/crucible-qemu-plugin/src/runtime/live_whitebox/api.rs|\
-                crates/crucible-qemu-plugin/src/runtime/tests/support.rs)
+                crates/crucible/qemu/crucible-qemu-plugin/src/abi.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/coverage/tests/live_callback_cases.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/fault_command/qemu_api.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/fingerprint_sampler.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/network_rx/qemu_symbols.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/network_tx.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/runtime/live_whitebox/api.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/runtime/tests/support.rs)
                   ;;
                 *)
                   echo "$file: transmute outside audited QEMU FFI adapters and tests" >&2
@@ -424,26 +424,26 @@ in
               'guest_address as *' \
               'guest_physical_address as *'
             do
-              if grep -RIn "$pattern" crates/crucible-qemu-plugin/src; then
+              if grep -RIn "$pattern" crates/crucible/qemu/crucible-qemu-plugin/src; then
                 echo "forbidden raw pointer guest-memory pattern: $pattern" >&2
                 exit 1
               fi
             done
-            grep -Rnl 'as_ptr().cast' crates/crucible-qemu-plugin/src \
+            grep -Rnl 'as_ptr().cast' crates/crucible/qemu/crucible-qemu-plugin/src \
               > "$TMPDIR/plugin-pointer-cast-files" || true
             while IFS= read -r file; do
               case "$file" in
-                crates/crucible-qemu-plugin/src/abi.rs|\
-                crates/crucible-qemu-plugin/src/abi/tests.rs|\
-                crates/crucible-qemu-plugin/src/fault_command/qemu_api.rs|\
-                crates/crucible-qemu-plugin/src/fingerprint_sampler.rs|\
-                crates/crucible-qemu-plugin/src/network_rx/qemu_symbols.rs|\
-                crates/crucible-qemu-plugin/src/network_tx.rs|\
-                crates/crucible-qemu-plugin/src/runtime/live_whitebox.rs|\
-                crates/crucible-qemu-plugin/src/runtime/live_whitebox/api.rs|\
-                crates/crucible-qemu-plugin/src/runtime/live_whitebox/error.rs|\
-                crates/crucible-qemu-plugin/src/runtime/live_whitebox/tests.rs|\
-                crates/crucible-qemu-plugin/src/setup.rs)
+                crates/crucible/qemu/crucible-qemu-plugin/src/abi.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/abi/tests.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/fault_command/qemu_api.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/fingerprint_sampler.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/network_rx/qemu_symbols.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/network_tx.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/runtime/live_whitebox.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/runtime/live_whitebox/api.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/runtime/live_whitebox/error.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/runtime/live_whitebox/tests.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/setup.rs)
                   ;;
                 *)
                   echo "$file: pointer cast outside audited QEMU FFI adapters and tests" >&2
@@ -451,14 +451,14 @@ in
                   ;;
               esac
             done < "$TMPDIR/plugin-pointer-cast-files"
-            grep -Rnl 'read_guest_memory' crates/crucible-qemu-plugin/src \
+            grep -Rnl 'read_guest_memory' crates/crucible/qemu/crucible-qemu-plugin/src \
               > "$TMPDIR/plugin-guest-read-files" || true
             while IFS= read -r file; do
               case "$file" in
-                crates/crucible-qemu-plugin/src/runtime/live_whitebox.rs|\
-                crates/crucible-qemu-plugin/src/whitebox_doorbell.rs|\
-                crates/crucible-qemu-plugin/src/whitebox_doorbell/selectable/tests.rs|\
-                crates/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs)
+                crates/crucible/qemu/crucible-qemu-plugin/src/runtime/live_whitebox.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/whitebox_doorbell.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/whitebox_doorbell/selectable/tests.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs)
                   ;;
                 *)
                   echo "$file: guest memory read outside whitebox doorbell adapters and tests" >&2
@@ -467,16 +467,16 @@ in
               esac
             done < "$TMPDIR/plugin-guest-read-files"
 
-            grep -Rnl 'write_whitebox_input' crates/crucible-qemu-plugin/src \
+            grep -Rnl 'write_whitebox_input' crates/crucible/qemu/crucible-qemu-plugin/src \
               > "$TMPDIR/plugin-guest-write-files" || true
             while IFS= read -r file; do
               case "$file" in
-                crates/crucible-qemu-plugin/src/runtime/live_whitebox/app_random.rs|\
-                crates/crucible-qemu-plugin/src/runtime/live_whitebox/selectable.rs|\
-                crates/crucible-qemu-plugin/src/runtime/live_whitebox/selectable/tests.rs|\
-                crates/crucible-qemu-plugin/src/whitebox_doorbell.rs|\
-                crates/crucible-qemu-plugin/src/whitebox_doorbell/selectable/tests.rs|\
-                crates/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs)
+                crates/crucible/qemu/crucible-qemu-plugin/src/runtime/live_whitebox/app_random.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/runtime/live_whitebox/selectable.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/runtime/live_whitebox/selectable/tests.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/whitebox_doorbell.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/whitebox_doorbell/selectable/tests.rs|\
+                crates/crucible/qemu/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs)
                   ;;
                 *)
                   echo "$file: guest memory write outside whitebox doorbell adapters and tests" >&2

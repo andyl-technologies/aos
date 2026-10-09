@@ -25,7 +25,7 @@
         needle = "`checks.crucible.phase1.spatialNodeLaunchInputs`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
       {
         label = "VM architecture enum";
         needle = "pub enum VmArchitecture";
@@ -131,7 +131,7 @@
         needle = "ScenarioImageReferenceNotContentAddressed";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" crateRoot [
       {
         label = "VM architecture re-export";
         needle = "VmArchitecture";
@@ -232,7 +232,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-spatial-node-launch-inputs-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --lib \
               world_node_launch_inputs_are_portable_and_identity_bearing \
               -- --test-threads=1

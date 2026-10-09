@@ -1,0 +1,73 @@
+[package]
+name = "aos-package-manager"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+aos-deployment.workspace = true
+aos-deployment-format.workspace = true
+thiserror.workspace = true
+aos-registry-client.workspace = true
+aos-registry-authoring.workspace = true
+aos-nar = { workspace = true, features = ["compression"] }
+aos-nix.workspace = true
+aos-cli-ui.workspace = true
+aos-module-format = { workspace = true }
+aos-activation = { workspace = true }
+aos-core = { workspace = true }
+aos-module-docs = { workspace = true }
+aos-nix-cache = { workspace = true }
+aos-transfer = { workspace = true, features = ["transfer"] }
+aos-oci-types = { workspace = true }
+aos-oci = { workspace = true }
+aos-hub-client = { workspace = true }
+aos-release-format = { workspace = true }
+aos-hub-api = { workspace = true }
+aos-systemd-client = { workspace = true }
+aos-storage-layout = { workspace = true }
+aos-platform-metadata = { workspace = true }
+aos-registry-format = { workspace = true }
+aos-boot-identity = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+reqwest = { workspace = true }
+rusqlite = { workspace = true }
+ed25519-dalek = { workspace = true }
+toml = { workspace = true }
+sha2 = { workspace = true }
+sha1 = { workspace = true }
+hex = { workspace = true }
+indicatif = { workspace = true }
+console = { workspace = true }
+base64 = { workspace = true }
+humantime = { workspace = true }
+glob = { workspace = true }
+regex = { workspace = true }
+clap = { workspace = true }
+semver = { workspace = true }
+zstd = { workspace = true }
+url = { workspace = true }
+futures-util = { workspace = true }
+async-trait = { workspace = true }
+tokio-stream = { workspace = true }
+tempfile = { workspace = true }
+libc = { workspace = true }
+rand = { workspace = true }
+git2 = { workspace = true }
+ssh-key = { workspace = true }
+tar = { workspace = true }
+flate2 = { workspace = true }
+rayon = { workspace = true }
+rustix = { workspace = true, features = ["event", "net", "process"] }
+zeroize = { workspace = true }
+
+[build-dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+crc32fast = { workspace = true }
+zbus = { version = "5", default-features = false, features = ["tokio", "p2p", "bus-impl"] }

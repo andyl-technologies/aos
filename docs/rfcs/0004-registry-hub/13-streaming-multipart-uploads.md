@@ -11,10 +11,10 @@
 Cloudflare Worker that fails for large objects:
 
 - The worker bridge buffers the **entire** request body in isolate memory
-  (`crates/aos-hub-worker/src/bridge.rs` `to_axum` → `req.bytes()`), then hands
+  (`crates/hub/aos-hub-worker/src/bridge.rs` `to_axum` → `req.bytes()`), then hands
   a `&[u8]` through `put_machine_path`/`put_cache_path`
-  (`crates/aos-hub-core/src/service.rs`) to `SurfaceWrite::write(path, &[u8])`
-  (`crates/aos-hub-core/src/surface_write.rs`). A large NAR exceeds the buffer
+  (`crates/hub/aos-hub-service/src/service.rs`) to `SurfaceWrite::write(path, &[u8])`
+  (`crates/hub/aos-hub-service/src/surface_write.rs`). A large NAR exceeds the buffer
   and returns `413 "Failed to buffer the request body: length limit exceeded"`.
 - Even ignoring memory, Cloudflare caps a **single request body** (~100 MB on
   most plans). NARs in the full AOS package set exceed that. So no
@@ -143,7 +143,7 @@ the worker bridge, but each body is one sub-cap part — bounded memory.
 
 ## Client: chunked uploader
 
-In `crates/aos-cache` (`backend/mod.rs` + `backend/http.rs` + `push.rs`):
+In `crates/aos/packages/aos-nix-cache` (`backend/mod.rs` + `backend/http.rs` + `push.rs`):
 
 - Add `CacheBackend` multipart methods (`initiate_multipart`, `upload_part`,
   `complete_multipart`, `supports_multipart`).
@@ -157,13 +157,13 @@ In `crates/aos-cache` (`backend/mod.rs` + `backend/http.rs` + `push.rs`):
 
 ## Files (ordered, smallest blast radius first)
 
-1. `crates/aos-hub-core/src/surface_write.rs` — port methods + `MultipartUpload`/`PartTag`.
-2. `crates/aos-hub-worker/src/surface.rs` — R2 multipart via js_sys; S3 multipart.
-3. `crates/aos-hub/src/coreports.rs` — local-fs temp-part multipart; native S3 multipart.
-4. `crates/aos-hub-core/src/service.rs` — `initiate/upload_part/complete_upload` (+ auth reuse).
-5. `crates/aos-hub-core/src/connect.rs` — facade query-param branch for the three ops.
-6. `crates/aos-cache/src/backend/mod.rs` + `backend/http.rs` — client multipart methods.
-7. `crates/aos-cache/src/push.rs` — size-threshold routing to multipart.
+1. `crates/hub/aos-hub-service/src/surface_write.rs` — port methods + `MultipartUpload`/`PartTag`.
+2. `crates/hub/aos-hub-worker/src/surface.rs` — R2 multipart via js_sys; S3 multipart.
+3. `crates/hub/aos-hub-native/src/coreports.rs` — local-fs temp-part multipart; native S3 multipart.
+4. `crates/hub/aos-hub-service/src/service.rs` — `initiate/upload_part/complete_upload` (+ auth reuse).
+5. `crates/hub/aos-hub-service/src/connect.rs` — facade query-param branch for the three ops.
+6. `crates/aos/packages/aos-nix-cache/src/backend/mod.rs` + `backend/http.rs` — client multipart methods.
+7. `crates/aos/packages/aos-nix-cache/src/push.rs` — size-threshold routing to multipart.
 
 The single-PUT path and `bridge.rs` are unchanged; small objects (narinfo, info/refs,
 sub-threshold NARs) keep working exactly as today.

@@ -8,7 +8,7 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  resolveTest = builtins.readFile ../../crates/crucible/tests/scheduler_resolve.rs;
+  resolveTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/scheduler_resolve.rs;
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -30,7 +30,7 @@
         needle = "never deliver the event late";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "late delivery comparison";
         needle = "delivery_time < advanced_to";
@@ -56,7 +56,7 @@
         needle = "delivery_time == advanced_to";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/scheduler_resolve.rs" resolveTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/scheduler_resolve.rs" resolveTest [
       {
         label = "direct late resolver test";
         needle = "resolve_rejects_late_event_before_advanced_frontier";
@@ -84,7 +84,7 @@
         needle = "schedulerLateDelivery = import ./phase3-scheduler-late-delivery.nix";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/scheduler_resolve.rs" resolveTest [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/scheduler_resolve.rs" resolveTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -155,21 +155,21 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-scheduler-late-delivery-target" \
-              -p crucible \
+              -p crucible-engine \
               --test scheduler_resolve \
               -- --test-threads=1
             cargo test \
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-scheduler-late-delivery-target" \
-              -p crucible \
+              -p crucible-engine \
               --test scheduler_conservative_pdes \
               -- --test-threads=1
             cargo test \
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-scheduler-late-delivery-target" \
-              -p crucible \
+              -p crucible-engine \
               --features test-double \
               --test gate_scheduler_liveness \
               -- --test-threads=1

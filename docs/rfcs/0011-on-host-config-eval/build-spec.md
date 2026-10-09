@@ -21,7 +21,7 @@ specifies, with no remaining choices, three inputs:
 3. the typed option declarations and binding plan produced by the complete
    package-module fixed point.
 
-All Rust types live in `crates/aos-package/src/types.rs` alongside the existing
+All Rust types live in `crates/aos/packages/aos-package-manager/src/types.rs` alongside the existing
 `PackageMeta` family and follow its conventions: `#[serde(deny_unknown_fields)]`
 on closed structs, `#[serde(default, skip_serializing_if = …)]` on optional
 fields, snake_case field identifiers with explicit `rename` only where the wire
@@ -415,7 +415,7 @@ This document is the **implementation contract** for the resolver loop that
 drives stock-Nix `evalModules` to a complete configuration on-host. It is
 normative: an agent implementing P1 against it should produce a deterministic
 resolver without further design input. Line citations are to
-`lib/modules.nix`, `crates/aos-package/src/resolve.rs`, and the manifest schema
+`lib/modules.nix`, `crates/aos/packages/aos-package-manager/src/resolve.rs`, and the manifest schema
 in [`architecture.md`](architecture.md). Companion specs:
 [`module-system.md`](module-system.md) (provides/requires inference),
 [`operability.md`](operability.md) (failure classes, traces).
@@ -503,7 +503,7 @@ exists until `aos-install-packages.service` consumes a returned manifest.
 
 The resolver's package-fetch + closure machinery is the existing
 `resolve_multiple` / `resolve_closure`
-(`crates/aos-package/src/resolve.rs:65,233`); the fixpoint is a driver *around*
+(`crates/aos/packages/aos-package-manager/src/resolve.rs:65,233`); the fixpoint is a driver *around*
 it. `resolve_with_requires` already has the cycle guard
 (`resolve.rs:267-271`, `"package requires cycle"`) and the `expose.requires` /
 `expose.uses` traversal (`resolve.rs:297-314`) — the fixpoint adds the
@@ -794,7 +794,7 @@ form the production boundary.
 Files referenced (absolute):
 - `lib/modules.nix` (undefined-declared and strict-undeclared errors,
   assertions, options-only evaluation, and base-lib injection)
-- `crates/aos-package/src/resolve.rs` (closure resolution, cycle guards, and
+- `crates/aos/packages/aos-package-manager/src/resolve.rs` (closure resolution, cycle guards, and
   expose-requires/uses traversal — the machinery the fixpoint drives)
 - `docs/rfcs/0011-on-host-config-eval/{module-system,architecture,operability}.md`
 
@@ -813,16 +813,16 @@ Here is the drop-in RFC markdown.
 
 This is the implementation contract for the graph compiler specified in
 [`orchestration.md`](orchestration.md). It is normative: an agent implementing
-`crates/aos-package/src/graph_compile.rs`, the new `apm` subverbs, and the
+`crates/aos/packages/aos-package-manager/src/graph_compile.rs`, the new `apm` subverbs, and the
 gen-0 template units in `modules/systemd/` MUST satisfy every clause here.
 Where a clause says MUST it is a gate; SHOULD is a strong default a reviewer
 may waive with rationale.
 
 Grounding: `modules/base/apm.nix` (units being replaced, `:385-406`),
 `modules/systemd/presets.nix` (the `aos-preset.service` that runs *after* this
-graph), `crates/aos-systemd/src/client.rs` (the only systemd-control surface
+graph), `crates/shared/aos-systemd-client/src/client.rs` (the only systemd-control surface
 permitted), `modules/base/activate.sh.in` (the atomic commit, reused
-unchanged), `crates/aos-package/src/{desired,config_artifact,install,exposed_units}.rs`
+unchanged), `crates/aos/packages/aos-package-manager/src/{desired,config_artifact,install,exposed_units}.rs`
 (the existing fetch/render plumbing the subverbs wrap).
 
 ---
@@ -1120,7 +1120,7 @@ Because unchanged packages are already-`active` `RemainAfterExit` oneshots, re-d
 
 ---
 
-Files an implementer touches: `modules/systemd/graph.nix` (new, the §1 templates+targets, baked gen-0); `modules/base/apm.nix` (replace `aos-install-packages.service:385-406` with `aos-eval`/`aos-graph-compile`/`aos-activate`, keep `aos-preset.service` `After=aos-activate.service`); `crates/aos-package/src/graph_compile.rs` (new, sibling to `exposed_units.rs`/`config_artifact.rs` — §2/§3/§6 compiler over the `aos_systemd` client) plus the `fetch`/`render-one` subverbs (§4) and the §5 re-projection in the activate-commit path. `modules/base/activate.sh.in` is reused unchanged (§5.4 already exits `EX_DEGRADED=6`).
+Files an implementer touches: `modules/systemd/graph.nix` (new, the §1 templates+targets, baked gen-0); `modules/base/apm.nix` (replace `aos-install-packages.service:385-406` with `aos-eval`/`aos-graph-compile`/`aos-activate`, keep `aos-preset.service` `After=aos-activate.service`); `crates/aos/packages/aos-package-manager/src/graph_compile.rs` (new, sibling to `exposed_units.rs`/`config_artifact.rs` — §2/§3/§6 compiler over the `aos_systemd` client) plus the `fetch`/`render-one` subverbs (§4) and the §5 re-projection in the activate-commit path. `modules/base/activate.sh.in` is reused unchanged (§5.4 already exits `EX_DEGRADED=6`).
 
 
 ---
@@ -1458,8 +1458,8 @@ tested. Ignition compatibility is not part of the end-state contract.
 ---
 
 Grounding files: `docs/rfcs/0011-on-host-config-eval/provisioning.md`,
-`crates/aos-metadata/src/{provider.rs,detect.rs,mount.rs}`,
-`crates/aos-net/src/{transfer.rs,types.rs,retry.rs,protocol/http.rs}`, and the
+`crates/aos/boot/aos-platform-metadata/src/{provider.rs,detect.rs,mount.rs}`,
+`crates/shared/aos-transfer/src/{transfer.rs,types.rs,retry.rs,protocol/http.rs}`, and the
 selected metadata provider package declaration.
 
 
@@ -1481,10 +1481,10 @@ at implementation depth. Each clause names the code it lands in.
 
 Grounding files:
 `modules/base/secure-boot.nix`, `modules/security/verity.nix`,
-`crates/aos-package/src/security.rs`, `crates/aos-package/src/verify.rs`,
-`crates/aos-package/src/registry/verify.rs`,
-`crates/aos-package/src/credential_artifact.rs`,
-`crates/aos-package/src/types.rs`,
+`crates/aos/packages/aos-package-manager/src/security.rs`, `crates/aos/packages/aos-package-manager/src/verify.rs`,
+`crates/aos/packages/aos-package-manager/src/registry/verify.rs`,
+`crates/aos/packages/aos-package-manager/src/credential_artifact.rs`,
+`crates/aos/packages/aos-package-manager/src/types.rs`,
 `lib/build/{rootfs.nix,package-root-image.nix}`,
 `pkgs/system/_systemd-abilities/platform/_uki-builder.nix`, `pkgs/system/_systemd-abilities/platform/_image-builder.nix`,
 `modules/base/{boot.nix,filesystems.nix,system.nix}`,
@@ -1496,7 +1496,7 @@ Grounding files:
 
 ### 1.1 Producer
 
-A new module in `aos-package` (`crates/aos-package/src/attestation.rs`) emits the
+A new module in `aos-package` (`crates/aos/packages/aos-package-manager/src/attestation.rs`) emits the
 record after a generation is materialized and `activate <N>` succeeds. It is a
 serde struct serialized to **canonical JSON** (BTreeMap key ordering, no
 insignificant whitespace — the same canonicalization the manifest hash uses).
@@ -2118,9 +2118,9 @@ the five generations-`§Open questions` resolutions (retention depth, measured
 locus, `stateVersion` orthogonality, first-boot re-eval, content-pinned
 `host.nix`).
 
-Grounding: `crates/aos-package/src/types.rs:3081-3112` (`SystemGeneration` /
-`SystemGenerationState`), `crates/aos-package/src/profile/{mod.rs,meta.rs}`
-(`Profile`/`Generation`/`ProfileState`), `crates/aos-package/src/store.rs:251`
+Grounding: `crates/aos/packages/aos-package-manager/src/types.rs:3081-3112` (`SystemGeneration` /
+`SystemGenerationState`), `crates/aos/packages/aos-package-manager/src/profile/{mod.rs,meta.rs}`
+(`Profile`/`Generation`/`ProfileState`), `crates/aos/packages/aos-package-manager/src/store.rs:251`
 (`create_gc_roots`), `modules/base/activate.sh.in` (staged swap),
 `pkgs/system/_systemd-abilities/platform/_image-builder.nix` (ESP/GPT assembly), `modules/base/system.nix:132`
 (`stateVersion`).
@@ -2495,4 +2495,4 @@ contract.
 
 ---
 
-The relevant source loci for implementation are: `crates/aos-package/src/types.rs:3081-3112` (replace `SystemGeneration`/`SystemGenerationState` with `ImageGeneration`/`ImageGenerationState` + `ConfigGeneration`/`ConfigGenerationState`), `crates/aos-package/src/store.rs:251` (`create_gc_roots`: add `cfg/` + `cfgsrc/`, plus a new image-scoped `baselib/<module_abi>` root writer), `crates/aos-package/src/profile/mod.rs` (`Generation` accessors for the two new root dirs), `modules/base/system.nix:132,257` (`moduleAbi` option + `AOS_MODULE_ABI`/`AOS_BASELIB_ABI_HASH` os-release lines), `modules/base/activate.sh.in` (unchanged swap; the new `aos-firstboot-reeval.service` orders before it), and `pkgs/system/_systemd-abilities/platform/_image-builder.nix:176-183` (boot-counting tries-suffix + `bootctl set-default` durability over the `default aos-*.efi` glob).
+The relevant source loci for implementation are: `crates/aos/packages/aos-package-manager/src/types.rs:3081-3112` (replace `SystemGeneration`/`SystemGenerationState` with `ImageGeneration`/`ImageGenerationState` + `ConfigGeneration`/`ConfigGenerationState`), `crates/aos/packages/aos-package-manager/src/store.rs:251` (`create_gc_roots`: add `cfg/` + `cfgsrc/`, plus a new image-scoped `baselib/<module_abi>` root writer), `crates/aos/packages/aos-package-manager/src/profile/mod.rs` (`Generation` accessors for the two new root dirs), `modules/base/system.nix:132,257` (`moduleAbi` option + `AOS_MODULE_ABI`/`AOS_BASELIB_ABI_HASH` os-release lines), `modules/base/activate.sh.in` (unchanged swap; the new `aos-firstboot-reeval.service` orders before it), and `pkgs/system/_systemd-abilities/platform/_image-builder.nix:176-183` (boot-counting tries-suffix + `bootctl set-default` durability over the `default aos-*.efi` glob).

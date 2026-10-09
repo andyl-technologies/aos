@@ -7,9 +7,9 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  protocolLib = builtins.readFile ../../crates/crucible-protocol/src/lib.rs;
-  codecTest = builtins.readFile ../../crates/crucible-protocol/tests/codec.rs;
-  protocolAbiGate = builtins.readFile ../../crates/crucible-protocol/tests/gate_abi_conformance.rs;
+  protocolLib = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs;
+  codecTest = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-protocol/tests/codec.rs;
+  protocolAbiGate = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-protocol/tests/gate_abi_conformance.rs;
   protocolSpec = builtins.readFile ../../docs/rfcs/0010-crucible/14-protocol.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -18,7 +18,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "crates/crucible-protocol/src/lib.rs" protocolLib [
+    failuresFor "crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs" protocolLib [
       {
         label = "plugin message enum";
         needle = "pub enum PluginMsg";
@@ -96,7 +96,7 @@
         needle = "if length > MAX_FRAME_SIZE";
       }
     ]
-    ++ failuresFor "crates/crucible-protocol/tests/codec.rs" codecTest [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-protocol/tests/codec.rs" codecTest [
       {
         label = "plugin message round trip";
         needle = "plugin_messages_round_trip_through_big_endian_frames";
@@ -130,7 +130,7 @@
         needle = "frame_read_helper_preserves_prefix_and_length_contract";
       }
     ]
-    ++ failuresFor "crates/crucible-protocol/tests/gate_abi_conformance.rs" protocolAbiGate [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-protocol/tests/gate_abi_conformance.rs" protocolAbiGate [
       {
         label = "canonical protocol ABI gate implemented";
         needle = "protocol_golden_vectors_match_live_codec_bytes";
@@ -209,7 +209,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-protocol-codec-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible-protocol \
+              -p crucible-qemu-protocol \
               --test codec \
               -- --test-threads=1
           '';

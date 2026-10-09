@@ -12,9 +12,9 @@
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
   libRs = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/src/lib.rs;
+    entry = ../../crates/crucible/engine/crucible-engine/src/lib.rs;
   };
-  corpusTest = builtins.readFile ../../crates/crucible/tests/gate_coverage_guided_corpus.rs;
+  corpusTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/gate_coverage_guided_corpus.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -45,7 +45,7 @@
         needle = "Throughput MUST be measured in deterministic work\n  units";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" temporalGraph [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" temporalGraph [
       {
         label = "corpus config";
         needle = "pub struct CoverageGuidedCorpusConfig";
@@ -91,7 +91,7 @@
         needle = "coverage_guided_corpus_select_parent";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libRs [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" libRs [
       {
         label = "corpus config export";
         needle = "CoverageGuidedCorpusConfig";
@@ -105,7 +105,7 @@
         needle = "CoverageGuidedFuzzThroughputReport";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/gate_coverage_guided_corpus.rs" corpusTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/gate_coverage_guided_corpus.rs" corpusTest [
       {
         label = "persistence gate";
         needle = "gate_coverage_guided_corpus_persists_replay_artifacts";
@@ -157,7 +157,7 @@
         needle = "phase6.coverageGuidedFuzzing";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible/tests/gate_coverage_guided_corpus.rs" corpusTest [
+    ++ forbiddenFailuresFor "crates/crucible/engine/crucible-engine/tests/gate_coverage_guided_corpus.rs" corpusTest [
       {
         label = "ignored red placeholder";
         needle = "#[ignore";
@@ -224,7 +224,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-coverage-guided-corpus-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --test gate_coverage_guided_corpus \
               -- --test-threads=1
           '';

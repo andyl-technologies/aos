@@ -9,15 +9,15 @@
 
   qemuLib = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu/src/lib.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-host/src/lib.rs;
   };
   qemuNode = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu/src/node.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-host/src/node.rs;
   };
   quantumLib = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu/src/quantum.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-host/src/quantum.rs;
   };
   # Production-only slice for the no-unwrap/no-expect forbids (test code is
   # allowed panic shortcuts, matching the workspace clippy allow policy).
@@ -29,23 +29,23 @@
   );
   pluginInbound = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/inbound.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/inbound.rs;
   };
   pluginDeviceIo = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/device_io.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/device_io.rs;
   };
   pluginIdleLoop = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/idle_loop.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/idle_loop.rs;
   };
   pluginLiveCallbacks = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/runtime/live_callbacks.rs;
   };
   pluginNetworkRx = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/network_rx.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/network_rx.rs;
   };
   qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -65,7 +65,7 @@
         needle = "freeze observations";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/lib.rs" qemuLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/lib.rs" qemuLib [
       {
         label = "device I/O freeze report exported";
         needle = "QemuDeviceIoFreezeReport";
@@ -75,13 +75,13 @@
         needle = "QemuDeviceIoFreezeObservation";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/node.rs" qemuNode [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/node.rs" qemuNode [
       {
         label = "emitted frame carries emit icount";
         needle = "pub emit_icount: Icount";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/quantum.rs" quantumLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/quantum.rs" quantumLib [
       {
         label = "delivery keys reconstructed from the shared ring";
         needle = "ledger.push_back(self.view.inbound_entries[slot].delivery_key())";
@@ -179,7 +179,7 @@
         needle = "qemu_quantum_reports_device_io_freeze_across_burst_release";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/inbound.rs" pluginInbound [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/inbound.rs" pluginInbound [
       {
         label = "plugin deterministic inbound order";
         needle = "sort_by_key(FrameEntry::delivery_key)";
@@ -189,7 +189,7 @@
         needle = "DeliveryAlreadyPassed";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/network_rx.rs" pluginNetworkRx [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/network_rx.rs" pluginNetworkRx [
       {
         label = "QEMU RX injection callback";
         needle = "handle_network_rx_idle_callback";
@@ -203,7 +203,7 @@
         needle = "validate_delivery_gate";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/device_io.rs" pluginDeviceIo [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/device_io.rs" pluginDeviceIo [
       {
         label = "device I/O freeze state";
         needle = "PluginDeviceIoFreeze";
@@ -221,7 +221,7 @@
         needle = "wake_for_device_io_release";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/idle_loop.rs" pluginIdleLoop [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/idle_loop.rs" pluginIdleLoop [
       {
         label = "device I/O suppresses timer deadline";
         needle = "idle_loop_device_io_freeze_suppresses_timer_deadline_until_scheduler_wake";
@@ -243,7 +243,7 @@
         needle = "idle_loop_rx_delivery_failure_does_not_commit_inbound_ring_reads";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs" pluginLiveCallbacks [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/runtime/live_callbacks.rs" pluginLiveCallbacks [
       {
         label = "plugin sole-consumer boundary injection";
         needle = "fn inject_due_network_inbound(";
@@ -257,7 +257,7 @@
         needle = "busy_boundary_retains_backpressured_inbound_until_guest_acceptance";
       }
     ]
-    ++ forbiddenFor "crates/crucible-qemu/src/quantum.rs" quantumProd [
+    ++ forbiddenFor "crates/crucible/qemu/crucible-qemu-host/src/quantum.rs" quantumProd [
       {
         label = "production unwrap";
         needle = ".unwrap()";
@@ -339,7 +339,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-qemu-injection-contract-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible-qemu \
+              -p crucible-qemu-host \
               --lib \
               quantum::tests \
               -- --test-threads=1

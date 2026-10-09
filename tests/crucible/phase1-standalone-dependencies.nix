@@ -2,24 +2,25 @@
   pkgs,
   lib,
 }: let
+  inherit (import ./_workspace-packages.nix {inherit lib;}) packageDir packageNames cruciblePackages;
   cratesDir = ../../crates;
 
   packages = [
-    "crucible-cas"
-    "crucible-sim"
-    "crucible-assert"
-    "crucible-shmem"
-    "crucible-protocol"
+    "crucible-store"
+    "crucible-determinism"
+    "crucible-test-support"
+    "crucible-qemu-shmem"
+    "crucible-qemu-protocol"
     "crucible-device"
-    "crucible-qemu"
+    "crucible-qemu-host"
     "crucible-qemu-plugin"
     "crucible-guest"
-    "crucible"
+    "crucible-engine"
     "crucible-session"
-    "crucible-api"
+    "crucible-control-api"
     "crucible-daemon"
     "crucible-cli"
-    "crucible-harness"
+    "crucible-test-support"
   ];
 
   forbiddenPrefixes = ["ratchet-" "aos-nix-"];
@@ -28,7 +29,7 @@
     builtins.elem name forbiddenExactNames
     || builtins.any (prefix: lib.hasPrefix prefix name) forbiddenPrefixes;
 
-  readManifest = package: builtins.fromTOML (builtins.readFile (cratesDir + "/${package}/Cargo.toml"));
+  readManifest = package: builtins.fromTOML (builtins.readFile (packageDir package + "/Cargo.toml"));
 
   workspaceManifest = builtins.fromTOML (builtins.readFile (cratesDir + "/Cargo.toml"));
   workspaceDependencies =

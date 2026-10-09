@@ -150,33 +150,318 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
-name = "aos"
+name = "aos-activation"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-core",
+ "aos-module-format",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "aos-activation-bpf-lsm"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-activation",
+ "aos-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "aos-activation-bpf-network"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-activation",
+ "aos-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "aos-activation-config-files"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "toml 0.8.23",
+]
+
+[[package]]
+name = "aos-activation-crucible"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-activation",
+ "aos-core",
+ "crucible-engine",
+ "crucible-guest",
+ "rustix 1.1.4",
+ "serde",
+ "tempfile",
+]
+
+[[package]]
+name = "aos-activation-filesystem"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-activation",
+ "aos-core",
+ "aos-module-format",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "aos-activation-kubernetes"
+version = "0.1.0"
+dependencies = [
+ "aos-activation",
+ "aos-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "aos-activation-nftables"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-activation",
+ "aos-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "aos-activation-nix-store"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-activation",
+ "aos-artifact-evidence",
+ "aos-core",
+ "aos-module-format",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "aos-activation-storage"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-activation",
+ "aos-core",
+ "aos-module-format",
+ "aos-storage-layout",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "aos-activation-sysctl"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "aos-activation-systemd"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-activation",
+ "aos-core",
+ "aos-module-format",
+ "aos-nix",
+ "aos-systemd-client",
+ "hex",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "aos-artifact-evidence"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "aos-boot-identity"
+version = "0.1.0"
+
+[[package]]
+name = "aos-boot-runtime"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-activation",
+ "aos-boot-identity",
+ "aos-core",
+ "aos-nix",
+ "aos-release-format",
+ "hex",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "zstd",
+]
+
+[[package]]
+name = "aos-build-api"
+version = "0.1.0"
+dependencies = [
+ "buffa",
+ "connectrpc",
+ "connectrpc-build",
+ "futures",
+ "http-body 1.0.1",
+ "prost",
+ "prost-types",
+ "serde",
+]
+
+[[package]]
+name = "aos-build-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-build-api",
+ "aos-nar",
+ "buffa",
+ "connectrpc",
+ "http 1.4.1",
+ "prost",
+ "rustls-native-certs",
+ "tokio",
+ "tokio-stream",
+ "webpki-roots",
+]
+
+[[package]]
+name = "aos-build-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-build-api",
+ "aos-build-client",
+ "aos-nar",
+ "aos-nix",
+ "async-trait",
+ "axum",
+ "base64 0.22.1",
+ "buffa",
+ "connectrpc",
+ "console",
+ "ed25519-dalek",
+ "futures",
+ "futures-util",
+ "glob",
+ "hex",
+ "humantime",
+ "humantime-serde",
+ "indicatif",
+ "jsonwebtoken",
+ "prost",
+ "rand 0.9.4",
+ "rcgen",
+ "regex",
+ "rusqlite",
+ "rustls",
+ "rustls-pemfile",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
+ "tokio-rustls",
+ "tokio-stream",
+ "tokio-util",
+ "toml 0.8.23",
+ "tower-http",
+ "tracing",
+ "uuid",
+ "zstd",
+]
+
+[[package]]
+name = "aos-cli"
 version = "0.1.0"
 dependencies = [
  "alejandra",
  "anyhow",
- "aos-ability-model",
- "aos-ability-plan",
- "aos-ability-runtime",
- "aos-cache",
- "aos-contract",
+ "aos-activation",
+ "aos-artifact-evidence",
+ "aos-build-client",
+ "aos-build-server",
+ "aos-cli-ui",
+ "aos-closure-analysis",
  "aos-core",
- "aos-doc",
- "aos-doc-model",
- "aos-hub",
- "aos-hub-core",
+ "aos-deployment",
+ "aos-deployment-format",
+ "aos-hub-api",
+ "aos-hub-client",
+ "aos-hub-native",
+ "aos-hub-service",
  "aos-image-finalizer",
- "aos-maintain",
- "aos-net",
+ "aos-module-docs",
+ "aos-module-format",
+ "aos-nar",
+ "aos-nix",
+ "aos-nix-cache",
+ "aos-nix-docs",
  "aos-oci",
  "aos-oci-types",
- "aos-package",
- "aos-profile",
- "aos-proto-types",
- "aos-registry-surface",
- "aos-release",
- "aos-remote",
- "aos-server",
+ "aos-package-maintenance",
+ "aos-package-manager",
+ "aos-registry-authoring",
+ "aos-registry-client",
+ "aos-registry-format",
+ "aos-release-coordinator",
+ "aos-release-format",
+ "aos-transfer",
  "async-trait",
  "axum",
  "base64 0.22.1",
@@ -207,6 +492,7 @@ dependencies = [
  "sha2 0.10.9",
  "tar",
  "tempfile",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-rustls",
  "tokio-util",
@@ -220,264 +506,220 @@ dependencies = [
 ]
 
 [[package]]
-name = "aos-ability-crucible"
+name = "aos-cli-ui"
 version = "0.1.0"
 dependencies = [
- "anyhow",
- "aos-ability-runtime",
- "aos-contract",
- "crucible",
- "crucible-guest",
- "rustix 1.1.4",
- "serde",
- "tempfile",
-]
-
-[[package]]
-name = "aos-ability-model"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "aos-contract",
- "regex",
- "schemars",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "aos-ability-plan"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "aos-ability-model",
- "aos-contract",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "aos-ability-runtime"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "aos-ability-model",
- "aos-ability-plan",
- "aos-contract",
- "rustix 1.1.4",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "aos-block-storage-provider"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "aos-ability-model",
- "aos-ability-runtime",
- "aos-contract",
- "aos-storage-provisioning",
- "rustix 1.1.4",
- "serde",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
-name = "aos-boot-identity"
-version = "0.1.0"
-
-[[package]]
-name = "aos-boot-preparation-provider"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "aos-ability-runtime",
- "aos-contract",
- "serde",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
-name = "aos-cache"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "aos-core",
- "aos-net",
- "aos-proto-types",
- "async-trait",
- "base64 0.22.1",
  "console",
- "futures",
- "hex",
  "indicatif",
- "regex",
- "serde",
  "serde_json",
- "sha2 0.10.9",
- "tempfile",
  "tokio",
- "tokio-util",
- "url",
- "zstd",
 ]
 
 [[package]]
-name = "aos-configuration-lower"
+name = "aos-closure-analysis"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "aos-ability-runtime",
- "aos-contract",
+ "aos-cli-ui",
+ "aos-core",
+ "aos-nix",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "aos-configuration-image"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-activation",
+ "aos-core",
  "base64 0.22.1",
  "rustix 1.1.4",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
-]
-
-[[package]]
-name = "aos-configuration-provider"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "rustix 1.1.4",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "toml 0.8.23",
-]
-
-[[package]]
-name = "aos-contract"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "serde",
- "serde_json",
- "sha2 0.10.9",
 ]
 
 [[package]]
 name = "aos-core"
 version = "0.1.0"
 dependencies = [
- "alejandra",
  "anyhow",
- "aos-contract",
- "base64 0.22.1",
- "console",
- "ed25519-dalek",
- "glob",
- "hex",
- "humantime",
- "ignore",
- "indicatif",
- "regex",
- "rustix 1.1.4",
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "tempfile",
  "thiserror 2.0.18",
- "tokio",
 ]
 
 [[package]]
-name = "aos-doc"
+name = "aos-deployment"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-activation",
+ "aos-core",
+ "aos-deployment-format",
+ "aos-module-format",
+ "aos-nar",
+ "aos-nix",
+ "aos-registry-format",
+ "aos-release-format",
+ "base64 0.22.1",
+ "hex",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "aos-deployment-format"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "aos-core",
- "crossterm",
- "glob",
- "ignore",
- "ratatui",
- "regex",
+ "aos-module-docs",
+ "aos-module-format",
+ "aos-registry-format",
+ "semver",
  "serde",
  "serde_json",
- "tokio",
 ]
 
 [[package]]
-name = "aos-doc-model"
+name = "aos-hub-api"
 version = "0.1.0"
 dependencies = [
- "aos-ability-model",
- "aos-ability-plan",
- "aos-contract",
- "schemars",
+ "pbjson",
+ "pbjson-build",
+ "prost",
+ "prost-build",
+ "prost-types",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "aos-hub-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-hub-api",
+ "http 1.4.1",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "url",
+]
+
+[[package]]
+name = "aos-hub-console"
+version = "0.1.0"
+dependencies = [
+ "aos-hub-api",
+ "aos-hub-ui",
+ "aos-module-docs",
+ "aos-registry-format",
+ "futures",
+ "gloo-net",
+ "js-sys",
+ "leptos",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
+name = "aos-hub-db"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-hub-api",
+ "aos-hub-model",
+ "aos-module-docs",
+ "aos-oci-types",
+ "aos-registry-format",
+ "aos-release-format",
+ "async-trait",
+ "base64 0.22.1",
+ "ed25519-dalek",
+ "hex",
+ "hmac 0.12.1",
+ "rand 0.9.4",
+ "rusqlite",
  "semver",
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "aos-ebpf-lsm-provider"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "aos-ability-runtime",
- "aos-contract",
- "serde",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
-name = "aos-ebpf-net-policy-provider"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "aos-ability-runtime",
- "aos-contract",
- "serde",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
-name = "aos-filesystem-provider"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "aos-ability-model",
- "aos-ability-runtime",
- "aos-contract",
- "rustix 1.1.4",
- "serde",
- "serde_json",
- "sha2 0.10.9",
+ "sqlx",
  "tempfile",
  "thiserror 2.0.18",
+ "tokio",
+ "toml 0.8.23",
+ "tracing",
+ "unicode-normalization",
+ "url",
+ "uuid",
 ]
 
 [[package]]
-name = "aos-hub"
+name = "aos-hub-model"
 version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
- "aos-cache",
+ "aos-oci-types",
+ "aos-registry-format",
+ "argon2",
+ "async-trait",
+ "base64 0.22.1",
+ "getrandom 0.2.17",
+ "getrandom 0.3.4",
+ "hex",
+ "hmac 0.12.1",
+ "js-sys",
+ "password-hash",
+ "rand 0.9.4",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+ "tokio",
+ "unicode-normalization",
+ "url",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "zeroize",
+]
+
+[[package]]
+name = "aos-hub-native"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "anyhow",
  "aos-core",
- "aos-hub-core",
+ "aos-hub-api",
+ "aos-hub-client",
+ "aos-hub-db",
+ "aos-hub-model",
+ "aos-hub-service",
+ "aos-nar",
+ "aos-nix-cache",
  "aos-oci",
  "aos-oci-types",
- "aos-package",
- "aos-proto-types",
- "aos-registry-surface",
- "aos-remote",
+ "aos-package-manager",
+ "aos-registry-authoring",
+ "aos-registry-client",
+ "aos-registry-format",
  "argon2",
  "async-trait",
  "axum",
@@ -523,48 +765,22 @@ dependencies = [
 ]
 
 [[package]]
-name = "aos-hub-console"
+name = "aos-hub-service"
 version = "0.1.0"
 dependencies = [
- "aos-doc-model",
- "aos-hub-console-contract",
- "aos-proto-types",
- "aos-registry-surface",
- "futures",
- "gloo-net",
- "js-sys",
- "leptos",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
-]
-
-[[package]]
-name = "aos-hub-console-contract"
-version = "0.1.0"
-dependencies = [
- "serde_json",
-]
-
-[[package]]
-name = "aos-hub-core"
-version = "0.1.0"
-dependencies = [
- "aes-gcm",
  "anyhow",
- "aos-ability-model",
- "aos-contract",
- "aos-doc-model",
- "aos-hub-console-contract",
+ "aos-core",
+ "aos-hub-api",
+ "aos-hub-db",
+ "aos-hub-model",
+ "aos-hub-ui",
+ "aos-module-docs",
+ "aos-module-format",
  "aos-oci-types",
- "aos-package",
- "aos-proto-types",
- "aos-registry-surface",
- "aos-release",
- "argon2",
+ "aos-package-manager",
+ "aos-registry-authoring",
+ "aos-registry-format",
+ "aos-release-format",
  "async-trait",
  "axum",
  "base64 0.22.1",
@@ -580,17 +796,13 @@ dependencies = [
  "jwt-rustcrypto",
  "md-5 0.11.0",
  "p256",
- "password-hash",
  "rand 0.9.4",
  "rsa",
- "rusqlite",
  "semver",
  "send_wrapper",
  "serde",
  "serde_json",
- "serde_urlencoded",
  "sha2 0.10.9",
- "sqlx",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -606,15 +818,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-hub-ui"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "aos-hub-worker"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "aos-hub",
- "aos-hub-core",
+ "aos-hub-api",
+ "aos-hub-db",
+ "aos-hub-model",
+ "aos-hub-native",
+ "aos-hub-service",
  "aos-oci-types",
- "aos-proto-types",
- "aos-registry-surface",
+ "aos-registry-format",
  "async-trait",
  "axum",
  "base64 0.22.1",
@@ -649,8 +870,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "aos-boot-identity",
- "aos-package",
- "aos-release",
+ "aos-deployment-format",
+ "aos-release-format",
  "async-trait",
  "base64 0.22.1",
  "rustix 1.1.4",
@@ -662,126 +883,113 @@ dependencies = [
 ]
 
 [[package]]
-name = "aos-kernel-tunable-provider"
+name = "aos-linux-project-quota"
 version = "0.1.0"
 dependencies = [
- "anyhow",
- "aos-contract",
- "serde",
- "serde_json",
- "tempfile",
+ "libc",
+ "rustix 1.1.4",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
-name = "aos-kubernetes-provider"
+name = "aos-module-docs"
 version = "0.1.0"
 dependencies = [
- "aos-ability-runtime",
- "aos-contract",
+ "aos-core",
+ "aos-module-format",
+ "schemars",
+ "semver",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "aos-module-format"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-artifact-evidence",
+ "aos-core",
+ "regex",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "aos-nar"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "ed25519-dalek",
+ "hex",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+ "zstd",
+]
+
+[[package]]
+name = "aos-nix"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-core",
+ "aos-nar",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.18",
 ]
 
 [[package]]
-name = "aos-maintain"
+name = "aos-nix-cache"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "aos-contract",
- "semver",
- "serde",
- "serde_json",
- "url",
-]
-
-[[package]]
-name = "aos-metadata"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "aos-ability-model",
- "aos-ability-plan",
- "aos-ability-runtime",
- "aos-contract",
- "aos-core",
- "aos-net",
- "aos-storage-provisioning",
+ "aos-cli-ui",
+ "aos-hub-api",
+ "aos-nar",
+ "aos-nix",
+ "aos-transfer",
  "async-trait",
  "base64 0.22.1",
+ "console",
+ "futures",
  "hex",
- "rand 0.9.4",
- "reqwest",
+ "indicatif",
+ "regex",
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "ssh-key",
- "tempfile",
- "tokio",
- "url",
-]
-
-[[package]]
-name = "aos-metadata-provider"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "aos-metadata",
- "tokio",
-]
-
-[[package]]
-name = "aos-net"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "aos-ability-model",
- "async-trait",
- "aws-config",
- "aws-sdk-s3",
- "aws-types",
- "bytes",
- "digest 0.10.7",
- "futures-util",
- "hex",
- "rand 0.9.4",
- "reqwest",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "ssh2",
  "tempfile",
  "tokio",
  "tokio-util",
- "tracing",
  "url",
+ "zstd",
 ]
 
 [[package]]
-name = "aos-network-ruleset-provider"
+name = "aos-nix-docs"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "aos-ability-runtime",
- "aos-contract",
+ "aos-cli-ui",
+ "aos-nix",
+ "crossterm",
+ "glob",
+ "ignore",
+ "ratatui",
+ "regex",
  "serde",
  "serde_json",
- "tempfile",
-]
-
-[[package]]
-name = "aos-nix-store-provider"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "aos-ability-model",
- "aos-ability-runtime",
- "aos-contract",
- "libc",
- "serde",
- "serde_json",
- "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -790,7 +998,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "aos-oci-types",
- "aos-registry-surface",
+ "aos-registry-format",
  "axum",
  "base64 0.22.1",
  "bytes",
@@ -817,36 +1025,53 @@ dependencies = [
 name = "aos-oci-types"
 version = "0.1.0"
 dependencies = [
+ "aos-core",
  "base64 0.22.1",
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "thiserror 2.0.18",
 ]
 
 [[package]]
-name = "aos-package"
+name = "aos-package-maintenance"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "aos-ability-model",
- "aos-ability-plan",
- "aos-ability-runtime",
- "aos-boot-identity",
- "aos-cache",
- "aos-contract",
  "aos-core",
- "aos-doc-model",
- "aos-metadata",
- "aos-net",
+ "semver",
+ "serde",
+ "serde_json",
+ "url",
+]
+
+[[package]]
+name = "aos-package-manager"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-activation",
+ "aos-boot-identity",
+ "aos-cli-ui",
+ "aos-core",
+ "aos-deployment",
+ "aos-deployment-format",
+ "aos-hub-api",
+ "aos-hub-client",
+ "aos-module-docs",
+ "aos-module-format",
+ "aos-nar",
+ "aos-nix",
+ "aos-nix-cache",
  "aos-oci",
  "aos-oci-types",
- "aos-proto-types",
- "aos-registry-surface",
- "aos-release",
- "aos-remote",
- "aos-storage-provisioning",
- "aos-systemd",
+ "aos-platform-metadata",
+ "aos-registry-authoring",
+ "aos-registry-client",
+ "aos-registry-format",
+ "aos-release-format",
+ "aos-storage-layout",
+ "aos-systemd-client",
+ "aos-transfer",
  "async-trait",
  "base64 0.22.1",
  "clap",
@@ -875,6 +1100,7 @@ dependencies = [
  "ssh-key",
  "tar",
  "tempfile",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
  "toml 0.8.23",
@@ -885,41 +1111,28 @@ dependencies = [
 ]
 
 [[package]]
-name = "aos-profile"
+name = "aos-platform-metadata"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aos-activation",
  "aos-core",
+ "aos-module-format",
+ "aos-nix",
+ "aos-storage-layout",
+ "aos-transfer",
+ "async-trait",
+ "base64 0.22.1",
+ "hex",
+ "rand 0.9.4",
+ "reqwest",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "ssh-key",
  "tempfile",
-]
-
-[[package]]
-name = "aos-proto"
-version = "0.1.0"
-dependencies = [
- "buffa",
- "connectrpc",
- "connectrpc-build",
- "futures",
- "http-body 1.0.1",
- "prost",
- "prost-types",
- "serde",
-]
-
-[[package]]
-name = "aos-proto-types"
-version = "0.1.0"
-dependencies = [
- "pbjson",
- "pbjson-build",
- "prost",
- "prost-build",
- "prost-types",
- "serde",
- "serde_json",
+ "tokio",
+ "url",
 ]
 
 [[package]]
@@ -930,27 +1143,87 @@ dependencies = [
 ]
 
 [[package]]
-name = "aos-registry-spa"
+name = "aos-registry-authoring"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "aos-registry-surface",
- "ed25519-dalek",
- "gloo-net",
+ "aos-cli-ui",
+ "aos-deployment",
+ "aos-deployment-format",
+ "aos-hub-client",
+ "aos-module-docs",
+ "aos-nar",
+ "aos-nix",
+ "aos-nix-cache",
+ "aos-oci",
+ "aos-oci-types",
+ "aos-registry-client",
+ "aos-registry-format",
+ "aos-release-format",
+ "aos-transfer",
+ "async-trait",
+ "clap",
+ "crc32fast",
+ "flate2",
+ "futures-util",
+ "git2",
  "hex",
- "leptos",
- "leptos_router",
+ "libc",
+ "rayon",
+ "reqwest",
+ "rustix 1.1.4",
+ "semver",
  "serde",
  "serde_json",
- "wasm-bindgen",
- "wasm-bindgen-futures",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml 0.8.23",
+ "url",
+ "zstd",
 ]
 
 [[package]]
-name = "aos-registry-surface"
+name = "aos-registry-client"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aos-cli-ui",
+ "aos-core",
+ "aos-hub-client",
+ "aos-nar",
+ "aos-registry-format",
+ "aos-transfer",
+ "async-trait",
+ "base64 0.22.1",
+ "ed25519-dalek",
+ "flate2",
+ "futures-util",
+ "git2",
+ "hex",
+ "libc",
+ "rand 0.9.4",
+ "reqwest",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha1 0.10.6",
+ "sha2 0.10.9",
+ "ssh-key",
+ "tempfile",
+ "tokio",
+ "toml 0.8.23",
+ "url",
+ "zstd",
+]
+
+[[package]]
+name = "aos-registry-format"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-core",
  "aos-oci-types",
  "base64 0.22.1",
  "crc32fast",
@@ -965,14 +1238,56 @@ dependencies = [
 ]
 
 [[package]]
-name = "aos-release"
+name = "aos-registry-web"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "aos-ability-model",
- "aos-ability-plan",
- "aos-contract",
- "aos-registry-surface",
+ "aos-registry-format",
+ "ed25519-dalek",
+ "gloo-net",
+ "hex",
+ "leptos",
+ "leptos_router",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+]
+
+[[package]]
+name = "aos-release-coordinator"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-image-finalizer",
+ "aos-nar",
+ "aos-nix-cache",
+ "aos-registry-format",
+ "aos-release-format",
+ "async-trait",
+ "base64 0.22.1",
+ "ed25519-dalek",
+ "futures-util",
+ "humantime",
+ "reqwest",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
+ "toml 0.8.23",
+ "url",
+]
+
+[[package]]
+name = "aos-release-format"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-core",
+ "aos-module-format",
+ "aos-registry-format",
  "base64 0.22.1",
  "ed25519-dalek",
  "humantime",
@@ -989,7 +1304,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "aos-oci-types",
- "aos-release",
+ "aos-release-format",
  "base64 0.22.1",
  "clap",
  "ed25519-dalek",
@@ -1003,80 +1318,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "aos-remote"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "aos-proto",
- "aos-proto-types",
- "buffa",
- "connectrpc",
- "http 1.4.1",
- "prost",
- "reqwest",
- "rustls-native-certs",
- "serde",
- "serde_json",
- "tokio",
- "tokio-stream",
- "tokio-util",
- "url",
- "webpki-roots",
-]
-
-[[package]]
-name = "aos-server"
+name = "aos-storage-layout"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "aos-core",
- "aos-proto",
- "aos-remote",
- "async-trait",
- "axum",
- "base64 0.22.1",
- "buffa",
- "connectrpc",
- "console",
- "ed25519-dalek",
- "futures",
- "futures-util",
- "glob",
- "hex",
- "humantime",
- "humantime-serde",
- "indicatif",
- "jsonwebtoken",
- "prost",
- "rand 0.9.4",
- "rcgen",
- "regex",
- "rusqlite",
- "rustls",
- "rustls-pemfile",
- "rustls-pki-types",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "tokio",
- "tokio-rustls",
- "tokio-stream",
- "tokio-util",
- "toml 0.8.23",
- "tower-http",
- "tracing",
- "uuid",
- "zstd",
-]
-
-[[package]]
-name = "aos-storage-provisioning"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "aos-ability-model",
- "aos-contract",
+ "aos-module-format",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -1084,7 +1331,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "aos-systemd"
+name = "aos-systemd-client"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -1097,24 +1344,29 @@ dependencies = [
 ]
 
 [[package]]
-name = "aos-systemd-provider"
+name = "aos-transfer"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "aos-ability-plan",
- "aos-ability-runtime",
- "aos-boot-identity",
- "aos-contract",
- "aos-release",
- "aos-systemd",
+ "async-trait",
+ "aws-config",
+ "aws-sdk-s3",
+ "aws-types",
+ "bytes",
+ "digest 0.10.7",
+ "futures-util",
  "hex",
- "rustix 1.1.4",
+ "rand 0.9.4",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "ssh2",
  "tempfile",
  "tokio",
- "zstd",
+ "tokio-util",
+ "tracing",
+ "url",
 ]
 
 [[package]]
@@ -2504,71 +2756,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "crucible"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "ciborium",
- "crucible-campaign",
- "crucible-cas",
- "crucible-device",
- "crucible-harness",
- "crucible-protocol",
- "crucible-shmem",
- "crucible-sim",
- "regex",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "toml 0.8.23",
- "tracing",
-]
-
-[[package]]
-name = "crucible-api"
-version = "0.1.0"
-dependencies = [
- "axum",
- "blake3",
- "bytes",
- "ciborium",
- "crucible",
- "crucible-campaign",
- "crucible-device",
- "crucible-protocol",
- "crucible-qemu",
- "crucible-session",
- "crucible-shmem",
- "futures-util",
- "hyper-util",
- "reqwest",
- "rustix 1.1.4",
- "rustls",
- "rustls-pemfile",
- "rustls-pki-types",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tokio-rustls",
- "uuid",
-]
-
-[[package]]
-name = "crucible-assert"
-version = "0.1.0"
-dependencies = [
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "crucible-campaign"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "crucible-cas",
+ "crucible-store",
  "ed25519-dalek",
  "num-bigint",
  "num-integer",
@@ -2581,20 +2773,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "crucible-cas"
-version = "0.1.0"
-dependencies = [
- "aes-gcm",
- "blake3",
- "rusqlite",
- "rustix 1.1.4",
- "tempfile",
- "thiserror 2.0.18",
- "zeroize",
- "zstd",
-]
-
-[[package]]
 name = "crucible-cli"
 version = "0.1.0"
 dependencies = [
@@ -2602,18 +2780,20 @@ dependencies = [
  "aws-sdk-s3",
  "clap",
  "clap_complete",
- "crucible",
- "crucible-api",
  "crucible-campaign",
- "crucible-cas",
+ "crucible-control-api",
+ "crucible-control-client",
+ "crucible-control-server",
  "crucible-daemon",
  "crucible-device",
+ "crucible-engine",
  "crucible-guest",
- "crucible-harness",
- "crucible-protocol",
- "crucible-qemu",
+ "crucible-qemu-host",
+ "crucible-qemu-protocol",
+ "crucible-qemu-shmem",
  "crucible-session",
- "crucible-shmem",
+ "crucible-store",
+ "crucible-test-support",
  "hex",
  "libc",
  "rcgen",
@@ -2630,27 +2810,92 @@ dependencies = [
 ]
 
 [[package]]
-name = "crucible-daemon"
+name = "crucible-control-api"
 version = "0.1.0"
 dependencies = [
  "blake3",
  "ciborium",
- "crucible",
- "crucible-api",
- "crucible-campaign",
- "crucible-cas",
- "crucible-guest",
- "crucible-linux-resource",
- "crucible-protocol",
- "crucible-qemu",
- "crucible-s3-store",
+ "crucible-engine",
+ "crucible-qemu-protocol",
  "crucible-session",
- "crucible-shmem",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "crucible-control-client"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "bytes",
+ "crucible-control-api",
+ "crucible-control-server",
+ "crucible-engine",
+ "crucible-qemu-host",
+ "crucible-qemu-protocol",
+ "crucible-qemu-shmem",
+ "crucible-session",
+ "futures-util",
+ "reqwest",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "crucible-control-server"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "bytes",
+ "crucible-control-api",
+ "crucible-control-client",
+ "crucible-engine",
+ "crucible-qemu-protocol",
+ "crucible-qemu-shmem",
+ "crucible-session",
+ "futures-util",
+ "hyper-util",
+ "rustix 1.1.4",
+ "rustls",
+ "rustls-pemfile",
+ "rustls-pki-types",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-rustls",
+ "uuid",
+]
+
+[[package]]
+name = "crucible-daemon"
+version = "0.1.0"
+dependencies = [
+ "aos-linux-project-quota",
+ "blake3",
+ "ciborium",
+ "crucible-campaign",
+ "crucible-control-api",
+ "crucible-control-client",
+ "crucible-control-server",
+ "crucible-device",
+ "crucible-engine",
+ "crucible-guest",
+ "crucible-qemu-host",
+ "crucible-qemu-protocol",
+ "crucible-qemu-shmem",
+ "crucible-session",
+ "crucible-store",
+ "crucible-store-s3",
  "ed25519-dalek",
  "rand 0.9.4",
  "rustix 1.1.4",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -2658,12 +2903,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "crucible-debug-gateway"
+name = "crucible-determinism"
 version = "0.1.0"
 dependencies = [
- "crucible-api",
- "crucible-protocol",
- "tempfile",
  "thiserror 2.0.18",
 ]
 
@@ -2673,10 +2915,31 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "ciborium",
- "crucible-shmem",
- "crucible-sim",
+ "crucible-determinism",
+ "crucible-qemu-shmem",
  "serde",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "crucible-engine"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "ciborium",
+ "crucible-campaign",
+ "crucible-determinism",
+ "crucible-device",
+ "crucible-qemu-protocol",
+ "crucible-qemu-shmem",
+ "crucible-store",
+ "crucible-test-support",
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "toml 0.8.23",
+ "tracing",
 ]
 
 [[package]]
@@ -2684,54 +2947,32 @@ name = "crucible-guest"
 version = "0.1.0"
 dependencies = [
  "crucible-campaign",
- "crucible-protocol",
+ "crucible-qemu-protocol",
  "libc",
  "thiserror 2.0.18",
 ]
 
 [[package]]
-name = "crucible-harness"
+name = "crucible-qemu-debug-gateway"
 version = "0.1.0"
 dependencies = [
- "rustix 1.1.4",
- "serde",
- "serde_json",
- "sha2 0.10.9",
+ "crucible-control-server",
+ "crucible-qemu-protocol",
  "tempfile",
- "toml 0.8.23",
-]
-
-[[package]]
-name = "crucible-linux-resource"
-version = "0.1.0"
-dependencies = [
- "libc",
- "rustix 1.1.4",
  "thiserror 2.0.18",
 ]
 
 [[package]]
-name = "crucible-protocol"
+name = "crucible-qemu-host"
 version = "0.1.0"
 dependencies = [
- "blake3",
- "libc",
- "sha2 0.10.9",
- "thiserror 2.0.18",
- "unicode-normalization",
-]
-
-[[package]]
-name = "crucible-qemu"
-version = "0.1.0"
-dependencies = [
+ "aos-linux-project-quota",
  "blake3",
  "ciborium",
- "crucible",
  "crucible-device",
- "crucible-linux-resource",
- "crucible-protocol",
- "crucible-shmem",
+ "crucible-engine",
+ "crucible-qemu-protocol",
+ "crucible-qemu-shmem",
  "libc",
  "rustix 1.1.4",
  "serde",
@@ -2747,9 +2988,9 @@ name = "crucible-qemu-plugin"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "crucible",
- "crucible-protocol",
- "crucible-shmem",
+ "crucible-engine",
+ "crucible-qemu-protocol",
+ "crucible-qemu-shmem",
  "hex",
  "libc",
  "serde_json",
@@ -2758,32 +2999,22 @@ dependencies = [
 ]
 
 [[package]]
-name = "crucible-s3-store"
-version = "0.1.0"
-dependencies = [
- "aws-config",
- "aws-sdk-s3",
- "crucible-cas",
- "thiserror 2.0.18",
- "tokio",
-]
-
-[[package]]
-name = "crucible-session"
-version = "0.1.0"
-dependencies = [
- "crucible",
- "crucible-protocol",
- "thiserror 2.0.18",
- "tokio",
-]
-
-[[package]]
-name = "crucible-shmem"
+name = "crucible-qemu-protocol"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "crucible-protocol",
+ "libc",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+ "unicode-normalization",
+]
+
+[[package]]
+name = "crucible-qemu-shmem"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "crucible-qemu-protocol",
  "libc",
  "serde",
  "serde_json",
@@ -2792,10 +3023,50 @@ dependencies = [
 ]
 
 [[package]]
-name = "crucible-sim"
+name = "crucible-session"
 version = "0.1.0"
 dependencies = [
+ "crucible-engine",
+ "crucible-qemu-protocol",
  "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
+name = "crucible-store"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "blake3",
+ "rusqlite",
+ "rustix 1.1.4",
+ "tempfile",
+ "thiserror 2.0.18",
+ "zeroize",
+ "zstd",
+]
+
+[[package]]
+name = "crucible-store-s3"
+version = "0.1.0"
+dependencies = [
+ "aws-config",
+ "aws-sdk-s3",
+ "crucible-store",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
+name = "crucible-test-support"
+version = "0.1.0"
+dependencies = [
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "toml 0.8.23",
 ]
 
 [[package]]

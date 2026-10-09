@@ -16,13 +16,13 @@
   cliMain = import ./_cli-source.nix {inherit lib;};
   shmemLib =
     import ./_crucible-shmem-source.nix {inherit lib;}
-    + builtins.readFile ../../crates/crucible-shmem/src/shmem/region.rs;
-  shmemHeader = builtins.readFile ../../crates/crucible-shmem/include/crucible_shmem_abi.h;
-  shmemHeaderTest = builtins.readFile ../../crates/crucible-shmem/tests/generated_abi_header.rs;
-  protocolLib = builtins.readFile ../../crates/crucible-protocol/src/lib.rs;
-  protocolGoldenVectors = builtins.readFile ../../crates/crucible-protocol/src/golden_vectors.rs;
-  apiRpcAbi = builtins.readFile ../../crates/crucible-api/src/rpc_abi.rs;
-  apiAbiGate = builtins.readFile ../../crates/crucible-api/tests/gate_abi_conformance.rs;
+    + builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/src/shmem/region.rs;
+  shmemHeader = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/include/crucible_shmem_abi.h;
+  shmemHeaderTest = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/tests/generated_abi_header.rs;
+  protocolLib = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs;
+  protocolGoldenVectors = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-protocol/src/golden_vectors.rs;
+  apiRpcAbi = builtins.readFile ../../crates/crucible/control/crucible-control-api/src/rpc_abi.rs;
+  apiAbiGate = builtins.readFile ../../crates/crucible/control/crucible-control-api/tests/gate_abi_conformance.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   firstLineWith = label: prefix: content: let
@@ -63,7 +63,7 @@
   rpcAbiVersion = "${rpcProtocolMajor}.${rpcProtocolMinor}.${rpcProtocolPatch}";
   shmemAbi = "crucible-shmem-abi-v${shmemAbiVersion}";
   guestHostProtocolAbi = "crucible-guest-host-channel-v${guestHostProtocolVersion}";
-  shmemHeaderHash = builtins.hashFile "sha256" ../../crates/crucible-shmem/include/crucible_shmem_abi.h;
+  shmemHeaderHash = builtins.hashFile "sha256" ../../crates/crucible/protocol/crucible-qemu-shmem/include/crucible_shmem_abi.h;
   qemuPackageMetadataProbe = import ../../pkgs/emulation/qemu.nix {
     inherit lib;
     pname = "qemu-crucible";
@@ -163,7 +163,7 @@
     ++ failuresFor "pkgs/emulation/qemu.nix" qemuPackageNix [
       {
         label = "generated shmem header input";
-        needle = "shmemGeneratedHeader = ../../crates/crucible-shmem/include/crucible_shmem_abi.h;";
+        needle = "shmemGeneratedHeader = ../../crates/crucible/protocol/crucible-qemu-shmem/include/crucible_shmem_abi.h;";
       }
       {
         label = "generated shmem header hash";
@@ -239,7 +239,7 @@
     ++ failuresFor "pkgs/tools/crucible/crucible.nix" cruciblePackageNix [
       {
         label = "CLI package reads shmem ABI source";
-        needle = "shmemLib = builtins.readFile ../../../crates/crucible-shmem/src/lib.rs;";
+        needle = "shmemLib = builtins.readFile ../../../crates/crucible/protocol/crucible-qemu-shmem/src/lib.rs;";
       }
       {
         label = "CLI package reads guest-host protocol source";
@@ -247,7 +247,7 @@
       }
       {
         label = "CLI package reads RPC ABI source";
-        needle = "apiRpcAbi = builtins.readFile ../../../crates/crucible-api/src/rpc_abi.rs;";
+        needle = "apiRpcAbi = builtins.readFile ../../../crates/crucible/control/crucible-control-api/src/rpc_abi.rs;";
       }
       {
         label = "CLI build-info shmem ABI version";
@@ -270,7 +270,7 @@
         needle = "rpc_abi_build=" + "$" + "{rpcProtocolBuild}";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
+    ++ failuresFor "crates/crucible/control/crucible-cli/src/main.rs" cliMain [
       {
         label = "CLI requires QEMU sim capability";
         needle = "required_metadata_field(&fields, \"qemu_sim_capability\", &marker)?";
@@ -300,7 +300,7 @@
         needle = "advertises shmem ABI";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/src/lib.rs" shmemLib [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/src/lib.rs" shmemLib [
       {
         label = "shmem ABI version constant";
         needle = "pub const ABI_VERSION: u32 = ${shmemAbiVersion};";
@@ -314,13 +314,13 @@
         needle = "pub use abi_header::generated_c_header;";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/include/crucible_shmem_abi.h" shmemHeader [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/include/crucible_shmem_abi.h" shmemHeader [
       {
         label = "committed generated shmem ABI version";
         needle = "#define CRUCIBLE_SHMEM_ABI_VERSION ${shmemAbiVersion}u";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/tests/generated_abi_header.rs" shmemHeaderTest [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/tests/generated_abi_header.rs" shmemHeaderTest [
       {
         label = "committed header equals generated Rust layout";
         needle = "committed_header_matches_generated_rust_layout";
@@ -330,7 +330,7 @@
         needle = "generated_header_asserts_every_shared_struct_layout";
       }
     ]
-    ++ failuresFor "crates/crucible-protocol/src/lib.rs" protocolLib [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs" protocolLib [
       {
         label = "guest-host protocol version constant";
         needle = "pub const CONTROL_PROTOCOL_VERSION: u32 = include!(\"control_protocol_version.in\");";
@@ -344,13 +344,13 @@
         needle = "shared-memory ABI mismatch";
       }
     ]
-    ++ failuresFor "crates/crucible-protocol/src/golden_vectors.rs" protocolGoldenVectors [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-protocol/src/golden_vectors.rs" protocolGoldenVectors [
       {
         label = "guest-host golden vectors track protocol version";
         needle = "GOLDEN_VECTOR_PROTOCOL_VERSION == CONTROL_PROTOCOL_VERSION";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/rpc_abi.rs" apiRpcAbi [
+    ++ failuresFor "crates/crucible/control/crucible-control-api/src/rpc_abi.rs" apiRpcAbi [
       {
         label = "RPC major version";
         needle = "pub const RPC_PROTOCOL_MAJOR: u16 = ${rpcProtocolMajor};";
@@ -376,7 +376,7 @@
         needle = "GOLDEN_VECTOR_RPC_PROTOCOL_VERSION.major == RPC_PROTOCOL_VERSION.major";
       }
     ]
-    ++ failuresFor "crates/crucible-api/tests/gate_abi_conformance.rs" apiAbiGate [
+    ++ failuresFor "crates/crucible/control/crucible-control-api/tests/gate_abi_conformance.rs" apiAbiGate [
       {
         label = "current RPC major gate assertion";
         needle = "assert_eq!(RPC_PROTOCOL_MAJOR, ${rpcProtocolMajor});";

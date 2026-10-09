@@ -235,8 +235,8 @@
     builtins.filter (name: name != "")
     (lib.splitString "\n" (builtins.readFile thoroughTestInventory))
   );
-  shmemLib = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
-  shmemGeneratedHeader = ../../crates/crucible-shmem/include/crucible_shmem_abi.h;
+  shmemLib = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/src/lib.rs;
+  shmemGeneratedHeader = ../../crates/crucible/protocol/crucible-qemu-shmem/include/crucible_shmem_abi.h;
   shmemHeaderInstallPath = "include/aos/crucible/crucible_shmem_abi.h";
   shmemHeaderHash = builtins.hashFile "sha256" shmemGeneratedHeader;
   qemuSimCapability =

@@ -102,7 +102,7 @@ authentication and public routes are enumerated exceptions, not prefix-wide
 fallbacks.
 
 The executable negative inventories live in
-`crates/aos-hub/tests/fixtures/removed-management-paths-v1.json` and
+`crates/hub/aos-hub-native/tests/fixtures/removed-management-paths-v1.json` and
 `removed-management-posts-v1.json`. The first contains concrete representatives
 of every removed or renamed management route class and is tested with GET,
 POST, PUT, PATCH, DELETE, and HEAD. The second contains every form POST mounted

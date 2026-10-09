@@ -34,7 +34,7 @@
         needle = "`T-SESS-7` is completed by `checks.crucible.phase5.sessionBreakpoints`";
       }
     ]
-    ++ failuresFor "crates/crucible-session/src/lib.rs" sessionLib [
+    ++ failuresFor "crates/crucible/control/crucible-session/src/lib.rs" sessionLib [
       {
         label = "breakpoint firing record";
         needle = "pub struct BreakpointFiring";
@@ -192,7 +192,7 @@
         needle = "breakpoint_symbol_metadata_resolves_coverage_and_memory_leaves";
       }
     ]
-    ++ failuresFor "crates/crucible/src/trigger.rs" triggerLib [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/trigger.rs" triggerLib [
       {
         label = "public condition prefix builder";
         needle = "pub fn from_scheduler_event_log_entries";
@@ -234,7 +234,7 @@
         needle = "event_firings: prefix.event_firings";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" schedulerLib [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" schedulerLib [
       {
         label = "quantum outcome quiescence field";
         needle = "pub scheduler_quiescence: Option<SchedulerQuiescence>";

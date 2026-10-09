@@ -10,10 +10,10 @@
 
   modelLib = import ./_crucible-model-source.nix {inherit lib;};
   crucibleLib =
-    builtins.readFile ../../crates/crucible/src/lib.rs
-    + builtins.readFile ../../crates/crucible/src/tests/model_core.rs;
+    builtins.readFile ../../crates/crucible/engine/crucible-engine/src/lib.rs
+    + builtins.readFile ../../crates/crucible/engine/crucible-engine/src/tests/model_core.rs;
   sessionLib = import ./_crucible-session-source.nix {inherit lib;};
-  forkGateTest = builtins.readFile ../../crates/crucible-session/tests/gate_exploration_fork.rs;
+  forkGateTest = builtins.readFile ../../crates/crucible/control/crucible-session/tests/gate_exploration_fork.rs;
   sessionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/20-session-control-plane.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -35,7 +35,7 @@
         needle = "`T-SESS-8` is green through `checks.crucible.phase5.sessionSaveResumeFork`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" modelLib [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" modelLib [
       {
         label = "checkpoint configuration lookup";
         needle = "pub fn checkpoint_configuration";
@@ -57,13 +57,13 @@
         needle = "or_else(|| self.cached_snapshots.get(&checkpoint))";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" crucibleLib [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" crucibleLib [
       {
         label = "cached snapshot checkpoint resume test";
         needle = "temporal_graph_checkpoint_resume_resolves_cached_snapshot_without_thin_node";
       }
     ]
-    ++ failuresFor "crates/crucible-session/src/lib.rs" sessionLib [
+    ++ failuresFor "crates/crucible/control/crucible-session/src/lib.rs" sessionLib [
       {
         label = "fork handle configuration identity";
         needle = "pub configuration: ContentHash";
@@ -141,7 +141,7 @@
         needle = "configuration: checkpoint.configuration";
       }
     ]
-    ++ failuresFor "crates/crucible-session/tests/gate_exploration_fork.rs" forkGateTest [
+    ++ failuresFor "crates/crucible/control/crucible-session/tests/gate_exploration_fork.rs" forkGateTest [
       {
         label = "command-path fork child test";
         needle = "actor_fork_command_spawns_independent_child_handle";

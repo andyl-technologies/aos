@@ -15,7 +15,7 @@ in
         name = "fork-replay-oracle";
         sqliteRequired = true;
         cargoBuildCommands = [
-          "test --frozen --offline --release --no-run -p crucible --test gate_fork_replay_oracle"
+          "test --frozen --offline --release --no-run -p crucible-engine --test gate_fork_replay_oracle"
         ];
         installedTests = [
           {

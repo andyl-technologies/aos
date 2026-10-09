@@ -7,9 +7,9 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  protocolLib = builtins.readFile ../../crates/crucible-protocol/src/lib.rs;
-  goldenLib = builtins.readFile ../../crates/crucible-protocol/src/golden_vectors.rs;
-  goldenTest = builtins.readFile ../../crates/crucible-protocol/tests/golden_vectors.rs;
+  protocolLib = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs;
+  goldenLib = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-protocol/src/golden_vectors.rs;
+  goldenTest = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-protocol/tests/golden_vectors.rs;
   protocolSpec = builtins.readFile ../../docs/rfcs/0010-crucible/14-protocol.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -18,7 +18,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "crates/crucible-protocol/src/lib.rs" protocolLib [
+    failuresFor "crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs" protocolLib [
       {
         label = "golden vector module";
         needle = "mod golden_vectors;";
@@ -28,7 +28,7 @@
         needle = "GOLDEN_CONTROL_VECTORS";
       }
     ]
-    ++ failuresFor "crates/crucible-protocol/src/golden_vectors.rs" goldenLib [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-protocol/src/golden_vectors.rs" goldenLib [
       {
         label = "literal frozen protocol version";
         needle = "pub const GOLDEN_VECTOR_PROTOCOL_VERSION: u32 = 3;";
@@ -86,7 +86,7 @@
         needle = "frame: &[0, 0, 0, 1, 0x12]";
       }
     ]
-    ++ failuresFor "crates/crucible-protocol/tests/golden_vectors.rs" goldenTest [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-protocol/tests/golden_vectors.rs" goldenTest [
       {
         label = "version bump regeneration test";
         needle = "golden_vector_protocol_version_matches_current_protocol_version";
@@ -192,7 +192,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-protocol-golden-vectors-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible-protocol \
+              -p crucible-qemu-protocol \
               --test golden_vectors \
               -- --test-threads=1
           '';

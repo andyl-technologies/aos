@@ -17,7 +17,7 @@
   representativeScenario = "${representativeScenarioPackage}/share/crucible/e2e-determinism.scenario.toml";
   nativeRunner = fleetRunner.e2eNativeRunner;
 
-  harnessLib = builtins.readFile ../../crates/crucible-harness/src/lib.rs;
+  harnessLib = builtins.readFile ../../crates/crucible/testing/crucible-test-support/src/lib.rs;
   nativeRunnerSource = builtins.readFile ./_e2e-determinism-native-runner.sh;
   determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
   assertionsDoc = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
@@ -44,7 +44,7 @@
         needle = "Completed by `checks.crucible.phase4.gates.e2eDeterminism.rawGate`";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/src/lib.rs" harnessLib [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/src/lib.rs" harnessLib [
       {
         label = "implemented canonical e2e gate";
         needle = "name: \"gate:e2e-determinism\",\n        phase: GatePhase::Phase4,\n        owner: \"crucible-harness\",\n        status: GateStatus::Implemented,";

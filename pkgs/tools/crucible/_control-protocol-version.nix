@@ -1,6 +1,6 @@
 # Reads the numeric authority included by the Rust control protocol. Release
 # metadata must retain the value, never the Rust include expression itself.
-{versionFile ? ../../../crates/crucible-protocol/src/control_protocol_version.in}: let
+{versionFile ? ../../../crates/crucible/protocol/crucible-qemu-protocol/src/control_protocol_version.in}: let
   matched = builtins.match "([1-9][0-9]*)\n?" (builtins.readFile versionFile);
   version =
     if matched == null

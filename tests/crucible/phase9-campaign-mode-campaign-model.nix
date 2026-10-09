@@ -44,7 +44,7 @@
   cargoArtifactContract = controllerArtifacts.passthru.cargoArtifactContract;
   cargoBuildCommands = [
     "test --frozen --offline --release --no-run -p crucible-campaign --lib --test gate_campaign_model"
-    "test --frozen --offline --release --no-run -p crucible --features test-support --lib"
+    "test --frozen --offline --release --no-run -p crucible-engine --features test-support --lib"
     "test --frozen --offline --release --no-run -p crucible-daemon --lib"
   ];
   artifacts = pkgs.mkCargoArtifacts {

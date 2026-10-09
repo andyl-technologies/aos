@@ -8,9 +8,9 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
-  rendezvousTest = builtins.readFile ../../crates/crucible/tests/scheduler_rendezvous.rs;
-  livenessTest = builtins.readFile ../../crates/crucible/tests/gate_scheduler_liveness.rs;
+  libSource = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/lib.rs;
+  rendezvousTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/scheduler_rendezvous.rs;
+  livenessTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/gate_scheduler_liveness.rs;
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -24,7 +24,7 @@
         needle = "Completed by `checks.crucible.phase3.schedulerRendezvous`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "rendezvous policy type";
         needle = "pub struct SchedulerRendezvous";
@@ -54,7 +54,7 @@
         needle = "if selected_candidates.is_empty()";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" libSource [
       {
         label = "rendezvous export";
         needle = "SchedulerRendezvous";
@@ -64,7 +64,7 @@
         needle = "rendezvous_cap_for";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/scheduler_rendezvous.rs" rendezvousTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/scheduler_rendezvous.rs" rendezvousTest [
       {
         label = "cap boundary test";
         needle = "rendezvous_cap_uses_next_shared_boundary";
@@ -102,13 +102,13 @@
         needle = "vec![(12, vec![77])]";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/gate_scheduler_liveness.rs" livenessTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/gate_scheduler_liveness.rs" livenessTest [
       {
         label = "liveness no per-quantum decision assumption";
         needle = "recorded decisions without canonical event-log entries";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/scheduler_rendezvous.rs" rendezvousTest [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/scheduler_rendezvous.rs" rendezvousTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -173,7 +173,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-scheduler-rendezvous-target" \
-              -p crucible \
+              -p crucible-engine \
               --test scheduler_rendezvous \
               -- --test-threads=1
           '';

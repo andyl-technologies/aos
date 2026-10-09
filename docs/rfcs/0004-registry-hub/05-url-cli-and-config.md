@@ -40,8 +40,8 @@ The magic is protocol reuse, not new glue:
   against the hub unchanged.** The hub implements the existing AOS-mode
   upload surface (`/oauth2/token`, `/query-missing`,
   `PUT /store/{hash}`, `/upload-pack` — the endpoints in
-  `crates/aos-server/src/routes.rs` that
-  `crates/aos-cache/src/backend/http.rs` already targets), scoped per
+  `crates/aos/packages/aos-build-server/src/routes.rs` that
+  `crates/aos/packages/aos-nix-cache/src/backend/http.rs` already targets), scoped per
   registry. A maintainer's existing
   `apr release --upload-url https://hub.example.com/acme/infra/prod
   --token aos_…` pipeline needs zero new flags.

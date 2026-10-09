@@ -9,18 +9,18 @@
 
   blockIo = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/block_io.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/block_io.rs;
     siblingTests = true;
   };
-  ioWireFuzz = builtins.readFile ../../crates/crucible-qemu-plugin/src/io_wire_fuzz.rs;
-  pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
+  ioWireFuzz = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/io_wire_fuzz.rs;
+  pluginLib = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs;
   shmem =
     import ./_crucible-shmem-source.nix {inherit lib;}
     + import ./_rust-module-source.nix {
       inherit lib;
-      entry = ../../crates/crucible-shmem/src/shmem/frame_node.rs;
+      entry = ../../crates/crucible/protocol/crucible-qemu-shmem/src/shmem/frame_node.rs;
     }
-    + builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node/frame_entry.rs;
+    + builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/src/shmem/frame_node/frame_entry.rs;
   ioDoc = builtins.readFile ../../docs/rfcs/0010-crucible/15-io-subnodes.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -50,7 +50,7 @@
         needle = "`FrameEntry.delivery_icount` is the computed completion icount";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/block_io.rs" blockIo [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/block_io.rs" blockIo [
       {
         label = "wire version";
         needle = "const BLOCK_WIRE_VERSION: u8 = 4";
@@ -152,7 +152,7 @@
         needle = "block_response_frames_are_stamped_by_reserved_block_slot_and_delivery_icount";
       }
     ]
-    ++ forbiddenFor "crates/crucible-qemu-plugin/src/block_io.rs" blockIo [
+    ++ forbiddenFor "crates/crucible/qemu/crucible-qemu-plugin/src/block_io.rs" blockIo [
       {
         label = "wall-clock dependency";
         needle = "SystemTime";
@@ -170,7 +170,7 @@
         needle = "std::fs::Metadata";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/io_wire_fuzz.rs" ioWireFuzz [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/io_wire_fuzz.rs" ioWireFuzz [
       {
         label = "block request corpus";
         needle = "IoWireFuzzChannel::BlockRequest";
@@ -204,7 +204,7 @@
         needle = "io_wire_fuzz_target_never_panics_on_regression_corpus";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/lib.rs" pluginLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs" pluginLib [
       {
         label = "block API exported";
         needle = "BlockRequest";
@@ -218,7 +218,7 @@
         needle = "BlockWireError";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/src/lib.rs" shmem [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/src/lib.rs" shmem [
       {
         label = "max frame data";
         needle = "pub const MAX_FRAME_DATA: usize = 4608";

@@ -52,7 +52,7 @@
           cargo test --frozen --offline --release --no-run \
             --message-format=json-render-diagnostics \
             --manifest-path crates/Cargo.toml --target-dir "$TMPDIR/target" \
-            -p crucible-api -p crucible-qemu -p crucible-daemon --lib \
+            -p crucible-control-api -p crucible-qemu-host -p crucible-daemon --lib \
             > "$TMPDIR/messages.jsonl"
           daemon_test=$(jq -r \
             'select(.reason == "compiler-artifact" and .target.name == "crucible_daemon" and .profile.test == true and .executable != null) | .executable' \

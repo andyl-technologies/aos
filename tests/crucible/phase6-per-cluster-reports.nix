@@ -25,15 +25,15 @@
   triageDoc = builtins.readFile ../../docs/rfcs/0010-crucible/34-failure-triage.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   modelSource = import ./_crucible-model-source.nix {inherit lib;};
-  reportMaterial = builtins.readFile ../../crates/crucible/src/model/failure/material.rs;
-  reportRenderer = builtins.readFile ../../crates/crucible/src/model/failure/model/reporting.rs;
+  reportMaterial = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/model/failure/material.rs;
+  reportRenderer = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/model/failure/model/reporting.rs;
   libSource = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/src/lib.rs;
+    entry = ../../crates/crucible/engine/crucible-engine/src/lib.rs;
   };
   signatureTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/tests/gate_failure_signature.rs;
+    entry = ../../crates/crucible/engine/crucible-engine/tests/gate_failure_signature.rs;
   };
   defaultChecks = builtins.readFile ./default.nix;
   taskList = builtins.concatStringsSep "," taskIds;
@@ -59,7 +59,7 @@
         needle = "checks.crucible.phase6.triageThinDriver";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" modelSource [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" modelSource [
       {
         label = "cluster report domain";
         needle = "FAILURE_CLUSTER_REPORT_DOMAIN";
@@ -189,7 +189,7 @@
         needle = "fn json_string";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" libSource [
       {
         label = "report export";
         needle = "FailureClusterReport";
@@ -207,7 +207,7 @@
         needle = "FailureClusterReportDivergence";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/gate_failure_signature.rs" signatureTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/gate_failure_signature.rs" signatureTest [
       {
         label = "per-cluster report regression";
         needle = "per_cluster_reports_render_same_content_deterministically";
@@ -303,7 +303,7 @@
         needle = "phase6.signaturePreservingMinimization";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible/tests/gate_failure_signature.rs" signatureTest [
+    ++ forbiddenFailuresFor "crates/crucible/engine/crucible-engine/tests/gate_failure_signature.rs" signatureTest [
       {
         label = "ignored test";
         needle = "#[ignore]";
@@ -317,7 +317,7 @@
         needle = "unimplemented!";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible/src/model/failure report renderer" (reportMaterial + reportRenderer) [
+    ++ forbiddenFailuresFor "crates/crucible/engine/crucible-engine/src/model/failure report renderer" (reportMaterial + reportRenderer) [
       {
         label = "serde_json dependency in report renderer";
         needle = "serde_json";

@@ -50,7 +50,7 @@ fast.
 ## 2. CURRENT state (as-is) — what we replace
 
 The current transport is a git-**bundle** pipeline. Cited code in
-[`crates/aos-package/src/registry/bundle.rs`](../../../crates/aos-package/src/registry/bundle.rs):
+[`crates/aos/packages/aos-package-manager/src/registry/bundle.rs`](../../../crates/aos/packages/aos-package-manager/src/registry/bundle.rs):
 
 | Concern | Pre-cutover implementation | `path:line` |
 |---|---|---|
@@ -393,7 +393,7 @@ uploaded (brief §4 TTL policy; workstream-01 for the index writes).
 ## 11. Implementation tasks
 
 New module replacing `bundle.rs`'s producer/transport role (suggested
-`crates/aos-package/src/registry/pack.rs`):
+`crates/aos/packages/aos-package-manager/src/registry/pack.rs`):
 
 1. **Delete the bundle transport path.** Remove `BundleType` (`bundle.rs:22-31`),
    `BundleEntry` (`bundle.rs:33-45`), `BundleManifest` (`bundle.rs:47-53`),
@@ -403,7 +403,7 @@ New module replacing `bundle.rs`'s producer/transport role (suggested
    `bundle.rs:59-92`, `BundleManifest::parse` at `bundle.rs:124-178`, and the
    selectors `entries_since`/`latest_snapshot`/`skip_delta_from`/`sequential_deltas_between`
    at `bundle.rs:181-224`)
-   ([`bundle.rs:22-243`, `251-404`](../../../crates/aos-package/src/registry/bundle.rs)).
+   ([`bundle.rs:22-243`, `251-404`](../../../crates/aos/packages/aos-package-manager/src/registry/bundle.rs)).
    Keep `ensure_git_repo` (`bundle.rs:349-371`) and `resolve_tag`
    (`bundle.rs:407-421`) — they're format-agnostic and still useful.
 
@@ -453,7 +453,7 @@ New module replacing `bundle.rs`'s producer/transport role (suggested
      (`state.rs:276-443`) stay — they exercise `[registry.state]` round-tripping
      and the `[registry.signing] public_key` preservation, which both survive.
 2. **`full_pack` — the §6 `pack-objects --revs` wrapper.** New
-   `crates/aos-package/src/registry/pack.rs`:
+   `crates/aos/packages/aos-package-manager/src/registry/pack.rs`:
 
    ```rust
    /// Generate a self-contained full pack over `release_commit` (§6).
@@ -584,7 +584,7 @@ New module replacing `bundle.rs`'s producer/transport role (suggested
 
   These port the *intent* of the removed bundle test
   `delta_classification`
-  ([`bundle.rs:533-559`](../../../crates/aos-package/src/registry/bundle.rs)) onto
+  ([`bundle.rs:533-559`](../../../crates/aos/packages/aos-package-manager/src/registry/bundle.rs)) onto
   semver ancestry — the calendar `classify_delta` it tested is deleted (Task 1).
 - **Round-trip** (`#[test] fn round_trip_full_pack`, `fn round_trip_thin_delta`):
   `full_pack` → `zstd_compress` → `zstd_decompress` → `index_pack` reproduces a
@@ -630,11 +630,11 @@ New module replacing `bundle.rs`'s producer/transport role (suggested
   [`current-state.md`](../../registry/current-state.md),
   [`README.md`](../../registry/README.md).
 - Current code (to remove/refactor):
-  [`crates/aos-package/src/registry/bundle.rs`](../../../crates/aos-package/src/registry/bundle.rs)
+  [`crates/aos/packages/aos-package-manager/src/registry/bundle.rs`](../../../crates/aos/packages/aos-package-manager/src/registry/bundle.rs)
   (the entire bundle surface),
-  [`crates/aos-package/src/update.rs`](../../../crates/aos-package/src/update.rs)
+  [`crates/aos/packages/aos-package-manager/src/update.rs`](../../../crates/aos/packages/aos-package-manager/src/update.rs)
   (`sync_bundle`/`pick_bundles`/`find_best_version_tag_in_manifest` consumers),
-  [`crates/aos-package/src/registry/state.rs`](../../../crates/aos-package/src/registry/state.rs)
+  [`crates/aos/packages/aos-package-manager/src/registry/state.rs`](../../../crates/aos/packages/aos-package-manager/src/registry/state.rs)
   (`check_monotonic`/`token_to_version` calendar-token logic),
-  [`crates/aos-package/src/registry_ops.rs`](../../../crates/aos-package/src/registry_ops.rs)
+  [`crates/aos/packages/aos-package-manager/src/registry_ops.rs`](../../../crates/aos/packages/aos-package-manager/src/registry_ops.rs)
   (the `apr bundle` producer stub at `registry_ops.rs:1706-1744`).

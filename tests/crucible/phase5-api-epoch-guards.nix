@@ -10,13 +10,13 @@
 
   apiDoc = builtins.readFile ../../docs/rfcs/0010-crucible/21-api.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
-  lifecycle = builtins.readFile ../../crates/crucible-api/src/lifecycle.rs;
-  streaming = builtins.readFile ../../crates/crucible-api/src/streaming.rs;
-  client = builtins.readFile ../../crates/crucible-api/src/client.rs;
-  epochGuardTest = builtins.readFile ../../crates/crucible-api/tests/gate_epoch_guards.rs;
+  lifecycle = import ./_crucible-control-source.nix { inherit lib; component = "lifecycle"; };
+  streaming = import ./_crucible-control-source.nix { inherit lib; component = "streaming"; };
+  client = import ./_crucible-control-source.nix { inherit lib; component = "client"; };
+  epochGuardTest = builtins.readFile ../../crates/crucible/control/crucible-control-server/tests/gate_epoch_guards.rs;
   controlClientTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-api/tests/gate_control_client.rs;
+    entry = ../../crates/crucible/control/crucible-control-client/tests/gate_control_client.rs;
   };
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -41,7 +41,7 @@
         needle = "`T-API-8` is green through `checks.crucible.phase5.apiEpochGuards`";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/lifecycle.rs" lifecycle [
+    ++ failuresFor "crates/crucible/control/crucible-control-api/src/lifecycle.rs" lifecycle [
       {
         label = "DestroySession expected epoch field";
         needle = "pub expected_epoch: Option<u64>";
@@ -59,7 +59,7 @@
         needle = "LifecycleApiError::EpochMismatch";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/streaming.rs" streaming [
+    ++ failuresFor "crates/crucible/control/crucible-control-api/src/streaming.rs" streaming [
       {
         label = "AttachRequest expected epoch";
         needle = "pub expected_epoch: Option<u64>";
@@ -77,7 +77,7 @@
         needle = "StreamingApiError::EpochMismatch";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/client.rs" client [
+    ++ failuresFor "crates/crucible/control/crucible-control-client/src/client.rs" client [
       {
         label = "typed RPC error decoder";
         needle = "decode_error_response";
@@ -103,7 +103,7 @@
         needle = "request.expected_epoch";
       }
     ]
-    ++ failuresFor "crates/crucible-api/tests/gate_epoch_guards.rs" epochGuardTest [
+    ++ failuresFor "crates/crucible/control/crucible-control-server/tests/gate_epoch_guards.rs" epochGuardTest [
       {
         label = "fast-fail mutation test";
         needle = "epoch_guards_fast_fail_without_state_or_event_log_mutation";
@@ -121,7 +121,7 @@
         needle = "streaming.event_log().current_cursor(), before_cursor";
       }
     ]
-    ++ failuresFor "crates/crucible-api/tests/gate_control_client*.rs" controlClientTest [
+    ++ failuresFor "crates/crucible/control/crucible-control-client/tests/gate_control_client*.rs" controlClientTest [
       {
         label = "RPC destroy expected epoch coverage";
         needle = "with_expected_epoch(inline_created.session.epoch)";
@@ -224,7 +224,7 @@ in
             --frozen \
             --offline \
             --target-dir "$TMPDIR/crucible-api-epoch-guards-target" \
-            -p crucible-api \
+            -p crucible-control-server \
             --test gate_epoch_guards \
             -- --test-threads=1
         '';

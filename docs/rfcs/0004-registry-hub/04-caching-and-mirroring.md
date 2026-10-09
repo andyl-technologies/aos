@@ -12,7 +12,7 @@
 **Shared NAR storage (no duplication).** Verified against the code:
 narinfo and NAR files contain nothing registry-specific — no registry
 id, content-hash-named files, signatures over content
-(`crates/aos-core/src/nar/info.rs`) — so multiple registries pointing
+(`crates/shared/aos-nar/src/info.rs`) — so multiple registries pointing
 `[[caches]]` at the same cache URL is already fully supported with
 natural deduplication. The hub models this as a shareable
 **CacheStore** (a binding + prefix that several registries advertise):
@@ -22,7 +22,7 @@ an org with twenty team registries stores each NAR once. No
 **Cache stacks.** Today the `[[caches]]` list is a *preference* list,
 not a failover chain: `apm` resolves the highest-priority cache and
 uses only it (`resolve_mirror` in
-`crates/aos-package/src/download.rs` takes
+`crates/aos/packages/aos-package-manager/src/download.rs` takes
 `mirrors.first()`). The stack model generalizes this into a small,
 nestable expression:
 

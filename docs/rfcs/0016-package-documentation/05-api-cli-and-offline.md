@@ -2,12 +2,12 @@
 
 ## One resource model
 
-`aos-doc-model` defines one bounded `aos.package-reference/v1` signed object
+`aos-module-docs` defines one bounded `aos.package-reference/v1` signed object
 that Connect, CLI, and LSP share. It retains package metadata and the exact
 checked `PackageAbilityReference`. Readers derive option and exported-method
 views directly from that reference.
 
-`aos-hub-core` also defines bounded view resources for browsing and search:
+`aos-hub-service` also defines bounded view resources for browsing and search:
 
 - `DocumentationArtifactRef`;
 - `PackageDocumentationSummary`;

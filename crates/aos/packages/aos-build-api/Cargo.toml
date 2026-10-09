@@ -1,0 +1,20 @@
+[package]
+name = "aos-build-api"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+
+[package.metadata.aos]
+source_inputs = ["api/proto"]
+
+[dependencies]
+connectrpc = "0.9.1"
+buffa = "0.9.2"
+prost = "0.13"
+prost-types = "0.13"
+serde = { version = "1", features = ["derive"] }
+futures = "0.3"
+http-body = "1"
+
+[build-dependencies]
+connectrpc-build = "0.9"

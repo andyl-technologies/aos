@@ -7,10 +7,10 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  qemuCargo = builtins.readFile ../../crates/crucible-qemu/Cargo.toml;
-  qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
-  shutdownLib = builtins.readFile ../../crates/crucible-qemu/src/shutdown.rs;
-  shutdownTest = builtins.readFile ../../crates/crucible-qemu/tests/shutdown.rs;
+  qemuCargo = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/Cargo.toml;
+  qemuLib = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/src/lib.rs;
+  shutdownLib = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/src/shutdown.rs;
+  shutdownTest = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/tests/shutdown.rs;
   protocolSpec = builtins.readFile ../../docs/rfcs/0010-crucible/14-protocol.md;
   defaultChecks = builtins.readFile ./default.nix;
   controlResponsiveGate = import ./phase5-control-responsive.nix {
@@ -24,7 +24,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "crates/crucible-qemu/Cargo.toml" qemuCargo [
+    failuresFor "crates/crucible/qemu/crucible-qemu-host/Cargo.toml" qemuCargo [
       {
         label = "Unix signal dependency";
         needle = "libc = { workspace = true }";
@@ -34,7 +34,7 @@
         needle = "crucible-protocol = { path = \"../crucible-protocol\" }";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/lib.rs" qemuLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/lib.rs" qemuLib [
       {
         label = "shutdown module";
         needle = "mod shutdown;";
@@ -44,7 +44,7 @@
         needle = "shutdown_qemu_child";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/shutdown.rs" shutdownLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/shutdown.rs" shutdownLib [
       {
         label = "shutdown rung enum";
         needle = "pub enum QemuShutdownRung";
@@ -162,7 +162,7 @@
         needle = "let mut waited = Duration::ZERO;";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/tests/shutdown.rs" shutdownTest [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/tests/shutdown.rs" shutdownTest [
       {
         label = "unresponsive child escalates to SIGKILL";
         needle = "shutdown_escalates_to_sigkill_and_reaps_unresponsive_child";
@@ -282,7 +282,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-protocol-shutdown-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible-qemu \
+              -p crucible-qemu-host \
               --test shutdown \
               -- --test-threads=1
           '';

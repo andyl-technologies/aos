@@ -94,7 +94,7 @@ are *specified here* so the tests are written before the code:
   systems.server.checks.<name>`.
 - **Fleet:** `tests/fleet/<name>.nix` (machines + `testScript`) → auto-discovered
   → `nix-build -A checks.fleet.<name>`.
-- **Rust:** `crates/aos-package/tests/<name>.rs` → `cargo test`.
+- **Rust:** `crates/aos/packages/aos-package-manager/tests/<name>.rs` → `cargo test`.
 
 ## Sequencing
 

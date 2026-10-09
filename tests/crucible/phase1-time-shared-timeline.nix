@@ -9,15 +9,15 @@
 
   model = import ./_crucible-model-source.nix {inherit lib;};
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
-  publicTest = builtins.readFile ../../crates/crucible/tests/time_shared_timeline.rs;
+  crateRoot = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/lib.rs;
+  publicTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/time_shared_timeline.rs;
   timeSpec = builtins.readFile ../../docs/rfcs/0010-crucible/09-virtual-time-icount.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "crates/crucible/src/model.rs" model [
+    failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
       {
         label = "uniform node counter type";
         needle = "pub struct NodeCounter";
@@ -31,7 +31,7 @@
         needle = "pub fn to_virtual(self, shift: Shift) -> Result<VirtualInstant, TimeConversionError>";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "shared timeline context";
         needle = "pub struct SharedTimeline";
@@ -133,7 +133,7 @@
         needle = "scheduled_event_keys_consume_shared_timeline_and_refine_by_producer";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" crateRoot [
       {
         label = "node counter export";
         needle = "NodeCounter";
@@ -151,7 +151,7 @@
         needle = "ordered_timeline_keys";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/time_shared_timeline.rs" publicTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/time_shared_timeline.rs" publicTest [
       {
         label = "public VM/I/O projection test";
         needle = "vm_and_io_counters_project_to_one_shared_timeline";
@@ -234,14 +234,14 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-time-shared-timeline-target" \
-              -p crucible \
+              -p crucible-engine \
               --lib shared_timeline \
               -- --test-threads=1
             cargo test \
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-time-shared-timeline-target" \
-              -p crucible \
+              -p crucible-engine \
               --test time_shared_timeline \
               -- --test-threads=1
           '';

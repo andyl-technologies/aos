@@ -7,9 +7,9 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
-  crashLib = builtins.readFile ../../crates/crucible-qemu/src/crash_detection.rs;
-  crashTest = builtins.readFile ../../crates/crucible-qemu/tests/crash_detection.rs;
+  qemuLib = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/src/lib.rs;
+  crashLib = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/src/crash_detection.rs;
+  crashTest = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/tests/crash_detection.rs;
   qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -24,7 +24,7 @@
         needle = "**[QEMU-32]** The host MUST detect an unexpected child exit";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/lib.rs" qemuLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/lib.rs" qemuLib [
       {
         label = "crash detection module";
         needle = "mod crash_detection;";
@@ -42,7 +42,7 @@
         needle = "QemuChildExitProbe";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/crash_detection.rs" crashLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/crash_detection.rs" crashLib [
       {
         label = "scheduler-facing status enum";
         needle = "pub enum QemuNodeRunStatus";
@@ -128,7 +128,7 @@
         needle = "pub fn detect_qmp_result";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/tests/crash_detection.rs" crashTest [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/tests/crash_detection.rs" crashTest [
       {
         label = "unexpected child exit test";
         needle = "unexpected_child_exit_surfaces_typed_crashed_node_status";
@@ -220,7 +220,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-qemu-crash-detection-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible-qemu \
+              -p crucible-qemu-host \
               --test crash_detection \
               -- --test-threads=1
           '';

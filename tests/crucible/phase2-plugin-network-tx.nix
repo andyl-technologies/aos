@@ -10,21 +10,21 @@
 
   pluginLib = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/lib.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs;
   };
   pluginNetworkTx = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/network_tx.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/network_tx.rs;
   };
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   shmemLib = import ./_crucible-shmem-source.nix {inherit lib;};
   shmemFrameNode = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-shmem/src/shmem/frame_node.rs;
+    entry = ../../crates/crucible/protocol/crucible-qemu-shmem/src/shmem/frame_node.rs;
   };
   shmemRingCoverage = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-shmem/src/shmem/ring_coverage.rs;
+    entry = ../../crates/crucible/protocol/crucible-qemu-shmem/src/shmem/ring_coverage.rs;
   };
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -55,7 +55,7 @@
     lib.concatMap (
       api:
         lib.optionals (hasInfix api pluginNetworkTx) [
-          "crates/crucible-qemu-plugin/src/network_tx.rs: forbidden host-time, entropy, or lock API in network TX callback path: `${api}`"
+          "crates/crucible/qemu/crucible-qemu-plugin/src/network_tx.rs: forbidden host-time, entropy, or lock API in network TX callback path: `${api}`"
         ]
     )
     forbiddenCallbackApis;
@@ -71,7 +71,7 @@
         needle = "rejecting oversize frames and full rings loudly";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/lib.rs" pluginLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs" pluginLib [
       {
         label = "network TX module exported";
         needle = "pub mod network_tx;";
@@ -93,7 +93,7 @@
         needle = "handle_network_tx_callback";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/network_tx.rs" pluginNetworkTx [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/network_tx.rs" pluginNetworkTx [
       {
         label = "network TX state";
         needle = "pub struct PluginNetworkTx";
@@ -183,7 +183,7 @@
         needle = "network_tx_idle_reentrant_path_uses_fixed_state_without_locks";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/src/lib.rs" shmemLib [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/src/lib.rs" shmemLib [
       {
         label = "router slot constant";
         needle = "pub const SLOT_NET_ROUTER";
@@ -193,13 +193,13 @@
         needle = "pub const MAX_FRAME_DATA";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/src/shmem/frame_node.rs" shmemFrameNode [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/frame_node.rs" shmemFrameNode [
       {
         label = "frame constructor";
         needle = "pub fn new(";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/src/shmem/ring_coverage.rs" shmemRingCoverage [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/ring_coverage.rs" shmemRingCoverage [
       {
         label = "SPSC enqueue";
         needle = "pub fn enqueue(";

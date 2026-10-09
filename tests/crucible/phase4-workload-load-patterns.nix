@@ -9,8 +9,8 @@
 
   workloadDoc = builtins.readFile ../../docs/rfcs/0010-crucible/33-examples-and-workloads.md;
   engineModel = import ./_crucible-model-source.nix {inherit lib;};
-  engineLib = builtins.readFile ../../crates/crucible/src/lib.rs;
-  loadPatternTest = builtins.readFile ../../crates/crucible/tests/workload_load_patterns.rs;
+  engineLib = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/lib.rs;
+  loadPatternTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/workload_load_patterns.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -52,7 +52,7 @@
         needle = "correlated partition +";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" engineModel [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" engineModel [
       {
         label = "load-pattern scenario parameter";
         needle = "pub const WORKLOAD_LOAD_PATTERN_SCENARIO_PARAMETER: &str = \"load_pattern\";";
@@ -130,14 +130,14 @@
         needle = "WorldNodeWorkloadSpikeModeWithoutSpikePattern";
       }
     ]
-    ++ forbiddenFor "crates/crucible/src/model.rs" engineModel (
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/src/model.rs" engineModel (
       builtins.map (needle: {
         label = "host-side workload origination API";
         inherit needle;
       })
       forbiddenOriginationApis
     )
-    ++ failuresFor "crates/crucible/src/lib.rs" engineLib [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" engineLib [
       {
         label = "load-pattern type re-export";
         needle = "GuestWorkloadPattern";
@@ -159,7 +159,7 @@
         needle = "WORKLOAD_SPIKE_MODE_SCENARIO_PARAMETER";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/workload_load_patterns.rs" loadPatternTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/workload_load_patterns.rs" loadPatternTest [
       {
         label = "plain parameter test";
         needle = "load_pattern_mappings_are_plain_cmdline_parameters";
@@ -267,7 +267,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-workload-load-patterns-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --test workload_load_patterns \
               -- --list > "$TMPDIR/workload-load-pattern-tests"
             require_listed \
@@ -299,7 +299,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-workload-load-patterns-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --test workload_load_patterns \
               -- --test-threads=1
           '';

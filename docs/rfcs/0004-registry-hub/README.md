@@ -1,6 +1,7 @@
 # RFC-0004: `aos-registry-hub` — a multi-tenant registry management WebUI
 
-- **Status:** Implemented (phases 1–4) — `crates/aos-registry-hub`.
+- **Status:** Implemented (phases 1–4) — native entry points now live in
+  `crates/hub/aos-hub-native`, with the executable still named `aos-hub`.
   **Topology follow-up:** [RFC-0012](../0012-hub-surface-topology/README.md)
   proposes the authoritative next topology for registries, binary caches,
   storage placements, routes/domains, registry/cache integrations,
@@ -27,8 +28,8 @@
   [`10-unified-runtime.md`](10-unified-runtime.md). This **supersedes** the
   read-only Workers edge in `crates/aos-registry-worker`.
 
-  **Shipped:** the async `Backend` + shared `aos-registry-core::Database` (reads
-  *and* writes; sqlx native / D1 Workers); a wasm-clean `aos-proto-types`
+  **Shipped:** the async `Backend` + shared `aos-hub-db::db::Database` (reads
+  *and* writes; sqlx native / D1 Workers); a wasm-clean `aos-hub-api`
   message crate; the transport-free `RpcService` holding **all 26
   `aos.registry.v1` methods** (registry/package/channel/release reads, org/
   project/storage/IAM, config change-sets + revert, webhooks, publish, git),
@@ -41,7 +42,7 @@
   that router via a hand-rolled `worker`⇄`axum` bridge (no adapter dep — none
   supports the worker 0.4.x pin) over its D1/R2/D1-limiter; the **native hub**
   mounts the same router and its connectrpc `rpc.rs` is deleted (connectrpc gone
-  from the registry path); and `aos-remote`/`aos hub` speak Connect-JSON,
+  from the registry path); and `aos-hub-client`/`aos hub` speak Connect-JSON,
   working identically against either deployment. No application logic is
   duplicated across the two.
 
@@ -80,15 +81,40 @@
   git-backed change requests; quotas/backup/offboarding.
 - **Date:** 2026-06-12 (Phase 5 addendum: 2026-06-15; wasm spike + Connect-JSON transport decision: 2026-06-16)
 - **PR:** [#99](https://github.com/andyl-technologies/aos/pull/99)
-- **Audience:** anyone working on `crates/aos-package/` (the `apr`/`apm`
-  registry surface), `crates/aos-server/`, `crates/aos-proto/`,
-  `crates/aos-registry-hub/`, `crates/aos-registry-worker/`, or the
+- **Audience:** anyone working on `crates/aos/packages/aos-package-manager/` (the `apr`/`apm`
+  registry surface), `crates/aos/packages/aos-build-server/`, `crates/aos/packages/aos-build-api/`,
+  `crates/hub/`, or the
   registry docs under `docs/registry/`.
 
 This RFC is a multi-file directory: this `README.md` carries the status
 header and indexes the topic files. The body below the status header is
 history — only the status header is maintained as the design ships. Phase 5
 is a live proposal and its own file carries its working status.
+
+## Current workspace ownership
+
+The Hub is one project in the AOS monorepo. Its crate names remain scoped even
+when consumed outside `crates/hub/`:
+
+| Crate | Responsibility |
+| --- | --- |
+| `aos-hub-model` | Portable domain values, identity and IAM rules, and policy inputs |
+| `aos-hub-db` | Backend abstraction, migrations, queries, and native SQL drivers |
+| `aos-hub-service` | Authorization, application orchestration, shared routes and web views |
+| `aos-hub-api` | Generated messages, ProtoJSON codecs, and Connect descriptors |
+| `aos-hub-client` | Hub RPC calls and OAuth login/device/refresh flows |
+| `aos-hub-ui` | Shared navigation, deep links, and presentation values |
+| `aos-hub-native`, `aos-hub-worker` | Native and Worker deployment adapters |
+| `aos-hub-console` | Browser application |
+
+Canonical protobuf sources live under `api/proto/`. The build server uses
+`aos-build-api` and `aos-build-client`; its transport dependencies are independent
+of Hub clients. API generation does not read browser source. The Hub API's
+`contract_inventory` integration tests verify the checked API/capability
+manifests and browser method coverage.
+
+Historical phase names below describe the implementation as it landed. The
+current crate boundaries above supersede their former shared-core layout.
 
 ## Topic files
 
