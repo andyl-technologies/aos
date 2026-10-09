@@ -112,6 +112,8 @@ impl InstalledNodeCatalog {
             attempt: Id::new(format!("observed/{}", execution_text(execution)))?,
             limits,
             handles: BTreeMap::new(),
+            #[cfg(test)]
+            preparation_fault: None,
         };
         let artifacts = self.artifacts.clone();
         let prepared = self

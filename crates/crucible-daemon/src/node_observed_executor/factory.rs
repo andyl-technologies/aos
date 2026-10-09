@@ -742,7 +742,7 @@ impl InstalledNodeCatalog {
             }
             let mut remaining = nodes.into_iter();
             while let Some(node) = remaining.next() {
-                match recorder.wrap(&graph, &target, node) {
+                match recorder.wrap(&graph, &target, node, &evidence) {
                     Ok(node) => wrapped.push(node),
                     Err(failure) => {
                         wrapped.push(failure.node);

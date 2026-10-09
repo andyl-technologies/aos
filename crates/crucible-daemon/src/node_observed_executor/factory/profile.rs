@@ -1,5 +1,8 @@
 //! Regenerates installed native profiles and complete directed-owner inventories.
 
+#[cfg(test)]
+mod direct_recording_pair;
+
 mod io;
 mod linked;
 mod scripted;
@@ -211,6 +214,13 @@ pub(super) fn build_world(
         (&mut domains, &mut objects, &mut captures),
         &mut contents,
         &qualification,
+    )?);
+    #[cfg(test)]
+    connections.extend(direct_recording_pair::connections(
+        selections,
+        &compatibility,
+        &mut objects,
+        &mut contents,
     )?);
     connections.sort_by(|left, right| left.id.cmp(&right.id));
     owners.sort_by(|left, right| left.owner.id.cmp(&right.owner.id));

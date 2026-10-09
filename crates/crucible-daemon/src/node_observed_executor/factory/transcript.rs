@@ -5,7 +5,15 @@
 //! selected world and run policy; it never turns a physical source into an exact
 //! native continuation or removes its original nondeterminism.
 
+mod context;
+mod context_fragments;
 mod recording;
+
+#[cfg(test)]
+mod preparation_tests;
+
+#[cfg(test)]
+mod tests;
 
 pub use recording::{InstalledRecordedWorld, InstalledReferenceRecording};
 
@@ -25,6 +33,14 @@ pub(super) struct ReferenceRecorder<'a> {
     attempt: Id,
     limits: TranscriptLimits,
     handles: BTreeMap<Id, RecordingHandle>,
+    #[cfg(test)]
+    preparation_fault: Option<RecordingPreparationFault>,
+}
+
+#[cfg(test)]
+struct RecordingPreparationFault {
+    node: Id,
+    original_activation: Option<ActivationRecord>,
 }
 
 /// Keeps an allocated original handle available for its whole-world guard.
@@ -39,8 +55,20 @@ impl ReferenceRecorder<'_> {
         graph: &AdmittedGraph,
         activation: &ActivationRecord,
         node: Box<dyn SimulationNode>,
+        evidence: &trust::InstalledEvidence,
     ) -> Result<Box<dyn SimulationNode>, RecorderPreparationFailure> {
         let logical = node.route().node.clone();
+        #[cfg(test)]
+        if let Some(fault) = self.preparation_fault.as_mut()
+            && fault.node == logical
+        {
+            fault.original_activation = Some(activation.clone());
+            return Err(RecorderPreparationFailure {
+                error: refused("injected recording preparation custody fault"),
+                node,
+            });
+        }
+
         let context = (|| {
             let selection = self
                 .selections
@@ -57,8 +85,14 @@ impl ReferenceRecorder<'_> {
             if self.handles.contains_key(&logical) {
                 return Err(refused("recorded source node was prepared twice"));
             }
-            recording::source_context(graph, self.selections, self.scenario, self.configuration)
-                .map(Some)
+            context::source_context(
+                graph,
+                self.selections,
+                self.scenario,
+                self.configuration,
+                evidence,
+            )
+            .map(Some)
         })();
         let context = match context {
             Ok(Some(context)) => context,
