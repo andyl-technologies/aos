@@ -77,6 +77,26 @@ impl ParentBinding {
         Ok(binding)
     }
 
+    pub(super) fn prepare_catalog(
+        &mut self,
+        setup: &mut issuer_catalog::IssuerCatalog,
+        interval: OriginalInterval,
+    ) -> Result<(), MeasurementOriginError> {
+        interval.before()?;
+        if interval.after_kernel(fcntl_get_seals(&self.record))? != required_seals() {
+            return Err(MeasurementOriginError::Authentication(
+                "catalog parent seals",
+            ));
+        }
+        let workflow = self
+            .workflow
+            .as_mut()
+            .ok_or(MeasurementOriginError::Authentication(
+                "authenticated quota workflow",
+            ))?;
+        setup.install(workflow, interval)
+    }
+
     pub(super) fn validate_and_seal(
         &mut self,
         policy: &OperatorPolicy,

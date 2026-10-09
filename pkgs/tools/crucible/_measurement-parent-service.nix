@@ -26,26 +26,29 @@
   valid = builtins.all (name:
     process ? ${name} && builtins.isInt process.${name} && process.${name} > 0)
   fields;
-  policy = pkgs.writeText "crucible-existing-parent-process.toml" ''
-    schema = "crucible.campaign-process.v1"
-    unit = "crucible-campaign.service"
-    executable = "${controller}/bin/crucible"
-    memory_max_bytes = ${toString process.memoryMaxBytes}
-    tasks_max = ${toString process.tasksMax}
-    file_descriptors = ${toString process.fileDescriptors}
-    runtime_seconds = ${toString process.runtimeSeconds}
-    startup_timeout_seconds = ${toString process.startupTimeoutSeconds}
-    main_thread_stack_bytes = ${toString process.mainThreadStackBytes}
-    cpu_quota_percent = ${toString process.cpuQuotaPercent}
-    baseline_resident_bytes = ${toString process.baselineResidentBytes}
-    metadata_bytes = ${toString process.metadataBytes}
-    sqlite_bootstrap_bytes = ${toString process.sqliteBootstrapBytes}
-    sqlite_heap_bytes = ${toString process.sqliteHeapBytes}
-    sqlite_connections = ${toString process.sqliteConnections}
-    worker_threads = ${toString process.workerThreads}
-    blocking_threads = ${toString process.blockingThreads}
-    thread_stack_bytes = ${toString process.threadStackBytes}
-  '';
+  policy = pkgs.writeTextFile {
+    name = "crucible-existing-parent-process.toml";
+    text = ''
+      schema = "crucible.campaign-process.v1"
+      unit = "crucible-campaign.service"
+      executable = "${controller}/bin/crucible"
+      memory_max_bytes = ${toString process.memoryMaxBytes}
+      tasks_max = ${toString process.tasksMax}
+      file_descriptors = ${toString process.fileDescriptors}
+      runtime_seconds = ${toString process.runtimeSeconds}
+      startup_timeout_seconds = ${toString process.startupTimeoutSeconds}
+      main_thread_stack_bytes = ${toString process.mainThreadStackBytes}
+      cpu_quota_percent = ${toString process.cpuQuotaPercent}
+      baseline_resident_bytes = ${toString process.baselineResidentBytes}
+      metadata_bytes = ${toString process.metadataBytes}
+      sqlite_bootstrap_bytes = ${toString process.sqliteBootstrapBytes}
+      sqlite_heap_bytes = ${toString process.sqliteHeapBytes}
+      sqlite_connections = ${toString process.sqliteConnections}
+      worker_threads = ${toString process.workerThreads}
+      blocking_threads = ${toString process.blockingThreads}
+      thread_stack_bytes = ${toString process.threadStackBytes}
+    '';
+  };
   createWorkload = pkgs.writeTextFile {
     name = "crucible-existing-parent-workload";
     destination = "/bin/create-workload";

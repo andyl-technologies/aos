@@ -9,6 +9,8 @@
 //! private measurement binaries require their nondefault feature and retain
 //! their library surface; they are not public CLI entry points. The allocation
 //! observer controls have one separately named test-support-only binary.
+//! The daemon also has one exact build-time workflow author under the private
+//! feature. Its immutable builder execution is separate from installed runtime entries.
 
 #![forbid(unsafe_code)]
 
@@ -527,6 +529,11 @@ fn artifact_type_failures(
             let bins = bin_targets(manifest);
             let expected_count = if spec.package == "crucible-linux-resource" {
                 failures.extend(artifact_inventory::allocation_control_target_failures(
+                    manifest,
+                ));
+                2
+            } else if spec.package == "crucible-daemon" {
+                failures.extend(artifact_inventory::workflow_author_target_failures(
                     manifest,
                 ));
                 2

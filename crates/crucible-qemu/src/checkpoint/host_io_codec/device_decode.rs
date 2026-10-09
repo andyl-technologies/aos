@@ -54,8 +54,8 @@ pub(super) fn decode_block_device(
         &mut admit_table,
         &mut |allocation| admit_collection(original, allocation),
         |payload, seed| from_cbor_slice_with_seed(payload, seed, original),
-        |bytes, device_length, maximum, _| {
-            decode_block_fault(bytes, device_length, maximum, original)
+        |bytes, device_length, maximum, _, admit_validation| {
+            decode_block_fault(bytes, device_length, maximum, original, admit_validation)
         },
     )
 }
@@ -65,6 +65,9 @@ fn decode_block_fault(
     device_length: u64,
     maximum: u64,
     original: &DecodeBudget,
+    admit_validation: &mut dyn FnMut(
+        crucible_device::DeviceSnapshotAllocation,
+    ) -> Result<(), &'static str>,
 ) -> Result<
     crucible_device::block::BlockFaultState,
     crucible_device::block::BlockFaultStateCodecError,
@@ -78,6 +81,7 @@ fn decode_block_fault(
                 .charge_bytes(bytes)
                 .map_err(|_| "original fault validation output refused")
         },
+        admit_validation,
         |payload| from_cbor_slice_with_seed(payload, ValueSeed(std::marker::PhantomData), original),
     )
 }
@@ -116,6 +120,30 @@ fn admit_collection(
     };
 
     let result = match allocation {
+        DeviceSnapshotAllocation::ValidationFlags { entries } => {
+            if entries == 0 {
+                original.check()
+            } else {
+                original.charge_array::<bool>(entries)
+            }
+        }
+        DeviceSnapshotAllocation::ValidationSequences { entries } => {
+            original.charge_btree_entries::<u64, ()>(entries)
+        }
+        DeviceSnapshotAllocation::ValidationJobs { entries } => {
+            original.charge_btree_entries::<([u8; 32], u64), ()>(entries)
+        }
+        DeviceSnapshotAllocation::ValidationJobArray { entries } => {
+            if entries == 0 {
+                original.check()
+            } else {
+                original.charge_array::<([u8; 32], u64)>(entries)
+            }
+        }
+        DeviceSnapshotAllocation::ValidationContributor => {
+            original.charge_btree_entry::<[u8; 32], ()>()
+        }
+        DeviceSnapshotAllocation::ValidationOperation => original.charge_btree_entry::<u8, ()>(),
         DeviceSnapshotAllocation::BlockPage => {
             original.charge_btree_entry::<u64, [u8; crucible_device::PAGE_SIZE]>()
         }

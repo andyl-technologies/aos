@@ -218,7 +218,13 @@ fn nested_fault_parser_uses_saved_original_under_other_scope() -> Result<(), Box
     let other_before = other_authority.calls.load(Ordering::SeqCst);
     let other_scope = other.enter();
 
-    let actual = decode_block_fault(&bytes, snapshot.device_length, MAX_BYTES, &saved)?;
+    let actual = decode_block_fault(
+        &bytes,
+        snapshot.device_length,
+        MAX_BYTES,
+        &saved,
+        &mut |allocation| admit_collection(&saved, allocation),
+    )?;
     drop(other_scope);
 
     assert_eq!(actual, snapshot.storage_faults);
@@ -239,12 +245,55 @@ fn nested_fault_parser_keeps_original_refusal_after_scope_switch() -> Result<(),
     *authority.switch.lock().map_err(|_| fmt::Error)? = Some(other.clone());
     let cleanup = ScopeCleanup;
 
-    let actual = decode_block_fault(&bytes, snapshot.device_length, MAX_BYTES, &saved);
+    let actual = decode_block_fault(
+        &bytes,
+        snapshot.device_length,
+        MAX_BYTES,
+        &saved,
+        &mut |allocation| admit_collection(&saved, allocation),
+    );
     drop(cleanup);
 
     assert!(actual.is_err());
     assert_eq!(saved.failure()?, Some(authority.failure.clone()));
     assert_eq!(other_authority.calls.load(Ordering::SeqCst), other_before);
     assert_eq!(other.failure()?, None);
+    Ok(())
+}
+
+#[test]
+fn validation_collection_callback_keeps_saved_account_across_scope_switch()
+-> Result<(), Box<dyn Error>> {
+    let (saved, authority) = original()?;
+    let (other, other_authority) = original()?;
+    let other_initial = other_authority.calls.load(Ordering::SeqCst);
+    let cleanup = ScopeCleanup;
+    *authority
+        .switch
+        .lock()
+        .map_err(|_| "fixture switch lock poisoned")? = Some(other.clone());
+
+    admit_collection(
+        &saved,
+        crucible_device::DeviceSnapshotAllocation::ValidationJobs { entries: 2 },
+    )?;
+    let refusal = admit_collection(
+        &saved,
+        crucible_device::DeviceSnapshotAllocation::ValidationJobArray { entries: 2 },
+    );
+    assert!(refusal.is_err());
+    assert_eq!(saved.failure()?, Some(authority.failure.clone()));
+    let saved_calls = authority.calls.load(Ordering::SeqCst);
+    assert!(
+        admit_collection(
+            &saved,
+            crucible_device::DeviceSnapshotAllocation::ValidationSequences { entries: 0 }
+        )
+        .is_err()
+    );
+    assert_eq!(authority.calls.load(Ordering::SeqCst), saved_calls);
+    assert_eq!(other_authority.calls.load(Ordering::SeqCst), other_initial);
+    assert_eq!(other.failure()?, None);
+    drop(cleanup);
     Ok(())
 }

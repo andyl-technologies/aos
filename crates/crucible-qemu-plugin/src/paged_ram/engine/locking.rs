@@ -225,8 +225,7 @@ fn verify_reader(
     let mut buffer = [0_u8; 8192];
     let mut begin = 0;
     let mut end = 0;
-    let mut line = [0_u8; 8192];
-    let mut length = 0;
+    let mut line = VmaEvidenceLine::new();
     let mut mapping = None;
     let mut flags = None;
     let mut index = 0;
@@ -238,7 +237,7 @@ fn verify_reader(
             operation.wait_slice()?;
             begin = 0;
             if end == 0 {
-                if length != 0 {
+                if line.length != 0 {
                     return Err(RamError::Invariant("truncated kernel VMA evidence"));
                 }
                 let previous = (index, covered);
@@ -249,18 +248,15 @@ fn verify_reader(
                 break;
             }
         }
-        let byte = buffer[begin];
-        begin += 1;
-        if byte != b'\n' {
-            let destination = line
-                .get_mut(length)
-                .ok_or("kernel VMA evidence line exceeds bound")?;
-            *destination = byte;
-            length += 1;
+        let newline = buffer[begin..end].iter().position(|byte| *byte == b'\n');
+        let length = newline.unwrap_or(end - begin);
+        line.append(&buffer[begin..begin + length])?;
+        begin += length;
+        if newline.is_none() {
             continue;
         }
-        let value = &line[..length];
-        if let Some(next) = mapping_header(value) {
+        begin += 1;
+        if let Some(next) = line.mapping_header() {
             operation.wait_slice()?;
             let previous = (index, covered);
             verify_mapping(mapping, flags, spans, locked, &mut index, &mut covered)?;
@@ -269,17 +265,13 @@ fn verify_reader(
             }
             mapping = Some(next);
             flags = None;
-        } else if let Some(value) = value.strip_prefix(b"VmFlags:") {
+        } else if let Some(locked) = line.lock_flag() {
             if flags.is_some() {
                 return Err(RamError::Invariant("duplicate kernel VMA flags"));
             }
-            flags = Some(
-                value
-                    .split(|byte| byte.is_ascii_whitespace())
-                    .any(|word| word == b"lo"),
-            );
+            flags = Some(locked);
         }
-        length = 0;
+        line.reset();
     }
     if index != spans.len() {
         return Err(RamError::Invariant(
@@ -287,6 +279,85 @@ fn verify_reader(
         ));
     }
     Ok(())
+}
+
+/// Recognizes only the VMA header and lock flag while counting every line byte.
+///
+/// A valid address header fits in 34 bytes: two at-most-16-digit hexadecimal
+/// addresses, a dash and the first literal space. Permissions, paths and other
+/// evidence remain uninterpreted, including non-UTF8 bytes, as in the kernel
+/// evidence verifier. Decisions are applied only after the original newline.
+struct VmaEvidenceLine {
+    prefix: [u8; 34],
+    length: usize,
+    flags_line: bool,
+    lock_seen: bool,
+    word_length: usize,
+    word_matches: bool,
+}
+
+impl VmaEvidenceLine {
+    fn new() -> Self {
+        Self {
+            prefix: [0; 34],
+            length: 0,
+            flags_line: false,
+            lock_seen: false,
+            word_length: 0,
+            word_matches: true,
+        }
+    }
+
+    fn append(&mut self, bytes: &[u8]) -> Result<(), RamError> {
+        if bytes.len() > 8192 - self.length {
+            return Err("kernel VMA evidence line exceeds bound".into());
+        }
+        let previous_length = self.length;
+        let retained = (self.prefix.len() - self.length.min(self.prefix.len())).min(bytes.len());
+        let prefix_start = previous_length.min(self.prefix.len());
+        self.prefix[prefix_start..][..retained].copy_from_slice(&bytes[..retained]);
+        self.length += bytes.len();
+
+        if previous_length < b"VmFlags:".len() && self.length >= b"VmFlags:".len() {
+            self.flags_line = self.prefix.starts_with(b"VmFlags:");
+        }
+        if self.flags_line {
+            let suffix_start = b"VmFlags:".len().saturating_sub(previous_length);
+            for byte in &bytes[suffix_start..] {
+                if byte.is_ascii_whitespace() {
+                    self.lock_seen |= self.word_length == 2 && self.word_matches;
+                    self.word_length = 0;
+                    self.word_matches = true;
+                } else {
+                    self.word_matches &= match self.word_length {
+                        0 => *byte == b'l',
+                        1 => *byte == b'o',
+                        _ => false,
+                    };
+                    self.word_length += 1;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn mapping_header(&self) -> Option<LockSpan> {
+        mapping_header(&self.prefix[..self.length.min(self.prefix.len())])
+    }
+
+    fn lock_flag(&self) -> Option<bool> {
+        self.flags_line
+            .then_some(self.lock_seen || (self.word_length == 2 && self.word_matches))
+    }
+
+    fn reset(&mut self) {
+        // Prefix bytes are overwritten before the next line can inspect them.
+        self.length = 0;
+        self.flags_line = false;
+        self.lock_seen = false;
+        self.word_length = 0;
+        self.word_matches = true;
+    }
 }
 
 fn verify_mapping(
@@ -341,6 +412,10 @@ fn hexadecimal(bytes: &[u8]) -> Option<u64> {
         value.checked_mul(16)?.checked_add(digit)
     })
 }
+
+#[cfg(test)]
+#[path = "locking/streaming_tests.rs"]
+mod streaming_tests;
 
 #[cfg(test)]
 mod tests {

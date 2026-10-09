@@ -6,7 +6,10 @@
   operatorPolicy,
   imageInventory,
   sourceManifest,
-  workflow,
+  nativeCount,
+  servicePolicy,
+  sqliteBootstrapProof,
+  campaignPolicy,
   imageBytes,
   operatorMode,
   kernel,
@@ -15,6 +18,9 @@
   dependencyRoots,
   process,
 }: let
+  workflow = import ./_measurement-workflow.nix {
+    inherit pkgs lib nativeCount servicePolicy sqliteBootstrapProof campaignPolicy;
+  };
   ownedRootfs = import ./_measurement-owned-rootfs.nix {
     inherit pkgs lib installedImages operatorPolicy imageInventory sourceManifest workflow imageBytes operatorMode;
   };

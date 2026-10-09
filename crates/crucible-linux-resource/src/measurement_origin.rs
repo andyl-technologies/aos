@@ -27,6 +27,7 @@ use serde::Deserialize;
 
 mod actor_partition;
 mod issuer_birth;
+mod issuer_catalog;
 mod issuer_custody;
 mod issuer_parent;
 mod parent_evidence;

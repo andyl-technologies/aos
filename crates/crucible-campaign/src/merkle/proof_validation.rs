@@ -5,6 +5,8 @@ use super::*;
 #[cfg(test)]
 mod child_table_tests;
 
+mod node_body;
+
 pub(super) fn finish_scan_page(
     mut entries: Vec<(CampaignHash, ContentId)>,
     limit: usize,
@@ -51,7 +53,7 @@ pub(super) fn decode_node_bytes(
         envelope
     };
     // The returned map entries remain charged to the original outer account.
-    let node = codec::decode::<MerkleNode>(envelope.body())?;
+    let node = node_body::decode(envelope.body())?;
     node.validate()?;
     if node.depth != expected_depth {
         return Err(invalid("node-depth-mismatch"));

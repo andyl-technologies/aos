@@ -1,6 +1,7 @@
 //! Canonical, bounded block-fault continuation codec.
 
 use super::*;
+use crate::DeviceSnapshotAllocation;
 use crate::snapshot_codec::{
     SnapshotEncodeError, SnapshotResourceError, admit_input, encode_prefixed_with_admission,
     map_decode_error,
@@ -85,6 +86,7 @@ impl BlockFaultState {
             device_length,
             maximum,
             &mut |_| Ok(()),
+            &mut |_| Ok(()),
             |payload| ciborium::de::from_reader(payload),
         )
     }
@@ -94,7 +96,9 @@ impl BlockFaultState {
     /// The supplied parser retains its original account and typed refusal
     /// separately from this codec's fixed relay. The output callback admits
     /// the counted canonical validation buffer before reservation. Restore
-    /// validation's other allocations retain their separate purposes.
+    /// validation collection requests name each temporary storage birth. Other
+    /// nested parsers, diagnostic payloads and returned-owner controls still
+    /// require their own custody.
     ///
     /// # Errors
     /// Returns a fixed malformed relay for a supplied parser failure, or the
@@ -105,6 +109,7 @@ impl BlockFaultState {
         device_length: u64,
         maximum: u64,
         admit_output: &mut dyn FnMut(u64) -> Result<(), &'static str>,
+        admit_validation: &mut dyn FnMut(DeviceSnapshotAllocation) -> Result<(), &'static str>,
         decode: F,
     ) -> Result<Self, BlockFaultStateCodecError>
     where
@@ -124,7 +129,7 @@ impl BlockFaultState {
             map_decode_error(error).map_or(BlockFaultStateCodecError::Malformed, map_resource_error)
         })?;
         state
-            .validate_restore(device_length)
+            .validate_restore_with_admission(device_length, admit_validation)
             .map_err(|_| BlockFaultStateCodecError::Invalid)?;
         if state
             .to_canonical_bytes_with_admission(maximum, admit_output)?

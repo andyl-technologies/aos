@@ -598,7 +598,28 @@ impl DecodeBudget {
     /// # Errors
     /// Refuses layout overflow or exhausted original resource authority.
     pub fn charge_btree_entry<K, V>(&self) -> Result<(), DecodeAdmissionError> {
-        let result = btree_entry_bytes::<K, V>().and_then(|bytes| self.charge_bytes(bytes));
+        self.charge_btree_entries::<K, V>(1)
+    }
+
+    /// Admits the existing B-tree node bound for a complete temporary collection.
+    ///
+    /// Zero entries perform the sticky failure check without reserving storage.
+    /// The caller keeps this account alive through the actual collection's free.
+    ///
+    /// # Errors
+    /// Refuses sizing overflow, an existing refusal, or original exhaustion.
+    pub fn charge_btree_entries<K, V>(&self, count: usize) -> Result<(), DecodeAdmissionError> {
+        let result = if count == 0 {
+            self.check()
+        } else {
+            btree_entry_bytes::<K, V>()
+                .and_then(|bytes| {
+                    bytes
+                        .checked_mul(count as u64)
+                        .ok_or_else(|| refusal("decoded B-tree size overflow"))
+                })
+                .and_then(|bytes| self.charge_bytes(bytes))
+        };
         if let Err(error) = &result {
             self.record_failure(error.clone());
         }

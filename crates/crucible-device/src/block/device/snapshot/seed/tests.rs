@@ -14,12 +14,13 @@ fn decode(
         admit,
         &mut |_| Ok(()),
         |payload, seed| ciborium::de::from_reader_with_buffer_seed(seed, payload, &mut scratch),
-        |bytes, length, maximum, admit_output| {
+        |bytes, length, maximum, admit_output, admit_validation| {
             BlockFaultState::from_canonical_bytes_with_decoder(
                 bytes,
                 length,
                 maximum,
                 admit_output,
+                admit_validation,
                 |payload| ciborium::de::from_reader(payload),
             )
         },

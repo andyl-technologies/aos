@@ -513,7 +513,7 @@ impl<'a> Decoder<'a> {
         Self { bytes, cursor: 0 }
     }
 
-    fn finish(self) -> Result<(), CampaignCodecError> {
+    pub(crate) fn finish(self) -> Result<(), CampaignCodecError> {
         if self.cursor == self.bytes.len() {
             Ok(())
         } else {

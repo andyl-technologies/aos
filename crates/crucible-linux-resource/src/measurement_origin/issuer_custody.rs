@@ -55,6 +55,7 @@ struct IssuerRecord {
     policy: Option<OperatorPolicy>,
     parent: Option<issuer_parent::ParentBinding>,
     birth: Option<issuer_birth::ActorBirth>,
+    catalog_setup: issuer_catalog::IssuerCatalog,
     first_work: Option<MeasurementOriginError>,
     kill_failure: Option<std::io::Error>,
     wait_failure: Option<std::io::Error>,
@@ -82,6 +83,7 @@ impl IssuerRecord {
             policy: None,
             parent: None,
             birth: None,
+            catalog_setup: issuer_catalog::IssuerCatalog::empty(),
             first_work: None,
             kill_failure: None,
             wait_failure: None,
@@ -274,6 +276,10 @@ impl IssuerRecord {
             .as_mut()
             .ok_or(MeasurementOriginError::MissingIssuerPurpose)?
             .validate_and_seal(&policy, digest, interval)?;
+        self.parent
+            .as_mut()
+            .ok_or(MeasurementOriginError::MissingIssuerPurpose)?
+            .prepare_catalog(&mut self.catalog_setup, interval)?;
         self.policy = Some(policy);
         self.policy_file = Some(policy_file);
         interval.after_io(Ok(()))?;
@@ -475,6 +481,7 @@ impl IssuerRecord {
         if let Some(cause) = &self.clock_failure {
             write!(formatter, "; original cleanup clock: {cause}")?;
         }
+        self.catalog_setup.format_refusal(formatter)?;
         if self.reuse_refused {
             formatter.write_str("; original slot reuse refused")?;
         }

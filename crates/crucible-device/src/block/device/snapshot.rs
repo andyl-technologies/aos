@@ -171,16 +171,17 @@ impl BlockSnapshot {
         &self,
         maximum: u64,
     ) -> Result<Vec<u8>, BlockSnapshotCodecError> {
-        self.to_canonical_bytes_with_admission(maximum, &mut |_| Ok(()))
+        self.to_canonical_bytes_with_admission(maximum, &mut |_| Ok(()), &mut |_| Ok(()))
     }
 
     fn to_canonical_bytes_with_admission(
         &self,
         maximum: u64,
         admit_allocation: &mut dyn FnMut(u64) -> Result<(), &'static str>,
+        admit_collection: &mut dyn FnMut(DeviceSnapshotAllocation) -> Result<(), &'static str>,
     ) -> Result<Vec<u8>, BlockSnapshotCodecError> {
         admit_snapshot_resources(self)?;
-        validate_snapshot(self, maximum)?;
+        validate_snapshot(self, maximum, admit_collection)?;
         let wire = BlockSnapshotEncodeWire {
             core: bounded_bytes(
                 self.core
@@ -270,12 +271,13 @@ impl BlockSnapshot {
             wire,
             &mut |_| Ok(()),
             &mut |_| Ok(()),
-            |bytes, length, maximum, admit_output| {
+            |bytes, length, maximum, admit_output, admit_validation| {
                 BlockFaultState::from_canonical_bytes_with_decoder(
                     bytes,
                     length,
                     maximum,
                     admit_output,
+                    admit_validation,
                     |payload| ciborium::de::from_reader(payload),
                 )
             },
@@ -320,6 +322,7 @@ impl BlockSnapshot {
             u64,
             u64,
             &mut dyn FnMut(u64) -> Result<(), &'static str>,
+            &mut dyn FnMut(DeviceSnapshotAllocation) -> Result<(), &'static str>,
         ) -> Result<BlockFaultState, BlockFaultStateCodecError>,
     {
         let payload = bytes
@@ -370,6 +373,7 @@ impl BlockSnapshot {
             u64,
             u64,
             &mut dyn FnMut(u64) -> Result<(), &'static str>,
+            &mut dyn FnMut(DeviceSnapshotAllocation) -> Result<(), &'static str>,
         ) -> Result<BlockFaultState, BlockFaultStateCodecError>,
     {
         let snapshot = Self {
@@ -397,6 +401,7 @@ impl BlockSnapshot {
                 wire.device_length,
                 maximum.min(MAX_BLOCK_SNAPSHOT_BYTES),
                 admit_allocation,
+                admit_collection,
             )
             .map_err(map_block_fault_error)?,
             latency: BlockLatency::new(
@@ -408,9 +413,9 @@ impl BlockSnapshot {
             ),
         };
         admit_snapshot_resources(&snapshot)?;
-        validate_snapshot(&snapshot, maximum)?;
+        validate_snapshot(&snapshot, maximum, admit_collection)?;
         if snapshot
-            .to_canonical_bytes_with_admission(maximum, admit_allocation)?
+            .to_canonical_bytes_with_admission(maximum, admit_allocation, admit_collection)?
             .as_slice()
             != bytes
         {
@@ -572,6 +577,7 @@ fn resource_limit(
 fn validate_snapshot(
     snapshot: &BlockSnapshot,
     maximum: u64,
+    admit_collection: &mut dyn FnMut(DeviceSnapshotAllocation) -> Result<(), &'static str>,
 ) -> Result<(), BlockSnapshotCodecError> {
     snapshot
         .core
@@ -579,7 +585,7 @@ fn validate_snapshot(
         .map_err(map_io_core_error)?;
     snapshot
         .storage_faults
-        .validate_restore(snapshot.device_length)
+        .validate_restore_with_admission(snapshot.device_length, admit_collection)
         .map_err(|_| BlockSnapshotCodecError::Nested)?;
     let maximum_pages = snapshot.device_length.div_ceil(PAGE_SIZE as u64);
     for pages in [&snapshot.overlay_delta.pages, &snapshot.full_pages] {

@@ -111,6 +111,8 @@ pub(super) fn private_binary_source_failures(
     let mut expected_sources = vec![expected];
     if spec.package == "crucible-linux-resource" {
         expected_sources.push(package_dir.join("src/bin/allocation_roster_controls.rs"));
+    } else if spec.package == "crucible-daemon" {
+        expected_sources.push(package_dir.join("src/bin/measurement_workflow.rs"));
     }
     expected_sources.sort();
     if entries == expected_sources && expected_sources.iter().all(|path| path.is_file()) {
@@ -318,4 +320,107 @@ fn qemu_library_rejects_retired_standalone_measurement_parent() {
         has_src_bin_dir: true,
     };
     assert!(!super::artifact_type_failures(&spec, &valid, &implicit).is_empty());
+}
+
+/// Requires the immutable builder's exact author target, separately from the actor.
+pub(super) fn workflow_author_target_failures(manifest: &toml::Value) -> Vec<String> {
+    let target = manifest
+        .get("bin")
+        .and_then(toml::Value::as_array)
+        .and_then(|targets| targets.get(1));
+    let valid = target.is_some_and(|target| {
+        target.get("name").and_then(toml::Value::as_str) == Some("crucible-measurement-workflow")
+            && target.get("path").and_then(toml::Value::as_str)
+                == Some("src/bin/measurement_workflow.rs")
+            && target
+                .get("required-features")
+                .and_then(toml::Value::as_array)
+                .is_some_and(|features| {
+                    features.len() == 1
+                        && features[0].as_str() == Some("private-measurement-domain")
+                })
+    });
+    if valid {
+        Vec::new()
+    } else {
+        vec!["crucible-daemon: build-time workflow author must have its exact name, path and nondefault private feature".to_owned()]
+    }
+}
+
+#[test]
+fn workflow_author_is_exact_and_separate_from_runtime_actor() {
+    let spec = ArtifactSpec {
+        package: "crucible-daemon",
+        expected: ExpectedArtifact::PrivateMeasurementLibrary {
+            name: "crucible-measurement-actor",
+            path: "src/bin/measurement_actor.rs",
+        },
+    };
+    let valid: toml::Value = r#"
+        [package]
+        name = "crucible-daemon"
+        [features]
+        private-measurement-domain = []
+        [[bin]]
+        name = "crucible-measurement-actor"
+        path = "src/bin/measurement_actor.rs"
+        required-features = ["private-measurement-domain"]
+        [[bin]]
+        name = "crucible-measurement-workflow"
+        path = "src/bin/measurement_workflow.rs"
+        required-features = ["private-measurement-domain"]
+    "#
+    .parse()
+    .expect("fixture TOML is valid");
+    let layout = super::PackageLayout::fleet_store();
+    assert!(super::artifact_type_failures(&spec, &valid, &layout).is_empty());
+
+    for field in ["name", "path", "required-features"] {
+        let mut missing = valid.clone();
+        missing["bin"][1]
+            .as_table_mut()
+            .expect("fixture target is a table")
+            .remove(field);
+        assert!(!super::artifact_type_failures(&spec, &missing, &layout).is_empty());
+    }
+
+    for (field, value) in [
+        ("name", "crucible-measurement-parent"),
+        ("path", "src/bin/measurement_parent.rs"),
+    ] {
+        let mut wrong = valid.clone();
+        wrong["bin"][1][field] = toml::Value::String(value.to_owned());
+        assert!(!super::artifact_type_failures(&spec, &wrong, &layout).is_empty());
+    }
+
+    let mut wrong_feature = valid.clone();
+    wrong_feature["bin"][1]["required-features"] =
+        toml::Value::Array(vec![toml::Value::String("test-support".to_owned())]);
+    assert!(!super::artifact_type_failures(&spec, &wrong_feature, &layout).is_empty());
+
+    let mut extra = valid.clone();
+    extra["bin"]
+        .as_array_mut()
+        .expect("fixture targets are an array")
+        .push(valid["bin"][1].clone());
+    assert!(!super::artifact_type_failures(&spec, &extra, &layout).is_empty());
+
+    let mut missing_author = valid.clone();
+    missing_author["bin"]
+        .as_array_mut()
+        .expect("fixture targets are an array")
+        .pop();
+    assert!(!super::artifact_type_failures(&spec, &missing_author, &layout).is_empty());
+
+    let mut default = valid;
+    default["features"]
+        .as_table_mut()
+        .expect("fixture features are a table")
+        .insert(
+            "default".to_owned(),
+            toml::Value::Array(vec![toml::Value::String(
+                "private-measurement-domain".to_owned(),
+            )]),
+        );
+    assert!(!super::artifact_type_failures(&spec, &default, &layout).is_empty());
 }

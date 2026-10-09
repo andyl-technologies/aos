@@ -1,6 +1,8 @@
 //! Complete checkpoint validation of retained block-fault ownership and accounting.
 
 use super::*;
+use crate::DeviceSnapshotAllocation;
+use crate::snapshot_allocation::{admit_validation, insert_validation_entries};
 
 impl BlockFaultState {
     /// Validates all checkpointed storage-state invariants against a device.
@@ -10,10 +12,18 @@ impl BlockFaultState {
     /// Returns [`DeviceError`] for geometry mismatch, accounting drift,
     /// out-of-range entries, exhausted bounds, or malformed retained responses.
     pub fn validate_restore(&self, device_length: u64) -> Result<(), DeviceError> {
+        self.validate_restore_with_admission(device_length, &mut |_| Ok(()))
+    }
+
+    pub(crate) fn validate_restore_with_admission(
+        &self,
+        device_length: u64,
+        admit: &mut dyn FnMut(DeviceSnapshotAllocation) -> Result<(), &'static str>,
+    ) -> Result<(), DeviceError> {
         self.config.validate()?;
         self.media.validate_restore(device_length)?;
         self.flash.validate_restore(device_length)?;
-        self.service.validate_restore()?;
+        self.service.validate_restore_with_admission(admit)?;
         if self.config.length_bytes != device_length
             || self.pending.len() > HARD_PENDING_BLOCK_FAULT_DIRECTIVES
             || self.retired_transport_epochs.len() > HARD_BLOCK_RETIRED_TRANSPORT_EPOCHS
@@ -155,8 +165,8 @@ impl BlockFaultState {
                 reason: "restored storage outcome order does not cover every outcome",
             });
         }
-        let mut seen_service = vec![false; self.service_outcomes.len()];
-        let mut seen_persistence = vec![false; self.persistence_media_outcomes.len()];
+        let mut seen_service = validation_flags(self.service_outcomes.len(), admit)?;
+        let mut seen_persistence = validation_flags(self.persistence_media_outcomes.len(), admit)?;
         for outcome in &self.storage_outcome_order {
             let seen = match *outcome {
                 BlockStorageOutcomeRef::Service(index) => seen_service.get_mut(index),
@@ -184,7 +194,7 @@ impl BlockFaultState {
             });
         }
         for (identity, directive) in &self.pending {
-            directive.validate_static(identity.request_id, &self.config)?;
+            directive.validate_static_with_admission(identity.request_id, &self.config, admit)?;
             if directive.request_epoch != identity.epoch {
                 return Err(DeviceError::InvalidBlockFaultDirective {
                     reason: "restored pending directive epoch differs from its key",
@@ -194,7 +204,7 @@ impl BlockFaultState {
         for (sequence, pending) in &self.service_pending {
             pending
                 .directive
-                .validate_for(&pending.request, &self.config)?;
+                .validate_for_with_admission(&pending.request, &self.config, admit)?;
             if *sequence != pending.directive.request_sequence
                 || pending.directive.service_rules.is_empty()
                 || pending.remaining_contributors.is_empty()
@@ -272,10 +282,11 @@ impl BlockFaultState {
             });
         }
         for (sequence, pending) in &self.execution_pending {
-            pending
-                .opportunity
-                .admission
-                .validate_for(&pending.opportunity.request, &self.config)?;
+            pending.opportunity.admission.validate_for_with_admission(
+                &pending.opportunity.request,
+                &self.config,
+                admit,
+            )?;
             if *sequence != pending.opportunity.request_sequence
                 || pending.opportunity.admission.request_sequence != *sequence
                 || !pending.opportunity.admission.service_rules.is_empty()
@@ -286,7 +297,11 @@ impl BlockFaultState {
                 });
             }
             if let Some(execution) = &pending.execution {
-                execution.validate_for(&pending.opportunity.request, &self.config)?;
+                execution.validate_for_with_admission(
+                    &pending.opportunity.request,
+                    &self.config,
+                    admit,
+                )?;
                 if execution.request_sequence != *sequence
                     || !execution.service_rules.is_empty()
                     || execution.execution_ticks != pending.opportunity.ready_ticks
@@ -302,9 +317,11 @@ impl BlockFaultState {
         }
         for (sequence, pending) in &self.request_persistence_pending {
             let opportunity = &pending.opportunity;
-            opportunity
-                .resolved
-                .validate_for(&opportunity.request, &self.config)?;
+            opportunity.resolved.validate_for_with_admission(
+                &opportunity.request,
+                &self.config,
+                admit,
+            )?;
             if *sequence != opportunity.request_sequence
                 || opportunity.resolved.request_sequence != *sequence
                 || opportunity.resolved.execution_ticks != opportunity.ready_ticks
@@ -318,7 +335,11 @@ impl BlockFaultState {
                 });
             }
             if let Some(persistence) = &pending.persistence {
-                persistence.validate_for(&opportunity.request, &self.config)?;
+                persistence.validate_for_with_admission(
+                    &opportunity.request,
+                    &self.config,
+                    admit,
+                )?;
                 if persistence.request_sequence != *sequence
                     || persistence.execution_ticks != opportunity.ready_ticks
                     || persistence.availability != opportunity.resolved.availability
@@ -346,9 +367,11 @@ impl BlockFaultState {
         }
         for (sequence, pending) in &self.delivery_pending {
             let opportunity = &pending.opportunity;
-            opportunity
-                .resolved
-                .validate_for(&opportunity.request, &self.config)?;
+            opportunity.resolved.validate_for_with_admission(
+                &opportunity.request,
+                &self.config,
+                admit,
+            )?;
             if *sequence != opportunity.request_sequence
                 || opportunity.resolved.request_sequence != *sequence
                 || opportunity.wire_digest != opportunity.resolved.request_digest
@@ -363,7 +386,7 @@ impl BlockFaultState {
                 });
             }
             if let Some(delivery) = &pending.delivery {
-                delivery.validate_for(&opportunity.request, &self.config)?;
+                delivery.validate_for_with_admission(&opportunity.request, &self.config, admit)?;
                 if delivery.request_sequence != *sequence
                     || delivery.execution_ticks != opportunity.resolved.execution_ticks
                     || delivery.availability != opportunity.resolved.availability
@@ -385,52 +408,81 @@ impl BlockFaultState {
                 }
             }
         }
-        let expected_service_jobs = self
+        let expected_count = self
             .service_pending
-            .iter()
-            .flat_map(|(sequence, pending)| {
+            .values()
+            .try_fold(0usize, |count, pending| {
+                count.checked_add(pending.remaining_contributors.len())
+            })
+            .ok_or(DeviceError::InvalidBlockFaultDirective {
+                reason: "service join count overflow",
+            })?;
+        admit_validation(
+            admit,
+            DeviceSnapshotAllocation::ValidationJobs {
+                entries: expected_count,
+            },
+        )?;
+        let expected_service_jobs = insert_validation_entries(
+            self.service_pending.iter().flat_map(|(sequence, pending)| {
                 pending
                     .remaining_contributors
                     .iter()
                     .map(|contributor| (*contributor, *sequence))
-            })
-            .collect::<BTreeSet<_>>();
-        if self
-            .service
-            .live_job_keys()
-            .into_iter()
-            .collect::<BTreeSet<_>>()
-            != expected_service_jobs
-        {
+            }),
+        );
+        let live_jobs = self.service.live_job_keys_with_admission(admit)?;
+        admit_validation(
+            admit,
+            DeviceSnapshotAllocation::ValidationJobs {
+                entries: live_jobs.len(),
+            },
+        )?;
+        if insert_validation_entries(live_jobs.into_iter()) != expected_service_jobs {
             return Err(DeviceError::InvalidBlockFaultDirective {
                 reason: "restored service queue differs from request contributor joins",
             });
         }
-        let service_sequences = self
-            .service_pending
-            .keys()
-            .copied()
-            .collect::<BTreeSet<_>>();
-        let execution_sequences = self
-            .execution_pending
-            .keys()
-            .copied()
-            .collect::<BTreeSet<_>>();
-        let persistence_sequences = self
-            .request_persistence_pending
-            .keys()
-            .copied()
-            .collect::<BTreeSet<_>>();
-        let delivery_sequences = self
-            .delivery_pending
-            .keys()
-            .copied()
-            .collect::<BTreeSet<_>>();
-        let installed_sequences = self
-            .pending
-            .values()
-            .map(|directive| directive.request_sequence)
-            .collect::<BTreeSet<_>>();
+        admit_validation(
+            admit,
+            DeviceSnapshotAllocation::ValidationSequences {
+                entries: self.service_pending.len(),
+            },
+        )?;
+        let service_sequences = insert_validation_entries(self.service_pending.keys().copied());
+        admit_validation(
+            admit,
+            DeviceSnapshotAllocation::ValidationSequences {
+                entries: self.execution_pending.len(),
+            },
+        )?;
+        let execution_sequences = insert_validation_entries(self.execution_pending.keys().copied());
+        admit_validation(
+            admit,
+            DeviceSnapshotAllocation::ValidationSequences {
+                entries: self.request_persistence_pending.len(),
+            },
+        )?;
+        let persistence_sequences =
+            insert_validation_entries(self.request_persistence_pending.keys().copied());
+        admit_validation(
+            admit,
+            DeviceSnapshotAllocation::ValidationSequences {
+                entries: self.delivery_pending.len(),
+            },
+        )?;
+        let delivery_sequences = insert_validation_entries(self.delivery_pending.keys().copied());
+        admit_validation(
+            admit,
+            DeviceSnapshotAllocation::ValidationSequences {
+                entries: self.pending.len(),
+            },
+        )?;
+        let installed_sequences = insert_validation_entries(
+            self.pending
+                .values()
+                .map(|directive| directive.request_sequence),
+        );
         if installed_sequences.len() != self.pending.len()
             || !service_sequences.is_disjoint(&execution_sequences)
             || !service_sequences.is_disjoint(&installed_sequences)
@@ -544,7 +596,7 @@ impl BlockFaultState {
                 reason: "restored block fault state has invalid accounting or sequence",
             });
         }
-        self.persistence.validate()?;
+        self.persistence.validate_with_admission(admit)?;
         if self.persistence.edge_limit()
             != usize::try_from(self.config.persistence_dependencies).unwrap_or(usize::MAX)
         {
@@ -552,35 +604,62 @@ impl BlockFaultState {
                 reason: "restored persistence graph uses a different configured edge bound",
             });
         }
-        let layer_sequences = self
+        let layer_count = self
             .controller
-            .keys()
-            .chain(self.media_queue.keys())
-            .chain(self.volatile.keys())
-            .copied()
-            .collect::<BTreeSet<_>>();
-        if layer_sequences
-            != self
-                .persistence
-                .nodes()
+            .len()
+            .checked_add(self.media_queue.len())
+            .and_then(|count| count.checked_add(self.volatile.len()))
+            .ok_or(DeviceError::InvalidBlockFaultDirective {
+                reason: "storage layer count overflow",
+            })?;
+        admit_validation(
+            admit,
+            DeviceSnapshotAllocation::ValidationSequences {
+                entries: layer_count,
+            },
+        )?;
+        let layer_sequences = insert_validation_entries(
+            self.controller
                 .keys()
-                .copied()
-                .collect::<BTreeSet<_>>()
-        {
+                .chain(self.media_queue.keys())
+                .chain(self.volatile.keys())
+                .copied(),
+        );
+        admit_validation(
+            admit,
+            DeviceSnapshotAllocation::ValidationSequences {
+                entries: self.persistence.nodes().len(),
+            },
+        )?;
+        if layer_sequences != insert_validation_entries(self.persistence.nodes().keys().copied()) {
             return Err(DeviceError::InvalidBlockFaultDirective {
                 reason: "restored persistence graph differs from pending storage layers",
             });
         }
-        let live_discard_operations = self
+        let discard_count = self
             .controller
             .values()
             .map(|entry| entry.media_identity)
             .chain(self.media_queue.values().map(|entry| entry.media_identity))
             .chain(self.volatile.values().map(|entry| entry.media_identity))
-            .filter_map(|identity| {
-                (identity.operation == BlockOp::Discard).then_some(identity.operation_sequence)
-            })
-            .collect::<BTreeSet<_>>();
+            .filter(|identity| identity.operation == BlockOp::Discard)
+            .count();
+        admit_validation(
+            admit,
+            DeviceSnapshotAllocation::ValidationSequences {
+                entries: discard_count,
+            },
+        )?;
+        let live_discard_operations = insert_validation_entries(
+            self.controller
+                .values()
+                .map(|entry| entry.media_identity)
+                .chain(self.media_queue.values().map(|entry| entry.media_identity))
+                .chain(self.volatile.values().map(|entry| entry.media_identity))
+                .filter_map(|identity| {
+                    (identity.operation == BlockOp::Discard).then_some(identity.operation_sequence)
+                }),
+        );
         if self.flash.continuations().values().any(|continuation| {
             continuation
                 .erase_decisions
@@ -647,4 +726,19 @@ impl BlockFaultState {
         }
         Ok(())
     }
+}
+
+fn validation_flags(
+    entries: usize,
+    admit: &mut dyn FnMut(DeviceSnapshotAllocation) -> Result<(), &'static str>,
+) -> Result<Vec<bool>, DeviceError> {
+    admit_validation(admit, DeviceSnapshotAllocation::ValidationFlags { entries })?;
+    let mut flags = Vec::new();
+    flags
+        .try_reserve_exact(entries)
+        .map_err(|_| DeviceError::InvalidBlockFaultDirective {
+            reason: "storage outcome validation allocation failed",
+        })?;
+    flags.resize(entries, false);
+    Ok(flags)
 }

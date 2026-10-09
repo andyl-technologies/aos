@@ -58,3 +58,8 @@ required-features = ["test-support"]
 name = "crucible-measurement-actor"
 path = "src/bin/measurement_actor.rs"
 required-features = ["private-measurement-domain"]
+
+[[bin]]
+name = "crucible-measurement-workflow"
+path = "src/bin/measurement_workflow.rs"
+required-features = ["private-measurement-domain"]

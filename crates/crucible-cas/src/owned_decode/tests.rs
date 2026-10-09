@@ -203,3 +203,27 @@ fn live_verification_keeps_original_usage_and_failure_precedence()
     assert_eq!(authority.used.load(Ordering::SeqCst), 0);
     Ok(())
 }
+
+#[test]
+fn bulk_btree_bound_is_one_target_request_and_overflow_is_sticky()
+-> Result<(), DecodeAdmissionError> {
+    let authority = authority();
+    let budget = DecodeBudget::new(authority.clone(), 4096)?;
+    let initial = used_bytes(&budget)?;
+    let calls = authority.calls.load(Ordering::SeqCst);
+    budget.charge_btree_entries::<u8, ()>(2)?;
+    assert_eq!(authority.calls.load(Ordering::SeqCst), calls + 1);
+    assert_eq!(
+        used_bytes(&budget)? - initial,
+        2 * btree_entry_bytes::<u8, ()>()? + (4 * std::mem::size_of::<ResourceLoan>()) as u64
+    );
+
+    let error = budget
+        .charge_btree_entries::<u64, u64>(usize::MAX)
+        .unwrap_err();
+    assert_eq!(budget.failure()?, Some(error.clone()));
+    let calls = authority.calls.load(Ordering::SeqCst);
+    assert_eq!(budget.charge_btree_entries::<u8, ()>(0), Err(error));
+    assert_eq!(authority.calls.load(Ordering::SeqCst), calls);
+    Ok(())
+}

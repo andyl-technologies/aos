@@ -150,3 +150,90 @@ fn admission_is_atomic_across_contributors() {
     );
     assert_eq!(state, before);
 }
+
+#[test]
+fn validation_admits_operations_after_each_class_checks() {
+    let mut service = rule(BlockServiceDiscipline::Fifo);
+    service.classes[0].weight = 0;
+    let mut calls = 0;
+    let invalid = service.validate_with_admission(&mut |_| {
+        calls += 1;
+        Err("validation allocation refused")
+    });
+    assert!(matches!(
+        invalid,
+        Err(DeviceError::InvalidBlockFaultDirective {
+            reason: "invalid block service class"
+        })
+    ));
+    assert_eq!(calls, 0);
+
+    service.classes[0].weight = 1;
+    service.classes[1].weight = 0;
+    let refused = service.validate_with_admission(&mut |purpose| {
+        calls += 1;
+        assert_eq!(purpose, DeviceSnapshotAllocation::ValidationOperation);
+        Err("validation allocation refused")
+    });
+    assert!(matches!(
+        refused,
+        Err(DeviceError::InvalidBlockFaultDirective {
+            reason: "validation allocation refused"
+        })
+    ));
+    assert_eq!(calls, 1);
+}
+
+#[test]
+fn validation_pays_active_sequence_and_exact_live_join_vector() {
+    let mut state = BlockServiceState::default();
+    state
+        .admit(
+            job(1, BlockOp::Read, 1),
+            &[rule(BlockServiceDiscipline::Fifo)],
+        )
+        .unwrap();
+    state
+        .admit(
+            job(2, BlockOp::Write, 1),
+            &[rule(BlockServiceDiscipline::Fifo)],
+        )
+        .unwrap();
+    let continuation = state.continuations.values().next().unwrap();
+    assert!(continuation.active.is_some());
+    assert_eq!(continuation.pending.len(), 1);
+
+    let mut purposes = Vec::new();
+    state
+        .validate_restore_with_admission(&mut |purpose| {
+            purposes.push(purpose);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        purposes,
+        [
+            DeviceSnapshotAllocation::ValidationOperation,
+            DeviceSnapshotAllocation::ValidationOperation,
+            DeviceSnapshotAllocation::ValidationSequences { entries: 2 },
+        ]
+    );
+
+    purposes.clear();
+    let keys = state
+        .live_job_keys_with_admission(&mut |purpose| {
+            purposes.push(purpose);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(keys, state.live_job_keys());
+    assert_eq!(
+        purposes,
+        [DeviceSnapshotAllocation::ValidationJobArray { entries: 2 }]
+    );
+    assert!(
+        state
+            .live_job_keys_with_admission(&mut |_| Err("join array refused"))
+            .is_err()
+    );
+}
