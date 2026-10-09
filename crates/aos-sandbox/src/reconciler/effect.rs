@@ -23,6 +23,9 @@ use aos_sandbox_core::{
 use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodOutcomeV1, AuthenticatedBrokerMethodResultV1,
 };
+use aos_sandbox_protocol::public_api::public_mutation_context::{
+    InvalidPublicMutationContext, PublicMutationContextV1,
+};
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
 
@@ -44,10 +47,7 @@ const MAXIMUM_DISPATCH_PACKET_BYTES: usize = MAXIMUM_REQUEST_BYTES;
 const BODY_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.effect-body.v1\0";
 const BINDING_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.effect-binding.v1\0";
 const ATTEMPT_TOKEN_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.effect-attempt-token.v1\0";
-const PUBLIC_MUTATION_EFFECT_MAGIC: &[u8; 8] = b"AOSPME01";
-const PUBLIC_MUTATION_EFFECT_VERSION: u16 = 1;
-const PUBLIC_MUTATION_EFFECT_HEADER_BYTES: usize = 60;
-const PUBLIC_MUTATION_EFFECT_DIGEST_BYTES: usize = 32;
+#[cfg(test)]
 const PUBLIC_MUTATION_EFFECT_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.public-mutation-effect.v1\0";
 
 /// Carries authenticated admission identity with one exact public mutation.
@@ -56,16 +56,32 @@ const PUBLIC_MUTATION_EFFECT_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.public-mutatio
 /// its project authority. Production lowering therefore persists those facts
 /// beside the exact envelope instead of attempting to reconstruct them from a
 /// target resource after admission.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct PublicMutationEffectV1 {
-    caller: PrincipalId,
-    project: ProjectId,
-    accepted_wall_seconds: i64,
-    canonical_request: Vec<u8>,
+    plain: PublicMutationContextV1,
     #[cfg(target_os = "linux")]
     fuse_admission: Option<crate::controller_fuse_admission::ControllerFuseAdmissionCarrierV1>,
     #[cfg(target_os = "linux")]
     nix_start: Option<crate::production_operation_compiler::NixStartAdmissionCarrierV2>,
+}
+
+impl std::fmt::Debug for PublicMutationEffectV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut fields = formatter.debug_struct("PublicMutationEffectV1");
+        fields.field("caller", &self.plain.caller());
+        fields.field("project", &self.plain.project());
+        fields.field("accepted_wall_seconds", &self.plain.accepted_wall_seconds());
+        fields.field("canonical_request", &self.plain.canonical_request());
+        #[cfg(target_os = "linux")]
+        fields.field("fuse_admission", &self.fuse_admission);
+        #[cfg(target_os = "linux")]
+        fields.field("nix_start", &self.nix_start);
+        fields.finish()
+    }
+}
+
+fn invalid_public_mutation_context(error: InvalidPublicMutationContext) -> ReconcilerError {
+    ReconcilerError::InvalidPlan(error.reason())
 }
 
 impl PublicMutationEffectV1 {
@@ -81,25 +97,14 @@ impl PublicMutationEffectV1 {
         accepted_wall_seconds: i64,
         canonical_request: Vec<u8>,
     ) -> Result<Self, ReconcilerError> {
-        let encoded_length = PUBLIC_MUTATION_EFFECT_HEADER_BYTES
-            .checked_add(canonical_request.len())
-            .and_then(|length| length.checked_add(PUBLIC_MUTATION_EFFECT_DIGEST_BYTES));
-        if caller.as_bytes() == &[0; 16]
-            || project.as_bytes() == &[0; 16]
-            || accepted_wall_seconds <= 0
-            || canonical_request.is_empty()
-            || encoded_length.is_none_or(|length| length > MAXIMUM_REQUEST_BYTES)
-        {
-            return Err(ReconcilerError::InvalidPlan(
-                "invalid authenticated public mutation effect",
-            ));
-        }
-
-        Ok(Self {
+        let plain = PublicMutationContextV1::new(
             caller,
             project,
             accepted_wall_seconds,
             canonical_request,
+        ).map_err(invalid_public_mutation_context)?;
+        Ok(Self {
+            plain,
             #[cfg(target_os = "linux")]
             fuse_admission: None,
             #[cfg(target_os = "linux")]
@@ -110,25 +115,25 @@ impl PublicMutationEffectV1 {
     /// Returns the authenticated caller fixed at admission.
     #[must_use]
     pub const fn caller(&self) -> PrincipalId {
-        self.caller
+        self.plain.caller()
     }
 
     /// Returns the authenticated project fixed at admission.
     #[must_use]
     pub const fn project(&self) -> ProjectId {
-        self.project
+        self.plain.project()
     }
 
     /// Returns the protected admission clock in Unix seconds.
     #[must_use]
     pub const fn accepted_wall_seconds(&self) -> i64 {
-        self.accepted_wall_seconds
+        self.plain.accepted_wall_seconds()
     }
 
     /// Returns the exact canonical public mutation envelope.
     #[must_use]
     pub fn canonical_request(&self) -> &[u8] {
-        &self.canonical_request
+        self.plain.canonical_request()
     }
 
     /// Decodes the exact public request through the established mutation validator.
@@ -146,9 +151,7 @@ impl PublicMutationEffectV1 {
     pub fn validated_request(
         &self,
     ) -> Result<aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1, ReconcilerError> {
-        crate::cli_model::PublicMutationRequestV1::decode(&self.canonical_request)
-            .and_then(|request| request.decode_validated_kind())
-            .map_err(|_| ReconcilerError::InvalidPlan("invalid controller effect request"))
+        self.plain.validated_request().map_err(invalid_public_mutation_context)
     }
 
     fn encode(&self) -> Result<Vec<u8>, ReconcilerError> {
@@ -167,31 +170,7 @@ impl PublicMutationEffectV1 {
     }
 
     pub(crate) fn encode_plain(&self) -> Result<Vec<u8>, ReconcilerError> {
-        let request_length = u32::try_from(self.canonical_request.len()).map_err(|_| {
-            ReconcilerError::InvalidPlan("public mutation effect request exceeds its bound")
-        })?;
-        let capacity = PUBLIC_MUTATION_EFFECT_HEADER_BYTES
-            .checked_add(self.canonical_request.len())
-            .and_then(|length| length.checked_add(PUBLIC_MUTATION_EFFECT_DIGEST_BYTES))
-            .ok_or(ReconcilerError::InvalidPlan(
-                "public mutation effect request exceeds its bound",
-            ))?;
-        let mut bytes = Vec::with_capacity(capacity);
-        bytes.extend_from_slice(PUBLIC_MUTATION_EFFECT_MAGIC);
-        bytes.extend_from_slice(&PUBLIC_MUTATION_EFFECT_VERSION.to_be_bytes());
-        bytes.extend_from_slice(&[0; 6]);
-        bytes.extend_from_slice(self.caller.as_bytes());
-        bytes.extend_from_slice(self.project.as_bytes());
-        bytes.extend_from_slice(&self.accepted_wall_seconds.to_be_bytes());
-        bytes.extend_from_slice(&request_length.to_be_bytes());
-        bytes.extend_from_slice(&self.canonical_request);
-        let digest: [u8; 32] = Sha256::new()
-            .chain_update(PUBLIC_MUTATION_EFFECT_DIGEST_DOMAIN)
-            .chain_update(&bytes)
-            .finalize()
-            .into();
-        bytes.extend_from_slice(&digest);
-        Ok(bytes)
+        self.plain.encode().map_err(invalid_public_mutation_context)
     }
 
     fn decode(bytes: &[u8]) -> Result<Option<Self>, ReconcilerError> {
@@ -268,75 +247,15 @@ impl PublicMutationEffectV1 {
     }
 
     pub(crate) fn decode_plain(bytes: &[u8]) -> Result<Option<Self>, ReconcilerError> {
-        if !bytes.starts_with(PUBLIC_MUTATION_EFFECT_MAGIC) {
-            return Ok(None);
-        }
-        if bytes.len() < PUBLIC_MUTATION_EFFECT_HEADER_BYTES + PUBLIC_MUTATION_EFFECT_DIGEST_BYTES
-            || u16::from_be_bytes(
-                bytes[8..10]
-                    .try_into()
-                    .map_err(|_| ReconcilerError::InvalidPlan("invalid public mutation effect"))?,
-            ) != PUBLIC_MUTATION_EFFECT_VERSION
-            || bytes[10..16] != [0; 6]
-        {
-            return Err(ReconcilerError::InvalidPlan(
-                "invalid public mutation effect",
-            ));
-        }
-        let caller = PrincipalId::from_bytes(
-            bytes[16..32]
-                .try_into()
-                .map_err(|_| ReconcilerError::InvalidPlan("invalid public mutation effect"))?,
-        );
-        let project = ProjectId::from_bytes(
-            bytes[32..48]
-                .try_into()
-                .map_err(|_| ReconcilerError::InvalidPlan("invalid public mutation effect"))?,
-        );
-        let accepted_wall_seconds = i64::from_be_bytes(
-            bytes[48..56]
-                .try_into()
-                .map_err(|_| ReconcilerError::InvalidPlan("invalid public mutation effect"))?,
-        );
-        let request_length = u32::from_be_bytes(
-            bytes[56..60]
-                .try_into()
-                .map_err(|_| ReconcilerError::InvalidPlan("invalid public mutation effect"))?,
-        ) as usize;
-        let request_end =
-            60_usize
-                .checked_add(request_length)
-                .ok_or(ReconcilerError::InvalidPlan(
-                    "invalid public mutation effect",
-                ))?;
-        let digest_end = request_end
-            .checked_add(PUBLIC_MUTATION_EFFECT_DIGEST_BYTES)
-            .ok_or(ReconcilerError::InvalidPlan(
-                "invalid public mutation effect",
-            ))?;
-        if digest_end != bytes.len() {
-            return Err(ReconcilerError::InvalidPlan(
-                "invalid public mutation effect",
-            ));
-        }
-        let expected: [u8; 32] = Sha256::new()
-            .chain_update(PUBLIC_MUTATION_EFFECT_DIGEST_DOMAIN)
-            .chain_update(&bytes[..request_end])
-            .finalize()
-            .into();
-        if bytes[request_end..] != expected {
-            return Err(ReconcilerError::InvalidPlan(
-                "invalid public mutation effect",
-            ));
-        }
-
-        Self::new(
-            caller,
-            project,
-            accepted_wall_seconds,
-            bytes[60..request_end].to_vec(),
-        )
-        .map(Some)
+        PublicMutationContextV1::decode(bytes)
+            .map(|context| context.map(|plain| Self {
+                plain,
+                #[cfg(target_os = "linux")]
+                fuse_admission: None,
+                #[cfg(target_os = "linux")]
+                nix_start: None,
+            }))
+            .map_err(invalid_public_mutation_context)
     }
 }
 

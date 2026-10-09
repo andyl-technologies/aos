@@ -24,6 +24,7 @@ pub mod event;
 pub mod method;
 pub mod model;
 pub mod mutation;
+pub mod public_mutation_context;
 pub mod observation;
 pub mod portable;
 pub mod portable_resource;
