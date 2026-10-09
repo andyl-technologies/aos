@@ -3,7 +3,8 @@
     cd crates
     cargo test --frozen --offline -p terrane-core --lib derived:: > "$TMPDIR/core.log"
     cargo test --frozen --offline -p terrane --lib --features tokio derived:: > "$TMPDIR/native.log"
-    python3 - "$TMPDIR/core.log" "$TMPDIR/native.log" <<'PY'
+    cargo test --frozen --offline -p terrane --test attrs_sdk --features tokio > "$TMPDIR/sdk.log"
+    python3 - "$TMPDIR/core.log" "$TMPDIR/native.log" "$TMPDIR/sdk.log" <<'PY'
     import pathlib, re, sys
     required = [
         ["derived::tests::record_canonical_fixture_and_separate_producer_identity",
@@ -28,6 +29,7 @@
          "derived::storage_tests::durable_catalog_reopen_and_quarantine_preserve_other_attributes",
          "derived::storage_tests::unavailable_producer_evidence_never_publishes_durable_quarantine",
          "derived::tests::signed_tests::context_tests::pending_actual_root_context_propagates_without_durable_quarantine"],
+        ["public_attrs_get_put_preserves_provenance_and_storage_errors"],
     ]
     for name, tests in zip(sys.argv[1:], required):
         output = pathlib.Path(name).read_text()
