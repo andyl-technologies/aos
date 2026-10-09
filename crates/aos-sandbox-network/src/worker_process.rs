@@ -467,6 +467,7 @@ fn protocol<T>(message: &'static str) -> Result<T, NetworkWorkerProcessError> {
     Err(NetworkWorkerProcessError::Protocol(message))
 }
 
+// Reserved fields remain grammar checks; these records do not use Core zeros.
 fn read_error(error: ReadError) -> NetworkWorkerProcessError {
     let message = match error {
         ReadError::LengthOverflow => "record offset overflowed",

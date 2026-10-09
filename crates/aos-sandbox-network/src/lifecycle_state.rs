@@ -1357,6 +1357,7 @@ fn transaction_id(label: &[u8], request_id: &[u8; 16]) -> [u8; 16] {
 fn decode_blob<'a>(
     decoder: &mut BoundedReader<'a, NetworkLifecycleStateError>,
 ) -> Result<&'a [u8], NetworkLifecycleStateError> {
+    // Retain this format's u32-to-usize cast after consuming the prefix.
     let length = u32::from_be_bytes(decoder.array()?) as usize;
     decoder.bytes(length)
 }

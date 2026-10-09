@@ -1964,6 +1964,7 @@ fn decode_catalog(
 fn decode_blob<'a>(
     decoder: &mut BoundedReader<'a, NetworkStateError>,
 ) -> Result<&'a [u8], NetworkStateError> {
+    // Keep the checked length conversion after the prefix has been consumed.
     let length = usize::try_from(u32::from_be_bytes(decoder.array()?))
         .map_err(|_| NetworkStateError::CorruptRecord)?;
     decoder.bytes(length)
