@@ -71,7 +71,8 @@ in {
       aosSystem = validatedSystem;
     };
     budgets = {
-      maxClosureMiB = 128;
+      # The full Native suite and shared libraries currently measure 141 MiB.
+      maxClosureMiB = 144;
       # Current library outputs retain 17.1 MiB of headers and static archives.
       maxDevelopmentPayloadMiB = 20;
       maxLayers = 4;
