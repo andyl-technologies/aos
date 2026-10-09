@@ -165,6 +165,16 @@ preserving existing forwarding and fault predicates. The two descendant helper
 files are carried from the frozen private composition; their only subsequent
 changes are these classifications. Combined compilation, lint and runtime
 remain pending; this is no native gate pass or task acceptance.
+The corrected native all-target check on `ac701f367a` reaches strict lint and
+stops only on the two unused synchronization boundaries in the shared
+permanent test hook (raw log
+`/tmp/terrane-native-recovery-all-target-clippy-corrections.log`, exit 101).
+The cancellation witness now exercises both boundaries alongside BeforeOpen,
+checking the actual independent coordination lock, native terminal outcome and
+fresh recovery after waiter cancellation. These added scenarios are source-only.
+The copied first-ownership auxiliary additionally registers the real unused-Memo
+and shared-live-Index regression, raising its exact inventory from nineteen to
+twenty without changing gate names or observation bounds (GC-5, GC-24, GC-29).
 
 All ten
 exact native Active completion cases pass on `4e6c14a7f3`. The eight-case native

@@ -19,6 +19,7 @@
     "gc::runner::copied_retirement_tests::gc_copied_retirement_native_losing_preparation_cannot_create_barrier"
     "gc::runner::copied_retirement_tests::gc_copied_retirement_native_failed_or_unexecuted_native_ack_cannot_select_owner"
     "gc::runner::copied_retirement_tests::gc_copied_retirement_native_first_owner_drops_unqualified_lineage_and_keeps_burns"
+    "gc::runner::copied_retirement_tests::gc_copied_retirement_native_unused_memo_sharing_live_index_result_keeps_actual_context"
   ];
 in
   # This check covers local copied-destination first ownership. Recurring
@@ -40,6 +41,6 @@ in
       python3 ../tests/terrane/check_native_gate.py execution \
         "$TMPDIR/copied-retirement-test.log" "[\"$test_name\"]"
     done
-    printf 'PASS: local copied-destination first ownership (19 exact cases)\n' \
+    printf 'PASS: local copied-destination first ownership (20 exact cases)\n' \
       > "$out/result"
   ''
