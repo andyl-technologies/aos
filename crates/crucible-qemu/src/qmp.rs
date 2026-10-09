@@ -45,10 +45,14 @@ use command::{
 use fingerprint_projection::{
     QMP_QUERY_FINGERPRINT_PROJECTION_MANIFEST_COMMAND, parse_fingerprint_projection_manifest,
 };
-#[cfg(target_os = "linux")]
-pub use kvm_profile::{QmpKvmAccelerationState, QmpKvmClockComponentState, QmpKvmClockOperation, QmpKvmClockRequest};
 pub(crate) use fingerprint_projection::{
     QmpFingerprintProjectionManifest, QmpFingerprintProjectionManifestRow,
+};
+#[cfg(target_os = "linux")]
+pub use kvm_profile::{
+    QmpKvmAccelerationState, QmpKvmClockComponentState, QmpKvmClockOperation, QmpKvmClockRequest,
+    QmpKvmClockV3ComponentState, QmpKvmUserspaceComponentState, QmpKvmUserspaceExitPhase,
+    QmpKvmUserspaceExitRecord, QmpKvmUserspaceInventory,
 };
 #[cfg(all(test, target_os = "linux"))]
 mod checkpoint_delta_flight_tests;
@@ -1337,6 +1341,12 @@ pub enum QmpCommandKind {
     /// Controls an experimental partial native clock without profile qualification.
     #[cfg(target_os = "linux")]
     KvmClockComponent,
+    /// Controls the edition-three partial native clock without profile qualification.
+    #[cfg(target_os = "linux")]
+    KvmClockComponentV3,
+    /// Observes original userspace exit inventory without completion or qualification.
+    #[cfg(target_os = "linux")]
+    KvmUserspaceExits,
     /// QMP capability negotiation.
     Capabilities,
     /// VMState snapshot save.
@@ -1424,6 +1434,10 @@ impl QmpCommandKind {
             Self::QueryKvm => "query-kvm",
             #[cfg(target_os = "linux")]
             Self::KvmClockComponent => "x-crucible-kvm-clock",
+            #[cfg(target_os = "linux")]
+            Self::KvmClockComponentV3 => "x-crucible-kvm-clock-v3",
+            #[cfg(target_os = "linux")]
+            Self::KvmUserspaceExits => "x-crucible-kvm-userspace-exits",
             Self::Capabilities => QMP_CAPABILITIES_COMMAND,
             Self::SaveVm => QMP_SNAPSHOT_SAVE_COMMAND,
             Self::DeleteSnapshot => QMP_SNAPSHOT_DELETE_COMMAND,

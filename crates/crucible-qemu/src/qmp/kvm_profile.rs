@@ -3,6 +3,15 @@
 //! Standard `query-kvm` proves only what the connected emulator reports about
 //! its accelerator. It grants no clock, native pause, custody or capture claim.
 
+mod userspace;
+mod v3;
+
+pub use userspace::{
+    QmpKvmUserspaceComponentState, QmpKvmUserspaceExitPhase, QmpKvmUserspaceExitRecord,
+    QmpKvmUserspaceInventory,
+};
+pub use v3::QmpKvmClockV3ComponentState;
+
 use serde::{Deserialize, Serialize};
 
 use super::{QmpClient, QmpCommand, QmpCommandKind, QmpError, QmpTimeoutStream};
@@ -49,13 +58,13 @@ pub struct QmpKvmClockRequest {
 
 /// Reports actual partial kernel mediation without complete node authority.
 ///
-/// The implementation has TSC read/write and native RUN-owner accounting only.
+/// Each component command checks its own fixed schema and coverage bitmap.
 /// `native_owners_stopped` excludes pending device, interrupt and exit custody.
 /// A successful response must therefore retain `profile_qualified == false`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct QmpKvmClockComponentState {
-    /// Identifies the fixed component response schema, currently one.
+    /// Identifies the command-specific fixed component response schema.
     pub schema_version: u32,
     /// Identifies the retained actual kernel window generation.
     pub window_generation: u64,
@@ -69,9 +78,11 @@ pub struct QmpKvmClockComponentState {
     pub numerator: u32,
     /// Divides elapsed host nanoseconds in the admitted rational projection.
     pub denominator: u32,
-    /// Reports the exact partial native coverage bitmap, currently seven.
+    /// Reports the command-specific exact partial native coverage bitmap.
     pub kernel_components: u32,
-    /// Counts actual native KVM_RUN ownership, including exit disposition.
+    /// Counts owners inside KVM_RUN, including counted completion reentry.
+    ///
+    /// Outstanding userspace MMIO/PIO disposition after return is not counted.
     pub run_owners: u32,
     /// Reports whether native execution admission is open for the component.
     pub active: bool,
@@ -128,16 +139,24 @@ fn parse_acceleration(value: &serde_json::Value) -> Result<QmpKvmAccelerationSta
     Ok(state)
 }
 
-fn malformed_component(reason: &str) -> QmpError {
+fn malformed_component_for(command: QmpCommandKind, reason: &str) -> QmpError {
     QmpError::MalformedTypedResponse {
-        command: QmpCommandKind::KvmClockComponent,
+        command,
         response: reason.to_owned(),
     }
 }
 
 fn validate_clock_request(request: &QmpKvmClockRequest) -> Result<(), QmpError> {
+    validate_clock_request_for(request, QmpCommandKind::KvmClockComponent)
+}
+
+fn validate_clock_request_for(
+    request: &QmpKvmClockRequest,
+    command: QmpCommandKind,
+) -> Result<(), QmpError> {
+    let malformed = |reason| malformed_component_for(command, reason);
     if request.start_ns > i64::MAX as u64 || request.end_ns > i64::MAX as u64 {
-        return Err(malformed_component(
+        return Err(malformed(
             "native component coordinate exceeds the QEMU timeline",
         ));
     }
@@ -145,14 +164,14 @@ fn validate_clock_request(request: &QmpKvmClockRequest) -> Result<(), QmpError> 
         QmpKvmClockOperation::Begin
             if request.window_generation == 0 || request.end_ns <= request.start_ns =>
         {
-            Err(malformed_component(
+            Err(malformed(
                 "native begin needs a generation and increasing ceiling",
             ))
         }
         QmpKvmClockOperation::Freeze
             if request.stop_budget_ns == 0 || request.stop_budget_ns > 5_000_000_000 =>
         {
-            Err(malformed_component(
+            Err(malformed(
                 "native freeze allowance must be within five seconds",
             ))
         }
@@ -164,11 +183,21 @@ fn parse_clock_component(
     request: &QmpKvmClockRequest,
     value: &serde_json::Value,
 ) -> Result<QmpKvmClockComponentState, QmpError> {
-    let state: QmpKvmClockComponentState = serde_json::from_value(value.clone()).map_err(|_| {
-        malformed_component("native component response does not match its closed schema")
-    })?;
-    if state.schema_version != 1
-        || state.kernel_components != 7
+    parse_clock_component_edition(request, value, QmpCommandKind::KvmClockComponent, 1, 7)
+}
+
+fn parse_clock_component_edition(
+    request: &QmpKvmClockRequest,
+    value: &serde_json::Value,
+    command: QmpCommandKind,
+    schema_version: u32,
+    kernel_components: u32,
+) -> Result<QmpKvmClockComponentState, QmpError> {
+    let malformed = |reason| malformed_component_for(command, reason);
+    let state: QmpKvmClockComponentState = serde_json::from_value(value.clone())
+        .map_err(|_| malformed("native component response does not match its closed schema"))?;
+    if state.schema_version != schema_version
+        || state.kernel_components != kernel_components
         || state.numerator == 0
         || state.denominator == 0
         || state.profile_qualified
@@ -178,14 +207,14 @@ fn parse_clock_component(
         || (state.native_owners_stopped && (state.active || state.run_owners != 0))
         || (state.active && (state.current_ns < state.start_ns || state.current_ns > state.end_ns))
     {
-        return Err(malformed_component(
+        return Err(malformed(
             "native component coverage, clock or ownership is incoherent",
         ));
     }
     if request.operation != QmpKvmClockOperation::Query
         && state.window_generation != request.window_generation
     {
-        return Err(malformed_component(
+        return Err(malformed(
             "native response changed the original window generation",
         ));
     }
@@ -195,12 +224,10 @@ fn parse_clock_component(
                 || state.start_ns != request.start_ns
                 || state.end_ns != request.end_ns =>
         {
-            return Err(malformed_component(
-                "native begin changed its immutable bounds",
-            ));
+            return Err(malformed("native begin changed its immutable bounds"));
         }
         QmpKvmClockOperation::Freeze if state.active || !state.native_owners_stopped => {
-            return Err(malformed_component(
+            return Err(malformed(
                 "native freeze did not acknowledge its actual RUN owners",
             ));
         }
@@ -209,9 +236,7 @@ fn parse_clock_component(
                 || !state.native_owners_stopped
                 || state.current_ns != request.start_ns =>
         {
-            return Err(malformed_component(
-                "native frozen step was not applied exactly",
-            ));
+            return Err(malformed("native frozen step was not applied exactly"));
         }
         _ => {}
     }

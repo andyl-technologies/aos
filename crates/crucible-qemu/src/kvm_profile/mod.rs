@@ -10,15 +10,24 @@
 mod capture;
 pub mod clock;
 mod coverage;
+mod installed;
 mod prepare;
 mod probe;
 
 pub use crate::qmp::{
     QmpKvmAccelerationState, QmpKvmClockComponentState, QmpKvmClockOperation, QmpKvmClockRequest,
+    QmpKvmClockV3ComponentState, QmpKvmUserspaceComponentState, QmpKvmUserspaceExitPhase,
+    QmpKvmUserspaceExitRecord, QmpKvmUserspaceInventory,
 };
 pub use capture::{KvmArchitecturalCapture, KvmCaptureIdentity, KvmCapturedState};
 pub use coverage::{
     KvmClockSource, KvmMediationEntry, KvmMediationManifest, KvmMediationMechanism,
+};
+pub use installed::{
+    KvmCandidateArtifactPolicy, KvmCandidateArtifactRole, KvmCandidateError, KvmCandidatePolicy,
+    KvmCandidatePreparation, KvmInstalledCandidate, KvmStoppedComponentInventory,
+    MAX_KVM_CANDIDATE_ARTIFACT_BYTES, MAX_KVM_CANDIDATE_POLICY_BYTES,
+    MAX_KVM_CANDIDATE_TOTAL_ARTIFACT_BYTES,
 };
 pub use prepare::{KvmNativePreparation, prepare_native_kvm};
 pub use probe::{KvmArchitecture, KvmHostProbe, probe_native_kvm};

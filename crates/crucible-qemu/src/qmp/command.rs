@@ -185,7 +185,15 @@ pub(super) enum QmpCommand<'a> {
     #[cfg(target_os = "linux")]
     QueryKvm,
     #[cfg(target_os = "linux")]
-    KvmClockComponent { request: &'a QmpKvmClockRequest },
+    KvmClockComponent {
+        request: &'a QmpKvmClockRequest,
+    },
+    #[cfg(target_os = "linux")]
+    KvmClockComponentV3 {
+        request: &'a QmpKvmClockRequest,
+    },
+    #[cfg(target_os = "linux")]
+    KvmUserspaceExits,
     Capabilities,
     SaveVm {
         tag: &'a QmpSnapshotTag,
@@ -319,6 +327,10 @@ impl QmpCommand<'_> {
             Self::QueryKvm => QmpCommandKind::QueryKvm,
             #[cfg(target_os = "linux")]
             Self::KvmClockComponent { .. } => QmpCommandKind::KvmClockComponent,
+            #[cfg(target_os = "linux")]
+            Self::KvmClockComponentV3 { .. } => QmpCommandKind::KvmClockComponentV3,
+            #[cfg(target_os = "linux")]
+            Self::KvmUserspaceExits => QmpCommandKind::KvmUserspaceExits,
             Self::Capabilities => QmpCommandKind::Capabilities,
             Self::SaveVm { .. } => QmpCommandKind::SaveVm,
             Self::DeleteSnapshot { .. } => QmpCommandKind::DeleteSnapshot,
@@ -413,6 +425,13 @@ impl QmpCommand<'_> {
                 "execute": "x-crucible-kvm-clock",
                 "arguments": request,
             }),
+            #[cfg(target_os = "linux")]
+            Self::KvmClockComponentV3 { request } => json!({
+                "execute": "x-crucible-kvm-clock-v3",
+                "arguments": request,
+            }),
+            #[cfg(target_os = "linux")]
+            Self::KvmUserspaceExits => json!({"execute":"x-crucible-kvm-userspace-exits"}),
             Self::QueryJobs => json!({
                 "execute": QMP_QUERY_JOBS_COMMAND,
             }),
