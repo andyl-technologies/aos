@@ -1,0 +1,1208 @@
+--- a/arch/arm64/include/asm/kvm_host.h
++++ b/arch/arm64/include/asm/kvm_host.h
+@@ -306,7 +306,24 @@
+ 	__NR_FGT_GROUP_IDS__
+ };
+ 
++struct kvm_crucible_clock_domain {
++	struct mutex control_lock;
++	u64 host_origin_ns;
++	u64 frozen_ns;
++	u64 start_ns;
++	u64 end_ns;
++	u64 window_generation;
++	u32 numerator;
++	u32 denominator;
++	u32 run_owners;
++	u32 timer_owners;
++	bool enabled;
++	bool active;
++	bool close_acknowledged;
++};
++
+ struct kvm_arch {
++	struct kvm_crucible_clock_domain crucible_clock;
+ 	struct kvm_s2_mmu mmu;
+ 
+ 	/*
+--- a/arch/arm64/kvm/Makefile
++++ b/arch/arm64/kvm/Makefile
+@@ -13,7 +13,7 @@
+ CFLAGS_sys_regs.o += -Wno-override-init
+ CFLAGS_handle_exit.o += -Wno-override-init
+ 
+-kvm-y += arm.o mmu.o mmio.o psci.o hypercalls.o pvtime.o \
++kvm-y += crucible-clock.o arm.o mmu.o mmio.o psci.o hypercalls.o pvtime.o \
+ 	 inject_fault.o va_layout.o handle_exit.o config.o \
+ 	 guest.o debug.o reset.o sys_regs.o stacktrace.o \
+ 	 vgic-sys-reg-v3.o fpsimd.o pkvm.o \
+--- a/arch/arm64/kvm/arch_timer.c
++++ b/arch/arm64/kvm/arch_timer.c
+@@ -7,6 +7,7 @@
+ #include <linux/cpu.h>
+ #include <linux/kvm.h>
+ #include <linux/kvm_host.h>
++#include "crucible-clock.h"
+ #include <linux/interrupt.h>
+ #include <linux/irq.h>
+ #include <linux/irqdomain.h>
+@@ -164,7 +165,12 @@
+ 
+ void get_timer_map(struct kvm_vcpu *vcpu, struct timer_map *map)
+ {
+-	if (vcpu_has_nv(vcpu)) {
++	if (kvm_crucible_clock_enabled(vcpu->kvm)) {
++		map->direct_vtimer = NULL;
++		map->direct_ptimer = NULL;
++		map->emul_vtimer = vcpu_vtimer(vcpu);
++		map->emul_ptimer = vcpu_ptimer(vcpu);
++	} else if (vcpu_has_nv(vcpu)) {
+ 		if (is_hyp_ctxt(vcpu)) {
+ 			map->direct_vtimer = vcpu_hvtimer(vcpu);
+ 			map->direct_ptimer = vcpu_hptimer(vcpu);
+@@ -239,13 +245,37 @@
+ 	return IRQ_HANDLED;
+ }
+ 
++static u64 timer_counter_now(struct arch_timer_context *ctx)
++{
++	struct kvm_vcpu *vcpu = timer_context_to_vcpu(ctx);
++
++	if (kvm_crucible_clock_enabled(vcpu->kvm))
++		return kvm_crucible_clock_counter(vcpu);
++	return kvm_phys_timer_read();
++}
++
++static void controller_timer_start(struct kvm_vcpu *vcpu, struct hrtimer *hrt, u64 ns)
++{
++	ktime_t host;
++
++	if (!kvm_crucible_clock_enabled(vcpu->kvm)) {
++		soft_timer_start(hrt, ns);
++		return;
++	}
++	if (kvm_crucible_clock_host_expiration(vcpu->kvm, ns, &host))
++		hrtimer_start(hrt, host, HRTIMER_MODE_ABS_HARD);
++}
++
+ static u64 kvm_counter_compute_delta(struct arch_timer_context *timer_ctx,
+ 				     u64 val)
+ {
+-	u64 now = kvm_phys_timer_read() - timer_get_offset(timer_ctx);
++	u64 now = timer_counter_now(timer_ctx) - timer_get_offset(timer_ctx);
+ 
+ 	if (now < val) {
+ 		u64 ns;
++
++		if (kvm_crucible_clock_enabled(timer_context_to_vcpu(timer_ctx)->kvm))
++			return kvm_crucible_clock_counter_delta(val - now);
+ 
+ 		ns = cyclecounter_cyc2ns(timecounter->cc,
+ 					 val - now,
+@@ -322,6 +352,24 @@
+ 	timer = container_of(hrt, struct arch_timer_cpu, bg_timer);
+ 	vcpu = container_of(timer, struct kvm_vcpu, arch.timer_cpu);
+ 
++	if (kvm_crucible_clock_enabled(vcpu->kvm)) {
++		if (!kvm_crucible_clock_timer_enter(vcpu->kvm))
++			return HRTIMER_NORESTART;
++		ns = kvm_timer_earliest_exp(vcpu);
++		if (ns) {
++			ktime_t host;
++			bool restart = kvm_crucible_clock_host_expiration(vcpu->kvm, ns, &host);
++
++			if (restart)
++				hrtimer_set_expires(hrt, host);
++			kvm_crucible_clock_timer_leave(vcpu->kvm);
++			return restart ? HRTIMER_RESTART : HRTIMER_NORESTART;
++		}
++		kvm_vcpu_wake_up(vcpu);
++		kvm_crucible_clock_timer_leave(vcpu->kvm);
++		return HRTIMER_NORESTART;
++	}
++
+ 	/*
+ 	 * Check that the timer has really expired from the guest's
+ 	 * PoV (NTP on the host may have forced it to expire
+@@ -345,6 +393,24 @@
+ 
+ 	ctx = container_of(hrt, struct arch_timer_context, hrtimer);
+ 	vcpu = timer_context_to_vcpu(ctx);
++
++	if (kvm_crucible_clock_enabled(vcpu->kvm)) {
++		if (!kvm_crucible_clock_timer_enter(vcpu->kvm))
++			return HRTIMER_NORESTART;
++		ns = kvm_timer_compute_delta(ctx);
++		if (ns) {
++			ktime_t host;
++			bool restart = kvm_crucible_clock_host_expiration(vcpu->kvm, ns, &host);
++
++			if (restart)
++				hrtimer_set_expires(hrt, host);
++			kvm_crucible_clock_timer_leave(vcpu->kvm);
++			return restart ? HRTIMER_RESTART : HRTIMER_NORESTART;
++		}
++		kvm_timer_update_irq(vcpu, true, ctx);
++		kvm_crucible_clock_timer_leave(vcpu->kvm);
++		return HRTIMER_NORESTART;
++	}
+ 
+ 	trace_kvm_timer_hrtimer_expire(ctx);
+ 
+@@ -400,7 +466,7 @@
+ 		return false;
+ 
+ 	cval = timer_get_cval(timer_ctx);
+-	now = kvm_phys_timer_read() - timer_get_offset(timer_ctx);
++	now = timer_counter_now(timer_ctx) - timer_get_offset(timer_ctx);
+ 
+ 	return cval <= now;
+ }
+@@ -499,7 +565,7 @@
+ 	if (pending || !kvm_timer_enabled(ctx))
+ 		return;
+ 
+-	soft_timer_start(&ctx->hrtimer, kvm_timer_compute_delta(ctx));
++	controller_timer_start(timer_context_to_vcpu(ctx), &ctx->hrtimer, kvm_timer_compute_delta(ctx));
+ }
+ 
+ static void set_cntvoff(u64 cntvoff)
+@@ -614,7 +680,7 @@
+ 	 * At least one guest time will expire. Schedule a background timer.
+ 	 * Set the earliest expiration time among the guest timers.
+ 	 */
+-	soft_timer_start(&timer->bg_timer, kvm_timer_earliest_exp(vcpu));
++	controller_timer_start(vcpu, &timer->bg_timer, kvm_timer_earliest_exp(vcpu));
+ }
+ 
+ static void kvm_timer_unblocking(struct kvm_vcpu *vcpu)
+@@ -790,6 +856,14 @@
+ 	if (!has_vhe())
+ 		return;
+ 
++	if (kvm_crucible_clock_enabled(vcpu->kvm)) {
++		sysreg_clear_set(cnthctl_el2,
++			(CNTHCTL_EL1PCEN | CNTHCTL_EL1PCTEN) << 10,
++			CNTHCTL_EL1TVT | CNTHCTL_EL1TVCT);
++		return;
++	}
++
++
+ 	/*
+ 	 * Our default policy is not to trap anything. As we progress
+ 	 * within this function, reality kicks in and we start adding
+@@ -890,6 +964,15 @@
+ 
+ 	get_timer_map(vcpu, &map);
+ 
++	if (kvm_crucible_clock_enabled(vcpu->kvm)) {
++		kvm_timer_unblocking(vcpu);
++		timer_emulate(map.emul_vtimer);
++		timer_emulate(map.emul_ptimer);
++		timer_set_traps(vcpu, &map);
++		return;
++	}
++
++
+ 	if (static_branch_likely(&has_gic_active_state)) {
+ 		/* We don't do NV on GICv5, yet */
+ 		if (vcpu_has_nv(vcpu) && !vgic_is_v5(vcpu->kvm))
+@@ -925,7 +1008,8 @@
+ 
+ 	get_timer_map(vcpu, &map);
+ 
+-	timer_save_state(map.direct_vtimer);
++	if (map.direct_vtimer)
++		timer_save_state(map.direct_vtimer);
+ 	if (map.direct_ptimer)
+ 		timer_save_state(map.direct_ptimer);
+ 
+@@ -1016,7 +1100,10 @@
+ 	if (unlikely(!timer->enabled))
+ 		return;
+ 
+-	if (unlikely(!irqchip_in_kernel(vcpu->kvm)))
++	if (kvm_crucible_clock_enabled(vcpu->kvm)) {
++		timer_emulate(vcpu_vtimer(vcpu));
++		timer_emulate(vcpu_ptimer(vcpu));
++	} else if (unlikely(!irqchip_in_kernel(vcpu->kvm)))
+ 		unmask_vtimer_irq_user(vcpu);
+ }
+ 
+@@ -1053,7 +1140,7 @@
+ 			kvm_timer_update_irq(vcpu, false,
+ 					     vcpu_get_timer(vcpu, i));
+ 
+-		if (irqchip_in_kernel(vcpu->kvm)) {
++		if (irqchip_in_kernel(vcpu->kvm) && map.direct_vtimer) {
+ 			kvm_vgic_reset_mapped_irq(vcpu, timer_irq(map.direct_vtimer));
+ 			if (map.direct_ptimer)
+ 				kvm_vgic_reset_mapped_irq(vcpu, timer_irq(map.direct_ptimer));
+@@ -1167,7 +1254,7 @@
+ 
+ 	switch (treg) {
+ 	case TIMER_REG_TVAL:
+-		val = timer_get_cval(timer) - kvm_phys_timer_read() + timer_get_offset(timer);
++		val = timer_get_cval(timer) - timer_counter_now(timer) + timer_get_offset(timer);
+ 		val = lower_32_bits(val);
+ 		break;
+ 
+@@ -1180,7 +1267,7 @@
+ 		break;
+ 
+ 	case TIMER_REG_CNT:
+-		val = kvm_phys_timer_read() - timer_get_offset(timer);
++		val = timer_counter_now(timer) - timer_get_offset(timer);
+ 		break;
+ 
+ 	case TIMER_REG_VOFF:
+@@ -1226,7 +1313,7 @@
+ {
+ 	switch (treg) {
+ 	case TIMER_REG_TVAL:
+-		timer_set_cval(timer, kvm_phys_timer_read() - timer_get_offset(timer) + (s32)val);
++		timer_set_cval(timer, timer_counter_now(timer) - timer_get_offset(timer) + (s32)val);
+ 		break;
+ 
+ 	case TIMER_REG_CTL:
+@@ -1587,6 +1674,14 @@
+ 	if (timer->enabled)
+ 		return 0;
+ 
++	if (kvm_crucible_clock_enabled(vcpu->kvm)) {
++		if (vgic_is_v5(vcpu->kvm))
++			return -EOPNOTSUPP;
++		if (irqchip_in_kernel(vcpu->kvm) && !timer_irqs_are_valid(vcpu))
++			return -EINVAL;
++		goto no_vgic;
++	}
++
+ 	/* Without a VGIC we do not map virtual IRQs to physical IRQs */
+ 	if (!irqchip_in_kernel(vcpu->kvm))
+ 		goto no_vgic;
+@@ -1733,6 +1828,12 @@
+ 		return -EINVAL;
+ 
+ 	mutex_lock(&kvm->lock);
++
++	if (kvm_crucible_clock_enabled(kvm)) {
++		mutex_unlock(&kvm->lock);
++		return -EOPNOTSUPP;
++	}
++
+ 
+ 	if (!kvm_trylock_all_vcpus(kvm)) {
+ 		set_bit(KVM_ARCH_FLAG_VM_COUNTER_OFFSET, &kvm->arch.flags);
+@@ -1755,3 +1856,33 @@
+ 
+ 	return ret;
+ }
++
++/* Freeze is called only after RUN/effect/callback ownership drains. Synchronous
++ * cancellation joins the callback tail and leaves architectural deadlines intact.
++ */
++void kvm_crucible_arm_timer_freeze(struct kvm *kvm)
++{
++	struct kvm_vcpu *vcpu;
++	unsigned long index;
++
++	kvm_for_each_vcpu(index, vcpu, kvm) {
++		hrtimer_cancel(&vcpu_timer(vcpu)->bg_timer);
++		for (int i = 0; i < nr_timers(vcpu); i++)
++			hrtimer_cancel(&vcpu_get_timer(vcpu, i)->hrtimer);
++	}
++}
++
++void kvm_crucible_arm_timer_resume(struct kvm *kvm)
++{
++	struct kvm_vcpu *vcpu;
++	unsigned long index;
++
++	kvm_for_each_vcpu(index, vcpu, kvm) {
++		if (!vcpu_timer(vcpu)->enabled)
++			continue;
++		timer_emulate(vcpu_vtimer(vcpu));
++		timer_emulate(vcpu_ptimer(vcpu));
++		if (kvm_vcpu_is_blocking(vcpu))
++			kvm_timer_blocking(vcpu);
++	}
++}
+--- a/arch/arm64/kvm/arm.c
++++ b/arch/arm64/kvm/arm.c
+@@ -10,6 +10,7 @@
+ #include <linux/errno.h>
+ #include <linux/err.h>
+ #include <linux/kvm_host.h>
++#include "crucible-clock.h"
+ #include <linux/list.h>
+ #include <linux/module.h>
+ #include <linux/vmalloc.h>
+@@ -144,6 +145,8 @@
+ 		return -EINVAL;
+ 
+ 	switch (cap->cap) {
++	case KVM_CAP_CRUCIBLE_CLOCK_V2:
++		return kvm_crucible_clock_control(kvm, cap);
+ 	case KVM_CAP_ARM_NISV_TO_USER:
+ 		r = 0;
+ 		set_bit(KVM_ARCH_FLAG_RETURN_NISV_IO_ABORT_TO_USER,
+@@ -227,6 +230,7 @@
+ 		return -EINVAL;
+ 
+ 	mutex_init(&kvm->arch.config_lock);
++	kvm_crucible_clock_init(kvm);
+ 
+ #ifdef CONFIG_LOCKDEP
+ 	/* Clue in lockdep that the config_lock must be taken inside kvm->lock */
+@@ -382,6 +386,8 @@
+ 		return 0;
+ 
+ 	switch (ext) {
++	case KVM_CAP_CRUCIBLE_CLOCK_V2:
++		return kvm_crucible_arm_supported() ? KVM_CRUCIBLE_ARM_COVERAGE : 0;
+ 	case KVM_CAP_IRQCHIP:
+ 		r = vgic_present;
+ 		break;
+@@ -1266,10 +1272,16 @@
+ 	struct kvm_run *run = vcpu->run;
+ 	int ret;
+ 
++	ret = kvm_crucible_clock_run_enter(vcpu);
++	if (ret)
++		return ret;
++
+ 	if (run->exit_reason == KVM_EXIT_MMIO) {
+ 		ret = kvm_handle_mmio_return(vcpu);
+-		if (ret <= 0)
++		if (ret <= 0) {
++			kvm_crucible_clock_run_leave(vcpu);
+ 			return ret;
++		}
+ 	}
+ 
+ 	vcpu_load(vcpu);
+@@ -1285,6 +1297,11 @@
+ 	run->exit_reason = KVM_EXIT_UNKNOWN;
+ 	run->flags = 0;
+ 	while (ret > 0) {
++		if (!kvm_crucible_clock_run_allowed(vcpu)) {
++			run->exit_reason = KVM_EXIT_INTR;
++			ret = -EINTR;
++			break;
++		}
+ 		/*
+ 		 * Check conditions before entering the guest
+ 		 */
+@@ -1447,6 +1464,7 @@
+ 		kvm_call_hyp(__kvm_adjust_pc, vcpu);
+ 
+ 	vcpu_put(vcpu);
++	kvm_crucible_clock_run_leave(vcpu);
+ 	return ret;
+ }
+ 
+@@ -1698,6 +1716,12 @@
+ 	if (init->target != KVM_ARM_TARGET_GENERIC_V8 &&
+ 	    init->target != kvm_target_cpu())
+ 		return -EINVAL;
++
++	if (kvm_crucible_clock_enabled(vcpu->kvm) &&
++	    (init->features[0] & (BIT(KVM_ARM_VCPU_EL1_32BIT) |
++		BIT(KVM_ARM_VCPU_PMU_V3) | BIT(KVM_ARM_VCPU_HAS_EL2) |
++		BIT(KVM_ARM_VCPU_HAS_EL2_E2H0))))
++		return -EOPNOTSUPP;
+ 
+ 	ret = kvm_vcpu_init_check_features(vcpu, init);
+ 	if (ret)
+--- /dev/null
++++ b/arch/arm64/kvm/crucible-clock.c
+@@ -0,0 +1,335 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Opt-in ARM counter/timer component. Device custody, complete GIC closure and
++ * native execution qualification are deliberately not advertised by this ABI.
++ */
++#include <linux/kvm_host.h>
++#include <linux/kvm_crucible_clock_math.h>
++#include <linux/ktime.h>
++#include <linux/math64.h>
++#include <linux/uaccess.h>
++#include <clocksource/arm_arch_timer.h>
++#include <asm/cpufeature.h>
++#include <asm/kvm_mmu.h>
++#include "crucible-clock.h"
++
++bool kvm_crucible_arm_supported(void)
++{
++	/* ECV is required to trap the virtual counter; offsets cannot freeze it. */
++	return has_vhe() && cpus_have_final_cap(ARM64_HAS_ECV) &&
++		!is_protected_kvm_enabled() && !system_supports_32bit_el0() &&
++		arch_timer_get_rate() &&
++		arch_timer_get_rate() <= NSEC_PER_SEC;
++}
++
++void kvm_crucible_clock_init(struct kvm *kvm)
++{
++	mutex_init(&kvm->arch.crucible_clock.control_lock);
++}
++
++static u64 clock_now_locked(struct kvm_crucible_clock_domain *clock)
++{
++	if (!clock->active)
++		return clock->frozen_ns;
++	return kvm_crucible_clock_project(ktime_get_ns() - clock->host_origin_ns,
++		clock->start_ns, clock->end_ns, clock->numerator, clock->denominator);
++}
++
++static int clock_transition_locked(struct kvm *kvm,
++				   struct kvm_crucible_clock *request)
++{
++	struct kvm_crucible_clock_domain *clock = &kvm->arch.crucible_clock;
++
++	if (request->operation == KVM_CRUCIBLE_CLOCK_CONFIGURE) {
++		if (clock->enabled || kvm->created_vcpus || kvm->crucible_effect_owners)
++			return -EBUSY;
++		if (!kvm_crucible_arm_supported())
++			return -EOPNOTSUPP;
++		if (!request->numerator || !request->denominator ||
++		    request->window_generation || request->start_ns > KTIME_MAX)
++			return -EINVAL;
++		clock->numerator = request->numerator;
++		clock->denominator = request->denominator;
++		clock->frozen_ns = request->start_ns;
++		/* No physical host epoch or pre-configuration counter offset survives. */
++		kvm->arch.timer_data.voffset = 0;
++		kvm->arch.timer_data.poffset = 0;
++		set_bit(KVM_ARCH_FLAG_VM_COUNTER_OFFSET, &kvm->arch.flags);
++		smp_store_release(&clock->enabled, true);
++		smp_store_release(&kvm->crucible_controlled, true);
++		return 0;
++	}
++	if (!clock->enabled)
++		return -ENOENT;
++	if (request->operation == KVM_CRUCIBLE_CLOCK_QUERY)
++		return 0;
++	if (request->operation == KVM_CRUCIBLE_CLOCK_BEGIN) {
++		struct kvm_crucible_begin_state state = {
++			.generation = clock->window_generation,
++			.frozen_ns = clock->frozen_ns,
++			.requested_generation = request->window_generation,
++			.start_ns = request->start_ns,
++			.end_ns = request->end_ns,
++			.denominator = clock->denominator,
++			.active = clock->active,
++			.owners_busy = clock->run_owners || clock->timer_owners ||
++				kvm->crucible_effect_owners,
++			.acknowledged = clock->close_acknowledged,
++		};
++
++		switch (kvm_crucible_clock_begin_policy(&state)) {
++		case KVM_CRUCIBLE_BEGIN_BUSY:
++			return -EBUSY;
++		case KVM_CRUCIBLE_BEGIN_INVALID:
++			return -EINVAL;
++		case KVM_CRUCIBLE_BEGIN_OVERFLOW:
++			return -EOVERFLOW;
++		case KVM_CRUCIBLE_BEGIN_READY:
++			break;
++		}
++		clock->window_generation = request->window_generation;
++		clock->start_ns = request->start_ns;
++		clock->end_ns = request->end_ns;
++		clock->host_origin_ns = ktime_get_ns();
++		clock->close_acknowledged = false;
++		clock->active = true;
++		kvm->crucible_active = true;
++		return 0;
++	}
++	if (request->window_generation != clock->window_generation)
++		return -ESTALE;
++	if (request->operation == KVM_CRUCIBLE_CLOCK_FREEZE) {
++		if (clock->active) {
++			clock->frozen_ns = clock_now_locked(clock);
++			clock->active = false;
++			kvm->crucible_active = false;
++		}
++		return 0;
++	}
++	if (request->operation == KVM_CRUCIBLE_CLOCK_STEP) {
++		if (clock->active || clock->run_owners || clock->timer_owners ||
++		    kvm->crucible_effect_owners || !clock->close_acknowledged)
++			return -EBUSY;
++		if (request->start_ns < clock->frozen_ns || request->start_ns > KTIME_MAX)
++			return -EINVAL;
++		clock->frozen_ns = request->start_ns;
++		return 0;
++	}
++	return -EINVAL;
++}
++
++int kvm_crucible_clock_control(struct kvm *kvm, struct kvm_enable_cap *cap)
++{
++	struct kvm_crucible_clock_domain *clock = &kvm->arch.crucible_clock;
++	struct kvm_crucible_clock request;
++	void __user *user = u64_to_user_ptr(cap->args[0]);
++	unsigned long flags;
++	int result, waited;
++
++	if (cap->cap != KVM_CAP_CRUCIBLE_CLOCK_V2 || cap->flags ||
++	    cap->args[1] || cap->args[2] || cap->args[3])
++		return -EINVAL;
++	if (copy_from_user(&request, user, sizeof(request)))
++		return -EFAULT;
++	if (request.version != 2 || request.flags || request.reserved[0] ||
++	    request.reserved[1] || request.reserved[2] || request.reserved[3] ||
++	    request.reserved[4])
++		return -EINVAL;
++	if (request.operation == KVM_CRUCIBLE_CLOCK_FREEZE &&
++	    (!request.stop_budget_ns || request.stop_budget_ns > 5ULL * NSEC_PER_SEC))
++		return -EINVAL;
++
++	mutex_lock(&clock->control_lock);
++	mutex_lock(&kvm->crucible_configuration_lock);
++	mutex_lock(&kvm->lock);
++	result = 0;
++	if (request.operation == KVM_CRUCIBLE_CLOCK_CONFIGURE) {
++		mutex_lock(&kvm->slots_lock);
++		if (!list_empty(&kvm->ioeventfds))
++			result = -EBUSY;
++#ifdef CONFIG_KVM_MMIO
++		if (!list_empty(&kvm->coalesced_zones))
++			result = -EBUSY;
++#endif
++		mutex_unlock(&kvm->slots_lock);
++		spin_lock_irqsave(&kvm->irqfds.lock, flags);
++		if (!list_empty(&kvm->irqfds.items))
++			result = -EBUSY;
++		spin_unlock_irqrestore(&kvm->irqfds.lock, flags);
++		if (!list_empty(&kvm->devices) || irqchip_in_kernel(kvm))
++			result = -EBUSY;
++	}
++	if (!result) {
++		raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++		result = clock_transition_locked(kvm, &request);
++		raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	}
++	mutex_unlock(&kvm->lock);
++	if (!result && request.operation == KVM_CRUCIBLE_CLOCK_FREEZE) {
++		kvm_make_all_cpus_request(kvm, KVM_REQ_IRQ_PENDING);
++		waited = wait_event_interruptible_hrtimeout(kvm->crucible_stopped,
++			!READ_ONCE(clock->run_owners) && !READ_ONCE(clock->timer_owners) &&
++			!READ_ONCE(kvm->crucible_effect_owners), ns_to_ktime(request.stop_budget_ns));
++		if (waited)
++			result = waited == -ETIME ? -ETIMEDOUT : waited;
++		else {
++			kvm_crucible_arm_timer_freeze(kvm);
++			raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++			/* Frozen immediate-exit reentry may disposition an old exit
++			 * concurrently with the wait/cancel tail. Recheck ownership at
++			 * the acknowledgment cut instead of certifying a stale drain.
++			 */
++			if (clock->run_owners || clock->timer_owners || kvm->crucible_effect_owners)
++				result = -EBUSY;
++			else
++				clock->close_acknowledged = true;
++			raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++		}
++	}
++	if (!result && request.operation == KVM_CRUCIBLE_CLOCK_BEGIN)
++		kvm_crucible_arm_timer_resume(kvm);
++
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	request.current_ns = clock_now_locked(clock);
++	request.window_generation = clock->window_generation;
++	request.start_ns = clock->start_ns;
++	request.end_ns = clock->end_ns;
++	request.numerator = clock->numerator;
++	request.denominator = clock->denominator;
++	request.coverage = KVM_CRUCIBLE_ARM_COVERAGE;
++	request.run_owners = clock->run_owners;
++	request.active = clock->active;
++	request.close_acknowledged = clock->close_acknowledged;
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	mutex_unlock(&kvm->crucible_configuration_lock);
++	mutex_unlock(&clock->control_lock);
++	if (copy_to_user(user, &request, sizeof(request)))
++		return -EFAULT;
++	return result;
++}
++
++int kvm_crucible_clock_run_enter(struct kvm_vcpu *vcpu)
++{
++	struct kvm *kvm = vcpu->kvm;
++	struct kvm_crucible_clock_domain *clock = &kvm->arch.crucible_clock;
++	unsigned long flags;
++	int result = 0;
++
++	if (!kvm_crucible_clock_enabled(kvm))
++		return 0;
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	if ((!clock->active && vcpu->wants_to_run) || clock->run_owners == U32_MAX)
++		result = -EAGAIN;
++	else {
++		if (!clock->active)
++			clock->close_acknowledged = false;
++		clock->run_owners++;
++	}
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	return result;
++}
++
++void kvm_crucible_clock_run_leave(struct kvm_vcpu *vcpu)
++{
++	struct kvm *kvm = vcpu->kvm;
++	unsigned long flags;
++
++	if (!kvm_crucible_clock_enabled(kvm))
++		return;
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	kvm->arch.crucible_clock.run_owners--;
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	wake_up_all(&kvm->crucible_stopped);
++}
++
++bool kvm_crucible_clock_run_allowed(struct kvm_vcpu *vcpu)
++{
++	return !kvm_crucible_clock_enabled(vcpu->kvm) || READ_ONCE(vcpu->kvm->crucible_active);
++}
++
++u64 kvm_crucible_clock_ns(struct kvm *kvm)
++{
++	unsigned long flags;
++	u64 now;
++
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	now = clock_now_locked(&kvm->arch.crucible_clock);
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	return now;
++}
++
++void kvm_crucible_clock_sample(struct kvm_vcpu *vcpu, u64 *ns, u64 *counter)
++{
++	struct kvm *kvm = vcpu->kvm;
++	unsigned long flags;
++
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	*ns = clock_now_locked(&kvm->arch.crucible_clock);
++	*counter = kvm_crucible_clock_counter_from_ns(*ns, arch_timer_get_rate());
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++}
++
++u64 kvm_crucible_clock_counter(struct kvm_vcpu *vcpu)
++{
++	u64 ns, counter;
++
++	kvm_crucible_clock_sample(vcpu, &ns, &counter);
++	return counter;
++}
++
++u64 kvm_crucible_clock_counter_delta(u64 cycles)
++{
++	return kvm_crucible_clock_counter_cycles_to_ns(cycles, arch_timer_get_rate());
++}
++
++bool kvm_crucible_clock_host_expiration(struct kvm *kvm, u64 logical_delta,
++				       ktime_t *host)
++{
++	struct kvm_crucible_clock_domain *clock = &kvm->arch.crucible_clock;
++	unsigned long flags;
++	u64 now, target, delay;
++	bool valid = false;
++
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	now = clock_now_locked(clock);
++	/* An unreachable counter deadline remains pending; saturating it onto
++	 * the terminal coordinate would repeatedly restart a hard IRQ timer.
++	 */
++	if (logical_delta > KTIME_MAX - now)
++		goto out;
++	target = now + logical_delta;
++	if (!clock->active || target > clock->end_ns)
++		goto out;
++	delay = kvm_crucible_clock_host_delay(target - clock->start_ns,
++		clock->numerator, clock->denominator);
++	if (delay > KTIME_MAX - clock->host_origin_ns)
++		goto out;
++	*host = ns_to_ktime(clock->host_origin_ns + delay);
++	valid = true;
++out:
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	return valid;
++}
++
++bool kvm_crucible_clock_timer_enter(struct kvm *kvm)
++{
++	struct kvm_crucible_clock_domain *clock = &kvm->arch.crucible_clock;
++	unsigned long flags;
++	bool admitted;
++
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	admitted = clock->active && clock->timer_owners != U32_MAX;
++	if (admitted)
++		clock->timer_owners++;
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	return admitted;
++}
++
++void kvm_crucible_clock_timer_leave(struct kvm *kvm)
++{
++	unsigned long flags;
++
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	kvm->arch.crucible_clock.timer_owners--;
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	wake_up_all(&kvm->crucible_stopped);
++}
+--- /dev/null
++++ b/arch/arm64/kvm/crucible-clock.h
+@@ -0,0 +1,31 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef __KVM_ARM_CRUCIBLE_CLOCK_H
++#define __KVM_ARM_CRUCIBLE_CLOCK_H
++
++/* These component bits are not complete device or native-close qualification. */
++#define KVM_CRUCIBLE_ARM_COVERAGE (KVM_CRUCIBLE_CLOCK_RUN_OWNERS | \
++	KVM_CRUCIBLE_CLOCK_ARM_COUNTER | KVM_CRUCIBLE_CLOCK_ARM_TIMER)
++
++static inline bool kvm_crucible_clock_enabled(struct kvm *kvm)
++{
++	return READ_ONCE(kvm->crucible_controlled);
++}
++
++bool kvm_crucible_arm_supported(void);
++void kvm_crucible_clock_init(struct kvm *kvm);
++int kvm_crucible_clock_control(struct kvm *kvm, struct kvm_enable_cap *cap);
++int kvm_crucible_clock_run_enter(struct kvm_vcpu *vcpu);
++void kvm_crucible_clock_run_leave(struct kvm_vcpu *vcpu);
++bool kvm_crucible_clock_run_allowed(struct kvm_vcpu *vcpu);
++u64 kvm_crucible_clock_ns(struct kvm *kvm);
++u64 kvm_crucible_clock_counter(struct kvm_vcpu *vcpu);
++void kvm_crucible_clock_sample(struct kvm_vcpu *vcpu, u64 *ns, u64 *counter);
++u64 kvm_crucible_clock_counter_delta(u64 cycles);
++bool kvm_crucible_clock_host_expiration(struct kvm *kvm, u64 logical_delta,
++				       ktime_t *host);
++bool kvm_crucible_clock_timer_enter(struct kvm *kvm);
++void kvm_crucible_clock_timer_leave(struct kvm *kvm);
++void kvm_crucible_arm_timer_freeze(struct kvm *kvm);
++void kvm_crucible_arm_timer_resume(struct kvm *kvm);
++
++#endif
+--- a/arch/arm64/kvm/hyp/include/hyp/switch.h
++++ b/arch/arm64/kvm/hyp/include/hyp/switch.h
+@@ -738,6 +738,12 @@
+ 	 * Also, we only deal with non-hypervisor context here (either
+ 	 * an EL1 guest, or a non-HYP context of an EL2 guest).
+ 	 */
++	/* The opt-in host controller owns this projection; the hyp fast path
++	 * otherwise reconstructs the free-running physical counter.
++	 */
++	if (READ_ONCE(vcpu->kvm->crucible_controlled))
++		return false;
++
+ 	if (is_hyp_ctxt(vcpu))
+ 		return false;
+ 
+--- a/arch/arm64/kvm/hypercalls.c
++++ b/arch/arm64/kvm/hypercalls.c
+@@ -3,6 +3,7 @@
+ 
+ #include <linux/arm-smccc.h>
+ #include <linux/kvm_host.h>
++#include "crucible-clock.h"
+ 
+ #include <asm/kvm_emulate.h>
+ 
+@@ -23,6 +24,20 @@
+ 	struct system_time_snapshot systime_snapshot;
+ 	u64 cycles = ~0UL;
+ 	u32 feature;
++
++	if (kvm_crucible_clock_enabled(vcpu->kvm)) {
++		u64 ns;
++
++		feature = smccc_get_arg1(vcpu);
++		if (feature != KVM_PTP_VIRT_COUNTER && feature != KVM_PTP_PHYS_COUNTER)
++			return;
++		kvm_crucible_clock_sample(vcpu, &ns, &cycles);
++		val[0] = upper_32_bits(ns);
++		val[1] = lower_32_bits(ns);
++		val[2] = upper_32_bits(cycles);
++		val[3] = lower_32_bits(cycles);
++		return;
++	}
+ 
+ 	/*
+ 	 * system time and counter value must captured at the same
+--- a/arch/arm64/kvm/pvtime.c
++++ b/arch/arm64/kvm/pvtime.c
+@@ -81,6 +81,9 @@
+ 	int ret = 0;
+ 	int idx;
+ 
++	if (READ_ONCE(kvm->crucible_controlled))
++		return -EOPNOTSUPP;
++
+ 	if (!kvm_arm_pvtime_supported() ||
+ 	    attr->attr != KVM_ARM_VCPU_PVTIME_IPA)
+ 		return -ENXIO;
+--- a/arch/arm64/kvm/sys_regs.c
++++ b/arch/arm64/kvm/sys_regs.c
+@@ -14,6 +14,7 @@
+ #include <linux/cacheinfo.h>
+ #include <linux/debugfs.h>
+ #include <linux/kvm_host.h>
++#include "crucible-clock.h"
+ #include <linux/mm.h>
+ #include <linux/printk.h>
+ #include <linux/uaccess.h>
+@@ -1695,6 +1696,11 @@
+ 			       const struct sys_reg_desc *rd,
+ 			       u64 val)
+ {
++	if (kvm_crucible_clock_enabled(vcpu->kvm) &&
++	    (reg_to_encoding(rd) == SYS_CNTVCT_EL0 ||
++	     reg_to_encoding(rd) == SYS_CNTPCT_EL0))
++		return val == kvm_crucible_clock_counter(vcpu) ? 0 : -EOPNOTSUPP;
++
+ 	switch (reg_to_encoding(rd)) {
+ 	case SYS_CNTV_CTL_EL0:
+ 	case SYS_CNTP_CTL_EL0:
+@@ -1722,10 +1728,12 @@
+ {
+ 	switch (reg_to_encoding(rd)) {
+ 	case SYS_CNTVCT_EL0:
+-		*val = kvm_phys_timer_read() - timer_get_offset(vcpu_vtimer(vcpu));
++		*val = kvm_crucible_clock_enabled(vcpu->kvm) ? kvm_crucible_clock_counter(vcpu) :
++			kvm_phys_timer_read() - timer_get_offset(vcpu_vtimer(vcpu));
+ 		break;
+ 	case SYS_CNTPCT_EL0:
+-		*val = kvm_phys_timer_read() - timer_get_offset(vcpu_ptimer(vcpu));
++		*val = kvm_crucible_clock_enabled(vcpu->kvm) ? kvm_crucible_clock_counter(vcpu) :
++			kvm_phys_timer_read() - timer_get_offset(vcpu_ptimer(vcpu));
+ 		break;
+ 	default:
+ 		*val = __vcpu_sys_reg(vcpu, rd->reg);
+--- a/arch/arm64/kvm/trace_arm.h
++++ b/arch/arm64/kvm/trace_arm.h
+@@ -237,7 +237,8 @@
+ 
+ 	TP_fast_assign(
+ 		__entry->vcpu_id		= vcpu_id;
+-		__entry->direct_vtimer		= arch_timer_ctx_index(map->direct_vtimer);
++		__entry->direct_vtimer =
++			map->direct_vtimer ? arch_timer_ctx_index(map->direct_vtimer) : -1;
+ 		__entry->direct_ptimer =
+ 			(map->direct_ptimer) ? arch_timer_ctx_index(map->direct_ptimer) : -1;
+ 		__entry->emul_vtimer =
+--- a/arch/arm64/kvm/vgic/vgic-init.c
++++ b/arch/arm64/kvm/vgic/vgic-init.c
+@@ -73,6 +73,10 @@
+ 	struct kvm_vcpu *vcpu;
+ 	unsigned long i;
+ 	int ret;
++
++	if (READ_ONCE(kvm->crucible_controlled) &&
++	    type != KVM_DEV_TYPE_ARM_VGIC_V2 && type != KVM_DEV_TYPE_ARM_VGIC_V3)
++		return -EOPNOTSUPP;
+ 
+ 	/*
+ 	 * This function is also called by the KVM_CREATE_IRQCHIP handler,
+--- a/arch/arm64/kvm/vgic/vgic-its.c
++++ b/arch/arm64/kvm/vgic/vgic-its.c
+@@ -1857,6 +1857,10 @@
+ 	int ret;
+ 	struct vgic_its *its;
+ 
++	/* ITS command workers and direct vLPI ownership require a separate profile. */
++	if (READ_ONCE(dev->kvm->crucible_controlled))
++		return -EOPNOTSUPP;
++
+ 	if (type != KVM_DEV_TYPE_ARM_VGIC_ITS)
+ 		return -ENODEV;
+ 
+--- a/arch/arm64/kvm/vgic/vgic-mmio-v3.c
++++ b/arch/arm64/kvm/vgic/vgic-mmio-v3.c
+@@ -50,6 +50,9 @@
+ 
+ bool vgic_supports_direct_msis(struct kvm *kvm)
+ {
++	if (READ_ONCE(kvm->crucible_controlled))
++		return false;
++
+ 	/*
+ 	 * Deliberately conflate vLPI and vSGI support on GICv4.1 hardware,
+ 	 * indirectly allowing userspace to control whether or not vPEs are
+@@ -68,7 +71,7 @@
+ 
+ bool vgic_supports_direct_sgis(struct kvm *kvm)
+ {
+-	return kvm->arch.vgic.nassgicap;
++	return !READ_ONCE(kvm->crucible_controlled) && kvm->arch.vgic.nassgicap;
+ }
+ 
+ /*
+--- a/arch/arm64/kvm/vgic/vgic.h
++++ b/arch/arm64/kvm/vgic/vgic.h
+@@ -488,6 +488,9 @@
+ 
+ static inline bool vgic_supports_direct_irqs(struct kvm *kvm)
+ {
++	if (READ_ONCE(kvm->crucible_controlled))
++		return false;
++
+ 	/* GICv5 always supports direct IRQs */
+ 	if (vgic_is_v5(kvm))
+ 		return true;
+--- a/arch/x86/kvm/crucible-clock-math.h
++++ b/arch/x86/kvm/crucible-clock-math.h
+@@ -1,90 +1,2 @@
+ /* SPDX-License-Identifier: GPL-2.0-only */
+-#ifndef __KVM_X86_CRUCIBLE_CLOCK_MATH_H
+-#define __KVM_X86_CRUCIBLE_CLOCK_MATH_H
+-
+-/* Callers validate extent*denominator before installing a window. This makes
+- * the unsaturated elapsed*numerator product representable without floating
+- * point, and saturation never creates a later authorization interval.
+- */
+-static inline u64 kvm_crucible_clock_project(u64 elapsed, u64 start, u64 end,
+-					   u32 numerator, u32 denominator)
+-{
+-	u64 product = (end - start) * denominator;
+-	u64 threshold = product / numerator + !!(product % numerator);
+-
+-	if (elapsed >= threshold)
+-		return end;
+-	return start + elapsed * numerator / denominator;
+-}
+-
+-/* The caller checks the product before accepting a window. Ceiling division
+- * avoids early native callbacks and does not overflow at U64_MAX products.
+- */
+-static inline u64 kvm_crucible_clock_host_delay(u64 logical_delta,
+-					       u32 numerator, u32 denominator)
+-{
+-	u64 product = logical_delta * denominator;
+-
+-	return product / numerator + !!(product % numerator);
+-}
+-
+-/* Logical timer positions use the nonnegative signed ktime range. Saturating
+- * retains a far-future deadline rather than wrapping it into a past callback.
+- */
+-static inline u64 kvm_crucible_clock_deadline_add(u64 position, u64 delta)
+-{
+-	u64 maximum = U64_MAX >> 1;
+-
+-	return delta > maximum - position ? maximum : position + delta;
+-}
+-
+-static inline u64 kvm_crucible_clock_cycles_to_ns(u64 cycles, u32 khz)
+-{
+-	u64 whole = cycles / khz;
+-	u64 product = (cycles % khz) * 1000000;
+-	u64 fraction = product / khz + !!(product % khz);
+-
+-	if (whole > (U64_MAX - fraction) / 1000000)
+-		return U64_MAX;
+-	return whole * 1000000 + fraction;
+-}
+-
+-/* This view is captured under the native admission lock. Portable tests execute
+- * the same transition policy; callback/run ownership still needs native proof.
+- */
+-struct kvm_crucible_begin_state {
+-	u64 generation;
+-	u64 frozen_ns;
+-	u64 requested_generation;
+-	u64 start_ns;
+-	u64 end_ns;
+-	u32 denominator;
+-	bool active;
+-	bool owners_busy;
+-	bool acknowledged;
+-};
+-
+-enum kvm_crucible_begin_result {
+-	KVM_CRUCIBLE_BEGIN_READY,
+-	KVM_CRUCIBLE_BEGIN_BUSY,
+-	KVM_CRUCIBLE_BEGIN_INVALID,
+-	KVM_CRUCIBLE_BEGIN_OVERFLOW,
+-};
+-
+-static inline enum kvm_crucible_begin_result
+-kvm_crucible_clock_begin_policy(const struct kvm_crucible_begin_state *state)
+-{
+-	if (state->active || state->owners_busy ||
+-	    (!state->acknowledged && state->generation))
+-		return KVM_CRUCIBLE_BEGIN_BUSY;
+-	if (!state->denominator || state->generation == U64_MAX ||
+-	    state->requested_generation != state->generation + 1 ||
+-	    state->start_ns != state->frozen_ns || state->end_ns <= state->start_ns ||
+-	    state->end_ns > (U64_MAX >> 1))
+-		return KVM_CRUCIBLE_BEGIN_INVALID;
+-	if (state->end_ns - state->start_ns > U64_MAX / state->denominator)
+-		return KVM_CRUCIBLE_BEGIN_OVERFLOW;
+-	return KVM_CRUCIBLE_BEGIN_READY;
+-}
+-
+-#endif
++#include <linux/kvm_crucible_clock_math.h>
+--- a/arch/x86/kvm/crucible-clock.c
++++ b/arch/x86/kvm/crucible-clock.c
+@@ -187,7 +187,14 @@
+ 		else {
+ 			kvm_crucible_lapic_freeze(kvm);
+ 			raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
+-			clock->close_acknowledged = true;
++			/* Frozen immediate-exit reentry may disposition an old exit
++			 * concurrently with the wait/cancel tail. Recheck ownership at
++			 * the acknowledgment cut instead of certifying a stale drain.
++			 */
++			if (clock->run_owners || clock->timer_owners || kvm->crucible_effect_owners)
++				result = -EBUSY;
++			else
++				clock->close_acknowledged = true;
+ 			raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
+ 		}
+ 	}
+@@ -229,7 +236,7 @@
+ 	/* Frozen reentry with immediate_exit may finish old I/O, but may not
+ 	 * retire a subsequent guest instruction. Its owner is counted too.
+ 	 */
+-	if (!clock->active && vcpu->wants_to_run)
++	if ((!clock->active && vcpu->wants_to_run) || clock->run_owners == U32_MAX)
+ 		result = -EAGAIN;
+ 	else {
+ 		if (!clock->active)
+@@ -407,7 +414,7 @@
+ 	bool admitted;
+ 
+ 	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
+-	admitted = clock->active && logical >= 0 &&
++	admitted = clock->active && clock->timer_owners != U32_MAX && logical >= 0 &&
+ 		clock_now_locked(clock) >= ktime_to_ns(logical);
+ 	if (admitted)
+ 		clock->timer_owners++;
+--- /dev/null
++++ b/include/linux/kvm_crucible_clock_math.h
+@@ -0,0 +1,110 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef __KVM_CRUCIBLE_CLOCK_MATH_H
++#define __KVM_CRUCIBLE_CLOCK_MATH_H
++
++/* Callers validate extent*denominator before installing a window. This makes
++ * the unsaturated elapsed*numerator product representable without floating
++ * point, and saturation never creates a later authorization interval.
++ */
++static inline u64 kvm_crucible_clock_project(u64 elapsed, u64 start, u64 end,
++					   u32 numerator, u32 denominator)
++{
++	u64 product = (end - start) * denominator;
++	u64 threshold = product / numerator + !!(product % numerator);
++
++	if (elapsed >= threshold)
++		return end;
++	return start + elapsed * numerator / denominator;
++}
++
++/* The caller checks the product before accepting a window. Ceiling division
++ * avoids early native callbacks and does not overflow at U64_MAX products.
++ */
++static inline u64 kvm_crucible_clock_host_delay(u64 logical_delta,
++					       u32 numerator, u32 denominator)
++{
++	u64 product = logical_delta * denominator;
++
++	return product / numerator + !!(product % numerator);
++}
++
++/* Logical timer positions use the nonnegative signed ktime range. Saturating
++ * retains a far-future deadline rather than wrapping it into a past callback.
++ */
++static inline u64 kvm_crucible_clock_deadline_add(u64 position, u64 delta)
++{
++	u64 maximum = U64_MAX >> 1;
++
++	return delta > maximum - position ? maximum : position + delta;
++}
++
++static inline u64 kvm_crucible_clock_cycles_to_ns(u64 cycles, u32 khz)
++{
++	u64 whole = cycles / khz;
++	u64 product = (cycles % khz) * 1000000;
++	u64 fraction = product / khz + !!(product % khz);
++
++	if (whole > (U64_MAX - fraction) / 1000000)
++		return U64_MAX;
++	return whole * 1000000 + fraction;
++}
++
++/* This view is captured under the native admission lock. Portable tests execute
++ * the same transition policy; callback/run ownership still needs native proof.
++ */
++struct kvm_crucible_begin_state {
++	u64 generation;
++	u64 frozen_ns;
++	u64 requested_generation;
++	u64 start_ns;
++	u64 end_ns;
++	u32 denominator;
++	bool active;
++	bool owners_busy;
++	bool acknowledged;
++};
++
++enum kvm_crucible_begin_result {
++	KVM_CRUCIBLE_BEGIN_READY,
++	KVM_CRUCIBLE_BEGIN_BUSY,
++	KVM_CRUCIBLE_BEGIN_INVALID,
++	KVM_CRUCIBLE_BEGIN_OVERFLOW,
++};
++
++static inline enum kvm_crucible_begin_result
++kvm_crucible_clock_begin_policy(const struct kvm_crucible_begin_state *state)
++{
++	if (state->active || state->owners_busy ||
++	    (!state->acknowledged && state->generation))
++		return KVM_CRUCIBLE_BEGIN_BUSY;
++	if (!state->denominator || state->generation == U64_MAX ||
++	    state->requested_generation != state->generation + 1 ||
++	    state->start_ns != state->frozen_ns || state->end_ns <= state->start_ns ||
++	    state->end_ns > (U64_MAX >> 1))
++		return KVM_CRUCIBLE_BEGIN_INVALID;
++	if (state->end_ns - state->start_ns > U64_MAX / state->denominator)
++		return KVM_CRUCIBLE_BEGIN_OVERFLOW;
++	return KVM_CRUCIBLE_BEGIN_READY;
++}
++
++/* The configured ARM rate is at most 1 GHz and logical coordinates are in the
++ * signed ktime range. Splitting avoids a wide product and preserves floor/ceil.
++ */
++static inline u64 kvm_crucible_clock_counter_from_ns(u64 ns, u32 frequency)
++{
++	return ns / 1000000000 * frequency +
++		(ns % 1000000000) * frequency / 1000000000;
++}
++
++static inline u64 kvm_crucible_clock_counter_cycles_to_ns(u64 cycles, u32 frequency)
++{
++	u64 whole = cycles / frequency;
++	u64 remainder = (cycles % frequency) * 1000000000;
++	u64 fraction = remainder / frequency + !!(remainder % frequency);
++
++	if (whole > (U64_MAX - fraction) / 1000000000)
++		return U64_MAX;
++	return whole * 1000000000 + fraction;
++}
++
++#endif
+--- a/include/uapi/linux/kvm.h
++++ b/include/uapi/linux/kvm.h
+@@ -741,6 +741,8 @@
+ #define KVM_CAP_CRUCIBLE_CLOCK_V2 0xa026
+ #define KVM_CRUCIBLE_CLOCK_PVCLOCK (1U << 3)
+ #define KVM_CRUCIBLE_CLOCK_LAPIC (1U << 4)
++#define KVM_CRUCIBLE_CLOCK_ARM_COUNTER (1U << 5)
++#define KVM_CRUCIBLE_CLOCK_ARM_TIMER (1U << 6)
+ #define KVM_CRUCIBLE_CLOCK_TSC_READ (1U << 0)
+ #define KVM_CRUCIBLE_CLOCK_TSC_WRITE (1U << 1)
+ #define KVM_CRUCIBLE_CLOCK_RUN_OWNERS (1U << 2)
