@@ -487,7 +487,7 @@ struct ProductionVmDebugConfig {
     allow_requested_loopback_listen: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct ProductionVmBranchConfig {
     base: Configuration,
     frontier: VirtualTime,
@@ -981,7 +981,7 @@ fn validate_exact_checkpoint_artifact(
     Ok(())
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct ProductionVmRecordedControl {
     configuration: Configuration,
     node_times: BTreeMap<NodeId, VirtualTime>,

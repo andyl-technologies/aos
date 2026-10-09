@@ -1459,7 +1459,7 @@ pub(super) struct HostAssertionState {
     proximity: Option<HostAssertionProximityMinimum>,
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) struct GuestMarkerAssertionState {
     pub(super) id: AssertionId,
     pub(super) lifecycle: PropertyLifecycleState,

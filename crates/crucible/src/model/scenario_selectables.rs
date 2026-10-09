@@ -130,9 +130,26 @@ pub struct ScenarioSelectables {
 
 impl PartialEq for ScenarioSelectables {
     fn eq(&self, other: &Self) -> bool {
-        self.limits == other.limits
-            && self.declarations == other.declarations
-            && self.declarations_by_name == other.declarations_by_name
+        // The cached encoding and its derived hash do not add semantic state.
+        // Exhaustive patterns require an explicit policy for future fields.
+        let Self {
+            limits,
+            declarations,
+            declarations_by_name,
+            content_hash: _,
+            canonical: _,
+        } = self;
+        let Self {
+            limits: other_limits,
+            declarations: other_declarations,
+            declarations_by_name: other_declarations_by_name,
+            content_hash: _,
+            canonical: _,
+        } = other;
+
+        limits == other_limits
+            && declarations == other_declarations
+            && declarations_by_name == other_declarations_by_name
     }
 }
 

@@ -16,6 +16,8 @@ use crucible::{ContentHash, DagStore, MemoryDagStore, NodeId};
 
 use super::*;
 
+mod modeled_comparison;
+
 /// Decoded lifecycle state paired with one-shot repository target claims.
 #[must_use = "authenticated checkpoint state must be consumed by lifecycle construction"]
 pub struct DecodedProductionExactCheckpoint {

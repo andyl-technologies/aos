@@ -49,7 +49,7 @@ use fallible_clone::{
 };
 
 /// Complete resumable state for the production fault runtime.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct ProductionFaultRuntimeCheckpoint {
     /// Signal evaluator, binding, canonical adapter, replay, and search state.
     runtime: Option<FaultRuntimeCheckpoint>,
@@ -83,7 +83,7 @@ pub struct ProductionFaultRuntimeCheckpoint {
 }
 
 /// Complete host/scheduler network continuation paired with QEMU snapshots.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProductionNetworkStateCheckpoint {
     identity: ContentHash,
     scheduler: SchedulerNetworkCheckpoint,

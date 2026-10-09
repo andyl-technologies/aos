@@ -54,7 +54,7 @@ impl std::ops::DerefMut for HostAssertionCheckpointBytes {
     }
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct HostAssertionEvaluatorWire {
     states: Vec<HostAssertionStateWire>,
@@ -64,7 +64,7 @@ struct HostAssertionEvaluatorWire {
     last_prefix: Option<EventLogOffset>,
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct HostAssertionStateWire {
     assertion: AssertionId,
@@ -130,6 +130,15 @@ impl HostAssertionEvaluator {
 }
 
 impl HostAssertionEvaluatorCheckpoint {
+    /// Compares every assertion continuation field without copying its custody.
+    ///
+    /// Each checkpoint retains its own original allocation authority. Those
+    /// operational credits do not contribute to logical assertion equality.
+    #[must_use]
+    pub fn same_continuation(&self, other: &Self) -> bool {
+        self.wire == other.wire
+    }
+
     /// Encodes the complete assertion continuation canonically.
     ///
     /// The exact output is counted before allocating; the write pass cannot grow
