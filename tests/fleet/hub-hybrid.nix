@@ -395,6 +395,7 @@
     rawDownloadMiB,
     recoveryBundleMiB,
   }: {
+    aos.activation.stages.host.configuration = [./_image-acceptance-agent-policy.nix];
     aos.image.budgets = {
       # The merged Native modules produce a 912.3 MiB diagnostic closure.
       # Retain a small allowance for package metadata and executable growth.
@@ -486,7 +487,11 @@
         # Native also retains the full Hub server and initializer payload.
         aos.image.budgets.maxRuntimeClosureMiB = lib.mkForce 1024;
         # Runtime roles must survive evaluation of the retained host sources.
-        aos.activation.stages.host.configuration = lib.mkForce ["${nativeHostModule}/module.nix"];
+        aos.activation.stages.host.configuration = lib.mkForce (
+          lib.remove "${fixture.hubRuntimeModule}/module.nix"
+          fixture.hubSystem.config.aos.activation.stages.host.configuration
+          ++ ["${nativeHostModule}/module.nix"]
+        );
         aos.kernel.modules = ["9pnet_virtio" "9p"];
         environment.systemPackages = [pkgs.util-linux];
       }

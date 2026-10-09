@@ -624,8 +624,9 @@ in {
             --key-id initial
           {APR} publish {AOS_HUB_PACKAGE} --registry production \\
             --key-id initial
+          {APR} publish {TOOL_V1} --registry production --key-id initial
           {APR} release 1.0.0 --registry production \\
-            --store-path {TOOL_V1} --key-id initial \\
+            --key-id initial \\
             --channel stable --init-channel --cache-url {REGISTRY} \\
             --upload-url file:///var/tmp/aos-publication-v1
           {APR} verify --registry production
@@ -896,8 +897,10 @@ in {
           cd ${updateProject.project}
           {APR} publish {HELPER_V2} --registry production \\
             --previous 1.0.0 --key-id initial
+          {APR} publish {TOOL_V2} --registry production \\
+            --previous 1.0.0 --key-id initial
           {APR} release 2.0.0 --registry production \\
-            --store-path {TOOL_V2} --previous 1.0.0 --key-id initial \\
+            --key-id initial \\
             --channel stable --count 256 --cache-url {REGISTRY} \\
             --upload-url file:///var/tmp/aos-publication-v2
           {APR} verify --registry production
