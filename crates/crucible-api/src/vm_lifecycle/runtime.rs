@@ -34,20 +34,11 @@ impl ProductionVmLifecycleLoop {
     // Terminal firings already live in the checkpointed trigger state, so a
     // restored lifecycle can recover the settlement point without new state.
     fn terminal_settlement_target(&self) -> Option<VirtualTime> {
-        self.terminal_verdict.as_ref()?;
-
-        self.trigger_graph
-            .events()
-            .iter()
-            .filter_map(|event| {
-                let mut passed = false;
-                let mut violations = Vec::new();
-                collect_terminal_actions(&event.action, &mut passed, &mut violations);
-                (passed || !violations.is_empty())
-                    .then(|| self.trigger_state.last_firing(&event.id))
-                    .flatten()
-            })
-            .max()
+        crate::node_lifecycle::terminal_settlement_target(
+            &self.trigger_graph,
+            &self.trigger_state,
+            self.terminal_verdict.as_ref(),
+        )
     }
 
     pub(super) fn terminal_stop_ready(&self) -> bool {
@@ -1116,148 +1107,40 @@ impl ProductionVmLifecycleLoop {
     pub(super) fn settle_genesis_entrypoints(
         &mut self,
     ) -> Result<Option<SchedulerEventLogAppend>, SchedulerError> {
-        if !self.initial_lifecycle_observations_pending {
-            return Ok(None);
-        }
-        // Initial node-state and fault observations turn the prefix into an
-        // event boundary. Entrypoints must run first; conditional events still
-        // wait for the ordinary pass over those initial observations.
-        let entrypoints = EventGraph::new_for_world(
-            self.trigger_graph
-                .events()
-                .iter()
-                .filter(|event| event.trigger.is_none())
-                .cloned()
-                .collect(),
-            &self.trigger_world,
+        crate::node_lifecycle::WorldTriggerLifecycle::new(
+            self.inner.loop_impl_mut(),
+            crate::node_lifecycle::WorldTriggerState {
+                trigger_graph: &self.trigger_graph,
+                trigger_state: &mut self.trigger_state,
+                trigger_world: &self.trigger_world,
+                assertion_evaluator: &mut self.assertion_evaluator,
+                assertion_oracle: &mut self.assertion_oracle,
+                terminal_verdict: &mut self.terminal_verdict,
+                initial_lifecycle_observations_pending: &mut self
+                    .initial_lifecycle_observations_pending,
+            },
         )
-        .map_err(|error| SchedulerError::BoundaryViolation {
-            message: format!("isolate initial trigger entrypoints: {error}"),
-        })?;
-        if entrypoints.events().is_empty() {
-            return Ok(None);
-        }
-        let scheduler = self.inner.loop_impl();
-        let prefix = scheduler.condition_event_log_prefix();
-        if prefix.point().kind() != crucible::EventEvaluationKind::Genesis {
-            return Err(SchedulerError::BoundaryViolation {
-                message: String::from("initial trigger entrypoints lost their genesis boundary"),
-            });
-        }
-        let mut pass = ConditionEvaluationPass::from_log_prefix_ref(prefix, no_named_trigger_leaf)
-            .with_timer_fires(scheduler.trigger_actions().armed_timers.clone())
-            .with_scheduler_quiescence(scheduler.quiescence()?)
-            .with_world_white_box_policies(&self.trigger_world);
-        let firings = pass.evaluate_event_graph(&entrypoints, &mut self.trigger_state);
-        if firings.is_empty() {
-            return Ok(None);
-        }
-        merge_terminal_verdict(&mut self.terminal_verdict, &firings);
-        let append = self.inner.loop_impl_mut().apply_trigger_firings(&firings)?;
-        self.inner
-            .loop_impl_mut()
-            .apply_queued_topology_changes_at_boundary()?;
-        Ok(Some(append))
+        .settle_genesis_entrypoints()
     }
 
     pub(super) fn settle_trigger_graph(
         &mut self,
     ) -> Result<Vec<SchedulerEventLogAppend>, SchedulerError> {
-        let mut appends = Vec::new();
-        if self.initial_lifecycle_observations_pending {
-            let at = self.inner.loop_impl().frontier();
-            let initial_events = initial_node_state_events(&self.source, at);
-            appends.push(
-                self.inner
-                    .loop_impl_mut()
-                    .append_observable_events(initial_events)?,
-            );
-            self.initial_lifecycle_observations_pending = false;
-        }
-        for _ in 0..MAX_TRIGGER_SETTLE_BATCHES {
-            // Rebuild this derived horizon from restored/settled authority before
-            // quiescence evaluation. In particular, a consumed deadline must not
-            // remain a stale blocker, and a newly armed timer must cap the next RUN.
-            let scheduler = self.inner.loop_impl();
-            let (wakeup, activation) = if self.terminal_verdict.is_some() {
-                let target = self.terminal_settlement_target().ok_or_else(|| {
-                    SchedulerError::BoundaryViolation {
-                        message: String::from(
-                            "terminal verdict has no checkpointed trigger firing",
-                        ),
-                    }
-                })?;
-                let wakeup = (target > scheduler.frontier()).then_some(target);
-                // A terminal pulse from a leading node is observable before the
-                // shared frontier reaches it. Keep the scheduler capped at that
-                // point until earlier network outputs are committed.
-                (wakeup, None)
-            } else {
-                let wakeup = self.trigger_state.next_evaluation_deadline(
-                    &self.trigger_graph,
-                    &scheduler.trigger_actions().armed_timers,
-                    scheduler.frontier(),
-                )?;
-                let activation = self.trigger_state.next_activation_deadline(
-                    &self.trigger_graph,
-                    &scheduler.trigger_actions().armed_timers,
-                    scheduler.frontier(),
-                )?;
-                (wakeup, activation)
-            };
-            self.inner
-                .loop_impl_mut()
-                .set_trigger_wakeup(wakeup, activation)?;
-            if self.terminal_verdict.is_some() {
-                return Ok(appends);
-            }
-            let assertion_outcomes = self.assertion_evaluator.observe_prefix(
-                self.inner.loop_impl().condition_event_log_prefix(),
-                &mut self.assertion_oracle,
-            );
-            let assertion_events = assertion_outcomes
-                .iter()
-                .filter_map(assertion_state_event_from_outcome)
-                .collect::<Vec<_>>();
-            let assertions_changed = !assertion_events.is_empty();
-            if assertions_changed {
-                appends.push(
-                    self.inner
-                        .loop_impl_mut()
-                        .append_observable_events(assertion_events)?,
-                );
-            }
-
-            let scheduler = self.inner.loop_impl();
-            let mut pass = ConditionEvaluationPass::from_log_prefix_ref(
-                scheduler.condition_event_log_prefix(),
-                no_named_trigger_leaf,
-            )
-            .with_timer_fires(scheduler.trigger_actions().armed_timers.clone())
-            .with_scheduler_quiescence(scheduler.quiescence()?)
-            .with_world_white_box_policies(&self.trigger_world);
-            let firings = pass.evaluate_event_graph_at_frontier(
-                &self.trigger_graph,
-                &mut self.trigger_state,
-                scheduler.frontier(),
-            );
-            if firings.is_empty() && !assertions_changed {
-                return Ok(appends);
-            }
-            if !firings.is_empty() {
-                merge_terminal_verdict(&mut self.terminal_verdict, &firings);
-                let append = self.inner.loop_impl_mut().apply_trigger_firings(&firings)?;
-                appends.push(append);
-                self.inner
-                    .loop_impl_mut()
-                    .apply_queued_topology_changes_at_boundary()?;
-            }
-        }
-        Err(SchedulerError::BoundaryViolation {
-            message: format!(
-                "trigger graph did not settle within {MAX_TRIGGER_SETTLE_BATCHES} batches"
-            ),
-        })
+        let source = &self.source;
+        crate::node_lifecycle::WorldTriggerLifecycle::new(
+            self.inner.loop_impl_mut(),
+            crate::node_lifecycle::WorldTriggerState {
+                trigger_graph: &self.trigger_graph,
+                trigger_state: &mut self.trigger_state,
+                trigger_world: &self.trigger_world,
+                assertion_evaluator: &mut self.assertion_evaluator,
+                assertion_oracle: &mut self.assertion_oracle,
+                terminal_verdict: &mut self.terminal_verdict,
+                initial_lifecycle_observations_pending: &mut self
+                    .initial_lifecycle_observations_pending,
+            },
+        )
+        .settle_trigger_graph(|at| initial_node_state_events(source, at))
     }
 }
 
