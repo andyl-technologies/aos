@@ -38,6 +38,23 @@ pub struct QemuHotForkChildProcessBasis {
 }
 
 impl QemuHotForkChildProcessBasis {
+    /// Constructs an explicitly modeled process basis for ownership tests.
+    ///
+    /// This does not authenticate a process, source response, or fork request.
+    #[cfg(any(test, feature = "test-support"))]
+    pub const fn from_unvalidated_test_process_ids(
+        source_process_id: u32,
+        child_process_id: u32,
+    ) -> Self {
+        let request =
+            crate::QmpHotForkRequest::for_test(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 0);
+        Self {
+            source_process_id,
+            child_process_id,
+            request,
+        }
+    }
+
     /// Returns the source template process identifier.
     #[must_use]
     pub const fn source_process_id(self) -> u32 {

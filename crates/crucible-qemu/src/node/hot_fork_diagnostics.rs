@@ -137,6 +137,38 @@ impl std::fmt::Debug for QemuHotForkChildDiagnosticConsumer {
 }
 
 impl QemuHotForkChildDiagnosticConsumer {
+    /// Builds an explicitly modeled private diagnostics consumer for tests.
+    ///
+    /// This creates no native writer, sealed resource plan, or release receipt.
+    /// The supplied socket still uses the production nonblocking drain and
+    /// cumulative capacity guard.
+    ///
+    /// # Errors
+    ///
+    /// Returns a channel error when the socket cannot enter nonblocking mode.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn from_unvalidated_test_stream(
+        host: UnixStream,
+        descriptor_name: crate::QmpDescriptorName,
+        socket_cookie: u64,
+        template_generation: u64,
+    ) -> Result<Self, QemuNodeChannelError> {
+        host.set_nonblocking(true).map_err(|source| {
+            QemuNodeChannelError::new("configure modeled child diagnostics", source.to_string())
+        })?;
+        Ok(Self {
+            host,
+            descriptor_name,
+            socket_cookie,
+            template_generation,
+            retained: Vec::new(),
+            eof: false,
+            writer_detached: false,
+            captured: false,
+            live_drain_error: None,
+        })
+    }
+
     /// Returns the standard-QMP descriptor name binding this consumer.
     #[must_use]
     pub const fn descriptor_name(&self) -> &crate::QmpDescriptorName {

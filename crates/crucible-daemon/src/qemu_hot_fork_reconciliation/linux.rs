@@ -2,12 +2,22 @@
 
 use super::*;
 
+mod admission_failure;
 mod diagnostics;
 mod reconciliation;
 
 /// Production backend failure while retaining source and target authorities.
 #[derive(Debug, Error)]
 pub enum LinuxQemuHotForkReconciliationError {
+    /// Child admission failed with bounded pre-quarantine private evidence.
+    #[error("{source}; private child admission evidence: {report}")]
+    ChildAdmission {
+        /// Original typed channel failure, unchanged by diagnostic collection.
+        #[source]
+        source: QemuNodeChannelError,
+        /// Advisory owned-stream and pidfd observations captured before cleanup.
+        report: Box<admission_failure::ChildAdmissionFailureReport>,
+    },
     /// Source-QEMU channel or resource-stage reconciliation failed.
     #[error(transparent)]
     Source(#[from] QemuNodeChannelError),
