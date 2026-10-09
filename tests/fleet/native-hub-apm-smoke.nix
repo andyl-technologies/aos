@@ -316,11 +316,12 @@ in {
 
       # The publisher receives host-built paths through 9p, then makes only
       # that closure visible at its canonical paths and in its local Nix DB.
+      # Cached reads are safe for these pinned immutable closure members.
       # No store bytes are copied into this VM image.
       publisher.succeed(textwrap.dedent(f"""
           set -eu
           mkdir -p /run/aos-host-store
-          {MOUNT} -t 9p -o trans=virtio,version=9p2000.L,msize=1048576,ro \\
+          {MOUNT} -t 9p -o trans=virtio,version=9p2000.L,msize=1048576,cache=loose,ro \\
             aos-host-store /run/aos-host-store
           test -r /run/aos-host-store/$(basename {CLOSURE_INFO})/registration
           while IFS= read -r store_path; do

@@ -1021,10 +1021,13 @@ in {
 
       for machine in (client, native, worker, s3${lib.optionalString separateDatabase ", database"}):
           machine.wait_for_unit("multi-user.target", timeout=240)
+          # Only pinned, immutable closure members are exposed below. Cache
+          # their data and metadata so APR preparation does not repeatedly
+          # traverse the host through uncached 9p filesystem operations.
           machine.succeed(textwrap.dedent("""
               set -eu
               mkdir -p /run/aos-host-store
-              ${pkgs.util-linux}/bin/mount -t 9p -o trans=virtio,version=9p2000.L,msize=1048576,ro \\
+              ${pkgs.util-linux}/bin/mount -t 9p -o trans=virtio,version=9p2000.L,msize=1048576,cache=loose,ro \\
                 aos-host-store /run/aos-host-store
               while IFS= read -r store_path; do
                 test -e "$store_path" && continue
