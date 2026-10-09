@@ -20,6 +20,10 @@ pub(crate) mod source_requalification;
 #[path = "selected/meta_batch.rs"]
 pub(crate) mod meta_batch;
 
+#[cfg(all(feature = "tokio", unix))]
+#[path = "selected/held_history.rs"]
+mod held_history;
+
 #[cfg(unix)]
 #[path = "selected/cold_fork.rs"]
 pub(crate) mod cold_fork;
@@ -65,6 +69,7 @@ pub(crate) struct GuardEffectContext {
     controls: Vec<crate::guard::RetainedControls>,
     selected_reads: Vec<SelectedControlRead>,
     publication_original: Option<crate::guard::OriginalCommitContext>,
+    existing_reads: Vec<crate::bucket::publication::receipts::RecordRead>,
 }
 
 /// Retains one actual separately protected selected read and its configured owner.
@@ -128,6 +133,11 @@ where
 }
 
 impl GuardEffectContext {
+    /// Borrows original payload observations retained by this actual operation.
+    pub(crate) fn existing_reads(&self) -> &[crate::bucket::publication::receipts::RecordRead] {
+        &self.existing_reads
+    }
+
     /// Borrows the actual retained new candidate context chosen by this producer.
     ///
     /// Absence never establishes that consumed controls were previously durable;
@@ -222,6 +232,7 @@ where
         evidence: CheckedEvidence::Advisory { snapshot },
         final_check: Box::new(|| final_check.recheck()),
         effect_context: Some(GuardEffectContext {
+            existing_reads: Vec::new(),
             final_check: final_check.clone(),
             controls: vec![retained_controls],
             selected_reads,
@@ -332,7 +343,11 @@ where
         _ => None,
     };
     let proof = observed.identity();
-    let history = crate::guard::HistoryObservation::held(proof).tracked(consumed);
+    let candidate_inputs = coordinator.guard().capture_candidate_inputs(admitted)?;
+    let history = crate::guard::HistoryObservation::held(proof)
+        .tracked(consumed)
+        .candidate(&candidate_inputs)
+        .requested_target();
     let direct_container = admitted.uploads.iter().any(|upload| {
         matches!(upload, crate::guard::StagedUpload::Meta { kind, .. }
             if matches!(kind, terrane_core::identity::IdentityKind::Pack
@@ -342,7 +357,7 @@ where
         history,
         original: Some(original),
     };
-    let (next, local_controls, early_controls) = if direct_container {
+    let (next, local_controls, early_controls, history_context) = if direct_container {
         // Direct import/Index lanes retain their ordinary existing semantics.
         // No early control lock or contextual batch is created for this attempt.
         let next = coordinator
@@ -355,7 +370,7 @@ where
                 retained_previous,
             )
             .await?;
-        (next, None, None)
+        (next, None, None, None)
     } else {
         let (immutable_context, local_controls) = meta_batch::retain(
             meta_batch::ControlOwner {
@@ -397,15 +412,29 @@ where
             .first()
             .ok_or_else(invalid)?
             .clone();
-        (next, Some(local_controls), Some(early_controls))
+        (
+            next,
+            Some(local_controls),
+            Some(early_controls),
+            Some(immutable_context),
+        )
     };
+    #[cfg(all(feature = "tokio", unix))]
+    let mut local_controls = local_controls;
+    #[cfg(all(feature = "tokio", unix))]
+    let mut history_context = history_context;
 
     // Durable content and log staging can publish lower logical revisions. The
     // candidate therefore binds the refreshed actual held selection, while its
     // root-policy reads remain under this same physical exclusion.
     #[cfg(test)]
     trace.mark("selected-stage-durable");
-    let staged_observation = coordinator.store().observe_publication().await?;
+    let retain_history_inputs = cfg!(all(feature = "tokio", unix)) && history_context.is_some();
+    let staged_observation = if retain_history_inputs {
+        coordinator.store().observe_publication_retained().await?
+    } else {
+        coordinator.store().observe_publication().await?
+    };
     if staged_observation.state().guard != observed.state().guard
         || staged_observation.state().loss_generation != observed.state().loss_generation
         || staged_observation.state().branches != observed.state().branches
@@ -414,10 +443,38 @@ where
         return Err(invalid().into());
     }
     let observed = &staged_observation;
-    coordinator
-        .guard()
-        .verified_history_observed(admitted.commit.identity(), history)
-        .await?;
+    #[cfg(all(feature = "tokio", unix))]
+    let (completed_history, existing_reads) = match history_context.as_mut() {
+        Some(context) => {
+            held_history::complete(
+                held_history::HistoryScope {
+                    coordinator,
+                    observed,
+                    history,
+                    view: admitted.commit.identity(),
+                },
+                authority,
+                context,
+                local_controls.as_mut().ok_or_else(invalid)?,
+            )
+            .await?
+        }
+        None => (
+            coordinator
+                .guard()
+                .complete_candidate_history_observed(admitted.commit.identity(), history)
+                .await?,
+            Vec::new(),
+        ),
+    };
+    #[cfg(not(all(feature = "tokio", unix)))]
+    let (completed_history, existing_reads) = (
+        coordinator
+            .guard()
+            .complete_candidate_history_observed(admitted.commit.identity(), history)
+            .await?,
+        Vec::new(),
+    );
 
     #[cfg(test)]
     trace.mark("selected-candidate-history-checked");
@@ -511,6 +568,11 @@ where
             .sort_by(|left, right| left.name.as_bytes().cmp(right.name.as_bytes()));
         CheckedEvidence::Candidate { snapshot, lineage }
     };
+    coordinator.guard().retain_completed_selection(
+        &candidate_inputs,
+        &completed_history,
+        history,
+    )?;
     let final_check = retain_final_check(coordinator.guard(), &requests, started, timing)?;
     let permit = CheckedMutation {
         observed,
@@ -520,6 +582,7 @@ where
         evidence,
         final_check: Box::new(|| final_check.recheck()),
         effect_context: Some(GuardEffectContext {
+            existing_reads,
             final_check: final_check.clone(),
             controls: vec![retained_controls],
             selected_reads,
@@ -717,6 +780,7 @@ where
         },
         final_check: Box::new(|| final_check.recheck()),
         effect_context: Some(GuardEffectContext {
+            existing_reads: Vec::new(),
             final_check: final_check.clone(),
             controls: vec![retained_controls],
             selected_reads,

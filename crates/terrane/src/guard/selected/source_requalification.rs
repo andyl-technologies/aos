@@ -203,6 +203,7 @@ where
         },
         final_check: Box::new(|| final_check.recheck()),
         effect_context: Some(GuardEffectContext {
+            existing_reads: Vec::new(),
             final_check: final_check.clone(),
             controls: vec![retained],
             selected_reads,

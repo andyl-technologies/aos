@@ -279,6 +279,21 @@ async fn contextual_frame<F: LocalFs + BucketBinding>(
             )
             .await?;
     }
+    for read in context.existing_reads() {
+        if let Some(retained) = read.retained_payload() {
+            frame.retained_payload_read(retained)?;
+        } else {
+            frame
+                .observed_read(
+                    fs,
+                    read.path(),
+                    read.bytes(),
+                    read.metadata(),
+                    FencePolicy::Payload { owner },
+                )
+                .await?;
+        }
+    }
     // Each submitted worker owns every descriptor, including independent
     // source configuration locks. Cancellation cannot release those inputs.
     for (retained, descriptors) in controls.iter().zip(control_descriptors) {

@@ -17,6 +17,8 @@ pub(crate) use consumed::registration as consumed_registration;
 #[cfg(feature = "std")]
 mod existing;
 mod history;
+#[cfg(all(feature = "tokio", unix))]
+pub(crate) use history::CompletedCandidateHistory;
 #[cfg(feature = "std")]
 pub mod index_backfill;
 #[cfg(feature = "std")]

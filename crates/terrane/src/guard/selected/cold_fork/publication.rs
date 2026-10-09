@@ -98,6 +98,7 @@ where
     )?;
     let immutable = super::super::meta_batch::from_cold(ColdImmutableInputs {
         effect: GuardEffectContext {
+            existing_reads: Vec::new(),
             final_check: early_check,
             controls: vec![initial_controls.clone()],
             selected_reads: selected_reads.clone(),
@@ -353,6 +354,7 @@ where
         evidence: super::super::super::CheckedEvidence::Candidate { snapshot, lineage },
         final_check: Box::new(|| final_check.recheck()),
         effect_context: Some(GuardEffectContext {
+            existing_reads: Vec::new(),
             final_check: final_check.clone(),
             controls: vec![retained_controls],
             selected_reads,

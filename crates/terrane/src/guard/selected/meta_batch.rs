@@ -269,6 +269,7 @@ where
     let state = observed.state();
     let context = ImmutableEffectContext {
         effect: GuardEffectContext {
+            existing_reads: Vec::new(),
             final_check,
             controls,
             selected_reads: reads,
