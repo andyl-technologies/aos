@@ -269,6 +269,68 @@ An embedded provider must disclose shared memory and cooperative cancellation.
 Remote supervision can implement the same boundary with authenticated ownership,
 grants, and finite cleanup; no shared daemon is required for local execution.
 
+### Configure managed execution in AOS
+
+Enable `aos.dispatch` and bind a profile to an existing controller service. This
+example assigns `batch-controller.service` an application budget shared by every
+session it opens, with a smaller shared solver budget and per-worker limits:
+
+```nix
+aos.dispatch = {
+  enable = true;
+  applications.batch = {
+    ownerService = "batch-controller";
+    aggregate = {
+      cpuWeight = 400;
+      memoryHighBytes = 1073741824;
+      memoryMaxBytes = 1610612736;
+      tasksMax = 256;
+    };
+    solvers = {
+      memoryHighBytes = 536870912;
+      memoryMaxBytes = 1073741824;
+      tasksMax = 128;
+    };
+    worker = {
+      cpuQuotaPercent = 100;
+      memoryHighBytes = 201326592;
+      memoryMaxBytes = 268435456;
+      tasksMax = 32;
+    };
+  };
+};
+```
+
+The module installs the tools and `/etc/dispatch/systemd-profiles.json`, creates
+the application and solver slices, and places the controller in its application
+slice. Enable the facade's `systemd` feature (or the runtime crate's matching
+feature) to select that trusted profile:
+
+```rust
+use dispatch::runtime::{
+    RequiredGuarantees, SessionBuilder,
+    providers::systemd::{SystemdProfile, SystemdProvider},
+};
+
+let configuration = tokio::fs::read("/etc/dispatch/systemd-profiles.json").await?;
+let profile = SystemdProfile::from_configuration(&configuration, "batch")?;
+let provider = SystemdProvider::connect(profile).await?;
+let session = SessionBuilder::new(Arc::new(provider), launch)
+    .required_guarantees(RequiredGuarantees {
+        hard_cancellation: true,
+        independent_memory: true,
+        aggregate_accounting: true,
+        owner_cleanup: true,
+    })
+    .start().await?;
+```
+
+Here `launch` supplies the trusted executable paths as in the session example.
+The controller or its supervisor must already be authorized to use the selected
+systemd manager. Profile configuration supplies resource policy; it does not
+grant D-Bus permissions. Standalone consumers can use a user-manager profile or
+provide their own supervisor through the same execution-provider interface.
+
 ## Use the command-line JSON interface
 
 The following examples use the [packing fixtures](../../crates/dispatch/examples/fixtures/packing.problem.json):
