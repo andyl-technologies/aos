@@ -705,13 +705,14 @@ in {
 
       # Exercise the anonymous, content-bearing browser and stable API aliases
       # served by the same native Hub process. The selected endpoint publishes
-      # a strong ETag that addresses the immutable documentation object.
+      # a strong ETag that addresses the immutable documentation object. Browser
+      # aliases redirect to the selected release and digest before rendering.
       consumer.succeed(
-          f"{CURL} -fsS '{REGISTRY}-/docs?q=nginx&kind=package' "
+          f"{CURL} -fsSL '{REGISTRY}-/docs?q=nginx&kind=package' "
           "| grep -q 'href=\"/acme/production/-/docs/nginx/'"
       )
       consumer.succeed(
-          f"{CURL} -fsS {REGISTRY}-/docs/nginx/${pkgs.nginx.version}/x86_64-linux "
+          f"{CURL} -fsSL {REGISTRY}-/docs/nginx/${pkgs.nginx.version}/x86_64-linux "
           "| grep -q 'Scope: <strong>package / nginx</strong>'"
       )
       consumer.succeed(textwrap.dedent(f"""
