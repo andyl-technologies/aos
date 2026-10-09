@@ -3,6 +3,9 @@
 //! The existing admitted custody fixture supplies effect counters. These cases
 //! do not assert process image, hardware or backend continuation qualification.
 
+// Test panics expose missing reservation preflights or original stream corruption.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use super::*;
 use std::{io::Write, os::unix::fs::OpenOptionsExt};
 

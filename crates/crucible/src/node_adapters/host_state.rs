@@ -431,6 +431,7 @@ pub(super) fn capture_live(
         node: node.route.node.clone(),
         profile: Id::new(HOST_EXACT_PROFILE).map_err(|error| failure(&error.to_string()))?,
         state: InputPayload { reference, bytes },
+        native_model: inventory.native_model,
         evidence: inventory.evidence,
     })
 }
@@ -466,9 +467,22 @@ pub(super) fn state_receipt_objects(
         input: Option<(&'a Id, &'a ContentRef, U64)>,
         pending_causes: ContentRef,
     }
+
+    #[derive(Serialize)]
+    struct CauseEvidence<'a> {
+        schema: &'static str,
+        causes: CausesWire<'a>,
+    }
+
     let native = node.capture()?;
+    // A bare empty array is also a legitimate input-inventory body. Scope
+    // newly issued causal evidence so one byte hash never acquires conflicting
+    // media metadata. Historical receipt bodies remain opaque preserved bytes.
     let causes_bytes = bounded_bytes(
-        &CausesWire(&node.pending_causes),
+        &CauseEvidence {
+            schema: "crucible.host-pending-causes.v1",
+            causes: CausesWire(&node.pending_causes),
+        },
         node.limits.maximum_capture_bytes,
     )?;
     let receipt = Receipt {

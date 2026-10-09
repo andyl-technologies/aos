@@ -18,6 +18,8 @@ fn scripted_source_split_cut_and_original_retry_preserve_actual_output_custody()
     let (mut adapter, record) = model_fixture(HostModel::ScriptedSource(Box::new(source)));
     adapter.arm(&record).unwrap();
     let activation = WorldActivation {
+        nodes: std::rc::Rc::from([]),
+        preparation: None,
         authority: Rc::new(()),
         record,
     };
@@ -194,6 +196,8 @@ fn scripted_source_split_cut_and_original_retry_preserve_actual_output_custody()
             .unwrap();
         restored.arm(&target).unwrap();
         let fresh_activation = WorldActivation {
+            nodes: std::rc::Rc::from([]),
+            preparation: None,
             authority: Rc::new(()),
             record: target,
         };

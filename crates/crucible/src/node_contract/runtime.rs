@@ -12,7 +12,7 @@ use super::{
     ActivationPublisher, ActivationRecord, BeginResult, CancelStatus, EffectKnowledge, FacetKind,
     Lifecycle, NodeFacet, NodeRoute, OperationAdmission, OperationFailure, OperationOutcome,
     OperationRequest, OperationToken, OwnerIdentity, QuarantinedRuntime, RuntimeError,
-    RuntimeLimits, SimulationNode, Submission, WorldActivation,
+    RuntimeLimits, SimulationNode, Submission, ValidatedNodePreparation, WorldActivation,
     activation::ActivationBarrier,
     validation::{valid_outcome, validate_request, validate_roster},
 };
@@ -45,6 +45,59 @@ struct NodeSnapshot {
     route: NodeRoute,
     facets: Vec<FacetKind>,
     thread_affinity: super::ThreadAffinity,
+}
+
+impl NodeSnapshot {
+    fn validate_current(&self, node: &dyn SimulationNode) -> Result<(), RuntimeError> {
+        if !self.thread_affinity.permits_current_thread() {
+            return Err(RuntimeError::ThreadAffinity);
+        }
+        if node.descriptor() != &self.descriptor
+            || node.binding() != &self.binding
+            || node.route() != &self.route
+            || node.facets() != self.facets
+            || node.thread_affinity() != self.thread_affinity
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        Ok(())
+    }
+}
+
+// Native validation hooks may expose changed declarations through interior
+// state. Recheck the frozen admission before and after all readiness effects.
+fn prepare_node_for_activation(
+    node: &mut dyn SimulationNode,
+    snapshot: &NodeSnapshot,
+    record: &ActivationRecord,
+    bindings: &BTreeMap<Id, Vec<crucible_node_contract::HashRef>>,
+) -> Result<ValidatedNodePreparation, RuntimeError> {
+    snapshot.validate_current(node)?;
+    let readiness = node.arm(record).map_err(|_| RuntimeError::InvalidReceipt)?;
+    snapshot.validate_current(node)?;
+    if readiness.owners != snapshot.route.owners
+        || readiness.boundary != record.boundary
+        || node.validate_readiness(record, &readiness).is_err()
+    {
+        return Err(RuntimeError::InvalidReceipt);
+    }
+
+    let owners = node
+        .prepared_owners(record, &readiness)
+        .map_err(|_| RuntimeError::InvalidReceipt)?;
+    if let Some(owners) = &owners {
+        node.validate_prepared_owners(record, &readiness, owners)
+            .map_err(|_| RuntimeError::InvalidReceipt)?;
+    }
+    snapshot.validate_current(node)?;
+
+    let preparation = ValidatedNodePreparation {
+        node: snapshot.route.node.clone(),
+        readiness,
+        prepared_owners: owners,
+    };
+    super::activation_preparation::validate_owner_mapping(&preparation, bindings)?;
+    Ok(preparation)
 }
 
 /// Owns admitted heterogeneous nodes and serializes all shared-owner mutations.
@@ -192,6 +245,7 @@ impl NodeRuntime {
     /// permission is issued, and all handles remain under runtime custody.
     pub fn arm_all(&mut self) -> Result<(), RuntimeError> {
         if self.activated
+            || !self.barrier.can_arm()
             || self
                 .owners
                 .values()
@@ -201,26 +255,78 @@ impl NodeRuntime {
         }
 
         let record = self.barrier.record().clone();
+        // Reserve preparation custody and compute the complete alias inventory
+        // before the first native arm. No adapter supplies its own binding scope.
         let mut ready = Vec::new();
-        for node in self.nodes.values_mut() {
-            let route = node.route().clone();
-            match node.arm(&record) {
-                Ok(attestation)
-                    if attestation.owners == route.owners
-                        && attestation.boundary == record.boundary
-                        && node.validate_readiness(&record, &attestation).is_ok() =>
-                {
-                    ready.extend(attestation.owners);
-                }
-                _ => {
-                    self.barrier.abandon();
-                    self.contain_roster(&route);
-                    return Err(RuntimeError::InvalidReceipt);
+        ready
+            .try_reserve_exact(self.nodes.len())
+            .map_err(|_| RuntimeError::ResourceLimit)?;
+        let mut bindings = BTreeMap::<Id, Vec<crucible_node_contract::HashRef>>::new();
+        for snapshot in self.snapshots.values() {
+            let binding = snapshot
+                .binding
+                .identity()
+                .map_err(|_| RuntimeError::InvalidReceipt)?;
+            for owner in &snapshot.route.owners {
+                bindings
+                    .entry(owner.owner.clone())
+                    .or_default()
+                    .push(binding.clone());
+            }
+        }
+        for hashes in bindings.values_mut() {
+            hashes.sort_by(|left, right| {
+                (&left.domain, &left.digest).cmp(&(&right.domain, &right.digest))
+            });
+            hashes.dedup();
+        }
+        for (node_id, node) in &mut self.nodes {
+            let Some(snapshot) = self.snapshots.get(node_id) else {
+                self.barrier.abandon(ready);
+                return Err(RuntimeError::UnknownNode);
+            };
+            let original_route = snapshot.route.clone();
+            match prepare_node_for_activation(node.as_mut(), snapshot, &record, &bindings) {
+                Ok(preparation) => ready.push(preparation),
+                Err(error) => {
+                    self.barrier.abandon(ready);
+                    self.contain_roster(&original_route);
+                    return Err(error);
                 }
             }
         }
 
-        self.barrier.ready(&ready)
+        if self
+            .barrier
+            .prepared_nodes()
+            .is_ok_and(|original| original != ready)
+        {
+            self.barrier.abandon(ready);
+            self.contain_roster(&NodeRoute {
+                node: record.activation_id,
+                owners: record.owners,
+            });
+            return Err(RuntimeError::InvalidReceipt);
+        }
+        self.barrier.ready(ready)
+    }
+
+    /// Borrows complete original readiness for preparing durable coordinator state.
+    ///
+    /// These data records grant no execution or publication authority.
+    ///
+    /// # Errors
+    /// Refuses incomplete, abandoned, already published or uncertain preparation.
+    pub fn prepared_node_records(&self) -> Result<&[ValidatedNodePreparation], RuntimeError> {
+        self.barrier.prepared_nodes()
+    }
+
+    pub(crate) fn reconcile_contained_publication(
+        &mut self,
+        record: &ActivationRecord,
+        publisher: &mut dyn ActivationPublisher,
+    ) -> Result<super::PublicationStatus, RuntimeError> {
+        self.barrier.reconcile_contained(record, publisher)
     }
 
     /// Durably publishes complete world readiness and mints local authority.
@@ -240,6 +346,7 @@ impl NodeRuntime {
         {
             return Err(RuntimeError::OwnerUnavailable);
         }
+        self.validate_all_declarations()?;
         let activation = self.barrier.publish(&self.authority, publisher)?;
         self.finish_activation();
         Ok(activation)
@@ -253,6 +360,7 @@ impl NodeRuntime {
         &mut self,
         publisher: &mut dyn ActivationPublisher,
     ) -> Result<WorldActivation, RuntimeError> {
+        self.validate_all_declarations()?;
         let activation = self.barrier.reconcile(&self.authority, publisher)?;
         self.finish_activation();
         Ok(activation)
@@ -733,6 +841,26 @@ impl NodeRuntime {
         Ok(())
     }
 
+    fn validate_all_declarations(&mut self) -> Result<(), RuntimeError> {
+        if self.nodes.len() != self.snapshots.len() {
+            return Err(RuntimeError::UnknownNode);
+        }
+        let changed = self.snapshots.iter().find_map(|(id, snapshot)| {
+            let result = match self.nodes.get(id) {
+                Some(node) => snapshot.validate_current(node.as_ref()),
+                None => Err(RuntimeError::UnknownNode),
+            };
+            result.err().map(|error| (snapshot.route.clone(), error))
+        });
+        if let Some((route, error)) = changed {
+            if error != RuntimeError::ThreadAffinity {
+                self.contain_roster(&route);
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
     fn checked_route(&mut self, node: &NodeId) -> Result<NodeRoute, RuntimeError> {
         let handle = self.nodes.get(node).ok_or(RuntimeError::UnknownNode)?;
         let snapshot = self.snapshots.get(node).ok_or(RuntimeError::UnknownNode)?;
@@ -989,6 +1117,13 @@ mod dispatch;
 
 #[path = "runtime_inputs.rs"]
 mod inputs;
+
+#[path = "runtime_input_provenance.rs"]
+mod input_provenance;
+
+pub use input_provenance::{InputProvenanceClosure, InputProvenanceLimits, SavedInputProvenance};
+
+mod initial;
 
 #[path = "runtime_evidence.rs"]
 mod evidence;

@@ -4,6 +4,9 @@
 //! qualification fixture is explicitly synthetic and does not qualify artifacts
 //! or profiles for production use.
 
+// Assertion panics expose failures of native bytes and signed original lineage.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::{
     collections::BTreeMap,
     fs,

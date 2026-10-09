@@ -39,6 +39,8 @@ fn exact(ceiling: ExactCeiling) -> ExecutionPolicy {
 
 fn fixture(policy: ExecutionPolicy, resolution: u64, latency: Option<u64>) -> CausalScheduler {
     let activation = WorldActivation {
+        nodes: std::rc::Rc::from([]),
+        preparation: None,
         authority: Rc::new(()),
         record: ActivationRecord {
             generation: U64::new(1),
@@ -1304,6 +1306,8 @@ fn saved_source_validation_checks_admitted_profile_without_reminting_custody() {
         })
         .collect();
     let activation = WorldActivation {
+        nodes: std::rc::Rc::from([]),
+        preparation: None,
         authority: Rc::new(()),
         record: ActivationRecord {
             world_binding_hash: graph.world_binding_hash().clone(),

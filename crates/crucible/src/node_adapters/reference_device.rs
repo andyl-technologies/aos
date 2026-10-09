@@ -27,6 +27,9 @@ use crate::{
     },
 };
 
+pub(crate) mod control;
+pub use control::ControlledReference;
+
 /// Identifies the installed coarse controlled-checksum execution facet.
 pub const REFERENCE_DEVICE_QUANTIZED_PROFILE: &str = "reference-device/quantized-v1";
 
@@ -84,11 +87,11 @@ impl RoleDescription for QuantizedDescription {
 /// The profile deliberately supports coarse controller-window visibility only.
 /// Application-level park does not establish physical OS suspension. Native
 /// process memory preservation, durable restart and exact execution are refused.
-pub struct ReferenceDeviceNode {
+pub struct ControlledReferenceNode<C: ControlledReference> {
     descriptor: NodeDescriptor,
     binding: NodeBinding,
     route: NodeRoute,
-    child: ReferenceDevice,
+    child: C,
     world_hash: crucible_node_contract::HashRef,
     thread: std::thread::ThreadId,
     profile: QuantizedDescription,
@@ -107,9 +110,15 @@ pub struct ReferenceDeviceNode {
     reclaimed: Option<NativeReclamationReceipt>,
     quarantined: bool,
     observation: Option<(WorldActivation, NativeSchedulingObservation)>,
+    boundary_evidence: BTreeMap<crucible_node_contract::HashRef, InputPayload>,
+    boundary_evidence_bytes: usize,
+    boundary_evidence_activation: Option<WorldActivation>,
 }
 
-impl ReferenceDeviceNode {
+/// Retains the original native reference-device adapter and constructor API.
+pub type ReferenceDeviceNode = ControlledReferenceNode<ReferenceDevice>;
+
+impl ControlledReferenceNode<ReferenceDevice> {
     /// Takes custody of a real prepared child already authenticated by admission.
     ///
     /// Preparation precedes whole-graph sealing; this constructor does not create
@@ -124,6 +133,26 @@ impl ReferenceDeviceNode {
         node: &Id,
         child: ReferenceDevice,
         qualification: &dyn ReferenceDeviceQualification,
+        maximum_operations: usize,
+    ) -> Result<Self, OperationFailure> {
+        Self::from_controlled_prepared(
+            graph,
+            node,
+            child,
+            &|child, descriptor, binding| {
+                qualification.authenticate_child(child, descriptor, binding)
+            },
+            maximum_operations,
+        )
+    }
+}
+
+impl<C: ControlledReference> ControlledReferenceNode<C> {
+    pub(crate) fn from_controlled_prepared(
+        graph: &AdmittedGraph,
+        node: &Id,
+        child: C,
+        authenticate: &impl Fn(&C, &NodeDescriptor, &NodeBinding) -> Result<(), OperationFailure>,
         maximum_operations: usize,
     ) -> Result<Self, OperationFailure> {
         let descriptor = graph
@@ -181,7 +210,7 @@ impl ReferenceDeviceNode {
                 "reference child selected facet differs from installed profile",
             ));
         }
-        qualification.authenticate_child(&child, descriptor, binding)?;
+        authenticate(&child, descriptor, binding)?;
         let executable = binding
             .compatibility
             .implementation
@@ -251,6 +280,9 @@ impl ReferenceDeviceNode {
             reclaimed: None,
             quarantined: false,
             observation: None,
+            boundary_evidence: BTreeMap::new(),
+            boundary_evidence_bytes: 0,
+            boundary_evidence_activation: None,
         })
     }
 
@@ -262,6 +294,61 @@ impl ReferenceDeviceNode {
                 .activation_authority
                 .as_ref()
                 .is_none_or(|authority| Rc::ptr_eq(authority, &activation.authority))
+    }
+
+    fn reserve_boundary_evidence(&self, object: &InputPayload) -> Result<(), OperationFailure> {
+        object
+            .reference
+            .verify(&object.bytes)
+            .map_err(|error| no_effect(&error.to_string()))?;
+        if let Some(original) = self.boundary_evidence.get(&object.reference.hash) {
+            if original != object {
+                return Err(no_effect(
+                    "original reference proof content or metadata changed",
+                ));
+            }
+            return Ok(());
+        }
+        // Historical proofs remain available after ACK. Admission bounds their
+        // complete lifetime inventory rather than discarding earlier custody.
+        if self.boundary_evidence.len()
+            >= self.maximum_operations.saturating_mul(2).saturating_add(1)
+            || self
+                .boundary_evidence_bytes
+                .checked_add(object.bytes.len())
+                .is_none_or(|total| total > 16 * 1024 * 1024)
+        {
+            return Err(no_effect(
+                "reference historical boundary proof inventory exhausted",
+            ));
+        }
+        Ok(())
+    }
+
+    fn retain_boundary_evidence(
+        &mut self,
+        activation: &WorldActivation,
+        object: InputPayload,
+    ) -> Result<(), OperationFailure> {
+        self.reserve_boundary_evidence(&object)?;
+        if !self.same_world(activation)
+            || self
+                .boundary_evidence_activation
+                .as_ref()
+                .is_some_and(|original| {
+                    original.record() != activation.record()
+                        || !Rc::ptr_eq(&original.authority, &activation.authority)
+                })
+        {
+            return Err(no_effect("reference boundary evidence activation changed"));
+        }
+        if !self.boundary_evidence.contains_key(&object.reference.hash) {
+            self.boundary_evidence_bytes += object.bytes.len();
+            self.boundary_evidence
+                .insert(object.reference.hash.clone(), object);
+        }
+        self.boundary_evidence_activation = Some(activation.clone());
+        Ok(())
     }
 
     fn original(&self, token: &OperationToken) -> Result<&Window, OperationFailure> {
@@ -284,11 +371,11 @@ impl ReferenceDeviceNode {
         operation: &Id,
     ) -> Result<NativeSchedulingObservation, OperationFailure> {
         let payload_bytes = json_bytes(&receipt.output)?;
-        let payload = canonical::content_ref(&payload_bytes, "application/json")
+        let payload = canonical::content_ref(&payload_bytes, self.child.output_media_type())
             .map_err(|e| no_effect(&e.to_string()))?;
         let proof = canonical::content_ref(&json_bytes(receipt)?, "application/json")
             .map_err(|e| no_effect(&e.to_string()))?;
-        let publication_id = Id::new(format!(
+        let local_publication_id = Id::new(format!(
             "output/{}",
             canonical::hash(
                 "cnp.reference-publication.v1",
@@ -298,6 +385,10 @@ impl ReferenceDeviceNode {
             .digest
         ))
         .map_err(|e| no_effect(&e.to_string()))?;
+        let (publication_id, native_sequence) = self
+            .child
+            .publication_identity(receipt)?
+            .unwrap_or((local_publication_id, receipt.grant.quantum));
         let next = receipt
             .grant
             .publication
@@ -324,7 +415,7 @@ impl ReferenceDeviceNode {
             publications: vec![NativePublication {
                 publication_id,
                 endpoint: self.output.clone(),
-                native_sequence: receipt.grant.quantum,
+                native_sequence,
                 publication: receipt.grant.publication,
                 evaluation: None,
                 causal_parents: input
@@ -355,7 +446,7 @@ impl ReferenceDeviceNode {
     }
 }
 
-impl ExternalDeviceNode for ReferenceDeviceNode {
+impl<C: ControlledReference> ExternalDeviceNode for ControlledReferenceNode<C> {
     fn external_description(&self) -> &dyn RoleDescription {
         &self.profile
     }

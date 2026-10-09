@@ -2,7 +2,7 @@
 
 use super::*;
 
-impl SimulationNode for ReferenceDeviceNode {
+impl<C: ControlledReference> SimulationNode for ControlledReferenceNode<C> {
     fn descriptor(&self) -> &NodeDescriptor {
         &self.descriptor
     }
@@ -43,17 +43,26 @@ impl SimulationNode for ReferenceDeviceNode {
                 "device readiness lacks actual original inactive child",
             ));
         }
+        let public_readiness = self.child.prepare_activation(record)?;
         let proof = json_bytes(
             &serde_json::json!({"schema_version":1,"child_pid":self.child.child_pid(),
             "supervision_id":self.child.supervision_id(),"owners":self.route.owners,"activation_id":record.activation_id,"world_generation":record.generation,"world_binding_hash":record.world_binding_hash,"activation_owners":record.owners,"activation_boundary":record.boundary,"state":self.descriptor.initialization_ref}),
         )?;
-        let ready = ReadyAttestation {
+        let ready = public_readiness.unwrap_or(ReadyAttestation {
             owners: self.route.owners.clone(),
             boundary: self.boundary,
             state_inventory: self.descriptor.initialization_ref.clone(),
             ready_receipt: canonical::content_ref(&proof, "application/json")
                 .map_err(|e| no_effect(&e.to_string()))?,
-        };
+        });
+        if ready.owners != self.route.owners
+            || ready.boundary != self.boundary
+            || ready.state_inventory != self.descriptor.initialization_ref
+        {
+            return Err(native_failure(
+                "controlled readiness differs from original sealed scope",
+            ));
+        }
         if self
             .ready
             .as_ref()
@@ -78,93 +87,57 @@ impl SimulationNode for ReferenceDeviceNode {
         {
             return Err(no_effect("device native initial readiness custody changed"));
         }
-        Ok(())
+        self.child.validate_activation(record, ready)
+    }
+
+    fn prepared_owners(
+        &self,
+        record: &ActivationRecord,
+        ready: &ReadyAttestation,
+    ) -> Result<Option<Vec<crucible_node_contract::PreparedOwner>>, OperationFailure> {
+        self.validate_readiness(record, ready)?;
+        self.child.prepared_owners(record, ready)
+    }
+
+    fn validate_prepared_owners(
+        &self,
+        record: &ActivationRecord,
+        ready: &ReadyAttestation,
+        owners: &[crucible_node_contract::PreparedOwner],
+    ) -> Result<(), OperationFailure> {
+        self.validate_readiness(record, ready)?;
+        self.child.validate_prepared_owners(record, ready, owners)
+    }
+
+    fn validate_initial_preparation(
+        &self,
+        world: &ActivationRecord,
+        ready: &ReadyAttestation,
+    ) -> Result<(), OperationFailure> {
+        self.validate_readiness(world, ready)?;
+        if !self.windows.is_empty() || self.activation_authority.is_some() {
+            return Err(no_effect("controlled node has retained continuation state"));
+        }
+        self.child.validate_initial_preparation(world, ready)
     }
 
     fn stage_inputs(
         &mut self,
         batch: &RuntimeInputBatch,
     ) -> Result<NativeInputAcknowledgement, OperationFailure> {
-        if !self.same_world(batch.activation())
-            || batch.node() != &self.route.node
-            || batch.owners() != self.route.owners
-            || self.quarantined
-            || self.active.is_some()
-            || self.staged.is_some()
-            || self.child.status() != DeviceStatus::Parked
-            || (!self.descriptor.ports.iter().any(|port| {
-                port.lanes
-                    .iter()
-                    .any(|lane| lane.direction == Direction::Input)
-            }) && (!batch.deliveries().is_empty() || !batch.payloads().is_empty()))
-        {
-            return Err(no_effect(
-                "reference device input staging custody unavailable",
-            ));
-        }
-        let mut bytes = Vec::new();
-        for delivery in batch.deliveries() {
-            if delivery.consumer != self.route.node
-                || delivery.consumer_endpoint.node_id != self.route.node
-                || !self.descriptor.ports.iter().any(|port| {
-                    port.id == delivery.consumer_endpoint.port_id
-                        && port.lanes.iter().any(|lane| {
-                            lane.id == delivery.consumer_endpoint.lane_id
-                                && lane.direction == Direction::Input
-                        })
-                })
-            {
-                return Err(no_effect(
-                    "reference input targets an unadmitted native port or lane",
-                ));
-            }
-            let payload = batch
-                .payloads()
-                .iter()
-                .find(|payload| payload.reference == delivery.payload)
-                .ok_or_else(|| no_effect("original device payload absent"))?;
-            let reference = canonical::content_ref(&payload.bytes, &payload.reference.media_type)
-                .map_err(|e| no_effect(&e.to_string()))?;
-            if reference != payload.reference
-                || bytes
-                    .len()
-                    .checked_add(payload.bytes.len())
-                    .is_none_or(|size| size > MAX_INPUT_BYTES)
-            {
-                return Err(no_effect(
-                    "reference device immutable input bytes mismatch or exceed native ceiling",
-                ));
-            }
-            bytes.extend_from_slice(&payload.bytes);
-        }
-        let proof_ref = canonical::content_ref(&bytes, "application/octet-stream")
-            .map_err(|e| no_effect(&e.to_string()))?;
-        // Empty byte batches still have real retained staging evidence.
-        let proof_ref = if bytes.is_empty() {
-            canonical::content_ref(
-                b"reference-device-owned-empty-input-v1",
-                "application/octet-stream",
-            )
-            .map_err(|e| no_effect(&e.to_string()))?
-        } else {
-            proof_ref
-        };
-        let acknowledgement = NativeInputAcknowledgement {
-            stage_operation: batch.stage_operation().clone(),
-            batch: batch.batch().clone(),
-            node: batch.node().clone(),
-            owners: batch.owners().to_vec(),
-            cutoff: batch.cutoff(),
-            inventory: batch.inventory().clone(),
-            proof_ref,
-        };
-        self.activation_authority = Some(Rc::clone(&batch.activation.authority));
-        self.staged = Some(Staged {
-            original: Rc::new(batch.retained_copy()),
-            bytes,
-            acknowledgement: acknowledgement.clone(),
-        });
-        Ok(acknowledgement)
+        self.stage_inputs_inner(batch, None)
+    }
+
+    fn requires_input_provenance(&self, batch: &RuntimeInputBatch) -> bool {
+        self.child.requires_input_provenance(batch)
+    }
+
+    fn stage_inputs_with_provenance(
+        &mut self,
+        batch: &RuntimeInputBatch,
+        provenance: &crate::node_contract::InputProvenanceClosure,
+    ) -> Result<NativeInputAcknowledgement, OperationFailure> {
+        self.stage_inputs_inner(batch, Some(provenance))
     }
 
     fn validate_input_acknowledgement(
@@ -286,7 +259,8 @@ impl SimulationNode for ReferenceDeviceNode {
         self.active = Some(original.token().operation().clone());
         if let Err(error) = self
             .child
-            .stage(grant.clone(), &staged.bytes)
+            .retain_operation(original)
+            .and_then(|()| self.child.stage(grant.clone(), &staged.bytes))
             .and_then(|()| self.child.activate(&grant))
         {
             self.quarantined = true;
@@ -596,9 +570,19 @@ impl SimulationNode for ReferenceDeviceNode {
             .get()
             .checked_add(self.quantum_ps)
             .ok_or_else(|| no_effect("reference future boundary overflow"))?;
-        let proof_ref = canonical::content_ref(&json_bytes(&serde_json::json!({"child":self.child.child_pid(),"owners":self.route.owners,
-            "controller_boundary":self.boundary,"earliest_grant_output":root(next,Phase::Publication),"profile":self.profile.0}))?, "application/json")
+        let proof_bytes = json_bytes(
+            &serde_json::json!({"child":self.child.child_pid(),"owners":self.route.owners,
+            "controller_boundary":self.boundary,"earliest_grant_output":root(next,Phase::Publication),"profile":self.profile.0}),
+        )?;
+        let proof_ref = canonical::content_ref(&proof_bytes, "application/json")
             .map_err(|e| no_effect(&e.to_string()))?;
+        self.retain_boundary_evidence(
+            activation,
+            InputPayload {
+                reference: proof_ref.clone(),
+                bytes: proof_bytes,
+            },
+        )?;
         let observation = NativeSchedulingObservation {
             node: self.route.node.clone(),
             owners: self.route.owners.clone(),
@@ -616,6 +600,165 @@ impl SimulationNode for ReferenceDeviceNode {
         };
         self.observation = Some((activation.clone(), observation.clone()));
         Ok(observation)
+    }
+
+    fn read_boundary_evidence(
+        &self,
+        activation: &WorldActivation,
+        references: &[ContentRef],
+        maximum_bytes: usize,
+    ) -> Result<Vec<InputPayload>, OperationFailure> {
+        if self.thread != std::thread::current().id()
+            || self.quarantined
+            || !self.same_world(activation)
+            || self
+                .boundary_evidence_activation
+                .as_ref()
+                .is_some_and(|original| {
+                    original.record() != activation.record()
+                        || !Rc::ptr_eq(&original.authority, &activation.authority)
+                })
+        {
+            return Err(no_effect(
+                "reference boundary evidence has foreign or reclaimed custody",
+            ));
+        }
+        let mut objects = Vec::new();
+        let mut bytes = 0usize;
+        for reference in references {
+            let object = if let Some(original) = self.boundary_evidence.get(&reference.hash) {
+                if original.reference != *reference {
+                    return Err(no_effect("reference historical proof metadata changed"));
+                }
+                bytes = bytes
+                    .checked_add(original.bytes.len())
+                    .ok_or_else(|| no_effect("reference evidence byte extent overflow"))?;
+                if bytes > maximum_bytes {
+                    return Err(no_effect("reference evidence exceeds original read budget"));
+                }
+                original.clone()
+            } else {
+                let requested = std::slice::from_ref(reference);
+                let mut delegated = self.child.read_boundary_evidence(
+                    activation,
+                    requested,
+                    maximum_bytes.saturating_sub(bytes),
+                )?;
+                self.child
+                    .validate_boundary_evidence(activation, requested, &delegated)?;
+                if delegated.len() != 1 {
+                    return Err(no_effect("controlled boundary evidence inventory changed"));
+                }
+                let object = delegated.remove(0);
+                bytes = bytes
+                    .checked_add(object.bytes.len())
+                    .ok_or_else(|| no_effect("controlled evidence byte extent overflow"))?;
+                object
+            };
+            if object.reference != *reference
+                || reference.verify(&object.bytes).is_err()
+                || bytes > maximum_bytes
+            {
+                return Err(no_effect(
+                    "controlled original proof bytes changed or exceed budget",
+                ));
+            }
+            objects.push(object);
+        }
+        Ok(objects)
+    }
+
+    fn validate_boundary_evidence(
+        &self,
+        activation: &WorldActivation,
+        references: &[ContentRef],
+        objects: &[InputPayload],
+    ) -> Result<(), OperationFailure> {
+        if self.read_boundary_evidence(activation, references, 16 * 1024 * 1024)? != objects {
+            return Err(no_effect(
+                "reference original boundary proof bodies changed",
+            ));
+        }
+        Ok(())
+    }
+
+    fn input_provenance_dependencies(
+        &self,
+        activation: &WorldActivation,
+        root: &ContentRef,
+        limits: InputProvenanceLimits,
+    ) -> Result<Vec<ContentRef>, OperationFailure> {
+        if self.thread != std::thread::current().id()
+            || !self.same_world(activation)
+            || self.quarantined
+        {
+            return Err(no_effect(
+                "reference producer proof has foreign or reclaimed custody",
+            ));
+        }
+        if let Some(object) = self.boundary_evidence.get(&root.hash) {
+            if object.reference != *root
+                || limits.maximum_objects == 0
+                || object.bytes.len() > limits.maximum_bytes
+            {
+                return Err(no_effect(
+                    "reference boundary proof metadata or closure budget changed",
+                ));
+            }
+            // This registry is populated only by the adapter's scalar observer
+            // codec and literal buffer-custody codec; both are reference leaves.
+            return Ok(Vec::new());
+        }
+        for window in self.windows.values() {
+            if !Rc::ptr_eq(
+                &window.original.activation().authority,
+                &activation.authority,
+            ) {
+                continue;
+            }
+            let Some(receipt) = &window.receipt else {
+                continue;
+            };
+            let Some(object) = window
+                .evidence
+                .iter()
+                .find(|object| object.reference == *root)
+            else {
+                continue;
+            };
+            if json_bytes(receipt)? != object.bytes {
+                continue;
+            }
+            if limits.maximum_objects == 0 || object.bytes.len() > limits.maximum_bytes {
+                return Err(no_effect(
+                    "reference producer proof closure budget exhausted",
+                ));
+            }
+            self.child
+                .validate_receipt(receipt)
+                .map_err(|error| no_effect(&error.to_string()))?;
+            // The installed checksum DeviceReceipt codec contains scalar grant,
+            // measured output and native outcome data; it references no objects.
+            return Ok(Vec::new());
+        }
+        self.child
+            .input_provenance_dependencies(activation, root, limits)
+    }
+
+    fn validate_input_provenance_dependencies(
+        &self,
+        activation: &WorldActivation,
+        root: &ContentRef,
+        dependencies: &[ContentRef],
+    ) -> Result<(), OperationFailure> {
+        if self.input_provenance_dependencies(activation, root, InputProvenanceLimits::default())?
+            != dependencies
+        {
+            return Err(no_effect(
+                "reference original producer dependency inventory changed",
+            ));
+        }
+        Ok(())
     }
 
     fn validate_scheduling_observation(
@@ -719,5 +862,125 @@ impl SimulationNode for ReferenceDeviceNode {
         // Reaping is not output-disposition authority. The driver's supervisor
         // retains original unpublished buffers when this wrapper is dropped.
         Ok(())
+    }
+}
+
+impl<C: ControlledReference> ControlledReferenceNode<C> {
+    fn stage_inputs_inner(
+        &mut self,
+        batch: &RuntimeInputBatch,
+        provenance: Option<&crate::node_contract::InputProvenanceClosure>,
+    ) -> Result<NativeInputAcknowledgement, OperationFailure> {
+        if !self.same_world(batch.activation())
+            || batch.node() != &self.route.node
+            || batch.owners() != self.route.owners
+            || self.quarantined
+            || self.active.is_some()
+            || self.staged.is_some()
+            || self.child.status() != DeviceStatus::Parked
+            || (!self.descriptor.ports.iter().any(|port| {
+                port.lanes
+                    .iter()
+                    .any(|lane| lane.direction == Direction::Input)
+            }) && (!batch.deliveries().is_empty() || !batch.payloads().is_empty()))
+        {
+            return Err(no_effect(
+                "reference device input staging custody unavailable",
+            ));
+        }
+        let mut bytes = Vec::new();
+        for delivery in batch.deliveries() {
+            if delivery.consumer != self.route.node
+                || delivery.consumer_endpoint.node_id != self.route.node
+                || !self.descriptor.ports.iter().any(|port| {
+                    port.id == delivery.consumer_endpoint.port_id
+                        && port.lanes.iter().any(|lane| {
+                            lane.id == delivery.consumer_endpoint.lane_id
+                                && lane.direction == Direction::Input
+                        })
+                })
+            {
+                return Err(no_effect(
+                    "reference input targets an unadmitted native port or lane",
+                ));
+            }
+            let payload = batch
+                .payloads()
+                .iter()
+                .find(|payload| payload.reference == delivery.payload)
+                .ok_or_else(|| no_effect("original device payload absent"))?;
+            let reference = canonical::content_ref(&payload.bytes, &payload.reference.media_type)
+                .map_err(|e| no_effect(&e.to_string()))?;
+            if reference != payload.reference
+                || bytes
+                    .len()
+                    .checked_add(payload.bytes.len())
+                    .is_none_or(|size| size > MAX_INPUT_BYTES)
+            {
+                return Err(no_effect(
+                    "reference device immutable input bytes mismatch or exceed native ceiling",
+                ));
+            }
+            bytes.extend_from_slice(&payload.bytes);
+        }
+        let proof_ref = canonical::content_ref(&bytes, "application/octet-stream")
+            .map_err(|e| no_effect(&e.to_string()))?;
+        // Empty byte batches still have real retained staging evidence.
+        let proof_ref = if bytes.is_empty() {
+            canonical::content_ref(
+                b"reference-device-owned-empty-input-v1",
+                "application/octet-stream",
+            )
+            .map_err(|e| no_effect(&e.to_string()))?
+        } else {
+            proof_ref
+        };
+        let acknowledgement = NativeInputAcknowledgement {
+            stage_operation: batch.stage_operation().clone(),
+            batch: batch.batch().clone(),
+            node: batch.node().clone(),
+            owners: batch.owners().to_vec(),
+            cutoff: batch.cutoff(),
+            inventory: batch.inventory().clone(),
+            proof_ref,
+        };
+        let fallback = InputPayload {
+            reference: acknowledgement.proof_ref.clone(),
+            bytes: if bytes.is_empty() {
+                b"reference-device-owned-empty-input-v1".to_vec()
+            } else {
+                bytes.clone()
+            },
+        };
+        self.reserve_boundary_evidence(&fallback)?;
+        let public_acknowledgement = match provenance {
+            Some(provenance) => self
+                .child
+                .stage_runtime_inputs_with_provenance(batch, provenance)?,
+            None => self.child.stage_runtime_inputs(batch)?,
+        };
+        if public_acknowledgement.is_none() {
+            self.retain_boundary_evidence(batch.activation(), fallback)
+                .map_err(|error| native_failure(&error.reason))?;
+        }
+        let acknowledgement = public_acknowledgement.unwrap_or(acknowledgement);
+        if acknowledgement.stage_operation != *batch.stage_operation()
+            || acknowledgement.batch != *batch.batch()
+            || acknowledgement.node != *batch.node()
+            || acknowledgement.owners != batch.owners()
+            || acknowledgement.cutoff != batch.cutoff()
+            || acknowledgement.inventory != *batch.inventory()
+        {
+            return Err(native_failure(
+                "controlled input receipt differs from original retained cut",
+            ));
+        }
+        self.activation_authority = Some(Rc::clone(&batch.activation.authority));
+        self.staged = Some(Staged {
+            original: Rc::new(batch.retained_copy()),
+            bytes,
+            acknowledgement: acknowledgement.clone(),
+        });
+        Ok(acknowledgement)
     }
 }

@@ -1,5 +1,8 @@
 //! Model-only supervisor tests for finite reservation and surviving complete ACK custody.
 
+// Test panics expose discarded native handles, original ACK state or reservations.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use super::*;
 use crate::node_contract::{BeginResult, RetainedOperationObservation};
 
@@ -43,6 +46,142 @@ fn record(graph: &crate::node_admission::AdmittedGraph) -> ActivationRecord {
                 }
             })
             .collect(),
+    }
+}
+
+#[test]
+fn unknown_complete_publication_survives_drop_and_contained_reconciliation() {
+    use crate::node_contract::PreparedWorldPublication;
+    use crucible_node_contract::{Extensions, PreparedOwner, canonical};
+
+    struct CompletePublisher(bool);
+
+    impl ActivationPublisher for CompletePublisher {
+        fn publish(&mut self, _: &ActivationRecord) -> PublicationStatus {
+            panic!("complete publication cannot use scalar custody")
+        }
+
+        fn reconcile(&mut self, _: &ActivationRecord) -> PublicationStatus {
+            panic!("complete reconciliation cannot use scalar custody")
+        }
+
+        fn prepare_coordinator(
+            &mut self,
+            _: &ActivationRecord,
+            _: &[crate::node_contract::ValidatedNodePreparation],
+        ) -> Result<InputPayload, RuntimeError> {
+            let bytes = b"{\"model_coordinator\":\"original\"}".to_vec();
+            Ok(InputPayload {
+                reference: canonical::content_ref(&bytes, "application/json").unwrap(),
+                bytes,
+            })
+        }
+
+        fn publish_complete(
+            &mut self,
+            _: &ActivationRecord,
+            _: &PreparedWorldPublication,
+        ) -> PublicationStatus {
+            assert!(!self.0, "model commit followed by callback unwind");
+            PublicationStatus::Unknown
+        }
+
+        fn reconcile_complete(
+            &mut self,
+            _: &ActivationRecord,
+            _: &PreparedWorldPublication,
+        ) -> PublicationStatus {
+            PublicationStatus::Committed
+        }
+    }
+
+    for (reconcile, unwind) in [(false, false), (true, false), (false, true)] {
+        let (graph, _) = crate::node_admission::test_fixture_isolated_execution(false);
+        let record = record(&graph);
+        let queue = RuntimeCustodyQueue::new(1).unwrap();
+        let slot = queue
+            .reserve_world(&record, RuntimeLimits::default())
+            .unwrap();
+        let mut runtime = NodeRuntime::new(
+            &graph,
+            crate::node_contract::test_nodes(&graph),
+            record.clone(),
+            RuntimeLimits::default(),
+            slot,
+        )
+        .unwrap_or_else(|failure| panic!("model admission failed: {}", failure.error));
+        runtime.arm_all().unwrap();
+
+        // Install model-only public records into the barrier to exercise whole
+        // supervisor transfer independently of any native qualification claim.
+        let mut nodes = runtime.prepared_node_records().unwrap().to_vec();
+        for node in &mut nodes {
+            node.prepared_owners = Some(
+                node.readiness
+                    .owners
+                    .iter()
+                    .map(|owner| PreparedOwner {
+                        owner_id: owner.owner.clone(),
+                        incarnation_id: owner.incarnation.clone(),
+                        owner_generation: owner.generation,
+                        prepared_token: id("original/model-preparation"),
+                        binding_hashes: vec![
+                            graph.binding(&node.node).unwrap().identity().unwrap(),
+                        ],
+                        ready_receipt: node.readiness.ready_receipt.clone(),
+                        extensions: Extensions::new(),
+                    })
+                    .collect(),
+            );
+        }
+        runtime.barrier = super::super::ActivationBarrier::new(record.clone()).unwrap();
+        runtime.barrier.ready(nodes.clone()).unwrap();
+        let mut publisher = CompletePublisher(unwind);
+        if unwind {
+            assert!(
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    runtime.activate(&mut publisher)
+                }))
+                .is_err()
+            );
+        } else {
+            assert!(runtime.activate(&mut publisher).is_err());
+        }
+        assert_eq!(runtime.arm_all(), Err(RuntimeError::ForeignAuthority));
+        let original = runtime.barrier.retained_preparation().unwrap();
+        let mut quarantined = runtime.into_quarantine();
+        let expected_status = if reconcile {
+            assert_eq!(
+                quarantined
+                    .reconcile_publication(&record, &mut publisher)
+                    .unwrap(),
+                PublicationStatus::Committed
+            );
+            PublicationStatus::Committed
+        } else {
+            PublicationStatus::Unknown
+        };
+
+        drop(quarantined);
+
+        let retained = queue.inner.mailboxes[0].custody.borrow();
+        let retained = retained.as_ref().unwrap();
+        assert_eq!(retained.activation(), &record);
+        assert_eq!(retained.publication_status(), Some(expected_status));
+        assert_eq!(retained.native_handle_count(), 2);
+        assert_eq!(retained.node_preparations(), nodes);
+        assert_eq!(
+            retained.prepared_world_publication(),
+            Some(original.as_ref())
+        );
+        assert_eq!(
+            retained
+                .prepared_world_publication()
+                .unwrap()
+                .coordinator_snapshot()
+                .bytes,
+            b"{\"model_coordinator\":\"original\"}"
+        );
     }
 }
 

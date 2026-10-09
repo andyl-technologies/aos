@@ -529,9 +529,15 @@ impl Objects {
                 || previous.bytes != bytes
                 || previous.dependencies != dependencies
             {
-                return Err(refusal(
-                    "source hash metadata, bytes or selected dependency semantics differ",
-                ));
+                return Err(refusal(format!(
+                    "source hash metadata, bytes or selected dependency semantics differ: hash={}, metadata_match={}, bytes_match={}, dependency_match={}, existing_dependency_count={}, incoming_dependency_count={}",
+                    reference.hash.digest,
+                    previous.reference == reference,
+                    previous.bytes == bytes,
+                    previous.dependencies == dependencies,
+                    previous.dependencies.len(),
+                    dependencies.len(),
+                )));
             }
             return Ok(());
         }

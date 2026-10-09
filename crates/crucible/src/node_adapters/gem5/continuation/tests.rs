@@ -157,3 +157,83 @@ fn decoder_refuses_unbounded_installed_credit_before_processing_evidence() {
         .is_err()
     );
 }
+
+fn stopped_record() -> (Gem5ContinuationRecord, ContentRef, Vec<u8>, usize) {
+    let (wire, source, mut evidence) = fixture();
+    let original_closure = b"model-only original closure, never native authority".to_vec();
+    let closure = canonical::content_ref(&original_closure, "application/octet-stream").unwrap();
+    let body = canonical::canonical_json(&serde_json::json!({
+        "schema":"crucible.gem5.common-observation.v1",
+        "boundary":wire.native_boundary,
+        "closure":closure,
+        "owners":wire.owners,
+        "activation_id":source.source_activation.activation_id,
+    }))
+    .unwrap();
+    let reference = canonical::content_ref(&body, "application/json").unwrap();
+    let credit = body.len() + original_closure.len();
+    evidence.push(InputPayload {
+        reference: closure,
+        bytes: original_closure,
+    });
+    evidence.push(InputPayload {
+        reference: reference.clone(),
+        bytes: body.clone(),
+    });
+    (
+        decode(&wire, &source, &evidence).unwrap(),
+        reference,
+        body,
+        credit,
+    )
+}
+
+#[test]
+fn stopped_proof_keeps_original_bytes_across_later_frontiers_and_repeat_reattachment() {
+    let (mut record, reference, original, credit) = stopped_record();
+    record.wire.native_boundary.logical_position.time_ps = 200.into();
+    let mut ledger = super::super::ledger::OperationLedger::new(1, 1, credit).unwrap();
+    super::super::observations::retain_historical_observations(&mut ledger, &record).unwrap();
+    super::super::observations::retain_historical_observations(&mut ledger, &record).unwrap();
+    assert_eq!(ledger.standalone().len(), 2);
+    assert_eq!(
+        ledger
+            .standalone()
+            .find(|object| object.reference == reference)
+            .unwrap()
+            .bytes,
+        original
+    );
+    assert!(ledger.can_run_prefix(1).is_err());
+}
+
+#[test]
+fn stopped_proof_requires_original_closure_and_bounded_credit_before_copying() {
+    let (mut record, reference, _, credit) = stopped_record();
+    let mut ledger = super::super::ledger::OperationLedger::new(1, 1, credit - 1).unwrap();
+    assert!(
+        super::super::observations::retain_historical_observations(&mut ledger, &record).is_err()
+    );
+    assert_eq!(ledger.standalone().len(), 0);
+
+    let body = &record.evidence[&reference].bytes;
+    let value = canonical::parse_json(body, 16 * 1024 * 1024).unwrap();
+    let closure: ContentRef = serde_json::from_value(value["closure"].clone()).unwrap();
+    record.evidence.remove(&closure);
+    let mut ledger = super::super::ledger::OperationLedger::new(1, 1, credit).unwrap();
+    assert!(
+        super::super::observations::retain_historical_observations(&mut ledger, &record).is_err()
+    );
+    assert_eq!(ledger.standalone().len(), 0);
+}
+
+#[test]
+fn stopped_proof_cannot_move_into_another_native_owner() {
+    let (mut record, _, _, credit) = stopped_record();
+    record.wire.owners[0].owner = Id::new("foreign-native-owner").unwrap();
+    let mut ledger = super::super::ledger::OperationLedger::new(1, 1, credit).unwrap();
+    assert!(
+        super::super::observations::retain_historical_observations(&mut ledger, &record).is_err()
+    );
+    assert_eq!(ledger.standalone().len(), 0);
+}

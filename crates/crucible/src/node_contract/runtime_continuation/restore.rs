@@ -81,6 +81,9 @@ impl PreparedRuntimeRestore {
             limits,
             maximum_record_bytes,
         )?;
+        if snapshot.schema_version == 2 {
+            verifier.verify_input_provenance(&snapshot, scheduling, target)?;
+        }
         let evidence = verifier.verify_runtime_continuation(&snapshot, scheduling, target)?;
         evidence
             .proof
@@ -188,6 +191,10 @@ impl PreparedRuntimeRestore {
                 input.stage_operation.clone(),
                 inputs::RetainedInput {
                     batch,
+                    provenance: input
+                        .provenance
+                        .clone()
+                        .map(|saved| InputProvenanceClosure::restore_validated(activation, saved)),
                     acknowledgement,
                     failure: input.failure.clone(),
                     committed: input.committed,
@@ -354,7 +361,12 @@ fn validate_snapshot(
     maximum_record_bytes: usize,
 ) -> Result<(), RuntimeError> {
     bounded_record(snapshot, maximum_record_bytes)?;
-    if snapshot.schema_version != 1
+    if !matches!(snapshot.schema_version, 1 | 2)
+        || (snapshot.schema_version == 2)
+            != snapshot
+                .inputs
+                .iter()
+                .any(|input| input.provenance.is_some())
         || snapshot.capture_cut != scheduling.capture_cut
         || snapshot.capture_ordinal != scheduling.capture_ordinal
         || snapshot.source_activation.world_binding_hash != *graph.world_binding_hash()
@@ -370,6 +382,7 @@ fn validate_snapshot(
     {
         return Err(RuntimeError::ForeignAuthority);
     }
+    input_provenance::validate_saved_inputs(&snapshot.inputs)?;
     if snapshot.owners.len() > limits.maximum_owners
         || snapshot
             .operations

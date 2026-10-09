@@ -2,7 +2,7 @@
 
 use std::task::{Context, Poll};
 
-use crucible_node_contract::{NodeBinding, NodeDescriptor, Position};
+use crucible_node_contract::{NodeBinding, NodeDescriptor, Position, PreparedOwner};
 
 use super::{
     ActivationRecord, CancelStatus, FacetKind, NativeReclamationReceipt, NodeRoute, NodeStatus,
@@ -11,7 +11,7 @@ use super::{
 };
 
 /// Reports an owner's prepared domains without authorizing execution.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct ReadyAttestation {
     /// Exact owner incarnations validated and armed by the provider.
     pub owners: Vec<OwnerIdentity>,
@@ -79,6 +79,88 @@ pub trait SimulationNode {
         Err(OperationFailure {
             effects: super::EffectKnowledge::None,
             reason: "complete native scheduling evidence validation is unsupported".into(),
+        })
+    }
+
+    /// Reads immutable native proof bodies for original boundary observations.
+    ///
+    /// Records must belong to this actual activation and retained native owner
+    /// scope. Reading does not regenerate a receipt, advance time or transfer
+    /// publication custody. The owner-thread restriction still applies. The
+    /// default explicitly refuses rather than substituting hashes for raw data.
+    ///
+    /// # Errors
+    /// Refuses unsupported retrieval, foreign or missing original evidence,
+    /// changed native custody and a total byte count exceeding `maximum_bytes`.
+    fn read_boundary_evidence(
+        &self,
+        _activation: &super::WorldActivation,
+        _references: &[crucible_node_contract::ContentRef],
+        _maximum_bytes: usize,
+    ) -> Result<Vec<crate::node_scheduling::InputPayload>, OperationFailure> {
+        Err(OperationFailure {
+            effects: super::EffectKnowledge::None,
+            reason: "original native boundary evidence retrieval is unsupported".into(),
+        })
+    }
+
+    /// Authenticates retained raw bodies against original native boundary custody.
+    ///
+    /// Syntax and content integrity are checked separately. This hook must verify
+    /// the actual owning adapter's original activation, native receipt registry
+    /// and complete requested inventory without deriving proof from public claims.
+    ///
+    /// # Errors
+    /// Refuses unsupported validation, mismatched scope, unavailable bodies or
+    /// evidence that was regenerated after original acknowledgement or retirement.
+    fn validate_boundary_evidence(
+        &self,
+        _activation: &super::WorldActivation,
+        _references: &[crucible_node_contract::ContentRef],
+        _objects: &[crate::node_scheduling::InputPayload],
+    ) -> Result<(), OperationFailure> {
+        Err(OperationFailure {
+            effects: super::EffectKnowledge::None,
+            reason: "original native boundary evidence authentication is unsupported".into(),
+        })
+    }
+
+    /// Lists complete codec-selected dependencies of an authentic producer proof.
+    ///
+    /// The returned inventory excludes the root itself. Implementations must
+    /// authenticate the root against this world's retained producer custody and
+    /// apply both finite limits before materializing dependent objects. Empty
+    /// dependencies establish a qualified leaf codec, not unknown provenance.
+    ///
+    /// # Errors
+    /// Refuses unsupported codecs, foreign roots, incomplete original custody,
+    /// changed dependencies or exhausted object and byte limits.
+    fn input_provenance_dependencies(
+        &self,
+        _activation: &super::WorldActivation,
+        _root: &crucible_node_contract::ContentRef,
+        _limits: super::InputProvenanceLimits,
+    ) -> Result<Vec<crucible_node_contract::ContentRef>, OperationFailure> {
+        Err(OperationFailure {
+            effects: super::EffectKnowledge::None,
+            reason: "original producer provenance closure is unsupported".into(),
+        })
+    }
+
+    /// Authenticates complete original dependencies against the producer codec.
+    ///
+    /// # Errors
+    /// Refuses unsupported verification, omitted dependency objects or a root
+    /// belonging to a different native world, owner or receipt registry.
+    fn validate_input_provenance_dependencies(
+        &self,
+        _activation: &super::WorldActivation,
+        _root: &crucible_node_contract::ContentRef,
+        _dependencies: &[crucible_node_contract::ContentRef],
+    ) -> Result<(), OperationFailure> {
+        Err(OperationFailure {
+            effects: super::EffectKnowledge::None,
+            reason: "original producer provenance closure validation is unsupported".into(),
         })
     }
 
@@ -170,6 +252,37 @@ pub trait SimulationNode {
         })
     }
 
+    /// Reports whether this installed consumer requires authentic producer proofs.
+    ///
+    /// This preference conveys no proof authority. Supporting consumers still
+    /// validate the opaque complete closure before any native staging effects.
+    fn requires_input_provenance(
+        &self,
+        _batch: &crate::node_scheduling::RuntimeInputBatch,
+    ) -> bool {
+        false
+    }
+
+    /// Stages an original input batch with its runtime-authenticated provenance.
+    ///
+    /// Implementations must validate the original activation, consumer, staging
+    /// operation, batch and complete inventory before touching native buffers.
+    /// Proof objects are evidence and must never become modeled payload bytes.
+    ///
+    /// # Errors
+    /// Refuses unsupported staging, mismatched proof scope, incomplete original
+    /// evidence or native failures with explicit effect knowledge.
+    fn stage_inputs_with_provenance(
+        &mut self,
+        _batch: &crate::node_scheduling::RuntimeInputBatch,
+        _provenance: &super::InputProvenanceClosure,
+    ) -> Result<crate::node_scheduling::NativeInputAcknowledgement, OperationFailure> {
+        Err(OperationFailure {
+            effects: super::EffectKnowledge::None,
+            reason: "native staging with producer provenance is unsupported".into(),
+        })
+    }
+
     /// Authenticates native custody of the unchanged complete staged input batch.
     ///
     /// # Errors
@@ -202,6 +315,59 @@ pub trait SimulationNode {
         world: &ActivationRecord,
         readiness: &ReadyAttestation,
     ) -> Result<(), OperationFailure>;
+
+    /// Reads original public owner preparation beneath the still-closed gate.
+    ///
+    /// `None` explicitly declares unsupported public mapping. A supported mapping
+    /// must retain actual preparation tokens and admitted complete binding hashes;
+    /// scalar owner IDs and content hashes cannot manufacture native readiness.
+    ///
+    /// # Errors
+    /// Returns unavailable or inconsistent original native preparation custody.
+    fn prepared_owners(
+        &self,
+        _world: &ActivationRecord,
+        _readiness: &ReadyAttestation,
+    ) -> Result<Option<Vec<PreparedOwner>>, OperationFailure> {
+        Ok(None)
+    }
+
+    /// Authenticates original public preparation against this native realization.
+    ///
+    /// # Errors
+    /// Refuses unsupported validation, changed preparation tokens or foreign
+    /// readiness, binding, owner generation or incarnation evidence.
+    fn validate_prepared_owners(
+        &self,
+        _world: &ActivationRecord,
+        _readiness: &ReadyAttestation,
+        _owners: &[PreparedOwner],
+    ) -> Result<(), OperationFailure> {
+        Err(OperationFailure {
+            effects: super::EffectKnowledge::None,
+            reason: "public owner preparation validation is unsupported".into(),
+        })
+    }
+
+    /// Authenticates fresh initial native state before encoding an initial coordinator.
+    ///
+    /// Empty represented host ledgers do not establish native initial state. A
+    /// restored owner may retain original operations outside those ledgers until
+    /// continuation installation. The default refuses this distinct assertion.
+    ///
+    /// # Errors
+    /// Refuses unsupported initial-state authentication or any restored, used,
+    /// foreign or incompletely observed native preparation.
+    fn validate_initial_preparation(
+        &self,
+        _world: &ActivationRecord,
+        _readiness: &ReadyAttestation,
+    ) -> Result<(), OperationFailure> {
+        Err(OperationFailure {
+            effects: super::EffectKnowledge::None,
+            reason: "fresh initial native preparation validation is unsupported".into(),
+        })
+    }
 
     /// Begins the original admitted operation without fabricating completion.
     fn begin_operation(&mut self, admission: &OperationAdmission) -> Submission;

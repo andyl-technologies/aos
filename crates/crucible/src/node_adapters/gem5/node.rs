@@ -478,6 +478,9 @@ impl SimulationNode for QualifiedGem5Node {
         let bytes = canonical::canonical_json(&serde_json::json!({"schema":"crucible.gem5.common-observation.v1","boundary":self.preparation.native.boundary(),"closure":closure,"owners":self.preparation.route.owners,"activation_id":activation.record().activation_id})).map_err(|error| refusal(&error.to_string()))?;
         let proof = canonical::content_ref(&bytes, "application/json")
             .map_err(|error| refusal(&error.to_string()))?;
+        let (closure_reference, closure_bytes) = self.authority.evidence();
+        self.ledger
+            .retain_standalone(&[(&proof, &bytes), (closure_reference, closure_bytes)])?;
         let observation = self.scheduling(proof, Vec::new())?;
         self.observation = Some((Rc::clone(&activation.authority), observation.clone()));
         Ok(observation)

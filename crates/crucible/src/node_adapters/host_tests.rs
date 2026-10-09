@@ -1,5 +1,8 @@
 //! Adversarial tests of real host-model state and opaque operation custody.
 
+// Assertion panics expose changes to original model state and custody contracts.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::task::Waker;
 
 use super::*;
@@ -70,10 +73,33 @@ fn admission(
         request,
         inputs: None,
         activation: WorldActivation {
+            nodes: std::rc::Rc::from([]),
+            preparation: None,
             authority: Rc::new(()),
             record: record.clone(),
         },
     }
+}
+
+#[test]
+fn empty_native_causes_do_not_alias_original_empty_input_inventory() {
+    let (adapter, _) = fixture();
+    let [receipt, _, causes] = state::state_receipt_objects(&adapter).unwrap();
+    let empty_inventory =
+        canonical::content_ref(b"[]", "application/vnd.crucible.input-inventory+json").unwrap();
+
+    assert_eq!(
+        causes.bytes,
+        br#"{"schema":"crucible.host-pending-causes.v1","causes":[]}"#
+    );
+    assert_ne!(causes.reference.hash, empty_inventory.hash);
+    causes.reference.verify(&causes.bytes).unwrap();
+
+    let body: serde_json::Value = serde_json::from_slice(&receipt.bytes).unwrap();
+    assert_eq!(
+        body["pending_causes"],
+        serde_json::to_value(&causes.reference).unwrap()
+    );
 }
 
 #[test]
@@ -441,6 +467,8 @@ fn exercise_half_open_model(model: HostModel, bytes: Vec<u8>, due: u64) -> Opera
     let (mut adapter, record) = model_fixture(model);
     adapter.arm(&record).unwrap();
     let activation = WorldActivation {
+        nodes: std::rc::Rc::from([]),
+        preparation: None,
         authority: Rc::new(()),
         record,
     };
@@ -600,6 +628,8 @@ fn host_input_limits_refuse_before_native_model_mutation() {
     let (mut adapter, record) = model_fixture(model);
     adapter.arm(&record).unwrap();
     let activation = WorldActivation {
+        nodes: std::rc::Rc::from([]),
+        preparation: None,
         authority: Rc::new(()),
         record,
     };
@@ -727,6 +757,8 @@ fn actual_host_restore_preserves_original_input_and_pending_reply_without_reexec
     let (mut original, record) = model_fixture(fresh_link());
     original.arm(&record).unwrap();
     let activation = WorldActivation {
+        nodes: std::rc::Rc::from([]),
+        preparation: None,
         authority: Rc::new(()),
         record: record.clone(),
     };
@@ -768,6 +800,7 @@ fn actual_host_restore_preserves_original_input_and_pending_reply_without_reexec
             scheduling_commit: None,
         }],
         inputs: vec![SavedRuntimeInput {
+            provenance: None,
             node: original.route.node.clone(),
             stage_operation: inputs.stage_operation().clone(),
             batch: inputs.batch().clone(),
@@ -818,6 +851,47 @@ fn actual_host_restore_preserves_original_input_and_pending_reply_without_reexec
     )
     .unwrap();
     assert_eq!(inventory.boundary, source.capture_cut);
+    let mut native_limits = crate::node_contract::NativeCaptureLimits {
+        maximum_record_bytes: 1_048_576,
+        maximum_total_record_bytes: 1_048_576,
+        maximum_objects: 128,
+        maximum_artifact_bytes: 1,
+        maximum_total_artifact_bytes: 1,
+    };
+    let native_capture = original
+        .capture_native_continuation(&activation, &source, native_limits)
+        .unwrap();
+    assert_eq!(native_capture.state().bytes, capture);
+    let model_objects: Vec<_> = native_capture
+        .evidence()
+        .iter()
+        .filter(|object| object.reference == inventory.native_model.reference)
+        .collect();
+    assert_eq!(model_objects.len(), 1);
+    assert_eq!(model_objects[0].bytes, inventory.native_model.bytes);
+    assert_eq!(live_capture.evidence(), inventory.evidence);
+
+    let charged_bytes = native_capture
+        .evidence()
+        .iter()
+        .fold(native_capture.state().bytes.len(), |total, object| {
+            total + object.bytes.len()
+        });
+    native_limits.maximum_total_record_bytes = charged_bytes - 1;
+    assert!(
+        original
+            .capture_native_continuation(&activation, &source, native_limits)
+            .is_err()
+    );
+    native_limits.maximum_total_record_bytes = charged_bytes;
+    native_limits.maximum_objects = native_capture.evidence().len();
+    assert!(
+        original
+            .capture_native_continuation(&activation, &source, native_limits)
+            .is_err()
+    );
+    assert_eq!(original.continuation_bytes().unwrap(), capture);
+
     assert_eq!(
         inventory.operations,
         vec![operation.token().operation().clone()]
@@ -894,6 +968,8 @@ fn actual_host_restore_preserves_original_input_and_pending_reply_without_reexec
     assert_eq!(restored.next_local_event(), Some(30));
     restored.arm(&target).unwrap();
     let fresh_activation = WorldActivation {
+        nodes: std::rc::Rc::from([]),
+        preparation: None,
         authority: Rc::new(()),
         record: target,
     };

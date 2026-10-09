@@ -21,6 +21,7 @@ mod continuation;
 mod execution;
 mod ledger;
 mod node;
+mod observations;
 mod positions;
 mod reconciliation;
 mod restore;

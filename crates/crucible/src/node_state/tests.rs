@@ -1,5 +1,8 @@
 //! Exercises host contracts with explicitly synthetic proof and native-custody fixtures.
 
+// These model-only fixtures intentionally panic on preserved-state regressions.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::{
     cell::{Cell, RefCell},
     collections::BTreeMap,
@@ -630,11 +633,11 @@ impl NativeRestoreStaging for Staging {
         owner: &CapturedOwner,
         activation: &ActivationRecord,
     ) -> Result<RestoredOwnerAttestation, StateError> {
-        if self.owned_resource.is_none() {
-            if let Some(watch) = &self.resource_watch {
-                watch.set(true);
-                self.owned_resource = Some(ModelNativeResource(Rc::clone(watch)));
-            }
+        if self.owned_resource.is_none()
+            && let Some(watch) = &self.resource_watch
+        {
+            watch.set(true);
+            self.owned_resource = Some(ModelNativeResource(Rc::clone(watch)));
         }
         if self.fail_owner.as_ref() == Some(&owner.capture_owner_id) {
             return Err(StateError::new(

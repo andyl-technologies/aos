@@ -245,10 +245,7 @@ impl NodeRuntime {
             }
             _ => return Err(RuntimeError::OutstandingObligations),
         };
-        let activation = WorldActivation {
-            authority: Rc::clone(&self.authority),
-            record: self.barrier.record().clone(),
-        };
+        let activation = self.barrier.activation(&self.authority);
         Ok(crate::node_scheduling::SchedulingReceipt::new(
             activation,
             token.route.node.clone(),

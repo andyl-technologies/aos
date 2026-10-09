@@ -46,6 +46,8 @@ fn blob() -> ContentRef {
 #[derive(Default)]
 struct NativeState {
     arm_fail: bool,
+    change_declarations_on_arm: bool,
+    changed_declarations: bool,
     pending: bool,
     invalid_evidence: bool,
     overshoot: bool,
@@ -106,7 +108,11 @@ impl SimulationNode for TestNode {
     }
 
     fn facets(&self) -> &[FacetKind] {
-        &self.facets
+        if self.state.borrow().changed_declarations {
+            &[]
+        } else {
+            &self.facets
+        }
     }
 
     fn status(&mut self) -> Result<NodeStatus, OperationFailure> {
@@ -125,9 +131,13 @@ impl SimulationNode for TestNode {
             });
         }
 
+        if self.state.borrow().change_declarations_on_arm {
+            self.state.borrow_mut().changed_declarations = true;
+        }
+
         Ok(ReadyAttestation {
             owners: self.route.owners.clone(),
-            boundary: record.boundary.clone(),
+            boundary: record.boundary,
             state_inventory: blob(),
             ready_receipt: blob(),
         })
@@ -312,7 +322,7 @@ impl SimulationNode for TestNode {
                 reached: if state.overshoot {
                     position(limit.time_ps.get() + 1)
                 } else if state.retained_outputs.is_empty() {
-                    limit.clone()
+                    *limit
                 } else {
                     position(limit.time_ps.get() - 1)
                 },
@@ -329,7 +339,7 @@ impl SimulationNode for TestNode {
                 ..
             } => ProgressEvidence::Quantized {
                 window: window.clone(),
-                publication: end.clone(),
+                publication: *end,
                 physical: PhysicalState::Active,
                 closure: Box::new(QuantumClosureEvidence {
                     input_batch: input_batch.clone(),
@@ -752,6 +762,49 @@ fn successful_arm_then_failed_rearm_invalidates_activation() {
 }
 
 #[test]
+fn declaration_change_during_arm_never_reaches_publication() {
+    let (mut runtime, state) = runtime(OperatingMode::Exact);
+    state[1].borrow_mut().change_declarations_on_arm = true;
+
+    assert_eq!(runtime.arm_all(), Err(RuntimeError::ForeignAuthority));
+    let mut publisher = Publisher {
+        disposition: PublicationStatus::Committed,
+        calls: 0,
+    };
+    assert!(runtime.activate(&mut publisher).is_err());
+
+    assert_eq!(publisher.calls, 0);
+    assert_eq!(state[0].borrow().begin_calls, 0);
+    assert_eq!(state[1].borrow().begin_calls, 0);
+    assert_eq!(runtime.barrier.retained_nodes().len(), 1);
+    assert_eq!(
+        runtime.owner_lifecycle(&id("shared-owner")),
+        Some(Lifecycle::Quarantined)
+    );
+}
+
+#[test]
+fn declaration_change_after_readiness_never_reaches_publication() {
+    let (mut runtime, state) = runtime(OperatingMode::Exact);
+    runtime.arm_all().unwrap();
+    state[1].borrow_mut().changed_declarations = true;
+    let mut publisher = Publisher {
+        disposition: PublicationStatus::Committed,
+        calls: 0,
+    };
+
+    assert!(matches!(
+        runtime.activate(&mut publisher),
+        Err(RuntimeError::ForeignAuthority)
+    ));
+
+    assert_eq!(publisher.calls, 0);
+    assert_eq!(runtime.barrier.retained_nodes().len(), 2);
+    assert_eq!(state[0].borrow().begin_calls, 0);
+    assert_eq!(state[1].borrow().begin_calls, 0);
+}
+
+#[test]
 fn uncertain_publication_requires_reconciliation_without_republishing() {
     let (mut runtime, _) = runtime(OperatingMode::Exact);
     runtime.arm_all().unwrap();
@@ -1100,24 +1153,19 @@ fn operation_and_output_resource_limits_preserve_owner_custody() {
     assert_eq!(state[0].borrow().ack_calls, 0);
 }
 
-fn admitted_parts() -> (
+type AdmittedRuntimeParts = (
     crate::node_admission::AdmittedGraph,
     Vec<Box<dyn SimulationNode>>,
     Vec<Rc<RefCell<NativeState>>>,
     ActivationRecord,
-) {
+);
+
+fn admitted_parts() -> AdmittedRuntimeParts {
     let (graph, _) = crate::node_admission::test_fixture_with_content();
     admitted_parts_from_graph(graph)
 }
 
-fn admitted_parts_from_graph(
-    graph: crate::node_admission::AdmittedGraph,
-) -> (
-    crate::node_admission::AdmittedGraph,
-    Vec<Box<dyn SimulationNode>>,
-    Vec<Rc<RefCell<NativeState>>>,
-    ActivationRecord,
-) {
+fn admitted_parts_from_graph(graph: crate::node_admission::AdmittedGraph) -> AdmittedRuntimeParts {
     let mut nodes: Vec<Box<dyn SimulationNode>> = Vec::new();
     let mut states = Vec::new();
     let mut owners = Vec::new();

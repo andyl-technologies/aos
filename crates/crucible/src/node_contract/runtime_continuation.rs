@@ -144,6 +144,9 @@ pub struct SavedRuntimeInput {
     pub deliveries: Vec<crate::node_scheduling::event::Delivery>,
     /// Retains readable authenticated bytes throughout native input custody.
     pub payloads: Vec<InputPayload>,
+    /// Retains explicit edition-2 proof custody without changing legacy payloads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<SavedInputProvenance>,
     /// Retains original native staging evidence, when received.
     #[serde(deserialize_with = "required_nullable")]
     pub acknowledgement: Option<NativeInputAcknowledgement>,
@@ -186,6 +189,22 @@ pub struct RuntimeSnapshot {
 
 /// Authenticates complete native runtime-ledger continuation at an unchanged cut.
 pub trait NativeRuntimeContinuationVerifier {
+    /// Authenticates edition-2 immutable proof custody against selected native codecs.
+    ///
+    /// This distinct gate checks original consumer-native proof buffers and all
+    /// producer dependencies. Legacy native codecs explicitly remain unsupported.
+    ///
+    /// # Errors
+    /// Refuses unsupported provenance continuation or incomplete original custody.
+    fn verify_input_provenance(
+        &mut self,
+        _snapshot: &RuntimeSnapshot,
+        _scheduling: &SchedulingSnapshot,
+        _target: &ActivationRecord,
+    ) -> Result<(), RuntimeError> {
+        Err(RuntimeError::InvalidReceipt)
+    }
+
     /// Verifies native restored operation, ACK and staged input custody under closed gates.
     ///
     /// This trusted installed adapter must prove the exact source lineage,
@@ -227,6 +246,9 @@ pub struct HostNativeCapture {
     pub(crate) node: Id,
     pub(crate) profile: Id,
     pub(crate) state: InputPayload,
+    // The generic native archive retains this selected codec leaf separately.
+    // Legacy Host archive evidence and serialized envelopes remain unchanged.
+    pub(crate) native_model: InputPayload,
     pub(crate) evidence: Vec<InputPayload>,
 }
 
@@ -364,6 +386,8 @@ pub struct WholeRuntimeCustody {
     prepared: Option<Box<dyn PreparedNativeResources>>,
     activation: ActivationRecord,
     publication: Option<PublicationStatus>,
+    node_preparations: Rc<[crate::node_contract::ValidatedNodePreparation]>,
+    world_preparation: Option<Rc<crate::node_contract::PreparedWorldPublication>>,
     limits: RuntimeLimits,
     reclamation_cursor: Option<Id>,
 }
@@ -389,6 +413,8 @@ impl WholeRuntimeCustody {
             prepared: Some(prepared),
             activation,
             publication,
+            node_preparations: Rc::from([]),
+            world_preparation: None,
             limits,
             reclamation_cursor: None,
         }
@@ -407,6 +433,21 @@ impl WholeRuntimeCustody {
     /// Reports actual durable publication knowledge, or no attempted publication.
     pub fn publication_status(&self) -> Option<PublicationStatus> {
         self.publication
+    }
+
+    /// Borrows original validated readiness retained through whole-world transfer.
+    pub fn node_preparations(&self) -> &[crate::node_contract::ValidatedNodePreparation] {
+        &self.node_preparations
+    }
+
+    /// Borrows the exact complete object of an original publication attempt.
+    ///
+    /// This data supports reconciliation under trusted storage policy. It grants
+    /// no execution permission and does not establish current native suspension.
+    pub fn prepared_world_publication(
+        &self,
+    ) -> Option<&crate::node_contract::PreparedWorldPublication> {
+        self.world_preparation.as_deref()
     }
 
     /// Returns the count of retained original native handles.
@@ -660,6 +701,8 @@ impl WholeRuntimeCustody {
             prepared: None,
             activation,
             publication: None,
+            node_preparations: Rc::from([]),
+            world_preparation: None,
             limits,
             reclamation_cursor: None,
         }
@@ -703,6 +746,8 @@ impl NodeRuntime {
             prepared: None,
             activation: self.barrier.record().clone(),
             publication: self.barrier.publication_status_or_not_attempted(),
+            node_preparations: self.barrier.retained_nodes(),
+            world_preparation: self.barrier.retained_preparation(),
             limits: self.limits,
             reclamation_cursor: None,
         };

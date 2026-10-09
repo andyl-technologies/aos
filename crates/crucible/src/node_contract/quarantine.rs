@@ -18,6 +18,22 @@ pub struct QuarantinedRuntime {
 }
 
 impl QuarantinedRuntime {
+    /// Reconciles original publication while retaining complete native containment.
+    ///
+    /// This updates durable disposition without issuing an activation token or
+    /// releasing resources. Even committed worlds remain quarantined.
+    ///
+    /// # Errors
+    /// Refuses foreign records or publication that was not uncertain.
+    pub fn reconcile_publication(
+        &mut self,
+        record: &super::ActivationRecord,
+        publisher: &mut dyn super::ActivationPublisher,
+    ) -> Result<super::PublicationStatus, super::RuntimeError> {
+        self.runtime
+            .reconcile_contained_publication(record, publisher)
+    }
+
     /// Polls at most one native owner's actual reclamation per invocation.
     ///
     /// `Ready(Ok(()))` means every owner has an authenticated reclamation receipt.

@@ -41,110 +41,10 @@ pub(super) struct OriginalOperation {
     pub failure: Option<OperationFailure>,
 }
 
-#[cfg(test)]
-mod tests {
-    use crucible_node_contract::{HashRef, Phase, Position};
-
-    use crate::node_contract::{
-        ActivationRecord, NodeRoute, OperationRequest, OwnerIdentity, WorldActivation,
-    };
-
-    use super::*;
-
-    // Model-only scope handles exercise ledger isolation. They neither prove
-    // installed native qualification nor construct a runnable gem5 adapter.
-    fn original() -> OperationAdmission {
-        let authority = Rc::new(());
-        let owner = OwnerIdentity {
-            owner: Id::new("owner").unwrap(),
-            incarnation: Id::new("native/first").unwrap(),
-            generation: 1.into(),
-        };
-        OperationAdmission {
-            token: OperationToken {
-                authority: Rc::clone(&authority),
-                operation: Id::new("original").unwrap(),
-                route: NodeRoute {
-                    node: Id::new("node").unwrap(),
-                    owners: vec![owner.clone()],
-                },
-            },
-            request: OperationRequest::Observe,
-            activation: WorldActivation {
-                authority,
-                record: ActivationRecord {
-                    generation: 1.into(),
-                    activation_id: Id::new("world").unwrap(),
-                    world_binding_hash: HashRef {
-                        algorithm: "blake3-256".to_owned(),
-                        domain: "model-only".to_owned(),
-                        digest: "1".repeat(64),
-                    },
-                    owners: vec![owner],
-                    boundary: Position::new(0.into(), 0.into(), Phase::BoundaryControl),
-                },
-            },
-            inputs: None,
-        }
-    }
-
-    #[test]
-    fn identical_ids_do_not_replace_original_live_token_authority() {
-        let admitted = original();
-        let mut ledger = OperationLedger::new(1, 2, 1024).unwrap();
-        ledger.reserve(&admitted).unwrap();
-        assert!(ledger.original(admitted.token()).is_ok());
-
-        let mut foreign = admitted.token().clone();
-        foreign.authority = Rc::new(());
-        assert!(ledger.original(&foreign).is_err());
-        assert!(ledger.original(admitted.token()).is_ok());
-    }
-
-    #[test]
-    fn original_incarnation_is_not_replaced_by_matching_owner_name() {
-        let admitted = original();
-        let mut ledger = OperationLedger::new(1, 2, 1024).unwrap();
-        ledger.reserve(&admitted).unwrap();
-
-        let mut foreign = admitted.token().clone();
-        foreign.route.owners[0].incarnation = Id::new("native/replaced").unwrap();
-        assert!(ledger.original(&foreign).is_err());
-    }
-
-    #[test]
-    fn repeated_submission_never_resets_retained_original_state() {
-        let admitted = original();
-        let mut ledger = OperationLedger::new(1, 2, 1024).unwrap();
-        ledger.reserve(&admitted).unwrap();
-        ledger.original_mut(admitted.token()).unwrap().acknowledged = true;
-
-        assert!(ledger.reserve(&admitted).is_err());
-        assert!(ledger.original(admitted.token()).unwrap().acknowledged);
-    }
-
-    #[test]
-    fn frame_credit_is_reserved_before_requesting_native_progress() {
-        let ledger = OperationLedger::new(1, 2, 1024).unwrap();
-        assert!(ledger.can_run_prefix(1024).is_ok());
-        assert!(ledger.can_run_prefix(1025).is_err());
-        assert!(ledger.can_run_prefix(usize::MAX).is_err());
-    }
-
-    #[test]
-    fn invalid_class_limits_are_refused_before_ledger_allocation() {
-        assert!(OperationLedger::new(0, 1, 1024).is_err());
-        assert!(OperationLedger::new(1, 0, 1024).is_err());
-        assert!(OperationLedger::new(1, 1, 0).is_err());
-        assert!(OperationLedger::new(65_537, 1, 1024).is_err());
-        assert!(OperationLedger::new(1, 65_537, 1024).is_err());
-        assert!(OperationLedger::new(1, 1, 256 * 1024 * 1024 + 1).is_err());
-    }
-}
-
 /// Keeps finite native receipt and operation credit until authentic reclamation.
 pub(super) struct OperationLedger {
     operations: BTreeMap<Id, OriginalOperation>,
+    standalone: BTreeMap<ContentRef, InputPayload>,
     maximum_operations: usize,
     maximum_prefixes: usize,
     maximum_bytes: usize,
@@ -174,12 +74,68 @@ impl OperationLedger {
 
         Ok(Self {
             operations: BTreeMap::new(),
+            standalone: BTreeMap::new(),
             maximum_operations,
             maximum_prefixes,
             maximum_bytes,
             retained_bytes: 0,
             retained_prefixes: 0,
         })
+    }
+
+    /// Borrows original stopped records independently of later operation polling.
+    pub fn standalone(&self) -> impl ExactSizeIterator<Item = &InputPayload> {
+        self.standalone.values()
+    }
+
+    /// Retains exact immutable administrative evidence before publishing a reference.
+    pub fn retain_standalone(
+        &mut self,
+        objects: &[(&ContentRef, &[u8])],
+    ) -> Result<(), OperationFailure> {
+        let mut additional = BTreeMap::new();
+        for (reference, bytes) in objects {
+            reference
+                .verify(bytes)
+                .map_err(|error| refusal(&error.to_string()))?;
+            if let Some(original) = self.standalone.get(*reference) {
+                if original.bytes != *bytes {
+                    return Err(refusal("gem5 original stopped evidence changed"));
+                }
+            } else if let Some(original) = additional.insert(*reference, *bytes)
+                && original != *bytes
+            {
+                return Err(refusal("gem5 stopped evidence repeats changed bytes"));
+            }
+        }
+        let ceiling = self.maximum_prefixes.saturating_mul(2).min(65_536);
+        if self
+            .standalone
+            .len()
+            .checked_add(additional.len())
+            .is_none_or(|count| count > ceiling)
+        {
+            return Err(refusal("gem5 stopped evidence object credit exhausted"));
+        }
+        let total = additional
+            .values()
+            .try_fold(self.retained_bytes, |total, bytes| {
+                total
+                    .checked_add(bytes.len())
+                    .filter(|total| *total <= self.maximum_bytes)
+                    .ok_or_else(|| refusal("gem5 stopped evidence byte credit exhausted"))
+            })?;
+        for (reference, bytes) in additional {
+            self.standalone.insert(
+                reference.clone(),
+                InputPayload {
+                    reference: reference.clone(),
+                    bytes: bytes.to_vec(),
+                },
+            );
+        }
+        self.retained_bytes = total;
+        Ok(())
     }
 
     pub fn reserve(&mut self, original: &OperationAdmission) -> Result<(), OperationFailure> {
@@ -383,5 +339,108 @@ impl OperationLedger {
         }
         self.retained_bytes = total;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crucible_node_contract::{HashRef, Phase, Position};
+
+    use crate::node_contract::{
+        ActivationRecord, NodeRoute, OperationRequest, OwnerIdentity, WorldActivation,
+    };
+
+    use super::*;
+
+    // Model-only scope handles exercise ledger isolation. They neither prove
+    // installed native qualification nor construct a runnable gem5 adapter.
+    fn original() -> OperationAdmission {
+        let authority = Rc::new(());
+        let owner = OwnerIdentity {
+            owner: Id::new("owner").unwrap(),
+            incarnation: Id::new("native/first").unwrap(),
+            generation: 1.into(),
+        };
+        OperationAdmission {
+            token: OperationToken {
+                authority: Rc::clone(&authority),
+                operation: Id::new("original").unwrap(),
+                route: NodeRoute {
+                    node: Id::new("node").unwrap(),
+                    owners: vec![owner.clone()],
+                },
+            },
+            request: OperationRequest::Observe,
+            activation: WorldActivation {
+                nodes: std::rc::Rc::from([]),
+                preparation: None,
+                authority,
+                record: ActivationRecord {
+                    generation: 1.into(),
+                    activation_id: Id::new("world").unwrap(),
+                    world_binding_hash: HashRef {
+                        algorithm: "blake3-256".to_owned(),
+                        domain: "model-only".to_owned(),
+                        digest: "1".repeat(64),
+                    },
+                    owners: vec![owner],
+                    boundary: Position::new(0.into(), 0.into(), Phase::BoundaryControl),
+                },
+            },
+            inputs: None,
+        }
+    }
+
+    #[test]
+    fn identical_ids_do_not_replace_original_live_token_authority() {
+        let admitted = original();
+        let mut ledger = OperationLedger::new(1, 2, 1024).unwrap();
+        ledger.reserve(&admitted).unwrap();
+        assert!(ledger.original(admitted.token()).is_ok());
+
+        let mut foreign = admitted.token().clone();
+        foreign.authority = Rc::new(());
+        assert!(ledger.original(&foreign).is_err());
+        assert!(ledger.original(admitted.token()).is_ok());
+    }
+
+    #[test]
+    fn original_incarnation_is_not_replaced_by_matching_owner_name() {
+        let admitted = original();
+        let mut ledger = OperationLedger::new(1, 2, 1024).unwrap();
+        ledger.reserve(&admitted).unwrap();
+
+        let mut foreign = admitted.token().clone();
+        foreign.route.owners[0].incarnation = Id::new("native/replaced").unwrap();
+        assert!(ledger.original(&foreign).is_err());
+    }
+
+    #[test]
+    fn repeated_submission_never_resets_retained_original_state() {
+        let admitted = original();
+        let mut ledger = OperationLedger::new(1, 2, 1024).unwrap();
+        ledger.reserve(&admitted).unwrap();
+        ledger.original_mut(admitted.token()).unwrap().acknowledged = true;
+
+        assert!(ledger.reserve(&admitted).is_err());
+        assert!(ledger.original(admitted.token()).unwrap().acknowledged);
+    }
+
+    #[test]
+    fn frame_credit_is_reserved_before_requesting_native_progress() {
+        let ledger = OperationLedger::new(1, 2, 1024).unwrap();
+        assert!(ledger.can_run_prefix(1024).is_ok());
+        assert!(ledger.can_run_prefix(1025).is_err());
+        assert!(ledger.can_run_prefix(usize::MAX).is_err());
+    }
+
+    #[test]
+    fn invalid_class_limits_are_refused_before_ledger_allocation() {
+        assert!(OperationLedger::new(0, 1, 1024).is_err());
+        assert!(OperationLedger::new(1, 0, 1024).is_err());
+        assert!(OperationLedger::new(1, 1, 0).is_err());
+        assert!(OperationLedger::new(65_537, 1, 1024).is_err());
+        assert!(OperationLedger::new(1, 65_537, 1024).is_err());
+        assert!(OperationLedger::new(1, 1, 256 * 1024 * 1024 + 1).is_err());
     }
 }

@@ -6,11 +6,13 @@
 //! controlled reference child provides a distinct coarse quantized profile.
 //! Native gem5 preparation retains real resources beneath a qualification gate.
 
+pub mod cnp;
 pub mod gem5;
 mod host;
 mod inventory;
 mod reference_device;
 mod scripted_source;
+pub mod transcript;
 
 pub use scripted_source::{
     MAXIMUM_SCRIPTED_REQUESTS, ScriptedRequest, ScriptedRequestKind, ScriptedSource,

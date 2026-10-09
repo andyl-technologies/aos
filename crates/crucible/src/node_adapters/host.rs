@@ -703,6 +703,7 @@ impl SimulationNode for HostModelNode {
             &self.descriptor,
             &self.binding,
             source.capture_cut,
+            limits,
         )
     }
 

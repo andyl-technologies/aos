@@ -10,8 +10,8 @@ use crucible_node_contract::{CapturedOwner, ContentRef, HashRef, Id, Position, U
 use crate::node_admission::AdmittedGraph;
 use crate::node_contract::{
     ActivationPublisher, ActivationRecord, NativeRuntimeContinuationVerifier, NodeRuntime,
-    OwnerIdentity, PreparedRuntimeRestore, PublicationStatus, QuarantinedRuntime,
-    RuntimeCustodySupervisor, RuntimeLimits, SimulationNode, WorldActivation,
+    OwnerIdentity, PreparedRuntimeRestore, PreparedWorldPublication, PublicationStatus,
+    QuarantinedRuntime, RuntimeCustodySupervisor, RuntimeLimits, SimulationNode, WorldActivation,
 };
 use crate::node_scheduling::PreparedSchedulingRestore;
 
@@ -222,6 +222,7 @@ pub struct RestoreFailure {
     pub original: OriginalWorldDisposition,
     publication: PublicationKnowledge,
     activation: Option<Box<ActivationRecord>>,
+    prepared_publication: Option<Rc<PreparedWorldPublication>>,
     staging: Option<Box<PreparedNativeCustody>>,
     runtime: Option<Box<QuarantinedRuntime>>,
     rejected_runtime: Option<Box<crate::node_contract::RuntimePreparationFailure>>,
@@ -242,6 +243,7 @@ impl RestoreFailure {
             original,
             publication,
             activation: Some(Box::new(activation)),
+            prepared_publication: None,
             staging: Some(Box::new(staging)),
             runtime: None,
             rejected_runtime: None,
@@ -255,6 +257,7 @@ impl RestoreFailure {
             original: OriginalWorldDisposition::Unknown,
             publication: PublicationKnowledge::NotAttempted,
             activation: None,
+            prepared_publication: None,
             staging: None,
             runtime: None,
             rejected_runtime: None,
@@ -294,7 +297,22 @@ impl RestoreFailure {
             .activation
             .as_ref()
             .ok_or_else(|| incomplete("failed publication", "original durable record absent"))?;
-        self.publication = publisher.reconcile(activation).into();
+        let status = match &mut self.runtime {
+            Some(runtime) => runtime
+                .reconcile_publication(activation, publisher)
+                .map_err(|error| {
+                    StateError::new(
+                        StateErrorCode::Restoration,
+                        "failed publication reconciliation",
+                        error.to_string(),
+                    )
+                })?,
+            None => match &self.prepared_publication {
+                Some(prepared) => publisher.reconcile_complete(activation, prepared),
+                None => publisher.reconcile(activation),
+            },
+        };
+        self.publication = status.into();
         if let Some(staging) = &mut self.staging {
             staging.quarantine_resources(activation, self.publication);
         }
@@ -337,6 +355,7 @@ pub struct PreparedRestore<'a> {
     capture: Rc<VerifiedCapture>,
     activation: ActivationRecord,
     publication: PublicationKnowledge,
+    prepared_publication: Option<Rc<PreparedWorldPublication>>,
     staging: Option<PreparedNativeCustody>,
     runtime: Option<NodeRuntime>,
     scheduler: Option<PreparedSchedulingRestore>,
@@ -596,6 +615,7 @@ fn stage_restore_inner<'a>(
         capture,
         activation,
         publication: PublicationKnowledge::NotAttempted,
+        prepared_publication: None,
         staging: Some(staging),
         runtime: Some(runtime),
         scheduler: Some(scheduler),
@@ -708,17 +728,61 @@ use crucible_node_contract::Validate;
 struct RecordingPublisher<'a> {
     publisher: &'a mut dyn ActivationPublisher,
     status: Option<PublicationStatus>,
+    publication: &'a mut PublicationKnowledge,
+    prepared: &'a mut Option<Rc<PreparedWorldPublication>>,
 }
 
 impl ActivationPublisher for RecordingPublisher<'_> {
+    fn prepare_coordinator(
+        &mut self,
+        record: &ActivationRecord,
+        nodes: &[crate::node_contract::ValidatedNodePreparation],
+    ) -> Result<crate::node_scheduling::InputPayload, crate::node_contract::RuntimeError> {
+        self.publisher.prepare_coordinator(record, nodes)
+    }
+
+    fn publish_complete(
+        &mut self,
+        record: &ActivationRecord,
+        prepared: &crate::node_contract::PreparedWorldPublication,
+    ) -> PublicationStatus {
+        *self.prepared = Some(Rc::new(prepared.clone()));
+        self.status = Some(PublicationStatus::Unknown);
+        *self.publication = PublicationKnowledge::Unknown;
+        let status = self.publisher.publish_complete(record, prepared);
+        self.status = Some(status);
+        *self.publication = status.into();
+        status
+    }
+
+    fn reconcile_complete(
+        &mut self,
+        record: &ActivationRecord,
+        prepared: &crate::node_contract::PreparedWorldPublication,
+    ) -> PublicationStatus {
+        *self.prepared = Some(Rc::new(prepared.clone()));
+        self.status = Some(PublicationStatus::Unknown);
+        *self.publication = PublicationKnowledge::Unknown;
+        let status = self.publisher.reconcile_complete(record, prepared);
+        self.status = Some(status);
+        *self.publication = status.into();
+        status
+    }
+
     fn publish(&mut self, record: &ActivationRecord) -> PublicationStatus {
+        self.status = Some(PublicationStatus::Unknown);
+        *self.publication = PublicationKnowledge::Unknown;
         let status = self.publisher.publish(record);
         self.status = Some(status);
+        *self.publication = status.into();
         status
     }
     fn reconcile(&mut self, record: &ActivationRecord) -> PublicationStatus {
+        self.status = Some(PublicationStatus::Unknown);
+        *self.publication = PublicationKnowledge::Unknown;
         let status = self.publisher.reconcile(record);
         self.status = Some(status);
+        *self.publication = status.into();
         status
     }
 }
@@ -744,23 +808,25 @@ impl<'a> PreparedRestore<'a> {
         publisher: &mut dyn ActivationPublisher,
         reconcile: bool,
     ) -> RestorePublication<'a> {
-        let mut publisher = RecordingPublisher {
-            publisher,
-            status: None,
+        let (result, publication_status) = {
+            let mut publisher = RecordingPublisher {
+                publisher,
+                status: None,
+                publication: &mut self.publication,
+                prepared: &mut self.prepared_publication,
+            };
+            let result = match self.runtime.as_mut() {
+                Some(runtime) if reconcile => runtime.reconcile_activation(&mut publisher),
+                Some(runtime) => runtime.activate(&mut publisher),
+                None => {
+                    return RestorePublication::Failed(self.fail(incomplete(
+                        "restore runtime",
+                        "prepared runtime custody absent",
+                    )));
+                }
+            };
+            (result, publisher.status)
         };
-        let result = match self.runtime.as_mut() {
-            Some(runtime) if reconcile => runtime.reconcile_activation(&mut publisher),
-            Some(runtime) => runtime.activate(&mut publisher),
-            None => {
-                return RestorePublication::Failed(self.fail(incomplete(
-                    "restore runtime",
-                    "prepared runtime custody absent",
-                )));
-            }
-        };
-        if let Some(status) = publisher.status {
-            self.publication = status.into();
-        }
         match result {
             Ok(activation) => {
                 self.publication = PublicationKnowledge::Committed;
@@ -838,7 +904,7 @@ impl<'a> PreparedRestore<'a> {
                     repeatability: self.capture.repeatability,
                 }))
             }
-            Err(_error) if publisher.status == Some(PublicationStatus::Unknown) => {
+            Err(_error) if publication_status == Some(PublicationStatus::Unknown) => {
                 let containment = match self.staging.as_mut() {
                     Some(staging) => staging.contain_uncertain_publication(&self.activation),
                     None => Err(incomplete(
@@ -870,6 +936,7 @@ impl<'a> PreparedRestore<'a> {
         };
         failure.publication = self.publication;
         failure.activation = Some(Box::new(self.activation.clone()));
+        failure.prepared_publication = self.prepared_publication.take();
         failure.runtime = self
             .runtime
             .take()
@@ -901,3 +968,7 @@ impl Drop for PreparedRestore<'_> {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "publication_tests.rs"]
+mod publication_tests;

@@ -136,6 +136,8 @@ fn actual_child_runs_two_admitted_quantums_with_original_input_and_publication_c
         let reference = canonical::content_ref(&bytes, "application/octet-stream").unwrap();
         let forbidden = RuntimeInputBatch {
             activation: WorldActivation {
+                nodes: std::rc::Rc::from([]),
+                preparation: None,
                 authority: Rc::new(()),
                 record: record.clone(),
             },

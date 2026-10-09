@@ -267,6 +267,9 @@ pub(super) fn limit(component: &str) -> StateError {
 
 #[cfg(test)]
 mod payload_tests {
+    // Panics identify a regression in authenticated object or byte-budget bounds.
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
     use super::*;
     use crucible_node_contract::canonical;
 

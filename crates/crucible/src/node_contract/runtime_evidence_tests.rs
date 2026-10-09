@@ -40,7 +40,7 @@ fn completed_evidence() -> (
 fn evidence_remains_same_original_bytes_after_acknowledgment() {
     let (mut runtime, state, token, reference) = completed_evidence();
     let before = runtime
-        .operation_evidence(&token, &[reference.clone()], 4096.into())
+        .operation_evidence(&token, std::slice::from_ref(&reference), 4096.into())
         .unwrap();
     runtime.acknowledge(&token, &[]).unwrap();
     drop(token);

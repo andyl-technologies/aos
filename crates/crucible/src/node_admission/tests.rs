@@ -10,6 +10,18 @@ use serde::Serialize;
 use super::*;
 use crate::node_scheduling::{ExactCeiling, ExecutionPolicy};
 
+// Matches the selected installed Host envelope definition, rather than treating
+// the test byte-lane schema as native continuation qualification.
+const HOST_NATIVE_SCHEMA: &[u8] = concat!(
+    "crucible installed host native continuation envelope v1: ",
+    "bounded complete host model cursor and codec; ",
+    "original native request/outcome/input/evidence receipt registries; ",
+    "causal cut, publication FIFO sequence and pending progress; ",
+    "authentic whole-world runtime/scheduler closure retained separately; ",
+    "no raw imported JSON grants authority",
+)
+.as_bytes();
+
 #[derive(Default)]
 struct Evidence {
     blobs: BTreeMap<String, Vec<u8>>,
@@ -72,8 +84,13 @@ impl AdmissionEvidence for Evidence {
     }
 
     fn authenticate_schema(&self, schema: &SchemaRef) -> Result<(), EvidenceError> {
+        let installed_host_codec = schema.id == id("host/native-continuation-v1")
+            && schema.definition
+                == canonical::content_ref(HOST_NATIVE_SCHEMA, "text/plain").unwrap()
+            && schema.extensions.is_empty();
         if self.reject_schema
-            || ![id("test.bytes"), id("crucible/block-request-v1")].contains(&schema.id)
+            || !([id("test.bytes"), id("crucible/block-request-v1")].contains(&schema.id)
+                || installed_host_codec)
             || schema.version != 1
         {
             return Err(EvidenceError {
@@ -402,7 +419,28 @@ fn host_model_fixture_parameters(
         extensions: Extensions::new(),
     })
     .collect();
+    let native_definition = canonical::content_ref(HOST_NATIVE_SCHEMA, "text/plain").unwrap();
+    fixture.evidence.blobs.insert(
+        native_definition.hash.digest.clone(),
+        HOST_NATIVE_SCHEMA.to_vec(),
+    );
+    let native_schema = SchemaRef {
+        id: id("host/native-continuation-v1"),
+        version: 1,
+        definition: native_definition,
+        extensions: Extensions::new(),
+    };
     for binding in &mut fixture.bindings {
+        binding
+            .compatibility
+            .implementation
+            .formats
+            .push(native_schema.clone());
+        binding
+            .compatibility
+            .implementation
+            .formats
+            .sort_by(|left, right| left.id.cmp(&right.id));
         let mut capability: CapabilityProfile = serde_json::from_slice(
             fixture
                 .evidence

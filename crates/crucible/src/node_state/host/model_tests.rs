@@ -301,7 +301,7 @@ fn source_with_pending(
 fn queued_archive_branches(selected: QueuedModel) {
     let directory = TestDirectory::new();
     let limits = StateLimits::default();
-    let archive = HostArchive::open(&directory.path().join("private"), limits).unwrap();
+    let archive = HostArchive::open(directory.path().join("private"), limits).unwrap();
     let initial = selected
         .make()
         .initialization_bytes(16 * 1024 * 1024)

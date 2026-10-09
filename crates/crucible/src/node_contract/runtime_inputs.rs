@@ -9,6 +9,7 @@ use crate::node_scheduling::{
 
 pub(super) struct RetainedInput {
     pub(super) batch: RuntimeInputBatch,
+    pub(super) provenance: Option<InputProvenanceClosure>,
     pub(super) acknowledgement: Option<NativeInputAcknowledgement>,
     pub(super) failure: Option<OperationFailure>,
     pub(super) committed: bool,
@@ -31,7 +32,7 @@ impl NodeRuntime {
         &mut self,
         batch: RuntimeInputBatch,
     ) -> Result<ValidatedInputAcknowledgement, RuntimePollFailure> {
-        let checked = (|| -> Result<(NodeRoute, OperationToken), RuntimePollFailure> {
+        let checked = (|| -> Result<(NodeRoute, OperationToken, Option<InputProvenanceClosure>), RuntimePollFailure> {
             self.validate_activation(batch.activation())
                 .map_err(RuntimePollFailure::Admission)?;
             if self.operations.contains_key(batch.stage_operation())
@@ -68,9 +69,10 @@ impl NodeRuntime {
                 operation: batch.stage_operation().clone(),
                 route: route.clone(),
             };
-            Ok((route, token))
+            let provenance = self.prepare_input_provenance(&batch)?;
+            Ok((route, token, provenance))
         })();
-        let (route, token) = match checked {
+        let (route, token, provenance) = match checked {
             Ok(checked) => checked,
             Err(error) => {
                 if let Some(scheduler) = &mut self.scheduler {
@@ -91,6 +93,7 @@ impl NodeRuntime {
             operation.clone(),
             RetainedInput {
                 batch,
+                provenance,
                 acknowledgement: None,
                 failure: None,
                 committed: false,
@@ -102,7 +105,10 @@ impl NodeRuntime {
             self.nodes.get_mut(&route.node),
             self.input_batches.get(&operation),
         ) {
-            (Some(node), Some(retained)) => node.stage_inputs(&retained.batch),
+            (Some(node), Some(retained)) => match &retained.provenance {
+                Some(provenance) => node.stage_inputs_with_provenance(&retained.batch, provenance),
+                None => node.stage_inputs(&retained.batch),
+            },
             _ => Err(OperationFailure {
                 effects: EffectKnowledge::Unknown,
                 reason: "original staged-input custody disappeared".into(),

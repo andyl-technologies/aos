@@ -141,6 +141,7 @@ impl QualifiedGem5Node {
             self.resources.maximum_prefixes,
             self.resources.maximum_retained_bytes,
         )?;
+        super::observations::retain_historical_observations(&mut ledger, &restored.record)?;
         let mut unique = BTreeSet::new();
         let mut active = None;
         for saved in &restored.record.wire.operations {

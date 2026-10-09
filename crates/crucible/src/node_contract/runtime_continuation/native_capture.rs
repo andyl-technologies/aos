@@ -272,10 +272,11 @@ impl InstalledNativeCapture {
     }
 
     pub(crate) fn from_host(
-        host: HostNativeCapture,
+        mut host: HostNativeCapture,
         descriptor: &NodeDescriptor,
         binding: &NodeBinding,
         cut: Position,
+        limits: NativeCaptureLimits,
     ) -> Result<Self, OperationFailure> {
         let schema = binding
             .compatibility
@@ -289,12 +290,54 @@ impl InstalledNativeCapture {
             .clone();
         if host.node != descriptor.id
             || host.profile.as_str() != crate::node_adapters::HOST_EXACT_PROFILE
-            || binding.compatibility.capture_owner.participant_ids != vec![host.node.clone()]
+            || binding
+                .compatibility
+                .capture_owner
+                .participant_ids
+                .as_slice()
+                != std::slice::from_ref(&host.node)
         {
             return Err(failure(
                 "host capture cannot qualify another native backend or shared owner",
             ));
         }
+
+        // Legacy Host envelopes embed the selected codec bytes. The generic
+        // archive also needs their original content leaf to authenticate a cold
+        // installed factory. Preserve the legacy evidence list outside this bridge.
+        let include_model = !host
+            .evidence
+            .iter()
+            .any(|object| object.reference == host.native_model.reference);
+        let objects = std::iter::once(&host.state)
+            .chain(&host.evidence)
+            .chain(include_model.then_some(&host.native_model));
+        let mut total_bytes = 0usize;
+        let mut total_objects = 0usize;
+        for object in objects {
+            object.reference.verify(&object.bytes).map_err(failure)?;
+            total_bytes = total_bytes
+                .checked_add(object.bytes.len())
+                .ok_or_else(|| failure("host native capture record credit overflow"))?;
+            total_objects = total_objects
+                .checked_add(1)
+                .ok_or_else(|| failure("host native capture object credit overflow"))?;
+            if object.bytes.len() > limits.maximum_record_bytes
+                || total_bytes > limits.maximum_total_record_bytes
+                || total_objects > limits.maximum_objects
+            {
+                return Err(failure(
+                    "host native capture exceeds remaining record credit",
+                ));
+            }
+        }
+        if include_model {
+            host.evidence
+                .try_reserve(1)
+                .map_err(|_| failure("host native codec evidence reservation failed"))?;
+            host.evidence.push(host.native_model);
+        }
+
         Ok(Self {
             owner: binding.compatibility.capture_owner.id.clone(),
             participants: vec![host.node],

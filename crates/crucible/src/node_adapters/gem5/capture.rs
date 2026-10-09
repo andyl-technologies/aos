@@ -283,6 +283,9 @@ impl QualifiedGem5Node {
         }
         let mut operations = Vec::new();
         let mut evidence = BTreeMap::new();
+        for object in self.ledger.standalone() {
+            insert_evidence(&mut evidence, object, limits)?;
+        }
         for ((identity, native), saved) in self.ledger.operations().zip(own) {
             let saved_result_matches = match (&saved.result, &native.outcome) {
                 (SavedRuntimeResult::Pending, None) => !native.acknowledged,

@@ -39,6 +39,9 @@ impl NodeRuntime {
         }
         for input in self.input_batches.values() {
             restore::bounded_record(&input.batch.payloads(), per_entry)?;
+            if let Some(provenance) = &input.provenance {
+                restore::bounded_record(provenance.saved(), per_entry)?;
+            }
         }
         let snapshot = extract_snapshot(self, capture_cut, capture_ordinal);
         restore::bounded_record(&snapshot, maximum_record_bytes)?;
@@ -52,7 +55,15 @@ fn extract_snapshot(
     capture_ordinal: U64,
 ) -> RuntimeSnapshot {
     RuntimeSnapshot {
-        schema_version: 1,
+        schema_version: if runtime
+            .input_batches
+            .values()
+            .any(|input| input.provenance.is_some())
+        {
+            2
+        } else {
+            1
+        },
         source_activation: runtime.barrier.record().into(),
         capture_cut,
         capture_ordinal,
@@ -111,6 +122,7 @@ fn extract_snapshot(
                 inventory: input.batch.inventory().clone(),
                 deliveries: input.batch.deliveries().to_vec(),
                 payloads: input.batch.payloads().to_vec(),
+                provenance: input.provenance.as_ref().map(|value| value.saved().clone()),
                 acknowledgement: input.acknowledgement.clone(),
                 failure: input.failure.clone(),
                 committed: input.committed,

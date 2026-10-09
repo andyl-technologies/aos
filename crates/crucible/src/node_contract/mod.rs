@@ -6,6 +6,7 @@
 //! Existing execution adapters remain separate until their node profiles qualify.
 
 mod activation;
+mod activation_preparation;
 mod provider;
 mod quarantine;
 mod runtime;
@@ -14,6 +15,7 @@ mod types;
 mod validation;
 
 pub use activation::*;
+pub use activation_preparation::*;
 pub use provider::*;
 pub use quarantine::*;
 pub use runtime::*;
