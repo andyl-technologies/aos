@@ -24,7 +24,6 @@ use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::cgroup::{
     CgroupPopulationMonitor, CgroupPopulationState, CgroupV2Root, RetainedCgroupAnchor,
 };
-use aos_sandbox_linux::no_setid::reject_io_uring_descriptor;
 use aos_sandbox_linux::pidfd::NamespaceIdentity;
 use aos_sandbox_linux::pidfd::{NamespaceFd, SingleThreadedProcess};
 use aos_sandbox_linux::seqpacket::descriptor_subject::{
@@ -752,7 +751,10 @@ pub(crate) fn send_record_before(
     payload: &[u8],
     deadline: u64,
 ) -> Result<(), NetworkWorkerRuntimeError> {
-    send_record_inner(socket, payload, &[], deadline)
+    aos_sandbox_linux::seqpacket::bounded::send_provisioned_worker_record(
+        socket, payload, &[], deadline,
+    )
+    .map_err(map_worker_record_error)
 }
 
 pub(crate) fn send_record_with_descriptors_before(
@@ -761,31 +763,10 @@ pub(crate) fn send_record_with_descriptors_before(
     descriptors: &[BorrowedFd<'_>],
     deadline: u64,
 ) -> Result<(), NetworkWorkerRuntimeError> {
-    send_record_inner(socket, payload, descriptors, deadline)
-}
-
-fn send_record_inner(
-    socket: &mut DescriptorSubjectSocket,
-    payload: &[u8],
-    descriptors: &[BorrowedFd<'_>],
-    deadline: u64,
-) -> Result<(), NetworkWorkerRuntimeError> {
-    socket.provision_packet_capacity(payload.len())?;
-    loop {
-        ensure_before_deadline(deadline)?;
-        let result = if descriptors.is_empty() {
-            socket.send(payload)
-        } else {
-            socket.send_with_descriptors(payload, descriptors)
-        };
-        match result {
-            Ok(()) => return ensure_before_deadline(deadline),
-            Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => {
-                wait_before(socket.as_fd()?, rustix::event::PollFlags::OUT, deadline)?;
-            }
-            Err(error) => return Err(error.into()),
-        }
-    }
+    aos_sandbox_linux::seqpacket::bounded::send_provisioned_worker_record(
+        socket, payload, descriptors, deadline,
+    )
+    .map_err(map_worker_record_error)
 }
 
 pub(crate) fn receive_record_before(
@@ -794,23 +775,10 @@ pub(crate) fn receive_record_before(
     descriptors: usize,
     deadline: u64,
 ) -> Result<ReceivedDescriptorRecord, NetworkWorkerRuntimeError> {
-    socket.provision_packet_capacity(maximum)?;
-    loop {
-        ensure_before_deadline(deadline)?;
-        match socket.receive(maximum, descriptors) {
-            Ok(record) => {
-                for descriptor in record.descriptors() {
-                    reject_io_uring_descriptor(descriptor.as_fd())?;
-                }
-                ensure_before_deadline(deadline)?;
-                return Ok(record);
-            }
-            Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => {
-                wait_before(socket.as_fd()?, rustix::event::PollFlags::IN, deadline)?;
-            }
-            Err(error) => return Err(error.into()),
-        }
-    }
+    aos_sandbox_linux::seqpacket::bounded::receive_provisioned_worker_record_without_io_uring(
+        socket, maximum, descriptors, deadline,
+    )
+    .map_err(map_worker_record_error)
 }
 
 pub(crate) fn quiesce_worker(
@@ -859,31 +827,22 @@ fn cgroup_is_quiescent(
     ))
 }
 
-fn wait_before(
-    descriptor: BorrowedFd<'_>,
-    events: rustix::event::PollFlags,
-    deadline: u64,
-) -> Result<(), NetworkWorkerRuntimeError> {
-    loop {
-        let remaining = deadline
-            .checked_sub(boottime_now_nanoseconds()?)
-            .filter(|remaining| *remaining != 0)
-            .ok_or(NetworkWorkerRuntimeError::Protocol(
-                "Network worker transfer deadline elapsed",
-            ))?;
-        let timeout = rustix::event::Timespec::try_from(Duration::from_nanos(remaining))
-            .map_err(|_| NetworkWorkerRuntimeError::Protocol("invalid transfer deadline"))?;
-        let mut descriptors = [rustix::event::PollFd::new(&descriptor, events)];
-        match rustix::event::poll(&mut descriptors, Some(&timeout)) {
-            Ok(0) => {
-                return Err(NetworkWorkerRuntimeError::Protocol(
-                    "Network worker transfer deadline elapsed",
-                ));
-            }
-            Ok(_) => return ensure_before_deadline(deadline),
-            Err(rustix::io::Errno::INTR) => continue,
-            Err(error) => return Err(error.into()),
-        }
+fn map_worker_record_error(
+    error: aos_sandbox_linux::seqpacket::bounded::WorkerRecordError,
+) -> NetworkWorkerRuntimeError {
+    use aos_sandbox_linux::seqpacket::bounded::{WorkerRecordClockError, WorkerRecordError};
+
+    match error {
+        WorkerRecordError::Transport(error) => NetworkWorkerRuntimeError::Transport(error),
+        WorkerRecordError::Poll(error) => NetworkWorkerRuntimeError::Poll(error),
+        WorkerRecordError::Linux(error) => NetworkWorkerRuntimeError::Linux(error),
+        WorkerRecordError::Clock(reason) => NetworkWorkerRuntimeError::Protocol(match reason {
+            WorkerRecordClockError::InvalidSeconds => "CLOCK_BOOTTIME seconds are invalid",
+            WorkerRecordClockError::InvalidNanoseconds => "CLOCK_BOOTTIME nanoseconds are invalid",
+            WorkerRecordClockError::Overflow => "CLOCK_BOOTTIME overflowed",
+            WorkerRecordClockError::Expired => "Network worker transfer deadline elapsed",
+            WorkerRecordClockError::InvalidTimeout => "invalid transfer deadline",
+        }),
     }
 }
 

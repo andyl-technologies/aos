@@ -4,7 +4,8 @@
 //! operations return transport data only; peers, descriptor roles, authority,
 //! currentness, acknowledgements, and worker quiescence remain caller-owned.
 
-use std::os::fd::BorrowedFd;
+use std::os::fd::{AsFd, BorrowedFd};
+use std::time::Duration;
 
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 
@@ -23,6 +24,76 @@ pub enum BoundedRecordError {
     /// Boot time was invalid or the exchange deadline expired.
     #[error("bounded record exchange deadline expired or clock was invalid")]
     Clock,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum WorkerRecordError {
+    #[error(transparent)]
+    Transport(#[from] SeqpacketError),
+    #[error(transparent)]
+    Poll(#[from] rustix::io::Errno),
+    #[error(transparent)]
+    Linux(#[from] crate::Error),
+    #[error(transparent)]
+    Clock(#[from] WorkerRecordClockError),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum WorkerRecordClockError {
+    #[error("CLOCK_BOOTTIME seconds are invalid")]
+    InvalidSeconds,
+    #[error("CLOCK_BOOTTIME nanoseconds are invalid")]
+    InvalidNanoseconds,
+    #[error("CLOCK_BOOTTIME overflowed")]
+    Overflow,
+    #[error("worker record transfer deadline elapsed")]
+    Expired,
+    #[error("worker record transfer deadline is invalid")]
+    InvalidTimeout,
+}
+
+pub fn send_provisioned_worker_record(
+    socket: &mut DescriptorSubjectSocket,
+    payload: &[u8],
+    descriptors: &[BorrowedFd<'_>],
+    deadline: u64,
+) -> Result<(), WorkerRecordError> {
+    socket.provision_packet_capacity(payload.len())?;
+    exchange_record(&WorkerProfile, socket, PollFlags::OUT, deadline, |socket| {
+        if descriptors.is_empty() {
+            socket.send(payload)
+        } else {
+            socket.send_with_descriptors(payload, descriptors)
+        }
+    })
+}
+
+pub fn receive_provisioned_worker_record(
+    socket: &mut DescriptorSubjectSocket,
+    maximum: usize,
+    expected_descriptors: usize,
+    deadline: u64,
+) -> Result<ReceivedDescriptorRecord, WorkerRecordError> {
+    socket.provision_packet_capacity(maximum)?;
+    exchange_record(&WorkerProfile, socket, PollFlags::IN, deadline, |socket| {
+        socket.receive(maximum, expected_descriptors)
+    })
+}
+
+pub fn receive_provisioned_worker_record_without_io_uring(
+    socket: &mut DescriptorSubjectSocket,
+    maximum: usize,
+    expected_descriptors: usize,
+    deadline: u64,
+) -> Result<ReceivedDescriptorRecord, WorkerRecordError> {
+    socket.provision_packet_capacity(maximum)?;
+    exchange_record(
+        &InspectedWorkerProfile,
+        socket,
+        PollFlags::IN,
+        deadline,
+        |socket| socket.receive(maximum, expected_descriptors),
+    )
 }
 
 /// Waits for one checked connection, rejecting a stale queued child.
@@ -158,17 +229,194 @@ fn record_before<Socket: BoundedRecordSocket, Record>(
     socket: &mut Socket,
     events: PollFlags,
     deadline: u64,
-    mut attempt: impl FnMut(&mut Socket) -> Result<Record, SeqpacketError>,
+    attempt: impl FnMut(&mut Socket) -> Result<Record, SeqpacketError>,
 ) -> Result<Record, BoundedRecordError> {
+    exchange_record(&BoundedProfile, socket, events, deadline, attempt)
+}
+
+enum InterruptedAttempt {
+    Retry,
+    Wait,
+}
+
+trait RecordProfile<Socket, Record> {
+    type Error: From<SeqpacketError>;
+
+    const INTERRUPTED: InterruptedAttempt;
+
+    fn check_deadline(&self, deadline: u64) -> Result<(), Self::Error>;
+    fn wait(&self, socket: &Socket, events: PollFlags, deadline: u64) -> Result<(), Self::Error>;
+    fn inspect(&self, record: &Record) -> Result<(), Self::Error>;
+}
+
+struct BoundedProfile;
+
+impl<Socket: BoundedRecordSocket, Record> RecordProfile<Socket, Record> for BoundedProfile {
+    type Error = BoundedRecordError;
+
+    const INTERRUPTED: InterruptedAttempt = InterruptedAttempt::Retry;
+
+    fn check_deadline(&self, deadline: u64) -> Result<(), Self::Error> {
+        check_deadline(deadline)
+    }
+
+    fn wait(&self, socket: &Socket, events: PollFlags, deadline: u64) -> Result<(), Self::Error> {
+        socket.wait_readiness(events, deadline)
+    }
+
+    fn inspect(&self, _: &Record) -> Result<(), Self::Error> {
+        Ok(())
+    }
+}
+
+struct WorkerProfile;
+
+impl<Record> RecordProfile<DescriptorSubjectSocket, Record> for WorkerProfile {
+    type Error = WorkerRecordError;
+
+    const INTERRUPTED: InterruptedAttempt = InterruptedAttempt::Wait;
+
+    fn check_deadline(&self, deadline: u64) -> Result<(), Self::Error> {
+        check_worker_deadline(deadline)
+    }
+
+    fn wait(
+        &self,
+        socket: &DescriptorSubjectSocket,
+        events: PollFlags,
+        deadline: u64,
+    ) -> Result<(), Self::Error> {
+        wait_worker_before(&NativeWorkerWait, socket.as_fd()?, events, deadline)
+    }
+
+    fn inspect(&self, _: &Record) -> Result<(), Self::Error> {
+        Ok(())
+    }
+}
+
+struct InspectedWorkerProfile;
+
+impl RecordProfile<DescriptorSubjectSocket, ReceivedDescriptorRecord> for InspectedWorkerProfile {
+    type Error = WorkerRecordError;
+
+    const INTERRUPTED: InterruptedAttempt = InterruptedAttempt::Wait;
+
+    fn check_deadline(&self, deadline: u64) -> Result<(), Self::Error> {
+        check_worker_deadline(deadline)
+    }
+
+    fn wait(
+        &self,
+        socket: &DescriptorSubjectSocket,
+        events: PollFlags,
+        deadline: u64,
+    ) -> Result<(), Self::Error> {
+        wait_worker_before(&NativeWorkerWait, socket.as_fd()?, events, deadline)
+    }
+
+    fn inspect(&self, record: &ReceivedDescriptorRecord) -> Result<(), Self::Error> {
+        for descriptor in record.descriptors() {
+            crate::no_setid::reject_io_uring_descriptor(descriptor.as_fd())?;
+        }
+        Ok(())
+    }
+}
+
+fn exchange_record<Socket, Record, Profile: RecordProfile<Socket, Record>>(
+    profile: &Profile,
+    socket: &mut Socket,
+    events: PollFlags,
+    deadline: u64,
+    mut attempt: impl FnMut(&mut Socket) -> Result<Record, SeqpacketError>,
+) -> Result<Record, Profile::Error> {
     loop {
-        check_deadline(deadline)?;
+        profile.check_deadline(deadline)?;
         match attempt(socket) {
             Ok(record) => {
-                check_deadline(deadline)?;
+                profile.inspect(&record)?;
+                profile.check_deadline(deadline)?;
                 return Ok(record);
             }
-            Err(SeqpacketError::WouldBlock) => socket.wait_readiness(events, deadline)?,
-            Err(SeqpacketError::Interrupted) => {}
+            Err(SeqpacketError::WouldBlock) => profile.wait(socket, events, deadline)?,
+            Err(SeqpacketError::Interrupted) => match Profile::INTERRUPTED {
+                InterruptedAttempt::Retry => {}
+                InterruptedAttempt::Wait => profile.wait(socket, events, deadline)?,
+            },
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+fn worker_boottime() -> Result<u64, WorkerRecordError> {
+    let now = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
+    let seconds = u64::try_from(now.tv_sec)
+        .map_err(|_| WorkerRecordClockError::InvalidSeconds)?;
+    let nanoseconds = u64::try_from(now.tv_nsec)
+        .map_err(|_| WorkerRecordClockError::InvalidNanoseconds)?;
+    seconds
+        .checked_mul(1_000_000_000)
+        .and_then(|value| value.checked_add(nanoseconds))
+        .ok_or_else(|| WorkerRecordClockError::Overflow.into())
+}
+
+fn check_worker_deadline(deadline: u64) -> Result<(), WorkerRecordError> {
+    if worker_boottime()? >= deadline {
+        return Err(WorkerRecordClockError::Expired.into());
+    }
+
+    Ok(())
+}
+
+trait WorkerWait {
+    fn boottime(&self) -> Result<u64, WorkerRecordError>;
+    fn poll(
+        &self,
+        descriptor: BorrowedFd<'_>,
+        events: PollFlags,
+        timeout: &Timespec,
+    ) -> Result<usize, rustix::io::Errno>;
+}
+
+struct NativeWorkerWait;
+
+impl WorkerWait for NativeWorkerWait {
+    fn boottime(&self) -> Result<u64, WorkerRecordError> {
+        worker_boottime()
+    }
+
+    fn poll(
+        &self,
+        descriptor: BorrowedFd<'_>,
+        events: PollFlags,
+        timeout: &Timespec,
+    ) -> Result<usize, rustix::io::Errno> {
+        let mut descriptors = [PollFd::new(&descriptor, events)];
+        poll(&mut descriptors, Some(timeout))
+    }
+}
+
+fn wait_worker_before(
+    wait: &impl WorkerWait,
+    descriptor: BorrowedFd<'_>,
+    events: PollFlags,
+    deadline: u64,
+) -> Result<(), WorkerRecordError> {
+    loop {
+        let remaining = deadline
+            .checked_sub(wait.boottime()?)
+            .filter(|remaining| *remaining != 0)
+            .ok_or(WorkerRecordClockError::Expired)?;
+        let timeout = Timespec::try_from(Duration::from_nanos(remaining))
+            .map_err(|_| WorkerRecordClockError::InvalidTimeout)?;
+        match wait.poll(descriptor, events, &timeout) {
+            Ok(0) => return Err(WorkerRecordClockError::Expired.into()),
+            Ok(_) => {
+                if wait.boottime()? >= deadline {
+                    return Err(WorkerRecordClockError::Expired.into());
+                }
+                return Ok(());
+            }
+            Err(rustix::io::Errno::INTR) => continue,
             Err(error) => return Err(error.into()),
         }
     }
@@ -253,6 +501,113 @@ mod tests {
     use std::os::fd::{AsFd, OwnedFd};
 
     use super::*;
+
+    fn packet_socket_pair() -> (DescriptorSubjectSocket, DescriptorSubjectSocket) {
+        let (first, second) = rustix::net::socketpair(
+            rustix::net::AddressFamily::UNIX,
+            rustix::net::SocketType::SEQPACKET,
+            rustix::net::SocketFlags::CLOEXEC,
+            None,
+        )
+        .unwrap();
+        (
+            DescriptorSubjectSocket::from_owned(first).unwrap(),
+            DescriptorSubjectSocket::from_owned(second).unwrap(),
+        )
+    }
+
+    fn packet_before<Packet>(
+        socket: &mut DescriptorSubjectSocket,
+        events: PollFlags,
+        deadline: u64,
+        attempt: impl FnMut(&mut DescriptorSubjectSocket) -> Result<Packet, SeqpacketError>,
+    ) -> Result<Packet, WorkerRecordError> {
+        exchange_record(&WorkerProfile, socket, events, deadline, attempt)
+    }
+
+    #[test]
+    fn packet_backpressure_and_interruption_both_wait_before_retrying() {
+        for interrupted in [false, true] {
+            let (mut socket, _peer) = packet_socket_pair();
+            socket.close();
+            let attempts = Cell::new(0);
+
+            let result =
+                packet_before(&mut socket, rustix::event::PollFlags::OUT, u64::MAX, |_| {
+                    attempts.set(attempts.get() + 1);
+                    if attempts.get() > 1 {
+                        return Ok(());
+                    }
+                    Err::<(), _>(if interrupted {
+                        SeqpacketError::Interrupted
+                    } else {
+                        SeqpacketError::WouldBlock
+                    })
+                });
+
+            // A retry without the original poll-descriptor borrow would invoke
+            // the attempt again instead of returning this closed-carrier error.
+            assert!(matches!(
+                result,
+                Err(WorkerRecordError::Transport(SeqpacketError::Closed))
+            ));
+            assert_eq!(attempts.get(), 1);
+        }
+    }
+
+    #[test]
+    fn packet_backpressure_and_interruption_retry_after_writable_poll() {
+        for interrupted in [false, true] {
+            let (mut socket, _peer) = packet_socket_pair();
+            let first_error = if interrupted {
+                SeqpacketError::Interrupted
+            } else {
+                SeqpacketError::WouldBlock
+            };
+            let mut outcomes = VecDeque::from([Err(first_error), Ok(())]);
+
+            packet_before(&mut socket, rustix::event::PollFlags::OUT, u64::MAX, |_| {
+                outcomes.pop_front().unwrap()
+            })
+            .unwrap();
+
+            assert!(outcomes.is_empty());
+        }
+    }
+
+    #[test]
+    fn fatal_packet_errors_are_returned_without_retry() {
+        let (mut socket, _peer) = packet_socket_pair();
+        let attempts = Cell::new(0);
+
+        let result = packet_before(&mut socket, rustix::event::PollFlags::OUT, u64::MAX, |_| {
+            attempts.set(attempts.get() + 1);
+            Err::<(), _>(SeqpacketError::InvalidMaximum)
+        });
+
+        assert!(matches!(
+            result,
+            Err(WorkerRecordError::Transport(SeqpacketError::InvalidMaximum))
+        ));
+        assert_eq!(attempts.get(), 1);
+    }
+
+    #[test]
+    fn expired_packet_deadline_precedes_the_atomic_attempt() {
+        let (mut socket, _peer) = packet_socket_pair();
+        let attempts = Cell::new(0);
+
+        let result = packet_before(&mut socket, rustix::event::PollFlags::OUT, 0, |_| {
+            attempts.set(attempts.get() + 1);
+            Ok(())
+        });
+
+        assert!(matches!(
+            result,
+            Err(WorkerRecordError::Clock(WorkerRecordClockError::Expired))
+        ));
+        assert_eq!(attempts.get(), 0);
+    }
 
     #[derive(Clone, Copy)]
     enum WaitFailure {

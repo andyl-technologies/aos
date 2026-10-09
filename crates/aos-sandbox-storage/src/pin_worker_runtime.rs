@@ -2526,10 +2526,10 @@ pub(crate) fn send_packet_before(
     payload: &[u8],
     deadline: u64,
 ) -> Result<(), ZfsWorkerError> {
-    socket.provision_packet_capacity(payload.len())?;
-    packet_before(socket, rustix::event::PollFlags::OUT, deadline, |socket| {
-        socket.send(payload)
-    })
+    aos_sandbox_linux::seqpacket::bounded::send_provisioned_worker_record(
+        socket, payload, &[], deadline,
+    )
+    .map_err(map_worker_record_error)
 }
 
 pub(crate) fn send_packet_with_descriptor_before(
@@ -2538,10 +2538,10 @@ pub(crate) fn send_packet_with_descriptor_before(
     descriptor: BorrowedFd<'_>,
     deadline: u64,
 ) -> Result<(), ZfsWorkerError> {
-    socket.provision_packet_capacity(payload.len())?;
-    packet_before(socket, rustix::event::PollFlags::OUT, deadline, |socket| {
-        socket.send_with_descriptors(payload, &[descriptor])
-    })
+    aos_sandbox_linux::seqpacket::bounded::send_provisioned_worker_record(
+        socket, payload, &[descriptor], deadline,
+    )
+    .map_err(map_worker_record_error)
 }
 
 pub(crate) fn receive_packet_before(
@@ -2552,10 +2552,10 @@ pub(crate) fn receive_packet_before(
     aos_sandbox_linux::seqpacket::descriptor_subject::ReceivedDescriptorRecord,
     ZfsWorkerError,
 > {
-    socket.provision_packet_capacity(maximum)?;
-    packet_before(socket, rustix::event::PollFlags::IN, deadline, |socket| {
-        socket.receive(maximum, 0)
-    })
+    aos_sandbox_linux::seqpacket::bounded::receive_provisioned_worker_record(
+        socket, maximum, 0, deadline,
+    )
+    .map_err(map_worker_record_error)
 }
 
 pub(crate) fn receive_packet_with_descriptor_before(
@@ -2566,32 +2566,28 @@ pub(crate) fn receive_packet_with_descriptor_before(
     aos_sandbox_linux::seqpacket::descriptor_subject::ReceivedDescriptorRecord,
     ZfsWorkerError,
 > {
-    socket.provision_packet_capacity(maximum)?;
-    packet_before(socket, rustix::event::PollFlags::IN, deadline, |socket| {
-        socket.receive(maximum, 1)
-    })
+    aos_sandbox_linux::seqpacket::bounded::receive_provisioned_worker_record(
+        socket, maximum, 1, deadline,
+    )
+    .map_err(map_worker_record_error)
 }
 
-// Only the concrete packet adapters above select an atomic socket operation.
-// Framed transfers, authority checks, ACKs, and worker cleanup stay separate.
-fn packet_before<Packet>(
-    socket: &mut DescriptorSubjectSocket,
-    events: rustix::event::PollFlags,
-    deadline: u64,
-    mut attempt: impl FnMut(&mut DescriptorSubjectSocket) -> Result<Packet, SeqpacketError>,
-) -> Result<Packet, ZfsWorkerError> {
-    loop {
-        ensure_before_deadline(deadline)?;
-        match attempt(socket) {
-            Ok(packet) => {
-                ensure_before_deadline(deadline)?;
-                return Ok(packet);
-            }
-            Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => {
-                wait_before(socket.as_fd()?, events, deadline)?;
-            }
-            Err(error) => return Err(error.into()),
-        }
+fn map_worker_record_error(
+    error: aos_sandbox_linux::seqpacket::bounded::WorkerRecordError,
+) -> ZfsWorkerError {
+    use aos_sandbox_linux::seqpacket::bounded::{WorkerRecordClockError, WorkerRecordError};
+
+    match error {
+        WorkerRecordError::Transport(error) => ZfsWorkerError::Transport(error),
+        WorkerRecordError::Poll(error) => ZfsWorkerError::Kernel(error),
+        WorkerRecordError::Linux(error) => ZfsWorkerError::Linux(error),
+        WorkerRecordError::Clock(reason) => ZfsWorkerError::Protocol(match reason {
+            WorkerRecordClockError::InvalidSeconds => "CLOCK_BOOTTIME seconds are invalid",
+            WorkerRecordClockError::InvalidNanoseconds => "CLOCK_BOOTTIME nanoseconds are invalid",
+            WorkerRecordClockError::Overflow => "CLOCK_BOOTTIME overflowed",
+            WorkerRecordClockError::Expired => "workspace pin whole-transfer deadline elapsed",
+            WorkerRecordClockError::InvalidTimeout => "workspace pin transfer deadline is invalid",
+        }),
     }
 }
 
@@ -2628,9 +2624,6 @@ pub(crate) fn map_observer_error(error: WorkspacePinObserverError) -> ZfsWorkerE
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use std::cell::Cell;
-    use std::collections::VecDeque;
-
     use tempfile::TempDir;
 
     use super::*;
@@ -2647,92 +2640,6 @@ mod tests {
             DescriptorSubjectSocket::from_owned(first).unwrap(),
             DescriptorSubjectSocket::from_owned(second).unwrap(),
         )
-    }
-
-    #[test]
-    fn packet_backpressure_and_interruption_both_wait_before_retrying() {
-        for interrupted in [false, true] {
-            let (mut socket, _peer) = packet_socket_pair();
-            socket.close();
-            let attempts = Cell::new(0);
-
-            let result =
-                packet_before(&mut socket, rustix::event::PollFlags::OUT, u64::MAX, |_| {
-                    attempts.set(attempts.get() + 1);
-                    if attempts.get() > 1 {
-                        return Ok(());
-                    }
-                    Err::<(), _>(if interrupted {
-                        SeqpacketError::Interrupted
-                    } else {
-                        SeqpacketError::WouldBlock
-                    })
-                });
-
-            // A retry without the original poll-descriptor borrow would invoke
-            // the attempt again instead of returning this closed-carrier error.
-            assert!(matches!(
-                result,
-                Err(ZfsWorkerError::Transport(SeqpacketError::Closed))
-            ));
-            assert_eq!(attempts.get(), 1);
-        }
-    }
-
-    #[test]
-    fn packet_backpressure_and_interruption_retry_after_writable_poll() {
-        for interrupted in [false, true] {
-            let (mut socket, _peer) = packet_socket_pair();
-            let first_error = if interrupted {
-                SeqpacketError::Interrupted
-            } else {
-                SeqpacketError::WouldBlock
-            };
-            let mut outcomes = VecDeque::from([Err(first_error), Ok(())]);
-
-            packet_before(&mut socket, rustix::event::PollFlags::OUT, u64::MAX, |_| {
-                outcomes.pop_front().unwrap()
-            })
-            .unwrap();
-
-            assert!(outcomes.is_empty());
-        }
-    }
-
-    #[test]
-    fn fatal_packet_errors_are_returned_without_retry() {
-        let (mut socket, _peer) = packet_socket_pair();
-        let attempts = Cell::new(0);
-
-        let result = packet_before(&mut socket, rustix::event::PollFlags::OUT, u64::MAX, |_| {
-            attempts.set(attempts.get() + 1);
-            Err::<(), _>(SeqpacketError::InvalidMaximum)
-        });
-
-        assert!(matches!(
-            result,
-            Err(ZfsWorkerError::Transport(SeqpacketError::InvalidMaximum))
-        ));
-        assert_eq!(attempts.get(), 1);
-    }
-
-    #[test]
-    fn expired_packet_deadline_precedes_the_atomic_attempt() {
-        let (mut socket, _peer) = packet_socket_pair();
-        let attempts = Cell::new(0);
-
-        let result = packet_before(&mut socket, rustix::event::PollFlags::OUT, 0, |_| {
-            attempts.set(attempts.get() + 1);
-            Ok(())
-        });
-
-        assert!(matches!(
-            result,
-            Err(ZfsWorkerError::Protocol(
-                "workspace pin whole-transfer deadline elapsed"
-            ))
-        ));
-        assert_eq!(attempts.get(), 0);
     }
 
     #[test]
