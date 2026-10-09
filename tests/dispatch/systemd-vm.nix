@@ -24,6 +24,17 @@
   fixture = system.extendModules {
     modules = [
       {
+        # Software emulation needs additional time to execute the sealed boot
+        # transaction. Keep its production path and KVM startup policy intact.
+        aos.services = lib.mkIf allowTcg (lib.genAttrs [
+            "boot-preparations.aos-ability-initrd-controller"
+            "boot-preparations.aos-ability-initrd-handoff-barrier"
+            "boot-preparations.aos-ability-host-receiver"
+          ] (_: {
+            lifecycle.start_timeout_millis = lib.mkForce 300000;
+            readiness.timeout_millis = lib.mkForce 300000;
+          }));
+
         aos.dispatch = {
           enable = true;
           applications.vm = {
@@ -122,8 +133,16 @@ in
           ${pkgs.bash}/bin/bash -o pipefail -c '
             serial_log=$1
             shift
-            ${pkgs.coreutils}/bin/timeout 900 "$@" 2>&1 \
-              | ${pkgs.coreutils}/bin/tee "$serial_log"
+            : > "$serial_log"
+            ${pkgs.coreutils}/bin/tail -n +1 -f --pid=$$ "$serial_log" \
+              | ${pkgs.coreutils}/bin/tr -d "\r" &
+            log_pid=$!
+            cleanup() {
+              kill "$log_pid" 2>/dev/null || true
+              wait "$log_pid" 2>/dev/null || true
+            }
+            trap cleanup EXIT
+            ${pkgs.coreutils}/bin/timeout 900 "$@"
           ' dispatch-vm "$out/serial.log" ${pkgs.qemu}/bin/qemu-system-x86_64 \
             -machine q35,accel=${
             if allowTcg
@@ -135,7 +154,8 @@ in
             then "max"
             else "host"
           } \
-            -m 2048 -smp 2 -nographic -no-reboot \
+            -m 2048 -smp 2 -display none -monitor none \
+            -serial file:"$out/serial.log" -no-reboot \
             -kernel "$kernel_image" \
             -initrd ${initrd}/initrd.img \
             -append ${lib.escapeShellArg kernelArguments} \
