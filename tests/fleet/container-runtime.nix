@@ -215,7 +215,7 @@ in {
     # Each fresh container initializes its local Nix state before the workload
     # starts; the short default command timeout only suits later exec calls.
     runtime.succeed(
-        "${nerdctl} run --rm --net none aos:latest /usr/bin/aos --version",
+        "${nerdctl} run --rm --net none aos:latest /usr/bin/apm --version",
         timeout=120,
     )
     runtime.succeed(
@@ -223,7 +223,8 @@ in {
         timeout=120,
     )
     runtime.succeed(
-        "${nerdctl} run --rm --net none aos:latest /usr/bin/apr --help",
+        "${nerdctl} run --rm --net none aos:latest ${bash} -c "
+        + shlex.quote("test ! -e /usr/bin/aos && test ! -e /usr/bin/apr"),
         timeout=120,
     )
 
@@ -392,15 +393,15 @@ in {
         "--trust-key \"$(cat /var/lib/aos-container-fixtures/trust-key)\" "
         "file:///fixtures/registry --name container-runtime-reg"
     )
-    apr_list = json.loads(
+    registries = json.loads(
         runtime.succeed(
-            "${nerdctl} exec aos-runtime-state /usr/bin/apr --json list"
+            "${nerdctl} exec aos-runtime-state /usr/bin/apm --json registry list"
         )
     )
     assert any(
         registry.get("name") == "container-runtime-reg"
-        for registry in apr_list
-    ), apr_list
+        for registry in registries
+    ), registries
     search = json.loads(
         runtime.succeed(
             "${nerdctl} exec aos-runtime-state /usr/bin/apm --json search "
