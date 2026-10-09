@@ -31,8 +31,11 @@ pub(crate) struct NativeSourceEffectCut {
 /// The caller supplies its actual live source root and registration's retained
 /// userdata. A non-NULL output must identify writable, aligned pointer storage
 /// for the synchronous call. It must not alias the retained owner or mapping.
-pub(crate) type AcquireRootEpoch =
-    unsafe extern "C" fn(*const NativeSourceRootSeal, *mut *mut c_void, *mut c_void) -> c_int;
+pub(crate) type AcquireRootEpoch = unsafe extern "C" fn(
+    root: *const NativeSourceRootSeal,
+    output: *mut *mut c_void,
+    userdata: *mut c_void,
+) -> c_int;
 
 /// Installs a scope only for the same epoch and native original effect cut.
 ///
