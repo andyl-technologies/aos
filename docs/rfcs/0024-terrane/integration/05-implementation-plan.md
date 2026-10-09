@@ -206,8 +206,14 @@ changing production receipt traits. The actual whole-lease witness queues a
 real renewal behind the held barrier and checks its selected durable value;
 its refusal may precede native ownership dispatch and proves no ownership ACK,
 not an in-worker refusal. Four focused runtime cases have started with unchanged
-bounds; full native qualification and the collector unknown-inventory refusal
-witnesses remain pending.
+bounds; full native qualification remains pending. The inventory audit finds
+that every admitted writable native selection validates known ref, catalog and
+exclusion inventories. Unknown legacy inputs remain read-only: their ref
+enumeration returns `Unsupported`, and Original/held mutation admission refuses
+them before effects. Existing `gc-roots-complete` and `bucket-cap-probe` cases
+cover rejected incomplete successors and that legacy boundary. Their actual
+owning-gate qualification is still required; a fabricated unknown writable
+selection would not be valid collector evidence (GC-2, GC-29).
 
 All ten
 exact native Active completion cases pass on `4e6c14a7f3`. The eight-case native
