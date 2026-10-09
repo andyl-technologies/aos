@@ -17,6 +17,8 @@ def main():
     parser.add_argument("--elf", required=True, type=Path)
     parser.add_argument("--objdump", default="objdump")
     parser.add_argument("--objcopy", default="objcopy")
+    parser.add_argument("--nm", default="nm")
+    parser.add_argument("--wire-reference", type=Path, required=True)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
     image = args.rom.read_bytes()
@@ -28,7 +30,19 @@ def main():
     assert len(image) == 65536
     assert image[65520:65525] == bytes.fromhex("ea000000f0")
     assert image[65525:] == bytes(11)
-    for marker in ("READY", "WRITTEN", "BAD_SEED", "BAD_COMMAND"):
+    symbols = {}
+    for line in subprocess.check_output([args.nm, "-n", str(args.elf)],
+                                        text=True, timeout=5).splitlines():
+        fields = line.split()
+        if len(fields) == 3:
+            symbols[fields[2]] = int(fields[0], 16)
+    wire = args.wire_reference.read_bytes()
+    assert len(wire) == 81 + 3 * 128
+    registration = symbols["registration_template"]
+    request = symbols["request_template"]
+    assert image[registration:registration + 81] == wire[:81]
+    assert image[request:request + 128] == wire[81:81 + 128]
+    for marker in ("READY", "WRITTEN", "RESEEDED", "BAD_SEED", "BAD_COMMAND"):
         assert image.count(f"\nRESET_ROM_{marker}_V1\n\0".encode()) == 1
 
     instructions = subprocess.check_output(
@@ -39,6 +53,13 @@ def main():
     assert "mov    %al,(%edi)" in write and "sub    $0x11,%al" in write
     verify = instructions.split("<verify_seed>:\n", 1)[1].split("<seed_checked>:", 1)[0]
     assert "cmp    %al,(%edi)" in verify and "add    $0x11,%al" in verify
+
+    baseline = instructions.split("<baseline_boundary>:\n", 1)[1].split("<write_payload>:", 1)[0]
+    written_boundary = instructions.split("<written_boundary>:\n", 1)[1].split("<seed_failed>:", 1)[0]
+    for boundary in (baseline, written_boundary):
+        assert "out    %al,$0xe7" in boundary
+        assert "<validate_reply>" in boundary and "<command_failed>" in boundary
+        assert "test   %eax,%eax" in boundary
 
     seed = bytes((0x3D + 17 * index) & 255 for index in range(32))
     written = bytes((0xC2 - 17 * index) & 255 for index in range(32))
@@ -51,9 +72,12 @@ def main():
         "payload_gpa": 1048576,
         "payload_bytes": 32,
         "loader_device": "loader,file=loader-seed.bin,addr=0x100000,force-raw=on",
+        "control": "existing flight.ready v1 Selected Unit, sequence2 before stores and sequence3 after stores",
+        "reset_boundary": "host system_reset only after WRITTEN; warm guest latch requires original canonical RAM custody",
+        "serial": "output only; no UART command input",
         "scope": "assembled guest asset only; actual ROM reset and RAM root remain unexecuted",
     }, indent=2) + "\n")
-    print("PASS: reset vector, four markers, actual writer/seed instructions, independent complemented payload")
+    print("PASS: reset vector, five markers, actual encoder bytes/reply gates, writer/seed instructions, independent complemented payload")
 
 
 if __name__ == "__main__":

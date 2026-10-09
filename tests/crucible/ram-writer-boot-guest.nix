@@ -44,7 +44,7 @@ in
           console=ttyS0-output-only-no-host-input
           boundaries=flight.ready-sequences-2-3-4-before-W-Z-Q-or-W-R-Q
           dma=original-private-writable-copy-of-native-root-image-as-vda
-          reset=separate-generic-loader-firmware-route-still-needs-managed-command-boundary
+          reset=separate-generic-loader-firmware-flight.ready-sequence2-gates-stores-sequence3-host-reset-under-original-guard
           fork=host-must-capture-and-restore-canonical-stopped-VM-and-original-pipe-state
           retirement=genuine-original-host-owner-no-guest-refund-or-new-timeout
           qualification=assets-and-local-controls-only-no-deployed-VM-result
