@@ -1,0 +1,7345 @@
+//! Crash-safe ordering for mount effects and broker-owned resources.
+
+use std::collections::BTreeMap;
+use std::os::unix::ffi::OsStrExt as _;
+use std::path::Path;
+
+use aos_proto::aos::sandbox::local::v1::{
+    AssignmentFence, AttachmentAnchorInventoryRecord, Descriptor, DestinationSlotAction,
+    DestinationSlotInventoryRecord, DestinationSlotLifecycle, DestinationSlotReapCorrelation,
+    DestinationSlotRematerializationCorrelation, InventoryDestinationSlotsResponse,
+    InventoryMountResourcesResponse, MountAction, MountAssignmentBinding, MountAttributes,
+    MountFaultCorrelation, MountFaultPhase, MountInventoryRecord, MountInventorySourceAuthority,
+    MountKernelObservation, MountLifecycle, MountOperationCorrelation, MountPublicationCorrelation,
+    MountRecipe, MountResult, MountSourceConsistency, MountSourceProofClass, MountState,
+};
+use aos_sandbox::journal::{
+    CommitResult, IdempotencyKey, IdempotencyOutcome, Journal, JournalError, JournalRecord,
+    JournalTransaction, RecordNamespace,
+};
+use aos_sandbox_core::{
+    AttachmentSlotId, ObjectDigest, OperationId, ProtocolVersion, RawPairedClockSample,
+};
+use aos_sandbox_linux::boot::KernelBootId;
+use aos_sandbox_linux::inventory::MountId;
+use aos_sandbox_protocol::mount_catalog::{
+    ValidatedMountCatalogPreparation, encode_mount_catalog_preparation_response,
+};
+use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
+use aos_sandbox_protocol::{
+    PeerCredentials, PeerPolicy, ValidatedDestinationSlotRequest, ValidatedMountAttributes,
+    ValidatedMountRequest, attachment_anchor_handle_v1, decode_destination_slot_request,
+    decode_mount_request, detached_mount_handle_v1, encode_destination_slot_inventory_response,
+    encode_destination_slot_response, encode_mount_inventory_response,
+};
+use buffa::Message as _;
+use sha2::{Digest as _, Sha256};
+
+use crate::authorization::semantics_v1::MountCatalogCommitmentV1;
+use crate::authorization::{MountAuthorityV1, VerifiedMountAdmissionV1};
+use crate::destination_slot::{
+    DestinationSlotBindingV1, DestinationSlotMaterializationV1, DestinationSlotReapV1,
+    DestinationSlotRematerializationV1, DestinationSlotResourcePhaseV1, DestinationSlotResourceV1,
+    DestinationSlotStoreV1,
+};
+use crate::host_scope::ObservedMountScope;
+use crate::source_pin::{
+    SourcePinRowV1, SourcePinRowV1Ext, SourcePinTableV1, SourceRealizationEvidenceV1,
+};
+use crate::state::authorization_v1::{MountEffectIntentV1, MountEffectStatusV1};
+use crate::state::fuse_worker_reservation_v1::{
+    FuseWorkerReservationTableV1, FuseWorkerReservationV1,
+};
+use crate::state::mount_resource_v1::{
+    AssignmentBindingV1, DetachedMountIdentityV1, InstalledMountObservationV1, MountFaultPhaseV1,
+    MountHandleV1, MountPolicyV1, MountRecipeV1, MountResourceLimitsV1, MountResourceStateV1,
+    MountResourceTableV1, MountResourceV1, MountSourceConsistencyV1, NativeMutationV1,
+    ObjectDescriptorV1, ObjectDescriptorV1Ext, OperationCorrelationV1, OwnedMountAttributeV1,
+    PublicationCorrelationV1, canonical_fd_store_key,
+};
+use crate::worker::{
+    CatalogAuthorizationV1, DurableMountExecutionV1, EffectDeadlineV1, EffectHandles,
+    MountTargetObservation, MountWorker, RetainedMountObservation, WorkerObservation,
+    expected_handles,
+};
+use crate::{MountError, Result};
+
+mod fuse_intent;
+mod git_coverage;
+mod source_custody;
+
+/// Reports local original response progress without granting a capability.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OriginalMountResponseProgressV5 {
+    /// The same original dispatcher has not locally transmitted a response.
+    Waiting,
+    /// The existing Pending branch locally sent its original RootClosed.
+    PendingClosedSent,
+    /// The same stored phase5 RootAccepted4 was locally transmitted once.
+    RootAcceptedSent,
+    /// The same stored phase7 Root13 was locally transmitted once, not ACKed.
+    RootTerminalRecordedSent,
+}
+
+/// Reports the independent original Release's local dispatch, not cleanup.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OriginalMountReleaseProgressV1 {
+    /// The original owners retain a pending preparation or native append.
+    Pending,
+    /// The separately reserved Release was locally sent once on the same queue.
+    ReleaseSent,
+    /// The exact Pending is consumed; only negative-custody debt remains funded.
+    ReleaseStatusStored,
+    /// The same committed Pending fence is accepted, not physically released.
+    ReleaseFenceAccepted,
+}
+
+/// Borrows the actual response failure still owned by the broker runtime.
+pub enum OriginalMountResponseFailureV5<'owner> {
+    /// The same zero-FD syscall returned this error before later observation debt.
+    Native(&'owner aos_sandbox_linux::seqpacket::SeqpacketError),
+    /// The actual original receiver retains a currentness or verification cause.
+    Security(&'owner aos_sandbox_source_provider_security::SourceProviderSecurityError),
+    /// A native stage retained this returned Mount error (possibly legacy prose).
+    Mount(&'owner MountError),
+    /// The SAME terminal owner retains this chronological typed first cause.
+    Terminal(&'owner (dyn std::error::Error + 'static)),
+}
+
+impl core::fmt::Debug for OriginalMountResponseFailureV5<'_> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("OriginalMountResponseFailureV5([resident cause])")
+    }
+}
+
+#[derive(Clone, Copy)]
+enum OriginalAdvancePurposeV5 {
+    Root1,
+    Response,
+    Release,
+}
+
+enum OriginalAdvanceResultV5 {
+    Root1(bool),
+    Response(OriginalMountResponseProgressV5),
+    Release(OriginalMountReleaseProgressV1),
+}
+
+/// Retains the independent signed-domain admission for one original Acquire.
+///
+/// Live and the exact body remain resident before domain verification. Each
+/// returned sealed value, transaction and reopen result is parked before the
+/// next fallible crossing. This is not a Source descriptor, terminal effect,
+/// combined native funding proof or detachable permission.
+pub struct OriginalMountAcquireAuthorityV1 {
+    sandbox_id: [u8; 16],
+    request_id: [u8; 16],
+    live: Option<aos_sandbox_protocol::LiveValidatedAcquireMountSourceRequest>,
+    body: Option<Vec<u8>>,
+    admission: Option<core::result::Result<VerifiedMountAdmissionV1, crate::authorization::MountAdmissionError>>,
+    sealed_fence: Option<core::result::Result<Vec<u8>, crate::authorization::MountAdmissionError>>,
+    sealed_effect: Option<core::result::Result<Vec<u8>, crate::authorization::MountAdmissionError>>,
+    transaction: Option<core::result::Result<JournalTransaction, JournalError>>,
+    preflight: Option<core::result::Result<(), JournalError>>,
+    commit: Option<core::result::Result<CommitResult, JournalError>>,
+    opened_fence: Option<core::result::Result<aos_sandbox_broker::BrokerAuthorizationFenceV1, crate::authorization::MountAdmissionError>>,
+    opened_effect: Option<core::result::Result<aos_sandbox_broker::BrokerEffectIntentV1, crate::authorization::MountAdmissionError>>,
+    current_fence: Option<core::result::Result<(), crate::authorization::MountAdmissionError>>,
+    clock: Option<Result<RawPairedClockSample>>,
+    clock_check: Option<core::result::Result<(), crate::authorization::MountAdmissionError>>,
+    first_stage: Option<OriginalMountAuthorityStageV1>,
+    state_failure: Option<MountError>,
+    attempted: bool,
+    committed: bool,
+    stopped: bool,
+    release_live: Option<aos_sandbox_protocol::LiveValidatedReleaseMountSourceAcquisitionRequest>,
+}
+
+#[derive(Clone, Copy)]
+enum OriginalMountAuthorityStageV1 {
+    State,
+    Clock,
+    Admission,
+    FenceSeal,
+    EffectSeal,
+    Transaction,
+    Preflight,
+    Commit,
+    FenceOpen,
+    FenceCurrent,
+    EffectOpen,
+    ClockCheck,
+}
+
+/// Borrows an actual first failure held by the original signed-domain owner.
+pub enum OriginalMountAcquireAuthorityFailureV1<'owner> {
+    /// A genuine signature, fence, seal or effect-clock check failed.
+    Authority(&'owner crate::authorization::MountAdmissionError),
+    /// A returned transaction, preflight or commit result failed.
+    Journal(&'owner JournalError),
+    /// An actual clock or state association failed.
+    Mount(&'owner MountError),
+    /// The owner ended without a returned cause, including unwind.
+    Ended,
+}
+
+impl core::fmt::Debug for OriginalMountAcquireAuthorityFailureV1<'_> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str(match self {
+            Self::Authority(_) => "OriginalMountAcquireAuthorityFailureV1::Authority",
+            Self::Journal(_) => "OriginalMountAcquireAuthorityFailureV1::Journal",
+            Self::Mount(_) => "OriginalMountAcquireAuthorityFailureV1::Mount",
+            Self::Ended => "OriginalMountAcquireAuthorityFailureV1::Ended",
+        })
+    }
+}
+
+impl core::fmt::Debug for OriginalMountAcquireAuthorityV1 {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("OriginalMountAcquireAuthorityV1([original signed admission])")
+    }
+}
+
+impl OriginalMountAcquireAuthorityV1 {
+    /// Parks genuine Live and its exact original body without observation.
+    ///
+    /// This constructor creates no admission. The broker independently verifies
+    /// the same untrusted quartet before any pair can be committed or lent.
+    #[must_use]
+    pub fn new(
+        live: aos_sandbox_protocol::LiveValidatedAcquireMountSourceRequest,
+        body: Vec<u8>,
+    ) -> Self {
+        let sandbox_id = *live.fence().sandbox_id();
+        let request_id = *live.header().request_id();
+        Self::from_original_inputs(sandbox_id, request_id, Some(live), None, body)
+    }
+
+    // One fixed reservoir layout serves both domain purposes. Neither input
+    // constructor authenticates the request or supplies a detached permit.
+    fn from_original_inputs(
+        sandbox_id: [u8; 16],
+        request_id: [u8; 16],
+        live: Option<aos_sandbox_protocol::LiveValidatedAcquireMountSourceRequest>,
+        release_live: Option<aos_sandbox_protocol::LiveValidatedReleaseMountSourceAcquisitionRequest>,
+        body: Vec<u8>,
+    ) -> Self {
+        Self {
+            sandbox_id,
+            request_id,
+            live,
+            body: Some(body),
+            admission: None,
+            sealed_fence: None,
+            sealed_effect: None,
+            transaction: None,
+            preflight: None,
+            commit: None,
+            opened_fence: None,
+            opened_effect: None,
+            current_fence: None,
+            clock: None,
+            clock_check: None,
+            first_stage: None,
+            state_failure: None,
+            attempted: false,
+            committed: false,
+            stopped: false,
+            release_live,
+        }
+    }
+
+    fn state_failure(&mut self, message: &'static str) {
+        self.stopped = true;
+        if self.first_stage.is_none() {
+            self.first_stage = Some(OriginalMountAuthorityStageV1::State);
+            self.state_failure = Some(MountError::Fence(message));
+        }
+    }
+
+    /// Lends the actual first cause without observation or another admission.
+    #[must_use]
+    pub fn failure(&self) -> Option<OriginalMountAcquireAuthorityFailureV1<'_>> {
+        use OriginalMountAuthorityStageV1 as Stage;
+        let failure = match self.first_stage {
+            Some(Stage::State) => self.state_failure.as_ref()
+                .map(OriginalMountAcquireAuthorityFailureV1::Mount),
+            Some(Stage::Clock) => self.clock.as_ref().and_then(|result| result.as_ref().err())
+                .map(OriginalMountAcquireAuthorityFailureV1::Mount),
+            Some(Stage::Admission) => self.admission.as_ref().and_then(|result| result.as_ref().err())
+                .map(OriginalMountAcquireAuthorityFailureV1::Authority),
+            Some(Stage::FenceSeal) => self.sealed_fence.as_ref().and_then(|result| result.as_ref().err())
+                .map(OriginalMountAcquireAuthorityFailureV1::Authority),
+            Some(Stage::EffectSeal) => self.sealed_effect.as_ref().and_then(|result| result.as_ref().err())
+                .map(OriginalMountAcquireAuthorityFailureV1::Authority),
+            Some(Stage::Transaction) => self.transaction.as_ref().and_then(|result| result.as_ref().err())
+                .map(OriginalMountAcquireAuthorityFailureV1::Journal),
+            Some(Stage::Preflight) => self.preflight.as_ref().and_then(|result| result.as_ref().err())
+                .map(OriginalMountAcquireAuthorityFailureV1::Journal),
+            Some(Stage::Commit) => self.commit.as_ref().and_then(|result| result.as_ref().err())
+                .map(OriginalMountAcquireAuthorityFailureV1::Journal),
+            Some(Stage::FenceOpen) => self.opened_fence.as_ref().and_then(|result| result.as_ref().err())
+                .map(OriginalMountAcquireAuthorityFailureV1::Authority),
+            Some(Stage::FenceCurrent) => self.current_fence.as_ref().and_then(|result| result.as_ref().err())
+                .map(OriginalMountAcquireAuthorityFailureV1::Authority),
+            Some(Stage::EffectOpen) => self.opened_effect.as_ref().and_then(|result| result.as_ref().err())
+                .map(OriginalMountAcquireAuthorityFailureV1::Authority),
+            Some(Stage::ClockCheck) => self.clock_check.as_ref().and_then(|result| result.as_ref().err())
+                .map(OriginalMountAcquireAuthorityFailureV1::Authority),
+            None => None,
+        };
+        failure.or_else(|| self.stopped.then_some(OriginalMountAcquireAuthorityFailureV1::Ended))
+    }
+
+    /// Stops this original without authorizing cleanup, replay or quota release.
+    pub fn stop(&mut self) {
+        self.stopped = true;
+    }
+}
+
+/// Retains a genuine independently authorized Release beside the old flight.
+///
+/// Construction parks DATA only. Admission and the exact sealed pair must be
+/// committed and reopened by the same broker before any native Release effect.
+pub struct OriginalMountReleaseAuthorityV1 {
+    original: OriginalMountAcquireAuthorityV1,
+}
+
+impl OriginalMountReleaseAuthorityV1 {
+    /// Parks the actual Live Release and received body without observation.
+    #[must_use]
+    pub fn new(
+        live: aos_sandbox_protocol::LiveValidatedReleaseMountSourceAcquisitionRequest,
+        body: Vec<u8>,
+    ) -> Self {
+        let sandbox_id = *live.fence().sandbox_id();
+        let request_id = *live.header().request_id();
+        Self {
+            original: OriginalMountAcquireAuthorityV1::from_original_inputs(
+                sandbox_id, request_id, None, Some(live), body,
+            ),
+        }
+    }
+
+    /// Borrows the actual domain, journal or clock cause without an observation.
+    #[must_use]
+    pub fn failure(&self) -> Option<OriginalMountAcquireAuthorityFailureV1<'_>> {
+        self.original.failure()
+    }
+
+    /// Permanently refuses further effects without releasing the originals.
+    pub fn stop(&mut self) {
+        self.original.stop();
+    }
+}
+
+/// Borrows the same broker and its resident reopened Release effect.
+///
+/// The private fields prevent DATA, clocks or an Acquire owner being supplied
+/// as Release authority. This short loan must end before mutable broker work.
+pub struct OriginalMountReleaseEffectLoanV1<'owner> {
+    effect: OriginalMountSignedEffectLoanV1<'owner>,
+}
+
+impl OriginalMountReleaseEffectLoanV1<'_> {
+    /// Rechecks the actual reopened Pending effect against the original lease.
+    ///
+    /// # Errors
+    /// Refuses changed purpose, a stopped owner, absent pair or expired clocks.
+    pub fn check_before_release_effect(&mut self) -> Result<()> {
+        if self.effect.original.live.is_some() {
+            return Err(MountError::Fence("original Release purpose is absent"));
+        }
+        // This private loan is constructed only from the concrete Release
+        // authority. Its Live may have moved into the SAME original runtime;
+        // the reopened domain effect remains in this owner throughout.
+        // The selected signing loan borrows a different owner. Establish the
+        // actual reopened effect before the last paired-clock observation;
+        // only the existing pure clock validation follows that sample.
+        if self.effect.original.stopped || !self.effect.original.committed
+            || !matches!(self.effect.original.opened_effect, Some(Ok(_)))
+        {
+            return Err(MountError::Fence("original reopened Release effect is unavailable"));
+        }
+        self.effect.check_before_original_effect()
+    }
+}
+
+/// Borrows actual same-broker authority and the resident reopened Pending effect.
+pub(crate) struct OriginalMountSignedEffectLoanV1<'owner> {
+    authority: &'owner MountAuthorityV1,
+    original: &'owner mut OriginalMountAcquireAuthorityV1,
+}
+
+/// Latches refusal before the broker or any retained admission can be dropped.
+struct OriginalMountAuthorityBoundaryV1<'broker, 'original, W> {
+    broker: &'broker mut MountBroker<W>,
+    original: &'original mut OriginalMountAcquireAuthorityV1,
+    completed: bool,
+}
+
+impl<W> Drop for OriginalMountAuthorityBoundaryV1<'_, '_, W> {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.original.stop();
+            self.broker.source_runtime_failed = true;
+        }
+    }
+}
+
+impl OriginalMountSignedEffectLoanV1<'_> {
+    /// Checks the original signed/boot-time limits at an actual effect crossing.
+    pub(crate) fn check_before_original_effect(&mut self) -> Result<()> {
+        if self.original.stopped || !self.original.committed {
+            return Err(MountError::Fence("original signed-domain owner is stopped"));
+        }
+        self.original.clock = Some(crate::service::trusted_paired_clock_sample());
+        let Some(Ok(clock)) = self.original.clock.as_ref() else {
+            self.original.first_stage = Some(OriginalMountAuthorityStageV1::Clock);
+            self.original.stopped = true;
+            return Err(MountError::Fence("original signed-domain clock failed"));
+        };
+        let Some(Ok(effect)) = self.original.opened_effect.as_ref() else {
+            self.original.state_failure("original reopened effect is absent");
+            return Err(MountError::Fence("original reopened effect is absent"));
+        };
+        self.original.clock_check = Some(self.authority.validate_effect_clock(effect, clock));
+        if !matches!(self.original.clock_check, Some(Ok(()))) {
+            self.original.first_stage = Some(OriginalMountAuthorityStageV1::ClockCheck);
+            self.original.stopped = true;
+            return Err(MountError::Fence("original signed-domain effect expired"));
+        }
+
+        Ok(())
+    }
+}
+
+pub use fuse_intent::{
+    HeldMountFuseIntentPreparationV1, PreparedMountFuseWorkerHandoffV1,
+    PreparedMountFuseWorkerObjectsV1,
+};
+
+/// Applies validated mount requests through durable, idempotent effects.
+pub struct MountBroker<W> {
+    journal: Journal,
+    worker: W,
+    resources: MountResourceTableV1,
+    source_pins: SourcePinTableV1,
+    fuse_reservations: FuseWorkerReservationTableV1,
+    kernel_boot_id: [u8; 16],
+    broker_instance_id: [u8; 16],
+    authority: MountAuthorityV1,
+    destination_slots: Option<DestinationSlotStoreV1>,
+    source_runtime: Option<crate::source_acquisition::SourceAcquisitionRuntimeV2>,
+    source_runtime_failed: bool,
+    git_coverage: Option<git_coverage::MountGitCoverageV1>,
+    git_coverage_persisted: bool,
+}
+
+/// Retains the selected broker's actual originals throughout one recovery.
+///
+/// The fixed selected root is `/run/aos/sandbox-mount-catalog`, with owner zero.
+/// This is neither a supplied-path recovery API nor a new startup authority.
+/// Unreturned lower recovery prefixes and allocation funding remain separate.
+pub struct SelectedMountBrokerStartupV2<W> {
+    startup: Option<aos_sandbox::mount_manager_startup::SelectedMountStartupV2>,
+    authority: Option<MountAuthorityV1>,
+    worker: Option<W>,
+    journal: Option<Journal>,
+    destination_slots: Option<Option<DestinationSlotStoreV1>>,
+    completed: Option<MountBroker<W>>,
+    result: Option<Result<()>>,
+    attempted: bool,
+    ended: bool,
+    startup_failed: bool,
+}
+
+/// Borrows the actual selected recovery refusal without copying its cause.
+pub enum SelectedMountBrokerStartupFailureRefV2<'owner> {
+    /// The genuine Core owner retains the failed kernel/image/protected join.
+    Startup(aos_sandbox::mount_manager_startup::SelectedMountStartupFailureRefV2<'owner>),
+    /// The original recovery recipe returned this exact Mount error.
+    Recovery(&'owner MountError),
+    /// A missing association or unwind ended the owner before returning a cause.
+    Ended,
+}
+
+enum BrokerRecoveryOriginals<'owner, W> {
+    // Function parameters formerly dropped authority, worker, then journal on
+    // failure, after recovery locals. Preserve that order in the closed adapter.
+    Legacy {
+        authority: MountAuthorityV1,
+        worker: W,
+        journal: Journal,
+    },
+    Selected(&'owner mut SelectedMountBrokerStartupV2<W>),
+}
+
+struct SelectedBrokerBoundary<'owner, W> {
+    owner: &'owner mut SelectedMountBrokerStartupV2<W>,
+    completed: bool,
+}
+
+impl<W> Drop for SelectedBrokerBoundary<'_, W> {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.owner.end();
+        }
+    }
+}
+
+impl<W> SelectedMountBrokerStartupV2<W> {
+    /// Parks the real handoff, worker and domain authority before recovery I/O.
+    #[must_use]
+    pub fn new(
+        journal: Journal,
+        worker: W,
+        authority: MountAuthorityV1,
+        startup: aos_sandbox::mount_manager_startup::SelectedMountStartupV2,
+    ) -> Self {
+        Self {
+            startup: Some(startup),
+            authority: Some(authority),
+            worker: Some(worker),
+            journal: Some(journal),
+            destination_slots: None,
+            completed: None,
+            result: None,
+            attempted: false,
+            ended: false,
+            startup_failed: false,
+        }
+    }
+
+    /// Borrows the actual terminal cause without observing or re-admitting.
+    #[must_use]
+    pub fn failure(&self) -> Option<SelectedMountBrokerStartupFailureRefV2<'_>> {
+        if self.startup_failed {
+            return self.startup.as_ref().and_then(|owner| owner.failure())
+                .map(SelectedMountBrokerStartupFailureRefV2::Startup)
+                .or(Some(SelectedMountBrokerStartupFailureRefV2::Ended));
+        }
+        self.result.as_ref().and_then(|result| result.as_ref().err())
+            .map(SelectedMountBrokerStartupFailureRefV2::Recovery)
+            .or_else(|| self.ended.then_some(SelectedMountBrokerStartupFailureRefV2::Ended))
+    }
+
+    fn end(&mut self) {
+        self.ended = true;
+        if let Some(startup) = self.startup.as_mut() {
+            startup.end();
+        }
+    }
+}
+
+impl<W: MountWorker> SelectedMountBrokerStartupV2<W> {
+    /// Runs the sole recovery recipe once under the genuine selected bookends.
+    ///
+    /// # Errors
+    /// Borrows the actual returned recovery or Core refusal. A recovery error
+    /// retains its old formatted error surface, not an invented OS error cause.
+    pub fn recover_once(&mut self) -> std::result::Result<(), SelectedMountBrokerStartupFailureRefV2<'_>> {
+        if self.attempted || self.ended {
+            self.end();
+            return Err(self.failure().unwrap_or(SelectedMountBrokerStartupFailureRefV2::Ended));
+        }
+        self.attempted = true;
+        let succeeded = {
+            let mut boundary = SelectedBrokerBoundary {
+                owner: self,
+                completed: false,
+            };
+            let owner = &mut *boundary.owner;
+            let prepared = match (owner.startup.as_mut(), owner.journal.as_mut()) {
+                (Some(startup), Some(journal)) => startup.recheck_held_capture(journal).is_ok(),
+                _ => false,
+            };
+            if !prepared {
+                owner.startup_failed = true;
+            } else {
+                owner.result = Some(MountBroker::recover_recipe(
+                    BrokerRecoveryOriginals::Selected(owner),
+                    Some((Path::new("/run/aos/sandbox-mount-catalog"), 0)),
+                ).map(|_| ()));
+                if matches!(owner.result, Some(Ok(()))) {
+                    let checked = match (owner.startup.as_mut(), owner.completed.as_mut()) {
+                        (Some(startup), Some(broker)) => broker.recheck_selected_mount_startup(startup).is_ok(),
+                        _ => false,
+                    };
+                    if !checked {
+                        owner.startup_failed = true;
+                    }
+                }
+            }
+            let succeeded = !owner.startup_failed && matches!(owner.result, Some(Ok(())));
+            boundary.completed = succeeded;
+            succeeded
+        };
+        if succeeded {
+            Ok(())
+        } else {
+            Err(self.failure().unwrap_or(SelectedMountBrokerStartupFailureRefV2::Ended))
+        }
+    }
+
+    /// Moves the paired completed broker and original Core owner exactly once.
+    ///
+    /// All slots are checked before taking; no observation or allocation occurs
+    /// between take and the returned pair. Refusal restores the same originals.
+    #[must_use]
+    pub fn take_completed(&mut self) -> Option<(
+        MountBroker<W>, aos_sandbox::mount_manager_startup::SelectedMountStartupV2,
+    )> {
+        if self.ended || !matches!(self.result, Some(Ok(())))
+            || self.completed.is_none() || self.startup.is_none()
+        {
+            self.end();
+            return None;
+        }
+        match (self.completed.take(), self.startup.take()) {
+            (Some(broker), Some(startup)) => Some((broker, startup)),
+            (broker, startup) => {
+                self.completed = broker;
+                self.startup = startup;
+                self.end();
+                None
+            }
+        }
+    }
+}
+
+impl<W> Drop for SelectedMountBrokerStartupV2<W> {
+    fn drop(&mut self) {
+        self.end();
+    }
+}
+
+impl<W: MountWorker> MountBroker<W> {
+    /// Bookends selected startup through the same protected held writer.
+    ///
+    /// This remains an observation while an original native flight is held;
+    /// it neither takes that runtime nor bypasses any admission or effect gate.
+    /// The original startup owns the kernel/image flight and its first cause.
+    ///
+    /// # Errors
+    /// Refuses ended startup or changed fixed names, capture, policy or images.
+    pub fn recheck_selected_mount_startup(
+        &mut self,
+        startup: &mut aos_sandbox::mount_manager_startup::SelectedMountStartupV2,
+    ) -> std::result::Result<(), aos_sandbox::mount_manager_startup::SelectedMountStartupEndedV2> {
+        startup.recheck_held_capture(&mut self.journal)
+    }
+
+    /// Commits and reopens one independently admitted original Acquire pair.
+    ///
+    /// The actual Live request, body, signature intersection, sealed records
+    /// and returned journal results remain in `original`. The same protected
+    /// journal receives DesiredState and Pending Effect in one transaction,
+    /// before the native runtime borrows its first snapshot. This is not a
+    /// combined future native funding reservation or a terminal outcome.
+    ///
+    /// # Errors
+    ///
+    /// Refuses an occupied/replayed request, unhealthy owner, invalid domain
+    /// admission, failed preflight/commit or changed authenticated readback.
+    /// The actual first cause remains available through `original.failure()`;
+    /// ambiguity requires protected restart, never a second original attempt.
+    pub fn prepare_original_acquire_authority(
+        &mut self,
+        original: &mut OriginalMountAcquireAuthorityV1,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+    ) -> Result<()> {
+        if original.attempted || original.stopped || self.source_runtime_failed {
+            original.state_failure("original signed-domain admission cannot be retried");
+            return Err(MountError::Fence("original signed-domain admission cannot be retried"));
+        }
+        original.attempted = true;
+
+        let mut boundary = OriginalMountAuthorityBoundaryV1 {
+            broker: self,
+            original,
+            completed: false,
+        };
+        let succeeded = boundary.broker.prepare_original_acquire_authority_inner(
+            boundary.original,
+            artifacts,
+        );
+        boundary.completed = succeeded;
+        if succeeded {
+            Ok(())
+        } else {
+            Err(MountError::Fence("original signed-domain admission remains retained"))
+        }
+    }
+
+    /// Commits and reopens the independently admitted Release on this Journal.
+    ///
+    /// The exact same pair recipe owns every returned result before the next
+    /// crossing. The old Acquire effect and native flight remain untouched.
+    ///
+    /// # Errors
+    /// Refuses repeated admission, changed authority or failed exact readback.
+    pub fn prepare_original_release_authority(
+        &mut self,
+        release: &mut OriginalMountReleaseAuthorityV1,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+    ) -> Result<()> {
+        self.prepare_original_acquire_authority(&mut release.original, artifacts)
+    }
+
+    /// Borrows a short checked boundary over the actual same-broker Release pair.
+    ///
+    /// # Errors
+    /// Refuses an uncommitted/stopped pair, wrong purpose or elapsed validity.
+    pub fn borrow_original_release_effect<'owner>(
+        &'owner mut self,
+        release: &'owner mut OriginalMountReleaseAuthorityV1,
+    ) -> Result<OriginalMountReleaseEffectLoanV1<'owner>> {
+        self.ensure_authority_healthy()?;
+        let mut loan = OriginalMountReleaseEffectLoanV1 {
+            effect: OriginalMountSignedEffectLoanV1 {
+                authority: &self.authority,
+                original: &mut release.original,
+            },
+        };
+        loan.check_before_release_effect()?;
+        Ok(loan)
+    }
+
+    /// Moves the independently admitted Release into the SAME retained flight.
+    ///
+    /// The old Live, Session, native terminal receiver and protected runtime
+    /// remain resident. This does not reopen the old sender or release custody.
+    ///
+    /// # Errors
+    /// Refuses an unhealthy owner, absent reopened pair or occupied destination.
+    /// Actual inputs remain in the authority or original runtime on refusal.
+    pub fn begin_signed_original_release(
+        &mut self,
+        release: &mut OriginalMountReleaseAuthorityV1,
+        session: &mut aos_sandbox_source_provider_security::CurrentRootMountSourceProviderSessionV1,
+    ) -> Result<()> {
+        let mut boundary = OriginalMountAuthorityBoundaryV1 {
+            broker: self,
+            original: &mut release.original,
+            completed: false,
+        };
+        let result = {
+            let mut entry = source_custody::QueryEntryBoundaryV6::new(boundary.broker, session);
+            let result = (|| {
+                let broker = &mut *entry.broker;
+                if broker.source_runtime_failed || boundary.original.stopped
+                    || !boundary.original.committed
+                {
+                    return Err(MountError::Fence("original Release pair is unavailable"));
+                }
+                OriginalMountSignedEffectLoanV1 {
+                    authority: &broker.authority,
+                    original: boundary.original,
+                }.check_before_original_effect()?;
+                broker.ensure_authority_healthy()?;
+                let Some(Ok(admission)) = boundary.original.admission.as_ref() else {
+                    return Err(MountError::Fence("original Release admission is absent"));
+                };
+                let deadline = admission.effect.plan_expires_seconds()
+                    .min(admission.effect.authority_expires_seconds());
+
+                broker.source_runtime_failed = true;
+                let mut runtime = source_custody::SourceRuntimeLoanV6::new(
+                    &mut broker.source_runtime,
+                    &mut broker.source_runtime_failed,
+                );
+                runtime.attach(&mut broker.journal)?;
+                runtime.operate(|owner| owner.begin_signed_original_release_v1(
+                    entry.session,
+                    &mut boundary.original.release_live,
+                    &mut boundary.original.body,
+                    deadline,
+                ))
+            })();
+            entry.finish(result)
+        };
+        match result {
+            Ok(()) => {
+                boundary.completed = true;
+                Ok(())
+            }
+            Err(cause) => {
+                if boundary.original.first_stage.is_none() {
+                    boundary.original.first_stage = Some(OriginalMountAuthorityStageV1::State);
+                    boundary.original.state_failure = Some(cause);
+                }
+                Err(MountError::Fence("original Release start remains retained"))
+            }
+        }
+    }
+
+    /// Advances native reservation and once-only send for the real Release.
+    ///
+    /// # Errors
+    /// Permanently ends the same Session on changed owners, clocks or native
+    /// results. Its actual native cause remains available separately below.
+    pub fn advance_signed_original_release(
+        &mut self,
+        release: &mut OriginalMountReleaseAuthorityV1,
+        session: &mut aos_sandbox_source_provider_security::CurrentRootMountSourceProviderSessionV1,
+    ) -> Result<OriginalMountReleaseProgressV1> {
+        match self.advance_signed_original_recipe_v5(
+            &mut release.original, session, OriginalAdvancePurposeV5::Release,
+        )? {
+            OriginalAdvanceResultV5::Release(progress) => Ok(progress),
+            _ => Err(MountError::Fence("original progress purpose differs")),
+        }
+    }
+
+    /// Lends the same original native Release cause without I/O or retry.
+    #[must_use]
+    pub fn original_release_failure_v1(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.source_runtime.as_ref().and_then(|runtime| runtime.original_release_failure_v1())
+    }
+
+    /// Lends later native Release observation debt separately from its cause.
+    ///
+    /// This performs no I/O, extraction, retry or physical cleanup.
+    #[must_use]
+    pub fn original_release_postcheck_debt_v1(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.source_runtime.as_ref().and_then(|runtime| runtime.original_release_postcheck_debt_v1())
+    }
+
+    fn prepare_original_acquire_authority_inner(
+        &mut self,
+        original: &mut OriginalMountAcquireAuthorityV1,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+    ) -> bool {
+        if let Err(cause) = self.ensure_authority_healthy() {
+            original.state_failure = Some(cause);
+            original.first_stage = Some(OriginalMountAuthorityStageV1::State);
+            return false;
+        }
+        if self.journal.get(RecordNamespace::Effect, &original.request_id).is_some() {
+            original.state_failure("original request already has a durable effect");
+            return false;
+        }
+        let Some(body) = original.body.as_ref() else {
+            original.state_failure("original request slots are incomplete");
+            return false;
+        };
+        if original.live.is_some() == original.release_live.is_some() {
+            original.state_failure("original request slots are incomplete");
+            return false;
+        }
+
+        original.clock = Some(crate::service::trusted_paired_clock_sample());
+        let Some(Ok(clock)) = original.clock.as_ref() else {
+            original.first_stage = Some(OriginalMountAuthorityStageV1::Clock);
+            return false;
+        };
+        let prior = self.journal.get(RecordNamespace::DesiredState, &original.sandbox_id);
+        original.admission = Some(match (original.live.as_ref(), original.release_live.as_ref()) {
+            (Some(live), None) => self.authority.admit_original_acquire_source(
+                live, body, artifacts, clock, prior,
+            ),
+            (None, Some(live)) => self.authority.admit_original_release_source(
+                live, body, artifacts, clock, prior,
+            ),
+            _ => return false,
+        });
+        let Some(Ok(admission)) = original.admission.as_ref() else {
+            original.first_stage = Some(OriginalMountAuthorityStageV1::Admission);
+            return false;
+        };
+
+        original.sealed_fence = Some(self.authority.seal_fence(
+            &original.sandbox_id,
+            &admission.fence,
+        ));
+        if !matches!(original.sealed_fence, Some(Ok(_))) {
+            original.first_stage = Some(OriginalMountAuthorityStageV1::FenceSeal);
+            return false;
+        }
+        original.sealed_effect = Some(self.authority.seal_effect(
+            &original.request_id,
+            &admission.effect,
+        ));
+        let (Some(Ok(fence)), Some(Ok(effect))) = (
+            original.sealed_fence.as_ref(),
+            original.sealed_effect.as_ref(),
+        ) else {
+            original.first_stage = Some(OriginalMountAuthorityStageV1::EffectSeal);
+            return false;
+        };
+
+        original.transaction = Some(JournalTransaction::new(
+            authority_refresh_transaction(
+                original.request_id,
+                admission.effect.plan_digest(),
+                admission.effect.lease_digest(),
+            ),
+            vec![
+                JournalRecord::put(RecordNamespace::DesiredState, original.sandbox_id.to_vec(), fence.clone()),
+                JournalRecord::put(RecordNamespace::Effect, original.request_id.to_vec(), effect.clone()),
+            ],
+        ).map_err(JournalError::from));
+        let Some(Ok(transaction)) = original.transaction.as_ref() else {
+            original.first_stage = Some(OriginalMountAuthorityStageV1::Transaction);
+            return false;
+        };
+        original.preflight = Some(self.journal.preflight_transactions(std::slice::from_ref(transaction)));
+        if !matches!(original.preflight, Some(Ok(()))) {
+            original.first_stage = Some(OriginalMountAuthorityStageV1::Preflight);
+            return false;
+        }
+
+        original.commit = Some(self.journal.commit(transaction));
+        if !matches!(original.commit, Some(Ok(_))) {
+            original.first_stage = Some(OriginalMountAuthorityStageV1::Commit);
+            return false;
+        }
+        // Exact bytes, not a sequence or digest alone, bind both same-owner
+        // locations. Commit ambiguity has already latched the negative owner.
+        if self.journal.get(RecordNamespace::DesiredState, &original.sandbox_id) != Some(fence.as_slice())
+            || self.journal.get(RecordNamespace::Effect, &original.request_id) != Some(effect.as_slice())
+        {
+            original.state_failure("original sealed pair differs from protected readback");
+            return false;
+        }
+        original.opened_fence = Some(self.authority.open_original_acquire_fence(&original.sandbox_id, fence));
+        let Some(Ok(opened_fence)) = original.opened_fence.as_ref() else {
+            original.first_stage = Some(OriginalMountAuthorityStageV1::FenceOpen);
+            return false;
+        };
+        original.current_fence = Some(self.authority.check_original_acquire_fence(opened_fence));
+        if !matches!(original.current_fence, Some(Ok(()))) {
+            original.first_stage = Some(OriginalMountAuthorityStageV1::FenceCurrent);
+            return false;
+        }
+        original.opened_effect = Some(self.authority.open_effect(&original.request_id, effect));
+        let Some(Ok(opened_effect)) = original.opened_effect.as_ref() else {
+            original.first_stage = Some(OriginalMountAuthorityStageV1::EffectOpen);
+            return false;
+        };
+        if opened_effect != &admission.effect
+            || opened_effect.status() != aos_sandbox_broker::BrokerEffectStatusV1::Pending
+            || opened_fence.assignment() != admission.fence.assignment()
+            || opened_fence.plan_digest() != admission.fence.plan_digest()
+            || opened_fence.local_lease_record() != admission.fence.local_lease_record()
+        {
+            original.state_failure("original reopened pair differs from signed admission");
+            return false;
+        }
+        original.committed = true;
+        let mut loan = OriginalMountSignedEffectLoanV1 {
+            authority: &self.authority,
+            original,
+        };
+        loan.check_before_original_effect().is_ok()
+    }
+
+    /// Moves complete original inputs into the sole protected native runtime.
+    ///
+    /// Only the genuine pair prepared by this broker can enter this route.
+    /// Live/body and catalog slots stay with their original owners until all
+    /// runtime occupancy checks pass; assembly then moves them infallibly.
+    /// The catalog inputs remain DATA and are authenticated by the existing
+    /// Source/native engine. This registers no public Acquire handler.
+    ///
+    /// # Errors
+    ///
+    /// Retains inputs and the first cause on invalid pair, attachment, occupied
+    /// runtime or input association. The actual Session is invalidated before
+    /// runtime restoration on returned error or unwind.
+    pub fn begin_signed_original_acquire(
+        &mut self,
+        original: &mut OriginalMountAcquireAuthorityV1,
+        session: &mut aos_sandbox_source_provider_security::CurrentRootMountSourceProviderSessionV1,
+        publication: &mut Option<Vec<u8>>,
+        catalog: &mut Option<Vec<u8>>,
+        selection: &mut Option<Vec<u8>>,
+    ) -> Result<()> {
+        let mut boundary = OriginalMountAuthorityBoundaryV1 {
+            broker: self,
+            original,
+            completed: false,
+        };
+        let result = boundary.broker.begin_signed_original_acquire_inner(
+            boundary.original,
+            session,
+            publication,
+            catalog,
+            selection,
+        );
+        if let Err(cause) = result {
+            if boundary.original.first_stage.is_none() {
+                boundary.original.first_stage = Some(OriginalMountAuthorityStageV1::State);
+                boundary.original.state_failure = Some(cause);
+            }
+            return Err(MountError::Fence("original native start remains retained"));
+        }
+        boundary.completed = true;
+        Ok(())
+    }
+
+    fn begin_signed_original_acquire_inner(
+        &mut self,
+        original: &mut OriginalMountAcquireAuthorityV1,
+        session: &mut aos_sandbox_source_provider_security::CurrentRootMountSourceProviderSessionV1,
+        publication: &mut Option<Vec<u8>>,
+        catalog: &mut Option<Vec<u8>>,
+        selection: &mut Option<Vec<u8>>,
+    ) -> Result<()> {
+        let mut entry = source_custody::QueryEntryBoundaryV6::new(self, session);
+        let result = (|| {
+            let broker = &mut *entry.broker;
+            if broker.source_runtime_failed || original.stopped || !original.committed {
+                return Err(MountError::Fence("original signed pair is unavailable"));
+            }
+            OriginalMountSignedEffectLoanV1 {
+                authority: &broker.authority,
+                original,
+            }.check_before_original_effect()?;
+            broker.ensure_authority_healthy()?;
+            let Some(Ok(admission)) = original.admission.as_ref() else {
+                return Err(MountError::Fence("original signed admission is absent"));
+            };
+            let plan = *admission.effect.plan_digest().as_bytes();
+            let lease = *admission.effect.lease_digest().as_bytes();
+            let deadline = admission.effect.plan_expires_seconds()
+                .min(admission.effect.authority_expires_seconds());
+
+            broker.source_runtime_failed = true;
+            let mut runtime = source_custody::SourceRuntimeLoanV6::new(
+                &mut broker.source_runtime,
+                &mut broker.source_runtime_failed,
+            );
+            runtime.attach(&mut broker.journal)?;
+            runtime.operate(|owner| {
+                owner.begin_signed_original_native_acquire_v5(
+                    &mut original.live,
+                    &mut original.body,
+                    plan,
+                    lease,
+                    publication,
+                    catalog,
+                    selection,
+                    deadline,
+                )?;
+                OriginalMountSignedEffectLoanV1 {
+                    authority: &broker.authority,
+                    original,
+                }.check_before_original_effect()
+            })
+        })();
+        entry.finish(result)
+    }
+
+    /// Advances one original stage under the same reopened signed effect.
+    ///
+    /// The existing physical writer, runtime, Session and first-flight engine
+    /// remain the only producers. A fresh signed/boot-time check brackets each
+    /// selected stage; ordinary routes retain their original observation order.
+    /// `true` reports local original sends, not Complete, Ready or descriptor
+    /// ownership transferred to the public broker caller.
+    ///
+    /// # Errors
+    ///
+    /// Retains runtime/admission custody and the first returned cause, while
+    /// permanently invalidating the actual Session on error or unwind.
+    pub fn advance_signed_original_acquire(
+        &mut self,
+        original: &mut OriginalMountAcquireAuthorityV1,
+        session: &mut aos_sandbox_source_provider_security::CurrentRootMountSourceProviderSessionV1,
+    ) -> Result<bool> {
+        match self.advance_signed_original_recipe_v5(original, session, OriginalAdvancePurposeV5::Root1)? {
+            OriginalAdvanceResultV5::Root1(finished) => Ok(finished),
+            OriginalAdvanceResultV5::Response(_) => Err(MountError::Fence("original progress purpose differs")),
+            OriginalAdvanceResultV5::Release(_) => Err(MountError::Fence("original progress purpose differs")),
+        }
+    }
+
+    /// Advances the SAME original response under its existing signed effect.
+    ///
+    /// Successful transmission retains the physical writer/runtime and all
+    /// original custody. Repeated positive waiting checks cannot resend Root4.
+    /// This is not ACK13, remote phase7, settlement or a public Acquire result.
+    ///
+    /// # Errors
+    ///
+    /// Keeps the first actual admission/runtime cause and invalidates the same
+    /// Session on missing owners, expired effect, failed receive/send or unwind.
+    pub fn advance_signed_original_response_v5(
+        &mut self,
+        original: &mut OriginalMountAcquireAuthorityV1,
+        session: &mut aos_sandbox_source_provider_security::CurrentRootMountSourceProviderSessionV1,
+    ) -> Result<OriginalMountResponseProgressV5> {
+        match self.advance_signed_original_recipe_v5(original, session, OriginalAdvancePurposeV5::Response)? {
+            OriginalAdvanceResultV5::Response(progress) => Ok(progress),
+            OriginalAdvanceResultV5::Root1(_) => Err(MountError::Fence("original progress purpose differs")),
+            OriginalAdvanceResultV5::Release(_) => Err(MountError::Fence("original progress purpose differs")),
+        }
+    }
+
+    /// Lends a resident response cause without opening or rechecking anything.
+    #[must_use]
+    pub fn original_response_failure_v5(&self) -> Option<OriginalMountResponseFailureV5<'_>> {
+        self.source_runtime.as_ref().and_then(|runtime| runtime.original_response_failure_v5())
+    }
+
+    /// Lends later Security debt separately from the first native response cause.
+    ///
+    /// The same positive receiver owns this error; borrowing it performs no
+    /// currentness observation, retry or replacement of the native result.
+    #[must_use]
+    pub fn original_response_postcheck_debt_v5(
+        &self,
+    ) -> Option<&aos_sandbox_source_provider_security::SourceProviderSecurityError> {
+        self.source_runtime.as_ref()
+            .and_then(|runtime| runtime.original_response_postcheck_debt_v5())
+    }
+
+    fn advance_signed_original_recipe_v5(
+        &mut self,
+        original: &mut OriginalMountAcquireAuthorityV1,
+        session: &mut aos_sandbox_source_provider_security::CurrentRootMountSourceProviderSessionV1,
+        purpose: OriginalAdvancePurposeV5,
+    ) -> Result<OriginalAdvanceResultV5> {
+        let mut boundary = OriginalMountAuthorityBoundaryV1 {
+            broker: self,
+            original,
+            completed: false,
+        };
+        let result = {
+            let mut entry = source_custody::QueryEntryBoundaryV6::new(boundary.broker, session);
+            let result = (|| {
+                let broker = &mut *entry.broker;
+                if broker.source_runtime_failed || boundary.original.stopped || !boundary.original.committed {
+                    return Err(MountError::Fence("original signed pair is unavailable"));
+                }
+                OriginalMountSignedEffectLoanV1 {
+                    authority: &broker.authority,
+                    original: boundary.original,
+                }.check_before_original_effect()?;
+                broker.source_runtime_failed = true;
+                broker.ensure_authority_healthy()?;
+                let mut runtime = source_custody::SourceRuntimeLoanV6::new(
+                    &mut broker.source_runtime,
+                    &mut broker.source_runtime_failed,
+                );
+                runtime.attach(&mut broker.journal)?;
+                let mut effect = OriginalMountSignedEffectLoanV1 {
+                    authority: &broker.authority,
+                    original: boundary.original,
+                };
+                runtime.operate(|owner| {
+                    match purpose {
+                        OriginalAdvancePurposeV5::Root1 => owner
+                            .advance_signed_original_native_acquire_v5(entry.session, &mut effect)
+                            .map(OriginalAdvanceResultV5::Root1),
+                        OriginalAdvancePurposeV5::Response => owner
+                            .advance_signed_original_response_v5(entry.session, &mut effect)
+                            .map(OriginalAdvanceResultV5::Response),
+                        OriginalAdvancePurposeV5::Release => {
+                            let mut release_effect = OriginalMountReleaseEffectLoanV1 {
+                                effect: OriginalMountSignedEffectLoanV1 {
+                                    authority: effect.authority,
+                                    original: &mut *effect.original,
+                                },
+                            };
+                            owner.advance_signed_original_release_v1(entry.session, &mut release_effect)
+                                .map(OriginalAdvanceResultV5::Release)
+                        }
+                    }
+                })
+            })();
+            entry.finish(result)
+        };
+        match result {
+            Ok(finished) => {
+                boundary.completed = true;
+                Ok(finished)
+            }
+            Err(cause) => {
+                if boundary.original.first_stage.is_none() {
+                    boundary.original.first_stage = Some(OriginalMountAuthorityStageV1::State);
+                    boundary.original.state_failure = Some(cause);
+                }
+                Err(MountError::Fence("original native progress remains retained"))
+            }
+        }
+    }
+
+    /// Reports whether existing durable resources can be changed or cleaned up.
+    #[must_use]
+    pub fn supports_existing_resource_actions(&self) -> bool {
+        self.worker.supports_existing_resource_actions()
+    }
+
+    /// Reports whether catalog preparation can create executable authority now.
+    #[must_use]
+    pub fn supports_catalog_preparation(&self) -> bool {
+        self.worker.supports_catalog_preparation()
+    }
+
+    /// Constructs a broker after bounded recovery and exact custody validation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed state, unavailable boot identity,
+    /// stale-boot fault persistence failure, or contradictory retained FDs.
+    pub fn new(journal: Journal, worker: W, authority: MountAuthorityV1) -> Result<Self> {
+        Self::recover(journal, worker, authority, None)
+    }
+
+    /// Constructs a broker with crash-recoverable destination-slot ownership.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors documented by [`Self::new`] and additionally rejects
+    /// an insecure anchor root or contradictory destination-slot recovery.
+    pub fn new_with_destination_slots(
+        journal: Journal,
+        worker: W,
+        authority: MountAuthorityV1,
+        destination_slot_root: impl AsRef<Path>,
+        expected_owner: u32,
+    ) -> Result<Self> {
+        Self::recover(
+            journal,
+            worker,
+            authority,
+            Some((destination_slot_root.as_ref(), expected_owner)),
+        )
+    }
+
+    fn recover(
+        journal: Journal,
+        worker: W,
+        authority: MountAuthorityV1,
+        destination_slot_root: Option<(&Path, u32)>,
+    ) -> Result<Self> {
+        let completed = Self::recover_recipe(
+            BrokerRecoveryOriginals::Legacy { authority, worker, journal },
+            destination_slot_root,
+        )?;
+        completed.ok_or(MountError::Fence("legacy broker recovery did not complete"))
+    }
+
+    fn recover_recipe(
+        mut originals: BrokerRecoveryOriginals<'_, W>,
+        destination_slot_root: Option<(&Path, u32)>,
+    ) -> Result<Option<Self>> {
+        let (journal, worker) = match &mut originals {
+            BrokerRecoveryOriginals::Legacy { journal, worker, .. } => (journal, worker),
+            BrokerRecoveryOriginals::Selected(owner) => {
+                if owner.completed.is_some() || owner.destination_slots.is_some() {
+                    return Err(MountError::Fence("selected broker recovery destination is occupied"));
+                }
+                let (Some(journal), Some(worker), Some(_)) = (
+                    owner.journal.as_mut(), owner.worker.as_mut(), owner.authority.as_ref(),
+                ) else {
+                    return Err(MountError::Fence("selected broker originals are unavailable"));
+                };
+                (journal, worker)
+            }
+        };
+        let kernel_boot_id = KernelBootId::current()
+            .map_err(|error| MountError::State(error.to_string()))?
+            .into_bytes();
+        let broker_instance_id = broker_instance_id()?;
+        let mut resources = MountResourceTableV1::recover(
+            journal,
+            MountResourceLimitsV1::default(),
+            kernel_boot_id,
+        )?;
+        let source_pins = SourcePinTableV1::recover(journal, kernel_boot_id)?;
+        let fuse_reservations = FuseWorkerReservationTableV1::recover(journal, kernel_boot_id)?;
+        ensure_fuse_slots_exclude_native(&resources, &fuse_reservations)?;
+        let custody = worker.custody_inventory()?;
+        validate_pre_repair_state(&resources, &source_pins, kernel_boot_id, &custody)?;
+
+        fault_stale_boot_resources(journal, &mut resources, kernel_boot_id)?;
+        fault_unverifiable_allocated_custody(
+            journal,
+            &mut resources,
+            kernel_boot_id,
+            worker,
+        )?;
+        validate_custody(&resources, kernel_boot_id, &worker.custody_inventory()?)?;
+        source_pins.validate_resource_references(&resources)?;
+        let destination_slots = destination_slot_root
+            .map(|(path, owner)| DestinationSlotStoreV1::recover(path, owner, journal))
+            .transpose()?;
+        match originals {
+            BrokerRecoveryOriginals::Legacy { journal, worker, authority } => Ok(Some(
+                Self::assemble_recovered(journal, worker, authority, resources, source_pins,
+                    fuse_reservations, kernel_boot_id, broker_instance_id, destination_slots),
+            )),
+            BrokerRecoveryOriginals::Selected(owner) => {
+                owner.destination_slots = Some(destination_slots);
+                if owner.completed.is_some() || owner.journal.is_none() || owner.worker.is_none()
+                    || owner.authority.is_none() || owner.destination_slots.is_none()
+                {
+                    return Err(MountError::Fence("selected broker recovery association changed"));
+                }
+                match (owner.journal.take(), owner.worker.take(), owner.authority.take(), owner.destination_slots.take()) {
+                    (Some(journal), Some(worker), Some(authority), Some(destination_slots)) => {
+                        owner.completed = Some(Self::assemble_recovered(journal, worker, authority,
+                            resources, source_pins, fuse_reservations, kernel_boot_id,
+                            broker_instance_id, destination_slots));
+                        Ok(None)
+                    }
+                    (journal, worker, authority, destination_slots) => {
+                        owner.journal = journal;
+                        owner.worker = worker;
+                        owner.authority = authority;
+                        owner.destination_slots = destination_slots;
+                        Err(MountError::Fence("selected broker recovery originals changed"))
+                    }
+                }
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn assemble_recovered(
+        journal: Journal,
+        worker: W,
+        authority: MountAuthorityV1,
+        resources: MountResourceTableV1,
+        source_pins: SourcePinTableV1,
+        fuse_reservations: FuseWorkerReservationTableV1,
+        kernel_boot_id: [u8; 16],
+        broker_instance_id: [u8; 16],
+        destination_slots: Option<DestinationSlotStoreV1>,
+    ) -> Self {
+        let git_coverage_persisted = journal.all_records().any(|(namespace, key, _)| {
+            namespace == RecordNamespace::DesiredState
+                && (key == b"z-git-birth-v1" || key == b"z-git-fence-v1")
+        });
+        Self {
+            journal,
+            worker,
+            resources,
+            source_pins,
+            fuse_reservations,
+            kernel_boot_id,
+            broker_instance_id,
+            authority,
+            destination_slots,
+            source_runtime: None,
+            source_runtime_failed: false,
+            git_coverage: None,
+            git_coverage_persisted,
+        }
+    }
+
+    /// Commits a first-generation FUSE reservation under Mount's journal owner.
+    ///
+    /// This private writer has no production caller until a separate signed
+    /// Controller intent and authenticated Mount method can supply every row
+    /// field. A row is neither worker-launch nor descriptor authority.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unhealthy or contradictory journal state, any native/FUSE slot
+    /// alias, an unsupported successor or replay, or failed durability.
+    pub(crate) fn reserve_fuse_worker_gen1(
+        &mut self,
+        reservation: &FuseWorkerReservationV1,
+    ) -> Result<()> {
+        self.require_git_coverage_new_admission_v1()?;
+        self.journal.ensure_healthy()?;
+        let resources = MountResourceTableV1::recover(
+            &self.journal,
+            MountResourceLimitsV1::default(),
+            self.kernel_boot_id,
+        )?;
+        let reservations =
+            FuseWorkerReservationTableV1::recover(&self.journal, self.kernel_boot_id)?;
+        ensure_fuse_slots_exclude_native(&resources, &reservations)?;
+        if !native_slot_is_unused_for_fuse(&resources, reservation) {
+            return Err(MountError::Fence(
+                "FUSE destination slot is claimed by native Mount state",
+            ));
+        }
+
+        let record = reservations.prepare_reservation(reservation)?;
+        let transaction_id = fuse_reservation_transaction_id(reservation);
+        self.journal
+            .commit(&JournalTransaction::new(transaction_id, vec![record])?)?;
+        self.resources = resources;
+        self.fuse_reservations =
+            FuseWorkerReservationTableV1::recover(&self.journal, self.kernel_boot_id)?;
+        Ok(())
+    }
+
+    /// Encodes one complete authoritative durable resource-table snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an internally produced row violates the current
+    /// closed wire schema.
+    pub fn inventory_resources(&self) -> Result<Vec<u8>> {
+        self.ensure_authority_healthy()?;
+        let response = InventoryMountResourcesResponse {
+            kernel_boot_id: self.kernel_boot_id.to_vec(),
+            journal_sequence: self.journal.snapshot_sequence(),
+            mounts: self.resources.resources().map(inventory_record).collect(),
+            broker_instance_id: self.broker_instance_id.to_vec(),
+            ..Default::default()
+        };
+        encode_mount_inventory_response(response).map_err(Into::into)
+    }
+
+    /// Encodes original source inventory after real terminal readback/currentness.
+    ///
+    /// This named observation retains the same Source runtime and Session under
+    /// the existing restoration boundary. It neither grants Release nor uses
+    /// the separate phase11 negative-inventory loan as a positive substitute.
+    ///
+    /// # Errors
+    /// Refuses stale domain authority, missing actual terminal delivery, full
+    /// graph/index mismatch or changed protected journal/kernel/currentness.
+    pub fn inventory_original_terminal_sources_v1(
+        &mut self,
+        original: &mut OriginalMountAcquireAuthorityV1,
+        session: &mut aos_sandbox_source_provider_security::CurrentRootMountSourceProviderSessionV1,
+        returned: &mut Option<Vec<u8>>,
+    ) -> Result<()> {
+        if returned.is_some() {
+            return Err(MountError::Fence("original terminal inventory destination is occupied"));
+        }
+        let mut boundary = source_custody::QueryEntryBoundaryV6::new(self, session);
+        let result = (|| {
+            if boundary.broker.source_runtime_failed || original.stopped || !original.committed {
+                return Err(MountError::Fence("original terminal inventory owner is unavailable"));
+            }
+            boundary.broker.ensure_authority_healthy()?;
+            let mut effect = OriginalMountSignedEffectLoanV1 { authority: &boundary.broker.authority, original };
+            effect.check_before_original_effect()?;
+            boundary.broker.source_runtime_failed = true;
+            let mut runtime = source_custody::SourceRuntimeLoanV6::new(
+                &mut boundary.broker.source_runtime, &mut boundary.broker.source_runtime_failed,
+            );
+            runtime.attach(&mut boundary.broker.journal)?;
+            runtime.operate(|owner| owner.encode_original_terminal_inventory_v1(boundary.session, &mut effect, returned))
+        })();
+        boundary.finish(result)
+    }
+
+    /// Lends actual original inventory journal debt without a new observation.
+    #[must_use]
+    pub fn original_terminal_inventory_failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.source_runtime.as_ref().and_then(|runtime| runtime.original_terminal_inventory_failure())
+    }
+
+    /// Lends Query custody and revokes actual Session on returned error or unwind.
+    ///
+    /// This dormant crate-private boundary includes errors before the generic
+    /// owner closure. On unwind the inner loan restores runtime custody before
+    /// this boundary revokes the actual Session and every retained Query owner.
+    /// This guarantee starts from the genuine phase11 original tuple; older
+    /// original/catalog construction and consuming legacy locals are separate.
+    /// Panic-abort and process loss do not execute these restoration guards.
+    ///
+    /// # Errors
+    /// Revokes Session and all available runtime owners on any returned broker,
+    /// writer, custody or operation failure, including before closure entry.
+    pub(crate) fn with_original_inventory_source_owner_v6<R>(
+        &mut self,
+        session: &mut aos_sandbox_source_provider_security::CurrentRootMountSourceProviderSessionV1,
+        operation: impl for<'journal> FnOnce(
+            &mut crate::source_acquisition::FixedMountSourceAcquisitionOwnerV2<'journal>,
+            &mut aos_sandbox_source_provider_security::CurrentRootMountSourceProviderSessionV1,
+        ) -> Result<R>,
+    ) -> Result<R> {
+        let mut boundary = source_custody::QueryEntryBoundaryV6::new(self, session);
+        let broker = &mut *boundary.broker;
+        let session = &mut *boundary.session;
+        let result = broker.with_fixed_source_acquisition_owner(|owner| operation(owner, session));
+        boundary.finish(result)
+    }
+
+    /// Lends the same runtime and actual Session before original-start progress.
+    ///
+    /// The failure boundary precedes health and attachment. Nested retained
+    /// producers preserve genuine Live, catalog and V5 append custody; initial
+    /// hello construction, legacy consuming calls and process loss are separate.
+    ///
+    /// # Errors
+    ///
+    /// Restores retained runtime and revokes actual Session on refusal or unwind.
+    pub(crate) fn with_original_native_source_owner_v5<R>(
+        &mut self,
+        session: &mut aos_sandbox_source_provider_security::CurrentRootMountSourceProviderSessionV1,
+        operation: impl for<'journal> FnOnce(
+            &mut crate::source_acquisition::FixedMountSourceAcquisitionOwnerV2<'journal>,
+            &mut aos_sandbox_source_provider_security::CurrentRootMountSourceProviderSessionV1,
+        ) -> Result<R>,
+    ) -> Result<R> {
+        self.with_original_inventory_source_owner_v6(session, |owner, session| {
+            // Stay inside the original restoration/revocation boundary. The
+            // Query entry remains available for genuine negative retirement.
+            owner.require_git_coverage_new_effect_v1()?;
+            operation(owner, session)
+        })
+    }
+
+    /// Lends the sole protected Mount journal to the source-acquisition owner.
+    ///
+    /// The first borrow replays the complete source graph. Later borrows
+    /// revalidate the fixed journal and reuse the broker-retained runtime, so
+    /// move-only descriptor custody survives between operations without a
+    /// second journal lock or a separate source service. An operation error
+    /// requires process restart before another source borrow.
+    /// The loan restores owners still parked in the runtime on unwind; it does
+    /// not recover unrelated consuming locals inside legacy operations.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an unhealthy broker, nonfixed or replaced journal, invalid
+    /// startup policy, noncanonical source-acquisition recovery graph, or a
+    /// failed earlier source operation.
+    #[doc(hidden)]
+    pub fn with_fixed_source_acquisition_owner<R>(
+        &mut self,
+        operation: impl for<'journal> FnOnce(
+            &mut crate::source_acquisition::FixedMountSourceAcquisitionOwnerV2<'journal>,
+        ) -> Result<R>,
+    ) -> Result<R> {
+        if self.source_runtime_failed {
+            return Err(MountError::State(
+                "source runtime failed; protected restart is required".to_owned(),
+            ));
+        }
+        // Health checks run with the existing runtime still in its broker slot.
+        self.source_runtime_failed = true;
+        self.ensure_authority_healthy()?;
+
+        let mut loan = source_custody::SourceRuntimeLoanV6::new(
+            &mut self.source_runtime,
+            &mut self.source_runtime_failed,
+        );
+        loan.attach(&mut self.journal)?;
+        loan.operate(operation)
+    }
+
+    /// Establishes a provider successor only before runtime construction.
+    ///
+    /// This actual absent-runtime boundary permits the trusted cold owner to
+    /// install replay-derived indexes without losing live descriptor or reply
+    /// custody. The protected graph selects existing empty/idle startup or
+    /// death-proven recovery; callers cannot nominate a cold shape. A failure
+    /// after construction retains that owner and closes all further source
+    /// borrows until protected process restart.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unhealthy or previously failed state, an existing runtime, invalid
+    /// fixed replay, unproved predecessor death, unfunded original native debt,
+    /// changed current Session/graph, local fences or insufficient capacity.
+    #[doc(hidden)]
+    pub fn establish_cold_provider_successor_v4(
+        &mut self,
+        root: &mut aos_sandbox_source_provider_security::RootMountSourceProviderOwnerV1,
+    ) -> Result<()> {
+        self.require_git_coverage_new_admission_v1()?;
+        self.ensure_authority_healthy()?;
+        if self.source_runtime_failed {
+            return Err(MountError::State(
+                "source runtime failed; protected restart is required".to_owned(),
+            ));
+        }
+        if self.source_runtime.is_some() {
+            return Err(MountError::State(
+                "kind5 cold successor cannot replace an existing runtime".to_owned(),
+            ));
+        }
+        let mut owner = crate::source_acquisition::FixedMountSourceAcquisitionOwnerV2::borrow_existing_kind5_fixed_journal(
+            &mut self.journal,
+        )?;
+        self.source_runtime_failed = true;
+        let result = owner.establish_cold_dead_successor_v4(root);
+        self.source_runtime = Some(owner.into_runtime());
+        if result.is_ok() {
+            self.source_runtime_failed = false;
+        }
+        result
+    }
+
+    /// Reports whether this broker owns a configured destination-slot store.
+    #[must_use]
+    pub const fn supports_destination_slots(&self) -> bool {
+        self.destination_slots.is_some()
+    }
+
+    /// Encodes one complete authoritative destination-slot table snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when destination-slot ownership is not configured or
+    /// an internally produced row violates the closed wire schema.
+    pub fn inventory_destination_slots(&self) -> Result<Vec<u8>> {
+        self.ensure_authority_healthy()?;
+        let slots = self.destination_slots.as_ref().ok_or_else(|| {
+            MountError::State("destination-slot ownership is not configured".to_owned())
+        })?;
+        let attachment_anchors = slots
+            .attachment_anchors()?
+            .into_iter()
+            .map(|anchor| {
+                let handle = attachment_anchor_handle_v1(
+                    &anchor.sandbox_id,
+                    &anchor.incarnation_id,
+                    anchor.namespace_generation,
+                    &anchor.kernel_boot_id,
+                    anchor.identity.device,
+                    anchor.identity.inode,
+                    anchor.mount_id.get(),
+                );
+                AttachmentAnchorInventoryRecord {
+                    attachment_anchor_handle: handle.to_vec(),
+                    sandbox_id: anchor.sandbox_id.to_vec(),
+                    incarnation_id: anchor.incarnation_id.to_vec(),
+                    namespace_generation: anchor.namespace_generation,
+                    resource_kernel_boot_id: anchor.kernel_boot_id.to_vec(),
+                    directory_device: anchor.identity.device,
+                    directory_inode: anchor.identity.inode,
+                    unique_mount_id: anchor.mount_id.get(),
+                    ..Default::default()
+                }
+            })
+            .collect();
+        let response = InventoryDestinationSlotsResponse {
+            kernel_boot_id: self.kernel_boot_id.to_vec(),
+            journal_sequence: self.journal.snapshot_sequence(),
+            slots: slots.resources().map(destination_slot_record).collect(),
+            broker_instance_id: self.broker_instance_id.to_vec(),
+            attachment_anchors,
+            ..Default::default()
+        };
+        encode_destination_slot_inventory_response(response).map_err(Into::into)
+    }
+
+    /// Admits and applies one signed destination-slot materialization or reap.
+    ///
+    /// The broker durably admits signed authority before the slot primitive
+    /// records filesystem intent. Reaping queries the serialized native mount
+    /// table before and after its own durable admission, under this broker's
+    /// single mutable request boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error before effects for hostile input, rejected authority,
+    /// request-ID reuse, a conflicting slot binding, a referenced slot, or an
+    /// unavailable destination-slot store. Filesystem effects remain captured
+    /// by the destination-slot journal state when later completion fails.
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_destination_slot<F>(
+        &mut self,
+        request_bytes: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        mut trusted_clock: F,
+    ) -> Result<Vec<u8>>
+    where
+        F: FnMut() -> Result<RawPairedClockSample>,
+    {
+        self.ensure_authority_healthy()?;
+        if self.destination_slots.is_none() {
+            return Err(MountError::State(
+                "destination-slot ownership is not configured".to_owned(),
+            ));
+        }
+
+        let verification_clock = trusted_clock()?;
+        let request = decode_destination_slot_request(
+            request_bytes,
+            peer,
+            policy,
+            verification_clock.boottime_nanoseconds(),
+        )?;
+        if request.header().protocol_version() != protocol_version {
+            return Err(MountError::Protocol(
+                aos_sandbox_protocol::ProtocolValidationError::MethodMismatch,
+            ));
+        }
+        let binding = destination_slot_binding(&request)?;
+        if self.git_coverage.is_some() || self.git_coverage_persisted {
+            // Only an actual retained slot may be retired. A fresh negative
+            // verb is not evidence that the corresponding original exists.
+            if request.action() != DestinationSlotAction::DESTINATION_SLOT_ACTION_REAP
+                || self.destination_slots.as_ref()
+                    .and_then(|slots| slots.get(&binding)).is_none()
+            {
+                return Err(MountError::Fence(
+                    "exclusive Git cohort permits only original destination cleanup",
+                ));
+            }
+        }
+        let request_digest: [u8; 32] = Sha256::digest(request_bytes).into();
+        let prior_fence = self
+            .journal
+            .get(RecordNamespace::DesiredState, request.fence().sandbox_id());
+        let admission = self
+            .authority
+            .admit_destination_slot(
+                artifacts,
+                &request,
+                request_bytes,
+                protocol_version,
+                &verification_clock,
+                prior_fence,
+            )
+            .map_err(|_| MountError::Fence("signed destination-slot authority was rejected"))?;
+        let idempotency = IdempotencyKey::new(request.header().request_id().to_vec())?;
+        let operation_id = OperationId::from_bytes(*request.header().request_id());
+        match self.journal.check_idempotency(&idempotency, request_digest) {
+            IdempotencyOutcome::Conflict => {
+                return Err(MountError::Fence(
+                    "request ID was reused with different bytes",
+                ));
+            }
+            IdempotencyOutcome::Replay(existing) if existing != operation_id => {
+                return Err(MountError::State(
+                    "destination-slot idempotency operation identity changed".to_owned(),
+                ));
+            }
+            IdempotencyOutcome::Replay(_) => {
+                let effect = self.effect(request.header().request_id())?;
+                validate_effect_matches(&effect, &admission, request_digest)?;
+                if effect.status() == MountEffectStatusV1::Complete {
+                    return Ok(effect.receipt().to_vec());
+                }
+                if effect.plan_digest() != admission.effect.plan_digest()
+                    || effect.lease_digest() != admission.effect.lease_digest()
+                {
+                    self.persist_destination_slot_authority_refresh(&request, &admission)?;
+                }
+            }
+            IdempotencyOutcome::Vacant => self.persist_destination_slot_intent(
+                &request,
+                &idempotency,
+                operation_id,
+                request_digest,
+                &admission,
+            )?,
+        }
+
+        let effect = self.effect(request.header().request_id())?;
+        validate_effect_matches(&effect, &admission, request_digest)?;
+        self.authority
+            .validate_effect_clock(&effect, &trusted_clock()?)
+            .map_err(|_| {
+                MountError::Fence("destination-slot authority expired before the effect")
+            })?;
+
+        let resource = match request.action() {
+            DestinationSlotAction::DESTINATION_SLOT_ACTION_MATERIALIZE => {
+                let mutation = DestinationSlotMaterializationV1::new(
+                    binding.clone(),
+                    operation_id,
+                    ObjectDigest::from_bytes(request_digest),
+                )?;
+                let must_be_unused = self
+                    .destination_slots
+                    .as_ref()
+                    .and_then(|slots| slots.get(&binding))
+                    .is_none_or(|resource| {
+                        resource.phase() == DestinationSlotResourcePhaseV1::Materializing
+                    });
+                if must_be_unused
+                    && !destination_slot_is_unused(
+                        &self.resources,
+                        &self.fuse_reservations,
+                        &binding,
+                    )
+                {
+                    return Err(MountError::Fence(
+                        "destination slot is already claimed by Mount state",
+                    ));
+                }
+
+                let authority = &self.authority;
+                let slots = self.destination_slots.as_mut().ok_or_else(|| {
+                    MountError::State("destination-slot ownership disappeared".to_owned())
+                })?;
+                slots
+                    .materialize_guarded(&mut self.journal, &mutation, || {
+                        authority
+                            .check_before_effect(&effect, &mut || {
+                                trusted_clock().map_err(|_| {
+                                    crate::authorization::MountAdmissionError::FenceRejected
+                                })
+                            })
+                            .map_err(|_| {
+                                MountError::Fence(
+                                    "destination-slot authority expired before materialization",
+                                )
+                            })
+                    })?
+                    .0
+            }
+            DestinationSlotAction::DESTINATION_SLOT_ACTION_REAP => {
+                let expected = request.expected_resource_digest().copied().ok_or_else(|| {
+                    MountError::State("validated reap lost its resource digest".to_owned())
+                })?;
+                let mutation = DestinationSlotReapV1::new(
+                    binding.clone(),
+                    operation_id,
+                    ObjectDigest::from_bytes(request_digest),
+                    ObjectDigest::from_bytes(expected),
+                )?;
+                let authority = &self.authority;
+                let resources = &self.resources;
+                let fuse_reservations = &self.fuse_reservations;
+                let slots = self.destination_slots.as_mut().ok_or_else(|| {
+                    MountError::State("destination-slot ownership disappeared".to_owned())
+                })?;
+                slots
+                    .reap(&mut self.journal, &mutation, |binding| {
+                        authority
+                            .check_before_effect(&effect, &mut || {
+                                trusted_clock().map_err(|_| {
+                                    crate::authorization::MountAdmissionError::FenceRejected
+                                })
+                            })
+                            .map_err(|_| {
+                                MountError::Fence(
+                                    "destination-slot authority expired before reaping",
+                                )
+                            })?;
+                        Ok(destination_slot_is_unused(
+                            resources,
+                            fuse_reservations,
+                            binding,
+                        ))
+                    })?
+                    .0
+            }
+            DestinationSlotAction::DESTINATION_SLOT_ACTION_REMATERIALIZE => {
+                let expected = request.expected_resource_digest().copied().ok_or_else(|| {
+                    MountError::State(
+                        "validated rematerialization lost its resource digest".to_owned(),
+                    )
+                })?;
+                let mutation = DestinationSlotRematerializationV1::new(
+                    binding.clone(),
+                    operation_id,
+                    ObjectDigest::from_bytes(request_digest),
+                    ObjectDigest::from_bytes(expected),
+                )?;
+                let authority = &self.authority;
+                let resources = &self.resources;
+                let fuse_reservations = &self.fuse_reservations;
+                let slots = self.destination_slots.as_mut().ok_or_else(|| {
+                    MountError::State("destination-slot ownership disappeared".to_owned())
+                })?;
+                slots
+                    .rematerialize_guarded(
+                        &mut self.journal,
+                        &mutation,
+                        |binding| {
+                            Ok(destination_slot_is_unused(resources, fuse_reservations, binding))
+                        },
+                        || {
+                            authority
+                                .check_before_effect(&effect, &mut || {
+                                    trusted_clock().map_err(|_| {
+                                        crate::authorization::MountAdmissionError::FenceRejected
+                                    })
+                                })
+                                .map_err(|_| {
+                                    MountError::Fence(
+                                        "destination-slot authority expired before rematerialization",
+                                    )
+                                })
+                        },
+                    )?
+                    .0
+            }
+            DestinationSlotAction::DESTINATION_SLOT_ACTION_UNSPECIFIED => {
+                return Err(MountError::State(
+                    "validated destination-slot action became unspecified".to_owned(),
+                ));
+            }
+        };
+        let response = encode_destination_slot_response(destination_slot_record(resource))?;
+        let response_limit = usize::try_from(request.header().maximum_response_bytes())
+            .map_err(|_| MountError::State("response limit does not fit usize".to_owned()))?;
+        if response.len() > response_limit {
+            return Err(MountError::State(
+                "destination-slot result exceeds the admitted response bound".to_owned(),
+            ));
+        }
+        self.persist_destination_slot_completion(&request, &response, effect)?;
+        Ok(response)
+    }
+
+    /// Retains a Host-attested namespace scope and returns its catalog commitment.
+    ///
+    /// This read-only operation does not admit or refresh a Mount authority
+    /// fence, write the journal, allocate a mount handle, or invoke the helper.
+    /// The returned commitment becomes useful only inside a separately signed
+    /// Mount Apply grant.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the Host response differs from the validated request
+    /// or the protected catalog cannot resolve the complete resource tuple.
+    pub fn prepare_catalog(
+        &mut self,
+        request: &ValidatedMountCatalogPreparation,
+        scope: ObservedMountScope,
+    ) -> Result<Vec<u8>> {
+        self.require_git_coverage_new_admission_v1()?;
+        self.ensure_authority_healthy()?;
+        if scope.metadata().fence() != request.mount_request().fence()
+            || scope.metadata().runtime_handle() != request.host_request().runtime_handle()
+            || scope.metadata().payload_scope_handle()
+                != request.host_request().payload_scope_handle()
+        {
+            return Err(MountError::Fence(
+                "Host scope differs from the Mount preparation request",
+            ));
+        }
+
+        let valid_until = scope.valid_until_boottime_nanoseconds();
+        let expected_source =
+            expected_source_for_request(&self.resources, request.mount_request())?;
+        let commitment =
+            self.worker
+                .prepare_catalog(request.mount_request(), scope, expected_source)?;
+        encode_mount_catalog_preparation_response(request, commitment, valid_until)
+            .map_err(Into::into)
+    }
+
+    /// Validates, fences, applies, and durably completes one mount request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error before effects for hostile input, stale/equivocating
+    /// assignment state, request-ID reuse, contradictory resource state, or
+    /// malformed replay state. Effects remain represented by durable intent.
+    pub fn apply_mount<F>(
+        &mut self,
+        request_bytes: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        mut trusted_clock: F,
+    ) -> Result<Vec<u8>>
+    where
+        F: FnMut() -> Result<RawPairedClockSample>,
+    {
+        self.ensure_authority_healthy()?;
+        let verification_clock = trusted_clock()?;
+        let request = decode_mount_request(
+            request_bytes,
+            peer,
+            policy,
+            verification_clock.boottime_nanoseconds(),
+        )?;
+        if request.header().protocol_version() != protocol_version {
+            return Err(MountError::Protocol(
+                aos_sandbox_protocol::ProtocolValidationError::MethodMismatch,
+            ));
+        }
+        if self.git_coverage.is_some() || self.git_coverage_persisted {
+            match request.action() {
+                MountAction::MOUNT_ACTION_DETACH | MountAction::MOUNT_ACTION_RELEASE => {
+                    // Resolve the original before idempotent replay or any
+                    // worker/catalog work. The old validator still checks its
+                    // exact assignment, state and signed cleanup admission.
+                    resource_for_supplied_handle(&self.resources, &request)?;
+                }
+                _ => self.require_git_coverage_new_admission_v1()?,
+            }
+        }
+        let request_digest: [u8; 32] = Sha256::digest(request_bytes).into();
+        let handle = operation_handle(&request, request_digest)?;
+        let expected_source = expected_source_for_request(&self.resources, &request)?;
+        let catalog_authorization = self.worker.catalog_commitment(&request, expected_source)?;
+        let catalog_commitment = catalog_authorization
+            .as_ref()
+            .map(CatalogAuthorizationV1::commitment);
+        let catalog_semantics = catalog_commitment
+            .map(MountCatalogCommitmentV1::from_verified_digest)
+            .transpose()
+            .map_err(|error| MountError::State(error.to_string()))?;
+        let prior_fence = self
+            .journal
+            .get(RecordNamespace::DesiredState, request.fence().sandbox_id());
+        let admission = self
+            .authority
+            .admit(
+                artifacts,
+                &request,
+                request_bytes,
+                catalog_semantics,
+                &[],
+                protocol_version,
+                &verification_clock,
+                prior_fence,
+            )
+            .map_err(|_| MountError::Fence("signed mount authority was rejected"))?;
+        let idempotency = IdempotencyKey::new(request.header().request_id().to_vec())?;
+        let operation_id = OperationId::from_bytes(*request.header().request_id());
+        match self.journal.check_idempotency(&idempotency, request_digest) {
+            IdempotencyOutcome::Conflict => {
+                return Err(MountError::Fence(
+                    "request ID was reused with different bytes",
+                ));
+            }
+            IdempotencyOutcome::Replay(existing) if existing != operation_id => {
+                return Err(MountError::State(
+                    "mount idempotency operation identity changed".to_owned(),
+                ));
+            }
+            IdempotencyOutcome::Replay(_) => {
+                let effect = self.effect(request.header().request_id())?;
+                validate_effect_matches(&effect, &admission, request_digest)?;
+                if effect.status() == MountEffectStatusV1::Complete {
+                    self.finish_source_reaping()?;
+                    return Ok(effect.receipt().to_vec());
+                }
+                if effect.plan_digest() != admission.effect.plan_digest()
+                    || effect.lease_digest() != admission.effect.lease_digest()
+                {
+                    self.persist_authority_refresh(&request, &admission)?;
+                }
+            }
+            IdempotencyOutcome::Vacant => {
+                self.persist_intent(
+                    &request,
+                    &idempotency,
+                    operation_id,
+                    request_digest,
+                    catalog_authorization,
+                    &admission,
+                )?;
+            }
+        }
+
+        // A zero-reference predecessor may enter Reaping in the CREATE intent
+        // transaction. Retire its custody before attempting the unrelated new
+        // mount effect, including when that later effect fails or is replayed.
+        self.finish_source_reaping()?;
+
+        let effect = self.effect(request.header().request_id())?;
+        validate_effect_matches(&effect, &admission, request_digest)?;
+        if effect.status() == MountEffectStatusV1::Complete {
+            return Ok(effect.receipt().to_vec());
+        }
+        self.authority
+            .validate_effect_clock(&effect, &trusted_clock()?)
+            .map_err(|_| MountError::Fence("mount authority expired before the effect"))?;
+
+        let current = self
+            .resources
+            .get(&handle)
+            .cloned()
+            .ok_or_else(|| MountError::State("durable mount resource is absent".to_owned()))?;
+        validate_request_resource(&request, &current, self.kernel_boot_id)?;
+        validate_pending_action_state(request.action(), &current.state)?;
+        let handles = expected_handles(
+            request.action(),
+            request_digest,
+            request.detached_mount_handle().copied(),
+        )?;
+        let authority = &self.authority;
+        let mut before_effect = || {
+            authority
+                .check_before_effect(&effect, &mut || {
+                    trusted_clock()
+                        .map_err(|_| crate::authorization::MountAdmissionError::FenceRejected)
+                })
+                .map_err(|_| MountError::Fence("mount authority expired before the effect"))?;
+            Ok(EffectDeadlineV1 {
+                clock_provenance: *effect.clock_provenance(),
+                host_boot_id: *effect.host_boot_id(),
+                boottime_nanoseconds: effect.effect_deadline_boottime_nanoseconds(),
+            })
+        };
+        let observation = if request.action() == MountAction::MOUNT_ACTION_DETACH {
+            let durable = DurableMountExecutionV1 {
+                request: &request,
+                request_digest,
+                handle: current.handle,
+                expected_mount_id: mount_id(installed_mount_id(&current)?)?,
+                expected_catalog_commitment: catalog_commitment.ok_or(MountError::Fence(
+                    "detach lost its admitted catalog commitment",
+                ))?,
+                expected_source: expected_source.ok_or_else(|| {
+                    MountError::State("detach lost its durable source realization".to_owned())
+                })?,
+            };
+            execute_durable_detach(&mut self.worker, durable, handles, &mut before_effect)?
+        } else {
+            self.worker.execute(
+                &request,
+                request_digest,
+                handles,
+                catalog_commitment,
+                expected_source,
+                &mut before_effect,
+            )?
+        };
+        validate_observation(request.action(), handles, &observation)?;
+        let response = encode_result(&request, &observation)?;
+        let response_limit = usize::try_from(request.header().maximum_response_bytes())
+            .map_err(|_| MountError::State("response limit does not fit usize".to_owned()))?;
+        if response.len() > response_limit {
+            return Err(MountError::State(
+                "mount result exceeds the admitted response bound".to_owned(),
+            ));
+        }
+        self.persist_completion(&request, &current, &observation, &response, effect)?;
+        self.finish_source_reaping()?;
+        Ok(response)
+    }
+
+    fn persist_authority_refresh(
+        &mut self,
+        request: &ValidatedMountRequest,
+        admission: &VerifiedMountAdmissionV1,
+    ) -> Result<()> {
+        let records = self
+            .sealed_admission_records(
+                request.fence().sandbox_id(),
+                request.header().request_id(),
+                admission,
+                "mount authority fence could not be sealed",
+                "mount effect intent could not be sealed",
+            )?
+            .to_vec();
+        self.journal.commit(&JournalTransaction::new(
+            authority_refresh_transaction(
+                *request.header().request_id(),
+                admission.effect.plan_digest(),
+                admission.effect.lease_digest(),
+            ),
+            records,
+        )?)?;
+        Ok(())
+    }
+
+    fn sealed_admission_records(
+        &self,
+        sandbox_id: &[u8; 16],
+        request_id: &[u8; 16],
+        admission: &VerifiedMountAdmissionV1,
+        fence_error: &'static str,
+        effect_error: &'static str,
+    ) -> Result<[JournalRecord; 2]> {
+        let fence = self
+            .authority
+            .seal_fence(sandbox_id, &admission.fence)
+            .map_err(|_| MountError::Fence(fence_error))?;
+        let effect = self
+            .authority
+            .seal_effect(request_id, &admission.effect)
+            .map_err(|_| MountError::Fence(effect_error))?;
+        Ok([
+            JournalRecord::put(RecordNamespace::DesiredState, sandbox_id.to_vec(), fence),
+            JournalRecord::put(RecordNamespace::Effect, request_id.to_vec(), effect),
+        ])
+    }
+
+    fn persist_intent(
+        &mut self,
+        request: &ValidatedMountRequest,
+        idempotency: &IdempotencyKey,
+        operation_id: OperationId,
+        request_digest: [u8; 32],
+        catalog_authorization: Option<CatalogAuthorizationV1>,
+        admission: &VerifiedMountAdmissionV1,
+    ) -> Result<()> {
+        let correlation = operation_correlation(request, request_digest);
+        let catalog_commitment = catalog_authorization
+            .as_ref()
+            .map(CatalogAuthorizationV1::commitment);
+        let mut fresh_source_activation = false;
+        let mut resource_records = match request.action() {
+            MountAction::MOUNT_ACTION_CREATE_DETACHED => {
+                if self.fuse_reservations.rows().any(|reservation| {
+                    reservation.assignment.sandbox_id == *request.fence().sandbox_id()
+                        && reservation.assignment.incarnation_id
+                            == *request.fence().incarnation_id()
+                        && reservation.destination_slot_id == *request.destination_slot_id()
+                }) {
+                    return Err(MountError::Fence(
+                        "native Mount destination slot is reserved for FUSE",
+                    ));
+                }
+                let source_realization = catalog_authorization
+                    .as_ref()
+                    .ok_or(MountError::Fence("CREATE lost its source realization"))?
+                    .source_realization();
+                let resource = allocated_resource(
+                    request,
+                    request_digest,
+                    self.kernel_boot_id,
+                    correlation,
+                    source_realization,
+                )?;
+                let binding = request.source_binding().ok_or_else(|| {
+                    MountError::State("CREATE lost its canonical source binding".to_owned())
+                })?;
+                if self.source_pins.get(&source_realization.handle).is_some() {
+                    self.source_pins
+                        .validate_existing_reference(binding, source_realization)?;
+                    self.resources.plan_allocate(&resource)?
+                } else {
+                    fresh_source_activation = true;
+                    let row = SourcePinRowV1::active(
+                        binding,
+                        source_realization,
+                        *request.header().request_id(),
+                        request_digest,
+                    )?;
+                    let expected_current = self
+                        .source_pins
+                        .current_handle(*binding.digest().as_bytes());
+                    self.source_pins.plan_activate_with_resource(
+                        &self.resources,
+                        &row,
+                        expected_current,
+                        &resource,
+                    )?
+                }
+            }
+            MountAction::MOUNT_ACTION_INSTALL | MountAction::MOUNT_ACTION_REPLACE => self
+                .plan_publication_intent(
+                    request,
+                    request_digest,
+                    correlation,
+                    catalog_commitment.ok_or(MountError::Fence(
+                        "publication lost its admitted catalog commitment",
+                    ))?,
+                )?,
+            MountAction::MOUNT_ACTION_DETACH => self.plan_detach_intent(request, correlation)?,
+            MountAction::MOUNT_ACTION_RELEASE => {
+                let current = resource_for_supplied_handle(&self.resources, request)?;
+                validate_request_resource(request, current, self.kernel_boot_id)?;
+                if !matches!(
+                    current.state,
+                    MountResourceStateV1::Prepared { .. } | MountResourceStateV1::Draining { .. }
+                ) {
+                    return Err(MountError::State(
+                        "release requires a prepared or draining mount resource".to_owned(),
+                    ));
+                }
+                self.plan_release_intent(current, correlation)?
+            }
+            MountAction::MOUNT_ACTION_UNSPECIFIED => return Err(invalid_pending_state()),
+        };
+        let applied_records = resource_records.clone();
+        let [fence, effect] = self.sealed_admission_records(
+            request.fence().sandbox_id(),
+            request.header().request_id(),
+            admission,
+            "mount authority fence could not be sealed",
+            "mount effect intent could not be sealed",
+        )?;
+        let mut records = vec![
+            fence,
+            JournalRecord::idempotency(idempotency, request_digest, operation_id),
+            effect,
+        ];
+        records.append(&mut resource_records);
+        let transaction =
+            JournalTransaction::new(intent_transaction(*request.header().request_id()), records)?;
+        self.journal
+            .preflight_transactions(std::slice::from_ref(&transaction))?;
+        if fresh_source_activation {
+            self.worker.establish_source_custody(
+                catalog_authorization
+                    .as_ref()
+                    .ok_or(MountError::Fence("CREATE lost its source realization"))?,
+            )?;
+        }
+        self.journal.commit(&transaction)?;
+        if applied_records
+            .iter()
+            .any(|record| record.namespace() == RecordNamespace::MountSourcePin)
+        {
+            self.source_pins.apply_committed(&applied_records)?;
+        }
+        let mount_records: Vec<_> = applied_records
+            .into_iter()
+            .filter(|record| record.namespace() == RecordNamespace::Operation)
+            .collect();
+        if !mount_records.is_empty() {
+            self.resources.apply_committed(&mount_records)?;
+        }
+        Ok(())
+    }
+
+    fn plan_publication_intent(
+        &self,
+        request: &ValidatedMountRequest,
+        request_digest: [u8; 32],
+        operation: OperationCorrelationV1,
+        catalog_commitment: aos_sandbox_core::ObjectDigest,
+    ) -> Result<Vec<JournalRecord>> {
+        let current = resource_for_supplied_handle(&self.resources, request)?;
+        validate_request_resource(request, current, self.kernel_boot_id)?;
+        let MountResourceStateV1::Prepared { detached, .. } = &current.state else {
+            return Err(MountError::State(
+                "publication requires a prepared mount resource".to_owned(),
+            ));
+        };
+        let expected_mount_id = mount_id(detached.unique_mount_id)?;
+        let predecessor = request
+            .replacement_mount_handle()
+            .map(|handle| replacement_predecessor(&self.resources, request, *handle))
+            .transpose()?;
+        let predecessor_identity = predecessor
+            .map(|resource| -> Result<_> {
+                Ok((resource.handle, mount_id(installed_mount_id(resource)?)?))
+            })
+            .transpose()?;
+        let preflight = self.worker.preflight_publication(
+            DurableMountExecutionV1 {
+                request,
+                request_digest,
+                handle: current.handle,
+                expected_mount_id,
+                expected_catalog_commitment: catalog_commitment,
+                expected_source: source_evidence(&current.recipe),
+            },
+            predecessor_identity,
+        )?;
+        let valid = match request.action() {
+            MountAction::MOUNT_ACTION_INSTALL => {
+                matches!(preflight.disposition, MountTargetObservation::Absent)
+            }
+            MountAction::MOUNT_ACTION_REPLACE => matches!(
+                preflight.disposition,
+                MountTargetObservation::PredecessorInstalled
+            ),
+            _ => false,
+        };
+        if !valid {
+            return Err(MountError::Worker(
+                "publication preflight found a conflicting target".to_owned(),
+            ));
+        }
+        let mut next = current.clone();
+        next.revision = checked_revision(current.revision)?;
+        next.state = MountResourceStateV1::Publishing {
+            detached: detached.clone(),
+            publication: PublicationCorrelationV1 {
+                operation,
+                target_mount_namespace_id: preflight.target_mount_namespace_id,
+                target_namespace_generation: request.namespace_generation(),
+                replaces: predecessor.map(|resource| resource.handle),
+            },
+        };
+        self.resources.plan_transition(current.revision, &next)
+    }
+
+    fn plan_detach_intent(
+        &self,
+        request: &ValidatedMountRequest,
+        detachment: OperationCorrelationV1,
+    ) -> Result<Vec<JournalRecord>> {
+        let current = resource_for_supplied_handle(&self.resources, request)?;
+        validate_request_resource(request, current, self.kernel_boot_id)?;
+        let MountResourceStateV1::Installed {
+            detached,
+            installed,
+            ..
+        } = &current.state
+        else {
+            return Err(MountError::State(
+                "detach requires an installed mount resource".to_owned(),
+            ));
+        };
+        let mut next = current.clone();
+        next.revision = checked_revision(current.revision)?;
+        next.state = MountResourceStateV1::Detaching {
+            detached: detached.clone(),
+            installed: installed.clone(),
+            detachment,
+        };
+        self.resources.plan_transition(current.revision, &next)
+    }
+
+    fn plan_release_intent(
+        &self,
+        current: &MountResourceV1,
+        release: OperationCorrelationV1,
+    ) -> Result<Vec<JournalRecord>> {
+        let (detached, installed, replaced_by) = match &current.state {
+            MountResourceStateV1::Prepared { detached, .. } => (detached.clone(), None, None),
+            MountResourceStateV1::Draining {
+                detached,
+                installed,
+                replaced_by,
+            } => (
+                detached.clone(),
+                Some(installed.clone()),
+                Some(*replaced_by),
+            ),
+            _ => return Err(invalid_pending_state()),
+        };
+        let mut next = current.clone();
+        next.revision = checked_revision(current.revision)?;
+        next.state = MountResourceStateV1::Releasing {
+            detached,
+            installed,
+            release,
+            replaced_by,
+        };
+        self.resources.plan_transition(current.revision, &next)
+    }
+
+    fn persist_completion(
+        &mut self,
+        request: &ValidatedMountRequest,
+        current: &MountResourceV1,
+        observation: &WorkerObservation,
+        response: &[u8],
+        effect: MountEffectIntentV1,
+    ) -> Result<()> {
+        let resource_records = self.plan_completion(request, current, observation)?;
+        let mut records = resource_records.clone();
+        let request_digest = *effect.transport_request_digest().as_bytes();
+        let completed = effect
+            .complete(response.to_vec())
+            .map_err(|_| MountError::State("completed mount effect is invalid".to_owned()))?;
+        records.push(JournalRecord::put(
+            RecordNamespace::Effect,
+            request.header().request_id().to_vec(),
+            self.authority
+                .seal_effect(request.header().request_id(), &completed)
+                .map_err(|_| MountError::Fence("completed mount effect could not be sealed"))?,
+        ));
+        self.journal.commit(&JournalTransaction::new(
+            completion_transaction(request_digest),
+            records,
+        )?)?;
+        if resource_records
+            .iter()
+            .any(|record| record.namespace() == RecordNamespace::MountSourcePin)
+        {
+            self.source_pins.apply_committed(&resource_records)?;
+        }
+        let mount_records: Vec<_> = resource_records
+            .into_iter()
+            .filter(|record| record.namespace() == RecordNamespace::Operation)
+            .collect();
+        self.resources.apply_committed(&mount_records)?;
+        Ok(())
+    }
+
+    fn finish_source_reaping(&mut self) -> Result<()> {
+        let handles: Vec<_> = self.source_pins.reaping_handles().collect();
+        for handle in handles {
+            if self
+                .resources
+                .source_realization_references()?
+                .contains_key(&handle)
+            {
+                return Err(MountError::State(
+                    "Reaping source realization regained a live reference".to_owned(),
+                ));
+            }
+            let revision = self
+                .source_pins
+                .get(&handle)
+                .ok_or_else(|| MountError::State("Reaping source pin disappeared".to_owned()))?
+                .revision;
+            let records = self.source_pins.plan_finish_reaping(handle)?;
+            let transaction = JournalTransaction::new(
+                derived_transaction_id(b"aos.mount.source-reaping.v1\0", handle, revision),
+                records.clone(),
+            )?;
+            self.journal
+                .preflight_transactions(std::slice::from_ref(&transaction))?;
+            if !self.worker.release_source_custody(handle)? {
+                continue;
+            }
+            self.journal.commit(&transaction)?;
+            self.source_pins.apply_committed(&records)?;
+        }
+        Ok(())
+    }
+
+    fn plan_completion(
+        &self,
+        request: &ValidatedMountRequest,
+        current: &MountResourceV1,
+        observation: &WorkerObservation,
+    ) -> Result<Vec<JournalRecord>> {
+        match request.action() {
+            MountAction::MOUNT_ACTION_CREATE_DETACHED => {
+                let MountResourceStateV1::Allocated { creation } = &current.state else {
+                    return Err(invalid_pending_state());
+                };
+                let observed = observation.detached_mount_id.ok_or_else(|| {
+                    MountError::Worker("create omitted detached mount identity".to_owned())
+                })?;
+                let mut next = current.clone();
+                next.revision = checked_revision(current.revision)?;
+                next.state = MountResourceStateV1::Prepared {
+                    detached: DetachedMountIdentityV1 {
+                        unique_mount_id: observed.get(),
+                    },
+                    creation: creation.clone(),
+                };
+                self.resources.plan_transition(current.revision, &next)
+            }
+            MountAction::MOUNT_ACTION_INSTALL => self.resources.plan_transition(
+                current.revision,
+                &installed_successor(current, observation)?,
+            ),
+            MountAction::MOUNT_ACTION_REPLACE => {
+                let successor = installed_successor(current, observation)?;
+                let predecessor = self
+                    .resources
+                    .get(request.replacement_mount_handle().ok_or_else(|| {
+                        MountError::State("replacement predecessor is absent".to_owned())
+                    })?)
+                    .ok_or_else(|| {
+                        MountError::State("replacement predecessor is unknown".to_owned())
+                    })?;
+                let MountResourceStateV1::Installed {
+                    detached,
+                    installed,
+                    ..
+                } = &predecessor.state
+                else {
+                    return Err(MountError::State(
+                        "replacement predecessor is not installed".to_owned(),
+                    ));
+                };
+                let mut draining = predecessor.clone();
+                draining.revision = checked_revision(predecessor.revision)?;
+                draining.state = MountResourceStateV1::Draining {
+                    detached: detached.clone(),
+                    installed: installed.clone(),
+                    replaced_by: successor.handle,
+                };
+                self.resources.plan_confirm_replacement(
+                    current.revision,
+                    &successor,
+                    predecessor.revision,
+                    &draining,
+                )
+            }
+            MountAction::MOUNT_ACTION_DETACH => {
+                let (last_detached_mount_id, last_installed_mount_id) = release_ids(&current.state);
+                let mut next = current.clone();
+                next.revision = checked_revision(current.revision)?;
+                next.state = MountResourceStateV1::Released {
+                    last_detached_mount_id,
+                    last_installed_mount_id,
+                };
+                let mut records = self.resources.plan_transition(current.revision, &next)?;
+                if self
+                    .source_pins
+                    .is_noncurrent_active(current.recipe.source_realization_handle)
+                {
+                    records.extend(
+                        self.source_pins
+                            .plan_reaping_after_release_if_last_reference(&self.resources, &next)?,
+                    );
+                }
+                Ok(records)
+            }
+            MountAction::MOUNT_ACTION_RELEASE => self.plan_release_completion(current),
+            MountAction::MOUNT_ACTION_UNSPECIFIED => Err(invalid_pending_state()),
+        }
+    }
+
+    fn plan_release_completion(&self, current: &MountResourceV1) -> Result<Vec<JournalRecord>> {
+        let (last_detached_mount_id, last_installed_mount_id) = release_ids(&current.state);
+        let mut released = current.clone();
+        released.revision = checked_revision(current.revision)?;
+        released.state = MountResourceStateV1::Released {
+            last_detached_mount_id,
+            last_installed_mount_id,
+        };
+        let MountResourceStateV1::Releasing { replaced_by, .. } = &current.state else {
+            return self.plan_single_release(current, &released);
+        };
+        let Some(replaced_by) = replaced_by else {
+            return self.plan_single_release(current, &released);
+        };
+        let successor = self.resources.get(replaced_by).ok_or_else(|| {
+            MountError::State("draining resource successor is unknown".to_owned())
+        })?;
+        let MountResourceStateV1::Installed {
+            detached,
+            installed,
+            publication,
+        } = &successor.state
+        else {
+            return Err(MountError::State(
+                "draining resource successor is not installed".to_owned(),
+            ));
+        };
+        let mut retired_successor = successor.clone();
+        retired_successor.revision = checked_revision(successor.revision)?;
+        let mut retired_publication = publication.clone();
+        retired_publication.replaces = None;
+        retired_successor.state = MountResourceStateV1::Installed {
+            detached: detached.clone(),
+            installed: installed.clone(),
+            publication: retired_publication,
+        };
+        let mut records = self.resources.plan_finish_replacement(
+            successor.revision,
+            &retired_successor,
+            current.revision,
+            &released,
+        )?;
+        if self
+            .source_pins
+            .is_noncurrent_active(current.recipe.source_realization_handle)
+        {
+            records.extend(
+                self.source_pins
+                    .plan_reaping_after_release_if_last_reference(&self.resources, &released)?,
+            );
+        }
+        Ok(records)
+    }
+
+    fn plan_single_release(
+        &self,
+        current: &MountResourceV1,
+        released: &MountResourceV1,
+    ) -> Result<Vec<JournalRecord>> {
+        let mut records = self.resources.plan_transition(current.revision, released)?;
+        if self
+            .source_pins
+            .is_noncurrent_active(current.recipe.source_realization_handle)
+        {
+            records.extend(
+                self.source_pins
+                    .plan_reaping_after_release_if_last_reference(&self.resources, released)?,
+            );
+        }
+        Ok(records)
+    }
+
+    fn persist_destination_slot_authority_refresh(
+        &mut self,
+        request: &ValidatedDestinationSlotRequest,
+        admission: &VerifiedMountAdmissionV1,
+    ) -> Result<()> {
+        let records = self
+            .sealed_admission_records(
+                request.fence().sandbox_id(),
+                request.header().request_id(),
+                admission,
+                "destination-slot authority fence could not be sealed",
+                "destination-slot effect intent could not be sealed",
+            )?
+            .to_vec();
+        self.journal.commit(&JournalTransaction::new(
+            authority_refresh_transaction(
+                *request.header().request_id(),
+                admission.effect.plan_digest(),
+                admission.effect.lease_digest(),
+            ),
+            records,
+        )?)?;
+        Ok(())
+    }
+
+    fn persist_destination_slot_intent(
+        &mut self,
+        request: &ValidatedDestinationSlotRequest,
+        idempotency: &IdempotencyKey,
+        operation_id: OperationId,
+        request_digest: [u8; 32],
+        admission: &VerifiedMountAdmissionV1,
+    ) -> Result<()> {
+        let [fence, effect] = self.sealed_admission_records(
+            request.fence().sandbox_id(),
+            request.header().request_id(),
+            admission,
+            "destination-slot authority fence could not be sealed",
+            "destination-slot effect intent could not be sealed",
+        )?;
+        let records = vec![
+            fence,
+            JournalRecord::idempotency(idempotency, request_digest, operation_id),
+            effect,
+        ];
+        self.journal.commit(&JournalTransaction::new(
+            destination_slot_intent_transaction(*request.header().request_id()),
+            records,
+        )?)?;
+        Ok(())
+    }
+
+    fn persist_destination_slot_completion(
+        &mut self,
+        request: &ValidatedDestinationSlotRequest,
+        response: &[u8],
+        effect: MountEffectIntentV1,
+    ) -> Result<()> {
+        let request_digest = *effect.transport_request_digest().as_bytes();
+        let completed = effect.complete(response.to_vec()).map_err(|_| {
+            MountError::State("completed destination-slot effect is invalid".to_owned())
+        })?;
+        let record = JournalRecord::put(
+            RecordNamespace::Effect,
+            request.header().request_id().to_vec(),
+            self.authority
+                .seal_effect(request.header().request_id(), &completed)
+                .map_err(|_| {
+                    MountError::Fence("completed destination-slot effect could not be sealed")
+                })?,
+        );
+        self.journal.commit(&JournalTransaction::new(
+            destination_slot_completion_transaction(request_digest),
+            vec![record],
+        )?)?;
+        Ok(())
+    }
+
+    fn effect(&self, request_id: &[u8; 16]) -> Result<MountEffectIntentV1> {
+        self.authority
+            .open_effect(
+                request_id,
+                self.journal
+                    .get(RecordNamespace::Effect, request_id)
+                    .ok_or_else(|| {
+                        MountError::State("durable mount effect is absent".to_owned())
+                    })?,
+            )
+            .map_err(|_| MountError::Fence("durable mount effect authentication failed"))
+    }
+
+    fn ensure_authority_healthy(&self) -> Result<()> {
+        self.journal.ensure_healthy()?;
+        self.worker.ensure_authority_healthy()
+    }
+}
+
+fn execute_durable_detach<W: MountWorker>(
+    worker: &mut W,
+    durable: DurableMountExecutionV1<'_>,
+    handles: EffectHandles,
+    before_effect: &mut dyn FnMut() -> Result<EffectDeadlineV1>,
+) -> Result<WorkerObservation> {
+    worker.reconcile_detach(durable, before_effect)?;
+    Ok(WorkerObservation {
+        state: MountState::MOUNT_STATE_REVOKED,
+        handles,
+        detached_mount_id: None,
+        installed: None,
+    })
+}
+
+fn installed_successor(
+    current: &MountResourceV1,
+    observation: &WorkerObservation,
+) -> Result<MountResourceV1> {
+    let MountResourceStateV1::Publishing {
+        detached,
+        publication,
+    } = &current.state
+    else {
+        return Err(invalid_pending_state());
+    };
+    let observed = observation.installed.as_ref().ok_or_else(|| {
+        MountError::Worker("publication omitted installed mount evidence".to_owned())
+    })?;
+    if observed.mount.mount_namespace_id != publication.target_mount_namespace_id {
+        return Err(MountError::Worker(
+            "publication changed target mount namespace identity".to_owned(),
+        ));
+    }
+    let mut next = current.clone();
+    next.revision = checked_revision(current.revision)?;
+    next.state = MountResourceStateV1::Installed {
+        detached: detached.clone(),
+        installed: InstalledMountObservationV1 {
+            unique_mount_id: observed.mount.mount_id.get(),
+            parent_mount_id: observed.mount.parent_mount_id.get(),
+            target_mount_namespace_id: observed.mount.mount_namespace_id,
+            device_major: observed.mount.device_major,
+            device_minor: observed.mount.device_minor,
+            superblock_magic: observed.mount.superblock_magic,
+            superblock_flags: observed.mount.superblock_flags,
+            mount_attributes: observed.mount.mount_attributes,
+            propagation: observed.mount.propagation,
+            root: observed.mount.root.as_os_str().as_bytes().to_vec(),
+            mount_point: observed.mount.mount_point.as_os_str().as_bytes().to_vec(),
+            identity_map_digest: observed.idmap_digest,
+        },
+        publication: publication.clone(),
+    };
+    Ok(next)
+}
+
+pub(crate) fn allocated_resource(
+    request: &ValidatedMountRequest,
+    request_digest: [u8; 32],
+    kernel_boot_id: [u8; 16],
+    creation: OperationCorrelationV1,
+    source_realization: crate::source_pin::SourceRealizationEvidenceV1,
+) -> Result<MountResourceV1> {
+    let attributes = request.attributes().ok_or_else(|| {
+        MountError::State("create request lost validated mount attributes".to_owned())
+    })?;
+    let descriptor = request.view_revision().ok_or_else(|| {
+        MountError::State("create request lost validated view descriptor".to_owned())
+    })?;
+    let handle = detached_mount_handle_v1(request_digest);
+    Ok(MountResourceV1 {
+        handle,
+        fd_store_key: canonical_fd_store_key(handle),
+        kernel_boot_id,
+        revision: 1,
+        binding: binding(request),
+        recipe: MountRecipeV1 {
+            attachment_id: *request.attachment_id(),
+            destination_slot_id: *request.destination_slot_id(),
+            view_revision: ObjectDescriptorV1::from_runtime(descriptor)?,
+            source_generation: request.source_generation(),
+            resource_attachment_generation: request.resource_attachment_generation(),
+            source_view_id: *request.source_view_id(),
+            source_incarnation_id: request.source_incarnation_id().copied(),
+            source_assignment_digest: request
+                .source_assignment_digest()
+                .map(|digest| *digest.as_bytes()),
+            source_consistency: mount_source_consistency(request.source_consistency()),
+            source_handle: aos_sandbox_core::encode_view_source(request.source_handle()),
+            source_binding_digest: *request
+                .source_binding()
+                .ok_or_else(|| {
+                    MountError::State("allocated resource lacks source binding".to_owned())
+                })?
+                .digest()
+                .as_bytes(),
+            source_realization_handle: source_realization.handle,
+            source_physical_proof_digest: source_realization.physical_proof_digest,
+            source_kernel_boot_id: source_realization.kernel_boot_id,
+            source_device: source_realization.device,
+            source_inode: source_realization.inode,
+            source_proof_class: source_realization.proof_class,
+            source_unique_mount_id: source_realization.unique_mount_id,
+            source_provider_authority_id: source_realization.provider_authority_id,
+            source_provider_authority_generation: source_realization.provider_authority_generation,
+            source_provider_authority_digest: source_realization.provider_authority_digest,
+            source_provider_resource_id: source_realization.provider_resource_id,
+            source_provider_resource_generation: source_realization.provider_resource_generation,
+            source_provider_resource_digest: source_realization.provider_resource_digest,
+            source_provider_catalog_generation: source_realization.provider_catalog_generation,
+            source_provider_catalog_digest: source_realization.provider_catalog_digest,
+            policy: mount_policy(attributes),
+        },
+        state: MountResourceStateV1::Allocated { creation },
+    })
+}
+
+fn binding(request: &ValidatedMountRequest) -> AssignmentBindingV1 {
+    AssignmentBindingV1 {
+        sandbox_id: *request.fence().sandbox_id(),
+        incarnation_id: *request.fence().incarnation_id(),
+        assignment_epoch: request.fence().assignment_epoch(),
+        desired_generation: request.fence().desired_generation(),
+        assignment_digest: *request.fence().assignment_digest(),
+        namespace_generation: request.namespace_generation(),
+    }
+}
+
+fn mount_policy(attributes: ValidatedMountAttributes) -> MountPolicyV1 {
+    let mut owned = Vec::new();
+    for (enabled, attribute) in [
+        (attributes.read_only(), OwnedMountAttributeV1::ReadOnly),
+        (attributes.no_exec(), OwnedMountAttributeV1::NoExec),
+        (attributes.no_suid(), OwnedMountAttributeV1::NoSuid),
+        (attributes.no_device(), OwnedMountAttributeV1::NoDevice),
+        (attributes.no_atime(), OwnedMountAttributeV1::NoAtime),
+        (attributes.recursive(), OwnedMountAttributeV1::Recursive),
+    ] {
+        if enabled {
+            owned.push(attribute);
+        }
+    }
+    let mutation = match attributes.mutation_mode() {
+        0 => NativeMutationV1::ReadOnly,
+        1 => NativeMutationV1::ReadWrite,
+        2 => NativeMutationV1::PrivateCow,
+        3 => NativeMutationV1::AppendOnly,
+        4 => NativeMutationV1::Service,
+        _ => unreachable!("validated mutation mode is closed"),
+    };
+    MountPolicyV1 {
+        attributes: owned,
+        mutation,
+    }
+}
+
+fn mount_source_consistency(value: MountSourceConsistency) -> MountSourceConsistencyV1 {
+    match value {
+        MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION => {
+            MountSourceConsistencyV1::ImmutableRevision
+        }
+        MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_LOCAL_LIVE => {
+            MountSourceConsistencyV1::LocalLive
+        }
+        MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_BEST_EFFORT_REPLICA => {
+            MountSourceConsistencyV1::BestEffortReplica
+        }
+        MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_UNSPECIFIED
+        | MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_TRANSACTIONAL_SERVICE => {
+            unreachable!("validated Mount source consistency is supported and closed")
+        }
+    }
+}
+
+fn protocol_source_consistency(value: MountSourceConsistencyV1) -> MountSourceConsistency {
+    match value {
+        MountSourceConsistencyV1::ImmutableRevision => {
+            MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION
+        }
+        MountSourceConsistencyV1::LocalLive => {
+            MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_LOCAL_LIVE
+        }
+        MountSourceConsistencyV1::BestEffortReplica => {
+            MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_BEST_EFFORT_REPLICA
+        }
+    }
+}
+
+fn validate_request_resource(
+    request: &ValidatedMountRequest,
+    resource: &MountResourceV1,
+    kernel_boot_id: [u8; 16],
+) -> Result<()> {
+    let source_handle = resource.recipe.source_handle.as_slice();
+    let request_binding = binding(request);
+    let existing_resource_binding_matches = request.action()
+        != MountAction::MOUNT_ACTION_CREATE_DETACHED
+        && request_binding.sandbox_id == resource.binding.sandbox_id
+        && request_binding.incarnation_id == resource.binding.incarnation_id
+        && request_binding.namespace_generation == resource.binding.namespace_generation
+        && ((
+            request_binding.assignment_epoch,
+            request_binding.desired_generation,
+        ) > (
+            resource.binding.assignment_epoch,
+            resource.binding.desired_generation,
+        ) || ((
+            request_binding.assignment_epoch,
+            request_binding.desired_generation,
+        ) == (
+            resource.binding.assignment_epoch,
+            resource.binding.desired_generation,
+        ) && request_binding.assignment_digest == resource.binding.assignment_digest));
+    let attributes_match = request
+        .attributes()
+        .is_none_or(|attributes| resource.recipe.policy == mount_policy(attributes));
+    let view_matches = request.view_revision().is_none_or(|descriptor| {
+        ObjectDescriptorV1::from_runtime(descriptor)
+            .is_ok_and(|value| value == resource.recipe.view_revision)
+    });
+    if resource.kernel_boot_id != kernel_boot_id
+        || (resource.binding != request_binding && !existing_resource_binding_matches)
+        || resource.recipe.attachment_id != *request.attachment_id()
+        || resource.recipe.destination_slot_id != *request.destination_slot_id()
+        || resource.recipe.source_generation != request.source_generation()
+        || resource.recipe.resource_attachment_generation
+            != request.resource_attachment_generation()
+        || resource.recipe.source_view_id != *request.source_view_id()
+        || resource.recipe.source_incarnation_id.as_ref() != request.source_incarnation_id()
+        || resource.recipe.source_assignment_digest
+            != request
+                .source_assignment_digest()
+                .map(|digest| *digest.as_bytes())
+        || resource.recipe.source_consistency
+            != mount_source_consistency(request.source_consistency())
+        || source_handle != aos_sandbox_core::encode_view_source(request.source_handle())
+        || !attributes_match
+        || !view_matches
+    {
+        return Err(MountError::Fence(
+            "mount request contradicts immutable resource recipe",
+        ));
+    }
+    Ok(())
+}
+
+fn resource_for_supplied_handle<'a>(
+    resources: &'a MountResourceTableV1,
+    request: &ValidatedMountRequest,
+) -> Result<&'a MountResourceV1> {
+    resources
+        .get(request.detached_mount_handle().ok_or_else(|| {
+            MountError::State("mount action omitted its resource handle".to_owned())
+        })?)
+        .ok_or_else(|| MountError::State("mount resource handle is unknown".to_owned()))
+}
+
+fn replacement_predecessor<'a>(
+    resources: &'a MountResourceTableV1,
+    request: &ValidatedMountRequest,
+    handle: [u8; 32],
+) -> Result<&'a MountResourceV1> {
+    let predecessor = resources
+        .get(&handle)
+        .ok_or_else(|| MountError::State("replacement predecessor is unknown".to_owned()))?;
+    let successor_generation = (
+        request.fence().assignment_epoch(),
+        request.fence().desired_generation(),
+    );
+    let predecessor_generation = (
+        predecessor.binding.assignment_epoch,
+        predecessor.binding.desired_generation,
+    );
+    if !matches!(predecessor.state, MountResourceStateV1::Installed { .. })
+        || predecessor.recipe.attachment_id != *request.attachment_id()
+        || predecessor.recipe.destination_slot_id != *request.destination_slot_id()
+        || predecessor.binding.sandbox_id != *request.fence().sandbox_id()
+        || predecessor.binding.incarnation_id != *request.fence().incarnation_id()
+        || successor_generation <= predecessor_generation
+        || request.resource_attachment_generation()
+            <= predecessor.recipe.resource_attachment_generation
+    {
+        return Err(MountError::Fence(
+            "replacement predecessor is not the prior generation of this slot",
+        ));
+    }
+    Ok(predecessor)
+}
+
+fn operation_handle(request: &ValidatedMountRequest, request_digest: [u8; 32]) -> Result<[u8; 32]> {
+    if request.action() == MountAction::MOUNT_ACTION_CREATE_DETACHED {
+        Ok(detached_mount_handle_v1(request_digest))
+    } else {
+        request
+            .detached_mount_handle()
+            .copied()
+            .ok_or_else(|| MountError::State("mount action omitted its durable handle".to_owned()))
+    }
+}
+
+fn expected_source_for_request(
+    resources: &MountResourceTableV1,
+    request: &ValidatedMountRequest,
+) -> Result<Option<SourceRealizationEvidenceV1>> {
+    if matches!(
+        request.action(),
+        MountAction::MOUNT_ACTION_CREATE_DETACHED | MountAction::MOUNT_ACTION_RELEASE
+    ) {
+        return Ok(None);
+    }
+    let resource = resource_for_supplied_handle(resources, request)?;
+    Ok(Some(source_evidence(&resource.recipe)))
+}
+
+fn source_evidence(recipe: &MountRecipeV1) -> SourceRealizationEvidenceV1 {
+    SourceRealizationEvidenceV1 {
+        handle: recipe.source_realization_handle,
+        physical_proof_digest: recipe.source_physical_proof_digest,
+        unique_mount_id: recipe.source_unique_mount_id,
+        provider_authority_digest: recipe.source_provider_authority_digest,
+        provider_authority_id: recipe.source_provider_authority_id,
+        provider_authority_generation: recipe.source_provider_authority_generation,
+        provider_resource_id: recipe.source_provider_resource_id,
+        provider_resource_generation: recipe.source_provider_resource_generation,
+        provider_resource_digest: recipe.source_provider_resource_digest,
+        provider_catalog_generation: recipe.source_provider_catalog_generation,
+        provider_catalog_digest: recipe.source_provider_catalog_digest,
+        kernel_boot_id: recipe.source_kernel_boot_id,
+        device: recipe.source_device,
+        inode: recipe.source_inode,
+        proof_class: recipe.source_proof_class,
+    }
+}
+
+fn operation_correlation(
+    request: &ValidatedMountRequest,
+    request_digest: [u8; 32],
+) -> OperationCorrelationV1 {
+    OperationCorrelationV1 {
+        operation_id: *request.header().request_id(),
+        request_digest,
+    }
+}
+
+fn installed_mount_id(resource: &MountResourceV1) -> Result<u64> {
+    match &resource.state {
+        MountResourceStateV1::Installed { installed, .. }
+        | MountResourceStateV1::Detaching { installed, .. }
+        | MountResourceStateV1::Draining { installed, .. } => Ok(installed.unique_mount_id),
+        _ => Err(invalid_pending_state()),
+    }
+}
+
+/// Authenticates all Mount recovery tables and retained mount custody without mutation.
+///
+/// The daemon calls this before source-custody reconciliation because that
+/// reconciliation may conservatively fault stale-boot resources. Direct broker
+/// construction performs the same preflight internally before any journal
+/// mutation or retained-descriptor removal.
+///
+/// # Errors
+///
+/// Returns an error for corrupt or contradictory Mount resources, source pins,
+/// cross-table references, boot identities, or retained mount descriptors.
+pub fn preflight_recovery_state(
+    journal: &Journal,
+    current_boot_id: [u8; 16],
+    custody: &[RetainedMountObservation],
+) -> Result<()> {
+    let resources =
+        MountResourceTableV1::recover(journal, MountResourceLimitsV1::default(), current_boot_id)?;
+    let source_pins = SourcePinTableV1::recover(journal, current_boot_id)?;
+    validate_pre_repair_state(&resources, &source_pins, current_boot_id, custody)
+}
+
+fn validate_pre_repair_state(
+    resources: &MountResourceTableV1,
+    source_pins: &SourcePinTableV1,
+    current_boot_id: [u8; 16],
+    custody: &[RetainedMountObservation],
+) -> Result<()> {
+    source_pins.validate_resource_references_before_reboot_repair(resources)?;
+    validate_custody(resources, current_boot_id, custody)
+}
+
+fn release_ids(state: &MountResourceStateV1) -> (Option<u64>, Option<u64>) {
+    match state {
+        MountResourceStateV1::Prepared { detached, .. }
+        | MountResourceStateV1::Publishing { detached, .. } => {
+            (Some(detached.unique_mount_id), None)
+        }
+        MountResourceStateV1::Installed {
+            detached,
+            installed,
+            ..
+        }
+        | MountResourceStateV1::Detaching {
+            detached,
+            installed,
+            ..
+        }
+        | MountResourceStateV1::Draining {
+            detached,
+            installed,
+            ..
+        } => (
+            Some(detached.unique_mount_id),
+            Some(installed.unique_mount_id),
+        ),
+        MountResourceStateV1::Releasing {
+            detached,
+            installed,
+            ..
+        } => (
+            Some(detached.unique_mount_id),
+            installed.as_ref().map(|value| value.unique_mount_id),
+        ),
+        _ => (None, None),
+    }
+}
+
+fn fault_unverifiable_allocated_custody<W: MountWorker>(
+    journal: &mut Journal,
+    resources: &mut MountResourceTableV1,
+    current_boot_id: [u8; 16],
+    worker: &mut W,
+) -> Result<()> {
+    let retained: std::collections::BTreeSet<_> = worker
+        .custody_inventory()?
+        .into_iter()
+        .map(|observation| observation.handle)
+        .collect();
+    let uncertain: Vec<_> = resources
+        .resources()
+        .filter(|resource| {
+            resource.kernel_boot_id == current_boot_id
+                && retained.contains(&resource.handle)
+                && matches!(resource.state, MountResourceStateV1::Allocated { .. })
+        })
+        .cloned()
+        .collect();
+    for current in uncertain {
+        worker.discard_retained(current.handle)?;
+        let MountResourceStateV1::Allocated { creation } = &current.state else {
+            return Err(invalid_pending_state());
+        };
+        let failure_digest: [u8; 32] =
+            Sha256::digest(b"aos.mount.fault.unverifiable-allocated-custody.v1").into();
+        let mut next = current.clone();
+        next.revision = checked_revision(current.revision)?;
+        next.state = fault(
+            MountFaultPhaseV1::Allocated,
+            Some(creation.clone()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            failure_digest,
+        );
+        let records = resources.plan_transition(current.revision, &next)?;
+        journal.commit(&JournalTransaction::new(
+            custody_fault_transaction(current.handle, next.revision),
+            records.clone(),
+        )?)?;
+        resources.apply_committed(&records)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn fault_stale_boot_resources(
+    journal: &mut Journal,
+    resources: &mut MountResourceTableV1,
+    current_boot_id: [u8; 16],
+) -> Result<()> {
+    let stale: Vec<_> = resources
+        .resources()
+        .filter(|resource| {
+            resource.kernel_boot_id != current_boot_id
+                && !matches!(
+                    resource.state,
+                    MountResourceStateV1::Released { .. } | MountResourceStateV1::Faulted { .. }
+                )
+        })
+        .cloned()
+        .collect();
+    for current in stale {
+        let mut next = current.clone();
+        next.revision = checked_revision(current.revision)?;
+        next.state = stale_boot_fault(&current.state);
+        let records = resources.plan_transition(current.revision, &next)?;
+        let transaction = JournalTransaction::new(
+            boot_fault_transaction(current.handle, next.revision),
+            records.clone(),
+        )?;
+        journal.commit(&transaction)?;
+        resources.apply_committed(&records)?;
+    }
+    Ok(())
+}
+
+fn stale_boot_fault(state: &MountResourceStateV1) -> MountResourceStateV1 {
+    let failure_digest: [u8; 32] = Sha256::digest(b"aos.mount.fault.kernel-boot-changed.v1").into();
+    match state {
+        MountResourceStateV1::Allocated { creation } => fault(
+            MountFaultPhaseV1::Allocated,
+            Some(creation.clone()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            failure_digest,
+        ),
+        MountResourceStateV1::Prepared { detached, creation } => fault(
+            MountFaultPhaseV1::Prepared,
+            Some(creation.clone()),
+            None,
+            None,
+            None,
+            Some(detached.clone()),
+            None,
+            failure_digest,
+        ),
+        MountResourceStateV1::Publishing {
+            detached,
+            publication,
+        } => fault(
+            MountFaultPhaseV1::Publishing,
+            None,
+            Some(publication.clone()),
+            None,
+            None,
+            Some(detached.clone()),
+            None,
+            failure_digest,
+        ),
+        MountResourceStateV1::Installed {
+            detached,
+            installed,
+            publication,
+        } => fault(
+            MountFaultPhaseV1::Installed,
+            None,
+            Some(publication.clone()),
+            None,
+            None,
+            Some(detached.clone()),
+            Some(installed.clone()),
+            failure_digest,
+        ),
+        MountResourceStateV1::Detaching {
+            detached,
+            installed,
+            detachment,
+        } => fault(
+            MountFaultPhaseV1::Detaching,
+            None,
+            None,
+            Some(detachment.clone()),
+            None,
+            Some(detached.clone()),
+            Some(installed.clone()),
+            failure_digest,
+        ),
+        MountResourceStateV1::Draining {
+            detached,
+            installed,
+            replaced_by,
+        } => fault(
+            MountFaultPhaseV1::Draining,
+            None,
+            None,
+            None,
+            Some(*replaced_by),
+            Some(detached.clone()),
+            Some(installed.clone()),
+            failure_digest,
+        ),
+        MountResourceStateV1::Releasing {
+            detached,
+            installed,
+            release,
+            replaced_by,
+        } => MountResourceStateV1::Faulted {
+            from: MountFaultPhaseV1::Releasing,
+            creation: None,
+            publication: None,
+            detachment: None,
+            release: Some(release.clone()),
+            replaced_by: *replaced_by,
+            detached: Some(detached.clone()),
+            installed: installed.clone(),
+            failure_digest,
+        },
+        MountResourceStateV1::Released { .. } | MountResourceStateV1::Faulted { .. } => {
+            state.clone()
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fault(
+    from: MountFaultPhaseV1,
+    creation: Option<OperationCorrelationV1>,
+    publication: Option<PublicationCorrelationV1>,
+    detachment: Option<OperationCorrelationV1>,
+    replaced_by: Option<[u8; 32]>,
+    detached: Option<DetachedMountIdentityV1>,
+    installed: Option<InstalledMountObservationV1>,
+    failure_digest: [u8; 32],
+) -> MountResourceStateV1 {
+    MountResourceStateV1::Faulted {
+        from,
+        creation,
+        publication,
+        detachment,
+        release: None,
+        replaced_by,
+        detached,
+        installed,
+        failure_digest,
+    }
+}
+
+fn validate_custody(
+    resources: &MountResourceTableV1,
+    current_boot_id: [u8; 16],
+    custody: &[RetainedMountObservation],
+) -> Result<()> {
+    let mut retained = BTreeMap::new();
+    let mut mount_ids = std::collections::BTreeSet::new();
+    for observation in custody {
+        if retained
+            .insert(observation.handle, observation.mount_id.get())
+            .is_some()
+            || !mount_ids.insert(observation.mount_id)
+        {
+            return Err(MountError::State(
+                "retained mount custody contains a handle or mount-ID alias".to_owned(),
+            ));
+        }
+    }
+    for resource in resources.resources() {
+        let retained_id = retained.remove(&resource.handle);
+        if resource.kernel_boot_id != current_boot_id {
+            if retained_id.is_some() {
+                return Err(MountError::State(
+                    "retained mount belongs to a stale kernel boot".to_owned(),
+                ));
+            }
+            continue;
+        }
+        let expected = match &resource.state {
+            MountResourceStateV1::Allocated { .. } => continue,
+            MountResourceStateV1::Prepared { detached, .. }
+            | MountResourceStateV1::Publishing { detached, .. }
+            | MountResourceStateV1::Installed { detached, .. }
+            | MountResourceStateV1::Draining { detached, .. } => Some(detached.unique_mount_id),
+            MountResourceStateV1::Detaching { detached, .. }
+            | MountResourceStateV1::Releasing { detached, .. } => {
+                if retained_id.is_some_and(|value| value != detached.unique_mount_id) {
+                    return Err(MountError::State(
+                        "releasing custody has the wrong mount identity".to_owned(),
+                    ));
+                }
+                continue;
+            }
+            MountResourceStateV1::Faulted { detached, .. } => {
+                detached.as_ref().map(|value| value.unique_mount_id)
+            }
+            MountResourceStateV1::Released { .. } => None,
+        };
+        if retained_id != expected {
+            return Err(MountError::State(
+                "retained mount custody contradicts durable resource state".to_owned(),
+            ));
+        }
+    }
+    if !retained.is_empty() {
+        return Err(MountError::State(
+            "retained mount custody contains an unknown handle".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_observation(
+    action: MountAction,
+    expected: EffectHandles,
+    observed: &WorkerObservation,
+) -> Result<()> {
+    let shape = match action {
+        MountAction::MOUNT_ACTION_CREATE_DETACHED => {
+            observed.state == MountState::MOUNT_STATE_DETACHED
+                && observed.detached_mount_id.is_some()
+                && observed.installed.is_none()
+        }
+        MountAction::MOUNT_ACTION_INSTALL | MountAction::MOUNT_ACTION_REPLACE => {
+            observed.state == MountState::MOUNT_STATE_INSTALLED
+                && observed.detached_mount_id.is_none()
+                && observed.installed.is_some()
+        }
+        MountAction::MOUNT_ACTION_DETACH => {
+            observed.state == MountState::MOUNT_STATE_REVOKED
+                && observed.detached_mount_id.is_none()
+                && observed.installed.is_none()
+        }
+        MountAction::MOUNT_ACTION_RELEASE => {
+            observed.state == MountState::MOUNT_STATE_ABSENT
+                && observed.detached_mount_id.is_none()
+                && observed.installed.is_none()
+        }
+        MountAction::MOUNT_ACTION_UNSPECIFIED => false,
+    };
+    if !shape || observed.handles != expected {
+        return Err(MountError::Worker(
+            "worker returned a contradictory mount observation".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn encode_result(
+    request: &ValidatedMountRequest,
+    observation: &WorkerObservation,
+) -> Result<Vec<u8>> {
+    let result = MountResult {
+        attachment_id: request.attachment_id().to_vec(),
+        detached_mount_handle: observation
+            .handles
+            .detached
+            .map_or_else(Vec::new, |handle| handle.to_vec()),
+        installed_mount_handle: observation
+            .handles
+            .installed
+            .map_or_else(Vec::new, |handle| handle.to_vec()),
+        view_revision: request
+            .view_revision()
+            .map(
+                |descriptor| aos_proto::aos::sandbox::local::v1::Descriptor {
+                    media_type: descriptor.media_type().as_str().to_owned(),
+                    sha256: descriptor.digest().as_bytes().to_vec(),
+                    encoded_size: descriptor.encoded_size(),
+                    ..Default::default()
+                },
+            )
+            .into(),
+        source_generation: request.source_generation(),
+        desired_attachment_generation: request.desired_attachment_generation(),
+        resource_attachment_generation: request.resource_attachment_generation(),
+        source_view_id: request.source_view_id().to_vec(),
+        source_incarnation_id: request
+            .source_incarnation_id()
+            .map_or_else(Vec::new, |value| value.to_vec()),
+        source_consistency: request.source_consistency().into(),
+        source_handle: aos_sandbox_core::encode_view_source(request.source_handle()),
+        source_assignment_digest: request
+            .source_assignment_digest()
+            .map_or_else(Vec::new, |digest| digest.as_bytes().to_vec()),
+        attachment_lease_id: request.attachment_lease_id().to_vec(),
+        attachment_lease_issued_seconds: request.attachment_lease_issued_seconds(),
+        attachment_lease_expires_seconds: request.attachment_lease_expires_seconds(),
+        state: observation.state.into(),
+        ..Default::default()
+    };
+    let bytes = result.encode_to_vec();
+    if bytes.is_empty() {
+        return Err(MountError::State(
+            "mount result encoded to an empty receipt".to_owned(),
+        ));
+    }
+    Ok(bytes)
+}
+
+fn mount_id(value: u64) -> Result<MountId> {
+    MountId::new(value).map_err(|error| MountError::State(error.to_string()))
+}
+
+fn checked_revision(revision: u64) -> Result<u64> {
+    revision
+        .checked_add(1)
+        .ok_or_else(|| MountError::State("mount resource revision overflow".to_owned()))
+}
+
+fn broker_instance_id() -> Result<[u8; 16]> {
+    const RANDOM_UUID_PATH: &str = "/proc/sys/kernel/random/uuid";
+    let bytes = std::fs::read(RANDOM_UUID_PATH)
+        .map_err(|error| MountError::State(format!("cannot read broker instance UUID: {error}")))?;
+    KernelBootId::parse(&bytes)
+        .map(KernelBootId::into_bytes)
+        .map_err(|error| MountError::State(format!("invalid broker instance UUID: {error}")))
+}
+
+fn destination_slot_binding(
+    request: &ValidatedDestinationSlotRequest,
+) -> Result<DestinationSlotBindingV1> {
+    DestinationSlotBindingV1::new(
+        request.binding_fence(),
+        request.namespace_generation(),
+        request.sandbox_specification(),
+        request.sandbox_spec().clone(),
+        AttachmentSlotId::from_bytes(*request.destination_slot_id()),
+    )
+}
+
+fn destination_slot_is_unused(
+    resources: &MountResourceTableV1,
+    fuse_reservations: &FuseWorkerReservationTableV1,
+    binding: &DestinationSlotBindingV1,
+) -> bool {
+    resources.destination_slot_is_unused(
+        binding.sandbox_id(),
+        binding.incarnation_id(),
+        binding.namespace_generation(),
+        binding.slot_id().as_bytes(),
+    ) && !fuse_reservations.rows().any(|reservation| {
+        // Every retained generation fences the physical slot, including an
+        // expired preparation or an unverified terminal claim. Namespace/head
+        // changes cannot make its original connection obligations disappear.
+        reservation.assignment.sandbox_id == *binding.sandbox_id()
+            && reservation.assignment.incarnation_id == *binding.incarnation_id()
+            && reservation.destination_slot_id == *binding.slot_id().as_bytes()
+    })
+}
+
+fn ensure_fuse_slots_exclude_native(
+    resources: &MountResourceTableV1,
+    reservations: &FuseWorkerReservationTableV1,
+) -> Result<()> {
+    for reservation in reservations.rows() {
+        if !native_slot_is_unused_for_fuse(resources, reservation) {
+            return Err(MountError::State(
+                "FUSE reservation aliases a native Mount resource".to_owned(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn native_slot_is_unused_for_fuse(
+    resources: &MountResourceTableV1,
+    reservation: &FuseWorkerReservationV1,
+) -> bool {
+    resources
+        .resources()
+        .filter(|resource| {
+            resource.binding.sandbox_id == reservation.assignment.sandbox_id
+                && resource.binding.incarnation_id == reservation.assignment.incarnation_id
+                && resource.recipe.destination_slot_id == reservation.destination_slot_id
+        })
+        .all(|resource| {
+            // Prepared detached resources can still be installed later even
+            // though the physical slot is not occupied yet.
+            matches!(resource.state, MountResourceStateV1::Released { .. })
+                && resources.destination_slot_is_unused(
+                    &reservation.assignment.sandbox_id,
+                    &reservation.assignment.incarnation_id,
+                    resource.binding.namespace_generation,
+                    &reservation.destination_slot_id,
+                )
+        })
+}
+
+fn fuse_reservation_transaction_id(reservation: &FuseWorkerReservationV1) -> [u8; 16] {
+    let digest = Sha256::new()
+        .chain_update(b"aos.mount.fuse.reservation.transaction.v1\0")
+        .chain_update(reservation.attachment_id)
+        .chain_update(reservation.connection_generation.to_be_bytes())
+        .chain_update(reservation.worker_instance_id)
+        .finalize();
+    let mut transaction_id = [0; 16];
+    transaction_id.copy_from_slice(&digest[..16]);
+    transaction_id
+}
+
+fn destination_slot_record(resource: DestinationSlotResourceV1) -> DestinationSlotInventoryRecord {
+    let binding = resource.binding();
+    let descriptor = binding.sandbox_spec();
+    let identity = resource.file_identity();
+    let reap = resource
+        .reap_operation()
+        .zip(resource.reap_request())
+        .zip(resource.expected_materialization())
+        .map(
+            |((operation_id, request_digest), expected_resource_digest)| {
+                DestinationSlotReapCorrelation {
+                    operation: Some(MountOperationCorrelation {
+                        operation_id: operation_id.as_bytes().to_vec(),
+                        request_digest: request_digest.as_bytes().to_vec(),
+                        ..Default::default()
+                    })
+                    .into(),
+                    expected_resource_digest: expected_resource_digest.as_bytes().to_vec(),
+                    ..Default::default()
+                }
+            },
+        );
+    let rematerialization = resource
+        .rematerialization_operation()
+        .zip(resource.rematerialization_request())
+        .zip(resource.rematerialization_predecessor())
+        .map(
+            |((operation_id, request_digest), expected_resource_digest)| {
+                DestinationSlotRematerializationCorrelation {
+                    operation: Some(MountOperationCorrelation {
+                        operation_id: operation_id.as_bytes().to_vec(),
+                        request_digest: request_digest.as_bytes().to_vec(),
+                        ..Default::default()
+                    })
+                    .into(),
+                    expected_resource_digest: expected_resource_digest.as_bytes().to_vec(),
+                    ..Default::default()
+                }
+            },
+        );
+    DestinationSlotInventoryRecord {
+        binding: Some(MountAssignmentBinding {
+            fence: Some(AssignmentFence {
+                sandbox_id: binding.sandbox_id().to_vec(),
+                incarnation_id: binding.incarnation_id().to_vec(),
+                assignment_epoch: binding.assignment_epoch(),
+                desired_generation: binding.desired_generation(),
+                assignment_digest: binding.assignment_digest().to_vec(),
+                ..Default::default()
+            })
+            .into(),
+            namespace_generation: binding.namespace_generation(),
+            ..Default::default()
+        })
+        .into(),
+        destination_slot_id: binding.slot_id().as_bytes().to_vec(),
+        sandbox_spec: Some(Descriptor {
+            media_type: descriptor.media_type().as_str().to_owned(),
+            sha256: descriptor.digest().as_bytes().to_vec(),
+            encoded_size: descriptor.encoded_size(),
+            ..Default::default()
+        })
+        .into(),
+        lifecycle: match resource.phase() {
+            DestinationSlotResourcePhaseV1::Materializing => {
+                DestinationSlotLifecycle::DESTINATION_SLOT_LIFECYCLE_MATERIALIZING
+            }
+            DestinationSlotResourcePhaseV1::Ready => {
+                DestinationSlotLifecycle::DESTINATION_SLOT_LIFECYCLE_READY
+            }
+            DestinationSlotResourcePhaseV1::Reaping => {
+                DestinationSlotLifecycle::DESTINATION_SLOT_LIFECYCLE_REAPING
+            }
+            DestinationSlotResourcePhaseV1::Released => {
+                DestinationSlotLifecycle::DESTINATION_SLOT_LIFECYCLE_RELEASED
+            }
+        }
+        .into(),
+        resource_kernel_boot_id: resource.kernel_boot_id().to_vec(),
+        materialization: Some(MountOperationCorrelation {
+            operation_id: resource.materialization_operation().as_bytes().to_vec(),
+            request_digest: resource.materialization_request().as_bytes().to_vec(),
+            ..Default::default()
+        })
+        .into(),
+        rematerialization: rematerialization.into(),
+        reap: reap.into(),
+        slot_device: identity.map(|value| value.device),
+        slot_inode: identity.map(|value| value.inode),
+        anchor_unique_mount_id: resource.anchor_mount_id().map(MountId::get),
+        resource_digest: resource.record_digest().as_bytes().to_vec(),
+        ..Default::default()
+    }
+}
+
+fn inventory_record(resource: &MountResourceV1) -> MountInventoryRecord {
+    let (
+        lifecycle,
+        creation,
+        publication,
+        detachment,
+        release,
+        replaced_by,
+        detached,
+        installed,
+        fault,
+        last_installed,
+    ) = inventory_state(&resource.state);
+    MountInventoryRecord {
+        mount_handle: resource.handle.to_vec(),
+        resource_revision: resource.revision,
+        binding: Some(MountAssignmentBinding {
+            fence: Some(AssignmentFence {
+                sandbox_id: resource.binding.sandbox_id.to_vec(),
+                incarnation_id: resource.binding.incarnation_id.to_vec(),
+                assignment_epoch: resource.binding.assignment_epoch,
+                desired_generation: resource.binding.desired_generation,
+                assignment_digest: resource.binding.assignment_digest.to_vec(),
+                ..Default::default()
+            })
+            .into(),
+            namespace_generation: resource.binding.namespace_generation,
+            ..Default::default()
+        })
+        .into(),
+        recipe: Some(inventory_recipe(&resource.recipe)).into(),
+        lifecycle: lifecycle.into(),
+        resource_kernel_boot_id: resource.kernel_boot_id.to_vec(),
+        detached_unique_mount_id: detached,
+        installed_observation: installed.map(inventory_observation).into(),
+        publication: publication.map(inventory_publication).into(),
+        replaced_by_mount_handle: replaced_by.map_or_else(Vec::new, |value| value.to_vec()),
+        fault: fault
+            .map(|(from, failure_digest)| MountFaultCorrelation {
+                from: from.into(),
+                failure_digest: failure_digest.to_vec(),
+                ..Default::default()
+            })
+            .into(),
+        last_installed_unique_mount_id: last_installed,
+        creation: creation.map(inventory_operation).into(),
+        detachment: detachment.map(inventory_operation).into(),
+        release: release.map(inventory_operation).into(),
+        ..Default::default()
+    }
+}
+
+type InventoryState<'a> = (
+    MountLifecycle,
+    Option<&'a OperationCorrelationV1>,
+    Option<&'a PublicationCorrelationV1>,
+    Option<&'a OperationCorrelationV1>,
+    Option<&'a OperationCorrelationV1>,
+    Option<MountHandleV1>,
+    Option<u64>,
+    Option<&'a InstalledMountObservationV1>,
+    Option<(MountFaultPhase, &'a [u8; 32])>,
+    Option<u64>,
+);
+
+#[allow(clippy::too_many_lines)]
+fn inventory_state(state: &MountResourceStateV1) -> InventoryState<'_> {
+    match state {
+        MountResourceStateV1::Allocated { creation } => (
+            MountLifecycle::MOUNT_LIFECYCLE_ALLOCATED,
+            Some(creation),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ),
+        MountResourceStateV1::Prepared { detached, creation } => (
+            MountLifecycle::MOUNT_LIFECYCLE_PREPARED,
+            Some(creation),
+            None,
+            None,
+            None,
+            None,
+            Some(detached.unique_mount_id),
+            None,
+            None,
+            None,
+        ),
+        MountResourceStateV1::Publishing {
+            detached,
+            publication,
+        } => (
+            MountLifecycle::MOUNT_LIFECYCLE_PUBLISHING,
+            None,
+            Some(publication),
+            None,
+            None,
+            None,
+            Some(detached.unique_mount_id),
+            None,
+            None,
+            None,
+        ),
+        MountResourceStateV1::Installed {
+            detached,
+            installed,
+            publication,
+        } => (
+            MountLifecycle::MOUNT_LIFECYCLE_INSTALLED,
+            None,
+            Some(publication),
+            None,
+            None,
+            None,
+            Some(detached.unique_mount_id),
+            Some(installed),
+            None,
+            None,
+        ),
+        MountResourceStateV1::Detaching {
+            detached,
+            installed,
+            detachment,
+        } => (
+            MountLifecycle::MOUNT_LIFECYCLE_DETACHING,
+            None,
+            None,
+            Some(detachment),
+            None,
+            None,
+            Some(detached.unique_mount_id),
+            Some(installed),
+            None,
+            None,
+        ),
+        MountResourceStateV1::Draining {
+            detached,
+            installed,
+            replaced_by,
+        } => (
+            MountLifecycle::MOUNT_LIFECYCLE_DRAINING,
+            None,
+            None,
+            None,
+            None,
+            Some(*replaced_by),
+            Some(detached.unique_mount_id),
+            Some(installed),
+            None,
+            None,
+        ),
+        MountResourceStateV1::Releasing {
+            detached,
+            installed,
+            release,
+            replaced_by,
+        } => (
+            MountLifecycle::MOUNT_LIFECYCLE_RELEASING,
+            None,
+            None,
+            None,
+            Some(release),
+            *replaced_by,
+            Some(detached.unique_mount_id),
+            installed.as_ref(),
+            None,
+            None,
+        ),
+        MountResourceStateV1::Released {
+            last_detached_mount_id,
+            last_installed_mount_id,
+        } => (
+            MountLifecycle::MOUNT_LIFECYCLE_RELEASED,
+            None,
+            None,
+            None,
+            None,
+            None,
+            *last_detached_mount_id,
+            None,
+            None,
+            *last_installed_mount_id,
+        ),
+        MountResourceStateV1::Faulted {
+            from,
+            creation,
+            publication,
+            detachment,
+            release,
+            replaced_by,
+            detached,
+            installed,
+            failure_digest,
+        } => (
+            MountLifecycle::MOUNT_LIFECYCLE_FAULTED,
+            creation.as_ref(),
+            publication.as_ref(),
+            detachment.as_ref(),
+            release.as_ref(),
+            *replaced_by,
+            detached.as_ref().map(|value| value.unique_mount_id),
+            installed.as_ref(),
+            Some((inventory_fault_phase(*from), failure_digest)),
+            None,
+        ),
+    }
+}
+
+fn inventory_fault_phase(phase: MountFaultPhaseV1) -> MountFaultPhase {
+    match phase {
+        MountFaultPhaseV1::Allocated => MountFaultPhase::MOUNT_FAULT_PHASE_ALLOCATED,
+        MountFaultPhaseV1::Prepared => MountFaultPhase::MOUNT_FAULT_PHASE_PREPARED,
+        MountFaultPhaseV1::Publishing => MountFaultPhase::MOUNT_FAULT_PHASE_PUBLISHING,
+        MountFaultPhaseV1::Installed => MountFaultPhase::MOUNT_FAULT_PHASE_INSTALLED,
+        MountFaultPhaseV1::Detaching => MountFaultPhase::MOUNT_FAULT_PHASE_DETACHING,
+        MountFaultPhaseV1::Draining => MountFaultPhase::MOUNT_FAULT_PHASE_DRAINING,
+        MountFaultPhaseV1::Releasing => MountFaultPhase::MOUNT_FAULT_PHASE_RELEASING,
+    }
+}
+
+fn inventory_operation(value: &OperationCorrelationV1) -> MountOperationCorrelation {
+    MountOperationCorrelation {
+        operation_id: value.operation_id.to_vec(),
+        request_digest: value.request_digest.to_vec(),
+        ..Default::default()
+    }
+}
+
+fn inventory_publication(value: &PublicationCorrelationV1) -> MountPublicationCorrelation {
+    MountPublicationCorrelation {
+        operation: Some(inventory_operation(&value.operation)).into(),
+        target_mount_namespace_id: value.target_mount_namespace_id,
+        target_namespace_generation: value.target_namespace_generation,
+        replaces_mount_handle: value
+            .replaces
+            .map_or_else(Vec::new, |handle| handle.to_vec()),
+        ..Default::default()
+    }
+}
+
+fn inventory_recipe(value: &MountRecipeV1) -> MountRecipe {
+    MountRecipe {
+        attachment_id: value.attachment_id.to_vec(),
+        destination_slot_id: value.destination_slot_id.to_vec(),
+        view_revision: Some(Descriptor {
+            media_type: value.view_revision.media_type.clone(),
+            sha256: value.view_revision.sha256_digest.to_vec(),
+            encoded_size: value.view_revision.encoded_size,
+            ..Default::default()
+        })
+        .into(),
+        source_generation: value.source_generation,
+        resource_attachment_generation: value.resource_attachment_generation,
+        source_view_id: value.source_view_id.to_vec(),
+        source_incarnation_id: value
+            .source_incarnation_id
+            .map_or_else(Vec::new, |incarnation| incarnation.to_vec()),
+        source_assignment_digest: value
+            .source_assignment_digest
+            .map_or_else(Vec::new, |digest| digest.to_vec()),
+        source_consistency: protocol_source_consistency(value.source_consistency).into(),
+        source_handle: value.source_handle.clone(),
+        source_authority: MountInventorySourceAuthority::MOUNT_INVENTORY_SOURCE_AUTHORITY_EXACT
+            .into(),
+        source_binding_digest: value.source_binding_digest.to_vec(),
+        source_realization_handle: value.source_realization_handle.to_vec(),
+        source_physical_proof_digest: value.source_physical_proof_digest.to_vec(),
+        source_kernel_boot_id: value.source_kernel_boot_id.to_vec(),
+        source_device: value.source_device,
+        source_inode: value.source_inode,
+        source_proof_class: match value.source_proof_class {
+            crate::source_pin::SourcePinProofClassV1::ImmutableTree => {
+                MountSourceProofClass::MOUNT_SOURCE_PROOF_CLASS_IMMUTABLE_TREE
+            }
+            crate::source_pin::SourcePinProofClassV1::LocalLive => {
+                MountSourceProofClass::MOUNT_SOURCE_PROOF_CLASS_LOCAL_LIVE
+            }
+            crate::source_pin::SourcePinProofClassV1::BestEffortReplica => {
+                MountSourceProofClass::MOUNT_SOURCE_PROOF_CLASS_BEST_EFFORT_REPLICA
+            }
+        }
+        .into(),
+        source_unique_mount_id: value.source_unique_mount_id,
+        source_provider_authority_id: value.source_provider_authority_id.to_vec(),
+        source_provider_authority_generation: value.source_provider_authority_generation,
+        source_provider_authority_digest: value.source_provider_authority_digest.to_vec(),
+        source_provider_resource_id: value.source_provider_resource_id.to_vec(),
+        source_provider_resource_generation: value.source_provider_resource_generation,
+        source_provider_resource_digest: value.source_provider_resource_digest.to_vec(),
+        source_provider_catalog_generation: value.source_provider_catalog_generation,
+        source_provider_catalog_digest: value.source_provider_catalog_digest.to_vec(),
+        attributes: Some(MountAttributes {
+            read_only: value
+                .policy
+                .attributes
+                .contains(&OwnedMountAttributeV1::ReadOnly),
+            no_exec: value
+                .policy
+                .attributes
+                .contains(&OwnedMountAttributeV1::NoExec),
+            no_suid: value
+                .policy
+                .attributes
+                .contains(&OwnedMountAttributeV1::NoSuid),
+            no_device: value
+                .policy
+                .attributes
+                .contains(&OwnedMountAttributeV1::NoDevice),
+            no_atime: value
+                .policy
+                .attributes
+                .contains(&OwnedMountAttributeV1::NoAtime),
+            recursive: value
+                .policy
+                .attributes
+                .contains(&OwnedMountAttributeV1::Recursive),
+            mutation_mode: match value.policy.mutation {
+                NativeMutationV1::ReadOnly => 0,
+                NativeMutationV1::ReadWrite => 1,
+                NativeMutationV1::PrivateCow => 2,
+                NativeMutationV1::AppendOnly => 3,
+                NativeMutationV1::Service => 4,
+            },
+            ..Default::default()
+        })
+        .into(),
+        ..Default::default()
+    }
+}
+
+fn inventory_observation(value: &InstalledMountObservationV1) -> MountKernelObservation {
+    MountKernelObservation {
+        unique_mount_id: value.unique_mount_id,
+        parent_mount_id: value.parent_mount_id,
+        mount_namespace_id: value.target_mount_namespace_id,
+        device_major: value.device_major,
+        device_minor: value.device_minor,
+        superblock_magic: value.superblock_magic,
+        superblock_flags: value.superblock_flags,
+        mount_attributes: value.mount_attributes,
+        propagation: value.propagation,
+        root: value.root.clone(),
+        mount_point: value.mount_point.clone(),
+        identity_map_digest: value.identity_map_digest.to_vec(),
+        ..Default::default()
+    }
+}
+
+fn boot_fault_transaction(handle: [u8; 32], revision: u64) -> [u8; 16] {
+    derived_transaction_id(b"aos.mount.boot-fault.v1\0", handle, revision)
+}
+
+fn custody_fault_transaction(handle: [u8; 32], revision: u64) -> [u8; 16] {
+    derived_transaction_id(b"aos.mount.custody-fault.v1\0", handle, revision)
+}
+
+fn derived_transaction_id(label: &[u8], handle: [u8; 32], revision: u64) -> [u8; 16] {
+    let mut digest = Sha256::new();
+    digest.update(label);
+    digest.update(handle);
+    digest.update(revision.to_le_bytes());
+    let output = digest.finalize();
+    let mut id = [0; 16];
+    id.copy_from_slice(&output[..16]);
+    if id == [0; 16] {
+        id[0] = 1;
+    }
+    id
+}
+
+fn invalid_pending_state() -> MountError {
+    MountError::State("pending effect contradicts durable resource lifecycle".to_owned())
+}
+
+fn validate_pending_action_state(action: MountAction, state: &MountResourceStateV1) -> Result<()> {
+    let valid = matches!(
+        (action, state),
+        (
+            MountAction::MOUNT_ACTION_CREATE_DETACHED,
+            MountResourceStateV1::Allocated { .. }
+        ) | (
+            MountAction::MOUNT_ACTION_INSTALL | MountAction::MOUNT_ACTION_REPLACE,
+            MountResourceStateV1::Publishing { .. }
+        ) | (
+            MountAction::MOUNT_ACTION_DETACH,
+            MountResourceStateV1::Detaching { .. }
+        ) | (
+            MountAction::MOUNT_ACTION_RELEASE,
+            MountResourceStateV1::Releasing { .. }
+        )
+    );
+    if valid {
+        Ok(())
+    } else {
+        Err(invalid_pending_state())
+    }
+}
+
+fn completion_transaction(request_digest: [u8; 32]) -> [u8; 16] {
+    destination_slot_transaction(b"aos.sandbox.mount.completion.v1\0", &request_digest)
+}
+
+fn destination_slot_completion_transaction(request_digest: [u8; 32]) -> [u8; 16] {
+    destination_slot_transaction(
+        b"aos.sandbox.mount.destination-slot.completion.v1\0",
+        &request_digest,
+    )
+}
+
+fn destination_slot_intent_transaction(request_id: [u8; 16]) -> [u8; 16] {
+    destination_slot_transaction(
+        b"aos.sandbox.mount.destination-slot.intent.v1\0",
+        &request_id,
+    )
+}
+
+fn destination_slot_transaction(domain: &[u8], identity: &[u8]) -> [u8; 16] {
+    let output = Sha256::new()
+        .chain_update(domain)
+        .chain_update(identity)
+        .finalize();
+    let mut transaction_id = [0; 16];
+    transaction_id.copy_from_slice(&output[..16]);
+    if transaction_id == [0; 16] {
+        transaction_id[0] = 1;
+    }
+    transaction_id
+}
+
+fn intent_transaction(request_id: [u8; 16]) -> [u8; 16] {
+    destination_slot_transaction(b"aos.sandbox.mount.intent.v1\0", &request_id)
+}
+
+fn authority_refresh_transaction(
+    request_id: [u8; 16],
+    plan_digest: ObjectDigest,
+    lease_digest: ObjectDigest,
+) -> [u8; 16] {
+    let mut digest = Sha256::new();
+    digest.update(b"aos.sandbox.mount.authority-refresh.v1\0");
+    digest.update(request_id);
+    digest.update(plan_digest.as_bytes());
+    digest.update(lease_digest.as_bytes());
+    let output = digest.finalize();
+    let mut id = [0; 16];
+    id.copy_from_slice(&output[..16]);
+    if id == [0; 16] {
+        id[0] = 1;
+    }
+    id
+}
+
+fn validate_effect_matches(
+    effect: &MountEffectIntentV1,
+    admission: &VerifiedMountAdmissionV1,
+    transport_request_digest: [u8; 32],
+) -> Result<()> {
+    if effect.transport_request_digest().as_bytes() != &transport_request_digest
+        || effect.request_digest() != admission.effect.request_digest()
+        || effect.verb() != admission.effect.verb()
+        || effect.target() != admission.effect.target()
+    {
+        return Err(MountError::Fence(
+            "durable effect contradicts exact request",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    #[cfg(feature = "kernel-tests")]
+    mod service_peer;
+
+    #[cfg(feature = "kernel-tests")]
+    mod host_scope_exchange;
+
+    use std::collections::BTreeSet;
+
+    use aos_proto::aos::sandbox::local::v1::{
+        ApplyDestinationSlotRequest, ApplyMountRequest, AssignmentFence, Audience,
+        BrokerAuthorizationArtifactsV1, BrokerMethod, BrokerRequestEnvelope, Descriptor,
+        DestinationSlotAction, MountAttributes, ObserveMountScopeRequest,
+        PrepareMountCatalogRequest, RequestHeader,
+    };
+    use aos_sandbox::journal::JournalLimits;
+    use aos_sandbox_core::format::{
+        encode_broker_authorization_plan, encode_ownership_lease, encode_signature,
+        encode_trust_policy,
+    };
+    use aos_sandbox_core::model::{
+        IdentityProfile, KeyReference, KeyUsage, Limit, LimitDimension, LimitValue, NetworkKind,
+        NetworkProfile, ResourceProfile, SandboxSpec, SignaturePurpose, SignatureStatement,
+        StableKeyId, TrustPolicy, UnmappableIdentityPolicy,
+    };
+    use aos_sandbox_core::{
+        AssignmentEpoch, AttachmentSlotId, BrokerAssignment, BrokerAudience,
+        BrokerAuthorizationPlan, BrokerGrant, DecodeLimits, DesiredGeneration, FeatureRef,
+        IncarnationId, LeaseAssignment, MediaType, NodeId, ObjectDescriptor, ObjectDigest,
+        OwnershipLease, OwnershipLeaseTrustAnchor, PortableMediaType, ProtocolId,
+        RawClockProvenance, RevocationScopeId, SandboxId, TrustScopeId, descriptor_for_bytes,
+        encode_sandbox_spec, sign_statement,
+    };
+    use aos_sandbox_linux::inventory::MountObservation;
+    use aos_sandbox_linux::pidfd::NamespaceIdentity;
+    use aos_sandbox_protocol::mount_catalog::{
+        decode_mount_catalog_preparation, decode_mount_catalog_preparation_response,
+        encode_mount_catalog_preparation_response,
+    };
+    use aos_sandbox_protocol::semantics::host::runtime_handle_v1;
+    use aos_sandbox_protocol::session::decode_request_envelope;
+    use aos_sandbox_protocol::{
+        AuthorizationArtifactBytes, ProtocolValidationError,
+        decode_destination_slot_inventory_response, decode_destination_slot_response,
+        encode_authorized_request_envelope,
+    };
+    use ed25519_dalek::SigningKey;
+    use std::cell::Cell;
+    use std::num::NonZeroU32;
+    use std::os::unix::ffi::OsStringExt as _;
+    use std::os::unix::fs::PermissionsExt as _;
+    use std::rc::Rc;
+
+    use super::*;
+    use crate::worker::{
+        InstalledMountObservation, PublicationPreflight, ReleasedMountObservation,
+    };
+
+    const TEST_WALL_SECONDS: i64 = 150;
+    const TEST_BOOTTIME_NANOSECONDS: u64 = 100;
+    const TEST_NODE: NodeId = NodeId::from_bytes([31; 16]);
+
+    struct AuthorityFixture {
+        plan_key: SigningKey,
+        lease_key: SigningKey,
+        plan_signer: KeyReference,
+        lease_signer: KeyReference,
+        plan_policy: Vec<u8>,
+        plan_policy_descriptor: aos_sandbox_core::ObjectDescriptor,
+        plan_scope: TrustScopeId,
+        lease_policy: Vec<u8>,
+        lease_policy_descriptor: aos_sandbox_core::ObjectDescriptor,
+        lease_scope: TrustScopeId,
+        revocation_scope: RevocationScopeId,
+    }
+
+    impl AuthorityFixture {
+        fn new() -> Self {
+            let plan_key = SigningKey::from_bytes(&[41; 32]);
+            let lease_key = SigningKey::from_bytes(&[42; 32]);
+            let plan_signer = key_reference(
+                "mount-plan-controller",
+                3,
+                KeyUsage::BrokerAuthorization,
+                &plan_key,
+            );
+            let lease_signer = key_reference(
+                "mount-ownership-authority",
+                7,
+                KeyUsage::OwnershipLease,
+                &lease_key,
+            );
+            let plan_scope = TrustScopeId::from_bytes([43; 16]);
+            let lease_scope = TrustScopeId::from_bytes([44; 16]);
+            let (plan_policy, plan_policy_descriptor) = trust_policy(
+                plan_scope,
+                SignaturePurpose::BrokerAuthorization,
+                plan_signer.clone(),
+            );
+            let (lease_policy, lease_policy_descriptor) = trust_policy(
+                lease_scope,
+                SignaturePurpose::OwnershipLease,
+                lease_signer.clone(),
+            );
+            Self {
+                plan_key,
+                lease_key,
+                plan_signer,
+                lease_signer,
+                plan_policy,
+                plan_policy_descriptor,
+                plan_scope,
+                lease_policy,
+                lease_policy_descriptor,
+                lease_scope,
+                revocation_scope: RevocationScopeId::from_bytes([45; 16]),
+            }
+        }
+
+        fn authority(&self) -> MountAuthorityV1 {
+            let plan_anchor = aos_sandbox_core::BrokerPlanTrustAnchor::from_trusted_configuration(
+                self.plan_policy.clone(),
+                self.plan_policy_descriptor.clone(),
+                self.plan_scope,
+                self.plan_signer.clone(),
+                self.plan_key.verifying_key().to_bytes(),
+                self.revocation_scope,
+                DecodeLimits::default(),
+            )
+            .unwrap();
+            let lease_anchor = OwnershipLeaseTrustAnchor::from_trusted_configuration(
+                self.lease_policy.clone(),
+                self.lease_policy_descriptor.clone(),
+                self.lease_scope,
+                self.lease_signer.clone(),
+                self.lease_key.verifying_key().to_bytes(),
+                DecodeLimits::default(),
+            )
+            .unwrap();
+            MountAuthorityV1::new(plan_anchor, lease_anchor, TEST_NODE, [46; 16], [47; 32]).unwrap()
+        }
+
+        fn common_authority(&self) -> aos_sandbox_broker::BrokerAuthority {
+            let plan_anchor = aos_sandbox_core::BrokerPlanTrustAnchor::from_trusted_configuration(
+                self.plan_policy.clone(),
+                self.plan_policy_descriptor.clone(),
+                self.plan_scope,
+                self.plan_signer.clone(),
+                self.plan_key.verifying_key().to_bytes(),
+                self.revocation_scope,
+                DecodeLimits::default(),
+            )
+            .unwrap();
+            let lease_anchor = OwnershipLeaseTrustAnchor::from_trusted_configuration(
+                self.lease_policy.clone(),
+                self.lease_policy_descriptor.clone(),
+                self.lease_scope,
+                self.lease_signer.clone(),
+                self.lease_key.verifying_key().to_bytes(),
+                DecodeLimits::default(),
+            )
+            .unwrap();
+            aos_sandbox_broker::BrokerAuthority::new(
+                aos_sandbox_broker::BrokerDomain::Mount,
+                plan_anchor,
+                lease_anchor,
+                TEST_NODE,
+                [46; 16],
+                [47; 32],
+            )
+            .unwrap()
+        }
+
+        fn fuse_intent_artifacts(
+            &self,
+            request: aos_sandbox_broker::AdmissionRequest<'_>,
+            lease: &ValidatedUntrustedAuthorizationArtifacts,
+        ) -> ValidatedUntrustedAuthorizationArtifacts {
+            let grant = BrokerGrant::new(
+                request.verb,
+                request.target,
+                request.argument_commitment,
+                u32::try_from(request.request_body.len()).unwrap(),
+                0,
+            )
+            .unwrap();
+            let plan = BrokerAuthorizationPlan::new(
+                BrokerAudience::Mount,
+                ProtocolId::MountFuseBroker,
+                ProtocolVersion::new(3, 0),
+                request.assignment,
+                TEST_NODE,
+                self.lease_signer.clone(),
+                vec![grant],
+                ObjectDigest::from_bytes([48; 32]),
+                self.revocation_scope,
+                100,
+                300,
+                vec![
+                    FeatureRef::new(
+                        aos_sandbox_core::MOUNT_FUSE_PRESENTATION_FEATURE_NAMESPACE.to_owned(),
+                        1,
+                        0,
+                    )
+                    .unwrap(),
+                ],
+            )
+            .unwrap();
+            let broker_plan = encode_broker_authorization_plan(&plan);
+            let broker_plan_signature = signed_object(
+                &broker_plan,
+                PortableMediaType::BrokerAuthorizationPlan,
+                self.plan_scope,
+                self.plan_signer.clone(),
+                SignaturePurpose::BrokerAuthorization,
+                &self.plan_policy_descriptor,
+                &self.plan_key,
+            );
+            validated_artifacts(BrokerAuthorizationArtifactsV1 {
+                broker_plan,
+                broker_plan_signature,
+                ownership_lease: lease.ownership_lease().to_vec(),
+                ownership_lease_signature: lease.ownership_lease_signature().to_vec(),
+                ..Default::default()
+            })
+        }
+
+        fn artifacts(
+            &self,
+            request_bytes: &[u8],
+            catalog_digest: Option<ObjectDigest>,
+            lease_generation: u64,
+            authorized_requests: &[&[u8]],
+        ) -> ValidatedUntrustedAuthorizationArtifacts {
+            self.artifacts_with_plan_key(
+                request_bytes,
+                catalog_digest,
+                lease_generation,
+                authorized_requests,
+                &self.plan_key,
+            )
+        }
+
+        fn destination_slot_artifacts(
+            &self,
+            request_bytes: &[u8],
+            lease_generation: u64,
+        ) -> ValidatedUntrustedAuthorizationArtifacts {
+            self.destination_slot_artifacts_with_plan_key(
+                request_bytes,
+                lease_generation,
+                &self.plan_key,
+            )
+        }
+
+        fn destination_slot_artifacts_with_plan_key(
+            &self,
+            request_bytes: &[u8],
+            lease_generation: u64,
+            plan_key: &SigningKey,
+        ) -> ValidatedUntrustedAuthorizationArtifacts {
+            let request = decode_destination_slot_request(
+                request_bytes,
+                peer(),
+                policy(),
+                TEST_BOOTTIME_NANOSECONDS,
+            )
+            .unwrap();
+            let semantics =
+                aos_sandbox_protocol::semantics::canonical_destination_slot_semantics_v1(&request)
+                    .unwrap();
+            let assignment = BrokerAssignment::new(
+                SandboxId::from_bytes(*request.fence().sandbox_id()),
+                IncarnationId::from_bytes(*request.fence().incarnation_id()),
+                AssignmentEpoch::new(request.fence().assignment_epoch()),
+                DesiredGeneration::new(request.fence().desired_generation()),
+                ObjectDigest::from_bytes(*request.fence().assignment_digest()),
+            )
+            .unwrap();
+            let grant = BrokerGrant::new(
+                semantics.verb(),
+                semantics.target(),
+                semantics.commitment(),
+                u32::try_from(request_bytes.len()).unwrap(),
+                0,
+            )
+            .unwrap();
+            let plan = BrokerAuthorizationPlan::new(
+                BrokerAudience::Mount,
+                ProtocolId::MountBroker,
+                ProtocolVersion::new(2, 0),
+                assignment,
+                TEST_NODE,
+                self.lease_signer.clone(),
+                vec![grant],
+                ObjectDigest::from_bytes([48; 32]),
+                self.revocation_scope,
+                100,
+                300,
+                Vec::new(),
+            )
+            .unwrap();
+            let broker_plan = encode_broker_authorization_plan(&plan);
+            let plan_signer = if plan_key.verifying_key() == self.plan_key.verifying_key() {
+                self.plan_signer.clone()
+            } else {
+                key_reference(
+                    "untrusted-destination-slot-controller",
+                    3,
+                    KeyUsage::BrokerAuthorization,
+                    plan_key,
+                )
+            };
+            let broker_plan_signature = signed_object(
+                &broker_plan,
+                PortableMediaType::BrokerAuthorizationPlan,
+                self.plan_scope,
+                plan_signer,
+                SignaturePurpose::BrokerAuthorization,
+                &self.plan_policy_descriptor,
+                plan_key,
+            );
+            let lease = OwnershipLease::new(
+                LeaseAssignment::new(
+                    assignment.sandbox(),
+                    assignment.incarnation(),
+                    assignment.epoch(),
+                    assignment.digest(),
+                )
+                .unwrap(),
+                TEST_NODE,
+                lease_generation,
+                100,
+                300,
+                10,
+                [u8::try_from(lease_generation).unwrap_or(255); 16],
+            )
+            .unwrap();
+            let ownership_lease = encode_ownership_lease(&lease);
+            let ownership_lease_signature = signed_object(
+                &ownership_lease,
+                PortableMediaType::OwnershipLease,
+                self.lease_scope,
+                self.lease_signer.clone(),
+                SignaturePurpose::OwnershipLease,
+                &self.lease_policy_descriptor,
+                &self.lease_key,
+            );
+            validated_artifacts(BrokerAuthorizationArtifactsV1 {
+                broker_plan,
+                broker_plan_signature,
+                ownership_lease,
+                ownership_lease_signature,
+                ..Default::default()
+            })
+        }
+
+        fn artifacts_with_plan_key(
+            &self,
+            request_bytes: &[u8],
+            catalog_digest: Option<ObjectDigest>,
+            lease_generation: u64,
+            authorized_requests: &[&[u8]],
+            plan_key: &SigningKey,
+        ) -> ValidatedUntrustedAuthorizationArtifacts {
+            self.artifacts_with_plan_key_and_version(
+                request_bytes,
+                catalog_digest,
+                lease_generation,
+                authorized_requests,
+                plan_key,
+                ProtocolVersion::new(2, 0),
+            )
+        }
+
+        fn artifacts_with_plan_key_and_version(
+            &self,
+            request_bytes: &[u8],
+            catalog_digest: Option<ObjectDigest>,
+            lease_generation: u64,
+            authorized_requests: &[&[u8]],
+            plan_key: &SigningKey,
+            protocol_version: ProtocolVersion,
+        ) -> ValidatedUntrustedAuthorizationArtifacts {
+            let validated =
+                decode_mount_request(request_bytes, peer(), policy(), TEST_BOOTTIME_NANOSECONDS)
+                    .unwrap();
+            let catalog = catalog_digest
+                .map(MountCatalogCommitmentV1::from_verified_digest)
+                .transpose()
+                .unwrap();
+            let semantics = crate::authorization::semantics_v1::canonical_mount_semantics_v1(
+                &validated,
+                catalog,
+                &[],
+            )
+            .unwrap();
+            let assignment = BrokerAssignment::new(
+                SandboxId::from_bytes(*validated.fence().sandbox_id()),
+                IncarnationId::from_bytes(*validated.fence().incarnation_id()),
+                AssignmentEpoch::new(validated.fence().assignment_epoch()),
+                DesiredGeneration::new(validated.fence().desired_generation()),
+                ObjectDigest::from_bytes(*validated.fence().assignment_digest()),
+            )
+            .unwrap();
+            let mut grants = Vec::new();
+            for candidate_bytes in authorized_requests {
+                let candidate = decode_mount_request(
+                    candidate_bytes,
+                    peer(),
+                    policy(),
+                    TEST_BOOTTIME_NANOSECONDS,
+                )
+                .unwrap();
+                if candidate.fence() != validated.fence() {
+                    continue;
+                }
+                let candidate_catalog = (candidate.action() != MountAction::MOUNT_ACTION_RELEASE)
+                    .then(|| {
+                        MountCatalogCommitmentV1::from_verified_digest(ObjectDigest::from_bytes(
+                            [77; 32],
+                        ))
+                        .unwrap()
+                    });
+                let candidate_semantics =
+                    crate::authorization::semantics_v1::canonical_mount_semantics_v1(
+                        &candidate,
+                        candidate_catalog,
+                        &[],
+                    )
+                    .unwrap();
+                grants.push(
+                    BrokerGrant::new(
+                        candidate_semantics.verb(),
+                        candidate_semantics.target(),
+                        candidate_semantics.commitment(),
+                        u32::try_from(candidate_bytes.len()).unwrap(),
+                        0,
+                    )
+                    .unwrap(),
+                );
+            }
+            assert!(grants.iter().any(|grant| {
+                grant.verb() == semantics.verb()
+                    && grant.target() == semantics.target()
+                    && grant.argument_commitment() == semantics.commitment()
+            }));
+            grants.sort_by_key(|grant| (grant.verb(), grant.target(), grant.argument_commitment()));
+            grants.dedup_by(|right, left| {
+                right.verb() == left.verb()
+                    && right.target() == left.target()
+                    && right.argument_commitment() == left.argument_commitment()
+            });
+            let plan = BrokerAuthorizationPlan::new(
+                BrokerAudience::Mount,
+                ProtocolId::MountBroker,
+                protocol_version,
+                assignment,
+                TEST_NODE,
+                self.lease_signer.clone(),
+                grants,
+                ObjectDigest::from_bytes([48; 32]),
+                self.revocation_scope,
+                100,
+                300,
+                Vec::new(),
+            )
+            .unwrap();
+            let broker_plan = encode_broker_authorization_plan(&plan);
+            let plan_signer = if plan_key.verifying_key() == self.plan_key.verifying_key() {
+                self.plan_signer.clone()
+            } else {
+                key_reference(
+                    "untrusted-mount-plan-controller",
+                    3,
+                    KeyUsage::BrokerAuthorization,
+                    plan_key,
+                )
+            };
+            let broker_plan_signature = signed_object(
+                &broker_plan,
+                PortableMediaType::BrokerAuthorizationPlan,
+                self.plan_scope,
+                plan_signer,
+                SignaturePurpose::BrokerAuthorization,
+                &self.plan_policy_descriptor,
+                plan_key,
+            );
+            let lease = OwnershipLease::new(
+                LeaseAssignment::new(
+                    assignment.sandbox(),
+                    assignment.incarnation(),
+                    assignment.epoch(),
+                    assignment.digest(),
+                )
+                .unwrap(),
+                TEST_NODE,
+                lease_generation,
+                100,
+                300,
+                10,
+                [u8::try_from(lease_generation).unwrap_or(255); 16],
+            )
+            .unwrap();
+            let ownership_lease = encode_ownership_lease(&lease);
+            let ownership_lease_signature = signed_object(
+                &ownership_lease,
+                PortableMediaType::OwnershipLease,
+                self.lease_scope,
+                self.lease_signer.clone(),
+                SignaturePurpose::OwnershipLease,
+                &self.lease_policy_descriptor,
+                &self.lease_key,
+            );
+            validated_artifacts(BrokerAuthorizationArtifactsV1 {
+                broker_plan,
+                broker_plan_signature,
+                ownership_lease,
+                ownership_lease_signature,
+                ..Default::default()
+            })
+        }
+    }
+
+    fn key_reference(id: &str, generation: u64, usage: KeyUsage, key: &SigningKey) -> KeyReference {
+        KeyReference::new(
+            StableKeyId::new(id.to_owned()).unwrap(),
+            generation,
+            ObjectDigest::from_bytes(Sha256::digest(key.verifying_key().as_bytes()).into()),
+            usage,
+        )
+    }
+
+    fn trust_policy(
+        scope: TrustScopeId,
+        purpose: SignaturePurpose,
+        signer: KeyReference,
+    ) -> (Vec<u8>, aos_sandbox_core::ObjectDescriptor) {
+        let bytes = encode_trust_policy(
+            &TrustPolicy::new(scope, purpose, vec![signer], Vec::new()).unwrap(),
+        );
+        let descriptor = descriptor_for_bytes(
+            MediaType::new(PortableMediaType::TrustPolicy.as_str().to_owned()).unwrap(),
+            &bytes,
+        );
+        (bytes, descriptor)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn signed_object(
+        bytes: &[u8],
+        media_type: PortableMediaType,
+        scope: TrustScopeId,
+        signer: KeyReference,
+        purpose: SignaturePurpose,
+        policy: &aos_sandbox_core::ObjectDescriptor,
+        key: &SigningKey,
+    ) -> Vec<u8> {
+        let subject = descriptor_for_bytes(
+            MediaType::new(media_type.as_str().to_owned()).unwrap(),
+            bytes,
+        );
+        let statement = SignatureStatement::new(
+            subject,
+            scope,
+            signer,
+            purpose,
+            100,
+            Some(300),
+            policy.clone(),
+        )
+        .unwrap();
+        encode_signature(&sign_statement(statement, key).unwrap())
+    }
+
+    fn validated_artifacts(
+        artifacts: BrokerAuthorizationArtifactsV1,
+    ) -> ValidatedUntrustedAuthorizationArtifacts {
+        let envelope = BrokerRequestEnvelope {
+            method: BrokerMethod::BROKER_METHOD_MOUNT_APPLY.into(),
+            body: vec![1],
+            authorization: Some(artifacts).into(),
+            ..Default::default()
+        };
+        decode_request_envelope(&envelope.encode_to_vec(), ProtocolId::MountBroker, 0)
+            .unwrap()
+            .authorization()
+            .unwrap()
+            .clone()
+    }
+
+    fn clock() -> RawPairedClockSample {
+        clock_at(TEST_WALL_SECONDS)
+    }
+
+    #[test]
+    fn fuse_policy_descriptor_joins_the_actual_signed_plan_not_its_digest() {
+        use aos_proto::aos::sandbox::local::v1::ReserveFuseWorkerIntentRequestV1;
+        use aos_sandbox_broker::AdmissionRequest;
+        use aos_sandbox_core::model::{
+            AttachmentConsistency, AttachmentIntent, AttachmentLease, AttachmentPresentation,
+            ViewMutation,
+        };
+        use aos_sandbox_core::{AttachmentId, LeaseId, NamespaceGeneration, Revision, ViewId};
+        use aos_sandbox_protocol::mount_fuse_reserve_intent::decode_fuse_reserve_intent_request_v1;
+        use aos_sandbox_protocol::semantics::mount_fuse_reserve_intent::canonical_mount_fuse_reserve_intent_semantics_v1;
+
+        let fixture = AuthorityFixture::new();
+        let authority = fixture.authority();
+        let native_body = request(1);
+        let native_request =
+            decode_mount_request(&native_body, peer(), policy(), TEST_BOOTTIME_NANOSECONDS)
+                .unwrap();
+        let catalog =
+            MountCatalogCommitmentV1::from_verified_digest(ObjectDigest::from_bytes([77; 32]))
+                .unwrap();
+        let native_artifacts = fixture.artifacts(
+            &native_body,
+            Some(ObjectDigest::from_bytes([77; 32])),
+            1,
+            &[&native_body],
+        );
+        let native = authority
+            .admit(
+                &native_artifacts,
+                &native_request,
+                &native_body,
+                Some(catalog),
+                &[],
+                ProtocolVersion::new(2, 0),
+                &clock(),
+                None,
+            )
+            .unwrap();
+        let prior = authority.seal_fence(&[1; 16], &native.fence).unwrap();
+        let intent = AttachmentIntent::new_with_presentation(
+            AttachmentId::from_bytes([3; 16]),
+            DesiredGeneration::new(1),
+            SandboxId::from_bytes([1; 16]),
+            IncarnationId::from_bytes([2; 16]),
+            NamespaceGeneration::new(1),
+            ViewId::from_bytes([8; 16]),
+            Revision::new(1),
+            None,
+            ObjectDescriptor::new(
+                MediaType::new(PortableMediaType::View.as_str().to_owned()).unwrap(),
+                ObjectDigest::from_bytes([5; 32]),
+                64,
+            ),
+            AttachmentSlotId::from_bytes([4; 16]),
+            AttachmentConsistency::ImmutableRevision,
+            ViewMutation::ReadOnly,
+            aos_sandbox_core::model::MountAttributes::new(true, true, true, true, true, false),
+            AttachmentLease::new(LeaseId::from_bytes([9; 16]), 100, 250).unwrap(),
+            AttachmentPresentation::Fuse,
+        )
+        .unwrap();
+        let mut wire = ReserveFuseWorkerIntentRequestV1 {
+            header: Some(RequestHeader {
+                protocol_major: 3,
+                protocol_minor: 0,
+                request_id: vec![42; 16],
+                audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+                deadline_boottime_nanoseconds: 1000,
+                maximum_response_bytes: 4096,
+                ..Default::default()
+            })
+            .into(),
+            fence: Some(AssignmentFence {
+                sandbox_id: vec![1; 16],
+                incarnation_id: vec![2; 16],
+                assignment_epoch: 1,
+                desired_generation: 1,
+                assignment_digest: vec![6; 32],
+                ..Default::default()
+            })
+            .into(),
+            attachment_intent_v2: aos_sandbox_core::encode_attachment_intent_v2(&intent),
+            desired_record_digest: vec![80; 32],
+            namespace_target_generation: 1,
+            namespace_allocation_digest: vec![81; 32],
+            runtime_handle: runtime_handle_v1(&[2; 16], 1, &[6; 32]).to_vec(),
+            payload_scope_handle: vec![82; 32],
+            intent_binding_version: 2,
+            accepted_policy: Some(Descriptor {
+                media_type: PortableMediaType::Policy.as_str().to_owned(),
+                sha256: vec![48; 32],
+                encoded_size: 100,
+                ..Default::default()
+            })
+            .into(),
+            ..Default::default()
+        };
+        let signed_for = |wire: &ReserveFuseWorkerIntentRequestV1| {
+            let body = wire.encode_to_vec();
+            let decoded = decode_fuse_reserve_intent_request_v1(
+                &body,
+                peer(),
+                policy(),
+                TEST_BOOTTIME_NANOSECONDS,
+            )
+            .unwrap();
+            let semantics = canonical_mount_fuse_reserve_intent_semantics_v1(&decoded).unwrap();
+            let artifacts = fixture.fuse_intent_artifacts(
+                AdmissionRequest {
+                    audience: BrokerAudience::Mount,
+                    protocol: ProtocolId::MountFuseBroker,
+                    protocol_version: ProtocolVersion::new(3, 0),
+                    assignment: native.fence.assignment(),
+                    request_id: *decoded.header().request_id(),
+                    request_body: &body,
+                    descriptor_count: 0,
+                    verb: semantics.verb(),
+                    target: semantics.target(),
+                    argument_commitment: semantics.commitment(),
+                    request_deadline_boottime_nanoseconds: decoded
+                        .header()
+                        .deadline_boottime_nanoseconds(),
+                },
+                &native_artifacts,
+            );
+            (body, decoded, artifacts)
+        };
+        let (body, decoded, artifacts) = signed_for(&wire);
+        let accepted = authority
+            .admit_fuse_reserve_intent(&artifacts, &decoded, &body, &clock(), Some(&prior))
+            .unwrap();
+        let plan_digest = *accepted.effect.plan_digest().as_bytes();
+        assert_ne!(plan_digest, *decoded.accepted_policy().digest().as_bytes());
+
+        // Re-sign the complete changed request, so these refusals exercise
+        // accepted Policy lineage after real signature/current-fence checks.
+        for substituted in [[47; 32], plan_digest] {
+            wire.accepted_policy.as_option_mut().unwrap().sha256 = substituted.to_vec();
+            let (body, decoded, artifacts) = signed_for(&wire);
+            assert!(matches!(
+                authority.admit_fuse_reserve_intent(
+                    &artifacts,
+                    &decoded,
+                    &body,
+                    &clock(),
+                    Some(&prior)
+                ),
+                Err(crate::authorization::MountAdmissionError::RequestMismatch)
+            ));
+        }
+    }
+
+    #[test]
+    fn fuse_intent_rotates_only_the_existing_exact_mount_assignment() {
+        use aos_sandbox_broker::{AdmissionRequest, BrokerAdmissionError};
+        use aos_sandbox_core::{
+            BrokerArgumentCommitment, BrokerGrantTarget, BrokerResourceHandle, BrokerVerb,
+        };
+
+        let fixture = AuthorityFixture::new();
+        let authority = fixture.common_authority();
+        let body = request(1);
+        let validated =
+            decode_mount_request(&body, peer(), policy(), TEST_BOOTTIME_NANOSECONDS).unwrap();
+        let catalog =
+            MountCatalogCommitmentV1::from_verified_digest(ObjectDigest::from_bytes([77; 32]))
+                .unwrap();
+        let semantics = crate::authorization::semantics_v1::canonical_mount_semantics_v1(
+            &validated,
+            Some(catalog),
+            &[],
+        )
+        .unwrap();
+        let assignment = BrokerAssignment::new(
+            SandboxId::from_bytes([1; 16]),
+            IncarnationId::from_bytes([2; 16]),
+            AssignmentEpoch::new(1),
+            DesiredGeneration::new(1),
+            ObjectDigest::from_bytes([6; 32]),
+        )
+        .unwrap();
+        let native = AdmissionRequest {
+            audience: BrokerAudience::Mount,
+            protocol: ProtocolId::MountBroker,
+            protocol_version: ProtocolVersion::new(2, 0),
+            assignment,
+            request_id: *validated.header().request_id(),
+            request_body: &body,
+            descriptor_count: 0,
+            verb: semantics.verb(),
+            target: semantics.target(),
+            argument_commitment: semantics.commitment(),
+            request_deadline_boottime_nanoseconds: validated
+                .header()
+                .deadline_boottime_nanoseconds(),
+        };
+        let native_artifacts =
+            fixture.artifacts(&body, Some(ObjectDigest::from_bytes([77; 32])), 1, &[&body]);
+        let prior = authority
+            .admit(&native_artifacts, native, &clock(), None)
+            .unwrap();
+        let sealed = authority
+            .seal_fence(assignment.sandbox().as_bytes(), &prior.fence)
+            .unwrap();
+        let fuse = AdmissionRequest {
+            protocol: ProtocolId::MountFuseBroker,
+            protocol_version: ProtocolVersion::new(3, 0),
+            request_id: [2; 16],
+            verb: BrokerVerb::MountReserveFuseWorkerIntent,
+            target: BrokerGrantTarget::Resource(
+                BrokerResourceHandle::from_bytes([80; 32]).unwrap(),
+            ),
+            argument_commitment: BrokerArgumentCommitment::for_canonical_bytes(
+                b"exact FUSE intent",
+            ),
+            ..native
+        };
+        let signed_fuse = fixture.fuse_intent_artifacts(fuse, &native_artifacts);
+
+        // The named phase accepts a distinct signed plan on the same genuine
+        // locally authenticated lease, but generic entry remains closed.
+        let accepted = authority
+            .admit_fuse_intent(&signed_fuse, fuse, &clock(), &sealed)
+            .unwrap();
+        assert_ne!(accepted.fence.plan_digest(), prior.fence.plan_digest());
+        assert_eq!(accepted.fence.assignment(), prior.fence.assignment());
+        assert_eq!(
+            accepted.fence.local_lease_record(),
+            prior.fence.local_lease_record()
+        );
+        let sealed_effect = authority
+            .seal_effect(&fuse.request_id, &accepted.effect)
+            .unwrap();
+        let renewed_native =
+            fixture.artifacts(&body, Some(ObjectDigest::from_bytes([77; 32])), 2, &[&body]);
+        let renewed_fuse = fixture.fuse_intent_artifacts(fuse, &renewed_native);
+        assert!(matches!(
+            authority.admit_fuse_intent(&renewed_fuse, fuse, &clock(), &sealed),
+            Err(BrokerAdmissionError::FenceRejected)
+        ));
+        assert_eq!(
+            authority
+                .open_effect(&fuse.request_id, &sealed_effect)
+                .unwrap(),
+            accepted.effect
+        );
+        for fence in [None, Some(sealed.as_slice())] {
+            assert!(matches!(
+                authority.admit(&signed_fuse, fuse, &clock(), fence),
+                Err(BrokerAdmissionError::RequestMismatch)
+            ));
+        }
+        assert!(matches!(
+            authority.admit_fuse_intent(&signed_fuse, fuse, &clock(), &[]),
+            Err(BrokerAdmissionError::FenceRejected)
+        ));
+
+        for case in 0..5 {
+            let changed = BrokerAssignment::new(
+                SandboxId::from_bytes(if case == 0 { [9; 16] } else { [1; 16] }),
+                IncarnationId::from_bytes(if case == 1 { [9; 16] } else { [2; 16] }),
+                AssignmentEpoch::new(if case == 2 { 2 } else { 1 }),
+                DesiredGeneration::new(if case == 3 { 2 } else { 1 }),
+                ObjectDigest::from_bytes(if case == 4 { [9; 32] } else { [6; 32] }),
+            )
+            .unwrap();
+            let changed_request = AdmissionRequest {
+                assignment: changed,
+                ..fuse
+            };
+            let changed_artifacts =
+                fixture.fuse_intent_artifacts(changed_request, &native_artifacts);
+            assert!(
+                matches!(
+                    authority.admit_fuse_intent(
+                        &changed_artifacts,
+                        changed_request,
+                        &clock(),
+                        &sealed
+                    ),
+                    Err(BrokerAdmissionError::FenceRejected)
+                ),
+                "changed assignment case {case}"
+            );
+        }
+    }
+
+    fn clock_at(wall_seconds: i64) -> RawPairedClockSample {
+        clock_sample(wall_seconds, TEST_BOOTTIME_NANOSECONDS)
+    }
+
+    fn clock_sample(wall_seconds: i64, boottime_nanoseconds: u64) -> RawPairedClockSample {
+        RawPairedClockSample::new_untrusted(
+            RawClockProvenance::new_untrusted([49; 16]).unwrap(),
+            [50; 16],
+            wall_seconds,
+            boottime_nanoseconds,
+        )
+        .unwrap()
+    }
+
+    fn apply<W: MountWorker>(
+        broker: &mut MountBroker<W>,
+        fixture: &AuthorityFixture,
+        request_bytes: &[u8],
+    ) -> Result<Vec<u8>> {
+        apply_authorized(broker, fixture, request_bytes, &[request_bytes])
+    }
+
+    fn apply_authorized<W: MountWorker>(
+        broker: &mut MountBroker<W>,
+        fixture: &AuthorityFixture,
+        request_bytes: &[u8],
+        authorized_requests: &[&[u8]],
+    ) -> Result<Vec<u8>> {
+        let request =
+            decode_mount_request(request_bytes, peer(), policy(), TEST_BOOTTIME_NANOSECONDS)?;
+        let expected_source = expected_source_for_request(&broker.resources, &request)?;
+        let catalog = broker
+            .worker
+            .catalog_commitment(&request, expected_source)?;
+        let artifacts = fixture.artifacts(
+            request_bytes,
+            catalog.map(|value| value.commitment()),
+            1,
+            authorized_requests,
+        );
+        broker.apply_mount(
+            request_bytes,
+            &artifacts,
+            ProtocolVersion::new(2, 0),
+            peer(),
+            policy(),
+            || Ok(clock()),
+        )
+    }
+
+    fn apply_destination_slot<W: MountWorker>(
+        broker: &mut MountBroker<W>,
+        fixture: &AuthorityFixture,
+        request_bytes: &[u8],
+        lease_generation: u64,
+    ) -> Result<Vec<u8>> {
+        let artifacts = fixture.destination_slot_artifacts(request_bytes, lease_generation);
+        broker.apply_destination_slot(
+            request_bytes,
+            &artifacts,
+            ProtocolVersion::new(2, 0),
+            peer(),
+            policy(),
+            || Ok(clock()),
+        )
+    }
+
+    fn test_broker<W: MountWorker>(
+        journal: Journal,
+        worker: W,
+    ) -> (MountBroker<W>, AuthorityFixture) {
+        let fixture = AuthorityFixture::new();
+        let broker = MountBroker::new(journal, worker, fixture.authority()).unwrap();
+        (broker, fixture)
+    }
+
+    fn test_broker_with_destination_slots<W: MountWorker>(
+        journal: Journal,
+        worker: W,
+        destination_slot_root: &Path,
+    ) -> (MountBroker<W>, AuthorityFixture) {
+        let fixture = AuthorityFixture::new();
+        let broker = MountBroker::new_with_destination_slots(
+            journal,
+            worker,
+            fixture.authority(),
+            destination_slot_root,
+            rustix::process::getuid().as_raw(),
+        )
+        .unwrap();
+        (broker, fixture)
+    }
+
+    fn fuse_reservation(attachment: u8) -> FuseWorkerReservationV1 {
+        FuseWorkerReservationV1 {
+            attachment_id: [attachment; 16],
+            connection_generation: 1,
+            kernel_boot_id: KernelBootId::current().unwrap().into_bytes(),
+            worker_instance_id: [attachment.wrapping_add(1); 16],
+            assignment: AssignmentBindingV1 {
+                sandbox_id: [1; 16],
+                incarnation_id: [2; 16],
+                assignment_epoch: 1,
+                desired_generation: 1,
+                assignment_digest: [6; 32],
+                namespace_generation: 1,
+            },
+            attachment_generation: 1,
+            destination_slot_id: [4; 16],
+            source_view_id: [7; 16],
+            source_view_revision: 1,
+            view_revision: ObjectDescriptorV1 {
+                media_type: PortableMediaType::View.as_str().to_owned(),
+                sha256_digest: [8; 32],
+                encoded_size: 1,
+            },
+            user_namespace_device: 9,
+            user_namespace_inode: 10,
+            user_namespace_generation: 1,
+            presentation_plan_digest: [11; 32],
+            policy_digest: [12; 32],
+            lease_identity: [13; 16],
+            lease_expires_boottime_ns: 1_000,
+            state: crate::state::fuse_worker_reservation_v1::FuseWorkerReservationStateV1::Reserved,
+        }
+    }
+
+    #[test]
+    fn fuse_reservation_writer_is_gen1_only_and_blocks_native_slot_reuse() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mount.journal");
+        let (mut broker, fixture) = test_broker(open(&path), ScriptedWorker::default());
+        let reservation = fuse_reservation(20);
+
+        broker.reserve_fuse_worker_gen1(&reservation).unwrap();
+        assert!(broker.reserve_fuse_worker_gen1(&reservation).is_err());
+        let mut successor = reservation.clone();
+        successor.connection_generation = 2;
+        successor.worker_instance_id = [22; 16];
+        assert!(broker.reserve_fuse_worker_gen1(&successor).is_err());
+        assert!(apply(&mut broker, &fixture, &request(30)).is_err());
+        assert_eq!(broker.worker.calls, 0);
+
+        drop(broker);
+        let (mut recovered, recovered_fixture) =
+            test_broker(open(&path), ScriptedWorker::default());
+        assert_eq!(recovered.fuse_reservations.rows().count(), 1);
+        assert!(apply(&mut recovered, &recovered_fixture, &request(31)).is_err());
+        assert_eq!(recovered.worker.calls, 0);
+    }
+
+    #[test]
+    fn fuse_request_index_blocks_authorized_native_request_id_reuse_after_recovery() {
+        let directory = private_destination_slot_root();
+        let path = directory.path().join("mount.journal");
+        let (mut broker, _) = test_broker_with_destination_slots(
+            open(&path),
+            ScriptedWorker::default(),
+            directory.path(),
+        );
+        let native = request(33);
+        let reservation = fuse_reservation(20);
+        let mut other_slot = reservation.clone();
+        other_slot.destination_slot_id = [5; 16];
+        let reservation_record = broker
+            .fuse_reservations
+            .prepare_reservation(&other_slot)
+            .unwrap();
+
+        // This exercises the shared atomic index, not a live FUSE producer or
+        // connected-worker grant. Native admission below uses real signatures.
+        let fuse_body = b"distinct original FUSE request";
+        let index =
+            fuse_intent::fuse_intent_idempotency_record(&broker.journal, [33; 16], fuse_body)
+                .unwrap();
+        let effect = JournalRecord::put(RecordNamespace::Effect, vec![33; 16], vec![81; 32]);
+        let origin = JournalRecord::put(
+            RecordNamespace::AuthorityPublication,
+            b"test-original-fuse-origin".to_vec(),
+            vec![82; 32],
+        );
+        broker
+            .journal
+            .commit(
+                &JournalTransaction::new([83; 16], vec![index, reservation_record, effect, origin])
+                    .unwrap(),
+            )
+            .unwrap();
+        drop(broker);
+
+        let (mut recovered, recovered_fixture) = test_broker_with_destination_slots(
+            open(&path),
+            ScriptedWorker::default(),
+            directory.path(),
+        );
+        let before = std::fs::read(&path).unwrap();
+        assert!(matches!(
+            apply(&mut recovered, &recovered_fixture, &native),
+            Err(MountError::Fence(
+                "request ID was reused with different bytes"
+            ))
+        ));
+        assert_eq!(recovered.worker.calls, 0);
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(recovered.fuse_reservations.rows().count(), 1);
+
+        let native_slot = destination_slot_request(
+            33,
+            1,
+            6,
+            DestinationSlotAction::DESTINATION_SLOT_ACTION_MATERIALIZE,
+            None,
+            None,
+        );
+        assert!(matches!(
+            apply_destination_slot(&mut recovered, &recovered_fixture, &native_slot, 1),
+            Err(MountError::Fence(
+                "request ID was reused with different bytes"
+            ))
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(recovered.fuse_reservations.rows().count(), 1);
+    }
+
+    #[test]
+    fn native_request_index_blocks_fuse_even_when_native_effect_is_absent() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mount.journal");
+        let (mut broker, fixture) = test_broker(open(&path), ScriptedWorker::default());
+        let native = request(34);
+        apply(&mut broker, &fixture, &native).unwrap();
+
+        for body in [native.as_slice(), b"distinct FUSE body".as_slice()] {
+            let sequence = broker.journal.snapshot_sequence();
+            assert!(
+                fuse_intent::fuse_intent_idempotency_record(&broker.journal, [34; 16], body,)
+                    .is_err()
+            );
+            assert_eq!(broker.journal.snapshot_sequence(), sequence);
+        }
+        broker
+            .journal
+            .commit(
+                &JournalTransaction::new(
+                    [84; 16],
+                    vec![JournalRecord::delete(RecordNamespace::Effect, vec![34; 16])],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let before = std::fs::read(&path).unwrap();
+        assert!(
+            fuse_intent::fuse_intent_idempotency_record(
+                &broker.journal,
+                [34; 16],
+                b"distinct FUSE body",
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(broker.fuse_reservations.rows().count(), 0);
+    }
+
+    #[test]
+    fn native_resource_blocks_fuse_reservation_and_forged_recovery() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mount.journal");
+        let (mut broker, fixture) = test_broker(open(&path), ScriptedWorker::default());
+        apply(&mut broker, &fixture, &request(32)).unwrap();
+        let reservation = fuse_reservation(20);
+
+        assert!(broker.reserve_fuse_worker_gen1(&reservation).is_err());
+        assert_eq!(broker.fuse_reservations.rows().count(), 0);
+
+        let forged = broker
+            .fuse_reservations
+            .prepare_reservation(&reservation)
+            .unwrap();
+        broker
+            .journal
+            .commit(&JournalTransaction::new([79; 16], vec![forged]).unwrap())
+            .unwrap();
+        let custody = broker.worker.custody.clone();
+        drop(broker);
+
+        assert!(
+            MountBroker::new(
+                open(&path),
+                ScriptedWorker {
+                    custody,
+                    ..Default::default()
+                },
+                fixture.authority(),
+            )
+            .is_err()
+        );
+    }
+
+    struct ScriptedWorker {
+        calls: usize,
+        catalog_calls: Cell<usize>,
+        fail_after_custody_once: bool,
+        fail_release_after_custody_once: bool,
+        fail_source_custody_once: bool,
+        source_acquisition_available: bool,
+        source_custody: BTreeSet<[u8; 32]>,
+        custody: Vec<RetainedMountObservation>,
+        discard_calls: Rc<Cell<usize>>,
+        catalog_byte: u8,
+        source_realization_byte: u8,
+    }
+
+    impl Default for ScriptedWorker {
+        fn default() -> Self {
+            Self {
+                calls: 0,
+                catalog_calls: Cell::new(0),
+                fail_after_custody_once: false,
+                fail_release_after_custody_once: false,
+                fail_source_custody_once: false,
+                source_acquisition_available: true,
+                source_custody: BTreeSet::new(),
+                custody: Vec::new(),
+                discard_calls: Rc::new(Cell::new(0)),
+                catalog_byte: 77,
+                source_realization_byte: 77,
+            }
+        }
+    }
+
+    impl MountWorker for ScriptedWorker {
+        fn ensure_authority_healthy(&self) -> Result<()> {
+            Ok(())
+        }
+
+        fn catalog_commitment(
+            &self,
+            request: &ValidatedMountRequest,
+            expected_source: Option<SourceRealizationEvidenceV1>,
+        ) -> Result<Option<CatalogAuthorizationV1>> {
+            self.catalog_calls.set(self.catalog_calls.get() + 1);
+            if request.action() == MountAction::MOUNT_ACTION_CREATE_DETACHED
+                && !self.source_acquisition_available
+            {
+                return Err(MountError::Worker(
+                    "authenticated source acquisition is unavailable".to_owned(),
+                ));
+            }
+            Ok(
+                (request.action() != MountAction::MOUNT_ACTION_RELEASE).then(|| {
+                    let source_realization = expected_source.unwrap_or_else(|| {
+                        crate::source_pin::SourceRealizationEvidenceV1::authenticated_fixture(
+                            request.source_binding().unwrap(),
+                            self.source_realization_byte,
+                            KernelBootId::current().unwrap().into_bytes(),
+                        )
+                        .unwrap()
+                    });
+                    CatalogAuthorizationV1::new(
+                        aos_sandbox_core::ObjectDigest::from_bytes([self.catalog_byte; 32]),
+                        source_realization,
+                    )
+                }),
+            )
+        }
+
+        fn establish_source_custody(
+            &mut self,
+            authorization: &CatalogAuthorizationV1,
+        ) -> Result<()> {
+            self.source_custody
+                .insert(authorization.source_realization().handle);
+            if self.fail_source_custody_once {
+                self.fail_source_custody_once = false;
+                return Err(MountError::State(
+                    "injected source custody readback ambiguity".to_owned(),
+                ));
+            }
+            Ok(())
+        }
+
+        fn release_source_custody(&mut self, handle: [u8; 32]) -> Result<bool> {
+            self.source_custody.remove(&handle);
+            Ok(true)
+        }
+
+        fn custody_inventory(&self) -> Result<Vec<RetainedMountObservation>> {
+            Ok(self.custody.clone())
+        }
+
+        fn discard_retained(&mut self, handle: [u8; 32]) -> Result<()> {
+            self.discard_calls.set(self.discard_calls.get() + 1);
+            self.custody.retain(|value| value.handle != handle);
+            Ok(())
+        }
+
+        fn preflight_publication(
+            &self,
+            _durable: DurableMountExecutionV1<'_>,
+            predecessor: Option<([u8; 32], MountId)>,
+        ) -> Result<PublicationPreflight> {
+            Ok(PublicationPreflight {
+                target_mount_namespace_id: 500,
+                disposition: if predecessor.is_some() {
+                    MountTargetObservation::PredecessorInstalled
+                } else {
+                    MountTargetObservation::Absent
+                },
+            })
+        }
+
+        fn reconcile_detach(
+            &mut self,
+            durable: DurableMountExecutionV1<'_>,
+            before_effect: &mut dyn FnMut() -> Result<EffectDeadlineV1>,
+        ) -> Result<ReleasedMountObservation> {
+            before_effect()?;
+            self.custody.retain(|value| value.handle != durable.handle);
+            Ok(ReleasedMountObservation {
+                mount_id: durable.expected_mount_id,
+            })
+        }
+
+        fn execute(
+            &mut self,
+            request: &ValidatedMountRequest,
+            _request_digest: [u8; 32],
+            handles: EffectHandles,
+            _expected_catalog_commitment: Option<aos_sandbox_core::ObjectDigest>,
+            _expected_source: Option<SourceRealizationEvidenceV1>,
+            before_effect: &mut dyn FnMut() -> Result<EffectDeadlineV1>,
+        ) -> Result<WorkerObservation> {
+            before_effect()?;
+            self.calls += 1;
+            match request.action() {
+                MountAction::MOUNT_ACTION_CREATE_DETACHED => {
+                    let handle = handles.detached.unwrap();
+                    if !self.custody.iter().any(|value| value.handle == handle) {
+                        let mount_id = MountId::new(700 + self.custody.len() as u64).unwrap();
+                        self.custody
+                            .push(RetainedMountObservation { handle, mount_id });
+                    }
+                    if self.fail_after_custody_once {
+                        self.fail_after_custody_once = false;
+                        return Err(MountError::Worker(
+                            "injected crash after custody barrier".to_owned(),
+                        ));
+                    }
+                    let mount_id = self
+                        .custody
+                        .iter()
+                        .find(|value| value.handle == handle)
+                        .unwrap()
+                        .mount_id;
+                    Ok(WorkerObservation {
+                        state: MountState::MOUNT_STATE_DETACHED,
+                        handles,
+                        detached_mount_id: Some(mount_id),
+                        installed: None,
+                    })
+                }
+                MountAction::MOUNT_ACTION_INSTALL | MountAction::MOUNT_ACTION_REPLACE => {
+                    let handle = handles.installed.unwrap();
+                    let mount_id = self
+                        .custody
+                        .iter()
+                        .find(|value| value.handle == handle)
+                        .unwrap()
+                        .mount_id;
+                    Ok(WorkerObservation {
+                        state: MountState::MOUNT_STATE_INSTALLED,
+                        handles,
+                        detached_mount_id: None,
+                        installed: Some(installed(mount_id)),
+                    })
+                }
+                MountAction::MOUNT_ACTION_RELEASE => {
+                    let handle = request.detached_mount_handle().copied().unwrap();
+                    self.custody.retain(|value| value.handle != handle);
+                    if self.fail_release_after_custody_once {
+                        self.fail_release_after_custody_once = false;
+                        return Err(MountError::Worker(
+                            "injected crash after descriptor removal".to_owned(),
+                        ));
+                    }
+                    Ok(WorkerObservation {
+                        state: MountState::MOUNT_STATE_ABSENT,
+                        handles,
+                        detached_mount_id: None,
+                        installed: None,
+                    })
+                }
+                _ => Err(MountError::Worker("unexpected action".to_owned())),
+            }
+        }
+    }
+
+    fn installed(mount_id: MountId) -> InstalledMountObservation {
+        InstalledMountObservation {
+            mount: MountObservation {
+                mount_id,
+                parent_mount_id: MountId::new(600).unwrap(),
+                mount_namespace_id: 500,
+                device_major: 8,
+                device_minor: 1,
+                superblock_magic: 0xef53,
+                superblock_flags: 1,
+                mount_attributes: 2,
+                propagation: 4,
+                supported_mask: Some(7),
+                root: std::ffi::OsString::from_vec(b"/".to_vec()),
+                mount_point: std::ffi::OsString::from_vec(b"/run/aos/slot".to_vec()),
+                filesystem_type: std::ffi::OsString::from_vec(b"ext4".to_vec()),
+                superblock_source: std::ffi::OsString::from_vec(b"none".to_vec()),
+                uid_map: None,
+                gid_map: None,
+            },
+            mount_namespace: NamespaceIdentity {
+                device: 10,
+                inode: 11,
+            },
+            idmap_digest: [12; 32],
+        }
+    }
+
+    fn peer() -> PeerCredentials {
+        PeerCredentials {
+            uid: 811,
+            gid: 811,
+            pid: Some(42),
+        }
+    }
+
+    fn policy() -> PeerPolicy {
+        PeerPolicy {
+            uid: 811,
+            gid: Some(811),
+            audience: Audience::AUDIENCE_NODE_CONTROLLER,
+        }
+    }
+
+    fn destination_slot_request(
+        request_id: u8,
+        desired_generation: u64,
+        assignment_digest_byte: u8,
+        action: DestinationSlotAction,
+        expected_resource_digest: Option<[u8; 32]>,
+        resource_fence: Option<AssignmentFence>,
+    ) -> Vec<u8> {
+        let sandbox_spec = destination_slot_sandbox_spec();
+        let sandbox_spec_bytes = encode_sandbox_spec(&sandbox_spec);
+        let sandbox_spec_descriptor = descriptor_for_bytes(
+            MediaType::new(PortableMediaType::SandboxSpec.as_str().to_owned()).unwrap(),
+            &sandbox_spec_bytes,
+        );
+
+        ApplyDestinationSlotRequest {
+            header: Some(RequestHeader {
+                protocol_major: 2,
+                protocol_minor: 0,
+                request_id: vec![request_id; 16],
+                audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+                deadline_boottime_nanoseconds: 1_000,
+                maximum_response_bytes: 4096,
+                ..Default::default()
+            })
+            .into(),
+            fence: Some(destination_slot_fence(
+                desired_generation,
+                assignment_digest_byte,
+            ))
+            .into(),
+            action: action.into(),
+            namespace_generation: 1,
+            destination_slot_id: vec![4; 16],
+            sandbox_spec: Some(Descriptor {
+                media_type: sandbox_spec_descriptor.media_type().as_str().to_owned(),
+                sha256: sandbox_spec_descriptor.digest().as_bytes().to_vec(),
+                encoded_size: sandbox_spec_descriptor.encoded_size(),
+                ..Default::default()
+            })
+            .into(),
+            sandbox_spec_bytes,
+            expected_resource_digest: expected_resource_digest
+                .map_or_else(Vec::new, |digest| digest.to_vec()),
+            resource_fence: resource_fence.into(),
+            ..Default::default()
+        }
+        .encode_to_vec()
+    }
+
+    fn destination_slot_fence(
+        desired_generation: u64,
+        assignment_digest_byte: u8,
+    ) -> AssignmentFence {
+        AssignmentFence {
+            sandbox_id: vec![1; 16],
+            incarnation_id: vec![2; 16],
+            assignment_epoch: 1,
+            desired_generation,
+            assignment_digest: vec![assignment_digest_byte; 32],
+            ..Default::default()
+        }
+    }
+
+    fn destination_slot_sandbox_spec() -> SandboxSpec {
+        SandboxSpec::new(
+            FeatureRef::new("aos.sandbox.runtime.linux-systemd", 1, 0).unwrap(),
+            IdentityProfile::PrivateUserns {
+                id_range_size: NonZeroU32::new(65_536).unwrap(),
+                unmappable_policy: UnmappableIdentityPolicy::Reject,
+                required_features: Vec::new(),
+            },
+            ResourceProfile::new(vec![Limit::new(
+                LimitDimension::Memory,
+                LimitValue::Bounded(1 << 20),
+                FeatureRef::new("aos.sandbox.enforcement.cgroup-v2", 1, 0).unwrap(),
+            )])
+            .unwrap(),
+            destination_slot_descriptor(PortableMediaType::Environment, 1),
+            destination_slot_descriptor(PortableMediaType::View, 2),
+            vec![AttachmentSlotId::from_bytes([4; 16])],
+            NetworkProfile::new(NetworkKind::Isolated, Vec::new(), Vec::new()).unwrap(),
+            Vec::new(),
+        )
+        .unwrap()
+    }
+
+    fn destination_slot_descriptor(kind: PortableMediaType, byte: u8) -> ObjectDescriptor {
+        ObjectDescriptor::new(
+            MediaType::new(kind.as_str().to_owned()).unwrap(),
+            ObjectDigest::from_bytes([byte; 32]),
+            1,
+        )
+    }
+
+    fn request(request_id: u8) -> Vec<u8> {
+        ApplyMountRequest {
+            header: Some(RequestHeader {
+                protocol_major: 2,
+                protocol_minor: 0,
+                request_id: vec![request_id; 16],
+                audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+                deadline_boottime_nanoseconds: 1_000,
+                maximum_response_bytes: 4096,
+                ..Default::default()
+            })
+            .into(),
+            fence: Some(AssignmentFence {
+                sandbox_id: vec![1; 16],
+                incarnation_id: vec![2; 16],
+                assignment_epoch: 1,
+                desired_generation: 1,
+                assignment_digest: vec![6; 32],
+                ..Default::default()
+            })
+            .into(),
+            action: MountAction::MOUNT_ACTION_CREATE_DETACHED.into(),
+            attachment_id: vec![3; 16],
+            destination_slot_id: vec![4; 16],
+            view_revision: Some(Descriptor {
+                media_type: "application/vnd.aos.sandbox.view.v1+cbor".to_owned(),
+                sha256: vec![5; 32],
+                encoded_size: 64,
+                ..Default::default()
+            })
+            .into(),
+            attributes: Some(MountAttributes {
+                read_only: true,
+                no_exec: true,
+                no_suid: true,
+                no_device: true,
+                no_atime: true,
+                mutation_mode: 0,
+                ..Default::default()
+            })
+            .into(),
+            source_generation: 1,
+            namespace_generation: 1,
+            desired_attachment_generation: 1,
+            resource_attachment_generation: 1,
+            source_view_id: vec![8; 16],
+            source_consistency: MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION
+                .into(),
+            source_handle: aos_sandbox_core::encode_view_source(
+                &aos_sandbox_core::model::ViewSource::ImmutableTree {
+                    tree: ObjectDescriptor::new(
+                        MediaType::new(PortableMediaType::Tree.as_str().to_owned()).unwrap(),
+                        ObjectDigest::from_bytes([10; 32]),
+                        11,
+                    ),
+                },
+            ),
+            attachment_lease_id: vec![9; 16],
+            attachment_lease_issued_seconds: 10,
+            attachment_lease_expires_seconds: 20,
+            ..Default::default()
+        }
+        .encode_to_vec()
+    }
+
+    #[test]
+    fn catalog_preparation_binds_mount_intent_host_scope_and_response() {
+        let mut mount = ApplyMountRequest::decode_from_slice(&request(91)).unwrap();
+        let mount_header = mount.header.get_or_insert_default();
+        mount_header.protocol_minor = 0;
+        mount_header.deadline_boottime_nanoseconds = 1_000;
+        let mount_bytes = mount.encode_to_vec();
+        let fixture = AuthorityFixture::new();
+        let artifacts = fixture.artifacts(
+            &mount_bytes,
+            Some(ObjectDigest::from_bytes([77; 32])),
+            1,
+            &[&mount_bytes],
+        );
+
+        let mut host_header = mount.header.as_option().unwrap().clone();
+        host_header.protocol_major = 1;
+        host_header.protocol_minor = 0;
+        host_header.audience = Audience::AUDIENCE_ROOT_MOUNT.into();
+        host_header.maximum_response_bytes = 16 * 1024;
+        let host = ObserveMountScopeRequest {
+            header: Some(host_header).into(),
+            fence: mount.fence.clone(),
+            runtime_handle: runtime_handle_v1(&[2; 16], 1, &[6; 32]).to_vec(),
+            payload_scope_handle: vec![72; 32],
+            ..Default::default()
+        };
+        let host_packet = encode_authorized_request_envelope(
+            ProtocolId::HostBroker,
+            BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE,
+            &host.encode_to_vec(),
+            &[],
+            AuthorizationArtifactBytes {
+                broker_plan: artifacts.broker_plan(),
+                broker_plan_signature: artifacts.broker_plan_signature(),
+                ownership_lease: artifacts.ownership_lease(),
+                ownership_lease_signature: artifacts.ownership_lease_signature(),
+            },
+        )
+        .unwrap();
+        let preparation = PrepareMountCatalogRequest {
+            header: mount.header.clone(),
+            mount_request: Some(mount.clone()).into(),
+            host_request_packet: host_packet,
+            ..Default::default()
+        };
+        let validated = decode_mount_catalog_preparation(
+            &preparation.encode_to_vec(),
+            peer(),
+            policy(),
+            TEST_BOOTTIME_NANOSECONDS,
+        )
+        .unwrap();
+        assert_eq!(
+            validated.mount_request().fence(),
+            validated.host_request().fence()
+        );
+        assert_eq!(validated.host_request().payload_scope_handle(), &[72; 32]);
+
+        let response = encode_mount_catalog_preparation_response(
+            &validated,
+            ObjectDigest::from_bytes([88; 32]),
+            1_000,
+        )
+        .unwrap();
+        let response = decode_mount_catalog_preparation_response(&response, &validated).unwrap();
+        assert_eq!(
+            response.catalog_commitment(),
+            ObjectDigest::from_bytes([88; 32])
+        );
+        assert_eq!(response.valid_until_boottime_nanoseconds(), 1_000);
+
+        let mut substituted_mount = preparation.clone();
+        substituted_mount
+            .mount_request
+            .get_or_insert_default()
+            .header
+            .get_or_insert_default()
+            .request_id[0] ^= 1;
+        assert!(
+            decode_mount_catalog_preparation(
+                &substituted_mount.encode_to_vec(),
+                peer(),
+                policy(),
+                TEST_BOOTTIME_NANOSECONDS,
+            )
+            .is_err()
+        );
+
+        let mut missing_host_authority = preparation;
+        let mut host_envelope =
+            BrokerRequestEnvelope::decode_from_slice(&missing_host_authority.host_request_packet)
+                .unwrap();
+        host_envelope.authorization = None.into();
+        missing_host_authority.host_request_packet = host_envelope.encode_to_vec();
+        assert!(
+            decode_mount_catalog_preparation(
+                &missing_host_authority.encode_to_vec(),
+                peer(),
+                policy(),
+                TEST_BOOTTIME_NANOSECONDS,
+            )
+            .is_err()
+        );
+    }
+
+    fn action_request(
+        request_id: u8,
+        desired_attachment_generation: u64,
+        resource_attachment_generation: u64,
+        source_generation: u64,
+        action: MountAction,
+        handle: Option<[u8; 32]>,
+        replacement: Option<[u8; 32]>,
+    ) -> Vec<u8> {
+        let mut request = ApplyMountRequest::decode_from_slice(&request(request_id)).unwrap();
+        request.fence = Some(AssignmentFence {
+            sandbox_id: vec![1; 16],
+            incarnation_id: vec![2; 16],
+            assignment_epoch: 1,
+            desired_generation: desired_attachment_generation,
+            assignment_digest: vec![u8::try_from(desired_attachment_generation).unwrap() + 5; 32],
+            ..Default::default()
+        })
+        .into();
+        request.action = action.into();
+        request.source_generation = source_generation;
+        request.desired_attachment_generation = desired_attachment_generation;
+        request.resource_attachment_generation = resource_attachment_generation;
+        request.detached_mount_handle = handle.map_or_else(Vec::new, |value| value.to_vec());
+        request.replacement_mount_handle =
+            replacement.map_or_else(Vec::new, |value| value.to_vec());
+        if matches!(
+            action,
+            MountAction::MOUNT_ACTION_DETACH | MountAction::MOUNT_ACTION_RELEASE
+        ) {
+            request.view_revision = None.into();
+            request.attributes = None.into();
+        }
+        request.encode_to_vec()
+    }
+
+    fn open(path: &std::path::Path) -> Journal {
+        Journal::open(path, JournalLimits::default()).unwrap().0
+    }
+
+    fn private_destination_slot_root() -> tempfile::TempDir {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        directory
+    }
+
+    #[test]
+    fn kind2_cold_owner_route_rejects_unprotected_journal_before_callback_or_retirement() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mount.journal");
+        let (mut broker, _) = test_broker(open(&path), ScriptedWorker::default());
+        let called = Cell::new(false);
+
+        let result = broker.with_fixed_source_acquisition_owner(|_| {
+            called.set(true);
+            Ok(())
+        });
+
+        assert!(result.is_err());
+        assert!(!called.get());
+        assert!(broker.source_runtime.is_none());
+        assert_eq!(
+            broker
+                .journal
+                .records(RecordNamespace::GlobalCapacityReservation)
+                .count(),
+            0
+        );
+        assert_eq!(broker.worker.calls, 0);
+        assert!(broker.inventory_resources().is_ok());
+    }
+
+    #[test]
+    fn failed_source_runtime_requires_restart_before_another_borrow() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mount.journal");
+        let (mut broker, _) = test_broker(open(&path), ScriptedWorker::default());
+        broker.source_runtime_failed = true;
+        let called = Cell::new(false);
+
+        let result = broker.with_fixed_source_acquisition_owner(|_| {
+            called.set(true);
+            Ok(())
+        });
+
+        assert!(matches!(
+            result,
+            Err(MountError::State(message))
+                if message == "source runtime failed; protected restart is required"
+        ));
+        assert!(!called.get());
+    }
+
+    #[test]
+    fn mount_apply_rejects_supplied_version_mismatch_before_state_or_effect() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mount.journal");
+        let (mut broker, fixture) = test_broker(open(&path), ScriptedWorker::default());
+        let request_bytes = request(79);
+        let request =
+            decode_mount_request(&request_bytes, peer(), policy(), TEST_BOOTTIME_NANOSECONDS)
+                .unwrap();
+        let catalog = broker.worker.catalog_commitment(&request, None).unwrap();
+        let supplied_version = ProtocolVersion::new(1, 1);
+        let artifacts = fixture.artifacts(
+            &request_bytes,
+            catalog.map(|value| value.commitment()),
+            1,
+            &[&request_bytes],
+        );
+        let journal_sequence = broker.journal.snapshot_sequence();
+        let catalog_calls = broker.worker.catalog_calls.get();
+
+        assert!(matches!(
+            broker.apply_mount(
+                &request_bytes,
+                &artifacts,
+                supplied_version,
+                peer(),
+                policy(),
+                || Ok(clock()),
+            ),
+            Err(MountError::Protocol(
+                ProtocolValidationError::MethodMismatch
+            ))
+        ));
+        assert_eq!(broker.journal.snapshot_sequence(), journal_sequence);
+        assert!(broker.resources.resources().next().is_none());
+        assert_eq!(broker.worker.catalog_calls.get(), catalog_calls);
+        assert_eq!(broker.worker.calls, 0);
+    }
+
+    #[test]
+    fn destination_slot_apply_rejects_supplied_version_mismatch_before_state_or_effect() {
+        let directory = private_destination_slot_root();
+        let path = directory.path().join("mount.journal");
+        let (mut broker, fixture) = test_broker_with_destination_slots(
+            open(&path),
+            ScriptedWorker::default(),
+            directory.path(),
+        );
+        let request_bytes = destination_slot_request(
+            79,
+            1,
+            6,
+            DestinationSlotAction::DESTINATION_SLOT_ACTION_MATERIALIZE,
+            None,
+            None,
+        );
+        let validated = decode_destination_slot_request(
+            &request_bytes,
+            peer(),
+            policy(),
+            TEST_BOOTTIME_NANOSECONDS,
+        )
+        .unwrap();
+        let binding = destination_slot_binding(&validated).unwrap();
+        let artifacts = fixture.destination_slot_artifacts(&request_bytes, 1);
+        let journal_sequence = broker.journal.snapshot_sequence();
+
+        assert!(matches!(
+            broker.apply_destination_slot(
+                &request_bytes,
+                &artifacts,
+                ProtocolVersion::new(1, 1),
+                peer(),
+                policy(),
+                || Ok(clock()),
+            ),
+            Err(MountError::Protocol(
+                ProtocolValidationError::MethodMismatch
+            ))
+        ));
+        assert_eq!(broker.journal.snapshot_sequence(), journal_sequence);
+        assert!(
+            broker
+                .destination_slots
+                .as_ref()
+                .unwrap()
+                .get(&binding)
+                .is_none()
+        );
+        assert_eq!(broker.worker.calls, 0);
+    }
+
+    #[test]
+    fn destination_slot_materialization_replays_across_restart_with_complete_inventory() {
+        let directory = private_destination_slot_root();
+        let journal_path = directory.path().join("mount.journal");
+        let (mut broker, fixture) = test_broker_with_destination_slots(
+            open(&journal_path),
+            ScriptedWorker::default(),
+            directory.path(),
+        );
+        let request = destination_slot_request(
+            80,
+            1,
+            6,
+            DestinationSlotAction::DESTINATION_SLOT_ACTION_MATERIALIZE,
+            None,
+            None,
+        );
+
+        let first = apply_destination_slot(&mut broker, &fixture, &request, 1).unwrap();
+        let second = apply_destination_slot(&mut broker, &fixture, &request, 1).unwrap();
+        assert_eq!(first, second);
+        let ready = decode_destination_slot_response(&first, 4096).unwrap();
+        assert_eq!(
+            ready.lifecycle(),
+            DestinationSlotLifecycle::DESTINATION_SLOT_LIFECYCLE_READY
+        );
+        assert!(ready.slot_device().is_some());
+        assert!(ready.slot_inode().is_some());
+        assert!(ready.anchor_unique_mount_id().is_some());
+
+        let inventory = decode_destination_slot_inventory_response(
+            &broker.inventory_destination_slots().unwrap(),
+            4096,
+        )
+        .unwrap();
+        assert_eq!(inventory.slots(), std::slice::from_ref(&ready));
+        assert_eq!(inventory.kernel_boot_id(), &broker.kernel_boot_id);
+        assert_ne!(inventory.broker_instance_id(), &[0; 16]);
+        assert!(inventory.journal_sequence() > 1);
+
+        assert_eq!(inventory.attachment_anchors().len(), 1);
+        let anchor = inventory.attachment_anchors()[0];
+        assert_eq!(anchor.sandbox_id(), ready.fence().sandbox_id());
+        assert_eq!(anchor.incarnation_id(), ready.fence().incarnation_id());
+        assert_eq!(anchor.namespace_generation(), ready.namespace_generation());
+        assert_eq!(anchor.resource_kernel_boot_id(), &broker.kernel_boot_id);
+        assert_eq!(anchor.directory_device(), ready.slot_device().unwrap());
+        assert_ne!(anchor.directory_inode(), 0);
+        assert_eq!(
+            anchor.unique_mount_id(),
+            ready.anchor_unique_mount_id().unwrap()
+        );
+        drop(broker);
+
+        let (mut recovered, recovered_fixture) = test_broker_with_destination_slots(
+            open(&journal_path),
+            ScriptedWorker::default(),
+            directory.path(),
+        );
+        let recovered_inventory = decode_destination_slot_inventory_response(
+            &recovered.inventory_destination_slots().unwrap(),
+            4096,
+        )
+        .unwrap();
+        assert_eq!(recovered_inventory.slots(), &[ready]);
+        assert_eq!(
+            apply_destination_slot(&mut recovered, &recovered_fixture, &request, 1).unwrap(),
+            first
+        );
+    }
+
+    #[test]
+    fn retained_fuse_reservation_fences_slot_materialization_after_recovery() {
+        let directory = private_destination_slot_root();
+        let path = directory.path().join("mount.journal");
+        let (mut broker, _) = test_broker_with_destination_slots(
+            open(&path),
+            ScriptedWorker::default(),
+            directory.path(),
+        );
+        let reservation = fuse_reservation(20);
+        broker.reserve_fuse_worker_gen1(&reservation).unwrap();
+        drop(broker);
+
+        let (mut recovered, fixture) = test_broker_with_destination_slots(
+            open(&path),
+            ScriptedWorker::default(),
+            directory.path(),
+        );
+        let materialize = destination_slot_request(
+            92,
+            1,
+            6,
+            DestinationSlotAction::DESTINATION_SLOT_ACTION_MATERIALIZE,
+            None,
+            None,
+        );
+        let decoded = decode_destination_slot_request(
+            &materialize,
+            peer(),
+            policy(),
+            TEST_BOOTTIME_NANOSECONDS,
+        )
+        .unwrap();
+        let binding = destination_slot_binding(&decoded).unwrap();
+
+        assert!(matches!(
+            apply_destination_slot(&mut recovered, &fixture, &materialize, 1),
+            Err(MountError::Fence(
+                "destination slot is already claimed by Mount state"
+            ))
+        ));
+        assert!(
+            recovered
+                .destination_slots
+                .as_ref()
+                .unwrap()
+                .get(&binding)
+                .is_none()
+        );
+        assert_eq!(
+            recovered.fuse_reservations.rows().next().unwrap(),
+            &reservation
+        );
+        assert_eq!(recovered.worker.calls, 0);
+
+        let mut unrelated = materialize;
+        let mut wire = ApplyDestinationSlotRequest::decode_from_slice(&unrelated).unwrap();
+        wire.fence.get_or_insert_default().incarnation_id = vec![3; 16];
+        unrelated = wire.encode_to_vec();
+        let decoded = decode_destination_slot_request(
+            &unrelated,
+            peer(),
+            policy(),
+            TEST_BOOTTIME_NANOSECONDS,
+        )
+        .unwrap();
+        let other = destination_slot_binding(&decoded).unwrap();
+        assert!(destination_slot_is_unused(
+            &recovered.resources,
+            &recovered.fuse_reservations,
+            &other,
+        ));
+    }
+
+    #[test]
+    fn retained_fuse_reservation_blocks_reap_and_stale_rematerialization() {
+        for action in [
+            DestinationSlotAction::DESTINATION_SLOT_ACTION_REAP,
+            DestinationSlotAction::DESTINATION_SLOT_ACTION_REMATERIALIZE,
+        ] {
+            let directory = private_destination_slot_root();
+            let path = directory.path().join("mount.journal");
+            let (mut broker, fixture) = test_broker_with_destination_slots(
+                open(&path),
+                ScriptedWorker::default(),
+                directory.path(),
+            );
+            let materialize = destination_slot_request(
+                93,
+                1,
+                6,
+                DestinationSlotAction::DESTINATION_SLOT_ACTION_MATERIALIZE,
+                None,
+                None,
+            );
+            let ready = decode_destination_slot_response(
+                &apply_destination_slot(&mut broker, &fixture, &materialize, 1).unwrap(),
+                4096,
+            )
+            .unwrap();
+            let decoded = decode_destination_slot_request(
+                &materialize,
+                peer(),
+                policy(),
+                TEST_BOOTTIME_NANOSECONDS,
+            )
+            .unwrap();
+            let binding = destination_slot_binding(&decoded).unwrap();
+            let expected = if action == DestinationSlotAction::DESTINATION_SLOT_ACTION_REMATERIALIZE
+            {
+                *broker
+                    .destination_slots
+                    .as_mut()
+                    .unwrap()
+                    .make_ready_record_stale_for_test(&mut broker.journal, &binding)
+                    .unwrap()
+                    .as_bytes()
+            } else {
+                *ready.resource_digest()
+            };
+            let reservation = fuse_reservation(20);
+            broker.reserve_fuse_worker_gen1(&reservation).unwrap();
+            drop(broker);
+
+            let (mut recovered, recovered_fixture) = test_broker_with_destination_slots(
+                open(&path),
+                ScriptedWorker::default(),
+                directory.path(),
+            );
+            let slot_before = recovered
+                .destination_slots
+                .as_ref()
+                .unwrap()
+                .get(&binding)
+                .unwrap();
+            let mutation = destination_slot_request(
+                94,
+                2,
+                7,
+                action,
+                Some(expected),
+                Some(destination_slot_fence(1, 6)),
+            );
+            assert!(
+                apply_destination_slot(&mut recovered, &recovered_fixture, &mutation, 1).is_err(),
+                "{action:?}"
+            );
+            assert_eq!(
+                recovered
+                    .destination_slots
+                    .as_ref()
+                    .unwrap()
+                    .get(&binding)
+                    .unwrap(),
+                slot_before
+            );
+            assert_eq!(
+                recovered.fuse_reservations.rows().next().unwrap(),
+                &reservation
+            );
+            assert_eq!(recovered.worker.calls, 0);
+        }
+    }
+
+    #[test]
+    fn destination_slot_rematerialization_replaces_only_the_exact_stale_resource() {
+        let directory = private_destination_slot_root();
+        let journal_path = directory.path().join("mount.journal");
+        let (mut broker, fixture) = test_broker_with_destination_slots(
+            open(&journal_path),
+            ScriptedWorker::default(),
+            directory.path(),
+        );
+        let materialize = destination_slot_request(
+            88,
+            1,
+            6,
+            DestinationSlotAction::DESTINATION_SLOT_ACTION_MATERIALIZE,
+            None,
+            None,
+        );
+        apply_destination_slot(&mut broker, &fixture, &materialize, 1).unwrap();
+        let request = decode_destination_slot_request(
+            &materialize,
+            peer(),
+            policy(),
+            TEST_BOOTTIME_NANOSECONDS,
+        )
+        .unwrap();
+        let binding = destination_slot_binding(&request).unwrap();
+        let predecessor = broker
+            .destination_slots
+            .as_mut()
+            .unwrap()
+            .make_ready_record_stale_for_test(&mut broker.journal, &binding)
+            .unwrap();
+        let rematerialize = destination_slot_request(
+            89,
+            2,
+            7,
+            DestinationSlotAction::DESTINATION_SLOT_ACTION_REMATERIALIZE,
+            Some(*predecessor.as_bytes()),
+            Some(destination_slot_fence(1, 6)),
+        );
+
+        let first = apply_destination_slot(&mut broker, &fixture, &rematerialize, 1).unwrap();
+        let second = apply_destination_slot(&mut broker, &fixture, &rematerialize, 1).unwrap();
+        assert_eq!(first, second);
+        let ready = decode_destination_slot_response(&first, 4096).unwrap();
+        assert_eq!(
+            ready.lifecycle(),
+            DestinationSlotLifecycle::DESTINATION_SLOT_LIFECYCLE_READY
+        );
+        assert_eq!(ready.resource_kernel_boot_id(), &broker.kernel_boot_id);
+        assert_eq!(ready.fence().desired_generation(), 1);
+        assert_eq!(ready.fence().assignment_digest(), &[6; 32]);
+        let correlation = ready.rematerialization().unwrap();
+        assert_eq!(correlation.operation().operation_id(), &[89; 16]);
+        assert_eq!(
+            correlation.expected_resource_digest(),
+            predecessor.as_bytes()
+        );
+
+        let substituted = destination_slot_request(
+            90,
+            2,
+            7,
+            DestinationSlotAction::DESTINATION_SLOT_ACTION_REMATERIALIZE,
+            Some([99; 32]),
+            Some(destination_slot_fence(1, 6)),
+        );
+        assert!(apply_destination_slot(&mut broker, &fixture, &substituted, 1).is_err());
+
+        let valid_reap = destination_slot_request(
+            91,
+            3,
+            8,
+            DestinationSlotAction::DESTINATION_SLOT_ACTION_REAP,
+            Some(*ready.resource_digest()),
+            Some(destination_slot_fence(1, 6)),
+        );
+        let artifacts = fixture.destination_slot_artifacts(&valid_reap, 1);
+        let mut wrong_version_reap =
+            ApplyDestinationSlotRequest::decode_from_slice(&valid_reap).unwrap();
+        wrong_version_reap
+            .header
+            .get_or_insert_default()
+            .protocol_minor = 1;
+        let wrong_version_reap = wrong_version_reap.encode_to_vec();
+        let journal_sequence = broker.journal.snapshot_sequence();
+        let before = broker
+            .destination_slots
+            .as_ref()
+            .unwrap()
+            .get(&binding)
+            .unwrap();
+
+        assert!(matches!(
+            broker.apply_destination_slot(
+                &wrong_version_reap,
+                &artifacts,
+                ProtocolVersion::new(1, 1),
+                peer(),
+                policy(),
+                || Ok(clock()),
+            ),
+            Err(MountError::Protocol(_))
+        ));
+        assert_eq!(broker.journal.snapshot_sequence(), journal_sequence);
+        assert_eq!(
+            broker
+                .destination_slots
+                .as_ref()
+                .unwrap()
+                .get(&binding)
+                .unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn destination_slot_reap_uses_new_authority_and_the_creation_fence() {
+        let directory = private_destination_slot_root();
+        let journal_path = directory.path().join("mount.journal");
+        let (mut broker, fixture) = test_broker_with_destination_slots(
+            open(&journal_path),
+            ScriptedWorker::default(),
+            directory.path(),
+        );
+        let materialize = destination_slot_request(
+            81,
+            1,
+            6,
+            DestinationSlotAction::DESTINATION_SLOT_ACTION_MATERIALIZE,
+            None,
+            None,
+        );
+        let ready = decode_destination_slot_response(
+            &apply_destination_slot(&mut broker, &fixture, &materialize, 1).unwrap(),
+            4096,
+        )
+        .unwrap();
+        let reap = destination_slot_request(
+            82,
+            2,
+            7,
+            DestinationSlotAction::DESTINATION_SLOT_ACTION_REAP,
+            Some(*ready.resource_digest()),
+            Some(destination_slot_fence(1, 6)),
+        );
+
+        let first = apply_destination_slot(&mut broker, &fixture, &reap, 1).unwrap();
+        let second = apply_destination_slot(&mut broker, &fixture, &reap, 1).unwrap();
+        assert_eq!(first, second);
+        let released = decode_destination_slot_response(&first, 4096).unwrap();
+        assert_eq!(
+            released.lifecycle(),
+            DestinationSlotLifecycle::DESTINATION_SLOT_LIFECYCLE_RELEASED
+        );
+        assert_eq!(released.fence().desired_generation(), 1);
+        assert_eq!(released.fence().assignment_digest(), &[6; 32]);
+        assert!(released.reap().is_some());
+    }
+
+    #[test]
+    fn destination_slot_reap_is_blocked_by_installed_mount_state() {
+        let directory = private_destination_slot_root();
+        let journal_path = directory.path().join("mount.journal");
+        let (mut broker, fixture) = test_broker_with_destination_slots(
+            open(&journal_path),
+            ScriptedWorker::default(),
+            directory.path(),
+        );
+        let materialize = destination_slot_request(
+            83,
+            1,
+            6,
+            DestinationSlotAction::DESTINATION_SLOT_ACTION_MATERIALIZE,
+            None,
+            None,
+        );
+        let ready = decode_destination_slot_response(
+            &apply_destination_slot(&mut broker, &fixture, &materialize, 1).unwrap(),
+            4096,
+        )
+        .unwrap();
+        let create = action_request(
+            84,
+            2,
+            2,
+            1,
+            MountAction::MOUNT_ACTION_CREATE_DETACHED,
+            None,
+            None,
+        );
+        let handle = detached_mount_handle_v1(Sha256::digest(&create).into());
+        let install = action_request(
+            85,
+            2,
+            2,
+            1,
+            MountAction::MOUNT_ACTION_INSTALL,
+            Some(handle),
+            None,
+        );
+        let authorized = [&create[..], &install[..]];
+        apply_authorized(&mut broker, &fixture, &create, &authorized).unwrap();
+        apply_authorized(&mut broker, &fixture, &install, &authorized).unwrap();
+        let reap = destination_slot_request(
+            86,
+            3,
+            8,
+            DestinationSlotAction::DESTINATION_SLOT_ACTION_REAP,
+            Some(*ready.resource_digest()),
+            Some(destination_slot_fence(1, 6)),
+        );
+
+        assert!(apply_destination_slot(&mut broker, &fixture, &reap, 1).is_err());
+        let inventory = decode_destination_slot_inventory_response(
+            &broker.inventory_destination_slots().unwrap(),
+            4096,
+        )
+        .unwrap();
+        assert_eq!(
+            inventory.slots()[0].lifecycle(),
+            DestinationSlotLifecycle::DESTINATION_SLOT_LIFECYCLE_READY
+        );
+    }
+
+    #[test]
+    fn destination_slot_authority_rejects_signature_and_semantic_substitution() {
+        for attack in ["signature", "namespace"] {
+            let directory = private_destination_slot_root();
+            let journal_path = directory.path().join(format!("{attack}.journal"));
+            let (mut broker, fixture) = test_broker_with_destination_slots(
+                open(&journal_path),
+                ScriptedWorker::default(),
+                directory.path(),
+            );
+            let original = destination_slot_request(
+                87,
+                1,
+                6,
+                DestinationSlotAction::DESTINATION_SLOT_ACTION_MATERIALIZE,
+                None,
+                None,
+            );
+            let wrong_key = SigningKey::from_bytes(&[99; 32]);
+            let artifacts = if attack == "signature" {
+                fixture.destination_slot_artifacts_with_plan_key(&original, 1, &wrong_key)
+            } else {
+                fixture.destination_slot_artifacts(&original, 1)
+            };
+            let presented = if attack == "namespace" {
+                let mut request =
+                    ApplyDestinationSlotRequest::decode_from_slice(&original).unwrap();
+                request.namespace_generation = 2;
+                request.encode_to_vec()
+            } else {
+                original
+            };
+
+            assert!(
+                broker
+                    .apply_destination_slot(
+                        &presented,
+                        &artifacts,
+                        ProtocolVersion::new(2, 0),
+                        peer(),
+                        policy(),
+                        || Ok(clock()),
+                    )
+                    .is_err(),
+                "attack {attack} reached a destination-slot effect"
+            );
+            let inventory = decode_destination_slot_inventory_response(
+                &broker.inventory_destination_slots().unwrap(),
+                4096,
+            )
+            .unwrap();
+            assert!(inventory.slots().is_empty());
+        }
+    }
+
+    #[test]
+    fn create_completion_atomically_materializes_prepared_resource() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mount.journal");
+        let (mut broker, fixture) = test_broker(open(&path), ScriptedWorker::default());
+        let bytes = request(9);
+        let first = apply(&mut broker, &fixture, &bytes).unwrap();
+        let second = apply(&mut broker, &fixture, &bytes).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(broker.worker.calls, 1);
+        let resource = broker.resources.resources().next().unwrap();
+        assert!(matches!(
+            resource.state,
+            MountResourceStateV1::Prepared { .. }
+        ));
+        assert_eq!(resource.revision, 2);
+
+        let inventory = broker.inventory_resources().unwrap();
+        let decoded =
+            aos_sandbox_protocol::decode_mount_inventory_response(&inventory, 4096).unwrap();
+        assert_eq!(decoded.mounts().len(), 1);
+        assert_eq!(
+            decoded.mounts()[0].lifecycle(),
+            MountLifecycle::MOUNT_LIFECYCLE_PREPARED
+        );
+        assert_eq!(decoded.kernel_boot_id(), &broker.kernel_boot_id);
+        assert_ne!(decoded.broker_instance_id(), &[0; 16]);
+        assert!(decoded.journal_sequence() > 1);
+        let recipe = decoded.mounts()[0].recipe();
+        assert_eq!(recipe.resource_attachment_generation(), 1);
+        assert_eq!(recipe.source_view_id(), &[8; 16]);
+        assert_eq!(
+            recipe.source_consistency(),
+            MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION
+        );
+        assert_eq!(recipe.source().source_view_id(), &[8; 16]);
+        assert_eq!(recipe.source().source_view_revision(), 1);
+        assert_eq!(recipe.source().view_descriptor(), recipe.view_revision());
+        assert!(!recipe.attributes().recursive());
+    }
+
+    #[test]
+    fn signed_authority_rejects_wrong_signature_body_and_catalog_substitution() {
+        for attack in [
+            "signature",
+            "body",
+            "attachment-generation",
+            "source-view",
+            "recursive",
+            "attachment-lease",
+            "catalog",
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join(format!("{attack}.journal"));
+            let (mut broker, fixture) = test_broker(open(&path), ScriptedWorker::default());
+            let original = request(60);
+            let catalog = Some(ObjectDigest::from_bytes([77; 32]));
+            let wrong_key = SigningKey::from_bytes(&[99; 32]);
+            let artifacts = if attack == "signature" {
+                fixture.artifacts_with_plan_key(&original, catalog, 1, &[&original], &wrong_key)
+            } else {
+                fixture.artifacts(&original, catalog, 1, &[&original])
+            };
+            let presented = if attack == "body" {
+                let mut substituted = ApplyMountRequest::decode_from_slice(&original).unwrap();
+                substituted.source_generation += 1;
+                substituted.encode_to_vec()
+            } else if attack == "attachment-generation" {
+                let mut substituted = ApplyMountRequest::decode_from_slice(&original).unwrap();
+                substituted.desired_attachment_generation += 1;
+                substituted.resource_attachment_generation += 1;
+                substituted.encode_to_vec()
+            } else if attack == "source-view" {
+                let mut substituted = ApplyMountRequest::decode_from_slice(&original).unwrap();
+                substituted.source_view_id = vec![88; 16];
+                substituted.encode_to_vec()
+            } else if attack == "recursive" {
+                let mut substituted = ApplyMountRequest::decode_from_slice(&original).unwrap();
+                substituted.attributes.get_or_insert_default().recursive = true;
+                substituted.encode_to_vec()
+            } else if attack == "attachment-lease" {
+                let mut substituted = ApplyMountRequest::decode_from_slice(&original).unwrap();
+                substituted.attachment_lease_id = vec![89; 16];
+                substituted.encode_to_vec()
+            } else {
+                original
+            };
+            if attack == "catalog" {
+                broker.worker.catalog_byte = 78;
+            }
+
+            assert!(
+                broker
+                    .apply_mount(
+                        &presented,
+                        &artifacts,
+                        ProtocolVersion::new(2, 0),
+                        peer(),
+                        policy(),
+                        || Ok(clock()),
+                    )
+                    .is_err()
+            );
+            assert_eq!(broker.worker.calls, 0, "attack {attack} reached worker");
+        }
+    }
+
+    #[test]
+    fn expired_authority_fails_before_effect_intent() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mount.journal");
+        let (mut broker, fixture) = test_broker(open(&path), ScriptedWorker::default());
+        let bytes = request(61);
+        let artifacts = fixture.artifacts(
+            &bytes,
+            Some(ObjectDigest::from_bytes([77; 32])),
+            1,
+            &[&bytes],
+        );
+
+        assert!(
+            broker
+                .apply_mount(
+                    &bytes,
+                    &artifacts,
+                    ProtocolVersion::new(2, 0),
+                    peer(),
+                    policy(),
+                    || Ok(clock_at(301)),
+                )
+                .is_err()
+        );
+        assert_eq!(broker.worker.calls, 0);
+        assert!(
+            broker
+                .journal
+                .get(RecordNamespace::Effect, &[61; 16])
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn request_deadline_crossing_after_intent_prevents_the_worker_effect() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mount.journal");
+        let (mut broker, fixture) = test_broker(open(&path), ScriptedWorker::default());
+        let bytes = request(63);
+        let artifacts = fixture.artifacts(
+            &bytes,
+            Some(ObjectDigest::from_bytes([77; 32])),
+            1,
+            &[&bytes],
+        );
+        let mut reads = 0;
+
+        assert!(
+            broker
+                .apply_mount(
+                    &bytes,
+                    &artifacts,
+                    ProtocolVersion::new(2, 0),
+                    peer(),
+                    policy(),
+                    || {
+                        reads += 1;
+                        Ok(if reads == 1 {
+                            clock()
+                        } else {
+                            clock_sample(TEST_WALL_SECONDS, 1_000)
+                        })
+                    },
+                )
+                .is_err()
+        );
+        assert_eq!(broker.worker.calls, 0);
+        assert!(
+            broker
+                .journal
+                .get(RecordNamespace::Effect, &[63; 16])
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn source_custody_readback_failure_prevents_active_or_resource_admission() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mount.journal");
+        let (mut broker, fixture) = test_broker(
+            open(&path),
+            ScriptedWorker {
+                fail_source_custody_once: true,
+                ..Default::default()
+            },
+        );
+        let bytes = request(64);
+
+        assert!(apply(&mut broker, &fixture, &bytes).is_err());
+        assert!(broker.resources.resources().next().is_none());
+        assert!(broker.source_pins.rows().next().is_none());
+        assert_eq!(broker.worker.source_custody.len(), 1);
+        assert!(
+            broker
+                .journal
+                .get(RecordNamespace::Effect, &[64; 16])
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn zero_reference_cutover_retires_old_custody_before_a_failed_create_effect() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mount.journal");
+        let (mut broker, fixture) = test_broker(open(&path), ScriptedWorker::default());
+        let create_first = action_request(
+            65,
+            1,
+            1,
+            1,
+            MountAction::MOUNT_ACTION_CREATE_DETACHED,
+            None,
+            None,
+        );
+        let first_mount = detached_mount_handle_v1(Sha256::digest(&create_first).into());
+        let release_first = action_request(
+            66,
+            1,
+            1,
+            1,
+            MountAction::MOUNT_ACTION_RELEASE,
+            Some(first_mount),
+            None,
+        );
+        let first_generation = [&create_first[..], &release_first[..]];
+
+        apply_authorized(&mut broker, &fixture, &create_first, &first_generation).unwrap();
+        let old_source = broker
+            .resources
+            .get(&first_mount)
+            .unwrap()
+            .recipe
+            .source_realization_handle;
+        apply_authorized(&mut broker, &fixture, &release_first, &first_generation).unwrap();
+        assert!(broker.worker.source_custody.contains(&old_source));
+
+        let create_second = action_request(
+            67,
+            2,
+            2,
+            1,
+            MountAction::MOUNT_ACTION_CREATE_DETACHED,
+            None,
+            None,
+        );
+        broker.worker.source_realization_byte = 78;
+        broker.worker.fail_after_custody_once = true;
+
+        assert!(
+            apply_authorized(&mut broker, &fixture, &create_second, &[&create_second]).is_err()
+        );
+        assert_eq!(
+            broker.source_pins.get(&old_source).unwrap().lifecycle,
+            crate::source_pin::SourcePinLifecycleV1::Released
+        );
+        assert!(!broker.worker.source_custody.contains(&old_source));
+        let current = broker.source_pins.rows().find(|row| row.current).unwrap();
+        assert_ne!(current.handle, old_source);
+        assert!(broker.worker.source_custody.contains(&current.handle));
+    }
+
+    #[test]
+    fn pending_replay_accepts_a_fresher_lease_without_reallocating() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mount.journal");
+        let (mut broker, fixture) = test_broker(
+            open(&path),
+            ScriptedWorker {
+                fail_after_custody_once: true,
+                ..Default::default()
+            },
+        );
+        let bytes = request(62);
+        let catalog = Some(ObjectDigest::from_bytes([77; 32]));
+        let first = fixture.artifacts(&bytes, catalog, 1, &[&bytes]);
+        assert!(
+            broker
+                .apply_mount(
+                    &bytes,
+                    &first,
+                    ProtocolVersion::new(2, 0),
+                    peer(),
+                    policy(),
+                    || Ok(clock()),
+                )
+                .is_err()
+        );
+        assert_eq!(broker.worker.calls, 1);
+        assert_eq!(broker.worker.custody.len(), 1);
+
+        let renewed = fixture.artifacts(&bytes, catalog, 2, &[&bytes]);
+        broker
+            .apply_mount(
+                &bytes,
+                &renewed,
+                ProtocolVersion::new(2, 0),
+                peer(),
+                policy(),
+                || Ok(clock()),
+            )
+            .unwrap();
+        assert_eq!(broker.worker.calls, 2);
+        assert_eq!(broker.worker.custody.len(), 1);
+    }
+
+    #[test]
+    fn restart_faults_unverifiable_allocated_custody() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mount.journal");
+        let bytes = request(10);
+        let (mut broker, fixture) = test_broker(
+            open(&path),
+            ScriptedWorker {
+                fail_after_custody_once: true,
+                ..Default::default()
+            },
+        );
+        assert!(apply(&mut broker, &fixture, &bytes).is_err());
+        let custody = broker.worker.custody.clone();
+        assert!(matches!(
+            broker.resources.resources().next().unwrap().state,
+            MountResourceStateV1::Allocated { .. }
+        ));
+        drop(broker);
+
+        let (mut recovered, recovered_fixture) = test_broker(
+            open(&path),
+            ScriptedWorker {
+                custody,
+                ..Default::default()
+            },
+        );
+        assert!(recovered.worker.custody.is_empty());
+        assert!(apply(&mut recovered, &recovered_fixture, &bytes).is_err());
+        assert!(matches!(
+            recovered.resources.resources().next().unwrap().state,
+            MountResourceStateV1::Faulted {
+                from: MountFaultPhaseV1::Allocated,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn recovery_rejects_cross_table_custody_contradiction_before_mutation() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mount.journal");
+        let bytes = request(11);
+        let (mut broker, fixture) = test_broker(
+            open(&path),
+            ScriptedWorker {
+                fail_after_custody_once: true,
+                ..Default::default()
+            },
+        );
+        assert!(apply(&mut broker, &fixture, &bytes).is_err());
+
+        let mut source = broker.source_pins.rows().next().unwrap().clone();
+        source.revision = 2;
+        source.current = false;
+        source.lifecycle = crate::source_pin::SourcePinLifecycleV1::Reaping;
+        let source_record = crate::source_pin::source_pin_record_for_test(&source).unwrap();
+        broker
+            .journal
+            .commit(&JournalTransaction::new([99; 16], vec![source_record]).unwrap())
+            .unwrap();
+
+        let custody = broker.worker.custody.clone();
+        let journal_before = std::fs::read(&path).unwrap();
+        let discard_calls = Rc::new(Cell::new(0));
+        drop(broker);
+
+        assert!(
+            MountBroker::new(
+                open(&path),
+                ScriptedWorker {
+                    custody: custody.clone(),
+                    discard_calls: discard_calls.clone(),
+                    ..Default::default()
+                },
+                fixture.authority(),
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), journal_before);
+        assert_eq!(discard_calls.get(), 0);
+        assert_eq!(custody.len(), 1);
+    }
+
+    #[test]
+    fn constructor_rejects_unexplained_retained_mount() {
+        let directory = tempfile::tempdir().unwrap();
+        let worker = ScriptedWorker {
+            custody: vec![RetainedMountObservation {
+                handle: [8; 32],
+                mount_id: MountId::new(900).unwrap(),
+            }],
+            ..Default::default()
+        };
+        let fixture = AuthorityFixture::new();
+        assert!(
+            MountBroker::new(
+                open(&directory.path().join("mount.journal")),
+                worker,
+                fixture.authority(),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn constructor_rejects_wrong_retained_mount_identity() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mount.journal");
+        let (mut broker, fixture) = test_broker(open(&path), ScriptedWorker::default());
+        apply(&mut broker, &fixture, &request(39)).unwrap();
+        let mut custody = broker.worker.custody.clone();
+        custody[0].mount_id = MountId::new(999).unwrap();
+        drop(broker);
+
+        assert!(
+            MountBroker::new(
+                open(&path),
+                ScriptedWorker {
+                    custody,
+                    ..Default::default()
+                },
+                fixture.authority(),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn restart_admits_missing_custody_for_precommitted_release() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mount.journal");
+        let (mut broker, fixture) = test_broker(open(&path), ScriptedWorker::default());
+        let create = request(40);
+        let handle = detached_mount_handle_v1(Sha256::digest(&create).into());
+        let release = action_request(
+            41,
+            1,
+            1,
+            1,
+            MountAction::MOUNT_ACTION_RELEASE,
+            Some(handle),
+            None,
+        );
+        let competing_release = action_request(
+            42,
+            1,
+            1,
+            1,
+            MountAction::MOUNT_ACTION_RELEASE,
+            Some(handle),
+            None,
+        );
+        let authorized = [&create[..], &release[..]];
+        let receipt = apply_authorized(&mut broker, &fixture, &create, &authorized).unwrap();
+        assert_eq!(
+            MountResult::decode_from_slice(&receipt)
+                .unwrap()
+                .detached_mount_handle,
+            handle
+        );
+        broker.worker.fail_release_after_custody_once = true;
+        assert!(apply_authorized(&mut broker, &fixture, &release, &authorized).is_err());
+        assert!(broker.worker.custody.is_empty());
+        assert!(matches!(
+            broker.resources.get(&handle).unwrap().state,
+            MountResourceStateV1::Releasing { .. }
+        ));
+        let release_artifacts = fixture.artifacts(&release, None, 1, &authorized);
+        assert!(
+            broker
+                .apply_mount(
+                    &competing_release,
+                    &release_artifacts,
+                    ProtocolVersion::new(2, 0),
+                    peer(),
+                    policy(),
+                    || Ok(clock()),
+                )
+                .is_err()
+        );
+        let custody = broker.worker.custody.clone();
+        drop(broker);
+
+        let (mut recovered, recovered_fixture) = test_broker(
+            open(&path),
+            ScriptedWorker {
+                custody,
+                ..Default::default()
+            },
+        );
+        apply_authorized(&mut recovered, &recovered_fixture, &release, &authorized).unwrap();
+        assert!(matches!(
+            recovered.resources.get(&handle).unwrap().state,
+            MountResourceStateV1::Released { .. }
+        ));
+    }
+
+    #[test]
+    fn provider_outage_blocks_create_but_not_existing_install_detach_or_release() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mount.journal");
+        let (mut broker, fixture) = test_broker(open(&path), ScriptedWorker::default());
+        let create = action_request(
+            90,
+            1,
+            1,
+            1,
+            MountAction::MOUNT_ACTION_CREATE_DETACHED,
+            None,
+            None,
+        );
+        let handle = detached_mount_handle_v1(Sha256::digest(&create).into());
+        let create_releasable = action_request(
+            95,
+            1,
+            1,
+            1,
+            MountAction::MOUNT_ACTION_CREATE_DETACHED,
+            None,
+            None,
+        );
+        let releasable = detached_mount_handle_v1(Sha256::digest(&create_releasable).into());
+        let install = action_request(
+            91,
+            1,
+            1,
+            1,
+            MountAction::MOUNT_ACTION_INSTALL,
+            Some(handle),
+            None,
+        );
+        let detach = action_request(
+            92,
+            1,
+            1,
+            1,
+            MountAction::MOUNT_ACTION_DETACH,
+            Some(handle),
+            None,
+        );
+        let release = action_request(
+            93,
+            1,
+            1,
+            1,
+            MountAction::MOUNT_ACTION_RELEASE,
+            Some(releasable),
+            None,
+        );
+        let authorized = [
+            &create[..],
+            &create_releasable[..],
+            &install[..],
+            &detach[..],
+            &release[..],
+        ];
+
+        apply_authorized(&mut broker, &fixture, &create, &authorized).unwrap();
+        apply_authorized(&mut broker, &fixture, &create_releasable, &authorized).unwrap();
+        broker.worker.source_acquisition_available = false;
+        apply_authorized(&mut broker, &fixture, &install, &authorized).unwrap();
+        apply_authorized(&mut broker, &fixture, &detach, &authorized).unwrap();
+        apply_authorized(&mut broker, &fixture, &release, &authorized).unwrap();
+
+        let unavailable_create = action_request(
+            94,
+            2,
+            2,
+            2,
+            MountAction::MOUNT_ACTION_CREATE_DETACHED,
+            None,
+            None,
+        );
+        assert!(
+            apply_authorized(
+                &mut broker,
+                &fixture,
+                &unavailable_create,
+                &[&unavailable_create],
+            )
+            .is_err()
+        );
+        assert!(matches!(
+            broker.resources.get(&handle).unwrap().state,
+            MountResourceStateV1::Released { .. }
+        ));
+    }
+
+    #[test]
+    fn replacement_draining_release_atomically_retires_both_edges() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mount.journal");
+        let (mut broker, fixture) = test_broker(open(&path), ScriptedWorker::default());
+
+        let create_predecessor = action_request(
+            20,
+            1,
+            1,
+            1,
+            MountAction::MOUNT_ACTION_CREATE_DETACHED,
+            None,
+            None,
+        );
+        let predecessor = detached_mount_handle_v1(Sha256::digest(&create_predecessor).into());
+        let install_predecessor = action_request(
+            21,
+            1,
+            1,
+            1,
+            MountAction::MOUNT_ACTION_INSTALL,
+            Some(predecessor),
+            None,
+        );
+        let create_successor = action_request(
+            22,
+            2,
+            2,
+            1,
+            MountAction::MOUNT_ACTION_CREATE_DETACHED,
+            None,
+            None,
+        );
+        let successor = detached_mount_handle_v1(Sha256::digest(&create_successor).into());
+        let replace = action_request(
+            23,
+            2,
+            2,
+            1,
+            MountAction::MOUNT_ACTION_REPLACE,
+            Some(successor),
+            Some(predecessor),
+        );
+        let release = action_request(
+            24,
+            2,
+            1,
+            1,
+            MountAction::MOUNT_ACTION_RELEASE,
+            Some(predecessor),
+            None,
+        );
+        let generation_one = [&create_predecessor[..], &install_predecessor[..]];
+        let generation_two = [&create_successor[..], &replace[..], &release[..]];
+
+        apply_authorized(&mut broker, &fixture, &create_predecessor, &generation_one).unwrap();
+        apply_authorized(&mut broker, &fixture, &install_predecessor, &generation_one).unwrap();
+        let predecessor_source = broker
+            .resources
+            .get(&predecessor)
+            .unwrap()
+            .recipe
+            .source_realization_handle;
+        broker.worker.source_realization_byte = 78;
+        apply_authorized(&mut broker, &fixture, &create_successor, &generation_two).unwrap();
+        broker.worker.source_acquisition_available = false;
+        apply_authorized(&mut broker, &fixture, &replace, &generation_two).unwrap();
+        assert!(matches!(
+            broker.resources.get(&predecessor).unwrap().state,
+            MountResourceStateV1::Draining { .. }
+        ));
+
+        let release_receipt =
+            apply_authorized(&mut broker, &fixture, &release, &generation_two).unwrap();
+        let release_result = MountResult::decode_from_slice(&release_receipt).unwrap();
+        assert_eq!(release_result.desired_attachment_generation, 2);
+        assert_eq!(release_result.resource_attachment_generation, 1);
+        assert!(matches!(
+            broker.resources.get(&predecessor).unwrap().state,
+            MountResourceStateV1::Released { .. }
+        ));
+        let successor_state = &broker.resources.get(&successor).unwrap().state;
+        assert!(matches!(
+            successor_state,
+            MountResourceStateV1::Installed { publication, .. }
+                if publication.replaces.is_none()
+        ));
+        assert_eq!(
+            broker
+                .source_pins
+                .get(&predecessor_source)
+                .unwrap()
+                .lifecycle,
+            crate::source_pin::SourcePinLifecycleV1::Released
+        );
+        assert!(!broker.worker.source_custody.contains(&predecessor_source));
+    }
+
+    #[test]
+    fn authoritative_inventory_decodes_reciprocal_faulted_replacement_pair() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mount.journal");
+        let (mut broker, fixture) = test_broker(open(&path), ScriptedWorker::default());
+
+        let create_predecessor = action_request(
+            50,
+            1,
+            1,
+            1,
+            MountAction::MOUNT_ACTION_CREATE_DETACHED,
+            None,
+            None,
+        );
+        let predecessor = detached_mount_handle_v1(Sha256::digest(&create_predecessor).into());
+        let install_predecessor = action_request(
+            51,
+            1,
+            1,
+            1,
+            MountAction::MOUNT_ACTION_INSTALL,
+            Some(predecessor),
+            None,
+        );
+        let create_successor = action_request(
+            52,
+            2,
+            2,
+            2,
+            MountAction::MOUNT_ACTION_CREATE_DETACHED,
+            None,
+            None,
+        );
+        let successor = detached_mount_handle_v1(Sha256::digest(&create_successor).into());
+        let replace = action_request(
+            53,
+            2,
+            2,
+            2,
+            MountAction::MOUNT_ACTION_REPLACE,
+            Some(successor),
+            Some(predecessor),
+        );
+        let generation_one = [&create_predecessor[..], &install_predecessor[..]];
+        let generation_two = [&create_successor[..], &replace[..]];
+        apply_authorized(&mut broker, &fixture, &create_predecessor, &generation_one).unwrap();
+        apply_authorized(&mut broker, &fixture, &install_predecessor, &generation_one).unwrap();
+        apply_authorized(&mut broker, &fixture, &create_successor, &generation_two).unwrap();
+        apply_authorized(&mut broker, &fixture, &replace, &generation_two).unwrap();
+
+        for (handle, transaction_id) in [(successor, [54; 16]), (predecessor, [55; 16])] {
+            let current = broker.resources.get(&handle).unwrap().clone();
+            let mut faulted = current.clone();
+            faulted.revision = checked_revision(current.revision).unwrap();
+            faulted.state = stale_boot_fault(&current.state);
+            let records = broker
+                .resources
+                .plan_transition(current.revision, &faulted)
+                .unwrap();
+            broker
+                .journal
+                .commit(&JournalTransaction::new(transaction_id, records.clone()).unwrap())
+                .unwrap();
+            broker.resources.apply_committed(&records).unwrap();
+        }
+
+        let bytes = broker.inventory_resources().unwrap();
+        let inventory =
+            aos_sandbox_protocol::decode_mount_inventory_response(&bytes, 16 * 1024).unwrap();
+        assert_eq!(inventory.mounts().len(), 2);
+        assert!(
+            inventory.mounts().iter().all(|resource| {
+                resource.lifecycle() == MountLifecycle::MOUNT_LIFECYCLE_FAULTED
+            })
+        );
+    }
+}

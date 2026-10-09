@@ -1,0 +1,58 @@
+{
+  "nftables": [
+    {"metainfo": {"version": "1.1.1", "release_name": "Commodore Bullmoose #2", "json_schema_version": 1}},
+    {"table": {"family": "inet", "name": "aos_sandbox", "handle": 1, "comment": "aos.net.v1:a=JP4cWbchTRTGJ6t24zhKOpFsiIQyeMo37kRXjdK--js:p=0jfvw4nuPdBVI06NmJSF_Eit_44IaqruRkzXs-MNPqA"}},
+    {"chain": {"family": "inet", "table": "aos_sandbox", "name": "ingress", "handle": 1, "type": "filter", "hook": "input", "prio": 0, "policy": "drop"}},
+    {"chain": {"family": "inet", "table": "aos_sandbox", "name": "egress", "handle": 2, "type": "filter", "hook": "output", "prio": 0, "policy": "drop"}},
+    {"rule": {"family": "inet", "table": "aos_sandbox", "chain": "ingress", "handle": 3, "comment": "aos.sandbox.network.rule.v1 anti-spoof", "expr": [
+      {"match": {"op": "==", "left": {"meta": {"key": "iif"}}, "right": "aog000000000001"}},
+      {"match": {"op": "!=", "left": {"payload": {"protocol": "ip", "field": "daddr"}}, "right": "10.80.0.1"}},
+      {"drop": null}
+    ]}},
+    {"rule": {"family": "inet", "table": "aos_sandbox", "chain": "ingress", "handle": 5, "comment": "aos.sandbox.network.rule.v1 anti-spoof", "expr": [
+      {"match": {"op": "==", "left": {"meta": {"key": "iif"}}, "right": "aog000000000001"}},
+      {"match": {"op": "!=", "left": {"payload": {"protocol": "ip6", "field": "daddr"}}, "right": "2001:db8:80::1"}},
+      {"drop": null}
+    ]}},
+    {"rule": {"family": "inet", "table": "aos_sandbox", "chain": "ingress", "handle": 7, "comment": "aos.sandbox.network.rule.v1 flow=51515151515151515151515151515151", "expr": [
+      {"match": {"op": "==", "left": {"payload": {"protocol": "ip6", "field": "saddr"}}, "right": "2001:db8::1"}},
+      {"match": {"op": "==", "left": {"payload": {"protocol": "tcp", "field": "dport"}}, "right": 8443}},
+      {"accept": null}
+    ]}},
+    {"rule": {"family": "inet", "table": "aos_sandbox", "chain": "ingress", "handle": 8, "comment": "aos.sandbox.network.rule.v1 flow=51515151515151515151515151515151", "expr": [
+      {"match": {"op": "==", "left": {"payload": {"protocol": "ip", "field": "saddr"}}, "right": "198.51.100.7"}},
+      {"match": {"op": "==", "left": {"payload": {"protocol": "udp", "field": "dport"}}, "right": {"range": [53, 54]}}},
+      {"accept": null}
+    ]}},
+    {"rule": {"family": "inet", "table": "aos_sandbox", "chain": "ingress", "handle": 9, "comment": "aos.sandbox.network.rule.v1 flow=51515151515151515151515151515151", "expr": [
+      {"match": {"op": "==", "left": {"payload": {"protocol": "ip6", "field": "saddr"}}, "right": {"prefix": {"addr": "2001:db8:1::", "len": 64}}}},
+      {"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": 58}},
+      {"accept": null}
+    ]}},
+    {"rule": {"family": "inet", "table": "aos_sandbox", "chain": "egress", "handle": 4, "comment": "aos.sandbox.network.rule.v1 anti-spoof", "expr": [
+      {"match": {"op": "==", "left": {"meta": {"key": "oif"}}, "right": "aog000000000001"}},
+      {"match": {"op": "!=", "left": {"payload": {"protocol": "ip", "field": "saddr"}}, "right": "10.80.0.1"}},
+      {"drop": null}
+    ]}},
+    {"rule": {"family": "inet", "table": "aos_sandbox", "chain": "egress", "handle": 6, "comment": "aos.sandbox.network.rule.v1 anti-spoof", "expr": [
+      {"match": {"op": "==", "left": {"meta": {"key": "oif"}}, "right": "aog000000000001"}},
+      {"match": {"op": "!=", "left": {"payload": {"protocol": "ip6", "field": "saddr"}}, "right": "2001:db8:80::1"}},
+      {"drop": null}
+    ]}},
+    {"rule": {"family": "inet", "table": "aos_sandbox", "chain": "egress", "handle": 10, "comment": "aos.sandbox.network.rule.v1 flow=51515151515151515151515151515151", "expr": [
+      {"match": {"op": "==", "left": {"payload": {"protocol": "ip", "field": "daddr"}}, "right": {"prefix": {"addr": "10.80.0.0", "len": 16}}}},
+      {"match": {"op": "==", "left": {"payload": {"protocol": "tcp", "field": "dport"}}, "right": 443}},
+      {"accept": null}
+    ]}},
+    {"rule": {"family": "inet", "table": "aos_sandbox", "chain": "egress", "handle": 11, "comment": "aos.sandbox.network.rule.v1 flow=51515151515151515151515151515151", "expr": [
+      {"match": {"op": "==", "left": {"payload": {"protocol": "ip6", "field": "daddr"}}, "right": {"prefix": {"addr": "2001:db8:2::", "len": 64}}}},
+      {"match": {"op": "==", "left": {"payload": {"protocol": "udp", "field": "dport"}}, "right": {"range": [1000, 1005]}}},
+      {"accept": null}
+    ]}},
+    {"rule": {"family": "inet", "table": "aos_sandbox", "chain": "egress", "handle": 12, "comment": "aos.sandbox.network.rule.v1 flow=51515151515151515151515151515151", "expr": [
+      {"match": {"op": "==", "left": {"payload": {"protocol": "ip", "field": "daddr"}}, "right": {"prefix": {"addr": "203.0.113.0", "len": 24}}}},
+      {"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": 1}},
+      {"accept": null}
+    ]}}
+  ]
+}

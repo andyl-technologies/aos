@@ -4,6 +4,7 @@
   mkCargoPackage,
   mkCargoArtifacts,
   mkCargoDummySource,
+  mkDerivation,
   fetchCargoVendor,
   bash,
   ca-certificates,
@@ -13,6 +14,9 @@
   perl,
   openssl,
   aos-landlock,
+  aos-method46-tpm-helper,
+  aos-runtime-deployment-tpm-helper,
+  aos-fuse-transport,
   aos-service-root,
   aos-selinux-run,
   aos-verity-root-guard,
@@ -84,7 +88,7 @@
   # The caller's PATH is retained solely for explicit user-supplied commands;
   # internal subprocesses always use the corresponding hermetic PATH.
   # On Darwin, local VM execution is supplied by the opt-in aos-vm wrapper.
-  aosRuntimeTools = [bash git-minimal nix zstd] ++ lib.optionals (!isDarwinCross) [qemu-img];
+  aosRuntimeTools = [bash git-minimal nix openssh zstd] ++ lib.optionals (!isDarwinCross) [qemu-img];
   aprRuntimeTools =
     [bash nix openssl sbsigntools mtools zstd]
     ++ lib.optionals (!isDarwinCross) [qemu-img]
@@ -95,6 +99,20 @@
   apmRuntimeTools =
     apmPortableRuntimeTools
     ++ lib.optionals (!isDarwinCross) [systemd util-linux];
+  linkedLibraries = [openssl sqlite zlib];
+  linkedLibraryFlags = lib.concatMapStringsSep " " (dependency: let
+    libraryDirectory = "${dependency}/lib";
+  in
+    lib.concatStringsSep " " (
+      [
+        "-L${libraryDirectory}"
+        "-Wl,-rpath,${libraryDirectory}"
+      ]
+      ++ lib.optionals stdenv.hostPlatform.isLinux [
+        "-Wl,-rpath-link,${libraryDirectory}"
+      ]
+    ))
+  linkedLibraries;
   referenceRemovalArguments = dependencies:
     builtins.concatStringsSep " \\\n            " (map (dependency: "-t ${dependency}") dependencies);
   runtimeBinPath = tools:
@@ -104,6 +122,7 @@
     );
   linuxRuntimeDeps = [
     aos-landlock
+    aos-method46-tpm-helper
     aos-service-root
     aos-selinux-run
     aos-verity-root-guard
@@ -148,6 +167,9 @@
     "aos-core"
     "aos-doc"
     "aos-doc-model"
+    "aos-filesystem-view"
+    "aos-filesystem-view-core"
+    "aos-filesystem-fuse"
     "aos-hub"
     "aos-hub-console"
     "aos-hub-console-contract"
@@ -168,6 +190,34 @@
     "aos-release"
     "aos-release-signer"
     "aos-remote"
+    "aos-sandbox-agent"
+    "aos-sandbox-broker"
+    "aos-sandbox-broker-session-protocol"
+    "aos-sandbox-broker-session-security"
+    "aos-sandbox-controller-runtime"
+    "aos-sandbox-cache-signer"
+    "aos-sandbox-client"
+    "aos-sandbox-core"
+    "aos-sandbox-guest"
+    "aos-sandbox-guest-root-realization"
+    "aos-sandbox-guest-root-tree"
+    "aos-sandbox-guardian"
+    "aos-sandbox-journal"
+    "aos-sandbox-mount"
+    "aos-sandbox-network"
+    "aos-sandbox-ownership-protocol"
+    "aos-sandbox-ownership"
+    "aos-sandbox-policy"
+    "aos-sandbox-protocol"
+    "aos-sandbox-source-provider"
+    "aos-sandbox-source-provider-ledger"
+    "aos-sandbox-source-provider-protocol"
+    "aos-sandbox-source-provider-security"
+    "aos-sandbox-source-signer"
+    "aos-sandbox-storage"
+    "aos-sandbox"
+    "aos-sandbox-linux"
+    "aos-sandbox-host"
     "aos-server"
     "aos-systemd"
   ];
@@ -178,22 +228,39 @@
     inherit src;
     name = "aos-vendor-${version}";
     sourceRoot = "source/crates";
-    hash = "sha256-6FU3M+iwF2iVd+nl7JvCC6r2oGz4Yq1PWOqBC2nBqDQ=";
+    hash = import ../crucible/_cargo-deps-hash.nix;
   };
   cargoArtifactContract = {
     family = "aos-native-release-and-test";
     checkType = "debug";
-    nativeInputs = map toString [openssl sqlite buildProtobuf buildCmake libssh2];
+    nativeInputs = map toString (
+      [openssl sqlite buildProtobuf buildCmake libssh2]
+      ++ lib.optionals (!isDarwinCross) [aos-fuse-transport]
+      ++ lib.optionals stdenv.hostPlatform.isLinux [
+        aos-method46-tpm-helper
+        aos-runtime-deployment-tpm-helper
+      ]
+    );
   };
-  cargoEnv = {
-    OPENSSL_DIR = "${openssl}";
-    OPENSSL_LIB_DIR = "${openssl}/lib";
-    OPENSSL_INCLUDE_DIR = "${openssl}/include";
-    OPENSSL_NO_VENDOR = "1";
-    OPENSSL_STATIC = "0";
-    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-    PROTOC = "${buildProtobuf}/bin/protoc";
+  noSetidTestLauncher = import ./_network-test-launcher.nix {
+    inherit mkDerivation version;
   };
+  cargoEnv =
+    {
+      OPENSSL_DIR = "${openssl}";
+      OPENSSL_LIB_DIR = "${openssl}/lib";
+      OPENSSL_INCLUDE_DIR = "${openssl}/include";
+      OPENSSL_NO_VENDOR = "1";
+      OPENSSL_STATIC = "0";
+      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+      PROTOC = "${buildProtobuf}/bin/protoc";
+    }
+    // lib.optionalAttrs stdenv.hostPlatform.isLinux {
+      AOS_NO_SETID_TEST_LAUNCHER = "${noSetidTestLauncher}/bin/no-setid-exec";
+      AOS_METHOD46_TPM_HELPER = "${aos-method46-tpm-helper}/libexec/aos-method46-tpm-helper";
+      AOS_METHOD46_TPM_PID1 = "${systemd}/lib/systemd/systemd";
+      AOS_RUNTIME_DEPLOYMENT_TPM_HELPER = "${aos-runtime-deployment-tpm-helper}/libexec/aos-runtime-deployment-tpm-helper";
+    };
   cargoArtifacts = mkCargoArtifacts {
     pname = "aos-native-release-and-test-artifacts";
     inherit version cargoDeps cargoArtifactContract;
@@ -209,8 +276,12 @@
       "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${applicationTestFlags}"
     ];
     inherit cargoEnv;
-    buildDeps = [buildPerl buildPkgConfig buildProtobuf buildCmake];
-    runtimeDeps = [openssl sqlite libssh2 zlib];
+    buildDeps =
+      [buildPerl buildPkgConfig openssl sqlite buildProtobuf buildCmake libssh2]
+      ++ lib.optionals (!isDarwinCross) [aos-fuse-transport];
+    runtimeDeps =
+      linkedLibraries
+      ++ lib.optionals (!isDarwinCross) [aos-fuse-transport];
   };
 
   # Compiles every application test target, including the `tests/`
@@ -223,8 +294,12 @@
     cargoBuildCommands = [
       "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${applicationTestFlags}"
     ];
-    buildDeps = [buildPerl buildPkgConfig buildProtobuf buildCmake];
-    runtimeDeps = [openssl sqlite libssh2 zlib];
+    buildDeps =
+      [buildPerl buildPkgConfig buildProtobuf buildCmake]
+      ++ lib.optionals (!isDarwinCross) [aos-fuse-transport];
+    runtimeDeps =
+      [openssl sqlite libssh2 zlib]
+      ++ lib.optionals (!isDarwinCross) [aos-fuse-transport];
     installBins = false;
     doCheck = false;
   };
@@ -248,6 +323,9 @@ in
     inherit cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
     cargoRoot = "crates";
     cargoNextest = true;
+    # Preserve failing-test details in retained Nix build directories, even
+    # when the terminal reporter only emits a generic test-run failure.
+    nextestFlags = "--profile ci";
     # Compilation still uses every allocated build core. Bound concurrent test
     # processes separately so loopback servers and SQLite workers retain enough
     # scheduler time to satisfy their production-sized deadlines on large hosts.
@@ -261,9 +339,10 @@ in
     # builds expose target headers and libraries without splicing in native
     # Linux shared objects.
     #
-    # openssh and zstd are build-only inputs for the check phase: the workspace
-    # tests use `ssh-keygen` for repository fixtures and exercise compressed
-    # registry packs. Nix supplies the multicall commands exercised by the
+    # The native OpenSSH and zstd inputs serve the check phase: workspace tests
+    # use `ssh-keygen` for repository fixtures and exercise compressed registry
+    # packs. The target OpenSSH client is also retained in the `aos` runtime
+    # closure for authorized execution attachment. Nix supplies commands in the
     # executable-resolution tests. `git-minimal` is also used by tests, but remains in
     # the `aos` runtime closure because maintainer commands create, inspect,
     # commit, and publish isolated Git worktrees without host tools.
@@ -280,20 +359,24 @@ in
         ca-certificates
         remove-references-to
       ]
+      ++ lib.optionals (!isDarwinCross) [aos-fuse-transport]
       ++ lib.optionals isDarwinCross [buildPackages.aos];
     runtimeDeps =
-      [openssl sqlite libssh2 zlib]
+      linkedLibraries
+      ++ [libssh2]
       ++ aosRuntimeTools
       ++ aprRuntimeTools
       ++ apmRuntimeTools
+      ++ lib.optionals (!isDarwinCross) [aos-fuse-transport]
       ++ lib.optionals (!isDarwinCross) linuxRuntimeDeps;
 
-    # mkDerivation normally constructs one RPATH from every runtimeDep. That
+    # mkDerivation normally constructs linker search paths from every runtimeDep. That
     # is correct for a single-output package, but would make each executable
     # retain the union of all four command closures here. The Rust programs
-    # dynamically link only these shared libraries; command-specific tools are
-    # referenced exclusively by the corresponding installed wrapper.
-    NIX_LDFLAGS = "-Wl,-rpath,${openssl}/lib -Wl,-rpath,${sqlite}/lib -Wl,-rpath,${zlib}/lib";
+    # dynamically link only these shared libraries. Keep their link-time and
+    # runtime search paths explicit; command-specific tools are referenced
+    # exclusively by the corresponding installed wrapper.
+    NIX_LDFLAGS = linkedLibraryFlags;
 
     preBuild = ''
       # Keep the integration-test executable below the bounded verifier-

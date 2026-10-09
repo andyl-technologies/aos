@@ -1254,6 +1254,10 @@
         message = "additional type predicates validate merged, default, and nested values";
       }
       {
+        ok = import ./component-parent-enclosure.nix {inherit lib;};
+        message = "nullable parent enclosure preserves absence and typed selected audit bounds";
+      }
+      {
         ok = pathInStoreAccepts && pathInStoreRejectsHost && pathInStoreRejectsRelative && pathInStoreRejectsNumber;
         message = "pathInStore validation";
       }

@@ -1,0 +1,289 @@
+##! modules/sandbox/mount-broker.nix — descriptor-only root mount boundary
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}: let
+  cfg = config.aos.sandbox.mountBroker;
+  hostBroker = config.aos.sandbox.hostBroker;
+  sourceProvider = config.aos.sandbox.sourceProvider;
+  signedCarrier = config.boot.initrd.systemd.mountExecutableCarrier;
+  selectedStage0 = config.aos.boot.initrd.stage0;
+  daemonPath =
+    if cfg.useExecutableCarrier
+    then "/run/aos/mount-executable-carrier/daemon"
+    else "${cfg.package}/bin/aos-sandbox-mountd";
+  brokerSession = import ./_broker-session-credentials.nix {inherit lib pkgs;};
+  brokerSessionEndpoints = [
+    {
+      name = "mount-broker";
+      description = "Mount broker";
+      role = "broker";
+      journalRoot = "/var/lib/aos/sandbox-mount/broker-session";
+      options = {
+        manifest = "brokerSessionManifest";
+        hello = "brokerSessionHelloKey";
+        record = "brokerSessionOutcomeKey";
+      };
+    }
+    {
+      name = "mount-host-client";
+      description = "RootMount-to-Host client";
+      role = "client";
+      journalRoot = "/var/lib/aos/sandbox-mount/broker-session/host";
+      options = {
+        manifest = "brokerSessionHostManifest";
+        hello = "brokerSessionHostHelloKey";
+        record = "brokerSessionHostRecordKey";
+      };
+    }
+    {
+      name = "mount-fuse-broker";
+      description = "Dormant FUSE-3 Mount broker context";
+      role = "broker";
+      optionalManifest = true;
+      journalRoot = "/var/lib/aos/sandbox-mount/broker-session/fuse";
+      options = {
+        manifest = "brokerSessionFuseManifest";
+        hello = "brokerSessionHelloKey";
+        record = "brokerSessionOutcomeKey";
+      };
+    }
+  ];
+  brokerSessionConfiguration = brokerSession.configure cfg.credentials brokerSessionEndpoints;
+  # Preserve the sole credential command generator. Selected controls use
+  # regular immutable copies and literal paths checked by PID1 before spawn.
+  brokerSessionInstallCommands =
+    if cfg.sourceProviderSession.enable
+    then map (
+      builtins.replaceStrings
+      ["${pkgs.coreutils}/bin/install" "${pkgs.coreutils}/bin/chmod" "%d/"]
+      ["/run/aos/mount-executable-carrier/install" "/run/aos/mount-executable-carrier/chmod" "/run/credentials/aos-sandbox-mountd.service/"]
+    ) brokerSessionConfiguration.installCommands
+    else brokerSessionConfiguration.installCommands;
+  credentialFields = {
+    brokerPlanPolicy = "broker-plan-policy.cbor";
+    brokerPlanPublicKey = "broker-plan-public-key";
+    brokerRevocationScope = "broker-revocation-scope";
+    ownershipLeasePolicy = "ownership-lease-policy.cbor";
+    ownershipLeasePublicKey = "ownership-lease-public-key";
+    nodeId = "node-id";
+    journalMacKey = "journal-mac-key";
+  };
+  coverageCredentialFields = {
+    gitCoverageEnrollment = "git-upload-coverage-enrollment-v1";
+    gitCoverageOwnerCatalog = "git-upload-owner-catalog-v1";
+    gitCoverageProjectPublicKey = "project-public-key";
+    gitCoverageDeploymentPublicKey = "deployment-public-key";
+  };
+  coverageSelected = cfg.credentials.gitCoverageEnrollment != null;
+  coverageLoadCredentials = lib.mapAttrsToList (
+    name: credentialFile: "${credentialFile}:/run/credentials/@system/${cfg.credentials.${name}}"
+  ) (lib.filterAttrs (name: _: cfg.credentials.${name} != null) coverageCredentialFields);
+  configuredCredentials =
+    lib.filterAttrs (name: _: cfg.credentials.${name} != null) credentialFields;
+  # Sources are names in the platform credential namespace, not paths or
+  # values. PID 1 copies their runtime bytes into the service credential
+  # directory, so evaluating and building the system never captures secrets in
+  # a derivation or Nix store path.
+  loadCredentials =
+    lib.mapAttrsToList (
+      name: _: "${credentialFields.${name}}:/run/credentials/@system/${cfg.credentials.${name}}"
+    )
+    configuredCredentials;
+in {
+  options.aos.sandbox.mountBroker = {
+    enable = lib.mkEnableOption "the fixed AOS sandbox mount broker";
+
+    sourceProviderSession.enable = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "Connect to the separate SourceProvider service after installing a protected AOSMMSTA1 Mount startup policy and externally provisioning RootMount's authority at /var/lib/aos/sandbox-mount/source-provider-authority and Provider's authority at /var/lib/aos/source-provider/authority. This enables authenticated session, pending Acquire observation, and Reserved Inventory readback; source effects and SourceRoot handoff remain unavailable.";
+    };
+
+    useExecutableCarrier = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "Run Mount's daemon from the signed, verified first-launcher carrier mounted by SELinux stage0. Requires the selected initrd and stage0 to name the same carrier, with a daemon built from this module's package.";
+    };
+
+    package = lib.mkOption {
+      type = lib.types.package;
+      default = pkgs.aos-sandbox-mountd;
+      defaultText = "pkgs.aos-sandbox-mountd";
+      description = "The independently packaged mount broker and helper.";
+    };
+
+    maximumRetainedMounts = lib.mkOption {
+      type = lib.types.addCheck lib.types.int (value: value > 0);
+      default = 1024;
+      description = "The hard admission ceiling for mount descriptors retained by PID 1 across broker restarts.";
+    };
+
+    credentials =
+      lib.mapAttrs (name: credentialFile:
+        lib.mkOption {
+          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          default = null;
+          description = "External system credential loaded as ${credentialFile}; its bytes never enter the Nix store.";
+        })
+      credentialFields
+      // lib.mapAttrs (_: credentialFile:
+        lib.mkOption {
+          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          default = null;
+          description = "Fixed public exclusive-cohort input loaded as ${credentialFile}. All four inputs are required together; this selects denial-only enrollment, not Mount allocation authority.";
+        })
+      coverageCredentialFields
+      // brokerSession.mkOptions brokerSessionEndpoints;
+  };
+
+  config = lib.mkIf cfg.enable {
+    assertions =
+      lib.mapAttrsToList (name: credentialFile: {
+        assertion = cfg.credentials.${name} != null;
+        message = "aos.sandbox.mountBroker.credentials.${name} is required for ${credentialFile}";
+      })
+      credentialFields
+      ++ lib.mapAttrsToList (name: _: {
+        assertion = (cfg.credentials.${name} != null) == coverageSelected;
+        message = "Mount Git coverage credentials must be configured as one complete fixed four-input profile";
+      }) coverageCredentialFields
+      ++ [
+        {
+          assertion = !coverageSelected || !cfg.sourceProviderSession.enable;
+          message = "The first exclusive Git cohort requires an unused Source domain, not an active SourceProvider connector";
+        }
+        {
+          assertion = !cfg.sourceProviderSession.enable || sourceProvider.enable;
+          message = "aos.sandbox.mountBroker.sourceProviderSession.enable requires aos.sandbox.sourceProvider.enable";
+        }
+        {
+          assertion =
+            !cfg.sourceProviderSession.enable
+            || (cfg.useExecutableCarrier
+              && cfg.package == pkgs.aos-sandbox-mountd
+              && sourceProvider.package == pkgs.aos-source-providerd
+              && config.systemd.package == pkgs.systemd
+              && config.aos.security.selinux.enable
+              && config.aos.security.selinux.bootMode == "immutable-stage0"
+              && config.aos.security.selinux.mode == "enforcing"
+              && signedCarrier != null
+              && (signedCarrier.passthru.sourceProviderCarrier or false));
+          message = "selected Mount/Source requires the fixed packages, enforcing immutable stage0 and its selected executable carrier";
+        }
+        {
+          assertion =
+            !cfg.useExecutableCarrier
+            || (signedCarrier
+              != null
+              && selectedStage0 != null
+              && (selectedStage0.passthru.mountCarrierFirstLauncher or false)
+              && selectedStage0.passthru ? mountExecutableCarrier
+              && selectedStage0.passthru.mountExecutableCarrier != null
+              && toString selectedStage0.passthru.mountExecutableCarrier == toString signedCarrier
+              && signedCarrier.passthru ? daemon
+              && toString signedCarrier.passthru.daemon == toString cfg.package);
+          message = "aos.sandbox.mountBroker.useExecutableCarrier requires a matching signed first-launcher stage0 carrier whose daemon is mountBroker.package";
+        }
+        {
+          assertion =
+            !hostBroker.enable
+            || cfg.credentials.journalMacKey == null
+            || hostBroker.credentials.journalMacKey == null
+            || cfg.credentials.journalMacKey != hostBroker.credentials.journalMacKey;
+          message = "host and mount brokers must use distinct journalMacKey credential sources";
+        }
+      ]
+      ++ brokerSessionConfiguration.assertions;
+
+    boot.initrd.systemd.mountExecutableCarrier = lib.mkIf cfg.sourceProviderSession.enable
+      (pkgs.aosMountSourceExecutableCarrierForKernel config.system.build.kernel);
+
+    systemd.sockets.aos-sandbox-mountd = {
+      description = "AOS sandbox mount broker socket";
+      wantedBy = ["sockets.target"];
+      socketConfig = {
+        ListenSequentialPacket = "/run/aos/sandbox-mount/control.sock";
+        FileDescriptorName = "aos-sandbox-mount";
+        Service = "aos-sandbox-mountd.service";
+        PassCredentials = true;
+        PassPIDFD = true;
+        SocketUser = "aos-sandboxd";
+        SocketGroup = "aos-sandboxd";
+        SocketMode = "0600";
+        DirectoryMode = "0710";
+        RemoveOnStop = true;
+      };
+    };
+
+    systemd.services.aos-sandbox-mountd = {
+      description = "AOS descriptor-only sandbox mount broker";
+      requires = ["aos-sandbox-mountd.socket"] ++ lib.optional cfg.sourceProviderSession.enable "aos-source-providerd.socket";
+      after = ["aos-sandbox-mountd.socket" "local-fs.target"] ++ lib.optional cfg.sourceProviderSession.enable "aos-source-providerd.socket";
+      unitConfig = {
+        StartLimitIntervalSec = 60;
+        StartLimitBurst = 5;
+      };
+      serviceConfig = {
+        Type = "simple";
+        NotifyAccess = "main";
+        ExecStartPre =
+          brokerSessionInstallCommands
+          ++ lib.optionals cfg.sourceProviderSession.enable [
+            "${daemonPath} --check-selected-source-provider-authority"
+          ];
+        # The service does not provision RootMount custody; the daemon checks
+        # its fixed files, peer and signed hello before retaining the session.
+        ExecStart = "${daemonPath} ${cfg.package}/bin/aos-sandbox-mount-helper${lib.optionalString cfg.sourceProviderSession.enable " --source-provider --selected-mount-source"}${lib.optionalString coverageSelected " --git-upload-exclusive-cohort"}";
+        LoadCredential = loadCredentials ++ brokerSessionConfiguration.loadCredentials ++ coverageLoadCredentials
+          ++ lib.optionals cfg.sourceProviderSession.enable [
+            "current-catalog-publication:/run/credentials/@system/${sourceProvider.credentials.catalogPublication}"
+            "current-catalog-manifest:/run/credentials/@system/${sourceProvider.credentials.catalogManifest}"
+          ];
+        Restart = "on-failure";
+        RestartSec = "2s";
+        FileDescriptorStoreMax = cfg.maximumRetainedMounts;
+        FileDescriptorStorePreserve = "yes";
+        StateDirectory = "aos/sandbox-mount";
+        StateDirectoryMode = "0700";
+        RuntimeDirectory = "aos/sandbox-mount-catalog";
+        RuntimeDirectoryMode = "0700";
+        RuntimeDirectoryPreserve = "restart";
+        UMask = "0077";
+
+        CapabilityBoundingSet = ["CAP_SYS_ADMIN" "CAP_SYS_CHROOT"];
+        AmbientCapabilities = ["CAP_SYS_ADMIN" "CAP_SYS_CHROOT"];
+        DevicePolicy = "closed";
+        DeviceAllow = ["/dev/fuse rw"];
+        LimitNOFILE = 4096;
+        LockPersonality = true;
+        MemoryHigh = "512M";
+        MemoryMax = "1G";
+        MemoryDenyWriteExecute = true;
+        NoNewPrivileges = true;
+        PrivateDevices = false;
+        PrivateTmp = true;
+        ProcSubset = "all";
+        ProtectClock = true;
+        ProtectControlGroups = true;
+        ProtectHome = true;
+        ProtectKernelLogs = true;
+        ProtectKernelModules = true;
+        ProtectKernelTunables = true;
+        ProtectProc = if cfg.sourceProviderSession.enable then "default" else "invisible";
+        ProtectSystem = "strict";
+        RestrictAddressFamilies = ["AF_UNIX"];
+        RestrictRealtime = true;
+        RestrictSUIDSGID = true;
+        Slice = "aos-control.slice";
+        TasksMax = 64;
+      } // lib.optionalAttrs cfg.sourceProviderSession.enable {
+        AosOwnLauncherImage = true;
+        NonBlocking = true;
+        SELinuxContext = "system_u:system_r:aos_sandbox_mount_t:s0";
+      };
+    };
+  };
+}

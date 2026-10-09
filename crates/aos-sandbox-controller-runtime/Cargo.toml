@@ -1,0 +1,47 @@
+[package]
+name = "aos-sandbox-controller-runtime"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+autobins = false
+
+[features]
+default = []
+kernel-tests = ["aos-sandbox-broker-session-security/kernel-tests", "aos-sandbox-linux/kernel-tests"]
+online-nix = ["aos-sandbox-broker-session-security/online-nix"]
+
+[dependencies]
+aos-filesystem-view-core.workspace = true
+aos-proto.workspace = true
+aos-sandbox.workspace = true
+aos-sandbox-agent.workspace = true
+aos-sandbox-broker-session-protocol.workspace = true
+aos-sandbox-broker-session-security.workspace = true
+aos-sandbox-core.workspace = true
+aos-sandbox-linux.workspace = true
+aos-sandbox-mount.workspace = true
+aos-sandbox-ownership-protocol.workspace = true
+aos-sandbox-protocol.workspace = true
+aos-sandbox-source-provider-protocol.workspace = true
+aos-systemd.workspace = true
+buffa.workspace = true
+connectrpc.workspace = true
+ed25519-dalek = { workspace = true, features = ["zeroize"] }
+futures.workspace = true
+rustix = { workspace = true, features = ["event", "fs", "net", "process", "rand", "time"] }
+serde.workspace = true
+serde_json.workspace = true
+ssh-key.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
+aos-sandbox = { workspace = true, features = ["test-fixtures"] }
+rustix = { workspace = true, features = ["net", "pipe"] }
+tempfile = "3"
+
+[lints]
+workspace = true

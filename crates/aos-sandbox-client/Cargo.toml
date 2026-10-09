@@ -1,0 +1,29 @@
+[package]
+name = "aos-sandbox-client"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+aos-proto.workspace = true
+aos-sandbox-core.workspace = true
+aos-sandbox-protocol.workspace = true
+anyhow.workspace = true
+base64.workspace = true
+buffa.workspace = true
+connectrpc.workspace = true
+hex.workspace = true
+http.workspace = true
+hyper-util.workspace = true
+rand.workspace = true
+rustix = { workspace = true, features = ["process"] }
+rustls-pemfile.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+tokio-rustls.workspace = true
+tower.workspace = true
+zeroize.workspace = true
+
+[lints]
+workspace = true

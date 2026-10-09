@@ -9,11 +9,15 @@
   checkpolicy,
   semodule-utils,
   policycoreutils,
+  production ? false,
 }: let
   version = "2.20240916";
 in
   mkDerivation {
-    pname = "refpolicy";
+    pname =
+      if production
+      then "refpolicy-production"
+      else "refpolicy";
     inherit version;
 
     src = fetchurl {
@@ -52,32 +56,57 @@ in
       }
       {
         name = "configure";
-        script = ''
-          # Set policy build options
-          sed -i \
-            -e 's/^#\?DISTRO.*/DISTRO = redhat/' \
-            -e 's/^#\?UBAC.*/UBAC = y/' \
-            -e 's/^#\?DIRECT_INITRC.*/DIRECT_INITRC = n/' \
-            -e 's/^#\?MONOLITHIC.*/MONOLITHIC = n/' \
-            -e 's|^#\?PREFIX.*|PREFIX = '"$out"'|' \
-            build.conf
+        script =
+          (
+            if production
+            then ''
+              # Match the production kernel's ordered security-class map. The
+              # final-policy gate independently derives and verifies this map
+              # from the pinned kernel source.
+              patch -p1 < ${./_aos-selinux-production-policy/refpolicy-linux-6.18.33.patch}
+              # Copied guest closures and the fixed FUSE worker must not gain
+              # ambient host-loader or textrel access through domain membership.
+              patch --fuzz=0 -p1 < ${./_aos-selinux-production-policy/refpolicy-explicit-loaders.patch}
+              # The worker reads raw kernel labels and has no translation RPC.
+              patch --fuzz=0 -p1 < ${./_aos-selinux-production-policy/refpolicy-explicit-contexts.patch}
+              # Normal Root custody is excluded from blanket domain grants only.
+              patch --fuzz=0 -p1 < ${./_aos-selinux-production-policy/refpolicy-private-root-custody.patch}
+              sed -i 's/^UNK_PERMS.*/UNK_PERMS = reject/' build.conf
+              # Both fixed AOS transitions retain NNP/nosuid. They use explicit
+              # process2 permissions rather than weakening the inherited guard.
+              if ! grep -q '^policycap nnp_nosuid_transition;' policy/policy_capabilities; then
+                printf '\npolicycap nnp_nosuid_transition;\n' >> policy/policy_capabilities
+              fi
 
-          # Override individual tool paths in the Makefile.
-          # checkmodule/checkpolicy come from the checkpolicy package,
-          # semodule_package/semodule_link/semodule_expand from semodule-utils,
-          # and semodule/load_policy/setfiles/sefcontext_compile from policycoreutils.
-          sed -i \
-            -e 's|^CHECKPOLICY ?=.*|CHECKPOLICY := ${checkpolicy}/bin/checkpolicy|' \
-            -e 's|^CHECKMODULE ?=.*|CHECKMODULE := ${checkpolicy}/bin/checkmodule|' \
-            -e 's|^SEMOD_PKG ?=.*|SEMOD_PKG := ${semodule-utils}/bin/semodule_package|' \
-            -e 's|^SEMOD_LNK ?=.*|SEMOD_LNK := ${semodule-utils}/bin/semodule_link|' \
-            -e 's|^SEMOD_EXP ?=.*|SEMOD_EXP := ${semodule-utils}/bin/semodule_expand|' \
-            -e 's|^SEMODULE ?=.*|SEMODULE := ${policycoreutils}/sbin/semodule|' \
-            -e 's|^LOADPOLICY ?=.*|LOADPOLICY := ${policycoreutils}/sbin/load_policy|' \
-            -e 's|^SETFILES ?=.*|SETFILES := ${policycoreutils}/sbin/setfiles|' \
-            -e 's|^SEFCONTEXT_COMPILE ?=.*|SEFCONTEXT_COMPILE := ${policycoreutils}/sbin/sefcontext_compile|' \
-            Makefile
-        '';
+            ''
+            else ""
+          )
+          + ''
+            # Set policy build options
+            sed -i \
+              -e 's/^#\?DISTRO.*/DISTRO = redhat/' \
+              -e 's/^#\?UBAC.*/UBAC = y/' \
+              -e 's/^#\?DIRECT_INITRC.*/DIRECT_INITRC = n/' \
+              -e 's/^#\?MONOLITHIC.*/MONOLITHIC = n/' \
+              -e 's|^#\?PREFIX.*|PREFIX = '"$out"'|' \
+              build.conf
+
+            # Override individual tool paths in the Makefile.
+            # checkmodule/checkpolicy come from the checkpolicy package,
+            # semodule_package/semodule_link/semodule_expand from semodule-utils,
+            # and semodule/load_policy/setfiles/sefcontext_compile from policycoreutils.
+            sed -i \
+              -e 's|^CHECKPOLICY ?=.*|CHECKPOLICY := ${checkpolicy}/bin/checkpolicy|' \
+              -e 's|^CHECKMODULE ?=.*|CHECKMODULE := ${checkpolicy}/bin/checkmodule|' \
+              -e 's|^SEMOD_PKG ?=.*|SEMOD_PKG := ${semodule-utils}/bin/semodule_package|' \
+              -e 's|^SEMOD_LNK ?=.*|SEMOD_LNK := ${semodule-utils}/bin/semodule_link|' \
+              -e 's|^SEMOD_EXP ?=.*|SEMOD_EXP := ${semodule-utils}/bin/semodule_expand|' \
+              -e 's|^SEMODULE ?=.*|SEMODULE := ${policycoreutils}/sbin/semodule|' \
+              -e 's|^LOADPOLICY ?=.*|LOADPOLICY := ${policycoreutils}/sbin/load_policy|' \
+              -e 's|^SETFILES ?=.*|SETFILES := ${policycoreutils}/sbin/setfiles|' \
+              -e 's|^SEFCONTEXT_COMPILE ?=.*|SEFCONTEXT_COMPILE := ${policycoreutils}/sbin/sefcontext_compile|' \
+              Makefile
+          '';
       }
       {
         name = "build";
@@ -111,7 +140,10 @@ in
     ];
 
     meta = {
-      description = "SELinux Reference Policy — base SELinux policy";
+      description =
+        if production
+        then "SELinux Reference Policy with the production Linux security-class map"
+        else "SELinux Reference Policy — base SELinux policy";
       homepage = "https://github.com/SELinuxProject/refpolicy";
       license = "GPL-2.0-or-later";
     };

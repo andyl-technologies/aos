@@ -1,0 +1,735 @@
+//! Nonauthorizing signed project authorization source for Source-tree limits.
+//!
+//! A privileged administrative signer, distinct from the Controller seed
+//! signer, may assert seven initial-tree limits against one current protected
+//! publisher head. Packet verification alone does not install credentials,
+//! retain the packet, spend an epoch, or authorize a Source journal append.
+//!
+//! ```text
+//! AOSPSC02 | version:u16be | reserved:u16be | signer-generation:u64be |
+//! project:16 | publisher-generation:u64be | AOSPOLH1 digest:32 |
+//! AOSPOLR1 digest:32 | request-id:16 | issuer-epoch:u64be |
+//! seven TreeLimitsV1 ceilings:u32be each | Ed25519 signature:64
+//! AOSPSC03 uses the same claims, followed by 22 resource ceilings:u64be
+//! in ResourceDimension::ALL order, then the signature (336 + 64 bytes).
+//!
+//! AOSPAK02 | signer-generation:u64be | Ed25519 public key:32 |
+//! SHA-256(key-domain || preceding 48 bytes):32
+//! ```
+
+use aos_sandbox_core::source_tree_model::TreeLimitsV1;
+use aos_sandbox_core::{ObjectDigest, ProjectId, ResourceDimension, ResourceVector};
+use aos_sandbox_protocol::source_project_authorization::{
+    PROJECT_AUTHORIZATION_SOURCE_BODY_BYTES_V2 as BODY_BYTES,
+    PROJECT_AUTHORIZATION_SOURCE_BODY_BYTES_V3 as BODY_BYTES_V3,
+    PROJECT_AUTHORIZATION_SOURCE_BYTES_V3,
+    ProjectAuthorizationSourceDataErrorV2, UnverifiedProjectAuthorizationClaimsV2,
+    packet_body_bytes, parse_unverified_project_authorization_claims_v2,
+    project_authorization_packet_digest,
+};
+use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
+use sha2::{Digest as _, Sha256};
+use thiserror::Error;
+
+use crate::journal::RecordNamespace;
+use crate::public_api_session::PinnedSystemdCredential;
+use crate::role_credential::{
+    ROLE_CREDENTIAL_BYTES, decode_role_credential, encode_role_credential,
+};
+
+use super::{PublisherPolicyError, PublisherPolicyStore, policy_current_key, policy_revision_key};
+
+const KEY_MAGIC: &[u8; 8] = b"AOSPAK02";
+const KEY_BYTES: usize = ROLE_CREDENTIAL_BYTES;
+const SIGNING_DOMAIN: &[u8] =
+    b"aos.sandbox.publisher-project-authorization-source.v2\0/var/lib/aos/sandboxd/controller.journal\0";
+const SIGNING_DOMAIN_V3: &[u8] =
+    b"aos.sandbox.publisher-project-authorization-source.v3\0/var/lib/aos/sandboxd/controller.journal\0";
+const KEY_DOMAIN: &[u8] = b"aos.sandbox.publisher-project-authorization-verifier.v2\0";
+pub(super) const HEAD_DOMAIN: &[u8] =
+    b"aos.sandbox.publisher-project-authorization.current-head.v2\0";
+pub(super) const REVISION_DOMAIN: &[u8] =
+    b"aos.sandbox.publisher-project-authorization.current-revision.v2\0";
+
+/// Reports an invalid or stale signed project authorization source.
+#[derive(Debug, Error)]
+pub enum ProjectAuthorizationSourceErrorV2 {
+    /// The fixed privileged issuer credential is missing or has changed.
+    #[error("project authorization issuer credential is unavailable")]
+    Credential,
+    /// A source packet, issuer credential, or tree limit is noncanonical.
+    #[error("invalid project authorization source")]
+    NonCanonical,
+    /// The packet does not match the pinned role or current protected head.
+    #[error("project authorization source is stale")]
+    Stale,
+    /// The pinned issuer did not sign these exact source bytes.
+    #[error("project authorization source signature is invalid")]
+    Signature,
+    /// Publisher policy replay cannot establish a current head.
+    #[error(transparent)]
+    Publisher(#[from] PublisherPolicyError),
+}
+
+impl From<ProjectAuthorizationSourceDataErrorV2> for ProjectAuthorizationSourceErrorV2 {
+    fn from(error: ProjectAuthorizationSourceDataErrorV2) -> Self {
+        match error {
+            ProjectAuthorizationSourceDataErrorV2::NonCanonical => Self::NonCanonical,
+        }
+    }
+}
+
+/// Holds a public-only, independently provisioned project issuer pin.
+///
+/// Decoding this credential does not install it as a trust root. Its bytes
+/// must come from privileged deployment configuration, never the packet.
+pub struct PinnedPublisherProjectAuthorizationIssuerV2 {
+    generation: u64,
+    key: VerifyingKey,
+}
+
+/// Holds the fixed systemd issuer pin and its protected file identity.
+///
+/// The Controller obtains this credential by its fixed name. A packet or
+/// caller cannot select the trust root used for a retained decision.
+pub(super) struct ProtectedProjectAuthorizationIssuerV2 {
+    credential: PinnedSystemdCredential,
+    pin: PinnedPublisherProjectAuthorizationIssuerV2,
+}
+
+impl ProtectedProjectAuthorizationIssuerV2 {
+    pub(super) fn from_systemd_credentials() -> Result<Self, ProjectAuthorizationSourceErrorV2> {
+        let credential = PinnedSystemdCredential::load_project_authorization_issuer_v2()
+            .map_err(|_| ProjectAuthorizationSourceErrorV2::Credential)?;
+        let pin = PinnedPublisherProjectAuthorizationIssuerV2::decode(credential.bytes())?;
+        credential
+            .recheck()
+            .map_err(|_| ProjectAuthorizationSourceErrorV2::Credential)?;
+        Ok(Self { credential, pin })
+    }
+
+    pub(super) fn pin(&self) -> &PinnedPublisherProjectAuthorizationIssuerV2 {
+        &self.pin
+    }
+
+    pub(super) fn recheck(&self) -> Result<(), ProjectAuthorizationSourceErrorV2> {
+        self.credential
+            .recheck()
+            .map_err(|_| ProjectAuthorizationSourceErrorV2::Credential)
+    }
+}
+
+impl PinnedPublisherProjectAuthorizationIssuerV2 {
+    /// Decodes the role-specific public verifier credential.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a foreign role, malformed key, zero generation, or alteration.
+    pub fn decode(bytes: &[u8]) -> Result<Self, ProjectAuthorizationSourceErrorV2> {
+        let (generation, key) = decode_role_credential(bytes, KEY_MAGIC, KEY_DOMAIN)
+            .ok_or(ProjectAuthorizationSourceErrorV2::NonCanonical)?;
+        Ok(Self { generation, key })
+    }
+
+    /// Returns the externally pinned signer generation.
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Returns the role-specific public key.
+    #[must_use]
+    pub const fn verifying_key(&self) -> &VerifyingKey {
+        &self.key
+    }
+}
+
+/// Encodes a public-only project issuer credential for offline provisioning.
+///
+/// This does not install an issuer or permit Source-tree creation.
+///
+/// # Errors
+///
+/// Rejects generation zero.
+pub fn encode_project_authorization_issuer_credential_v2(
+    generation: u64,
+    key: &VerifyingKey,
+) -> Result<[u8; KEY_BYTES], ProjectAuthorizationSourceErrorV2> {
+    encode_role_credential(generation, key, KEY_MAGIC, KEY_DOMAIN)
+        .ok_or(ProjectAuthorizationSourceErrorV2::NonCanonical)
+}
+
+/// Describes an offline administrative statement with an explicit full budget.
+///
+/// These values are DATA until the existing issuer signature and current
+/// publisher, epoch and owner joins are verified. No Node ceiling is inherited.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProjectResourceAuthorizationClaimsV3 {
+    /// Identifies the project selected by the administrative signer.
+    pub project: ProjectId,
+    /// Retains the independent administrative issuer generation.
+    pub issuer_generation: u64,
+    /// Identifies the existing publisher revision generation.
+    pub publisher_generation: u64,
+    /// Commits to the exact existing protected publisher pointer.
+    pub publisher_head: ObjectDigest,
+    /// Commits to the exact existing immutable publisher revision.
+    pub publisher_revision: ObjectDigest,
+    /// Correlates the administrative request and matching seed.
+    pub request_id: [u8; 16],
+    /// Carries the administrative epoch, which retention must spend once.
+    pub epoch: u64,
+    /// Carries the same seven independent initial-tree ceilings as PSC02.
+    pub tree_limits: TreeLimitsV1,
+    /// Carries explicit ceilings for every registered resource dimension.
+    pub resource_envelope: ResourceVector,
+}
+
+/// Signs the full administrative resource statement for offline provisioning.
+///
+/// The signer remains the existing AOSPAK02 role. Signing does not install a
+/// credential, retain an epoch, authorize Source mutation or fund a Project.
+///
+/// # Errors
+/// Rejects sentinel claims or tree limits that cannot fit the existing codec.
+pub fn sign_project_resource_authorization_source_v3(
+    claims: ProjectResourceAuthorizationClaimsV3,
+    key: &SigningKey,
+) -> Result<[u8; PROJECT_AUTHORIZATION_SOURCE_BYTES_V3], ProjectAuthorizationSourceErrorV2> {
+    let mut packet = [0; PROJECT_AUTHORIZATION_SOURCE_BYTES_V3];
+    packet[..8].copy_from_slice(b"AOSPSC03");
+    packet[8..10].copy_from_slice(&3_u16.to_be_bytes());
+    packet[12..20].copy_from_slice(&claims.issuer_generation.to_be_bytes());
+    packet[20..36].copy_from_slice(claims.project.as_bytes());
+    packet[36..44].copy_from_slice(&claims.publisher_generation.to_be_bytes());
+    packet[44..76].copy_from_slice(claims.publisher_head.as_bytes());
+    packet[76..108].copy_from_slice(claims.publisher_revision.as_bytes());
+    packet[108..124].copy_from_slice(&claims.request_id);
+    packet[124..132].copy_from_slice(&claims.epoch.to_be_bytes());
+
+    for (index, limit) in [
+        claims.tree_limits.maximum_project_roots(),
+        claims.tree_limits.maximum_project_sandboxes(),
+        claims.tree_limits.maximum_project_live_sandboxes(),
+        claims.tree_limits.maximum_depth(),
+        claims.tree_limits.maximum_children_per_parent(),
+        claims.tree_limits.maximum_descendants(),
+        claims.tree_limits.maximum_live_descendants(),
+    ].into_iter().enumerate() {
+        let limit = u32::try_from(limit).map_err(|_| ProjectAuthorizationSourceErrorV2::NonCanonical)?;
+        packet[132 + index * 4..136 + index * 4].copy_from_slice(&limit.to_be_bytes());
+    }
+    for (index, dimension) in ResourceDimension::ALL.into_iter().enumerate() {
+        packet[BODY_BYTES + index * 8..BODY_BYTES + (index + 1) * 8]
+            .copy_from_slice(&claims.resource_envelope.get(dimension).to_be_bytes());
+    }
+
+    parse_unverified_project_authorization_claims_v2(&packet)?;
+    let signature = key.sign(&signing_preimage(&packet[..BODY_BYTES_V3]));
+    packet[BODY_BYTES_V3..].copy_from_slice(&signature.to_bytes());
+    Ok(packet)
+}
+
+/// Selects a trusted project, request, and previously spent issuer epoch.
+///
+/// The future issuer must derive these values from protected administrative
+/// custody. An arbitrary caller-created expectation grants no authority.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProjectAuthorizationSourceExpectedV2 {
+    project: ProjectId,
+    request_id: [u8; 16],
+    last_epoch: u64,
+}
+
+impl ProjectAuthorizationSourceExpectedV2 {
+    /// Constructs a nonauthorizing expected request and replay floor.
+    ///
+    /// # Errors
+    ///
+    /// Rejects sentinel project or request identities.
+    pub fn new(
+        project: ProjectId,
+        request_id: [u8; 16],
+        last_epoch: u64,
+    ) -> Result<Self, ProjectAuthorizationSourceErrorV2> {
+        if project.as_bytes() == &[0; 16] || request_id == [0; 16] {
+            return Err(ProjectAuthorizationSourceErrorV2::NonCanonical);
+        }
+        Ok(Self {
+            project,
+            request_id,
+            last_epoch,
+        })
+    }
+}
+
+/// Carries signature-checked limits and protected-head comparisons only.
+///
+/// It is not a project authorization record, durable epoch, or Source append
+/// capability. A future issuer must retain the protected Controller writer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VerifiedPublisherProjectAuthorizationSourceV2 {
+    project: ProjectId,
+    limits: TreeLimitsV1,
+    issuer_generation: u64,
+    publisher_generation: u64,
+    publisher_head_digest: ObjectDigest,
+    publisher_revision_digest: ObjectDigest,
+    request_id: [u8; 16],
+    epoch: u64,
+    packet_digest: ObjectDigest,
+    resource_envelope: Option<ResourceVector>,
+}
+
+impl VerifiedPublisherProjectAuthorizationSourceV2 {
+    /// Returns the explicit signed resource envelope, or none for legacy V2.
+    ///
+    /// This observation is DATA, not paid capacity or a bank admission proof.
+    #[must_use]
+    pub const fn resource_envelope(self) -> Option<ResourceVector> {
+        self.resource_envelope
+    }
+
+    /// Returns the signed project identity.
+    #[must_use]
+    pub const fn project(self) -> ProjectId {
+        self.project
+    }
+
+    /// Returns the seven explicit administrative ceilings.
+    #[must_use]
+    pub const fn limits(self) -> TreeLimitsV1 {
+        self.limits
+    }
+
+    /// Returns the independently pinned administrative issuer generation.
+    #[must_use]
+    pub const fn issuer_generation(self) -> u64 {
+        self.issuer_generation
+    }
+
+    /// Returns the matched protected publisher generation.
+    #[must_use]
+    pub const fn publisher_generation(self) -> u64 {
+        self.publisher_generation
+    }
+
+    /// Returns the signed digest of the exact protected AOSPOLH1 pointer.
+    #[must_use]
+    pub const fn publisher_head_digest(self) -> ObjectDigest {
+        self.publisher_head_digest
+    }
+
+    /// Returns the signed digest of the selected protected AOSPOLR1 revision.
+    #[must_use]
+    pub const fn publisher_revision_digest(self) -> ObjectDigest {
+        self.publisher_revision_digest
+    }
+
+    /// Returns the signed original request identity.
+    #[must_use]
+    pub const fn request_id(self) -> [u8; 16] {
+        self.request_id
+    }
+
+    /// Returns the signed but not durably spent issuer epoch.
+    #[must_use]
+    pub const fn epoch(self) -> u64 {
+        self.epoch
+    }
+
+    /// Returns the domain-separated digest of the exact signed packet.
+    #[must_use]
+    pub const fn packet_digest(self) -> ObjectDigest {
+        self.packet_digest
+    }
+}
+
+/// Verifies a V2 or V3 source against its pin and protected publisher head.
+///
+/// The packet binds both the `AOSPOLH1` current pointer and the selected
+/// `AOSPOLR1` revision, so a validly encoded replacement with the same
+/// portable descriptor cannot silently reuse this statement. The caller must
+/// still protect the expected request and epoch floor, retain the Controller
+/// writer through issuance, and persist an authorization head before Source
+/// may append a tree. Legacy `AOSPSC01` packets are never accepted.
+///
+/// # Errors
+///
+/// Rejects malformed framing or limits, a missing or rotated signer, changed
+/// publisher heads, request/epoch replay, or invalid signature.
+pub fn verify_current_project_authorization_source_v2(
+    store: &PublisherPolicyStore<'_>,
+    bytes: &[u8],
+    issuer: &PinnedPublisherProjectAuthorizationIssuerV2,
+    expected: ProjectAuthorizationSourceExpectedV2,
+) -> Result<VerifiedPublisherProjectAuthorizationSourceV2, ProjectAuthorizationSourceErrorV2> {
+    let claims = verify_signed_project_authorization_claims_v2(bytes, issuer)?;
+
+    if claims.project() != expected.project
+        || claims.request_id() != expected.request_id
+        || claims.epoch() <= expected.last_epoch
+    {
+        return Err(ProjectAuthorizationSourceErrorV2::Stale);
+    }
+
+    let current = store
+        .current_policy(claims.project())?
+        .ok_or(ProjectAuthorizationSourceErrorV2::Stale)?;
+    let head = store
+        .journal
+        .get(
+            RecordNamespace::PublisherPolicy,
+            &policy_current_key(claims.project()),
+        )
+        .ok_or(ProjectAuthorizationSourceErrorV2::Stale)?;
+    let revision = store
+        .journal
+        .get(
+            RecordNamespace::PublisherPolicy,
+            &policy_revision_key(claims.project(), current.generation()),
+        )
+        .ok_or(ProjectAuthorizationSourceErrorV2::Stale)?;
+    if current.generation() != claims.publisher_generation()
+        || commitment(HEAD_DOMAIN, head) != claims.publisher_head_digest()
+        || commitment(REVISION_DOMAIN, revision) != claims.publisher_revision_digest()
+    {
+        return Err(ProjectAuthorizationSourceErrorV2::Stale);
+    }
+    Ok(VerifiedPublisherProjectAuthorizationSourceV2 {
+        project: claims.project(),
+        limits: claims.limits(),
+        issuer_generation: claims.issuer_generation(),
+        publisher_generation: claims.publisher_generation(),
+        publisher_head_digest: claims.publisher_head_digest(),
+        publisher_revision_digest: claims.publisher_revision_digest(),
+        request_id: claims.request_id(),
+        epoch: claims.epoch(),
+        packet_digest: project_authorization_packet_digest(bytes)?,
+        resource_envelope: claims.resource_envelope(),
+    })
+}
+
+/// Checks only the independent role signature; callers separately join owners.
+pub(crate) fn verify_signed_project_authorization_claims_v2(
+    bytes: &[u8],
+    issuer: &PinnedPublisherProjectAuthorizationIssuerV2,
+) -> Result<UnverifiedProjectAuthorizationClaimsV2, ProjectAuthorizationSourceErrorV2> {
+    let claims = parse_unverified_project_authorization_claims_v2(bytes)?;
+    if claims.issuer_generation() != issuer.generation {
+        return Err(ProjectAuthorizationSourceErrorV2::Stale);
+    }
+    let body_bytes = packet_body_bytes(bytes)?;
+    let signature = Signature::from_bytes(&take::<64>(bytes, body_bytes)?);
+    issuer
+        .key
+        .verify_strict(&signing_preimage(&bytes[..body_bytes]), &signature)
+        .map_err(|_| ProjectAuthorizationSourceErrorV2::Signature)?;
+    Ok(claims)
+}
+
+pub(super) fn commitment(domain: &[u8], bytes: &[u8]) -> ObjectDigest {
+    ObjectDigest::from_bytes(
+        Sha256::new()
+            .chain_update(domain)
+            .chain_update(bytes)
+            .finalize()
+            .into(),
+    )
+}
+
+fn signing_preimage(body: &[u8]) -> Vec<u8> {
+    let domain = if body.len() == BODY_BYTES_V3 { SIGNING_DOMAIN_V3 } else { SIGNING_DOMAIN };
+    let mut bytes = Vec::with_capacity(domain.len() + body.len());
+    bytes.extend_from_slice(domain);
+    bytes.extend_from_slice(body);
+    bytes
+}
+
+fn take<const N: usize>(
+    bytes: &[u8],
+    offset: usize,
+) -> Result<[u8; N], ProjectAuthorizationSourceErrorV2> {
+    bytes
+        .get(offset..offset + N)
+        .and_then(|slice| slice.try_into().ok())
+        .ok_or(ProjectAuthorizationSourceErrorV2::NonCanonical)
+}
+
+#[cfg(test)]
+mod tests {
+    use ed25519_dalek::SigningKey;
+
+    use crate::{JournalRecord, JournalTransaction};
+
+    use super::*;
+    use crate::publisher_policy::PublisherPolicyLimits;
+    use crate::publisher_policy::project_authorization_test_fixture::{
+        TestDirectory, packet, pin, policy, resign,
+    };
+
+    #[test]
+    fn malformed_data_preserves_existing_role_and_genesis_error_categories() {
+        let error = parse_unverified_project_authorization_claims_v2(&[]).unwrap_err();
+
+        assert!(matches!(
+            ProjectAuthorizationSourceErrorV2::from(error),
+            ProjectAuthorizationSourceErrorV2::NonCanonical,
+        ));
+        assert!(matches!(
+            crate::hierarchy::genesis_profile::SourceGenesisErrorV1::from(error),
+            crate::hierarchy::genesis_profile::SourceGenesisErrorV1::Authorization(
+                ProjectAuthorizationSourceErrorV2::NonCanonical,
+            ),
+        ));
+    }
+
+    #[test]
+    fn signed_limits_join_exact_protected_publisher_head_and_cold_replay() {
+        let directory = TestDirectory::new();
+        let project = ProjectId::from_bytes([1; 16]);
+        let key = SigningKey::from_bytes(&[2; 32]);
+        let mut journal = directory.open();
+        let mut store =
+            PublisherPolicyStore::load(&mut journal, PublisherPolicyLimits::default()).unwrap();
+        store
+            .publish_policy_from_trusted_controller([3; 16], None, &policy(project, 1, 100))
+            .unwrap();
+        let packet = packet(&store, project, &key, 7, [4; 16], 9);
+        let expected = ProjectAuthorizationSourceExpectedV2::new(project, [4; 16], 8).unwrap();
+        let verified = verify_current_project_authorization_source_v2(
+            &store,
+            &packet,
+            &pin(&key, 7),
+            expected,
+        )
+        .unwrap();
+        assert_eq!(verified.project(), project);
+        assert_eq!(
+            verified.limits(),
+            TreeLimitsV1::new(1, 8, 7, 6, 5, 4, 3).unwrap()
+        );
+        assert_eq!(verified.publisher_generation(), 1);
+        assert_eq!(verified.request_id(), [4; 16]);
+        assert_eq!(verified.epoch(), 9);
+        assert_eq!(
+            verified.packet_digest(),
+            commitment(b"aos.sandbox.publisher-project-authorization.packet.v2\0", &packet),
+        );
+        drop(store);
+        drop(journal);
+
+        let mut reopened = directory.open();
+        let store =
+            PublisherPolicyStore::load(&mut reopened, PublisherPolicyLimits::default()).unwrap();
+        assert!(
+            verify_current_project_authorization_source_v2(
+                &store,
+                &packet,
+                &pin(&key, 7),
+                expected
+            )
+            .is_ok()
+        );
+        let spent = ProjectAuthorizationSourceExpectedV2::new(project, [4; 16], 9).unwrap();
+        assert!(matches!(
+            verify_current_project_authorization_source_v2(&store, &packet, &pin(&key, 7), spent),
+            Err(ProjectAuthorizationSourceErrorV2::Stale)
+        ));
+    }
+
+    #[test]
+    fn role_rotation_tampering_and_signed_invalid_limits_fail_closed() {
+        let directory = TestDirectory::new();
+        let project = ProjectId::from_bytes([1; 16]);
+        let key = SigningKey::from_bytes(&[2; 32]);
+        let mut journal = directory.open();
+        let mut store =
+            PublisherPolicyStore::load(&mut journal, PublisherPolicyLimits::default()).unwrap();
+        store
+            .publish_policy_from_trusted_controller([3; 16], None, &policy(project, 1, 100))
+            .unwrap();
+        let packet = packet(&store, project, &key, 7, [4; 16], 9);
+        let expected = ProjectAuthorizationSourceExpectedV2::new(project, [4; 16], 8).unwrap();
+
+        for offset in [
+            12, 20, 36, 44, 76, 108, 124, 132, 136, 140, 144, 148, 152, 156, 160,
+        ] {
+            let mut altered = packet;
+            altered[offset] ^= 1;
+            assert!(
+                verify_current_project_authorization_source_v2(
+                    &store,
+                    &altered,
+                    &pin(&key, 7),
+                    expected
+                )
+                .is_err()
+            );
+        }
+        for offset in [0, 8, 10] {
+            let mut altered = packet;
+            altered[offset] ^= 1;
+            assert!(matches!(
+                verify_current_project_authorization_source_v2(
+                    &store,
+                    &altered,
+                    &pin(&key, 7),
+                    expected
+                ),
+                Err(ProjectAuthorizationSourceErrorV2::NonCanonical)
+            ));
+        }
+        let mut invalid_limits = packet;
+        invalid_limits[136..140].copy_from_slice(&65_537_u32.to_be_bytes());
+        resign(&mut invalid_limits, &key);
+        assert!(matches!(
+            verify_current_project_authorization_source_v2(
+                &store,
+                &invalid_limits,
+                &pin(&key, 7),
+                expected
+            ),
+            Err(ProjectAuthorizationSourceErrorV2::NonCanonical)
+        ));
+        assert!(
+            verify_current_project_authorization_source_v2(
+                &store,
+                &packet[..packet.len() - 1],
+                &pin(&key, 7),
+                expected
+            )
+            .is_err()
+        );
+        assert!(
+            verify_current_project_authorization_source_v2(
+                &store,
+                &[0; 272],
+                &pin(&key, 7),
+                expected
+            )
+            .is_err()
+        );
+        assert!(
+            verify_current_project_authorization_source_v2(
+                &store,
+                &packet,
+                &pin(&key, 8),
+                expected
+            )
+            .is_err()
+        );
+        assert!(
+            verify_current_project_authorization_source_v2(
+                &store,
+                &packet,
+                &pin(&SigningKey::from_bytes(&[5; 32]), 7),
+                expected
+            )
+            .is_err()
+        );
+
+        let mut credential =
+            encode_project_authorization_issuer_credential_v2(7, &key.verifying_key()).unwrap();
+        credential[79] ^= 1;
+        assert!(PinnedPublisherProjectAuthorizationIssuerV2::decode(&credential).is_err());
+        assert!(PinnedPublisherProjectAuthorizationIssuerV2::decode(&credential[..79]).is_err());
+        assert!(
+            encode_project_authorization_issuer_credential_v2(0, &key.verifying_key()).is_err()
+        );
+
+        let source_seed_credential =
+            crate::hierarchy::source_seed::encode_controller_source_tree_seed_credential_v1(
+                7,
+                &key.verifying_key(),
+            )
+            .unwrap();
+        assert!(
+            PinnedPublisherProjectAuthorizationIssuerV2::decode(&source_seed_credential).is_err()
+        );
+    }
+
+    #[test]
+    fn stale_request_epoch_head_and_revision_are_rejected() {
+        let directory = TestDirectory::new();
+        let project = ProjectId::from_bytes([1; 16]);
+        let key = SigningKey::from_bytes(&[2; 32]);
+        let mut journal = directory.open();
+        let mut store =
+            PublisherPolicyStore::load(&mut journal, PublisherPolicyLimits::default()).unwrap();
+        store
+            .publish_policy_from_trusted_controller([3; 16], None, &policy(project, 1, 100))
+            .unwrap();
+        let stale_packet = packet(&store, project, &key, 7, [4; 16], 9);
+        for expected in [
+            ProjectAuthorizationSourceExpectedV2::new(project, [5; 16], 8).unwrap(),
+            ProjectAuthorizationSourceExpectedV2::new(project, [4; 16], 9).unwrap(),
+            ProjectAuthorizationSourceExpectedV2::new(ProjectId::from_bytes([6; 16]), [4; 16], 8)
+                .unwrap(),
+        ] {
+            assert!(matches!(
+                verify_current_project_authorization_source_v2(
+                    &store,
+                    &stale_packet,
+                    &pin(&key, 7),
+                    expected
+                ),
+                Err(ProjectAuthorizationSourceErrorV2::Stale)
+            ));
+        }
+
+        store
+            .publish_policy_from_trusted_controller([7; 16], Some(1), &policy(project, 2, 100))
+            .unwrap();
+        let expected = ProjectAuthorizationSourceExpectedV2::new(project, [4; 16], 8).unwrap();
+        assert!(matches!(
+            verify_current_project_authorization_source_v2(
+                &store,
+                &stale_packet,
+                &pin(&key, 7),
+                expected
+            ),
+            Err(ProjectAuthorizationSourceErrorV2::Stale)
+        ));
+        drop(store);
+
+        let previous = policy(project, 1, 101);
+        let transaction = JournalTransaction::new(
+            [8; 16],
+            vec![JournalRecord::put(
+                RecordNamespace::PublisherPolicy,
+                policy_revision_key(project, 1),
+                super::super::encode_policy_revision(&previous).unwrap(),
+            )],
+        )
+        .unwrap();
+        journal.commit(&transaction).unwrap();
+        let store =
+            PublisherPolicyStore::load(&mut journal, PublisherPolicyLimits::default()).unwrap();
+        let packet_for_current = packet(&store, project, &key, 7, [4; 16], 10);
+        drop(store);
+
+        let changed = policy(project, 2, 101);
+        let transaction = JournalTransaction::new(
+            [9; 16],
+            vec![JournalRecord::put(
+                RecordNamespace::PublisherPolicy,
+                policy_revision_key(project, 2),
+                super::super::encode_policy_revision(&changed).unwrap(),
+            )],
+        )
+        .unwrap();
+        journal.commit(&transaction).unwrap();
+        let store =
+            PublisherPolicyStore::load(&mut journal, PublisherPolicyLimits::default()).unwrap();
+        assert!(matches!(
+            verify_current_project_authorization_source_v2(
+                &store,
+                &packet_for_current,
+                &pin(&key, 7),
+                ProjectAuthorizationSourceExpectedV2::new(project, [4; 16], 9).unwrap()
+            ),
+            Err(ProjectAuthorizationSourceErrorV2::Stale)
+        ));
+    }
+}

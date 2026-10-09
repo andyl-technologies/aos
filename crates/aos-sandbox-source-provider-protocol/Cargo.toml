@@ -1,0 +1,17 @@
+[package]
+name = "aos-sandbox-source-provider-protocol"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+aos-sandbox-core.workspace = true
+ed25519-dalek.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+hex.workspace = true
+
+[lints]
+workspace = true

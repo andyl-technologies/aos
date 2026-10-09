@@ -3,6 +3,8 @@
   pkgs,
   lib,
 }: let
+  fixedOutputSourceInputs = import ./fixed-output-source-inputs.nix {inherit lib;};
+
   canarySpec = {
     schema = "aos.package-update/v1";
     unitId = "maintenance-fixture-1";
@@ -126,6 +128,7 @@
     builtins.filter (unit: unit.unitId == "zlib-1") pkgs.maintenanceInventory.units
   );
 in
+  assert builtins.deepSeq fixedOutputSourceInputs.contracts true;
   assert !invalidContract.success;
   assert baseline.drvPath == annotated.drvPath;
   assert !(builtins.hasAttr "update" annotated);

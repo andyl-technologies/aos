@@ -185,6 +185,7 @@ let
     "python3-typogrify"
     "xxhash"
     "acpica"
+    "aos-fuse3"
     "bind"
     "boringssl"
     "cloc"
@@ -498,6 +499,7 @@ let
     "aos-hub-dialect-tests"
     "aos-hub-e2e"
     "aos-hub-worker-do-e2e"
+    "aos-nix-generation-seed-builder"
     "aos-secret-reference-test"
     "aos-system-image-e2e-fixture"
     "aos-test-agent"
@@ -601,11 +603,45 @@ let
     "aos-boot-identity"
     "aos-ebpf-lsm-policy"
     "aos-ebpf-net-policy"
+    "aos-fuse-transport"
+    "aos-filesystem-fuse-worker"
+    "aos-git-helper"
+    "aos-installed-filter-collector"
     "aos-landlock"
+    "aos-method46-tpm-helper"
+    "aos-nix-offline-tpm-helper"
+    "aos-nix-runtime-tpm-helpers"
+    "aos-netd"
+    "aos-namespace-inspector-manager-query"
     "aos-recovery"
     "aos-registry-server"
+    "aos-runtime-deployment-tpm-helper"
+    "aos-sandbox-agent"
+    "aos-sandbox-deployment-specimen-root"
+    "aos-sandbox-guest-root-template"
+    "aos-sandbox-guardian"
+    "aos-sandbox-hostd"
+    "aos-sandbox-mountd"
+    "aos-sandbox-nix-generation-template"
+    "aos-source-providerd"
+    "aos-sandbox-ownershipd"
+    "aos-sandbox-network-lease-gate"
+    "aos-sandbox-network-lease-gate-loader"
+    "aos-sandbox-kernel-export-deny"
+    "aos-sandbox-kernel-export-owner"
+    "aos-sandbox-kernel-export-ownerd"
+    "aos-sandbox-network-observer"
+    "aos-sandbox-runtime-publisher"
+    "aos-sandbox-view-preparer-tools"
+    "aos-selinux-runtime-roots"
+    "aos-sandbox-zfs-worker"
+    "aos-sandboxd"
     "aos-service-root"
+    "aos-selinux-production-policy"
+    "aos-selinux-kernel-policy-readback"
+    "aos-storaged"
     "aos-selinux-run"
+    "aos-selinux-stage0"
     "aos-var-policy-migrate"
     "aos-verity-root-guard"
     "attr"
@@ -720,11 +756,13 @@ let
     "qemu-crucible-reference"
     "qemu-crucible-source"
     "refpolicy"
+    "refpolicy-production"
     "ripgrep"
     "rootlesskit"
     "runc"
     "samba"
     "samba-smbd"
+    "secilc"
     "semodule-utils"
     "setools"
     "slirp4netns"
@@ -853,6 +891,9 @@ let
   };
 
   architectureOverrides = {
+    "aos-installed-filter-collector" = ["x86_64"];
+    "aos-sandbox-deployment-specimen-root" = ["x86_64"];
+    "aos-selinux-kernel-policy-readback" = ["x86_64"];
     darling = ["x86_64"];
     # TODO: cross-compile the complete Samba suite. Its AD/DC Python modules
     # need a target Python configuration and more reviewed Waf answers; only
@@ -946,6 +987,7 @@ let
     "darwin/_darwin-gcc.nix" = "cross-build-helper";
     "emulation/_darwin-signer.nix" = "linux-only-build-helper";
     "emulation/_darling-sources.nix" = "linux-only-source";
+    "emulation/_qemu-aarch64-linux-user.nix" = "linux-only-build-helper";
     "emulation/qemu-patches/_atomic-patch.nix" = "linux-only-source";
     "kernel/_source.nix" = "linux-only-source";
     "kubernetes/_k3s-addon-entrypoints.nix" = "linux-only-build-helper";
@@ -961,6 +1003,14 @@ let
     "kubernetes/_k3s-traefik.nix" = "linux-only-build-helper";
     "kubernetes/_kubeedge-source.nix" = "linux-only-source";
     "kubernetes/_source.nix" = "mixed-source";
+    "security/_aos-mount-executable-carrier.nix" = "linux-only-build-helper";
+    "security/_aos-normal-root-profile.nix" = "linux-only-build-helper";
+    "security/_aos-nix-offline-startup-profile.nix" = "linux-only-build-helper";
+    "security/_aos-nix-startup-profile.nix" = "linux-only-build-helper";
+    "security/_nix-cxx-library-inputs.nix" = "linux-only-build-helper";
+    "security/_openssl-output-check.nix" = "cross-build-helper";
+    "storage/_postgresql-cross.nix" = "cross-build-helper";
+    "tools/_aos-git-helper-images.nix" = "linux-only-build-helper";
     "toolchain/_bazel-asm.nix" = "native-build-helper";
     "toolchain/_bazel-async-profiler-api.nix" = "native-build-helper";
     "toolchain/_bazel-async-profiler-jar.nix" = "linux-only-build-helper";
@@ -1105,8 +1155,10 @@ let
     "toolchain/rust/_rust-darwin-build-tool.nix" = "cross-build-helper";
     "toolchain/rust/_rust-darwin.nix" = "cross-build-helper";
     "toolchain/rust/_rust-bootstrap.nix" = "native-build-helper";
+    "tools/aos/_network-test-launcher.nix" = "linux-only-build-helper";
     "tools/aos/_release-tooling.nix" = "native-release-helper";
     "tools/aos/_tests.nix" = "native-test-helper";
+    "tools/aos/_workspace-cargo.nix" = "target-independent-source";
     "tools/aos/_workspace-source.nix" = "target-independent-source";
     "tools/crucible/_cargo-deps-hash.nix" = "target-independent-source";
     "tools/crucible/_cargo-source.nix" = "mixed-source";
@@ -1121,6 +1173,7 @@ let
   factoryInventory = {
     "boot/aos-uki.nix" = "linux-only-package-factory";
     "build-support/trivial-builders.nix" = "native-build-helper-factory";
+    "security/aos-nix-online-store-reader.nix" = "linux-only-package-factory";
     "system/dbus-conf.nix" = "target-independent-package-factory";
   };
 
@@ -1156,6 +1209,54 @@ let
     "networking/_envoy-config/types.nix" = "linux-only-config-source";
     "networking/_nginx-config/module.nix" = "linux-only-config-source";
     "networking/_openldap-config/module.nix" = "linux-only-config-source";
+    "networking/_samba-cross/aarch64-linux.answers" = "linux-only-build-source";
+    "networking/_samba-cross/heimdal-build-tools.nix" = "native-build-helper";
+    "security/_aos-namespace-inspector-manager-query/broker-query.c" = "linux-only-build-source";
+    "security/_aos-namespace-inspector-manager-query/fd-table.c" = "linux-only-build-source";
+    "security/_aos-namespace-inspector-manager-query/helper.h" = "linux-only-build-source";
+    "security/_aos-namespace-inspector-manager-query/main.c" = "linux-only-build-source";
+    "security/_aos-namespace-inspector-manager-query/protocol.c" = "linux-only-build-source";
+    "security/_aos-namespace-inspector-manager-query/systemd-query.c" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/aos_sandbox.fc" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/aos_sandbox.te" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/aos_sandbox_attribute_negative.te" = "linux-only-test-source";
+    "security/_aos-selinux-production-policy/aos_sandbox_context_negative.te" = "linux-only-test-source";
+    "security/_aos-selinux-production-policy/aos_sandbox_guest_ancestor_negative.te" = "linux-only-test-source";
+    "security/_aos-selinux-production-policy/aos_sandbox_guest_file_negative.te" = "linux-only-test-source";
+    "security/_aos-selinux-production-policy/aos_sandbox_helper_socket_negative.te" = "linux-only-test-source";
+    "security/_aos-selinux-production-policy/aos_sandbox_signer_socket_negative.te" = "linux-only-test-source";
+    "security/_aos-selinux-production-policy/aos_sandbox_loader_negative.te" = "linux-only-test-source";
+    "security/_aos-selinux-production-policy/aos_sandbox_root_custody_negative.te" = "linux-only-test-source";
+    "security/_aos-selinux-production-policy/coverage.py" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/coverage_test.py" = "linux-only-test-source";
+    "security/_aos-selinux-production-policy/context_plan.py" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/context_plan_test.py" = "linux-only-test-source";
+    "security/_aos-selinux-production-policy/effective_policy.py" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/effective_policy_test.py" = "linux-only-test-source";
+    "security/_aos-selinux-production-policy/git_read_delegation.fc" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/git_read_delegation.te" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/fuse_worker_policy.py" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/guest_file_policy.py" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/kernel-classmap.c" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/labeled_erofs_tar.py" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/owner_confinement.te" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/owner_policy.py" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/refpolicy-explicit-contexts.patch" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/refpolicy-explicit-loaders.patch" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/refpolicy-private-root-custody.patch" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/refpolicy-linux-6.18.33.patch" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/rule_query.py" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/rule_query_fixture.conf" = "linux-only-test-source";
+    "security/_aos-selinux-production-policy/rule_query_test.py" = "linux-only-test-source";
+    "security/_aos-selinux-production-policy/verify_context_dump.py" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/verify_context_dump_test.py" = "linux-only-test-source";
+    "security/_aos-selinux-production-policy/verify_context_lookups.py" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/verify_erofs_contexts.py" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/verify_erofs_contexts_test.py" = "linux-only-test-source";
+    "security/_aos-selinux-production-policy/view_confinement.te" = "linux-only-build-source";
+    "security/_aos-selinux-production-policy/view_policy.py" = "linux-only-build-source";
+    "security/_aos-selinux-runtime-roots/view-roots-test.c" = "linux-only-test-source";
+    "security/_aos-selinux-runtime-roots/view-roots.h" = "linux-only-build-source";
     "security/_krb5-kdc-config/module.nix" = "linux-only-config-source";
     "storage/_garage-config/module.nix" = "linux-only-config-source";
     "storage/_garage-tests/lifecycle.nix" = "linux-only-test-source";
@@ -1172,6 +1273,7 @@ let
     "tests/_aos-test-agent-config/module.nix" = "linux-only-test-source";
     "tests/_config-module-smoke/module.nix" = "linux-only-test-source";
     "tests/_config-module-smoke/private.nix" = "linux-only-test-source";
+    "tools/_aos-git-helper/helper.c" = "linux-only-build-source";
     "tools/_conntrackd-config/module.nix" = "linux-only-config-source";
     "tools/_nix-daemon-config/module.nix" = "linux-only-config-source";
     "tools/_nix-daemon-config/documentation.nix" = "linux-only-config-source";
@@ -1196,15 +1298,19 @@ in rec {
     packageInventory.${name}
     or (throw "package platform support: unclassified package '${name}'");
 
+  supportsArchitecture = system: name:
+    builtins.elem (systemCpu system) (packageSupport name).architectures;
+
   supportsTarget = system: name: let
     entry = packageSupport name;
+    architectureSupported = supportsArchitecture system name;
   in
     if isLinux system
-    then entry.disposition != "darwin-only"
+    then entry.disposition != "darwin-only" && architectureSupported
     else if isDarwin system
     then
       builtins.elem entry.disposition ["target" "independent" "darwin-only"]
-      && builtins.elem (systemCpu system) entry.architectures
+      && architectureSupported
     else throw "package platform support: unsupported target system '${system}'";
 
   targetPackageNames = system: names: builtins.filter (supportsTarget system) names;

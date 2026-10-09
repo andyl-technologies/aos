@@ -1,0 +1,125 @@
+/(nix|nix\.lower)/store/[a-z0-9]{32}-aos-sandbox-hostd-[^/]+/bin/aos-sandbox-hostd -- system_u:object_r:aos_sandbox_host_exec_t
+/(nix|nix\.lower)/store/[a-z0-9]{32}-systemd-[^/]+/bin/systemd-nspawn -- system_u:object_r:aos_nspawn_exec_t
+/(nix|nix\.lower)/store/@AOS_NETD_BASENAME_REGEX@/bin/aos-netd -- system_u:object_r:aos_sandbox_network_publisher_exec_t
+/(nix|nix\.lower)/store/@AOS_NETD_BASENAME_REGEX@/bin/aos-sandbox-network-namespace-inspector -- system_u:object_r:aos_sandbox_namespace_inspector_exec_t
+/(nix|nix\.lower)/store/@AOS_NETD_BASENAME_REGEX@/bin/aos-sandbox-network-lifecycle-worker -- system_u:object_r:aos_sandbox_network_lifecycle_worker_exec_t
+/(nix|nix\.lower)/store/@AOS_FUSE_WORKER_BASENAME_REGEX@/bin/aos-filesystem-fuse-worker -- system_u:object_r:aos_filesystem_fuse_worker_exec_t
+/(nix|nix\.lower)/store/@AOS_ZFS_WORKER_BASENAME_REGEX@/bin/aos-sandbox-guest-root-publisher -- system_u:object_r:aos_sandbox_guest_root_publisher_exec_t
+/(nix|nix\.lower)/store/@AOS_CONTROLLER_BASENAME_REGEX@/bin/aos-sandboxd -- system_u:object_r:aos_sandbox_controller_exec_t
+/(nix|nix\.lower)/store/@AOS_CONTROLLER_BASENAME_REGEX@/bin/aos-sandbox-git-gateway -- system_u:object_r:aos_sandbox_git_gateway_exec_t
+/(nix|nix\.lower)/store/@AOS_CONTROLLER_BASENAME_REGEX@/bin/aos-sandbox-nix-floor-provision -- system_u:object_r:aos_nix_offline_prepare_exec_t
+/(nix|nix\.lower)/store/@AOS_CONTROLLER_BASENAME_REGEX@/bin/aos-sandbox-policy-authorityd -- system_u:object_r:aos_sandbox_policy_authority_exec_t
+/(nix|nix\.lower)/store/@AOS_CONTROLLER_BASENAME_REGEX@/bin/aos-sandbox-source-signerd -- system_u:object_r:aos_sandbox_source_signer_exec_t
+/(nix|nix\.lower)/store/@AOS_CONTROLLER_BASENAME_REGEX@/bin/aos-sandbox-cache-signerd -- system_u:object_r:aos_sandbox_cache_signer_exec_t
+/(nix|nix\.lower)/store/@AOS_VIEW_TOOLS_BASENAME_REGEX@/libexec/(bash|stat|mkdir|chown|findmnt|mount|umount) -- system_u:object_r:aos_sandbox_view_preparer_tool_exec_t
+/(nix|nix\.lower)/store/@AOS_STORAGE_BASENAME_REGEX@/bin/aos-storaged -- system_u:object_r:aos_sandbox_storage_exec_t
+/(nix|nix\.lower)/store/@AOS_TPM_HELPER_BASENAME_REGEX@/libexec/aos-method46-tpm-helper -- system_u:object_r:aos_method46_helper_exec_t
+/dev/tpmrm0 -c system_u:object_r:aos_method46_tpm_device_t
+/(nix|nix\.lower)/store/[0123456789abcdfghijklmnpqrsvwxyz]{32}-aos-nix-offline-tpm-helper-5/libexec/aos-nix-offline-tpm-helper -- system_u:object_r:aos_nix_offline_tpm_helper_exec_t
+# These public immutable inputs are not signer secrets or runtime authority.
+/(nix|nix\.lower)/store/@AOS_SYSTEMD_BASENAME_REGEX@/share/aos/backend-policy-artifact-v2 -- system_u:object_r:etc_t
+/(nix|nix\.lower)/store/[0123456789abcdfghijklmnpqrsvwxyz]{32}-aos-normal-root-startup-profile-1/(profile\.json|effective-policy\.tsv|source-policy\.33) -- system_u:object_r:aos_sandbox_policy_authority_profile_t
+/(nix|nix\.lower)/store/[0123456789abcdfghijklmnpqrsvwxyz]{32}-aos-nix-offline-startup-profile-3/(profile\.json|effective-policy\.tsv|source-policy\.33) -- system_u:object_r:aos_nix_offline_prepare_profile_t
+/(nix|nix\.lower)/store/[a-z0-9]{32}-aos-selinux-runtime-roots-[^/]+/bin/aos-selinux-runtime-roots -- system_u:object_r:aos_sandbox_runtime_roots_exec_t
+/usr/lib/systemd/aos-selinux-root-handoff -- system_u:object_r:init_exec_t
+/usr/lib/systemd/aos-selinux-runtime-roots-handoff -- system_u:object_r:aos_sandbox_runtime_roots_handoff_exec_t
+/usr/lib/systemd/aos-empty-ld-so-preload -- system_u:object_r:lib_t
+# Refpolicy has no safe labels for these immutable stage-1 symlinks.
+/init -l system_u:object_r:init_exec_t
+/usr -l system_u:object_r:usr_t
+/aos-registration -- system_u:object_r:etc_t
+/aos-toplevel -l system_u:object_r:etc_t
+/root -d system_u:object_r:user_home_dir_t
+/root(/.*)? system_u:object_r:user_home_t
+/run/current-system -l system_u:object_r:var_run_t
+/run/etc -d system_u:object_r:var_run_t
+/var/lib/aos/sandbox -d system_u:object_r:aos_sandbox_view_parent_t
+/var/lib/aos/sandbox-host/canary-capacity-v1 -d system_u:object_r:aos_sandbox_host_canary_state_t
+/var/lib/aos/sandbox-host/canary-capacity-v1/(baseline|cell-0|cell-1) -- system_u:object_r:aos_sandbox_host_canary_state_t
+/var/lib/aos/sandbox-nix-floor-provision -d system_u:object_r:aos_nix_offline_prepare_state_t
+/var/lib/aos/sandbox-nix-floor-provision/(installation\.lock|candidate-private-v3|candidate-public-v3|approved-job-v3|approved-effect-v4|approved-recovery-v4|provisioning-v4\.journal(\.lock)?) -- system_u:object_r:aos_nix_offline_prepare_state_t
+/run/credentials/aos-sandbox-nix-floor-provision\.service -d system_u:object_r:aos_nix_offline_prepare_credential_t
+/run/credentials/aos-sandbox-nix-floor-provision\.service/(node-id|nix-floor-provision-approval-public-key-v3|nix-fixed-domain-pins-v2|nix-floor-owner-hierarchy-auth-v4) -- system_u:object_r:aos_nix_offline_prepare_credential_t
+/var/lib/aos/sandbox/source-evidence -d system_u:object_r:aos_sandbox_policy_authority_state_t
+/var/lib/aos/sandbox/source-evidence/git-authority-v1\.journal(\.lock|\.compact\.tmp)? -- system_u:object_r:aos_sandbox_policy_authority_state_t
+/var/lib/aos/sandbox/source-domains(/.*)? system_u:object_r:aos_sandbox_source_journal_t
+/var/lib/aos/sandbox/cache-residency-journals(/.*)? system_u:object_r:aos_sandbox_cache_journal_t
+/var/lib/aos/sandbox/cache-residency-objects(/.*)? system_u:object_r:aos_sandbox_cache_object_t
+/run/aos/sandbox-source-signer-journal -d system_u:object_r:aos_sandbox_source_view_mount_t
+/run/aos/sandbox-policy-cache-journals -d system_u:object_r:aos_sandbox_cache_view_mount_t
+/run/aos/sandbox-cache-signer-(journals|objects) -d system_u:object_r:aos_sandbox_cache_view_mount_t
+/run/aos/sandbox-source-signerd\.sock -s system_u:object_r:aos_sandbox_source_signer_socket_t
+/run/aos/sandbox-cache-signerd\.sock -s system_u:object_r:aos_sandbox_cache_signer_socket_t
+/run/credentials/aos-sandbox-source-signerd\.service(/.*)? system_u:object_r:aos_sandbox_source_signer_credential_t
+/run/credentials/aos-sandbox-cache-signerd\.service(/.*)? system_u:object_r:aos_sandbox_cache_signer_credential_t
+/run/credentials/aos-sandbox-policy-authorityd\.service(/.*)? system_u:object_r:aos_sandbox_policy_authority_credential_t
+/run/credentials/aos-sandboxd\.service(/.*)? system_u:object_r:aos_sandbox_controller_credential_t
+/var/lib/aos/sandbox-storage-credential-sources -d system_u:object_r:aos_sandbox_storage_credential_source_t
+/var/lib/aos/sandbox-storage-credential-sources/(storage-zfs-hold-key-v1|operator-recovery-controller-public-key-v1|operator-recovery-storage-owner-key-v1) -- system_u:object_r:aos_sandbox_storage_credential_source_t
+/run/credentials/aos-storaged\.service -d system_u:object_r:aos_sandbox_storage_credential_t
+/run/credentials/aos-storaged\.service/(storage-zfs-hold-key-v1|operator-recovery-controller-public-key-v1|operator-recovery-storage-owner-key-v1) -- system_u:object_r:aos_sandbox_storage_credential_t
+/run/credentials/aos-sandbox-git-gateway\.service(/.*)? system_u:object_r:aos_sandbox_git_gateway_credential_t
+/sysroot -d system_u:object_r:root_t
+
+/var/lib/aos/sandbox-network -d system_u:object_r:aos_sandbox_network_root_t
+/var/lib/aos/sandbox-network/broker-state(/.*)? system_u:object_r:aos_sandbox_network_state_t
+/var/lib/aos/sandbox-network/namespace-inspector -d system_u:object_r:aos_sandbox_network_store_t
+/var/lib/aos/sandbox-network/namespace-inspector/expected-staging -d system_u:object_r:aos_sandbox_network_expected_staging_t
+/var/lib/aos/sandbox-network/namespace-inspector/expected-staging/\.aosni-expected-[0-9a-f]{64} -- system_u:object_r:aos_sandbox_network_expected_record_t
+/var/lib/aos/sandbox-network/namespace-inspector/expected-final -d system_u:object_r:aos_sandbox_network_expected_final_t
+/var/lib/aos/sandbox-network/namespace-inspector/expected-final/aosni-expected-[0-9a-f]{64} -- system_u:object_r:aos_sandbox_network_expected_record_t
+
+/var/lib/aos/sandbox-network/namespace-inspector/spent-staging -d system_u:object_r:aos_sandbox_network_spent_staging_t
+/var/lib/aos/sandbox-network/namespace-inspector/spent-staging/\.aosni-spent-[0-9a-f]{64} -- system_u:object_r:aos_sandbox_network_spent_record_t
+/var/lib/aos/sandbox-network/namespace-inspector/spent-final -d system_u:object_r:aos_sandbox_network_spent_final_t
+/var/lib/aos/sandbox-network/namespace-inspector/spent-final/aosni-spent-[0-9a-f]{64} -- system_u:object_r:aos_sandbox_network_spent_record_t
+# AOS_HOST_RUNTIME_BEGIN
+
+/run/credentials/aos-storaged\.service/(runtime-deployment-genesis-v1|runtime-deployment-provisioner-pin-v1|runtime-deployment-canary-purpose-v2) -- system_u:object_r:aos_sandbox_storage_credential_t
+
+# Fixed disabled Host055 artifacts and independently provisioned originals.
+/(nix|nix\.lower)/store/[^/]+-aos-sandbox-runtime-publisher-0\.1\.0/bin/aos-sandbox-runtime-publisher -- system_u:object_r:aos_runtime_deployment_publisher_exec_t
+/(nix|nix\.lower)/store/[^/]+-aos-runtime-deployment-tpm-helper-0\.1\.0/libexec/aos-runtime-deployment-tpm-helper -- system_u:object_r:aos_runtime_deployment_helper_exec_t
+/(nix|nix\.lower)/store/[^/]+-aos-runtime-deployment-startup-profile-1/(profile\.json|source-policy\.33|effective-policy\.tsv) -- system_u:object_r:aos_runtime_deployment_profile_t
+/(nix|nix\.lower)/store/[^/]+-aos-runtime-deployment-storage-profile-2/(storage\.json|source-policy\.33|effective-policy\.tsv) -- system_u:object_r:aos_runtime_deployment_profile_t
+/run/credentials/aos-sandbox-runtime-publisher\.service -d system_u:object_r:aos_runtime_deployment_credential_t
+/run/credentials/aos-sandbox-runtime-publisher\.service/(runtime-deployment-genesis-v1|runtime-deployment-provisioner-pin-v1|runtime-deployment-canary-purpose-v2|runtime-deployment-signing-seed-v1|runtime-deployment-tpm-index-auth-v1) -- system_u:object_r:aos_runtime_deployment_credential_t
+/var/lib/aos/sandbox/runtime-deployment -d system_u:object_r:aos_runtime_deployment_state_t
+/var/lib/aos/sandbox/runtime-deployment/(preparation\.journal|tpm-floor\.journal) -- system_u:object_r:aos_runtime_deployment_state_t
+/var/lib/aos/sandbox/runtime-deployment/(preparation\.journal\.lock|tpm-floor\.journal\.lock) -- system_u:object_r:aos_runtime_deployment_lock_t
+/run/aos/sandbox/runtime-deployment\.sock -s system_u:object_r:aos_runtime_deployment_runtime_t
+# AOS_HOST_RUNTIME_END
+# AOS_SELECTED_MOUNT_SOURCE_BEGIN
+
+# The selected carrier's daemon is already sealed with this exact object type.
+/(nix|nix\.lower)/store/@AOS_MOUNT_BASENAME_REGEX@/bin/aos-sandbox-mountd -- system_u:object_r:aos_sandbox_mount_exec_t
+/(nix|nix\.lower)/store/@AOS_MOUNT_BASENAME_REGEX@/bin/aos-sandbox-mount-helper -- system_u:object_r:aos_sandbox_mount_helper_exec_t
+/(nix|nix\.lower)/store/@AOS_SOURCE_PROVIDER_BASENAME_REGEX@/bin/aos-source-providerd -- system_u:object_r:aos_source_provider_exec_t
+/run/aos/mount-executable-carrier/(install|chmod) -- system_u:object_r:aos_sandbox_mount_install_exec_t
+
+/run/credentials/aos-sandbox-mountd\.service -d system_u:object_r:aos_sandbox_mount_credential_t
+/run/credentials/aos-sandbox-mountd\.service/(broker-plan-policy\.cbor|broker-plan-public-key|broker-revocation-scope|ownership-lease-policy\.cbor|ownership-lease-public-key|node-id|journal-mac-key|mount-(broker|host-client|fuse-broker)-(manifest|hello-key|record-key)|current-catalog-publication|current-catalog-manifest) -- system_u:object_r:aos_sandbox_mount_credential_t
+/run/credentials/aos-source-providerd\.service -d system_u:object_r:aos_source_provider_credential_t
+/run/credentials/aos-source-providerd\.service/(current-catalog-publication|current-catalog-manifest) -- system_u:object_r:aos_source_provider_credential_t
+
+/var/lib/aos/sandbox-mount -d system_u:object_r:aos_sandbox_mount_state_t
+/var/lib/aos/sandbox-mount/(mount\.journal(\.lock|\.compact\.tmp)?|startup-policy\.pending) -- system_u:object_r:aos_sandbox_mount_state_t
+/var/lib/aos/sandbox-mount/broker-session(/(host|fuse|custody))* -d system_u:object_r:aos_sandbox_mount_state_t
+/var/lib/aos/sandbox-mount/broker-session(/(host|fuse|custody))*/(session(-floor)?\.journal(\.lock|\.compact\.tmp)?|broker-session-manifest|client-hello-signing-key|client-record-signing-key|broker-hello-signing-key|broker-outcome-signing-key) -- system_u:object_r:aos_sandbox_mount_state_t
+/var/lib/aos/sandbox-mount/source-provider-authority -d system_u:object_r:aos_sandbox_mount_custody_t
+/var/lib/aos/sandbox-mount/source-provider-authority/(source-provider-manifest|source-provider-trust|current-route|root-mount-hello-signing-key|root-mount-record-signing-key) -- system_u:object_r:aos_sandbox_mount_custody_t
+/run/aos/sandbox-mount-catalog(/.*)? system_u:object_r:aos_sandbox_mount_catalog_t
+/run/aos/sandbox-mount -d system_u:object_r:aos_sandbox_mount_runtime_t
+/run/aos/sandbox-mount/control\.sock -s system_u:object_r:aos_sandbox_mount_runtime_t
+
+/var/lib/aos/source-provider -d system_u:object_r:aos_source_provider_state_t
+/var/lib/aos/source-provider/(provider\.journal(\.lock|\.compact\.tmp)?|current-catalog-publication|catalog-manifest-[0-9a-f]{64}|native-hold-challenges\.journal(\.lock|\.compact\.tmp)?) -- system_u:object_r:aos_source_provider_state_t
+/var/lib/aos/source-provider/configuration-history -d system_u:object_r:aos_source_provider_state_t
+/var/lib/aos/source-provider/configuration-history/(e|o|c)-[0-9a-f]{64} -- system_u:object_r:aos_source_provider_state_t
+/var/lib/aos/source-provider/authority -d system_u:object_r:aos_source_provider_custody_t
+/var/lib/aos/source-provider/authority/(source-provider-manifest|source-provider-trust|current-route|provider-hello-signing-key|provider-outcome-signing-key) -- system_u:object_r:aos_source_provider_custody_t
+/var/lib/aos/source-provider/backend-authority -d system_u:object_r:aos_source_provider_custody_t
+/var/lib/aos/source-provider/backend-authority/current-verifiers -- system_u:object_r:aos_source_provider_custody_t
+/run/aos/source-provider -d system_u:object_r:aos_source_provider_runtime_t
+/run/aos/source-provider/control\.sock -s system_u:object_r:aos_source_provider_runtime_t
+# AOS_SELECTED_MOUNT_SOURCE_END

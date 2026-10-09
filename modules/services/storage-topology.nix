@@ -35,6 +35,11 @@
   # is then never part of the boot-time storage chain.
   zfsState = config.aos.filesystems.zfs.enable && config.aos.filesystems.zfs.systemState;
   measured = config.aos.boot.secureBoot.measuredBoot.enable;
+  protectedVar =
+    config.aos.security.selinux.protectedSandboxNetworkRoots.enable
+    || config.aos.sandbox.controllerService.method46TpmFloor.required
+    || config.aos.sandbox.storageBroker.method46TpmFloor.required;
+  varRootContext = config.aos.security.selinux.protectedSandboxNetworkRoots._varRootContext;
 
   # RAID personalities and xfs are loadable modules
   # (pkgs/kernel/config/storage.config); the md core and ext4 are built in.
@@ -234,6 +239,7 @@ in {
           arrays="$stash/storage-arrays"
           volumes="$stash/storage-volumes"
           pending=/dev/disk/by-partlabel/aos-provisioning-pending-v1
+          ${lib.optionalString protectedVar ''created_var_array=0''}
 
           wait_for() {
             i=0
@@ -249,11 +255,36 @@ in {
           # and reflink on its own.
           make_filesystem() {
             case "$1" in
-              ext4) mkfs.ext4 -q -L "$2" "$3" ;;
+              ext4)
+                ${lib.optionalString protectedVar ''
+                  if [ "$4" = var ]; then
+                    mkfs.ext4 -q -L "$2" -E root_selinux=${varRootContext} "$3" || return 1
+                    sync "$3" || return 1
+                    require_var_label "$3" || return 1
+                    return 0
+                  fi
+                ''}
+                mkfs.ext4 -q -L "$2" "$3"
+                ;;
               xfs) mkfs.xfs -q -L "$2" "$3" ;;
               *) klog "unsupported filesystem $1 for $3"; return 1 ;;
             esac
           }
+
+          ${lib.optionalString protectedVar ''
+            require_var_label() {
+              if [ "$(blkid -p -s TYPE -o value "$1")" != ext4 ] \
+                || findmnt -n -S "$1" >/dev/null; then
+                klog "protected /var is not an unmounted ext4 filesystem"
+                return 1
+              fi
+              var_label=$(debugfs -R 'ea_get / security.selinux' "$1" 2>/dev/null) || return 1
+              if [ "$var_label" != 'security.selinux (23) = "${varRootContext}"' ]; then
+                klog "protected /var root lacks its durable exact SELinux label"
+                return 1
+              fi
+            }
+          ''}
 
           # Incremental udev assembly usually has every complete array running
           # by now; --scan finishes any whose members surfaced late.
@@ -312,6 +343,9 @@ in {
                   --level="$level" \
                   --raid-devices="$count" \
                   "''${devices[@]}" >&2 || exit 1
+                ${lib.optionalString protectedVar ''
+                  [ "$name" != var ] || created_var_array=1
+                ''}
               done < "$arrays"
               udevadm settle --timeout=10 || true
               while IFS="$(printf '\t')" read -r name level count members; do
@@ -331,8 +365,30 @@ in {
                 [ "$kind" = array ] || continue
                 [ "$encryption" = none ] || continue
                 [ "$filesystem" != - ] || continue
+                ${lib.optionalString protectedVar ''
+                  if [ "$name" = var ]; then
+                    if [ "$filesystem" != ext4 ] || [ "$label" != var ]; then
+                      klog "protected /var requires its exact plain ext4 array identity"
+                      exit 1
+                    fi
+                    if [ "$created_var_array" -ne 1 ]; then
+                      # An already active array is not our fresh format output.
+                      # Verify it without repairing or overwriting its contents.
+                      require_var_label "$device" || exit 1
+                      continue
+                    fi
+                    signature_status=0
+                    signature=$(blkid -p -s TYPE -o value "$device" 2>/dev/null) \
+                      || signature_status=$?
+                    if [ -n "$signature" ] || [ "$signature_status" -ne 2 ] \
+                      || findmnt -n -S "$device" >/dev/null; then
+                      klog "new protected var array is not provably blank and unmounted"
+                      exit 1
+                    fi
+                  fi
+                ''}
                 klog "formatting $device as $filesystem '$label'"
-                make_filesystem "$filesystem" "$label" "$device" || exit 1
+                make_filesystem "$filesystem" "$label" "$device" "$name" || exit 1
               done < "$volumes"
               udevadm settle --timeout=10 || true
             fi

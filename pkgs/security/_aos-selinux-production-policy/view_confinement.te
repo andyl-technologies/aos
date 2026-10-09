@@ -1,0 +1,154 @@
+# Fixed existing Source/Cache mount preparers and read-only signer peers.
+require {
+    attribute aos_no_context_translation_domain;
+    type fs_t;
+    type tmpfs_t;
+    type nsfs_t;
+    class capability { chown dac_read_search setgid setuid sys_admin };
+    class filesystem { associate getattr remount unmount };
+    class dir mounton;
+    class user_namespace create;
+}
+
+attribute aos_sandbox_view_preparer;
+typeattribute aos_sandbox_source_view_preparer_t aos_sandbox_view_preparer;
+typeattribute aos_sandbox_cache_view_preparer_t aos_sandbox_view_preparer;
+type aos_sandbox_source_view_preparer_exec_t;
+type aos_sandbox_cache_view_preparer_exec_t;
+type aos_sandbox_view_preparer_tool_exec_t;
+type aos_sandbox_view_parent_t;
+type aos_sandbox_source_journal_t;
+type aos_sandbox_cache_journal_t;
+type aos_sandbox_cache_object_t;
+type aos_sandbox_source_view_mount_t;
+type aos_sandbox_cache_view_mount_t;
+
+# Explicit normal-unit contexts, not a generic script/interpreter transition.
+allow init_t { aos_sandbox_source_view_preparer_exec_t aos_sandbox_cache_view_preparer_exec_t }:file { execute execute_no_trans getattr open read };
+allow init_t { aos_sandbox_source_view_preparer_t aos_sandbox_cache_view_preparer_t }:process transition;
+allow init_t { aos_sandbox_source_view_preparer_t aos_sandbox_cache_view_preparer_t }:process2 nnp_transition;
+allow aos_sandbox_source_view_preparer_t aos_sandbox_source_view_preparer_exec_t:file { entrypoint getattr open read };
+allow aos_sandbox_cache_view_preparer_t aos_sandbox_cache_view_preparer_exec_t:file { entrypoint getattr open read };
+allow aos_sandbox_view_preparer aos_sandbox_view_preparer_tool_exec_t:file { entrypoint execute execute_no_trans getattr map open read };
+allow init_t aos_sandbox_view_preparer_tool_exec_t:file { execute getattr map open read };
+allow aos_sandbox_view_preparer { root_t usr_t etc_t var_t var_lib_t var_run_t }:dir { getattr open search };
+allow aos_sandbox_view_preparer lib_t:file { execute getattr map open read };
+allow aos_sandbox_view_preparer ld_so_t:file { execute getattr map open read };
+allow aos_sandbox_view_preparer self:process { fork getattr sigchld signal };
+allow aos_sandbox_view_preparer self:capability { chown dac_read_search setgid setuid sys_admin };
+allow aos_sandbox_view_preparer self:user_namespace create;
+allow aos_sandbox_view_preparer proc_t:filesystem getattr;
+allow aos_sandbox_view_preparer proc_t:dir { getattr open read search };
+allow aos_sandbox_view_preparer self:dir { getattr open read search };
+allow aos_sandbox_view_preparer self:file { getattr open read write };
+allow aos_sandbox_view_preparer self:lnk_file { getattr read };
+allow aos_sandbox_view_preparer nsfs_t:file { getattr open read };
+allow aos_sandbox_view_preparer init_t:fd use;
+allow aos_sandbox_view_preparer null_device_t:chr_file { getattr open read write };
+allow aos_sandbox_view_preparer aos_sandbox_view_parent_t:dir { getattr open read search };
+allow aos_sandbox_view_preparer fs_t:filesystem { getattr remount unmount };
+allow aos_sandbox_view_preparer tmpfs_t:filesystem getattr;
+
+# Only the exact existing static provider creates/chowns missing roots. Its
+# immutable table rejects existing wrong metadata; scripts have no fallback
+# parent mutation, arbitrary label selection or generic bin_t execution.
+allow aos_sandbox_cache_view_preparer_t aos_sandbox_runtime_roots_exec_t:file { execute getattr map open read };
+allow aos_sandbox_cache_view_preparer_t aos_sandbox_runtime_roots_t:process transition;
+type_transition aos_sandbox_cache_view_preparer_t aos_sandbox_runtime_roots_exec_t:process aos_sandbox_runtime_roots_t;
+allow aos_sandbox_runtime_roots_t aos_sandbox_cache_view_preparer_t:process sigchld;
+# The existing preparer bound already carries DAC_READ_SEARCH. Metadata
+# preflight/name reopens must reach Controller-owned 0700 directories after
+# fresh-only chown; protected file open/read remains explicitly denied.
+allow aos_sandbox_runtime_roots_t self:capability dac_read_search;
+allow aos_sandbox_runtime_roots_t var_run_t:dir { add_name create getattr open read search write };
+allow aos_sandbox_runtime_roots_t { aos_sandbox_view_parent_t aos_sandbox_source_journal_t aos_sandbox_cache_journal_t aos_sandbox_cache_object_t aos_sandbox_source_view_mount_t aos_sandbox_cache_view_mount_t }:dir { add_name create getattr open read search setattr write };
+allow aos_sandbox_runtime_roots_t fs_t:filesystem getattr;
+allow aos_sandbox_runtime_roots_t tmpfs_t:filesystem getattr;
+
+allow aos_sandbox_source_view_preparer_t aos_sandbox_source_journal_t:dir { getattr open read search };
+allow aos_sandbox_source_view_preparer_t aos_sandbox_source_journal_t:file getattr;
+allow aos_sandbox_source_view_preparer_t aos_sandbox_source_view_mount_t:dir { getattr mounton open read search };
+allow aos_sandbox_cache_view_preparer_t { aos_sandbox_cache_journal_t aos_sandbox_cache_object_t }:dir { getattr open read search };
+allow aos_sandbox_cache_view_preparer_t { aos_sandbox_cache_journal_t aos_sandbox_cache_object_t }:file getattr;
+allow aos_sandbox_cache_view_preparer_t aos_sandbox_cache_view_mount_t:dir { getattr mounton open read search };
+
+# Original and idmapped views share inode labels. DAC stays Controller-only
+# on originals; the signer/Root reads are possible only through the checked
+# read-only mappings, not by adding capabilities or original-root traversal.
+allow aos_sandbox_controller_t aos_sandbox_view_parent_t:dir { getattr open search };
+allow aos_sandbox_controller_t { aos_sandbox_source_journal_t aos_sandbox_cache_journal_t aos_sandbox_cache_object_t }:dir { add_name create getattr open read remove_name search write };
+allow aos_sandbox_controller_t { aos_sandbox_source_journal_t aos_sandbox_cache_journal_t aos_sandbox_cache_object_t }:file { append create getattr lock open read rename setattr unlink write };
+type_transition aos_sandbox_controller_t aos_sandbox_source_journal_t:file aos_sandbox_source_journal_t;
+type_transition aos_sandbox_controller_t aos_sandbox_cache_journal_t:file aos_sandbox_cache_journal_t;
+type_transition aos_sandbox_controller_t aos_sandbox_cache_object_t:dir aos_sandbox_cache_object_t;
+type_transition aos_sandbox_controller_t aos_sandbox_cache_object_t:file aos_sandbox_cache_object_t;
+allow aos_sandbox_policy_authority_t aos_sandbox_cache_journal_t:dir { getattr open read search };
+allow aos_sandbox_policy_authority_t aos_sandbox_cache_journal_t:file { getattr lock open read };
+
+# Fixed signer servers accept only inherited listeners. They do not translate
+# SELinux contexts; ambient setrans grants would permit new outbound sockets.
+attribute aos_sandbox_readback_signer;
+type aos_sandbox_source_signer_t;
+typeattribute aos_sandbox_source_signer_t domain;
+typeattribute aos_sandbox_source_signer_t aos_sandbox_readback_signer;
+typeattribute aos_sandbox_source_signer_t aos_no_context_translation_domain;
+role system_r types aos_sandbox_source_signer_t;
+type aos_sandbox_cache_signer_t;
+typeattribute aos_sandbox_cache_signer_t domain;
+typeattribute aos_sandbox_cache_signer_t aos_sandbox_readback_signer;
+typeattribute aos_sandbox_cache_signer_t aos_no_context_translation_domain;
+role system_r types aos_sandbox_cache_signer_t;
+type aos_sandbox_source_signer_exec_t;
+type aos_sandbox_cache_signer_exec_t;
+type aos_sandbox_source_signer_credential_t;
+type aos_sandbox_cache_signer_credential_t;
+type aos_sandbox_source_signer_socket_t;
+type aos_sandbox_cache_signer_socket_t;
+
+allow init_t { aos_sandbox_source_signer_exec_t aos_sandbox_cache_signer_exec_t }:file { execute execute_no_trans getattr map open read };
+allow init_t aos_sandbox_readback_signer:process transition;
+allow init_t aos_sandbox_readback_signer:process2 nnp_transition;
+allow aos_sandbox_source_signer_t aos_sandbox_source_signer_exec_t:file { entrypoint getattr map open read };
+allow aos_sandbox_cache_signer_t aos_sandbox_cache_signer_exec_t:file { entrypoint getattr map open read };
+allow aos_sandbox_readback_signer { root_t usr_t etc_t var_t var_lib_t var_run_t aos_sandbox_view_parent_t }:dir { getattr open search };
+allow aos_sandbox_readback_signer lib_t:file { execute getattr map open read };
+allow aos_sandbox_readback_signer ld_so_t:file { execute getattr map open read };
+allow aos_sandbox_readback_signer proc_t:dir { getattr open read search };
+allow aos_sandbox_readback_signer proc_t:filesystem getattr;
+allow aos_sandbox_readback_signer self:dir { getattr open read search };
+allow aos_sandbox_readback_signer self:file { getattr open read };
+allow aos_sandbox_readback_signer self:process { getattr sigchld signal };
+allow aos_sandbox_readback_signer self:unix_stream_socket { accept getattr getopt read setopt shutdown write };
+allow aos_sandbox_readback_signer init_t:fd use;
+allow aos_sandbox_readback_signer null_device_t:chr_file { getattr open read write };
+allow aos_sandbox_readback_signer sysctl_t:dir search;
+allow aos_sandbox_readback_signer sysctl_kernel_t:dir search;
+allow aos_sandbox_readback_signer sysctl_kernel_t:file { getattr open read };
+allow aos_sandbox_source_signer_t aos_sandbox_source_journal_t:dir { getattr open read search };
+allow aos_sandbox_source_signer_t aos_sandbox_source_journal_t:file { getattr lock open read };
+allow aos_sandbox_cache_signer_t { aos_sandbox_cache_journal_t aos_sandbox_cache_object_t }:dir { getattr open read search };
+allow aos_sandbox_cache_signer_t aos_sandbox_cache_journal_t:file { getattr lock open read };
+allow aos_sandbox_cache_signer_t aos_sandbox_cache_object_t:file { getattr lock map open read };
+allow aos_sandbox_source_signer_t aos_sandbox_source_signer_credential_t:dir { getattr open search };
+allow aos_sandbox_source_signer_t aos_sandbox_source_signer_credential_t:file { getattr open read };
+allow aos_sandbox_cache_signer_t aos_sandbox_cache_signer_credential_t:dir { getattr open search };
+allow aos_sandbox_cache_signer_t aos_sandbox_cache_signer_credential_t:file { getattr open read };
+
+# systemd 261.2 determines the activated socket's creation SID from the
+# service's explicit SELinuxContext before creating it. SO_PEERCRED still
+# names PID 1; these rules do not relabel that credential as the signer task.
+allow init_t aos_sandbox_readback_signer:unix_stream_socket { bind create getattr getopt listen setopt };
+allow init_t { aos_sandbox_source_signer_socket_t aos_sandbox_cache_signer_socket_t }:sock_file { create getattr open read setattr unlink write };
+allow aos_sandbox_source_signer_t aos_sandbox_source_signer_socket_t:sock_file { getattr open read };
+allow aos_sandbox_cache_signer_t aos_sandbox_cache_signer_socket_t:sock_file { getattr open read };
+allow aos_sandbox_policy_authority_t { aos_sandbox_source_signer_socket_t aos_sandbox_cache_signer_socket_t }:sock_file { getattr open read write };
+allow aos_sandbox_policy_authority_t aos_sandbox_readback_signer:unix_stream_socket connectto;
+allow aos_sandbox_controller_t aos_sandbox_cache_signer_socket_t:sock_file { getattr open read write };
+allow aos_sandbox_controller_t aos_sandbox_cache_signer_t:unix_stream_socket connectto;
+
+# Refpolicy maps ext4/ZFS xattr superblocks to fs_t, /run tmpfs to tmpfs_t,
+# and devtmpfs to device_t. Association is an object→superblock check; no
+# protected inode needs broad file_type/device_node attribute membership.
+allow { aos_sandbox_view_parent_t aos_sandbox_source_journal_t aos_sandbox_cache_journal_t aos_sandbox_cache_object_t aos_sandbox_controller_state_t aos_sandbox_storage_state_t aos_sandbox_policy_authority_state_t aos_method46_controller_floor_t aos_method46_controller_lock_t aos_method46_storage_floor_t aos_method46_storage_lock_t } fs_t:filesystem associate;
+allow { aos_sandbox_source_view_mount_t aos_sandbox_cache_view_mount_t aos_sandbox_controller_runtime_t aos_sandbox_storage_runtime_t aos_sandbox_policy_authority_runtime_t aos_sandbox_source_signer_credential_t aos_sandbox_cache_signer_credential_t aos_sandbox_source_signer_socket_t aos_sandbox_cache_signer_socket_t aos_sandbox_controller_credential_t aos_sandbox_storage_credential_t aos_sandbox_policy_authority_credential_t } tmpfs_t:filesystem associate;
+allow aos_method46_tpm_device_t device_t:filesystem associate;

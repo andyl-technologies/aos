@@ -1,0 +1,9 @@
+prefix=@PREFIX@
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: aos-fuse-transport
+Description: Bounded libfuse transport for AOS immutable filesystem views
+Version: 0.1.0
+Libs: -L${libdir} -laos-fuse-transport
+Cflags: -I${includedir}

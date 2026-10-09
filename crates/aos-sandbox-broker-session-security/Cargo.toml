@@ -1,0 +1,60 @@
+[package]
+name = "aos-sandbox-broker-session-security"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+autobins = false
+
+[features]
+default = []
+kernel-tests = ["aos-sandbox-linux/kernel-tests"]
+online-nix = ["dep:aos-sandbox-broker", "dep:base64"]
+
+[dependencies]
+aos-proto.workspace = true
+aos-filesystem-view-core.workspace = true
+aos-sandbox.workspace = true
+aos-sandbox-agent.workspace = true
+aos-sandbox-broker = { workspace = true, optional = true }
+aos-sandbox-broker-session-protocol.workspace = true
+aos-sandbox-core.workspace = true
+aos-sandbox-journal.workspace = true
+aos-sandbox-policy.workspace = true
+aos-sandbox-host.workspace = true
+aos-sandbox-linux.workspace = true
+aos-sandbox-mount.workspace = true
+aos-sandbox-network.workspace = true
+aos-sandbox-ownership-protocol.workspace = true
+aos-sandbox-protocol.workspace = true
+aos-sandbox-storage.workspace = true
+aos-systemd.workspace = true
+aos-sandbox-source-provider.workspace = true
+aos-sandbox-source-provider-protocol.workspace = true
+aos-sandbox-source-provider-security.workspace = true
+aos-sandbox-source-signer.workspace = true
+base64 = { workspace = true, optional = true }
+buffa.workspace = true
+connectrpc.workspace = true
+ed25519-dalek = { workspace = true, features = ["zeroize"] }
+futures.workspace = true
+rustix = { workspace = true, features = ["event", "fs", "net", "process", "rand", "time"] }
+serde.workspace = true
+serde_json.workspace = true
+ssh-key.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
+aos-sandbox = { workspace = true, features = ["test-fixtures"] }
+async-trait.workspace = true
+hex.workspace = true
+rcgen.workspace = true
+reqwest = { workspace = true, features = ["http2"] }
+rustix = { workspace = true, features = ["net", "pipe"] }
+tempfile = "3"
+
+[lints]
+workspace = true

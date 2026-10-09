@@ -1,0 +1,30 @@
+//! Shared privileged-broker authority admission and durable records.
+//!
+//! Audience-specific brokers canonicalize their own request and catalog
+//! semantics. This crate verifies the common signed plan and ownership lease,
+//! intersects them with protected local time and fencing state, and emits
+//! location-authenticated durable records that remain non-authorizing until
+//! committed by the caller.
+//!
+//! Admission owns the common signature/lease intersection, configuration owns
+//! descriptor-relative protected credential loading, and records own the private
+//! location-bound MAC engine. Domain brokers retain semantic admission and effects.
+
+mod admission;
+mod config;
+mod record;
+
+pub use admission::{
+    AdmissionRequest, BrokerAdmissionError, BrokerAuthority, BrokerEffectClockDispositionV1,
+    VerifiedBrokerAdmission,
+};
+pub use aos_sandbox_core::RecordNamespace;
+pub use config::{
+    BrokerAuthorityConfigError, ProtectedBrokerAuthorityConfiguration,
+    ProtectedBrokerPublicCredentialRole, ProtectedBrokerPublicCredentialSnapshot,
+    ProtectedBrokerPublicCredentials,
+};
+pub use record::{
+    AuthorizationRecordError, BrokerAuthorizationFenceV1, BrokerDomain, BrokerEffectIntentV1,
+    BrokerEffectStatusV1, BrokerLocalRecordDomain,
+};

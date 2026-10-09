@@ -1,0 +1,71 @@
+diff --git a/include/linux/sched.h b/include/linux/sched.h
+--- a/include/linux/sched.h
++++ b/include/linux/sched.h
+@@ -1883,6 +1883,12 @@
+ TASK_PFA_TEST(AOS_NO_SETID, aos_no_setid)
+ TASK_PFA_SET(AOS_NO_SETID, aos_no_setid)
+ 
++/* Every io_uring worker denies set-ID mode effects, including borrowed rings. */
++static inline bool task_aos_no_setid_mode_guard(struct task_struct *p)
++{
++	return task_aos_no_setid(p) || (p->flags & PF_IO_WORKER);
++}
++
+ TASK_PFA_TEST(SPREAD_PAGE, spread_page)
+ TASK_PFA_SET(SPREAD_PAGE, spread_page)
+ TASK_PFA_CLEAR(SPREAD_PAGE, spread_page)
+diff --git a/fs/namei.c b/fs/namei.c
+--- a/fs/namei.c
++++ b/fs/namei.c
+@@ -4153,7 +4153,8 @@
+ 				   umode_t mask_perms, umode_t type)
+ {
+ 	/* Keep the raw request visible before SGID or umask stripping. */
+-	if (task_aos_no_setid(current) && (*mode & (S_ISUID | S_ISGID)))
++	if (task_aos_no_setid_mode_guard(current) &&
++	    (*mode & (S_ISUID | S_ISGID)))
+ 		return -EPERM;
+ 
+ 	*mode = mode_strip_sgid(idmap, dir, *mode);
+@@ -4222,7 +4223,8 @@
+ 	if (error)
+ 		return error;
+ 
+-	if (task_aos_no_setid(current) && (mode & (S_ISUID | S_ISGID)))
++	if (task_aos_no_setid_mode_guard(current) &&
++	    (mode & (S_ISUID | S_ISGID)))
+ 		return -EPERM;
+ 
+ 	mode &= S_IALLUGO;
+@@ -5280,7 +5282,7 @@
+ 		goto err;
+ 
+ 	/* inode_init_owner and ZFS inherit SGID from the parent directory. */
+-	if (task_aos_no_setid(current) && (dir->i_mode & S_ISGID))
++	if (task_aos_no_setid_mode_guard(current) && (dir->i_mode & S_ISGID))
+ 		goto err;
+ 
+ 	error = vfs_prepare_mode(idmap, dir, &mode, S_IRWXUGO | S_ISVTX, 0);
+diff --git a/fs/open.c b/fs/open.c
+--- a/fs/open.c
++++ b/fs/open.c
+@@ -1192,7 +1192,7 @@
+ 		if (how->mode & ~S_IALLUGO)
+ 			return -EINVAL;
+ 		/* openat2's mode is copied before this shared open path runs. */
+-		if (task_aos_no_setid(current) &&
++		if (task_aos_no_setid_mode_guard(current) &&
+ 		    (how->mode & (S_ISUID | S_ISGID)))
+ 			return -EPERM;
+ 		op->mode = how->mode | S_IFREG;
+diff --git a/fs/attr.c b/fs/attr.c
+--- a/fs/attr.c
++++ b/fs/attr.c
+@@ -436,7 +436,7 @@
+ 
+ 	WARN_ON_ONCE(!inode_is_locked(inode));
+ 	/* Reject mode-bearing changes before a filesystem can apply them. */
+-	if (task_aos_no_setid(current) && (ia_valid & ATTR_MODE) &&
++	if (task_aos_no_setid_mode_guard(current) && (ia_valid & ATTR_MODE) &&
+ 	    (attr->ia_mode & (S_ISUID | S_ISGID)))
+ 		return -EPERM;

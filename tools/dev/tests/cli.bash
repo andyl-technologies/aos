@@ -4,24 +4,50 @@ root=$1
 scratch=$2
 mkdir -p "$scratch/bin"
 
+cat > "$scratch/bin/nix-instantiate" <<'MOCK'
+#!@BASH@
+if [[ " $* " == *' --raw '* ]]; then
+  echo "error: unrecognised flag '--raw'" >&2
+fi
+exit 1
+MOCK
+
 cat > "$scratch/bin/nix" <<'MOCK'
 #!@BASH@
 if [[ $1 == config && $2 == show ]]; then
   printf 'trusted-users = root %s\n' "$(id -un)"
   exit 0
 fi
+
+if [[ " $* " == *'nix-config.nix text '* ]]; then
+  printf '%s\n' \
+    'extra-substituters = https://cdn.aos.andyl.org/andyl/experimental/' \
+    'extra-trusted-public-keys = andyl-experimental-nix-cache-v1:1eydap438KfoN+1wAumCXOewnzzg2Cc5mq9WwEb9z/I=' \
+    'fallback = true'
+  exit 0
+fi
+
+[[ $1 == --extra-experimental-features && $2 == nix-command && \
+    $3 == eval && $4 == --raw && $5 == --file && \
+    $6 == tools/dev/targets.nix && ${!#} == entries ]] || exit 1
+if [[ -n ${AOS_DEV_TEST_EVAL_LOG:-} ]]; then
+  printf '%s\n' "$*" >> "$AOS_DEV_TEST_EVAL_LOG"
+fi
+if [[ ${AOS_DEV_TEST_REQUIRE_CHECK_SCOPE:-0} == 1 && \
+    " $* " == *' category checks '* && " $* " != *' scope '* ]]; then
+  echo 'unrelated check tree forced by unscoped validation' >&2
+  exit 1
+fi
 case " $* " in
-  *'nix-config.nix text '*)
-    printf '%s\n' \
-      'extra-substituters = https://cdn.aos.andyl.org/andyl/experimental/' \
-      'extra-trusted-public-keys = andyl-experimental-nix-cache-v1:1eydap438KfoN+1wAumCXOewnzzg2Cc5mq9WwEb9z/I=' \
-      'fallback = true'
-    ;;
   *' category packages '*' crossSystem x86_64-darwin '*) printf 'alpha\nbeta\ndarwin-runtimes' ;;
   *' category packages '*) printf 'alpha\nbeta' ;;
   *' category checks '*' scope build.aos-dev-cli '*) printf 'build.aos-dev-cli' ;;
   *' category checks '*' scope build.aos-dev '*) : ;;
   *' category checks '*' scope build '*) printf 'build.aos-dev-cli\nbuild.aos-dev-cache-identity' ;;
+  *' category checks '*' scope eval '*' crossSystem x86_64-darwin '*) printf 'eval' ;;
+  *' category checks '*' scope eval '*) printf 'eval' ;;
+  *' category checks '*' scope group '*) printf 'group.child' ;;
+  *' category checks '*' scope '*) : ;;
   *' category checks '*) printf 'eval\nbuild.all' ;;
   *' category images '*) printf 'server:qcow2' ;;
   *' category containers '*) printf 'aos:oci' ;;
@@ -81,8 +107,8 @@ printf '<%s>' "$@" >> "$AOS_DEV_TEST_TOOL_ARGS_LOG"
 printf '\n' >> "$AOS_DEV_TEST_TOOL_ARGS_LOG"
 MOCK
 
-sed -i "s|@BASH@|$BASH|" "$scratch/bin/nix-build" "$scratch/bin/nix" "$scratch/bin/setfacl" "$scratch/bin/getfacl" "$scratch/bin/nix-store" "$scratch/cli/bin/aos"
-chmod +x "$scratch/bin/nix-build" "$scratch/bin/nix" "$scratch/bin/setfacl" "$scratch/bin/getfacl" "$scratch/bin/nix-store" "$scratch/cli/bin/aos"
+sed -i "s|@BASH@|$BASH|" "$scratch/bin/nix-build" "$scratch/bin/nix" "$scratch/bin/nix-instantiate" "$scratch/bin/setfacl" "$scratch/bin/getfacl" "$scratch/bin/nix-store" "$scratch/cli/bin/aos"
+chmod +x "$scratch/bin/nix-build" "$scratch/bin/nix" "$scratch/bin/nix-instantiate" "$scratch/bin/setfacl" "$scratch/bin/getfacl" "$scratch/bin/nix-store" "$scratch/cli/bin/aos"
 cp "$scratch/cli/bin/aos" "$scratch/cli/bin/apm"
 cp "$scratch/cli/bin/aos" "$scratch/cli/bin/apr"
 
@@ -96,12 +122,65 @@ export AOS_DEV_TEST_TOOL_LOG="$scratch/tools.log"
 export AOS_DEV_TEST_TOOL_ARGS_LOG="$scratch/tool-args.log"
 export AOS_DEV_TEST_NIX_CONFIG_LOG="$scratch/nix-config.log"
 
+# The legacy evaluator must not mask the pinned Nix --raw incompatibility.
+if nix-instantiate --eval --raw --expr '"unused"' >"$scratch/legacy.out" 2>"$scratch/legacy.err"; then
+  echo 'legacy evaluator accepted unsupported --raw' >&2
+  exit 1
+fi
+grep -Fq -- "unrecognised flag '--raw'" "$scratch/legacy.err"
+
 bash -n "$root/tools/dev/aos-dev" "$root"/tools/dev/lib/*.bash
 bash "$root/tools/dev/aos-dev" help | grep -Fq 'Usage: aos-dev'
 bash "$root/tools/dev/aos-dev" completion bash | grep -Fq '_aos_dev_complete()'
 test "$(bash "$root/tools/dev/aos-dev" list packages)" = $'alpha\nbeta'
 test "$(bash "$root/tools/dev/aos-dev" list check build.aos-dev)" = $'build.aos-dev-cli\nbuild.aos-dev-cache-identity'
 test "$(bash "$root/tools/dev/aos-dev" list check build.aos-dev-cli)" = 'build.aos-dev-cli'
+
+test "$(AOS_DEV_TEST_EVAL_LOG="$scratch/scoped-eval.log" \
+  bash "$root/tools/dev/aos-dev" --release build check build.aos-dev-cli --no-out-link)" = /tmp/aos-dev-test-output
+grep -Fq -- 'scope build.aos-dev-cli' "$scratch/scoped-eval.log"
+grep -Fq -- '--extra-experimental-features nix-command eval --raw --file tools/dev/targets.nix' "$scratch/scoped-eval.log"
+if grep -F -- 'category checks' "$scratch/scoped-eval.log" | grep -Fv -- 'scope build.aos-dev-cli'; then
+  echo 'nested check validation evaluated unrelated check groups' >&2
+  exit 1
+fi
+if bash "$root/tools/dev/aos-dev" --release build check build.aos-dev --no-out-link >/dev/null 2>&1; then
+  echo 'check completion prefix was accepted as an exact target' >&2
+  exit 1
+fi
+
+# A named leaf must not force the mock's unrelated check tree.
+export AOS_DEV_TEST_REQUIRE_CHECK_SCOPE=1
+test "$(AOS_DEV_TEST_EVAL_LOG="$scratch/leaf-eval.log" \
+  bash "$root/tools/dev/aos-dev" --release build check eval --dry-run)" = /tmp/aos-dev-test-output
+grep -Fq -- 'category checks --argstr scope eval' "$scratch/leaf-eval.log"
+test "$(wc -l < "$scratch/leaf-eval.log")" -eq 1
+if grep -Fq -- 'crossSystem' "$scratch/leaf-eval.log"; then
+  echo 'native check validation added a cross target' >&2
+  exit 1
+fi
+
+test "$(AOS_DEV_TEST_EVAL_LOG="$scratch/cross-leaf-eval.log" \
+  bash "$root/tools/dev/aos-dev" --release build check eval \
+    --argstr crossSystem x86_64-darwin --dry-run)" = /tmp/aos-dev-test-output
+grep -Fq -- 'scope eval --argstr crossSystem x86_64-darwin' "$scratch/cross-leaf-eval.log"
+grep -Fq -- '-A checks.eval --argstr crossSystem x86_64-darwin --dry-run' "$AOS_DEV_TEST_LOG"
+
+for invalid_check in eva group build.aos-dev; do
+  if bash "$root/tools/dev/aos-dev" --release build check "$invalid_check" --dry-run >/dev/null 2>&1; then
+    echo "nonexact check target was accepted: $invalid_check" >&2
+    exit 1
+  fi
+done
+# Deep direct attributes remain the requested Nix build's responsibility.
+test "$(AOS_DEV_TEST_EVAL_LOG="$scratch/deep-eval.log" \
+  bash "$root/tools/dev/aos-dev" --release build check group.child.deep --dry-run)" = /tmp/aos-dev-test-output
+test ! -e "$scratch/deep-eval.log"
+unset AOS_DEV_TEST_REQUIRE_CHECK_SCOPE
+
+test "$(bash "$root/tools/dev/aos-dev" list checks eva)" = eval
+test "$(bash "$root/tools/dev/aos-dev" list check build.aos-dev)" = $'build.aos-dev-cli\nbuild.aos-dev-cache-identity'
+
 test "$(bash "$root/tools/dev/aos-dev" --release build package alpha --no-out-link)" = /tmp/aos-dev-test-output
 grep -Fq -- '-A pkgs.alpha --no-out-link' "$AOS_DEV_TEST_LOG"
 test "$(bash "$root/tools/dev/aos-dev" --release all checks --no-out-link)" = /tmp/aos-dev-test-output

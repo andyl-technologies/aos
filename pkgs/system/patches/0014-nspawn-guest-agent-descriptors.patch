@@ -1,0 +1,278 @@
+diff --git a/src/nspawn/nspawn.c b/src/nspawn/nspawn.c
+--- a/src/nspawn/nspawn.c
++++ b/src/nspawn/nspawn.c
+@@ -150,6 +150,8 @@
+ static char *arg_directory = NULL;
+ static bool arg_aos_root_directory_fd = false;
+ static bool arg_aos_attachment_anchor_fd = false;
++static bool arg_aos_guest_agent_fds = false;
++static int arg_aos_guest_fds[3] = { -EBADF, -EBADF, -EBADF };
+ static char *arg_template = NULL;
+ static char *arg_chdir = NULL;
+ static char *arg_pivot_root_new = NULL;
+@@ -1187,6 +1189,15 @@
+                         arg_aos_attachment_anchor_fd = true;
+                         break;
+ 
++                OPTION_LONG("aos-guest-agent-fds", "NAMES",
++                            "Deliver exact named AOS agent credentials to the guest bootstrap"):
++                        if (arg_aos_guest_agent_fds || !streq(opts.arg, AOS_GUEST_AGENT_FD_NAMES))
++                                return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
++                                                       "Invalid or repeated AOS guest agent descriptor roles.");
++
++                        arg_aos_guest_agent_fds = true;
++                        break;
++
+                 OPTION_LONG("restrict-address-families", "LIST", "Restrict socket address families to the given allowlist"):
+                         r = parse_address_families(opts.arg, &arg_restrict_address_families, &arg_restrict_address_families_is_allowlist);
+                         if (r < 0)
+@@ -3683,7 +3694,7 @@
+         if (asprintf(envp + n_env++, "container_uuid=%s", SD_ID128_TO_UUID_STRING(arg_uuid)) < 0)
+                 return log_oom();
+ 
+-        if (!fdset_isempty(fds)) {
++        if (!fdset_isempty(fds) && !arg_aos_guest_agent_fds) {
+                 r = fdset_cloexec(fds, false);
+                 if (r < 0)
+                         return log_error_errno(r, "Failed to unset O_CLOEXEC for file descriptors.");
+@@ -3748,6 +3759,13 @@
+ 
+         (void) fdset_close_others(fds);
+ 
++        if (arg_aos_guest_agent_fds) {
++                for (int i = 0; i < 3; i++)
++                        if (!fdset_contains(fds, arg_aos_guest_fds[i]) ||
++                            dup3(arg_aos_guest_fds[i], SD_LISTEN_FDS_START + i, 0) < 0)
++                                return log_error_errno(errno, "Failed to deliver AOS guest agent descriptor: %m");
++        }
++
+         /* This is intentionally the last nspawn setup operation before payload
+          * execution. The filter is inherited by guest PID 1 and every child it
+          * creates, while nspawn's namespace and mount setup remains possible. */
+@@ -3761,6 +3779,13 @@
+                 char **a;
+                 size_t m;
+ 
++                if (arg_aos_guest_agent_fds) {
++                        char *bootstrap_argv[] = { (char*) "/usr/libexec/aos-sandbox-guest-init", NULL };
++
++                        execve(bootstrap_argv[0], bootstrap_argv, env_use);
++                        return log_error_errno(errno, "Failed to start AOS guest bootstrap: %m");
++                }
++
+                 /* Automatically search for the init system */
+ 
+                 m = strv_length(arg_parameters);
+@@ -6368,6 +6393,7 @@
+                 aos_attachment_anchor_namespace_fd = -EBADF;
+         _cleanup_fdset_free_ FDSet *fds = NULL;
+         int r, ret = EXIT_SUCCESS;
++        bool guest_fds_owned_by_set = false;
+         char veth_name[IFNAMSIZ] = "";
+         struct ExposeArgs expose_args = {};
+         _cleanup_(release_lock_file) LockFile tree_global_lock = LOCK_FILE_INIT, tree_local_lock = LOCK_FILE_INIT;
+@@ -6388,7 +6414,7 @@
+         if (r <= 0)
+                 goto finish;
+ 
+-        if (arg_aos_attachment_anchor_fd && !arg_aos_root_directory_fd) {
++        if ((arg_aos_attachment_anchor_fd || arg_aos_guest_agent_fds) && !arg_aos_root_directory_fd) {
+                 r = log_error_errno(
+                                 SYNTHETIC_ERRNO(EINVAL),
+                                 "AOS attachment anchor requires an AOS root descriptor.");
+@@ -6402,7 +6428,7 @@
+                 if (arg_runtime_scope != RUNTIME_SCOPE_SYSTEM || arg_start_mode != START_BOOT ||
+                     !arg_keep_unit || !arg_machine || arg_register || arg_background || arg_cleanup ||
+                     !FLAGS_SET(arg_settings_mask, _SETTINGS_MASK_ALL) ||
+-                    !arg_aos_payload_seccomp_profile ||
++                    !arg_aos_payload_seccomp_profile || !arg_aos_guest_agent_fds ||
+                     arg_userns_mode != USER_NAMESPACE_FIXED || arg_uid_shift == 0 || arg_uid_range < 65536 ||
+                     arg_userns_ownership != USER_NAMESPACE_OWNERSHIP_MAP ||
+                     arg_directory || arg_image || arg_template || arg_oci_bundle ||
+@@ -6414,11 +6440,13 @@
+ 
+                 r = aos_root_directory_acquire(
+                                 arg_aos_attachment_anchor_fd,
++                                arg_aos_guest_agent_fds,
+                                 &aos_root_fd,
+                                 &aos_root_lock_fd,
+                                 &arg_directory,
+                                 &aos_attachment_anchor_fd,
+-                                &aos_attachment_anchor_namespace_fd);
++                                &aos_attachment_anchor_namespace_fd,
++                                arg_aos_guest_fds);
+                 if (r < 0) {
+                         log_error_errno(r, "Failed to acquire AOS root descriptor: %m");
+                         goto finish;
+@@ -6531,7 +6559,12 @@
+          * so just turning this off here means we only turn it off in nspawn itself, not any children. */
+         (void) ignore_signals(SIGPIPE);
+ 
+-        r = fdset_new_listen_fds(&fds, /* unset= */ false);
++        if (arg_aos_guest_agent_fds) {
++                r = fdset_new_array(&fds, arg_aos_guest_fds, 3);
++                if (r >= 0)
++                        guest_fds_owned_by_set = true;
++        } else
++                r = fdset_new_listen_fds(&fds, /* unset= */ false);
+         if (r < 0) {
+                 log_error_errno(r, "Failed to collect file descriptors: %m");
+                 goto finish;
+@@ -7115,6 +7148,9 @@
+         }
+ 
+ finish:
++        if (!guest_fds_owned_by_set)
++                for (int i = 0; i < 3; i++)
++                        arg_aos_guest_fds[i] = safe_close(arg_aos_guest_fds[i]);
+         (void) sd_notify(false,
+                          r == 0 && ret == EXIT_FORCE_RESTART ? "STOPPING=1\nSTATUS=Restarting..." :
+                                                                "STOPPING=1\nSTATUS=Terminating...");
+diff --git a/src/nspawn/nspawn-root-fd.c b/src/nspawn/nspawn-root-fd.c
+--- a/src/nspawn/nspawn-root-fd.c
++++ b/src/nspawn/nspawn-root-fd.c
+@@ -178,15 +178,57 @@
+         return 0;
+ }
+ 
++static int aos_guest_agent_descriptor_validate(int fd, int role) {
++        struct stat st;
++
++        if (fstat(fd, &st) < 0)
++                return -errno;
++        if (role == 0) {
++                struct sockaddr_storage peer;
++                socklen_t peer_length = sizeof(peer);
++                int type, domain, accepting;
++                socklen_t length = sizeof(int);
++
++                if (!S_ISSOCK(st.st_mode) ||
++                    getsockopt(fd, SOL_SOCKET, SO_TYPE, &type, &length) < 0 ||
++                    length != sizeof(int) || type != SOCK_SEQPACKET)
++                        return -EINVAL;
++                length = sizeof(int);
++                if (getsockopt(fd, SOL_SOCKET, SO_DOMAIN, &domain, &length) < 0 ||
++                    length != sizeof(int) || domain != AF_UNIX)
++                        return -EINVAL;
++                length = sizeof(int);
++                if (getsockopt(fd, SOL_SOCKET, SO_ACCEPTCONN, &accepting, &length) < 0 ||
++                    length != sizeof(int) || accepting != 0 ||
++                    getpeername(fd, (struct sockaddr*) &peer, &peer_length) < 0)
++                        return -EINVAL;
++                return 0;
++        }
++
++        if (!S_ISREG(st.st_mode) ||
++            (role == 1 && st.st_size != 258) ||
++            (role == 2 && (st.st_size < 152 || st.st_size > 16792)))
++                return -EINVAL;
++        int seals = fcntl(fd, F_GET_SEALS);
++        if (seals < 0)
++                return -errno;
++        if ((seals & (F_SEAL_SEAL|F_SEAL_SHRINK|F_SEAL_GROW|F_SEAL_WRITE)) !=
++            (F_SEAL_SEAL|F_SEAL_SHRINK|F_SEAL_GROW|F_SEAL_WRITE))
++                return -EPERM;
++        return 0;
++}
++
+ int aos_root_directory_acquire(
+                 bool with_attachment_anchor,
++                bool with_guest_agent,
+                 int *ret_root_fd,
+                 int *ret_lock_fd,
+                 char **ret_path,
+                 int *ret_anchor_fd,
+-                int *ret_anchor_namespace_fd) {
++                int *ret_anchor_namespace_fd,
++                int ret_guest_fds[3]) {
+         _cleanup_strv_free_ char **names = NULL;
+-        int expected, n, r;
++        int expected, guest_base, n, r;
+ 
+         /* This is a setup-only descriptor, never a payload activation socket.
+          * Unsetting LISTEN_* makes the later fdset collector empty. Require the
+@@ -195,12 +237,17 @@
+         n = sd_listen_fds_with_names(/* unset_environment= */ true, &names);
+         if (n < 0)
+                 return n;
+-        expected = with_attachment_anchor ? 3 : 1;
++        guest_base = with_attachment_anchor ? 3 : 1;
++        expected = guest_base + (with_guest_agent ? 3 : 0);
+         if (n != expected ||
+             !streq_ptr(names[0], AOS_ROOT_DIRECTORY_FD_NAME) ||
+             (with_attachment_anchor &&
+              (!streq_ptr(names[1], AOS_ATTACHMENT_ANCHOR_FD_NAME) ||
+-              !streq_ptr(names[2], AOS_ATTACHMENT_ANCHOR_NAMESPACE_FD_NAME))))
++              !streq_ptr(names[2], AOS_ATTACHMENT_ANCHOR_NAMESPACE_FD_NAME))) ||
++            (with_guest_agent &&
++             (!streq_ptr(names[guest_base], AOS_GUEST_AGENT_CHANNEL_FD_NAME) ||
++              !streq_ptr(names[guest_base + 1], AOS_GUEST_AGENT_PROVISIONING_FD_NAME) ||
++              !streq_ptr(names[guest_base + 2], AOS_GUEST_ATTACH_TRUST_FD_NAME))))
+                 r = -EINVAL;
+         else {
+                 r = aos_root_directory_from_fd(SD_LISTEN_FDS_START, ret_root_fd, ret_lock_fd, ret_path);
+@@ -210,6 +257,20 @@
+                         r = aos_attachment_anchor_namespace_from_fd(
+                                         SD_LISTEN_FDS_START + 2,
+                                         ret_anchor_namespace_fd);
++                if (r >= 0 && with_guest_agent) {
++                        assert(ret_guest_fds);
++                        for (int i = 0; i < 3; i++) {
++                                int fd = fcntl(SD_LISTEN_FDS_START + guest_base + i, F_DUPFD_CLOEXEC, 16);
++                                if (fd < 0) {
++                                        r = -errno;
++                                        break;
++                                }
++                                ret_guest_fds[i] = fd;
++                                r = aos_guest_agent_descriptor_validate(fd, i);
++                                if (r < 0)
++                                        break;
++                        }
++                }
+         }
+ 
+         for (int i = 0; i < n; i++)
+diff --git a/src/nspawn/nspawn-root-fd.h b/src/nspawn/nspawn-root-fd.h
+--- a/src/nspawn/nspawn-root-fd.h
++++ b/src/nspawn/nspawn-root-fd.h
+@@ -4,6 +4,10 @@
+ #define AOS_ROOT_DIRECTORY_FD_NAME "aos-sandbox-root-mount-v1"
+ #define AOS_ATTACHMENT_ANCHOR_FD_NAME "aos-sandbox-attachment-anchor-v1"
+ #define AOS_ATTACHMENT_ANCHOR_NAMESPACE_FD_NAME "aos-sandbox-attachment-anchor-namespace-v1"
++#define AOS_GUEST_AGENT_CHANNEL_FD_NAME "aos-sandbox-guest-agent-channel-v1"
++#define AOS_GUEST_AGENT_PROVISIONING_FD_NAME "aos-sandbox-guest-agent-provisioning-v1"
++#define AOS_GUEST_ATTACH_TRUST_FD_NAME "aos-sandbox-guest-attach-trust-v1"
++#define AOS_GUEST_AGENT_FD_NAMES AOS_GUEST_AGENT_CHANNEL_FD_NAME ":" AOS_GUEST_AGENT_PROVISIONING_FD_NAME ":" AOS_GUEST_ATTACH_TRUST_FD_NAME
+ 
+ int aos_root_directory_from_fd(int fd, int *ret_root_fd, int *ret_lock_fd, char **ret_path);
+ int aos_attachment_anchor_from_fd(int fd, int *ret_anchor_fd);
+@@ -11,8 +15,10 @@
+ int aos_attachment_anchor_clone(int anchor_fd, int source_namespace_fd, int *ret_mount_fd);
+ int aos_root_directory_acquire(
+                 bool with_attachment_anchor,
++                bool with_guest_agent,
+                 int *ret_root_fd,
+                 int *ret_lock_fd,
+                 char **ret_path,
+                 int *ret_anchor_fd,
+-                int *ret_anchor_namespace_fd);
++                int *ret_anchor_namespace_fd,
++                int ret_guest_fds[3]);
+diff --git a/src/nspawn/test-nspawn-root-fd.c b/src/nspawn/test-nspawn-root-fd.c
+--- a/src/nspawn/test-nspawn-root-fd.c
++++ b/src/nspawn/test-nspawn-root-fd.c
+@@ -129,11 +129,13 @@
+                         ASSERT_EQ(
+                                         aos_root_directory_acquire(
+                                                         c->with_anchor,
++                                                        false,
+                                                         &root,
+                                                         &lock,
+                                                         &alias,
+                                                         &anchor,
+-                                                        &anchor_namespace),
++                                                        &anchor_namespace,
++                                                        NULL),
+                                         c->expected);
+                         ASSERT_NULL(getenv("LISTEN_PID"));
+                         ASSERT_NULL(getenv("LISTEN_FDS"));

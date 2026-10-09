@@ -1,0 +1,18 @@
+[package]
+name = "aos-sandbox-agent"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+aos-sandbox-core = { path = "../aos-sandbox-core" }
+ed25519-dalek = { workspace = true, features = ["zeroize"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+ssh-key.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+
+[lints]
+workspace = true

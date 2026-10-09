@@ -1,0 +1,97 @@
+--- a/dump/main.c
++++ b/dump/main.c
+@@ -11,6 +11,7 @@
+ #include <time.h>
+ #include <sys/stat.h>
+ #include "erofs/print.h"
++#include "erofs/xattr.h"
+ #include "erofs/inode.h"
+ #include "erofs/dir.h"
+ #include "../lib/liberofs_compress.h"
+@@ -34,6 +35,7 @@
+ 	bool show_blkid_udev;
+ 	erofs_nid_t nid;
+ 	const char *inode_path;
++	const char *xattr_name;
+ };
+ static struct erofsdump_cfg dumpcfg;
+ 
+@@ -88,6 +90,7 @@
+ 	{"offset", required_argument, NULL, 6},
+ 	{"cat", no_argument, NULL, 7},
+ 	{"blkid-udev", no_argument, NULL, 512},
++	{"get-xattr", required_argument, NULL, 513},
+ 	{0, 0, 0, 0},
+ };
+ 
+@@ -141,7 +144,8 @@
+ 		" --cat           show file contents (INODE required)\n"
+ 		" --nid=#         show the target inode info of nid #\n"
+ 		" --offset=#      skip # bytes at the beginning of IMAGE\n"
+-		" --path=X        show the target inode info of path X\n",
++		" --path=X        show the target inode info of path X\n"
++		" --get-xattr=X   print one raw inode xattr as a versioned marker (PATH required)\n",
+ 		argv[0]);
+ }
+ 
+@@ -212,6 +216,9 @@
+ 		case 512:
+ 			dumpcfg.show_blkid_udev = true;
+ 			break;
++		case 513:
++			dumpcfg.xattr_name = optarg;
++			break;
+ 		default:
+ 			return -EINVAL;
+ 		}
+@@ -233,6 +240,38 @@
+ 	return 0;
+ }
+ 
++static int erofsdump_show_xattr(void)
++{
++	struct erofs_inode inode = { .sbi = &g_sbi };
++	char value[4096];
++	int length, i;
++
++	if (!dumpcfg.inode_path || dumpcfg.show_extent ||
++	    dumpcfg.show_file_content || dumpcfg.show_statistics ||
++	    dumpcfg.show_superblock || dumpcfg.show_subdirectories)
++		return -EINVAL;
++
++	length = erofs_ilookup(dumpcfg.inode_path, &inode);
++	if (length)
++		return length;
++	length = erofs_getxattr(&inode, dumpcfg.xattr_name,
++				value, sizeof(value));
++	if (length == -ENODATA) {
++		printf("EROFS_XATTR_V1\tmode=%07o\tstatus=absent\tvalue=-\n",
++		       inode.i_mode);
++		return 0;
++	}
++	if (length < 0)
++		return length;
++
++	printf("EROFS_XATTR_V1\tmode=%07o\tstatus=present\tvalue=",
++	       inode.i_mode);
++	for (i = 0; i < length; i++)
++		printf("%02x", (unsigned char)value[i]);
++	putchar('\n');
++	return 0;
++}
++
+ static int erofsdump_get_occupied_size(struct erofs_inode *inode,
+ 		erofs_off_t *size)
+ {
+@@ -818,6 +857,11 @@
+ 		goto exit_put_super;
+ 	}
+ 
++	if (dumpcfg.xattr_name) {
++		err = erofsdump_show_xattr();
++		goto exit_put_super;
++	}
++
+ 	if (dumpcfg.show_file_content) {
+ 		if (dumpcfg.show_superblock || dumpcfg.show_statistics || dumpcfg.show_subdirectories) {
+ 			fprintf(stderr, "The '--cat' flag is incompatible with '-S', '-e', '-s' and '--ls'.\n");

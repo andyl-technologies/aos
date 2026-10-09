@@ -1,0 +1,20 @@
+# Selected fixed DIRECT inspection, not a new actor or generic file_type.
+type aos_git_read_delegate_runtime_t;
+allow aos_git_read_delegate_runtime_t tmpfs_t:filesystem associate;
+allow init_t aos_git_read_delegate_runtime_t:dir { create getattr open read search setattr };
+type_transition init_t var_run_t:dir aos_git_read_delegate_runtime_t "git-upload-delegation";
+allow aos_sandbox_controller_t aos_git_read_delegate_runtime_t:dir { add_name getattr open read remove_name search write };
+allow aos_sandbox_controller_t aos_git_read_delegate_runtime_t:sock_file { create getattr setattr unlink };
+type_transition aos_sandbox_controller_t aos_git_read_delegate_runtime_t:sock_file aos_git_read_delegate_runtime_t "control.sock";
+allow aos_sandbox_git_gateway_t aos_git_read_delegate_runtime_t:dir { getattr search };
+allow aos_sandbox_git_gateway_t aos_git_read_delegate_runtime_t:sock_file { getattr write };
+allow aos_sandbox_git_gateway_t aos_sandbox_controller_t:unix_stream_socket connectto;
+
+# Proc contents inherit the actual task SID. Default proc visibility exposes
+# names, but only these dedicated peers may read each other's stat/attr DATA.
+allow aos_sandbox_controller_t aos_sandbox_git_gateway_t:process getattr;
+allow aos_sandbox_controller_t aos_sandbox_git_gateway_t:dir { getattr search };
+allow aos_sandbox_controller_t aos_sandbox_git_gateway_t:file { getattr open read };
+allow aos_sandbox_git_gateway_t aos_sandbox_controller_t:process getattr;
+allow aos_sandbox_git_gateway_t aos_sandbox_controller_t:dir { getattr search };
+allow aos_sandbox_git_gateway_t aos_sandbox_controller_t:file { getattr open read };

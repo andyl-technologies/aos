@@ -12,7 +12,7 @@
   phaseTemplatesNix = builtins.readFile ../../stdenv/phases.nix;
   phaseTemplates = import ../../stdenv/phases.nix;
   cargoDepsHash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  expectedCargoDepsHash = "sha256-Rax7Te32Xr+wazk4vF63nEGuFDBKHxAJ+lCXkRo/bxw=";
+  expectedCargoDepsHash = "sha256-qruC6y8zCgNkjpfVL1rktjw1oHfns1NhWqPnbUORBuQ=";
   packageInventory = import ../../pkgs/tools/crucible/_packages.nix;
   workspaceManifest = builtins.fromTOML (builtins.readFile ../../crates/Cargo.toml);
   defaultChecks = builtins.readFile ./default.nix;
@@ -82,7 +82,11 @@
       }
       {
         label = "workspace membership comes from Cargo metadata";
-        needle = "workspacePackages = (builtins.fromTOML (builtins.readFile ../../../crates/Cargo.toml)).workspace.members;";
+        needle = "workspaceMembers = (builtins.fromTOML (builtins.readFile ../../../crates/Cargo.toml)).workspace.members;";
+      }
+      {
+        label = "workspace package names resolve from each member manifest";
+        needle = "workspacePackages = map workspacePackageName workspaceMembers;";
       }
       {
         label = "workspace cargo flags";

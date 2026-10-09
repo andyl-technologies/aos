@@ -7,7 +7,6 @@
 {
   lib,
   mkSystem,
-  pkgs,
   ...
 }: let
   failClosedSystem = mkSystem [
@@ -21,18 +20,6 @@
         "systemd.journald.forward_to_kmsg=1"
         "systemd.journald.max_level_kmsg=info"
       ];
-      aos.image.erofsCompressionLevel = 1;
-      # Fast compression with the test agent produces a roughly 666 MiB root
-      # and 769 MiB compressed image.
-      aos.image.budgets.maxRootMiB = 704;
-      aos.image.budgets.maxDownloadMiB = 800;
-
-      # This negative boot fixture deliberately bundles the fleet agent.
-      aos.image.allowTestArtifacts = true;
-      aos.packages.aos-test-agent = {
-        package = pkgs.aos-test-agent;
-        bundle = true;
-      };
     }
   ];
   rootVerify = failClosedSystem.config.boot.initrd.systemd.services."aos-verity-root-verify";

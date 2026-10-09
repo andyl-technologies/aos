@@ -1,0 +1,1103 @@
+# Existing normal owners and same-UID private TPM children.
+# Protected object types deliberately have no file_type membership. This file
+# is linked into the existing module; it creates no Linux principal or service.
+require {
+    attribute aos_private_root_custody_domain;
+    attribute aos_no_context_translation_domain;
+    attribute unreserved_port_type;
+    type node_t;
+    type netif_t;
+    type unlabeled_t;
+    type lib_t;
+    type ld_so_t;
+    type usr_t;
+    type etc_t;
+    type var_run_t;
+    type sysctl_t;
+    type sysctl_kernel_t;
+    type cgroup_t;
+    type init_exec_t;
+    type init_tmpfs_t;
+    # Matches pinned refpolicy's init_get_generic_units_status target.
+    type systemd_unit_t;
+    type system_dbusd_t;
+    type system_dbusd_var_run_t;
+    type null_device_t;
+    class chr_file { getattr ioctl open read write };
+    class fd use;
+    class dir { ioctl lock };
+    class sock_file { create getattr open read setattr unlink write };
+    class unix_stream_socket { accept bind connect connectto create getattr getopt listen read setopt shutdown write };
+    class dbus send_msg;
+    class service { status start stop reload enable disable };
+    class system { status start stop reload reboot halt };
+    class process { fork getattr getsched setrlimit sigchld sigkill signal dyntransition setsockcreate };
+    class tcp_socket { accept bind create getattr getopt listen name_bind name_connect node_bind read recvfrom setopt shutdown write };
+    class netif { egress ingress };
+    class node { recvfrom sendto };
+    class peer recv;
+    class packet { recv send };
+    class capability { chown dac_override };
+}
+
+# Disabled manual prepare-only administrative principal. Its selected unit
+# uses root0/cap0x3, but this role receives no TPM, runtime writer or normal
+# owner conversion. Creation below the existing parent is a literal-name
+# transition; no generic var_lib_t file create or removal permission is added.
+type aos_nix_offline_prepare_t;
+typeattribute aos_nix_offline_prepare_t domain;
+typeattribute aos_nix_offline_prepare_t aos_private_root_custody_domain;
+role system_r types aos_nix_offline_prepare_t;
+type aos_nix_offline_prepare_exec_t;
+type aos_nix_offline_prepare_profile_t;
+type aos_nix_offline_prepare_credential_t;
+type aos_nix_offline_prepare_state_t;
+
+allow init_t aos_nix_offline_prepare_exec_t:file { execute execute_no_trans getattr map open read };
+allow init_t aos_nix_offline_prepare_t:process transition;
+allow init_t aos_nix_offline_prepare_t:process2 nnp_transition;
+allow aos_nix_offline_prepare_t aos_nix_offline_prepare_exec_t:file { entrypoint getattr map open read };
+allow aos_nix_offline_prepare_t self:capability { chown dac_override };
+allow aos_nix_offline_prepare_t self:process { fork getattr getsched sigchld signal };
+allow aos_nix_offline_prepare_t init_t:fd use;
+allow aos_nix_offline_prepare_t null_device_t:chr_file { getattr open read write };
+allow aos_nix_offline_prepare_t { root_t var_t var_lib_t var_run_t usr_t etc_t }:dir { getattr open search };
+allow aos_nix_offline_prepare_t { usr_t etc_t }:file { getattr open read };
+allow aos_nix_offline_prepare_t etc_t:lnk_file { getattr read };
+allow aos_nix_offline_prepare_t { lib_t ld_so_t }:file { execute getattr map open read };
+allow aos_nix_offline_prepare_t init_exec_t:file { getattr read };
+allow aos_nix_offline_prepare_t aos_nix_offline_prepare_profile_t:file { getattr open read };
+allow init_t aos_nix_offline_prepare_profile_t:file { getattr open read };
+allow aos_nix_offline_prepare_t proc_t:dir { getattr open read search };
+allow aos_nix_offline_prepare_t proc_t:filesystem getattr;
+allow aos_nix_offline_prepare_t self:dir { getattr open read search };
+allow aos_nix_offline_prepare_t self:file { getattr open read };
+allow aos_nix_offline_prepare_t self:lnk_file { getattr read };
+allow aos_nix_offline_prepare_t security_t:dir { getattr open read search };
+allow aos_nix_offline_prepare_t security_t:filesystem getattr;
+allow aos_nix_offline_prepare_t security_t:file { getattr open read };
+allow aos_nix_offline_prepare_t cgroup_t:dir { getattr open read search };
+allow aos_nix_offline_prepare_t cgroup_t:file { getattr open read };
+allow aos_nix_offline_prepare_t sysctl_t:dir search;
+allow aos_nix_offline_prepare_t sysctl_kernel_t:dir search;
+allow aos_nix_offline_prepare_t sysctl_kernel_t:file { getattr open read };
+allow aos_nix_offline_prepare_t systemd_unit_t:file { getattr open read };
+allow aos_nix_offline_prepare_t tmpfs_t:filesystem getattr;
+
+# Sole existing unique-PID1 status observer; no manager mutation grant.
+allow aos_nix_offline_prepare_t self:unix_stream_socket { connect create getattr getopt read setopt shutdown write };
+allow aos_nix_offline_prepare_t system_dbusd_var_run_t:sock_file { getattr open read write };
+allow aos_nix_offline_prepare_t system_dbusd_t:unix_stream_socket connectto;
+allow aos_nix_offline_prepare_t { init_t system_dbusd_t }:dbus send_msg;
+allow { init_t system_dbusd_t } aos_nix_offline_prepare_t:dbus send_msg;
+allow aos_nix_offline_prepare_t systemd_unit_t:service status;
+allow aos_nix_offline_prepare_t init_t:system status;
+
+# Preserve PID 1's existing inspection under the private custody attribute.
+allow init_t aos_nix_offline_prepare_t:dir { getattr search open read lock ioctl };
+allow init_t aos_nix_offline_prepare_t:file { getattr open read lock ioctl };
+allow init_t aos_nix_offline_prepare_t:lnk_file { getattr read };
+
+# Fixed independent public delivery only. PID1 creates its immutable credential
+# copy; the prepare role cannot mutate either delivered public original.
+allow aos_nix_offline_prepare_t aos_nix_offline_prepare_credential_t:dir { getattr open read search };
+allow aos_nix_offline_prepare_t aos_nix_offline_prepare_credential_t:file { getattr open read };
+allow aos_nix_offline_prepare_credential_t tmpfs_t:filesystem associate;
+allow init_t aos_nix_offline_prepare_credential_t:dir { add_name create getattr mounton open read relabelto remove_name search setattr write };
+allow init_t aos_nix_offline_prepare_credential_t:file { create getattr open read setattr unlink write };
+type_transition init_t aos_nix_offline_prepare_credential_t:file aos_nix_offline_prepare_credential_t;
+
+# No remove_name, unlink, rename, link or foreign-tree cleanup permissions.
+allow aos_nix_offline_prepare_t var_lib_t:dir { add_name write };
+type_transition aos_nix_offline_prepare_t var_lib_t:dir aos_nix_offline_prepare_state_t "sandbox-nix-floor-provision";
+allow aos_nix_offline_prepare_t aos_nix_offline_prepare_state_t:dir { add_name create getattr open read search setattr write };
+allow aos_nix_offline_prepare_t aos_nix_offline_prepare_state_t:file { create getattr lock open read setattr write };
+type_transition aos_nix_offline_prepare_t aos_nix_offline_prepare_state_t:file aos_nix_offline_prepare_state_t;
+
+# Only the measured descriptor-launched offline entry may open the TPM. Parent
+# cap0x3 does not imply device access. The new type is present even while its
+# manual unit remains disabled; ordinary startup still has no hardware recipe.
+type aos_nix_offline_tpm_helper_t;
+typeattribute aos_nix_offline_tpm_helper_t domain;
+typeattribute aos_nix_offline_tpm_helper_t aos_private_root_custody_domain;
+role system_r types aos_nix_offline_tpm_helper_t;
+type aos_nix_offline_tpm_helper_exec_t;
+
+type_transition aos_nix_offline_prepare_t aos_nix_offline_tpm_helper_exec_t:process aos_nix_offline_tpm_helper_t;
+allow aos_nix_offline_prepare_t aos_nix_offline_tpm_helper_exec_t:file { execute getattr map open read };
+allow aos_nix_offline_prepare_t aos_nix_offline_tpm_helper_t:process { transition getattr sigkill signal };
+allow aos_nix_offline_prepare_t aos_nix_offline_tpm_helper_t:process2 nnp_transition;
+allow aos_nix_offline_tpm_helper_t aos_nix_offline_tpm_helper_exec_t:file { entrypoint execute getattr map open read };
+allow aos_nix_offline_tpm_helper_t self:process { getattr getsched setrlimit sigchld signal };
+allow aos_nix_offline_tpm_helper_t aos_nix_offline_prepare_t:fd use;
+allow aos_nix_offline_tpm_helper_t aos_nix_offline_prepare_t:unix_stream_socket { getattr getopt read setopt shutdown write };
+allow aos_nix_offline_prepare_t self:unix_stream_socket { create getattr getopt read setopt shutdown write };
+allow aos_nix_offline_prepare_t aos_nix_offline_tpm_helper_t:dir { getattr open read search };
+allow aos_nix_offline_prepare_t aos_nix_offline_tpm_helper_t:file { getattr open read };
+allow aos_nix_offline_prepare_t aos_nix_offline_tpm_helper_t:lnk_file { getattr read };
+allow aos_nix_offline_tpm_helper_t aos_nix_offline_prepare_state_t:file { getattr lock };
+allow aos_nix_offline_tpm_helper_t null_device_t:chr_file { getattr open read write };
+allow aos_nix_offline_tpm_helper_t { root_t var_t var_lib_t var_run_t usr_t etc_t }:dir { getattr open search };
+allow aos_nix_offline_tpm_helper_t { lib_t ld_so_t }:file { execute getattr map open read };
+allow aos_nix_offline_tpm_helper_t proc_t:dir { getattr open read search };
+allow aos_nix_offline_tpm_helper_t proc_t:filesystem getattr;
+allow aos_nix_offline_tpm_helper_t self:dir { getattr open read search };
+allow aos_nix_offline_tpm_helper_t self:file { getattr open read };
+allow aos_nix_offline_tpm_helper_t security_t:dir { getattr open read search };
+allow aos_nix_offline_tpm_helper_t security_t:filesystem getattr;
+allow aos_nix_offline_tpm_helper_t security_t:file { getattr open read };
+allow aos_nix_offline_tpm_helper_t aos_method46_tpm_device_t:chr_file { getattr open read write };
+
+# PID1's private population/metadata observation is not a helper entry route.
+allow init_t aos_nix_offline_tpm_helper_t:dir { getattr search open read lock ioctl };
+allow init_t aos_nix_offline_tpm_helper_t:file { getattr open read lock ioctl };
+allow init_t aos_nix_offline_tpm_helper_t:lnk_file { getattr read };
+
+# Dedicated transport-only Gateway. Its explicit unit context is the only
+# normal entry route; no writer, protected owner, helper or default transition
+# is inherited. Hard service limits and advisory node observations are separate.
+type aos_sandbox_git_gateway_t;
+typeattribute aos_sandbox_git_gateway_t domain;
+role system_r types aos_sandbox_git_gateway_t;
+type aos_sandbox_git_gateway_exec_t;
+type aos_sandbox_git_gateway_credential_t;
+
+allow init_t aos_sandbox_git_gateway_exec_t:file { execute execute_no_trans getattr map open read };
+allow init_t aos_sandbox_git_gateway_t:process transition;
+allow init_t aos_sandbox_git_gateway_t:process2 nnp_transition;
+allow aos_sandbox_git_gateway_t aos_sandbox_git_gateway_exec_t:file { entrypoint getattr map open read };
+allow aos_sandbox_git_gateway_t self:process { fork getattr getsched sigchld signal };
+allow aos_sandbox_git_gateway_t init_t:fd use;
+allow aos_sandbox_git_gateway_t init_t:unix_stream_socket write;
+allow aos_sandbox_git_gateway_t null_device_t:chr_file { getattr open read write };
+
+# Original self/image, immutable fragment/policy, read-only kernel limits and
+# fixed credential observations use existing physical admission engines.
+allow aos_sandbox_git_gateway_t { root_t var_t var_run_t usr_t etc_t }:dir { getattr open search };
+allow aos_sandbox_git_gateway_t { usr_t etc_t }:file { getattr open read };
+allow aos_sandbox_git_gateway_t etc_t:lnk_file { getattr read };
+allow aos_sandbox_git_gateway_t { lib_t ld_so_t }:file { execute getattr map open read };
+allow aos_sandbox_git_gateway_t proc_t:dir { getattr open read search };
+allow aos_sandbox_git_gateway_t proc_t:filesystem getattr;
+# The pinned refpolicy labels /proc/meminfo proc_t. This is explicitly type-wide
+# global-proc DATA read access, not a pathname ACL or network/currentness grant.
+allow aos_sandbox_git_gateway_t proc_t:file { getattr open read };
+allow aos_sandbox_git_gateway_t self:dir { getattr open read search };
+allow aos_sandbox_git_gateway_t self:file { getattr open read };
+allow aos_sandbox_git_gateway_t self:lnk_file { getattr read };
+allow aos_sandbox_git_gateway_t security_t:dir { getattr open read search };
+allow aos_sandbox_git_gateway_t security_t:filesystem getattr;
+allow aos_sandbox_git_gateway_t security_t:file { getattr open read };
+allow aos_sandbox_git_gateway_t cgroup_t:dir { getattr open read search };
+allow aos_sandbox_git_gateway_t cgroup_t:file { getattr open read };
+allow aos_sandbox_git_gateway_t sysctl_t:dir search;
+allow aos_sandbox_git_gateway_t sysctl_kernel_t:dir search;
+allow aos_sandbox_git_gateway_t sysctl_kernel_t:file { getattr open read };
+allow aos_sandbox_git_gateway_t systemd_unit_t:file { getattr open read };
+allow aos_sandbox_git_gateway_t aos_sandbox_git_gateway_credential_t:dir { getattr open search };
+allow aos_sandbox_git_gateway_t aos_sandbox_git_gateway_credential_t:file { getattr open read };
+allow aos_sandbox_git_gateway_credential_t tmpfs_t:filesystem associate;
+
+# Status-only D-Bus observations cannot mutate PID1 service policy.
+allow aos_sandbox_git_gateway_t self:unix_stream_socket { connect create getattr getopt read setopt shutdown write };
+allow aos_sandbox_git_gateway_t system_dbusd_var_run_t:sock_file { getattr open read write };
+allow aos_sandbox_git_gateway_t system_dbusd_t:unix_stream_socket connectto;
+allow aos_sandbox_git_gateway_t { init_t system_dbusd_t }:dbus send_msg;
+allow { init_t system_dbusd_t } aos_sandbox_git_gateway_t:dbus send_msg;
+allow aos_sandbox_git_gateway_t systemd_unit_t:service status;
+allow aos_sandbox_git_gateway_t init_t:system status;
+
+# Numeric unprivileged listener ingress only. No name_connect, UDP/raw socket,
+# outgoing client, device, writable state or protected-journal grant is added.
+allow aos_sandbox_git_gateway_t self:tcp_socket { accept bind create getattr getopt listen read setopt shutdown write };
+allow aos_sandbox_git_gateway_t unreserved_port_type:tcp_socket name_bind;
+allow aos_sandbox_git_gateway_t node_t:tcp_socket node_bind;
+allow aos_sandbox_git_gateway_t netif_t:netif { egress ingress };
+allow aos_sandbox_git_gateway_t node_t:node { recvfrom sendto };
+allow aos_sandbox_git_gateway_t unlabeled_t:tcp_socket recvfrom;
+allow aos_sandbox_git_gateway_t unlabeled_t:peer recv;
+allow aos_sandbox_git_gateway_t unlabeled_t:packet { recv send };
+
+type aos_sandbox_controller_t;
+typeattribute aos_sandbox_controller_t domain;
+role system_r types aos_sandbox_controller_t;
+type aos_sandbox_controller_exec_t;
+type aos_sandbox_controller_state_t;
+type aos_sandbox_controller_credential_t;
+type aos_sandbox_controller_runtime_t;
+
+# Explicit normal-unit context only: no ELF-based init_t default transition.
+# PID 1 may still run the legacy/recovery invocation without that context.
+allow init_t aos_sandbox_controller_exec_t:file { execute execute_no_trans getattr map open read };
+allow init_t aos_sandbox_controller_t:process transition;
+allow init_t aos_sandbox_controller_t:process2 nnp_transition;
+allow aos_sandbox_controller_t aos_sandbox_controller_exec_t:file { entrypoint getattr map open read };
+allow aos_sandbox_controller_t self:process { fork getattr getsched setrlimit sigchld signal };
+allow aos_sandbox_controller_t self:unix_stream_socket { accept bind connect create getattr getopt listen read setopt shutdown write };
+allow aos_sandbox_controller_t init_t:fd use;
+allow aos_sandbox_controller_t null_device_t:chr_file { getattr open read write };
+allow aos_sandbox_controller_t { root_t var_t var_lib_t var_run_t usr_t etc_t }:dir { getattr open search };
+allow aos_sandbox_controller_t device_t:dir { getattr open search };
+allow aos_sandbox_controller_t etc_t:file { getattr open read };
+allow aos_sandbox_controller_t etc_t:lnk_file { getattr read };
+allow aos_sandbox_controller_t lib_t:file { execute getattr map open read };
+allow aos_sandbox_controller_t ld_so_t:file { execute getattr map open read };
+allow aos_sandbox_controller_t proc_t:dir { getattr open read search };
+allow aos_sandbox_controller_t proc_t:filesystem getattr;
+allow aos_sandbox_controller_t self:file { getattr open read };
+allow aos_sandbox_controller_t self:dir { getattr open read search };
+allow aos_sandbox_controller_t security_t:dir { getattr open read search };
+allow aos_sandbox_controller_t security_t:filesystem getattr;
+allow aos_sandbox_controller_t security_t:file { getattr open read };
+allow aos_sandbox_controller_t cgroup_t:dir { getattr open read search };
+allow aos_sandbox_controller_t cgroup_t:file { getattr open read };
+allow aos_sandbox_controller_t sysctl_t:dir search;
+allow aos_sandbox_controller_t sysctl_kernel_t:dir search;
+allow aos_sandbox_controller_t sysctl_kernel_t:file { getattr open read };
+allow aos_sandbox_controller_t aos_sandbox_controller_state_t:dir { add_name getattr open read remove_name search write };
+allow aos_sandbox_controller_t aos_sandbox_controller_state_t:file { append create getattr ioctl lock open read rename setattr unlink write };
+type_transition aos_sandbox_controller_t aos_sandbox_controller_state_t:file aos_sandbox_controller_state_t;
+allow aos_sandbox_controller_t aos_sandbox_controller_credential_t:dir { getattr open read search };
+allow aos_sandbox_controller_t aos_sandbox_controller_credential_t:file { getattr open read };
+# PID 1 copies credentials beneath their protected directory type. This is
+# type-wide delivery, not authority inferred from a name or SELinux label.
+allow init_t aos_sandbox_controller_credential_t:dir { add_name create getattr mounton open read relabelto remove_name search setattr write };
+allow init_t aos_sandbox_controller_credential_t:file { create getattr open read setattr unlink write };
+type_transition init_t aos_sandbox_controller_credential_t:file aos_sandbox_controller_credential_t;
+allow aos_sandbox_controller_t tmpfs_t:filesystem getattr;
+allow aos_sandbox_controller_t aos_sandbox_controller_runtime_t:dir { add_name getattr open read remove_name search write };
+allow aos_sandbox_controller_t aos_sandbox_controller_runtime_t:sock_file { create getattr open read setattr unlink write };
+type_transition aos_sandbox_controller_t aos_sandbox_controller_runtime_t:sock_file aos_sandbox_controller_runtime_t;
+
+# D-Bus transports the existing status-only manager calls. Method authorization
+# still checks service/system classes; there is no start/stop/reload grant.
+allow aos_sandbox_controller_t system_dbusd_var_run_t:sock_file { getattr open read write };
+allow aos_sandbox_controller_t system_dbusd_t:unix_stream_socket connectto;
+allow aos_sandbox_controller_t { init_t system_dbusd_t }:dbus send_msg;
+allow { init_t system_dbusd_t } aos_sandbox_controller_t:dbus send_msg;
+allow aos_sandbox_controller_t systemd_unit_t:service status;
+allow aos_sandbox_controller_t init_t:system status;
+
+type aos_sandbox_storage_t;
+typeattribute aos_sandbox_storage_t domain;
+role system_r types aos_sandbox_storage_t;
+type aos_sandbox_storage_exec_t;
+type aos_sandbox_storage_state_t;
+type aos_sandbox_storage_credential_t;
+type aos_sandbox_storage_credential_source_t;
+type aos_sandbox_storage_runtime_t;
+
+# Explicit normal-unit context only: no ELF-based init_t default transition.
+# PID 1 may still run the legacy/recovery invocation without that context.
+allow init_t aos_sandbox_storage_exec_t:file { execute execute_no_trans getattr map open read };
+allow init_t aos_sandbox_storage_t:process transition;
+allow init_t aos_sandbox_storage_t:process2 nnp_transition;
+allow aos_sandbox_storage_t aos_sandbox_storage_exec_t:file { entrypoint getattr map open read };
+allow aos_sandbox_storage_t self:process { fork getattr getsched setrlimit sigchld signal };
+allow aos_sandbox_storage_t self:unix_stream_socket { accept bind connect create getattr getopt listen read setopt shutdown write };
+allow aos_sandbox_storage_t init_t:fd use;
+allow aos_sandbox_storage_t null_device_t:chr_file { getattr open read write };
+allow aos_sandbox_storage_t { root_t var_t var_lib_t var_run_t usr_t etc_t }:dir { getattr open search };
+allow aos_sandbox_storage_t device_t:dir { getattr open search };
+allow aos_sandbox_storage_t etc_t:file { getattr open read };
+allow aos_sandbox_storage_t etc_t:lnk_file { getattr read };
+allow aos_sandbox_storage_t lib_t:file { execute getattr map open read };
+allow aos_sandbox_storage_t ld_so_t:file { execute getattr map open read };
+allow aos_sandbox_storage_t proc_t:dir { getattr open read search };
+allow aos_sandbox_storage_t proc_t:filesystem getattr;
+allow aos_sandbox_storage_t self:file { getattr open read };
+allow aos_sandbox_storage_t self:dir { getattr open read search };
+# Genuine startup rechecks the retained manager and its /proc/1/exe inode.
+# The task-file read is PTRACE_MODE_READ, not process:ptrace or execution.
+allow aos_sandbox_storage_t init_exec_t:file { getattr open read };
+allow aos_sandbox_storage_t init_t:dir search;
+allow aos_sandbox_storage_t init_t:lnk_file read;
+allow aos_sandbox_storage_t init_t:file read;
+allow aos_sandbox_storage_t systemd_unit_t:file { getattr open read };
+allow aos_sandbox_storage_t security_t:dir { getattr open read search };
+allow aos_sandbox_storage_t security_t:filesystem getattr;
+allow aos_sandbox_storage_t security_t:file { getattr open read };
+allow aos_sandbox_storage_t cgroup_t:dir { getattr open read search };
+allow aos_sandbox_storage_t cgroup_t:file { getattr open read };
+allow aos_sandbox_storage_t sysctl_t:dir search;
+allow aos_sandbox_storage_t sysctl_kernel_t:dir search;
+allow aos_sandbox_storage_t sysctl_kernel_t:file { getattr open read };
+allow aos_sandbox_storage_t aos_sandbox_storage_state_t:dir { add_name getattr open read remove_name search write };
+allow aos_sandbox_storage_t aos_sandbox_storage_state_t:file { append create getattr ioctl lock open read rename setattr unlink write };
+type_transition aos_sandbox_storage_t aos_sandbox_storage_state_t:file aos_sandbox_storage_state_t;
+allow aos_sandbox_storage_t aos_sandbox_storage_credential_t:dir { getattr open search };
+allow aos_sandbox_storage_t aos_sandbox_storage_credential_t:file { getattr open read };
+# Independently provisioned source originals are never delivery-copy objects.
+# PID1 reads these exact labelled records; no runtime source mutation is added.
+allow aos_sandbox_storage_credential_source_t fs_t:filesystem associate;
+allow init_t aos_sandbox_storage_credential_source_t:dir { getattr open search };
+allow init_t aos_sandbox_storage_credential_source_t:file { getattr open read };
+
+# The manager labels the fixed directory before plain openat creates copies.
+# Unknown names keep the existing ordinary temporary type, not secret custody.
+allow init_t aos_sandbox_storage_credential_t:dir { add_name create getattr mounton open read relabelto remove_name search setattr write };
+allow init_t aos_sandbox_storage_credential_t:file { create getattr open read setattr unlink write };
+type_transition init_t aos_sandbox_storage_credential_t:file init_tmpfs_t;
+type_transition init_t aos_sandbox_storage_credential_t:file aos_sandbox_storage_credential_t "storage-zfs-hold-key-v1";
+type_transition init_t aos_sandbox_storage_credential_t:file aos_sandbox_storage_credential_t "operator-recovery-controller-public-key-v1";
+type_transition init_t aos_sandbox_storage_credential_t:file aos_sandbox_storage_credential_t "operator-recovery-storage-owner-key-v1";
+
+allow aos_sandbox_storage_t aos_sandbox_storage_runtime_t:dir { add_name getattr open read remove_name search write };
+allow aos_sandbox_storage_t aos_sandbox_storage_runtime_t:sock_file { create getattr open read setattr unlink write };
+type_transition aos_sandbox_storage_t aos_sandbox_storage_runtime_t:sock_file aos_sandbox_storage_runtime_t;
+
+# D-Bus transports the existing status-only manager calls. Method authorization
+# still checks service/system classes; there is no start/stop/reload grant.
+allow aos_sandbox_storage_t system_dbusd_var_run_t:sock_file { getattr open read write };
+allow aos_sandbox_storage_t system_dbusd_t:unix_stream_socket connectto;
+allow aos_sandbox_storage_t { init_t system_dbusd_t }:dbus send_msg;
+allow { init_t system_dbusd_t } aos_sandbox_storage_t:dbus send_msg;
+allow aos_sandbox_storage_t systemd_unit_t:service status;
+allow aos_sandbox_storage_t init_t:system status;
+
+type aos_sandbox_policy_authority_t;
+typeattribute aos_sandbox_policy_authority_t domain;
+typeattribute aos_sandbox_policy_authority_t aos_private_root_custody_domain;
+role system_r types aos_sandbox_policy_authority_t;
+type aos_sandbox_policy_authority_exec_t;
+type aos_sandbox_policy_authority_state_t;
+type aos_sandbox_policy_authority_credential_t;
+type aos_sandbox_policy_authority_runtime_t;
+type aos_sandbox_policy_authority_profile_t;
+
+# Explicit normal-unit context only: no ELF-based init_t default transition.
+# PID 1 may still run the legacy/recovery invocation without that context.
+allow init_t aos_sandbox_policy_authority_exec_t:file { execute execute_no_trans getattr map open read };
+allow init_t aos_sandbox_policy_authority_t:process transition;
+allow init_t aos_sandbox_policy_authority_t:process2 nnp_transition;
+
+# Restore only PID 1's exact pinned domain_read_all_domains_state profile.
+# Other interface callers must not inspect normal Root's task files or FDs.
+allow init_t aos_sandbox_policy_authority_t:dir { getattr search open read lock ioctl };
+allow init_t aos_sandbox_policy_authority_t:file { getattr open read lock ioctl };
+allow init_t aos_sandbox_policy_authority_t:lnk_file { getattr read };
+
+allow aos_sandbox_policy_authority_t aos_sandbox_policy_authority_exec_t:file { entrypoint getattr map open read };
+allow aos_sandbox_policy_authority_t self:process { fork getattr getsched setrlimit sigchld signal };
+allow aos_sandbox_policy_authority_t self:unix_stream_socket { accept bind connect create getattr getopt listen read setopt shutdown write };
+allow aos_sandbox_policy_authority_t init_t:fd use;
+# Original PID1 OpenFile is an already-owned executable FD, not permission to
+# execute PID1 or inspect its procfs task. Only Root's own exe symlink is read.
+allow aos_sandbox_policy_authority_t init_exec_t:file { getattr read };
+allow aos_sandbox_policy_authority_t self:lnk_file { getattr read };
+allow aos_sandbox_policy_authority_t aos_sandbox_policy_authority_profile_t:file { getattr open read };
+allow init_t aos_sandbox_policy_authority_profile_t:file { getattr open read };
+# Public selected-image bytes, never Root task files or Root-owned descriptors.
+allow aos_sandbox_controller_t aos_sandbox_policy_authority_profile_t:file { getattr open read };
+allow aos_sandbox_controller_t aos_sandbox_policy_authority_exec_t:file { getattr open read };
+allow aos_sandbox_controller_t init_exec_t:file { getattr open read };
+allow aos_sandbox_policy_authority_t null_device_t:chr_file { getattr open read write };
+allow aos_sandbox_policy_authority_t { root_t var_t var_lib_t var_run_t usr_t etc_t }:dir { getattr open search };
+allow aos_sandbox_policy_authority_t device_t:dir { getattr open search };
+allow aos_sandbox_policy_authority_t etc_t:file { getattr open read };
+allow aos_sandbox_policy_authority_t etc_t:lnk_file { getattr read };
+allow aos_sandbox_policy_authority_t lib_t:file { execute getattr map open read };
+allow aos_sandbox_policy_authority_t ld_so_t:file { execute getattr map open read };
+allow aos_sandbox_policy_authority_t proc_t:dir { getattr open read search };
+allow aos_sandbox_policy_authority_t proc_t:filesystem getattr;
+allow aos_sandbox_policy_authority_t self:file { getattr open read };
+allow aos_sandbox_policy_authority_t self:dir { getattr open read search };
+allow aos_sandbox_policy_authority_t security_t:dir { getattr open read search };
+allow aos_sandbox_policy_authority_t security_t:filesystem getattr;
+allow aos_sandbox_policy_authority_t security_t:file { getattr open read };
+allow aos_sandbox_policy_authority_t cgroup_t:dir { getattr open read search };
+allow aos_sandbox_policy_authority_t cgroup_t:file { getattr open read };
+allow aos_sandbox_policy_authority_t sysctl_t:dir search;
+allow aos_sandbox_policy_authority_t sysctl_kernel_t:dir search;
+allow aos_sandbox_policy_authority_t sysctl_kernel_t:file { getattr open read };
+allow aos_sandbox_policy_authority_t aos_sandbox_policy_authority_state_t:dir { add_name getattr open read remove_name search write };
+allow aos_sandbox_policy_authority_t aos_sandbox_policy_authority_state_t:file { append create getattr ioctl lock open read rename setattr unlink write };
+type_transition aos_sandbox_policy_authority_t aos_sandbox_policy_authority_state_t:file aos_sandbox_policy_authority_state_t;
+allow aos_sandbox_policy_authority_t aos_sandbox_policy_authority_credential_t:dir { getattr open read search };
+allow aos_sandbox_policy_authority_t aos_sandbox_policy_authority_credential_t:file { getattr open read };
+# PID 1 labels this fixed unit's credential directory before creating copies.
+# This is credential delivery only: Root state remains denied to PID 1, and
+# the reader still verifies read-only backing and original named identity.
+allow init_t aos_sandbox_policy_authority_credential_t:dir { add_name create getattr mounton open read relabelto remove_name search setattr write };
+allow init_t aos_sandbox_policy_authority_credential_t:file { create getattr open read setattr unlink write };
+type_transition init_t aos_sandbox_policy_authority_credential_t:file aos_sandbox_policy_authority_credential_t;
+allow aos_sandbox_policy_authority_t aos_sandbox_view_parent_t:dir { getattr open search };
+allow aos_sandbox_policy_authority_t tmpfs_t:filesystem getattr;
+allow aos_sandbox_policy_authority_t aos_sandbox_policy_authority_runtime_t:dir { add_name getattr open read remove_name search write };
+allow aos_sandbox_policy_authority_t aos_sandbox_policy_authority_runtime_t:sock_file { create getattr open read setattr unlink write };
+type_transition aos_sandbox_policy_authority_t aos_sandbox_policy_authority_runtime_t:sock_file aos_sandbox_policy_authority_runtime_t;
+
+# D-Bus transports the existing status-only manager calls. Method authorization
+# still checks service/system classes; there is no start/stop/reload grant.
+allow aos_sandbox_policy_authority_t system_dbusd_var_run_t:sock_file { getattr open read write };
+allow aos_sandbox_policy_authority_t system_dbusd_t:unix_stream_socket connectto;
+allow aos_sandbox_policy_authority_t { init_t system_dbusd_t }:dbus send_msg;
+allow { init_t system_dbusd_t } aos_sandbox_policy_authority_t:dbus send_msg;
+allow aos_sandbox_policy_authority_t systemd_unit_t:service status;
+allow aos_sandbox_policy_authority_t init_t:system status;
+
+# Root owns its accepted endpoint. A Controller client needs only pathname
+# access and connectto; receiving/using/writing Root's accepted FD is denied.
+allow aos_sandbox_controller_t aos_sandbox_policy_authority_runtime_t:dir { getattr open search };
+allow aos_sandbox_controller_t aos_sandbox_policy_authority_runtime_t:sock_file { getattr open read write };
+allow aos_sandbox_controller_t aos_sandbox_policy_authority_t:unix_stream_socket connectto;
+
+# One exact helper image has source-specific transitions, never an init_t entry.
+# Its raw kernel role checks use no MLS/MCS translation RPC. The deny-only
+# marker removes that blanket socket grant, not either inherited owner channel.
+type aos_method46_helper_exec_t;
+type aos_method46_tpm_device_t;
+
+type aos_method46_controller_helper_t;
+typeattribute aos_method46_controller_helper_t domain;
+typeattribute aos_method46_controller_helper_t aos_no_context_translation_domain;
+role system_r types aos_method46_controller_helper_t;
+type aos_method46_controller_floor_t;
+type aos_method46_controller_lock_t;
+allow aos_sandbox_controller_t aos_method46_helper_exec_t:file { execute getattr map open read };
+allow aos_sandbox_controller_t aos_method46_controller_helper_t:process { getattr sigkill signal transition };
+allow aos_sandbox_controller_t aos_method46_controller_helper_t:process2 nnp_transition;
+allow aos_sandbox_controller_t aos_method46_controller_helper_t:dir { getattr open read search };
+# PTRACE_MODE_READ/task image inspection, never process:ptrace/attach. Image
+# observation occurs before public HELLO and before the child becomes nondumpable.
+allow aos_sandbox_controller_t aos_method46_controller_helper_t:file { getattr open read };
+allow aos_method46_controller_helper_t aos_method46_helper_exec_t:file { entrypoint getattr map open read };
+type_transition aos_sandbox_controller_t aos_method46_helper_exec_t:process aos_method46_controller_helper_t;
+allow aos_method46_controller_helper_t aos_sandbox_controller_t:process sigchld;
+allow aos_method46_controller_helper_t aos_sandbox_controller_t:fd use;
+allow aos_method46_controller_helper_t aos_sandbox_controller_t:unix_stream_socket { getattr getopt read setopt write };
+allow aos_sandbox_controller_t aos_method46_controller_helper_t:fd use;
+allow aos_method46_controller_helper_t self:process getattr;
+allow aos_method46_controller_helper_t self:file { getattr open read };
+allow aos_method46_controller_helper_t self:dir { getattr open search };
+allow aos_method46_controller_helper_t { root_t usr_t device_t proc_t }:dir { getattr open search };
+allow aos_method46_controller_helper_t proc_t:filesystem getattr;
+allow aos_method46_controller_helper_t lib_t:file { execute getattr map open read };
+allow aos_method46_controller_helper_t ld_so_t:file { execute getattr map open read };
+allow aos_method46_controller_helper_t security_t:dir { getattr open search };
+allow aos_method46_controller_helper_t security_t:filesystem getattr;
+allow aos_method46_controller_helper_t security_t:file { getattr open read };
+allow aos_method46_controller_helper_t aos_method46_tpm_device_t:chr_file { getattr open read write };
+# SCM_RIGHTS checks the RDWR mode. These permissions apply only to exact empty
+# lock OFDs, not journal data; no pathname open, flock, truncate or rename grant.
+allow aos_method46_controller_helper_t aos_method46_controller_lock_t:file { getattr read write };
+allow aos_sandbox_controller_t aos_method46_controller_floor_t:dir { add_name getattr open read remove_name search write };
+allow aos_sandbox_controller_t aos_method46_controller_floor_t:file { append create getattr open read rename setattr unlink write };
+allow aos_sandbox_controller_t aos_method46_controller_lock_t:file { create getattr lock open read write };
+type_transition aos_sandbox_controller_t aos_method46_controller_floor_t:file aos_method46_controller_floor_t;
+type_transition aos_sandbox_controller_t aos_method46_controller_floor_t:file aos_method46_controller_lock_t "session.journal.lock";
+type_transition aos_sandbox_controller_t aos_method46_controller_floor_t:file aos_method46_controller_lock_t "session-floor.journal.lock";
+
+type aos_method46_storage_helper_t;
+typeattribute aos_method46_storage_helper_t domain;
+typeattribute aos_method46_storage_helper_t aos_no_context_translation_domain;
+role system_r types aos_method46_storage_helper_t;
+type aos_method46_storage_floor_t;
+type aos_method46_storage_lock_t;
+allow aos_sandbox_storage_t aos_method46_helper_exec_t:file { execute getattr map open read };
+allow aos_sandbox_storage_t aos_method46_storage_helper_t:process { getattr sigkill signal transition };
+allow aos_sandbox_storage_t aos_method46_storage_helper_t:process2 nnp_transition;
+allow aos_sandbox_storage_t aos_method46_storage_helper_t:dir { getattr open read search };
+# PTRACE_MODE_READ/task image inspection, never process:ptrace/attach. Image
+# observation occurs before public HELLO and before the child becomes nondumpable.
+allow aos_sandbox_storage_t aos_method46_storage_helper_t:file { getattr open read };
+allow aos_method46_storage_helper_t aos_method46_helper_exec_t:file { entrypoint getattr map open read };
+type_transition aos_sandbox_storage_t aos_method46_helper_exec_t:process aos_method46_storage_helper_t;
+allow aos_method46_storage_helper_t aos_sandbox_storage_t:process sigchld;
+allow aos_method46_storage_helper_t aos_sandbox_storage_t:fd use;
+allow aos_method46_storage_helper_t aos_sandbox_storage_t:unix_stream_socket { getattr getopt read setopt write };
+allow aos_sandbox_storage_t aos_method46_storage_helper_t:fd use;
+allow aos_method46_storage_helper_t self:process getattr;
+allow aos_method46_storage_helper_t self:file { getattr open read };
+allow aos_method46_storage_helper_t self:dir { getattr open search };
+allow aos_method46_storage_helper_t { root_t usr_t device_t proc_t }:dir { getattr open search };
+allow aos_method46_storage_helper_t proc_t:filesystem getattr;
+allow aos_method46_storage_helper_t lib_t:file { execute getattr map open read };
+allow aos_method46_storage_helper_t ld_so_t:file { execute getattr map open read };
+allow aos_method46_storage_helper_t security_t:dir { getattr open search };
+allow aos_method46_storage_helper_t security_t:filesystem getattr;
+allow aos_method46_storage_helper_t security_t:file { getattr open read };
+allow aos_method46_storage_helper_t aos_method46_tpm_device_t:chr_file { getattr open read write };
+# SCM_RIGHTS checks the RDWR mode. These permissions apply only to exact empty
+# lock OFDs, not journal data; no pathname open, flock, truncate or rename grant.
+allow aos_method46_storage_helper_t aos_method46_storage_lock_t:file { getattr read write };
+allow aos_sandbox_storage_t aos_method46_storage_floor_t:dir { add_name getattr open read remove_name search write };
+allow aos_sandbox_storage_t aos_method46_storage_floor_t:file { append create getattr open read rename setattr unlink write };
+allow aos_sandbox_storage_t aos_method46_storage_lock_t:file { create getattr lock open read write };
+type_transition aos_sandbox_storage_t aos_method46_storage_floor_t:file aos_method46_storage_floor_t;
+type_transition aos_sandbox_storage_t aos_method46_storage_floor_t:file aos_method46_storage_lock_t "session.journal.lock";
+type_transition aos_sandbox_storage_t aos_method46_storage_floor_t:file aos_method46_storage_lock_t "session-floor.journal.lock";
+
+# Narrow subroles name existing preparation processes, not new principals.
+# Their fixed entrypoint/tool/mount/credential-input producer closure remains
+# independently required; no generic init_t or bin_t grant substitutes for it.
+type aos_sandbox_cache_view_preparer_t;
+typeattribute aos_sandbox_cache_view_preparer_t domain;
+role system_r types aos_sandbox_cache_view_preparer_t;
+type aos_sandbox_source_view_preparer_t;
+typeattribute aos_sandbox_source_view_preparer_t domain;
+role system_r types aos_sandbox_source_view_preparer_t;
+
+# The static preparation program already runs with PID 1's setup capabilities.
+# Only freshly created held Controller directories may be fchowned to the
+# compiled image assignment; no data inode or existing wrong-owner repair.
+require { class capability chown; }
+allow aos_sandbox_runtime_roots_t self:capability chown;
+allow aos_sandbox_runtime_roots_t aos_sandbox_controller_state_t:dir { add_name create getattr open read search setattr write };
+allow aos_sandbox_runtime_roots_t aos_method46_controller_floor_t:dir { create getattr open read search setattr };
+allow aos_sandbox_runtime_roots_t aos_sandbox_storage_state_t:dir { add_name create getattr open read search write };
+allow aos_sandbox_runtime_roots_t aos_method46_storage_floor_t:dir { create getattr open read search };
+# AOS_ONLINE_NIX_BEGIN
+# This entire block is absent from the default compiled policy. It names
+# existing-only ONLINE058/059 consumers, not the offline provisioning role.
+require {
+    class capability { setuid setgid };
+    class process setcap;
+    class fifo_file { create getattr read write };
+}
+type aos_sandbox_nix_t;
+typeattribute aos_sandbox_nix_t domain;
+typeattribute aos_sandbox_nix_t aos_private_root_custody_domain;
+role system_r types aos_sandbox_nix_t;
+type aos_sandbox_nix_exec_t;
+type aos_nix_startup_profile_t;
+type aos_nix_online_owner_credential_t;
+type aos_nix_online_owner_state_t;
+type aos_nix_online_controller_state_t;
+type aos_nix_online_owner_lock_t;
+type aos_nix_online_controller_lock_t;
+type aos_nix_online_runtime_t;
+type aos_nix_online_store_t;
+type aos_nix_online_gcroots_t;
+
+# An existing ext4/ZFS Store label needs this object-to-superblock association.
+# It grants no actor the ability to provision, relabel or mutate that Store.
+allow aos_nix_online_store_t fs_t:filesystem associate;
+
+allow init_t aos_sandbox_nix_exec_t:file { execute getattr map open read };
+allow init_t aos_sandbox_nix_t:process transition;
+allow init_t aos_sandbox_nix_t:process2 nnp_transition;
+allow aos_sandbox_nix_t aos_sandbox_nix_exec_t:file { entrypoint execute getattr map open read };
+allow aos_sandbox_nix_t self:capability { setuid setgid };
+allow aos_sandbox_nix_t self:process { fork getattr getsched setrlimit sigchld signal };
+allow aos_sandbox_nix_t self:unix_stream_socket { accept bind connect create getattr getopt listen read setopt shutdown write };
+allow aos_sandbox_nix_t self:fifo_file { create getattr read write };
+allow aos_sandbox_nix_t init_t:fd use;
+allow aos_sandbox_nix_t null_device_t:chr_file { getattr open read write };
+allow aos_sandbox_nix_t { root_t var_t var_lib_t var_run_t usr_t etc_t device_t }:dir { getattr open search };
+allow aos_sandbox_nix_t { lib_t ld_so_t }:file { execute getattr map open read };
+allow aos_sandbox_nix_t etc_t:file { getattr open read };
+allow aos_sandbox_nix_t etc_t:lnk_file { getattr read };
+allow aos_sandbox_nix_t proc_t:dir { getattr open read search };
+allow aos_sandbox_nix_t { proc_t security_t tmpfs_t }:filesystem getattr;
+allow aos_sandbox_nix_t self:dir { getattr open read search };
+allow aos_sandbox_nix_t self:file { getattr open read };
+allow aos_sandbox_nix_t self:lnk_file { getattr read };
+allow aos_sandbox_nix_t { security_t cgroup_t sysctl_kernel_t }:dir { getattr open read search };
+allow aos_sandbox_nix_t { security_t cgroup_t sysctl_kernel_t systemd_unit_t }:file { getattr open read };
+allow aos_sandbox_nix_t sysctl_t:dir search;
+allow aos_sandbox_nix_t init_exec_t:file { getattr open read };
+allow aos_sandbox_nix_t system_dbusd_var_run_t:sock_file { getattr open read write };
+allow aos_sandbox_nix_t system_dbusd_t:unix_stream_socket connectto;
+allow aos_sandbox_nix_t { init_t system_dbusd_t }:dbus send_msg;
+allow { init_t system_dbusd_t } aos_sandbox_nix_t:dbus send_msg;
+allow aos_sandbox_nix_t systemd_unit_t:service status;
+allow aos_sandbox_nix_t init_t:system status;
+allow init_t aos_sandbox_nix_t:dir { getattr search open read lock ioctl };
+allow init_t aos_sandbox_nix_t:file { getattr open read lock ioctl };
+allow init_t aos_sandbox_nix_t:lnk_file { getattr read };
+
+# The same selected profile supplies immutable image comparisons to both real
+# owners. These type-wide observations are not full executable/Ready authority.
+allow { aos_sandbox_controller_t aos_sandbox_nix_t } aos_nix_startup_profile_t:dir { getattr open read search };
+allow { aos_sandbox_controller_t aos_sandbox_nix_t } aos_nix_startup_profile_t:file { getattr open read };
+allow aos_sandbox_nix_t aos_sandbox_controller_t:dir { getattr open read search };
+allow aos_sandbox_nix_t aos_sandbox_controller_t:file { getattr open read };
+allow aos_sandbox_controller_t aos_sandbox_nix_t:dir { getattr open read search };
+allow aos_sandbox_controller_t aos_sandbox_nix_t:file { getattr open read };
+
+# The fixed PID1 ProcessEvidence reader searches the task directory and reads
+# stat. These type-wide observations grant no exe link, ptrace or process control.
+allow aos_sandbox_controller_t init_t:dir search;
+allow aos_sandbox_controller_t init_t:file { open read };
+
+allow aos_sandbox_controller_t aos_nix_online_runtime_t:dir { getattr open search };
+allow aos_sandbox_controller_t aos_nix_online_runtime_t:sock_file { getattr open read write };
+allow aos_sandbox_controller_t aos_sandbox_nix_t:unix_stream_socket connectto;
+allow aos_sandbox_nix_t aos_sandbox_controller_t:unix_stream_socket { getattr getopt read setopt shutdown write };
+allow aos_sandbox_nix_t aos_sandbox_controller_t:fd use;
+allow aos_sandbox_nix_t aos_nix_online_runtime_t:dir { add_name getattr open read remove_name search write };
+allow aos_sandbox_nix_t aos_nix_online_runtime_t:sock_file { create getattr open read setattr unlink write };
+allow aos_nix_online_runtime_t tmpfs_t:filesystem associate;
+type_transition aos_sandbox_nix_t aos_nix_online_runtime_t:sock_file aos_nix_online_runtime_t;
+
+allow aos_sandbox_nix_t aos_nix_online_owner_credential_t:dir { getattr open read search };
+allow aos_sandbox_nix_t aos_nix_online_owner_credential_t:file { getattr open read };
+allow init_t aos_nix_online_owner_credential_t:dir { add_name create getattr mounton open read relabelto remove_name search setattr write };
+allow init_t aos_nix_online_owner_credential_t:file { create getattr open read setattr unlink write };
+allow aos_nix_online_owner_credential_t tmpfs_t:filesystem associate;
+type_transition init_t aos_nix_online_owner_credential_t:file aos_nix_online_owner_credential_t;
+
+allow aos_sandbox_controller_t aos_nix_online_controller_state_t:dir { add_name getattr open read remove_name search write };
+allow aos_sandbox_controller_t aos_nix_online_controller_state_t:file { append create getattr lock open read rename setattr unlink write };
+allow aos_sandbox_controller_t aos_nix_online_controller_lock_t:file { getattr lock open read write };
+allow aos_sandbox_nix_t aos_nix_online_owner_state_t:dir { add_name getattr open read remove_name search write };
+allow aos_sandbox_nix_t aos_nix_online_owner_state_t:file { append create getattr lock open read rename setattr unlink write };
+allow aos_sandbox_nix_t aos_nix_online_owner_lock_t:file { getattr lock open read write };
+type_transition aos_sandbox_controller_t aos_nix_online_controller_state_t:file aos_nix_online_controller_state_t;
+type_transition aos_sandbox_nix_t aos_nix_online_owner_state_t:file aos_nix_online_owner_state_t;
+type_transition aos_sandbox_controller_t aos_nix_online_controller_state_t:file aos_nix_online_controller_lock_t "session.journal.lock";
+type_transition aos_sandbox_controller_t aos_nix_online_controller_state_t:file aos_nix_online_controller_lock_t "tpm-floor.journal.lock";
+type_transition aos_sandbox_nix_t aos_nix_online_owner_state_t:file aos_nix_online_owner_lock_t "session.journal.lock";
+type_transition aos_sandbox_nix_t aos_nix_online_owner_state_t:file aos_nix_online_owner_lock_t "tpm-floor.journal.lock";
+
+# Helpers receive only the two existing lock OFDs. They cannot open data or
+# unlock/truncate either OFD; the original journals are never passed to them.
+type aos_nix_controller_floor_helper_t;
+typeattribute aos_nix_controller_floor_helper_t domain;
+typeattribute aos_nix_controller_floor_helper_t aos_no_context_translation_domain;
+typeattribute aos_nix_controller_floor_helper_t aos_private_root_custody_domain;
+role system_r types aos_nix_controller_floor_helper_t;
+type aos_nix_controller_floor_helper_exec_t;
+type aos_nix_owner_floor_helper_t;
+typeattribute aos_nix_owner_floor_helper_t domain;
+typeattribute aos_nix_owner_floor_helper_t aos_no_context_translation_domain;
+typeattribute aos_nix_owner_floor_helper_t aos_private_root_custody_domain;
+role system_r types aos_nix_owner_floor_helper_t;
+type aos_nix_owner_floor_helper_exec_t;
+
+allow aos_sandbox_controller_t aos_nix_controller_floor_helper_exec_t:file { execute getattr map open read };
+allow aos_sandbox_controller_t aos_nix_controller_floor_helper_t:process { getattr sigkill signal transition };
+allow aos_sandbox_controller_t aos_nix_controller_floor_helper_t:process2 nnp_transition;
+type_transition aos_sandbox_controller_t aos_nix_controller_floor_helper_exec_t:process aos_nix_controller_floor_helper_t;
+allow aos_nix_controller_floor_helper_t aos_nix_controller_floor_helper_exec_t:file { entrypoint execute getattr map open read };
+allow aos_nix_controller_floor_helper_t aos_sandbox_controller_t:process sigchld;
+allow aos_nix_controller_floor_helper_t aos_sandbox_controller_t:fd use;
+allow aos_nix_controller_floor_helper_t aos_sandbox_controller_t:unix_stream_socket { getattr getopt read setopt write };
+allow aos_sandbox_controller_t aos_nix_controller_floor_helper_t:fd use;
+allow aos_sandbox_controller_t aos_nix_controller_floor_helper_t:dir { getattr open read search };
+allow aos_sandbox_controller_t aos_nix_controller_floor_helper_t:file { getattr open read };
+allow aos_sandbox_controller_t aos_nix_controller_floor_helper_t:lnk_file { getattr read };
+allow aos_nix_controller_floor_helper_t aos_nix_online_controller_lock_t:file { getattr read write };
+
+allow aos_sandbox_nix_t aos_nix_owner_floor_helper_exec_t:file { execute getattr map open read };
+allow aos_sandbox_nix_t aos_nix_owner_floor_helper_t:process { getattr sigkill signal transition };
+allow aos_sandbox_nix_t aos_nix_owner_floor_helper_t:process2 nnp_transition;
+type_transition aos_sandbox_nix_t aos_nix_owner_floor_helper_exec_t:process aos_nix_owner_floor_helper_t;
+allow aos_nix_owner_floor_helper_t aos_nix_owner_floor_helper_exec_t:file { entrypoint execute getattr map open read };
+allow aos_nix_owner_floor_helper_t aos_sandbox_nix_t:process sigchld;
+allow aos_nix_owner_floor_helper_t aos_sandbox_nix_t:fd use;
+allow aos_nix_owner_floor_helper_t aos_sandbox_nix_t:unix_stream_socket { getattr getopt read setopt write };
+allow aos_sandbox_nix_t aos_nix_owner_floor_helper_t:fd use;
+allow aos_sandbox_nix_t aos_nix_owner_floor_helper_t:dir { getattr open read search };
+allow aos_sandbox_nix_t aos_nix_owner_floor_helper_t:file { getattr open read };
+allow aos_sandbox_nix_t aos_nix_owner_floor_helper_t:lnk_file { getattr read };
+allow aos_nix_owner_floor_helper_t aos_nix_online_owner_lock_t:file { getattr read write };
+
+allow { aos_nix_controller_floor_helper_t aos_nix_owner_floor_helper_t } self:process getattr;
+# The fixed C entry drops its inherited credential-drop capabilities before
+# the shared HELLO engine. This MAC permission grants no Linux capability.
+allow { aos_nix_controller_floor_helper_t aos_nix_owner_floor_helper_t } self:process setcap;
+allow { aos_nix_controller_floor_helper_t aos_nix_owner_floor_helper_t } self:file { getattr open read };
+allow { aos_nix_controller_floor_helper_t aos_nix_owner_floor_helper_t } self:dir { getattr open search };
+allow { aos_nix_controller_floor_helper_t aos_nix_owner_floor_helper_t } self:lnk_file { getattr read };
+allow { aos_nix_controller_floor_helper_t aos_nix_owner_floor_helper_t } { root_t usr_t device_t proc_t }:dir { getattr open search };
+allow { aos_nix_controller_floor_helper_t aos_nix_owner_floor_helper_t } proc_t:filesystem getattr;
+allow { aos_nix_controller_floor_helper_t aos_nix_owner_floor_helper_t } { lib_t ld_so_t }:file { execute getattr map open read };
+allow { aos_nix_controller_floor_helper_t aos_nix_owner_floor_helper_t } security_t:dir { getattr open search };
+allow { aos_nix_controller_floor_helper_t aos_nix_owner_floor_helper_t } security_t:filesystem getattr;
+allow { aos_nix_controller_floor_helper_t aos_nix_owner_floor_helper_t } security_t:file { getattr open read };
+allow { aos_nix_controller_floor_helper_t aos_nix_owner_floor_helper_t } aos_method46_tpm_device_t:chr_file { getattr open read write };
+allow init_t { aos_nix_controller_floor_helper_t aos_nix_owner_floor_helper_t }:dir { getattr search open read lock ioctl };
+allow init_t { aos_nix_controller_floor_helper_t aos_nix_owner_floor_helper_t }:file { getattr open read lock ioctl };
+allow init_t { aos_nix_controller_floor_helper_t aos_nix_owner_floor_helper_t }:lnk_file { getattr read };
+
+# This same PATH child performs one upstream read-only Store operation. Its
+# inherited cap0xc0 is the existing PATH behavior, not a new capability grant.
+type aos_nix_online_store_reader_t;
+typeattribute aos_nix_online_store_reader_t domain;
+typeattribute aos_nix_online_store_reader_t aos_private_root_custody_domain;
+role system_r types aos_nix_online_store_reader_t;
+type aos_nix_online_store_reader_exec_t;
+allow aos_sandbox_nix_t aos_nix_online_store_reader_exec_t:file { execute getattr map open read };
+allow aos_sandbox_nix_t aos_nix_online_store_reader_t:process { getattr sigkill signal transition };
+allow aos_sandbox_nix_t aos_nix_online_store_reader_t:process2 nnp_transition;
+type_transition aos_sandbox_nix_t aos_nix_online_store_reader_exec_t:process aos_nix_online_store_reader_t;
+allow aos_nix_online_store_reader_t aos_nix_online_store_reader_exec_t:file { entrypoint execute getattr map open read };
+allow aos_nix_online_store_reader_t aos_sandbox_nix_t:process sigchld;
+allow aos_nix_online_store_reader_t aos_sandbox_nix_t:fd use;
+allow aos_nix_online_store_reader_t aos_sandbox_nix_t:fifo_file { getattr read write };
+allow aos_sandbox_nix_t aos_nix_online_store_reader_t:dir { getattr open read search };
+allow aos_sandbox_nix_t aos_nix_online_store_reader_t:file { getattr open read };
+allow aos_sandbox_nix_t aos_nix_online_store_reader_t:lnk_file { getattr read };
+# initNix owns its existing signal-handler thread; no alternate supervisor is
+# added and these process permissions do not authorize a Store write/build.
+allow aos_nix_online_store_reader_t self:process { fork getattr getsched setrlimit sigchld signal };
+allow aos_nix_online_store_reader_t { root_t var_t var_lib_t usr_t etc_t }:dir { getattr open search };
+allow aos_nix_online_store_reader_t { lib_t ld_so_t }:file { execute getattr map open read };
+allow aos_nix_online_store_reader_t proc_t:filesystem getattr;
+allow aos_nix_online_store_reader_t proc_t:dir { getattr open read search };
+allow aos_nix_online_store_reader_t self:dir { getattr open read search };
+allow aos_nix_online_store_reader_t self:file { getattr open read };
+allow aos_nix_online_store_reader_t self:lnk_file { getattr read };
+allow aos_nix_online_store_reader_t null_device_t:chr_file { getattr open read write };
+allow { aos_sandbox_nix_t aos_nix_online_store_reader_t } aos_nix_online_store_t:dir { getattr open read search };
+allow { aos_sandbox_nix_t aos_nix_online_store_reader_t } aos_nix_online_store_t:file { getattr open read };
+allow { aos_sandbox_nix_t aos_nix_online_store_reader_t } aos_nix_online_store_t:lnk_file { getattr read };
+allow aos_sandbox_nix_t aos_nix_online_store_t:file ioctl;
+allowxperm aos_sandbox_nix_t aos_nix_online_store_t:file ioctl { 0x6686 };
+
+# Only the two independently provisioned root subtrees carry this distinct
+# object SID. The Store/DB SID above remains read-only. The measured PATH child
+# uses the existing upstream temp/symlink/rename engine; the original owner can
+# only inspect and sync retained directories and links, never create or repair.
+allow aos_nix_online_gcroots_t fs_t:filesystem associate;
+allow aos_sandbox_nix_t aos_nix_online_gcroots_t:dir { getattr open read search };
+allow aos_sandbox_nix_t aos_nix_online_gcroots_t:lnk_file { getattr read };
+allow aos_nix_online_store_reader_t aos_nix_online_gcroots_t:dir { add_name getattr open read remove_name search write };
+allow aos_nix_online_store_reader_t aos_nix_online_gcroots_t:lnk_file { create getattr read rename unlink };
+type_transition aos_nix_online_store_reader_t aos_nix_online_gcroots_t:lnk_file aos_nix_online_gcroots_t;
+# AOS_ONLINE_NIX_END
+# AOS_HOST_RUNTIME_BEGIN
+
+require {
+    class memfd_file { getattr ioctl open read };
+}
+
+type_transition init_t aos_sandbox_storage_credential_t:file aos_sandbox_storage_credential_t "runtime-deployment-genesis-v1";
+type_transition init_t aos_sandbox_storage_credential_t:file aos_sandbox_storage_credential_t "runtime-deployment-provisioner-pin-v1";
+type_transition init_t aos_sandbox_storage_credential_t:file aos_sandbox_storage_credential_t "runtime-deployment-canary-purpose-v2";
+allow aos_sandbox_storage_t tmpfs_t:filesystem getattr;
+
+# Disabled fixed Host055 producer. The publisher owns already provisioned
+# journals and its independent delivery; only its measured private child may
+# open the TPM. Neither role inherits runtime/Create or provisioning authority.
+type aos_runtime_deployment_publisher_t;
+typeattribute aos_runtime_deployment_publisher_t domain;
+typeattribute aos_runtime_deployment_publisher_t aos_private_root_custody_domain;
+role system_r types aos_runtime_deployment_publisher_t;
+type aos_runtime_deployment_publisher_exec_t;
+type aos_runtime_deployment_profile_t;
+type aos_runtime_deployment_credential_t;
+type aos_runtime_deployment_state_t;
+type aos_runtime_deployment_lock_t;
+type aos_runtime_deployment_runtime_t;
+
+type aos_runtime_deployment_helper_t;
+typeattribute aos_runtime_deployment_helper_t domain;
+typeattribute aos_runtime_deployment_helper_t aos_private_root_custody_domain;
+typeattribute aos_runtime_deployment_helper_t aos_no_context_translation_domain;
+role system_r types aos_runtime_deployment_helper_t;
+type aos_runtime_deployment_helper_exec_t;
+
+allow init_t aos_runtime_deployment_publisher_exec_t:file { execute getattr map open read };
+allow init_t aos_runtime_deployment_publisher_t:process transition;
+allow init_t aos_runtime_deployment_publisher_t:process2 nnp_transition;
+allow aos_runtime_deployment_publisher_t aos_runtime_deployment_publisher_exec_t:file { entrypoint execute getattr map open read };
+allow aos_runtime_deployment_publisher_t self:process { fork getattr getsched sigchld signal };
+allow aos_runtime_deployment_publisher_t init_t:fd use;
+allow aos_runtime_deployment_publisher_t self:unix_stream_socket { accept connect create getattr getopt listen read setopt shutdown write };
+
+# Original self, fixed Storage/PID1 task DATA, immutable image and status-only
+# observations. These reads do not grant ptrace, manager mutation or execution
+# of the delegate image. Every live comparison remains in its resident owner.
+allow aos_runtime_deployment_publisher_t { self init_t aos_sandbox_storage_t }:dir { getattr open read search };
+allow aos_runtime_deployment_publisher_t { self init_t aos_sandbox_storage_t }:file { getattr open read };
+allow aos_runtime_deployment_publisher_t { self init_t aos_sandbox_storage_t }:lnk_file { getattr read };
+allow aos_runtime_deployment_publisher_t { aos_sandbox_storage_exec_t init_exec_t }:file { getattr open read };
+allow aos_runtime_deployment_publisher_t { root_t var_t var_lib_t var_run_t usr_t etc_t device_t }:dir { getattr open search };
+allow aos_runtime_deployment_publisher_t aos_sandbox_view_parent_t:dir { getattr open search };
+allow aos_runtime_deployment_publisher_t { usr_t etc_t }:file { getattr open read };
+allow aos_runtime_deployment_publisher_t etc_t:lnk_file { getattr read };
+allow aos_runtime_deployment_publisher_t { lib_t ld_so_t }:file { execute getattr map open read };
+allow aos_runtime_deployment_publisher_t proc_t:dir { getattr open read search };
+allow aos_runtime_deployment_publisher_t proc_t:filesystem getattr;
+allow aos_runtime_deployment_publisher_t security_t:dir { getattr open read search };
+allow aos_runtime_deployment_publisher_t security_t:filesystem getattr;
+allow aos_runtime_deployment_publisher_t security_t:file { getattr open read };
+allow aos_runtime_deployment_publisher_t cgroup_t:dir { getattr open read search };
+allow aos_runtime_deployment_publisher_t cgroup_t:file { getattr open read };
+allow aos_runtime_deployment_publisher_t sysctl_t:dir search;
+allow aos_runtime_deployment_publisher_t sysctl_kernel_t:dir search;
+allow aos_runtime_deployment_publisher_t sysctl_kernel_t:file { getattr open read };
+allow aos_runtime_deployment_publisher_t systemd_unit_t:file { getattr open read };
+allow aos_runtime_deployment_publisher_t null_device_t:chr_file { getattr open read write };
+allow aos_runtime_deployment_publisher_t aos_runtime_deployment_profile_t:file { getattr open read };
+allow init_t aos_runtime_deployment_profile_t:file { getattr open read };
+allow aos_runtime_deployment_publisher_t system_dbusd_var_run_t:sock_file { getattr open read write };
+allow aos_runtime_deployment_publisher_t system_dbusd_t:unix_stream_socket connectto;
+allow aos_runtime_deployment_publisher_t { init_t system_dbusd_t }:dbus send_msg;
+allow { init_t system_dbusd_t } aos_runtime_deployment_publisher_t:dbus send_msg;
+allow aos_runtime_deployment_publisher_t systemd_unit_t:service status;
+allow aos_runtime_deployment_publisher_t init_t:system status;
+
+# Original credentials are immutable PID1 copies, not a secret-source writer.
+# Unknown names keep the ordinary temporary type. Storage uses its existing
+# credential SID/tmpfs association; the three added named transitions above
+# are the only selected additions to that established delivery mechanism.
+allow aos_runtime_deployment_credential_t tmpfs_t:filesystem associate;
+allow aos_runtime_deployment_publisher_t tmpfs_t:filesystem getattr;
+allow aos_runtime_deployment_publisher_t aos_runtime_deployment_credential_t:dir { getattr open read search };
+allow aos_runtime_deployment_publisher_t aos_runtime_deployment_credential_t:file { getattr open read };
+allow init_t aos_runtime_deployment_credential_t:dir { add_name create getattr mounton open read relabelto remove_name search setattr write };
+allow init_t aos_runtime_deployment_credential_t:file { create getattr open read setattr unlink write };
+type_transition init_t aos_runtime_deployment_credential_t:file init_tmpfs_t;
+type_transition init_t aos_runtime_deployment_credential_t:file aos_runtime_deployment_credential_t "runtime-deployment-genesis-v1";
+type_transition init_t aos_runtime_deployment_credential_t:file aos_runtime_deployment_credential_t "runtime-deployment-provisioner-pin-v1";
+type_transition init_t aos_runtime_deployment_credential_t:file aos_runtime_deployment_credential_t "runtime-deployment-canary-purpose-v2";
+type_transition init_t aos_runtime_deployment_credential_t:file aos_runtime_deployment_credential_t "runtime-deployment-signing-seed-v1";
+type_transition init_t aos_runtime_deployment_credential_t:file aos_runtime_deployment_credential_t "runtime-deployment-tpm-index-auth-v1";
+
+# Both journals/empty locks must already exist. No directory creation, removal,
+# rename, relabel, foreign writer or offline bootstrap is enabled here.
+allow { aos_runtime_deployment_state_t aos_runtime_deployment_lock_t } fs_t:filesystem associate;
+allow aos_runtime_deployment_publisher_t aos_runtime_deployment_state_t:dir { getattr open read search };
+allow aos_runtime_deployment_publisher_t aos_runtime_deployment_state_t:file { append getattr open read write };
+allow aos_runtime_deployment_publisher_t aos_runtime_deployment_lock_t:file { getattr lock open read write };
+
+# PID1 owns the fixed activated pathname. Storage alone connects; the received
+# full job remains sealed nonauthorizing DATA. These are type-wide SCM read
+# cells, never acceptance of an arbitrary descriptor as an authenticated job.
+allow aos_runtime_deployment_runtime_t tmpfs_t:filesystem associate;
+allow init_t aos_runtime_deployment_runtime_t:dir { add_name create getattr open remove_name search setattr write };
+allow init_t aos_runtime_deployment_runtime_t:sock_file { create getattr open read setattr unlink write };
+allow aos_sandbox_storage_t aos_runtime_deployment_runtime_t:dir { getattr open search };
+allow aos_sandbox_storage_t aos_runtime_deployment_runtime_t:sock_file { getattr open read write };
+allow aos_sandbox_storage_t aos_runtime_deployment_publisher_t:unix_stream_socket connectto;
+allow aos_runtime_deployment_publisher_t aos_sandbox_storage_t:fd use;
+allow aos_sandbox_storage_t aos_sandbox_host_t:fd use;
+allow { aos_sandbox_storage_t aos_runtime_deployment_publisher_t } aos_sandbox_host_t:memfd_file { getattr open read };
+
+# Same measured helper launcher and original lock pair; no PID1 helper entry,
+# new hierarchy capability, new lock open/flock, or journal write in the child.
+allow aos_runtime_deployment_publisher_t aos_runtime_deployment_helper_exec_t:file { execute getattr map open read };
+allow aos_runtime_deployment_publisher_t aos_runtime_deployment_helper_t:process { getattr sigkill signal transition };
+allow aos_runtime_deployment_publisher_t aos_runtime_deployment_helper_t:process2 nnp_transition;
+type_transition aos_runtime_deployment_publisher_t aos_runtime_deployment_helper_exec_t:process aos_runtime_deployment_helper_t;
+allow aos_runtime_deployment_helper_t aos_runtime_deployment_helper_exec_t:file { entrypoint execute getattr map open read };
+allow aos_runtime_deployment_helper_t aos_runtime_deployment_publisher_t:process sigchld;
+allow aos_runtime_deployment_helper_t aos_runtime_deployment_publisher_t:fd use;
+allow aos_runtime_deployment_publisher_t aos_runtime_deployment_helper_t:fd use;
+allow aos_runtime_deployment_helper_t aos_runtime_deployment_publisher_t:unix_stream_socket { getattr getopt read setopt shutdown write };
+allow aos_runtime_deployment_publisher_t aos_runtime_deployment_helper_t:dir { getattr open read search };
+allow aos_runtime_deployment_publisher_t aos_runtime_deployment_helper_t:file { getattr open read };
+allow aos_runtime_deployment_publisher_t aos_runtime_deployment_helper_t:lnk_file { getattr read };
+allow aos_runtime_deployment_helper_t self:process { getattr getsched setrlimit sigchld signal };
+allow aos_runtime_deployment_helper_t self:dir { getattr open search };
+allow aos_runtime_deployment_helper_t self:file { getattr open read };
+allow aos_runtime_deployment_helper_t self:lnk_file { getattr read };
+allow aos_runtime_deployment_helper_t { root_t usr_t device_t proc_t }:dir { getattr open search };
+allow aos_runtime_deployment_helper_t proc_t:filesystem getattr;
+allow aos_runtime_deployment_helper_t { lib_t ld_so_t }:file { execute getattr map open read };
+allow aos_runtime_deployment_helper_t security_t:dir { getattr open search };
+allow aos_runtime_deployment_helper_t security_t:filesystem getattr;
+allow aos_runtime_deployment_helper_t security_t:file { getattr open read };
+allow aos_runtime_deployment_helper_t aos_method46_tpm_device_t:chr_file { getattr open read write };
+allow aos_runtime_deployment_helper_t aos_runtime_deployment_lock_t:file { getattr read write };
+allow aos_runtime_deployment_helper_t null_device_t:chr_file { getattr open read write };
+
+# PID1's independent population/metadata observer is not a helper launch route.
+allow init_t { aos_runtime_deployment_publisher_t aos_runtime_deployment_helper_t }:dir { getattr search open read lock ioctl };
+allow init_t { aos_runtime_deployment_publisher_t aos_runtime_deployment_helper_t }:file { getattr open read lock ioctl };
+allow init_t { aos_runtime_deployment_publisher_t aos_runtime_deployment_helper_t }:lnk_file { getattr read };
+# AOS_HOST_RUNTIME_END
+# AOS_RESOURCE_BANK_ENROLLMENT_BEGIN
+
+# Only the fixed original bank recipients may read PID1's sealed capsule.
+# Read-only delivery, not seals alone, excludes a write-mode exec inheritance.
+allow { aos_sandbox_controller_t aos_sandbox_storage_t } init_tmpfs_t:file { getattr read };
+# AOS_RESOURCE_BANK_ENROLLMENT_END
+# AOS_HOST_COMPONENT_CONTROL_BEGIN
+
+# Only the configured original Host recipient borrows the same sealed RO pair.
+# This does not permit reopening, mapping, mutating or executing the capsule.
+allow aos_sandbox_host_t init_t:fd use;
+allow aos_sandbox_host_t init_tmpfs_t:file { getattr read };
+# AOS_HOST_COMPONENT_CONTROL_END
+# AOS_SELECTED_MOUNT_SOURCE_BEGIN
+
+# This closed suffix is compiled only with the fixed Mount/Source carrier.
+# Protected objects deliberately have no file_type or generic readable cohort.
+# There is no default ELF transition or new principal/capability assignment.
+type aos_sandbox_mount_t;
+typeattribute aos_sandbox_mount_t domain;
+typeattribute aos_sandbox_mount_t aos_private_root_custody_domain;
+typeattribute aos_sandbox_mount_t aos_no_context_translation_domain;
+role system_r types aos_sandbox_mount_t;
+type aos_sandbox_mount_exec_t;
+type aos_sandbox_mount_helper_exec_t;
+type aos_sandbox_mount_install_exec_t;
+type aos_sandbox_mount_credential_t;
+type aos_sandbox_mount_state_t;
+type aos_sandbox_mount_custody_t;
+type aos_sandbox_mount_catalog_t;
+type aos_sandbox_mount_runtime_t;
+
+type aos_source_provider_t;
+typeattribute aos_source_provider_t domain;
+typeattribute aos_source_provider_t aos_private_root_custody_domain;
+typeattribute aos_source_provider_t aos_no_context_translation_domain;
+role system_r types aos_source_provider_t;
+type aos_source_provider_exec_t;
+type aos_source_provider_credential_t;
+type aos_source_provider_state_t;
+type aos_source_provider_custody_t;
+type aos_source_provider_runtime_t;
+
+allow init_t aos_sandbox_mount_exec_t:file { execute getattr map open read };
+allow init_t aos_sandbox_mount_t:process transition;
+allow init_t aos_sandbox_mount_t:process2 nnp_transition;
+allow aos_sandbox_mount_t aos_sandbox_mount_exec_t:file { entrypoint execute getattr map open read };
+# The sole startup measurer rechecks its own sealed inode, not another role.
+allow aos_sandbox_mount_t aos_sandbox_mount_exec_t:file ioctl;
+allowxperm aos_sandbox_mount_t aos_sandbox_mount_exec_t:file ioctl { 0x6686 };
+allow aos_sandbox_mount_t aos_sandbox_mount_helper_exec_t:file { execute execute_no_trans getattr map open read };
+# Only PID1 may enter an installer, after its whole fixed command/FD check.
+# Post-transition ELF mappings need execute, but same-SID invocation still
+# requires execute_no_trans, which is deliberately absent on these copies.
+allow init_t aos_sandbox_mount_install_exec_t:file { execute getattr map open read };
+allow aos_sandbox_mount_t aos_sandbox_mount_install_exec_t:file { entrypoint execute getattr map open read };
+allow init_t aos_source_provider_exec_t:file { execute getattr map open read };
+allow init_t aos_source_provider_t:process transition;
+allow init_t aos_source_provider_t:process2 nnp_transition;
+allow aos_source_provider_t aos_source_provider_exec_t:file { entrypoint execute getattr map open read };
+# The fixed Source startup measures its own retained image, never task memory.
+allow aos_source_provider_t aos_source_provider_exec_t:file ioctl;
+allowxperm aos_source_provider_t aos_source_provider_exec_t:file ioctl { 0x6686 };
+
+allow aos_sandbox_mount_t self:capability { sys_admin sys_chroot };
+allow { aos_sandbox_mount_t aos_source_provider_t } self:process { fork getattr getsched setrlimit sigchld signal };
+allow { aos_sandbox_mount_t aos_source_provider_t } init_t:fd use;
+allow { aos_sandbox_mount_t aos_source_provider_t } init_exec_t:file { getattr ioctl read };
+allowxperm { aos_sandbox_mount_t aos_source_provider_t } init_exec_t:file ioctl { 0x6686 };
+allow { aos_sandbox_mount_t aos_source_provider_t } null_device_t:chr_file { getattr open read write };
+allow { aos_sandbox_mount_t aos_source_provider_t } { root_t var_t var_lib_t var_run_t usr_t etc_t }:dir { getattr open search };
+allow { aos_sandbox_mount_t aos_source_provider_t } etc_t:file { getattr open read };
+allow { aos_sandbox_mount_t aos_source_provider_t } etc_t:lnk_file { getattr read };
+allow { aos_sandbox_mount_t aos_source_provider_t } { lib_t ld_so_t }:file { execute getattr map open read };
+allow { aos_sandbox_mount_t aos_source_provider_t } proc_t:dir { getattr open read search };
+allow { aos_sandbox_mount_t aos_source_provider_t } proc_t:filesystem getattr;
+allow { aos_sandbox_mount_t aos_source_provider_t } security_t:dir { getattr open read search };
+allow { aos_sandbox_mount_t aos_source_provider_t } security_t:filesystem getattr;
+allow { aos_sandbox_mount_t aos_source_provider_t } security_t:file { getattr open read };
+allow { aos_sandbox_mount_t aos_source_provider_t } cgroup_t:dir { getattr open read search };
+allow { aos_sandbox_mount_t aos_source_provider_t } cgroup_t:file { getattr open read };
+allow { aos_sandbox_mount_t aos_source_provider_t } sysctl_t:dir search;
+allow { aos_sandbox_mount_t aos_source_provider_t } sysctl_kernel_t:dir search;
+allow { aos_sandbox_mount_t aos_source_provider_t } sysctl_kernel_t:file { getattr open read };
+allow { aos_sandbox_mount_t aos_source_provider_t } systemd_unit_t:file { getattr open read };
+allow { aos_sandbox_mount_t aos_source_provider_t } tmpfs_t:filesystem getattr;
+
+# These are type-wide reads of the two actual task roles. Kernel ptrace/DAC
+# restrictions remain independent; no task memory, signal or transition grant.
+allow { aos_sandbox_mount_t aos_source_provider_t } { aos_sandbox_mount_t aos_source_provider_t }:process getattr;
+allow { aos_sandbox_mount_t aos_source_provider_t } { aos_sandbox_mount_t aos_source_provider_t }:dir { getattr open read search };
+allow { aos_sandbox_mount_t aos_source_provider_t } { aos_sandbox_mount_t aos_source_provider_t }:file { getattr open read };
+allow { aos_sandbox_mount_t aos_source_provider_t } { aos_sandbox_mount_t aos_source_provider_t }:lnk_file { getattr read };
+
+# The activated connecting endpoint belongs to PID1, not the SCM Source task.
+# The actual attr/current observer needs these type-wide init_t reads; it does
+# not read /proc/1/exe or gain process:ptrace. Source's independent INITIAL
+# kernel-parent observation is granted separately below, not as peer authority.
+allow aos_sandbox_mount_t init_t:process getattr;
+allow aos_sandbox_mount_t init_t:dir { getattr open read search };
+allow aos_sandbox_mount_t init_t:file { getattr open read };
+
+# Direct-parent kernel observations are type-wide reads, not /proc/1/exe.
+allow aos_source_provider_t init_t:process getattr;
+allow aos_source_provider_t init_t:dir { getattr open read search };
+allow aos_source_provider_t init_t:file { getattr open read };
+
+# PID1's genuine requester/cgroup observer retains its existing trusted read
+# side under the private-root attribute. Runtime owners gain no inverse use.
+allow init_t { aos_sandbox_mount_t aos_source_provider_t }:process getattr;
+allow init_t { aos_sandbox_mount_t aos_source_provider_t }:dir { getattr open read search lock ioctl };
+allow init_t { aos_sandbox_mount_t aos_source_provider_t }:file { getattr open read lock ioctl };
+allow init_t { aos_sandbox_mount_t aos_source_provider_t }:lnk_file { getattr read };
+
+# Fixed original sockets and status-only manager transport. There is no TCP,
+# general domain:fd use or manager service/system mutation permission.
+allow { aos_sandbox_mount_t aos_source_provider_t } self:unix_stream_socket { accept bind connect create getattr getopt listen read setopt shutdown write };
+allow { aos_sandbox_mount_t aos_source_provider_t } init_t:unix_stream_socket { getattr getopt read setopt shutdown write };
+allow aos_sandbox_mount_t aos_source_provider_t:unix_stream_socket { connectto getattr getopt read setopt shutdown write };
+allow aos_source_provider_t aos_sandbox_mount_t:unix_stream_socket { getattr getopt read setopt shutdown write };
+allow aos_source_provider_t aos_sandbox_mount_t:fd use;
+allow aos_sandbox_mount_t aos_source_provider_t:fd use;
+allow aos_sandbox_mount_t aos_sandbox_controller_t:unix_stream_socket { getattr getopt read setopt shutdown write };
+allow aos_sandbox_mount_t aos_sandbox_controller_t:fd use;
+allow aos_sandbox_controller_t aos_sandbox_mount_t:unix_stream_socket connectto;
+allow aos_sandbox_controller_t aos_sandbox_mount_runtime_t:sock_file { getattr open read write };
+allow { aos_sandbox_mount_t aos_source_provider_t } system_dbusd_var_run_t:sock_file { getattr open read write };
+allow { aos_sandbox_mount_t aos_source_provider_t } system_dbusd_t:unix_stream_socket connectto;
+allow { aos_sandbox_mount_t aos_source_provider_t } { init_t system_dbusd_t }:dbus send_msg;
+allow { init_t system_dbusd_t } { aos_sandbox_mount_t aos_source_provider_t }:dbus send_msg;
+allow { aos_sandbox_mount_t aos_source_provider_t } systemd_unit_t:service status;
+allow { aos_sandbox_mount_t aos_source_provider_t } init_t:system status;
+
+allow aos_sandbox_mount_t aos_sandbox_mount_credential_t:dir { getattr open read search };
+allow aos_sandbox_mount_t aos_sandbox_mount_credential_t:file { getattr open read };
+allow aos_source_provider_t aos_source_provider_credential_t:dir { getattr open read search };
+allow aos_source_provider_t aos_source_provider_credential_t:file { getattr open read };
+allow { aos_sandbox_mount_credential_t aos_source_provider_credential_t } tmpfs_t:filesystem associate;
+allow init_t { aos_sandbox_mount_credential_t aos_source_provider_credential_t }:dir { add_name create getattr mounton open read relabelto remove_name search setattr write };
+allow init_t { aos_sandbox_mount_credential_t aos_source_provider_credential_t }:file { create getattr open read setattr unlink write };
+type_transition init_t aos_sandbox_mount_credential_t:file init_tmpfs_t;
+type_transition init_t aos_source_provider_credential_t:file init_tmpfs_t;
+type_transition init_t aos_sandbox_mount_credential_t:file aos_sandbox_mount_credential_t "broker-plan-policy.cbor";
+type_transition init_t aos_sandbox_mount_credential_t:file aos_sandbox_mount_credential_t "broker-plan-public-key";
+type_transition init_t aos_sandbox_mount_credential_t:file aos_sandbox_mount_credential_t "broker-revocation-scope";
+type_transition init_t aos_sandbox_mount_credential_t:file aos_sandbox_mount_credential_t "ownership-lease-policy.cbor";
+type_transition init_t aos_sandbox_mount_credential_t:file aos_sandbox_mount_credential_t "ownership-lease-public-key";
+type_transition init_t aos_sandbox_mount_credential_t:file aos_sandbox_mount_credential_t "node-id";
+type_transition init_t aos_sandbox_mount_credential_t:file aos_sandbox_mount_credential_t "journal-mac-key";
+type_transition init_t aos_sandbox_mount_credential_t:file aos_sandbox_mount_credential_t "mount-broker-manifest";
+type_transition init_t aos_sandbox_mount_credential_t:file aos_sandbox_mount_credential_t "mount-broker-hello-key";
+type_transition init_t aos_sandbox_mount_credential_t:file aos_sandbox_mount_credential_t "mount-broker-record-key";
+type_transition init_t aos_sandbox_mount_credential_t:file aos_sandbox_mount_credential_t "mount-host-client-manifest";
+type_transition init_t aos_sandbox_mount_credential_t:file aos_sandbox_mount_credential_t "mount-host-client-hello-key";
+type_transition init_t aos_sandbox_mount_credential_t:file aos_sandbox_mount_credential_t "mount-host-client-record-key";
+type_transition init_t aos_sandbox_mount_credential_t:file aos_sandbox_mount_credential_t "mount-fuse-broker-manifest";
+type_transition init_t aos_sandbox_mount_credential_t:file aos_sandbox_mount_credential_t "mount-fuse-broker-hello-key";
+type_transition init_t aos_sandbox_mount_credential_t:file aos_sandbox_mount_credential_t "mount-fuse-broker-record-key";
+type_transition init_t aos_sandbox_mount_credential_t:file aos_sandbox_mount_credential_t "current-catalog-publication";
+type_transition init_t aos_sandbox_mount_credential_t:file aos_sandbox_mount_credential_t "current-catalog-manifest";
+type_transition init_t aos_source_provider_credential_t:file aos_source_provider_credential_t "current-catalog-publication";
+type_transition init_t aos_source_provider_credential_t:file aos_source_provider_credential_t "current-catalog-manifest";
+
+allow aos_sandbox_mount_t aos_sandbox_mount_state_t:dir { add_name create getattr open read remove_name search setattr write };
+allow aos_sandbox_mount_t aos_sandbox_mount_state_t:file { append create getattr lock open read rename setattr unlink write };
+type_transition aos_sandbox_mount_t aos_sandbox_mount_state_t:dir aos_sandbox_mount_state_t;
+type_transition aos_sandbox_mount_t aos_sandbox_mount_state_t:file aos_sandbox_mount_state_t;
+allow aos_source_provider_t aos_source_provider_state_t:dir { add_name create getattr lock open read remove_name search setattr write };
+allow aos_source_provider_t aos_source_provider_state_t:file { append create getattr lock open read rename setattr unlink write };
+type_transition aos_source_provider_t aos_source_provider_state_t:dir aos_source_provider_state_t;
+type_transition aos_source_provider_t aos_source_provider_state_t:file aos_source_provider_state_t;
+
+# External secret trees are read/lock only, never generic state descendants.
+allow aos_sandbox_mount_t aos_sandbox_mount_custody_t:dir { getattr open read search };
+allow aos_sandbox_mount_t aos_sandbox_mount_custody_t:file { getattr lock open read };
+allow aos_source_provider_t aos_source_provider_custody_t:dir { getattr open read search };
+allow aos_source_provider_t aos_source_provider_custody_t:file { getattr lock open read };
+allow { aos_sandbox_mount_state_t aos_sandbox_mount_custody_t aos_source_provider_state_t aos_source_provider_custody_t } fs_t:filesystem associate;
+
+allow aos_sandbox_mount_t aos_sandbox_mount_catalog_t:dir { add_name create getattr open read remove_name search setattr write };
+allow aos_sandbox_mount_t aos_sandbox_mount_catalog_t:file { create getattr lock open read rename setattr unlink write };
+type_transition aos_sandbox_mount_t aos_sandbox_mount_catalog_t:dir aos_sandbox_mount_catalog_t;
+type_transition aos_sandbox_mount_t aos_sandbox_mount_catalog_t:file aos_sandbox_mount_catalog_t;
+allow aos_sandbox_mount_catalog_t tmpfs_t:filesystem associate;
+allow aos_sandbox_mount_t aos_sandbox_mount_runtime_t:dir { add_name getattr open read remove_name search write };
+allow aos_sandbox_mount_t aos_sandbox_mount_runtime_t:sock_file { create getattr open read setattr unlink write };
+type_transition aos_sandbox_mount_t aos_sandbox_mount_runtime_t:sock_file aos_sandbox_mount_runtime_t;
+allow aos_source_provider_t aos_source_provider_runtime_t:dir { add_name getattr open read remove_name search write };
+allow aos_source_provider_t aos_source_provider_runtime_t:sock_file { create getattr open read setattr unlink write };
+type_transition aos_source_provider_t aos_source_provider_runtime_t:sock_file aos_source_provider_runtime_t;
+allow { aos_sandbox_mount_runtime_t aos_source_provider_runtime_t } tmpfs_t:filesystem associate;
+allow aos_sandbox_mount_t aos_source_provider_runtime_t:sock_file { getattr open read write };
+allow init_t { aos_sandbox_mount_runtime_t aos_source_provider_runtime_t }:dir { add_name create getattr open remove_name search setattr write };
+allow init_t { aos_sandbox_mount_runtime_t aos_source_provider_runtime_t }:sock_file { create getattr open read setattr unlink write };
+allow init_t { aos_sandbox_mount_state_t aos_source_provider_state_t }:dir { add_name create getattr open relabelto search setattr write };
+
+# Fixed Mount plan/report memfds are created by that same role. These tmpfs
+# cells are type-wide DATA access, never permission to accept caller memfds.
+allow aos_sandbox_mount_t tmpfs_t:file { getattr lock read write };
+# AOS_SELECTED_MOUNT_SOURCE_END

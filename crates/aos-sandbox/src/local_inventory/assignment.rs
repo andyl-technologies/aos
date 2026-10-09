@@ -1,0 +1,2443 @@
+//! Assignment intent and monotonic node-observation models.
+//!
+//! Assignment intent commits controller-selected semantics and the capability
+//! observation used during placement. It contains no ownership lease, signing
+//! key, guardian deadline, or broker grant. Node observations can advance
+//! status only for that exact tuple and likewise carry no authority.
+
+use sha2::{Digest as _, Sha256};
+
+use aos_sandbox_core::state::{AssignmentPhase, DesiredSandboxState};
+use aos_sandbox_core::{
+    AssignmentEpoch, CanonicalAssignmentManifestV1, DesiredGeneration, IncarnationId, NodeId,
+    ObjectDescriptor, ObjectDigest, ObservationSequence, OperationId, PortableMediaType, ProjectId,
+    ResourceVector, SandboxId, SnapshotId,
+};
+
+use super::capability::{CarrierValidatedCapabilityObservationV1, NodeBootId, NodeBootLineageV1};
+use super::evidence::AuthenticatedEvidenceContextV1;
+use super::evidence_authority::VerifierEvidenceGrantV1;
+use super::journal::{JournalEffectStateV1, MultiNodeJournalDomainV1, ProtectedJournalRecordV1};
+#[cfg(feature = "multi-node")]
+use super::protocol;
+
+#[cfg(feature = "multi-node")]
+mod acceptance_evidence;
+
+#[cfg(feature = "multi-node")]
+mod observation_reducer;
+
+#[cfg(feature = "multi-node")]
+mod remote_verification;
+
+#[cfg(feature = "multi-node")]
+mod restore_admission;
+
+#[cfg(feature = "multi-node")]
+pub use acceptance_evidence::VerifiedAssignmentAcceptanceV1;
+
+#[cfg(feature = "multi-node")]
+pub(super) use observation_reducer::AssignmentEffectPlanV1;
+
+#[cfg(feature = "multi-node")]
+pub use observation_reducer::{
+    AssignmentObservationApplyOutcomeV1, AssignmentObservationReducerV1,
+};
+
+#[cfg(feature = "multi-node")]
+pub(super) use remote_verification::staged_prefix_commitment;
+
+#[cfg(feature = "multi-node")]
+pub use remote_verification::{
+    AuthenticatedSnapshotChunkV1, AuthenticatedSnapshotDependencyRangeV1,
+    DurableSnapshotTransferCheckpointV1, SnapshotDependencyReducerV1,
+    SnapshotTransferApplyOutcomeV1, SnapshotTransferReducerV1,
+};
+
+#[cfg(feature = "multi-node")]
+pub use restore_admission::{
+    SnapshotRestoreAdmissionDecisionV1, SnapshotRestoreAdmissionV1, SnapshotRestoreBlockReasonV1,
+    VerifiedRestoreAuthorizationV1,
+};
+
+/// Uses the core closed assignment transition vocabulary for node observations.
+pub type AssignmentObservationPhaseV1 = AssignmentPhase;
+
+/// Reports malformed assignment intent or contradictory node observation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum InvalidAssignmentModel {
+    /// An identity, digest, generation, or sequence uses its zero sentinel.
+    #[error("assignment model contains an unspecified identity or generation")]
+    Unspecified,
+    /// A node observation names another assignment tuple.
+    #[error("node observation does not match the reducer's exact assignment")]
+    AssignmentMismatch,
+    /// Placement evidence selected a node other than the assignment target.
+    #[error("placement evidence does not select the assignment target node")]
+    PlacementMismatch,
+    /// The node claims a desired generation newer than controller intent.
+    #[error("node observation is ahead of the controller's desired generation")]
+    DesiredGenerationAhead,
+    /// One sequence names two different observations for the same node boot.
+    #[error("assignment observation sequence was reused for different content")]
+    SequenceConflict,
+    /// One boot identity is paired with different generations, or conversely.
+    #[error("assignment observation boot identity and generation are inconsistent")]
+    BootConflict,
+    /// A newer boot does not directly extend the last authenticated lineage.
+    #[error("assignment observation skipped or contradicted durable boot lineage")]
+    BootLineageGap,
+    /// The closed assignment state machine rejects a transition.
+    #[error("assignment observation contains an invalid phase transition")]
+    InvalidPhaseTransition,
+    /// The reason class contradicts the observed assignment phase.
+    #[error("assignment observation reason is incompatible with its phase")]
+    ReasonPhaseMismatch,
+    /// Ownership/Guardian evidence is absent, stale, or bound to another tuple.
+    #[error("assignment observation authority evidence is incompatible with its phase")]
+    AuthorityMismatch,
+}
+
+/// Selects the verifier-observed Guardian state for one assignment authority.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VerifiedGuardianStateV1 {
+    /// Current lease is armed and fail-stop enforcement is active.
+    Armed,
+    /// Payload and external access are contained.
+    Contained,
+    /// Lease expiry was observed and containment completed.
+    ExpiredAndContained,
+}
+
+/// Carries verifier-issued current ownership and Guardian observation evidence.
+///
+/// This type is evidence about separately issued authority; it is not a lease,
+/// grant, signature, or capability and cannot authorize an effect.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VerifiedAssignmentAuthorityV1 {
+    node: NodeId,
+    context: AuthenticatedEvidenceContextV1,
+    sandbox: SandboxId,
+    incarnation: IncarnationId,
+    epoch: AssignmentEpoch,
+    desired_generation: DesiredGeneration,
+    assignment_digest: ObjectDigest,
+    lease_generation: u64,
+    lease_digest: ObjectDigest,
+    guardian_state: VerifiedGuardianStateV1,
+    guardian_digest: ObjectDigest,
+    audience_digest: ObjectDigest,
+    carrier_frame_digest: ObjectDigest,
+    verified_at_unix_seconds: u64,
+    valid_until_unix_seconds: u64,
+}
+
+impl VerifiedAssignmentAuthorityV1 {
+    /// Constructs evidence only inside the authenticated owner-verifier boundary.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn from_owner_verifier(
+        grant: VerifierEvidenceGrantV1<(
+            AuthenticatedEvidenceContextV1,
+            SandboxId,
+            IncarnationId,
+            AssignmentEpoch,
+            DesiredGeneration,
+            ObjectDigest,
+            u64,
+            ObjectDigest,
+            VerifiedGuardianStateV1,
+            ObjectDigest,
+            ObjectDigest,
+            ObjectDigest,
+            u64,
+            u64,
+        )>,
+    ) -> Result<Self, InvalidAssignmentModel> {
+        let (
+            (
+                context,
+                sandbox,
+                incarnation,
+                epoch,
+                desired_generation,
+                assignment_digest,
+                lease_generation,
+                lease_digest,
+                guardian_state,
+                guardian_digest,
+                audience_digest,
+                carrier_frame_digest,
+                verified_at_unix_seconds,
+                valid_until_unix_seconds,
+            ),
+            verifier_domain_digest,
+            replay_fence,
+            issuance_sequence,
+            verifier_context,
+        ) = grant.into_parts();
+        let node = context.node();
+        if node.as_bytes() == &[0; 16]
+            || verifier_domain_digest.as_bytes() == &[0; 32]
+            || replay_fence.as_bytes() == &[0; 32]
+            || replay_fence != verifier_context.replay_fence()
+            || issuance_sequence == 0
+            || verifier_context != context
+            || sandbox.as_bytes() == &[0; 16]
+            || incarnation.as_bytes() == &[0; 16]
+            || epoch.get() == 0
+            || desired_generation.get() == 0
+            || assignment_digest.as_bytes() == &[0; 32]
+            || lease_generation == 0
+            || lease_digest.as_bytes() == &[0; 32]
+            || guardian_digest.as_bytes() == &[0; 32]
+            || audience_digest != context.audience_digest()
+            || carrier_frame_digest != context.canonical_frame_digest()
+            || valid_until_unix_seconds <= verified_at_unix_seconds
+            || !context.is_current_at(verified_at_unix_seconds)
+            || !context.is_current_at(valid_until_unix_seconds)
+        {
+            return Err(InvalidAssignmentModel::AuthorityMismatch);
+        }
+        Ok(Self {
+            node,
+            context,
+            sandbox,
+            incarnation,
+            epoch,
+            desired_generation,
+            assignment_digest,
+            lease_generation,
+            lease_digest,
+            guardian_state,
+            guardian_digest,
+            audience_digest,
+            carrier_frame_digest,
+            verified_at_unix_seconds,
+            valid_until_unix_seconds,
+        })
+    }
+
+    /// Returns the verified lease generation.
+    #[must_use]
+    pub const fn lease_generation(self) -> u64 {
+        self.lease_generation
+    }
+
+    /// Returns the verified lease commitment without exposing lease authority.
+    #[must_use]
+    pub const fn lease_digest(self) -> ObjectDigest {
+        self.lease_digest
+    }
+
+    /// Returns the verifier-observed Guardian state.
+    #[must_use]
+    pub const fn guardian_state(self) -> VerifiedGuardianStateV1 {
+        self.guardian_state
+    }
+
+    /// Returns the verified Guardian observation commitment.
+    #[must_use]
+    pub const fn guardian_digest(self) -> ObjectDigest {
+        self.guardian_digest
+    }
+
+    /// Returns the authenticated audience commitment.
+    #[must_use]
+    pub const fn audience_digest(self) -> ObjectDigest {
+        self.audience_digest
+    }
+
+    /// Returns the exact authenticated carrier-frame commitment.
+    #[must_use]
+    pub const fn carrier_frame_digest(self) -> ObjectDigest {
+        self.carrier_frame_digest
+    }
+
+    /// Reports whether the evidence is current for exact intent and node boot.
+    #[must_use]
+    pub fn is_current_for(
+        self,
+        intent: &AssignmentIntentV1,
+        lineage: NodeBootLineageV1,
+        coordinator_unix_seconds: u64,
+    ) -> bool {
+        let guardian_matches_lifecycle = match intent.desired_lifecycle() {
+            DesiredSandboxState::Running | DesiredSandboxState::Suspended(_) => {
+                self.guardian_state == VerifiedGuardianStateV1::Armed
+            }
+            DesiredSandboxState::Stopped | DesiredSandboxState::Deleted => matches!(
+                self.guardian_state,
+                VerifiedGuardianStateV1::Contained | VerifiedGuardianStateV1::ExpiredAndContained
+            ),
+        };
+        self.node == intent.node()
+            && self.context.lineage() == lineage
+            && self.sandbox == intent.sandbox()
+            && self.incarnation == intent.incarnation()
+            && self.epoch == intent.epoch()
+            && self.desired_generation == intent.desired_generation()
+            && self.assignment_digest == intent.assignment_digest()
+            && guardian_matches_lifecycle
+            && self.context.is_current_at(coordinator_unix_seconds)
+            && coordinator_unix_seconds >= self.verified_at_unix_seconds
+            && coordinator_unix_seconds <= self.valid_until_unix_seconds
+    }
+
+    /// Reports whether this verifier observation remains current independent of lifecycle policy.
+    #[must_use]
+    pub fn is_current_at(self, coordinator_unix_seconds: u64) -> bool {
+        self.context.is_current_at(coordinator_unix_seconds)
+            && coordinator_unix_seconds >= self.verified_at_unix_seconds
+            && coordinator_unix_seconds <= self.valid_until_unix_seconds
+    }
+
+    /// Returns the immutable lease/Guardian evidence deadline.
+    #[must_use]
+    pub(super) const fn valid_until_unix_seconds(self) -> u64 {
+        self.valid_until_unix_seconds
+    }
+
+    /// Returns the exact verifier carrier/currentness context.
+    #[must_use]
+    pub(super) const fn context(self) -> AuthenticatedEvidenceContextV1 {
+        self.context
+    }
+
+    pub(super) fn matches_drain_plan(
+        self,
+        plan: super::draining::DrainAssignmentPlanV1,
+        context: AuthenticatedEvidenceContextV1,
+        coordinator_unix_seconds: u64,
+    ) -> bool {
+        self.node == context.node()
+            && self.context == context
+            && self.sandbox == plan.sandbox()
+            && self.incarnation == plan.incarnation()
+            && self.epoch == plan.epoch()
+            && self.desired_generation == plan.desired_generation()
+            && self.assignment_digest == plan.assignment_digest()
+            && self.is_current_at(coordinator_unix_seconds)
+    }
+}
+
+/// Classifies a bounded node-side reason without accepting arbitrary text.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AssignmentObservationReasonV1 {
+    /// No exceptional condition is reported.
+    None,
+    /// Required immutable input is not yet resident.
+    AwaitingContent,
+    /// Hard node capacity is temporarily unavailable.
+    AwaitingCapacity,
+    /// A required node capability drifted after placement.
+    CapabilityDrift,
+    /// Ownership authority has not been acquired or renewed.
+    AwaitingOwnershipAuthority,
+    /// The assignment guardian is not yet armed.
+    AwaitingGuardian,
+    /// Ownership authority expired or was superseded.
+    OwnershipFenced,
+    /// Complete boot inventory is not yet reconciled.
+    InventoryIncomplete,
+    /// Unknown or ambiguous node-local state requires quarantine.
+    ResidualState,
+    /// A required external dependency is unavailable.
+    MissingDependency,
+    /// A closed node-side operation failed.
+    NodeOperationFailed,
+}
+
+pub(super) fn assignment_reason_phase_consistent(
+    phase: AssignmentObservationPhaseV1,
+    reason: AssignmentObservationReasonV1,
+) -> bool {
+    match phase {
+        AssignmentPhase::Active | AssignmentPhase::Released => {
+            reason == AssignmentObservationReasonV1::None
+        }
+        AssignmentPhase::Fenced => reason == AssignmentObservationReasonV1::OwnershipFenced,
+        AssignmentPhase::Failed => reason != AssignmentObservationReasonV1::None,
+        AssignmentPhase::Proposed
+        | AssignmentPhase::Accepted
+        | AssignmentPhase::Arming
+        | AssignmentPhase::Draining => true,
+    }
+}
+
+/// Stores controller intent for one canonical assignment generation.
+///
+/// This value is a desired-state record, not proof that the target node owns
+/// the sandbox. Effect admission must independently validate current ownership
+/// authority and its guardian binding.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AssignmentIntentV1 {
+    assignment: CanonicalAssignmentManifestV1,
+    desired_lifecycle: DesiredSandboxState,
+    selected_capability: SelectedCapabilityBindingV1,
+}
+
+/// Retains the exact non-authorizing capability selection carried by intent.
+///
+/// The binding commits the original carrier bytes and currentness interval but
+/// cannot refresh that interval or substitute for the live observation that an
+/// acceptance verifier must independently consume.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SelectedCapabilityBindingV1 {
+    node: NodeId,
+    lineage: NodeBootLineageV1,
+    sequence: ObservationSequence,
+    evidence_binding_digest: ObjectDigest,
+    canonical_frame_digest: ObjectDigest,
+    canonical_frame_bytes: u32,
+    coordinator_epoch: u64,
+    authenticated_at_unix_seconds: u64,
+    valid_until_unix_seconds: u64,
+    audience_digest: ObjectDigest,
+    disclosure_domain_digest: ObjectDigest,
+    carrier_binding_digest: ObjectDigest,
+    replay_fence: ObjectDigest,
+}
+
+impl SelectedCapabilityBindingV1 {
+    /// Constructs a non-authorizing exact capability-selection binding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidAssignmentModel::PlacementMismatch`] for a sentinel,
+    /// empty frame, or nonpositive immutable currentness interval.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        node: NodeId,
+        lineage: NodeBootLineageV1,
+        sequence: ObservationSequence,
+        evidence_binding_digest: ObjectDigest,
+        canonical_frame_digest: ObjectDigest,
+        canonical_frame_bytes: u32,
+        coordinator_epoch: u64,
+        authenticated_at_unix_seconds: u64,
+        valid_until_unix_seconds: u64,
+        audience_digest: ObjectDigest,
+        disclosure_domain_digest: ObjectDigest,
+        carrier_binding_digest: ObjectDigest,
+        replay_fence: ObjectDigest,
+    ) -> Result<Self, InvalidAssignmentModel> {
+        if node.as_bytes() == &[0; 16]
+            || sequence.get() == 0
+            || evidence_binding_digest.as_bytes() == &[0; 32]
+            || canonical_frame_digest.as_bytes() == &[0; 32]
+            || canonical_frame_bytes == 0
+            || coordinator_epoch == 0
+            || valid_until_unix_seconds <= authenticated_at_unix_seconds
+            || audience_digest.as_bytes() == &[0; 32]
+            || disclosure_domain_digest.as_bytes() == &[0; 32]
+            || carrier_binding_digest.as_bytes() == &[0; 32]
+            || replay_fence.as_bytes() == &[0; 32]
+        {
+            return Err(InvalidAssignmentModel::PlacementMismatch);
+        }
+        Ok(Self {
+            node,
+            lineage,
+            sequence,
+            evidence_binding_digest,
+            canonical_frame_digest,
+            canonical_frame_bytes,
+            coordinator_epoch,
+            authenticated_at_unix_seconds,
+            valid_until_unix_seconds,
+            audience_digest,
+            disclosure_domain_digest,
+            carrier_binding_digest,
+            replay_fence,
+        })
+    }
+
+    /// Copies the exact non-authorizing binding from a validated observation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidAssignmentModel::PlacementMismatch`] for an unspecified
+    /// identity or commitment, empty frame, or invalid currentness interval.
+    pub(super) fn from_observation(
+        observation: &CarrierValidatedCapabilityObservationV1,
+    ) -> Result<Self, InvalidAssignmentModel> {
+        Self::new(
+            observation.audience_node(),
+            observation.snapshot().lineage(),
+            observation.snapshot().sequence(),
+            observation.evidence_binding_digest(),
+            observation.canonical_observation_digest(),
+            observation.canonical_frame_bytes(),
+            observation.coordinator_epoch(),
+            observation.authenticated_at_unix_seconds(),
+            observation.valid_until_unix_seconds(),
+            observation.audience_digest(),
+            observation.disclosure_domain_digest(),
+            observation.carrier_binding_digest(),
+            observation.replay_fence(),
+        )
+    }
+
+    /// Returns the selected node.
+    #[must_use]
+    pub const fn node(self) -> NodeId {
+        self.node
+    }
+    /// Returns the selected durable boot lineage.
+    #[must_use]
+    pub const fn lineage(self) -> NodeBootLineageV1 {
+        self.lineage
+    }
+    /// Returns the selected observation sequence.
+    #[must_use]
+    pub const fn sequence(self) -> ObservationSequence {
+        self.sequence
+    }
+    /// Returns the complete capability evidence commitment.
+    #[must_use]
+    pub const fn evidence_binding_digest(self) -> ObjectDigest {
+        self.evidence_binding_digest
+    }
+    /// Returns the exact carrier-frame commitment.
+    #[must_use]
+    pub const fn canonical_frame_digest(self) -> ObjectDigest {
+        self.canonical_frame_digest
+    }
+    /// Returns the exact bounded carrier-frame length.
+    #[must_use]
+    pub const fn canonical_frame_bytes(self) -> u32 {
+        self.canonical_frame_bytes
+    }
+    /// Returns the authenticating coordinator epoch.
+    #[must_use]
+    pub const fn coordinator_epoch(self) -> u64 {
+        self.coordinator_epoch
+    }
+    /// Returns the original authentication time.
+    #[must_use]
+    pub const fn authenticated_at_unix_seconds(self) -> u64 {
+        self.authenticated_at_unix_seconds
+    }
+    /// Returns the immutable currentness deadline.
+    #[must_use]
+    pub const fn valid_until_unix_seconds(self) -> u64 {
+        self.valid_until_unix_seconds
+    }
+    /// Returns the authenticated audience commitment.
+    #[must_use]
+    pub const fn audience_digest(self) -> ObjectDigest {
+        self.audience_digest
+    }
+    /// Returns the authenticated disclosure-domain commitment.
+    #[must_use]
+    pub const fn disclosure_domain_digest(self) -> ObjectDigest {
+        self.disclosure_domain_digest
+    }
+    /// Returns the authenticated carrier-binding commitment.
+    #[must_use]
+    pub const fn carrier_binding_digest(self) -> ObjectDigest {
+        self.carrier_binding_digest
+    }
+    /// Returns the verifier replay-fence commitment.
+    #[must_use]
+    pub const fn replay_fence(self) -> ObjectDigest {
+        self.replay_fence
+    }
+
+    /// Reports whether the placement observation's immutable interval covers `time`.
+    #[must_use]
+    pub const fn is_current_at(self, time: u64) -> bool {
+        time >= self.authenticated_at_unix_seconds && time <= self.valid_until_unix_seconds
+    }
+
+    /// Reports whether `observation` is the exact still-current source fact.
+    #[must_use]
+    pub fn matches_current(
+        self,
+        observation: &CarrierValidatedCapabilityObservationV1,
+        coordinator_unix_seconds: u64,
+    ) -> bool {
+        Self::from_observation(observation).is_ok_and(|binding| binding == self)
+            && observation.is_current_at(coordinator_unix_seconds)
+    }
+}
+
+impl AssignmentIntentV1 {
+    /// Reconstructs authenticated controller intent from its exact wire binding.
+    ///
+    /// The binding remains historical scheduling evidence. Acceptance still
+    /// requires the evidence authority to consume the matching live capability
+    /// observation, ownership lease, Guardian fact, and protected journal row.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidAssignmentModel::PlacementMismatch`] when the manifest
+    /// names a different node than the immutable capability binding.
+    pub fn from_canonical_binding(
+        assignment: CanonicalAssignmentManifestV1,
+        desired_lifecycle: DesiredSandboxState,
+        selected_capability: SelectedCapabilityBindingV1,
+    ) -> Result<Self, InvalidAssignmentModel> {
+        if assignment.manifest().node() != selected_capability.node() {
+            return Err(InvalidAssignmentModel::PlacementMismatch);
+        }
+        Ok(Self {
+            assignment,
+            desired_lifecycle,
+            selected_capability,
+        })
+    }
+
+    /// Returns the canonical assignment manifest and internally derived digest.
+    #[must_use]
+    pub const fn assignment(&self) -> &CanonicalAssignmentManifestV1 {
+        &self.assignment
+    }
+
+    /// Returns the logical sandbox identity.
+    #[must_use]
+    pub const fn sandbox(&self) -> SandboxId {
+        self.assignment.manifest().sandbox()
+    }
+
+    /// Returns the target runtime incarnation.
+    #[must_use]
+    pub const fn incarnation(&self) -> IncarnationId {
+        self.assignment.manifest().incarnation()
+    }
+
+    /// Returns the preferred node from the immutable assignment semantics.
+    #[must_use]
+    pub const fn node(&self) -> NodeId {
+        self.assignment.manifest().node()
+    }
+
+    /// Returns the assignment fencing epoch.
+    #[must_use]
+    pub const fn epoch(&self) -> AssignmentEpoch {
+        self.assignment.manifest().epoch()
+    }
+
+    /// Returns the desired generation inside the assignment epoch.
+    #[must_use]
+    pub const fn desired_generation(&self) -> DesiredGeneration {
+        self.assignment.manifest().desired_generation()
+    }
+
+    /// Returns the internally derived canonical assignment digest.
+    #[must_use]
+    pub const fn assignment_digest(&self) -> ObjectDigest {
+        self.assignment.digest()
+    }
+
+    /// Returns resources expected to be reserved by controller state.
+    #[must_use]
+    pub const fn reservations(&self) -> ResourceVector {
+        self.assignment.manifest().reservations()
+    }
+
+    /// Returns the desired sandbox lifecycle state.
+    #[must_use]
+    pub const fn desired_lifecycle(&self) -> DesiredSandboxState {
+        self.desired_lifecycle
+    }
+
+    /// Returns the node boot used for placement capability evaluation.
+    #[must_use]
+    pub const fn selected_capability_boot(&self) -> NodeBootId {
+        self.selected_capability.lineage().boot()
+    }
+
+    /// Returns the durable node boot generation used during placement.
+    #[must_use]
+    pub const fn selected_capability_boot_generation(&self) -> u64 {
+        self.selected_capability.lineage().generation()
+    }
+
+    /// Returns the durable capability boot lineage used during placement.
+    #[must_use]
+    pub const fn selected_capability_lineage(&self) -> NodeBootLineageV1 {
+        self.selected_capability.lineage()
+    }
+
+    /// Returns the exact capability observation sequence used for placement.
+    #[must_use]
+    pub const fn selected_capability_sequence(&self) -> ObservationSequence {
+        self.selected_capability.sequence()
+    }
+
+    /// Returns the exact carrier/currentness evidence used by placement.
+    #[must_use]
+    pub const fn selected_capability_binding(&self) -> SelectedCapabilityBindingV1 {
+        self.selected_capability
+    }
+}
+
+/// Stores one complete assignment observation from a fixed node boot.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NodeAssignmentObservationV1 {
+    context: AuthenticatedEvidenceContextV1,
+    sandbox: SandboxId,
+    incarnation: IncarnationId,
+    epoch: AssignmentEpoch,
+    desired_generation: DesiredGeneration,
+    assignment_digest: ObjectDigest,
+    sequence: ObservationSequence,
+    phase: AssignmentObservationPhaseV1,
+    realized_lifecycle: Option<DesiredSandboxState>,
+    reason: AssignmentObservationReasonV1,
+    authority: Option<VerifiedAssignmentAuthorityV1>,
+    observed_at_unix_seconds: u64,
+}
+
+impl NodeAssignmentObservationV1 {
+    /// Constructs one bounded assignment observation.
+    ///
+    /// The timestamp selects verifier-current evidence; it never extends an
+    /// ownership lease or substitutes for the independently checked lease.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidAssignmentModel::Unspecified`] for zero identities,
+    /// generations, sequence, or digest.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn from_authenticated_node(
+        context: AuthenticatedEvidenceContextV1,
+        sandbox: SandboxId,
+        incarnation: IncarnationId,
+        epoch: AssignmentEpoch,
+        desired_generation: DesiredGeneration,
+        assignment_digest: ObjectDigest,
+        sequence: ObservationSequence,
+        phase: AssignmentObservationPhaseV1,
+        realized_lifecycle: Option<DesiredSandboxState>,
+        reason: AssignmentObservationReasonV1,
+        observed_at_unix_seconds: u64,
+    ) -> Result<Self, InvalidAssignmentModel> {
+        let node = context.node();
+        if node.as_bytes() == &[0; 16]
+            || sandbox.as_bytes() == &[0; 16]
+            || incarnation.as_bytes() == &[0; 16]
+            || epoch.get() == 0
+            || desired_generation.get() == 0
+            || assignment_digest.as_bytes() == &[0; 32]
+            || sequence.get() == 0
+            || !context.is_current_at(observed_at_unix_seconds)
+        {
+            return Err(InvalidAssignmentModel::Unspecified);
+        }
+        if !assignment_reason_phase_consistent(phase, reason) {
+            return Err(InvalidAssignmentModel::ReasonPhaseMismatch);
+        }
+        let lifecycle_matches_phase = match realized_lifecycle {
+            Some(DesiredSandboxState::Running | DesiredSandboxState::Suspended(_)) => {
+                phase == AssignmentPhase::Active
+            }
+            Some(DesiredSandboxState::Stopped) => {
+                matches!(phase, AssignmentPhase::Fenced | AssignmentPhase::Released)
+            }
+            Some(DesiredSandboxState::Deleted) => phase == AssignmentPhase::Released,
+            None => phase != AssignmentPhase::Active,
+        };
+        if !lifecycle_matches_phase {
+            return Err(InvalidAssignmentModel::AuthorityMismatch);
+        }
+        Ok(Self {
+            context,
+            sandbox,
+            incarnation,
+            epoch,
+            desired_generation,
+            assignment_digest,
+            sequence,
+            phase,
+            realized_lifecycle,
+            reason,
+            authority: None,
+            observed_at_unix_seconds,
+        })
+    }
+
+    /// Attaches independently verified ownership/Guardian evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidAssignmentModel::AuthorityMismatch`] unless the
+    /// singular verifier grant names this exact observation and currentness.
+    pub(super) fn with_verified_authority(
+        mut self,
+        grant: VerifierEvidenceGrantV1<(VerifiedAssignmentAuthorityV1, u64)>,
+    ) -> Result<Self, InvalidAssignmentModel> {
+        let (
+            (evidence, verified_at_unix_seconds),
+            verifier_domain_digest,
+            replay_fence,
+            issuance_sequence,
+            verifier_context,
+        ) = grant.into_parts();
+        let authority_matches = {
+            evidence.node == self.node()
+                && evidence.context == self.context
+                && evidence.sandbox == self.sandbox
+                && evidence.incarnation == self.incarnation
+                && evidence.epoch == self.epoch
+                && evidence.desired_generation == self.desired_generation
+                && evidence.assignment_digest == self.assignment_digest
+                && verified_at_unix_seconds >= evidence.verified_at_unix_seconds
+                && verified_at_unix_seconds <= evidence.valid_until_unix_seconds
+        };
+        let phase_authority_matches = match self.phase {
+            AssignmentPhase::Active => evidence.guardian_state() == VerifiedGuardianStateV1::Armed,
+            AssignmentPhase::Fenced => {
+                matches!(
+                    evidence.guardian_state(),
+                    VerifiedGuardianStateV1::Contained
+                        | VerifiedGuardianStateV1::ExpiredAndContained
+                )
+            }
+            _ => true,
+        };
+        if verifier_domain_digest.as_bytes() == &[0; 32]
+            || replay_fence.as_bytes() == &[0; 32]
+            || replay_fence != verifier_context.replay_fence()
+            || issuance_sequence == 0
+            || verifier_context != self.context
+            || !authority_matches
+            || !phase_authority_matches
+        {
+            return Err(InvalidAssignmentModel::AuthorityMismatch);
+        }
+        self.authority = Some(evidence);
+        Ok(self)
+    }
+
+    /// Returns the observing node.
+    #[must_use]
+    pub const fn node(&self) -> NodeId {
+        self.context.node()
+    }
+
+    /// Returns the observing node boot.
+    #[must_use]
+    pub const fn boot(&self) -> NodeBootId {
+        self.context.lineage().boot()
+    }
+
+    /// Returns the durable monotonic generation associated with the node boot.
+    #[must_use]
+    pub const fn boot_generation(&self) -> u64 {
+        self.context.lineage().generation()
+    }
+
+    /// Returns the authenticated durable boot lineage.
+    #[must_use]
+    pub const fn lineage(&self) -> NodeBootLineageV1 {
+        self.context.lineage()
+    }
+
+    /// Returns the exact authenticated carrier/audience/currentness context.
+    #[must_use]
+    pub const fn context(&self) -> AuthenticatedEvidenceContextV1 {
+        self.context
+    }
+
+    /// Returns the logical sandbox.
+    #[must_use]
+    pub const fn sandbox(&self) -> SandboxId {
+        self.sandbox
+    }
+
+    /// Returns the observed runtime incarnation.
+    #[must_use]
+    pub const fn incarnation(&self) -> IncarnationId {
+        self.incarnation
+    }
+
+    /// Returns the observed assignment epoch.
+    #[must_use]
+    pub const fn epoch(&self) -> AssignmentEpoch {
+        self.epoch
+    }
+
+    /// Returns the observed desired generation.
+    #[must_use]
+    pub const fn desired_generation(&self) -> DesiredGeneration {
+        self.desired_generation
+    }
+
+    /// Returns the observed canonical assignment digest.
+    #[must_use]
+    pub const fn assignment_digest(&self) -> ObjectDigest {
+        self.assignment_digest
+    }
+
+    /// Returns the monotonic sequence within the node boot.
+    #[must_use]
+    pub const fn sequence(&self) -> ObservationSequence {
+        self.sequence
+    }
+
+    /// Returns the closed assignment realization phase.
+    #[must_use]
+    pub const fn phase(&self) -> AssignmentObservationPhaseV1 {
+        self.phase
+    }
+
+    /// Returns the exact realized lifecycle for terminal/active observations.
+    #[must_use]
+    pub const fn realized_lifecycle(&self) -> Option<DesiredSandboxState> {
+        self.realized_lifecycle
+    }
+
+    /// Returns the closed reason class.
+    #[must_use]
+    pub const fn reason(&self) -> AssignmentObservationReasonV1 {
+        self.reason
+    }
+
+    /// Returns verifier-issued authority/Guardian evidence when present.
+    #[must_use]
+    pub const fn authority(&self) -> Option<VerifiedAssignmentAuthorityV1> {
+        self.authority
+    }
+
+    /// Returns diagnostic wall-clock observation time.
+    #[must_use]
+    pub const fn observed_at_unix_seconds(&self) -> u64 {
+        self.observed_at_unix_seconds
+    }
+
+    /// Reports whether this observation names the exact assignment intent.
+    #[must_use]
+    pub fn matches(&self, intent: &AssignmentIntentV1) -> bool {
+        self.node() == intent.node()
+            && self.sandbox == intent.sandbox()
+            && self.incarnation == intent.incarnation()
+            && self.epoch == intent.epoch()
+            && self.desired_generation == intent.desired_generation()
+            && self.assignment_digest == intent.assignment_digest()
+    }
+}
+
+/// Maximum immutable snapshot chunks described by one transfer manifest.
+pub const MAX_SNAPSHOT_TRANSFER_CHUNKS: usize = 65_536;
+/// Maximum immutable dependencies admitted by one transfer manifest.
+pub const MAX_SNAPSHOT_TRANSFER_DEPENDENCIES: usize = 4_096;
+/// Maximum required features encoded in a snapshot transfer manifest.
+pub const MAX_SNAPSHOT_TRANSFER_REQUIRED_FEATURES: usize = 64;
+/// Maximum bytes in one independently verified snapshot chunk.
+pub const MAX_SNAPSHOT_TRANSFER_CHUNK_BYTES: u32 = 4 * 1024 * 1024;
+/// Maximum conservative canonical-wire charge for one complete manifest.
+///
+/// Each bounded row is charged at more than its closed V1 JSON schema can
+/// encode, including maximum-length media types and feature names. This keeps
+/// all 65,536 chunk commitments representable without permitting an
+/// allocation proportional to attacker-controlled, unvalidated bytes.
+pub const MAX_SNAPSHOT_TRANSFER_MANIFEST_WIRE_BYTES: usize = 15 * 1024 * 1024;
+
+const SNAPSHOT_MANIFEST_FIXED_WIRE_BYTES: usize = 16 * 1024;
+const SNAPSHOT_CHUNK_MAX_WIRE_BYTES: usize = 192;
+const SNAPSHOT_DEPENDENCY_MAX_WIRE_BYTES: usize = 768;
+const SNAPSHOT_FEATURE_MAX_WIRE_BYTES: usize = 512;
+
+/// Reports malformed immutable transfer or restore-admission evidence.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum InvalidSnapshotTransfer {
+    /// An identity, digest, generation, or size uses its zero sentinel.
+    #[error("snapshot transfer contains an unspecified value")]
+    Unspecified,
+    /// The transfer semantic version is not exactly supported.
+    #[error("snapshot transfer semantic version is unsupported")]
+    IncompatibleVersion,
+    /// The root object is not an immutable snapshot descriptor.
+    #[error("snapshot transfer root descriptor is not a snapshot")]
+    WrongRootMediaType,
+    /// Chunks are oversized, unordered, overlapping, gapped, or incomplete.
+    #[error("snapshot transfer chunks do not canonically cover the root object")]
+    ChunksNotCanonical,
+    /// Dependencies are oversized, duplicated, unordered, or malformed.
+    #[error("snapshot transfer dependencies are not canonical")]
+    DependenciesNotCanonical,
+    /// A dependency could carry lease, signature, trust, or grant authority.
+    #[error("snapshot transfer dependencies must be inert immutable data")]
+    AuthorityBearingDependency,
+    /// Required features are oversized, duplicated, or unordered.
+    #[error("snapshot transfer required features are not canonical")]
+    FeaturesNotCanonical,
+    /// The bounded manifest rows exceed the canonical wire allocation ceiling.
+    #[error("snapshot transfer manifest exceeds its canonical wire ceiling")]
+    ManifestTooLarge,
+    /// The supplied manifest commitment does not match its canonical fields.
+    #[error("snapshot transfer manifest commitment does not match")]
+    ManifestDigestMismatch,
+    /// A supplied chunk does not match the committed length or digest.
+    #[error("snapshot transfer chunk failed integrity validation")]
+    ChunkIntegrityMismatch,
+    /// A resume checkpoint does not name a valid committed chunk boundary.
+    #[error("snapshot transfer resume checkpoint is invalid")]
+    InvalidResumeCheckpoint,
+    /// Restore admission evidence does not name the manifest destination.
+    #[error("snapshot restore admission evidence does not match the manifest")]
+    RestoreAdmissionMismatch,
+}
+
+/// Selects the immutable snapshot-transfer semantic protocol.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SnapshotTransferVersionV1 {
+    major: u16,
+    minor: u16,
+}
+
+impl SnapshotTransferVersionV1 {
+    /// Returns the only transfer semantics understood by this model.
+    #[must_use]
+    pub const fn v1_0() -> Self {
+        Self { major: 1, minor: 0 }
+    }
+
+    /// Constructs an explicitly versioned transfer request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidSnapshotTransfer::IncompatibleVersion`] unless the
+    /// version is exactly 1.0. Transfer compatibility is independent from the
+    /// coordinator-to-node protocol.
+    pub const fn new(major: u16, minor: u16) -> Result<Self, InvalidSnapshotTransfer> {
+        if major != 1 || minor != 0 {
+            return Err(InvalidSnapshotTransfer::IncompatibleVersion);
+        }
+        Ok(Self { major, minor })
+    }
+
+    /// Returns the breaking semantic major version.
+    #[must_use]
+    pub const fn major(self) -> u16 {
+        self.major
+    }
+
+    /// Returns the additive semantic minor version.
+    #[must_use]
+    pub const fn minor(self) -> u16 {
+        self.minor
+    }
+}
+
+/// Identifies one immutable transfer without granting source or destination authority.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct SnapshotTransferIdentityV1 {
+    operation: OperationId,
+    project: ProjectId,
+    sandbox: SandboxId,
+    incarnation: IncarnationId,
+    assignment_epoch: AssignmentEpoch,
+    desired_generation: DesiredGeneration,
+    assignment_digest: ObjectDigest,
+    snapshot: SnapshotId,
+    source_node: NodeId,
+    destination_node: NodeId,
+    storage_domain_digest: ObjectDigest,
+    audience_digest: ObjectDigest,
+    disclosure_domain_digest: ObjectDigest,
+    manifest_digest: ObjectDigest,
+}
+
+impl SnapshotTransferIdentityV1 {
+    /// Constructs an inert transfer identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidSnapshotTransfer::Unspecified`] for any zero value.
+    pub fn new(
+        operation: OperationId,
+        project: ProjectId,
+        sandbox: SandboxId,
+        incarnation: IncarnationId,
+        assignment_epoch: AssignmentEpoch,
+        desired_generation: DesiredGeneration,
+        assignment_digest: ObjectDigest,
+        snapshot: SnapshotId,
+        source_node: NodeId,
+        destination_node: NodeId,
+        storage_domain_digest: ObjectDigest,
+        audience_digest: ObjectDigest,
+        disclosure_domain_digest: ObjectDigest,
+        manifest_digest: ObjectDigest,
+    ) -> Result<Self, InvalidSnapshotTransfer> {
+        if operation.as_bytes() == &[0; 16]
+            || project.as_bytes() == &[0; 16]
+            || sandbox.as_bytes() == &[0; 16]
+            || incarnation.as_bytes() == &[0; 16]
+            || assignment_epoch.get() == 0
+            || desired_generation.get() == 0
+            || assignment_digest.as_bytes() == &[0; 32]
+            || snapshot.as_bytes() == &[0; 16]
+            || source_node.as_bytes() == &[0; 16]
+            || destination_node.as_bytes() == &[0; 16]
+            || storage_domain_digest.as_bytes() == &[0; 32]
+            || audience_digest.as_bytes() == &[0; 32]
+            || disclosure_domain_digest.as_bytes() == &[0; 32]
+            || manifest_digest.as_bytes() == &[0; 32]
+        {
+            return Err(InvalidSnapshotTransfer::Unspecified);
+        }
+        Ok(Self {
+            operation,
+            project,
+            sandbox,
+            incarnation,
+            assignment_epoch,
+            desired_generation,
+            assignment_digest,
+            snapshot,
+            source_node,
+            destination_node,
+            storage_domain_digest,
+            audience_digest,
+            disclosure_domain_digest,
+            manifest_digest,
+        })
+    }
+
+    /// Returns the idempotent operation identity.
+    #[must_use]
+    pub const fn operation(self) -> OperationId {
+        self.operation
+    }
+
+    /// Returns the logical snapshot identity.
+    #[must_use]
+    pub const fn snapshot(self) -> SnapshotId {
+        self.snapshot
+    }
+
+    /// Returns the project authority domain bound to immutable data.
+    #[must_use]
+    pub const fn project(self) -> ProjectId {
+        self.project
+    }
+
+    /// Returns the logical sandbox bound to the snapshot.
+    #[must_use]
+    pub const fn sandbox(self) -> SandboxId {
+        self.sandbox
+    }
+
+    /// Returns the exact runtime incarnation captured by the snapshot.
+    #[must_use]
+    pub const fn incarnation(self) -> IncarnationId {
+        self.incarnation
+    }
+
+    /// Returns the exact assignment fencing epoch captured by the snapshot.
+    #[must_use]
+    pub const fn assignment_epoch(self) -> AssignmentEpoch {
+        self.assignment_epoch
+    }
+
+    /// Returns the exact desired assignment generation captured by the snapshot.
+    #[must_use]
+    pub const fn desired_generation(self) -> DesiredGeneration {
+        self.desired_generation
+    }
+
+    /// Returns the exact canonical assignment commitment captured by the snapshot.
+    #[must_use]
+    pub const fn assignment_digest(self) -> ObjectDigest {
+        self.assignment_digest
+    }
+
+    /// Returns the node that may serve immutable bytes.
+    #[must_use]
+    pub const fn source_node(self) -> NodeId {
+        self.source_node
+    }
+
+    /// Returns the only admitted destination node.
+    #[must_use]
+    pub const fn destination_node(self) -> NodeId {
+        self.destination_node
+    }
+
+    /// Returns the immutable storage-domain commitment.
+    #[must_use]
+    pub const fn storage_domain_digest(self) -> ObjectDigest {
+        self.storage_domain_digest
+    }
+
+    /// Returns the exact authenticated transfer audience commitment.
+    #[must_use]
+    pub const fn audience_digest(self) -> ObjectDigest {
+        self.audience_digest
+    }
+
+    /// Returns the disclosure-domain commitment.
+    #[must_use]
+    pub const fn disclosure_domain_digest(self) -> ObjectDigest {
+        self.disclosure_domain_digest
+    }
+
+    /// Returns the canonical manifest commitment.
+    #[must_use]
+    pub const fn manifest_digest(self) -> ObjectDigest {
+        self.manifest_digest
+    }
+}
+
+/// Commits one bounded, independently verifiable snapshot byte range.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct SnapshotTransferChunkV1 {
+    index: u32,
+    offset: u64,
+    length: u32,
+    digest: ObjectDigest,
+}
+
+impl SnapshotTransferChunkV1 {
+    /// Constructs one chunk commitment.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidSnapshotTransfer::ChunksNotCanonical`] for an empty or
+    /// oversized chunk or a zero digest.
+    pub fn new(
+        index: u32,
+        offset: u64,
+        length: u32,
+        digest: ObjectDigest,
+    ) -> Result<Self, InvalidSnapshotTransfer> {
+        if length == 0
+            || length > MAX_SNAPSHOT_TRANSFER_CHUNK_BYTES
+            || digest.as_bytes() == &[0; 32]
+        {
+            return Err(InvalidSnapshotTransfer::ChunksNotCanonical);
+        }
+        Ok(Self {
+            index,
+            offset,
+            length,
+            digest,
+        })
+    }
+
+    /// Returns the zero-based chunk index.
+    #[must_use]
+    pub const fn index(self) -> u32 {
+        self.index
+    }
+
+    /// Returns the byte offset in the immutable root object.
+    #[must_use]
+    pub const fn offset(self) -> u64 {
+        self.offset
+    }
+
+    /// Returns the exact chunk length.
+    #[must_use]
+    pub const fn length(self) -> u32 {
+        self.length
+    }
+
+    /// Returns the SHA-256 commitment to the exact chunk bytes.
+    #[must_use]
+    pub const fn digest(self) -> ObjectDigest {
+        self.digest
+    }
+
+    /// Verifies exact immutable bytes against this chunk commitment.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidSnapshotTransfer::ChunkIntegrityMismatch`] for a
+    /// length or SHA-256 mismatch.
+    pub fn verify_bytes(self, bytes: &[u8]) -> Result<(), InvalidSnapshotTransfer> {
+        if bytes.len() != self.length as usize
+            || ObjectDigest::from_bytes(Sha256::digest(bytes).into()) != self.digest
+        {
+            return Err(InvalidSnapshotTransfer::ChunkIntegrityMismatch);
+        }
+        Ok(())
+    }
+}
+
+/// Describes all immutable data and semantic prerequisites for one transfer.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SnapshotTransferManifestV1 {
+    identity: SnapshotTransferIdentityV1,
+    version: SnapshotTransferVersionV1,
+    root: ObjectDescriptor,
+    chunks: Vec<SnapshotTransferChunkV1>,
+    dependencies: Vec<ObjectDescriptor>,
+    required_features: Vec<aos_sandbox_core::FeatureRef>,
+}
+
+impl SnapshotTransferManifestV1 {
+    /// Computes the canonical commitment used to construct a transfer identity.
+    ///
+    /// Inputs must still pass [`Self::new`] before use. This helper only
+    /// exposes the deterministic source codec and grants no authority.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn canonical_commitment_for(
+        operation: OperationId,
+        project: ProjectId,
+        sandbox: SandboxId,
+        incarnation: IncarnationId,
+        assignment_epoch: AssignmentEpoch,
+        desired_generation: DesiredGeneration,
+        assignment_digest: ObjectDigest,
+        snapshot: SnapshotId,
+        source_node: NodeId,
+        destination_node: NodeId,
+        storage_domain_digest: ObjectDigest,
+        audience_digest: ObjectDigest,
+        disclosure_domain_digest: ObjectDigest,
+        version: SnapshotTransferVersionV1,
+        root: &ObjectDescriptor,
+        chunks: &[SnapshotTransferChunkV1],
+        dependencies: &[ObjectDescriptor],
+        required_features: &[aos_sandbox_core::FeatureRef],
+    ) -> ObjectDigest {
+        canonical_manifest_commitment(
+            operation,
+            project,
+            sandbox,
+            incarnation,
+            assignment_epoch,
+            desired_generation,
+            assignment_digest,
+            snapshot,
+            source_node,
+            destination_node,
+            storage_domain_digest,
+            audience_digest,
+            disclosure_domain_digest,
+            version,
+            root,
+            chunks,
+            dependencies,
+            required_features,
+        )
+    }
+
+    /// Constructs and verifies one immutable transfer manifest.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidSnapshotTransfer`] unless the root is a snapshot,
+    /// chunks exactly and contiguously cover it, dependencies and features are
+    /// canonical bounded sets, and the identity commits the canonical fields.
+    pub fn new(
+        identity: SnapshotTransferIdentityV1,
+        version: SnapshotTransferVersionV1,
+        root: ObjectDescriptor,
+        chunks: Vec<SnapshotTransferChunkV1>,
+        dependencies: Vec<ObjectDescriptor>,
+        required_features: Vec<aos_sandbox_core::FeatureRef>,
+    ) -> Result<Self, InvalidSnapshotTransfer> {
+        if root.media_type().as_str() != PortableMediaType::Snapshot.as_str()
+            || root.digest().as_bytes() == &[0; 32]
+            || root.encoded_size() == 0
+        {
+            return Err(InvalidSnapshotTransfer::WrongRootMediaType);
+        }
+        validate_transfer_chunks(root.encoded_size(), &chunks)?;
+        if dependencies.len() > MAX_SNAPSHOT_TRANSFER_DEPENDENCIES
+            || dependencies.iter().any(|object| {
+                object.digest().as_bytes() == &[0; 32]
+                    || object.encoded_size() == 0
+                    || PortableMediaType::parse(object.media_type().as_str()).is_err()
+            })
+            || !dependencies.windows(2).all(|pair| pair[0] < pair[1])
+        {
+            return Err(InvalidSnapshotTransfer::DependenciesNotCanonical);
+        }
+        if dependencies.iter().any(|object| {
+            PortableMediaType::parse(object.media_type().as_str())
+                .is_ok_and(|media_type| !is_inert_transfer_dependency(media_type))
+        }) {
+            return Err(InvalidSnapshotTransfer::AuthorityBearingDependency);
+        }
+        if required_features.len() > MAX_SNAPSHOT_TRANSFER_REQUIRED_FEATURES
+            || !required_features.windows(2).all(|pair| pair[0] < pair[1])
+            || aos_sandbox_core::validate_required_features(&required_features).is_err()
+        {
+            return Err(InvalidSnapshotTransfer::FeaturesNotCanonical);
+        }
+        snapshot_manifest_aggregate_wire_bytes(
+            chunks.len(),
+            dependencies.len(),
+            required_features.len(),
+        )?;
+
+        let manifest = Self {
+            identity,
+            version,
+            root,
+            chunks,
+            dependencies,
+            required_features,
+        };
+        if manifest.canonical_commitment() != identity.manifest_digest() {
+            return Err(InvalidSnapshotTransfer::ManifestDigestMismatch);
+        }
+        Ok(manifest)
+    }
+
+    /// Returns the inert transfer identity.
+    #[must_use]
+    pub const fn identity(&self) -> SnapshotTransferIdentityV1 {
+        self.identity
+    }
+
+    /// Returns the exact independent transfer protocol version.
+    #[must_use]
+    pub const fn version(&self) -> SnapshotTransferVersionV1 {
+        self.version
+    }
+
+    /// Returns the immutable snapshot root descriptor.
+    #[must_use]
+    pub const fn root(&self) -> &ObjectDescriptor {
+        &self.root
+    }
+
+    /// Returns contiguous chunk commitments in transfer order.
+    #[must_use]
+    pub fn chunks(&self) -> &[SnapshotTransferChunkV1] {
+        &self.chunks
+    }
+
+    /// Returns immutable prerequisite objects in canonical order.
+    #[must_use]
+    pub fn dependencies(&self) -> &[ObjectDescriptor] {
+        &self.dependencies
+    }
+
+    /// Returns hard destination feature requirements in canonical order.
+    #[must_use]
+    pub fn required_features(&self) -> &[aos_sandbox_core::FeatureRef] {
+        &self.required_features
+    }
+
+    /// Verifies one received chunk before it can advance a resume boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidSnapshotTransfer::ChunkIntegrityMismatch`] when the
+    /// index is absent or exact bytes differ in length or SHA-256 digest.
+    pub fn verify_chunk(&self, index: u32, bytes: &[u8]) -> Result<(), InvalidSnapshotTransfer> {
+        let chunk = self
+            .chunks
+            .get(
+                usize::try_from(index)
+                    .map_err(|_| InvalidSnapshotTransfer::ChunkIntegrityMismatch)?,
+            )
+            .filter(|chunk| chunk.index() == index)
+            .ok_or(InvalidSnapshotTransfer::ChunkIntegrityMismatch)?;
+        chunk.verify_bytes(bytes)
+    }
+
+    /// Computes the canonical commitment to a verified chunk prefix.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidSnapshotTransfer::InvalidResumeCheckpoint`] when the
+    /// boundary exceeds the committed chunk count.
+    pub fn prefix_commitment(
+        &self,
+        next_chunk: u32,
+    ) -> Result<ObjectDigest, InvalidSnapshotTransfer> {
+        let boundary = usize::try_from(next_chunk)
+            .map_err(|_| InvalidSnapshotTransfer::InvalidResumeCheckpoint)?;
+        let prefix = self
+            .chunks
+            .get(..boundary)
+            .ok_or(InvalidSnapshotTransfer::InvalidResumeCheckpoint)?;
+        let mut hasher = Sha256::new();
+        hasher.update(b"aos.snapshot-transfer-prefix.v1\0");
+        hasher.update(self.identity.manifest_digest().as_bytes());
+        hasher.update(next_chunk.to_be_bytes());
+        for chunk in prefix {
+            hasher.update(chunk.index().to_be_bytes());
+            hasher.update(chunk.digest().as_bytes());
+        }
+        Ok(ObjectDigest::from_bytes(hasher.finalize().into()))
+    }
+
+    fn canonical_commitment(&self) -> ObjectDigest {
+        canonical_manifest_commitment(
+            self.identity.operation(),
+            self.identity.project(),
+            self.identity.sandbox(),
+            self.identity.incarnation(),
+            self.identity.assignment_epoch(),
+            self.identity.desired_generation(),
+            self.identity.assignment_digest(),
+            self.identity.snapshot(),
+            self.identity.source_node(),
+            self.identity.destination_node(),
+            self.identity.storage_domain_digest(),
+            self.identity.audience_digest(),
+            self.identity.disclosure_domain_digest(),
+            self.version,
+            &self.root,
+            &self.chunks,
+            &self.dependencies,
+            &self.required_features,
+        )
+    }
+}
+
+fn snapshot_manifest_aggregate_wire_bytes(
+    chunks: usize,
+    dependencies: usize,
+    features: usize,
+) -> Result<usize, InvalidSnapshotTransfer> {
+    let charge = SNAPSHOT_MANIFEST_FIXED_WIRE_BYTES
+        .checked_add(
+            chunks
+                .checked_mul(SNAPSHOT_CHUNK_MAX_WIRE_BYTES)
+                .ok_or(InvalidSnapshotTransfer::ManifestTooLarge)?,
+        )
+        .and_then(|value| {
+            dependencies
+                .checked_mul(SNAPSHOT_DEPENDENCY_MAX_WIRE_BYTES)
+                .and_then(|rows| value.checked_add(rows))
+        })
+        .and_then(|value| {
+            features
+                .checked_mul(SNAPSHOT_FEATURE_MAX_WIRE_BYTES)
+                .and_then(|rows| value.checked_add(rows))
+        })
+        .ok_or(InvalidSnapshotTransfer::ManifestTooLarge)?;
+    if charge > MAX_SNAPSHOT_TRANSFER_MANIFEST_WIRE_BYTES {
+        return Err(InvalidSnapshotTransfer::ManifestTooLarge);
+    }
+    Ok(charge)
+}
+
+/// Binds one requested chunk to the immutable manifest that commits it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SnapshotTransferChunkRequestV1 {
+    identity: SnapshotTransferIdentityV1,
+    chunk: SnapshotTransferChunkV1,
+}
+
+impl SnapshotTransferChunkRequestV1 {
+    /// Reconstructs an inert request from an exact identity and chunk commitment.
+    ///
+    /// This does not prove that the chunk belongs to a manifest; the receiving
+    /// transfer reducer must match both fields to its already validated manifest.
+    #[must_use]
+    pub const fn from_exact_commitment(
+        identity: SnapshotTransferIdentityV1,
+        chunk: SnapshotTransferChunkV1,
+    ) -> Self {
+        Self { identity, chunk }
+    }
+
+    /// Derives one exact chunk request from a validated manifest.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidSnapshotTransfer::ChunkIntegrityMismatch`] when the
+    /// index is outside the manifest's committed chunk sequence.
+    pub fn new(
+        manifest: &SnapshotTransferManifestV1,
+        index: u32,
+    ) -> Result<Self, InvalidSnapshotTransfer> {
+        let chunk = manifest
+            .chunks()
+            .get(
+                usize::try_from(index)
+                    .map_err(|_| InvalidSnapshotTransfer::ChunkIntegrityMismatch)?,
+            )
+            .copied()
+            .filter(|chunk| chunk.index() == index)
+            .ok_or(InvalidSnapshotTransfer::ChunkIntegrityMismatch)?;
+        Ok(Self {
+            identity: manifest.identity(),
+            chunk,
+        })
+    }
+
+    /// Returns the exact immutable transfer identity.
+    #[must_use]
+    pub const fn identity(self) -> SnapshotTransferIdentityV1 {
+        self.identity
+    }
+
+    /// Returns the exact manifest-committed chunk.
+    #[must_use]
+    pub const fn chunk(self) -> SnapshotTransferChunkV1 {
+        self.chunk
+    }
+}
+
+/// Binds one bounded dependency byte range to its manifest descriptor.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SnapshotDependencyRangeV1 {
+    identity: SnapshotTransferIdentityV1,
+    dependency: ObjectDescriptor,
+    offset: u64,
+    length: u32,
+}
+
+impl SnapshotDependencyRangeV1 {
+    /// Reconstructs one inert manifest-bound dependency range.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidSnapshotTransfer::DependenciesNotCanonical`] for an
+    /// invalid descriptor or an empty, oversized, overflowing, or out-of-range span.
+    pub fn from_exact_commitment(
+        identity: SnapshotTransferIdentityV1,
+        dependency: ObjectDescriptor,
+        offset: u64,
+        length: u32,
+    ) -> Result<Self, InvalidSnapshotTransfer> {
+        let end = offset
+            .checked_add(u64::from(length))
+            .ok_or(InvalidSnapshotTransfer::DependenciesNotCanonical)?;
+        if dependency.digest().as_bytes() == &[0; 32]
+            || dependency.encoded_size() == 0
+            || PortableMediaType::parse(dependency.media_type().as_str()).is_err()
+            || length == 0
+            || length > MAX_SNAPSHOT_TRANSFER_CHUNK_BYTES
+            || end > dependency.encoded_size()
+        {
+            return Err(InvalidSnapshotTransfer::DependenciesNotCanonical);
+        }
+        Ok(Self {
+            identity,
+            dependency,
+            offset,
+            length,
+        })
+    }
+
+    /// Derives one bounded range request from a validated manifest dependency.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidSnapshotTransfer::DependenciesNotCanonical`] for an
+    /// unknown dependency, zero/oversized range, overflow, or out-of-bounds end.
+    pub fn new(
+        manifest: &SnapshotTransferManifestV1,
+        dependency_index: u32,
+        offset: u64,
+        length: u32,
+    ) -> Result<Self, InvalidSnapshotTransfer> {
+        let dependency = manifest
+            .dependencies()
+            .get(
+                usize::try_from(dependency_index)
+                    .map_err(|_| InvalidSnapshotTransfer::DependenciesNotCanonical)?,
+            )
+            .ok_or(InvalidSnapshotTransfer::DependenciesNotCanonical)?;
+        let end = offset
+            .checked_add(u64::from(length))
+            .ok_or(InvalidSnapshotTransfer::DependenciesNotCanonical)?;
+        if length == 0
+            || length > MAX_SNAPSHOT_TRANSFER_CHUNK_BYTES
+            || end > dependency.encoded_size()
+        {
+            return Err(InvalidSnapshotTransfer::DependenciesNotCanonical);
+        }
+        Ok(Self {
+            identity: manifest.identity(),
+            dependency: dependency.clone(),
+            offset,
+            length,
+        })
+    }
+
+    /// Returns the exact scoped transfer identity.
+    #[must_use]
+    pub const fn identity(&self) -> SnapshotTransferIdentityV1 {
+        self.identity
+    }
+
+    /// Returns the manifest-bound immutable dependency descriptor.
+    #[must_use]
+    pub const fn dependency(&self) -> &ObjectDescriptor {
+        &self.dependency
+    }
+
+    /// Returns the exact dependency byte offset.
+    #[must_use]
+    pub const fn offset(&self) -> u64 {
+        self.offset
+    }
+
+    /// Returns the bounded byte count.
+    #[must_use]
+    pub const fn length(&self) -> u32 {
+        self.length
+    }
+}
+
+/// Commits resumable progress only at an already verified chunk boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SnapshotTransferResumeV1 {
+    identity: SnapshotTransferIdentityV1,
+    next_chunk: u32,
+    verified_prefix_digest: ObjectDigest,
+}
+
+impl SnapshotTransferResumeV1 {
+    /// Constructs an integrity-bound resume checkpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidSnapshotTransfer::InvalidResumeCheckpoint`] when the
+    /// identity differs or the boundary exceeds the manifest. The prefix
+    /// commitment is derived from the manifest rather than accepted as input.
+    pub(super) fn new(
+        manifest: &SnapshotTransferManifestV1,
+        identity: SnapshotTransferIdentityV1,
+        next_chunk: u32,
+    ) -> Result<Self, InvalidSnapshotTransfer> {
+        if identity != manifest.identity()
+            || usize::try_from(next_chunk)
+                .ok()
+                .is_none_or(|index| index > manifest.chunks().len())
+        {
+            return Err(InvalidSnapshotTransfer::InvalidResumeCheckpoint);
+        }
+        let verified_prefix_digest = manifest.prefix_commitment(next_chunk)?;
+        Ok(Self {
+            identity,
+            next_chunk,
+            verified_prefix_digest,
+        })
+    }
+
+    /// Returns the exact transfer identity.
+    #[must_use]
+    pub const fn identity(self) -> SnapshotTransferIdentityV1 {
+        self.identity
+    }
+
+    /// Returns the first not-yet-verified chunk index.
+    #[must_use]
+    pub const fn next_chunk(self) -> u32 {
+        self.next_chunk
+    }
+
+    /// Returns the digest of the exact verified prefix bytes.
+    #[must_use]
+    pub const fn verified_prefix_digest(self) -> ObjectDigest {
+        self.verified_prefix_digest
+    }
+}
+
+/// Proves that actual staged bytes passed every chunk and whole-object digest.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VerifiedStagedSnapshotV1 {
+    identity: SnapshotTransferIdentityV1,
+    root: ObjectDescriptor,
+    verified_bytes: u64,
+    final_prefix_digest: ObjectDigest,
+}
+
+impl VerifiedStagedSnapshotV1 {
+    /// Returns the exact scoped transfer identity.
+    #[must_use]
+    pub const fn identity(&self) -> SnapshotTransferIdentityV1 {
+        self.identity
+    }
+
+    /// Returns the whole-object descriptor verified from actual bytes.
+    #[must_use]
+    pub const fn root(&self) -> &ObjectDescriptor {
+        &self.root
+    }
+
+    /// Returns the exact number of staged bytes verified.
+    #[must_use]
+    pub const fn verified_bytes(&self) -> u64 {
+        self.verified_bytes
+    }
+
+    /// Returns the final durable chunk-boundary commitment.
+    #[must_use]
+    pub const fn final_prefix_digest(&self) -> ObjectDigest {
+        self.final_prefix_digest
+    }
+}
+
+/// Proves one declared dependency's actual immutable bytes matched its descriptor.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct VerifiedSnapshotDependencyV1 {
+    identity: SnapshotTransferIdentityV1,
+    descriptor: ObjectDescriptor,
+}
+
+impl VerifiedSnapshotDependencyV1 {
+    /// Returns the exact project, sandbox, nodes, audience, and manifest binding.
+    #[must_use]
+    pub const fn identity(&self) -> SnapshotTransferIdentityV1 {
+        self.identity
+    }
+
+    /// Returns the exact verified immutable descriptor.
+    #[must_use]
+    pub const fn descriptor(&self) -> &ObjectDescriptor {
+        &self.descriptor
+    }
+}
+
+/// Commits the exact canonical set of dependencies verified from actual bytes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VerifiedSnapshotDependencySetV1 {
+    identity: SnapshotTransferIdentityV1,
+    dependencies: Vec<VerifiedSnapshotDependencyV1>,
+    digest: ObjectDigest,
+}
+
+impl VerifiedSnapshotDependencySetV1 {
+    /// Constructs the exact dependency set required by a manifest.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidSnapshotTransfer::DependenciesNotCanonical`] unless
+    /// verified descriptors exactly equal the manifest dependency list.
+    pub fn new(
+        manifest: &SnapshotTransferManifestV1,
+        dependencies: Vec<VerifiedSnapshotDependencyV1>,
+    ) -> Result<Self, InvalidSnapshotTransfer> {
+        if dependencies.len() != manifest.dependencies().len()
+            || !dependencies.windows(2).all(|pair| pair[0] < pair[1])
+            || dependencies
+                .iter()
+                .zip(manifest.dependencies())
+                .any(|(verified, expected)| {
+                    verified.identity() != manifest.identity() || verified.descriptor() != expected
+                })
+        {
+            return Err(InvalidSnapshotTransfer::DependenciesNotCanonical);
+        }
+        let mut hasher = Sha256::new();
+        hasher.update(b"aos.snapshot-transfer.dependencies.v1\0");
+        hasher.update(manifest.identity().manifest_digest().as_bytes());
+        for dependency in &dependencies {
+            hash_descriptor(&mut hasher, dependency.descriptor());
+        }
+        Ok(Self {
+            identity: manifest.identity(),
+            dependencies,
+            digest: ObjectDigest::from_bytes(hasher.finalize().into()),
+        })
+    }
+
+    /// Returns the exact scoped transfer identity.
+    #[must_use]
+    pub const fn identity(&self) -> SnapshotTransferIdentityV1 {
+        self.identity
+    }
+
+    /// Returns verified dependencies in canonical manifest order.
+    #[must_use]
+    pub fn dependencies(&self) -> &[VerifiedSnapshotDependencyV1] {
+        &self.dependencies
+    }
+
+    /// Returns the canonical verified-dependency commitment.
+    #[must_use]
+    pub const fn digest(&self) -> ObjectDigest {
+        self.digest
+    }
+}
+
+/// Couples a complete verified dependency set to protected current storage evidence.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DurableSnapshotDependencySetV1 {
+    verified: VerifiedSnapshotDependencySetV1,
+    journal_record: ProtectedJournalRecordV1,
+    live_until_unix_seconds: u64,
+}
+
+impl DurableSnapshotDependencySetV1 {
+    /// Issues dependency durability evidence only inside the protected-store verifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidSnapshotTransfer::DependenciesNotCanonical`] unless
+    /// the protected record commits the exact complete dependency set under
+    /// the destination, storage domain, audience, and current context.
+    pub(super) fn from_storage_verifier(
+        grant: VerifierEvidenceGrantV1<(
+            VerifiedSnapshotDependencySetV1,
+            ProtectedJournalRecordV1,
+            u64,
+        )>,
+    ) -> Result<Self, InvalidSnapshotTransfer> {
+        let (
+            (verified, journal_record, coordinator_unix_seconds),
+            verifier_domain_digest,
+            replay_fence,
+            issuance_sequence,
+            verifier_context,
+        ) = grant.into_parts();
+        let identity = verified.identity();
+        let durable_state = journal_record
+            .record()
+            .state_payload()
+            .snapshot_transfer_state()
+            .ok_or(InvalidSnapshotTransfer::DependenciesNotCanonical)?;
+        let live_until_unix_seconds = durable_state
+            .dependencies()
+            .iter()
+            .filter_map(|dependency| dependency.live_until_unix_seconds)
+            .min()
+            .ok_or(InvalidSnapshotTransfer::DependenciesNotCanonical)?;
+        if verifier_domain_digest.as_bytes() == &[0; 32]
+            || replay_fence.as_bytes() == &[0; 32]
+            || replay_fence != verifier_context.replay_fence()
+            || issuance_sequence == 0
+            || verifier_context != journal_record.context()
+            || journal_record.record().domain() != MultiNodeJournalDomainV1::SnapshotTransfer
+            || journal_record.record().operation() != identity.operation()
+            || journal_record.record().payload_digest() != verified.digest()
+            || journal_record.record().effect_state() != JournalEffectStateV1::Committed
+            || journal_record.record().effect_digest() != verified.digest()
+            || durable_state.manifest().identity() != identity
+            || durable_state.dependencies().len() != verified.dependencies().len()
+            || durable_state
+                .dependencies()
+                .iter()
+                .zip(verified.dependencies())
+                .any(|(durable, expected)| {
+                    &durable.descriptor != expected.descriptor()
+                        || durable.next_offset != durable.descriptor.encoded_size()
+                        || durable.liveness_digest.is_none()
+                        || durable
+                            .live_until_unix_seconds
+                            .is_none_or(|deadline| deadline < coordinator_unix_seconds)
+                })
+            || journal_record.storage_domain_digest() != identity.storage_domain_digest()
+            || journal_record.context().node() != identity.destination_node()
+            || journal_record.context().audience_digest() != identity.audience_digest()
+            || journal_record.context().disclosure_domain_digest()
+                != identity.disclosure_domain_digest()
+            || !journal_record
+                .context()
+                .is_current_at(coordinator_unix_seconds)
+        {
+            return Err(InvalidSnapshotTransfer::DependenciesNotCanonical);
+        }
+        Ok(Self {
+            verified,
+            journal_record,
+            live_until_unix_seconds,
+        })
+    }
+
+    /// Returns the exact scoped transfer identity.
+    #[must_use]
+    pub const fn identity(&self) -> SnapshotTransferIdentityV1 {
+        self.verified.identity()
+    }
+
+    /// Returns the exact canonical verified-dependency commitment.
+    #[must_use]
+    pub const fn digest(&self) -> ObjectDigest {
+        self.verified.digest()
+    }
+
+    /// Returns the opaque protected-store capability for dependency durability.
+    #[must_use]
+    pub const fn journal_record(&self) -> &ProtectedJournalRecordV1 {
+        &self.journal_record
+    }
+
+    /// Reports whether the durable dependency inventory remains current.
+    #[must_use]
+    pub fn is_current_at(&self, coordinator_unix_seconds: u64) -> bool {
+        self.journal_record
+            .context()
+            .is_current_at(coordinator_unix_seconds)
+            && coordinator_unix_seconds <= self.live_until_unix_seconds
+    }
+}
+
+/// Proves a storage verifier atomically published verified staged bytes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AtomicSnapshotPublicationV1 {
+    identity: SnapshotTransferIdentityV1,
+    root: ObjectDescriptor,
+    publication_generation: u64,
+    publication_digest: ObjectDigest,
+    journal_record: ProtectedJournalRecordV1,
+    evidence_context: AuthenticatedEvidenceContextV1,
+}
+
+impl AtomicSnapshotPublicationV1 {
+    /// Constructs publication evidence only inside the storage-verifier boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidSnapshotTransfer`] for tuple, digest, generation,
+    /// destination, disclosure-domain, or currentness mismatch.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn from_storage_verifier(
+        grant: VerifierEvidenceGrantV1<(
+            VerifiedStagedSnapshotV1,
+            u64,
+            ObjectDigest,
+            ProtectedJournalRecordV1,
+            u64,
+        )>,
+    ) -> Result<Self, InvalidSnapshotTransfer> {
+        let (
+            (
+                staged,
+                publication_generation,
+                publication_digest,
+                journal_record,
+                verified_at_unix_seconds,
+            ),
+            verifier_domain_digest,
+            replay_fence,
+            issuance_sequence,
+            verifier_context,
+        ) = grant.into_parts();
+        let evidence_context = journal_record.context();
+        let durable_state = journal_record
+            .record()
+            .state_payload()
+            .snapshot_transfer_state()
+            .ok_or(InvalidSnapshotTransfer::RestoreAdmissionMismatch)?;
+        let durable_publication = durable_state
+            .publication()
+            .ok_or(InvalidSnapshotTransfer::RestoreAdmissionMismatch)?;
+        if verifier_domain_digest.as_bytes() == &[0; 32]
+            || replay_fence.as_bytes() == &[0; 32]
+            || replay_fence != verifier_context.replay_fence()
+            || issuance_sequence == 0
+            || verifier_context != evidence_context
+            || publication_generation == 0
+            || publication_digest.as_bytes() == &[0; 32]
+            || journal_record.record().domain() != MultiNodeJournalDomainV1::SnapshotTransfer
+            || journal_record.record().operation() != staged.identity().operation()
+            || journal_record.record().payload_digest() != staged.final_prefix_digest()
+            || journal_record.record().effect_state() != JournalEffectStateV1::Committed
+            || journal_record.record().effect_digest() != publication_digest
+            || durable_state.manifest().identity() != staged.identity()
+            || durable_state.manifest().root() != staged.root()
+            || usize::try_from(durable_state.resume().next_chunk()).ok()
+                != Some(durable_state.manifest().chunks().len())
+            || durable_state.staged_chunks().len() != durable_state.manifest().chunks().len()
+            || durable_state.dependencies().iter().any(|dependency| {
+                dependency.next_offset != dependency.descriptor.encoded_size()
+                    || dependency
+                        .live_until_unix_seconds
+                        .is_none_or(|deadline| deadline < verified_at_unix_seconds)
+            })
+            || durable_publication.publication_generation != publication_generation
+            || durable_publication.publication_digest != publication_digest
+            || journal_record.storage_domain_digest() != staged.identity().storage_domain_digest()
+            || !journal_record
+                .context()
+                .is_current_at(verified_at_unix_seconds)
+            || evidence_context.node() != staged.identity().destination_node()
+            || evidence_context.audience_digest() != staged.identity().audience_digest()
+            || evidence_context.disclosure_domain_digest()
+                != staged.identity().disclosure_domain_digest()
+            || !evidence_context.is_current_at(verified_at_unix_seconds)
+        {
+            return Err(InvalidSnapshotTransfer::RestoreAdmissionMismatch);
+        }
+        Ok(Self {
+            identity: staged.identity(),
+            root: staged.root().clone(),
+            publication_generation,
+            publication_digest,
+            journal_record,
+            evidence_context,
+        })
+    }
+
+    /// Returns the exact scoped transfer identity.
+    #[must_use]
+    pub const fn identity(&self) -> SnapshotTransferIdentityV1 {
+        self.identity
+    }
+
+    /// Returns the atomically published root descriptor.
+    #[must_use]
+    pub const fn root(&self) -> &ObjectDescriptor {
+        &self.root
+    }
+
+    /// Returns the monotonic storage publication generation.
+    #[must_use]
+    pub const fn publication_generation(&self) -> u64 {
+        self.publication_generation
+    }
+
+    /// Returns the atomic publication commitment.
+    #[must_use]
+    pub const fn publication_digest(&self) -> ObjectDigest {
+        self.publication_digest
+    }
+
+    /// Returns the opaque protected-store durability receipt commitment.
+    #[must_use]
+    pub fn protected_store_receipt_commitment(&self) -> ObjectDigest {
+        self.journal_record.receipt_commitment()
+    }
+
+    /// Returns the exact opaque protected-store record proving durability.
+    #[must_use]
+    pub const fn protected_journal_record(&self) -> &ProtectedJournalRecordV1 {
+        &self.journal_record
+    }
+
+    /// Returns the verifier-issued carrier/audience/currentness context.
+    #[must_use]
+    pub const fn evidence_context(&self) -> AuthenticatedEvidenceContextV1 {
+        self.evidence_context
+    }
+}
+
+/// Commits completion of every integrity-verified chunk in one transfer.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SnapshotTransferCompletionV1 {
+    identity: SnapshotTransferIdentityV1,
+    verified_bytes: u64,
+    root_digest: ObjectDigest,
+    verified_prefix_digest: ObjectDigest,
+    dependency_set_digest: ObjectDigest,
+    dependencies_live_until_unix_seconds: u64,
+    dependency_record: ProtectedJournalRecordV1,
+    publication_generation: u64,
+    publication_digest: ObjectDigest,
+    journal_record: ProtectedJournalRecordV1,
+    evidence_context: AuthenticatedEvidenceContextV1,
+    completion_digest: ObjectDigest,
+}
+
+impl SnapshotTransferCompletionV1 {
+    /// Constructs completion evidence at the manifest's final chunk boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidSnapshotTransfer::RestoreAdmissionMismatch`] unless the
+    /// staged root, verified dependency set, and atomic publication name one
+    /// exact immutable transfer.
+    pub(super) fn from_atomic_publication(
+        staged: VerifiedStagedSnapshotV1,
+        dependencies: DurableSnapshotDependencySetV1,
+        publication: AtomicSnapshotPublicationV1,
+    ) -> Result<Self, InvalidSnapshotTransfer> {
+        if dependencies.identity() != staged.identity()
+            || publication.identity() != staged.identity()
+            || publication.root() != staged.root()
+        {
+            return Err(InvalidSnapshotTransfer::RestoreAdmissionMismatch);
+        }
+        let identity = staged.identity();
+        let verified_bytes = staged.verified_bytes();
+        let root_digest = staged.root().digest();
+        let verified_prefix_digest = staged.final_prefix_digest();
+        let dependency_set_digest = dependencies.digest();
+        let dependencies_live_until_unix_seconds = dependencies.live_until_unix_seconds;
+        let dependency_record = dependencies.journal_record().clone();
+        let publication_generation = publication.publication_generation();
+        let publication_digest = publication.publication_digest();
+        let protected_store_receipt_commitment = publication.protected_store_receipt_commitment();
+        let journal_record = publication.protected_journal_record().clone();
+        let evidence_context = publication.evidence_context();
+        if dependency_record.storage_domain_digest()
+            != publication
+                .protected_journal_record()
+                .storage_domain_digest()
+            || dependency_record.replay_fence()
+                != publication.protected_journal_record().replay_fence()
+            || publication
+                .protected_journal_record()
+                .durability_generation()
+                <= dependency_record.durability_generation()
+            || publication.protected_journal_record().record().sequence()
+                != dependency_record.record().sequence().saturating_add(1)
+            || publication
+                .protected_journal_record()
+                .record()
+                .predecessor_digest()
+                != dependency_record.record().digest()
+        {
+            return Err(InvalidSnapshotTransfer::RestoreAdmissionMismatch);
+        }
+        let completion_digest = snapshot_transfer_completion_digest(
+            identity,
+            verified_bytes,
+            root_digest,
+            verified_prefix_digest,
+            dependency_set_digest,
+            dependencies_live_until_unix_seconds,
+            publication_generation,
+            publication_digest,
+            dependency_record.receipt_commitment(),
+            protected_store_receipt_commitment,
+            evidence_context,
+        );
+        Ok(Self {
+            identity,
+            verified_bytes,
+            root_digest,
+            verified_prefix_digest,
+            dependency_set_digest,
+            dependencies_live_until_unix_seconds,
+            dependency_record,
+            publication_generation,
+            publication_digest,
+            journal_record,
+            evidence_context,
+            completion_digest,
+        })
+    }
+
+    /// Returns the completed immutable transfer identity.
+    #[must_use]
+    pub const fn identity(&self) -> SnapshotTransferIdentityV1 {
+        self.identity
+    }
+
+    /// Returns the exact number of verified root-object bytes.
+    #[must_use]
+    pub const fn verified_bytes(&self) -> u64 {
+        self.verified_bytes
+    }
+
+    /// Returns the verified root-object digest.
+    #[must_use]
+    pub const fn root_digest(&self) -> ObjectDigest {
+        self.root_digest
+    }
+
+    /// Returns the final verified-prefix commitment.
+    #[must_use]
+    pub const fn verified_prefix_digest(&self) -> ObjectDigest {
+        self.verified_prefix_digest
+    }
+
+    /// Returns the canonical commitment to this exact completed transfer.
+    #[must_use]
+    pub const fn completion_digest(&self) -> ObjectDigest {
+        self.completion_digest
+    }
+
+    /// Returns the exact verified-dependency-set commitment.
+    #[must_use]
+    pub const fn dependency_set_digest(&self) -> ObjectDigest {
+        self.dependency_set_digest
+    }
+
+    /// Returns the exact protected dependency durability capability.
+    #[must_use]
+    pub const fn protected_dependency_record(&self) -> &ProtectedJournalRecordV1 {
+        &self.dependency_record
+    }
+
+    /// Reports whether the complete durable dependency inventory remains live.
+    #[must_use]
+    pub fn dependencies_current_at(&self, coordinator_unix_seconds: u64) -> bool {
+        self.dependency_record
+            .context()
+            .is_current_at(coordinator_unix_seconds)
+            && coordinator_unix_seconds <= self.dependencies_live_until_unix_seconds
+    }
+
+    /// Returns the monotonic atomic publication generation.
+    #[must_use]
+    pub const fn publication_generation(&self) -> u64 {
+        self.publication_generation
+    }
+
+    /// Returns the immutable atomic-publication effect commitment.
+    #[must_use]
+    pub const fn publication_digest(&self) -> ObjectDigest {
+        self.publication_digest
+    }
+
+    /// Returns the opaque atomic-publication protected-store receipt.
+    #[must_use]
+    pub fn protected_store_receipt_commitment(&self) -> ObjectDigest {
+        self.journal_record.receipt_commitment()
+    }
+
+    /// Returns the exact opaque protected-store record proving publication durability.
+    #[must_use]
+    pub const fn protected_journal_record(&self) -> &ProtectedJournalRecordV1 {
+        &self.journal_record
+    }
+
+    /// Returns the exact verifier/currentness context for publication.
+    #[must_use]
+    pub const fn evidence_context(&self) -> AuthenticatedEvidenceContextV1 {
+        self.evidence_context
+    }
+}
+
+fn validate_transfer_chunks(
+    encoded_size: u64,
+    chunks: &[SnapshotTransferChunkV1],
+) -> Result<(), InvalidSnapshotTransfer> {
+    if chunks.is_empty() || chunks.len() > MAX_SNAPSHOT_TRANSFER_CHUNKS {
+        return Err(InvalidSnapshotTransfer::ChunksNotCanonical);
+    }
+    let mut expected_offset = 0_u64;
+    for (expected_index, chunk) in chunks.iter().enumerate() {
+        let Ok(expected_index) = u32::try_from(expected_index) else {
+            return Err(InvalidSnapshotTransfer::ChunksNotCanonical);
+        };
+        if chunk.index() != expected_index || chunk.offset() != expected_offset {
+            return Err(InvalidSnapshotTransfer::ChunksNotCanonical);
+        }
+        expected_offset = expected_offset
+            .checked_add(u64::from(chunk.length()))
+            .ok_or(InvalidSnapshotTransfer::ChunksNotCanonical)?;
+    }
+    if expected_offset != encoded_size {
+        return Err(InvalidSnapshotTransfer::ChunksNotCanonical);
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn snapshot_transfer_completion_digest(
+    identity: SnapshotTransferIdentityV1,
+    verified_bytes: u64,
+    root_digest: ObjectDigest,
+    verified_prefix_digest: ObjectDigest,
+    dependency_set_digest: ObjectDigest,
+    dependencies_live_until_unix_seconds: u64,
+    publication_generation: u64,
+    publication_digest: ObjectDigest,
+    dependency_store_receipt_commitment: ObjectDigest,
+    protected_store_receipt_commitment: ObjectDigest,
+    context: AuthenticatedEvidenceContextV1,
+) -> ObjectDigest {
+    let mut hasher = Sha256::new();
+    hasher.update(b"aos.snapshot-transfer.completion.v1\0");
+    hasher.update(identity.operation().as_bytes());
+    hasher.update(identity.project().as_bytes());
+    hasher.update(identity.sandbox().as_bytes());
+    hasher.update(identity.incarnation().as_bytes());
+    hasher.update(identity.assignment_epoch().get().to_be_bytes());
+    hasher.update(identity.desired_generation().get().to_be_bytes());
+    hasher.update(identity.assignment_digest().as_bytes());
+    hasher.update(identity.snapshot().as_bytes());
+    hasher.update(identity.source_node().as_bytes());
+    hasher.update(identity.destination_node().as_bytes());
+    hasher.update(identity.storage_domain_digest().as_bytes());
+    hasher.update(identity.audience_digest().as_bytes());
+    hasher.update(identity.disclosure_domain_digest().as_bytes());
+    hasher.update(identity.manifest_digest().as_bytes());
+    hasher.update(verified_bytes.to_be_bytes());
+    hasher.update(root_digest.as_bytes());
+    hasher.update(verified_prefix_digest.as_bytes());
+    hasher.update(dependency_set_digest.as_bytes());
+    hasher.update(dependencies_live_until_unix_seconds.to_be_bytes());
+    hasher.update(publication_generation.to_be_bytes());
+    hasher.update(publication_digest.as_bytes());
+    hasher.update(dependency_store_receipt_commitment.as_bytes());
+    hasher.update(protected_store_receipt_commitment.as_bytes());
+    hasher.update(context.node().as_bytes());
+    hasher.update(context.lineage().digest().as_bytes());
+    hasher.update(context.audience_digest().as_bytes());
+    hasher.update(context.disclosure_domain_digest().as_bytes());
+    hasher.update(context.carrier_binding_digest().as_bytes());
+    hasher.update(context.canonical_frame_digest().as_bytes());
+    hasher.update(context.canonical_frame_bytes().to_be_bytes());
+    hasher.update(context.coordinator_epoch().to_be_bytes());
+    hasher.update(context.verified_at_unix_seconds().to_be_bytes());
+    hasher.update(context.valid_until_unix_seconds().to_be_bytes());
+    ObjectDigest::from_bytes(hasher.finalize().into())
+}
+
+fn hash_descriptor(hasher: &mut Sha256, descriptor: &ObjectDescriptor) {
+    let media_type = descriptor.media_type().as_str();
+    hasher.update((media_type.len() as u16).to_be_bytes());
+    hasher.update(media_type.as_bytes());
+    hasher.update(descriptor.digest().as_bytes());
+    hasher.update(descriptor.encoded_size().to_be_bytes());
+}
+
+fn is_inert_transfer_dependency(media_type: PortableMediaType) -> bool {
+    matches!(
+        media_type,
+        PortableMediaType::Content
+            | PortableMediaType::Directory
+            | PortableMediaType::Tree
+            | PortableMediaType::Delta
+            | PortableMediaType::View
+            | PortableMediaType::Environment
+            | PortableMediaType::Optimization
+            | PortableMediaType::SandboxSpec
+            | PortableMediaType::Policy
+            | PortableMediaType::Snapshot
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn canonical_manifest_commitment(
+    operation: OperationId,
+    project: ProjectId,
+    sandbox: SandboxId,
+    incarnation: IncarnationId,
+    assignment_epoch: AssignmentEpoch,
+    desired_generation: DesiredGeneration,
+    assignment_digest: ObjectDigest,
+    snapshot: SnapshotId,
+    source_node: NodeId,
+    destination_node: NodeId,
+    storage_domain_digest: ObjectDigest,
+    audience_digest: ObjectDigest,
+    disclosure_domain_digest: ObjectDigest,
+    version: SnapshotTransferVersionV1,
+    root: &ObjectDescriptor,
+    chunks: &[SnapshotTransferChunkV1],
+    dependencies: &[ObjectDescriptor],
+    required_features: &[aos_sandbox_core::FeatureRef],
+) -> ObjectDigest {
+    let mut hasher = Sha256::new();
+    hasher.update(b"aos.snapshot-transfer-manifest.v1\0");
+    hasher.update(operation.as_bytes());
+    hasher.update(project.as_bytes());
+    hasher.update(sandbox.as_bytes());
+    hasher.update(incarnation.as_bytes());
+    hasher.update(assignment_epoch.get().to_be_bytes());
+    hasher.update(desired_generation.get().to_be_bytes());
+    hasher.update(assignment_digest.as_bytes());
+    hasher.update(snapshot.as_bytes());
+    hasher.update(source_node.as_bytes());
+    hasher.update(destination_node.as_bytes());
+    hasher.update(storage_domain_digest.as_bytes());
+    hasher.update(audience_digest.as_bytes());
+    hasher.update(disclosure_domain_digest.as_bytes());
+    hasher.update(version.major().to_be_bytes());
+    hasher.update(version.minor().to_be_bytes());
+    hash_descriptor(&mut hasher, root);
+    hasher.update((chunks.len() as u32).to_be_bytes());
+    for chunk in chunks {
+        hasher.update(chunk.index().to_be_bytes());
+        hasher.update(chunk.offset().to_be_bytes());
+        hasher.update(chunk.length().to_be_bytes());
+        hasher.update(chunk.digest().as_bytes());
+    }
+    hasher.update((dependencies.len() as u32).to_be_bytes());
+    for dependency in dependencies {
+        hash_descriptor(&mut hasher, dependency);
+    }
+    hasher.update((required_features.len() as u32).to_be_bytes());
+    for feature in required_features {
+        hasher.update((feature.namespace().len() as u16).to_be_bytes());
+        hasher.update(feature.namespace().as_bytes());
+        hasher.update(feature.major().to_be_bytes());
+        hasher.update(feature.minor().to_be_bytes());
+    }
+    ObjectDigest::from_bytes(hasher.finalize().into())
+}

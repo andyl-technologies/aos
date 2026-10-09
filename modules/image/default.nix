@@ -268,6 +268,18 @@ in {
       '';
     };
 
+    erofsDeduplication = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Share identical compressed data extents across distinct EROFS inodes.
+        File names, inode metadata, and SELinux contexts remain independent.
+        The pinned EROFS builder requires serial compression for this mode;
+        fragment packing remains disabled. Enable only for a qualified image
+        cohort; neither runtime nor download budgets change automatically.
+      '';
+    };
+
     espExtraFreeMiB = lib.mkOption {
       type = lib.types.int;
       default = 0;
@@ -437,6 +449,10 @@ in {
         {
           assertion = cfg.allowTestArtifacts || cfg.testArtifactRoots == [];
           message = "aos.image.testArtifactRoots requires aos.image.allowTestArtifacts = true";
+        }
+        {
+          assertion = !cfg.erofsDeduplication || config.aos.filesystems.rootFsType == "erofs";
+          message = "aos.image.erofsDeduplication requires an EROFS root filesystem";
         }
         {
           assertion = cfg.budgets.maxEspMiB >= 2 * cfg.budgets.maxUkiMiB + 32;

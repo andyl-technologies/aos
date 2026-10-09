@@ -20,6 +20,11 @@
 }: let
   cfg = config.aos.filesystems.zfs;
   pool = cfg.poolName;
+  confinedViews = config.aos.security.selinux.enable && config.aos.security.selinux.bootMode == "immutable-stage0" && config.aos.sandbox.policyAuthority.enable;
+  hasExactRootContext = dataset: expected:
+    lib.filter (option: lib.hasPrefix "rootcontext=" option) dataset.mountOptions
+    == [expected]
+    && !(lib.any (option: lib.hasPrefix "context=" option || lib.hasPrefix "fscontext=" option || lib.hasPrefix "defcontext=" option) dataset.mountOptions);
 
   # Record sizes above 128 KiB make each ZFS buffer cache slab a large,
   # unmovable allocation. Compaction cannot relocate those, so once they are
@@ -433,6 +438,18 @@ in {
   config = lib.mkIf cfg.enable {
     assertions = [
       {
+        assertion =
+          !(confinedViews && cfg.systemState)
+          || (
+            cfg.datasets.var.mountPoint
+            == "/var"
+            && cfg.datasets."var/lib".mountPoint == "/var/lib"
+            && hasExactRootContext cfg.datasets.var "rootcontext=system_u:object_r:var_t"
+            && hasExactRootContext cfg.datasets."var/lib" "rootcontext=system_u:object_r:var_lib_t"
+          );
+        message = "Confined signer views require the declared ZFS /var and /var/lib mounted roots and exactly their image-owned SELinux root contexts; whole-filesystem label overrides are not supported.";
+      }
+      {
         assertion = cfg.allowLargeRecords || datasetsWithLargeRecords == [];
         message =
           "datasets ${lib.concatStringsSep ", " datasetsWithLargeRecords} declare record sizes above 128 KiB"
@@ -469,6 +486,8 @@ in {
     aos.filesystems.zfs.datasets = lib.mkIf cfg.systemState {
       "var" = {
         mountPoint = "/var";
+        # Pin only the mounted root's type, not a relabel of existing state.
+        mountOptions = lib.mkAfter (lib.optional confinedViews "rootcontext=system_u:object_r:var_t");
       };
       "var/log" = {
         mountPoint = "/var/log";
@@ -479,6 +498,7 @@ in {
       };
       "var/lib" = {
         mountPoint = "/var/lib";
+        mountOptions = lib.mkAfter (lib.optional confinedViews "rootcontext=system_u:object_r:var_lib_t");
       };
     };
 

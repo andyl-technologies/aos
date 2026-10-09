@@ -2,9 +2,6 @@
 {
   mkDerivation,
   mkGithubUpstream,
-  gnumake,
-  cmake,
-  ninja,
   stdenv,
   buildPackages,
 }: let

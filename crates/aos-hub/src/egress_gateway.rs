@@ -518,7 +518,12 @@ mod tests {
 
         let future = router
             .clone()
-            .oneshot(challenge_request("current", &key, now + 1, nonce))
+            .oneshot(challenge_request(
+                "current",
+                &key,
+                now + CLOCK_SKEW_SECS + 1,
+                nonce,
+            ))
             .await
             .unwrap();
         assert_eq!(future.status(), StatusCode::UNAUTHORIZED);

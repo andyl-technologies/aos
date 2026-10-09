@@ -5,8 +5,12 @@
 //! tasks that forward `JobRemoved` / `Reloading` events into shared state.
 //! Method callers `await` on a per-job oneshot; the stream task owns the
 //! signal stream continuously, dodging the "stream not polled" hang.
+//!
+//! The selected Controller property owner retains one readonly, unsubscribed
+//! attempt. Its bounded transport and whole Results are DATA, not paid authority.
 
 use std::collections::BTreeMap;
+use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -19,6 +23,218 @@ use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 
 use crate::error::{Error, Result, is_no_such_unit};
 use crate::manager_proxy::{ListUnitsEntry, ManagerProxy, ServiceProxy, UnitProxy};
+
+mod service_properties;
+pub(crate) use service_properties::{
+    ServicePropertyBookendV1, capture_mount_fd_store_bookend_v1,
+};
+mod git_source_socket;
+pub use git_source_socket::GitSourceSocketObservationV1;
+#[cfg(target_os = "linux")]
+mod source_launcher_image;
+#[cfg(target_os = "linux")]
+pub use source_launcher_image::{
+    CompletedOwnUnitPid1ImageV1, OwnUnitPid1ImageAttemptV1,
+    OwnUnitPid1ImageEndedV1, OwnUnitPid1ImageFailureV1,
+};
+
+/// Retains one readonly Controller/PID-1 property observation and its originals.
+///
+/// The caller creates this DATA owner before spawning or entering a prepaid
+/// observation. Whole constructor/property Results and the original bounded
+/// transport survive returned errors and cancellation; this type issues no
+/// resource payment, peer authority, currentness or permission.
+#[cfg(target_os = "linux")]
+pub struct ControllerPropertyObserverAttemptV1 {
+    transport: zbus::connection::ControllerPropertyReceiveAttemptV1,
+    constructor: Option<Result<SystemdClient>>,
+    properties: Option<Result<(Vec<OwnedValue>, Vec<OwnedValue>)>>,
+    connect_attempted: bool,
+    observe_attempted: bool,
+}
+
+#[cfg(target_os = "linux")]
+impl ControllerPropertyObserverAttemptV1 {
+    /// Maximum bytes in one retained message, checked before frame growth.
+    pub const MESSAGE_BYTES: usize =
+        zbus::connection::ControllerPropertyReceiveAttemptV1::MESSAGE_BYTES;
+    /// Maximum aggregate raw AUTH receive bytes.
+    pub const AUTH_BYTES: usize =
+        zbus::connection::ControllerPropertyReceiveAttemptV1::AUTH_BYTES;
+    /// Maximum incoming frames retained by one original.
+    pub const INCOMING_MESSAGES: usize =
+        zbus::connection::ControllerPropertyReceiveAttemptV1::INCOMING_MESSAGES;
+    /// Maximum outgoing messages, including the one Hello.
+    pub const OUTGOING_MESSAGES: usize =
+        zbus::connection::ControllerPropertyReceiveAttemptV1::OUTGOING_MESSAGES;
+    /// Aggregate raw receive-prefix byte capacity, separate from framed messages.
+    pub const RAW_PREFIX_BYTES: usize =
+        zbus::connection::ControllerPropertyReceiveAttemptV1::RAW_PREFIX_BYTES;
+
+    /// Returns this owner's inline representation size, not its heap/peak demand.
+    #[must_use]
+    pub fn inline_bytes() -> usize {
+        std::mem::size_of::<Self>()
+    }
+
+    /// Prearms one fixed DATA attempt without opening a socket or spawning a task.
+    ///
+    /// The bounded transport storage is real resident allocation, not a payment
+    /// proof. A genuine caller-owned resource interval must precede this call.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            transport: zbus::connection::ControllerPropertyReceiveAttemptV1::empty(),
+            constructor: None,
+            properties: None,
+            connect_attempted: false,
+            observe_attempted: false,
+        }
+    }
+
+    /// Constructs one readonly client on the fixed system bus without Subscribe.
+    ///
+    /// # Errors
+    /// Refuses repeated/fenced entry. The actual constructor Result stays in
+    /// this owner; the returned refusal does not replace its native cause.
+    ///
+    /// # Panics
+    /// Panics if polled outside a Tokio runtime with its I/O driver enabled.
+    pub async fn connect(&mut self) -> Result<()> {
+        let mut cancellation = self.transport.cancellation_fence();
+        if self.connect_attempted || self.transport.has_ended() {
+            self.transport.end();
+            return Err(Error::Zbus(zbus::Error::InvalidReply));
+        }
+        self.connect_attempted = true;
+
+        self.constructor = Some(self.connect_inner().await);
+        if matches!(self.constructor.as_ref(), Some(Err(_))) {
+            self.transport.end();
+            return Err(Error::Zbus(zbus::Error::InvalidReply));
+        }
+        cancellation.complete();
+        Ok(())
+    }
+
+    async fn connect_inner(&mut self) -> Result<SystemdClient> {
+        let conn = self.transport.connect().await.map_err(Error::SystemdUnavailable)?;
+        let manager = ManagerProxy::builder(&conn)
+            .cache_properties(CacheProperties::No)
+            .build()
+            .await?;
+        let (_, event_rx) = mpsc::unbounded_channel::<()>();
+
+        Ok(SystemdClient {
+            conn,
+            manager,
+            jobs: Arc::new(Mutex::new(JobRegistry {
+                closed: true,
+                ..JobRegistry::default()
+            })),
+            reloading: Arc::new(AtomicBool::new(false)),
+            job_event_rx: AsyncMutex::new(event_rx),
+            tasks: Vec::new(),
+            readonly_controller: true,
+        })
+    }
+
+    /// Performs one shared startup-property kernel with authentic PID-1 bookends.
+    ///
+    /// No proxy cache, subscription, listener or background job task is entered.
+    /// Each separate profile requires its own prepaid attempt; this flight
+    /// retains the fixed 30-property-RPC-plus-Hello ceiling.
+    ///
+    /// # Errors
+    /// Refuses a repeated, unconnected, malformed or fenced observation. The
+    /// complete actual property Result remains resident before this projection.
+    pub async fn observe_pid1_service_startup_properties(
+        &mut self,
+        name: &str,
+        expected_main_pid: u32,
+        service_properties: &[&str],
+        unit_properties: &[&str],
+    ) -> Result<()> {
+        let mut cancellation = self.transport.cancellation_fence();
+        if self.observe_attempted || self.transport.has_ended() {
+            self.transport.end();
+            return Err(Error::Zbus(zbus::Error::InvalidReply));
+        }
+        self.observe_attempted = true;
+
+        let result = match self.constructor.as_ref() {
+            Some(Ok(client)) => client.observe_pid1_service_startup_properties(
+                name, expected_main_pid, service_properties, unit_properties,
+            ).await,
+            _ => Err(Error::Zbus(zbus::Error::InvalidReply)),
+        };
+        self.properties = Some(result);
+        if matches!(self.properties.as_ref(), Some(Err(_))) {
+            self.transport.end();
+            return Err(Error::Zbus(zbus::Error::InvalidReply));
+        }
+        cancellation.complete();
+        Ok(())
+    }
+
+    /// Borrows the constructor's actual error, or reports its parked success.
+    ///
+    /// This does not expose the retained client or an extracted Connection.
+    pub fn constructor_result(&self) -> Option<std::result::Result<(), &Error>> {
+        self.constructor.as_ref().map(|result| result.as_ref().map(|_| ()))
+    }
+
+    /// Borrows the complete original decoded property Result as diagnostic DATA.
+    pub fn property_result(&self) -> Option<&Result<(Vec<OwnedValue>, Vec<OwnedValue>)>> {
+        self.properties.as_ref()
+    }
+
+    /// Arms the same original transport fence for an outer timeout or cancellation.
+    ///
+    /// The caller completes this fence only after parking the whole attempt and
+    /// its returned Result. Dropping an unfinished fence permanently ends it.
+    #[must_use]
+    pub fn cancellation_fence(&self) -> zbus::connection::FixedLauncherImageCancellationV1 {
+        self.transport.cancellation_fence()
+    }
+
+    /// Borrows the actual native/parser cause without reconnecting or extracting it.
+    ///
+    /// # Errors
+    /// Reports a borrowed or poisoned native slot without healing that slot.
+    pub fn transport_failure(&self) -> std::result::Result<
+        Option<zbus::connection::socket::LauncherImageFailureLoanV1<'_>>,
+        zbus::connection::socket::LauncherImageFailureUnavailableV1,
+    > {
+        self.transport.failure()
+    }
+
+    /// Borrows the original one-shot shutdown Results, separately from first cause.
+    pub fn shutdown_outcomes(&self) -> (
+        Option<&std::io::Result<()>>,
+        Option<&std::io::Result<()>>,
+    ) {
+        self.transport.shutdown_outcomes()
+    }
+
+    /// Reports permanent cancellation/failure fencing without I/O.
+    #[must_use]
+    pub fn has_ended(&self) -> bool {
+        self.transport.has_ended()
+    }
+
+    /// Ends the same original transport without releasing any retained Result.
+    pub fn end(&self) {
+        self.transport.end();
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for ControllerPropertyObserverAttemptV1 {
+    fn drop(&mut self) {
+        self.transport.end();
+    }
+}
 
 /// Classification of a systemd job's terminal `result`, per the `job_result`
 /// table in systemd's `src/core/job.h`. We name only the four cases
@@ -105,6 +321,88 @@ pub struct FailedUnit {
     pub status_dump: String,
 }
 
+/// Reports one stable manager observation of an active service's cgroup locator.
+///
+/// The path and PID are not kernel authority. A consumer must open the cgroup
+/// beneath a trusted cgroup-v2 root and verify the pinned PID's exact membership.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ServiceControlGroupObservation {
+    /// Systemd's cgroup path relative to the cgroup-v2 root, with a leading slash.
+    pub control_group: String,
+    /// Service main PID observed before and after its cgroup property.
+    pub main_pid: NonZeroU32,
+    /// Current systemd activation identity observed before and after.
+    pub invocation_id: [u8; 16],
+}
+
+/// Retains one fixed offline Nix absence observation and its partial DATA.
+///
+/// Empty construction performs no I/O and establishes no authority. The fixed
+/// reader parks returned property pairs, actual absence errors and unexpected
+/// raw replies here before later checks. Library pre-return intervals remain
+/// outside this holder; it proves neither population retirement nor currentness.
+pub struct NixOfflineAbsenceObservationV5 {
+    attempted: bool,
+    complete: bool,
+    controller: Option<(Vec<OwnedValue>, Vec<OwnedValue>)>,
+    nix_owner: Option<(Vec<OwnedValue>, Vec<OwnedValue>)>,
+    absence: [Option<Error>; 2],
+    owner_path: Option<OwnedObjectPath>,
+    raw_reply: Option<zbus::Message>,
+    first_failure: Option<Error>,
+}
+
+impl NixOfflineAbsenceObservationV5 {
+    /// Creates empty fixed DATA slots without admitting an observation.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            attempted: false,
+            complete: false,
+            controller: None,
+            nix_owner: None,
+            absence: [None, None],
+            owner_path: None,
+            raw_reply: None,
+            first_failure: None,
+        }
+    }
+
+    /// Borrows checked Controller and optional Nix-owner property DATA.
+    ///
+    /// # Errors
+    /// Refuses an unfinished, failed or interrupted observation. Absence is
+    /// represented only after both original named errors and PID1 bookends.
+    pub fn properties(&self) -> Result<(
+        &(Vec<OwnedValue>, Vec<OwnedValue>),
+        Option<&(Vec<OwnedValue>, Vec<OwnedValue>)>,
+    )> {
+        if !self.complete || self.first_failure.is_some() {
+            return Err(Error::InvalidSandboxUnit("offline Nix observation is fenced".to_owned()));
+        }
+        let controller = self.controller.as_ref().ok_or_else(|| {
+            Error::InvalidSandboxUnit("offline Controller observation is absent".to_owned())
+        })?;
+        Ok((controller, self.nix_owner.as_ref()))
+    }
+
+    /// Borrows the first actual failure without releasing returned originals.
+    pub fn failure(&self) -> Option<&Error> {
+        self.first_failure.as_ref()
+    }
+
+    /// Borrows the two original named absence errors as diagnostic DATA.
+    pub fn absence_errors(&self) -> &[Option<Error>; 2] {
+        &self.absence
+    }
+}
+
+impl Default for NixOfflineAbsenceObservationV5 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Result of a post-run failed-unit scan.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct FailedUnitsReport {
@@ -171,8 +469,8 @@ struct JobRegistry {
 
 /// Typed async client for `org.freedesktop.systemd1`.
 pub struct SystemdClient {
-    conn: zbus::Connection,
-    manager: ManagerProxy<'static>,
+    pub(crate) conn: zbus::Connection,
+    pub(crate) manager: ManagerProxy<'static>,
     jobs: Arc<Mutex<JobRegistry>>,
     reloading: Arc<AtomicBool>,
     /// One tick per observed `JobRemoved`, regardless of whether a waiter was
@@ -181,6 +479,8 @@ pub struct SystemdClient {
     job_event_rx: AsyncMutex<mpsc::UnboundedReceiver<()>>,
     /// Background signal-listener tasks; aborted on drop.
     tasks: Vec<JoinHandle<()>>,
+    // Selected readonly clients never subscribe or enter unsubscribe-on-drop.
+    readonly_controller: bool,
 }
 
 impl SystemdClient {
@@ -209,6 +509,35 @@ impl SystemdClient {
         Self::from_connection(conn).await
     }
 
+    /// Connects a Nix offline observer to the fixed bus without incoming FDs.
+    ///
+    /// The Unix reader rejects ancillary control before authentication and
+    /// every subsequent message read. The fixed address has no environment
+    /// override or alternate transport. This constructs a DATA transport only;
+    /// the caller still owns genuine startup, approval and current custody.
+    /// Ordinary [`Self::connect`] behavior is unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::SystemdUnavailable`] for address, connection or
+    /// authentication failures, including terminal incoming-control rejection,
+    /// or any error from [`Self::from_connection`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if polled outside a Tokio runtime with its I/O driver enabled.
+    #[cfg(target_os = "linux")]
+    pub async fn connect_nix_offline_hardware_observer() -> Result<Self> {
+        let conn = zbus::connection::Builder::address("unix:path=/run/dbus/system_bus_socket")
+            .map_err(Error::SystemdUnavailable)?
+            .reject_incoming_unix_fds()
+            .build()
+            .await
+            .map_err(Error::SystemdUnavailable)?;
+
+        Self::from_connection(conn).await
+    }
+
     /// Build a client around a caller-supplied connection. Used by the unit
     /// tests to inject one end of a p2p pair pointing at a `FakeSystemd`; also
     /// a legitimate embedding API. Unconditionally `pub` so the integration
@@ -221,7 +550,26 @@ impl SystemdClient {
     /// established.
     pub async fn from_connection(conn: zbus::Connection) -> Result<Self> {
         let manager = ManagerProxy::new(&conn).await?;
+        Self::from_manager_connection(conn, manager).await
+    }
 
+    /// Uses only the sender established by the fixed worker private handshake.
+    #[cfg(target_os = "linux")]
+    pub(crate) async fn from_worker_private_connection(conn: zbus::Connection) -> Result<Self> {
+        // A well-known destination makes zbus resolve GetNameOwner through a
+        // bus daemon. The direct PID 1 connection has no such daemon; its
+        // role-specific sender must also be the exact signal-stream source.
+        let manager = ManagerProxy::builder(&conn)
+            .destination(":1.0")?
+            .build()
+            .await?;
+        Self::from_manager_connection(conn, manager).await
+    }
+
+    async fn from_manager_connection(
+        conn: zbus::Connection,
+        manager: ManagerProxy<'static>,
+    ) -> Result<Self> {
         // MUST come before constructing any signal stream below. API-bus peers
         // receive NO JobNew/JobRemoved/Reloading until they call Subscribe();
         // direct (private-socket) peers are subscribed implicitly. systemd
@@ -292,6 +640,7 @@ impl SystemdClient {
             reloading,
             job_event_rx: AsyncMutex::new(event_rx),
             tasks,
+            readonly_controller: false,
         })
     }
 
@@ -373,7 +722,7 @@ impl SystemdClient {
     /// is no caller-side timeout — per switch-to-configuration-ng's contract,
     /// "this job is in flight; we wait for systemd's answer." Callers wanting
     /// an upper bound wrap this in `tokio::time::timeout` themselves.
-    async fn await_job(&self, path: OwnedObjectPath) -> Result<JobOutcome> {
+    pub(crate) async fn await_job(&self, path: OwnedObjectPath) -> Result<JobOutcome> {
         let path_key = path.as_str().to_owned();
         let rx = {
             let mut reg = self.jobs.lock().unwrap();
@@ -490,6 +839,202 @@ impl SystemdClient {
         let iface = zbus::names::InterfaceName::try_from("org.freedesktop.systemd1.Unit")
             .expect("static interface name is valid");
         Ok(props.get(iface, prop).await?)
+    }
+
+    /// Reads service properties from one PID 1-owned systemd bus generation.
+    ///
+    /// The manager destination is its unique bus name, not the replaceable
+    /// well-known name. The owner and service identity are checked on both
+    /// sides of the read; callers still recheck any kernel objects they pin.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a non-service name, a manager not owned by PID 1, an inactive
+    /// or changing service, an absent property, or any D-Bus failure.
+    pub async fn observe_pid1_service_properties(
+        &self,
+        name: &str,
+        expected_main_pid: u32,
+        properties: &[&str],
+    ) -> Result<Vec<OwnedValue>> {
+        let (values, _) = service_properties::observe(
+            self,
+            name,
+            expected_main_pid,
+            properties,
+            &[],
+            service_properties::ObservationPhase::Active,
+        )
+        .await?;
+        Ok(values)
+    }
+
+    /// Observes only the fixed Controller Git Source socket at unique PID 1.
+    ///
+    /// The uncached fixed properties and active/listening invocation must be
+    /// unchanged across readback. The result is data; the original listener,
+    /// configured Controller identity and immutable fragment need separate pins.
+    ///
+    /// # Errors
+    /// Rejects a missing, substituted, changed, transient or overridden socket,
+    /// wrong fixed profile, non-PID-1 manager, timeout or D-Bus failure.
+    ///
+    /// # Panics
+    /// Panics if polled without a Tokio runtime with its time driver enabled.
+    pub async fn observe_fixed_controller_git_source_socket_v1(
+        &self,
+    ) -> Result<GitSourceSocketObservationV1> {
+        git_source_socket::observe(self).await
+    }
+
+    /// Reads PID 1's exact starting or running service and unit properties.
+    ///
+    /// Startup accepts only `activating/start`; running accepts only
+    /// `active/running`. The unique PID 1 bus owner, unit ID, invocation,
+    /// main PID, and state must remain equal around the reads. This permits
+    /// checks before a notify service reports ready, without granting readiness
+    /// or freezing properties against a later administrative reload.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a missing or substituted service, another startup substate,
+    /// changing invocation or state, a missing property, or any bus failure.
+    pub async fn observe_pid1_service_startup_properties(
+        &self,
+        name: &str,
+        expected_main_pid: u32,
+        service_properties: &[&str],
+        unit_properties: &[&str],
+    ) -> Result<(Vec<OwnedValue>, Vec<OwnedValue>)> {
+        service_properties::observe(
+            self,
+            name,
+            expected_main_pid,
+            service_properties,
+            unit_properties,
+            service_properties::ObservationPhase::StartingOrRunning,
+        )
+        .await
+    }
+
+    /// Observes only the two fixed Nix runtime units in the inactive/dead phase.
+    ///
+    /// The same unique-PID-1 observer brackets each uncached read with its unit,
+    /// state, main PID and invocation. Missing units fail; zero invocation is
+    /// accepted only here. These properties are DATA, not population or drain
+    /// authority. A genuine offline owner separately checks fixed kernel cgroups.
+    ///
+    /// # Errors
+    /// Rejects missing, nonstopped, changed or schematically invalid units,
+    /// a non-PID-1 manager, unavailable properties or a D-Bus failure.
+    pub async fn observe_fixed_stopped_nix_units_v3(
+        &self,
+    ) -> Result<[(Vec<OwnedValue>, Vec<OwnedValue>); 2]> {
+        service_properties::observe_stopped_nix(self).await
+    }
+
+    /// Observes the stopped Controller and stopped or uninstalled Nix owner.
+    ///
+    /// Only the fixed Nix owner may be absent. That alternative requires the
+    /// same unique PID1's exact `NoSuchUnit` and `FileNotFound` method errors.
+    /// Both errors enter the caller's resident DATA slots before subsequent
+    /// checks. Neither absence nor these properties prove population retirement.
+    ///
+    /// # Errors
+    /// Rejects reused slots, a missing Controller, any other method error,
+    /// changed PID1 ownership, a live unit or mismatched property signatures.
+    /// Earlier parked method errors remain borrowed caller-owned originals.
+    pub async fn observe_fixed_offline_nix_units_v5<'observation>(
+        &self,
+        observation: &'observation mut NixOfflineAbsenceObservationV5,
+    ) -> std::result::Result<(), &'observation Error> {
+        if observation.attempted {
+            observation.complete = false;
+            return Err(observation.first_failure.get_or_insert_with(|| {
+                Error::InvalidSandboxUnit("offline Nix observation is fenced".to_owned())
+            }));
+        }
+        observation.attempted = true;
+        let result = service_properties::observe_offline_nix(self, observation).await;
+        match result {
+            Ok(()) => {
+                observation.complete = true;
+                Ok(())
+            }
+            Err(error) => Err(observation.first_failure.get_or_insert(error)),
+        }
+    }
+
+    /// Observes an active service's exact unit, invocation, main PID, and cgroup.
+    ///
+    /// The returned path is only a locator. Consumers must retain and validate
+    /// the kernel cgroup object and PID separately; a service restart after this
+    /// call does not preserve either observation.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a missing, inactive, substituted, or changing service, an
+    /// invalid cgroup path or invocation, or a D-Bus exchange failure.
+    pub async fn observe_service_control_group(
+        &self,
+        name: &str,
+    ) -> Result<ServiceControlGroupObservation> {
+        if !name.ends_with(".service") || name.contains('/') || name.contains('\0') {
+            return Err(Error::InvalidSandboxUnit(
+                "service name is not an exact unit name".to_owned(),
+            ));
+        }
+        let path = self.manager.get_unit(name).await?;
+        let unit = UnitProxy::builder(&self.conn)
+            .path(path.clone())?
+            .cache_properties(CacheProperties::No)
+            .build()
+            .await?;
+        let service = ServiceProxy::builder(&self.conn)
+            .path(path)?
+            .cache_properties(CacheProperties::No)
+            .build()
+            .await?;
+
+        let id_before = unit.id().await?;
+        let invocation_before = unit.invocation_id().await?;
+        let active_before = unit.active_state().await?;
+        let pid_before = service.main_pid().await?;
+        let control_group = service.control_group().await?;
+        let pid_after = service.main_pid().await?;
+        let active_after = unit.active_state().await?;
+        let invocation_after = unit.invocation_id().await?;
+        let id_after = unit.id().await?;
+
+        let invocation_id: [u8; 16] = invocation_before
+            .as_slice()
+            .try_into()
+            .map_err(|_| Error::InvalidSandboxUnit("service invocation is invalid".to_owned()))?;
+        let main_pid = NonZeroU32::new(pid_before)
+            .ok_or_else(|| Error::InvalidSandboxUnit("service main PID is absent".to_owned()))?;
+        let path_is_normalized = control_group.len() <= 4096
+            && control_group.starts_with('/')
+            && control_group.split('/').skip(1).all(|part| {
+                !part.is_empty() && part != "." && part != ".." && !part.contains('\0')
+            });
+        if id_before != name
+            || id_after != name
+            || invocation_id == [0; 16]
+            || invocation_before != invocation_after
+            || active_before != "active"
+            || active_after != "active"
+            || pid_before != pid_after
+            || !path_is_normalized
+        {
+            return Err(Error::InvalidSandboxUnit(
+                "service identity or cgroup changed during observation".to_owned(),
+            ));
+        }
+        Ok(ServiceControlGroupObservation {
+            control_group,
+            main_pid,
+            invocation_id,
+        })
     }
 
     /// List units filtered by active states and shell-glob name patterns;
@@ -695,6 +1240,10 @@ impl SystemdClient {
 
 impl Drop for SystemdClient {
     fn drop(&mut self) {
+        if self.readonly_controller {
+            return;
+        }
+
         // Stop the background listeners.
         for task in &self.tasks {
             task.abort();

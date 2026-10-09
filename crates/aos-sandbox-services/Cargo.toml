@@ -1,0 +1,236 @@
+[package]
+name = "aos-sandbox-services"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+autobins = false
+
+[features]
+default = []
+controller = [
+    "dep:aos-proto",
+    "dep:aos-sandbox-controller-runtime",
+    "dep:aos-sandbox",
+    "dep:axum",
+    "dep:connectrpc",
+    "dep:rustix",
+    "dep:tokio",
+]
+git = ["dep:aos-sandbox"]
+entitlement = [
+    "dep:aos-sandbox",
+    "dep:rustix",
+    "dep:zeroize",
+]
+policy = [
+    "dep:aos-sandbox",
+    "dep:aos-sandbox-broker-session-security",
+    "dep:aos-sandbox-cache-signer",
+    "dep:aos-sandbox-core",
+    "dep:aos-sandbox-policy",
+    "dep:aos-sandbox-source-signer",
+    "dep:ed25519-dalek",
+    "dep:rustix",
+    "dep:sha2",
+]
+# Selects only the existing offline helper; installed CLI availability is unchanged.
+policy-key-pin = [
+    "dep:aos-sandbox",
+    "dep:aos-sandbox-policy",
+    "dep:ed25519-dalek",
+    "dep:rustix",
+]
+cache-signer = ["dep:aos-sandbox-cache-signer"]
+source-signer = ["dep:aos-sandbox-source-signer"]
+publisher = ["dep:aos-sandbox-linux"]
+host = [
+    "dep:aos-sandbox",
+    "dep:aos-sandbox-broker-session-security",
+    "dep:aos-sandbox-host",
+    "dep:aos-sandbox-linux",
+    "dep:aos-systemd",
+    "dep:ed25519-dalek",
+    "dep:rustix",
+    "dep:thiserror",
+    "dep:tokio",
+    "dep:zeroize",
+]
+storage = [
+    "dep:aos-sandbox-broker-session-security",
+    "dep:aos-sandbox-linux",
+    "dep:aos-sandbox-storage",
+    "dep:rustix",
+    "dep:thiserror",
+]
+network = [
+    "dep:aos-sandbox-broker-session-security",
+    "dep:aos-sandbox-linux",
+    "dep:aos-sandbox-network",
+    "dep:rustix",
+    "dep:thiserror",
+]
+mount = [
+    "dep:aos-sandbox",
+    "dep:aos-sandbox-broker-session-security",
+    "dep:aos-sandbox-linux",
+    "dep:aos-sandbox-mount",
+    "dep:aos-sandbox-protocol",
+    "dep:aos-sandbox-source-provider-security",
+    "dep:rustix",
+    "dep:sha2",
+    "dep:thiserror",
+]
+ownership = ["dep:aos-sandbox-broker-session-security"]
+source-provider = [
+    "dep:aos-sandbox-broker-session-security",
+    "dep:aos-sandbox-core",
+    "dep:aos-sandbox-source-provider",
+    "dep:aos-sandbox-source-provider-security",
+    "dep:rustix",
+    "dep:thiserror",
+]
+runtime-publisher = ["dep:aos-sandbox", "dep:aos-sandbox-broker-session-security"]
+nix-provision = ["dep:aos-sandbox", "dep:aos-sandbox-broker-session-security"]
+nix = ["dep:aos-sandbox-broker-session-security", "aos-sandbox-broker-session-security/online-nix"]
+online-nix = [
+    "aos-sandbox-broker-session-security?/online-nix",
+    "aos-sandbox-controller-runtime?/online-nix",
+]
+kernel-tests = [
+    "aos-sandbox-controller-runtime?/kernel-tests",
+    "aos-sandbox-broker-session-security?/kernel-tests",
+    "dep:aos-sandbox-core",
+    "dep:aos-sandbox-protocol",
+    "dep:buffa",
+    "dep:rcgen",
+    "dep:reqwest",
+    "dep:serde_json",
+    "dep:sha2",
+]
+
+[dependencies]
+aos-proto = { workspace = true, optional = true }
+aos-sandbox = { workspace = true, optional = true }
+aos-sandbox-broker-session-security = { workspace = true, optional = true }
+aos-sandbox-cache-signer = { workspace = true, optional = true }
+aos-sandbox-controller-runtime = { workspace = true, optional = true }
+aos-sandbox-core = { workspace = true, optional = true }
+aos-sandbox-host = { workspace = true, optional = true }
+aos-sandbox-linux = { workspace = true, optional = true }
+aos-sandbox-mount = { workspace = true, optional = true }
+aos-sandbox-network = { workspace = true, optional = true }
+aos-sandbox-policy = { workspace = true, optional = true }
+aos-sandbox-protocol = { workspace = true, optional = true }
+aos-sandbox-source-provider = { workspace = true, optional = true }
+aos-sandbox-source-provider-security = { workspace = true, optional = true }
+aos-sandbox-source-signer = { workspace = true, optional = true }
+aos-sandbox-storage = { workspace = true, optional = true }
+aos-systemd = { workspace = true, optional = true }
+axum = { workspace = true, optional = true }
+buffa = { workspace = true, optional = true }
+connectrpc = { workspace = true, optional = true }
+ed25519-dalek = { workspace = true, optional = true }
+rcgen = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true, features = ["http2"] }
+rustix = { workspace = true, optional = true, features = ["event", "fs", "net", "process", "rand", "time"] }
+serde_json = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
+thiserror = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+zeroize = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[[bin]]
+name = "aos-sandboxd"
+path = "src/bin/aos-sandboxd.rs"
+required-features = ["controller"]
+
+[[bin]]
+name = "aos-sandbox-git-gateway"
+path = "src/bin/aos-sandbox-git-gateway.rs"
+required-features = ["git"]
+
+[[bin]]
+name = "aos-sandbox-entitlement-sign"
+path = "src/bin/aos-sandbox-entitlement-sign.rs"
+required-features = ["entitlement"]
+
+[[bin]]
+name = "aos-sandbox-policy-authorityd"
+path = "src/bin/aos-sandbox-policy-authorityd.rs"
+required-features = ["policy"]
+
+[[bin]]
+name = "aos-sandbox-policy-key-pin"
+path = "src/bin/aos-sandbox-policy-key-pin.rs"
+required-features = ["policy-key-pin"]
+
+[[bin]]
+name = "aos-sandbox-cache-signerd"
+path = "src/bin/aos-sandbox-cache-signerd.rs"
+required-features = ["cache-signer"]
+
+[[bin]]
+name = "aos-sandbox-source-signerd"
+path = "src/bin/aos-sandbox-source-signerd.rs"
+required-features = ["source-signer"]
+
+[[bin]]
+name = "aos-view-publisher"
+path = "src/bin/aos-view-publisher.rs"
+required-features = ["publisher"]
+
+[[bin]]
+name = "aos-sandbox-hostd"
+path = "src/bin/aos-sandbox-hostd.rs"
+required-features = ["host"]
+
+[[bin]]
+name = "aos-sandbox-host-phase0-probe"
+path = "src/bin/aos-sandbox-host-phase0-probe.rs"
+required-features = ["host"]
+
+[[bin]]
+name = "aos-storaged"
+path = "src/bin/aos-storaged.rs"
+required-features = ["storage"]
+
+[[bin]]
+name = "aos-netd"
+path = "src/bin/aos-netd.rs"
+required-features = ["network"]
+
+[[bin]]
+name = "aos-sandbox-mountd"
+path = "src/bin/aos-sandbox-mountd.rs"
+required-features = ["mount"]
+
+[[bin]]
+name = "aos-sandbox-ownershipd"
+path = "src/bin/aos-sandbox-ownershipd.rs"
+required-features = ["ownership"]
+
+[[bin]]
+name = "aos-source-providerd"
+path = "src/bin/aos-source-providerd.rs"
+required-features = ["source-provider"]
+
+[[bin]]
+name = "aos-sandbox-runtime-publisher"
+path = "src/bin/aos-sandbox-runtime-publisher.rs"
+required-features = ["runtime-publisher"]
+
+[[bin]]
+name = "aos-sandbox-nix-floor-provision"
+path = "src/bin/aos-sandbox-nix-floor-provision.rs"
+required-features = ["nix-provision"]
+
+[[bin]]
+name = "aos-sandbox-nixd"
+path = "src/bin/aos-sandbox-nixd.rs"
+required-features = ["nix"]
+
+[lints]
+workspace = true

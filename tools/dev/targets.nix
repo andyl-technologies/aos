@@ -72,5 +72,6 @@
     ];
   };
 in {
-  text = join values.${category};
+  # Selecting an attribute lets nix eval apply this function's --argstr inputs.
+  entries = join values.${category};
 }

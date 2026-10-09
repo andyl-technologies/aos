@@ -14,7 +14,7 @@
   guestNix = builtins.readFile ../../pkgs/tools/crucible-guest.nix;
   fleetStoreNix = builtins.readFile ../../pkgs/tools/crucible-fleet-store.nix;
   cargoDepsHash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  expectedCargoDepsHash = "sha256-Rax7Te32Xr+wazk4vF63nEGuFDBKHxAJ+lCXkRo/bxw=";
+  expectedCargoDepsHash = "sha256-qruC6y8zCgNkjpfVL1rktjw1oHfns1NhWqPnbUORBuQ=";
   atomicPatch = import ../../pkgs/emulation/qemu-patches/_atomic-patch.nix;
   packageFiles = [
     {
@@ -36,7 +36,7 @@
     {
       label = "pkgs/kernel/linux-crucible.nix";
       content = linuxCrucibleNix;
-      builder = "linuxFixtureWith";
+      builder = "linuxFixtureWith extraConfig";
       pname = "pname = \"linux-crucible\";";
       needsBuildDeps = false;
       needsRuntimeDeps = false;
@@ -263,6 +263,10 @@
       {
         label = "package auto-discovery";
         needle = "discoverPackages ./.";
+      }
+      {
+        label = "QEMU package wrapper imports the source recipe";
+        needle = "package = callPackage ./emulation/qemu.nix args;";
       }
       {
         label = "qemu-crucible explicit override";
