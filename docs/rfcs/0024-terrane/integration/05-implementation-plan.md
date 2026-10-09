@@ -155,8 +155,12 @@ run `b1714418-7bf1-4194-a449-cb6f83123793`). Both earlier failures now pass.
 A separate diagnostic identifies a fixture-held duplicate namespace lock
 surviving publication and blocking the reopened public read. Candidate
 `5a284a967c` releases that fixture adapter after the real publication ACK and
-before reopening; its fresh strict Clippy passes, while compilation and runtime
-qualification remain pending. No diagnostic run substitutes for qualification.
+before reopening. Fresh strict Clippy, compilation and executable-bound
+inventory pass. The mandatory twenty-nine cases all pass in 32.162 seconds
+at their unchanged deadlines, and the exact public SDK case passes in 0.009
+seconds. All source and bound executable seals remain unchanged. The separate
+ninety-three-case read qualification, owning gates and full current trunk floor
+remain pending. No diagnostic run substitutes for qualification.
 Unchanged-budget runtime tests and the complete current trunk floor remain
 required before task acceptance.
 The frozen `9d122397a6` native recovery run is terminal: all thirty-one

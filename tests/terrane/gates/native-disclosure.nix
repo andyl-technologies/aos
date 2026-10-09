@@ -70,13 +70,18 @@ in {
   dom-reference-order = sourceGate "dom-reference-order" ''
     cd crates
     ${domainCore}
+    ${qualifySuite "terrane" "--no-default-features --features tokio,surface-sdk" "domain::native_deletion_tests::" [
+      "domain::native_deletion_tests::domain_deletion_native_erases_generations_and_disables_surviving_and_reopened_routes"
+      "domain::native_deletion_tests::domain_deletion_native_rejects_denied_roots_and_whole_inventory_races"
+      "domain::native_deletion_tests::domain_deletion_native_erases_empty_registered_namespace_and_retains_pending_on_parent_sync_failure"
+    ]}
     ${nativeSuite "ref_advance::disclosure_tests::" [
       "disclosure_domain_reference_order_and_dedup_remain_scoped"
       "disclosure_current_authority_rechecks_both_whole_heads_tokens_epochs_and_root_acls"
       "disclosure_boundary_nested_and_repeated_root_occurrences_check_actual_domains"
       "disclosure_projection_rejects_tree_whiteout_conflict_and_index_entries"
     ]}
-    printf 'PASS: canonical domain ordering and independently guarded native references\n' > "$out/result"
+    printf 'PASS: canonical domain ordering, native deletion and independently guarded references\n' > "$out/result"
   '';
 
   dom-dedup-scope = sourceGate "dom-dedup-scope" ''
