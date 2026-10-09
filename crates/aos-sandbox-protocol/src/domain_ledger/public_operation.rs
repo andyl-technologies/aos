@@ -110,7 +110,9 @@ impl OperationState {
             5 => Ok(Self::OwnershipPending),
             6 => Ok(Self::CanceledBeforeCommit),
             7 => Ok(Self::FailedBeforeCommit),
-            _ => Err(PublicOperationDataError::CorruptLedger("unknown operation state")),
+            _ => Err(PublicOperationDataError::CorruptLedger(
+                "unknown operation state",
+            )),
         }
     }
 
@@ -759,11 +761,9 @@ fn read_i64(bytes: &[u8]) -> Result<i64, PublicOperationDataError> {
 }
 
 fn read_array<const N: usize>(bytes: &[u8]) -> Result<[u8; N], PublicOperationDataError> {
-    bytes
-        .try_into()
-        .map_err(|_| {
-            PublicOperationDataError::CorruptLedger("truncated public operation authorization")
-        })
+    bytes.try_into().map_err(|_| {
+        PublicOperationDataError::CorruptLedger("truncated public operation authorization")
+    })
 }
 
 const fn resource_kind_code(kind: ResourceKind) -> u8 {
