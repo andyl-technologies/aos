@@ -15,7 +15,7 @@ pub enum TokenCmd {
     /// Create a new provisioning token
     Create {
         /// Views this token can access (repeatable)
-        #[arg(short, long, required = true)]
+        #[arg(short = 'V', long, required = true)]
         view: Vec<String>,
         /// Comma-separated permissions (e.g., "read,build")
         #[arg(short, long, default_value = "read")]

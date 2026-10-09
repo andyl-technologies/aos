@@ -57,17 +57,21 @@ STORE_PATH="$(nix build .#pkg-curl --no-link --print-out-paths)"
 
 apr publish "$STORE_PATH" \
   --registry acme \
-  --description "Command-line URL transfer tool" \
-  --homepage https://curl.se/ \
-  --license curl \
-  --maintainer registry@example.com \
   --key-id initial
 ```
 
-`apr publish` writes package metadata and a realization record for every
-runtime-closure member. It creates a signed commit unless `--no-commit` is
-given. Use `--no-commit` only when deliberately grouping several changes; the
-final commit still needs a trusted signature.
+For an ordinary package, `apr publish` evaluates the target-specific
+`DerivationInventoryV1` and requires the requested path to be that record's
+exact primary output. Name, version, public metadata, source identity, named
+outputs, generated documentation, and any package contract all come from the
+same evaluated record. A contract-bearing package is written with its
+documentation and complete realization graph in one transaction and one
+commit; the command never searches for a contract by package name or store
+path.
+
+The complete ordinary-package transaction always creates one signed commit.
+`--no-commit` and manual metadata flags are reserved for `--sysroot`, whose
+image catalog entry is outside the ordinary package inventory.
 
 For a grouped change, commit only the intended registry paths with `apr commit`.
 It uses the same in-process signer as the other producer commands, requires a

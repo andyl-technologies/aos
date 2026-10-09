@@ -18,6 +18,23 @@
   };
 in
   mkCargoPackage {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "uutils-procps";
     inherit version src cargoDeps;
 
@@ -54,6 +71,5 @@ in
       homepage = "https://github.com/uutils/procps";
       license = "MIT";
       mainProgram = "ps";
-      platforms = ["x86_64-linux" "aarch64-linux"];
     };
   }

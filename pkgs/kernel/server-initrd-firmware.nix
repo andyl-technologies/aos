@@ -1,12 +1,69 @@
 ##! server-initrd-firmware — pre-root firmware for supported server adapters
 {
+  lib,
   mkDerivation,
   firmware,
 }: let
   version = firmware.version;
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "server-initrd-firmware";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "All four server-adapter families contain nonempty files and are described by WHENCE.";
+        "files" = {};
+        "input" = "The bounded bnx2, bnx2x, cxgb4, and qed pre-root firmware families.";
+        "operation" = "Walk each selected family and verify its firmware payload and WHENCE attribution.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import pathlib\nroot = pathlib.Path(\"@out@/lib/firmware\")\nattribution = (root / \"WHENCE\").read_text(errors=\"replace\").lower()\nfor family in [\"bnx2\", \"bnx2x\", \"cxgb4\", \"qed\"]:\n    directory = root / family\n    files = [path for path in directory.rglob(\"*\") if path.is_file()]\n    assert files and all(path.stat().st_size > 0 for path in files)\n    assert family in attribution\nprint(\"server-initrd-firmware operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "server-initrd-firmware operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The bounded server firmware package rejects the absent wireless family.";
+        "files" = {};
+        "input" = "A request for an unrelated desktop wireless firmware family.";
+        "operation" = "Resolve the family outside the documented initrd subset.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import sys\nimport pathlib\nassert not pathlib.Path(\"@out@/lib/firmware/iwlwifi\").exists()\n\nsys.stderr.write(\"server-initrd-firmware rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "server-initrd-firmware rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
     src = null;
 

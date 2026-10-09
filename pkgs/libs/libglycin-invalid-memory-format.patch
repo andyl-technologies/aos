@@ -1,0 +1,23 @@
+--- a/libglycin/src/memory_format.rs
++++ b/libglycin/src/memory_format.rs
+@@ -10,7 +10,9 @@
+ 
+ #[unsafe(no_mangle)]
+ pub unsafe extern "C" fn gly_memory_format_has_alpha(memory_format: i32) -> glib::ffi::gboolean {
+-    let format = glycin::MemoryFormat::try_from(memory_format).unwrap();
++    let Ok(format) = glycin::MemoryFormat::try_from(memory_format) else {
++        return false.into_glib();
++    };
+     format.has_alpha().into_glib()
+ }
+ 
+@@ -18,6 +20,8 @@
+ pub unsafe extern "C" fn gly_memory_format_is_premultiplied(
+     memory_format: i32,
+ ) -> glib::ffi::gboolean {
+-    let format = glycin::MemoryFormat::try_from(memory_format).unwrap();
++    let Ok(format) = glycin::MemoryFormat::try_from(memory_format) else {
++        return false.into_glib();
++    };
+     format.is_premultiplied().into_glib()
+ }

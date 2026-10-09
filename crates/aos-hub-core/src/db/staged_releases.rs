@@ -408,7 +408,7 @@ mod tests {
             .unwrap()
             .get::<i64>(0)
             .unwrap();
-        assert_eq!(version, 5);
+        assert_eq!(version, super::super::MIGRATIONS.len() as i64);
         db.register_registry("test", &[], false).await.unwrap();
         let id = db.registry_by_slug("test").await.unwrap().unwrap().id;
         db.upsert_staged_release(id, &revision(1, 'a'), 0, None, 10)

@@ -169,6 +169,11 @@ def recurse_symlink_source(
         for these leaves — the leaves stay as symlinks into the Nix
         store.
     """
+    # The source root may be a generated directory alias. Regular-file leaves
+    # must point directly into its underlying store directory so strict native
+    # readers never traverse an intermediate directory symlink.
+    source = os.path.realpath(source, strict=True)
+
     # The target itself.
     paths[target] = ComposefsPath(
         attrs,

@@ -1,0 +1,18 @@
+[package]
+name = "aos-metadata-provider"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[[bin]]
+name = "aos-metadata-acquisition-provider"
+path = "src/acquisition.rs"
+
+[[bin]]
+name = "aos-metadata-policy-provider"
+path = "src/policy.rs"
+
+[dependencies]
+aos-metadata = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }

@@ -754,7 +754,9 @@ request supplies:
 - digests of the public evidence and restricted operator policies.
 
 Package eligibility is deliberately absent from the request. Planning derives
-every package decision from the versioned Nix inventory for this closed matrix:
+every package decision from native recipe `platformSupport` declarations through
+the caller-selected policy in [`pkgs/_target-policy.nix`](../../pkgs/_target-policy.nix).
+The release contract selects this matrix:
 
 | Artifact | `x86_64-linux` | `aarch64-linux` | `x86_64-darwin` | `aarch64-darwin` |
 | --- | --- | --- | --- | --- |
@@ -1077,9 +1079,39 @@ finalization evidence carries that graph into the stage inventory.
 
 Each package/platform coordinate must contain exactly one `out` output. That
 output remains the installable `store_path`; every additional named output is
-retained in the platform entry's `named_outputs` table and receives its own
-store-graph and static-cache root. Preparation fails closed on a missing,
+retained in the platform entry's `named_outputs` table with its exact
+`store_path`, native deployment companion when present, and output-specific
+attestation facts. Each output receives its own store-graph and static-cache
+root; NAR identities remain in the signed store graph. Preparation fails closed on a missing,
 duplicate, or mismatched output binding.
+
+Recipes can also export named outputs as ordinary installable subpackages.
+An adjacent `_outputs.nix` declares the source recipe and installable names;
+the recipe imports that declaration into `outputPackages` and supplies each
+output's runtime dependencies, documentation metadata, module, and qualification
+probe. Structural discovery reads the names before resolving recipe arguments,
+so consumers can depend on the subpackages through the normal package set.
+Names share the package namespace and collisions fail evaluation.
+
+For example, the `aos` recipe exports `apm`, `apr`, and `aos-package-runtime`.
+Each owns one logical `out` payload backed by the original physical Nix output
+of the same `aos` derivation and version. Publication generates independent
+deployment, documentation, compatibility, and provenance metadata for those
+package identities; it does not copy executable payloads. `apm install apr`
+therefore uses ordinary package resolution, and removing it preserves an
+installed `apm`. The unrelated Apache Portable Runtime library remains an
+ordinary package named `apache-portable-runtime` with its upstream version.
+Publishing the source package also publishes its declared subpackages in the
+same signed transaction; publishing one subpackage publishes that package.
+
+Before publishing these names into a registry that previously distributed
+Apache Portable Runtime as `apr`, publish that library's upstream releases
+under `apache-portable-runtime` and remove the old library-only `apr` catalog
+from the new registry release. Do not append publisher version `0.1.0` to a
+catalog that still advertises library version `1.7.0`: ordinary version
+resolution would select the library. Existing signed release tags keep their
+historical records; operators migrate library dependency requests and installed
+library selections to `apache-portable-runtime` before adopting the new release.
 
 ```sh
 aos maintain release step finalize-registry \

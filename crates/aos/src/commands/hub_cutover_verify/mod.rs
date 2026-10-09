@@ -59,6 +59,7 @@ pub(super) enum CutoverErrorCode {
     RunningVerifierIdentityMismatch,
     FixtureInvalid,
     OutputAlreadyExists,
+    #[cfg(not(target_os = "linux"))]
     ExecutableHandleUnsupported,
     InternalError,
 }
@@ -77,6 +78,7 @@ impl CutoverErrorCode {
             Self::RunningVerifierIdentityMismatch => "running_verifier_identity_mismatch",
             Self::FixtureInvalid => "fixture_invalid",
             Self::OutputAlreadyExists => "output_already_exists",
+            #[cfg(not(target_os = "linux"))]
             Self::ExecutableHandleUnsupported => "executable_handle_unsupported",
             Self::InternalError => "internal_error",
         }
@@ -444,6 +446,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "linux"))]
     fn unsupported_executable_handle_survives_command_boundary_classification() {
         let error = classify_error(
             typed_error(

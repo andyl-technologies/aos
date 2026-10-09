@@ -1,4 +1,5 @@
 {
+  lib,
   mkDerivation,
   fetchurl,
   stdenv,
@@ -13,7 +14,69 @@
 in
   mkDerivation (
     {
+      platformSupport = {
+        build = [{abi = ["gnu"]; os = ["linux"];}];
+        host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+        target = [];
+        role = "public-package";
+      };
       pname = "gnumake";
+      qualification.packageProbe = lib.qualification.commandProbe {
+        "primary" = {
+          "artifacts" = [
+            {
+              "path" = "result.txt";
+              "text" = "make result: 42\n";
+            }
+          ];
+          "expected" = "Make runs the recipe and creates the exact output artifact.";
+          "files" = {
+            "Makefile" = "       value = 42\n       result.txt:\nprintf 'make result: %s\\n' '$(value)' > result.txt\n";
+          };
+          "input" = "A makefile deriving an output file from an input variable.";
+          "operation" = "Build the declared target with GNU Make.";
+          "steps" = [
+            {
+              "argv" = [
+                "@out@/bin/make"
+                "--no-print-directory"
+                "result.txt"
+              ];
+              "exit_code" = 0;
+              "stderr" = {
+                "exact" = "";
+              };
+              "stdout" = {
+                "exact" = "printf 'make result: %s\\n' '42' > result.txt\n";
+              };
+            }
+          ];
+        };
+        "badInput" = {
+          "artifacts" = [];
+          "expected" = "Make rejects the target with status 2.";
+          "files" = {
+            "Makefile" = "all:\n\t@:\n";
+          };
+          "input" = "A requested target with no rule in an otherwise valid makefile.";
+          "operation" = "Ask GNU Make to build the undefined target.";
+          "steps" = [
+            {
+              "argv" = [
+                "@out@/bin/make"
+                "--no-print-directory"
+                "missing-target"
+              ];
+              "exit_code" = 2;
+              "observes_rejection" = true;
+              "stdout" = {
+                "exact" = "";
+              };
+            }
+          ];
+        };
+      };
+
       inherit version;
 
       src = fetchurl {

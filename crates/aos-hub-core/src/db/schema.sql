@@ -1550,8 +1550,7 @@ CREATE TABLE registry_catalog_artifacts(
   PRIMARY KEY(registry_id, source_revision, package_name, package_version,
 platform, artifact_kind, store_hash),
   CHECK(artifact_kind IN(
-    'output', 'image', 'source_derivation', 'expose', 'config',
-    'evaluation_base_lib', 'documentation'
+    'output', 'image', 'source_derivation', 'documentation'
   ))
 );
 
@@ -1568,11 +1567,53 @@ CREATE TABLE package_documentation(
   document_sha256 KEYTEXT128 NOT NULL,
   document_size INTEGER NOT NULL,
   semantic_schema_sha256 KEYTEXT128 NOT NULL,
-  system_module_nar_hash KEYTEXT128,
   PRIMARY KEY(registry_id, package_name, package_version, platform),
-  CHECK(format = 'aos.package-documentation/v1+json'),
+  CHECK(format = 'aos.package-reference/v1+json'),
   CHECK(nar_size > 0 AND nar_size <= 4194304),
   CHECK(document_size > 0 AND document_size <= 4194304)
+);
+
+-- Admin-enrolled identities allowed to submit private, bounded deployment state.
+CREATE TABLE ability_deployment_reporters(
+  registry_id INTEGER NOT NULL REFERENCES registries(id) ON DELETE CASCADE,
+  deployment KEYTEXT128 NOT NULL,
+  principal_kind KEYTEXT32 NOT NULL,
+  principal_id INTEGER NOT NULL,
+  principal_ref TEXT NOT NULL,
+  active INTEGER NOT NULL,
+  resource_version INTEGER NOT NULL,
+  current_sequence INTEGER NOT NULL DEFAULT 0,
+  last_mutation_plan_id KEYTEXT64 NOT NULL,
+  registry_commit KEYTEXT64,
+  package_name KEYTEXT128,
+  package_version KEYTEXT64,
+  platform KEYTEXT64,
+  manifest_sha256 KEYTEXT128,
+  package_digest KEYTEXT128,
+  canonical_json BLOB,
+  reported_at INTEGER,
+  received_at INTEGER,
+  expires_at INTEGER,
+  PRIMARY KEY(registry_id, deployment),
+  CHECK(principal_kind IN('user', 'service_account')),
+  CHECK(active IN(0, 1)),
+  CHECK(resource_version > 0),
+  CHECK(current_sequence >= 0),
+  CHECK(
+    (current_sequence = 0
+      AND registry_commit IS NULL AND package_name IS NULL AND package_version IS NULL
+      AND platform IS NULL AND manifest_sha256 IS NULL AND package_digest IS NULL
+      AND canonical_json IS NULL AND reported_at IS NULL AND received_at IS NULL
+      AND expires_at IS NULL)
+    OR
+    (current_sequence > 0
+      AND registry_commit IS NOT NULL AND package_name IS NOT NULL
+      AND package_version IS NOT NULL AND platform IS NOT NULL
+      AND manifest_sha256 IS NOT NULL AND package_digest IS NOT NULL
+      AND canonical_json IS NOT NULL AND reported_at IS NOT NULL
+      AND received_at IS NOT NULL AND expires_at > received_at)
+  ),
+  CHECK(canonical_json IS NULL OR (length(canonical_json) > 0 AND length(canonical_json) <= 1048576))
 );
 
 CREATE TABLE release_bundles(
@@ -3514,8 +3555,7 @@ CREATE TABLE release_artifacts(
   store_hash KEYTEXT64 NOT NULL,
   metadata_digest KEYTEXT128 NOT NULL,
   CHECK(artifact_kind IN(
-    'output', 'image', 'source_derivation', 'expose', 'config',
-    'evaluation_base_lib', 'documentation'
+    'output', 'image', 'source_derivation', 'documentation'
   )),
   PRIMARY KEY(snapshot_id, package_name, package_version, platform,
 artifact_kind, store_hash),
@@ -4512,11 +4552,10 @@ CREATE TABLE release_package_documentation(
   document_sha256 KEYTEXT128 NOT NULL,
   document_size INTEGER NOT NULL,
   semantic_schema_sha256 KEYTEXT128 NOT NULL,
-  system_module_nar_hash KEYTEXT128,
   metadata_digest KEYTEXT128 NOT NULL,
   PRIMARY KEY(snapshot_id, package_name, package_version, platform),
   CHECK(artifact_kind = 'documentation'),
-  CHECK(format = 'aos.package-documentation/v1+json'),
+  CHECK(format = 'aos.package-reference/v1+json'),
   CHECK(nar_size > 0 AND nar_size <= 4194304),
   CHECK(document_size > 0 AND document_size <= 4194304),
   FOREIGN KEY(snapshot_id, release_id, registry_id)
@@ -5693,6 +5732,11 @@ ON package_documentation_search(registry_id,
   package_name,
   package_version,
   platform);
+
+CREATE INDEX ability_deployment_overlay_anchor
+ON ability_deployment_reporters(
+  registry_id, registry_commit, package_name, package_version, platform, active, expires_at
+);
 
 CREATE INDEX release_package_documentation_digest_idx
 ON release_package_documentation(registry_id,

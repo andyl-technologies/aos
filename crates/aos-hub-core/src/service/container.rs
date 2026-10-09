@@ -643,6 +643,7 @@ fn release_roots(release: &ContainerRelease) -> Vec<Descriptor> {
     vec![
         release.oci.index.clone(),
         release.nix.closure.clone(),
+        release.evidence.abilities.clone(),
         release.evidence.sbom.clone(),
         release.evidence.source.clone(),
         release.evidence.license.clone(),
@@ -725,6 +726,8 @@ fn descriptor_role(
         ContainerReleaseDescriptorRole::PlatformManifest
     } else if descriptor.digest == release.nix.closure.digest {
         ContainerReleaseDescriptorRole::NixClosure
+    } else if descriptor.digest == release.evidence.abilities.digest {
+        ContainerReleaseDescriptorRole::Abilities
     } else if descriptor.digest == release.evidence.sbom.digest {
         ContainerReleaseDescriptorRole::Sbom
     } else if descriptor.digest == release.evidence.source.digest {
@@ -879,6 +882,7 @@ mod staging_tests {
             },
             qualification: qualification_fixture(),
             evidence: ContainerReleaseEvidence {
+                abilities: evidence_descriptor(MediaType::AosContainerStaticAbilities, "abilities"),
                 sbom: evidence_descriptor(MediaType::SpdxJson, "sbom"),
                 source: evidence_descriptor(MediaType::AosSourceClosure, "source"),
                 license: evidence_descriptor(MediaType::AosLicenseReport, "license"),
