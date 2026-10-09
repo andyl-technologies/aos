@@ -273,7 +273,7 @@ impl ControllerFuseAdmissionCarrierV1 {
             return Err(FuseHistoryDataError::Rejected);
         }
 
-        let request = crate::public_api::request::ResolvedPublicMutationRequestV1::decode(
+        let request = crate::public_api::mutation::ResolvedPublicMutationRequestV1::decode(
             effect.canonical_request(),
         )
         .map_err(|_| FuseHistoryDataError::Rejected)?;

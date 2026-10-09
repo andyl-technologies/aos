@@ -325,7 +325,7 @@ impl CheckedStartAuthorityV2 {
             aos_sandbox_core::DecodeLimits::default(),
         )
         .map_err(|_| NixHistoryDataError::Invalid)?;
-        let request = crate::public_api::request::ResolvedPublicMutationRequestV1::decode(
+        let request = crate::public_api::mutation::ResolvedPublicMutationRequestV1::decode(
             &self.original_request,
         )
         .map_err(|_| NixHistoryDataError::Invalid)?;
@@ -782,7 +782,7 @@ impl NixStartAdmissionCarrierV2 {
             PublicProjectionResourceV1, decode_checked_public_projection_v1,
         };
 
-        let request = crate::public_api::request::ResolvedPublicMutationRequestV1::decode(
+        let request = crate::public_api::mutation::ResolvedPublicMutationRequestV1::decode(
             &self.authority.original_request,
         )
         .map_err(|_| NixHistoryDataError::Invalid)?;
