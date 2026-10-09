@@ -1667,3 +1667,114 @@ impl<'a> BoundedFrameDecoderV1<'a> {
         Ok(bytes)
     }
 }
+
+#[cfg(test)]
+mod bounded_frame_decoder_tests {
+    use super::{BoundedFrameDecodeError, BoundedFrameDecoderV1};
+
+    #[test]
+    fn integer_short_prefixes_preserve_position_and_complete_values_use_big_endian() {
+        macro_rules! check_integer {
+            ($method:ident, $value:expr) => {{
+                let bytes = $value.to_be_bytes();
+                for length in 0..bytes.len() {
+                    let mut decoder =
+                        BoundedFrameDecoderV1::new(&bytes[..length], bytes.len()).unwrap();
+
+                    assert_eq!(decoder.$method(), Err(BoundedFrameDecodeError::Truncated));
+                    assert_eq!(decoder.position(), 0);
+                    if length > 0 {
+                        assert_eq!(decoder.read_u8(), Ok(bytes[0]));
+                        assert_eq!(decoder.position(), 1);
+                    }
+                }
+
+                let mut decoder = BoundedFrameDecoderV1::new(&bytes, bytes.len()).unwrap();
+
+                assert_eq!(decoder.$method(), Ok($value));
+                assert_eq!(decoder.position(), bytes.len());
+                assert_eq!(decoder.finish(), Ok(()));
+            }};
+        }
+
+        check_integer!(read_u16, 0x0102_u16);
+        check_integer!(read_u32, 0x0102_0304_u32);
+        check_integer!(read_u64, 0x0102_0304_0506_0708_u64);
+    }
+
+    #[test]
+    fn constructor_ceilings_and_clone_debug_equality_retain_the_full_input_and_position() {
+        let bytes = [7, 8];
+
+        assert_eq!(
+            BoundedFrameDecoderV1::new(&bytes, 0),
+            Err(BoundedFrameDecodeError::LimitExceeded)
+        );
+        assert_eq!(
+            BoundedFrameDecoderV1::new(&bytes, 1),
+            Err(BoundedFrameDecodeError::LimitExceeded)
+        );
+
+        let mut decoder = BoundedFrameDecoderV1::new(&bytes, bytes.len()).unwrap();
+        let mut snapshot = decoder.clone();
+        assert_eq!(decoder, snapshot);
+        assert_eq!(
+            format!("{decoder:?}"),
+            "BoundedFrameDecoderV1 { bytes: [7, 8], offset: 0 }"
+        );
+
+        assert_eq!(decoder.read_u8(), Ok(7));
+        assert_ne!(decoder, snapshot);
+        assert_eq!(snapshot.read_u8(), Ok(7));
+        assert_eq!(decoder, snapshot);
+        assert_eq!(
+            format!("{decoder:?}"),
+            "BoundedFrameDecoderV1 { bytes: [7, 8], offset: 1 }"
+        );
+
+        let mut different_input = BoundedFrameDecoderV1::new(&[9, 8], 2).unwrap();
+        assert_eq!(different_input.read_u8(), Ok(9));
+        assert_ne!(decoder, different_input);
+
+        assert_eq!(decoder.read_u8(), Ok(8));
+        assert_eq!(snapshot.read_u8(), Ok(8));
+        assert_eq!(decoder.finish(), Ok(()));
+        assert_eq!(snapshot.finish(), Ok(()));
+    }
+
+    #[test]
+    fn bounded_payload_failures_consume_only_the_prefix_and_preserve_exact_errors() {
+        let missing_payload = [0, 0, 0, 2, 7];
+        for (ceiling, error) in [
+            (1, BoundedFrameDecodeError::LimitExceeded),
+            (2, BoundedFrameDecodeError::Truncated),
+        ] {
+            let mut decoder =
+                BoundedFrameDecoderV1::new(&missing_payload, missing_payload.len()).unwrap();
+
+            assert_eq!(decoder.read_bounded_bytes(ceiling), Err(error));
+            assert_eq!(decoder.position(), 4);
+            assert_eq!(
+                decoder.read_exact(usize::MAX),
+                Err(BoundedFrameDecodeError::LimitExceeded)
+            );
+            assert_eq!(decoder.position(), 4);
+            assert_eq!(decoder.read_u8(), Ok(7));
+            assert_eq!(decoder.finish(), Ok(()));
+        }
+
+        let bytes = [0, 0, 0, 1, 7, 8];
+        let mut decoder = BoundedFrameDecoderV1::new(&bytes, bytes.len()).unwrap();
+        let payload = decoder.read_bounded_bytes(1).unwrap();
+
+        assert_eq!(payload, &[7]);
+        assert!(std::ptr::eq(payload.as_ptr(), bytes[4..].as_ptr()));
+        assert_eq!(decoder.position(), 5);
+        assert_eq!(
+            decoder.clone().finish(),
+            Err(BoundedFrameDecodeError::TrailingBytes)
+        );
+        assert_eq!(decoder.read_u8(), Ok(8));
+        assert_eq!(decoder.finish(), Ok(()));
+    }
+}

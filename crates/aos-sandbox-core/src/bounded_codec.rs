@@ -195,4 +195,65 @@ mod tests {
         assert_eq!(reader.bytes(3), Err(ReadError::Truncated));
         assert_eq!(reader.remaining_bytes(), &bytes[1..]);
     }
+
+    #[test]
+    fn checked_regions_preserve_borrowed_pointers_and_report_overflow_before_missing_ranges() {
+        let bytes = [1, 2, 3, 4];
+        let (middle, end) = {
+            let offset = 1;
+            checked_byte_region(&bytes, offset, 2).unwrap()
+        };
+
+        assert_eq!(middle, &bytes[1..3]);
+        assert_eq!(end, 3);
+        assert!(std::ptr::eq(middle.as_ptr(), bytes[1..].as_ptr()));
+
+        for offset in 0..=bytes.len() {
+            let (empty, end) = checked_byte_region(&bytes, offset, 0).unwrap();
+
+            assert!(empty.is_empty());
+            assert_eq!(end, offset);
+            assert!(std::ptr::eq(empty.as_ptr(), bytes[offset..].as_ptr()));
+        }
+
+        let input = &bytes[..0];
+        let (empty, end) = checked_byte_region(input, 0, 0).unwrap();
+        assert_eq!(end, 0);
+        assert!(std::ptr::eq(empty.as_ptr(), input.as_ptr()));
+
+        assert_eq!(checked_byte_region(&bytes, 3, 2), Err(ReadError::Truncated));
+        assert_eq!(checked_byte_region(&bytes, 5, 0), Err(ReadError::Truncated));
+        assert_eq!(checked_byte_region(input, usize::MAX, 0), Err(ReadError::Truncated));
+        assert_eq!(
+            checked_byte_region(input, usize::MAX, 1),
+            Err(ReadError::LengthOverflow)
+        );
+    }
+
+    #[test]
+    fn range_errors_invoke_the_original_mapper_once_before_cursor_commit() {
+        thread_local! {
+            static MAPPING_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        }
+
+        fn mapped_error(error: ReadError) -> (ReadError, usize) {
+            let count = MAPPING_COUNT.with(|count| {
+                let next = count.get() + 1;
+                count.set(next);
+                next
+            });
+            (error, count)
+        }
+
+        MAPPING_COUNT.with(|count| count.set(0));
+        let mut reader = BoundedReader::new(&[7, 8], mapped_error);
+
+        assert_eq!(reader.u8(), Ok(7));
+        assert_eq!(reader.bytes(usize::MAX), Err((ReadError::LengthOverflow, 1)));
+        assert_eq!(reader.bytes(2), Err((ReadError::Truncated, 2)));
+        assert_eq!(reader.remaining_bytes(), &[8]);
+        assert_eq!(reader.u8(), Ok(8));
+        assert_eq!(reader.finish(), Ok(()));
+        MAPPING_COUNT.with(|count| assert_eq!(count.get(), 2));
+    }
 }
