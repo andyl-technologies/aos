@@ -320,6 +320,95 @@ fn reserve(
 }
 
 #[test]
+fn refused_begin_retains_original_identity_without_a_native_effect_permit() {
+    let (_handshake, authority, mut journal, supervisor) = fixture();
+    let (original, begin) = begin(&authority, "refused", "refused-operation");
+    let NativeRequestRegistration::New(permit) = journal
+        .register_request(&authority, &original, RequestOrigin::Controller)
+        .unwrap()
+    else {
+        panic!("new refusal");
+    };
+    assert!(
+        journal
+            .with_request_resources(&permit, |resources| {
+                resources.effects += 1;
+                Ok(())
+            })
+            .is_err()
+    );
+    let response = json!({"status":"error","operation_state":"not_started","error":{"code":"UNSUPPORTED_FEATURE",
+        "message":"unsupported fixture facet","effect":"not_started","retryable":false,"details":{}},"extensions":{}}).as_object().unwrap().clone();
+    journal.record_request_refusal(&permit, &response).unwrap();
+    assert_eq!(journal.resources().effects, 0);
+    assert!(journal.snapshot().operations.is_empty());
+    assert!(
+        journal
+            .register_begin(&authority, &original, &begin, &verifier())
+            .is_err()
+    );
+    let NativeRequestRegistration::Original(snapshot) = journal
+        .register_request(&authority, &original, RequestOrigin::Controller)
+        .unwrap()
+    else {
+        panic!("original refusal");
+    };
+    assert_eq!(snapshot.outcome.unwrap(), canonical_map(&response).unwrap());
+    assert_eq!(
+        journal
+            .resumed_operations(&vec![id("refused-operation")])
+            .unwrap()[0]
+            .operation_state,
+        bodies::OperationState::NotStarted
+    );
+
+    drop(journal);
+    let custody = supervisor.0.borrow_mut().pop().unwrap();
+    assert_eq!(custody.refused_operations.len(), 1);
+    assert_eq!(custody.resources.effects, 0);
+}
+
+#[test]
+fn started_nonbegin_effect_cannot_be_relabelled_as_not_started_refusal() {
+    let (_handshake, authority, mut journal, _) = fixture();
+    let request = envelope(
+        &authority,
+        "discover",
+        None,
+        Method::Discover,
+        json!({"profile_ids":[],"extensions":{}}),
+    );
+    let NativeRequestRegistration::New(permit) = journal
+        .register_request(&authority, &request, RequestOrigin::Controller)
+        .unwrap()
+    else {
+        panic!("new request");
+    };
+    journal
+        .with_request_resources(&permit, |resources| {
+            resources.effects += 1;
+            Ok(())
+        })
+        .unwrap();
+    let response = json!({"status":"error","operation_state":"not_started","error":{"code":"INVALID_STATE",
+        "message":"not a rollback","effect":"not_started","retryable":false,"details":{}},"extensions":{}}).as_object().unwrap().clone();
+    assert!(journal.record_request_refusal(&permit, &response).is_err());
+    assert_eq!(journal.resources().effects, 1);
+    assert_eq!(
+        journal
+            .snapshot()
+            .requests
+            .get(&RequestKey {
+                origin: RequestOrigin::Controller,
+                id: id("discover")
+            })
+            .unwrap()
+            .state(),
+        JournalState::Unknown
+    );
+}
+
+#[test]
 fn retry_never_issues_another_effect_permit_and_domain_conflicts_precede_effects() {
     let (_handshake, authority, mut journal, _) = fixture();
     let permit = reserve(&mut journal, &authority, "request", "operation");

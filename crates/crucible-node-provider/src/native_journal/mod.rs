@@ -20,11 +20,13 @@ use crate::journal::{
     JournalLimits, JournalState, Registration, RequestJournal, RequestKey, Reservation,
 };
 
+mod completion;
 mod inputs;
 mod models;
 mod observations;
 mod operations;
 
+pub use completion::NativeRequestOutcomeVerifier;
 pub use inputs::{InputAcceptance, NativeInputReconciler, NativeInputVerifier};
 pub use models::*;
 pub use observations::NativeObservationVerifier;
@@ -83,6 +85,7 @@ impl<C: 'static> NativeJournal<C> {
                 requests: journal,
                 reservations: BTreeMap::new(),
                 operations: BTreeMap::new(),
+                refused_operations: BTreeMap::new(),
                 inputs: BTreeMap::new(),
                 input_streams: BTreeMap::new(),
                 observation_streams: BTreeMap::new(),
@@ -101,6 +104,27 @@ impl<C: 'static> NativeJournal<C> {
     /// Returns the complete retained ledger without transferring resource custody.
     pub fn snapshot(&self) -> &NativeCustody<C> {
         self.custody()
+    }
+
+    /// Returns complete immutable original request material for trusted inspection.
+    ///
+    /// # Errors
+    /// Rejects unknown origin-scoped identities without issuing any native permit.
+    pub fn request_material(
+        &self,
+        origin: RequestOrigin,
+        id: &Id,
+    ) -> Result<&Envelope, ProviderError> {
+        self.custody()
+            .reservations
+            .get(&RequestKey {
+                origin,
+                id: id.clone(),
+            })
+            .map(|record| &record.original)
+            .ok_or(ProviderError::Correlation(
+                "original request material unavailable",
+            ))
     }
 
     /// Reclaims actual same-incarnation custody without resetting retained streams.
@@ -133,6 +157,7 @@ impl<C: 'static> NativeJournal<C> {
                     > limits.operation_tombstones
                 || custody.inputs.len() > limits.input_batches
                 || custody.observations.len() > limits.observation_batches
+                || custody.refused_operations.len() > limits.operation_tombstones
                 || custody.retained_bytes > limits.retained_bytes
             {
                 return Err(ProviderError::ResourceExhausted(
@@ -203,6 +228,11 @@ impl<C: 'static> NativeJournal<C> {
         let record = self.custody_mut().reservations.get_mut(&permit.key).ok_or(
             ProviderError::Correlation("request reservation disappeared"),
         )?;
+        if record.original.method == crate::envelope::Method::Begin {
+            return Err(ProviderError::Conflict(
+                "begin resource access requires native operation authority",
+            ));
+        }
         if record.started {
             return Err(ProviderError::Conflict(
                 "original request effect already started",

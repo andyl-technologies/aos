@@ -330,7 +330,9 @@ impl<S: ProviderStream> Connection<S> {
                     _ => None,
                 };
                 if operation.is_some() && operation != envelope.operation_id.0.as_ref() {
-                    return Err(ProviderError::Correlation("response body changed original operation scope"));
+                    return Err(ProviderError::Correlation(
+                        "response body changed original operation scope",
+                    ));
                 }
                 Ok(ReceivedBody::Response(Box::new(response)))
             }

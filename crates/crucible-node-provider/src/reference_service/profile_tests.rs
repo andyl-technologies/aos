@@ -110,3 +110,62 @@ fn zero_budgets_are_refused_before_profile_creation() {
         );
     }
 }
+
+#[test]
+fn closed_ingress_profile_has_distinct_compatibility_and_no_effective_input_lane() {
+    let ordinary = profile(100);
+    let closed = ReferenceProfile::build_closed(
+        ordinary.descriptor.id.clone(),
+        ordinary.owner.id.clone(),
+        canonical::content_ref(b"fixture-provider", "application/octet-stream").unwrap(),
+        canonical::content_ref(b"fixture-device", "application/octet-stream").unwrap(),
+        100.into(),
+        1_000_000_000.into(),
+    )
+    .unwrap();
+
+    assert!(
+        closed
+            .descriptor
+            .ports
+            .iter()
+            .flat_map(|port| &port.lanes)
+            .all(|lane| lane.direction == Direction::Output)
+    );
+    assert_eq!(closed.descriptor.ports[0].lanes.len(), 1);
+    assert!(
+        !closed
+            .implementation
+            .formats
+            .iter()
+            .any(|schema| schema.id.as_str() == "reference-device/input-v1")
+    );
+    assert_ne!(
+        closed.descriptor.identity().unwrap(),
+        ordinary.descriptor.identity().unwrap()
+    );
+    assert_ne!(closed.configuration_ref, ordinary.configuration_ref);
+    assert_ne!(
+        closed.node_manifest.configuration_schema,
+        ordinary.node_manifest.configuration_schema
+    );
+    assert_ne!(
+        closed.node_manifest.profile_id,
+        ordinary.node_manifest.profile_id
+    );
+    let (closed_binding, _) = closed.bind(authority("same")).unwrap();
+    let (ordinary_binding, _) = ordinary.bind(authority("same")).unwrap();
+    assert_ne!(
+        closed_binding.identity().unwrap(),
+        ordinary_binding.identity().unwrap()
+    );
+    let configuration: serde_json::Value =
+        serde_json::from_slice(closed.content(&closed.configuration_ref).unwrap()).unwrap();
+    assert_eq!(configuration["input_policy"], "closed-no-ingress");
+    assert!(closed.provider_manifest.protocol_versions.is_empty());
+    assert!(closed.provider_manifest.extensions_supported.is_empty());
+    assert_eq!(
+        ordinary.provider_manifest.protocol_versions,
+        vec![id("CNP/1").unwrap()]
+    );
+}

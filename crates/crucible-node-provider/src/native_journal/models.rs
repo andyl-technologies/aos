@@ -214,6 +214,8 @@ pub struct NativeCustody<C: 'static> {
     pub(super) reservations: BTreeMap<RequestKey, RequestRecord>,
     /// Retains original operations, including consumed reuse tombstones.
     pub operations: BTreeMap<Id, OperationSnapshot>,
+    /// Retains bounded refused begin identities without native effect authority.
+    pub refused_operations: BTreeMap<Id, RefusedOperation>,
     /// Retains exact accepted or uncertain original input batches.
     pub inputs: BTreeMap<(OwnerStream, Id), InputSnapshot>,
     /// Preserves original admitted input epochs and monotonic stream cursors.
@@ -223,6 +225,25 @@ pub struct NativeCustody<C: 'static> {
     /// Retains original ordered observation batches and staged payload custody.
     pub observations: Vec<ObservationBatch>,
     pub(super) retained_bytes: usize,
+}
+
+/// Preserves a proved not-started begin refusal without an execution scope.
+#[derive(Clone, Debug)]
+pub struct RefusedOperation {
+    /// Names the original controller-generated operation.
+    pub operation_id: Id,
+    /// Names the original controller request.
+    pub request_key: RequestKey,
+    /// Commits to all original envelope and begin arguments.
+    pub request_hash: HashRef,
+    /// Retains the exact requested node correlation, without admission authority.
+    pub node_id: Option<Id>,
+    /// Retains requested execution correlation, without granting an owner lease.
+    pub execution_owner_id: Option<Id>,
+    /// Retains requested capture correlation, without claiming capture support.
+    pub capture_owner_id: Option<Id>,
+    /// Retains the exact immutable not-started response body.
+    pub outcome: Map<String, Value>,
 }
 
 /// Authenticates native reclamation and durable consumption before retirement.

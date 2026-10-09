@@ -287,7 +287,14 @@ fn a_valid_poll_body_cannot_substitute_another_original_operation() {
     let original = frame(&authority);
     let (stream, mut peer) = pair();
     let supervisor = Rc::new(Supervisor::default());
-    let mut connection = Connection::new(stream, authority, supervisor.clone(), Rc::new(CoreSchemas), EndpointRole::Controller).unwrap();
+    let mut connection = Connection::new(
+        stream,
+        authority,
+        supervisor.clone(),
+        Rc::new(CoreSchemas),
+        EndpointRole::Controller,
+    )
+    .unwrap();
     connection.send(original.clone()).unwrap();
 
     let mut response = original.clone();
@@ -296,7 +303,10 @@ fn a_valid_poll_body_cannot_substitute_another_original_operation() {
         "status":"completed", "operation_state":"completed", "extensions":{},
         "result": {"operation_id":"foreign-operation", "operation_state":"running", "outcome":null,
                    "observations":[], "next_observation_sequence":"0"}
-    }).as_object().unwrap().clone();
+    })
+    .as_object()
+    .unwrap()
+    .clone();
     write_frame(&mut peer, &serde_json::to_value(response).unwrap(), 4096).unwrap();
 
     assert!(connection.receive().is_err());

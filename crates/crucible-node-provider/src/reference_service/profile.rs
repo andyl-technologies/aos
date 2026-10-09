@@ -53,6 +53,8 @@ pub struct ReferenceProfile {
     pub provider_manifest: ProviderManifest,
     /// Binds all resolved operational and checksum parameters.
     pub configuration_ref: ContentRef,
+    /// Defines inert verified-byte possession without granting model effects.
+    pub content_possession_schema: SchemaRef,
     /// Retains profile content by digest for bounded blob resolution.
     pub contents: BTreeMap<String, (ContentRef, Vec<u8>)>,
     profile_ref: ContentRef,
@@ -80,6 +82,56 @@ impl ReferenceProfile {
         quantum_ps: U64,
         host_budget_ns: U64,
     ) -> Result<Self, ProviderError> {
+        Self::build_selected(
+            node,
+            owner,
+            provider_executable,
+            device_executable,
+            quantum_ps,
+            host_budget_ns,
+            false,
+        )
+    }
+
+    /// Builds an output-only checksum profile with permanently closed ingress.
+    ///
+    /// The owning adapter exclusively controls the private companion and accepts
+    /// only an authenticated empty original input cut. The descriptor exposes no
+    /// input lane; input schema and profile/configuration identities differ from
+    /// [`Self::build`]. This declaration does not itself authenticate deployment.
+    ///
+    /// # Errors
+    /// Rejects invalid artifacts, zero quantum/budget, malformed records, or
+    /// serialization failure. Native admission separately verifies the closed
+    /// descriptor and actual exclusive child custody before any effects.
+    pub fn build_closed(
+        node: Id,
+        owner: Id,
+        provider_executable: ContentRef,
+        device_executable: ContentRef,
+        quantum_ps: U64,
+        host_budget_ns: U64,
+    ) -> Result<Self, ProviderError> {
+        Self::build_selected(
+            node,
+            owner,
+            provider_executable,
+            device_executable,
+            quantum_ps,
+            host_budget_ns,
+            true,
+        )
+    }
+
+    fn build_selected(
+        node: Id,
+        owner: Id,
+        provider_executable: ContentRef,
+        device_executable: ContentRef,
+        quantum_ps: U64,
+        host_budget_ns: U64,
+        closed_ingress: bool,
+    ) -> Result<Self, ProviderError> {
         provider_executable.validate()?;
         device_executable.validate()?;
         if quantum_ps.get() == 0 || host_budget_ns.get() == 0 {
@@ -89,7 +141,14 @@ impl ReferenceProfile {
         }
 
         let mut content = Vec::new();
-        let model = put_text(&mut content, MODEL_SPECIFICATION)?;
+        let model = put_text(
+            &mut content,
+            if closed_ingress {
+                CLOSED_MODEL_SPECIFICATION
+            } else {
+                MODEL_SPECIFICATION
+            },
+        )?;
         let limitations = put_json(
             &mut content,
             &json!({
@@ -100,6 +159,12 @@ impl ReferenceProfile {
                 "physical_pause":"unknown",
                 "repeatability":"nondeterministic",
                 "host_budget":"elapsed host time is operational and can fail differently between runs",
+                "native_resource_limits": if closed_ingress {
+                    "The actor-native adapter bounds original windows, staged/output bytes, retained operations and world custody; finite wall-time control and window budgets contain this fixed measured no-fork child. Dedicated CNP-provider RLIMIT partitioning is not selected or claimed by this actor profile."
+                } else {
+                    "dedicated provider and fixed measured companion inherit half of admitted RLIMIT_AS, RLIMIT_NOFILE, RLIMIT_FSIZE and integral-second RLIMIT_CPU hard ceilings; smaller CPU allowances are refused"
+                },
+                "process_limit":"the measured no-fork companion is the sole child; this profile does not sandbox arbitrary external executables",
                 "state_ownership":"all child, staged input, output and retry state belongs to one owner"
             }),
         )?;
@@ -115,7 +180,14 @@ impl ReferenceProfile {
             extensions: Extensions::new(),
         };
         let guarantees_ref = put_json(&mut content, &guarantees)?;
-        let window = put_text(&mut content, WINDOW_SPECIFICATION)?;
+        let window = put_text(
+            &mut content,
+            if closed_ingress {
+                CLOSED_WINDOW_SPECIFICATION
+            } else {
+                WINDOW_SPECIFICATION
+            },
+        )?;
         let policy = put_json(
             &mut content,
             &json!({
@@ -123,15 +195,16 @@ impl ReferenceProfile {
                 "phase_ps":"0","host_budget_ns":host_budget_ns,"window_proof_ref":window
             }),
         )?;
-        let configuration = put_json(
-            &mut content,
-            &json!({
-                "schema_version":1,"quantum_ps":quantum_ps,"phase_ps":"0",
-                "host_budget_ns":host_budget_ns,"maximum_input_bytes":U64::new(MAX_INPUT_BYTES as u64),
-                "ordering_profile":"superdense-v1","window_semantics_ref":window,
-                "checksum_multiplier":"257","checksum_modulus":"18446744073709551616"
-            }),
-        )?;
+        let mut configuration_value = json!({
+            "schema_version":1,"quantum_ps":quantum_ps,"phase_ps":"0",
+            "host_budget_ns":host_budget_ns,"maximum_input_bytes":U64::new(MAX_INPUT_BYTES as u64),
+            "ordering_profile":"superdense-v1","window_semantics_ref":window,
+            "checksum_multiplier":"257","checksum_modulus":"18446744073709551616"
+        });
+        if closed_ingress {
+            configuration_value["input_policy"] = json!("closed-no-ingress");
+        }
+        let configuration = put_json(&mut content, &configuration_value)?;
         let facet = FacetSelection {
             id: id("reference-device/quantized-v1")?,
             version: 1,
@@ -154,7 +227,8 @@ impl ReferenceProfile {
             &mut content,
             &json!({
                 "schema_version":1,"device":"rolling-checksum",
-                "input":"immutable raw byte batch","output":"one cumulative checksum record",
+                "input": if closed_ingress { "permanently closed; authenticated empty batch only" } else { "immutable raw byte batch" },
+                "output":"one cumulative checksum record",
                 "queues":"one staged input and one unacknowledged output per owner",
                 "dma":false,"irq":false,"reset":"fresh realization only","capture":false
             }),
@@ -197,14 +271,33 @@ impl ReferenceProfile {
                 "capture":"unsupported"
             }),
         )?;
+        let mut lane_policies = Vec::new();
+        let mut lanes = Vec::new();
+        if !closed_ingress {
+            lane_policies.push(lane_policy(
+                "input",
+                quantum_ps,
+                &window,
+                MAX_INPUT_BYTES as u64,
+            ));
+            lanes.push(lane(
+                "input",
+                Direction::Input,
+                input_schema.clone(),
+                MAX_INPUT_BYTES as u64,
+            )?);
+        }
+        lane_policies.push(lane_policy("output", quantum_ps, &window, 4096));
+        lanes.push(lane(
+            "output",
+            Direction::Output,
+            output_schema.clone(),
+            4096,
+        )?);
         let port_policy = put_json(
             &mut content,
             &json!({
-                "schema_version":1,
-                "lanes":[
-                    lane_policy("input", quantum_ps, &window, MAX_INPUT_BYTES as u64),
-                    lane_policy("output", quantum_ps, &window, 4096)
-                ],
+                "schema_version":1,"lanes":lane_policies,
                 "maximum_producers":"1","maximum_consumers":"1",
                 "arbitration_ref":window,"execution_owner_id":owner,
                 "state_domain_ids":domains,"internal":false
@@ -219,22 +312,28 @@ impl ReferenceProfile {
             initialization_ref: initialization,
             ports: vec![PortDescriptor {
                 id: id("data")?,
-                lanes: vec![
-                    lane(
-                        "input",
-                        Direction::Input,
-                        input_schema.clone(),
-                        MAX_INPUT_BYTES as u64,
-                    )?,
-                    lane("output", Direction::Output, output_schema.clone(), 4096)?,
-                ],
-                interface_id: id("reference-device/bytes-and-checksum-v1")?,
+                lanes,
+                interface_id: id(if closed_ingress {
+                    "reference-device/checksum-only-v1"
+                } else {
+                    "reference-device/bytes-and-checksum-v1"
+                })?,
                 features: Vec::new(),
                 configuration_ref: port_policy,
                 extensions: Extensions::new(),
             }],
             extensions: Extensions::new(),
         };
+        let content_possession_schema = schema(
+            &mut content,
+            "reference-device/content-possession-v1",
+            r#"{"schema":"reference-device/content-possession-v1","semantics":"Verified bounded content remains inert. A selected consuming schema and native authority are required before effects."}"#,
+        )?;
+        let mut formats = vec![output_schema, content_possession_schema.clone()];
+        if !closed_ingress {
+            formats.push(input_schema);
+        }
+        formats.sort_by(|left, right| (&left.id, left.version).cmp(&(&right.id, right.version)));
         let implementation = ImplementationIdentity {
             schema_version: 1,
             implementation_id: id("crucible-reference-device")?,
@@ -243,7 +342,7 @@ impl ReferenceProfile {
                 artifact("provider", "provider-executable", provider_executable)?,
             ],
             model_definitions: vec![model],
-            formats: vec![input_schema, output_schema],
+            formats,
             extensions: Extensions::new(),
         };
         let profile_ref = put_json(
@@ -261,8 +360,16 @@ impl ReferenceProfile {
 
         let configuration_schema = schema(
             &mut content,
-            "reference-device/configuration-v1",
-            CONFIGURATION_SCHEMA,
+            if closed_ingress {
+                "reference-device/configuration-closed-v1"
+            } else {
+                "reference-device/configuration-v1"
+            },
+            if closed_ingress {
+                CLOSED_CONFIGURATION_SCHEMA
+            } else {
+                CONFIGURATION_SCHEMA
+            },
         )?;
         let allowed_combinations_ref = put_json(
             &mut content,
@@ -274,7 +381,11 @@ impl ReferenceProfile {
         let port_templates_ref = put_json(&mut content, &descriptor.ports)?;
         let node_manifest = NodeManifest {
             schema_version: 1,
-            profile_id: id("reference-device/quantized-v1")?,
+            profile_id: id(if closed_ingress {
+                "reference-device/closed-quantized-v1"
+            } else {
+                "reference-device/quantized-v1"
+            })?,
             roles: descriptor.roles.clone(),
             configuration_schema,
             allowed_combinations_ref,
@@ -285,11 +396,25 @@ impl ReferenceProfile {
         };
         let provider_manifest = ProviderManifest {
             schema_version: 1,
-            provider_id: id("crucible-reference-provider")?,
+            provider_id: id(if closed_ingress {
+                "crucible-host-reference-adapter"
+            } else {
+                "crucible-reference-provider"
+            })?,
             implementation: implementation.clone(),
-            protocol_versions: vec![id("CNP/1")?],
+            // The closed actor profile selects the local native adapter, not
+            // the independently launched public CNP provider endpoint.
+            protocol_versions: if closed_ingress {
+                Vec::new()
+            } else {
+                vec![id("CNP/1")?]
+            },
             supported_profiles: vec![node_manifest.clone()],
-            extensions_supported: Vec::new(),
+            extensions_supported: if closed_ingress {
+                Vec::new()
+            } else {
+                vec![id("cnp.resume/1")?, id("reference-device/quantized-v1")?]
+            },
             qualification_refs: Vec::new(),
             extensions: Extensions::new(),
         };
@@ -307,6 +432,7 @@ impl ReferenceProfile {
             .collect();
 
         Ok(Self {
+            content_possession_schema,
             descriptor,
             implementation,
             operating_contract,
@@ -500,6 +626,12 @@ const INPUT_SCHEMA: &str = "reference-device/input-v1: arbitrary octets in one i
 const OUTPUT_SCHEMA: &str = "reference-device/output-v1: closed JSON object with required bytes_processed and checksum fields. Each field is a canonical decimal u64 string, never a JSON number. bytes_processed equals the original frozen input length for this window; checksum is cumulative across windows. There are no additional fields. The original grant carries the quantum identity separately. Serialized bytes are preserved exactly in output custody.";
 
 const CONFIGURATION_SCHEMA: &str = "reference-device/configuration-v1: closed JSON object, required schema_version integral JSON value 1, positive canonical decimal u64 quantum_ps and host_budget_ns, phase_ps string 0, maximum_input_bytes decimal u64 equal to the installed implementation limit, ordering_profile string superdense-v1, window_semantics_ref complete CNP ContentRef, checksum_multiplier string 257, checksum_modulus string 18446744073709551616. No additional fields or extensions are accepted. Native admission also verifies the original configured profile and separately authenticated owner/world custody.";
+
+const CLOSED_MODEL_SPECIFICATION: &str = "Controlled checksum model, closed-ingress edition 1. Initial quantum and checksum are zero. No public input lane or independent ingress source exists. The exclusive native adapter accepts only an authenticated empty original input cut. Every window preserves checksum zero, reports bytes_processed zero, and publishes one original JSON checksum record. The child process and retry/output custody remain owned. Native state export, fork and continuation are unsupported.";
+
+const CLOSED_WINDOW_SPECIFICATION: &str = "Closed-ingress quantized checksum window, edition 1. No public input lane or side ingress exists. The exclusive measured controller freezes an authenticated empty cut before begin. Exactly one bounded empty-input window executes with a finite host-time budget. Original output remains invisible until authentic controller close, then publishes at (window_end_ps,0,Publication), without evaluation coordinates. Original retry and output custody persist until acknowledgement; lost responses never authorize reexecution. The native adapter rejects nonempty input before staging or execution. Application park does not certify physical suspension. Capture, fork, reset and continuation are unsupported.";
+
+const CLOSED_CONFIGURATION_SCHEMA: &str = "reference-device/configuration-closed-v1: closed JSON object with schema_version integral 1, positive canonical decimal u64 quantum_ps and host_budget_ns, phase_ps string 0, maximum_input_bytes equal to the installed companion ceiling, ordering_profile string superdense-v1, window_semantics_ref complete CNP ContentRef for closed ingress, checksum_multiplier string 257, checksum_modulus string 18446744073709551616, and input_policy string closed-no-ingress. No extensions, side-input source, or public input lane exists. The exclusive native adapter accepts authenticated empty original input cuts only. Other fields are refused.";
 
 #[cfg(test)]
 #[path = "profile_tests.rs"]

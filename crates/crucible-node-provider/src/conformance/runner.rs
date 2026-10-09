@@ -19,6 +19,9 @@ use super::{
 #[path = "blob.rs"]
 mod incoming_blob;
 
+#[path = "identity.rs"]
+mod identity;
+
 /// Supplies a bounded independent peer transport without granting native authority.
 pub trait ProbeSession {
     /// Returns independently observed local peer facts, when available.
@@ -191,6 +194,20 @@ impl Runner<'_> {
 
     fn step(&mut self, step: &ProbeStep, result: &mut CheckResult) -> Result<(), ProviderError> {
         match step {
+            ProbeStep::Identity {
+                kind,
+                value,
+                identity_binding,
+                ..
+            } => {
+                let value = resolve(value, &self.bindings, 0)?;
+                let identity = identity::project(*kind, value)?;
+                self.retain_binding(
+                    identity_binding.as_str(),
+                    serde_json::to_value(identity)
+                        .map_err(crucible_node_contract::ContractError::from)?,
+                )
+            }
             ProbeStep::ReceiveBlob {
                 reference,
                 maximum_chunks,
@@ -473,8 +490,9 @@ impl Runner<'_> {
         else {
             return Ok(());
         };
+        let expected_session = request.resume_session.as_ref().map(|_| &result.session_id);
         if request.session_id != result.session_id
-            || reply.session_id.0.as_ref() != Some(&result.session_id)
+            || reply.session_id.0.as_ref() != expected_session
             || reply.incarnation_id.0.as_ref() != Some(&result.incarnation_id)
             || request.controller_nonce != result.controller_nonce
             || !request.versions.contains(&result.version)
@@ -550,6 +568,12 @@ fn check_shape(expected: &Expectation, shape: &ResponseShape) -> Result<(), Prov
 
 fn check_method(check: CheckKind, method: Method, body: &RequestBody) -> Result<(), ProviderError> {
     let permitted = match check {
+        CheckKind::ContentTransfer => matches!(
+            method,
+            Method::BlobBegin | Method::BlobChunk | Method::BlobFinish
+        ),
+        CheckKind::WorldActivation => method == Method::WorldActivate,
+        CheckKind::Consumption => method == Method::Retire,
         CheckKind::Hello | CheckKind::Limits | CheckKind::UnsupportedContract => {
             method == Method::Hello
         }
@@ -640,12 +664,13 @@ fn error_category(error: &ProviderError) -> &'static str {
             "bounded transport failure; original native outcome remains unresolved"
         }
         ProviderError::Contract(_) => "closed portable schema validation failed",
-        ProviderError::Frame(_) => "frame or probe-plan validation failed",
-        ProviderError::Correlation(_) => "original scope, sequence or independent oracle disagreed",
-        ProviderError::ResourceExhausted(_) => {
-            "finite local or negotiated resource allowance exhausted"
-        }
-        ProviderError::Conflict(_) => "original identity or captured evidence conflicted",
+        // These variants contain only source-defined static reasons. Dynamic
+        // schema and OS diagnostics above remain suppressed because they may
+        // carry peer values, credentials, or operational paths.
+        ProviderError::Frame(reason)
+        | ProviderError::Correlation(reason)
+        | ProviderError::ResourceExhausted(reason)
+        | ProviderError::Conflict(reason) => reason,
     }
 }
 

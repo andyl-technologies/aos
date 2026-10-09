@@ -54,6 +54,11 @@ JSON. None of these local steps authenticates a native receipt or settles
 publication custody. Native publication requires its separate consumption
 operation. A request sequence may use `{"$sequence":"outgoing"}` to preserve
 both directions' actual frame sequences after finite content-transfer replies.
+`identity` decodes one selected CNP schema and applies its normative identity
+projection to a fresh private binding. Typed projections normalize equivalent
+accepted version/phase spellings and retain NodeBinding's exclusion of live
+authority. Raw arbitrary hash domains are not accepted. An empty JSON Pointer
+selects the complete original object.
 
 Request templates and assertion values resolve an exact object of this form:
 
@@ -88,7 +93,9 @@ checks rather than treating omitted tests as passing. The available obligations
 include hello and limits, unsupported contracts, descriptor/binding identity,
 paused preparation, preactivation grant refusal, inputs, bounded grants,
 capture or truthful capture refusal, duplicates, same-incarnation reconnect,
-resource limits, malformed frames, publication and release.
+resource limits, malformed frames, publication and release. Positive content
+uploads, world activation and consumed retirement each have separate check
+classifications.
 
 The runner independently decodes every ordinary request and method-specific
 reply. It checks the complete original scope, sequence, nonce, feature selection,
@@ -115,3 +122,32 @@ report hashes. Reports exclude raw control bodies, private tokens and captured
 payloads. Synthetic
 protocol-unit tests remain distinct from the actual controlled-process reference
 profile and from vendor behavioral qualification evidence.
+
+## Controlled reference-service integration
+
+The source-built integration suite launches `crucible-reference-provider` with
+its independently measured `crucible-reference-device` child. Private admission
+and bootstrap configuration travel through framed stdin; private fixture and
+socket directories are inaccessible to other users. The probes use public
+CNP/1 envelopes over the actual Unix endpoint, including the packaged runner
+CLI, rather than calling dispatcher functions or substituting reply fixtures.
+
+The suite verifies initial and resumed handshakes, original request replay and
+changed-request conflict, negotiated receiving limits, unsupported required
+features, malformed-stream fencing, and compact credential-free report output.
+Its complete native-window scenario exercises withheld preparation, graph
+admission, refusal before world activation, the complete activation transaction,
+truthful capture refusal, retained input bytes, and an actual stateful checksum
+window. It checks operation-credit exhaustion while that window's publication
+is still retained.
+
+The probe receives and verifies the original output, physical measurement,
+pending inventory, staged observation batch and stop receipt. Closing the
+window creates a separate committed batch, which is also transferred and
+verified against the fixed publication boundary. A matching consumed receipt
+then retires the original operation and acknowledges the child publication;
+shutdown confirms actual child reaping before owner release. The reference
+profile remains nondeterministic and does not advertise capture or exact
+continuation. These experiments establish protocol and custody behavior for
+this controlled checksum implementation, without qualifying CPU fidelity or
+additional vendor implementations.

@@ -100,6 +100,11 @@ impl<C: 'static> NativeJournal<C> {
             ))?;
         let key = request_key(envelope, RequestOrigin::Controller)?;
         let hash = envelope.request_hash(RequestOrigin::Controller)?;
+        if self.custody().refused_operations.contains_key(operation) {
+            return Err(ProviderError::Conflict(
+                "original operation retains a not-started refusal",
+            ));
+        }
         if let Some(existing) = self.custody().operations.get(operation) {
             if existing.retired {
                 return Err(ProviderError::Conflict("original operation retired"));
@@ -381,6 +386,20 @@ impl<C: 'static> NativeJournal<C> {
         after: U64,
         maximum_batches: usize,
     ) -> Result<PollResult, ProviderError> {
+        if let Some(refused) = self.custody().refused_operations.get(operation) {
+            if after.get() != 0 {
+                return Err(ProviderError::Correlation(
+                    "refused operation has no observations",
+                ));
+            }
+            return Ok(PollResult {
+                operation_id: operation.clone(),
+                operation_state: OperationState::NotStarted,
+                outcome: Nullable(Some(refused.outcome.clone())),
+                observations: Vec::new(),
+                next_observation_sequence: U64::new(0),
+            });
+        }
         let record = self.operation(operation)?;
         let stream = OwnerStream {
             owner: record.scope.execution_owner.clone(),
@@ -414,6 +433,13 @@ impl<C: 'static> NativeJournal<C> {
         operations
             .iter()
             .map(|id| {
+                if let Some(refused) = self.custody().refused_operations.get(id) {
+                    return Ok(ResumedOperation {
+                        operation_id: id.clone(),
+                        operation_state: OperationState::NotStarted,
+                        outcome: Nullable(Some(refused.outcome.clone())),
+                    });
+                }
                 let record = self.operation(id)?;
                 Ok(ResumedOperation {
                     operation_id: id.clone(),

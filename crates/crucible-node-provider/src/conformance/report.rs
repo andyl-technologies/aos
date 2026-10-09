@@ -47,7 +47,7 @@ pub struct CheckResult {
     pub request_identity: Option<HashRef>,
     /// Commits to the original reply, absent for credential-bearing Hello.
     pub response_identity: Option<HashRef>,
-    /// Reports a fixed diagnostic category without logging peer or secret data.
+    /// Reports a static failure reason without logging peer or secret data.
     pub diagnostic: String,
 }
 

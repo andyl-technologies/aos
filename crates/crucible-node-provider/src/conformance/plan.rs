@@ -15,6 +15,12 @@ use super::{MAX_PLAN_BYTES, MAX_PLAN_STEPS, PLAN_VERSION};
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CheckKind {
+    /// Checks a positively acknowledged bounded content-transfer method.
+    ContentTransfer,
+    /// Checks the complete world activation publication transaction.
+    WorldActivation,
+    /// Checks explicit consumption and retirement of original retained custody.
+    Consumption,
     /// Checks version, nonce, feature, session and incarnation negotiation.
     Hello,
     /// Checks negotiated finite receiving ceilings.
@@ -45,6 +51,24 @@ pub enum CheckKind {
     Publication,
     /// Checks bounded shutdown and resource-release protocol behavior.
     Release,
+}
+
+/// Selects a normative CNP identity projection after typed schema validation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IdentityKind {
+    /// Selects a complete original observation batch.
+    ObservationBatch,
+    /// Selects a complete delivered input batch.
+    InputBatch,
+    /// Selects durable node compatibility, excluding live authority.
+    NodeBinding,
+    /// Selects complete owner compatibility and participants.
+    OwnerBinding,
+    /// Selects the complete admitted world compatibility.
+    WorldBinding,
+    /// Selects an immutable complete node descriptor.
+    NodeDescriptor,
 }
 
 /// Selects the exact expected common response or a fatal stream refusal.
@@ -80,6 +104,17 @@ pub struct ReplyAssertion {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ProbeStep {
+    /// Derives a typed normative identity without authenticating the object.
+    Identity {
+        /// Identifies the local typed projection step.
+        id: Id,
+        /// Selects the normative validated CNP object schema and projection.
+        kind: IdentityKind,
+        /// Contains the exact original object or its private binding template.
+        value: Value,
+        /// Names a fresh binding for the object's complete HashRef.
+        identity_binding: Id,
+    },
     /// Accepts a bounded provider-origin transfer into independent probe custody.
     ReceiveBlob {
         /// Identifies the complete content-transfer case.
@@ -152,7 +187,8 @@ impl ProbeStep {
     /// Returns the case's stable identity.
     pub fn id(&self) -> &Id {
         match self {
-            Self::ReceiveBlob { id, .. }
+            Self::Identity { id, .. }
+            | Self::ReceiveBlob { id, .. }
             | Self::CanonicalContent { id, .. }
             | Self::InspectContent { id, .. }
             | Self::Exchange { id, .. }
@@ -166,7 +202,8 @@ impl ProbeStep {
         match self {
             Self::Exchange { check, .. } => Some(*check),
             Self::Malformed { .. } => Some(CheckKind::Malformed),
-            Self::ReceiveBlob { .. }
+            Self::Identity { .. }
+            | Self::ReceiveBlob { .. }
             | Self::CanonicalContent { .. }
             | Self::InspectContent { .. }
             | Self::Disconnect { .. } => None,
@@ -237,6 +274,11 @@ impl ProbePlan {
                 ));
             }
             match step {
+                ProbeStep::Identity {
+                    identity_binding, ..
+                } => {
+                    identity_binding.validate()?;
+                }
                 ProbeStep::Exchange {
                     request,
                     assertions,
@@ -320,7 +362,7 @@ fn validate_field_oracles(
         .map(|assertion| &assertion.pointer)
         .chain(captures.values())
     {
-        if pointer.len() > 4096 || !pointer.starts_with('/') {
+        if pointer.len() > 4096 || (!pointer.is_empty() && !pointer.starts_with('/')) {
             return Err(ProviderError::Frame("invalid reply JSON pointer"));
         }
     }

@@ -121,6 +121,7 @@ fn hello_reply() -> Value {
         }),
     );
     reply["message"] = json!("response");
+    reply["session_id"] = Value::Null;
     reply
 }
 
@@ -429,6 +430,59 @@ fn provider_content_requires_complete_bytes_and_preserves_both_direction_sequenc
     assert!(report.passed());
     assert!(report.results[1].request_identity.is_some());
     assert!(report.results[1].response_identity.is_some());
+}
+
+#[test]
+fn identity_uses_typed_normative_projection_for_equivalent_version_spelling() {
+    use crucible_node_contract::InputBatch;
+
+    let batch = InputBatch {
+        schema_version: 1,
+        execution_owner_id: id("checksum-owner"),
+        input_epoch: id("fixture-input"),
+        batch_id: id("batch/1"),
+        batch_sequence: 1.into(),
+        events: Vec::new(),
+        extensions: BTreeMap::new(),
+    };
+    let expected = batch.identity().unwrap();
+    let mut object = serde_json::to_value(batch).unwrap();
+    object["schema_version"] = json!(1.0);
+    let steps = vec![
+        hello_step(),
+        ProbeStep::Identity {
+            id: id("typed-batch-identity"),
+            kind: IdentityKind::InputBatch,
+            value: object,
+            identity_binding: id("batch-hash"),
+        },
+        ProbeStep::CanonicalContent {
+            id: id("identity-record"),
+            value: json!({"identity":{"$binding":"batch-hash"}}),
+            reference_binding: id("record-ref"),
+            bytes_binding: id("record-bytes"),
+        },
+        ProbeStep::InspectContent {
+            id: id("normative-identity-oracle"),
+            reference: json!({"$binding":"record-ref"}),
+            bytes: json!({"$binding":"record-bytes"}),
+            assertions: vec![ReplyAssertion {
+                pointer: "/identity".into(),
+                equals: serde_json::to_value(expected).unwrap(),
+            }],
+            captures: BTreeMap::new(),
+        },
+    ];
+    let mut connector = SyntheticConnector {
+        replies: Some(VecDeque::from([Some(hello_reply())])),
+    };
+    let report = run(
+        &plan(steps, BTreeSet::from([CheckKind::Hello])),
+        &mut connector,
+        private_bindings(),
+    )
+    .unwrap();
+    assert!(report.passed());
 }
 
 #[cfg(target_os = "linux")]

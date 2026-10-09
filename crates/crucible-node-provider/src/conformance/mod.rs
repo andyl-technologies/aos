@@ -21,7 +21,7 @@ mod runner;
 #[cfg(target_os = "linux")]
 mod unix;
 
-pub use plan::{CheckKind, Expectation, ProbePlan, ProbeStep, ReplyAssertion};
+pub use plan::{CheckKind, Expectation, IdentityKind, ProbePlan, ProbeStep, ReplyAssertion};
 pub use report::{CheckDisposition, CheckResult, ConformanceReport, EndpointMeasurement};
 pub use runner::{ProbeConnector, ProbeSession, run};
 #[cfg(target_os = "linux")]
