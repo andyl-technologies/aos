@@ -1,0 +1,20 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -253,8 +253,17 @@
+           -I "${CMAKE_CURRENT_BINARY_DIR}"
+           -I "${FBTHRIFT_INCLUDE_DIR}"
+           ${FILE}
++        COMMAND_ERROR_IS_FATAL ANY
+         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+       )
++
++    # Some compiler failures return success after printing usage. Require
++    # the generated public header before configuring any consumers.
++    get_filename_component(THRIFT_BASENAME "${FILE}" NAME_WE)
++    if(NOT EXISTS "${OUTPUT_PATH}/gen-cpp2/${THRIFT_BASENAME}_types.h")
++        message(FATAL_ERROR
++            "Thrift compiler did not generate ${THRIFT_BASENAME}_types.h")
++    endif()
+ endforeach()
+ 
+ 

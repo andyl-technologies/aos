@@ -1,0 +1,35 @@
+--- a/algopt/rebalancer/solver/moves/tests/MoveSetTest.cpp
++++ b/algopt/rebalancer/solver/moves/tests/MoveSetTest.cpp
+@@ -17,6 +17,7 @@
+ #include "algopt/rebalancer/solver/moves/MoveSet.h"
+ #include "algopt/rebalancer/solver/tests/IdConverterTestUtils.h"
+ 
++#include <fmt/format.h>
+ #include <folly/container/irange.h>
+ #include <gtest/gtest.h>
+ 
+@@ -102,12 +103,20 @@
+ 
+   const auto universe = builder.buildUniverse();
+   const auto result = moves.toString(*universe);
+-  EXPECT_EQ(
++  // IDs reflect registration from an unordered assignment map, so retain
++  // the complete formatting assertion without depending on its iteration order.
++  const auto expected = fmt::format(
+       "[\n"
+-      "  Object = task1 (id: 0), Source Container = host1 (id: 0), Destination Container = host3 (id: 1)\n"
+-      "  Object = task2 (id: 1), Source Container = host2 (id: 2), Destination Container = host3 (id: 1)\n"
++      "  Object = task1 (id: {}), Source Container = host1 (id: {}), Destination Container = host3 (id: {})\n"
++      "  Object = task2 (id: {}), Source Container = host2 (id: {}), Destination Container = host3 (id: {})\n"
+       "]",
+-      result);
++      builder.object("task1").asInt(),
++      builder.container("host1").asInt(),
++      builder.container("host3").asInt(),
++      builder.object("task2").asInt(),
++      builder.container("host2").asInt(),
++      builder.container("host3").asInt());
++  EXPECT_EQ(expected, result);
+ }
+ 
+ TEST(MoveSetTest, EmptyToString) {
