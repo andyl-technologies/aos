@@ -18,8 +18,8 @@
 //! Effect key: operation-id[16] | step:u32be
 //! ```
 //!
-//! A zero runtime-digest slot means absence. Decoding rejects a zero Operation
-//! identity, while Effect key construction preserves every supplied identity.
+//! A zero runtime-digest slot means absence. Operation key decoding rejects a
+//! zero identity, while Effect key construction preserves every supplied identity.
 //! Public metadata uses the separate [`super::public_operation`] DATA format.
 //!
 //! # Examples
@@ -160,8 +160,8 @@ pub fn effect_key(operation_id: OperationId, step: u32) -> [u8; EFFECT_KEY_BYTES
 /// Decodes the fixed-width nonzero Operation identity key.
 ///
 /// # Errors
-/// Returns [`PublicOperationDataError::CorruptLedger`] for a non-16-byte key
-/// before checking whether its identity is zero.
+/// Returns [`PublicOperationDataError::CorruptLedger`] for a non-16-byte key or
+/// a zero identity. The length check precedes the zero-identity check.
 pub fn decode_operation_key(bytes: &[u8]) -> Result<OperationId, PublicOperationDataError> {
     let value: [u8; OPERATION_KEY_BYTES] = bytes
         .try_into()
