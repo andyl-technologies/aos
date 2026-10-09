@@ -92,10 +92,15 @@ pub(super) const CONTRACTS: &[Contract] = &[Contract {
             "let original = supervisor.begin(HostOperationClass::Transfer)",
             r#"let marks = SqliteBlobBackend::open_with_physical_quota(
                 "component-gc-marks", scratch.path(), Arc::clone(&resources),
-                8 * 1024 * 1024, sqlite,
+                8 * 1024 * 1024, sqlite.clone(),
                 &crucible_cas::content_store::fixture_sqlite_heap()
                     .expect("authored SQLite fixture process"),
             )"#,
+            "sqlite: Arc<ComponentSqliteSupervisor>",
+            "_scratch: scratch, sqlite,",
+            r#"pub(in crate::campaign_gc) fn supervision(&self) -> HostOperationSupervisor {
+                self.sqlite.supervisor.clone()
+            }"#,
             r#"boundary: Box::new(move || {
                 original.wait_slice().map(|_| ()).map_err(supervision_error)
             })"#,
@@ -253,6 +258,15 @@ mod tests {
             ),
             ("8 * 1024 * 1024", "9 * 1024 * 1024"),
             ("original.wait_slice()", "foreign.wait_slice()"),
+            ("sqlite.clone()", "foreign_sqlite.clone()"),
+            (
+                "_scratch: scratch, sqlite,",
+                "_scratch: scratch, sqlite: foreign_sqlite,",
+            ),
+            (
+                "self.sqlite.supervisor.clone()",
+                "foreign.supervisor.clone()",
+            ),
         ] {
             let compact = pattern(&companions[0]);
             let before = pattern(before);

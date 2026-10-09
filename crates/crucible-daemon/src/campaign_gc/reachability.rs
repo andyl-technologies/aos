@@ -25,6 +25,9 @@ mod metadata_lifecycle;
 #[cfg(test)]
 mod batched_tests;
 
+#[cfg(test)]
+mod membership_tests;
+
 pub(super) struct Reachability {
     map: MerkleMap,
     root: MerkleMapRoot,
@@ -181,12 +184,36 @@ impl Reachability {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(super) fn contains(&self, id: &ContentId) -> Result<bool, StoreError> {
         let account = mark_account(&self.original)?;
         let _scope = account.enter();
         let value = self
             .map
             .get(self.root.content_id(), mark_key(*id))
+            .map_err(|source| self.failure("authenticate GC mark", source))?;
+        account
+            .check()
+            .map_err(|error| mark_admission(&account, error))?;
+        match value {
+            None => Ok(false),
+            Some(found) if found == *id => Ok(true),
+            Some(_) => Err(StoreError::Corrupt {
+                id: self.root.content_id(),
+            }),
+        }
+    }
+
+    pub(super) fn contains_with_boundary(
+        &self,
+        id: &ContentId,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<bool, StoreError> {
+        let account = mark_account(&self.original)?;
+        let _scope = account.enter();
+        let value = self
+            .map
+            .get_with_boundary(self.root.content_id(), mark_key(*id), &account, boundary)
             .map_err(|source| self.failure("authenticate GC mark", source))?;
         account
             .check()

@@ -617,7 +617,7 @@ where
             .map_err(CampaignGcApplyError::Reachability)?;
         if matches!(candidate.reason(), CampaignGcCandidateReason::Unreachable)
             && current_reachable
-                .contains(&candidate.id())
+                .contains_with_boundary(&candidate.id(), &mut || operation.check())
                 .map_err(CampaignGcApplyError::Reachability)?
         {
             return Err(CampaignGcApplyError::CandidateBecameReachable { id: candidate.id() });
@@ -691,7 +691,7 @@ where
         let cache_role = physical[cache_index].graph().retention(kind);
         let source_role = physical[source_index].graph().retention(kind);
         if !current_reachable
-            .contains(&candidate.id())
+            .contains_with_boundary(&candidate.id(), &mut || operation.check())
             .map_err(CampaignGcApplyError::Reachability)?
             || candidate.backend() == required_backend
             || cache_role != Some(StoreGraphPhysicalRetention::Cache)

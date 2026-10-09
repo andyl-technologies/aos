@@ -324,7 +324,9 @@ fn retained_original_bytes(original: &Original) -> u64 {
         .bank
         .reserve_resources(0, 0, 1)
         .expect("one-byte observer body");
-    let (probe, identity) = TestAllocationObserver::capture(1, || Box::new(0_u8));
+    // The probe must physically allocate even when capture is inlined.
+    let (probe, identity) =
+        TestAllocationObserver::capture(1, || std::hint::black_box(Box::new(0_u8)));
     let ((), paid) =
         TestAllocationObserver::observe(&original.bank, identity.expect("observer body"), || {
             drop(probe)

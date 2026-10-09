@@ -5,6 +5,7 @@
 //! filesystem quota or native paging admission.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use crucible_cas::content_store::{
@@ -26,6 +27,7 @@ pub(crate) struct ComponentGcOperation {
     decoding: DecodeBudget,
     boundary: Box<dyn FnMut() -> Result<(), StoreError>>,
     _scratch: tempfile::TempDir,
+    sqlite: Arc<ComponentSqliteSupervisor>,
 }
 
 impl ComponentGcOperation {
@@ -55,13 +57,14 @@ impl ComponentGcOperation {
         let sqlite = Arc::new(ComponentSqliteSupervisor {
             resources: Arc::clone(&resources),
             supervisor,
+            reads: AtomicU64::new(0),
         });
         let marks = SqliteBlobBackend::open_with_physical_quota(
             "component-gc-marks",
             scratch.path(),
             Arc::clone(&resources),
             8 * 1024 * 1024,
-            sqlite,
+            sqlite.clone(),
             &crucible_cas::content_store::fixture_sqlite_heap()
                 .expect("authored SQLite fixture process"),
         )
@@ -75,12 +78,28 @@ impl ComponentGcOperation {
                 original.wait_slice().map(|_| ()).map_err(supervision_error)
             }),
             _scratch: scratch,
+            sqlite,
         }
     }
 
     /// Borrows the finite fixture account for lifetime assertions.
-    pub(super) fn resources(&self) -> Arc<dyn StorePhysicalQuotaGuard> {
+    pub(in crate::campaign_gc) fn resources(&self) -> Arc<dyn StorePhysicalQuotaGuard> {
         Arc::clone(&self.resources)
+    }
+
+    /// Borrows the real catalog directory for independent row-corruption controls.
+    pub(in crate::campaign_gc) fn scratch_path(&self) -> &std::path::Path {
+        self._scratch.path()
+    }
+
+    /// Counts actual catalog read operations, independently of SQL queries.
+    pub(in crate::campaign_gc) fn read_starts(&self) -> u64 {
+        self.sqlite.reads.load(Ordering::Relaxed)
+    }
+
+    /// Clones the existing original supervisor for exact cancellation controls.
+    pub(in crate::campaign_gc) fn supervision(&self) -> HostOperationSupervisor {
+        self.sqlite.supervisor.clone()
     }
 
     /// Borrows the same original scope and scratch authority for all GC calls.
@@ -97,6 +116,7 @@ impl ComponentGcOperation {
 struct ComponentSqliteSupervisor {
     resources: Arc<dyn StorePhysicalQuotaGuard>,
     supervisor: HostOperationSupervisor,
+    reads: AtomicU64,
 }
 
 impl SqliteCatalogSupervisor for ComponentSqliteSupervisor {
@@ -112,7 +132,10 @@ impl SqliteCatalogSupervisor for ComponentSqliteSupervisor {
         kind: SqliteCatalogOperationKind,
     ) -> Result<Box<dyn SqliteCatalogOperation>, StoreError> {
         let class = match kind {
-            SqliteCatalogOperationKind::Read => HostOperationClass::PageIn,
+            SqliteCatalogOperationKind::Read => {
+                self.reads.fetch_add(1, Ordering::Relaxed);
+                HostOperationClass::PageIn
+            }
             SqliteCatalogOperationKind::Write => HostOperationClass::Writeback,
         };
         self.supervisor

@@ -672,7 +672,7 @@ where
         let summary = fence
             .visit_inventory(&mut |record| {
                 operation.check()?;
-                if !reachable.contains(&record.id())? {
+                if !reachable.contains_with_boundary(&record.id(), &mut || operation.check())? {
                     if candidates.len() >= MAX_CAMPAIGN_GC_MANIFEST_ENTRIES {
                         return Ok(());
                     }
@@ -752,7 +752,7 @@ where
         let summary = fence
             .visit_inventory(&mut |record| {
                 operation.check()?;
-                if !reachable.contains(&record.id())?
+                if !reachable.contains_with_boundary(&record.id(), &mut || operation.check())?
                     && candidates.len() < MAX_CAMPAIGN_GC_MANIFEST_ENTRIES
                 {
                     candidates.push(
@@ -837,7 +837,7 @@ where
                 if candidates.len() >= MAX_CAMPAIGN_GC_MANIFEST_ENTRIES
                     || cache.graph().retention(record.id().kind())
                         != Some(StoreGraphPhysicalRetention::Cache)
-                    || !reachable.contains(&record.id())?
+                    || !reachable.contains_with_boundary(&record.id(), &mut || operation.check())?
                 {
                     return Ok(());
                 }
