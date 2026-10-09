@@ -134,6 +134,8 @@ in
           test -s "$out/lib/libiberty.a"
           mkdir -p "$out/share/licenses/libiberty"
           cp COPYING.LIB "$out/share/licenses/libiberty/"
+          cp ../COPYING "$out/share/licenses/libiberty/"
+          sed -n '1,/^\*\//p' cp-demangle.c > "$out/share/licenses/libiberty/LINKING-EXCEPTION"
         '';
       }
     ];
@@ -141,6 +143,7 @@ in
     meta = {
       description = "GNU portable support functions and C++ symbol demangling";
       homepage = "https://www.gnu.org/software/binutils/";
-      license = "LGPL-2.1-or-later";
+      # Demangler sources grant an additional unrestricted linking permission.
+      license = "LGPL-2.1-or-later AND GPL-2.0-or-later";
     };
   }

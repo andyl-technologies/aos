@@ -146,7 +146,15 @@ in
         script = ''
           cmake --install build
           mkdir -p "$out/share/licenses/highs"
-          cp LICENSE.txt "$out/share/licenses/highs/"
+          cp LICENSE.txt THIRD_PARTY_NOTICES.md "$out/share/licenses/highs/"
+          for notice in extern/amd/License.txt extern/metis/LICENSE.txt \
+            extern/pdqsort/license.txt extern/rcm/LICENSE extern/zstr/LICENSE \
+            highs/io/filereaderlp/LICENSE; do
+            mkdir -p "$out/share/licenses/highs/$(dirname "$notice")"
+            cp "$notice" "$out/share/licenses/highs/$notice"
+          done
+          sed -n '1,/^#pragma once/p' extern/CLI11.hpp \
+            > "$out/share/licenses/highs/CLI11-NOTICE"
         '';
       }
     ];
@@ -154,6 +162,6 @@ in
     meta = {
       description = "High performance linear and mixed integer optimization";
       homepage = "https://highs.dev";
-      license = "MIT";
+      license = "MIT AND BSD-3-Clause AND Zlib";
     };
   }

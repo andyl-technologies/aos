@@ -139,6 +139,8 @@ in
         name = "install";
         script = ''
           cmake --install build
+          mkdir -p $out/share/licenses/fast-float
+          cp LICENSE-APACHE LICENSE-BOOST LICENSE-MIT AUTHORS $out/share/licenses/fast-float/
         '';
       }
     ];

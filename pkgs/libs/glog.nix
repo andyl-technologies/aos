@@ -168,6 +168,8 @@ in
         name = "install";
         script = ''
           cmake --install build
+          mkdir -p $out/share/licenses/glog
+          cp COPYING AUTHORS $out/share/licenses/glog/
         '';
       }
     ];

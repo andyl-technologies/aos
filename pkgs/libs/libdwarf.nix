@@ -163,6 +163,35 @@ in
         name = "install";
         script = ''
           cmake --install build
+          mkdir -p $out/share/licenses/libdwarf
+          cp COPYING AUTHORS $out/share/licenses/libdwarf/
+          cp src/lib/libdwarf/LGPL.txt src/lib/libdwarf/LIBDWARFCOPYRIGHT \
+            src/bin/dwarfdump/GPL.txt src/bin/dwarfdump/DWARFDUMPCOPYRIGHT \
+            $out/share/licenses/libdwarf/
+
+          # BSD contributors place their binary-distribution notices in source
+          # comments. Preserve each notice verbatim alongside the component texts.
+          python3 - "$out/share/licenses/libdwarf/BSD-NOTICES.txt" <<'PY'
+          import pathlib
+          import re
+          import sys
+
+          notices = []
+          for directory in ("src/lib", "src/bin/dwarfdump"):
+              for source in sorted(pathlib.Path(directory).rglob("*")):
+                  if not source.is_file() or source.suffix not in (".c", ".h"):
+                      continue
+
+                  for comment in re.findall(r"/\*.*?\*/", source.read_text(), re.DOTALL):
+                      words = comment.lower()
+                      if "copyright" in words and "redistribution" in words:
+                          notices.append(f"{source}\n{comment}\n")
+
+          if not notices:
+              raise SystemExit("libdwarf BSD notices were not found")
+
+          pathlib.Path(sys.argv[1]).write_text("\n".join(notices))
+          PY
         '';
       }
     ];
@@ -170,6 +199,6 @@ in
     meta = {
       description = "DWARF debugging information reader and writer";
       homepage = "https://www.prevanders.net/dwarf.html";
-      license = "LGPL-2.1-or-later AND BSD-2-Clause";
+      license = "LGPL-2.1-only AND GPL-2.0-only AND BSD-2-Clause AND BSD-3-Clause";
     };
   }

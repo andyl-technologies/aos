@@ -154,6 +154,8 @@ in
         name = "install";
         script = ''
           cmake --install build
+          mkdir -p $out/share/licenses/gflags
+          cp COPYING.txt AUTHORS.txt $out/share/licenses/gflags/
         '';
       }
     ];
