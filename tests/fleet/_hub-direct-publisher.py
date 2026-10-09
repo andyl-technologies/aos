@@ -149,7 +149,11 @@ def prepare_direct_signed_surface(client, python, apr, git, openssh, nix,
             result = subprocess.run(arguments, cwd={publication_project!r}, env=environment, capture_output=True,
                 timeout=180, check=False)
             if result.returncode:
-                raise ValueError('actual signed publisher preparation refused')
+                # The enclosing private command retains this traceback in
+                # owner-private files, without rendering it in the driver log.
+                raise ValueError('actual signed publisher preparation refused: '
+                    + arguments[1] + ' (exit ' + str(result.returncode) + ')\\n'
+                    + result.stderr.decode(errors='replace'))
             return result.stdout + result.stderr
 
         generated = run([{apr!r}, 'keys', 'generate', 'initial', '--registry', name])

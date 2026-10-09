@@ -8,8 +8,11 @@ It grants no storage admission, credential validation or provider acceptance.
 import base64
 import hashlib
 import json
+import os
+from pathlib import Path
 import re
 import shlex
+import tempfile
 import textwrap
 
 
@@ -96,13 +99,23 @@ def private_guest_command(machine, command, timeout=60):
     # refusal before they reach the driver log.
     prefix = "# Private fixture input: command contents and output are not logged.\n"
     try:
-        status, stdout, _ = machine.agent.request(
+        status, stdout, stderr = machine.agent.request(
             (prefix + command).encode(), timeout=timeout,
         )
     except Exception:
         raise RuntimeError("private operator fixture command failed in transport") from None
     if status != 0:
-        raise RuntimeError(f"private operator fixture command failed with exit {status}")
+        # Preserve bounded diagnostics for the operator, never in the driver
+        # log. Keeping a failed build retains this owner-private directory.
+        directory = Path(tempfile.mkdtemp(prefix="private-command-failure-", dir="."))
+        for name, body in (("stdout", stdout), ("stderr", stderr)):
+            descriptor = os.open(directory / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, "wb") as output:
+                output.write(body[:1024 * 1024])
+        raise RuntimeError(
+            f"private operator fixture command failed with exit {status}; "
+            f"private diagnostics: {directory.name}"
+        )
     return stdout.decode()
 
 
