@@ -180,11 +180,11 @@
     ++ failuresFor "crates/crucible/testing/crucible-test-support/tests/gate_target_mapping.rs" gateTargetMappingTest [
       {
         label = "fleet-equivalence target mapping test";
-        needle = "\"gate:fleet-equivalence\",\n                \"crucible\",\n                \"gate_fleet_equivalence\"";
+        needle = "\"gate:fleet-equivalence\",\n                \"crucible-engine\",\n                \"gate_fleet_equivalence\"";
       }
       {
         label = "campaign-continuity target mapping test";
-        needle = "\"gate:campaign-continuity\",\n                \"crucible-cas\",\n                \"gate_campaign_continuity\"";
+        needle = "\"gate:campaign-continuity\",\n                \"crucible-store\",\n                \"gate_campaign_continuity\"";
       }
     ]
     ++ failuresFor "tests/crucible/phase1-phase-gate-wiring.nix" phaseGateWiring [

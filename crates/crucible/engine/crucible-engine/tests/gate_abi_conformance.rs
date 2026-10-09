@@ -59,9 +59,9 @@ fn assert_frozen_golden_vectors(expected_abis: &[BoundaryAbi]) {
         .filter(|target| target.gate == "gate:abi-conformance")
         .map(|target| target.package)
         .collect::<BTreeSet<_>>();
-    assert!(implemented_targets.contains("crucible-shmem"));
-    assert!(implemented_targets.contains("crucible-protocol"));
-    assert!(implemented_targets.contains("crucible-api"));
+    assert!(implemented_targets.contains("crucible-qemu-shmem"));
+    assert!(implemented_targets.contains("crucible-qemu-protocol"));
+    assert!(implemented_targets.contains("crucible-control-api"));
     assert!(implemented_targets.contains("crucible-qemu-plugin"));
 }
 
@@ -79,7 +79,7 @@ fn assert_decode_encode_roundtrip() {
 fn assert_abi_version_field() {
     assert!(gate_targets().iter().any(|target| {
         target.gate == "gate:abi-conformance"
-            && target.package == "crucible"
+            && target.package == "crucible-engine"
             && target.required_features == ["test-double"].as_slice()
     }));
 }
@@ -101,7 +101,7 @@ fn assert_structure_aware_fuzz_corpus() {
         .filter(|target| target.gate == "gate:abi-conformance")
         .map(|target| (target.package, target.test_target))
         .collect::<BTreeSet<_>>();
-    assert!(target_pairs.contains(&("crucible-protocol", "gate_abi_conformance")));
+    assert!(target_pairs.contains(&("crucible-qemu-protocol", "gate_abi_conformance")));
     assert!(target_pairs.contains(&("crucible-qemu-plugin", "gate_abi_conformance")));
 }
 

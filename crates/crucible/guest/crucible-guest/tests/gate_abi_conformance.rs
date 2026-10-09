@@ -302,10 +302,12 @@ fn manifest_file(path: &str) -> String {
 }
 
 fn repo_file(path: &str) -> String {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+    let Some(root) = Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
         .find(|candidate| candidate.join("crates/Cargo.toml").is_file())
-        .expect("guest test must be inside the repository Cargo workspace");
+    else {
+        panic!("guest test must be inside the repository Cargo workspace");
+    };
     std::fs::read_to_string(root.join(path))
         .unwrap_or_else(|error| panic!("failed to read repository file {path}: {error}"))
 }

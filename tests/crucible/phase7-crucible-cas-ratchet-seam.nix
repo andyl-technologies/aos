@@ -8,6 +8,8 @@
   casSource = builtins.readFile ../../crates/crucible/storage/crucible-store/src/lib.rs;
   casManifest = builtins.readFile ../../crates/crucible/storage/crucible-store/Cargo.toml;
   defaultChecks = builtins.readFile ./default.nix;
+  standaloneDependencyLint = builtins.readFile ./phase1-standalone-dependencies.nix;
+  inherit (import ./_workspace-packages.nix {inherit lib;}) cruciblePackages;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
@@ -66,8 +68,8 @@
         needle = "crucibleCasRatchetSeam = import ./phase7-crucible-cas-ratchet-seam.nix";
       }
     ]
-    ++ lib.optionals (!(hasInfix "\"crucible-cas\"" (builtins.readFile ./phase1-standalone-dependencies.nix))) [
-      "tests/crucible/phase1-standalone-dependencies.nix: structured standalone dependency lint must include crucible-cas"
+    ++ lib.optionals (!(builtins.elem "crucible-store" cruciblePackages && hasInfix "packages = cruciblePackages;" standaloneDependencyLint)) [
+      "tests/crucible/phase1-standalone-dependencies.nix: structured standalone dependency lint must include crucible-store"
     ]
     ++ lib.optionals (!(hasInfix "forbiddenExactNames = [\"ratchet\" \"aos-nix\"];" (builtins.readFile ./phase1-standalone-dependencies.nix))) [
       "tests/crucible/phase1-standalone-dependencies.nix: structured standalone dependency lint must reject exact ratchet/aos-nix names"

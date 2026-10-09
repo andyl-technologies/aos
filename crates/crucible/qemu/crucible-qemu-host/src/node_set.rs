@@ -13,8 +13,8 @@ use std::thread;
 
 use crucible_engine::{
     BackendEffect, BackendError, BackendNetworkOutput, BackendPhysicalStop, BackendRngEvidence,
-    BackendSnapshot, FingerprintSample, Icount, NodeId, ObservableEvent, ObservableEventPayload,
-    SimulationBackend, StepObservation, VirtualTime,
+    BackendSnapshot, FingerprintSample, Icount, NodeId, ObservableEvent, SimulationBackend,
+    StepObservation, VirtualTime,
 };
 #[cfg(target_os = "linux")]
 use crucible_engine::{ContentHash, EventLog};
@@ -33,11 +33,13 @@ use crate::{
     QemuHotForkTemplateIdentity, QemuHotForkTemplatePreparer, QemuLaunchResourceRequirements,
     QemuProcessIdentity,
 };
-use crate::{QemuLogicalTimeCalibration, QemuNode, QemuNodeError, QemuNodeIdleState};
+use crate::{QemuNode, QemuNodeError, QemuNodeIdleState};
 
 #[cfg(target_os = "linux")]
 #[path = "node_set/block_boundary.rs"]
 mod block_boundary;
+#[path = "node_set/campaign_marker_boundary.rs"]
+mod campaign_marker_boundary;
 #[path = "node_set/collection.rs"]
 mod collection;
 #[path = "node_set/concurrent.rs"]
@@ -53,6 +55,8 @@ mod lifecycle;
 #[cfg(target_os = "linux")]
 pub use block_boundary::QemuNodeSetBlockBoundaryCheckpoint;
 pub use concurrent::QemuHostParallelismEvidence;
+
+use campaign_marker_boundary::campaign_marker_parked_at;
 
 /// A fully validated, no-fail terminal node-generation map update.
 pub struct QemuNodeTerminalReplacementPlan {
@@ -538,88 +542,10 @@ impl QemuCampaignMarkerBoundaryDiagnostic {
     }
 }
 
-const CAMPAIGN_BOUNDARY_MARKERS: [&str; 2] = ["fault.transport.ready", "fault.followup.ready"];
-
-fn campaign_marker_parked_at(
-    node: &NodeId,
-    physical_icount: Icount,
-    calibration: QemuLogicalTimeCalibration,
-    events: &[ObservableEvent],
-) -> Result<Option<QemuParkedCampaignMarker>, BackendError> {
-    let mut matched = None;
-    for event in events {
-        let ObservableEventPayload::GuestMarker {
-            retired_icount,
-            node: marker_node,
-            marker,
-        } = event.payload()
-        else {
-            continue;
-        };
-        if marker_node != node || !CAMPAIGN_BOUNDARY_MARKERS.contains(&marker.name.as_str()) {
-            continue;
-        }
-        // The trap reports its instruction's pre-retirement raw count. The
-        // stopped slot independently pairs the post-instruction raw count with
-        // its scheduler-visible logical tick.
-        let post_raw =
-            retired_icount
-                .retired
-                .checked_add(1)
-                .ok_or_else(|| BackendError::Rejected {
-                    message: format!("QEMU node `{}` marker retired count overflowed", node.name),
-                })?;
-        let logical_offset_picoseconds = calibration
-            .offset()
-            .map_err(|source| BackendError::Rejected {
-                message: format!(
-                    "QEMU node `{}` campaign marker `{}` has invalid logical-time calibration: {source}",
-                    node.name, marker.name,
-                ),
-            })?;
-        let observed_tick = post_raw
-            .checked_mul(crucible_engine::SIM_TICKS_PER_INSTRUCTION)
-            .and_then(|raw_picoseconds| raw_picoseconds.checked_add(logical_offset_picoseconds))
-            .ok_or_else(|| BackendError::Rejected {
-                message: format!(
-                    "QEMU node `{}` campaign marker `{}` logical coordinate overflowed",
-                    node.name, marker.name,
-                ),
-            })?;
-        let diagnostic = QemuCampaignMarkerBoundaryDiagnostic {
-            node: node.clone(),
-            marker: marker.name.clone(),
-            pre_raw: retired_icount.retired,
-            post_raw,
-            observed_tick,
-            logical_offset_picoseconds,
-            marker_event_raw: retired_icount.retired,
-            physical_stop_raw: calibration.raw_icount,
-            physical_stop_tick: physical_icount.retired,
-        };
-        if !diagnostic.proves_exact_stop() || matched.is_some() {
-            return Err(BackendError::Rejected {
-                message: format!(
-                    "QEMU node `{}` campaign marker `{}` at {} does not uniquely prove physical stop {}; {diagnostic}",
-                    node.name, marker.name, retired_icount.retired, physical_icount.retired,
-                ),
-            });
-        }
-        matched = Some(QemuParkedCampaignMarker {
-            marker: marker.name.clone(),
-            marker_icount: *retired_icount,
-            physical_raw_icount: Icount {
-                retired: calibration.raw_icount,
-            },
-            physical_icount,
-        });
-    }
-    Ok(matched)
-}
-
 #[cfg(test)]
 mod campaign_marker_parking_tests {
     use super::*;
+    use crate::QemuLogicalTimeCalibration;
     use crucible_engine::MarkerId;
 
     #[test]

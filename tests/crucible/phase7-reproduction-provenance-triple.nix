@@ -26,15 +26,15 @@
   cliDevDependencies = cliManifestToml."dev-dependencies" or {};
   cliRuntimeProtocolBypasses =
     builtins.filter (
-      table: builtins.hasAttr "crucible-protocol" table.dependencies
+      table: builtins.hasAttr "crucible-qemu-protocol" table.dependencies
     )
     cliRuntimeDependencyTables;
   cliManifestDependencyFailures =
     lib.optional
-    (!(builtins.hasAttr "crucible-api" cliManifestToml.dependencies))
+    (!(builtins.hasAttr "crucible-control-api" cliManifestToml.dependencies))
     "crates/crucible/control/crucible-cli/Cargo.toml: missing CLI control-plane API dependency"
     ++ lib.optional
-    (!(builtins.hasAttr "crucible-protocol" cliDevDependencies))
+    (!(builtins.hasAttr "crucible-qemu-protocol" cliDevDependencies))
     "crates/crucible/control/crucible-cli/Cargo.toml: missing black-box guest protocol fixture dev dependency"
     ++ map (
       table: "crates/crucible/control/crucible-cli/Cargo.toml ${table.scope}: forbidden production CLI bypass of the API protocol re-export"
@@ -274,8 +274,12 @@
         needle = "RPC_PROTOCOL_BUILD, RPC_PROTOCOL_MAJOR,";
       }
       {
-        label = "CLI reads RPC ABI patch constants";
-        needle = "RPC_PROTOCOL_MINOR, RPC_PROTOCOL_PATCH";
+        label = "CLI reads RPC ABI minor constant";
+        needle = "RPC_PROTOCOL_MINOR,";
+      }
+      {
+        label = "CLI reads RPC ABI patch constant";
+        needle = "RPC_PROTOCOL_PATCH,";
       }
       {
         label = "CLI identity carries QEMU atomic-patch hash";
