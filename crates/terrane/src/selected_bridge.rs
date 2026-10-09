@@ -149,6 +149,17 @@ impl OwnedFinalCheck {
         }
     }
 
+    /// Retains actual maintenance descriptors alongside genuine current authority.
+    ///
+    /// The one-element prefix preserves the same current-pair-current ordering
+    /// as complete collector prefixes and retains the actual native receipt.
+    pub(crate) fn with_restore_pair(
+        &self,
+        pair: &crate::store::native_publication_effects::NativeRestorePair,
+    ) -> Self {
+        self.with_restore_pairs(std::slice::from_ref(pair))
+    }
+
     /// Retains genuine candidate-family traversal beside current authority.
     ///
     /// The opaque native receipt refreshes its complete family enumeration and
