@@ -314,7 +314,12 @@ pub(super) fn encode_with_limit(
         .capture(maximum)?;
     let staged = node.staged.as_ref().map(input_wire);
     let wire = Wire {
-        schema_version: 1,
+        schema_version: if matches!(&node.model, Some(HostModel::Semantics(model)) if model.definition().version == 2)
+        {
+            2
+        } else {
+            1
+        },
         profile: HOST_EXACT_PROFILE,
         boundary: node.boundary,
         native: &native,
@@ -560,6 +565,7 @@ impl HostModelNode {
             || self.readiness.is_some()
             || self.activation_authority.is_some()
             || self.prepared_continuation.is_some()
+            || self.public_preparation.is_some()
             || !self.completed.is_empty()
             || self.staged.is_some()
             || !self.facets.contains(&FacetKind::ExactExecution)
@@ -601,7 +607,13 @@ impl HostModelNode {
         let source_scope = SourceScope::checked(source, &self.route.node, self.limits)?;
         let captured: Captured =
             serde_json::from_slice(bytes).map_err(|error| failure(&error.to_string()))?;
-        if captured.schema_version != 1
+        if captured.schema_version
+            != if matches!(&self.model, Some(HostModel::Semantics(model)) if model.definition().version == 2)
+            {
+                2
+            } else {
+                1
+            }
             || captured.profile != HOST_EXACT_PROFILE
             || captured.boundary != source.capture_cut
             || captured.operations.len() > self.limits.maximum_operations
@@ -675,13 +687,13 @@ impl HostModelNode {
                     "host captured request, result or original ACK knowledge changed",
                 ));
             }
-            let maximum_objects = operation
-                .outcome
-                .scheduling
-                .as_ref()
-                .map_or(1, |observation| {
-                    observation.publications.len().saturating_add(3)
-                });
+            let maximum_objects = operation.outcome.scheduling.as_ref().map_or_else(
+                || match &operation.outcome.progress {
+                    ProgressEvidence::AssertionsFinalized { .. } => 2,
+                    _ => 1,
+                },
+                |observation| observation.publications.len().saturating_add(3),
+            );
             if operation.evidence.len() > maximum_objects {
                 return Err(failure(
                     "captured host receipt registry exceeds original object inventory",
@@ -698,6 +710,20 @@ impl HostModelNode {
                         "captured host original receipt bytes or identities changed",
                     ));
                 }
+            }
+            if let ProgressEvidence::AssertionsFinalized {
+                barrier, report, ..
+            } = &operation.outcome.progress
+                && (captured.schema_version != 2
+                    || source.schema_version != 3
+                    || operation.outcome.scheduling.is_some()
+                    || references.len() != 2
+                    || !references.contains(barrier)
+                    || !references.contains(report))
+            {
+                return Err(failure(
+                    "captured host original terminal evidence is incomplete",
+                ));
             }
             if let Some(observation) = &operation.outcome.scheduling
                 && (!references.contains(&observation.proof_ref)
@@ -850,6 +876,9 @@ impl HostModelNode {
         }
         // Native restoration preserves base/tree identity through existing
         // device validators. No request is re-submitted and no queue is drained.
+        // Successful source authentication selects a restored birth before any
+        // native model effect. Event-zero restoration cannot become fresh Realize.
+        self.preparation_origin = HostPreparationOrigin::Restored;
         let native_result = restore_model(
             self.model
                 .as_mut()
@@ -1080,6 +1109,7 @@ fn restore_model(
             Ok(())
         }
         HostModel::ScriptedSource(source) => source.restore(bytes),
+        HostModel::Semantics(model) => model.restore_continuation(bytes),
         HostModel::Clock(clock) => {
             let prefix = b"crucible.host-clock.v1\0";
             let ticks = bytes

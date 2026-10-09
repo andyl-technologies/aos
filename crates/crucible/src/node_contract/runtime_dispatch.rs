@@ -16,7 +16,7 @@ impl NodeRuntime {
         self.begin_with_inputs(activation, node, operation, request, None)
     }
 
-    fn begin_with_inputs(
+    pub(super) fn begin_with_inputs(
         &mut self,
         activation: &WorldActivation,
         node: &NodeId,
@@ -25,6 +25,18 @@ impl NodeRuntime {
         inputs: Option<Rc<crate::node_scheduling::RuntimeInputBatch>>,
     ) -> Result<BeginResult, RuntimeError> {
         self.validate_activation(activation)?;
+        if let Some(terminal) = &self.terminal {
+            if !matches!(&request, OperationRequest::FinalizeAssertions { barrier, receipt }
+                if barrier.as_ref() == &terminal.saved.record
+                    && receipt == &terminal.saved.reference
+                    && node == &terminal.saved.record.node
+                    && operation == terminal.saved.record.operation)
+            {
+                return Err(RuntimeError::OutstandingObligations);
+            }
+        } else if matches!(&request, OperationRequest::FinalizeAssertions { .. }) {
+            return Err(RuntimeError::ForeignAuthority);
+        }
         if self.operations.contains_key(&operation) || self.input_batches.contains_key(&operation) {
             return Err(RuntimeError::DuplicateOperation);
         }

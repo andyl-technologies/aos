@@ -1,7 +1,7 @@
 //! Actual installed linked-source recording and original source retirement.
 
-// crucible-lint: allow clippy-disallowed-method -- Operational deadlines in these transcript tests bound native supervision and never enter modeled state.
-// crucible-lint: allow panic-shortcut -- These transcript tests deliberately panic on invalid fixtures or failed invariants.
+// crucible-lint: allow panic-shortcut -- Actual source recording and native retirement failures invalidate the original attempt.
+// crucible-lint: allow clippy-disallowed-method -- Absolute operational watchdogs bound source process cleanup without entering modeled time.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::disallowed_methods)]
 
 use std::time::Instant;
@@ -316,6 +316,52 @@ fn actual_direct_native_source_records_complete_original_inputs_before_retiremen
         );
     }
 
+    let mut changed_configuration = run_configuration.clone();
+    changed_configuration.horizon_ps = U64::new(100);
+    assert!(
+        catalog
+            .select_conditional_replay(recorded.clone(), &changed_configuration)
+            .is_err()
+    );
+    // The fresh model has its own reserved supervision queue. Its inactive
+    // custody must not be counted as an outstanding original physical owner.
+    let production_catalog = InstalledNodeCatalog::new(
+        executable.clone(),
+        measure_executable(&executable).unwrap(),
+        temporary.path().to_owned(),
+        Duration::from_secs(5),
+        1,
+    )
+    .unwrap();
+    let production_execution = ExecutionId::from_bytes([99; 16]).unwrap();
+    let production = production_catalog
+        .select_conditional_replay(recorded.clone(), &run_configuration)
+        .unwrap()
+        .prepare(&production_catalog, production_execution)
+        .unwrap();
+    let second_catalog = InstalledNodeCatalog::new(
+        executable.clone(),
+        measure_executable(&executable).unwrap(),
+        temporary.path().to_owned(),
+        Duration::from_secs(5),
+        1,
+    )
+    .unwrap();
+    let second_execution = ExecutionId::from_bytes([100; 16]).unwrap();
+    let production_second = second_catalog
+        .select_conditional_replay(recorded.clone(), &run_configuration)
+        .unwrap()
+        .prepare(&second_catalog, second_execution)
+        .unwrap();
+    assert_eq!(
+        production.world.scenario.artifact().unwrap(),
+        production_second.world.scenario.artifact().unwrap()
+    );
+    assert_ne!(
+        production.activation.owners,
+        production_second.activation.owners
+    );
+
     let verified =
         source_enrollment::verify_original_world(&catalog, recorded.clone(), &run_configuration)
             .unwrap();
@@ -373,10 +419,47 @@ fn actual_direct_native_source_records_complete_original_inputs_before_retiremen
         std::thread::sleep(Duration::from_millis(1));
     }
     drop(catalog);
+    drop(_gc);
+    production_tests::drive_store_failures(
+        recorded.clone(),
+        executable.clone(),
+        temporary.path().to_owned(),
+        run_configuration.clone(),
+    );
+    production_tests::drive_service_original(production_tests::ServiceReplayFixture {
+        archive,
+        sources: recorded
+            .iter()
+            .map(|(node, source)| (node.clone(), source.reference().clone()))
+            .collect(),
+        executable: executable.clone(),
+        private_root: temporary.path().to_owned(),
+        configuration: run_configuration.clone(),
+        repository: repository.clone(),
+        blobs: blobs.clone(),
+        refs: refs.clone(),
+    });
     // Authenticate the source once, then remove its retrieval namespace before
     // any fresh replay response. The fresh node owns complete signed raw bytes.
-    drop(archive);
     std::fs::remove_dir_all(temporary.path().join("transcripts")).unwrap();
+    let first_plan = production_tests::drive_original_recipe(
+        production,
+        production_execution,
+        blobs.clone(),
+        refs.clone(),
+        repository.clone(),
+    );
+    let second_plan = production_tests::drive_original_recipe(
+        production_second,
+        second_execution,
+        blobs.clone(),
+        refs.clone(),
+        repository.clone(),
+    );
+    assert_eq!(
+        first_plan, second_plan,
+        "fresh operational nonce changed semantic replay identity"
+    );
     // Even after native source death, the installed policy refuses a changed
     // raw context or its order before any fresh readiness or replay response.
     for node in &replay.nodes {

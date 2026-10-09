@@ -19,6 +19,9 @@ mod host_state_ledger;
 mod host_state_service;
 #[cfg(test)]
 mod native_state_tests;
+mod terminal_state;
+#[cfg(test)]
+mod terminal_state_tests;
 #[cfg(test)]
 mod tests;
 mod transport;
@@ -28,7 +31,9 @@ use crucible_node_contract::{Bytes, Id, canonical};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-use crate::node_observed_executor::InstalledNodeSelection;
+use crate::node_observed_executor::{
+    InstalledNodeSelection, NodeCacheReuseReceipt, NodeCacheReuseRequest,
+};
 use crate::node_observed_executor::{NativeWorldRecord, NativeWorldRequest};
 
 pub use daemon::{
@@ -36,6 +41,7 @@ pub use daemon::{
 };
 pub use host_state::{NodeHostStateOutcome, NodeHostStateRecord, NodeHostStateRequest};
 pub use host_state_service::NodeHostStateRetention;
+pub use terminal_state::{NodeTerminalStage, NodeTerminalStateRequest};
 
 /// Bounds each complete local control frame before body allocation.
 pub const MAX_NODE_CONTROL_BYTES: usize = 16 * 1024 * 1024;
@@ -72,6 +78,16 @@ pub struct NodeControlRequest {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NodeControlCommand {
+    /// Reuses original deterministic evidence under control edition six.
+    CacheReuse {
+        /// Pins the complete original selection without a new execution nonce.
+        request: Box<NodeCacheReuseRequest>,
+    },
+    /// Finalizes or resumes original terminal custody under control edition four.
+    TerminalState {
+        /// Contains the explicit closed terminal request without native authority.
+        request: Box<NodeTerminalStateRequest>,
+    },
     /// Preserves or restores installed native worlds under control edition three.
     NativeState {
         /// Contains the original closed native operation without native authority.
@@ -125,6 +141,11 @@ pub struct NodeControlReply {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NodeControlResult {
+    /// Returns authenticated original observed bytes without a fresh-execution claim.
+    CacheReused {
+        /// Binds the exact original nonce/result and complete cache compatibility key.
+        receipt: Box<NodeCacheReuseReceipt>,
+    },
     /// Returns the original native-world reservation or authentic preservation result.
     NativeState {
         /// Retains the original nonce, archive, actual owner scopes and operation.
@@ -153,6 +174,26 @@ pub enum NodeControlResult {
 }
 
 impl NodeControlRequest {
+    /// Builds an explicit edition-four terminal request without minting EOF.
+    ///
+    /// # Errors
+    /// Refuses invalid identities, unsupported topology, or malformed requests.
+    pub fn terminal_state(
+        request_id: &str,
+        request: NodeTerminalStateRequest,
+    ) -> Result<Self, NodeControlError> {
+        let request = Self {
+            format: "crucible.node-control".into(),
+            version: 4,
+            request_id: Id::new(request_id)?,
+            command: NodeControlCommand::TerminalState {
+                request: Box::new(request),
+            },
+        };
+        request.validate()?;
+        Ok(request)
+    }
+
     /// Builds an edition-one correlated request.
     ///
     /// # Errors
@@ -208,8 +249,30 @@ impl NodeControlRequest {
         Ok(request)
     }
 
+    /// Builds an explicit edition-six deterministic cache-reuse request.
+    ///
+    /// # Errors
+    /// Refuses malformed or oversized selection/context records and identities.
+    pub fn cache_reuse(
+        request_id: &str,
+        request: NodeCacheReuseRequest,
+    ) -> Result<Self, NodeControlError> {
+        let request = Self {
+            format: "crucible.node-control".into(),
+            version: 6,
+            request_id: Id::new(request_id)?,
+            command: NodeControlCommand::CacheReuse {
+                request: Box::new(request),
+            },
+        };
+        request.validate()?;
+        Ok(request)
+    }
+
     fn validate(&self) -> Result<(), NodeControlError> {
         let expected_version = match self.command {
+            NodeControlCommand::CacheReuse { .. } => 6,
+            NodeControlCommand::TerminalState { .. } => 4,
             NodeControlCommand::NativeState { .. } => 3,
             NodeControlCommand::HostState { .. } => 2,
             _ => 1,
@@ -218,8 +281,17 @@ impl NodeControlRequest {
             return Err(refused("unsupported local node control edition"));
         }
         match &self.command {
+            NodeControlCommand::CacheReuse { request } => request.validate().map_err(refused),
+            NodeControlCommand::TerminalState { request } => request.validate(),
+            NodeControlCommand::HostState { request } => {
+                if matches!(request.as_ref(), NodeHostStateRequest::Terminal { .. }) {
+                    return Err(refused(
+                        "terminal requests require explicit control edition four",
+                    ));
+                }
+                request.validate()
+            }
             NodeControlCommand::NativeState { request } => request.validate().map_err(refused),
-            NodeControlCommand::HostState { request } => request.validate(),
             NodeControlCommand::Compile { selections } => validate_selections(selections),
             NodeControlCommand::Observe {
                 ledger,
@@ -312,6 +384,9 @@ pub fn decode_node_state(
             ObservedAttemptState::from_canonical_bytes(state.as_slice()).map_err(refused)
         }
         NodeControlResult::Refused { reason } => Err(refused(reason)),
+        NodeControlResult::CacheReused { .. } => Err(refused(
+            "cache reuse is original evidence, not fresh execution state",
+        )),
         NodeControlResult::HostState { .. } => {
             Err(refused("exact state is not observed execution state"))
         }

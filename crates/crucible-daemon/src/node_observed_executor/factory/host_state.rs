@@ -31,7 +31,7 @@ use crucible::{
 use crucible_device::clock::VirtualClock;
 use crucible_node_contract::{
     CaptureManifest, CapturedOwner, ContentRef, Id, NodeBinding, NodeDescriptor, Phase, Position,
-    SchemaRef,
+    SchemaRef, canonical,
 };
 
 use super::{
@@ -106,6 +106,7 @@ impl InstalledNodeCatalog {
                 InstalledNodeKind::HostClock
                     | InstalledNodeKind::HostIo { .. }
                     | InstalledNodeKind::HostScripted { .. }
+                    | InstalledNodeKind::HostSemantics { .. }
             )
         }) {
             return Err(refused(
@@ -132,7 +133,9 @@ impl InstalledNodeCatalog {
                 .formats
                 .iter()
                 .filter(|schema| {
-                    schema.id.as_str() == "host/native-continuation-v1" && schema.version == 1
+                    (schema.id.as_str() == "host/native-continuation-v1" && schema.version == 1)
+                        || (schema.id.as_str() == "host/native-semantic-continuation-v2"
+                            && schema.version == 2)
                 })
                 .count()
                 != 1
@@ -198,7 +201,7 @@ impl InstalledHostStateFactory {
         Ok(())
     }
 
-    fn check_model(
+    pub(in crate::node_observed_executor::factory) fn check_model(
         &self,
         model: &HostModel,
         descriptor: &NodeDescriptor,
@@ -256,6 +259,13 @@ impl InstalledHostStateFactory {
                     .verify(&actual.script_bytes()?)
                     .map_err(no_effect)?;
             }
+            (InstalledNodeKind::HostSemantics { profile }, HostModel::Semantics(actual)) => {
+                let definition = canonical::canonical_json(
+                    &serde_json::to_value(actual.definition()).map_err(no_effect)?,
+                )
+                .map_err(no_effect)?;
+                profile.program.verify(&definition).map_err(no_effect)?;
+            }
             _ => return Err(no_effect("actual installed native family differs")),
         }
         Ok(())
@@ -276,6 +286,7 @@ impl InstalledHostStateFactory {
             InstalledNodeKind::HostClock => return Ok(None),
             InstalledNodeKind::HostIo { profile } => profile.artifact(),
             InstalledNodeKind::HostScripted { profile } => &profile.script,
+            InstalledNodeKind::HostSemantics { profile } => &profile.program,
             _ => return Err(refusal("unsupported installed native archive family")),
         };
         let bytes = content.get(reference).ok_or_else(|| {
@@ -304,6 +315,20 @@ impl InstalledHostStateFactory {
                 )
                 .map_err(|error| refusal(error.reason))?,
             ))),
+            InstalledNodeKind::HostSemantics { .. } => {
+                let definition = serde_json::from_slice(
+                    self.immutable_input(node, content)?
+                        .ok_or_else(|| refusal("semantic immutable program absent"))?,
+                )
+                .map_err(state_error)?;
+                let model = crucible::node_adapters::HostSemanticModel::new(
+                    definition,
+                    super::semantics::MAXIMUM_SEMANTIC_STATE_BYTES,
+                    super::semantics::MAXIMUM_SEMANTIC_EVENTS,
+                )
+                .map_err(|error| refusal(error.reason))?;
+                Ok(HostModel::Semantics(Box::new(model)))
+            }
             _ => Err(refusal("unsupported installed native archive family")),
         }
     }
@@ -341,6 +366,82 @@ impl InstalledHostStateFactory {
 }
 
 impl HostWorldFactory for InstalledHostStateFactory {
+    fn authenticate_terminal_custody(
+        &self,
+        graph: &AdmittedGraph,
+        runtime: &RuntimeSnapshot,
+        scheduler: &SchedulingSnapshot,
+        _content: Option<&VerifiedStateContent>,
+    ) -> Result<(), StateError> {
+        self.check_graph(graph)?;
+        let saved = runtime
+            .terminal
+            .as_ref()
+            .ok_or_else(|| refusal("complete original terminal custody absent"))?;
+        if runtime.schema_version != 3
+            || !saved.submitted
+            || saved.record.source.world_binding_hash != *graph.world_binding_hash()
+            || saved.record.cut != runtime.capture_cut
+            || scheduler.capture_cut != runtime.capture_cut
+            || saved
+                .record
+                .native
+                .iter()
+                .any(|native| native.boundary != saved.record.cut)
+            || runtime.inputs.iter().any(|input| {
+                !input.deliveries.is_empty()
+                    || !input.payloads.is_empty()
+                    || input.provenance.is_some()
+            })
+            || !scheduler.pending_deliveries.is_empty()
+            || !scheduler.reservations.is_empty()
+        {
+            return Err(refusal(
+                "selected closed terminal codec lacks complete unchanged custody",
+            ));
+        }
+        let mut semantic = 0;
+        for selection in self.selections.values() {
+            match &selection.kind {
+                InstalledNodeKind::HostClock => {}
+                InstalledNodeKind::HostSemantics { profile } => {
+                    let program = &self
+                        .objects
+                        .get(&profile.program.hash.digest)
+                        .filter(|(reference, _)| reference == &profile.program)
+                        .ok_or_else(|| refusal("installed original semantic program absent"))?
+                        .1;
+                    let definition: crucible::node_adapters::HostSemanticDefinition =
+                        serde_json::from_slice(program).map_err(state_error)?;
+                    if definition.version != 2
+                        || !definition.inputs.is_empty()
+                        || saved.record.node != selection.node
+                    {
+                        return Err(refusal(
+                            "selected terminal program has unqualified external semantics",
+                        ));
+                    }
+                    semantic += 1;
+                }
+                _ => {
+                    return Err(refusal(
+                        "terminal native world codec is not installed for this family",
+                    ));
+                }
+            }
+        }
+        if semantic != 1 || !runtime.operations.iter().any(|original| {
+            original.operation == saved.record.operation
+                && matches!(&original.result,
+                    crucible::node_contract::SavedRuntimeResult::Complete(outcome)
+                        | crucible::node_contract::SavedRuntimeResult::Acknowledged(outcome)
+                    if matches!(outcome.progress, crucible::node_contract::ProgressEvidence::AssertionsFinalized { .. }))
+        }) {
+            return Err(refusal("original terminal outcome is not complete under selected native custody"));
+        }
+        Ok(())
+    }
+
     fn reservation(
         &self,
         graph: &AdmittedGraph,
@@ -364,6 +465,7 @@ impl HostWorldFactory for InstalledHostStateFactory {
             InstalledNodeKind::HostIo { profile } => profile.artifact().length.get(),
             InstalledNodeKind::HostScripted { profile } => profile.script.length.get(),
             InstalledNodeKind::HostClock => 0,
+            InstalledNodeKind::HostSemantics { profile } => profile.program.length.get(),
             _ => return Err(refusal("unsupported installed native reservation family")),
         };
         let memory_bytes = (native.len() as u64)
@@ -388,7 +490,9 @@ impl HostWorldFactory for InstalledHostStateFactory {
             .formats
             .iter()
             .find(|schema| {
-                schema.id.as_str() == "host/native-continuation-v1" && schema.version == 1
+                (schema.id.as_str() == "host/native-continuation-v1" && schema.version == 1)
+                    || (schema.id.as_str() == "host/native-semantic-continuation-v2"
+                        && schema.version == 2)
             })
             .cloned()
             .ok_or_else(|| refusal("installed complete native continuation edition absent"))
@@ -403,7 +507,7 @@ impl HostWorldFactory for InstalledHostStateFactory {
     ) -> Result<(), StateError> {
         self.check_graph(graph)?;
         let policy = graph.ownership_policy();
-        if runtime.schema_version != 1
+        if !matches!(runtime.schema_version, 1 | 3)
             || scheduler.schema_version != 1
             || runtime.source_activation.world_binding_hash != *graph.world_binding_hash()
             || scheduler.world_binding_hash != *graph.world_binding_hash()
@@ -549,6 +653,53 @@ impl HostWorldFactory for InstalledHostStateFactory {
                         && (!input.deliveries.is_empty() || !input.payloads.is_empty())
                 }) {
                     return Err(refusal("output-only source has nonempty input custody"));
+                }
+            }
+            InstalledNodeKind::HostSemantics { .. } => {
+                let definition = serde_json::from_slice(
+                    self.immutable_input(node, content)?
+                        .ok_or_else(|| refusal("semantic original program absent"))?,
+                )
+                .map_err(state_error)?;
+                let model = crucible::node_adapters::HostSemanticModel::restore(
+                    definition,
+                    &inventory.native_model.bytes,
+                    super::semantics::MAXIMUM_SEMANTIC_STATE_BYTES,
+                    super::semantics::MAXIMUM_SEMANTIC_EVENTS,
+                )
+                .map_err(|error| refusal(error.reason))?;
+                if !model.definition().inputs.is_empty()
+                    || source.inputs.iter().any(|input| {
+                        &input.node == node
+                            && (!input.deliveries.is_empty()
+                                || !input.payloads.is_empty()
+                                || input.provenance.is_some())
+                    })
+                {
+                    return Err(refusal(
+                        "semantic archive input provenance edition is unqualified",
+                    ));
+                }
+                match &source.terminal {
+                    Some(saved) if &saved.record.node == node => {
+                        let report = model
+                            .terminal_report()
+                            .ok_or_else(|| refusal("original terminal marker absent"))?;
+                        if model.terminal_context() != Some((&saved.record, &saved.reference))
+                            || saved.report.as_ref().is_some_and(|saved| saved != report)
+                            || !inventory.evidence.iter().any(|original| original == report)
+                        {
+                            return Err(refusal(
+                                "original semantic terminal context/report changed",
+                            ));
+                        }
+                    }
+                    _ if model.terminal_report().is_some() => {
+                        return Err(refusal(
+                            "finalized semantic state omits original runtime custody",
+                        ));
+                    }
+                    _ => {}
                 }
             }
             _ => return Err(refusal("unsupported installed native source family")),

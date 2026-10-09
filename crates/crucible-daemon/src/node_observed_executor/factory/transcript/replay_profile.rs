@@ -27,6 +27,7 @@ pub(super) struct ReplayProfile {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum ReplayContract {
+    #[cfg(test)]
     OriginalExecution,
     CompleteReplayModel,
 }
@@ -172,7 +173,8 @@ pub(super) fn build(
             "host":catalog.host_identity,
         }))?;
         let receipt = canonical::content_ref(&bytes, "application/json")?;
-        content.insert(receipt.clone(), bytes.clone());
+        // Fresh enrollment authenticates operational custody. It remains in
+        // the owning allocation, outside execution-independent scenario bytes.
         enrolled.insert(
             selected.node_id.clone(),
             InputPayload {

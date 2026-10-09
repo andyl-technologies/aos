@@ -48,6 +48,15 @@ impl PreparedRealization {
         }
     }
 
+    /// Borrows the exact original inactive world record under this owned realization.
+    ///
+    /// This read-only data grants no readiness, publication or execution authority.
+    /// The caller may bind authentic coordinator publication to this original
+    /// record; actual owner preparation and the runtime barrier remain mandatory.
+    pub fn activation_record(&self) -> &ActivationRecord {
+        &self.activation
+    }
+
     /// Admits prepared native handles into an inactive whole-world runtime.
     ///
     /// # Errors

@@ -10,6 +10,7 @@ mod activation_preparation;
 mod provider;
 mod quarantine;
 mod runtime;
+mod terminal;
 mod traits;
 mod types;
 mod validation;
@@ -19,6 +20,7 @@ pub use activation_preparation::*;
 pub use provider::*;
 pub use quarantine::*;
 pub use runtime::*;
+pub use terminal::*;
 pub use traits::*;
 pub use types::*;
 

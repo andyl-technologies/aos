@@ -11,6 +11,8 @@ use crucible_campaign::{
 };
 use crucible_cas::content_store::{ContentId, ImmutableBlobBackend, MutableRefBackend};
 use crucible_node_contract::ContentRef;
+
+mod replay;
 use std::{
     collections::{BTreeMap, BTreeSet},
     panic::{AssertUnwindSafe, catch_unwind},
@@ -60,6 +62,10 @@ pub enum NodeObservationServiceError {
 type Reply = SyncSender<Result<ObservedAttemptState, NodeObservationServiceError>>;
 
 enum Command {
+    CacheReuse {
+        request: super::NodeCacheReuseRequest,
+        reply: SyncSender<Result<super::NodeCacheReuseReceipt, NodeObservationServiceError>>,
+    },
     Compile {
         selections: Vec<InstalledNodeSelection>,
         reply: SyncSender<Result<Vec<u8>, NodeObservationServiceError>>,
@@ -72,6 +78,10 @@ enum Command {
         configuration: Vec<u8>,
         reply: Reply,
     },
+    ConditionalReplay {
+        request: replay::ReplayRequest,
+        reply: Reply,
+    },
     State {
         execution: ExecutionId,
         reply: Reply,
@@ -82,9 +92,11 @@ struct ActorWorker {
     worker: ObservedAttemptWorker<NodeObservedBackend>,
     request: crucible_campaign::observed_node_attempt::ObservedAttemptRequest,
     admission: super::NodeObservedAdmission,
+    replay: Option<replay::ReplaySubmission>,
 }
 
 struct ActorStorage {
+    transcripts: Option<crucible::node_adapters::transcript::TranscriptArchive>,
     repository: Arc<CampaignRepository>,
     blobs: Arc<dyn ImmutableBlobBackend>,
     refs: Arc<dyn MutableRefBackend>,
@@ -153,6 +165,16 @@ impl NodeObservationService {
         blobs: Arc<dyn ImmutableBlobBackend>,
         refs: Arc<dyn MutableRefBackend>,
     ) -> Result<Self, NodeObservationServiceError> {
+        Self::start_inner(configuration, None, repository, blobs, refs)
+    }
+
+    fn start_inner(
+        configuration: NodeObservationServiceConfig,
+        transcripts: Option<crucible::node_adapters::transcript::TranscriptArchive>,
+        repository: Arc<CampaignRepository>,
+        blobs: Arc<dyn ImmutableBlobBackend>,
+        refs: Arc<dyn MutableRefBackend>,
+    ) -> Result<Self, NodeObservationServiceError> {
         if configuration.maximum_pending_requests == 0
             || configuration.maximum_pending_requests > 64
             || configuration.maximum_worlds == 0
@@ -189,6 +211,7 @@ impl NodeObservationService {
                             catalog,
                             configuration.maximum_worlds,
                             ActorStorage {
+                                transcripts,
                                 repository,
                                 blobs,
                                 refs,
@@ -277,6 +300,25 @@ impl NodeObservationService {
             .map_err(|_| NodeObservationServiceError::Unavailable)?
     }
 
+    /// Reuses an authenticated original result after complete deterministic admission.
+    ///
+    /// No new native execution, permit, snapshot or observation nonce is created.
+    ///
+    /// # Errors
+    /// Refuses changed installation/inputs, incomplete or corrupt original closure,
+    /// nonrepeatable coupled owners, excessive requests, or unavailable custody.
+    pub fn reuse_cache(
+        &self,
+        request: super::NodeCacheReuseRequest,
+    ) -> Result<super::NodeCacheReuseReceipt, NodeObservationServiceError> {
+        request.validate()?;
+        let (reply, response) = mpsc::sync_channel(1);
+        self.send(Command::CacheReuse { request, reply })?;
+        response
+            .recv()
+            .map_err(|_| NodeObservationServiceError::Unavailable)?
+    }
+
     /// Reads original durable state without launching or resuming native work.
     ///
     /// # Errors
@@ -338,11 +380,7 @@ fn run_actor(
     storage: ActorStorage,
     control: ActorControl,
 ) {
-    let ActorStorage {
-        repository,
-        blobs,
-        refs,
-    } = storage;
+    let ActorStorage { repository, .. } = &storage;
     let ActorControl {
         receiver,
         stopping,
@@ -378,9 +416,7 @@ fn run_actor(
                     &mut workers,
                     &mut catalog,
                     maximum_worlds.saturating_sub(retired_roots.len()),
-                    &repository,
-                    &blobs,
-                    &refs,
+                    &storage,
                 );
             }))
             .is_err()
@@ -472,11 +508,22 @@ fn handle_command(
     workers: &mut BTreeMap<ExecutionId, ActorWorker>,
     catalog: &mut InstalledNodeCatalog,
     maximum_worlds: usize,
-    repository: &Arc<CampaignRepository>,
-    blobs: &Arc<dyn ImmutableBlobBackend>,
-    refs: &Arc<dyn MutableRefBackend>,
+    storage: &ActorStorage,
 ) {
+    let ActorStorage {
+        repository,
+        blobs,
+        refs,
+        ..
+    } = storage;
     match command {
+        Command::ConditionalReplay { request, reply } => {
+            let result = replay::submit(request, workers, catalog, maximum_worlds, storage);
+            let _ = reply.send(result);
+        }
+        Command::CacheReuse { request, reply } => {
+            let _ = reply.send(super::cache_reuse::reuse(catalog, repository, &request));
+        }
         Command::Compile { selections, reply } => {
             let result = catalog
                 .scenario(&selections)
@@ -583,6 +630,7 @@ fn handle_command(
                         worker,
                         request,
                         admission,
+                        replay: None,
                     },
                 );
                 let owned = workers
@@ -600,10 +648,15 @@ fn handle_command(
 
 fn reply_refusal(command: Command, error: NodeObservationServiceError) {
     match command {
+        Command::CacheReuse { reply, .. } => {
+            let _ = reply.send(Err(error));
+        }
         Command::Compile { reply, .. } => {
             let _ = reply.send(Err(error));
         }
-        Command::State { reply, .. } | Command::Submit { reply, .. } => {
+        Command::State { reply, .. }
+        | Command::Submit { reply, .. }
+        | Command::ConditionalReplay { reply, .. } => {
             let _ = reply.send(Err(error));
         }
     }

@@ -18,6 +18,7 @@ use crate::{
     node_scenario::{MAX_NODE_SCENARIO_BYTES, NodeScenario},
 };
 
+use super::terminal_state::NodeTerminalStateRequest;
 use super::{NodeControlError, execution_id, refused, validate_selections};
 
 /// Selects one exact whole-world operation on qualified synchronous host models.
@@ -28,6 +29,11 @@ use super::{NodeControlError, execution_id, refused, validate_selections};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NodeHostStateRequest {
+    /// Retains a distinct terminal edition without changing legacy state bytes.
+    Terminal {
+        /// Contains an explicit terminal operation, never a horizon EOF claim.
+        request: Box<NodeTerminalStateRequest>,
+    },
     /// Executes a new admitted exact host world to a coherent cut and captures it.
     Capture {
         /// Names an independent original state-operation nonce in lowercase hex.
@@ -119,6 +125,7 @@ impl NodeHostStateRequest {
     #[must_use]
     pub fn execution(&self) -> &str {
         match self {
+            Self::Terminal { request } => request.execution(),
             Self::Capture { execution, .. }
             | Self::Restore { execution, .. }
             | Self::Status { execution } => execution,
@@ -126,6 +133,9 @@ impl NodeHostStateRequest {
     }
 
     pub(super) fn validate(&self) -> Result<(), NodeControlError> {
+        if let Self::Terminal { request } = self {
+            return request.validate();
+        }
         execution_id(self.execution())?;
         let (selections, scenario) = match self {
             Self::Capture {
@@ -143,6 +153,9 @@ impl NodeHostStateRequest {
                 (selections, scenario)
             }
             Self::Status { .. } => return Ok(()),
+            Self::Terminal { .. } => {
+                return Err(refused("terminal request uses its own validator"));
+            }
         };
 
         validate_selections(selections)?;
@@ -198,7 +211,7 @@ impl NodeHostStateRecord {
     }
 
     pub(super) fn validate(&self) -> Result<(), NodeControlError> {
-        if self.format != "crucible.node-state-operation" || self.version != 1 {
+        if self.format != "crucible.node-state-operation" || !matches!(self.version, 1 | 2) {
             return Err(refused("unsupported exact-state operation record edition"));
         }
         execution_id(&self.execution)?;
@@ -207,7 +220,13 @@ impl NodeHostStateRecord {
                 "exact-state record has an unsupported request identity",
             ));
         }
-        if let NodeHostStateOutcome::Refused { reason } = &self.state
+        if self.version == 1 && matches!(self.state, NodeHostStateOutcome::Unknown { .. }) {
+            return Err(refused(
+                "legacy state records cannot acquire terminal uncertainty",
+            ));
+        }
+        if let NodeHostStateOutcome::Refused { reason } | NodeHostStateOutcome::Unknown { reason } =
+            &self.state
             && reason.len() > 4096
         {
             return Err(refused("exact-state refusal exceeds its finite ceiling"));
@@ -235,6 +254,11 @@ impl NodeHostStateRecord {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NodeHostStateOutcome {
+    /// Retains original terminal custody after effects or uncertain publication.
+    Unknown {
+        /// Reports a bounded class without granting replacement dispatch.
+        reason: String,
+    },
     /// Retains the original reservation without issuing retry or resume authority.
     Reserved {},
     /// Retains a host-authenticated complete capture from the original operation.

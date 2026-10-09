@@ -14,6 +14,10 @@ use crucible_node_contract::{
 
 use crate::{device_subnode::ScheduledIoNode, node_admission::AdmittedGraph, node_contract::*};
 
+pub use preparation::{
+    HOST_PUBLIC_CLOCK_PREPARATION_SPECIFICATION, host_public_clock_preparation_schema,
+};
+use preparation::{HostPreparationOrigin, HostPublicPreparation};
 pub use state::archive::{HostContinuationInventory, validate_host_continuation};
 
 /// Identifies the complete host-model preservation facet.
@@ -22,6 +26,10 @@ pub const HOST_PRESERVATION_PROFILE: &str = "host/preservation-v1";
 pub const HOST_PHYSICAL_PAUSE_PROFILE: &str = "host/physical-pause-v1";
 /// Identifies bounded exact host-model event execution and boundary settlement.
 pub const HOST_EXACT_PROFILE: &str = "host/exact-v1";
+/// Identifies explicit whole-world-fenced assertion finalization.
+pub const HOST_TERMINAL_ASSERTIONS_PROFILE: &str = "host/terminal-assertions-v1";
+/// Identifies complete stopped host-model future-work inventory.
+pub const HOST_TERMINAL_INVENTORY_PROFILE: &str = "host/terminal-inventory-v1";
 
 /// Encodes the complete integer clock continuation without guest timer state.
 pub fn host_clock_initial_bytes(time_ps: u64) -> Vec<u8> {
@@ -40,6 +48,8 @@ pub enum HostModel {
     Clock(VirtualClock),
     /// Owns a finite immutable public request script and its exact native cursor.
     ScriptedSource(Box<super::ScriptedSource>),
+    /// Owns the complete original assertion evaluator and checked input prefix.
+    Semantics(Box<super::semantic_model::HostSemanticModel>),
 }
 
 impl HostModel {
@@ -57,6 +67,7 @@ impl HostModel {
             Self::Link(_) => "network_link",
             Self::Clock(_) => "clock",
             Self::ScriptedSource(_) => "scripted_source",
+            Self::Semantics(_) => "host_assertions",
         }
     }
 
@@ -70,6 +81,7 @@ impl HostModel {
             Self::Link(link) => Ok(link.current_icount()),
             Self::Clock(clock) => Ok(clock.current_icount()),
             Self::ScriptedSource(source) => Ok(source.time_ps()),
+            Self::Semantics(model) => Ok(model.position().time_ps.get()),
         }
     }
 
@@ -85,6 +97,7 @@ impl HostModel {
                 .map_err(|e| failure(&e.to_string()))?,
             Self::Clock(clock) => host_clock_initial_bytes(clock.current_icount()),
             Self::ScriptedSource(source) => source.capture()?,
+            Self::Semantics(model) => model.capture()?,
         };
         if bytes.len() > maximum {
             return Err(failure(
@@ -188,6 +201,8 @@ pub struct HostModelNode {
     quarantined: bool,
     activation_authority: Option<Rc<()>>,
     execution: HostFacet,
+    terminal: HostFacet,
+    terminal_inventory: HostFacet,
     input_endpoint: Option<Endpoint>,
     output_endpoint: Option<Endpoint>,
     maximum_microsteps: crucible_node_contract::U64,
@@ -201,6 +216,9 @@ pub struct HostModelNode {
     )>,
     prepared_continuation: Option<state::PreparedHostContinuation>,
     readiness_inventory: ContentRef,
+    original_model_session: Rc<()>,
+    preparation_origin: HostPreparationOrigin,
+    public_preparation: Option<HostPublicPreparation>,
 }
 
 impl HostModelNode {
@@ -249,6 +267,10 @@ impl HostModelNode {
         let preservation = Id::new("host/preservation-v1").map_err(|e| failure(&e.to_string()))?;
         let pause = Id::new("host/physical-pause-v1").map_err(|e| failure(&e.to_string()))?;
         let execution = Id::new(HOST_EXACT_PROFILE).map_err(|e| failure(&e.to_string()))?;
+        let terminal =
+            Id::new(HOST_TERMINAL_ASSERTIONS_PROFILE).map_err(|e| failure(&e.to_string()))?;
+        let terminal_inventory =
+            Id::new(HOST_TERMINAL_INVENTORY_PROFILE).map_err(|e| failure(&e.to_string()))?;
         for selected in &binding.compatibility.operating_contract.facets {
             if selected.id == preservation {
                 facets.push(FacetKind::Preservation);
@@ -256,6 +278,13 @@ impl HostModelNode {
                 facets.push(FacetKind::PhysicalPause);
             } else if selected.id == execution && selected.version == 1 {
                 facets.push(FacetKind::ExactExecution);
+            } else if selected.id == terminal
+                && selected.version == 1
+                && matches!(&model, HostModel::Semantics(model) if model.definition().version == 2)
+            {
+                facets.push(FacetKind::TerminalAssertions);
+            } else if selected.id == terminal_inventory && selected.version == 1 {
+                facets.push(FacetKind::Introspection);
             } else {
                 return Err(failure(
                     "host selected facet lacks an installed execution adapter",
@@ -302,6 +331,8 @@ impl HostModelNode {
             quarantined: false,
             activation_authority: None,
             execution: HostFacet(execution),
+            terminal: HostFacet(terminal),
+            terminal_inventory: HostFacet(terminal_inventory),
             input_endpoint,
             output_endpoint,
             maximum_microsteps: graph.coordinator_policy().maximum_microsteps_per_instant,
@@ -312,6 +343,9 @@ impl HostModelNode {
             scheduling_observation: None,
             prepared_continuation: None,
             readiness_inventory: descriptor.initialization_ref.clone(),
+            original_model_session: Rc::new(()),
+            preparation_origin: HostPreparationOrigin::Original,
+            public_preparation: None,
         })
     }
 
@@ -424,12 +458,13 @@ impl SimulationNode for HostModelNode {
                 "host readiness has changed state, world or original boundary",
             ));
         }
-        let ready = ReadyAttestation {
+        let mut ready = ReadyAttestation {
             owners: self.route.owners.clone(),
             boundary: self.boundary,
             state_inventory: self.readiness_inventory.clone(),
             ready_receipt: self.receipt("host-model-owned-inactive-v1")?,
         };
+        self.retain_public_clock_ready(world, &mut ready)?;
         if let Some((original, retained)) = &self.readiness
             && (original != world || retained != &ready)
         {
@@ -437,6 +472,41 @@ impl SimulationNode for HostModelNode {
         }
         self.readiness = Some((world.clone(), ready.clone()));
         Ok(ready)
+    }
+
+    fn prepared_owners(
+        &self,
+        world: &ActivationRecord,
+        ready: &ReadyAttestation,
+    ) -> Result<Option<Vec<crucible_node_contract::PreparedOwner>>, OperationFailure> {
+        self.public_clock_owners(world, ready)
+    }
+
+    fn validate_prepared_owners(
+        &self,
+        world: &ActivationRecord,
+        ready: &ReadyAttestation,
+        owners: &[crucible_node_contract::PreparedOwner],
+    ) -> Result<(), OperationFailure> {
+        let original = self
+            .public_clock_owners(world, ready)?
+            .ok_or_else(|| failure("public clock preparation was not selected"))?;
+        if original != owners {
+            return Err(failure(
+                "public clock owners differ from original inactive model custody",
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_initial_preparation(
+        &self,
+        world: &ActivationRecord,
+        ready: &ReadyAttestation,
+    ) -> Result<(), OperationFailure> {
+        self.public_clock_owners(world, ready)?
+            .ok_or_else(|| failure("clock did not select genuine public initial preparation"))?;
+        Ok(())
     }
 
     fn validate_readiness(
@@ -457,6 +527,12 @@ impl SimulationNode for HostModelNode {
     }
 
     fn begin_operation(&mut self, admission: &OperationAdmission) -> Submission {
+        if matches!(
+            admission.request(),
+            OperationRequest::FinalizeAssertions { .. }
+        ) {
+            return self.begin_finalization(admission);
+        }
         if matches!(
             admission.request(),
             OperationRequest::ExactRun { .. } | OperationRequest::BoundarySettle { .. }
@@ -667,6 +743,8 @@ impl SimulationNode for HostModelNode {
             // borrowed trait object must itself outlive the returned view.
             FacetKind::PhysicalPause => Ok(NodeFacet::PhysicalPause(&self.pause)),
             FacetKind::ExactExecution => Ok(NodeFacet::ExactExecution(&self.execution)),
+            FacetKind::TerminalAssertions => Ok(NodeFacet::TerminalAssertions(&self.terminal)),
+            FacetKind::Introspection => Ok(NodeFacet::Introspection(&self.terminal_inventory)),
             _ => Err(Refusal {
                 reason: "host facet unsupported".into(),
             }),
@@ -680,12 +758,39 @@ impl SimulationNode for HostModelNode {
         self.stage_exact_inputs(batch)
     }
 
+    fn observe_terminal(
+        &mut self,
+        activation: &WorldActivation,
+        maximum_bytes: usize,
+    ) -> Result<NativeTerminalInventory, OperationFailure> {
+        self.terminal_inventory(activation, maximum_bytes)
+    }
+
+    fn validate_terminal(
+        &self,
+        activation: &WorldActivation,
+        inventory: &NativeTerminalInventory,
+    ) -> Result<(), OperationFailure> {
+        let actual = self.terminal_inventory(activation, inventory.receipt.bytes.len())?;
+        if actual != *inventory {
+            return Err(failure(
+                "host terminal inventory changed under original custody",
+            ));
+        }
+        Ok(())
+    }
+
     fn capture_host_continuation(
         &self,
         activation: &WorldActivation,
         source: &RuntimeSnapshot,
         maximum_bytes: usize,
     ) -> Result<HostNativeCapture, OperationFailure> {
+        if self.public_preparation.is_some() {
+            return Err(failure(
+                "public clock preparation requires a distinct preparation-bearing capture codec",
+            ));
+        }
         state::capture_live(self, activation, source, maximum_bytes)
     }
 
@@ -783,6 +888,12 @@ mod execution;
 
 #[path = "host_state.rs"]
 mod state;
+
+#[path = "host_terminal.rs"]
+mod terminal;
+
+#[path = "host_preparation.rs"]
+mod preparation;
 
 pub(super) fn failure(reason: &str) -> OperationFailure {
     OperationFailure {

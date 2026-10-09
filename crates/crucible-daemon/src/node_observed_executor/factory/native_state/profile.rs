@@ -36,6 +36,7 @@ pub(super) struct MixedProfile {
     pub(super) installed: Rc<InstalledGem5ClosedProfile>,
     pub(super) qualification: ContentRef,
     pub(super) isa: String,
+    pub(super) public_preparation: bool,
 }
 
 impl MixedProfile {
@@ -48,6 +49,23 @@ impl MixedProfile {
         installed: Rc<InstalledGem5ClosedProfile>,
         host: &ContentRef,
         isa: &str,
+    ) -> Result<Self, NodeObservedError> {
+        Self::build_selected(installed, host, isa, false)
+    }
+
+    pub(super) fn build_public(
+        installed: Rc<InstalledGem5ClosedProfile>,
+        host: &ContentRef,
+        isa: &str,
+    ) -> Result<Self, NodeObservedError> {
+        Self::build_selected(installed, host, isa, true)
+    }
+
+    fn build_selected(
+        installed: Rc<InstalledGem5ClosedProfile>,
+        host: &ContentRef,
+        isa: &str,
+        public_preparation: bool,
     ) -> Result<Self, NodeObservedError> {
         let guest = installed.guest(isa)?;
         let mut contents = BTreeMap::new();
@@ -62,18 +80,22 @@ impl MixedProfile {
                 "installed gem5 policy document identity changed",
             ));
         }
-        let qualification = put_json(
-            &mut contents,
-            &serde_json::json!({
-                "schema":"crucible.installed-mixed-native-procedure.v1",
-                "installed_package":installed.identity(),"isa":isa,"guest":guest.content,
-                "clock":"complete owned host integer clock",
-                "gem5":"complete fixed O3/classic-DDR3 opaque process and resource closure",
-                "coordinator":"complete original runtime, prefix, output, reservations and ACK custody",
-                "restart":"signed backend-bound original images; genuine fresh native certificate; no drain or operation replay",
-                "external_inputs":[],"connections":[],"faults":[],
-            }),
-        )?;
+        let mut qualification_body = serde_json::json!({
+            "schema":"crucible.installed-mixed-native-procedure.v1",
+            "installed_package":installed.identity(),"isa":isa,"guest":guest.content,
+            "clock":"complete owned host integer clock",
+            "gem5":"complete fixed O3/classic-DDR3 opaque process and resource closure",
+            "coordinator":"complete original runtime, prefix, output, reservations and ACK custody",
+            "restart":"signed backend-bound original images; genuine fresh native certificate; no drain or operation replay",
+            "external_inputs":[],"connections":[],"faults":[],
+        });
+        if public_preparation {
+            qualification_body["schema"] = "crucible.installed-public-native-preparation.v1".into();
+            qualification_body["restart"] =
+                "unsupported: preparation-bearing archive codec not selected".into();
+            qualification_body["public_preparation"] = true.into();
+        }
+        let qualification = put_json(&mut contents, &qualification_body)?;
         let clock = InstalledNodeSelection {
             node: Id::new("clock")?,
             owner: Id::new("owner/clock")?,
@@ -94,7 +116,10 @@ impl MixedProfile {
         let mut domains = Vec::new();
         let mut objects = Vec::new();
         let mut captures = Vec::new();
-        for (descriptor, binding, mut owner, _) in [clock_profile, cpu_profile] {
+        for (mut descriptor, mut binding, mut owner, _) in [clock_profile, cpu_profile] {
+            if public_preparation {
+                select_public_preparation(&mut descriptor, &mut binding, &mut contents)?;
+            }
             let domain = owner
                 .owner
                 .state_domain_ids
@@ -122,10 +147,10 @@ impl MixedProfile {
             });
             captures.push(OwnerCapturePolicy {
                 owner_id: owner.owner.id.clone(),
-                complete_model: true,
-                unchanged_cut: true,
-                exact_continuation: true,
-                durable_restart: true,
+                complete_model: !public_preparation,
+                unchanged_cut: !public_preparation,
+                exact_continuation: !public_preparation,
+                durable_restart: !public_preparation,
                 isolated_fork: false,
                 dependencies: Vec::new(),
                 cut_procedure_ref: qualification.clone(),
@@ -156,14 +181,16 @@ impl MixedProfile {
                 external_inputs: Vec::new(),
             },
         )?;
-        let scenario_ref = put_json(
-            &mut contents,
-            &serde_json::json!({
-                "schema":"crucible.installed-mixed-native-scenario.v1",
-                "isa":isa,"package":installed.identity(),"nodes":["clock","cpu"],
-                "connections":[],"external_inputs":[],"faults":[],
-            }),
-        )?;
+        let mut scenario_body = serde_json::json!({
+            "schema":"crucible.installed-mixed-native-scenario.v1",
+            "isa":isa,"package":installed.identity(),"nodes":["clock","cpu"],
+            "connections":[],"external_inputs":[],"faults":[],
+        });
+        if public_preparation {
+            scenario_body["schema"] = "crucible.installed-public-native-scenario.v1".into();
+            scenario_body["public_preparation"] = true.into();
+        }
+        let scenario_ref = put_json(&mut contents, &scenario_body)?;
         let initialization_ref = put_json(
             &mut contents,
             &descriptors
@@ -205,9 +232,14 @@ impl MixedProfile {
             owners,
             requirements: ScenarioRequirements {
                 deterministic: true,
-                exact_capture: true,
-                exact_continuation: true,
-                durable_restart: true,
+                exact_capture: !public_preparation,
+                exact_continuation: !public_preparation,
+                durable_restart: !public_preparation,
+                accepted_limited_state_nodes: if public_preparation {
+                    vec![Id::new("clock")?, Id::new("cpu")?]
+                } else {
+                    Vec::new()
+                },
                 ..ScenarioRequirements::default()
             },
             content,
@@ -218,8 +250,80 @@ impl MixedProfile {
             installed,
             qualification,
             isa: isa.to_owned(),
+            public_preparation,
         })
     }
+}
+
+/// Selects live public readiness while explicitly refusing every preservation capability.
+fn select_public_preparation(
+    descriptor: &mut NodeDescriptor,
+    binding: &mut BindingCompatibility,
+    contents: &mut BTreeMap<String, ScenarioContent>,
+) -> Result<(), NodeObservedError> {
+    use crucible::node_adapters::{
+        HOST_PUBLIC_CLOCK_PREPARATION_SPECIFICATION,
+        gem5::{GEM5_PUBLIC_PREPARATION_SPECIFICATION, gem5_public_preparation_schema},
+        host_public_clock_preparation_schema,
+    };
+    let (schema, specification) = if descriptor.id.as_str() == "clock" {
+        (
+            host_public_clock_preparation_schema(),
+            HOST_PUBLIC_CLOCK_PREPARATION_SPECIFICATION,
+        )
+    } else {
+        (
+            gem5_public_preparation_schema(),
+            GEM5_PUBLIC_PREPARATION_SPECIFICATION,
+        )
+    };
+    let schema = schema.map_err(|error| super::super::refused(&error.reason))?;
+    if put(contents, specification.as_bytes().to_vec(), "text/plain")? != schema.definition {
+        return Err(super::super::refused(
+            "public preparation schema bytes differ",
+        ));
+    }
+    let mut guarantee: GuaranteeProfile =
+        serde_json::from_slice(&contents[&binding.guarantees_ref.hash.digest].bytes)?;
+    guarantee.capture_scope = crucible_node_contract::CaptureScope::None;
+    guarantee.continuation = crucible_node_contract::Continuation::Unsupported;
+    guarantee.durable_restart = false;
+    guarantee.isolated_fork = false;
+    guarantee.conditional_replay = false;
+    binding.guarantees_ref = put_json(contents, &guarantee)?;
+    let mut configuration: serde_json::Value =
+        serde_json::from_slice(&contents[&descriptor.configuration_ref.hash.digest].bytes)?;
+    configuration["public_preparation_schema"] = serde_json::to_value(&schema)?;
+    descriptor.configuration_ref = put_json(contents, &configuration)?;
+    binding.configuration_ref = descriptor.configuration_ref.clone();
+    binding.implementation.formats = vec![schema];
+    binding
+        .operating_contract
+        .facets
+        .retain(|facet| facet.id.as_str() != GEM5_OPAQUE_PRESERVATION_PROFILE);
+    for facet in &mut binding.operating_contract.facets {
+        facet.guarantees_ref = binding.guarantees_ref.clone();
+        facet.configuration_ref = descriptor.configuration_ref.clone();
+    }
+    let original: CapabilityProfile =
+        serde_json::from_slice(&contents[&binding.capabilities_ref.hash.digest].bytes)?;
+    let capabilities = CapabilityProfile {
+        facets: binding.operating_contract.facets.clone(),
+        ..original
+    };
+    binding.capabilities_ref = put_json(contents, &capabilities)?;
+    binding.descriptor_hash = descriptor.identity()?;
+    binding.profile_ref = put_json(
+        contents,
+        &serde_json::json!({
+            "schema":"crucible.installed-live-public-preparation.v1",
+            "descriptor":descriptor,"implementation":binding.implementation,
+            "operating_contract":binding.operating_contract,
+            "capabilities":capabilities,"guarantees":guarantee,
+            "preservation":"unsupported until original preparation-bearing codec qualification",
+        }),
+    )?;
+    Ok(())
 }
 
 /// Fixes the bounded mechanical prefix policy before native realization.

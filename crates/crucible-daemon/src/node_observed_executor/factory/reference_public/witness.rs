@@ -39,6 +39,8 @@ struct WindowWitness<'a> {
     windows: &'a [ReferenceWindowObservation],
     independent_oracle: &'a ReferenceOracleResult,
     lifecycle: &'a super::lifecycle_witness::LifecycleObservation,
+    supported_preparation: &'a super::supported_lifecycle::SupportedLifecycleObservation,
+    supported_cycles: &'a super::supported_execution::SupportedCycleObservation,
 }
 
 struct SerializationBudget(usize);
@@ -214,7 +216,14 @@ pub(super) fn collect_original_windows(
             }
         }
     }
-    let lifecycle = super::lifecycle_witness::verify(installation, source, activation, windows)?;
+    let lifecycle = super::lifecycle_witness::verify(installation, &recorded, activation, windows)?;
+    let supported_preparation =
+        super::supported_lifecycle::verify(installation, &recorded, activation)?;
+    #[cfg(test)]
+    super::supported_lifecycle::verify_counterfactuals(installation, &recorded, activation)?;
+    let supported_cycles = super::supported_execution::verify(installation, source, windows)?;
+    #[cfg(test)]
+    super::supported_execution::verify_counterfactuals(installation, source, windows)?;
     let oracle = verify_reference_windows(contract, windows)
         .map_err(|error| ProviderError::Io(std::io::Error::other(error.to_string())))?;
     // Preflight base64 and nested-control expansion before constructing a JSON
@@ -228,6 +237,8 @@ pub(super) fn collect_original_windows(
         windows,
         independent_oracle: &oracle,
         lifecycle: &lifecycle,
+        supported_preparation: &supported_preparation,
+        supported_cycles: &supported_cycles,
     };
     let mut budget = SerializationBudget(0);
     serde_json::to_writer(&mut budget, &witness)

@@ -251,7 +251,12 @@ impl AdmissionEvidence for InstalledEvidence {
     }
 
     fn authenticate_schema(&self, schema: &SchemaRef) -> Result<(), EvidenceError> {
-        if schema.version != 1
+        let semantic_v2 = schema.version == 2
+            && matches!(
+                schema.id.as_str(),
+                "host/native-semantic-continuation-v2" | "crucible/host-semantic-continuation-v2"
+            );
+        if !(schema.version == 1 || semantic_v2)
             || !matches!(
                 schema.id.as_str(),
                 "reference-device/input-v1"
@@ -263,6 +268,10 @@ impl AdmissionEvidence for InstalledEvidence {
                     | "crucible/block-response-v1"
                     | "crucible/filesystem-request-v1"
                     | "crucible/filesystem-response-v1"
+                    | "host/native-semantic-continuation-v2"
+                    | "crucible/host-semantic-continuation-v1"
+                    | "crucible/host-semantic-continuation-v2"
+                    | "crucible/host-assertion-outcome-v1"
             )
             || !self.enrollments.values().any(|enrollment| {
                 enrollment

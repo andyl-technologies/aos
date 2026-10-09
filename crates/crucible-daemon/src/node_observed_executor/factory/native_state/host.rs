@@ -27,7 +27,7 @@ use crucible_node_contract::{Id, NodeBinding, NodeDescriptor};
 /// # Errors
 /// Refuses another backend/schema/owner, incomplete original runtime/evidence,
 /// altered raw receipt bodies, incompatible bindings or unsupported host state.
-pub(super) fn authenticate_clock_source(
+pub(in crate::node_observed_executor::factory) fn authenticate_clock_source(
     graph: &AdmittedGraph,
     node: &Id,
     source: &AuthenticatedNativeSource<'_>,
@@ -96,7 +96,7 @@ pub(super) fn authenticate_clock_source(
 /// # Errors
 /// Refuses incompatible installed qualification, original lineage, fresh target
 /// authority, bounded resource capacity or selected native continuation codec.
-pub(super) fn prepare_clock(
+pub(in crate::node_observed_executor::factory) fn prepare_clock(
     graph: &AdmittedGraph,
     node: &Id,
     source: &AuthenticatedNativeSource<'_>,

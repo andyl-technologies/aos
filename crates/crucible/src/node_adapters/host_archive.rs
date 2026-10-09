@@ -75,7 +75,15 @@ pub fn validate_host_continuation(
     SourceScope::checked(source, node, limits)?;
     let captured: Captured =
         serde_json::from_slice(bytes).map_err(|error| failure(&error.to_string()))?;
-    if captured.schema_version != 1
+    let terminal_semantic = binding
+        .compatibility
+        .implementation
+        .formats
+        .iter()
+        .any(|schema| {
+            schema.id.as_str() == "host/native-semantic-continuation-v2" && schema.version == 2
+        });
+    if captured.schema_version != if terminal_semantic { 2 } else { 1 }
         || captured.profile != HOST_EXACT_PROFILE
         || captured.boundary != source.capture_cut
         || captured.operations.len() > limits.maximum_operations
@@ -135,13 +143,13 @@ pub fn validate_host_continuation(
             ));
         }
         previous = Some(&operation.operation);
-        let maximum_objects = operation
-            .outcome
-            .scheduling
-            .as_ref()
-            .map_or(1, |observation| {
-                observation.publications.len().saturating_add(3)
-            });
+        let maximum_objects = operation.outcome.scheduling.as_ref().map_or_else(
+            || match &operation.outcome.progress {
+                ProgressEvidence::AssertionsFinalized { .. } => 2,
+                _ => 1,
+            },
+            |observation| observation.publications.len().saturating_add(3),
+        );
         if operation.evidence.len() > maximum_objects {
             return Err(failure(
                 "host archive original receipt object ceiling exceeded",
@@ -162,6 +170,24 @@ pub fn validate_host_continuation(
             evidence
                 .entry(object.reference.clone())
                 .or_insert_with(|| object.bytes.clone());
+        }
+        if let ProgressEvidence::AssertionsFinalized {
+            barrier, report, ..
+        } = &operation.outcome.progress
+        {
+            // The new semantic codec retains both original terminal objects;
+            // legacy model codecs cannot silently acquire this custody shape.
+            if captured.schema_version != 2
+                || source.schema_version != 3
+                || operation.outcome.scheduling.is_some()
+                || references.len() != 2
+                || !references.contains(barrier)
+                || !references.contains(report)
+            {
+                return Err(failure(
+                    "host archive original terminal evidence is incomplete",
+                ));
+            }
         }
         if let Some(observation) = &operation.outcome.scheduling {
             if observation.node != *node

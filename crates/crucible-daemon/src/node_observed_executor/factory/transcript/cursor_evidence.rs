@@ -44,6 +44,15 @@ impl AdmissionEvidence for cursor_allocation::CursorAllocation {
             reference.verify(&bytes).map_err(failure)?;
             return Ok(bytes);
         }
+        if let Some(object) = self
+            .profile()
+            .enrolled
+            .values()
+            .find(|object| &object.reference == reference)
+        {
+            reference.verify(&object.bytes).map_err(failure)?;
+            return Ok(object.bytes.clone());
+        }
         let object = self
             .profile()
             .scenario

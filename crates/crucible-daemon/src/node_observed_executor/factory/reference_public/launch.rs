@@ -54,6 +54,7 @@ pub(super) struct ObservedPublicPreparation {
     pub(super) prepared: CnpReferencePreparation,
     pub(super) observations: ObservationHandle,
     pub(super) probe: serde_json::Value,
+    pub(super) prepared_probe: serde_json::Value,
 }
 
 /// Keeps the one original connection's uncertainty in its native reservation.
@@ -106,6 +107,8 @@ pub(super) fn launch(
         ));
     }
     let probe_plan = super::source_probe::SourceProbePlan::build(installed)?;
+    let prepared_plan =
+        super::source_pre_activation_probe::SourcePreActivationProbePlan::build(installed)?;
     let provider = installed
         .package
         .executable("provider")
@@ -305,12 +308,21 @@ pub(super) fn launch(
     let (probe, original_snapshot) =
         super::source_probe_execution::collect(installed, &mut guard, &probe_plan, &observations)?;
     let probe = serde_json::json!({"premises":probe,"original_snapshot_bytes":original_snapshot});
-    let prepared = CnpReferencePreparation::prepare(guard, installed)
+    let mut prepared = CnpReferencePreparation::prepare(guard, installed)
         .map_err(|failure| ProviderError::Io(std::io::Error::other(failure.error.reason)))?;
+    let (prepared_probe, original_snapshot) = super::source_pre_activation_execution::collect(
+        installed,
+        &mut prepared,
+        &prepared_plan,
+        &observations,
+    )?;
+    let prepared_probe =
+        serde_json::json!({"premises":prepared_probe,"original_snapshot_bytes":original_snapshot});
     Ok(ObservedPublicPreparation {
         prepared,
         observations,
         probe,
+        prepared_probe,
     })
 }
 

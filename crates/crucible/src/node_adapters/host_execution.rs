@@ -102,6 +102,12 @@ pub(super) fn validate_inventory(
                 "integer host clock has no guest timer or external I/O lanes",
             ));
         }
+    } else if matches!(model, HostModel::Semantics(model) if model.definition().inputs.is_empty()) {
+        if input.is_some() || output.is_none() {
+            return Err(failure(
+                "closed semantic program requires one output and no ingress lane",
+            ));
+        }
     } else if matches!(model, HostModel::ScriptedSource(_)) {
         if input.is_some() || output.is_none() {
             return Err(failure(
@@ -125,6 +131,7 @@ pub(super) fn validate_inventory(
             HostModel::Link(link) => link.inflight_len(),
             HostModel::Clock(_) => 0,
             HostModel::ScriptedSource(source) => source.requests().len() - source.cursor(),
+            HostModel::Semantics(model) => model.pending_count(),
         };
         if pending as u64 > lane.maximum_pending_events.get() {
             return Err(failure(
@@ -281,6 +288,9 @@ impl HostModelNode {
                             "native link frame exceeds its realized output lane geometry",
                         ));
                     }
+                }
+                Some(HostModel::Semantics(model)) => {
+                    model.validate_input(delivery, bytes)?;
                 }
                 _ => return Err(failure("host clock cannot consume guest requests")),
             }
@@ -466,6 +476,7 @@ impl HostModelNode {
                 .map(|delivery| reaction(delivery.delivery));
             let local_position = match self.model.as_ref() {
                 Some(HostModel::ScriptedSource(source)) => source.next_position(),
+                Some(HostModel::Semantics(model)) => model.next_position(),
                 _ => self.next_local_event().map(root_reaction),
             };
             let next = match (input_position, local_position) {
@@ -515,6 +526,9 @@ impl HostModelNode {
         }
         if let Some(HostModel::ScriptedSource(source)) = self.model.as_mut() {
             source.park(limit.time_ps.get())?;
+        }
+        if let Some(HostModel::Semantics(model)) = self.model.as_mut() {
+            model.park(limit)?;
         }
         self.boundary = limit;
         let original_objects = state::state_receipt_objects(self)?;
@@ -601,6 +615,7 @@ impl HostModelNode {
             Some(HostModel::Io(io)) => io.next_exact_local_event(),
             Some(HostModel::Link(link)) => link.next_exact_local_event(),
             Some(HostModel::ScriptedSource(source)) => source.next_time(),
+            Some(HostModel::Semantics(model)) => model.next_position().map(|at| at.time_ps.get()),
             _ => None,
         }
     }
@@ -613,6 +628,7 @@ impl HostModelNode {
         let pending = match self.model.as_ref() {
             Some(HostModel::Io(io)) => io.pending_completion_keys().count(),
             Some(HostModel::Link(link)) => link.inflight_len(),
+            Some(HostModel::Semantics(model)) => model.pending_count(),
             _ => 0,
         };
         if pending as u64 >= pending_limit {
@@ -672,6 +688,9 @@ impl HostModelNode {
                     );
                 }
             }
+            Some(HostModel::Semantics(model)) => {
+                model.consume(delivery, bytes, reaction(delivery.delivery))?;
+            }
             _ => return Err(failure("host clock has no input reaction")),
         }
         if self.pending_causes.len() > self.limits.maximum_operations {
@@ -688,6 +707,9 @@ impl HostModelNode {
         evaluation: Position,
         operation: &Id,
     ) -> Result<Vec<NativePublication>, OperationFailure> {
+        if matches!(self.model.as_ref(), Some(HostModel::Semantics(_))) {
+            return self.publish_semantic(evaluation, operation);
+        }
         let maximum_payload_bytes = self
             .lane(self.output_endpoint.as_ref())?
             .maximum_payload_bytes
@@ -773,11 +795,88 @@ impl HostModelNode {
         Ok(publications)
     }
 
+    fn publish_semantic(
+        &mut self,
+        evaluation: Position,
+        operation: &Id,
+    ) -> Result<Vec<NativePublication>, OperationFailure> {
+        let endpoint = self
+            .output_endpoint
+            .clone()
+            .ok_or_else(|| failure("semantic original output endpoint absent"))?;
+        let maximum_payload_bytes = self.lane(Some(&endpoint))?.maximum_payload_bytes.get();
+        let Some(HostModel::Semantics(model)) = self.model.as_mut() else {
+            return Err(failure("semantic native model absent"));
+        };
+        if model.pending_count() == 0 {
+            model.settle(evaluation)?;
+        }
+        let outputs = model.take_publications_at(evaluation);
+        let mut publications = Vec::with_capacity(outputs.len());
+        for output in outputs {
+            let payload_bytes = output.bytes.as_slice().to_vec();
+            if payload_bytes.len() as u64 > maximum_payload_bytes {
+                return Err(failure(
+                    "semantic original output exceeds selected lane ceiling",
+                ));
+            }
+            let publication = crate::node_scheduling::event::reaction_publication(
+                &output.parents,
+                output.evaluation,
+                output.evaluation.time_ps,
+                self.maximum_microsteps,
+            )
+            .map_err(|error| failure(&error.to_string()))?;
+            let native_sequence = self.native_sequence;
+            self.native_sequence = self
+                .native_sequence
+                .checked_add(1)
+                .ok_or_else(|| failure("semantic original sequence exhausted"))?;
+            let publication_id = Id::new(format!(
+                "host-output/{}",
+                canonical::hash(
+                    "cnp.host-publication.v1",
+                    format!("{operation}/{native_sequence}").as_bytes()
+                )
+                .map_err(|error| failure(&error.to_string()))?
+                .digest
+            ))
+            .map_err(|error| failure(&error.to_string()))?;
+            let payload = canonical::content_ref(&payload_bytes, "application/octet-stream")
+                .map_err(|error| failure(&error.to_string()))?;
+            publications.push(NativePublication {
+                publication_id,
+                endpoint: endpoint.clone(),
+                native_sequence: native_sequence.into(),
+                publication,
+                evaluation: Some(output.evaluation),
+                causal_parents: output.parents,
+                payload,
+                payload_bytes,
+            });
+        }
+        Ok(publications)
+    }
+
     fn output_bound(&self) -> NativeOutputBound {
         if self.output_endpoint.is_none() {
             // The qualified integer clock has no public outputs, armed guest
             // timers or autonomous worker, so this covers its entire inventory.
             NativeOutputBound::AfterInstant(U64::new(u64::MAX))
+        } else if let Some(HostModel::Semantics(model)) = self.model.as_ref() {
+            // Input closure is independently established by the terminal gate.
+            // An empty evaluator queue does not imply an unconditional EOF.
+            let at = model.next_position().unwrap_or(self.boundary);
+            let microstep = if at.phase > Phase::Publication {
+                at.microstep.checked_add(U64::new(1)).ok()
+            } else {
+                Some(at.microstep)
+            };
+            microstep
+                .filter(|microstep| *microstep < self.maximum_microsteps)
+                .map_or(NativeOutputBound::Unknown, |microstep| {
+                    NativeOutputBound::At(Position::new(at.time_ps, microstep, Phase::Publication))
+                })
         } else if let Some(HostModel::ScriptedSource(source)) = self.model.as_ref() {
             // This original cursor covers all immutable future publications.
             // At EOF, with no ingress or autonomy, the complete observation

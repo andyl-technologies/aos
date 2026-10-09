@@ -85,6 +85,16 @@ impl StoredWorldActivationPublisher {
 }
 
 impl ActivationPublisher for StoredWorldActivationPublisher {
+    fn retain_initial_coordinator(
+        &mut self,
+        record: &ActivationRecord,
+        nodes: Vec<crucible::node_contract::ValidatedNodePreparation>,
+        coordinator: crucible::node_scheduling::InputPayload,
+    ) -> Result<(), crucible::node_contract::RuntimeError> {
+        self.retain_coordinator(record.clone(), nodes, coordinator)
+            .map_err(|_| crucible::node_contract::RuntimeError::PublicationFailed)
+    }
+
     fn prepare_coordinator(
         &mut self,
         record: &ActivationRecord,

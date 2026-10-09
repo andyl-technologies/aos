@@ -82,6 +82,45 @@ pub trait SimulationNode {
         })
     }
 
+    /// Reads complete native terminal inventory without advancing or draining.
+    ///
+    /// The selected codec must establish physical suspension, no outstanding
+    /// native events/inputs/outputs, and either unconditional future closure or
+    /// input-dependent closure. The default explicitly refuses.
+    ///
+    /// # Errors
+    /// Refuses unsupported or incomplete terminal scope and exhausted bytes.
+    fn observe_terminal(
+        &mut self,
+        _activation: &super::WorldActivation,
+        _maximum_bytes: usize,
+    ) -> Result<super::NativeTerminalInventory, OperationFailure> {
+        Err(OperationFailure {
+            effects: super::EffectKnowledge::None,
+            reason: "complete native terminal inventory is unsupported".into(),
+        })
+    }
+
+    /// Authenticates original terminal inventory against live native custody.
+    ///
+    /// An accepted disposition covers all autonomous native work and future
+    /// timers, retained publications and non-coordinator ingress. Its native
+    /// fence remains effective through original report publication and ACK.
+    /// Paused execution, an empty queue or a finite output bound is insufficient.
+    ///
+    /// # Errors
+    /// Refuses unsupported validation, foreign scope or changed native state.
+    fn validate_terminal(
+        &self,
+        _activation: &super::WorldActivation,
+        _inventory: &super::NativeTerminalInventory,
+    ) -> Result<(), OperationFailure> {
+        Err(OperationFailure {
+            effects: super::EffectKnowledge::None,
+            reason: "native terminal inventory authentication is unsupported".into(),
+        })
+    }
+
     /// Reads immutable native proof bodies for original boundary observations.
     ///
     /// Records must belong to this actual activation and retained native owner
@@ -522,6 +561,8 @@ pub enum NodeFacet<'a> {
     Coverage(&'a dyn FacetDescription),
     /// Declared architectural observation semantics.
     Introspection(&'a dyn FacetDescription),
+    /// Whole-world-fenced terminal assertion semantics.
+    TerminalAssertions(&'a dyn FacetDescription),
     /// Explicit noncanonical debugging semantics.
     Debugging(&'a dyn FacetDescription),
 }
@@ -538,7 +579,8 @@ impl NodeFacet<'_> {
             | Self::FaultInjection(facet)
             | Self::Coverage(facet)
             | Self::Introspection(facet)
-            | Self::Debugging(facet) => facet.profile(),
+            | Self::Debugging(facet)
+            | Self::TerminalAssertions(facet) => facet.profile(),
         }
     }
 
@@ -554,6 +596,7 @@ impl NodeFacet<'_> {
             Self::Coverage(_) => FacetKind::Coverage,
             Self::Introspection(_) => FacetKind::Introspection,
             Self::Debugging(_) => FacetKind::Debugging,
+            Self::TerminalAssertions(_) => FacetKind::TerminalAssertions,
         }
     }
 }

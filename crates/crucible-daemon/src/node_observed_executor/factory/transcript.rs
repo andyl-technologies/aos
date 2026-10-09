@@ -8,6 +8,8 @@
 mod context;
 mod context_fragments;
 mod recording;
+mod replay_recipe;
+pub(super) mod replay_stepper;
 
 #[cfg(test)]
 mod preparation_tests;
@@ -16,21 +18,20 @@ mod preparation_tests;
 mod tests;
 
 #[cfg(test)]
+mod production_tests;
+
 mod source_enrollment;
 
-#[cfg(test)]
 mod replay_profile;
 
-#[cfg(test)]
 mod cursor_allocation;
 
-#[cfg(test)]
 mod cursor_evidence;
 
-#[cfg(test)]
 mod cursor_policy;
 
 pub use recording::{InstalledRecordedWorld, InstalledReferenceRecording};
+pub use replay_recipe::{InstalledConditionalReplay, InstalledReplayRecipe};
 
 use crucible::{
     node_adapters::transcript::{RecordingHandle, RecordingNode, TranscriptLimits},

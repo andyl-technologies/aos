@@ -80,14 +80,56 @@ impl InstalledMixedEngine {
         })
     }
 
+    pub(super) fn with_runtime(
+        root: PathBuf,
+        runtime: RuntimeCustodyQueue,
+    ) -> Result<Self, NodeObservedError> {
+        private_parent(&root)?;
+        Ok(Self {
+            native: Gem5CustodyQueue::installed(8).map_err(error)?,
+            runtime,
+            root,
+            installed: InstalledGem5ClosedProfile::built_in()?,
+            host: PathBuf::from("/proc/self/exe"),
+        })
+    }
+
     /// Prepares an actual closed native peer and clock beneath reserved custody.
     pub(super) fn prepare_live(&self, isa: &str) -> Result<MixedLiveWorld, NodeObservedError> {
-        let profile = Rc::new(MixedProfile::build(
-            self.installed.clone(),
-            &measure_executable(&self.host)?,
-            isa,
-        )?);
-        let target = fresh_target(&profile, None)?;
+        self.prepare_live_selected(isa, false, None)
+    }
+
+    pub(super) fn prepare_public_initial(
+        &self,
+        isa: &str,
+        activation_id: Id,
+    ) -> Result<MixedLiveWorld, NodeObservedError> {
+        self.prepare_live_selected(isa, true, Some(activation_id))
+    }
+
+    fn prepare_live_selected(
+        &self,
+        isa: &str,
+        public: bool,
+        activation_id: Option<Id>,
+    ) -> Result<MixedLiveWorld, NodeObservedError> {
+        let profile = Rc::new(if public {
+            MixedProfile::build_public(
+                self.installed.clone(),
+                &measure_executable(&self.host)?,
+                isa,
+            )?
+        } else {
+            MixedProfile::build(
+                self.installed.clone(),
+                &measure_executable(&self.host)?,
+                isa,
+            )?
+        });
+        let mut target = fresh_target(&profile, None)?;
+        if let Some(activation_id) = activation_id {
+            target.activation_id = activation_id;
+        }
         let runtime_slot = self
             .runtime
             .reserve_world(&target, runtime_limits())
@@ -167,7 +209,7 @@ impl InstalledMixedEngine {
                 .admit(&bindings, evidence.as_ref(), admission_limits())
                 .map_err(|failure| refused(&format!("initial mixed graph admission: {failure}")))?,
         );
-        let clock = HostModelNode::new(
+        let mut clock = HostModelNode::new(
             &graph,
             &Id::new("clock")?,
             clock,
@@ -175,18 +217,31 @@ impl InstalledMixedEngine {
             host_resources(),
         )
         .map_err(|failure| refused(&failure.reason))?;
+        if public {
+            clock
+                .qualify_public_initial_clock(&graph, evidence.as_ref())
+                .map_err(|failure| refused(&failure.reason))?;
+        }
         let qualification = evidence.qualify_prepared(&native, &authority)?;
         let prepared =
             Gem5NodePreparation::from_prepared(&graph, &Id::new("cpu")?, native, &qualification)
                 .map_err(|failure| refused(&failure.error.reason))?;
-        let cpu = prepared
-            .into_qualified_capturing_simulation_node(
-                &graph,
-                authority,
-                native_resources(isa)?,
-                archive_installation(&self.installed, &namespace)?,
-            )
-            .map_err(|failure| refused(&failure.error.reason))?;
+        let cpu = if public {
+            prepared
+                .into_qualified_simulation_node(&graph, authority, native_resources(isa)?)
+                .map_err(|failure| refused(&failure.error.reason))?
+                .into_public_initial_preparation(&graph, &qualification)
+                .map_err(|failure| refused(&failure.error.reason))?
+        } else {
+            prepared
+                .into_qualified_capturing_simulation_node(
+                    &graph,
+                    authority,
+                    native_resources(isa)?,
+                    archive_installation(&self.installed, &namespace)?,
+                )
+                .map_err(|failure| refused(&failure.error.reason))?
+        };
         let nodes: Vec<Box<dyn SimulationNode>> = vec![Box::new(clock), Box::new(cpu)];
         let realization =
             PreparedRealization::new(nodes, target.clone(), runtime_limits(), runtime_slot);
@@ -474,3 +529,7 @@ fn private_parent(path: &Path) -> Result<(), NodeObservedError> {
 fn error(error: impl std::fmt::Display) -> NodeObservedError {
     refused(&error.to_string())
 }
+
+#[cfg(test)]
+#[path = "initial_preparation_tests.rs"]
+mod initial_preparation_tests;

@@ -4,8 +4,13 @@
 //! and native cleanup. These commands transport authored bytes and render original
 //! durable state without implementing scheduling or claiming deterministic replay.
 
+#[path = "node_cache_reuse.rs"]
+mod cache_reuse;
+
 #[path = "node_host_state.rs"]
 mod host_state;
+#[path = "node_terminal_state.rs"]
+mod terminal_state;
 
 #[path = "node_native_state.rs"]
 mod native_state;
@@ -40,6 +45,10 @@ pub(super) struct NodeArgs {
 
 #[derive(Subcommand, Debug, PartialEq, Eq)]
 enum NodeCommand {
+    #[command(flatten)]
+    CacheReuse(cache_reuse::NodeCacheReuseCommand),
+    #[command(flatten)]
+    TerminalState(terminal_state::NodeTerminalCommand),
     #[command(flatten)]
     ExactState(host_state::NodeHostStateCommand),
     #[command(flatten)]
@@ -114,6 +123,8 @@ pub(super) fn run_node_invocation(cli: &Cli, args: &NodeArgs) -> Result<(), CliE
         ));
     }
     match &args.command {
+        NodeCommand::CacheReuse(command) => cache_reuse::run(command),
+        NodeCommand::TerminalState(command) => terminal_state::run(command),
         NodeCommand::ExactState(command) => host_state::run(command),
         NodeCommand::NativeState(command) => native_state::run(command),
         NodeCommand::Kvm(command) => kvm::run(command),

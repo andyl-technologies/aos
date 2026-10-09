@@ -11,6 +11,7 @@ use crucible_cas::content_store::{
     RefName,
 };
 use crucible_node_contract::canonical;
+use serde::{Deserialize, Serialize};
 
 use super::{
     NodeControlError, execution_id,
@@ -22,6 +23,17 @@ use super::{
 
 const MAXIMUM_RECORD_BYTES: usize = 8 * 1024 * 1024;
 const MAXIMUM_OPERATION_RECORDS: usize = 4096;
+const MAXIMUM_QUOTA_BYTES: usize = 1024;
+const MAXIMUM_QUOTA_CONTENTION: usize = 64;
+
+/// Retains consumed namespace-wide admission credits, including uncertain attempts.
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RecordQuota {
+    format: String,
+    version: u32,
+    consumed: u32,
+}
 
 #[derive(Clone)]
 pub(super) struct HostStateLedger {
@@ -51,7 +63,7 @@ impl HostStateLedger {
         request: &NodeHostStateRequest,
     ) -> Result<StateReservation, NodeControlError> {
         request.validate()?;
-        if matches!(request, NodeHostStateRequest::Status { .. }) {
+        if is_status(request) {
             return Err(refused("read-only state status cannot reserve native work"));
         }
         let bytes = canonical::canonical_json(
@@ -81,17 +93,18 @@ impl HostStateLedger {
             });
         }
 
-        // Enforce persistent admission capacity before allocating native owners.
-        let retained_operations = self.operation_count()?;
-        if retained_operations >= MAXIMUM_OPERATION_RECORDS {
-            return Err(refused(
-                "persistent host-state operation capacity exhausted",
-            ));
-        }
+        // The publication guard excludes GC, not concurrent publishers. A
+        // shared durable CAS therefore owns each credit before any new record.
+        // Uncertain or competing reservations never return their credit.
+        self.reserve_record_credit()?;
         self.put(request_identity, bytes)?;
         let record = NodeHostStateRecord {
             format: "crucible.node-state-operation".into(),
-            version: 1,
+            version: if matches!(request, NodeHostStateRequest::Terminal { .. }) {
+                2
+            } else {
+                1
+            },
             execution: request.execution().to_owned(),
             request: request_identity,
             state: NodeHostStateOutcome::Reserved {},
@@ -157,27 +170,89 @@ impl HostStateLedger {
     }
 
     pub(super) fn retention_roots(&self) -> Result<BTreeSet<ContentId>, NodeControlError> {
-        self.inventory().map(|(roots, _)| roots)
+        let (mut roots, recorded) = self.inventory()?;
+        if let Some(identity) = self.refs.read_ref(&record_quota_ref()?).map_err(refused)? {
+            if self.read_quota(identity)? < recorded {
+                return Err(refused("host-state quota omits original reservations"));
+            }
+            roots.insert(identity);
+        }
+        Ok(roots)
     }
 
-    fn operation_count(&self) -> Result<usize, NodeControlError> {
-        let namespace = RefName::new("node-state-operations").map_err(refused)?;
-        let mut after = None;
-        let mut count = 0usize;
-        loop {
-            let page = self
+    fn reserve_record_credit(&self) -> Result<(), NodeControlError> {
+        let reference = record_quota_ref()?;
+        for _ in 0..MAXIMUM_QUOTA_CONTENTION {
+            let current = self.refs.read_ref(&reference).map_err(refused)?;
+            let recorded = self.inventory()?.1;
+            let consumed = match current {
+                Some(identity) => self.read_quota(identity)?,
+                // Migrating existing records does not alter their bytes. Every
+                // first publisher competes for this same initialization CAS.
+                None => recorded,
+            };
+            if consumed < recorded {
+                if self.refs.read_ref(&reference).map_err(refused)? != current {
+                    continue;
+                }
+                return Err(refused("host-state quota omits original reservations"));
+            }
+            if consumed >= MAXIMUM_OPERATION_RECORDS {
+                return Err(refused(
+                    "persistent host-state operation capacity exhausted",
+                ));
+            }
+            let quota = RecordQuota {
+                format: "crucible.host-state-record-quota".into(),
+                version: 1,
+                consumed: u32::try_from(consumed + 1).map_err(refused)?,
+            };
+            let bytes = canonical::canonical_json(
+                &serde_json::to_value(&quota)
+                    .map_err(crucible_node_contract::ContractError::from)?,
+            )?;
+            let next = ContentId::for_bytes(ObjectKind::Trace, 1, &bytes);
+            self.put(next, bytes)?;
+            match self
                 .refs
-                .scan_refs(&namespace, after.as_ref(), 64)
-                .map_err(refused)?;
-            count = count
-                .checked_add(page.entries().len())
-                .filter(|count| *count <= MAXIMUM_OPERATION_RECORDS)
-                .ok_or_else(|| refused("persistent host-state operation capacity exhausted"))?;
-            after = page.next_after().cloned();
-            if after.is_none() {
-                return Ok(count);
+                .compare_exchange(&reference, current, next)
+                .map_err(refused)?
+            {
+                RefCasOutcome::Advanced { next: actual } if actual == next => return Ok(()),
+                RefCasOutcome::Conflict { .. } => continue,
+                _ => return Err(refused("host-state record credit requires reconciliation")),
             }
         }
+        Err(refused(
+            "host-state record credit contention exceeds its finite ceiling",
+        ))
+    }
+
+    fn read_quota(&self, identity: ContentId) -> Result<usize, NodeControlError> {
+        let bytes = self
+            .blobs
+            .read(identity, None)
+            .and_then(|handle| handle.read_all(MAXIMUM_QUOTA_BYTES as u64))
+            .map_err(refused)?;
+        if ContentId::for_bytes(ObjectKind::Trace, 1, &bytes) != identity {
+            return Err(refused("host-state quota identity is corrupt"));
+        }
+        let value = canonical::parse_json(&bytes, MAXIMUM_QUOTA_BYTES)?;
+        if canonical::canonical_json(&value)? != bytes {
+            return Err(refused("host-state quota is not canonical"));
+        }
+        let quota: RecordQuota =
+            serde_json::from_value(value).map_err(crucible_node_contract::ContractError::from)?;
+        let consumed = usize::try_from(quota.consumed).map_err(refused)?;
+        if quota.format != "crucible.host-state-record-quota"
+            || quota.version != 1
+            || consumed > MAXIMUM_OPERATION_RECORDS
+        {
+            return Err(refused(
+                "host-state quota is not an original bounded budget",
+            ));
+        }
+        Ok(consumed)
     }
 
     fn inventory(&self) -> Result<(BTreeSet<ContentId>, usize), NodeControlError> {
@@ -267,7 +342,13 @@ impl HostStateLedger {
         .map_err(crucible_node_contract::ContractError::from)?;
         original.validate()?;
         if original.execution() != execution
-            || matches!(original, NodeHostStateRequest::Status { .. })
+            || is_status(&original)
+            || record.version
+                != if matches!(original, NodeHostStateRequest::Terminal { .. }) {
+                    2
+                } else {
+                    1
+                }
         {
             return Err(refused(
                 "state record does not retain its original dispatch request",
@@ -301,7 +382,17 @@ impl HostStateLedger {
     }
 }
 
+pub(super) fn is_status(request: &NodeHostStateRequest) -> bool {
+    matches!(request, NodeHostStateRequest::Status { .. })
+        || matches!(request, NodeHostStateRequest::Terminal { request }
+            if matches!(request.as_ref(), super::terminal_state::NodeTerminalStateRequest::Status { .. }))
+}
+
 fn operation_ref(execution: &str) -> Result<RefName, NodeControlError> {
     execution_id(execution)?;
     RefName::new(format!("node-state-operations/{execution}")).map_err(refused)
+}
+
+fn record_quota_ref() -> Result<RefName, NodeControlError> {
+    RefName::new("node-state-quota/records").map_err(refused)
 }

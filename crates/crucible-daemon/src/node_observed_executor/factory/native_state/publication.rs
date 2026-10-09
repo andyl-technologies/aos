@@ -67,6 +67,15 @@ impl ActivationPublisher for NativeCustodyPublisher {
         self.record_effect(record, |stored| stored.reconcile(record))
     }
 
+    fn retain_initial_coordinator(
+        &mut self,
+        record: &ActivationRecord,
+        nodes: Vec<ValidatedNodePreparation>,
+        coordinator: InputPayload,
+    ) -> Result<(), RuntimeError> {
+        self.stored.retain_initial_coordinator(record, nodes, coordinator)
+    }
+
     fn prepare_coordinator(
         &mut self,
         record: &ActivationRecord,

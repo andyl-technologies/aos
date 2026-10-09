@@ -140,7 +140,9 @@ struct Actor {
     candidate: Option<PrivateCandidate>,
     observers: Vec<Rc<RefCell<Option<ObservationHandle>>>>,
     windows: Vec<Vec<ReferenceWindowObservation>>,
+    runtime_retries: Vec<Vec<super::runtime_retries::RuntimeCachedRecovery>>,
     probes: Vec<serde_json::Value>,
+    prepared_probes: Vec<serde_json::Value>,
     phase: &'static str,
     planned: Vec<Vec<ReferenceWindowCase>>,
     oracles: Vec<ReferenceOracleContract>,
@@ -169,7 +171,9 @@ fn run_actor(directory: PathBuf) -> Result<CandidateHarnessResult, ProviderError
         candidate: None,
         observers: (0..2).map(|_| Rc::new(RefCell::new(None))).collect(),
         windows: (0..2).map(|_| Vec::with_capacity(3)).collect(),
+        runtime_retries: (0..2).map(|_| Vec::with_capacity(3)).collect(),
         probes: Vec::with_capacity(2),
+        prepared_probes: Vec::with_capacity(2),
         phase: "source-enrollment",
         planned: Vec::with_capacity(2),
         oracles: Vec::with_capacity(2),
@@ -333,9 +337,42 @@ impl Actor {
             roots.push(serde_json::json!({"reference":reference,"object":object.encode()}));
         }
         let report = self.persist(issued.bytes(), "qualification/population/report")?;
+        let inspection = super::metadata_inspection::inspect(original, issued).map_err(failure)?;
+        let inspection_bytes = canonical::canonical_json(
+            &serde_json::to_value(inspection)
+                .map_err(crucible_node_contract::ContractError::from)?,
+        )?;
+        let inspection_root =
+            self.persist(&inspection_bytes, "qualification/metadata-inspection")?;
+        let package = self
+            .candidate
+            .as_ref()
+            .ok_or(ProviderError::Frame("original package absent"))?
+            .installations[0]
+            .package
+            .clone();
+        let artifact_plan = package.artifact_measurement_plan().map_err(failure)?;
+        let source_fixtures = unit
+            .objects
+            .get(&unit.identity.fixtures)
+            .ok_or(ProviderError::Frame("original fixture absent"))?;
+        let source_fixtures = canonical::parse_json(source_fixtures, 16 * 1024 * 1024)?;
+        if source_fixtures["artifact_integrity_plan"] != artifact_plan.fixture() {
+            return Err(ProviderError::Frame(
+                "original artifact measurement plan changed",
+            ));
+        }
+        let artifact_controls = artifact_plan.inspect(&package).map_err(failure)?;
+        let artifact_bytes = canonical::canonical_json(
+            &serde_json::to_value(artifact_controls)
+                .map_err(crucible_node_contract::ContractError::from)?,
+        )?;
+        let artifact_root = self.persist(&artifact_bytes, "qualification/artifact-integrity")?;
         let envelope = canonical::canonical_json(&serde_json::json!({
             "schema":"crucible.reference.original-population-roots.v1",
             "report":issued.reference(),"report_object":report.encode(),
+            "metadata_inspection":inspection_root.encode(),
+            "artifact_integrity":artifact_root.encode(),
             "original_result":original.original_result().encode(),
             "retirement_result":original.retirement_result().encode(),
             "objects":roots,"qualification_accepted":false
@@ -373,7 +410,7 @@ impl Actor {
         }));
         serde_json::json!({"schema":"crucible.reference.candidate-failure.v1","phase":self.phase,
             "error":error,"candidate":candidate,"original_observations":observations,
-            "original_completed_windows":self.windows,"source_probes":self.probes,"qualification_accepted":false})
+            "original_completed_windows":self.windows,"original_runtime_retries":self.runtime_retries,"source_probes":self.probes,"prepared_probes":self.prepared_probes,"qualification_accepted":false})
     }
 
     fn persist(&self, bytes: &[u8], name: &str) -> Result<ContentId, ProviderError> {
@@ -474,8 +511,10 @@ impl Actor {
                 prepared,
                 observations: observer,
                 probe,
+                prepared_probe,
             } = original;
             self.probes.push(probe);
+            self.prepared_probes.push(prepared_probe);
             observations.push(observer);
             nodes.push(Box::new(
                 prepared
@@ -543,6 +582,19 @@ impl Actor {
                 collect_reference_window(runtime, &graph, &activation, case, &mut context)
                     .map_err(failure)?,
             );
+            self.phase = "original-runtime-cached-recovery";
+            let window = self.windows[index].last().ok_or(ProviderError::Frame(
+                "original window unavailable for recovery",
+            ))?;
+            self.runtime_retries[index].push(super::runtime_retries::collect(
+                runtime,
+                &graph,
+                &activation,
+                case,
+                window,
+                &mut context,
+            )?);
+            self.phase = "original-native-windows";
         }
         self.phase = "independent-window-oracle";
         let mut witnesses = Vec::<OriginalPublicWindowWitness>::with_capacity(2);
@@ -562,7 +614,7 @@ impl Actor {
         Ok(
             serde_json::json!({"schema":"crucible.reference.candidate-original.v1","implementation":package.identity(),
                 "activation":crucible::node_contract::SavedRuntimeActivation::from(activation.record()),
-                "source_probes":self.probes,"prepared_nodes":original.nodes(),"prepared_owners":original.prepared_owners(),"coordinator":coordinator,"windows":witnesses.iter().map(|witness|serde_json::json!({
+                "source_probes":self.probes,"prepared_probes":self.prepared_probes,"runtime_cached_recovery":self.runtime_retries,"prepared_nodes":original.nodes(),"prepared_owners":original.prepared_owners(),"coordinator":coordinator,"windows":witnesses.iter().map(|witness|serde_json::json!({
                     "reference":witness.reference,"bytes":witness.bytes})).collect::<Vec<_>>()
             }),
         )
@@ -735,12 +787,12 @@ mod source_probe_native_test {
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>();
         let path = PathBuf::from(format!("/tmp/p-probes-{short}"));
-        let receiver = super::start(path).unwrap();
+        let receiver = super::start(path.clone()).unwrap();
         let original = receiver.recv().unwrap().unwrap();
         assert!(
             original.succeeded(),
-            "{}",
-            String::from_utf8_lossy(original.original_bytes())
+            "failed original retained at {}",
+            path.display()
         );
         let value = canonical::parse_json(original.original_bytes(), 16 * 1024 * 1024).unwrap();
         let probes = value["source_probes"].as_array().unwrap();
@@ -770,6 +822,125 @@ mod source_probe_native_test {
         eprintln!(
             "source-built provider-only cohort: six original rejected controls, two unchanged native premises, full common world/windows/oracle/reap; original {}",
             original.original_result().encode()
+        );
+    }
+}
+
+#[cfg(test)]
+// crucible-lint: allow panic-shortcut -- Actual native fixture failure must fail the test
+// crucible-lint: allow rust-allow -- Actual native fixture failure must fail the test
+#[allow(
+    clippy::unwrap_used,
+    reason = "Actual native fixture failure must fail the test"
+)]
+mod prepared_adverse_native_test {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires compiled installed source-built reference implementation package"]
+    fn actual_prepared_adverse_controls_preserve_original_first_native_quantum() {
+        let nonce = super::super::candidate::entropy().unwrap();
+        let short = nonce
+            .as_slice()
+            .iter()
+            .take(8)
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let path = PathBuf::from(format!("/tmp/pp-probes-{short}"));
+        let original = super::start(path.clone()).unwrap().recv().unwrap().unwrap();
+        assert!(
+            original.succeeded(),
+            "failed original retained at {}",
+            path.display()
+        );
+        let value = canonical::parse_json(original.original_bytes(), 16 * 1024 * 1024).unwrap();
+        let probes = value["prepared_probes"].as_array().unwrap();
+        assert_eq!(probes.len(), 2);
+        for probe in probes {
+            let premises = &probe["premises"];
+            assert_eq!(premises["provider_before"], premises["provider_after"]);
+            assert_eq!(premises["controls"]["cases"].as_array().unwrap().len(), 6);
+            assert_eq!(premises["controls"]["unchanged_pending_page"], true);
+            assert_eq!(
+                premises["initial_gate"]["schema"],
+                "crucible.reference.original-prepared-gate.v1"
+            );
+            let bytes: Vec<u8> =
+                serde_json::from_value(probe["original_snapshot_bytes"].clone()).unwrap();
+            let snapshot = canonical::parse_json(&bytes, 1024 * 1024).unwrap();
+            assert_eq!(snapshot["recording_complete"], true);
+            assert_eq!(snapshot["observed_unknown"], false);
+            assert_eq!(
+                snapshot["evidence"]["requests"].as_array().unwrap().len(),
+                6
+            );
+        }
+        let owners = value["windows"].as_array().unwrap();
+        let recoveries = value["runtime_cached_recovery"].as_array().unwrap();
+        assert_eq!(recoveries.len(), 2);
+        for owner in recoveries {
+            let windows = owner.as_array().unwrap();
+            assert_eq!(windows.len(), 3);
+            for recovery in windows {
+                for (reference_field, bytes_field) in [
+                    ("outcome", "outcome_bytes"),
+                    ("visible_coordinator", "visible_coordinator_bytes"),
+                ] {
+                    let reference: ContentRef =
+                        serde_json::from_value(recovery[reference_field].clone()).unwrap();
+                    let bytes: Bytes =
+                        serde_json::from_value(recovery[bytes_field].clone()).unwrap();
+                    reference.verify(bytes.as_slice()).unwrap();
+                }
+            }
+        }
+        assert_eq!(owners.len(), 2);
+        for owner in owners {
+            let bytes: Bytes = serde_json::from_value(owner["bytes"].clone()).unwrap();
+            let reference: ContentRef = serde_json::from_value(owner["reference"].clone()).unwrap();
+            reference.verify(bytes.as_slice()).unwrap();
+            let witness = canonical::parse_json(bytes.as_slice(), 8 * 1024 * 1024).unwrap();
+            assert_eq!(witness["windows"].as_array().unwrap().len(), 3);
+            assert_eq!(witness["windows"][0]["original_grant"]["quantum"], "0");
+            assert_eq!(witness["independent_oracle"]["windows"], "3");
+            let cycles = &witness["supported_cycles"]["cycles"];
+            assert_eq!(cycles.as_array().unwrap().len(), 3);
+            for cycle in cycles.as_array().unwrap() {
+                let sequences = ["input", "begin", "close", "consumption"].map(|kind| {
+                    serde_json::from_value::<U64>(cycle[kind]["wire_sequence"].clone()).unwrap()
+                });
+                assert!(sequences.windows(2).all(|pair| pair[0] < pair[1]));
+            }
+            let supported = &witness["supported_preparation"];
+            assert_eq!(
+                supported["schema"],
+                "crucible.reference.original-supported-preparation.v1"
+            );
+            let mut previous = 0;
+            for control in [
+                "discovery",
+                "realization",
+                "admission",
+                "readiness",
+                "global_activation",
+            ] {
+                let sequence: U64 =
+                    serde_json::from_value(supported[control]["wire_sequence"].clone()).unwrap();
+                assert!(sequence.get() > previous);
+                previous = sequence.get();
+                let request: ContentRef =
+                    serde_json::from_value(supported[control]["request"].clone()).unwrap();
+                let response: ContentRef =
+                    serde_json::from_value(supported[control]["response"].clone()).unwrap();
+                assert!(request.length.get() > 0 && response.length.get() > 0);
+            }
+        }
+        let retired = canonical::parse_json(original.retirement_bytes(), 1024 * 1024).unwrap();
+        assert_eq!(retired["reclaimed_original_peers"], 2);
+        assert_eq!(retired["world_reservations"], 0);
+        eprintln!(
+            "source-built original prepared cohort persisted at {}: twelve controls, authentic unsupported and body-scope refusals, original gates and pending revision-zero oracle, six independently checked native windows, original groups reclaimed; partial qualification only",
+            path.display()
         );
     }
 }

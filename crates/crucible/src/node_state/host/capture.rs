@@ -73,20 +73,101 @@ impl HostArchive {
         immutable: &dyn CaptureEvidence,
         factory: &dyn HostWorldFactory,
     ) -> Result<HostArchiveRecord, StateError> {
+        self.capture_world_selected(
+            graph,
+            runtime,
+            activation,
+            cut,
+            ordinal,
+            capture_id,
+            requirements,
+            immutable,
+            factory,
+            false,
+        )
+    }
+
+    /// Captures explicit terminal-bearing state with its original result stages.
+    ///
+    /// This selected coordinator edition retains the finalized evaluator,
+    /// original barrier context, report bytes, publication uncertainty and ACK
+    /// custody. Capturing never finalizes assertions or retries native work.
+    ///
+    /// # Errors
+    /// Refuses absent terminal custody, unsupported installed codecs or any
+    /// ordinary complete-world capture and finite-closure validation failure.
+    // crucible-lint: allow rust-allow -- The terminal entry retains the same graph, original runtime, cut and storage arguments as ordinary capture.
+    #[allow(clippy::too_many_arguments)]
+    pub fn capture_terminal_world(
+        &self,
+        graph: &AdmittedGraph,
+        runtime: &mut NodeRuntime,
+        activation: &WorldActivation,
+        cut: Position,
+        ordinal: U64,
+        capture_id: Id,
+        requirements: StateRequirements,
+        immutable: &dyn CaptureEvidence,
+        factory: &dyn HostWorldFactory,
+    ) -> Result<HostArchiveRecord, StateError> {
+        self.capture_world_selected(
+            graph,
+            runtime,
+            activation,
+            cut,
+            ordinal,
+            capture_id,
+            requirements,
+            immutable,
+            factory,
+            true,
+        )
+    }
+
+    // crucible-lint: allow rust-allow -- Both capture editions share one preflight and native ownership transaction; the selected terminal flag never substitutes authority.
+    #[allow(clippy::too_many_arguments)]
+    fn capture_world_selected(
+        &self,
+        graph: &AdmittedGraph,
+        runtime: &mut NodeRuntime,
+        activation: &WorldActivation,
+        cut: Position,
+        ordinal: U64,
+        capture_id: Id,
+        requirements: StateRequirements,
+        immutable: &dyn CaptureEvidence,
+        factory: &dyn HostWorldFactory,
+        terminal: bool,
+    ) -> Result<HostArchiveRecord, StateError> {
         require_supported_extensions(graph)?;
         if requirements.restore_mode != StateRestoreMode::DurableRestart {
             return Err(refusal(
                 "host signed archive selects durable reconstruction explicitly",
             ));
         }
-        let scheduler = runtime
-            .scheduler(graph, activation)
-            .map_err(schema)?
-            .snapshot(cut, ordinal)
-            .map_err(schema)?;
-        let source = runtime
-            .runtime_snapshot(cut, ordinal, self.limits.maximum_record_bytes)
-            .map_err(schema)?;
+        let scheduler = if terminal {
+            runtime
+                .terminal_scheduler_snapshot(activation, cut, ordinal)
+                .map_err(schema)?
+        } else {
+            runtime
+                .scheduler(graph, activation)
+                .map_err(schema)?
+                .snapshot(cut, ordinal)
+                .map_err(schema)?
+        };
+        let source = if terminal {
+            runtime
+                .terminal_runtime_snapshot(cut, ordinal, self.limits.maximum_record_bytes)
+                .map_err(schema)?
+        } else {
+            runtime
+                .runtime_snapshot(cut, ordinal, self.limits.maximum_record_bytes)
+                .map_err(schema)?
+        };
+        if terminal {
+            factory.authenticate_terminal_custody(graph, &source, &scheduler, None)?;
+        }
         let immutable_refs = required_immutable_refs(graph, self.limits)?;
         let mut immutable_content = verify_closure(immutable_refs.clone(), immutable, self.limits)?;
         let captures = runtime
@@ -106,11 +187,29 @@ impl HostArchive {
             objects.insert(reference.clone(), bytes.to_vec(), dependencies)?;
         }
         let coordinator = Coordinator {
-            schema_version: 1,
+            schema_version: if terminal { 2 } else { 1 },
             scheduler,
             runtime: source,
             world_repeatability: graph.world_repeatability(),
         };
+        if let Some(terminal) = &coordinator.runtime.terminal {
+            for inventory in &terminal.record.native {
+                objects.insert(
+                    inventory.receipt.reference.clone(),
+                    inventory.receipt.bytes.clone(),
+                    vec![],
+                )?;
+            }
+            objects.insert(
+                terminal.reference.clone(),
+                canonical::canonical_json(&serde_json::to_value(&terminal.record).map_err(schema)?)
+                    .map_err(schema)?,
+                vec![],
+            )?;
+            if let Some(report) = &terminal.report {
+                objects.insert(report.reference.clone(), report.bytes.clone(), vec![])?;
+            }
+        }
         // Original scheduler custody retains dynamic request bytes separately
         // from immutable graph definitions. Verify their bounded identities
         // before native and coordinator validators authenticate their lineage.
@@ -261,17 +360,27 @@ impl HostArchive {
             provenance_ref,
             extensions: Default::default(),
         };
-        if runtime
-            .runtime_snapshot(cut, ordinal, self.limits.maximum_record_bytes)
-            .map_err(schema)?
-            != coordinator.runtime
-            || runtime
+        let runtime_after = if terminal {
+            runtime
+                .terminal_runtime_snapshot(cut, ordinal, self.limits.maximum_record_bytes)
+                .map_err(schema)?
+        } else {
+            runtime
+                .runtime_snapshot(cut, ordinal, self.limits.maximum_record_bytes)
+                .map_err(schema)?
+        };
+        let scheduler_after = if terminal {
+            runtime
+                .terminal_scheduler_snapshot(activation, cut, ordinal)
+                .map_err(schema)?
+        } else {
+            runtime
                 .scheduler(graph, activation)
                 .map_err(schema)?
                 .snapshot(cut, ordinal)
                 .map_err(schema)?
-                != coordinator.scheduler
-        {
+        };
+        if runtime_after != coordinator.runtime || scheduler_after != coordinator.scheduler {
             return Err(refusal(
                 "original runtime or coordinator changed during native capture",
             ));
@@ -311,7 +420,8 @@ impl HostArchiveRecord {
             return Err(limit("authenticated source activation record"));
         }
         let coordinator: Coordinator = serde_json::from_slice(&object.bytes).map_err(schema)?;
-        if coordinator.schema_version != 1
+        if !matches!(coordinator.schema_version, 1 | 2)
+            || (coordinator.schema_version == 2) != (coordinator.runtime.schema_version == 3)
             || coordinator.runtime.source_activation.world_binding_hash
                 != self.manifest.world_binding_hash
             || coordinator.runtime.capture_cut != self.manifest.cut
@@ -467,10 +577,19 @@ impl CaptureEvidence for ArchiveEvidence<'_> {
             return Err(refusal("signed coordinator manifest differs"));
         }
         let coordinator = self.coordinator(content)?;
-        if coordinator.schema_version != 1
+        if !matches!(coordinator.schema_version, 1 | 2)
+            || (coordinator.schema_version == 2) != (coordinator.runtime.schema_version == 3)
             || coordinator.world_repeatability != graph.world_repeatability()
         {
             return Err(refusal("signed coordinator edition or guarantee differs"));
+        }
+        if coordinator.schema_version == 2 {
+            self.factory.authenticate_terminal_custody(
+                graph,
+                &coordinator.runtime,
+                &coordinator.scheduler,
+                Some(content),
+            )?;
         }
         self.factory.authenticate_coordinator(
             graph,

@@ -83,6 +83,95 @@ fn admission(
 }
 
 #[test]
+fn heterogeneous_native_cuts_refuse_before_evaluator_or_custody_effects() {
+    use std::collections::BTreeSet;
+
+    use super::super::semantic_model::{HostSemanticDefinition, HostSemanticModel};
+    use crate::{AssertionDef, AssertionId, Predicate, Properties, Property};
+
+    // This fixture exercises the real adapter guard, not installed profile
+    // qualification. It deliberately retains an older semantic cut while a
+    // peer's genuine local inventory would establish a later maximum.
+    let (mut adapter, record) = fixture();
+    let namespace =
+        crate::model::PropertyNamespace::new(BTreeMap::new(), false, true, BTreeSet::new())
+            .unwrap();
+    let properties = Properties::from_assertions_for_namespace(
+        &namespace,
+        vec![AssertionDef {
+            id: AssertionId::from_name("terminal-cut-guard"),
+            message: "finalization requires an unchanged common cut".into(),
+            property: Property::AfterQuiescence {
+                predicate: Predicate::quiescent(),
+            },
+        }],
+    )
+    .unwrap();
+    adapter.model = Some(HostModel::Semantics(Box::new(
+        HostSemanticModel::new(
+            HostSemanticDefinition {
+                version: 2,
+                properties: crucible_node_contract::Bytes::new(properties.to_compact_binary()),
+                inputs: Vec::new(),
+            },
+            1 << 20,
+            128,
+        )
+        .unwrap(),
+    )));
+    adapter.facets.push(FacetKind::TerminalAssertions);
+    adapter.initial = Rc::new(adapter.capture().unwrap());
+    adapter.arm(&record).unwrap();
+    let unchanged = adapter.capture().unwrap();
+    let later = Position::new(1.into(), 0.into(), Phase::BoundaryControl);
+
+    for local_cut in [record.boundary, later] {
+        let inventory_bytes = b"fixture actual stopped inventory".to_vec();
+        let barrier = WorldTerminalRecord {
+            version: 1,
+            operation: Id::new("original/op").unwrap(),
+            node: adapter.route.node.clone(),
+            source: (&record).into(),
+            cut: later,
+            scheduler: crucible_node_contract::Bytes::new(b"fixture coordinator".to_vec()),
+            native: vec![NativeTerminalInventory {
+                node: adapter.route.node.clone(),
+                owners: adapter.route.owners.clone(),
+                boundary: record.boundary,
+                disposition: NativeTerminalDisposition::InputsDrained,
+                receipt: crate::node_scheduling::InputPayload {
+                    reference: canonical::content_ref(&inventory_bytes, "text/plain").unwrap(),
+                    bytes: inventory_bytes,
+                },
+            }],
+        };
+        let barrier_bytes =
+            canonical::canonical_json(&serde_json::to_value(&barrier).unwrap()).unwrap();
+        adapter.boundary = local_cut;
+        let original = admission(
+            &adapter,
+            &record,
+            OperationRequest::FinalizeAssertions {
+                barrier: Box::new(barrier),
+                receipt: canonical::content_ref(&barrier_bytes, "application/json").unwrap(),
+            },
+        );
+
+        let Submission::Refused(refusal) = adapter.begin_finalization(&original) else {
+            panic!("heterogeneous native cuts must not finalize assertions");
+        };
+        assert_eq!(
+            refusal.reason,
+            "host terminal codec requires one unchanged native cut"
+        );
+        assert!(adapter.completed.is_empty());
+        assert!(adapter.failed.is_empty());
+        adapter.boundary = record.boundary;
+        assert_eq!(adapter.capture().unwrap(), unchanged);
+    }
+}
+
+#[test]
 fn empty_native_causes_do_not_alias_original_empty_input_inventory() {
     let (adapter, _) = fixture();
     let [receipt, _, causes] = state::state_receipt_objects(&adapter).unwrap();
@@ -193,6 +282,51 @@ fn scalar_tick_advance_cannot_impersonate_semantic_execution() {
         adapter.facets(),
         &[FacetKind::PhysicalPause, FacetKind::Preservation]
     );
+}
+
+#[test]
+fn semantic_definition_one_keeps_literal_legacy_native_envelope() {
+    // This checks actual serialization and evaluator continuation, not native
+    // admission or installed qualification of the deliberately local fixture.
+    let namespace = crate::model::PropertyNamespace::new(
+        std::collections::BTreeMap::new(),
+        false,
+        false,
+        std::collections::BTreeSet::new(),
+    )
+    .unwrap();
+    let properties = crate::Properties::from_assertions_for_namespace(
+        &namespace,
+        vec![crate::AssertionDef {
+            id: crate::AssertionId::from_name("legacy-semantic"),
+            message: "unchanged definition one".into(),
+            property: crate::Property::Sometimes {
+                predicate: crate::Predicate::at(crate::VirtualTime { ticks: 2 }),
+            },
+        }],
+    )
+    .unwrap();
+    let definition = super::super::HostSemanticDefinition {
+        version: 1,
+        properties: crucible_node_contract::Bytes::new(properties.to_compact_binary()),
+        inputs: Vec::new(),
+    };
+    let model = super::super::HostSemanticModel::new(definition, 65_536, 16).unwrap();
+    let original_native = model.capture().unwrap();
+    let mut restored_model = model.clone();
+    restored_model
+        .restore_continuation(&original_native)
+        .unwrap();
+    assert_eq!(restored_model.capture().unwrap(), original_native);
+    let (mut adapter, _) = fixture();
+    adapter.model = Some(HostModel::Semantics(Box::new(model)));
+
+    let actual = state::encode(&adapter).unwrap();
+    let expected = format!(
+        "{{\"schema_version\":1,\"profile\":\"host/exact-v1\",\"boundary\":{{\"time_ps\":\"0\",\"microstep\":\"0\",\"phase\":0}},\"native\":{},\"native_sequence\":\"0\",\"staged\":null,\"input_history\":[],\"pending_causes\":[],\"operations\":[]}}",
+        serde_json::to_string(&original_native).unwrap(),
+    );
+    assert_eq!(actual, expected.as_bytes());
 }
 
 #[test]
@@ -775,6 +909,7 @@ fn actual_host_restore_preserves_original_input_and_pending_reply_without_reexec
     assert!(outcome.retained_outputs.is_empty());
     let capture = original.continuation_bytes().unwrap();
     let source = RuntimeSnapshot {
+        terminal: None,
         schema_version: 1,
         source_activation: (&record).into(),
         capture_cut: original.boundary,

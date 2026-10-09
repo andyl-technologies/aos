@@ -46,6 +46,26 @@ pub trait ActivationPublisher {
     /// Resolves uncertain publication of the same original generation.
     fn reconcile(&mut self, record: &ActivationRecord) -> PublicationStatus;
 
+    /// Retains authentic initial coordinator data after all native owners are armed.
+    ///
+    /// This preparation callback performs no world publication. The caller must
+    /// supply the original complete runtime extraction and validated native
+    /// preparations. Implementations retain those exact bounded bodies for the
+    /// subsequent complete publication; portable records grant no authority.
+    /// Existing publishers default to refusal rather than scalar substitution.
+    ///
+    /// # Errors
+    /// Refuses unsupported initial state, foreign or repeated preparation, invalid
+    /// content bodies, incomplete owner mappings or unavailable finite retention.
+    fn retain_initial_coordinator(
+        &mut self,
+        _record: &ActivationRecord,
+        _nodes: Vec<ValidatedNodePreparation>,
+        _coordinator: InputPayload,
+    ) -> Result<(), RuntimeError> {
+        Err(RuntimeError::PublicationFailed)
+    }
+
     /// Reads the actual complete prepared coordinator object before publication.
     ///
     /// Implementations must bind the complete routing, clock, scheduling, input

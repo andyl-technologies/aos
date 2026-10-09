@@ -30,6 +30,26 @@ pub use driver::HostWorldRestoreDriver;
 /// public provider descriptor or a matching profile name cannot implement this
 /// qualification by itself.
 pub trait HostWorldFactory {
+    /// Authenticates selected terminal-bearing coordinator and native custody.
+    ///
+    /// Installed implementations bind the exact program, complete original
+    /// assertion checkpoint and report/ACK stages to authenticated source data.
+    /// Legacy factories refuse instead of dropping terminal state.
+    ///
+    /// # Errors
+    /// Refuses unsupported editions or incomplete original future-affecting state.
+    fn authenticate_terminal_custody(
+        &self,
+        _graph: &AdmittedGraph,
+        _runtime: &RuntimeSnapshot,
+        _scheduler: &crate::node_scheduling::SchedulingSnapshot,
+        _content: Option<&VerifiedStateContent>,
+    ) -> Result<(), StateError> {
+        Err(archive::refusal(
+            "installed terminal archive codec is unsupported",
+        ))
+    }
+
     /// Reports an enforced peak native reservation before constructing this owner.
     ///
     /// # Errors

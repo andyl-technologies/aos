@@ -83,6 +83,16 @@ impl NodeHostStateService {
         let actor_stopping = Arc::clone(&stopping);
         let actor_retired = Arc::clone(&retired);
         let actor_ledger = ledger.clone();
+        let mut fenced_results = Vec::new();
+        // One active request, the bounded channel, and the daemon's single
+        // serialized submission that may already be reserving when fenced.
+        let result_capacity = configuration
+            .maximum_pending_requests
+            .checked_add(2)
+            .ok_or_else(|| refused("host-state deferred result capacity overflows"))?;
+        fenced_results
+            .try_reserve_exact(result_capacity)
+            .map_err(refused)?;
 
         thread::Builder::new()
             .name("crucible-node-host-state".into())
@@ -122,6 +132,7 @@ impl NodeHostStateService {
                             receiver,
                             actor_stopping,
                             actor_retired,
+                            fenced_results,
                         );
                     }
                     Err(error) => {
@@ -145,7 +156,7 @@ impl NodeHostStateService {
         request: NodeHostStateRequest,
     ) -> Result<NodeHostStateRecord, NodeControlError> {
         request.validate()?;
-        if matches!(request, NodeHostStateRequest::Status { .. }) {
+        if super::host_state_ledger::is_status(&request) {
             return self.retention.ledger.state(request.execution());
         }
         if self.stopping.load(Ordering::Acquire) {
@@ -191,7 +202,12 @@ fn run_actor(
     receiver: Receiver<Work>,
     stopping: Arc<AtomicBool>,
     retired: Arc<AtomicBool>,
+    mut fenced_results: Vec<(Work, NodeHostStateOutcome)>,
 ) {
+    // Keep each original request and result outside every storage callback.
+    // A failed publisher disables admission/publication while this same actor
+    // continues polling the original native custody through reclamation.
+    let mut publication_available = true;
     loop {
         let mut context = Context::from_waker(Waker::noop());
         let _ = catch_unwind(AssertUnwindSafe(|| {
@@ -199,9 +215,38 @@ fn run_actor(
         }));
         if stopping.load(Ordering::Acquire) {
             while let Ok(work) = receiver.try_recv() {
-                let _ = ledger.complete(&work.reservation, refused_outcome());
+                let outcome = refused_outcome();
+                let published = publication_available
+                    && matches!(
+                        catch_unwind(AssertUnwindSafe(
+                            || ledger.complete(&work.reservation, outcome.clone())
+                        )),
+                        Ok(Ok(_))
+                    );
+                if !published {
+                    publication_available = false;
+                    fenced_results.push((work, outcome));
+                }
             }
-            if catalog.custody().reserved_worlds() == 0 {
+            // Only original retained completions may be reconciled after the
+            // fence. No native execution or replacement request is repeated.
+            // Persistent backend failure keeps this finite owner alive rather
+            // than discarding its result identity or unregistering GC roots.
+            let mut next = 0;
+            while next < fenced_results.len() {
+                let (work, outcome) = &fenced_results[next];
+                if matches!(
+                    catch_unwind(AssertUnwindSafe(
+                        || ledger.complete(&work.reservation, outcome.clone())
+                    )),
+                    Ok(Ok(_))
+                ) {
+                    fenced_results.swap_remove(next);
+                } else {
+                    next += 1;
+                }
+            }
+            if catalog.custody().reserved_worlds() == 0 && fenced_results.is_empty() {
                 retired.store(true, Ordering::Release);
                 return;
             }
@@ -225,11 +270,23 @@ fn run_actor(
                 artifact: record.artifact().clone(),
                 manifest: Box::new(record.manifest().clone()),
             },
+            _ if matches!(work.request, NodeHostStateRequest::Terminal { .. }) => NodeHostStateOutcome::Unknown {
+                reason: "original terminal operation requires reconciliation; replacement dispatch is refused".into(),
+            },
             _ => refused_outcome(),
         };
         // Original native quarantine stays owned even if result publication fails.
         // Neither that failure nor a restarted actor may redispatch this nonce.
-        let _ = ledger.complete(&work.reservation, outcome);
+        if !matches!(
+            catch_unwind(AssertUnwindSafe(
+                || ledger.complete(&work.reservation, outcome.clone())
+            )),
+            Ok(Ok(_))
+        ) {
+            fenced_results.push((work, outcome));
+            publication_available = false;
+            stopping.store(true, Ordering::Release);
+        }
     }
 }
 

@@ -1,5 +1,8 @@
 //! Retained native rounds and exact planned-to-observed artifact admission.
 
+#[path = "backend/replay.rs"]
+mod replay;
+
 use std::{
     collections::BTreeSet,
     sync::Arc,
@@ -20,8 +23,8 @@ use crucible_campaign::{
     CampaignCodecError, ConfigurationArtifact, ExecutionId, ScenarioArtifact,
     executor_node_capabilities::{ExecutorNodeCapabilities, NodeMaterializationStrategy},
     observed_node_attempt::{
-        ObservedAttemptAdmission, ObservedAttemptBackend, ObservedAttemptOutcome,
-        ObservedAttemptRequest, ObservedAttemptResult,
+        ConditionalReplayScope, ObservedAttemptAdmission, ObservedAttemptBackend,
+        ObservedAttemptOutcome, ObservedAttemptRequest, ObservedAttemptResult,
     },
 };
 use crucible_cas::content_store::{
@@ -36,7 +39,8 @@ use crate::{
     supervision::ProcessDeadline,
 };
 
-use super::InstalledPreparedWorld;
+use super::factory::{ReplayStep, ReplayStepper};
+use super::{InstalledConditionalReplay, InstalledPreparedWorld, StoredWorldActivationPublisher};
 
 /// Authenticates exact planned artifacts against one complete sealed realization.
 #[derive(Clone)]
@@ -46,6 +50,7 @@ pub struct NodeObservedAdmission {
     configuration: ConfigurationArtifact,
     capabilities: ExecutorNodeCapabilities,
     inputs: ContentId,
+    conditional: Option<ConditionalReplayScope>,
 }
 
 impl ObservedAttemptAdmission for NodeObservedAdmission {
@@ -60,6 +65,7 @@ impl ObservedAttemptAdmission for NodeObservedAdmission {
             || configuration != &self.configuration
             || request.capabilities() != &self.capabilities
             || request.inputs() != self.inputs
+            || request.conditional_scope() != self.conditional.as_ref()
         {
             return Err(CampaignCodecError::InvalidValue {
                 reason: "observed request differs from sealed node artifacts or authenticated inputs",
@@ -131,6 +137,7 @@ struct CompletedNative {
 /// into the factory's already-reserved owning supervision slot.
 pub struct NodeObservedBackend {
     graph: AdmittedGraph,
+    preparation_record: crucible::node_contract::ActivationRecord,
     runtime: Option<NodeRuntime>,
     activation: Option<WorldActivation>,
     publisher: Box<dyn ActivationPublisher>,
@@ -139,6 +146,8 @@ pub struct NodeObservedBackend {
     blobs: Arc<dyn ImmutableBlobBackend>,
     request: Option<ObservedAttemptRequest>,
     round: Option<ActiveRound>,
+    replay: Option<ReplayStepper>,
+    prearmed: bool,
     rounds: u64,
     incoming: Vec<serde_json::Value>,
     outgoing: Vec<serde_json::Value>,
@@ -167,6 +176,22 @@ impl NodeObservedBackend {
         blobs: Arc<dyn ImmutableBlobBackend>,
         inputs: ContentId,
         execution: ExecutionId,
+    ) -> Result<Self, NodeObservedError> {
+        Self::from_prepared_with(world, configuration, blobs, inputs, execution, |_, _| {
+            Ok(publisher)
+        })
+    }
+
+    fn from_prepared_with(
+        world: InstalledPreparedWorld,
+        configuration: NodeRunConfiguration,
+        blobs: Arc<dyn ImmutableBlobBackend>,
+        inputs: ContentId,
+        execution: ExecutionId,
+        publisher: impl FnOnce(
+            &mut NodeRuntime,
+            &AdmittedGraph,
+        ) -> Result<Box<dyn ActivationPublisher>, NodeObservedError>,
     ) -> Result<Self, NodeObservedError> {
         let InstalledPreparedWorld {
             scenario,
@@ -221,12 +246,15 @@ impl NodeObservedBackend {
             roster,
             BTreeSet::from([NodeMaterializationStrategy::FreshExecution]),
         )?;
-        let runtime = prepared.admit(&graph).map_err(|failure| {
+        let preparation_record = prepared.activation_record().clone();
+        let mut runtime = prepared.admit(&graph).map_err(|failure| {
             NodeObservedError::Native(format!("native preparation refused: {:?}", failure.error))
         })?;
 
+        let publisher = publisher(&mut runtime, &graph)?;
         Ok(Self {
             graph,
+            preparation_record,
             runtime: Some(runtime),
             activation: None,
             publisher,
@@ -236,11 +264,14 @@ impl NodeObservedBackend {
                 configuration: configuration_artifact,
                 capabilities,
                 inputs,
+                conditional: None,
             },
             configuration,
             blobs,
             request: None,
             round: None,
+            replay: None,
+            prearmed: false,
             rounds: 0,
             incoming: Vec::new(),
             outgoing: Vec::new(),
@@ -270,11 +301,19 @@ impl NodeObservedBackend {
                 reason: "execution nonce differs from prepared native world",
             });
         }
-        ObservedAttemptRequest::new(
-            execution,
-            self.admission.capabilities.clone(),
-            self.admission.inputs,
-        )
+        match &self.admission.conditional {
+            Some(scope) => ObservedAttemptRequest::conditional_replay(
+                execution,
+                self.admission.capabilities.clone(),
+                self.admission.inputs,
+                scope.clone(),
+            ),
+            None => ObservedAttemptRequest::new(
+                execution,
+                self.admission.capabilities.clone(),
+                self.admission.inputs,
+            ),
+        }
     }
 
     /// Returns the authenticated scenario artifact to publish before submission.
@@ -540,7 +579,25 @@ impl ObservedAttemptBackend for NodeObservedBackend {
             .runtime
             .as_mut()
             .ok_or_else(|| NodeObservedError::Native("prepared world is unavailable".into()))?;
-        runtime.arm_all().map_err(native)?;
+        if !self.prearmed {
+            runtime.arm_all().map_err(native)?;
+            // Complete preparation is required only for the public owner-map
+            // contract, matching the runtime activation barrier's publication path.
+            if let Ok(nodes) = runtime.prepared_node_records()
+                && nodes.iter().any(|node| node.prepared_owners().is_some())
+            {
+                let nodes = nodes.to_vec();
+                let coordinator = runtime
+                    .initial_coordinator_snapshot(
+                        &self.graph,
+                        crucible::node_contract::MAXIMUM_ACTIVATION_COORDINATOR_BYTES,
+                    )
+                    .map_err(native)?;
+                self.publisher
+                    .retain_initial_coordinator(&self.preparation_record, nodes, coordinator)
+                    .map_err(native)?;
+            }
+        }
         self.activation = Some(runtime.activate(self.publisher.as_mut()).map_err(native)?);
         Ok(())
     }
@@ -587,6 +644,10 @@ impl ObservedAttemptBackend for NodeObservedBackend {
             )?;
             self.result = Some(result.clone());
             return Ok(Some(result));
+        }
+        if self.replay.is_some() {
+            self.poll_original_replay(&mut context)?;
+            return Ok(None);
         }
         if self.round.is_none() {
             if self.rounds >= self.configuration.maximum_rounds.get() {
@@ -750,6 +811,12 @@ fn evidence_references(
         }
         ProgressEvidence::Paused { stop_receipt, .. } => {
             references.insert(stop_receipt.clone());
+        }
+        ProgressEvidence::AssertionsFinalized {
+            barrier, report, ..
+        } => {
+            references.insert(barrier.clone());
+            references.insert(report.clone());
         }
         ProgressEvidence::Exact { .. } | ProgressEvidence::Administrative => {}
     }

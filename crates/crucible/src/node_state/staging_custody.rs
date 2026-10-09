@@ -146,6 +146,28 @@ impl PreparedNativeCustody {
 }
 
 impl NativeRuntimeContinuationVerifier for PreparedNativeCustody {
+    fn verify_terminal_continuation(
+        &mut self,
+        snapshot: &RuntimeSnapshot,
+        scheduling: &SchedulingSnapshot,
+        target: &ActivationRecord,
+    ) -> Result<(), RuntimeError> {
+        self.native_mut()
+            .map_err(|_| RuntimeError::ForeignAuthority)?
+            .verify_terminal_continuation(snapshot, scheduling, target)
+    }
+
+    fn verify_input_provenance(
+        &mut self,
+        snapshot: &RuntimeSnapshot,
+        scheduling: &SchedulingSnapshot,
+        target: &ActivationRecord,
+    ) -> Result<(), RuntimeError> {
+        self.native_mut()
+            .map_err(|_| RuntimeError::ForeignAuthority)?
+            .verify_input_provenance(snapshot, scheduling, target)
+    }
+
     fn verify_runtime_continuation(
         &mut self,
         snapshot: &RuntimeSnapshot,

@@ -15,6 +15,9 @@ use serde::Deserialize;
 
 use super::super::{NodeObservedError, refused};
 
+#[path = "package_metadata_controls.rs"]
+mod metadata_controls;
+
 const MAXIMUM_MANIFEST_BYTES: usize = 1024 * 1024;
 const MAXIMUM_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
 const MAXIMUM_CLOSURE_BYTES: u64 = 4 * 1024 * 1024 * 1024;

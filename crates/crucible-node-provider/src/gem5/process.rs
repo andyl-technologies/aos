@@ -35,6 +35,12 @@ use crate::{
 #[path = "image_process.rs"]
 mod image_process;
 
+#[path = "preparation.rs"]
+mod preparation;
+
+use preparation::PreparationOrigin;
+pub use preparation::{Gem5PreparationCustody, Gem5PreparedSession};
+
 #[path = "closure.rs"]
 mod closure;
 
@@ -121,6 +127,8 @@ pub struct Gem5NativeCustody {
     pub unresolved_capture: Option<Id>,
     /// Retains the complete sealed source image for any live reconstructed child.
     pub source_image: Option<crate::gem5::Gem5CapturedImage>,
+    /// Retains original Ready bytes even when native preparation validation fails.
+    pub preparation: Gem5PreparationCustody,
     /// Retains original process-group termination and actual reaping progress.
     pub quarantine: Option<Gem5QuarantineCustody>,
 }
@@ -155,6 +163,7 @@ pub struct Gem5NativeProcess {
     unresolved_capture: Option<Id>,
     source_image: Option<crate::gem5::Gem5CapturedImage>,
     quarantine: Option<Gem5QuarantineCustody>,
+    preparation: Gem5PreparationCustody,
     supervisor: Option<Box<dyn Gem5CustodySlot>>,
 }
 
@@ -240,6 +249,8 @@ impl Gem5NativeProcess {
             .stderr(Stdio::from(stderr))
             .spawn()?;
         let mut kernel_identity = None;
+        let mut preparation = Gem5PreparationCustody::AwaitingReady;
+        let mut prepared_stream = None;
         let ready = (|| {
             kernel_identity = Some(containment::capture_identity(&child)?);
             write_frame(
@@ -249,9 +260,13 @@ impl Gem5NativeProcess {
                 GEM5_NATIVE_FRAME_BYTES,
             )?;
             drop(private);
-            let mut stream = connect(&listener, &mut child, launch.timeout)?;
-            let value = exchange_read(&mut stream, launch.timeout)?;
-            let ready: Ready = serde_json::from_value(value)
+            prepared_stream = Some(connect(&listener, &mut child, launch.timeout)?);
+            let stream = prepared_stream.as_mut().ok_or(ProviderError::Correlation(
+                "gem5 original preparation control session is absent",
+            ))?;
+            let frame = exchange_read_retained(stream, launch.timeout)?;
+            preparation = Gem5PreparationCustody::Received(frame.bytes);
+            let ready: Ready = serde_json::from_value(frame.value)
                 .map_err(|_| ProviderError::Frame("invalid gem5 native readiness"))?;
             if ready.kind != "ready"
                 || ready.schema != GEM5_NATIVE_PROTOCOL
@@ -270,15 +285,17 @@ impl Gem5NativeProcess {
                     "actual gem5 initial native custody differs",
                 ));
             }
-            Ok((stream, ready.boundary))
+            let boundary = ready.boundary.clone();
+            preparation.authenticate(&child, &launch, ready, PreparationOrigin::Original)?;
+            Ok(boundary)
         })();
-        let (stream, boundary) = match ready {
+        let boundary = match ready {
             Ok(ready) => ready,
             Err(error) => {
                 supervisor.retain(Gem5NativeCustody {
                     kernel_identity,
                     child,
-                    stream: None,
+                    stream: prepared_stream.take(),
                     listener: Some(listener),
                     boundary: None,
                     launch,
@@ -288,6 +305,7 @@ impl Gem5NativeProcess {
                     last_acknowledged: None,
                     unresolved_capture: None,
                     source_image: None,
+                    preparation,
                     quarantine: None,
                 });
                 return Err(error);
@@ -297,7 +315,7 @@ impl Gem5NativeProcess {
             kernel_identity,
             child: Some(child),
             launch,
-            stream: Some(stream),
+            stream: prepared_stream,
             listener: Some(listener),
             boundary,
             completed: BTreeMap::new(),
@@ -306,6 +324,7 @@ impl Gem5NativeProcess {
             unresolved: None,
             unresolved_capture: None,
             source_image: None,
+            preparation,
             quarantine: None,
             supervisor: Some(supervisor),
         })
@@ -585,6 +604,10 @@ impl Drop for Gem5NativeProcess {
                 last_acknowledged: self.last_acknowledged.take(),
                 unresolved_capture: self.unresolved_capture.take(),
                 source_image: self.source_image.take(),
+                preparation: std::mem::replace(
+                    &mut self.preparation,
+                    Gem5PreparationCustody::AwaitingReady,
+                ),
                 quarantine: self.quarantine.take(),
             });
         }
@@ -883,4 +906,20 @@ impl Write for DeadlineIo<'_> {
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
+}
+
+/// Reads one original native packet without discarding its wire body.
+fn exchange_read_retained(
+    stream: &mut UnixStream,
+    timeout: Duration,
+) -> Result<crate::transport::RetainedFrame, ProviderError> {
+    let mut io = DeadlineIo {
+        stream,
+        deadline: deadline(timeout)?,
+    };
+    FrameReader::new(&mut io, GEM5_NATIVE_FRAME_BYTES)?
+        .read_retained()?
+        .ok_or(ProviderError::Correlation(
+            "gem5 native peer disconnected before preparation receipt",
+        ))
 }

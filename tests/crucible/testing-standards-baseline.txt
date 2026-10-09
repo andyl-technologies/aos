@@ -291,3 +291,18 @@ crucible-qemu	tests/native_node_control	thread::sleep	1
 crucible-qemu	tests/native_node_control	std::thread::sleep	1
 crucible-qemu-plugin	src/native_node_control/administration_custody_tests	retry	1
 crucible-qemu-plugin	src/native_node_control/phase_custody_tests	retry	1
+# The absolute original watchdog paces one retained frame wait; ready queues remain deadline bounded.
+crucible-qemu	tests/native_node_control/watchdog	thread::sleep	1
+crucible-qemu	tests/native_node_control/watchdog	std::thread::sleep	1
+# Native process/actor watchdogs keep one absolute deadline and original state;
+# conditional resubmission checks the same retained request rather than rerunning a failed test.
+crucible-cli	tests/node_cache_reuse_process	thread::sleep	1
+crucible-cli	tests/node_cache_reuse_process	std::thread::sleep	1
+crucible-cli	tests/node_terminal_state_process	thread::sleep	1
+crucible-cli	tests/node_terminal_state_process	std::thread::sleep	1
+crucible-daemon	src/node_control/terminal_state_tests	thread::sleep	1
+crucible-daemon	src/node_observed_executor/factory/native_state/initial_preparation_tests	thread::sleep	1
+crucible-daemon	src/node_observed_executor/factory/native_state/initial_preparation_tests	std::thread::sleep	1
+crucible-daemon	src/node_observed_executor/factory/transcript/production_tests	retry	1
+crucible-daemon	src/node_observed_executor/tests/cache_workflow	thread::sleep	1
+crucible-daemon	src/node_observed_executor/tests/cache_workflow	std::thread::sleep	1

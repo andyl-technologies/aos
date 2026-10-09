@@ -44,6 +44,7 @@ pub(super) fn materialize(
             InstalledNodeKind::HostClock => continue,
             InstalledNodeKind::HostIo { profile } => profile.artifact(),
             InstalledNodeKind::HostScripted { profile } => profile.artifact(),
+            InstalledNodeKind::HostSemantics { profile } => &profile.program,
             _ => {
                 return Err(refused(
                     "archive source cannot enroll another native implementation",

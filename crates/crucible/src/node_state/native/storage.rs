@@ -440,12 +440,9 @@ fn validate_index(index: &Index, limits: NativeArchiveLimits) -> Result<(), Stat
     {
         return Err(limit("native archive index edition or inventory"));
     }
-    if index.selected_extensions.is_some() {
-        // A syntactic signed root is not installed extension qualification.
-        // The selected policy's owning adapter must authenticate this branch
-        // before native continuation is admitted; absent that adapter refuse.
+    if index.selected_extensions.is_some() && index.schema_version != 2 {
         return Err(refused(
-            "selected extension preservation policy is not installed",
+            "legacy native inventory cannot carry selected semantics",
         ));
     }
     if index.schema_version == 2
@@ -505,6 +502,14 @@ fn validate_index(index: &Index, limits: NativeArchiveLimits) -> Result<(), Stat
         || !identities.contains(&index.artifact)
     {
         return Err(limit("native complete core closure"));
+    }
+    if let Some(selected) = &index.selected_extensions {
+        selected.validate().map_err(schema)?;
+        if !identities.contains(selected) {
+            return Err(refused(
+                "selected semantic root is outside signed typed inventory",
+            ));
+        }
     }
     if index.schema_version == 2
         && index

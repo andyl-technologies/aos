@@ -63,7 +63,20 @@ impl AdmissionEvidence for MixedEvidence {
 
     fn authenticate_schema(&self, schema: &SchemaRef) -> Result<(), EvidenceError> {
         let native = gem5_native_continuation_schema().map_err(|error| evidence(&error.reason))?;
-        let supported = if schema == &native {
+        let public_native = crucible::node_adapters::gem5::gem5_public_preparation_schema()
+            .map_err(|error| evidence(&error.reason))?;
+        let public_clock = crucible::node_adapters::host_public_clock_preparation_schema()
+            .map_err(|error| evidence(&error.reason))?;
+        let selected = self.bindings.values().any(|binding| {
+            binding
+                .compatibility
+                .implementation
+                .formats
+                .contains(schema)
+        });
+        let supported = if schema == &native
+            || (selected && (schema == &public_native || schema == &public_clock))
+        {
             true
         } else if schema.id.as_str() == NATIVE_OCTET_SCHEMA_ID
             && schema.version == 1

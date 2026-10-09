@@ -43,6 +43,377 @@ fn held_native_publication_survives_source_death_in_two_complete_worlds() {
     cold_world_witness("aarch64", true);
 }
 
+#[test]
+fn ordinary_closed_selection_requires_original_complete_owner_roster() {
+    use super::super::{InstalledNodeKind, InstalledNodeSelection};
+
+    let selected = vec![
+        InstalledNodeSelection {
+            node: id("clock"),
+            owner: id("owner/clock"),
+            kind: InstalledNodeKind::HostClock,
+        },
+        InstalledNodeSelection {
+            node: id("cpu"),
+            owner: id("owner/cpu"),
+            kind: InstalledNodeKind::Gem5Closed {
+                isa: super::control::InstalledGem5Isa::X86_64,
+            },
+        },
+    ];
+    assert!(super::public_catalog::selected_isa(&selected).is_ok());
+
+    let mut foreign = selected.clone();
+    foreign[1].owner = id("owner/foreign");
+    assert!(super::public_catalog::selected_isa(&foreign).is_err());
+    foreign = selected.clone();
+    foreign.swap(0, 1);
+    assert!(super::public_catalog::selected_isa(&foreign).is_err());
+    assert!(super::public_catalog::selected_isa(&selected[1..]).is_err());
+    foreign = selected;
+    foreign[1].kind = InstalledNodeKind::HostClock;
+    assert!(super::public_catalog::selected_isa(&foreign).is_err());
+}
+
+#[test]
+#[ignore = "requires measured installed RF assets and explicit genuine companion; spawns no native peer"]
+fn ordinary_public_profile_refuses_preservation_or_legacy_selection_before_allocation() {
+    use super::super::{InstalledNodeCatalog, InstalledNodeKind, InstalledNodeSelection};
+
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let companion = std::path::PathBuf::from(
+        std::env::var_os("CRUCIBLE_REFERENCE_DEVICE")
+            .expect("explicit genuine installed companion is required"),
+    );
+    let mut catalog = InstalledNodeCatalog::new(
+        companion.clone(),
+        super::super::measure_executable(&companion).unwrap(),
+        directory.path().to_path_buf(),
+        Duration::from_secs(30),
+        8,
+    )
+    .unwrap();
+    let selected = vec![
+        InstalledNodeSelection {
+            node: id("clock"),
+            owner: id("owner/clock"),
+            kind: InstalledNodeKind::HostClock,
+        },
+        InstalledNodeSelection {
+            node: id("cpu"),
+            owner: id("owner/cpu"),
+            kind: InstalledNodeKind::Gem5Closed {
+                isa: super::control::InstalledGem5Isa::X86_64,
+            },
+        },
+    ];
+    let expected = catalog.scenario(&selected).unwrap();
+    let queue = super::custody::Gem5CustodyQueue::installed(8).unwrap();
+    let original_reserved = queue.reserved_owners();
+    assert_eq!(catalog.custody().reserved_worlds(), 0);
+
+    let mut capture = expected.clone();
+    capture.requirements.exact_capture = true;
+    let mut continuation = expected.clone();
+    continuation.requirements.exact_continuation = true;
+    let mut durable = expected;
+    durable.requirements.durable_restart = true;
+    let legacy = super::profile::MixedProfile::build(
+        super::super::InstalledGem5ClosedProfile::built_in().unwrap(),
+        &catalog.host_identity,
+        "x86_64",
+    )
+    .unwrap()
+    .scenario;
+
+    for authored in [capture, continuation, durable, legacy] {
+        assert!(
+            catalog
+                .prepare_world(
+                    &selected,
+                    authored,
+                    crucible_campaign::ExecutionId::from_bytes([75; 16]).unwrap(),
+                )
+                .is_err()
+        );
+        assert_eq!(catalog.custody().reserved_worlds(), 0);
+        assert_eq!(queue.reserved_owners(), original_reserved);
+    }
+}
+
+#[test]
+#[ignore = "requires genuine installed RF native preparation and current closure authority"]
+fn original_native_and_clock_prepare_one_complete_public_world() {
+    let directory = tempfile::tempdir().unwrap().keep();
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let companion = std::path::PathBuf::from(
+        std::env::var_os("CRUCIBLE_REFERENCE_DEVICE")
+            .expect("explicit genuine installed companion is required"),
+    );
+    let mut catalog = super::super::InstalledNodeCatalog::new(
+        companion.clone(),
+        super::super::measure_executable(&companion).unwrap(),
+        directory.clone(),
+        Duration::from_secs(30),
+        8,
+    )
+    .unwrap();
+    let engine =
+        InstalledMixedEngine::with_runtime(directory.clone(), catalog.custody().clone()).unwrap();
+    let _supervision = FailedWitnessSupervision { engine: &engine };
+    let selections = vec![
+        super::super::InstalledNodeSelection {
+            node: id("clock"),
+            owner: id("owner/clock"),
+            kind: super::super::InstalledNodeKind::HostClock,
+        },
+        super::super::InstalledNodeSelection {
+            node: id("cpu"),
+            owner: id("owner/cpu"),
+            kind: super::super::InstalledNodeKind::Gem5Closed {
+                isa: super::control::InstalledGem5Isa::X86_64,
+            },
+        },
+    ];
+    let scenario = catalog.scenario(&selections).unwrap();
+    let execution = crucible_campaign::ExecutionId::from_bytes([73; 16]).unwrap();
+    let live = catalog
+        .prepare_world(&selections, scenario, execution)
+        .unwrap();
+    let graph = live.graph;
+    for node in graph.node_ids() {
+        let guarantee = graph.guarantees(node).unwrap();
+        assert_eq!(
+            guarantee.capture_scope,
+            crucible_node_contract::CaptureScope::None
+        );
+        assert_eq!(
+            guarantee.continuation,
+            crucible_node_contract::Continuation::Unsupported
+        );
+        assert!(!guarantee.durable_restart && !guarantee.isolated_fork);
+    }
+    let blobs: Arc<dyn ImmutableBlobBackend> = Arc::new(DirectoryBlobBackend::new(
+        "public-native",
+        directory.join("cas"),
+    ));
+    let refs: Arc<dyn MutableRefBackend> =
+        Arc::new(DirectoryRefBackend::new(directory.join("refs")));
+    let target = live.realization.activation_record().clone();
+    let mut runtime = live
+        .realization
+        .admit(&graph)
+        .unwrap_or_else(|failure| panic!("{}", failure.error));
+
+    runtime.arm_all().unwrap();
+    let preparations = runtime.prepared_node_records().unwrap().to_vec();
+    assert_eq!(preparations.len(), 2);
+    let coordinator = runtime
+        .initial_coordinator_snapshot(&graph, 16 * 1024 * 1024)
+        .unwrap();
+    let stored = StoredWorldActivationPublisher::new(
+        blobs.clone(),
+        refs.clone(),
+        RefName::new("node-world-activations/public-native").unwrap(),
+    )
+    .unwrap()
+    .with_prepared_coordinator(target.clone(), preparations, coordinator.clone())
+    .unwrap();
+    let mut publisher = super::public_catalog::publisher(stored).unwrap();
+    let activation = runtime.activate(publisher.as_mut()).unwrap();
+    assert_eq!(activation.record(), &target);
+    for node in graph.node_ids() {
+        let observation = runtime.observe_scheduling(&activation, node).unwrap();
+        runtime
+            .scheduler(&graph, &activation)
+            .unwrap()
+            .accept_boundary_observation(observation)
+            .unwrap();
+    }
+    let admission = runtime
+        .scheduler(&graph, &activation)
+        .unwrap()
+        .admit_exact(
+            &id("cpu"),
+            id("public/original-native-run"),
+            U64::new(1_000_000_000),
+        )
+        .unwrap();
+    let BeginResult::Accepted(token) = runtime.begin_admitted(admission).unwrap() else {
+        panic!("genuine public native execution was refused");
+    };
+    let completed = finish_poll(&mut runtime, &token);
+    assert_eq!(completed.retained_outputs.len(), 1);
+    assert_eq!(
+        completed.scheduling.as_ref().unwrap().publications[0]
+            .payload_bytes
+            .len(),
+        8
+    );
+    assert!(
+        runtime
+            .initial_coordinator_snapshot(&graph, 16 * 1024 * 1024)
+            .is_err()
+    );
+
+    drop(runtime);
+    let mut context = Context::from_waker(Waker::noop());
+    for _ in 0..6000 {
+        match engine.runtime.poll_reclamation(&mut context) {
+            Poll::Ready(Ok(())) | Poll::Pending => {}
+            Poll::Ready(Err(error)) => panic!("original public native cleanup failed: {error}"),
+        }
+        if engine.runtime.reserved_worlds() == 0 && engine.native.all_groups_reclaimed() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    panic!("actual public native group and whole-world custody did not retire");
+}
+
+#[test]
+#[ignore = "requires current installed RF native profile and explicit genuine companion"]
+fn ordinary_installed_gem5_scenario_executes_through_observed_attempt_worker() {
+    use crucible_campaign::{
+        CampaignRepository,
+        observed_node_attempt::{
+            ObservedAttemptOutcome, ObservedAttemptState, ObservedAttemptWorker,
+        },
+    };
+    let directory = tempfile::tempdir().unwrap().keep();
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let companion =
+        std::path::PathBuf::from(std::env::var_os("CRUCIBLE_REFERENCE_DEVICE").unwrap());
+    let mut catalog = super::super::InstalledNodeCatalog::new(
+        companion.clone(),
+        super::super::measure_executable(&companion).unwrap(),
+        directory.clone(),
+        Duration::from_secs(30),
+        8,
+    )
+    .unwrap();
+    let engine =
+        InstalledMixedEngine::with_runtime(directory.clone(), catalog.custody().clone()).unwrap();
+    let _supervision = FailedWitnessSupervision { engine: &engine };
+    let selected = vec![
+        super::super::InstalledNodeSelection {
+            node: id("clock"),
+            owner: id("owner/clock"),
+            kind: super::super::InstalledNodeKind::HostClock,
+        },
+        super::super::InstalledNodeSelection {
+            node: id("cpu"),
+            owner: id("owner/cpu"),
+            kind: super::super::InstalledNodeKind::Gem5Closed {
+                isa: super::control::InstalledGem5Isa::X86_64,
+            },
+        },
+    ];
+    let scenario = catalog.scenario(&selected).unwrap();
+    let blobs: Arc<dyn ImmutableBlobBackend> = Arc::new(DirectoryBlobBackend::new(
+        "public-native-observed",
+        directory.join("blobs"),
+    ));
+    let refs: Arc<dyn MutableRefBackend> =
+        Arc::new(DirectoryRefBackend::new(directory.join("refs")));
+    let repository = Arc::new(CampaignRepository::new(blobs.clone(), refs.clone()));
+    let execution = crucible_campaign::ExecutionId::from_bytes([74; 16]).unwrap();
+    let backend = catalog
+        .prepare(
+            &selected,
+            scenario,
+            crate::node_scenario::NodeRunConfiguration {
+                format: "crucible.node-run-configuration".into(),
+                version: 1,
+                horizon_ps: 1_000_000_000.into(),
+                maximum_rounds: 64.into(),
+            },
+            execution,
+            blobs.clone(),
+            refs.clone(),
+        )
+        .unwrap();
+    let planned = backend.scenario_artifact();
+    repository
+        .publish_scenario_artifact(
+            planned.scenario(),
+            planned.payload_schema(),
+            planned.payload().to_vec(),
+        )
+        .unwrap();
+    let configured = backend.configuration_artifact();
+    repository
+        .publish_configuration_artifact(
+            configured.scenario(),
+            configured.scenario_artifact(),
+            configured.configuration(),
+            configured.payload_schema(),
+            configured.payload().to_vec(),
+        )
+        .unwrap();
+    let request = backend.request(execution).unwrap();
+    let admission = backend.admission().clone();
+    let mut worker = ObservedAttemptWorker::new(repository.clone(), backend, 1).unwrap();
+    let _gc = repository.acquire_gc_exclusion_guard().unwrap();
+    worker
+        .submit("genuine-public-native", &request, &admission)
+        .unwrap();
+    let mut result = None;
+    for _ in 0..60_000 {
+        match worker.poll(execution).unwrap() {
+            ObservedAttemptState::Completed(completed) => {
+                result = Some(completed);
+                break;
+            }
+            ObservedAttemptState::Quarantined { reason, .. } => {
+                panic!("genuine public native observed world quarantined: {reason}")
+            }
+            ObservedAttemptState::Reserved(_) => {}
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let result = result.expect("original native observed operation exceeded finite watchdog");
+    assert_eq!(result.outcome(), ObservedAttemptOutcome::Completed);
+    let bytes = blobs
+        .read(result.outgoing(), None)
+        .unwrap()
+        .read_all(16 * 1024 * 1024)
+        .unwrap();
+    let outgoing: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let mut publications = Vec::new();
+    for event in outgoing["events"].as_array().unwrap() {
+        let outcome: crucible::node_contract::OperationOutcome =
+            serde_json::from_value(event.clone()).unwrap();
+        if outcome.node.as_str() == "cpu" {
+            publications.extend(outcome.scheduling.unwrap().publications);
+        }
+    }
+    assert_eq!(publications.len(), 1);
+    assert_eq!(publications[0].payload_bytes.len(), 8);
+    publications[0]
+        .payload
+        .verify(&publications[0].payload_bytes)
+        .unwrap();
+    let ObservedAttemptState::Completed(repeated) = worker.poll(execution).unwrap() else {
+        panic!("original completed nonce lost its immutable result");
+    };
+    assert_eq!(repeated, result);
+    drop(worker);
+    let mut context = Context::from_waker(Waker::noop());
+    for _ in 0..6000 {
+        match engine.runtime.poll_reclamation(&mut context) {
+            Poll::Ready(Ok(())) | Poll::Pending => {}
+            Poll::Ready(Err(error)) => panic!("original observed cleanup failed: {error}"),
+        }
+        if engine.runtime.reserved_worlds() == 0 && engine.native.all_groups_reclaimed() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    panic!("original observed journals and all native groups did not retire");
+}
+
 fn cold_world_witness(isa: &str, held_publication: bool) {
     // Failed native callbacks keep their original backing tree until the owning
     // supervisor proves reclamation. A temporary-directory Drop cannot decide

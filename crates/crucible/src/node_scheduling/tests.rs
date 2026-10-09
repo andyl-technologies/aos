@@ -1409,3 +1409,6 @@ mod complete_future_bound;
 
 #[path = "tests/future_birth.rs"]
 mod future_birth;
+
+#[path = "tests/terminal.rs"]
+mod terminal;

@@ -9,7 +9,7 @@ use crucible_node_contract::*;
 use crucible_node_provider::{
     ProviderError,
     bodies::*,
-    client::ReferenceObservationSnapshot,
+    client::{RecordedReferenceObservation, ReferenceObservationSnapshot},
     envelope::{Envelope, Method, RequestOrigin},
     reference_service::PublicationConsumption,
 };
@@ -28,10 +28,34 @@ pub(super) struct LifecycleObservation {
 
 pub(super) fn verify(
     installation: &SourcePublicReferenceInstallation,
-    source: &ReferenceObservationSnapshot,
+    recorded: &RecordedReferenceObservation,
     activation: &WorldActivation,
     windows: &[ReferenceWindowObservation],
 ) -> Result<LifecycleObservation, ProviderError> {
+    let prepared_plan =
+        super::source_pre_activation_probe::SourcePreActivationProbePlan::build(installation)?;
+    prepared_plan.verify(recorded)?;
+    let prepared_requests = prepared_plan
+        .cases()
+        .iter()
+        .map(|case| case.request_id.clone())
+        .collect::<BTreeSet<_>>();
+    let source = &recorded.evidence;
+    // Inert inventories are keyed records, not a chronological transcript. Bind
+    // preparation ordering to the original authenticated wire sequence instead.
+    let mut activation_sequence = None;
+    for original in &source.requests {
+        if original.key.origin != RequestOrigin::Controller {
+            continue;
+        }
+        let request = Envelope::decode(original.request.bytes.as_slice(), 1_048_576)?;
+        if request.method == Method::WorldActivate
+            && activation_sequence.replace(request.sequence).is_some()
+        {
+            return Err(refused());
+        }
+    }
+    let activation_sequence = activation_sequence.ok_or_else(refused)?;
     let bootstrap = &installation.bootstrap;
     let record = activation.record();
     if record.activation_id != bootstrap.activation_id
@@ -58,6 +82,15 @@ pub(super) fn verify(
             continue;
         }
         let request = Envelope::decode(original.request.bytes.as_slice(), 1_048_576)?;
+        // Only the exact independently verified unsupported preparation cohort
+        // is outside successful operation lifetime. Other failed Begin controls
+        // continue to refuse lifecycle qualification.
+        if prepared_requests.contains(&original.key.request_id) {
+            if request.sequence >= activation_sequence {
+                return Err(refused());
+            }
+            continue;
+        }
         if !matches!(
             request.method,
             Method::Begin | Method::WorldActivate | Method::Retire

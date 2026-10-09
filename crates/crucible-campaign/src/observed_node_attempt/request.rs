@@ -39,6 +39,7 @@ pub struct ObservedAttemptRequest {
     execution: ExecutionId,
     capabilities: ExecutorNodeCapabilities,
     inputs: ContentId,
+    conditional: Option<ConditionalReplayScope>,
 }
 
 impl ObservedAttemptRequest {
@@ -64,6 +65,7 @@ impl ObservedAttemptRequest {
             execution,
             capabilities,
             inputs,
+            conditional: None,
         };
         codec::ensure_encoded_size(
             &request,
@@ -71,6 +73,50 @@ impl ObservedAttemptRequest {
             "observed request bytes",
         )?;
         Ok(request)
+    }
+
+    /// Builds an explicitly selected unchanged-context conditional replay request.
+    ///
+    /// Version two retains the complete original source scope as child-bearing
+    /// evidence. Construction authenticates no source and grants no deterministic
+    /// work; the installed admission must verify the complete sealed recipe.
+    ///
+    /// # Errors
+    /// Refuses a capability set other than conditional transcript replay alone
+    /// or an oversized request. Fresh physical execution is never substituted.
+    pub fn conditional_replay(
+        execution: ExecutionId,
+        capabilities: ExecutorNodeCapabilities,
+        inputs: ContentId,
+        scope: ConditionalReplayScope,
+    ) -> Result<Self, CampaignCodecError> {
+        if capabilities.materialization()
+            != &std::collections::BTreeSet::from([
+                NodeMaterializationStrategy::ConditionalTranscriptReplay,
+            ])
+        {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "conditional replay requires its distinct admitted materialization",
+            });
+        }
+        let request = Self {
+            execution,
+            capabilities,
+            inputs,
+            conditional: Some(scope),
+        };
+        codec::ensure_encoded_size(
+            &request,
+            MAX_OBSERVED_RECORD_BYTES - 1024,
+            "conditional replay request bytes",
+        )?;
+        Ok(request)
+    }
+
+    /// Returns the original-source scope only for explicit conditional replay.
+    #[must_use]
+    pub const fn conditional_scope(&self) -> Option<&ConditionalReplayScope> {
+        self.conditional.as_ref()
     }
 
     /// Returns the independent execution nonce.
@@ -97,7 +143,12 @@ impl ObservedAttemptRequest {
         let mut encoder = Encoder::new();
         self.capabilities.digest().encode(&mut encoder);
         Canonical::encode(&self.inputs, &mut encoder);
-        CampaignHash::derive("crucible.observed-node-plan.v1", &encoder.finish())
+        if let Some(scope) = &self.conditional {
+            scope.encode(&mut encoder);
+            CampaignHash::derive("crucible.conditional-node-plan.v2", &encoder.finish())
+        } else {
+            CampaignHash::derive("crucible.observed-node-plan.v1", &encoder.finish())
+        }
     }
 
     /// Returns the complete request identity, including the execution nonce.
@@ -106,13 +157,13 @@ impl ObservedAttemptRequest {
         CampaignHash::derive("crucible.observed-node-request.v1", &self.canonical_bytes())
     }
 
-    /// Returns strict version-one canonical request bytes.
+    /// Returns strict canonical request bytes in its selected edition.
     #[must_use]
     pub fn canonical_bytes(&self) -> Vec<u8> {
         codec::encode(self)
     }
 
-    /// Decodes bounded canonical version-one request bytes.
+    /// Decodes bounded canonical fresh or conditional request bytes.
     ///
     /// # Errors
     ///
@@ -124,15 +175,39 @@ impl ObservedAttemptRequest {
 
     pub(crate) fn envelope(&self) -> Result<ContentEnvelope, CampaignCodecError> {
         let roster = self.capabilities.roster();
-        envelope(
+        let Some(scope) = &self.conditional else {
+            return envelope(
+                "crucible.observed-node-request",
+                [
+                    ("scenario", roster.scenario().content_id()),
+                    ("configuration", roster.configuration().content_id()),
+                    ("inputs", self.inputs),
+                ],
+                self.canonical_bytes(),
+            );
+        };
+        let mut children = vec![
+            ContentChild::new("scenario", roster.scenario().content_id())?,
+            ContentChild::new("configuration", roster.configuration().content_id())?,
+            ContentChild::new("inputs", self.inputs)?,
+        ];
+        children
+            .try_reserve_exact(scope.sources().len())
+            .map_err(|_| CampaignCodecError::LimitExceeded {
+                limit: "conditional replay source child allocation",
+            })?;
+        for (index, source) in scope.sources().values().enumerate() {
+            children.push(ContentChild::new(
+                format!("recorded-source-{index:04}"),
+                *source,
+            )?);
+        }
+        Ok(ContentEnvelope::new(
             "crucible.observed-node-request",
-            [
-                ("scenario", roster.scenario().content_id()),
-                ("configuration", roster.configuration().content_id()),
-                ("inputs", self.inputs),
-            ],
+            2,
+            children.into_iter().collect(),
             self.canonical_bytes(),
-        )
+        )?)
     }
 
     pub(crate) fn content_id(&self) -> Result<ContentId, CampaignCodecError> {
@@ -142,18 +217,38 @@ impl ObservedAttemptRequest {
 
 impl Canonical for ObservedAttemptRequest {
     fn encode(&self, encoder: &mut Encoder) {
-        encoder.u32(VERSION);
+        encoder.u32(if self.conditional.is_some() {
+            2
+        } else {
+            VERSION
+        });
         self.execution.encode(encoder);
         self.capabilities.encode(encoder);
         Canonical::encode(&self.inputs, encoder);
+        if let Some(scope) = &self.conditional {
+            scope.encode(encoder);
+        }
     }
 
     fn decode(decoder: &mut Decoder<'_>) -> Result<Self, CampaignCodecError> {
-        require_version(decoder)?;
-        Self::new(
-            ExecutionId::decode(decoder)?,
-            ExecutorNodeCapabilities::decode(decoder)?,
-            ContentId::decode(decoder)?,
-        )
+        let edition = decoder.u32()?;
+        if !matches!(edition, 1 | 2) {
+            return Err(CampaignCodecError::InvalidValue {
+                reason: "unsupported observed request edition",
+            });
+        }
+        let execution = ExecutionId::decode(decoder)?;
+        let capabilities = ExecutorNodeCapabilities::decode(decoder)?;
+        let inputs = ContentId::decode(decoder)?;
+        if edition == 1 {
+            Self::new(execution, capabilities, inputs)
+        } else {
+            Self::conditional_replay(
+                execution,
+                capabilities,
+                inputs,
+                ConditionalReplayScope::decode(decoder)?,
+            )
+        }
     }
 }

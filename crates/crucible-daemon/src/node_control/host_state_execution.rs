@@ -2,6 +2,8 @@
 
 #[path = "host_state_advance.rs"]
 mod host_state_advance;
+#[path = "terminal_state_execution.rs"]
+mod terminal_state_execution;
 
 use std::{
     rc::Rc,
@@ -44,6 +46,9 @@ pub(super) fn execute(
     refs: &Arc<dyn MutableRefBackend>,
 ) -> Result<HostArchiveRecord, NodeControlError> {
     request.validate()?;
+    if let NodeHostStateRequest::Terminal { request } = request {
+        return terminal_state_execution::execute(request, catalog, archive, limits, blobs, refs);
+    }
     let (selections, scenario, horizon, source) = match request {
         NodeHostStateRequest::Capture {
             selections,
@@ -60,6 +65,9 @@ pub(super) fn execute(
         } => (selections, scenario, *horizon_ps, Some(source)),
         NodeHostStateRequest::Status { .. } => {
             return Err(refused("status grants no native state authority"));
+        }
+        NodeHostStateRequest::Terminal { .. } => {
+            return Err(refused("terminal request uses its selected executor"));
         }
     };
     let scenario = NodeScenario::from_json(scenario.as_slice()).map_err(refused)?;

@@ -267,6 +267,7 @@ fn facet_name(facet: FacetKind) -> &'static str {
         FacetKind::Coverage => "coverage",
         FacetKind::Introspection => "introspection",
         FacetKind::Debugging => "debugging",
+        FacetKind::TerminalAssertions => "terminal-assertions",
     }
 }
 

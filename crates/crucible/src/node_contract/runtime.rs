@@ -120,6 +120,7 @@ pub struct NodeRuntime {
     limits: RuntimeLimits,
     scheduler: Option<crate::node_scheduling::CausalScheduler>,
     custody_slot: Option<Box<dyn RuntimeCustodySlot>>,
+    terminal: Option<super::terminal::TerminalState>,
 }
 
 impl NodeRuntime {
@@ -232,6 +233,7 @@ impl NodeRuntime {
             limits,
             scheduler: None,
             custody_slot: Some(custody_slot),
+            terminal: None,
         })
     }
 
@@ -390,6 +392,9 @@ impl NodeRuntime {
         activation: &WorldActivation,
     ) -> Result<&mut crate::node_scheduling::CausalScheduler, RuntimeError> {
         self.validate_activation(activation)?;
+        if self.terminal.is_some() {
+            return Err(RuntimeError::OutstandingObligations);
+        }
         if graph.world_binding_hash() != &activation.record.world_binding_hash {
             return Err(RuntimeError::ForeignAuthority);
         }
@@ -654,6 +659,9 @@ impl NodeRuntime {
     /// # Errors
     /// Refuses unknown nodes, unsupported or incorrectly returned facet kinds.
     pub fn facet(&mut self, node: &NodeId, kind: FacetKind) -> Result<NodeFacet<'_>, RuntimeError> {
+        if self.terminal.is_some() && kind != FacetKind::TerminalAssertions {
+            return Err(RuntimeError::OutstandingObligations);
+        }
         let handle = self.nodes.get_mut(node).ok_or(RuntimeError::UnknownNode)?;
         if !handle.facets().contains(&kind) {
             return Err(RuntimeError::UnsupportedFacet);
@@ -1111,6 +1119,9 @@ pub(crate) fn test_nodes(
 pub(crate) fn test_custody_slot() -> Box<dyn RuntimeCustodySlot> {
     continuation::test_custody_slot()
 }
+
+#[path = "runtime_terminal.rs"]
+mod terminal_runtime;
 
 #[path = "runtime_dispatch.rs"]
 mod dispatch;

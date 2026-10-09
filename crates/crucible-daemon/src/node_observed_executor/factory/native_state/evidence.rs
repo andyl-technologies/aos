@@ -240,7 +240,11 @@ impl MixedEvidence {
                 "mixed host code is not the actual owning controller",
             ));
         }
-        let regenerated = MixedProfile::build(profile.installed.clone(), &host, &profile.isa)?;
+        let regenerated = if profile.public_preparation {
+            MixedProfile::build_public(profile.installed.clone(), &host, &profile.isa)?
+        } else {
+            MixedProfile::build(profile.installed.clone(), &host, &profile.isa)?
+        };
         if profile
             .scenario
             .canonical_bytes()

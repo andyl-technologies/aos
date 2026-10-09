@@ -72,6 +72,7 @@ fn scripted_source_split_cut_and_original_retry_preserve_actual_output_custody()
     let captured_pending = adapter.continuation_bytes().unwrap();
     let script = native.script_bytes().unwrap();
     let snapshot = RuntimeSnapshot {
+        terminal: None,
         schema_version: 1,
         source_activation: activation.record().into(),
         capture_cut: limit,

@@ -7,6 +7,7 @@
 //!
 //! ```text
 //! ObservedRequestV1 = version | execution | capabilities | inputs
+//! ConditionalRequestV2 = 2 | execution | capabilities | inputs | original-scope
 //! ObservedResultV1 = version | request | incoming | outgoing | evidence | outcome
 //! ObservedLedgerV1 = version | capabilities-digest | execution-index-root
 //! ObservedStateV1 = version | request | reserved/completed/quarantined
@@ -20,12 +21,14 @@ use crate::codec::{self, Canonical, Decoder, Encoder};
 use crate::executor_node_capabilities::ExecutorNodeCapabilities;
 use crate::{CampaignCodecError, CampaignHash, ExecutionId};
 
+mod conditional;
 mod envelope;
 mod ledger;
 mod request;
 mod result;
 mod worker;
 
+pub use conditional::ConditionalReplayScope;
 pub(crate) use envelope::ObservedEnvelopeRecord;
 pub use ledger::{ObservedAttemptState, ObservedExecutionPermit, ObservedReservation};
 pub(crate) use ledger::{ObservedDispatchReservation, ObservedLedger, execution_key};

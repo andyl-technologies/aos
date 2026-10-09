@@ -222,12 +222,17 @@ impl Gem5NativeProcess {
         launch.owner_script.path = launch.resource_root.join("native-owner.py");
         launch.model_script.path = launch.resource_root.join("native-owner-model.py");
         launch.guest.path = launch.resource_root.join("guest.elf");
+        let mut preparation = super::Gem5PreparationCustody::AwaitingReady;
+        let mut prepared_stream = None;
         let ready = (|| {
             kernel_identity = Some(identity?);
-            let mut stream = connect(&listener, &mut child, launch.timeout)?;
+            prepared_stream = Some(connect(&listener, &mut child, launch.timeout)?);
+            let stream = prepared_stream.as_mut().ok_or(ProviderError::Correlation(
+                "gem5 restored preparation control session is absent",
+            ))?;
             verify_restored_code(child.id(), &image.source)?;
             let mut io = super::DeadlineIo {
-                stream: &mut stream,
+                stream,
                 deadline: super::deadline(launch.timeout)?,
             };
             crate::transport::write_frame(
@@ -239,7 +244,9 @@ impl Gem5NativeProcess {
                 }),
                 super::GEM5_NATIVE_FRAME_BYTES,
             )?;
-            let ready: Ready = serde_json::from_value(exchange_read(&mut stream, launch.timeout)?)
+            let frame = super::exchange_read_retained(stream, launch.timeout)?;
+            preparation = super::Gem5PreparationCustody::Received(frame.bytes);
+            let ready: Ready = serde_json::from_value(frame.value)
                 .map_err(|_| ProviderError::Frame("gem5 fresh restored native readiness shape"))?;
             if ready.kind != "ready"
                 || ready.schema != GEM5_NATIVE_PROTOCOL
@@ -253,15 +260,23 @@ impl Gem5NativeProcess {
                     "gem5 fresh native lineage or stopped state differs",
                 ));
             }
-            Ok(stream)
+            preparation.authenticate(
+                &child,
+                &launch,
+                ready,
+                super::PreparationOrigin::Restored {
+                    source_capture: image.capture.clone(),
+                },
+            )?;
+            Ok(())
         })();
-        let stream = match ready {
-            Ok(stream) => stream,
+        match ready {
+            Ok(()) => {}
             Err(error) => {
                 supervisor.retain(Gem5NativeCustody {
                     kernel_identity,
                     child,
-                    stream: None,
+                    stream: prepared_stream.take(),
                     listener: Some(listener),
                     boundary: Some(image.boundary.clone()),
                     launch,
@@ -271,6 +286,7 @@ impl Gem5NativeProcess {
                     unresolved: None,
                     unresolved_capture: Some(image.capture.clone()),
                     source_image: Some(image.clone()),
+                    preparation,
                     quarantine: None,
                 });
                 return Err(error);
@@ -280,7 +296,7 @@ impl Gem5NativeProcess {
             kernel_identity,
             child: Some(child),
             launch,
-            stream: Some(stream),
+            stream: prepared_stream,
             listener: Some(listener),
             boundary: image.boundary.clone(),
             completed: image.completed.clone(),
@@ -289,6 +305,7 @@ impl Gem5NativeProcess {
             unresolved: None,
             unresolved_capture: None,
             source_image: Some(image.clone()),
+            preparation,
             quarantine: None,
             supervisor: Some(supervisor),
         })

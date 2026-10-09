@@ -447,6 +447,27 @@ impl NodeControlDaemon {
             .as_ref()
             .ok_or_else(|| refused("node actor admission stopped"))?;
         match command {
+            NodeControlCommand::CacheReuse { request } => {
+                let receipt = service.reuse_cache(*request).map_err(refused)?;
+                Ok(NodeControlResult::CacheReused {
+                    receipt: Box::new(receipt),
+                })
+            }
+            NodeControlCommand::TerminalState { request } => {
+                let state = self
+                    .state_service
+                    .as_ref()
+                    .ok_or_else(|| refused("terminal state is not enabled by installed policy"))?
+                    .submit(super::host_state::NodeHostStateRequest::Terminal { request })?;
+                if state.version != 2 {
+                    return Err(refused(
+                        "terminal control cannot relabel a legacy state record",
+                    ));
+                }
+                Ok(NodeControlResult::HostState {
+                    record: Box::new(state),
+                })
+            }
             NodeControlCommand::NativeState { request } => {
                 let record = self
                     .native_service
@@ -464,6 +485,11 @@ impl NodeControlDaemon {
                     .as_ref()
                     .ok_or_else(|| refused("exact state is not enabled by installed policy"))?
                     .submit(*request)?;
+                if state.version != 1 {
+                    return Err(refused(
+                        "legacy host-state wire cannot expose terminal records",
+                    ));
+                }
                 Ok(NodeControlResult::HostState {
                     record: Box::new(state),
                 })

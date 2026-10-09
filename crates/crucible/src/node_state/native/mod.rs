@@ -11,6 +11,7 @@
 
 mod capture;
 mod driver;
+pub(crate) mod extensions;
 mod storage;
 mod typed_index;
 
@@ -31,6 +32,7 @@ use super::{
 };
 
 pub use driver::NativeWorldRestoreDriver;
+pub use extensions::NativeExtensionPreservationPolicy;
 pub use storage::{NativeArchive, NativeArchiveRecord, NativeArtifactState, NativeOwnerState};
 
 /// Bounds metadata and streamed native preservation independently.
@@ -117,6 +119,13 @@ impl AuthenticatedNativeSource<'_> {
 /// complete native ledgers and every image/resource dependency. Source image
 /// certificates never qualify a fresh live peer or grant execution authority.
 pub trait NativeWorldFactory {
+    /// Resolves installed support for the exact selected native semantic closure.
+    ///
+    /// Missing support preserves refusal before native capture or allocation.
+    fn extension_preservation_policy(&self) -> Option<&dyn NativeExtensionPreservationPolicy> {
+        None
+    }
+
     /// Authenticates complete original native state and streamed artifact closure.
     ///
     /// # Errors

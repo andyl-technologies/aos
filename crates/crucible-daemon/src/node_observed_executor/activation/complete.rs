@@ -40,6 +40,16 @@ impl StoredWorldActivationPublisher {
         nodes: Vec<ValidatedNodePreparation>,
         coordinator: InputPayload,
     ) -> Result<Self, StoreError> {
+        self.retain_coordinator(activation, nodes, coordinator)?;
+        Ok(self)
+    }
+
+    pub(super) fn retain_coordinator(
+        &mut self,
+        activation: ActivationRecord,
+        nodes: Vec<ValidatedNodePreparation>,
+        coordinator: InputPayload,
+    ) -> Result<(), StoreError> {
         if self.prepared.is_some()
             || nodes.is_empty()
             || nodes.iter().any(|node| node.prepared_owners().is_none())
@@ -62,7 +72,7 @@ impl StoredWorldActivationPublisher {
             coordinator,
             reference,
         });
-        Ok(self)
+        Ok(())
     }
 
     pub(super) fn prepare_complete_coordinator(

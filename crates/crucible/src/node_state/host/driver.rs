@@ -137,6 +137,15 @@ impl WorldRestoreDriver for HostWorldRestoreDriver {
             let reservation = self.factory.reservation(graph, node, native, resources)?;
             add_reservation(&mut reservations, reservation, limits)?;
         }
+        let terminal_authenticated = capture.runtime.schema_version == 3;
+        if terminal_authenticated {
+            self.factory.authenticate_terminal_custody(
+                graph,
+                &capture.runtime,
+                &capture.scheduler,
+                Some(capture.content()),
+            )?;
+        }
         let capsule = HostStaging {
             graph: self.graph.clone(),
             archive: self.archive.clone(),
@@ -149,6 +158,7 @@ impl WorldRestoreDriver for HostWorldRestoreDriver {
             owners: BTreeMap::new(),
             coordinator: None,
             quarantined: false,
+            terminal_authenticated,
         };
         // Install the owning empty native capsule before actual model allocation.
         // All later prepare callbacks mutate that capsule under reserved custody.
@@ -168,9 +178,27 @@ struct HostStaging {
     owners: BTreeMap<Id, RestoredOwnerAttestation>,
     coordinator: Option<ContentRef>,
     quarantined: bool,
+    terminal_authenticated: bool,
 }
 
 impl NativeRuntimeContinuationVerifier for HostStaging {
+    fn verify_terminal_continuation(
+        &mut self,
+        snapshot: &RuntimeSnapshot,
+        scheduling: &SchedulingSnapshot,
+        target: &ActivationRecord,
+    ) -> Result<(), RuntimeError> {
+        if self.quarantined
+            || target != &self.target
+            || snapshot.schema_version != 3
+            || !self.terminal_authenticated
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        self.verify_runtime_continuation(snapshot, scheduling, target)
+            .map(|_| ())
+    }
+
     fn verify_runtime_continuation(
         &mut self,
         snapshot: &RuntimeSnapshot,

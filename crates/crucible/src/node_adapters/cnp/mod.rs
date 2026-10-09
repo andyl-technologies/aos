@@ -15,6 +15,7 @@ mod input;
 mod lifecycle;
 mod pending;
 mod preparation;
+mod preparation_adverse;
 mod preparation_probe;
 mod process;
 mod readiness;
@@ -32,3 +33,5 @@ pub type CnpReferenceNode =
 mod tests;
 
 pub use preparation_probe::{CnpPreRealizationProbeBody, CnpPreRealizationProbeRequest};
+
+pub use preparation_adverse::{CnpPreparedAdverseBody, CnpPreparedAdverseRequest};

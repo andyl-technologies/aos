@@ -6,7 +6,10 @@ mod direct_recording_pair;
 mod io;
 mod linked;
 mod scripted;
+mod semantic_connections;
+mod semantics;
 mod storage_connections;
+mod terminal;
 
 use super::{InstalledNodeKind, InstalledNodeSelection, NodeObservedError, native, refused};
 use crate::node_scenario::{NodeScenario, ScenarioContent};
@@ -54,7 +57,16 @@ pub(super) fn build_world(
         ));
     }
     let mut contents = BTreeMap::new();
-    let qualification=put(&mut contents,b"crucible installed clock/checksum profiles v1: exact regenerated semantics; private measured native custody; installed clock complete runtime envelopes support authenticated durable restart; no guest CPU, external ingress, native RAM capture or fork; connected transfer custody and reference native state have no installed durable archive".to_vec(),"text/plain")?;
+    let terminal = terminal::selected(selections, artifacts)?;
+    let qualification = put(
+        &mut contents,
+        if terminal {
+            b"crucible installed closed terminal profile v2: one independently enrolled host assertion program plus integer clock peers; actual evaluator/event prefix/emitted-result registry/finalization context/report and ACK custody; original full native envelopes and coordinator/runtime terminal codecs; immutable program and measured host code; no nonempty input provenance, external ingress, mutable faults/controllers/debug state, guest CPU or RAM, or fork".to_vec()
+        } else {
+            b"crucible installed clock/checksum profiles v1: exact regenerated semantics; private measured native custody; installed clock complete runtime envelopes support authenticated durable restart; no guest CPU, external ingress, native RAM capture or fork; connected transfer custody and reference native state have no installed durable archive".to_vec()
+        },
+        "text/plain",
+    )?;
     let mut descriptors = Vec::new();
     let mut compatibility = Vec::new();
     let mut owners = Vec::new();
@@ -149,10 +161,27 @@ pub(super) fn build_world(
                     &mut contents,
                 )?
             }
+            InstalledNodeKind::Gem5Closed { .. } => {
+                return Err(refused(
+                    "closed gem5 requires its distinct public profile compiler",
+                ));
+            }
             InstalledNodeKind::HostClock => {
                 clock_profile(selection, host, &qualification, &mut contents)?
             }
+            InstalledNodeKind::HostSemantics { profile } => semantics::semantic_profile(
+                selection,
+                selections,
+                profile,
+                artifacts,
+                host,
+                &qualification,
+                &mut contents,
+            )?,
         };
+        if terminal {
+            terminal::install_inventory(&descriptor, &mut binding, &mut contents)?;
+        }
         binding.qualification_refs = vec![qualification.clone()];
         owner.node_bindings = vec![NodeBindingRef {
             node_id: selection.node.clone(),
@@ -189,6 +218,7 @@ pub(super) fn build_world(
                 InstalledNodeKind::HostClock
                     | InstalledNodeKind::HostIo { .. }
                     | InstalledNodeKind::HostScripted { .. }
+                    | InstalledNodeKind::HostSemantics { .. }
             ),
             isolated_fork: false,
             dependencies: Vec::new(),
@@ -207,6 +237,15 @@ pub(super) fn build_world(
         &mut contents,
     )?;
     connections.extend(storage_connections::connections(
+        selections,
+        &descriptors,
+        &mut compatibility,
+        &mut owners,
+        (&mut domains, &mut objects, &mut captures),
+        &mut contents,
+        &qualification,
+    )?);
+    connections.extend(semantic_connections::connections(
         selections,
         &descriptors,
         &mut compatibility,

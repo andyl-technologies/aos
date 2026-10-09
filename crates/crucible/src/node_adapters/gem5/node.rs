@@ -96,6 +96,8 @@ pub struct QualifiedGem5Node {
     pub(super) captures: Vec<RetainedCapture>,
     pub(super) capture_roots: Vec<std::path::PathBuf>,
     pub(super) restored: Option<Gem5AuthenticatedContinuation>,
+    pub(super) public_preparation: bool,
+    pub(super) prepared_mapping: Option<super::preparation_mapping::Gem5PreparedMapping>,
     thread: std::thread::ThreadId,
     facet: ExactFacet,
     preservation: ExactFacet,
@@ -290,6 +292,8 @@ impl QualifiedGem5Node {
                     captures: Vec::new(),
                     capture_roots: Vec::new(),
                     restored,
+                    public_preparation: false,
+                    prepared_mapping: None,
                     thread: std::thread::current().id(),
                     facet: ExactFacet(facet),
                     preservation: ExactFacet(preservation),
@@ -313,7 +317,9 @@ impl QualifiedGem5Node {
                 .is_none_or(|authority| Rc::ptr_eq(authority, &activation.authority))
     }
 
-    fn readiness_boundary(&self) -> Result<crucible_node_contract::Position, OperationFailure> {
+    pub(super) fn readiness_boundary(
+        &self,
+    ) -> Result<crucible_node_contract::Position, OperationFailure> {
         if let Some(restored) = &self.restored {
             // A latent original operation may be ahead of the coordinator cut.
             // That original Ready applies only while the entire native journal
@@ -441,8 +447,56 @@ impl SimulationNode for QualifiedGem5Node {
                 "gem5 native owner is already armed for another activation",
             ));
         }
+        if self.public_preparation && self.prepared_mapping.is_none() {
+            let mapping = self.retain_original_preparation_mapping(world, &ready, &bytes)?;
+            self.prepared_mapping = Some(mapping);
+        }
         self.world = Some((world.clone(), ready.clone()));
         Ok(ready)
+    }
+
+    fn prepared_owners(
+        &self,
+        world: &ActivationRecord,
+        ready: &ReadyAttestation,
+    ) -> Result<Option<Vec<crucible_node_contract::PreparedOwner>>, OperationFailure> {
+        if !self.public_preparation {
+            return Ok(None);
+        }
+        let mapping = self.prepared_mapping.as_ref().ok_or_else(|| {
+            refusal("public gem5 owner mapping has no original armed native preparation")
+        })?;
+        self.original_prepared_owners(mapping, world, ready)
+            .map(Some)
+    }
+
+    fn validate_prepared_owners(
+        &self,
+        world: &ActivationRecord,
+        ready: &ReadyAttestation,
+        owners: &[crucible_node_contract::PreparedOwner],
+    ) -> Result<(), OperationFailure> {
+        let mapping = self
+            .prepared_mapping
+            .as_ref()
+            .ok_or_else(|| refusal("public gem5 owner mapping is not selected or armed"))?;
+        if self.original_prepared_owners(mapping, world, ready)? != owners {
+            return Err(refusal(
+                "public gem5 owner mapping differs from original native custody",
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_initial_preparation(
+        &self,
+        world: &ActivationRecord,
+        ready: &ReadyAttestation,
+    ) -> Result<(), OperationFailure> {
+        let mapping = self.prepared_mapping.as_ref().ok_or_else(|| {
+            refusal("gem5 source did not select genuine public initial preparation")
+        })?;
+        self.validate_original_preparation_mapping(mapping, world, ready)
     }
 
     fn validate_readiness(
@@ -590,6 +644,11 @@ impl SimulationNode for QualifiedGem5Node {
         source: &RuntimeSnapshot,
         limits: NativeCaptureLimits,
     ) -> Result<InstalledNativeCapture, OperationFailure> {
+        if self.public_preparation {
+            return Err(refusal(
+                "public gem5 preparation requires a distinct preparation-bearing capture codec",
+            ));
+        }
         self.capture_installed(activation, source, limits)
     }
 

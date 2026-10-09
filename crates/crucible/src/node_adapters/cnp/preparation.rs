@@ -31,6 +31,25 @@ pub trait CnpReferenceQualification {
         profile: &ReferenceProfile,
     ) -> Result<(), OperationFailure>;
 
+    /// Authenticates an exact adverse population beneath original preparation.
+    ///
+    /// Source policy checks unchanged complete binding and independently measured
+    /// native provider/companion custody. Data responses mint no runtime authority.
+    ///
+    /// # Errors
+    /// Refuses by default or when source scope, original IDs/body population or
+    /// actual native preparation differs from the installed immutable fixture.
+    fn authenticate_prepared_adverse_probes(
+        &self,
+        _: &CnpReferencePreparation,
+        _: &[super::CnpPreparedAdverseRequest],
+    ) -> Result<(), OperationFailure> {
+        Err(OperationFailure {
+            effects: EffectKnowledge::None,
+            reason: "source-qualified prepared adverse controls are not installed".into(),
+        })
+    }
+
     /// Authenticates the exact planned controls and actual provider-only scope.
     ///
     /// A cached absence of companion metadata is insufficient. Installed policy

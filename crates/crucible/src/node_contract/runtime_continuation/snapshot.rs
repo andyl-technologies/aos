@@ -17,6 +17,39 @@ impl NodeRuntime {
         capture_ordinal: U64,
         maximum_record_bytes: usize,
     ) -> Result<RuntimeSnapshot, RuntimeError> {
+        if self.terminal.is_some() {
+            // Existing coordinator editions cannot omit original terminal custody.
+            return Err(RuntimeError::UnsupportedFacet);
+        }
+        self.checked_runtime_snapshot(capture_cut, capture_ordinal, maximum_record_bytes)
+    }
+
+    /// Captures explicit edition-three original terminal custody as facts only.
+    ///
+    /// Selected installed capture codecs must independently authenticate complete
+    /// native and coordinator state. This read never finalizes assertions or
+    /// recreates a usable barrier from serialized source facts.
+    ///
+    /// # Errors
+    /// Refuses absent terminal custody, unpublished worlds or finite byte limits.
+    pub fn terminal_runtime_snapshot(
+        &self,
+        capture_cut: Position,
+        capture_ordinal: U64,
+        maximum_record_bytes: usize,
+    ) -> Result<RuntimeSnapshot, RuntimeError> {
+        if self.terminal.is_none() {
+            return Err(RuntimeError::UnsupportedFacet);
+        }
+        self.checked_runtime_snapshot(capture_cut, capture_ordinal, maximum_record_bytes)
+    }
+
+    fn checked_runtime_snapshot(
+        &self,
+        capture_cut: Position,
+        capture_ordinal: U64,
+        maximum_record_bytes: usize,
+    ) -> Result<RuntimeSnapshot, RuntimeError> {
         if !self.activated {
             return Err(RuntimeError::NotActivated);
         }
@@ -43,6 +76,9 @@ impl NodeRuntime {
                 restore::bounded_record(provenance.saved(), per_entry)?;
             }
         }
+        if let Some(terminal) = &self.terminal {
+            restore::bounded_record(&terminal.saved, maximum_record_bytes)?;
+        }
         let snapshot = extract_snapshot(self, capture_cut, capture_ordinal);
         restore::bounded_record(&snapshot, maximum_record_bytes)?;
         Ok(snapshot)
@@ -55,7 +91,9 @@ fn extract_snapshot(
     capture_ordinal: U64,
 ) -> RuntimeSnapshot {
     RuntimeSnapshot {
-        schema_version: if runtime
+        schema_version: if runtime.terminal.is_some() {
+            3
+        } else if runtime
             .input_batches
             .values()
             .any(|input| input.provenance.is_some())
@@ -65,6 +103,10 @@ fn extract_snapshot(
             1
         },
         source_activation: runtime.barrier.record().into(),
+        terminal: runtime
+            .terminal
+            .as_ref()
+            .map(|terminal| terminal.saved.clone()),
         capture_cut,
         capture_ordinal,
         owners: runtime

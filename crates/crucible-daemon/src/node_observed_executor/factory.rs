@@ -1,6 +1,8 @@
 //! Host-owned installed providers and native enrollment before graph sealing.
 
 mod archive_artifacts;
+mod cached_artifacts;
+mod clock_label;
 mod gem5_profile;
 mod host_state;
 mod io;
@@ -10,12 +12,19 @@ mod native_state;
 mod profile;
 mod reference_public;
 mod scripted;
+mod semantics;
 mod transcript;
 mod trust;
 
 #[cfg(test)]
 mod artifact_tests;
 
+#[cfg(test)]
+mod semantic_terminal_tests;
+
+pub(super) use transcript::replay_stepper::{ReplayStep, ReplayStepper};
+
+pub use clock_label::{InstalledClockLabelFactory, InstalledClockLabelProfile};
 pub use gem5_profile::InstalledGem5ClosedProfile;
 pub use host_state::InstalledHostStateFactory;
 pub use io::{InstalledHostIoProfile, InstalledIoArtifact, InstalledIoArtifactSource};
@@ -31,7 +40,11 @@ pub use reference_public::{
     ReferenceQualificationObservation, ReferenceQualificationRun,
 };
 pub use scripted::InstalledScriptedSourceProfile;
-pub use transcript::{InstalledRecordedWorld, InstalledReferenceRecording};
+pub use semantics::InstalledHostSemanticProfile;
+pub use transcript::{
+    InstalledConditionalReplay, InstalledRecordedWorld, InstalledReferenceRecording,
+    InstalledReplayRecipe,
+};
 
 use std::{
     collections::BTreeMap,
@@ -73,6 +86,17 @@ use crate::node_scenario::{NodeRunConfiguration, NodeScenario};
 pub enum InstalledNodeKind {
     /// Runs the owned host integer clock with no timers or autonomous work.
     HostClock,
+    /// Runs an independently enrolled host assertion program and original state.
+    HostSemantics {
+        /// Binds immutable compact properties and qualified input projections.
+        profile: InstalledHostSemanticProfile,
+    },
+    /// Runs the installed closed gem5 model with original live public readiness.
+    /// Preservation remains unsupported in this distinct initial edition.
+    Gem5Closed {
+        /// Selects the independently installed fixed guest and native poll policy.
+        isa: InstalledGem5Isa,
+    },
     /// Runs native block or 9p storage with independently enrolled immutable input.
     HostIo {
         /// Binds the native storage codec, immutable input and positive timing.
@@ -119,6 +143,8 @@ impl<'de> Deserialize<'de> for InstalledNodeKind {
         let wire = InstalledNodeKindWire::deserialize(deserializer)?;
         Ok(match wire {
             InstalledNodeKindWire::HostClock {} => Self::HostClock,
+            InstalledNodeKindWire::HostSemantics { profile } => Self::HostSemantics { profile },
+            InstalledNodeKindWire::Gem5Closed { isa } => Self::Gem5Closed { isa },
             InstalledNodeKindWire::HostIo { profile } => Self::HostIo { profile },
             InstalledNodeKindWire::HostScripted { profile } => Self::HostScripted { profile },
             InstalledNodeKindWire::ReferenceDevice {
@@ -159,6 +185,12 @@ impl<'de> Deserialize<'de> for InstalledNodeKind {
 enum InstalledNodeKindWire {
     /// Runs the owned host integer clock with no timers or autonomous work.
     HostClock {},
+    HostSemantics {
+        profile: InstalledHostSemanticProfile,
+    },
+    Gem5Closed {
+        isa: InstalledGem5Isa,
+    },
     HostIo {
         profile: InstalledHostIoProfile,
     },
@@ -226,6 +258,13 @@ pub struct InstalledPreparedWorld {
 struct PreparationSource<'a> {
     activation: Option<&'a crucible::node_contract::SavedRuntimeActivation>,
     preserved_cut: Option<Position>,
+}
+
+// Keeps original preservation lineage and its optional installed semantic
+// selection together; neither may be substituted during native enrollment.
+struct SelectedPreparation<'a> {
+    source: PreparationSource<'a>,
+    label: Option<&'a clock_label::ClockLabelPolicy>,
 }
 
 /// Owns trusted local installation measurements and finite world retirement slots.
@@ -364,6 +403,12 @@ impl InstalledNodeCatalog {
         &self,
         selections: &[InstalledNodeSelection],
     ) -> Result<NodeScenario, NodeObservedError> {
+        if selections
+            .iter()
+            .any(|selection| matches!(selection.kind, InstalledNodeKind::Gem5Closed { .. }))
+        {
+            return native_state::public_catalog::scenario(self, selections);
+        }
         Ok(profile::build_world(
             selections,
             &self.host_identity,
@@ -407,7 +452,15 @@ impl InstalledNodeCatalog {
             "node-world-activations/{}",
             execution_text(execution)
         ))?;
-        let publisher = StoredWorldActivationPublisher::new(Arc::clone(&blobs), refs, reference)?;
+        let stored = StoredWorldActivationPublisher::new(Arc::clone(&blobs), refs, reference)?;
+        let publisher: Box<dyn crucible::node_contract::ActivationPublisher> = if selections
+            .iter()
+            .any(|selection| matches!(selection.kind, InstalledNodeKind::Gem5Closed { .. }))
+        {
+            native_state::public_catalog::publisher(stored)?
+        } else {
+            Box::new(stored)
+        };
         NodeObservedBackend::from_prepared(
             InstalledPreparedWorld {
                 scenario,
@@ -415,7 +468,7 @@ impl InstalledNodeCatalog {
                 realization: prepared,
             },
             configuration,
-            Box::new(publisher),
+            publisher,
             blobs,
             inputs,
             execution,
@@ -439,6 +492,12 @@ impl InstalledNodeCatalog {
         scenario: NodeScenario,
         execution: ExecutionId,
     ) -> Result<InstalledPreparedWorld, NodeObservedError> {
+        if selections
+            .iter()
+            .any(|selection| matches!(selection.kind, InstalledNodeKind::Gem5Closed { .. }))
+        {
+            return native_state::public_catalog::prepare(self, selections, scenario, execution);
+        }
         let artifacts = self.artifacts.clone();
         Ok(self
             .prepare_world_with_source(
@@ -476,6 +535,7 @@ impl InstalledNodeCatalog {
                 InstalledNodeKind::HostClock
                     | InstalledNodeKind::HostIo { .. }
                     | InstalledNodeKind::HostScripted { .. }
+                    | InstalledNodeKind::HostSemantics { .. }
             )
         }) || record.manifest().world_binding_hash != scenario.world.identity()?
             || record.manifest().scenario_ref != scenario.world.scenario_ref
@@ -508,14 +568,45 @@ impl InstalledNodeCatalog {
         execution: ExecutionId,
         source: PreparationSource<'_>,
         artifacts: &BTreeMap<String, InstalledIoArtifact>,
-        mut recorder: Option<&mut transcript::ReferenceRecorder<'_>>,
+        recorder: Option<&mut transcript::ReferenceRecorder<'_>>,
     ) -> Result<(InstalledPreparedWorld, ActivationRecord), NodeObservedError> {
-        let resolved = profile::build_world(
+        self.prepare_world_with_selected_label(
+            selections,
+            scenario,
+            execution,
+            artifacts,
+            recorder,
+            SelectedPreparation {
+                source,
+                label: None,
+            },
+        )
+    }
+
+    fn prepare_world_with_selected_label(
+        &mut self,
+        selections: &[InstalledNodeSelection],
+        scenario: NodeScenario,
+        execution: ExecutionId,
+        artifacts: &BTreeMap<String, InstalledIoArtifact>,
+        mut recorder: Option<&mut transcript::ReferenceRecorder<'_>>,
+        preparation: SelectedPreparation<'_>,
+    ) -> Result<(InstalledPreparedWorld, ActivationRecord), NodeObservedError> {
+        let SelectedPreparation { source, label } = preparation;
+        let mut resolved = profile::build_world(
             selections,
             &self.host_identity,
             &self.device_identity,
             artifacts,
         )?;
+        if let Some(label) = label {
+            if resolved.scenario.canonical_bytes()? != label.base.canonical_bytes()? {
+                return Err(refused(
+                    "Clock label differs from actual installed baseline",
+                ));
+            }
+            resolved.scenario = label.labeled.clone();
+        }
         if scenario.canonical_bytes()? != resolved.scenario.canonical_bytes()? {
             return Err(refused(
                 "authored world differs from complete installed profile selection",
@@ -650,10 +741,23 @@ impl InstalledNodeCatalog {
                         scripted::build_model(selection, profile, artifacts)?,
                     );
                 }
+                InstalledNodeKind::Gem5Closed { .. } => {
+                    return Err(refused(
+                        "closed gem5 requires its original public preparation bridge",
+                    ));
+                }
                 InstalledNodeKind::HostClock => {
                     models.insert(
                         selection.node.clone(),
                         HostModel::Clock(VirtualClock::new()),
+                    );
+                }
+                InstalledNodeKind::HostSemantics { profile } => {
+                    models.insert(
+                        selection.node.clone(),
+                        HostModel::Semantics(Box::new(semantics::build_model(
+                            selection, selections, profile, artifacts,
+                        )?)),
                     );
                 }
                 InstalledNodeKind::ReferenceDevice { .. }
@@ -702,11 +806,33 @@ impl InstalledNodeCatalog {
             maximum_total_content_bytes: 2 * 1024 * 1024 * 1024,
             ..AdmissionLimits::default()
         };
-        let graph = scenario.admit(&bindings, &evidence, admission_limits)?;
+        let graph = if let Some(label) = label {
+            let profile = self.clock_label_profile()?;
+            if label.labeled.canonical_bytes()? != profile.labeled.canonical_bytes()? {
+                return Err(refused("installed Clock label changed before admission"));
+            }
+            let registry = profile.registry()?;
+            scenario.admit(
+                &bindings,
+                &clock_label::LabelAdmission {
+                    original: &evidence,
+                    registry: &registry,
+                },
+                admission_limits,
+            )?
+        } else {
+            scenario.admit(&bindings, &evidence, admission_limits)?
+        };
         let mut nodes: Vec<Box<dyn SimulationNode>> = Vec::new();
         for selection in selections {
             match &selection.kind {
+                InstalledNodeKind::Gem5Closed { .. } => {
+                    return Err(refused(
+                        "closed gem5 native custody cannot become a host model",
+                    ));
+                }
                 InstalledNodeKind::HostClock
+                | InstalledNodeKind::HostSemantics { .. }
                 | InstalledNodeKind::HostNetLink { .. }
                 | InstalledNodeKind::HostIo { .. }
                 | InstalledNodeKind::HostScripted { .. } => {
@@ -779,6 +905,34 @@ impl InstalledNodeCatalog {
     /// Returns owning cleanup supervision for polling on every daemon actor turn.
     pub fn custody(&self) -> &RuntimeCustodyQueue {
         &self.custody
+    }
+
+    pub(super) fn authenticate_cache_selection(
+        &self,
+        selections: &[InstalledNodeSelection],
+        scenario: &NodeScenario,
+    ) -> Result<(), NodeObservedError> {
+        if measure_executable(&self.host_executable)? != self.host_identity
+            || measure_executable(&self.device_executable)? != self.device_identity
+        {
+            return Err(refused(
+                "installed implementation changed before cache reuse",
+            ));
+        }
+        let artifacts = cached_artifacts::materialize(&self.artifacts, selections, scenario)?;
+        let selected = profile::build_world(
+            selections,
+            &self.host_identity,
+            &self.device_identity,
+            artifacts.registry(),
+        )?
+        .scenario;
+        if selected.canonical_bytes()? != scenario.canonical_bytes()? {
+            return Err(refused(
+                "cached scenario differs from exact installed implementation/model",
+            ));
+        }
+        Ok(())
     }
 
     pub(super) fn authenticate_recorded(

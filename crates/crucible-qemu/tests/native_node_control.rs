@@ -39,6 +39,11 @@ use crucible_shmem::{
     mmap_setup_region,
 };
 
+#[path = "native_node_control/watchdog.rs"]
+mod watchdog;
+
+use watchdog::{OriginalDeadline, check_child, is_execution_frame};
+
 const PROBE_VM_SLOT: u32 = 0;
 
 struct ChildCustody(Child);
@@ -154,50 +159,43 @@ fn artifact(variable: &str) -> Result<PathBuf, Box<dyn Error>> {
     Ok(path)
 }
 
-// Wall time bounds this external-process test watchdog; it is never a modeled clock.
-// crucible-lint: allow clippy-disallowed-method -- Operational deadlines in these native node control tests bound native supervision and never enter modeled state.
-#[allow(clippy::disallowed_methods)]
+// All nested filters use this same operational deadline for one original wait.
+fn next_any_frame_before(
+    control: &mut NativeQemuControlTransport,
+    child: &mut Child,
+    deadline: &OriginalDeadline,
+) -> Result<NativeFrame, Box<dyn Error>> {
+    deadline.next_matching(
+        || Ok(control.poll_original()?),
+        || check_child(child),
+        |_| true,
+    )
+}
+
 fn next_any_frame(
     control: &mut NativeQemuControlTransport,
     child: &mut Child,
 ) -> Result<NativeFrame, Box<dyn Error>> {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        if let Some(frame) = control.poll_original()? {
-            return Ok(frame);
-        }
-        if let Some(status) = child.try_wait()? {
-            return Err(io::Error::other(format!("native QEMU exited early: {status}")).into());
-        }
-        if Instant::now() >= deadline {
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "native original receipt unavailable",
-            )
-            .into());
-        }
-        std::thread::sleep(Duration::from_millis(1));
-    }
+    next_any_frame_before(control, child, &OriginalDeadline::native())
+}
+
+fn next_frame_before(
+    control: &mut NativeQemuControlTransport,
+    child: &mut Child,
+    deadline: &OriginalDeadline,
+) -> Result<NativeFrame, Box<dyn Error>> {
+    deadline.next_matching(
+        || Ok(control.poll_original()?),
+        || check_child(child),
+        is_execution_frame,
+    )
 }
 
 fn next_frame(
     control: &mut NativeQemuControlTransport,
     child: &mut Child,
 ) -> Result<NativeFrame, Box<dyn Error>> {
-    loop {
-        let frame = next_any_frame(control, child)?;
-        if !matches!(
-            frame,
-            NativeFrame::CpuPark(_)
-                | NativeFrame::WriterChunk(_)
-                | NativeFrame::PhaseTimerChunk(_)
-                | NativeFrame::InitializationCut(_)
-                | NativeFrame::InitializationStopped(_)
-                | NativeFrame::InitializationAcknowledged(_)
-        ) {
-            return Ok(frame);
-        }
-    }
+    next_frame_before(control, child, &OriginalDeadline::native())
 }
 
 fn read_timers(
@@ -205,9 +203,11 @@ fn read_timers(
     child: &mut Child,
     sequence: U64,
 ) -> Result<NativeTimerObservation, Box<dyn Error>> {
+    let deadline = OriginalDeadline::native();
     loop {
+        deadline.check()?;
         assert!(native.request_timer_observation(sequence)?);
-        let NativeFrame::TimerChunk(_) = next_frame(native, child)? else {
+        let NativeFrame::TimerChunk(_) = next_frame_before(native, child, &deadline)? else {
             panic!("original native timer slice");
         };
         if let Some(observation) = native.timer_observation(sequence) {
@@ -520,8 +520,9 @@ fn run_initialized_probe(
 
     if expect_source_fault {
         let mut diagnostic = None;
+        let deadline = OriginalDeadline::native();
         while diagnostic.is_none() {
-            match next_any_frame(&mut native, &mut child.0)? {
+            match next_any_frame_before(&mut native, &mut child.0, &deadline)? {
                 NativeFrame::SourceFault(facts) => diagnostic = Some(facts),
                 NativeFrame::CpuPark(_) | NativeFrame::WriterChunk(_) => {}
                 frame => panic!("source fault is not a native completion: {frame:?}"),
@@ -557,9 +558,10 @@ fn run_initialized_probe(
     }
 
     let original_initialization_cut = if let Some(preparation) = &initialization {
+        let deadline = OriginalDeadline::native();
         loop {
             native.request_initialization_cut()?;
-            match next_any_frame(&mut native, &mut child.0)? {
+            match next_any_frame_before(&mut native, &mut child.0, &deadline)? {
                 NativeFrame::InitializationCut(cut) => {
                     cut.validate_against(preparation)?;
                     break Some(*cut);
@@ -573,8 +575,9 @@ fn run_initialized_probe(
     };
     let original_cpu_park = if require_cpu_park {
         assert!(native.request_cpu_park()?);
+        let deadline = OriginalDeadline::native();
         let facts = loop {
-            match next_any_frame(&mut native, &mut child.0)? {
+            match next_any_frame_before(&mut native, &mut child.0, &deadline)? {
                 NativeFrame::CpuPark(facts) => break facts,
                 NativeFrame::InitializationCut(_) | NativeFrame::WriterChunk(_) => {}
                 frame => panic!("actual source CPU-only initial park observation: {frame:?}"),
@@ -665,8 +668,9 @@ fn run_initialized_probe(
                 .is_err()
         );
         assert!(native.transmit_initialization(original.clone())?.1);
+        let deadline = OriginalDeadline::native();
         let receipt = loop {
-            match next_any_frame(&mut native, &mut child.0)? {
+            match next_any_frame_before(&mut native, &mut child.0, &deadline)? {
                 NativeFrame::InitializationStopped(receipt) => break *receipt,
                 NativeFrame::InitializationCut(_)
                 | NativeFrame::CpuPark(_)
@@ -688,8 +692,9 @@ fn run_initialized_probe(
                 .is_err()
         );
         native.transmit_initialization(original.clone())?;
+        let deadline = OriginalDeadline::native();
         loop {
-            match next_any_frame(&mut native, &mut child.0)? {
+            match next_any_frame_before(&mut native, &mut child.0, &deadline)? {
                 NativeFrame::InitializationStopped(retry) => {
                     assert_eq!(*retry, receipt);
                     break;
@@ -703,8 +708,9 @@ fn run_initialized_probe(
         assert!(native.transmit_initialization_acknowledgement()?);
         assert!(!native.initialization_acknowledged());
         assert!(native.transmit_initialization_acknowledgement()?);
+        let deadline = OriginalDeadline::native();
         loop {
-            match next_any_frame(&mut native, &mut child.0)? {
+            match next_any_frame_before(&mut native, &mut child.0, &deadline)? {
                 NativeFrame::InitializationAcknowledged(_) => break,
                 NativeFrame::InitializationCut(_)
                 | NativeFrame::InitializationStopped(_)
@@ -865,9 +871,10 @@ fn run_initialized_probe(
                         && *birth_sequence==sequence && *command_digest==facts.command_digest)));
             }
             assert!(native.request_phase_timer_observation(sequence)?);
+            let deadline = OriginalDeadline::native();
             loop {
                 if matches!(
-                    next_any_frame(&mut native, &mut child.0)?,
+                    next_any_frame_before(&mut native, &mut child.0, &deadline)?,
                     NativeFrame::PhaseTimerChunk(_)
                 ) {
                     break;
@@ -902,7 +909,8 @@ fn run_initialized_probe(
     }
     if let Some(original) = original_cpu_park {
         assert!(native.request_cpu_park()?);
-        let mut recovered = next_any_frame(&mut native, &mut child.0)?;
+        let deadline = OriginalDeadline::native();
+        let mut recovered = next_any_frame_before(&mut native, &mut child.0, &deadline)?;
         while matches!(
             recovered,
             NativeFrame::WriterChunk(_)
@@ -910,7 +918,7 @@ fn run_initialized_probe(
                 | NativeFrame::InitializationStopped(_)
                 | NativeFrame::InitializationAcknowledged(_)
         ) {
-            recovered = next_any_frame(&mut native, &mut child.0)?;
+            recovered = next_any_frame_before(&mut native, &mut child.0, &deadline)?;
         }
         assert_eq!(recovered, NativeFrame::CpuPark(original.clone()));
         // Recovery returns historical bytes, not invented current readiness.
@@ -974,25 +982,18 @@ fn read_writers(
     child: &mut Child,
     sequence: U64,
 ) -> Result<NativeWriterObservation, Box<dyn Error>> {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = OriginalDeadline::native();
     loop {
+        deadline.check()?;
         // The initial CPU-only fact can precede completion of the actual HOLD.
         // Retry this original offset; the reader never resamples source queues.
         assert!(native.request_writer_observation(sequence)?);
-        while native.poll_original()?.is_some() {}
+        deadline.drain(|| Ok(native.poll_original()?), |_| {})?;
         if let Some(cut) = native.writer_observation(sequence) {
             return Ok(cut.clone());
         }
-        if let Some(status) = child.try_wait()? {
-            return Err(io::Error::other(format!("native QEMU exited early: {status}")).into());
-        }
-        if Instant::now() >= deadline {
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "original writer object unavailable",
-            )
-            .into());
-        }
+        check_child(child)?;
+        deadline.check()?;
         std::thread::sleep(Duration::from_millis(2));
     }
 }
@@ -1054,23 +1055,16 @@ fn read_phase_timers(
     child: &mut Child,
     sequence: U64,
 ) -> Result<crucible_protocol::node_control::NativePhaseTimerObservation, Box<dyn Error>> {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = OriginalDeadline::native();
     loop {
+        deadline.check()?;
         assert!(native.request_phase_timer_observation(sequence)?);
-        while native.poll_original()?.is_some() {}
+        deadline.drain(|| Ok(native.poll_original()?), |_| {})?;
         if let Some(observation) = native.phase_timer_observation(sequence) {
             return Ok(observation.clone());
         }
-        if let Some(status) = child.try_wait()? {
-            return Err(io::Error::other(format!("native QEMU exited: {status}")).into());
-        }
-        if Instant::now() >= deadline {
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "native phase original slice unavailable",
-            )
-            .into());
-        }
+        check_child(child)?;
+        deadline.check()?;
         std::thread::sleep(Duration::from_millis(1));
     }
 }
@@ -1102,15 +1096,19 @@ fn read_successor(
     child: &mut Child,
 ) -> Result<crucible_protocol::node_control::NativePreparationSuccessorObservation, Box<dyn Error>>
 {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = OriginalDeadline::native();
     assert!(native.request_preparation_successor()?);
     let mut received = false;
     loop {
-        while let Some(frame) = native.poll_original()? {
-            if matches!(frame, NativeFrame::PreparationSuccessorChunk(_)) {
-                received = true;
-            }
-        }
+        deadline.check()?;
+        deadline.drain(
+            || Ok(native.poll_original()?),
+            |frame| {
+                if matches!(frame, NativeFrame::PreparationSuccessorChunk(_)) {
+                    received = true;
+                }
+            },
+        )?;
         if received {
             if let Some(original) = native.preparation_successor() {
                 return Ok(original.clone());
@@ -1118,16 +1116,8 @@ fn read_successor(
             assert!(native.request_preparation_successor()?);
             received = false;
         }
-        if let Some(status) = child.try_wait()? {
-            return Err(io::Error::other(format!("native QEMU exited: {status}")).into());
-        }
-        if Instant::now() >= deadline {
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "original preparation successor unavailable",
-            )
-            .into());
-        }
+        check_child(child)?;
+        deadline.check()?;
         std::thread::sleep(Duration::from_millis(1));
     }
 }

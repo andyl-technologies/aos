@@ -190,6 +190,12 @@ pub(super) fn outcome_references(outcome: &OperationOutcome) -> Vec<ContentRef> 
             retain(&closure.clock_evidence);
         }
         ProgressEvidence::Paused { stop_receipt, .. } => retain(stop_receipt),
+        ProgressEvidence::AssertionsFinalized {
+            barrier, report, ..
+        } => {
+            retain(barrier);
+            retain(report);
+        }
         _ => {}
     }
     if let Some(observation) = &outcome.scheduling {
@@ -260,7 +266,8 @@ pub(super) fn observation_proof_references(
 
 pub(super) fn outcome_positions(outcome: &OperationOutcome) -> Vec<Position> {
     let mut positions = match &outcome.progress {
-        ProgressEvidence::Exact { reached, .. } => vec![*reached],
+        ProgressEvidence::Exact { reached, .. }
+        | ProgressEvidence::AssertionsFinalized { reached, .. } => vec![*reached],
         ProgressEvidence::Paused { reached, .. } => reached.iter().copied().collect(),
         ProgressEvidence::Quantized { publication, .. } => vec![*publication],
         ProgressEvidence::Administrative => Vec::new(),

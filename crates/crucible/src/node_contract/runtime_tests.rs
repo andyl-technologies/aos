@@ -48,6 +48,7 @@ fn blob() -> ContentRef {
 
 #[derive(Default)]
 struct NativeState {
+    terminal_failure: Option<EffectKnowledge>,
     arm_fail: bool,
     change_declarations_on_arm: bool,
     changed_declarations: bool,
@@ -152,6 +153,22 @@ impl SimulationNode for TestNode {
         _readiness: &ReadyAttestation,
     ) -> Result<(), OperationFailure> {
         Ok(())
+    }
+
+    fn observe_terminal(
+        &mut self,
+        _: &WorldActivation,
+        _: usize,
+    ) -> Result<crate::node_contract::NativeTerminalInventory, OperationFailure> {
+        Err(OperationFailure {
+            effects: self
+                .state
+                .borrow()
+                .terminal_failure
+                .clone()
+                .unwrap_or(EffectKnowledge::None),
+            reason: "fixture deliberately refuses native terminal observation".into(),
+        })
     }
 
     fn observe_scheduling(
@@ -674,6 +691,7 @@ fn runtime(mode: OperatingMode) -> (NodeRuntime, Vec<Rc<RefCell<NativeState>>>) 
         limits: RuntimeLimits::default(),
         scheduler: None,
         custody_slot: Some(crate::node_contract::test_custody_slot()),
+        terminal: None,
     };
     (runtime, vec![a_state, b_state])
 }
@@ -1548,3 +1566,16 @@ fn declared_external_root_requires_runtime_native_inventory_before_input_closure
 
 #[path = "runtime_evidence_tests.rs"]
 mod evidence_tests;
+
+#[path = "runtime_terminal_tests.rs"]
+mod terminal;
+
+// This fixture injects classified read failure, never qualified native EOF.
+pub(super) fn terminal_read_failure_fixture(
+    effects: EffectKnowledge,
+) -> (NodeRuntime, WorldActivation) {
+    let (mut runtime, native) = runtime(OperatingMode::Exact);
+    let activation = activate(&mut runtime);
+    native[0].borrow_mut().terminal_failure = Some(effects);
+    (runtime, activation)
+}

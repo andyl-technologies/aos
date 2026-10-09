@@ -219,7 +219,7 @@ impl HostWorldFactory for QueuedFactory {
                     let snapshot = crucible_device::netlink::LinkSnapshot::from_canonical_bytes(&inventory.native_model.bytes).map_err(super::super::super::schema)?;
                     NetLink::restore(&snapshot).map_err(super::super::super::schema)?;
                 }
-                HostModel::Clock(_) | HostModel::ScriptedSource(_) => unreachable!(),
+                HostModel::Clock(_) | HostModel::ScriptedSource(_) | HostModel::Semantics(_) => unreachable!(),
             }
         } else if inventory.native_model.bytes
             != host_clock_initial_bytes(source.capture_cut.time_ps.get())

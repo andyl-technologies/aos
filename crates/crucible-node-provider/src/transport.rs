@@ -66,10 +66,15 @@ impl<R: Read> FrameReader<R> {
     /// JSON, duplicate keys, invalid Unicode, and reuse after any failure.
     /// An error leaves the stream fenced; bytes are never scanned to resync.
     pub fn read(&mut self) -> Result<Option<Value>, ProviderError> {
+        self.read_retained()
+            .map(|frame| frame.map(|frame| frame.value))
+    }
+
+    /// Keeps original validated wire bytes for source-owned native preparation.
+    pub(crate) fn read_retained(&mut self) -> Result<Option<RetainedFrame>, ProviderError> {
         if self.failed {
             return Err(ProviderError::Frame("connection already failed"));
         }
-
         let result = self.read_frame();
         if result.is_err() {
             self.failed = true;
@@ -81,7 +86,7 @@ impl<R: Read> FrameReader<R> {
         &mut self.stream
     }
 
-    fn read_frame(&mut self) -> Result<Option<Value>, ProviderError> {
+    fn read_frame(&mut self) -> Result<Option<RetainedFrame>, ProviderError> {
         let mut header = [0_u8; 4];
         let first = loop {
             match self.stream.read(&mut header[..1]) {
@@ -101,12 +106,19 @@ impl<R: Read> FrameReader<R> {
 
         let mut body = vec![0_u8; length];
         self.stream.read_exact(&mut body)?;
-        Ok(Some(canonical::parse_json_with_depth(
-            &body,
-            self.maximum_bytes,
-            self.maximum_nesting,
-        )?))
+        let value =
+            canonical::parse_json_with_depth(&body, self.maximum_bytes, self.maximum_nesting)?;
+        Ok(Some(RetainedFrame { value, bytes: body }))
     }
+}
+
+/// Carries a validated frame without canonicalizing its original wire body.
+///
+/// Parsing establishes transport validity only. Native custody and installed
+/// source qualification must separately authenticate preparation provenance.
+pub(crate) struct RetainedFrame {
+    pub(crate) value: Value,
+    pub(crate) bytes: Vec<u8>,
 }
 
 /// Writes one bounded canonical JSON frame to a connected stream.
@@ -260,5 +272,59 @@ mod tests {
         write_frame_with_limits(&mut stream, &nested, 128, 2).unwrap();
         let mut reader = FrameReader::with_limits(Cursor::new(stream), 128, 2).unwrap();
         assert_eq!(reader.read().unwrap(), Some(nested));
+    }
+}
+
+#[cfg(test)]
+mod retained_frame_tests {
+    //! Checks byte custody only; these frames cannot issue native authority.
+
+    use std::io::Cursor;
+
+    use super::*;
+
+    #[test]
+    fn retained_frame_preserves_original_valid_wire_body() {
+        let original = br#"{ "kind" : "ready", "source" : "native packet" }"#;
+        let mut wire = Vec::new();
+        wire.extend_from_slice(&(original.len() as u32).to_be_bytes());
+        wire.extend_from_slice(original);
+        let mut reader = FrameReader::new(Cursor::new(wire.clone()), 1024)
+            .unwrap_or_else(|error| panic!("bounded reader failed: {error}"));
+
+        let retained = reader
+            .read_retained()
+            .unwrap_or_else(|error| panic!("original body failed: {error}"))
+            .unwrap_or_else(|| panic!("complete original frame is absent"));
+        assert_eq!(retained.bytes, original);
+        assert_eq!(retained.value["kind"], "ready");
+        assert_ne!(
+            canonical::canonical_json(&retained.value)
+                .unwrap_or_else(|error| panic!("parsed value failed: {error}")),
+            retained.bytes
+        );
+
+        let mut legacy = FrameReader::new(Cursor::new(wire), 1024)
+            .unwrap_or_else(|error| panic!("legacy reader failed: {error}"));
+        assert_eq!(
+            legacy
+                .read()
+                .unwrap_or_else(|error| panic!("legacy frame failed: {error}")),
+            Some(retained.value)
+        );
+    }
+
+    #[test]
+    fn retained_frame_keeps_the_original_fatal_parse_fence() {
+        let original = br#"{"kind":"ready","kind":"foreign"}"#;
+        let mut wire = Vec::new();
+        wire.extend_from_slice(&(original.len() as u32).to_be_bytes());
+        wire.extend_from_slice(original);
+        let mut reader = FrameReader::new(Cursor::new(wire), 1024)
+            .unwrap_or_else(|error| panic!("bounded reader failed: {error}"));
+
+        assert!(reader.read_retained().is_err());
+        assert!(reader.read().is_err());
+        assert!(reader.read_retained().is_err());
     }
 }

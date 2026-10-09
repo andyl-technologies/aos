@@ -20,8 +20,9 @@ pub use scripted_source::{
 
 pub use host::{
     HOST_EXACT_PROFILE, HOST_PHYSICAL_PAUSE_PROFILE, HOST_PRESERVATION_PROFILE,
-    HostContinuationInventory, HostModel, HostModelNode, HostModelQualification,
-    HostModelResources, host_clock_initial_bytes, validate_host_continuation,
+    HOST_PUBLIC_CLOCK_PREPARATION_SPECIFICATION, HostContinuationInventory, HostModel,
+    HostModelNode, HostModelQualification, HostModelResources, host_clock_initial_bytes,
+    host_public_clock_preparation_schema, validate_host_continuation,
 };
 pub use inventory::{
     CurrentPort, CurrentPortKind, CurrentWorldInventory, CurrentWorldParticipant,
@@ -31,4 +32,10 @@ pub use inventory::{
 pub use reference_device::{
     REFERENCE_DEVICE_QUANTIZED_PROFILE, ReferenceDeviceNode, ReferenceDeviceQualification,
     reference_device_initial_bytes,
+};
+
+/// Owns selected assertion model state without issuing native qualification.
+pub mod semantic_model;
+pub use semantic_model::{
+    HostSemanticDefinition, HostSemanticInput, HostSemanticInputKind, HostSemanticModel,
 };

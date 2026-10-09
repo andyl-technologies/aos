@@ -332,7 +332,11 @@ fn typed_inventory_requires_its_explicit_edition_and_nullable_extension_root() {
     unsupported["typed_inventory"]["schema_version"] = 1.into();
     assert!(serde_json::from_value::<Index>(unsupported).is_err());
     let mut uninstalled = value;
-    uninstalled["selected_extensions"] = serde_json::to_value(index.artifact.clone()).unwrap();
+    // A selected root must have its own enrolled typed row. Installed native
+    // interpretation is checked separately before admission or allocation.
+    let missing_root =
+        canonical::content_ref(b"missing selected semantic body", "application/json").unwrap();
+    uninstalled["selected_extensions"] = serde_json::to_value(missing_root).unwrap();
     assert!(
         archive
             .record(serde_json::from_value(uninstalled).unwrap())

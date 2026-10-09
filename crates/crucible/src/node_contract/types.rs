@@ -108,6 +108,8 @@ pub enum FacetKind {
     Introspection,
     /// Separately admitted debugging operations.
     Debugging,
+    /// Whole-world-fenced terminal host assertion evaluation.
+    TerminalAssertions,
 }
 
 /// Defines the permission for a single common operation.
@@ -153,6 +155,13 @@ pub enum OperationRequest {
     Observe,
     /// Captures the reached state without modeled draining or execution.
     Capture,
+    /// Finalizes assertions under original opaque whole-world admission.
+    FinalizeAssertions {
+        /// Retains original live-scope facts without issuing public authority.
+        barrier: Box<super::WorldTerminalRecord>,
+        /// Binds exact canonical original barrier bytes.
+        receipt: ContentRef,
+    },
     /// Ends semantic access and initiates supervised native shutdown.
     Shutdown,
 }
@@ -174,6 +183,7 @@ impl OperationRequest {
                 Some(FacetKind::QuantizedExecution)
             }
             Self::Pause => Some(FacetKind::PhysicalPause),
+            Self::FinalizeAssertions { .. } => Some(FacetKind::TerminalAssertions),
             Self::Capture => Some(FacetKind::Preservation),
             Self::Observe | Self::Shutdown => None,
         }
@@ -207,6 +217,15 @@ pub enum ProgressEvidence {
         reached: Option<Position>,
         /// Native physical stop acknowledgement, not a logical window closure.
         stop_receipt: ContentRef,
+    },
+    /// Retains exact original terminal assertion report and barrier custody.
+    AssertionsFinalized {
+        /// Retains the authentic whole-world terminal cut.
+        reached: Position,
+        /// Retains the original barrier receipt.
+        barrier: ContentRef,
+        /// Binds original canonical report bytes under native custody.
+        report: ContentRef,
     },
     /// Reports an observational or lifecycle result with no fabricated progress.
     Administrative,

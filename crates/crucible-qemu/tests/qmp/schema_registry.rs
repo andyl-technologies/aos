@@ -264,6 +264,7 @@ fn patched_qapi_commands_have_schema_owners_or_qapi_only_contracts() {
         "x-crucible-kvm-clock-v3",
         "x-crucible-kvm-userspace-exits",
         "x-crucible-kvm-completion",
+        "x-crucible-kvm-response-service",
     ];
 
     let declared = patch

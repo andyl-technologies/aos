@@ -113,6 +113,11 @@ fn outcome_references(outcome: &OperationOutcome) -> BTreeSet<&ContentRef> {
         ProgressEvidence::Paused { stop_receipt, .. } => {
             references.insert(stop_receipt);
         }
+        ProgressEvidence::AssertionsFinalized {
+            barrier, report, ..
+        } => {
+            references.extend([barrier, report]);
+        }
         ProgressEvidence::Exact { .. } | ProgressEvidence::Administrative => {}
     }
     if let Some(observation) = &outcome.scheduling {

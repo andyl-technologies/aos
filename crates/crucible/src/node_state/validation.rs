@@ -100,6 +100,32 @@ pub(super) fn admit_capture_with_inventory(
     limits: StateLimits,
     edition: super::closure::ContentInventoryEdition,
 ) -> Result<VerifiedCapture, StateError> {
+    admit_capture_with_selected_graph(
+        graph,
+        artifact,
+        requirements,
+        evidence,
+        limits,
+        edition,
+        None,
+    )
+}
+
+pub(crate) fn admit_capture_with_selected_graph(
+    graph: &AdmittedGraph,
+    artifact: &ContentRef,
+    requirements: StateRequirements,
+    evidence: &dyn CaptureEvidence,
+    limits: StateLimits,
+    edition: super::closure::ContentInventoryEdition,
+    selected: Option<&super::native::extensions::SelectedGraphReferences>,
+) -> Result<VerifiedCapture, StateError> {
+    if selected.is_some() && edition != super::closure::ContentInventoryEdition::Typed {
+        return Err(incompatible(
+            "selected closure",
+            "selected semantics require typed inventory two",
+        ));
+    }
     artifact.validate().map_err(schema)?;
     let length = usize::try_from(artifact.length.get()).map_err(|_| limit("manifest bytes"))?;
     if length > limits.maximum_record_bytes || length > limits.maximum_total_content_bytes {
@@ -123,7 +149,12 @@ pub(super) fn admit_capture_with_inventory(
 
     let mut roots = core_references(&manifest, limits.maximum_record_bytes)?;
     roots.push(artifact.clone());
-    let immutable = required_immutable_refs(graph, limits)?;
+    let immutable = if let Some(selected) = selected {
+        selected.verify(graph, limits)?;
+        selected.roots().to_vec()
+    } else {
+        required_immutable_refs(graph, limits)?
+    };
     if immutable
         .iter()
         .any(|reference| !manifest.immutable_refs.contains(reference))

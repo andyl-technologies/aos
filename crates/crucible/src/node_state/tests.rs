@@ -198,6 +198,7 @@ fn setup(
         used_input_batches: vec![],
     };
     let runtime = crate::node_contract::RuntimeSnapshot {
+        terminal: None,
         schema_version: 1,
         source_activation: crate::node_contract::SavedRuntimeActivation {
             generation: snapshot.source_generation,

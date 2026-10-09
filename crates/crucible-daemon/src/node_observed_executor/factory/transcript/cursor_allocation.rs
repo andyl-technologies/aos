@@ -34,6 +34,7 @@ pub(super) struct PreparedReplayPair {
 }
 
 impl CursorAllocation {
+    #[cfg(test)]
     pub(super) fn allocate(
         catalog: &InstalledNodeCatalog,
         source: source_enrollment::VerifiedRecordedWorld,
@@ -154,6 +155,7 @@ impl CursorAllocation {
         })
     }
 
+    #[cfg(test)]
     pub(super) fn admit_graph(&self) -> Result<Rc<AdmittedGraph>, NodeObservedError> {
         self.check_scope()?;
         Ok(Rc::new(
@@ -186,6 +188,7 @@ impl CursorAllocation {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn fresh_branch(
         &self,
         source: &crucible::node_state::NativeArchiveRecord,
@@ -227,13 +230,6 @@ impl CursorAllocation {
                 "source":source.artifact(),"target_owner":owner,"host":self.host_identity,
             }))?;
             let receipt = canonical::content_ref(&bytes, "application/json")?;
-            profile
-                .scenario
-                .content
-                .push(crate::node_scenario::ScenarioContent {
-                    reference: receipt.clone(),
-                    bytes: bytes.clone(),
-                });
             profile.enrolled.insert(
                 binding.compatibility.node_id.clone(),
                 InputPayload {

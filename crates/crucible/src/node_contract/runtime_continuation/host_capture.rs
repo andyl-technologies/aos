@@ -14,13 +14,20 @@ impl NodeRuntime {
     ) -> Result<Vec<HostNativeCapture>, RuntimePollFailure> {
         self.validate_activation(activation)
             .map_err(RuntimePollFailure::Admission)?;
-        let actual = self
-            .runtime_snapshot(
+        let actual = if source.schema_version == 3 {
+            self.terminal_runtime_snapshot(
                 source.capture_cut,
                 source.capture_ordinal,
                 maximum_record_bytes,
             )
-            .map_err(RuntimePollFailure::Admission)?;
+        } else {
+            self.runtime_snapshot(
+                source.capture_cut,
+                source.capture_ordinal,
+                maximum_record_bytes,
+            )
+        }
+        .map_err(RuntimePollFailure::Admission)?;
         if &actual != source {
             return Err(RuntimePollFailure::Admission(
                 RuntimeError::ForeignAuthority,

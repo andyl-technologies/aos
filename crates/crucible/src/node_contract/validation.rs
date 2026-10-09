@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crucible_node_contract::OperatingMode;
+use crucible_node_contract::{OperatingMode, Validate};
 
 use super::{
     ActivationRecord, ExactBoundaryPolicy, OperationAdmission, OperationOutcome, OperationRequest,
@@ -227,6 +227,21 @@ pub(super) fn valid_outcome(admission: &OperationAdmission, outcome: &OperationO
             },
         ) => window == actual_window && publication == end && input_batch == &closure.input_batch,
         (OperationRequest::Pause, ProgressEvidence::Paused { .. }) => true,
+        (
+            OperationRequest::FinalizeAssertions { barrier, receipt },
+            ProgressEvidence::AssertionsFinalized {
+                reached,
+                barrier: actual,
+                report,
+            },
+        ) => {
+            *reached == barrier.cut
+                && actual == receipt
+                && outcome.retained_outputs.is_empty()
+                && outcome.scheduling.is_none()
+                && report.length.get() != 0
+                && report.validate().is_ok()
+        }
         (
             OperationRequest::Observe | OperationRequest::Capture | OperationRequest::Shutdown,
             ProgressEvidence::Administrative,

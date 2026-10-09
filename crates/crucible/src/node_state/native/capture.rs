@@ -22,7 +22,7 @@ use super::super::{
         verify_closure_with_edition,
     },
     schema,
-    validation::{admit_capture_with_inventory, required_immutable_refs},
+    validation::required_immutable_refs,
 };
 use super::storage::{Index, NativeArtifactState, Object};
 use super::{
@@ -146,7 +146,25 @@ impl NativeArchive {
         factory: &dyn NativeWorldFactory,
         edition: ContentInventoryEdition,
     ) -> Result<NativeArchiveRecord, StateError> {
-        require_supported_extensions(graph)?;
+        let selected = match edition {
+            ContentInventoryEdition::Legacy => {
+                require_supported_extensions(graph)?;
+                None
+            }
+            ContentInventoryEdition::Typed => {
+                super::extensions::archive::prepare_capture(graph, factory, self.limits.state)?
+            }
+        };
+        let graph_refs = selected
+            .as_ref()
+            .map(|selected| {
+                super::extensions::graph_refs::immutable_refs(graph, selected, self.limits.state)
+            })
+            .transpose()?;
+        let immutable = super::extensions::evidence::SelectionEvidence {
+            base: immutable,
+            selected: selected.as_ref(),
+        };
         if requirements.restore_mode != StateRestoreMode::DurableRestart {
             return Err(refused(
                 "native archive selects durable reconstruction explicitly",
@@ -160,15 +178,37 @@ impl NativeArchive {
         let source = runtime
             .runtime_snapshot(cut, ordinal, self.limits.state.maximum_record_bytes)
             .map_err(schema)?;
-        let immutable_refs = required_immutable_refs(graph, self.limits.state)?;
+        let immutable_refs = if let Some(refs) = &graph_refs {
+            refs.verify(graph, self.limits.state)?;
+            refs.roots().to_vec()
+        } else {
+            required_immutable_refs(graph, self.limits.state)?
+        };
         let content = verify_closure_with_edition(
             immutable_refs.clone(),
-            immutable,
+            &immutable,
             self.limits.state,
             edition,
         )?;
+        let coordinator = Coordinator {
+            schema_version: 1,
+            scheduler,
+            runtime: source,
+            world_repeatability: graph.world_repeatability(),
+        };
+        // Known portable and immutable custody is reserved before any native capture hook.
+        let native_limits = if selected.is_some() {
+            super::extensions::credits::remaining_native(
+                graph,
+                &content,
+                &coordinator,
+                self.limits,
+            )?
+        } else {
+            self.limits.native
+        };
         let captures = runtime
-            .capture_installed_native(graph, activation, &source, self.limits.native)
+            .capture_installed_native(graph, activation, &coordinator.runtime, native_limits)
             .map_err(schema)?;
         let mut objects = Objects::new(self, edition);
         for (reference, bytes) in content.entries() {
@@ -179,12 +219,6 @@ impl NativeArchive {
             )?;
             objects.insert(reference.clone(), bytes, dependencies)?;
         }
-        let coordinator = Coordinator {
-            schema_version: 1,
-            scheduler,
-            runtime: source,
-            world_repeatability: graph.world_repeatability(),
-        };
         let coordinator_ref = objects.record(
             &coordinator,
             core_references(&coordinator, self.limits.state.maximum_record_bytes)?,
@@ -294,10 +328,14 @@ impl NativeArchive {
         });
         if edition == ContentInventoryEdition::Typed {
             provenance["native_archive"] = serde_json::json!({
-                "schema_version":2,"content_inventory":2,"selected_extensions":null,
+                "schema_version":2,"content_inventory":2,"selected_extensions":selected.as_ref().map(|selected| &selected.record.reference),
             });
         }
-        let provenance_ref = objects.record(&provenance, vec![])?;
+        let provenance_dependencies = selected
+            .as_ref()
+            .map(|selected| vec![selected.record.reference.clone()])
+            .unwrap_or_default();
+        let provenance_ref = objects.record(&provenance, provenance_dependencies)?;
         let manifest = CaptureManifest {
             schema_version: 1,
             capture_id,
@@ -338,7 +376,9 @@ impl NativeArchive {
                 ContentInventoryEdition::Legacy => 1,
                 ContentInventoryEdition::Typed => 2,
             },
-            selected_extensions: None,
+            selected_extensions: selected
+                .as_ref()
+                .map(|selected| selected.record.reference.clone()),
             artifact,
             objects: objects.finish(),
             owners: states,
@@ -368,7 +408,13 @@ impl NativeArchiveRecord {
         requirements: StateRequirements,
         factory: &dyn NativeWorldFactory,
     ) -> Result<VerifiedCapture, StateError> {
-        require_supported_extensions(graph)?;
+        let selected = super::extensions::archive::authenticate_archive(self, graph, factory)?;
+        let graph_refs = selected
+            .as_ref()
+            .map(|selected| {
+                super::extensions::graph_refs::immutable_refs(graph, selected, self.limits.state)
+            })
+            .transpose()?;
         if self.index.owners.len() != self.manifest.owners.len()
             || self
                 .index
@@ -381,7 +427,7 @@ impl NativeArchiveRecord {
                 "native signed owner inventory differs from complete manifest",
             ));
         }
-        admit_capture_with_inventory(
+        super::super::validation::admit_capture_with_selected_graph(
             graph,
             self.artifact(),
             requirements,
@@ -395,6 +441,7 @@ impl NativeArchiveRecord {
                 2 => ContentInventoryEdition::Typed,
                 _ => return Err(refused("unsupported native content inventory")),
             },
+            graph_refs.as_ref(),
         )
     }
 

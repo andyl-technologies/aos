@@ -105,6 +105,9 @@ pub struct CausalScheduler {
     maximum_microsteps: U64,
 }
 
+#[path = "terminal.rs"]
+mod terminal;
+
 impl CausalScheduler {
     pub(crate) fn activation(&self) -> &WorldActivation {
         &self.activation

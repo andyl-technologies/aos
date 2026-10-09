@@ -185,10 +185,31 @@ pub struct RuntimeSnapshot {
     pub operations: Vec<SavedRuntimeOperation>,
     /// Enumerates all native input staging entries and preserved immutable buffers.
     pub inputs: Vec<SavedRuntimeInput>,
+    /// Retains complete original terminal custody only in selected edition three.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal: Option<crate::node_contract::SavedWorldTerminal>,
 }
 
 /// Authenticates complete native runtime-ledger continuation at an unchanged cut.
 pub trait NativeRuntimeContinuationVerifier {
+    /// Authenticates original terminal state and native result custody under fresh owners.
+    ///
+    /// This separate installed gate must authenticate the complete original
+    /// barrier context, finalization marker, report bytes, publication knowledge
+    /// and acknowledgement history without rewriting original source facts.
+    /// Default and legacy native codecs refuse the terminal-bearing edition.
+    ///
+    /// # Errors
+    /// Refuses unsupported terminal codecs or incomplete original native custody.
+    fn verify_terminal_continuation(
+        &mut self,
+        _snapshot: &RuntimeSnapshot,
+        _scheduling: &SchedulingSnapshot,
+        _target: &ActivationRecord,
+    ) -> Result<(), RuntimeError> {
+        Err(RuntimeError::UnsupportedFacet)
+    }
+
     /// Authenticates edition-2 immutable proof custody against selected native codecs.
     ///
     /// This distinct gate checks original consumer-native proof buffers and all
@@ -383,6 +404,7 @@ pub struct WholeRuntimeCustody {
     operations: BTreeMap<Id, RetainedOperation>,
     input_batches: BTreeMap<Id, inputs::RetainedInput>,
     scheduler: Option<crate::node_scheduling::CausalScheduler>,
+    terminal: Option<crate::node_contract::terminal::TerminalState>,
     prepared: Option<Box<dyn PreparedNativeResources>>,
     activation: ActivationRecord,
     publication: Option<PublicationStatus>,
@@ -410,6 +432,7 @@ impl WholeRuntimeCustody {
             operations: BTreeMap::new(),
             input_batches: BTreeMap::new(),
             scheduler: None,
+            terminal: None,
             prepared: Some(prepared),
             activation,
             publication,
@@ -428,6 +451,11 @@ impl WholeRuntimeCustody {
     /// Returns the exact original complete world generation retained for supervision.
     pub fn activation(&self) -> &ActivationRecord {
         &self.activation
+    }
+
+    /// Borrows retained original terminal facts without restoring live authority.
+    pub fn terminal_checkpoint(&self) -> Option<&crate::node_contract::SavedWorldTerminal> {
+        self.terminal.as_ref().map(|terminal| &terminal.saved)
     }
 
     /// Reports actual durable publication knowledge, or no attempted publication.
@@ -698,6 +726,7 @@ impl WholeRuntimeCustody {
             operations: BTreeMap::new(),
             input_batches: BTreeMap::new(),
             scheduler: None,
+            terminal: None,
             prepared: None,
             activation,
             publication: None,
@@ -743,6 +772,7 @@ impl NodeRuntime {
             operations: std::mem::take(&mut self.operations),
             input_batches: std::mem::take(&mut self.input_batches),
             scheduler: self.scheduler.take(),
+            terminal: self.terminal.take(),
             prepared: None,
             activation: self.barrier.record().clone(),
             publication: self.barrier.publication_status_or_not_attempted(),
@@ -789,6 +819,9 @@ pub use restore::PreparedRuntimeRestore;
 
 #[path = "runtime_continuation/snapshot.rs"]
 mod snapshot;
+
+#[path = "runtime_continuation/terminal.rs"]
+mod terminal;
 
 #[path = "runtime_continuation/host_capture.rs"]
 mod host_capture;

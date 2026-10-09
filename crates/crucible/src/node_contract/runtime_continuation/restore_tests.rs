@@ -34,6 +34,7 @@ fn saved_world() -> RuntimeSnapshot {
         crucible_node_contract::Phase::BoundaryControl,
     );
     RuntimeSnapshot {
+        terminal: None,
         schema_version: 1,
         source_activation: SavedRuntimeActivation {
             generation: 1.into(),

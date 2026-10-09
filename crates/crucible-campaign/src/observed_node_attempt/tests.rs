@@ -824,3 +824,138 @@ fn native_callback_unwind_retains_original_permit_for_quarantine_without_redispa
         assert_eq!(worker.backend().starts, 1);
     }
 }
+
+#[test]
+fn conditional_request_requires_distinct_mode_and_retains_complete_source_children() {
+    let fixture = Fixture::memory();
+    let capabilities = ExecutorNodeCapabilities::new(
+        fixture.request.capabilities().roster().clone(),
+        BTreeSet::from([NodeMaterializationStrategy::ConditionalTranscriptReplay]),
+    )
+    .unwrap();
+    let sources = BTreeMap::from([
+        (
+            "producer".to_owned(),
+            put_leaf(
+                &*fixture.blobs,
+                ObjectKind::Trace,
+                b"original signed producer",
+            ),
+        ),
+        (
+            "consumer".to_owned(),
+            put_leaf(
+                &*fixture.blobs,
+                ObjectKind::Trace,
+                b"original signed consumer",
+            ),
+        ),
+    ]);
+    let scope = ConditionalReplayScope::new(
+        hash(b"original world"),
+        hash(b"full raw context"),
+        sources.clone(),
+    )
+    .unwrap();
+    assert!(
+        ObservedAttemptRequest::new(execution(2), capabilities.clone(), fixture.request.inputs())
+            .is_err()
+    );
+    let conditional = ObservedAttemptRequest::conditional_replay(
+        execution(2),
+        capabilities,
+        fixture.request.inputs(),
+        scope,
+    )
+    .unwrap();
+    assert_eq!(&conditional.canonical_bytes()[..4], &2u32.to_be_bytes());
+    assert_eq!(
+        ObservedAttemptRequest::from_canonical_bytes(&conditional.canonical_bytes()).unwrap(),
+        conditional
+    );
+    assert!(!conditional.capabilities().roster().is_repeatable());
+    assert_eq!(conditional.envelope().unwrap().schema_version(), 2);
+    let children = conditional
+        .envelope()
+        .unwrap()
+        .children()
+        .iter()
+        .map(|child| child.id())
+        .collect::<BTreeSet<_>>();
+    assert!(sources.values().all(|source| children.contains(source)));
+
+    let mut mislabelled = conditional.canonical_bytes();
+    mislabelled[..4].copy_from_slice(&1u32.to_be_bytes());
+    assert!(ObservedAttemptRequest::from_canonical_bytes(&mislabelled).is_err());
+    let fresh = fixture.request.clone();
+    assert!(fresh.conditional_scope().is_none());
+    assert_eq!(&fresh.canonical_bytes()[..4], &1u32.to_be_bytes());
+    assert_eq!(fresh.envelope().unwrap().schema_version(), 1);
+    assert_eq!(
+        ObservedAttemptRequest::from_canonical_bytes(&fresh.canonical_bytes()).unwrap(),
+        fresh
+    );
+}
+
+#[test]
+fn conditional_context_and_actor_changes_create_distinct_plan_and_cannot_use_fresh_capabilities() {
+    let fixture = Fixture::memory();
+    let source = put_leaf(&*fixture.blobs, ObjectKind::Trace, b"original source");
+    let scope = ConditionalReplayScope::new(
+        hash(b"world"),
+        hash(b"context"),
+        BTreeMap::from([("source".to_owned(), source)]),
+    )
+    .unwrap();
+    assert!(
+        ObservedAttemptRequest::conditional_replay(
+            execution(2),
+            fixture.request.capabilities().clone(),
+            fixture.request.inputs(),
+            scope.clone(),
+        )
+        .is_err()
+    );
+    let capabilities = ExecutorNodeCapabilities::new(
+        fixture.request.capabilities().roster().clone(),
+        BTreeSet::from([NodeMaterializationStrategy::ConditionalTranscriptReplay]),
+    )
+    .unwrap();
+    let original = ObservedAttemptRequest::conditional_replay(
+        execution(2),
+        capabilities.clone(),
+        fixture.request.inputs(),
+        scope,
+    )
+    .unwrap();
+    for changed in [
+        ConditionalReplayScope::new(
+            hash(b"changed world"),
+            hash(b"context"),
+            BTreeMap::from([("source".to_owned(), source)]),
+        )
+        .unwrap(),
+        ConditionalReplayScope::new(
+            hash(b"world"),
+            hash(b"changed context"),
+            BTreeMap::from([("source".to_owned(), source)]),
+        )
+        .unwrap(),
+        ConditionalReplayScope::new(
+            hash(b"world"),
+            hash(b"context"),
+            BTreeMap::from([("changed-actor".to_owned(), source)]),
+        )
+        .unwrap(),
+    ] {
+        let altered = ObservedAttemptRequest::conditional_replay(
+            execution(2),
+            capabilities.clone(),
+            fixture.request.inputs(),
+            changed,
+        )
+        .unwrap();
+        assert_ne!(altered.plan_digest(), original.plan_digest());
+        assert_ne!(altered.digest(), original.digest());
+    }
+}

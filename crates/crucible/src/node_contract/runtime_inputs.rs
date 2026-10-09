@@ -32,6 +32,11 @@ impl NodeRuntime {
         &mut self,
         batch: RuntimeInputBatch,
     ) -> Result<ValidatedInputAcknowledgement, RuntimePollFailure> {
+        if self.terminal.is_some() {
+            return Err(RuntimePollFailure::Admission(
+                RuntimeError::OutstandingObligations,
+            ));
+        }
         let checked = (|| -> Result<(NodeRoute, OperationToken, Option<InputProvenanceClosure>), RuntimePollFailure> {
             self.validate_activation(batch.activation())
                 .map_err(RuntimePollFailure::Admission)?;

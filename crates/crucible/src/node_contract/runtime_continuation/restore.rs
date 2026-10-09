@@ -81,8 +81,16 @@ impl PreparedRuntimeRestore {
             limits,
             maximum_record_bytes,
         )?;
-        if snapshot.schema_version == 2 {
+        if snapshot.schema_version >= 2
+            && snapshot
+                .inputs
+                .iter()
+                .any(|input| input.provenance.is_some())
+        {
             verifier.verify_input_provenance(&snapshot, scheduling, target)?;
+        }
+        if snapshot.schema_version == 3 {
+            verifier.verify_terminal_continuation(&snapshot, scheduling, target)?;
         }
         let evidence = verifier.verify_runtime_continuation(&snapshot, scheduling, target)?;
         evidence
@@ -298,6 +306,11 @@ impl PreparedRuntimeRestore {
         runtime.input_batches = inputs;
         runtime.operations = operations;
         runtime.owners = owners;
+        runtime.terminal = self
+            .snapshot
+            .terminal
+            .clone()
+            .map(|saved| crate::node_contract::terminal::TerminalState { saved });
 
         for (node_id, native) in &mut runtime.nodes {
             let node_operations: Vec<_> = runtime
@@ -361,12 +374,15 @@ fn validate_snapshot(
     maximum_record_bytes: usize,
 ) -> Result<(), RuntimeError> {
     bounded_record(snapshot, maximum_record_bytes)?;
-    if !matches!(snapshot.schema_version, 1 | 2)
-        || (snapshot.schema_version == 2)
-            != snapshot
-                .inputs
-                .iter()
-                .any(|input| input.provenance.is_some())
+    terminal::validate(snapshot)?;
+    if !matches!(snapshot.schema_version, 1..=3)
+        || (snapshot.schema_version == 3) != snapshot.terminal.is_some()
+        || (snapshot.schema_version != 3
+            && (snapshot.schema_version == 2)
+                != snapshot
+                    .inputs
+                    .iter()
+                    .any(|input| input.provenance.is_some()))
         || snapshot.capture_cut != scheduling.capture_cut
         || snapshot.capture_ordinal != scheduling.capture_ordinal
         || snapshot.source_activation.world_binding_hash != *graph.world_binding_hash()
@@ -519,6 +535,18 @@ fn validate_operation(
         .operation
         .validate()
         .map_err(|_| RuntimeError::InvalidReceipt)?;
+    // Finalization is admitted by the original fenced whole-world barrier,
+    // rather than a scheduling grant. The selected terminal validator above
+    // authenticates its single original request and complete saved custody.
+    let terminal_operation = snapshot.terminal.as_ref().is_some_and(|terminal| {
+        terminal.submitted
+            && terminal.record.operation == operation.operation
+            && terminal.record.node == operation.route.node
+            && matches!(
+                operation.request,
+                OperationRequest::FinalizeAssertions { .. }
+            )
+    });
     if operation.route.owners != source_route(graph, source_owners, &operation.route.node)?
         || !scheduling.used_operations.contains(&operation.operation)
     {
@@ -559,13 +587,15 @@ fn validate_operation(
         {
             return Err(RuntimeError::InvalidReceipt);
         }
-    } else if matches!(operation.result, SavedRuntimeResult::Acknowledged(_)) {
+    } else if matches!(operation.result, SavedRuntimeResult::Acknowledged(_)) && !terminal_operation
+    {
         return Err(RuntimeError::InvalidReceipt);
     }
     if matches!(
         operation.result,
         SavedRuntimeResult::Pending | SavedRuntimeResult::Complete(_)
     ) && operation.scheduling_commit.is_none()
+        && !terminal_operation
         && !scheduling
             .reservations
             .iter()

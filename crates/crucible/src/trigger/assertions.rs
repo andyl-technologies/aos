@@ -1573,6 +1573,27 @@ impl HostAssertionEvaluator {
         outcomes
     }
 
+    /// Reports retained terminal quiescence context without evaluating assertions.
+    pub(crate) fn has_terminal_scheduler_quiescence(&self) -> bool {
+        self.terminal_quiescence.is_some()
+    }
+
+    /// Reads original terminal outcomes without reevaluating the event prefix.
+    pub(crate) fn retained_terminal_outcomes(&self) -> Vec<HostAssertionOutcome> {
+        let mut outcomes = self
+            .states
+            .iter()
+            .filter_map(HostAssertionState::outcome)
+            .chain(
+                self.guest_marker_states
+                    .iter()
+                    .filter_map(GuestMarkerAssertionState::outcome),
+            )
+            .collect::<Vec<_>>();
+        sort_host_assertion_outcomes(&mut outcomes);
+        outcomes
+    }
+
     /// Finalizes all assertions at the supplied terminal event-log prefix.
     pub fn finalize_prefix<O>(
         &mut self,

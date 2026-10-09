@@ -6,26 +6,31 @@
 
 mod activation;
 mod backend;
+mod cache_reuse;
 mod factory;
 mod service;
+mod terminal_publication;
 
 pub use activation::StoredWorldActivationPublisher;
 pub use backend::{NodeObservedAdmission, NodeObservedBackend, NodeObservedError};
+pub use cache_reuse::{NodeCacheReuseReceipt, NodeCacheReuseRequest, node_cache_key};
 pub use factory::{
+    InstalledClockLabelFactory, InstalledClockLabelProfile, InstalledConditionalReplay,
     InstalledGem5ClosedProfile, InstalledGem5Isa, InstalledHostIoProfile,
-    InstalledHostStateFactory, InstalledIoArtifact, InstalledIoArtifactSource,
-    InstalledNodeCatalog, InstalledNodeKind, InstalledNodeSelection, InstalledPreparedWorld,
-    InstalledPublicReferencePackage, InstalledRecordedWorld, InstalledReferenceQualifier,
-    InstalledReferenceRecording, InstalledScriptedSourceProfile, MAX_KVM_CANDIDATE_POLICY_BYTES,
-    NativeCapturePoint, NativeWorldOutcome, NativeWorldRecord, NativeWorldRequest,
-    NativeWorldRetention, NativeWorldService, QualificationRunError,
-    ReferenceQualificationObservation, ReferenceQualificationRun, load_installed_kvm_candidate,
-    prepare_installed_kvm_candidate,
+    InstalledHostSemanticProfile, InstalledHostStateFactory, InstalledIoArtifact,
+    InstalledIoArtifactSource, InstalledNodeCatalog, InstalledNodeKind, InstalledNodeSelection,
+    InstalledPreparedWorld, InstalledPublicReferencePackage, InstalledRecordedWorld,
+    InstalledReferenceQualifier, InstalledReferenceRecording, InstalledReplayRecipe,
+    InstalledScriptedSourceProfile, MAX_KVM_CANDIDATE_POLICY_BYTES, NativeCapturePoint,
+    NativeWorldOutcome, NativeWorldRecord, NativeWorldRequest, NativeWorldRetention,
+    NativeWorldService, QualificationRunError, ReferenceQualificationObservation,
+    ReferenceQualificationRun, load_installed_kvm_candidate, prepare_installed_kvm_candidate,
 };
 pub use service::{
     NodeObservationRetention, NodeObservationService, NodeObservationServiceConfig,
     NodeObservationServiceError,
 };
+pub use terminal_publication::StoredTerminalResultPublisher;
 
 #[cfg(test)]
 mod tests;

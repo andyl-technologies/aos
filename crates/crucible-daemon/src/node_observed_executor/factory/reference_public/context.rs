@@ -55,9 +55,18 @@ pub(super) fn measure(
             ["unit",include_str!("unit.rs")],
             ["witness",include_str!("witness.rs")],
             ["lifecycle",include_str!("lifecycle_witness.rs")],
+            ["supported_lifecycle",include_str!("supported_lifecycle.rs")],
+            ["supported_execution",include_str!("supported_execution.rs")],
+            ["runtime_retries",include_str!("runtime_retries.rs")],
+            ["metadata_inspection",include_str!("metadata_inspection.rs")],
+            ["package_metadata_controls",include_str!("package_metadata_controls.rs")],
             ["source_probe",include_str!("source_probe.rs")],
             ["source_probe_execution",include_str!("source_probe_execution.rs")],
             ["provider_only",include_str!("native/provider_only.rs")],
+            ["prepared_adverse",include_str!("../../../../../crucible/src/node_adapters/cnp/preparation_adverse.rs")],
+            ["prepared_gate",include_str!("prepared_gate_evidence.rs")],
+            ["prepared_execution",include_str!("source_pre_activation_execution.rs")],
+            ["prepared_plan",include_str!("source_pre_activation_probe.rs")],
             ["preparation_probe",include_str!("../../../../../crucible/src/node_adapters/cnp/preparation_probe.rs")]
         ]
     }))?;
@@ -66,9 +75,20 @@ pub(super) fn measure(
         .iter()
         .map(super::source_probe::SourceProbePlan::build)
         .collect::<Result<Vec<_>, _>>()?;
+    let prepared_plans = candidate
+        .installations
+        .iter()
+        .map(super::source_pre_activation_probe::SourcePreActivationProbePlan::build)
+        .collect::<Result<Vec<_>, _>>()?;
     let fixtures = canonical::canonical_json(&serde_json::json!({
         "source_probe_plans":source_probes.iter().map(|plan|serde_json::json!({"reference":plan.reference,"bytes":plan.bytes,"objects":plan.objects.iter().map(|(reference,bytes)|serde_json::json!({"reference":reference,"bytes":bytes})).collect::<Vec<_>>() })).collect::<Vec<_>>(),
+        "prepared_probe_plans":prepared_plans.iter().map(|plan|serde_json::json!({"reference":plan.reference,"bytes":plan.bytes,"objects":plan.fixture_objects().iter().map(|(reference,bytes)|serde_json::json!({"reference":reference,"bytes":bytes})).collect::<Vec<_>>() })).collect::<Vec<_>>(),
         "schema":"crucible.reference.qualification-fixtures.v1",
+        "supported_preparation":super::supported_lifecycle::fixture(),
+        "supported_cycle":super::supported_execution::fixture(),
+        "runtime_cached_recovery":super::runtime_retries::fixture(),
+        "metadata_inspection":super::metadata_inspection::fixture(),
+        "artifact_integrity_plan":candidate.installations[0].package.artifact_measurement_plan().map_err(failure)?.fixture(),
         "window_order":[["producer",0],["consumer",0],["consumer",1],["producer",1],["consumer",2],["producer",2]],
         "node_windows":oracles.iter().map(|oracle|serde_json::json!({
             "owner":oracle.owner,"quantum_ps":oracle.quantum_ps,
