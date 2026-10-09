@@ -21,6 +21,10 @@ pub(crate) mod collection;
 #[path = "../../gc/checkpoint_effects.rs"]
 pub(crate) mod collection_checkpoints;
 
+/// Executes copied destination retirement under checked placement and leases.
+#[path = "../../gc/copied_retirement_effects.rs"]
+pub(crate) mod collection_copied_retirement;
+
 #[path = "effects/capture.rs"]
 mod capture;
 #[path = "effects/commands.rs"]

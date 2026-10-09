@@ -392,6 +392,9 @@ enum Plan {
     SealLeasePublication(Box<artifact_seal::lease_publication::LeaseRequest>),
     SealMutationPublication(Box<artifact_seal::mutation_publication::MutationRequest>),
     SealRawPublication(Box<artifact_seal::raw_publication::RawRequest>),
+    SealCopiedPreparation(Box<artifact_seal::copied_retirement::PreparationRequest>),
+    ObserveCopiedBarrier(Box<artifact_seal::copied_retirement::BarrierRequest>),
+    SealCopiedOwnership(Box<artifact_seal::copied_retirement::OwnershipRequest>),
     SealPendingCreation(Box<artifact_seal::PendingRequest>),
     SealArtifact(Box<artifact_seal::SealRequest>),
     CommitCreation(Box<artifact_seal::CommitRequest>),
@@ -602,6 +605,12 @@ pub(crate) enum EffectFaultProbe<'a> {
     /// Identifies durability of the exact selected collector lease slot.
     #[cfg(feature = "tokio")]
     SealLeasePublication(&'a std::path::Path),
+    /// Identifies durability of a new copied destination retirement plan.
+    CopiedPreparation(&'a std::path::Path),
+    /// Identifies observation of the genuine copied destination barrier.
+    CopiedBarrier(&'a std::path::Path),
+    /// Identifies durability of checked first copied destination ownership.
+    CopiedOwnership(&'a std::path::Path),
     /// Identifies durability of Pending before the first artifact mutation.
     SealPendingCreation(&'a std::path::Path),
     /// Identifies same-descriptor verification and durability of one artifact.
@@ -717,6 +726,11 @@ impl NativeFsEffect {
             Plan::SealLeasePublication(request) => {
                 EffectFaultProbe::SealLeasePublication(request.path())
             }
+            Plan::SealCopiedPreparation(request) => {
+                EffectFaultProbe::CopiedPreparation(request.path())
+            }
+            Plan::ObserveCopiedBarrier(request) => EffectFaultProbe::CopiedBarrier(request.path()),
+            Plan::SealCopiedOwnership(request) => EffectFaultProbe::CopiedOwnership(request.path()),
             Plan::SealPendingCreation(request) => {
                 EffectFaultProbe::SealPendingCreation(request.journal_path())
             }
@@ -943,6 +957,9 @@ impl NativeFsEffect {
                 Plan::SealMutationPublication(_)
                 | Plan::SealRawPublication(_)
                 | Plan::SealLeasePublication(_)
+                | Plan::SealCopiedPreparation(_)
+                | Plan::ObserveCopiedBarrier(_)
+                | Plan::SealCopiedOwnership(_)
                 | Plan::SealPendingCreation(_)
                 | Plan::SealArtifact(_)
                 | Plan::CommitCreation(_) => {

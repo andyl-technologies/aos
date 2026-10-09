@@ -33,6 +33,10 @@ pub(super) mod raw_publication;
 #[path = "artifact_seal/lease_publication.rs"]
 pub(super) mod lease_publication;
 
+/// Closes checked copied destination preparation, barrier and ownership effects.
+#[path = "artifact_seal/copied_retirement.rs"]
+pub(super) mod copied_retirement;
+
 #[path = "artifact_seal/pending.rs"]
 pub(super) mod pending;
 
@@ -446,6 +450,9 @@ pub(super) fn owns(plan: &Plan) -> bool {
         Plan::SealMutationPublication(_)
         | Plan::SealRawPublication(_)
         | Plan::SealLeasePublication(_)
+        | Plan::SealCopiedPreparation(_)
+        | Plan::ObserveCopiedBarrier(_)
+        | Plan::SealCopiedOwnership(_)
         | Plan::SealPendingCreation(_)
         | Plan::SealArtifact(_)
         | Plan::CommitCreation(_) => true,
@@ -455,6 +462,9 @@ pub(super) fn owns(plan: &Plan) -> bool {
                 Plan::SealMutationPublication(_)
                     | Plan::SealRawPublication(_)
                     | Plan::SealLeasePublication(_)
+                    | Plan::SealCopiedPreparation(_)
+                    | Plan::ObserveCopiedBarrier(_)
+                    | Plan::SealCopiedOwnership(_)
                     | Plan::SealPendingCreation(_)
                     | Plan::SealArtifact(_)
                     | Plan::CommitCreation(_)
@@ -510,6 +520,13 @@ pub(super) fn execute(effect: NativeFsEffect) -> Result<(), NativeEffectFailure>
         Plan::SealMutationPublication(request) => mutation_publication::execute(*request, worker),
         Plan::SealRawPublication(request) => raw_publication::execute(*request, worker),
         Plan::SealLeasePublication(request) => lease_publication::execute(*request, worker),
+        Plan::SealCopiedPreparation(request) => {
+            copied_retirement::execute_preparation(*request, worker)
+        }
+        Plan::ObserveCopiedBarrier(request) => copied_retirement::execute_barrier(*request, worker),
+        Plan::SealCopiedOwnership(request) => {
+            copied_retirement::execute_ownership(*request, worker)
+        }
         Plan::SealPendingCreation(request) => pending::execute(*request, worker),
         Plan::SealArtifact(request) => seal(*request, worker),
         Plan::CommitCreation(request) => commit(*request, worker),

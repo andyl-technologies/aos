@@ -21,6 +21,14 @@ pub(crate) mod native_collection;
 #[path = "gc/selected_checkpoint.rs"]
 pub(crate) mod native_collection_checkpoints;
 
+/// Verifies current destination data placement for copied pack retirement.
+#[path = "gc/copied_placement.rs"]
+pub(crate) mod native_copied_placement;
+
+/// Selects copied retirement only from checked destination barriers and leases.
+#[path = "gc/selected_copied_retirement.rs"]
+pub(crate) mod native_copied_retirement;
+
 // This test-only descendant constructs typed deadline checks for effect mechanics
 // without exposing a production callback or authority factory.
 #[cfg(all(feature = "std", test))]

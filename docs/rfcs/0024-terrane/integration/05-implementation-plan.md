@@ -2521,7 +2521,15 @@ are present once and nonignored. The shared gate selectors are corrected to
 the actual module paths; no witness or requirement is removed. The original
 failure is preserved, and runtime and owning gates remain unrun. This
 qualification is separate from the worker's two scoped Core passes.
-No task checkbox or milestone status advances.
+Candidate `058f383e7b` composes only those gate selectors and progress updates;
+all Cargo inputs remain byte-identical. Corrected discovery reuses the original
+actual inventory and compiler evidence. Its two Core graft, two default
+receiving, two native receiving, two native graft and three retirement cases
+pass. Default compilation also succeeds; a separate observer correction adds
+Cargo's declared `default` feature to its expected metadata without recompiling.
+Native compilation succeeds and records the actual current Core dependency
+and its artifact hashes. The remaining classifier runtime and owning gates
+are still pending. No task checkbox or milestone status advances.
 After the class candidate releases the team's heavy lane, the diagnostic's
 restoration command exits zero but its artifact verifier stops: Cargo reports
 the shared executable as fresh while it still contains the class candidate's
@@ -4984,7 +4992,13 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   future trunk qualification. No task or full-floor result is inferred.
 - [ ] **T-GC-1** Mark-and-sweep collector: roots, mark, grace, two-phase
   sweep, singleton lease, resumability, retention values `gc`, `lease`,
-  `ttl`, `forever`, and ordinary reflog duration/count selection. D-78
+  `ttl`, `forever`, and ordinary reflog duration/count selection.
+  Parent-owned registrations and a nineteen-case auxiliary check now prepare
+  isolated implementation of genuine local copied-destination first ownership.
+  Its production modules and runtime qualification remain pending; recurring
+  permanent recovery and restoration remain additional T1 local obligations.
+  Actual remote provider qualification belongs to T3. No remote conformance
+  or full `gc-two-phase-delete` pass is claimed. D-78
   registers physical creation journals and recoverable deletion intent.
   The isolated pre-ownership restore implementation now passes all ten exact
   cases in its owning Nix check on unchanged source. All 4,837 included files

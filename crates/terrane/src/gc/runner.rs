@@ -18,10 +18,18 @@ pub(crate) mod session;
 /// Expands authenticated metadata contexts without reading chunk plaintext.
 pub(crate) mod walk;
 
+/// Coordinates copied destination barriers and checked first ownership.
+#[path = "copied_retirement.rs"]
+pub mod copied_retirement;
+
 #[cfg(all(test, feature = "tokio", unix))]
 pub(crate) mod fixture;
 #[cfg(all(test, feature = "tokio", unix))]
 mod tests;
+
+#[cfg(all(test, feature = "tokio", unix))]
+#[path = "runner/tests/copied_retirement.rs"]
+mod copied_retirement_tests;
 
 /// Reports refused traversal, fenced ownership or failed native checkpoint effects.
 #[derive(Debug)]
