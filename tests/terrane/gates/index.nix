@@ -17,7 +17,7 @@
     "indexing::evaluation_tests::role_contexts_preserve_shared_nodes_without_false_authority"
     "indexing::evaluation_tests::generated_missing_inline_coverage_is_independent_of_candidate_count"
     "indexing::evaluation_tests::hierarchical_local_keys_do_not_flatten_long_graft_paths"
-    "indexing::evaluation_tests::unsupported_conditional_and_overlay_sources_remain_incomplete"
+    "indexing::evaluation_tests::conditional_sources_remain_incomplete_and_canonical_layers_are_indexed"
     "indexing::evaluation_tests::source_geometry_identities_and_registered_value_types_are_checked"
     "indexing::evaluation_tests::canonical_internal_routes_check_child_summaries_and_boundaries"
     "indexing::evaluation::layer_tests::layer_index_preserves_regular_file_rows_and_exact_graft_occurrences"
