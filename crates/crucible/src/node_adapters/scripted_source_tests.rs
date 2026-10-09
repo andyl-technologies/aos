@@ -115,3 +115,22 @@ fn source_refuses_skipped_requests_and_unrepresentable_response_geometry() {
         .is_err()
     );
 }
+
+#[test]
+fn continuation_refuses_evaluation_of_a_future_group_and_partial_group_cursor() {
+    let mut original = source();
+    original.evaluate();
+    original.park(10).unwrap();
+    let script = original.script_bytes().unwrap();
+    let native = original.capture().unwrap();
+    assert!(ScriptedSource::from_continuation(&script, &native).is_ok());
+
+    let mut premature = native.clone();
+    let length = premature.len();
+    premature[length - 9..length - 1].copy_from_slice(&0u64.to_le_bytes());
+    assert!(ScriptedSource::from_continuation(&script, &premature).is_err());
+
+    let mut partial = native;
+    partial[length - 17..length - 9].copy_from_slice(&1u64.to_le_bytes());
+    assert!(ScriptedSource::from_continuation(&script, &partial).is_err());
+}

@@ -140,6 +140,26 @@ impl ScriptedSource {
         Self::new(kind, requests)
     }
 
+    /// Reconstructs native cursor data against an independently installed script.
+    ///
+    /// This bounded structural constructor authenticates neither saved source
+    /// lineage nor activation. Installed archive qualification must separately
+    /// verify complete original host, coordinator and connection custody before
+    /// the reconstructed model can acquire execution authority.
+    ///
+    /// # Errors
+    /// Refuses unsupported script or continuation editions, changed immutable
+    /// futures, impossible cursor/evaluation states, malformed lengths or clocks
+    /// that skip remaining requests.
+    pub fn from_continuation(
+        installed_script: &[u8],
+        native: &[u8],
+    ) -> Result<Self, OperationFailure> {
+        let mut source = Self::from_script_bytes(installed_script)?;
+        source.restore(native)?;
+        Ok(source)
+    }
+
     /// Encodes the complete original immutable script in its canonical edition.
     ///
     /// # Errors
@@ -278,6 +298,11 @@ impl ScriptedSource {
         if !input.is_empty()
             || cursor > self.requests.len()
             || (evaluated && cursor == self.requests.len())
+            || (evaluated
+                && self
+                    .requests
+                    .get(cursor)
+                    .is_some_and(|request| request.time_ps != time_ps))
             || self
                 .requests
                 .get(cursor)
