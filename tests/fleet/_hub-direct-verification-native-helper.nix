@@ -3,6 +3,7 @@
 # its Wasm distribution, the ordinary Native service or any production command.
 {pkgs}: let
   worker = pkgs.aos-hub-direct-guard-e2e.passthru.workerDist;
+  vendor = builtins.elemAt pkgs.aos-hub.passthru.evidenceSources 1;
   selector = "external_object::stage::tests::observation::actual_verification_hold_observation";
   # The Native test-support dependency requires the ordinary test profile.
   cargoCommand = "test --frozen --offline --no-run -p aos-hub-worker --lib --features do-e2e -j$NIX_BUILD_CORES";
@@ -13,12 +14,8 @@ in
       version = "0.1.0";
       src = worker.src;
       cargoRoot = "crates";
-      cargoDeps = pkgs.fetchCargoVendor {
-        src = worker.src;
-        name = "aos-vendor-0.1.0";
-        sourceRoot = "source/crates";
-        hash = "sha256-WGkOGTHCcEgqZb0Igesu7xXTnhmEifgKt1IS0ARGuCI=";
-      };
+      cargoWorkspaceMembers = import ./_hub-retained-workspace.nix worker.src;
+      cargoDeps = vendor;
       cargoBuildCommands = [cargoCommand];
       cargoEnv = {
         # Host tests also compile the Native service's development dependencies.

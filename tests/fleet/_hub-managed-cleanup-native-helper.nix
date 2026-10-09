@@ -16,12 +16,8 @@ in
       version = "0.1.0";
       src = native.src;
       cargoRoot = "crates";
-      cargoDeps = pkgs.fetchCargoVendor {
-        src = native.src;
-        name = "aos-vendor-0.1.0";
-        sourceRoot = "source/crates";
-        hash = "sha256-WGkOGTHCcEgqZb0Igesu7xXTnhmEifgKt1IS0ARGuCI=";
-      };
+      cargoWorkspaceMembers = import ./_hub-retained-workspace.nix native.src;
+      cargoDeps = builtins.elemAt native.passthru.evidenceSources 1;
       cargoBuildCommands = [cargoCommand];
       cargoEnv = {
         OPENSSL_DIR = "${pkgs.openssl}";
