@@ -1033,12 +1033,15 @@ pub trait LocalFs {
         Ok(None)
     }
 
-    /// Executes a fixed ordinary leaf read when the binding supports it.
+    /// Executes a fixed ordinary read recipe when the binding supports it.
     ///
     /// Callers first validate every parent observation in its original order.
     /// The recipe supplies whole read data or an ordinary layout rejection;
     /// it grants no authority and imposes no protected-record owner, mode or
     /// link-count policy. Callers retain all surrounding validation fences.
+    /// A separate private physical closing recipe checks every original whole
+    /// preimage and named fence while owning genuine exclusion duplicates. It
+    /// returns only an explicit checked observation, never a body or mutation ACK.
     /// The default returns `None` without I/O. A supported failure must never
     /// be retried through the scalar fallback. Fault-intercepting wrappers
     /// retain the default unless forwarding preserves their actual boundaries.

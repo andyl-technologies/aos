@@ -299,11 +299,11 @@ impl Frame {
         Ok(bytes)
     }
 
-    /// Owns the complete refreshed frame for one privately fixed command.
+    /// Packages all original name and whole-value predicates without a command.
     ///
     /// # Errors
     /// Rejects malformed or incomplete captured parent projections.
-    pub(super) fn effect(&self, plan: Plan) -> Result<NativeFsEffect, StoreFailure> {
+    fn physical_inputs(&self) -> Result<(Vec<NamedFence>, Vec<ExactRead>), StoreFailure> {
         // Repeated projection installs can capture the same name many times.
         // Coalesce only identical predicates; distinct policy, descriptor,
         // ancestry or incarnation observations still reach every native check.
@@ -368,6 +368,15 @@ impl Frame {
                 descriptor: None,
             });
         }
+        Ok((names, preimages))
+    }
+
+    /// Owns the complete refreshed frame for one privately fixed command.
+    ///
+    /// # Errors
+    /// Rejects malformed or incomplete captured parent projections.
+    pub(super) fn effect(&self, plan: Plan) -> Result<NativeFsEffect, StoreFailure> {
+        let (names, preimages) = self.physical_inputs()?;
         Ok(NativeFsEffect {
             exclusions: Arc::clone(&self.exclusions),
             names,
@@ -379,6 +388,22 @@ impl Frame {
             #[cfg(all(test, feature = "tokio"))]
             gates: Vec::new(),
         })
+    }
+
+    /// Owns every actual physical recipe for a read-only closing worker.
+    ///
+    /// # Errors
+    /// Rejects malformed or incomplete original parent projections.
+    #[cfg(all(feature = "tokio", unix))]
+    pub(super) fn read_projection(
+        &self,
+    ) -> Result<crate::store::native_effect::NativeReadProjection, StoreFailure> {
+        let (names, preimages) = self.physical_inputs()?;
+        Ok(crate::store::native_effect::NativeReadProjection::new(
+            Arc::clone(&self.exclusions),
+            names,
+            preimages,
+        ))
     }
 
     /// Submits a privately fixed command with owned exclusions and current checks.

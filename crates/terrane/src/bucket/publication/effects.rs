@@ -34,6 +34,11 @@ mod capture;
 #[path = "effects/retained_read.rs"]
 mod retained_read;
 pub(crate) use retained_read::{PayloadReadCapture, RetainedPayloadRead};
+#[cfg(all(feature = "tokio", unix))]
+#[path = "effects/history_inputs.rs"]
+mod history_inputs;
+#[cfg(all(feature = "tokio", unix))]
+pub(crate) use history_inputs::{CheckedHistoryInputs, close_history_inputs};
 #[path = "effects/commands.rs"]
 mod commands;
 #[path = "effects/raw.rs"]

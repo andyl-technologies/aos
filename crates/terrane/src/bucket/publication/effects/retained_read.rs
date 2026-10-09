@@ -164,6 +164,8 @@ impl RetainedPayloadRead {
         {
             match record.into_outcome() {
                 #[cfg(all(feature = "tokio", unix))]
+                crate::store::OrdinaryReadOutcome::ProjectionChecked => return Err(unsupported()),
+                #[cfg(all(feature = "tokio", unix))]
                 crate::store::OrdinaryReadOutcome::Present(bytes, metadata) => {
                     self.matches(Some(&bytes), Some(&metadata))?;
                 }

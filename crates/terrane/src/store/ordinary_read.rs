@@ -1,7 +1,9 @@
-//! Executes an ordinary regular leaf read without granting authority.
+//! Executes ordinary leaf reads and fixed physical read closures without authority.
 //!
 //! Parent validation remains with the caller. This recipe preserves ordinary
 //! whole-body and absence semantics without protected owner or link policies.
+//! A separate private recipe closes genuine retained publication inputs and
+//! reports a physical observation alone; it performs no mutation or durability ACK.
 
 use std::path::Path;
 #[cfg(all(feature = "tokio", unix))]
@@ -9,10 +11,17 @@ use std::path::PathBuf;
 
 /// Carries a fixed ordinary leaf recipe with privately constructed inputs.
 ///
-/// It carries no callback, holder, descriptor or selected-state authority.
+/// Ordinary leaves carry no retained holder. The private projection recipe owns
+/// already acquired exclusions and exact read data, without selected-state authority.
 pub struct NativeOrdinaryRead {
     #[cfg(all(feature = "tokio", unix))]
-    path: PathBuf,
+    recipe: Recipe,
+}
+
+#[cfg(all(feature = "tokio", unix))]
+enum Recipe {
+    Leaf(PathBuf),
+    Projection(super::native_effect::NativeReadProjection),
 }
 
 /// Holds whole ordinary read data or a sealed physical-layout rejection.
@@ -24,6 +33,8 @@ pub struct NativeOrdinaryRecord {
 
 /// Separates caller-classified layout rejection from actual I/O errors.
 pub(crate) enum OrdinaryReadOutcome {
+    #[cfg(all(feature = "tokio", unix))]
+    ProjectionChecked,
     #[cfg(all(feature = "tokio", unix))]
     Absent,
     #[cfg(all(feature = "tokio", unix))]
@@ -37,7 +48,17 @@ impl NativeOrdinaryRead {
     #[cfg(all(feature = "tokio", unix))]
     pub(crate) fn for_leaf(path: &Path) -> Self {
         Self {
-            path: path.to_owned(),
+            recipe: Recipe::Leaf(path.to_owned()),
+        }
+    }
+
+    /// Retains complete actual physical inputs for a read-only closing worker.
+    #[cfg(all(feature = "tokio", unix))]
+    pub(in crate::store) fn for_projection(
+        projection: super::native_effect::NativeReadProjection,
+    ) -> Self {
+        Self {
+            recipe: Recipe::Projection(projection),
         }
     }
 
@@ -55,10 +76,24 @@ impl NativeOrdinaryRead {
     /// NotFound after successful body reading remains an I/O error.
     #[cfg(all(feature = "tokio", unix))]
     pub(super) fn execute(self) -> std::io::Result<NativeOrdinaryRecord> {
+        match self.recipe {
+            Recipe::Leaf(path) => Self::execute_leaf(&path),
+            Recipe::Projection(projection) => {
+                projection.check()?;
+                Ok(NativeOrdinaryRecord {
+                    outcome: OrdinaryReadOutcome::ProjectionChecked,
+                })
+            }
+        }
+    }
+
+    /// Preserves the ordinary leaf's ordered metadata and whole-body checks.
+    #[cfg(all(feature = "tokio", unix))]
+    fn execute_leaf(path: &Path) -> std::io::Result<NativeOrdinaryRecord> {
         use std::io::Read;
         use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 
-        let before = match std::fs::symlink_metadata(&self.path) {
+        let before = match std::fs::symlink_metadata(path) {
             Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => metadata,
             Ok(_) => {
                 return Ok(NativeOrdinaryRecord {
@@ -77,7 +112,7 @@ impl NativeOrdinaryRead {
             let mut file = std::fs::OpenOptions::new()
                 .read(true)
                 .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-                .open(&self.path)?;
+                .open(path)?;
             if !file.metadata()?.is_file() {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
@@ -98,7 +133,7 @@ impl NativeOrdinaryRead {
             Err(error) => return Err(error),
         };
 
-        let after = std::fs::symlink_metadata(&self.path)?;
+        let after = std::fs::symlink_metadata(path)?;
         if !after.is_file()
             || after.file_type().is_symlink()
             || (before.dev(), before.ino()) != (after.dev(), after.ino())

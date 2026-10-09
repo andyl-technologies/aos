@@ -19,6 +19,40 @@ impl<'operation, 'held> ImmutableEffectContext<'operation, 'held> {
         &self.effect
     }
 
+    /// Extends genuine control observations through the same acquired exclusion.
+    ///
+    /// The owning history verifier records all late Original and issuer pins
+    /// before this call. This method preserves every earlier physical recipe;
+    /// it does not promote pending views or supply semantic history completion.
+    ///
+    /// # Errors
+    /// Refuses another control owner, a paired source context, missing earlier
+    /// records, changed physical preimages, stale requests or unavailable reads.
+    pub(super) async fn extend_history_controls<F: LocalFs + BucketBinding>(
+        &mut self,
+        early: &mut EarlyControlInputs<'_, F>,
+        authority: &OriginalAuthority,
+        consumed: &ConsumedResolver,
+    ) -> Result<crate::guard::RetainedControls, StoreFailure> {
+        self.recheck()?;
+        if !self.sources.is_empty() || self.effect.controls.len() != 1 {
+            return Err(StoreFailure::new(StoreErrorKind::Unsupported));
+        }
+
+        let previous = self.effect.controls.first().ok_or_else(invalid)?.clone();
+        let registration = crate::guard::consumed_registration(authority);
+        let pins = consumed.control_pins()?;
+        if pins.iter().any(|pin| pin.owner != registration) {
+            return Err(StoreFailure::new(StoreErrorKind::Unsupported));
+        }
+
+        let extended = early.exclusion.retain_used(&pins).await?;
+        check_continuity(&previous, &extended)?;
+        self.recheck()?;
+        self.effect.controls = vec![extended.clone()];
+        Ok(extended)
+    }
+
     /// Borrows other held namespace observations retained for native effects.
     pub(crate) fn sources(&self) -> &[&'operation SelectedObservation<'held>] {
         &self.sources

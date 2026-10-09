@@ -287,6 +287,10 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         {
             match record.into_outcome() {
                 #[cfg(all(feature = "tokio", unix))]
+                crate::store::OrdinaryReadOutcome::ProjectionChecked => {
+                    return Err(StoreFailure::new(StoreErrorKind::Unsupported));
+                }
+                #[cfg(all(feature = "tokio", unix))]
                 crate::store::OrdinaryReadOutcome::Absent => {
                     return Ok(RecordRead::observed(path, None, None));
                 }

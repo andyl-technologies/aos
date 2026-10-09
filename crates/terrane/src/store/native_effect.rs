@@ -22,6 +22,12 @@ mod range;
 #[path = "native_effect/directory_retention.rs"]
 mod directory_retention;
 
+#[cfg(all(feature = "tokio", unix))]
+#[path = "native_effect/read_projection.rs"]
+mod read_projection;
+#[cfg(all(feature = "tokio", unix))]
+pub(super) use read_projection::NativeReadProjection;
+
 #[path = "native_effect/artifact_seal.rs"]
 mod artifact_seal;
 
