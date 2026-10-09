@@ -21,18 +21,13 @@ use aos_sandbox_core::{ObjectDigest, OperationId, ProjectId, RecordNamespace, Sa
 use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
 
-use crate::domain_ledger::transaction::JournalRecord;
 use super::proto_json::CheckedCacheStatusV1;
 use super::{
-    CheckedAttachmentResourceV1,
-    CheckedCapabilityResourceV1,
-    CheckedExecutionResourceV1,
-    CheckedFilesystemViewResourceV1,
-    CheckedSandboxResourceV1,
-    CheckedSnapshotResourceV1,
-    InvalidPublicResource,
-    MAXIMUM_PUBLIC_RESOURCE_BYTES,
+    CheckedAttachmentResourceV1, CheckedCapabilityResourceV1, CheckedExecutionResourceV1,
+    CheckedFilesystemViewResourceV1, CheckedSandboxResourceV1, CheckedSnapshotResourceV1,
+    InvalidPublicResource, MAXIMUM_PUBLIC_RESOURCE_BYTES,
 };
+use crate::domain_ledger::transaction::JournalRecord;
 
 const PROJECTION_MAGIC: &[u8; 8] = b"AOSPRJ01";
 const PROJECTION_VERSION: u16 = 1;
