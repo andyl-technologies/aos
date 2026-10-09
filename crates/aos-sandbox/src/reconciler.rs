@@ -69,7 +69,6 @@ mod observe_reservation;
 mod operation_ledger;
 mod operator_repair_failure;
 pub(crate) mod project_admission;
-mod public_operation;
 mod runtime_authority;
 
 use crate::runtime_authority::{
@@ -120,7 +119,7 @@ pub use project_admission::{
 pub(crate) use operation_ledger::effect_key;
 use operation_ledger::{
     MAXIMUM_EFFECTS, MAXIMUM_GATED_EFFECTS, OPERATION_KEY_BYTES, OPERATION_RECORD_V2_BYTES,
-    OperationRecord, OperationState, decode_operation, decode_operation_key, decode_ownership_gate,
+    OperationRecord, decode_operation, decode_operation_key, decode_ownership_gate,
     encode_operation_record, encode_ownership_gate,
 };
 #[cfg(test)]
@@ -129,10 +128,13 @@ use operation_ledger::{
     encode_operation,
 };
 pub use operation_ledger::{OwnershipGatePlanV1, OwnershipGateStatusV1};
-pub(crate) use public_operation::{
+use aos_sandbox_protocol::domain_ledger::public_operation::{OperationState, resource_version};
+pub(crate) use aos_sandbox_protocol::domain_ledger::public_operation::{
     public_operation_method_from_record_code_v1, public_operation_method_record_code_v1,
 };
-pub use public_operation::{PublicOperationAdmissionV1, PublicOperationAuthorizationV1};
+pub use aos_sandbox_protocol::domain_ledger::public_operation::{
+    PublicOperationAdmissionV1, PublicOperationAuthorizationV1,
+};
 
 const MAXIMUM_RECEIPT_BYTES: usize = 64 * 1024;
 
@@ -1280,6 +1282,21 @@ pub enum ReconcilerError {
 }
 
 
+impl From<aos_sandbox_protocol::domain_ledger::public_operation::PublicOperationDataError>
+    for ReconcilerError
+{
+    fn from(error: aos_sandbox_protocol::domain_ledger::public_operation::PublicOperationDataError) -> Self {
+        use aos_sandbox_protocol::domain_ledger::public_operation::PublicOperationDataError;
+
+        match error {
+            PublicOperationDataError::InvalidPlan(reason) => Self::InvalidPlan(reason),
+            PublicOperationDataError::CorruptLedger(reason) => Self::CorruptLedger(reason),
+            PublicOperationDataError::PublicOperationClock => Self::PublicOperationClock,
+            PublicOperationDataError::PublicOperationSequenceExhausted => Self::PublicOperationSequenceExhausted,
+        }
+    }
+}
+
 /// Reports whether exact ownership-gate activation committed or replayed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OwnershipGateActivationOutcome {
@@ -1995,6 +2012,7 @@ where
             )
             .map(PublicOperationAuthorizationV1::decode)
             .transpose()
+            .map_err(ReconcilerError::from)
     }
 
     /// Advances one operation by at most one durable transition or effect.
@@ -3489,6 +3507,7 @@ pub(crate) fn recovered_public_operation_authorization_v1(
         )
         .map(PublicOperationAuthorizationV1::decode)
         .transpose()
+        .map_err(ReconcilerError::from)
 }
 
 pub(crate) fn recovered_public_operation_resource_v1(
@@ -3804,7 +3823,7 @@ fn retained_create_sandbox_admission_revision_v1(
         project_admission: None,
     })?;
     let revision =
-        public_operation::resource_version(operation_id, &admitted_operation, &[&admitted_effect]);
+        resource_version(operation_id, &admitted_operation, &[&admitted_effect]);
 
     Ok(Some((
         ObjectDigest::from_bytes(revision),
@@ -4306,7 +4325,7 @@ fn transition_operation(
         .public_operation
         .map(|public| {
             let wall_seconds = wall_seconds.ok_or(ReconcilerError::PublicOperationClock)?;
-            public.advance(state, wall_seconds)
+            public.advance(state, wall_seconds).map_err(ReconcilerError::from)
         })
         .transpose()?;
 
@@ -8523,7 +8542,7 @@ mod tests {
         let last = authorization_bytes.len() - 1;
         authorization_bytes[last] ^= 1;
         assert!(matches!(
-            PublicOperationAuthorizationV1::decode(&authorization_bytes),
+            PublicOperationAuthorizationV1::decode(&authorization_bytes).map_err(ReconcilerError::from),
             Err(ReconcilerError::CorruptLedger(_))
         ));
     }

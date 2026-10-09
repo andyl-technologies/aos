@@ -31,7 +31,9 @@ use aos_sandbox_core::{ObjectDigest, OperationId};
 use aos_sandbox_ownership_protocol::{CLAIM_BYTES, OwnershipClaimV1};
 
 use super::ReconcilerError;
-use super::public_operation::{DurablePublicOperationV1, PUBLIC_OPERATION_RECORD_BYTES};
+use aos_sandbox_protocol::domain_ledger::public_operation::{
+    DurablePublicOperationV1, OperationState, PUBLIC_OPERATION_RECORD_BYTES,
+};
 use crate::journal::IdempotencyKey;
 use crate::publication::AuthorityPublicationDraftV1;
 
@@ -55,49 +57,12 @@ const OWNERSHIP_GATE_VERSION: u16 = 1;
 const OWNERSHIP_GATE_FIXED_BYTES: usize = 252;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(u8)]
-pub(super) enum OperationState {
-    Accepted = 1,
-    Applying = 2,
-    Succeeded = 3,
-    PermanentlyBlocked = 4,
-    OwnershipPending = 5,
-    CanceledBeforeCommit = 6,
-    FailedBeforeCommit = 7,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct OperationRecord {
     pub(super) state: OperationState,
     pub(super) effect_count: u32,
     pub(super) ownership_gated: bool,
     pub(super) runtime_intent_digest: Option<ObjectDigest>,
     pub(super) public_operation: Option<DurablePublicOperationV1>,
-}
-
-impl OperationState {
-    fn from_byte(value: u8) -> Result<Self, ReconcilerError> {
-        match value {
-            1 => Ok(Self::Accepted),
-            2 => Ok(Self::Applying),
-            3 => Ok(Self::Succeeded),
-            4 => Ok(Self::PermanentlyBlocked),
-            5 => Ok(Self::OwnershipPending),
-            6 => Ok(Self::CanceledBeforeCommit),
-            7 => Ok(Self::FailedBeforeCommit),
-            _ => Err(ReconcilerError::CorruptLedger("unknown operation state")),
-        }
-    }
-
-    pub(super) const fn is_terminal(self) -> bool {
-        matches!(
-            self,
-            Self::Succeeded
-                | Self::PermanentlyBlocked
-                | Self::CanceledBeforeCommit
-                | Self::FailedBeforeCommit
-        )
-    }
 }
 
 /// Carries the bounded non-authorizing inputs durably held before ownership.

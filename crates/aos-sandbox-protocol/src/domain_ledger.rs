@@ -9,6 +9,7 @@
 //! physical custody and role-specific admission stay with their actual owners.
 
 pub mod capacity;
+pub mod public_operation;
 pub mod records;
 pub mod transaction;
 
