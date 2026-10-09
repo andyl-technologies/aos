@@ -18,6 +18,8 @@ mod lifecycle_witness;
 mod native;
 mod package;
 mod qualification;
+mod source_probe;
+mod source_probe_execution;
 mod unit;
 mod witness;
 mod world;

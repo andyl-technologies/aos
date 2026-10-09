@@ -54,10 +54,20 @@ pub(super) fn measure(
             ["world",include_str!("world.rs")],
             ["unit",include_str!("unit.rs")],
             ["witness",include_str!("witness.rs")],
-            ["lifecycle",include_str!("lifecycle_witness.rs")]
+            ["lifecycle",include_str!("lifecycle_witness.rs")],
+            ["source_probe",include_str!("source_probe.rs")],
+            ["source_probe_execution",include_str!("source_probe_execution.rs")],
+            ["provider_only",include_str!("native/provider_only.rs")],
+            ["preparation_probe",include_str!("../../../../../crucible/src/node_adapters/cnp/preparation_probe.rs")]
         ]
     }))?;
+    let source_probes = candidate
+        .installations
+        .iter()
+        .map(super::source_probe::SourceProbePlan::build)
+        .collect::<Result<Vec<_>, _>>()?;
     let fixtures = canonical::canonical_json(&serde_json::json!({
+        "source_probe_plans":source_probes.iter().map(|plan|serde_json::json!({"reference":plan.reference,"bytes":plan.bytes,"objects":plan.objects.iter().map(|(reference,bytes)|serde_json::json!({"reference":reference,"bytes":bytes})).collect::<Vec<_>>() })).collect::<Vec<_>>(),
         "schema":"crucible.reference.qualification-fixtures.v1",
         "window_order":[["producer",0],["consumer",0],["consumer",1],["producer",1],["consumer",2],["producer",2]],
         "node_windows":oracles.iter().map(|oracle|serde_json::json!({

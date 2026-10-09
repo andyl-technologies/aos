@@ -53,6 +53,7 @@ pub(super) struct PublicLaunchRequest {
 pub(super) struct ObservedPublicPreparation {
     pub(super) prepared: CnpReferencePreparation,
     pub(super) observations: ObservationHandle,
+    pub(super) probe: serde_json::Value,
 }
 
 /// Keeps the one original connection's uncertainty in its native reservation.
@@ -104,6 +105,7 @@ pub(super) fn launch(
             "original observation slot already occupied",
         ));
     }
+    let probe_plan = super::source_probe::SourceProbePlan::build(installed)?;
     let provider = installed
         .package
         .executable("provider")
@@ -300,11 +302,15 @@ pub(super) fn launch(
     let observations = controller.observe(request.observation_limits)?;
     *request.observation_sink.borrow_mut() = Some(observations.clone());
     guard.attach(controller, handshake)?;
+    let (probe, original_snapshot) =
+        super::source_probe_execution::collect(installed, &mut guard, &probe_plan, &observations)?;
+    let probe = serde_json::json!({"premises":probe,"original_snapshot_bytes":original_snapshot});
     let prepared = CnpReferencePreparation::prepare(guard, installed)
         .map_err(|failure| ProviderError::Io(std::io::Error::other(failure.error.reason)))?;
     Ok(ObservedPublicPreparation {
         prepared,
         observations,
+        probe,
     })
 }
 

@@ -136,6 +136,7 @@ struct Actor {
     candidate: Option<PrivateCandidate>,
     observers: Vec<Rc<RefCell<Option<ObservationHandle>>>>,
     windows: Vec<Vec<ReferenceWindowObservation>>,
+    probes: Vec<serde_json::Value>,
     phase: &'static str,
     planned: Vec<Vec<ReferenceWindowCase>>,
     oracles: Vec<ReferenceOracleContract>,
@@ -164,6 +165,7 @@ fn run_actor(directory: PathBuf) -> Result<CandidateHarnessResult, ProviderError
         candidate: None,
         observers: (0..2).map(|_| Rc::new(RefCell::new(None))).collect(),
         windows: (0..2).map(|_| Vec::with_capacity(3)).collect(),
+        probes: Vec::with_capacity(2),
         phase: "source-enrollment",
         planned: Vec::with_capacity(2),
         oracles: Vec::with_capacity(2),
@@ -367,7 +369,7 @@ impl Actor {
         }));
         serde_json::json!({"schema":"crucible.reference.candidate-failure.v1","phase":self.phase,
             "error":error,"candidate":candidate,"original_observations":observations,
-            "original_completed_windows":self.windows,"qualification_accepted":false})
+            "original_completed_windows":self.windows,"source_probes":self.probes,"qualification_accepted":false})
     }
 
     fn persist(&self, bytes: &[u8], name: &str) -> Result<ContentId, ProviderError> {
@@ -467,7 +469,9 @@ impl Actor {
             let ObservedPublicPreparation {
                 prepared,
                 observations: observer,
+                probe,
             } = original;
+            self.probes.push(probe);
             observations.push(observer);
             nodes.push(Box::new(
                 prepared
@@ -554,7 +558,7 @@ impl Actor {
         Ok(
             serde_json::json!({"schema":"crucible.reference.candidate-original.v1","implementation":package.identity(),
                 "activation":crucible::node_contract::SavedRuntimeActivation::from(activation.record()),
-                "prepared_nodes":original.nodes(),"prepared_owners":original.prepared_owners(),"coordinator":coordinator,"windows":witnesses.iter().map(|witness|serde_json::json!({
+                "source_probes":self.probes,"prepared_nodes":original.nodes(),"prepared_owners":original.prepared_owners(),"coordinator":coordinator,"windows":witnesses.iter().map(|witness|serde_json::json!({
                     "reference":witness.reference,"bytes":witness.bytes})).collect::<Vec<_>>()
             }),
         )
@@ -705,4 +709,61 @@ pub(super) fn oracle_contract(
 }
 fn failure(error: impl std::fmt::Display) -> ProviderError {
     ProviderError::Io(std::io::Error::other(error.to_string()))
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "Actual native fixture failure must fail the test"
+)]
+mod source_probe_native_test {
+    use super::*;
+    #[test]
+    #[ignore = "requires compiled installed source-built reference implementation package"]
+    fn actual_guarded_pre_realization_refusals_preserve_original_native_world() {
+        let nonce = super::super::candidate::entropy().unwrap();
+        let short = nonce
+            .as_slice()
+            .iter()
+            .take(8)
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let path = PathBuf::from(format!("/tmp/p-probes-{short}"));
+        let receiver = super::start(path).unwrap();
+        let original = receiver.recv().unwrap().unwrap();
+        assert!(
+            original.succeeded(),
+            "{}",
+            String::from_utf8_lossy(original.original_bytes())
+        );
+        let value = canonical::parse_json(original.original_bytes(), 16 * 1024 * 1024).unwrap();
+        let probes = value["source_probes"].as_array().unwrap();
+        assert_eq!(probes.len(), 2);
+        for probe in probes {
+            assert_eq!(
+                probe["premises"]["provider_before"],
+                probe["premises"]["provider_after"]
+            );
+            assert_eq!(
+                probe["premises"]["controls"]["cases"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                3
+            );
+            let bytes: Vec<u8> =
+                serde_json::from_value(probe["original_snapshot_bytes"].clone()).unwrap();
+            let snapshot = canonical::parse_json(&bytes, 1024 * 1024).unwrap();
+            assert_eq!(snapshot["recording_complete"], true);
+            assert_eq!(snapshot["observed_unknown"], false);
+            assert_eq!(
+                snapshot["evidence"]["requests"].as_array().unwrap().len(),
+                3
+            );
+        }
+        eprintln!(
+            "source-built provider-only cohort: six original rejected controls, two unchanged native premises, full common world/windows/oracle/reap; original {}",
+            original.original_result().encode()
+        );
+    }
 }

@@ -342,3 +342,6 @@ fn read_kernel(path: &Path, maximum: usize) -> Result<String, ProviderError> {
 fn package_error(error: super::super::NodeObservedError) -> ProviderError {
     ProviderError::Io(std::io::Error::other(error.to_string()))
 }
+
+mod provider_only;
+pub(super) use provider_only::ProviderOnlyEnrollment;

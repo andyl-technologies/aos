@@ -31,6 +31,27 @@ pub trait CnpReferenceQualification {
         profile: &ReferenceProfile,
     ) -> Result<(), OperationFailure>;
 
+    /// Authenticates the exact planned controls and actual provider-only scope.
+    ///
+    /// A cached absence of companion metadata is insufficient. Installed policy
+    /// must independently establish the actual native premise and authorize the
+    /// complete immutable probe population before any control is dispatched.
+    /// Ordinary preparation does not invoke this optional qualification seam.
+    ///
+    /// # Errors
+    /// Refuses by default. Installed policy rejects unplanned bodies/identities,
+    /// absent native premises, changed source or unsupported qualification scope.
+    fn authenticate_pre_realization_probes(
+        &self,
+        _: &CnpLaunchGuard,
+        _: &[super::CnpPreRealizationProbeRequest],
+    ) -> Result<(), OperationFailure> {
+        Err(OperationFailure {
+            effects: EffectKnowledge::None,
+            reason: "source-qualified preparation probes are not installed".into(),
+        })
+    }
+
     /// Authenticates the genuinely realized companion beneath its original closed gate.
     ///
     /// # Errors
