@@ -130,11 +130,17 @@ Clippy on two large enum variants. The reviewed enum, PACK-16 attribution,
 native fixture, producer-history and GC handoff corrections are composed on
 `f0d494fb01`. Its public SDK fixture's disallowed randomized `HashMap` is
 corrected with full-identity ordered storage. The generic closing-pause fixture
-now uses its actual content observer. Strict native Clippy on `8b2ca826a8`
-then identifies an unused test accessor; its removal awaits fresh qualification.
-The registry Nix gate passes all 292 mappings and 69 current plan citations.
-No compiled inventory or runtime tests ran. Unchanged-budget runtime tests
-and the complete current trunk floor remain required before task acceptance.
+now uses its actual content observer. After removing the unused test accessor,
+frozen candidate `05b1e3916e` passes strict native all-target Clippy with
+warnings denied. Its original test compilation and fresh executable-bound
+inventory pass; the selected twenty-nine native cases are running under the
+unchanged deadlines. Runtime results remain incomplete. Its registry Nix gate
+passes all 292 mappings and 69 current plan citations.
+Six isolated workers now complete chunking/codecs, pure algebra, pure
+properties, native provenance disclosure, domains and native cold forks with
+disjoint file ownership. Their changes leave the qualification candidate frozen.
+Unchanged-budget runtime tests and the complete current trunk floor remain
+required before task acceptance.
 The frozen `9d122397a6` native recovery run is terminal: all thirty-one
 registered cases ran, with fourteen passes, eight failures and nine timeouts
 (2,770.386 seconds; run `cf52bbd2-6224-4a3c-bf53-54dba13b7583`, raw log
