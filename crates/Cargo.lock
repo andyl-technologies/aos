@@ -158,6 +158,7 @@ dependencies = [
  "aos-ability-model",
  "aos-ability-plan",
  "aos-ability-runtime",
+ "aos-assessment-providers",
  "aos-cache",
  "aos-contract",
  "aos-core",
@@ -279,7 +280,22 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "aos-contract",
+ "humantime",
+ "packageurl",
  "semver",
+ "serde",
+ "serde_json",
+ "url",
+]
+
+[[package]]
+name = "aos-assessment-providers"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-assessment",
+ "aos-contract",
+ "humantime",
  "serde",
  "serde_json",
  "url",
@@ -4920,6 +4936,16 @@ dependencies = [
  "primeorder",
  "rand_core 0.6.4",
  "sha2 0.10.9",
+]
+
+[[package]]
+name = "packageurl"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "35da99768af1ae8830ccf30d295db0e09c24bcfda5a67515191dd4b773f6d82a"
+dependencies = [
+ "percent-encoding",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

@@ -67,6 +67,7 @@ aos-doc-model = { workspace = true }
 aos-package = { workspace = true }
 aos-registry-surface = { workspace = true }
 aos-maintain = { workspace = true }
+aos-assessment-providers = { workspace = true }
 aos-release = { workspace = true }
 aos-image-finalizer = { workspace = true }
 aos-profile = { workspace = true }
