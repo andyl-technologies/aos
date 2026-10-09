@@ -28,10 +28,10 @@ use crucible_node_contract::{
 pub use error::{AdmissionCode, AdmissionError, AdmissionStage, AdmissionSubject, EffectCertainty};
 pub use evidence::{AdmissionEvidence, AdmissionLimits, EvidenceError, QualificationClaim};
 pub use extensions::{
-    AdmittedExtensionApplication, AdmittedExtensionSet, ExtensionApplication,
-    ExtensionApplicationScope, ExtensionImpact, ExtensionInstallationAuthority,
-    ExtensionQualificationAuthority, ExtensionRecordKind, ExtensionRecordPath,
-    ExtensionRegistration, ExtensionRegistryLimits, ExtensionSemanticContract,
+    AdmittedExtensionApplication, AdmittedExtensionDefinition, AdmittedExtensionSet,
+    ExtensionApplication, ExtensionApplicationScope, ExtensionImpact,
+    ExtensionInstallationAuthority, ExtensionQualificationAuthority, ExtensionRecordKind,
+    ExtensionRecordPath, ExtensionRegistration, ExtensionRegistryLimits, ExtensionSemanticContract,
     ExtensionSemanticHandler, InstalledExtensionRegistry,
 };
 pub use policy::{

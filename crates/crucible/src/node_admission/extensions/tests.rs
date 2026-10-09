@@ -4,6 +4,11 @@
 //! support. A production-positive graph needs independently enrolled native
 //! evidence for its exact extension-bearing world and selected profile.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
+#[path = "frozen_admission_tests.rs"]
+mod frozen_admission_tests;
+
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
@@ -304,10 +309,10 @@ struct ModelHandler {
 
 impl ExtensionSemanticHandler for ModelHandler {
     fn identity(&self) -> &ContentRef {
-        if self.changed.get() {
-            if let Some(identity) = &self.identity_after_validation {
-                return identity;
-            }
+        if self.changed.get()
+            && let Some(identity) = &self.identity_after_validation
+        {
+            return identity;
         }
         &self.identity
     }

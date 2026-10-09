@@ -7,7 +7,7 @@ use crucible_node_contract::{
     ContentRef, ExtensionApplicability, ExtensionDependency, ExtensionLocation, ExtensionUse,
     Extensions, HashRef, Id, Validate, canonical,
 };
-use serde::Serialize;
+use serde::{Serialize, Serializer, ser::SerializeSeq};
 
 use crate::node_admission::{
     AdmissionCode, AdmissionError, AdmissionStage, evidence::bounded_core,
@@ -16,8 +16,12 @@ use crate::node_admission::{
 use super::context::{
     ExtensionApplication, ExtensionApplicationScope, ExtensionRecordKind, ExtensionRecordPath,
 };
+use super::frozen::{DefinitionView, SemanticContractView, serialize_semantics};
 use super::registry::{InstalledDefinition, failure, schema_error, trust_error};
-use super::{ExtensionImpact, InstalledExtensionRegistry};
+use super::{
+    AdmittedExtensionDefinition, ExtensionImpact, ExtensionSemanticContract,
+    InstalledExtensionRegistry,
+};
 
 /// Retains one exact application after independent installed qualification.
 #[derive(Clone, Debug, Serialize)]
@@ -25,6 +29,8 @@ pub struct AdmittedExtensionApplication {
     scope: ExtensionApplicationScope,
     selected: ExtensionUse,
     handler_identity: ContentRef,
+    #[serde(serialize_with = "serialize_semantics")]
+    semantic_contract: ExtensionSemanticContract,
 }
 
 impl AdmittedExtensionApplication {
@@ -42,6 +48,11 @@ impl AdmittedExtensionApplication {
     pub fn handler_identity(&self) -> &ContentRef {
         &self.handler_identity
     }
+
+    /// Borrows the actual frozen interpretation qualified for this application.
+    pub fn semantic_contract(&self) -> &ExtensionSemanticContract {
+        &self.semantic_contract
+    }
 }
 
 /// Holds immutable selected semantics without allowing caller-issued admission.
@@ -53,7 +64,7 @@ impl AdmittedExtensionApplication {
 #[derive(Default)]
 pub struct AdmittedExtensionSet {
     applications: Vec<AdmittedExtensionApplication>,
-    definitions: BTreeSet<ContentRef>,
+    definitions: BTreeMap<ContentRef, AdmittedExtensionDefinition>,
     objects: BTreeMap<ContentRef, Rc<[u8]>>,
     application_bytes: usize,
     qualification_checks: usize,
@@ -78,6 +89,11 @@ impl AdmittedExtensionSet {
         self.applications.iter()
     }
 
+    /// Iterates each direct or prerequisite definition with its own frozen semantics.
+    pub fn definitions(&self) -> impl ExactSizeIterator<Item = &AdmittedExtensionDefinition> {
+        self.definitions.values()
+    }
+
     /// Iterates complete selected immutable definition and dependency bodies.
     pub fn objects(&self) -> impl ExactSizeIterator<Item = (&ContentRef, &[u8])> {
         self.objects
@@ -95,18 +111,48 @@ impl AdmittedExtensionSet {
     /// # Errors
     /// Refuses inability to encode already bounded selected records.
     pub fn identity(&self) -> Result<HashRef, crucible_node_contract::ContractError> {
+        if self.is_empty() {
+            // The original empty selection has no interpretation to widen.
+            #[derive(Serialize)]
+            struct EmptyIdentity {
+                applications: [u8; 0],
+                definitions: [u8; 0],
+            }
+            return canonical::json_hash(
+                "cnp.selected-extensions.v1",
+                &EmptyIdentity {
+                    applications: [],
+                    definitions: [],
+                },
+            );
+        }
+
         #[derive(Serialize)]
         struct Identity<'a> {
+            schema_version: u16,
             applications: &'a [AdmittedExtensionApplication],
-            definitions: &'a BTreeSet<ContentRef>,
+            definitions: Definitions<'a>,
         }
         canonical::json_hash(
-            "cnp.selected-extensions.v1",
+            "cnp.selected-extensions.v2",
             &Identity {
+                schema_version: 2,
                 applications: &self.applications,
-                definitions: &self.definitions,
+                definitions: Definitions(&self.definitions),
             },
         )
+    }
+}
+
+struct Definitions<'a>(&'a BTreeMap<ContentRef, AdmittedExtensionDefinition>);
+
+impl Serialize for Definitions<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut sequence = serializer.serialize_seq(Some(self.0.len()))?;
+        for definition in self.0.values() {
+            sequence.serialize_element(definition)?;
+        }
+        sequence.end()
     }
 }
 
@@ -140,37 +186,8 @@ impl InstalledExtensionRegistry {
                 "too many selected applications",
             ));
         }
-        let body_bytes = bounded_core(extensions, self.limits.maximum_application_bytes)?;
-        let scope_bytes = bounded_core(application.scope(), self.limits.maximum_application_bytes)?;
-        let retained_metadata = scope_bytes
-            .checked_add(1024)
-            .and_then(|bytes| bytes.checked_mul(extensions.len()))
-            .and_then(|bytes| bytes.checked_add(body_bytes))
-            .ok_or_else(|| {
-                failure(
-                    AdmissionCode::BoundMismatch,
-                    "bounded application metadata",
-                    "application byte overflow",
-                )
-            })?;
-        let total = admitted
-            .application_bytes
-            .checked_add(retained_metadata)
-            .ok_or_else(|| {
-                failure(
-                    AdmissionCode::BoundMismatch,
-                    "bounded selected parameters",
-                    "application byte overflow",
-                )
-            })?;
-        if total > self.limits.maximum_total_application_bytes {
-            return Err(scoped(
-                application,
-                AdmissionCode::BoundMismatch,
-                "finite selected parameter credit",
-                "selected body inventory exceeds ceiling",
-            ));
-        }
+        bounded_core(extensions, self.limits.maximum_application_bytes)?;
+        bounded_core(application.scope(), self.limits.maximum_application_bytes)?;
 
         // Reserve the whole map before validator callbacks. Failed qualification
         // never inserts a partially selected record or exposes a success seal.
@@ -252,6 +269,61 @@ impl InstalledExtensionRegistry {
             pending.push((installed, selected, dependencies));
         }
 
+        // Count actual retained interpretations before qualification callbacks.
+        #[derive(Serialize)]
+        struct ApplicationView<'a> {
+            scope: &'a ExtensionApplicationScope,
+            selected: &'a ExtensionUse,
+            handler_identity: &'a ContentRef,
+            semantic_contract: SemanticContractView<'a>,
+        }
+        let mut definitions = BTreeSet::new();
+        let mut total = admitted.application_bytes;
+        for (installed, selected, _) in &pending {
+            self.selected_closure(installed, &mut definitions)?;
+            let bytes = bounded_core(
+                &ApplicationView {
+                    scope: application.scope(),
+                    selected,
+                    handler_identity: &installed.handler_identity,
+                    semantic_contract: SemanticContractView::from(&installed.semantics),
+                },
+                self.limits.maximum_application_bytes,
+            )?;
+            total = add_metadata_credit(
+                application,
+                total,
+                bytes,
+                self.limits.maximum_total_application_bytes,
+            )?;
+        }
+        for reference in &definitions {
+            if admitted.definitions.contains_key(reference) {
+                continue;
+            }
+            let installed = self.definitions.get(reference).ok_or_else(|| {
+                failure(
+                    AdmissionCode::IdentityMismatch,
+                    "sealed prerequisite definition",
+                    "installed prerequisite vanished",
+                )
+            })?;
+            let bytes = bounded_core(
+                &DefinitionView {
+                    selection: &installed.selection,
+                    handler_identity: &installed.handler_identity,
+                    semantic_contract: SemanticContractView::from(&installed.semantics),
+                },
+                self.limits.maximum_application_bytes,
+            )?;
+            total = add_metadata_credit(
+                application,
+                total,
+                bytes,
+                self.limits.maximum_total_application_bytes,
+            )?;
+        }
+
         let mut checks = admitted.qualification_checks;
         for (_, _, dependencies) in &pending {
             checks = dependencies
@@ -315,10 +387,24 @@ impl InstalledExtensionRegistry {
                 .map_err(|error| with_subject(application, error))?;
         }
 
-        let mut definitions = BTreeSet::new();
-        for (installed, _, _) in &pending {
-            self.selected_closure(installed, &mut definitions)?;
+        // A later callback can touch a handler from this or a previous map.
+        // Revalidate the bounded complete closure before inserting any custody.
+        for reference in admitted.definitions.keys().chain(
+            definitions
+                .iter()
+                .filter(|reference| !admitted.definitions.contains_key(*reference)),
+        ) {
+            let installed = self.definitions.get(reference).ok_or_else(|| {
+                failure(
+                    AdmissionCode::IdentityMismatch,
+                    "sealed installed dependency closure",
+                    "installed prerequisite vanished",
+                )
+            })?;
+            ensure_handler_unchanged(installed)
+                .map_err(|error| with_subject(application, error))?;
         }
+
         for reference in &definitions {
             let installed = self.definitions.get(reference).ok_or_else(|| {
                 failure(
@@ -337,13 +423,23 @@ impl InstalledExtensionRegistry {
                 })?;
                 admitted.objects.insert(object.clone(), Rc::clone(bytes));
             }
+            admitted
+                .definitions
+                .entry(reference.clone())
+                .or_insert_with(|| {
+                    AdmittedExtensionDefinition::new(
+                        installed.selection.clone(),
+                        installed.handler_identity.clone(),
+                        installed.semantics.clone(),
+                    )
+                });
         }
-        admitted.definitions.extend(definitions);
         for (installed, selected, _) in pending {
             admitted.applications.push(AdmittedExtensionApplication {
                 scope: application.scope().clone(),
                 selected,
                 handler_identity: installed.handler_identity.clone(),
+                semantic_contract: installed.semantics.clone(),
             });
         }
         admitted.application_bytes = total;
@@ -473,6 +569,25 @@ impl InstalledExtensionRegistry {
         }
         Ok(())
     }
+}
+
+fn add_metadata_credit(
+    application: &ExtensionApplication<'_>,
+    total: usize,
+    bytes: usize,
+    maximum: usize,
+) -> Result<usize, AdmissionError> {
+    total
+        .checked_add(bytes)
+        .filter(|total| *total <= maximum)
+        .ok_or_else(|| {
+            scoped(
+                application,
+                AdmissionCode::BoundMismatch,
+                "finite frozen interpretation credit",
+                "selected semantic snapshots exceed remaining metadata ceiling",
+            )
+        })
 }
 
 fn ensure_handler_unchanged(installed: &InstalledDefinition) -> Result<(), AdmissionError> {
