@@ -2392,6 +2392,17 @@ larger or adversarial populations and its remaining qualification stages
 unrun. Independent bucket qualification starts in a separate finite sequence
 with the atomic-write and generation-manifest gates, application compile-only
 check and required formatting pair; it does not retry the failed population.
+The whole atomic-write gate passes ten exact cases, including the targeted
+witnesses and original partial-generation test, then fails the native creation
+case's exact effect trace. The original gate exits one with builder exit 101;
+generation, application compilation and formatting stay unrun in that sequence.
+Independent comparison finds exactly one extra actual root-directory operation
+between transaction rename and selecting commit-slot staging write. Source
+review identifies the real complete staged-payload verification barrier;
+the test's expected trace omits it. The proposed test-only correction requires
+that exact operation and ordering while preserving every equality, nonce,
+association, body, projection and acknowledgment assertion. Original failures
+remain retained; changed-source qualification is still required.
 No task checkbox or milestone status advances.
 After the class candidate releases the team's heavy lane, the diagnostic's
 restoration command exits zero but its artifact verifier stops: Cargo reports
