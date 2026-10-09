@@ -144,9 +144,9 @@ pub(super) fn decode(
         }
         selected if selected.starts_with("-/api/v1/documentation/") => {
             let digest = selected.trim_start_matches("-/api/v1/documentation/");
-            let document = aos_doc_model::PackageDocumentation::from_canonical_json(reply)?;
+            aos_doc_model::runtime::RuntimeDocument::from_json(reply)?;
             ensure!(
-                document.document_sha256()? == digest,
+                format!("sha256:{}", files::digest(reply)) == digest,
                 "canonical document identity differs"
             );
             payload.reply_raw_object_bytes = reply.len().to_string();

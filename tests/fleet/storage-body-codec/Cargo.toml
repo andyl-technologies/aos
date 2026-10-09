@@ -17,6 +17,7 @@ aos-hub = { path = "../../../crates/aos-hub", features = ["test-support"] }
 aos-hub-core = { path = "../../../crates/aos-hub-core" }
 aos-oci-types = { path = "../../../crates/aos-oci-types" }
 anyhow = "1"
+base64 = "0.22"
 hex = "0.4"
 rustix = { version = "1.1.4", features = ["fs", "process"] }
 serde = { version = "1", features = ["derive"] }

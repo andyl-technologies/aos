@@ -627,6 +627,7 @@ dependencies = [
  "aos-hub-core",
  "aos-oci-types",
  "aos-proto-types",
+ "base64 0.22.1",
  "hex",
  "rustix",
  "serde",
