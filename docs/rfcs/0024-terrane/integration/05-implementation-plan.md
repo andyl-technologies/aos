@@ -2528,8 +2528,18 @@ receiving, two native receiving, two native graft and three retirement cases
 pass. Default compilation also succeeds; a separate observer correction adds
 Cargo's declared `default` feature to its expected metadata without recompiling.
 Native compilation succeeds and records the actual current Core dependency
-and its artifact hashes. The remaining classifier runtime and owning gates
-are still pending. No task checkbox or milestone status advances.
+and its artifact hashes. The ten new classifier and 110 existing native cases
+pass with tracing both disabled and enabled: 240 executions over 120 distinct
+names. Together with the eleven receiving, graft and retirement executions,
+the current scoped runtime count is 251. Eight owning checks now pass on the
+same actual Nix source: property resolution, required attributes, domain
+references, manifest identity, derived attributes, Core without std, native
+profile quality and checked mutation publication. Core without std is compile
+only; native profile quality proves three Clippy and three private rustdoc
+profiles. Checked publication executes all six exact acknowledgment cases.
+Written mutation sync and the remaining supporting checks, population cases,
+ultimate owning gates and full trunk floor remain pending. No task checkbox
+or milestone status advances.
 After the class candidate releases the team's heavy lane, the diagnostic's
 restoration command exits zero but its artifact verifier stops: Cargo reports
 the shared executable as fresh while it still contains the class candidate's
