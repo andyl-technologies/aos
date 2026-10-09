@@ -433,6 +433,8 @@ pub(super) fn validate_encoded_publication(
                 && descriptor_count <= grant.maximum_descriptors()
         });
         let grant = matching_grant.ok_or(AuthorityPublicationError::CorruptCurrent)?;
+        // The matched grant preserves the stored hash inputs. Copying its semantic
+        // identity adds no admission or allocation before the digest check.
         let semantics = BrokerDispatchSemanticIdentityV1::new(
             grant.verb(),
             grant.target(),
