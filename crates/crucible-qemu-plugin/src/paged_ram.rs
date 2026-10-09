@@ -13,6 +13,8 @@ mod fork;
 mod kernel;
 mod lifecycle;
 mod performance;
+#[cfg(feature = "kernel-swap-measurement")]
+pub(crate) mod research_resident;
 mod source;
 mod storage;
 mod supervision;

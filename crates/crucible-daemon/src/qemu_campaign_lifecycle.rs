@@ -2375,6 +2375,13 @@ where
             return Err(QemuAttemptProductionVmLifecycleError::ResourceContractMismatch);
         }
 
+        #[cfg(feature = "private-measurement-domain")]
+        if let Some(registry) = context.host_operational_registry() {
+            guard
+                .retain_original_native_registry(registry.clone())
+                .map_err(QemuAttemptProductionVmLifecycleError::ResourceInstallation)?;
+        }
+
         let _controller_resources = registration
             .reserve_native_controller_resources()
             .map_err(QemuAttemptProductionVmLifecycleError::HostRamAdmission)?;

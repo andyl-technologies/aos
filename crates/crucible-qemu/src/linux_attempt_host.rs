@@ -36,6 +36,8 @@ pub use original_actor::{
     OriginalActorServicePolicy, OriginalActorSqliteInstallError, OriginalActorSqliteOwner,
 };
 #[cfg(feature = "private-measurement-domain")]
+pub use original_host::OriginalNativePhysicalRetirement;
+#[cfg(feature = "private-measurement-domain")]
 pub(crate) use original_roster::NativeAccountAttempt;
 #[cfg(feature = "private-measurement-domain")]
 pub use original_roster::{OriginalNativeAccountFactoryBinding, OriginalNativeAccountRoster};

@@ -71,6 +71,36 @@ impl OriginalNativeControlRetirement {
         u64::try_from(layout.pad_to_align().size()).ok()
     }
 
+    pub(super) fn matches_controller(
+        &self,
+        controller: &LinuxQemuNativeResourceController,
+    ) -> bool {
+        self.state
+            .as_ref()
+            .is_some_and(|state| std::ptr::eq(controller.state.as_ptr(), Arc::as_ptr(state)))
+    }
+
+    pub(super) fn release_registry_alias(
+        &self,
+        controller: &mut LinuxQemuNativeResourceController,
+    ) -> Result<(), LinuxQemuNativeResourceError> {
+        let state = self
+            .state
+            .as_ref()
+            .ok_or(LinuxQemuNativeResourceError::Retired)?;
+        release_registry_weak(state, &mut controller.state)?;
+        Ok(())
+    }
+
+    pub(super) fn restore_registry_alias(
+        &self,
+        controller: &mut LinuxQemuNativeResourceController,
+    ) {
+        if let Some(state) = self.state.as_ref() {
+            controller.state = Arc::downgrade(state);
+        }
+    }
+
     /// Frees the same drained control only after its final other alias closes.
     ///
     /// Success certifies this allocation's closure only. The enclosing actor
@@ -146,6 +176,20 @@ fn unwrap_without_weak<T>(mut value: Arc<T>) -> Result<T, Arc<T>> {
         return Err(value);
     }
     Arc::try_unwrap(value)
+}
+
+#[cfg(feature = "private-measurement-domain")]
+fn release_registry_weak<T>(
+    state: &Arc<T>,
+    registry: &mut Weak<T>,
+) -> Result<(), LinuxQemuNativeResourceError> {
+    if !std::ptr::eq(registry.as_ptr(), Arc::as_ptr(state)) {
+        return Err(LinuxQemuNativeResourceError::Retired);
+    }
+    // Assignment physically drops the old Weak here. Keeping it in a local
+    // rollback variable would itself prevent the atomic control gate.
+    *registry = Weak::new();
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -449,5 +493,59 @@ mod original_retirement_tests {
         );
         // These real allocation/counter controls certify the terminal primitive,
         // not installed native state, kernel cleanup or whole-purpose funding.
+    }
+}
+
+#[cfg(all(test, feature = "private-measurement-domain"))]
+// crucible-lint: allow panic-shortcut -- these real Arc alias controls panic only when matching registry release or the atomic last-control gate violates custody; they mint no physical retirement witness.
+#[allow(clippy::unwrap_used)]
+mod registry_control_tail_tests {
+    use super::*;
+
+    #[test]
+    fn removing_the_registry_weak_does_not_discharge_a_different_weak_borrower() {
+        let control = Arc::new(41_u64);
+        let mut registry = Arc::downgrade(&control);
+        let in_flight_controller = registry.clone();
+
+        release_registry_weak(&control, &mut registry).unwrap();
+        assert_eq!(registry.strong_count(), 0);
+        let control = unwrap_without_weak(control).unwrap_err();
+        registry = Arc::downgrade(&control);
+        assert_eq!(*in_flight_controller.upgrade().unwrap(), 41);
+
+        drop(in_flight_controller);
+        release_registry_weak(&control, &mut registry).unwrap();
+        assert_eq!(unwrap_without_weak(control).unwrap(), 41);
+    }
+
+    #[test]
+    fn removing_the_registry_weak_does_not_discharge_an_in_flight_strong_update() {
+        let control = Arc::new(43_u64);
+        let mut registry = Arc::downgrade(&control);
+        let in_flight_update = registry.upgrade().unwrap();
+
+        release_registry_weak(&control, &mut registry).unwrap();
+        assert_eq!(registry.strong_count(), 0);
+        let control = unwrap_without_weak(control).unwrap_err();
+        registry = Arc::downgrade(&control);
+        assert_eq!(*in_flight_update, 43);
+
+        drop(in_flight_update);
+        release_registry_weak(&control, &mut registry).unwrap();
+        assert_eq!(unwrap_without_weak(control).unwrap(), 43);
+    }
+    #[test]
+    fn equal_values_in_a_different_allocation_cannot_release_registry_custody() {
+        let control = Arc::new(47_u64);
+        let different = Arc::new(47_u64);
+        let mut registry = Arc::downgrade(&control);
+
+        assert!(release_registry_weak(&different, &mut registry).is_err());
+
+        assert_eq!(Arc::weak_count(&control), 1);
+        assert!(std::ptr::eq(registry.as_ptr(), Arc::as_ptr(&control)));
+        release_registry_weak(&control, &mut registry).unwrap();
+        assert_eq!(unwrap_without_weak(control).unwrap(), 47);
     }
 }

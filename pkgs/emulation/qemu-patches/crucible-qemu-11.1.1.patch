@@ -1,17 +1,20 @@
-From 0e5751df73fdbf48b1d7f37b4a8c6eed6748a6c5 Mon Sep 17 00:00:00 2001
+From d12224c30eeb7079ca8a89044966e0de492df1b8 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Fri, 9 Oct 2026 03:15:26 +0000
-Subject: [PATCH] Preserve RAM admission refusals and root workspace lifetime
+Date: Fri, 9 Oct 2026 11:59:44 +0000
+Subject: [PATCH] Refuse legacy full RAM load under admitted paging ownership
 
-Retain the complete guarded RAM observation, discard and bounded
-paused query integration with its existing process protocols.
+Carry the complete QEMU integration and exact selectable reset boundary.
 
-Separate inventory preparation and finalization from the root hash
-workspace. Preserve collection refusals before metadata queries or
-observer publication and close the same partial inventory once.
+Reject legacy snapshot and incoming full RAM loaders before their effects
+when the admitted paging owner is present. Preserve the authenticated lazy
+RAM replacement and its bounded device-only FULL/EOF state stream, with
+iterable and command refusal before dispatch. Cover internal RAM loaders
+and retain ordinary load behavior without admitted paging ownership.
 
-Keep capture, restore and writer behavior, per-file licenses and
-unqualified experimental resource and performance boundaries.
+Keep fourteen production-body regression controls in the normal check.
+Preserve per-file licenses and complete corresponding source. This source
+does not qualify deployed cache/restore, original resource payment, kernel
+swap, complete stack bounds or performance parity.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -20980,10 +20983,17 @@ index 5cbfba0a86d24569923c863d6ecda125ce43bceb..0d5b934a41f0cb6d362f0104ee62400a
              address_space_write_rom(rom->as, rom->addr, MEMTXATTRS_UNSPECIFIED,
                                      rom->data, rom->datasize);
 diff --git a/hw/core/machine-qmp-cmds.c b/hw/core/machine-qmp-cmds.c
-index e62cb4ec888e8d356e469fe83160bd240f2741f4..71df5de4048049c9b8257138507560560dd2d1ac 100644
+index e62cb4ec888e8d356e469fe83160bd240f2741f4..e8b9d2f592f5288ed1491cfc080edfbb2e56dc08 100644
 --- a/hw/core/machine-qmp-cmds.c
 +++ b/hw/core/machine-qmp-cmds.c
-@@ -22,6 +22,7 @@
+@@ -16,12 +16,14 @@
+ #include "qapi/qapi-builtin-visit.h"
+ #include "qapi/qapi-commands-accelerator.h"
+ #include "qapi/qapi-commands-machine.h"
++#include "qapi/qapi-commands-misc.h"
+ #include "qobject/qobject.h"
+ #include "qapi/qobject-input-visitor.h"
+ #include "qapi/type-helpers.h"
  #include "qemu/uuid.h"
  #include "qemu/target-info.h"
  #include "qemu/target-info-qapi.h"
@@ -20991,6 +21001,27 @@ index e62cb4ec888e8d356e469fe83160bd240f2741f4..71df5de4048049c9b825713850756056
  #include "qom/qom-qobject.h"
  #include "system/hostmem.h"
  #include "system/hw_accel.h"
+@@ -300,6 +302,20 @@ UuidInfo *qmp_query_uuid(Error **errp)
+     return info;
+ }
+ 
++void qmp_crucible_selectable_reset_v1(
++    uint32_t schema_version, uint64_t correlation, const char *request_hex,
++    uint64_t raw_icount, uint64_t trap_tick_ps, uint32_t vcpu_index,
++    uint64_t reply_address, Error **errp)
++{
++    int status = qemu_crucible_selectable_reset_request(
++        schema_version, correlation, request_hex, raw_icount, trap_tick_ps,
++        vcpu_index, reply_address);
++
++    if (status) {
++        error_setg_errno(errp, -status, "correlated selectable reset refused");
++    }
++}
++
+ void qmp_system_reset(Error **errp)
+ {
+     qemu_system_reset_request(SHUTDOWN_CAUSE_HOST_QMP_SYSTEM_RESET);
 diff --git a/hw/core/or-irq.c b/hw/core/or-irq.c
 index 3dc008ea4f3c911bdb428ef287cef04b8f3990dd..805fd3d22b08e6f85bcf7ecec239d69d7555f9f9 100644
 --- a/hw/core/or-irq.c
@@ -60651,7 +60682,7 @@ index 890497b0d22ede109c03bcc24fbc3aa24b09e59c..36c355bf303715c91112dcceb32fb779
  
  int monitor_puts(Monitor *mon, const char *str);
 diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
-index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..6014d6e0501b9d87c2c6ea4f12192f75c8abb0f2 100644
+index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..eb5137179287bedb284d73967fb1b956972c40b3 100644
 --- a/include/plugins/qemu-plugin.h
 +++ b/include/plugins/qemu-plugin.h
 @@ -198,6 +198,326 @@ typedef void (*qemu_plugin_vcpu_discon_cb_t)(unsigned int vcpu_index,
@@ -60981,7 +61012,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..6014d6e0501b9d87c2c6ea4f12192f75
  /**
   * qemu_plugin_uninstall() - Uninstall a plugin
   * @id: this plugin's opaque ID
-@@ -827,470 +1147,1955 @@ QEMU_PLUGIN_API
+@@ -827,470 +1147,1999 @@ QEMU_PLUGIN_API
  void qemu_plugin_update_ns(const void *handle, int64_t time);
  
  /**
@@ -61602,6 +61633,50 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..6014d6e0501b9d87c2c6ea4f12192f75
 +    void *userdata);
 +
 +#define QEMU_PLUGIN_CRUCIBLE_SELECTABLE_REPLY_STATUS_VERSION 1
++
++/* GPL-side callback data, never a socket or shared-memory representation. */
++#define QEMU_PLUGIN_CRUCIBLE_SELECTABLE_RESET_PREPARE 1u
++#define QEMU_PLUGIN_CRUCIBLE_SELECTABLE_RESET_CHECK 2u
++#define QEMU_PLUGIN_CRUCIBLE_SELECTABLE_RESET_COMMIT 3u
++#define QEMU_PLUGIN_CRUCIBLE_SELECTABLE_RESET_MAX_REQUEST 4608u
++
++struct qemu_plugin_crucible_selectable_reset_request {
++    uint32_t schema_version;
++    uint32_t vcpu_index;
++    uint64_t correlation;
++    uint64_t request_sequence;
++    uint64_t raw_icount;
++    uint64_t trap_tick_ps;
++    uint64_t reply_address;
++    const uint8_t *request;
++    size_t request_length;
++};
++
++typedef int (*qemu_plugin_crucible_selectable_reset_cb_t)(
++    uint32_t action,
++    const struct qemu_plugin_crucible_selectable_reset_request *request,
++    void *userdata);
++
++/**
++ * qemu_plugin_crucible_register_selectable_reset() - register exact settlement
++ * @plugin_id: actual loaded owner
++ * @cb: validates and retains a pending catalog token, then settles that token
++ * @userdata: process-local callback owner
++ *
++ * PREPARE validates complete canonical request bytes and all original
++ * coordinates. CHECK revalidates the same catalog incarnation before lifecycle
++ * restore. COMMIT is called only at the correlated terminal reset boundary.
++ * A callback returns zero or a negative errno. It must contain Rust panics and
++ * retain an uncertain token until actual VM retirement. Native pointers remain
++ * entirely within the GPL-side process.
++ *
++ * Returns: zero for the same installed owner, or a negative refusal.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_register_selectable_reset(
++    qemu_plugin_id_t plugin_id,
++    qemu_plugin_crucible_selectable_reset_cb_t cb,
++    void *userdata);
 +
 +struct qemu_plugin_crucible_selectable_reply_status {
 +    uint32_t schema_version;
@@ -62303,38 +62378,34 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..6014d6e0501b9d87c2c6ea4f12192f75
 +QEMU_PLUGIN_API
 +bool qemu_plugin_crucible_read_memory_paddr(uint64_t addr,
 +                                            GByteArray *data, size_t len);
- 
- /**
-- * qemu_plugin_start_code() - returns start of text segment
++
++/**
 + * qemu_plugin_crucible_write_memory_vaddr() - write guest virtual memory
 + * @addr: virtual address at which to begin the write
 + * @data: bytes to write
 + * @len: number of bytes to write
-  *
-- * Returns the nominal start address of the main text segment in
-- * user-mode. Currently returns 0 for system emulation.
++ *
 + * This Crucible-only helper writes through the current vCPU's debug memory
 + * access path. It is intended for synchronous white-box doorbell replies from
 + * an instruction callback and must not be used as an asynchronous input path.
 + *
 + * Returns true on success and false when @len is zero or the complete write
 + * cannot be performed.
-  */
- QEMU_PLUGIN_API
--uint64_t qemu_plugin_start_code(void);
++ */
++QEMU_PLUGIN_API
 +bool qemu_plugin_crucible_write_memory_vaddr(uint64_t addr,
 +                                             const uint8_t *data,
 +                                             size_t len);
  
  /**
-- * qemu_plugin_end_code() - returns end of text segment
+- * qemu_plugin_start_code() - returns start of text segment
 + * qemu_plugin_crucible_write_memory_vaddr_for_vcpu() - write one vCPU's memory
 + * @vcpu_index: exact vCPU whose resume callback authorizes the write
 + * @addr: virtual address at which to begin the write
 + * @data: bytes to write
 + * @len: number of bytes to write
   *
-- * Returns the nominal end address of the main text segment in
+- * Returns the nominal start address of the main text segment in
 - * user-mode. Currently returns 0 for system emulation.
 + * This Crucible-only helper accepts writes only from the serialized exact
 + * resume callback for @vcpu_index, before that vCPU resumes guest execution.
@@ -62345,15 +62416,15 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..6014d6e0501b9d87c2c6ea4f12192f75
 + * buffer or vCPU, or when the complete write cannot be performed.
   */
  QEMU_PLUGIN_API
--uint64_t qemu_plugin_end_code(void);
+-uint64_t qemu_plugin_start_code(void);
 +bool qemu_plugin_crucible_write_memory_vaddr_for_vcpu(
 +    unsigned int vcpu_index, uint64_t addr, const uint8_t *data, size_t len);
  
  /**
-- * qemu_plugin_entry_code() - returns start address for module
+- * qemu_plugin_end_code() - returns end of text segment
 + * qemu_plugin_write_memory_vaddr() - write to memory using a virtual address
   *
-- * Returns the nominal entry address of the main text segment in
+- * Returns the nominal end address of the main text segment in
 - * user-mode. Currently returns 0 for system emulation.
 + * @addr: A virtual address to write to
 + * @data: A byte array containing the data to write
@@ -62370,15 +62441,16 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..6014d6e0501b9d87c2c6ea4f12192f75
 + * Returns true on success and false on failure.
   */
  QEMU_PLUGIN_API
--uint64_t qemu_plugin_entry_code(void);
+-uint64_t qemu_plugin_end_code(void);
 +bool qemu_plugin_write_memory_vaddr(uint64_t addr,
 +                                   GByteArray *data);
  
--/** struct qemu_plugin_register - Opaque handle for register access */
--struct qemu_plugin_register;
-+/**
+ /**
+- * qemu_plugin_entry_code() - returns start address for module
 + * enum qemu_plugin_hwaddr_operation_result - result of a memory operation
-+ *
+  *
+- * Returns the nominal entry address of the main text segment in
+- * user-mode. Currently returns 0 for system emulation.
 + * @QEMU_PLUGIN_HWADDR_OPERATION_OK: hwaddr operation succeeded
 + * @QEMU_PLUGIN_HWADDR_OPERATION_ERROR: unexpected error occurred
 + * @QEMU_PLUGIN_HWADDR_OPERATION_DEVICE_ERROR: error in memory device
@@ -62394,17 +62466,10 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..6014d6e0501b9d87c2c6ea4f12192f75
 +    QEMU_PLUGIN_HWADDR_OPERATION_INVALID_ADDRESS,
 +    QEMU_PLUGIN_HWADDR_OPERATION_INVALID_ADDRESS_SPACE,
 +};
- 
- /**
-- * typedef qemu_plugin_reg_descriptor - register descriptions
++
++/**
 + * qemu_plugin_read_memory_hwaddr() - read from memory using a hardware address
-  *
-- * @handle: opaque handle for retrieving value with qemu_plugin_read_register or
-- *          writing value with qemu_plugin_write_register
-- * @name: register name
-- * @feature: optional feature descriptor, can be NULL
-- * @is_readonly: true if the register cannot be written via
-- *               qemu_plugin_write_register
++ *
 + * @addr: The physical address to read from
 + * @data: A byte array to store data into
 + * @len: The number of bytes to read, starting from @addr
@@ -62424,12 +62489,13 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..6014d6e0501b9d87c2c6ea4f12192f75
 + * Returns a qemu_plugin_hwaddr_operation_result indicating the result of the
 + * operation.
   */
--typedef struct {
--    struct qemu_plugin_register *handle;
-+QEMU_PLUGIN_API
+ QEMU_PLUGIN_API
+-uint64_t qemu_plugin_entry_code(void);
 +enum qemu_plugin_hwaddr_operation_result
 +qemu_plugin_read_memory_hwaddr(uint64_t addr, GByteArray *data, size_t len);
-+
+ 
+-/** struct qemu_plugin_register - Opaque handle for register access */
+-struct qemu_plugin_register;
 +/**
 + * qemu_plugin_write_memory_hwaddr() - write to memory using a hardware address
 + *
@@ -62463,10 +62529,17 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..6014d6e0501b9d87c2c6ea4f12192f75
 +QEMU_PLUGIN_API
 +enum qemu_plugin_hwaddr_operation_result
 +qemu_plugin_write_memory_hwaddr(uint64_t addr, GByteArray *data);
-+
-+/**
+ 
+ /**
+- * typedef qemu_plugin_reg_descriptor - register descriptions
 + * qemu_plugin_translate_vaddr() - translate virtual address for current vCPU
-+ *
+  *
+- * @handle: opaque handle for retrieving value with qemu_plugin_read_register or
+- *          writing value with qemu_plugin_write_register
+- * @name: register name
+- * @feature: optional feature descriptor, can be NULL
+- * @is_readonly: true if the register cannot be written via
+- *               qemu_plugin_write_register
 + * @vaddr: virtual address to translate
 + * @hwaddr: pointer to store the physical address
 + *
@@ -62474,7 +62547,9 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..6014d6e0501b9d87c2c6ea4f12192f75
 + * valid for softmmu targets.
 + *
 + * Returns true on success and false on failure.
-+ */
+  */
+-typedef struct {
+-    struct qemu_plugin_register *handle;
 +QEMU_PLUGIN_API
 +bool qemu_plugin_translate_vaddr(uint64_t vaddr, uint64_t *hwaddr);
 +
@@ -63015,8 +63090,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..6014d6e0501b9d87c2c6ea4f12192f75
 + * @marker_len: exact nonzero marker length, bounded to 255 bytes
 + * @observed_icount: exact raw icount at the guest observation callback when
 + *                   the marker names a pending policy
-  *
-- * Returns true on success, false on failure.
++ *
 + * Returns QEMU_PLUGIN_CRUCIBLE_READY_MARKER_QUEUED when a matching guest
 + * observation is queued for exact completion,
 + * QEMU_PLUGIN_CRUCIBLE_READY_MARKER_UNMATCHED when no pending policy names it,
@@ -63024,33 +63098,43 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..6014d6e0501b9d87c2c6ea4f12192f75
 + * observations are inert in any callback context. A queued match forces exit
 + * before another chained TB and completes from the following drained
 + * deterministic control boundary.
-  */
- QEMU_PLUGIN_API
--bool qemu_plugin_write_register(struct qemu_plugin_register *handle,
--                                GByteArray *buf);
++ */
++QEMU_PLUGIN_API
 +int qemu_plugin_crucible_fault_ready_marker(
 +    const char *marker, size_t marker_len, uint64_t observed_icount);
- 
- /**
-- * qemu_plugin_set_pc() - set the program counter for the current vCPU
++
++/**
 + * qemu_plugin_crucible_fault_submit() - copy and arm a validated command
 + * @command: plugin-validated fixed command fields
 + * @payload: copied canonical payload bytes
 + * @payload_len: exact payload byte count
   *
-- * @vaddr: the new virtual (guest) address for the program counter
-- *
-- * This function sets the program counter for the current vCPU to @vaddr and
-- * resumes execution at that address. This function does not return.
+- * Returns true on success, false on failure.
 + * Returns zero after arming or queuing a canonical rejection, or a negative
 + * errno when transport resources cannot preserve a result.
   */
  QEMU_PLUGIN_API
--__attribute__((__noreturn__))
--void qemu_plugin_set_pc(uint64_t vaddr);
+-bool qemu_plugin_write_register(struct qemu_plugin_register *handle,
+-                                GByteArray *buf);
 +int qemu_plugin_crucible_fault_submit(
 +    const struct qemu_plugin_crucible_fault_command *command,
 +    const uint8_t *payload, size_t payload_len);
+ 
+ /**
+- * qemu_plugin_set_pc() - set the program counter for the current vCPU
++ * qemu_plugin_crucible_fault_cancel() - cancel one command not yet applied
++ * @command_sequence: exact live sequence to cancel
+  *
+- * @vaddr: the new virtual (guest) address for the program counter
+- *
+- * This function sets the program counter for the current vCPU to @vaddr and
+- * resumes execution at that address. This function does not return.
++ * Returns zero on cancellation or -ENOENT once absent or applied.
+  */
+ QEMU_PLUGIN_API
+-__attribute__((__noreturn__))
+-void qemu_plugin_set_pc(uint64_t vaddr);
++int qemu_plugin_crucible_fault_cancel(uint64_t command_sequence);
  
  /**
 - * qemu_plugin_read_memory_vaddr() - read from memory using a virtual address
@@ -63067,23 +63151,24 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..6014d6e0501b9d87c2c6ea4f12192f75
 - * callers should take care when calling this function in plugin callbacks to
 - * avoid attempting to read data which may not yet be written and should use
 - * the memory callback API instead.
-+ * qemu_plugin_crucible_fault_cancel() - cancel one command not yet applied
-+ * @command_sequence: exact live sequence to cancel
-  *
-- * Returns true on success and false on failure.
-+ * Returns zero on cancellation or -ENOENT once absent or applied.
-  */
- QEMU_PLUGIN_API
--bool qemu_plugin_read_memory_vaddr(uint64_t addr,
--                                   GByteArray *data, size_t len);
-+int qemu_plugin_crucible_fault_cancel(uint64_t command_sequence);
- 
- /**
-- * qemu_plugin_write_memory_vaddr() - write to memory using a virtual address
 + * qemu_plugin_crucible_fault_peek() - inspect one completed result
 + * @result: fixed result destination
 + * @payload_length: exact result payload byte count
   *
+- * Returns true on success and false on failure.
++ * Returns one when a result is ready, zero when none is ready, or -EINVAL for
++ * an invalid pointer contract. This call never consumes or changes the result.
+  */
+ QEMU_PLUGIN_API
+-bool qemu_plugin_read_memory_vaddr(uint64_t addr,
+-                                   GByteArray *data, size_t len);
++int qemu_plugin_crucible_fault_peek(
++    struct qemu_plugin_crucible_fault_result *result,
++    size_t *payload_length);
+ 
+ /**
+- * qemu_plugin_write_memory_vaddr() - write to memory using a virtual address
+- *
 - * @addr: A virtual address to write to
 - * @data: A byte array containing the data to write
 - *
@@ -63095,25 +63180,29 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..6014d6e0501b9d87c2c6ea4f12192f75
 - * so callers should take care to only call this function in vCPU context (i.e.
 - * in callbacks) and avoid depending on the existence of data written using this
 - * function which may be overwritten afterward.
-- *
-- * Returns true on success and false on failure.
-+ * Returns one when a result is ready, zero when none is ready, or -EINVAL for
-+ * an invalid pointer contract. This call never consumes or changes the result.
-  */
- QEMU_PLUGIN_API
--bool qemu_plugin_write_memory_vaddr(uint64_t addr,
--                                   GByteArray *data);
-+int qemu_plugin_crucible_fault_peek(
-+    struct qemu_plugin_crucible_fault_result *result,
-+    size_t *payload_length);
- 
- /**
-- * enum qemu_plugin_hwaddr_operation_result - result of a memory operation
 + * qemu_plugin_crucible_fault_poll() - copy one completed result
 + * @result: fixed result destination
 + * @payload: result payload destination
 + * @payload_capacity: bytes available at @payload
 + * @payload_length: required/copied result payload bytes
+  *
+- * Returns true on success and false on failure.
++ * Returns one when a result was consumed, zero when none is ready, -ENOSPC
++ * without consumption when the payload buffer is too small, or -EINVAL for an
++ * invalid pointer contract.
+  */
+ QEMU_PLUGIN_API
+-bool qemu_plugin_write_memory_vaddr(uint64_t addr,
+-                                   GByteArray *data);
++int qemu_plugin_crucible_fault_poll(
++    struct qemu_plugin_crucible_fault_result *result,
++    uint8_t *payload, size_t payload_capacity, size_t *payload_length);
+ 
+ /**
+- * enum qemu_plugin_hwaddr_operation_result - result of a memory operation
++ * qemu_plugin_crucible_fault_event_peek() - inspect one occurrence
++ * @event: fixed event destination
++ * @payload_length: exact evidence payload byte count
   *
 - * @QEMU_PLUGIN_HWADDR_OPERATION_OK: hwaddr operation succeeded
 - * @QEMU_PLUGIN_HWADDR_OPERATION_ERROR: unexpected error occurred
@@ -63121,9 +63210,8 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..6014d6e0501b9d87c2c6ea4f12192f75
 - * @QEMU_PLUGIN_HWADDR_OPERATION_ACCESS_DENIED: permission error
 - * @QEMU_PLUGIN_HWADDR_OPERATION_INVALID_ADDRESS: address was invalid
 - * @QEMU_PLUGIN_HWADDR_OPERATION_INVALID_ADDRESS_SPACE: invalid address space
-+ * Returns one when a result was consumed, zero when none is ready, -ENOSPC
-+ * without consumption when the payload buffer is too small, or -EINVAL for an
-+ * invalid pointer contract.
++ * Returns one when an event is ready, zero when none is ready, or -EINVAL.
++ * The event is not consumed.
   */
 -enum qemu_plugin_hwaddr_operation_result {
 -    QEMU_PLUGIN_HWADDR_OPERATION_OK,
@@ -63134,20 +63222,17 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..6014d6e0501b9d87c2c6ea4f12192f75
 -    QEMU_PLUGIN_HWADDR_OPERATION_INVALID_ADDRESS_SPACE,
 -};
 +QEMU_PLUGIN_API
-+int qemu_plugin_crucible_fault_poll(
-+    struct qemu_plugin_crucible_fault_result *result,
-+    uint8_t *payload, size_t payload_capacity, size_t *payload_length);
++int qemu_plugin_crucible_fault_event_peek(
++    struct qemu_plugin_crucible_fault_event *event, size_t *payload_length);
  
  /**
 - * qemu_plugin_read_memory_hwaddr() - read from memory using a hardware address
-+ * qemu_plugin_crucible_fault_event_peek() - inspect one occurrence
-+ * @event: fixed event destination
-+ * @payload_length: exact evidence payload byte count
-  *
+- *
 - * @addr: The physical address to read from
 - * @data: A byte array to store data into
 - * @len: The number of bytes to read, starting from @addr
-- *
++ * qemu_plugin_crucible_fault_event_envelope_version() - event payload schema
+  *
 - * @len bytes of data is read from the current memory space for the current
 - * vCPU starting at @addr and stored into @data. If @data is not large enough to
 - * hold @len bytes, it will be expanded to the necessary size, reallocating if
@@ -63162,14 +63247,14 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..6014d6e0501b9d87c2c6ea4f12192f75
 - *
 - * Returns a qemu_plugin_hwaddr_operation_result indicating the result of the
 - * operation.
-+ * Returns one when an event is ready, zero when none is ready, or -EINVAL.
-+ * The event is not consumed.
++ * Returns the mandatory private event-envelope version. Version one carries
++ * the canonical originating node request and raw occurrence evidence so a
++ * fresh plugin process can validate events from restored VM state.
   */
  QEMU_PLUGIN_API
 -enum qemu_plugin_hwaddr_operation_result
 -qemu_plugin_read_memory_hwaddr(uint64_t addr, GByteArray *data, size_t len);
-+int qemu_plugin_crucible_fault_event_peek(
-+    struct qemu_plugin_crucible_fault_event *event, size_t *payload_length);
++int qemu_plugin_crucible_fault_event_envelope_version(void);
  
  /**
 - * qemu_plugin_write_memory_hwaddr() - write to memory using a hardware address
@@ -63188,7 +63273,12 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..6014d6e0501b9d87c2c6ea4f12192f75
 - * pages containing the address are not locked. Practically, this means that you
 - * should not write instruction memory in a current translation block inside a
 - * callback registered with qemu_plugin_register_vcpu_tb_trans_cb.
-- *
++ * qemu_plugin_crucible_fault_event_poll() - copy one occurrence
++ * @event: fixed event destination
++ * @payload: evidence destination
++ * @payload_capacity: bytes available at @payload
++ * @payload_length: required/copied evidence byte count
+  *
 - * You can, for example, write instruction memory in a current translation block
 - * in a callback registered with qemu_plugin_register_vcpu_tb_exec_cb, although
 - * be aware that the write will not be flushed until after the translation block
@@ -63197,38 +63287,24 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..6014d6e0501b9d87c2c6ea4f12192f75
 - * block.
 - *
 - * This function is only valid for softmmu targets.
-+ * qemu_plugin_crucible_fault_event_envelope_version() - event payload schema
-  *
+- *
 - * Returns a qemu_plugin_hwaddr_operation_result indicating the result of the
 - * operation.
-+ * Returns the mandatory private event-envelope version. Version one carries
-+ * the canonical originating node request and raw occurrence evidence so a
-+ * fresh plugin process can validate events from restored VM state.
++ * Returns one when consumed, zero when empty, -ENOSPC without consumption, or
++ * -EINVAL for an invalid pointer contract.
   */
  QEMU_PLUGIN_API
 -enum qemu_plugin_hwaddr_operation_result
 -qemu_plugin_write_memory_hwaddr(uint64_t addr, GByteArray *data);
-+int qemu_plugin_crucible_fault_event_envelope_version(void);
- 
- /**
-- * qemu_plugin_translate_vaddr() - translate virtual address for current vCPU
-+ * qemu_plugin_crucible_fault_event_poll() - copy one occurrence
-+ * @event: fixed event destination
-+ * @payload: evidence destination
-+ * @payload_capacity: bytes available at @payload
-+ * @payload_length: required/copied evidence byte count
-  *
-- * @vaddr: virtual address to translate
-- * @hwaddr: pointer to store the physical address
-+ * Returns one when consumed, zero when empty, -ENOSPC without consumption, or
-+ * -EINVAL for an invalid pointer contract.
-+ */
-+QEMU_PLUGIN_API
 +int qemu_plugin_crucible_fault_event_poll(
 +    struct qemu_plugin_crucible_fault_event *event, uint8_t *payload,
 +    size_t payload_capacity, size_t *payload_length);
-+
-+/**
+ 
+ /**
+- * qemu_plugin_translate_vaddr() - translate virtual address for current vCPU
+- *
+- * @vaddr: virtual address to translate
+- * @hwaddr: pointer to store the physical address
 + * qemu_plugin_crucible_fault_dispatch_node_boundary() - commit due node faults
 + * @raw_icount: exact raw retired-instruction coordinate
   *
@@ -63258,7 +63334,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..6014d6e0501b9d87c2c6ea4f12192f75
  
  /**
   * qemu_plugin_scoreboard_new() - alloc a new scoreboard
-@@ -1363,6 +3168,382 @@ void qemu_plugin_u64_set(qemu_plugin_u64 entry, unsigned int vcpu_index,
+@@ -1363,6 +3212,398 @@ void qemu_plugin_u64_set(qemu_plugin_u64 entry, unsigned int vcpu_index,
  QEMU_PLUGIN_API
  uint64_t qemu_plugin_u64_sum(qemu_plugin_u64 entry);
  
@@ -63298,6 +63374,22 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..6014d6e0501b9d87c2c6ea4f12192f75
 +QEMU_PLUGIN_API
 +int qemu_plugin_crucible_register_ram_admission_v1(
 +    qemu_plugin_crucible_ram_admission_cb_v1 observer);
++
++/**
++ * Selects a one-use experimental resident classification before admission.
++ *
++ * The caller supplies its original FULL resident/backing and TOTAL metadata
++ * projections. The borrowed cancellation descriptor is never consumed here.
++ * This GPL-private request creates no grant or public process-protocol object.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_ram_research_resident_request_v1(
++    uint32_t schema, uint64_t total_metadata_bytes, uint64_t full_resident_bytes,
++    uint64_t full_backing_bytes, int cancellation_fd);
++
++/** Refuses unsupported experimental transitions and closes their class. */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_ram_research_resident_refuse_transition_v1(void);
 +
 +QEMU_PLUGIN_API
 +int qemu_plugin_crucible_ram_admission_grant_v1(
@@ -63840,10 +63932,10 @@ index 1c31de60f9406a93f04dcc04f435a40596c4cef4..9bf1523320ff6c7a4635eb0b11faa4fd
   */
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..0aa2ac56a44967239cdcc8713ff44397b80f127b
+index 0000000000000000000000000000000000000000..31d312090c633aa86b1c80c273b564133956e544
 --- /dev/null
 +++ b/include/qemu/crucible-fault.h
-@@ -0,0 +1,811 @@
+@@ -0,0 +1,812 @@
 +/*
 + * Crucible deterministic fault command registry
 + *
@@ -64408,6 +64500,7 @@ index 0000000000000000000000000000000000000000..0aa2ac56a44967239cdcc8713ff44397
 +    QemuCrucibleFaultEventReservation **event_reservation);
 +bool qemu_crucible_fault_node_hung(void);
 +bool qemu_crucible_fault_vcpu_hung(uint32_t vcpu);
++bool qemu_crucible_fault_lifecycle_reset_pending(void);
 +void qemu_crucible_fault_lifecycle_reset_complete(void);
 +
 +/*
@@ -65534,7 +65627,7 @@ index 8c1241a2c11c289bc3c69fff66ab67d06e9f257c..0c821e747558eabaeb83af16c23b3c0f
  
  #endif
 diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
-index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..7b65b1d13903e1103be776a058e4bdb8bd685002 100644
+index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..581a3ded58a886fc64ec3cebd9a151c0d5b9a6fd 100644
 --- a/include/qemu/plugin.h
 +++ b/include/qemu/plugin.h
 @@ -9,11 +9,13 @@
@@ -65563,7 +65656,7 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..7b65b1d13903e1103be776a058e4bdb8
  /*
   * Construct a qemu_plugin_meminfo_t.
   */
-@@ -183,6 +190,97 @@ void qemu_plugin_flush_cb(void);
+@@ -183,6 +190,102 @@ void qemu_plugin_flush_cb(void);
  
  void qemu_plugin_atexit_cb(void);
  
@@ -65631,6 +65724,11 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..7b65b1d13903e1103be776a058e4bdb8
 +    const char *action_sha256, const char *evidence_sha256,
 +    uint64_t process_generation, bool *already_authorized,
 +    int *exit_code);
++int qemu_plugin_crucible_selectable_reset_call(
++    uint32_t action,
++    const struct qemu_plugin_crucible_selectable_reset_request *request);
++int qemu_plugin_crucible_selectable_reset_unregister(qemu_plugin_id_t plugin_id);
++
 +int qemu_plugin_crucible_complete_selectable_reply(
 +    uint64_t request_sequence, uint64_t logical_boundary_icount,
 +    uint64_t expected_completed_requests, uint32_t vcpu_index,
@@ -65661,7 +65759,7 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..7b65b1d13903e1103be776a058e4bdb8
  void qemu_plugin_add_dyn_cb_arr(GArray *arr);
  
  static inline void qemu_plugin_disable_mem_helpers(CPUState *cpu)
-@@ -237,6 +335,11 @@ static inline enum qemu_plugin_cb_flags qemu_plugin_get_cb_flags(void)
+@@ -237,6 +340,11 @@ static inline enum qemu_plugin_cb_flags qemu_plugin_get_cb_flags(void)
  static inline void qemu_plugin_add_opts(void)
  { }
  
@@ -65673,7 +65771,7 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..7b65b1d13903e1103be776a058e4bdb8
  static inline void qemu_plugin_opt_parse(const char *optstr,
                                           QemuPluginList *head)
  {
-@@ -306,6 +409,186 @@ static inline void qemu_plugin_flush_cb(void)
+@@ -306,6 +414,199 @@ static inline void qemu_plugin_flush_cb(void)
  static inline void qemu_plugin_atexit_cb(void)
  { }
  
@@ -65835,6 +65933,19 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..7b65b1d13903e1103be776a058e4bdb8
 +    (void)already_authorized;
 +    (void)exit_code;
 +    return -ENOTSUP;
++}
++
++static inline int qemu_plugin_crucible_selectable_reset_call(
++    uint32_t action,
++    const struct qemu_plugin_crucible_selectable_reset_request *request)
++{
++    return -ENOSYS;
++}
++
++static inline int qemu_plugin_crucible_selectable_reset_unregister(
++    qemu_plugin_id_t plugin_id)
++{
++    return 0;
 +}
 +
 +static inline int qemu_plugin_crucible_complete_selectable_reply(
@@ -68962,7 +69073,7 @@ index cde83fab15f5b5544047f6e8a3fcdbdf28abe2d0..cfd8d06af887fd12e5f8627a4e5542dd
 +
  #endif
 diff --git a/include/system/runstate.h b/include/system/runstate.h
-index 929379adae4190256dd8b13c2dccfe9e8ec1b8de..b27c7758109e40fe0674571df94e9c687ce12d6f 100644
+index 929379adae4190256dd8b13c2dccfe9e8ec1b8de..a5341c199889c6ed655162a0570d7c0f4fa285fe 100644
 --- a/include/system/runstate.h
 +++ b/include/system/runstate.h
 @@ -6,6 +6,7 @@
@@ -68973,7 +69084,24 @@ index 929379adae4190256dd8b13c2dccfe9e8ec1b8de..b27c7758109e40fe0674571df94e9c68
  RunState runstate_get(void);
  bool runstate_is_running(void);
  bool runstate_needs_reset(void);
-@@ -146,6 +147,9 @@ void qemu_system_debug_request(void);
+@@ -128,6 +129,16 @@ typedef enum WakeupReason {
+     QEMU_WAKEUP_REASON_OTHER,
+ } WakeupReason;
+ 
++/* Pairs around every admitted restore body, including nested state loads. */
++bool qemu_crucible_selectable_resume_blocked(void);
++int qemu_crucible_selectable_restore_begin(void);
++void qemu_crucible_selectable_restore_end(void);
++void qemu_crucible_selectable_restore_uncertain(void);
++
++int qemu_crucible_selectable_reset_request(
++    uint32_t schema_version, uint64_t correlation, const char *request_hex,
++    uint64_t raw_icount, uint64_t trap_tick_ps, uint32_t vcpu_index,
++    uint64_t reply_address);
+ void qemu_system_reset_request(ShutdownCause reason);
+ void qemu_system_suspend_request(void);
+ void qemu_register_suspend_notifier(Notifier *notifier);
+@@ -146,6 +157,9 @@ void qemu_system_debug_request(void);
  void qemu_system_vmstop_request(RunState reason);
  void qemu_system_vmstop_request_prepare(void);
  bool qemu_vmstop_requested(RunState *r);
@@ -69191,10 +69319,14 @@ index 3558535b40f52fc841e4790433d41aab39f062cd..f07b4c572b614166eb161b924759fe0d
   * iothread_create() objects. */
  IOThread *iothread_by_id(const char *id)
 diff --git a/migration/migration.c b/migration/migration.c
-index 9df6da131cec8a6e885c87e74e8dd1f9db4edcfd..f8388da642193ddb715a55cd1825b62ca33444b6 100644
+index 9df6da131cec8a6e885c87e74e8dd1f9db4edcfd..618d0b4f3a171d09ed6fde5da37215c66178dfca 100644
 --- a/migration/migration.c
 +++ b/migration/migration.c
-@@ -17,6 +17,7 @@
+@@ -14,9 +14,11 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#include "qemu/crucible-paged-ram.h"
  #include "qemu/ctype.h"
  #include "qemu/error-report.h"
  #include "qemu/main-loop.h"
@@ -69202,7 +69334,7 @@ index 9df6da131cec8a6e885c87e74e8dd1f9db4edcfd..f8388da642193ddb715a55cd1825b62c
  #include "migration/blocker.h"
  #include "exec.h"
  #include "file.h"
-@@ -93,6 +94,10 @@ enum mig_rp_message_type {
+@@ -93,6 +95,10 @@ enum mig_rp_message_type {
  
  static MigrationState *current_migration;
  static MigrationIncomingState *current_incoming;
@@ -69213,7 +69345,7 @@ index 9df6da131cec8a6e885c87e74e8dd1f9db4edcfd..f8388da642193ddb715a55cd1825b62c
  
  static GSList *migration_blockers[MIG_MODE__MAX];
  
-@@ -296,6 +301,7 @@ static int migration_stop_vm(MigrationState *s, RunState state)
+@@ -296,6 +302,7 @@ static int migration_stop_vm(MigrationState *s, RunState state)
  void migration_object_init(void)
  {
      /* This can only be called once. */
@@ -69221,7 +69353,7 @@ index 9df6da131cec8a6e885c87e74e8dd1f9db4edcfd..f8388da642193ddb715a55cd1825b62c
      assert(!current_migration);
      current_migration = MIGRATION(object_new(TYPE_MIGRATION));
  
-@@ -632,6 +638,12 @@ migration_incoming_state_setup(MigrationIncomingState *mis, Error **errp)
+@@ -632,6 +639,12 @@ migration_incoming_state_setup(MigrationIncomingState *mis, Error **errp)
  {
      MigrationStatus current = mis->state;
  
@@ -69234,7 +69366,31 @@ index 9df6da131cec8a6e885c87e74e8dd1f9db4edcfd..f8388da642193ddb715a55cd1825b62c
      if (current == MIGRATION_STATUS_POSTCOPY_PAUSED) {
          /*
           * Incoming postcopy migration will stay in PAUSED state even if
-@@ -1028,6 +1040,103 @@ bool migration_is_running(void)
+@@ -657,6 +670,11 @@ static void qemu_setup_incoming_migration(const char *uri, bool has_channels,
+     g_autoptr(MigrationChannel) main_ch = NULL;
+     MigrationIncomingState *mis = migration_incoming_get_current();
+ 
++    if (qemu_crucible_ram_paging_requested()) {
++        error_setg(errp, "Incoming migration cannot replace admitted RAM");
++        return;
++    }
++
+     if (!migration_channel_parse_input(uri, channels, &main_ch, NULL, errp)) {
+         return;
+     }
+@@ -817,6 +835,11 @@ bool migration_incoming_setup(QIOChannel *ioc, uint8_t channel, Error **errp)
+     MigrationIncomingState *mis = migration_incoming_get_current();
+     QEMUFile *f;
+ 
++    if (qemu_crucible_ram_paging_requested()) {
++        error_setg(errp, "Incoming migration cannot replace admitted RAM");
++        return false;
++    }
++
+     if (multifd_recv_setup(errp) != 0) {
+         return false;
+     }
+@@ -1028,6 +1051,103 @@ bool migration_is_running(void)
      }
  }
  
@@ -69338,7 +69494,19 @@ index 9df6da131cec8a6e885c87e74e8dd1f9db4edcfd..f8388da642193ddb715a55cd1825b62c
  static bool migration_is_active(void)
  {
      MigrationState *s = migrate_get_current();
-@@ -1940,6 +2049,11 @@ bool migration_is_blocked(Error **errp)
+@@ -1835,6 +1955,11 @@ void qmp_migrate_incoming(const char *uri, bool has_channels,
+         return;
+     }
+ 
++    if (qemu_crucible_ram_paging_requested()) {
++        error_setg(errp, "Incoming migration cannot replace admitted RAM");
++        return;
++    }
++
+     if (!yank_register_instance(MIGRATION_YANK_INSTANCE, errp)) {
+         return;
+     }
+@@ -1940,6 +2065,11 @@ bool migration_is_blocked(Error **errp)
  {
      GSList *blockers = migration_blockers[migrate_mode()];
  
@@ -69350,13 +69518,71 @@ index 9df6da131cec8a6e885c87e74e8dd1f9db4edcfd..f8388da642193ddb715a55cd1825b62c
      if (qemu_savevm_state_blocked(errp)) {
          return true;
      }
-diff --git a/migration/savevm.c b/migration/savevm.c
-index 34dd06f9f732dee7d3c6d0458da8bb67f23d76b4..56c49945c90ef9b67f63b88561279dc2919308fa 100644
---- a/migration/savevm.c
-+++ b/migration/savevm.c
-@@ -28,6 +28,9 @@
+diff --git a/migration/ram.c b/migration/ram.c
+index 8918b2f03b6fbcc98532bb45ab905f9bac59384c..77b132dbb59211d5438e4de9438b4e232a12b192 100644
+--- a/migration/ram.c
++++ b/migration/ram.c
+@@ -27,6 +27,7 @@
+  */
  
  #include "qemu/osdep.h"
++#include "qemu/crucible-paged-ram.h"
+ #include "qemu/cutils.h"
+ #include "qemu/bitops.h"
+ #include "qemu/bitmap.h"
+@@ -3753,6 +3754,10 @@ void colo_release_ram_cache(void)
+  */
+ static int ram_load_setup(QEMUFile *f, void *opaque, Error **errp)
+ {
++    if (qemu_crucible_ram_paging_requested()) {
++        error_setg(errp, "Legacy RAM load cannot replace admitted RAM");
++        return -EPERM;
++    }
+     xbzrle_load_setup();
+     ramblock_recv_map_init();
+ 
+@@ -3792,6 +3797,10 @@ static int ram_load_cleanup(void *opaque)
+  */
+ int ram_postcopy_incoming_init(MigrationIncomingState *mis, Error **errp)
+ {
++    if (qemu_crucible_ram_paging_requested()) {
++        error_setg(errp, "Postcopy load cannot replace admitted RAM");
++        return -EPERM;
++    }
+     return postcopy_ram_incoming_init(mis, errp);
+ }
+ 
+@@ -3814,6 +3823,10 @@ int ram_load_postcopy(QEMUFile *f, int channel)
+     MigrationIncomingState *mis = migration_incoming_get_current();
+     PostcopyTmpPage *tmp_page = &mis->postcopy_tmp_pages[channel];
+ 
++    if (qemu_crucible_ram_paging_requested()) {
++        return -EPERM;
++    }
++
+     while (!ret && !(flags & RAM_SAVE_FLAG_EOS)) {
+         ram_addr_t addr;
+         void *page_buffer = NULL;
+@@ -4470,6 +4483,10 @@ static int ram_load(QEMUFile *f, void *opaque, int version_id)
+      */
+     bool postcopy_running = postcopy_is_running();
+ 
++    if (qemu_crucible_ram_paging_requested()) {
++        return -EPERM;
++    }
++
+     seq_iter++;
+ 
+     if (version_id != 4) {
+diff --git a/migration/savevm.c b/migration/savevm.c
+index 34dd06f9f732dee7d3c6d0458da8bb67f23d76b4..470fa5dee605dbfc361b1eb7a046d579fba03a4c 100644
+--- a/migration/savevm.c
++++ b/migration/savevm.c
+@@ -27,7 +27,11 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#include "qemu/crucible-paged-ram.h"
  #include "hw/core/boards.h"
 +#include "hw/core/cpu.h"
 +#include "hw/core/qdev.h"
@@ -69364,7 +69590,7 @@ index 34dd06f9f732dee7d3c6d0458da8bb67f23d76b4..56c49945c90ef9b67f63b88561279dc2
  #include "net/net.h"
  #include "migration.h"
  #include "migration/snapshot.h"
-@@ -49,12 +52,15 @@
+@@ -49,12 +53,15 @@
  #include "qemu/error-report.h"
  #include "system/cpus.h"
  #include "system/memory.h"
@@ -69380,7 +69606,7 @@ index 34dd06f9f732dee7d3c6d0458da8bb67f23d76b4..56c49945c90ef9b67f63b88561279dc2
  #include "block/snapshot.h"
  #include "block/thread-pool.h"
  #include "qemu/cutils.h"
-@@ -182,10 +188,11 @@ static QEMUFile *qemu_fopen_bdrv(BlockDriverState *bs, int is_writable)
+@@ -182,10 +189,11 @@ static QEMUFile *qemu_fopen_bdrv(BlockDriverState *bs, int is_writable)
  
  void timer_put(QEMUFile *f, QEMUTimer *ts)
  {
@@ -69396,7 +69622,7 @@ index 34dd06f9f732dee7d3c6d0458da8bb67f23d76b4..56c49945c90ef9b67f63b88561279dc2
  }
  
  void timer_get(QEMUFile *f, QEMUTimer *ts)
-@@ -229,7 +236,6 @@ const VMStateInfo vmstate_info_timer = {
+@@ -229,7 +237,6 @@ const VMStateInfo vmstate_info_timer = {
      .save  = save_timer,
  };
  
@@ -69404,7 +69630,7 @@ index 34dd06f9f732dee7d3c6d0458da8bb67f23d76b4..56c49945c90ef9b67f63b88561279dc2
  typedef struct CompatEntry {
      char idstr[256];
      int instance_id;
-@@ -248,10 +254,69 @@ typedef struct SaveStateEntry {
+@@ -248,10 +255,69 @@ typedef struct SaveStateEntry {
      int load_section_id;
      const SaveVMHandlers *ops;
      const VMStateDescription *vmsd;
@@ -69474,7 +69700,7 @@ index 34dd06f9f732dee7d3c6d0458da8bb67f23d76b4..56c49945c90ef9b67f63b88561279dc2
  typedef struct SaveState {
      QTAILQ_HEAD(, SaveStateEntry) handlers;
      SaveStateEntry *handler_pri_head[MIG_PRI_MAX + 1];
-@@ -262,8 +327,17 @@ typedef struct SaveState {
+@@ -262,8 +328,17 @@ typedef struct SaveState {
      uint32_t caps_count;
      MigrationCapability *capabilities;
      QemuUUID uuid;
@@ -69492,7 +69718,7 @@ index 34dd06f9f732dee7d3c6d0458da8bb67f23d76b4..56c49945c90ef9b67f63b88561279dc2
  static SaveState savevm_state = {
      .handlers = QTAILQ_HEAD_INITIALIZER(savevm_state.handlers),
      .handler_pri_head = { [0 ... MIG_PRI_MAX] = NULL },
-@@ -318,6 +392,7 @@ static bool configuration_pre_save(void *opaque, Error **errp)
+@@ -318,6 +393,7 @@ static bool configuration_pre_save(void *opaque, Error **errp)
          }
      }
      state->uuid = qemu_uuid;
@@ -69500,7 +69726,7 @@ index 34dd06f9f732dee7d3c6d0458da8bb67f23d76b4..56c49945c90ef9b67f63b88561279dc2
  
      return true;
  }
-@@ -340,6 +415,8 @@ static bool configuration_pre_load(void *opaque, Error **errp)
+@@ -340,6 +416,8 @@ static bool configuration_pre_load(void *opaque, Error **errp)
       * minimum possible value for this CPU.
       */
      state->target_page_bits = migration_legacy_page_bits();
@@ -69509,7 +69735,7 @@ index 34dd06f9f732dee7d3c6d0458da8bb67f23d76b4..56c49945c90ef9b67f63b88561279dc2
      return true;
  }
  
-@@ -403,6 +480,12 @@ static bool configuration_post_load(void *opaque, int version_id, Error **errp)
+@@ -403,6 +481,12 @@ static bool configuration_post_load(void *opaque, int version_id, Error **errp)
          ok = false;
          goto out;
      }
@@ -69522,7 +69748,7 @@ index 34dd06f9f732dee7d3c6d0458da8bb67f23d76b4..56c49945c90ef9b67f63b88561279dc2
  
  out:
      g_free((void *)state->name);
-@@ -541,6 +624,37 @@ static const VMStateDescription vmstate_uuid = {
+@@ -541,6 +625,37 @@ static const VMStateDescription vmstate_uuid = {
      }
  };
  
@@ -69560,7 +69786,7 @@ index 34dd06f9f732dee7d3c6d0458da8bb67f23d76b4..56c49945c90ef9b67f63b88561279dc2
  static const VMStateDescription vmstate_configuration = {
      .name = "configuration",
      .version_id = 1,
-@@ -557,6 +671,7 @@ static const VMStateDescription vmstate_configuration = {
+@@ -557,6 +672,7 @@ static const VMStateDescription vmstate_configuration = {
          &vmstate_target_page_bits,
          &vmstate_capabilites,
          &vmstate_uuid,
@@ -69568,7 +69794,7 @@ index 34dd06f9f732dee7d3c6d0458da8bb67f23d76b4..56c49945c90ef9b67f63b88561279dc2
          NULL
      }
  };
-@@ -937,6 +1052,7 @@ int vmstate_register_with_alias_id(VMStateIf *obj, uint32_t instance_id,
+@@ -937,6 +1053,7 @@ int vmstate_register_with_alias_id(VMStateIf *obj, uint32_t instance_id,
      se->section_id = savevm_state.global_section_id++;
      se->opaque = opaque;
      se->vmsd = vmsd;
@@ -69576,7 +69802,7 @@ index 34dd06f9f732dee7d3c6d0458da8bb67f23d76b4..56c49945c90ef9b67f63b88561279dc2
      se->alias_id = alias_id;
  
      if (obj) {
-@@ -1953,16 +2069,43 @@ static bool qemu_savevm_se_iterable(SaveStateEntry *se)
+@@ -1953,16 +2070,43 @@ static bool qemu_savevm_se_iterable(SaveStateEntry *se)
  
  int qemu_save_device_state(QEMUFile *f, Error **errp)
  {
@@ -69627,7 +69853,7 @@ index 34dd06f9f732dee7d3c6d0458da8bb67f23d76b4..56c49945c90ef9b67f63b88561279dc2
      }
  
      qemu_savevm_state_end(f);
-@@ -1970,6 +2113,285 @@ int qemu_save_device_state(QEMUFile *f, Error **errp)
+@@ -1970,6 +2114,285 @@ int qemu_save_device_state(QEMUFile *f, Error **errp)
      return 0;
  }
  
@@ -69913,7 +70139,27 @@ index 34dd06f9f732dee7d3c6d0458da8bb67f23d76b4..56c49945c90ef9b67f63b88561279dc2
  static SaveStateEntry *find_se(const char *idstr, uint32_t instance_id)
  {
      SaveStateEntry *se;
-@@ -3011,6 +3433,14 @@ int qemu_loadvm_state_main(QEMUFile *f, MigrationIncomingState *mis,
+@@ -2716,6 +3139,10 @@ qemu_loadvm_section_start_full(QEMUFile *f, uint8_t type, Error **errp)
+                    version_id, idstr, se->version_id);
+         return -EINVAL;
+     }
++    if (qemu_crucible_ram_paging_requested() && qemu_savevm_se_iterable(se)) {
++        error_setg(errp, "Legacy iterable state cannot replace admitted RAM");
++        return -EPERM;
++    }
+     se->load_version_id = version_id;
+     se->load_section_id = section_id;
+ 
+@@ -3004,13 +3431,21 @@ static bool postcopy_pause_incoming(MigrationIncomingState *mis)
+     return true;
+ }
+ 
+-int qemu_loadvm_state_main(QEMUFile *f, MigrationIncomingState *mis,
+-                           Error **errp)
++static int qemu_loadvm_state_main_without_selectable_reset(QEMUFile *f, MigrationIncomingState *mis,
++                           bool device_only, Error **errp)
+ {
+     ERRP_GUARD();
      uint8_t section_type;
      int ret = 0;
  
@@ -69928,7 +70174,23 @@ index 34dd06f9f732dee7d3c6d0458da8bb67f23d76b4..56c49945c90ef9b67f63b88561279dc2
  retry:
      while (true) {
          section_type = qemu_get_byte(f);
-@@ -3082,6 +3512,7 @@ out:
+@@ -3023,6 +3458,15 @@ retry:
+             break;
+         }
+ 
++        /* The authenticated lazy route imports only non-iterable FULL rows.
++         * Commands and continuation sections can reach independent RAM loaders. */
++        if (device_only && qemu_crucible_ram_paging_requested() &&
++            section_type != QEMU_VM_SECTION_FULL && section_type != QEMU_VM_EOF) {
++            error_setg(errp, "Admitted RAM requires a device-only state stream");
++            ret = -EPERM;
++            goto out;
++        }
++
+         trace_qemu_loadvm_state_section(section_type);
+         switch (section_type) {
+         case QEMU_VM_SECTION_START:
+@@ -3082,10 +3526,40 @@ out:
              goto retry;
          }
      }
@@ -69936,7 +70198,104 @@ index 34dd06f9f732dee7d3c6d0458da8bb67f23d76b4..56c49945c90ef9b67f63b88561279dc2
      return ret;
  }
  
-@@ -3364,6 +3795,17 @@ bool save_snapshot(const char *name, bool overwrite, const char *vmstate,
+-int qemu_loadvm_state(QEMUFile *f, Error **errp)
++static int qemu_loadvm_state_main_checked(QEMUFile *f, MigrationIncomingState *mis,
++                                        bool device_only, Error **errp)
++{
++    int status = qemu_crucible_selectable_restore_begin();
++    int result;
++
++    if (status) {
++        error_setg_errno(errp, -status, "State load conflicts with a staged selectable reset");
++        return status;
++    }
++    if (!device_only && qemu_crucible_ram_paging_requested()) {
++        error_setg(errp, "Legacy full state load cannot replace admitted RAM");
++        qemu_crucible_selectable_restore_end();
++        return -EPERM;
++    }
++    result = qemu_loadvm_state_main_without_selectable_reset(f, mis, device_only, errp);
++    if (result < 0) {
++        qemu_crucible_selectable_restore_uncertain();
++    }
++    qemu_crucible_selectable_restore_end();
++    return result;
++}
++
++int qemu_loadvm_state_main(QEMUFile *f, MigrationIncomingState *mis,
++                           Error **errp)
++{
++    return qemu_loadvm_state_main_checked(f, mis, false, errp);
++}
++
++static int qemu_loadvm_state_without_selectable_reset(QEMUFile *f, Error **errp)
+ {
+     MigrationState *s = migrate_get_current();
+     MigrationIncomingState *mis = migration_incoming_get_current();
+@@ -3183,13 +3657,35 @@ int qemu_loadvm_state(QEMUFile *f, Error **errp)
+     return ret;
+ }
+ 
+-int qemu_load_device_state(QEMUFile *f, Error **errp)
++int qemu_loadvm_state(QEMUFile *f, Error **errp)
++{
++    int status = qemu_crucible_selectable_restore_begin();
++    int result;
++
++    if (status) {
++        error_setg_errno(errp, -status, "Restore conflicts with a staged selectable reset");
++        return status;
++    }
++    if (qemu_crucible_ram_paging_requested()) {
++        error_setg(errp, "Legacy full state load cannot replace admitted RAM");
++        qemu_crucible_selectable_restore_end();
++        return -EPERM;
++    }
++    result = qemu_loadvm_state_without_selectable_reset(f, errp);
++    if (result < 0) {
++        qemu_crucible_selectable_restore_uncertain();
++    }
++    qemu_crucible_selectable_restore_end();
++    return result;
++}
++
++static int qemu_load_device_state_without_selectable_reset(QEMUFile *f, Error **errp)
+ {
+     MigrationIncomingState *mis = migration_incoming_get_current();
+     int ret;
+ 
+-    /* Load QEMU_VM_SECTION_FULL section */
+-    ret = qemu_loadvm_state_main(f, mis, errp);
++    /* Load the non-iterable FULL stream used by authenticated lazy restore. */
++    ret = qemu_loadvm_state_main_checked(f, mis, true, errp);
+     if (ret < 0) {
+         return ret;
+     }
+@@ -3198,6 +3694,23 @@ int qemu_load_device_state(QEMUFile *f, Error **errp)
+     return 0;
+ }
+ 
++int qemu_load_device_state(QEMUFile *f, Error **errp)
++{
++    int status = qemu_crucible_selectable_restore_begin();
++    int result;
++
++    if (status) {
++        error_setg_errno(errp, -status, "Restore conflicts with a staged selectable reset");
++        return status;
++    }
++    result = qemu_load_device_state_without_selectable_reset(f, errp);
++    if (result < 0) {
++        qemu_crucible_selectable_restore_uncertain();
++    }
++    qemu_crucible_selectable_restore_end();
++    return result;
++}
++
+ static int qemu_loadvm_approve_switchover_legacy(const char *approver)
+ {
+     MigrationIncomingState *mis = migration_incoming_get_current();
+@@ -3364,6 +3877,17 @@ bool save_snapshot(const char *name, bool overwrite, const char *vmstate,
  
      ret = 0;
  
@@ -69954,7 +70313,16 @@ index 34dd06f9f732dee7d3c6d0458da8bb67f23d76b4..56c49945c90ef9b67f63b88561279dc2
   the_end:
      bdrv_drain_all_end();
  
-@@ -3532,6 +3974,11 @@ bool load_snapshot(const char *name, const char *vmstate,
+@@ -3453,7 +3977,7 @@ void qmp_xen_load_devices_state(const char *filename, Error **errp)
+     migration_incoming_state_destroy();
+ }
+ 
+-bool load_snapshot(const char *name, const char *vmstate,
++static bool load_snapshot_without_selectable_reset(const char *name, const char *vmstate,
+                    bool has_devices, strList *devices, Error **errp)
+ {
+     BlockDriverState *bs_vm_state;
+@@ -3532,6 +4056,11 @@ bool load_snapshot(const char *name, const char *vmstate,
          return false;
      }
  
@@ -69966,6 +70334,36 @@ index 34dd06f9f732dee7d3c6d0458da8bb67f23d76b4..56c49945c90ef9b67f63b88561279dc2
      return true;
  
  err_drain:
+@@ -3539,6 +4068,29 @@ err_drain:
+     return false;
+ }
+ 
++bool load_snapshot(const char *name, const char *vmstate,
++                   bool has_devices, strList *devices, Error **errp)
++{
++    int status = qemu_crucible_selectable_restore_begin();
++    bool result;
++
++    if (status) {
++        error_setg_errno(errp, -status, "Restore conflicts with a staged selectable reset");
++        return false;
++    }
++    if (qemu_crucible_ram_paging_requested()) {
++        error_setg(errp, "Legacy snapshot load cannot replace admitted RAM");
++        qemu_crucible_selectable_restore_end();
++        return false;
++    }
++    result = load_snapshot_without_selectable_reset(name, vmstate, has_devices, devices, errp);
++    if (!result) {
++        qemu_crucible_selectable_restore_uncertain();
++    }
++    qemu_crucible_selectable_restore_end();
++    return result;
++}
++
+ void load_snapshot_resume(RunState state)
+ {
+     vm_resume(state);
 diff --git a/migration/savevm.h b/migration/savevm.h
 index f7dcdd7d1b6b7b5397eb1b6aab5cb5816a92f1a8..366ad0c3d0cbcc26e74d0f3ccfe66054ee88af1e 100644
 --- a/migration/savevm.h
@@ -71549,7 +71947,7 @@ index 8fe0876a3dab43aa3dc7376ada20b149b7c9d032..5434d4501636c9aad39475c8f6920e48
      if (mon->commands == &qmp_commands) {
          error_set(errp, ERROR_CLASS_COMMAND_NOT_FOUND,
 diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
-index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..3dd8201e7a92a5c06b8ee2d339ec6050c4e9a634 100644
+index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..19aa2ae9bde8f6cd36d74d5f2da33e675e1f5773 100644
 --- a/monitor/qmp-cmds.c
 +++ b/monitor/qmp-cmds.c
 @@ -14,53 +14,6899 @@
@@ -77405,16 +77803,14 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..3dd8201e7a92a5c06b8ee2d339ec6050
 +
 +    return (first > second) - (first < second);
 +}
- 
--NameInfo *qmp_query_name(Error **errp)
++
 +/* The private plugin callback transfers disarmed parent ownership. Validate
 + * the entire roster against every new owner before consuming any old handle. */
 +static int crucible_hot_fork_close_ram_parent_descriptors(
 +    const QemuCrucibleHotForkChildResourcePlan *resources,
 +    const int *retained, uint32_t retained_count,
 +    const int *closed, uint32_t closed_count)
- {
--    NameInfo *info = g_malloc0(sizeof(*info));
++{
 +    if (!resources || retained_count > CRUCIBLE_RAM_FORK_MAX_DESCRIPTORS ||
 +        closed_count > CRUCIBLE_RAM_FORK_MAX_DESCRIPTORS ||
 +        resources->retained_fd_count >
@@ -77428,8 +77824,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..3dd8201e7a92a5c06b8ee2d339ec6050
 +    for (uint32_t index = 0; index < closed_count; index++) {
 +        int descriptor = closed[index];
  
--    info->name = g_strdup(qemu_name);
--    return info;
+-NameInfo *qmp_query_name(Error **errp)
 +        if (descriptor < 0 || fcntl(descriptor, F_GETFD) < 0) {
 +            return -ESTALE;
 +        }
@@ -77468,21 +77863,21 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..3dd8201e7a92a5c06b8ee2d339ec6050
 +        }
 +    }
 +    return 0;
- }
- 
--void qmp_quit(Error **errp)
++}
++
 +static int crucible_hot_fork_merge_ram_child_resources(
 +    QemuCrucibleHotForkChildResourcePlan *resources)
  {
--    shutdown_action = SHUTDOWN_ACTION_POWEROFF;
--    qemu_system_shutdown_request(SHUTDOWN_CAUSE_HOST_QMP_QUIT);
+-    NameInfo *info = g_malloc0(sizeof(*info));
 +    int retained[CRUCIBLE_RAM_FORK_MAX_DESCRIPTORS];
 +    int closed[CRUCIBLE_RAM_FORK_MAX_DESCRIPTORS];
 +    uint32_t retained_count = 0, closed_count = 0;
 +    int result = qemu_crucible_ram_fork_child_resources(
 +        retained, G_N_ELEMENTS(retained), &retained_count,
 +        closed, G_N_ELEMENTS(closed), &closed_count);
-+
+ 
+-    info->name = g_strdup(qemu_name);
+-    return info;
 +    if (result) {
 +        return result;
 +    }
@@ -77507,13 +77902,11 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..3dd8201e7a92a5c06b8ee2d339ec6050
 +    return qemu_crucible_ram_fork_child_adopted();
  }
  
--void qmp_stop(Error **errp)
+-void qmp_quit(Error **errp)
 +static int crucible_hot_fork_finish_child_operation(void *opaque)
  {
--    /* if there is a dump in background, we should wait until the dump
--     * finished */
--    if (qemu_system_dump_in_progress()) {
--        error_setg(errp, "There is a dump in process, please wait.");
+-    shutdown_action = SHUTDOWN_ACTION_POWEROFF;
+-    qemu_system_shutdown_request(SHUTDOWN_CAUSE_HOST_QMP_QUIT);
 +    CrucibleHotForkOperation *operation = opaque;
 +    QemuCrucibleHotForkDescriptorTableTransaction descriptors = { 0 };
 +    QemuCrucibleHotForkDescriptorTableProof proof = { 0 };
@@ -77659,8 +78052,9 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..3dd8201e7a92a5c06b8ee2d339ec6050
 +        crucible_hot_fork_child_exit_at(15, result);
 +    }
 +    return 0;
-+}
-+
+ }
+ 
+-void qmp_stop(Error **errp)
 +CrucibleHotForkState *qmp_crucible_hot_fork(
 +    uint64_t template_generation, uint64_t private_ring_generation,
 +    uint64_t diagnostic_generation, uint64_t qmp_generation,
@@ -77673,7 +78067,11 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..3dd8201e7a92a5c06b8ee2d339ec6050
 +    uint64_t child_process_contract_generation,
 +    uint64_t child_files_generation,
 +    Error **errp)
-+{
+ {
+-    /* if there is a dump in background, we should wait until the dump
+-     * finished */
+-    if (qemu_system_dump_in_progress()) {
+-        error_setg(errp, "There is a dump in process, please wait.");
 +    CrucibleHotForkOperation operation = {
 +        .template_generation = template_generation,
 +        .private_ring_generation = private_ring_generation,
@@ -78468,12 +78866,16 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..3dd8201e7a92a5c06b8ee2d339ec6050
  }
  
  void qmp_cont(Error **errp)
-@@ -68,7 +6914,23 @@ void qmp_cont(Error **errp)
+@@ -68,7 +6914,27 @@ void qmp_cont(Error **errp)
      BlockBackend *blk;
      BlockJob *job;
      Error *local_err = NULL;
 +    int flush_status;
  
++    if (qemu_crucible_selectable_resume_blocked()) {
++        error_setg(errp, "Guest resume conflicts with a retained selectable reset");
++        return;
++    }
 +    if (qemu_crucible_checkpoint_candidate_active()) {
 +        error_setg(errp, "Guest resume is blocked by an active Crucible "
 +                   "checkpoint candidate");
@@ -78492,7 +78894,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..3dd8201e7a92a5c06b8ee2d339ec6050
      /* if there is a dump in background, we should wait until the dump
       * finished */
      if (qemu_system_dump_in_progress()) {
-@@ -116,6 +6978,155 @@ void qmp_cont(Error **errp)
+@@ -116,6 +6982,155 @@ void qmp_cont(Error **errp)
      }
  }
  
@@ -78648,7 +79050,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..3dd8201e7a92a5c06b8ee2d339ec6050
  void qmp_add_client(const char *protocol, const char *fdname,
                      bool has_skipauth, bool skipauth, bool has_tls, bool tls,
                      Error **errp)
-@@ -207,3 +7218,49 @@ static void __attribute__((__constructor__)) monitor_init_qmp_commands(void)
+@@ -207,3 +7222,49 @@ static void __attribute__((__constructor__)) monitor_init_qmp_commands(void)
                           qmp_marshal_qmp_capabilities,
                           QCO_ALLOW_PRECONFIG, 0);
  }
@@ -79331,7 +79733,7 @@ index 9e9941fe73e77a7b3bcc3ca1ab7ad4bec58f0151..66e2d8cd64d01e2304aa51675bfe4959
  
  static int net_slirp_init(NetClientState *peer, const char *model,
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index fbf905cd63e4cc109748b379f4209f6ad6547c2c..dcd3b89ad59f364ca6282f6767b3f1fe71480a2f 100644
+index fbf905cd63e4cc109748b379f4209f6ad6547c2c..8bf737424a2348d06476014426253e261ade8d8b 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -11,12 +11,41 @@
@@ -79376,7 +79778,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..dcd3b89ad59f364ca6282f6767b3f1fe
  
  /*
   * In system mode we cannot trace the binary being executed so the
-@@ -101,14 +130,1036 @@ const char *qemu_plugin_hwaddr_device_name(const struct qemu_plugin_hwaddr *h)
+@@ -101,14 +130,1138 @@ const char *qemu_plugin_hwaddr_device_name(const struct qemu_plugin_hwaddr *h)
   */
  static bool has_control;
  static Error *migration_blocker;
@@ -79419,6 +79821,11 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..dcd3b89ad59f364ca6282f6767b3f1fe
 +static qemu_plugin_crucible_hot_fork_child_runtime_cb_t
 +    qemu_plugin_crucible_child_runtime_cb;
 +static void *qemu_plugin_crucible_child_runtime_userdata;
++static qemu_plugin_crucible_selectable_reset_cb_t
++    qemu_plugin_crucible_selectable_reset_cb;
++static void *qemu_plugin_crucible_selectable_reset_userdata;
++static qemu_plugin_id_t qemu_plugin_crucible_selectable_reset_owner;
++static bool qemu_plugin_crucible_selectable_reset_busy;
 +static qemu_plugin_crucible_selectable_reply_cb_t
 +    qemu_plugin_crucible_selectable_reply_cb;
 +static void *qemu_plugin_crucible_selectable_reply_userdata;
@@ -79587,6 +79994,103 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..dcd3b89ad59f364ca6282f6767b3f1fe
 +    qemu_plugin_crucible_child_runtime_cb = cb;
 +    qemu_plugin_crucible_child_runtime_userdata = userdata;
 +    return 0;
++}
++
++int qemu_plugin_crucible_register_selectable_reset(
++    qemu_plugin_id_t plugin_id,
++    qemu_plugin_crucible_selectable_reset_cb_t cb,
++    void *userdata)
++{
++    QEMU_LOCK_GUARD(&qemu_plugin_crucible_resource_lock);
++
++    if (!plugin_id || !cb || !userdata) {
++        return -EINVAL;
++    }
++    if (qemu_plugin_crucible_selectable_reset_cb) {
++        return qemu_plugin_crucible_selectable_reset_owner == plugin_id &&
++               qemu_plugin_crucible_selectable_reset_cb == cb &&
++               qemu_plugin_crucible_selectable_reset_userdata == userdata ?
++               0 : -EALREADY;
++    }
++    if (qemu_plugin_crucible_observed_plugin_id &&
++        qemu_plugin_crucible_observed_plugin_id != plugin_id) {
++        return -EPROTO;
++    }
++    qemu_plugin_crucible_selectable_reset_owner = plugin_id;
++    qemu_plugin_crucible_selectable_reset_cb = cb;
++    qemu_plugin_crucible_selectable_reset_userdata = userdata;
++    return 0;
++}
++
++int qemu_plugin_crucible_selectable_reset_call(
++    uint32_t action,
++    const struct qemu_plugin_crucible_selectable_reset_request *request)
++{
++    qemu_plugin_crucible_selectable_reset_cb_t callback;
++    void *userdata;
++    int status;
++
++    if (!bql_locked() || !request ||
++        action < QEMU_PLUGIN_CRUCIBLE_SELECTABLE_RESET_PREPARE ||
++        action > QEMU_PLUGIN_CRUCIBLE_SELECTABLE_RESET_COMMIT) {
++        return -EINVAL;
++    }
++    qemu_mutex_lock(&qemu_plugin_crucible_barrier_operation_lock);
++    qemu_mutex_lock(&qemu_plugin_crucible_resource_lock);
++    callback = qemu_plugin_crucible_selectable_reset_cb;
++    userdata = qemu_plugin_crucible_selectable_reset_userdata;
++    if (!callback) {
++        qemu_mutex_unlock(&qemu_plugin_crucible_resource_lock);
++        qemu_mutex_unlock(&qemu_plugin_crucible_barrier_operation_lock);
++        return -ENOSYS;
++    }
++    /* Claim before calling loaded code; even a panic-result retains custody. */
++    if (action == QEMU_PLUGIN_CRUCIBLE_SELECTABLE_RESET_PREPARE) {
++        if (qemu_plugin_crucible_selectable_reset_busy) {
++            qemu_mutex_unlock(&qemu_plugin_crucible_resource_lock);
++            qemu_mutex_unlock(&qemu_plugin_crucible_barrier_operation_lock);
++            return -EBUSY;
++        }
++        qemu_plugin_crucible_selectable_reset_busy = true;
++    } else if (!qemu_plugin_crucible_selectable_reset_busy) {
++        qemu_mutex_unlock(&qemu_plugin_crucible_resource_lock);
++        qemu_mutex_unlock(&qemu_plugin_crucible_barrier_operation_lock);
++        return -ESTALE;
++    }
++    qemu_mutex_unlock(&qemu_plugin_crucible_resource_lock);
++
++    status = callback(action, request, userdata);
++    if (status > 0) {
++        status = -EPROTO;
++    }
++    if (!status && action == QEMU_PLUGIN_CRUCIBLE_SELECTABLE_RESET_COMMIT) {
++        qemu_mutex_lock(&qemu_plugin_crucible_resource_lock);
++        qemu_plugin_crucible_selectable_reset_busy = false;
++        qemu_mutex_unlock(&qemu_plugin_crucible_resource_lock);
++    }
++    qemu_mutex_unlock(&qemu_plugin_crucible_barrier_operation_lock);
++    return status;
++}
++
++int qemu_plugin_crucible_selectable_reset_unregister(qemu_plugin_id_t plugin_id)
++{
++    int status = 0;
++
++    /* Serialize removal with every use of the loaded callback address. */
++    qemu_mutex_lock(&qemu_plugin_crucible_barrier_operation_lock);
++    qemu_mutex_lock(&qemu_plugin_crucible_resource_lock);
++    if (qemu_plugin_crucible_selectable_reset_owner == plugin_id) {
++        if (qemu_plugin_crucible_selectable_reset_busy) {
++            status = -EBUSY;
++        } else {
++            qemu_plugin_crucible_selectable_reset_owner = 0;
++            qemu_plugin_crucible_selectable_reset_cb = NULL;
++            qemu_plugin_crucible_selectable_reset_userdata = NULL;
++        }
++    }
++    qemu_mutex_unlock(&qemu_plugin_crucible_resource_lock);
++    qemu_mutex_unlock(&qemu_plugin_crucible_barrier_operation_lock);
++    return status;
 +}
 +
 +int qemu_plugin_crucible_register_selectable_reply(
@@ -80416,7 +80920,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..dcd3b89ad59f364ca6282f6767b3f1fe
          return &has_control;
      }
      return NULL;
-@@ -123,9 +1174,1908 @@ static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
+@@ -123,9 +1276,1908 @@ static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
  void qemu_plugin_update_ns(const void *handle, int64_t new_time)
  {
      if (handle == &has_control) {
@@ -97812,10 +98316,10 @@ index 0000000000000000000000000000000000000000..956059d73495bbe1aacf19550ebe19b1
 +}
 diff --git a/plugins/crucible-fault-lifecycle.c b/plugins/crucible-fault-lifecycle.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..0985c824c23ced182bc2a894013748e9233a4ccb
+index 0000000000000000000000000000000000000000..cfc189ef5bb301030ef98cd404d43f97edc57eda
 --- /dev/null
 +++ b/plugins/crucible-fault-lifecycle.c
-@@ -0,0 +1,2770 @@
+@@ -0,0 +1,2776 @@
 +/*
 + * Crucible deterministic node lifecycle and hang faults
 + *
@@ -98909,6 +99413,12 @@ index 0000000000000000000000000000000000000000..0985c824c23ced182bc2a894013748e9
 +    return crucible_lifecycle_execute(
 +        rule, observed_icount, &plan, true, before_hash, after_hash,
 +        evidence, outcome, event_reservation);
++}
++
++bool qemu_crucible_fault_lifecycle_reset_pending(void)
++{
++    /* A caller lacking the actual serialized boundary cannot certify absence. */
++    return !bql_locked() || crucible_lifecycle_pending_reset.rule != NULL;
 +}
 +
 +void qemu_crucible_fault_lifecycle_reset_complete(void)
@@ -102461,10 +102971,10 @@ index 0000000000000000000000000000000000000000..542ce0a4b1bbcff09a1302f99768a96c
 +}
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..fb28f36dcc3a7ab19a87b68710598ab2d5900e76
+index 0000000000000000000000000000000000000000..9106a118974a554e63561e4fb20eaaa6f8f4c50f
 --- /dev/null
 +++ b/plugins/crucible-fault-node.c
-@@ -0,0 +1,13217 @@
+@@ -0,0 +1,13219 @@
 +/*
 + * Crucible closed-schema node fault rules and lossless occurrence transport
 + *
@@ -109375,7 +109885,9 @@ index 0000000000000000000000000000000000000000..fb28f36dcc3a7ab19a87b68710598ab2
 +        return false;
 +    }
 +    if (!ticket->active || !ticket->ready ||
-+        ticket->replay_phase != CRUCIBLE_CPU_MEMORY_REPLAY_STORE ||
++        ticket->access_class != QEMU_CRUCIBLE_MEMORY_CPU_STORE ||
++        (ticket->replay_phase != CRUCIBLE_CPU_MEMORY_REPLAY_ACCESS &&
++         ticket->replay_phase != CRUCIBLE_CPU_MEMORY_REPLAY_STORE) ||
 +        ticket->store_vaddr != vaddr ||
 +        !node_cpu_memory_ticket_identity(
 +            ticket, cpu, instruction_pc, instruction_ordinal)) {
@@ -121132,10 +121644,10 @@ index 0000000000000000000000000000000000000000..e8d98a0beb68a58aed72e673fb28070c
 +}
 diff --git a/plugins/crucible-paged-ram.c b/plugins/crucible-paged-ram.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..f964c1a131dd09307d88e2a95a833316f163003c
+index 0000000000000000000000000000000000000000..c562db9e9d52b48e0fbe2e8812499754e0ffaa8c
 --- /dev/null
 +++ b/plugins/crucible-paged-ram.c
-@@ -0,0 +1,2535 @@
+@@ -0,0 +1,2843 @@
 +/*
 + * Logical RAM observation and host paging ownership.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -121170,6 +121682,7 @@ index 0000000000000000000000000000000000000000..f964c1a131dd09307d88e2a95a833316
 +#include "qapi/error.h"
 +#include <blake3.h>
 +#ifdef CONFIG_LINUX
++#include <poll.h>
 +#include <sys/sysmacros.h>
 +#endif
 +
@@ -121222,6 +121735,7 @@ index 0000000000000000000000000000000000000000..f964c1a131dd09307d88e2a95a833316
 +static qemu_plugin_crucible_ram_restore_transition_cb_v1 restore_abort;
 +static bool restore_staged;
 +static bool restore_destructive;
++static bool restore_operation_claimed;
 +static __thread bool mutation_bql_owned;
 +static __thread bool mutation_writer_scope;
 +static __thread bool mutation_preflight_scope;
@@ -121243,6 +121757,32 @@ index 0000000000000000000000000000000000000000..f964c1a131dd09307d88e2a95a833316
 +static bool admission_grant_open;
 +static bool admission_grant_applied;
 +static uint64_t admission_grant_owner;
++
++enum ResearchResidentState {
++    RESEARCH_RESIDENT_ABSENT,
++    RESEARCH_RESIDENT_REQUESTING,
++    RESEARCH_RESIDENT_REQUESTED,
++    RESEARCH_RESIDENT_SEALING,
++    RESEARCH_RESIDENT_SEALED,
++    RESEARCH_RESIDENT_FAILED,
++};
++
++/* GPL-private classification, not a resource issuer. Inventory/FD fields use BQL;
++ * the host retains the original role and this borrowed event through teardown.
++ * State publications are atomic so off-BQL refusal cannot enter the ordinary
++ * absent-owner branch; remaining fields are accessed only under BQL. */
++static struct {
++    enum ResearchResidentState state;
++    int cancellation_fd;
++    uint64_t total_metadata;
++    uint64_t full_resident;
++    uint64_t full_backing;
++    uint64_t sealed_topology;
++} research_resident;
++
++/* Keep research-only validation scratch outside the ordinary resume frame. */
++static int research_resident_before_resume(void)
++    __attribute__((cold, noinline));
 +
 +static int diagnostic_failure;
 +
@@ -121313,6 +121853,12 @@ index 0000000000000000000000000000000000000000..f964c1a131dd09307d88e2a95a833316
 +    status = qemu_crucible_ram_diagnostic_failure();
 +    if (status) {
 +        return status;
++    }
++    if (qatomic_read(&research_resident.state) != RESEARCH_RESIDENT_ABSENT) {
++        if (!bql_locked()) {
++            return -EPERM;
++        }
++        return research_resident_before_resume();
 +    }
 +    if (!qemu_crucible_ram_paging_requested()) {
 +        return 0;
@@ -121708,6 +122254,86 @@ index 0000000000000000000000000000000000000000..f964c1a131dd09307d88e2a95a833316
 +    return 0;
 +}
 +
++static int research_resident_cancellation_status(int fd)
++{
++#ifdef CONFIG_LINUX
++    struct pollfd cancellation = { .fd = fd, .events = POLLIN };
++    int status;
++
++    if (fcntl(fd, F_GETFD) < 0) {
++        return -errno;
++    }
++    status = poll(&cancellation, 1, 0);
++    if (status < 0) {
++        return -errno;
++    }
++    if (cancellation.revents & (POLLERR | POLLHUP | POLLNVAL)) {
++        return -EBADF;
++    }
++    if (cancellation.revents & POLLIN) {
++        return -ECANCELED;
++    }
++    return cancellation.revents ? -EPROTO : 0;
++#else
++    return -ENOTSUP;
++#endif
++}
++
++int qemu_plugin_crucible_ram_research_resident_request_v1(
++    uint32_t schema, uint64_t total_metadata, uint64_t full_resident,
++    uint64_t full_backing, int cancellation_fd)
++{
++    int status;
++
++    if (!bql_locked()) {
++        return -EPERM;
++    }
++    if (qatomic_cmpxchg(&research_resident.state,
++                       RESEARCH_RESIDENT_ABSENT, RESEARCH_RESIDENT_REQUESTING) !=
++        RESEARCH_RESIDENT_ABSENT) {
++        return -EBUSY;
++    }
++    /* Publish the claim before any fallible descriptor observation. A bad
++     * request cannot silently become an ordinary managed or resident launch. */
++    if (schema != 1 || !total_metadata || !full_resident || !full_backing ||
++        cancellation_fd != 11 || admission_regions || capture_active) {
++        qatomic_set(&research_resident.state, RESEARCH_RESIDENT_FAILED);
++        return -EINVAL;
++    }
++    status = research_resident_cancellation_status(cancellation_fd);
++    if (status) {
++        qatomic_set(&research_resident.state, RESEARCH_RESIDENT_FAILED);
++        return status;
++    }
++    research_resident.cancellation_fd = cancellation_fd;
++    research_resident.total_metadata = total_metadata;
++    research_resident.full_resident = full_resident;
++    research_resident.full_backing = full_backing;
++    if (qatomic_cmpxchg(&research_resident.state, RESEARCH_RESIDENT_REQUESTING,
++                       RESEARCH_RESIDENT_REQUESTED) != RESEARCH_RESIDENT_REQUESTING) {
++        return -ENOTSUP;
++    }
++    return 0;
++}
++
++/* Unsupported lifecycle calls can originate outside BQL. They only close
++ * this atomic selection scalar; inventory and descriptor fields stay untouched. */
++int __attribute__((cold))
++qemu_plugin_crucible_ram_research_resident_refuse_transition_v1(void)
++{
++    enum ResearchResidentState previous;
++
++    do {
++        previous = qatomic_read(&research_resident.state);
++        if (previous == RESEARCH_RESIDENT_ABSENT ||
++            previous == RESEARCH_RESIDENT_FAILED) {
++            return -ENOTSUP;
++        }
++    } while (qatomic_cmpxchg(&research_resident.state, previous,
++                            RESEARCH_RESIDENT_FAILED) != previous);
++    return -ENOTSUP;
++}
++
 +int qemu_plugin_crucible_ram_admission_grant_v1(
 +    uint64_t generation, uint64_t total_metadata_bytes, uint64_t *rust_allowance)
 +{
@@ -121715,6 +122341,11 @@ index 0000000000000000000000000000000000000000..f964c1a131dd09307d88e2a95a833316
 +        admission_grant_applied || admission_grant_owner != qemu_get_thread_id() ||
 +        generation != admission.topology_generation ||
 +        generation != qatomic_read(&topology_generation)) {
++        return -EPERM;
++    }
++    if (qatomic_read(&research_resident.state) != RESEARCH_RESIDENT_ABSENT &&
++        (qatomic_read(&research_resident.state) != RESEARCH_RESIDENT_SEALING ||
++         total_metadata_bytes != research_resident.total_metadata)) {
 +        return -EPERM;
 +    }
 +    if (total_metadata_bytes <= admission.native_metadata_bytes) {
@@ -121767,6 +122398,14 @@ index 0000000000000000000000000000000000000000..f964c1a131dd09307d88e2a95a833316
 +    int source_fd, int cancellation_fd)
 +{
 +    int status;
++    bool research_selected = qatomic_read(&research_resident.state) !=
++        RESEARCH_RESIDENT_ABSENT;
++
++    /* Preserve original validation/first-error priority while closing this
++     * unsupported class before any transition callback or authority effect. */
++    if (research_selected) {
++        qemu_plugin_crucible_ram_research_resident_refuse_transition_v1();
++    }
 +
 +    if (!bql_locked() || !runstate_check(RUN_STATE_PAUSED) ||
 +        !qemu_plugin_crucible_vmstop_quiesced() || restore_staged ||
@@ -121783,11 +122422,22 @@ index 0000000000000000000000000000000000000000..f964c1a131dd09307d88e2a95a833316
 +    if (status) {
 +        return status;
 +    }
++    if (research_selected) {
++        return -ENOTSUP;
++    }
++    status = qemu_crucible_selectable_restore_begin();
++    if (status) {
++        return status;
++    }
++    restore_operation_claimed = true;
 +    status = restore_prepare(root_record, root_length, root_digest,
 +                             topology_digest, session, owner, generation,
 +                             source_fd, cancellation_fd);
 +    if (!status) {
 +        restore_staged = true;
++    } else {
++        restore_operation_claimed = false;
++        qemu_crucible_selectable_restore_end();
 +    }
 +    return status;
 +}
@@ -121795,6 +122445,14 @@ index 0000000000000000000000000000000000000000..f964c1a131dd09307d88e2a95a833316
 +int qemu_plugin_crucible_ram_restore_commit_v1(void)
 +{
 +    int failure;
++    bool research_selected = qatomic_read(&research_resident.state) !=
++        RESEARCH_RESIDENT_ABSENT;
++
++    /* Preserve original validation/first-error priority while closing this
++     * unsupported class before any transition callback or authority effect. */
++    if (research_selected) {
++        qemu_plugin_crucible_ram_research_resident_refuse_transition_v1();
++    }
 +
 +    if (!bql_locked() || !runstate_check(RUN_STATE_PAUSED) ||
 +        !restore_staged || restore_destructive || !restore_commit) {
@@ -121804,24 +122462,47 @@ index 0000000000000000000000000000000000000000..f964c1a131dd09307d88e2a95a833316
 +    if (failure) {
 +        return failure;
 +    }
++    if (research_selected) {
++        return -ENOTSUP;
++    }
 +    /* A failed destructive transition retains service/registration ownership;
 +     * neither retry nor abort may turn missing guest bytes into anonymous zeros.
 +     */
 +    restore_destructive = true;
 +    restore_staged = false;
-+    return restore_commit();
++    failure = restore_commit();
++    if (!failure && restore_operation_claimed) {
++        restore_operation_claimed = false;
++        qemu_crucible_selectable_restore_end();
++    }
++    return failure;
 +}
 +
 +int qemu_plugin_crucible_ram_restore_abort_v1(void)
 +{
 +    int status;
++    bool research_selected = qatomic_read(&research_resident.state) !=
++        RESEARCH_RESIDENT_ABSENT;
++
++    /* Preserve original validation/first-error priority while closing this
++     * unsupported class before any transition callback or authority effect. */
++    if (research_selected) {
++        qemu_plugin_crucible_ram_research_resident_refuse_transition_v1();
++    }
 +
 +    if (!bql_locked() || !restore_staged || restore_destructive || !restore_abort) {
 +        return -EINVAL;
 +    }
++    if (research_selected) {
++        return -ENOTSUP;
++    }
 +    status = restore_abort();
 +    if (!status) {
 +        restore_staged = false;
++        if (restore_operation_claimed) {
++            restore_operation_claimed = false;
++            qemu_crucible_selectable_restore_end();
++        }
 +    }
 +    return status;
 +}
@@ -121992,6 +122673,15 @@ index 0000000000000000000000000000000000000000..f964c1a131dd09307d88e2a95a833316
 +
 +int qemu_plugin_crucible_ram_capture_rebind_v1(void)
 +{
++    bool research_selected = qatomic_read(&research_resident.state) !=
++        RESEARCH_RESIDENT_ABSENT;
++
++    /* Preserve original validation/first-error priority while closing this
++     * unsupported class before any transition callback or authority effect. */
++    if (research_selected) {
++        qemu_plugin_crucible_ram_research_resident_refuse_transition_v1();
++    }
++
 +    if (!bql_locked() || capture_active || mutation_writer_scope ||
 +        !admission_regions || !runstate_check(RUN_STATE_PAUSED) ||
 +        capture_generation == UINT64_MAX) {
@@ -121999,6 +122689,9 @@ index 0000000000000000000000000000000000000000..f964c1a131dd09307d88e2a95a833316
 +    }
 +    if (qemu_crucible_ram_diagnostic_failure()) {
 +        return qemu_crucible_ram_diagnostic_failure();
++    }
++    if (research_selected) {
++        return -ENOTSUP;
 +    }
 +    /* The child owns COW-private bitmap/capture authority. Topology identity
 +     * remains stable so the inherited immutable root cache remains reusable.
@@ -122194,7 +122887,7 @@ index 0000000000000000000000000000000000000000..f964c1a131dd09307d88e2a95a833316
 +    return 0;
 +}
 +
-+int qemu_crucible_ram_seal_admission(Error **errp)
++static int seal_admission_inventory(Error **errp)
 +{
 +    GPtrArray *regions;
 +    uint64_t logical_bytes = 0;
@@ -122246,6 +122939,12 @@ index 0000000000000000000000000000000000000000..f964c1a131dd09307d88e2a95a833316
 +    if (status) {
 +        goto inventory_failed;
 +    }
++    if (qatomic_read(&research_resident.state) == RESEARCH_RESIDENT_SEALING &&
++        (logical_bytes > research_resident.full_resident ||
++         logical_bytes > research_resident.full_backing)) {
++        status = -ENOSPC;
++        goto inventory_failed;
++    }
 +    /* One sealed inventory and one temporary observation inventory coexist.
 +     * The allowance covers conservative allocator/container overhead. Dirty
 +     * bitmap accounting includes headers still awaiting RCU reclamation.
@@ -122253,6 +122952,10 @@ index 0000000000000000000000000000000000000000..f964c1a131dd09307d88e2a95a833316
 +    native_floor = (uint64_t)regions->len *
 +        2 * (sizeof(CrucibleRamRegion) + 32 + 2 * sizeof(void *)) + 128 +
 +        qemu_crucible_ram_owner_metadata_bytes();
++    if (qatomic_read(&research_resident.state) == RESEARCH_RESIDENT_SEALING) {
++        /* This actual retained state is charged before TOTAL is partitioned. */
++        native_floor += sizeof(research_resident);
++    }
 +    status = qemu_crucible_ram_dirty_rearm_metadata_bytes(&admitted_rearm_metadata);
 +    if (!status && admitted_rearm_metadata <= UINT64_MAX - native_floor) {
 +        native_floor += admitted_rearm_metadata;
@@ -122314,6 +123017,98 @@ index 0000000000000000000000000000000000000000..f964c1a131dd09307d88e2a95a833316
 +inventory_failed:
 +    g_ptr_array_unref(regions);
 +    error_setg(errp, "logical RAM native inventory admission failed (%d)", status);
++    return status;
++}
++
++int qemu_crucible_ram_seal_admission(Error **errp)
++{
++    int status;
++
++    if (!bql_locked() ||
++        qatomic_read(&research_resident.state) == RESEARCH_RESIDENT_ABSENT) {
++        return seal_admission_inventory(errp);
++    }
++    if (qatomic_read(&research_resident.state) != RESEARCH_RESIDENT_REQUESTED ||
++        metadata_budget != research_resident.total_metadata) {
++        qatomic_set(&research_resident.state, RESEARCH_RESIDENT_FAILED);
++        error_setg(errp, "experimental resident admission is not pending");
++        return -EPERM;
++    }
++    if (qatomic_cmpxchg(&research_resident.state, RESEARCH_RESIDENT_REQUESTED,
++                       RESEARCH_RESIDENT_SEALING) != RESEARCH_RESIDENT_REQUESTED) {
++        error_setg(errp, "experimental resident transition was refused");
++        return -ENOTSUP;
++    }
++    status = research_resident_cancellation_status(
++        research_resident.cancellation_fd);
++    if (status) {
++        qatomic_set(&research_resident.state, RESEARCH_RESIDENT_FAILED);
++        error_setg(errp, "experimental resident admission canceled (%d)", status);
++        return status;
++    }
++
++    status = seal_admission_inventory(errp);
++    if (status) {
++        qatomic_set(&research_resident.state, RESEARCH_RESIDENT_FAILED);
++        return status;
++    }
++    status = research_resident_cancellation_status(
++        research_resident.cancellation_fd);
++    if (!status &&
++        qatomic_read(&research_resident.state) != RESEARCH_RESIDENT_SEALING) {
++        status = -ENOTSUP;
++    }
++    if (!status && (!admission_grant_applied || !rust_metadata_budget ||
++                    admission.schema != 1 || !admission.topology_generation ||
++                    admission.topology_generation != qatomic_read(&topology_generation))) {
++        status = -ESTALE;
++    }
++    if (!status && qatomic_cmpxchg(&research_resident.state, RESEARCH_RESIDENT_SEALING,
++                                  RESEARCH_RESIDENT_SEALED) != RESEARCH_RESIDENT_SEALING) {
++        status = -ENOTSUP;
++    }
++    if (status) {
++        qatomic_set(&research_resident.state, RESEARCH_RESIDENT_FAILED);
++        g_ptr_array_unref(admission_regions);
++        admission_regions = NULL;
++        rust_metadata_budget = 0;
++        memset(&admission, 0, sizeof(admission));
++        error_setg(errp, "experimental resident admission did not settle (%d)", status);
++        return status;
++    }
++    research_resident.sealed_topology = admission.topology_generation;
++    return 0;
++}
++
++static int research_resident_before_resume(void)
++{
++    uint64_t stop_generation = qemu_plugin_crucible_vmstop_generation();
++    int status;
++
++    /* This is the explicitly weaker experimental placement class. It is not
++     * an ordinary pager callback or a physical residency certificate. */
++    if (qatomic_read(&research_resident.state) != RESEARCH_RESIDENT_SEALED ||
++        !runstate_check(RUN_STATE_PAUSED) ||
++        !qemu_plugin_crucible_vmstop_quiesced() || !admission_regions ||
++        !stop_generation || stop_generation == UINT64_MAX ||
++        !admission_grant_applied || admission_grant_open ||
++        admission.topology_generation != research_resident.sealed_topology ||
++        admission.topology_generation != qatomic_read(&topology_generation)) {
++        qatomic_set(&research_resident.state, RESEARCH_RESIDENT_FAILED);
++        return -EPERM;
++    }
++    status = research_resident_cancellation_status(
++        research_resident.cancellation_fd);
++    if (!status &&
++        qatomic_read(&research_resident.state) != RESEARCH_RESIDENT_SEALED) {
++        status = -ENOTSUP;
++    }
++    if (!status && stop_generation != qemu_plugin_crucible_vmstop_generation()) {
++        status = -ESTALE;
++    }
++    if (status) {
++        qatomic_set(&research_resident.state, RESEARCH_RESIDENT_FAILED);
++    }
 +    return status;
 +}
 +
@@ -122520,7 +123315,7 @@ index 0000000000000000000000000000000000000000..f964c1a131dd09307d88e2a95a833316
 +    return 0;
 +}
 +
-+int qemu_plugin_crucible_ram_restore_ack_source_v1(uint64_t generation)
++static inline int restore_ack_source_preflight(uint64_t generation)
 +{
 +    if (!bql_locked() || !runstate_check(RUN_STATE_PAUSED) ||
 +        !qemu_plugin_crucible_vmstop_quiesced() || capture_active ||
@@ -122531,6 +123326,31 @@ index 0000000000000000000000000000000000000000..f964c1a131dd09307d88e2a95a833316
 +    if (qemu_crucible_ram_diagnostic_failure()) {
 +        return qemu_crucible_ram_diagnostic_failure();
 +    }
++    return 0;
++}
++
++static int __attribute__((cold, noinline))
++research_refuse_restore_ack_source(uint64_t generation)
++{
++    int status;
++
++    qemu_plugin_crucible_ram_research_resident_refuse_transition_v1();
++    status = restore_ack_source_preflight(generation);
++    return status ? status : -ENOTSUP;
++}
++
++int qemu_plugin_crucible_ram_restore_ack_source_v1(uint64_t generation)
++{
++    int status;
++
++    if (qatomic_read(&research_resident.state) != RESEARCH_RESIDENT_ABSENT) {
++        return research_refuse_restore_ack_source(generation);
++    }
++    status = restore_ack_source_preflight(generation);
++    if (status) {
++        return status;
++    }
++
 +    for (size_t index = 0; index < admission_regions->len; index++) {
 +        CrucibleRamRegion *region = g_ptr_array_index(admission_regions, index);
 +
@@ -123848,16 +124668,21 @@ index 0000000000000000000000000000000000000000..a6505f56ae310e902e678903407476ba
 +
 +#endif
 diff --git a/plugins/loader.c b/plugins/loader.c
-index b10ebe8cc050e5dc436aaf62f04adc5f9eae5fd1..269bbde2f8324b8fa39facba65dc12456ef50103 100644
+index b10ebe8cc050e5dc436aaf62f04adc5f9eae5fd1..24f50c874a335eca9628c426a24495a72f93fe40 100644
 --- a/plugins/loader.c
 +++ b/plugins/loader.c
-@@ -391,6 +391,11 @@ void plugin_reset_uninstall(qemu_plugin_id_t id,
+@@ -391,6 +391,16 @@ void plugin_reset_uninstall(qemu_plugin_id_t id,
      struct qemu_plugin_reset_data *data;
      struct qemu_plugin_ctx *ctx = NULL;
  
 +    if (qemu_plugin_crucible_selectable_reply_owner_registered(id)) {
 +        error_report("Crucible selectable reply owner is process-lifetime and cannot be reset or uninstalled");
 +        abort();
++    }
++
++    if (qemu_plugin_crucible_selectable_reset_unregister(id) != 0) {
++        error_report("Crucible correlated reset retains its loaded owner until VM retirement");
++        return;
 +    }
 +
      WITH_QEMU_LOCK_GUARD(&plugin.lock) {
@@ -123943,7 +124768,7 @@ index 1f87b078505ad1ec41c2a8efb037fed0b3cae069..2d99203a7eeead610af03ea47d988ed9
        'file':       'BlockdevOptionsFile',
        'ftp':        'BlockdevOptionsCurlFtp',
 diff --git a/qapi/misc.json b/qapi/misc.json
-index 22b7afed9f650c866f81aa154e6ba03dcc606c44..4b50455cc2425a9b96b65e6a7094f79eccccca3d 100644
+index 22b7afed9f650c866f81aa154e6ba03dcc606c44..f57ba81629358106143c12722dcdce99745c2f43 100644
 --- a/qapi/misc.json
 +++ b/qapi/misc.json
 @@ -181,6 +181,172 @@
@@ -124181,7 +125006,7 @@ index 22b7afed9f650c866f81aa154e6ba03dcc606c44..4b50455cc2425a9b96b65e6a7094f79e
  ##
  # @CommandLineParameterType:
  #
-@@ -605,3 +798,164 @@
+@@ -605,3 +798,195 @@
  { 'event': 'VFU_CLIENT_HANGUP',
    'data': { 'vfu-id': 'str', 'vfu-qom-path': 'str',
              'dev-id': 'str', 'dev-qom-path': 'str' } }
@@ -124346,14 +125171,106 @@ index 22b7afed9f650c866f81aa154e6ba03dcc606c44..4b50455cc2425a9b96b65e6a7094f79e
 +{ 'command': 'query-crucible-kernel-swap-admission-v1',
 +  'data': { 'expected-generation': 'uint64', 'cancellation-fdname': 'str' },
 +  'returns': 'CrucibleKernelSwapAdmission' }
++
++##
++# @crucible-selectable-reset-v1:
++#
++# Stages an exact pending selectable token for a dedicated reset.
++# Requires a paused quiescent deterministic VM without queued reset,
++# lifecycle restore, rebuild or reboot-as-shutdown work.  The empty
++# reply acknowledges acceptance; a separate event reports completion
++# or refusal.  Stale VM-wide correlations fail without fallback.
++#
++# @schema-version: Exact version 1.
++#
++# @correlation: Nonzero VM-wide monotonic host correlation.
++#
++# @request-hex: Lowercase canonical request hex, at most 9216 chars.
++#
++# @raw-icount: Exact original pending coordinate.
++#
++# @trap-tick-ps: Exact original pending tick.
++#
++# @vcpu-index: Exact pending request vCPU.
++#
++# @reply-address: Exact original virtual reply range address.
++#
++# Since: 11.1 (Crucible downstream extension)
++##
++{ 'command': 'crucible-selectable-reset-v1',
++  'data': { 'schema-version': 'uint32', 'correlation': 'uint64',
++            'request-hex': 'str', 'raw-icount': 'uint64',
++            'trap-tick-ps': 'uint64', 'vcpu-index': 'uint32',
++            'reply-address': 'uint64' } }
 diff --git a/qapi/run-state.json b/qapi/run-state.json
-index a5771ad46815528fef2c2ebfa538d4e023a19969..1c68e9f2fa3d7448ab7a74dac2a005bf8eda5d46 100644
+index a5771ad46815528fef2c2ebfa538d4e023a19969..84d4240f355cce89c0332d1e231f62232264e3c1 100644
 --- a/qapi/run-state.json
 +++ b/qapi/run-state.json
-@@ -133,6 +133,3214 @@
-   'allow-preconfig': true }
- 
- ##
+@@ -78,61 +78,3273 @@
+ #
+ # @host-ui: Reaction to a UI event, like window close
+ #
++# @host-crucible-selectable-reset: Correlated host reset retaining one
++#     exact pending selectable request (Crucible downstream extension)
++#
+ # @guest-shutdown: Guest shutdown/suspend request, via ACPI or other
+ #     hardware-specific means
+ #
+-# @guest-reset: Guest reset request, and command line turns that into
+-#     a shutdown
++# @guest-reset: Guest reset request, and command line turns that into
++#     a shutdown
++#
++# @guest-panic: Guest panicked, and command line turns that into a
++#     shutdown
++#
++# @subsystem-reset: Partial guest reset that does not trigger QMP
++#     events and ignores --no-reboot.  This is useful for sanitizing
++#     hypercalls on s390 that are used during kexec/kdump/boot
++#
++# @snapshot-load: A snapshot is being loaded by the record & replay
++#     subsystem.  This value is used only within QEMU.  It doesn't
++#     occur in QMP.  (since 7.2)
++##
++{ 'enum': 'ShutdownCause',
++  # Beware, shutdown_caused_by_guest() depends on enumeration order
++  'data': [ 'none', 'host-error', 'host-qmp-quit', 'host-qmp-system-reset',
++            'host-signal', 'host-ui', 'host-crucible-selectable-reset',
++            'guest-shutdown', 'guest-reset',
++            'guest-panic', 'subsystem-reset', 'snapshot-load'] }
++
++##
++# @StatusInfo:
++#
++# Information about VM run state
++#
++# @running: true if all VCPUs are runnable, false if not runnable
++#
++# @status: the virtual machine `RunState`
++#
++# Since: 0.14
++##
++{ 'struct': 'StatusInfo',
++  'data': {'running': 'bool',
++           'status': 'RunState'} }
++
++##
++# @query-status:
++#
++# Query the run status of the VM
++#
++# Since: 0.14
++#
++# .. qmp-example::
++#
++#     -> { "execute": "query-status" }
++#     <- { "return": { "running": true,
++#                      "status": "running" } }
++##
++{ 'command': 'query-status', 'returns': 'StatusInfo',
++  'allow-preconfig': true }
++
++##
 +# @CrucibleHotForkBlockBarrierAction:
 +#
 +# Operation over QEMU's reversible all-block drain section.
@@ -126638,11 +127555,16 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..1c68e9f2fa3d7448ab7a74dac2a005bf
 +# @stage: duplicate and authenticate two standard-QMP `getfd` entries
 +#
 +# @query: observe the retained endpoint pair without changing it
-+#
+ #
+-# @guest-panic: Guest panicked, and command line turns that into a
+-#     shutdown
 +# @release: close the exact QEMU-retained duplicates; the monitor's
 +#     `getfd` entries remain separately owned until standard QMP
 +#     `closefd`
-+#
+ #
+-# @subsystem-reset: Partial guest reset that does not trigger QMP
+-#     events and ignores --no-reboot.  This is useful for sanitizing
+-#     hypercalls on s390 that are used during kexec/kdump/boot
 +# Since: 10.0 (Crucible downstream extension)
 +##
 +{ 'enum': 'CrucibleHotForkPluginEndpointAction',
@@ -126650,7 +127572,10 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..1c68e9f2fa3d7448ab7a74dac2a005bf
 +
 +##
 +# @CrucibleHotForkPluginEndpointState:
-+#
+ #
+-# @snapshot-load: A snapshot is being loaded by the record & replay
+-#     subsystem.  This value is used only within QEMU.  It doesn't
+-#     occur in QMP.  (since 7.2)
 +# Exact QEMU-owned state for one authenticated branch-private plugin
 +# endpoint pair.  For a template-bound stage, version 5 records the
 +# exact quiescent plugin-barrier generation, complete worker masks,
@@ -126767,7 +127692,12 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..1c68e9f2fa3d7448ab7a74dac2a005bf
 +            'disposition-complete': 'bool',
 +            'readiness-proof-acknowledged': 'bool' } }
 +
-+##
+ ##
+-{ 'enum': 'ShutdownCause',
+-  # Beware, shutdown_caused_by_guest() depends on enumeration order
+-  'data': [ 'none', 'host-error', 'host-qmp-quit', 'host-qmp-system-reset',
+-            'host-signal', 'host-ui', 'guest-shutdown', 'guest-reset',
+-            'guest-panic', 'subsystem-reset', 'snapshot-load'] }
 +# @crucible-hot-fork-plugin-endpoints:
 +#
 +# Retains or observes authenticated duplicates of standard-QMP `getfd`
@@ -126804,41 +127734,56 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..1c68e9f2fa3d7448ab7a74dac2a005bf
 +            '*expected-wake-eventfd-id': 'uint64' },
 +  'returns': 'CrucibleHotForkPluginEndpointState',
 +  'allow-oob': true }
-+
-+##
+ 
+ ##
+-# @StatusInfo:
 +# @CrucibleHotForkDiagnosticAction:
-+#
+ #
+-# Information about VM run state
 +# Operation over QEMU's retained duplicate of one branch-private
 +# diagnostics stream.
-+#
+ #
+-# @running: true if all VCPUs are runnable, false if not runnable
 +# @stage: duplicate and authenticate one standard-QMP `getfd` entry
-+#
+ #
+-# @status: the virtual machine `RunState`
 +# @query: observe the retained stream without changing it
-+#
+ #
+-# Since: 0.14
 +# @release: close the exact QEMU-retained duplicate; the monitor's
 +#     `getfd` entry remains separately owned until standard QMP
 +#     `closefd`
 +#
 +# Since: 10.0 (Crucible downstream extension)
-+##
+ ##
+-{ 'struct': 'StatusInfo',
+-  'data': {'running': 'bool',
+-           'status': 'RunState'} }
 +{ 'enum': 'CrucibleHotForkDiagnosticAction',
 +  'data': [ 'stage', 'query', 'release' ] }
-+
-+##
+ 
+ ##
+-# @query-status:
 +# @CrucibleHotForkDiagnosticState:
-+#
+ #
+-# Query the run status of the VM
 +# Exact QEMU-owned state for the branch-private nonblocking
 +# diagnostics stream installed as a future fork child's stderr.
 +# Version 1 authenticates the connected AF_UNIX stream by Linux
 +# SO_COOKIE.  Template-bound staging prepares one source-to-stderr
 +# contribution; the contribution becomes sealed only when the complete
 +# child resource plan is composed.
-+#
+ #
+-# Since: 0.14
 +# @schema-version: retained diagnostics contract version, currently 1
-+#
+ #
+-# .. qmp-example::
 +# @generation: process-local positive mutation generation, or zero
 +#     initially
-+#
+ #
+-#     -> { "execute": "query-status" }
+-#     <- { "return": { "running": true,
+-#                      "status": "running" } }
 +# @template-generation: exact template transaction generation that
 +#     admitted the stream, or zero when absent
 +#
@@ -126867,7 +127812,9 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..1c68e9f2fa3d7448ab7a74dac2a005bf
 +#     acknowledges no hot-fork readiness proof
 +#
 +# Since: 10.0 (Crucible downstream extension)
-+##
+ ##
+-{ 'command': 'query-status', 'returns': 'StatusInfo',
+-  'allow-preconfig': true }
 +{ 'struct': 'CrucibleHotForkDiagnosticState',
 +  'data': { 'schema-version': 'uint32',
 +            'generation': 'uint64',
@@ -127370,8 +128317,8 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..1c68e9f2fa3d7448ab7a74dac2a005bf
 +            'maximum-ram-bytes': 'uint64',
 +            'maximum-device-bytes': 'uint64' },
 +  'returns': 'CrucibleCheckpointCapture' }
-+
-+##
+ 
+ ##
 +# @crucible-checkpoint-commit:
 +#
 +# Commits the exact active candidate, advances the private dirty
@@ -127565,7 +128512,7 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..1c68e9f2fa3d7448ab7a74dac2a005bf
  # @SHUTDOWN:
  #
  # Emitted when the virtual machine has shut down, indicating that QEMU
-@@ -156,7 +3364,8 @@
+@@ -156,7 +3368,8 @@
  #
  #     <- { "event": "SHUTDOWN",
  #          "data": { "guest": true, "reason": "guest-shutdown" },
@@ -127575,7 +128522,7 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..1c68e9f2fa3d7448ab7a74dac2a005bf
  ##
  { 'event': 'SHUTDOWN', 'data': { 'guest': 'bool', 'reason': 'ShutdownCause' } }
  
-@@ -171,7 +3380,8 @@
+@@ -171,7 +3384,8 @@
  # .. qmp-example::
  #
  #     <- { "event": "POWERDOWN",
@@ -127585,7 +128532,7 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..1c68e9f2fa3d7448ab7a74dac2a005bf
  ##
  { 'event': 'POWERDOWN' }
  
-@@ -193,7 +3403,8 @@
+@@ -193,7 +3407,8 @@
  #
  #     <- { "event": "RESET",
  #          "data": { "guest": false, "reason": "guest-reset" },
@@ -127595,7 +128542,7 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..1c68e9f2fa3d7448ab7a74dac2a005bf
  ##
  { 'event': 'RESET', 'data': { 'guest': 'bool', 'reason': 'ShutdownCause' } }
  
-@@ -207,7 +3418,8 @@
+@@ -207,7 +3422,8 @@
  # .. qmp-example::
  #
  #     <- { "event": "STOP",
@@ -127605,7 +128552,7 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..1c68e9f2fa3d7448ab7a74dac2a005bf
  ##
  { 'event': 'STOP' }
  
-@@ -221,7 +3433,8 @@
+@@ -221,7 +3437,8 @@
  # .. qmp-example::
  #
  #     <- { "event": "RESUME",
@@ -127615,7 +128562,7 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..1c68e9f2fa3d7448ab7a74dac2a005bf
  ##
  { 'event': 'RESUME' }
  
-@@ -236,7 +3449,8 @@
+@@ -236,7 +3453,8 @@
  # .. qmp-example::
  #
  #     <- { "event": "SUSPEND",
@@ -127625,7 +128572,7 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..1c68e9f2fa3d7448ab7a74dac2a005bf
  ##
  { 'event': 'SUSPEND' }
  
-@@ -255,7 +3469,8 @@
+@@ -255,7 +3473,8 @@
  # .. qmp-example::
  #
  #     <- { "event": "SUSPEND_DISK",
@@ -127635,7 +128582,7 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..1c68e9f2fa3d7448ab7a74dac2a005bf
  ##
  { 'event': 'SUSPEND_DISK' }
  
-@@ -270,7 +3485,8 @@
+@@ -270,7 +3489,8 @@
  # .. qmp-example::
  #
  #     <- { "event": "WAKEUP",
@@ -127645,7 +128592,7 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..1c68e9f2fa3d7448ab7a74dac2a005bf
  ##
  { 'event': 'WAKEUP' }
  
-@@ -293,7 +3509,8 @@
+@@ -293,7 +3513,8 @@
  #
  #     <- { "event": "WATCHDOG",
  #          "data": { "action": "reset" },
@@ -127655,7 +128602,7 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..1c68e9f2fa3d7448ab7a74dac2a005bf
  ##
  { 'event': 'WATCHDOG',
    'data': { 'action': 'WatchdogAction' } }
-@@ -438,7 +3655,8 @@
+@@ -438,7 +3659,8 @@
  #
  #     <- { "event": "GUEST_PANICKED",
  #          "data": { "action": "pause" },
@@ -127665,7 +128612,7 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..1c68e9f2fa3d7448ab7a74dac2a005bf
  ##
  { 'event': 'GUEST_PANICKED',
    'data': { 'action': 'GuestPanicAction', '*info': 'GuestPanicInformation' } }
-@@ -458,7 +3676,8 @@
+@@ -458,7 +3680,8 @@
  #
  #     <- { "event": "GUEST_CRASHLOADED",
  #          "data": { "action": "run" },
@@ -127675,7 +128622,7 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..1c68e9f2fa3d7448ab7a74dac2a005bf
  ##
  { 'event': 'GUEST_CRASHLOADED',
    'data': { 'action': 'GuestPanicAction', '*info': 'GuestPanicInformation' } }
-@@ -473,7 +3692,8 @@
+@@ -473,7 +3696,8 @@
  # .. qmp-example::
  #
  #     <- { "event": "GUEST_PVSHUTDOWN",
@@ -127685,7 +128632,7 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..1c68e9f2fa3d7448ab7a74dac2a005bf
  ##
  { 'event': 'GUEST_PVSHUTDOWN' }
  
-@@ -664,7 +3884,8 @@
+@@ -664,7 +3888,8 @@
  #                    "action": "fatal",
  #                    "flags": { "action-required": false,
  #                               "recursive": false } },
@@ -127695,6 +128642,68 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..1c68e9f2fa3d7448ab7a74dac2a005bf
  ##
  { 'event': 'MEMORY_FAILURE',
    'data': { 'recipient': 'MemoryFailureRecipient',
+@@ -749,3 +3974,61 @@
+ ##
+ { 'enum': 'NotifyVmexitOption',
+   'data': [ 'run', 'internal-error', 'disable' ] }
++
++##
++# @CRUCIBLE_SELECTABLE_RESET_COMPLETED:
++#
++# Reports terminal reset after CPU synchronization, lifecycle closure,
++# deterministic handoff readiness and exact catalog abandonment.
++# Ordinary RESET does not establish this correlated completion.
++#
++# @schema-version: Exact version 1.
++#
++# @correlation: Accepted VM-wide monotonic host correlation.
++#
++# @request-sequence: Exact retained request sequence.
++#
++# @raw-icount: Original retained request coordinate.
++#
++# @trap-tick-ps: Original retained request tick.
++#
++# @vcpu-index: Original request vCPU.
++#
++# @observation-generation: Fresh nonzero VM-wide observation.
++#
++# Since: 11.1 (Crucible downstream extension)
++##
++{ 'event': 'CRUCIBLE_SELECTABLE_RESET_COMPLETED',
++  'data': { 'schema-version': 'uint32', 'correlation': 'uint64',
++            'request-sequence': 'uint64', 'raw-icount': 'uint64',
++            'trap-tick-ps': 'uint64', 'vcpu-index': 'uint32',
++            'observation-generation': 'uint64' } }
++
++##
++# @CRUCIBLE_SELECTABLE_RESET_FAILED:
++#
++# Reports actual negative refusal to settle the retained token.
++# This event does not acknowledge abandonment.  Native and plugin
++# custody remain retained through original VM retirement.
++#
++# @schema-version: Exact version 1.
++#
++# @correlation: Accepted VM-wide monotonic host correlation.
++#
++# @request-sequence: Exact retained request sequence.
++#
++# @raw-icount: Original retained request coordinate.
++#
++# @trap-tick-ps: Original retained request tick.
++#
++# @vcpu-index: Original request vCPU.
++#
++# @status: Actual negative native or callback errno.
++#
++# Since: 11.1 (Crucible downstream extension)
++##
++{ 'event': 'CRUCIBLE_SELECTABLE_RESET_FAILED',
++  'data': { 'schema-version': 'uint32', 'correlation': 'uint64',
++            'request-sequence': 'uint64', 'raw-icount': 'uint64',
++            'trap-tick-ps': 'uint64', 'vcpu-index': 'uint32',
++            'status': 'int64' } }
 diff --git a/qemu-options.hx b/qemu-options.hx
 index 34970fffc94b4d79b6c2cbfc12efab9ad88855f2..12c2dfaf3f82ad3fe317f9c6939a75da9011c71b 100644
 --- a/qemu-options.hx
@@ -128405,7 +129414,7 @@ index 9919b46230f1caf8be1a1b6ef00acd94678437ce..5688cd190ad09880d4faa1af38d86d39
           * cpu_exit() is not enough to kick a halted CPU out of
           * qemu_tcg_wait_io_event.  async_run_on_cpu, instead,
 diff --git a/system/cpus.c b/system/cpus.c
-index 97e5a5edee23b70d8bd170c2b984568f4e804672..c39d52d58c013c8077db0ce45c0a672f0ad48a23 100644
+index 97e5a5edee23b70d8bd170c2b984568f4e804672..68b13326f6b0e49dfa806380359c03b84d002583 100644
 --- a/system/cpus.c
 +++ b/system/cpus.c
 @@ -25,11 +25,14 @@
@@ -128735,10 +129744,13 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..c39d52d58c013c8077db0ce45c0a672f
      if (qemu_in_vcpu_thread()) {
          qemu_system_vmstop_request_prepare();
          qemu_system_vmstop_request(state);
-@@ -768,6 +1021,14 @@ int vm_prepare_start(bool step_pending)
+@@ -768,6 +1021,17 @@ int vm_prepare_start(bool step_pending)
      RunState state = vm_was_suspended ? RUN_STATE_SUSPENDED : RUN_STATE_RUNNING;
      RunState requested;
  
++    if (qemu_crucible_selectable_resume_blocked()) {
++        return -1;
++    }
 +    if (qemu_crucible_cold_stop_transaction_active()) {
 +        qemu_crucible_cold_stop_competing_stop();
 +        return -1;
@@ -128750,7 +129762,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..c39d52d58c013c8077db0ce45c0a672f
      qemu_vmstop_requested(&requested);
      if (runstate_is_running() && requested == RUN_STATE__MAX) {
          return -1;
-@@ -784,6 +1045,12 @@ int vm_prepare_start(bool step_pending)
+@@ -784,6 +1048,12 @@ int vm_prepare_start(bool step_pending)
          return -1;
      }
  
@@ -128763,7 +129775,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..c39d52d58c013c8077db0ce45c0a672f
      /*
       * WHPX accelerator needs to know whether we are going to step
       * any CPUs, before starting the first one.
-@@ -797,9 +1064,11 @@ int vm_prepare_start(bool step_pending)
+@@ -797,9 +1067,11 @@ int vm_prepare_start(bool step_pending)
      runstate_set(state);
      vm_state_notify(1, state);
      vm_was_suspended = false;
@@ -128775,7 +129787,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..c39d52d58c013c8077db0ce45c0a672f
  void vm_start(void)
  {
      if (!vm_prepare_start(false)) {
-@@ -820,6 +1089,10 @@ void vm_resume(RunState state)
+@@ -820,6 +1092,10 @@ void vm_resume(RunState state)
     current state is forgotten forever */
  int vm_stop_force_state(RunState state)
  {
@@ -128786,17 +129798,17 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..c39d52d58c013c8077db0ce45c0a672f
      if (runstate_is_live(runstate_get())) {
          return vm_stop(state);
      } else {
-@@ -928,4 +1201,3 @@ void qmp_inject_nmi(Error **errp)
+@@ -928,4 +1204,3 @@ void qmp_inject_nmi(Error **errp)
  {
      nmi_monitor_handle(monitor_get_cpu_index(monitor_cur()), errp);
  }
 -
 diff --git a/system/crucible-checkpoint-restore.c b/system/crucible-checkpoint-restore.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..66055e9cef10731f5b33fbde54a067763c0ac3db
+index 0000000000000000000000000000000000000000..00a802f7d877e4a8fbac170734e15f36dfe646fb
 --- /dev/null
 +++ b/system/crucible-checkpoint-restore.c
-@@ -0,0 +1,450 @@
+@@ -0,0 +1,464 @@
 +/*
 + * Crucible authenticated lazy RAM and non-RAM checkpoint restore
 + *
@@ -129083,7 +130095,15 @@ index 0000000000000000000000000000000000000000..66055e9cef10731f5b33fbde54a06776
 +    bool commit_started = false;
 +    bool state_changed = false;
 +    int status;
++    bool selectable_operation = false;
 +
++    status = qemu_crucible_selectable_restore_begin();
++    if (status) {
++        error_setg_errno(errp, -status,
++                         "Lazy restore conflicts with a staged selectable reset");
++        goto out;
++    }
++    selectable_operation = true;
 +    qemu_crucible_cold_stop_invalidate();
 +    if (!crucible_restore_exact_paused_boundary() ||
 +        qemu_crucible_checkpoint_candidate_active()) {
@@ -129244,6 +130264,12 @@ index 0000000000000000000000000000000000000000..66055e9cef10731f5b33fbde54a06776
 +    }
 +    if (device_fd >= 0) {
 +        close(device_fd);
++    }
++    if (selectable_operation) {
++        if (state_changed && !report) {
++            qemu_crucible_selectable_restore_uncertain();
++        }
++        qemu_crucible_selectable_restore_end();
 +    }
 +    return report;
 +}
@@ -137692,10 +138718,18 @@ index 018609a4f9a4f56b5e3485f82513ab6ceebb3501..74dc67b8b0e01b3518e6c48513a2653d
  
  static void configure_rtc_base_datetime(const char *startdate)
 diff --git a/system/runstate.c b/system/runstate.c
-index 08acf801b0e6cdbade400a64a3de6e2d1f08d1ca..d2bd1837a36b486acb75ba121fe61f8644917a6d 100644
+index 08acf801b0e6cdbade400a64a3de6e2d1f08d1ca..1dd091e99d4084a51f953f28e4d90255ac59e731 100644
 --- a/system/runstate.c
 +++ b/system/runstate.c
-@@ -43,10 +43,15 @@
+@@ -24,6 +24,7 @@
+ 
+ #include "qemu/osdep.h"
+ #include "qemu/audio.h"
++#include "qemu/bswap.h"
+ #include "block/block.h"
+ #include "block/export.h"
+ #include "chardev/char.h"
+@@ -43,10 +44,15 @@
  #include "qapi/qapi-events-run-state.h"
  #include "qemu/accel.h"
  #include "accel/accel-ops.h"
@@ -137711,7 +138745,7 @@ index 08acf801b0e6cdbade400a64a3de6e2d1f08d1ca..d2bd1837a36b486acb75ba121fe61f86
  #include "qemu/sockets.h"
  #include "qemu/timer.h"
  #include "qemu/thread.h"
-@@ -73,6 +78,9 @@ static RunState current_run_state = RUN_STATE_PRELAUNCH;
+@@ -73,6 +79,9 @@ static RunState current_run_state = RUN_STATE_PRELAUNCH;
  /* We use RUN_STATE__MAX but any invalid value will do */
  static RunState vmstop_requested = RUN_STATE__MAX;
  static QemuMutex vmstop_lock;
@@ -137721,7 +138755,7 @@ index 08acf801b0e6cdbade400a64a3de6e2d1f08d1ca..d2bd1837a36b486acb75ba121fe61f86
  
  typedef struct {
      RunState from;
-@@ -247,9 +255,32 @@ void runstate_set(RunState new_state)
+@@ -247,9 +256,32 @@ void runstate_set(RunState new_state)
          abort();
      }
  
@@ -137754,7 +138788,7 @@ index 08acf801b0e6cdbade400a64a3de6e2d1f08d1ca..d2bd1837a36b486acb75ba121fe61f86
  RunState runstate_get(void)
  {
      return current_run_state;
-@@ -285,6 +316,26 @@ bool qemu_vmstop_requested(RunState *r)
+@@ -285,6 +317,26 @@ bool qemu_vmstop_requested(RunState *r)
      return *r < RUN_STATE__MAX;
  }
  
@@ -137781,7 +138815,7 @@ index 08acf801b0e6cdbade400a64a3de6e2d1f08d1ca..d2bd1837a36b486acb75ba121fe61f86
  void qemu_system_vmstop_request_prepare(void)
  {
      qemu_mutex_lock(&vmstop_lock);
-@@ -292,6 +343,10 @@ void qemu_system_vmstop_request_prepare(void)
+@@ -292,6 +344,10 @@ void qemu_system_vmstop_request_prepare(void)
  
  void qemu_system_vmstop_request(RunState state)
  {
@@ -137792,39 +138826,329 @@ index 08acf801b0e6cdbade400a64a3de6e2d1f08d1ca..d2bd1837a36b486acb75ba121fe61f86
      vmstop_requested = state;
      qemu_mutex_unlock(&vmstop_lock);
      qemu_notify_event();
-@@ -521,6 +576,8 @@ void qemu_system_reset(ShutdownCause reason)
+@@ -508,6 +564,255 @@ static int qemu_debug_requested(void)
+     return r;
+ }
+ 
++typedef struct CrucibleSelectableReset {
++    struct qemu_plugin_crucible_selectable_reset_request request;
++    uint8_t *bytes;
++    uint64_t observation_generation;
++    int status;
++    bool terminal;
++    bool event_sent;
++} CrucibleSelectableReset;
++
++/* BQL-owned, VM-wide identities; neither reconnect nor reset renews them. */
++static CrucibleSelectableReset *crucible_selectable_reset;
++static uint64_t crucible_selectable_reset_correlation;
++static uint64_t crucible_selectable_reset_generation;
++
++/* Restore entries can release BQL while doing I/O. This single atomic gate
++ * excludes a staged reset across the entire real operation, including nested
++ * device/state loads; it owns no allocation, timer, or resource authority. */
++static uint32_t crucible_selectable_operation;
++#define CRUCIBLE_SELECTABLE_RESET_EXCLUSIVE UINT32_MAX
++#define CRUCIBLE_SELECTABLE_RESTORE_UNCERTAIN (UINT32_MAX - 1)
++static bool crucible_selectable_reset_conflict;
++
++bool qemu_crucible_selectable_resume_blocked(void)
++{
++    return qatomic_read(&crucible_selectable_operation) ==
++        CRUCIBLE_SELECTABLE_RESET_EXCLUSIVE;
++}
++
++int qemu_crucible_selectable_restore_begin(void)
++{
++    uint32_t current = qatomic_read(&crucible_selectable_operation);
++
++    for (;;) {
++        uint32_t previous;
++
++        if (current >= CRUCIBLE_SELECTABLE_RESTORE_UNCERTAIN - 1) {
++            return -EBUSY;
++        }
++        previous = qatomic_cmpxchg(&crucible_selectable_operation,
++                                  current, current + 1);
++        if (previous == current) {
++            return 0;
++        }
++        current = previous;
++    }
++}
++
++void qemu_crucible_selectable_restore_end(void)
++{
++    uint32_t current = qatomic_read(&crucible_selectable_operation);
++
++    for (;;) {
++        uint32_t previous;
++
++        if (current == CRUCIBLE_SELECTABLE_RESTORE_UNCERTAIN) {
++            return;
++        }
++        assert(current && current < CRUCIBLE_SELECTABLE_RESTORE_UNCERTAIN);
++        previous = qatomic_cmpxchg(&crucible_selectable_operation,
++                                  current, current - 1);
++        if (previous == current) {
++            return;
++        }
++        current = previous;
++    }
++}
++
++void qemu_crucible_selectable_restore_uncertain(void)
++{
++    /* Keep a destructive failure unavailable to a later experimental reset.
++     * Ordinary reset behavior is unchanged when no selectable token exists. */
++    uint32_t previous = qatomic_xchg(&crucible_selectable_operation,
++                                    CRUCIBLE_SELECTABLE_RESTORE_UNCERTAIN);
++
++    assert(previous && previous != CRUCIBLE_SELECTABLE_RESET_EXCLUSIVE);
++}
++
++
++static int crucible_selectable_reset_hex_digit(char value)
++{
++    if (value >= '0' && value <= '9') {
++        return value - '0';
++    }
++    if (value >= 'a' && value <= 'f') {
++        return value - 'a' + 10;
++    }
++    return -1;
++}
++
++int qemu_crucible_selectable_reset_request(
++    uint32_t schema_version, uint64_t correlation, const char *request_hex,
++    uint64_t raw_icount, uint64_t trap_tick_ps, uint32_t vcpu_index,
++    uint64_t reply_address)
++{
++    CrucibleSelectableReset *owner;
++    MachineState *machine = current_machine;
++    size_t length;
++    size_t index;
++    int status;
++
++    if (!bql_locked() || schema_version != 1 || !correlation || !request_hex) {
++        return -EINVAL;
++    }
++    if (!qemu_plugin_crucible_single_threaded_rr() ||
++        !runstate_check(RUN_STATE_PAUSED) ||
++        !qemu_plugin_crucible_vmstop_quiesced() ||
++        !cpus_are_resettable() || !machine || machine->new_accel_vmfd_on_reset ||
++        reboot_action == REBOOT_ACTION_SHUTDOWN) {
++        return -ENOTSUP;
++    }
++    if (reset_requested != SHUTDOWN_CAUSE_NONE ||
++        shutdown_requested != SHUTDOWN_CAUSE_NONE || suspend_requested ||
++        qemu_crucible_fault_lifecycle_reset_pending() ||
++        (crucible_selectable_reset && !crucible_selectable_reset->terminal)) {
++        return -EBUSY;
++    }
++    if (crucible_selectable_reset && crucible_selectable_reset->status) {
++        return -ESTALE;
++    }
++    if (correlation <= crucible_selectable_reset_correlation ||
++        crucible_selectable_reset_generation == UINT64_MAX) {
++        return -ESTALE;
++    }
++    length = strnlen(request_hex,
++                     QEMU_PLUGIN_CRUCIBLE_SELECTABLE_RESET_MAX_REQUEST * 2 + 1);
++    if (!length || length & 1 ||
++        length > QEMU_PLUGIN_CRUCIBLE_SELECTABLE_RESET_MAX_REQUEST * 2) {
++        return -EINVAL;
++    }
++    for (index = 0; index < length; index++) {
++        if (crucible_selectable_reset_hex_digit(request_hex[index]) < 0) {
++            return -EINVAL;
++        }
++    }
++
++    if (qatomic_cmpxchg(&crucible_selectable_operation, 0,
++                       CRUCIBLE_SELECTABLE_RESET_EXCLUSIVE) != 0) {
++        return -EBUSY;
++    }
++
++    qatomic_set(&crucible_selectable_reset_conflict, false);
++    owner = g_try_new0(CrucibleSelectableReset, 1);
++    if (!owner) {
++        qatomic_set(&crucible_selectable_operation, 0);
++        return -ENOMEM;
++    }
++    owner->bytes = g_try_malloc(length / 2);
++    if (!owner->bytes) {
++        g_free(owner);
++        qatomic_set(&crucible_selectable_operation, 0);
++        return -ENOMEM;
++    }
++    for (index = 0; index < length / 2; index++) {
++        owner->bytes[index] =
++            crucible_selectable_reset_hex_digit(request_hex[index * 2]) << 4 |
++            crucible_selectable_reset_hex_digit(request_hex[index * 2 + 1]);
++    }
++    owner->request = (struct qemu_plugin_crucible_selectable_reset_request) {
++        .schema_version = schema_version,
++        .vcpu_index = vcpu_index,
++        .correlation = correlation,
++        .raw_icount = raw_icount,
++        .trap_tick_ps = trap_tick_ps,
++        .reply_address = reply_address,
++        .request = owner->bytes,
++        .request_length = length / 2,
++    };
++    /* Canonical decoding in the real plugin authenticates this sequence too. */
++    if (length / 2 < 48) {
++        g_free(owner->bytes);
++        g_free(owner);
++        qatomic_set(&crucible_selectable_operation, 0);
++        return -EINVAL;
++    }
++    owner->request.request_sequence = ldq_le_p(owner->bytes + 12);
++    owner->observation_generation = crucible_selectable_reset_generation + 1;
++
++    if (crucible_selectable_reset) {
++        g_free(crucible_selectable_reset->bytes);
++        g_free(crucible_selectable_reset);
++    }
++    /* Publish before loaded code can retain a token or return a panic-result. */
++    crucible_selectable_reset = owner;
++    crucible_selectable_reset_correlation = correlation;
++    crucible_selectable_reset_generation = owner->observation_generation;
++    status = qemu_plugin_crucible_selectable_reset_call(
++        QEMU_PLUGIN_CRUCIBLE_SELECTABLE_RESET_PREPARE, &owner->request);
++    if (status) {
++        owner->status = status;
++        owner->terminal = true;
++        return status;
++    }
++    qemu_system_reset_request(SHUTDOWN_CAUSE_HOST_CRUCIBLE_SELECTABLE_RESET);
++    return 0;
++}
++
++static int crucible_selectable_reset_pre_restore(ShutdownCause reason)
++{
++    CrucibleSelectableReset *owner = crucible_selectable_reset;
++
++    if (!owner || owner->terminal) {
++        return reason == SHUTDOWN_CAUSE_HOST_CRUCIBLE_SELECTABLE_RESET ?
++               -ESTALE : 0;
++    }
++    if (reason != SHUTDOWN_CAUSE_HOST_CRUCIBLE_SELECTABLE_RESET) {
++        if (!owner->status) {
++            owner->status = -ESTALE;
++        }
++        return owner->status;
++    }
++    if (qemu_crucible_fault_lifecycle_reset_pending()) {
++        owner->status = -EBUSY;
++        return owner->status;
++    }
++    owner->status = qemu_plugin_crucible_selectable_reset_call(
++        QEMU_PLUGIN_CRUCIBLE_SELECTABLE_RESET_CHECK, &owner->request);
++    return owner->status;
++}
++
++static void crucible_selectable_reset_terminal(ShutdownCause reason)
++{
++    CrucibleSelectableReset *owner = crucible_selectable_reset;
++
++    if (!owner || owner->terminal || owner->event_sent) {
++        return;
++    }
++    if (!owner->status &&
++        reason == SHUTDOWN_CAUSE_HOST_CRUCIBLE_SELECTABLE_RESET) {
++        owner->status = qemu_plugin_crucible_selectable_reset_call(
++            QEMU_PLUGIN_CRUCIBLE_SELECTABLE_RESET_COMMIT, &owner->request);
++    } else if (!owner->status) {
++        owner->status = -ESTALE;
++    }
++    owner->terminal = true;
++    owner->event_sent = true;
++    if (owner->status) {
++        qapi_event_send_crucible_selectable_reset_failed(
++            1, owner->request.correlation, owner->request.request_sequence,
++            owner->request.raw_icount, owner->request.trap_tick_ps,
++            owner->request.vcpu_index, owner->status);
++    } else {
++        qapi_event_send_crucible_selectable_reset_completed(
++            1, owner->request.correlation, owner->request.request_sequence,
++            owner->request.raw_icount, owner->request.trap_tick_ps,
++            owner->request.vcpu_index, owner->observation_generation);
++        qatomic_set(&crucible_selectable_operation, 0);
++    }
++}
++
+ /*
+  * Reset the VM. Issue an event unless @reason is SHUTDOWN_CAUSE_NONE.
+  */
+@@ -520,6 +825,25 @@ void qemu_system_reset(ShutdownCause reason)
+     bool guest_state_rebuilt = false;
      int ret;
      ResetType type;
- 
-+    qemu_crucible_cold_stop_invalidate();
++    int selectable_status;
 +
++    if (crucible_selectable_reset &&
++        (crucible_selectable_reset->status ||
++         (!crucible_selectable_reset->terminal &&
++          (reason != SHUTDOWN_CAUSE_HOST_CRUCIBLE_SELECTABLE_RESET ||
++           qatomic_read(&crucible_selectable_reset_conflict) ||
++           !cpus_are_resettable() || force_vmfd_change)))) {
++        assert(bql_locked());
++        if (!crucible_selectable_reset->status) {
++            crucible_selectable_reset->status = -ESTALE;
++        }
++        qemu_plugin_crucible_exact_boundary_enter();
++        crucible_selectable_reset_terminal(reason);
++        qemu_plugin_crucible_exact_boundary_leave();
++        return;
++    }
++
++    qemu_crucible_cold_stop_invalidate();
+ 
      cpu_synchronize_all_states();
  
-     switch (reason) {
-@@ -590,6 +647,13 @@ void qemu_system_reset(ShutdownCause reason)
+@@ -590,6 +914,23 @@ void qemu_system_reset(ShutdownCause reason)
      }
  
      vm_set_suspended(false);
 +    /* Reset completion is the deterministic boundary for post-reset evidence. */
 +    qemu_plugin_crucible_exact_boundary_enter();
-+    qemu_crucible_fault_lifecycle_reset_complete();
++    selectable_status = crucible_selectable_reset_pre_restore(reason);
++    /* A dedicated conflict cannot restore over the retained catalog token. */
++    if (selectable_status == 0) {
++        qemu_crucible_fault_lifecycle_reset_complete();
++    }
 +    qemu_plugin_crucible_exact_boundary_leave();
 +#ifdef CONFIG_TCG
 +    rr_crucible_sim_reset_handoff_ready();
 +#endif
++    /* Generic RESET precedes CPU sync; only this terminal seam can settle. */
++    if (crucible_selectable_reset && !crucible_selectable_reset->terminal) {
++        qemu_plugin_crucible_exact_boundary_enter();
++        crucible_selectable_reset_terminal(reason);
++        qemu_plugin_crucible_exact_boundary_leave();
++    }
  }
  
  /*
-@@ -736,6 +800,8 @@ void qemu_system_guest_pvshutdown(void)
+@@ -736,6 +1077,15 @@ void qemu_system_guest_pvshutdown(void)
  
  void qemu_system_reset_request(ShutdownCause reason)
  {
++    if (reason != SHUTDOWN_CAUSE_HOST_CRUCIBLE_SELECTABLE_RESET &&
++        qatomic_read(&crucible_selectable_operation) ==
++            CRUCIBLE_SELECTABLE_RESET_EXCLUSIVE) {
++        qatomic_set(&crucible_selectable_reset_conflict, true);
++        qemu_notify_event();
++        return;
++    }
 +    qemu_crucible_cold_stop_invalidate();
 +
      if (reboot_action == REBOOT_ACTION_SHUTDOWN &&
          reason != SHUTDOWN_CAUSE_SUBSYSTEM_RESET) {
          shutdown_requested = reason;
-@@ -844,6 +910,13 @@ void qemu_system_shutdown_request(ShutdownCause reason)
+@@ -844,6 +1194,13 @@ void qemu_system_shutdown_request(ShutdownCause reason)
      shutdown_requested = reason;
      if (reason == SHUTDOWN_CAUSE_HOST_QMP_QUIT) {
          force_shutdown = true;
@@ -137838,7 +139162,7 @@ index 08acf801b0e6cdbade400a64a3de6e2d1f08d1ca..d2bd1837a36b486acb75ba121fe61f86
      }
      qemu_notify_event();
  }
-@@ -856,6 +929,9 @@ static void qemu_system_powerdown(void)
+@@ -856,6 +1213,9 @@ static void qemu_system_powerdown(void)
  
  static void qemu_system_shutdown(ShutdownCause cause)
  {
@@ -137848,6 +139172,17 @@ index 08acf801b0e6cdbade400a64a3de6e2d1f08d1ca..d2bd1837a36b486acb75ba121fe61f86
      qapi_event_send_shutdown(shutdown_caused_by_guest(cause), cause);
      notifier_list_notify(&shutdown_notifiers, &cause);
  }
+@@ -914,7 +1274,9 @@ static bool main_loop_should_exit(int *status)
+     if (request) {
+         pause_all_vcpus();
+         qemu_system_reset(request);
+-        resume_all_vcpus();
++        if (!qemu_crucible_selectable_resume_blocked()) {
++            resume_all_vcpus();
++        }
+         /*
+          * runstate can change in pause_all_vcpus()
+          * as iothread mutex is unlocked
 diff --git a/system/vl.c b/system/vl.c
 index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..33f6e683a10cdb23655fcf3604eafb109cac9077 100644
 --- a/system/vl.c
@@ -181102,6 +182437,495 @@ index 0000000000000000000000000000000000000000..43fc2e788019da47087362648c66db0a
 +
 +if __name__ == "__main__":
 +    main()
+diff --git a/tests/unit/test-crucible-legacy-ram-load.py b/tests/unit/test-crucible-legacy-ram-load.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..515f8cfe9ee34e49ed84f322f91884fc8f40f92c
+--- /dev/null
++++ b/tests/unit/test-crucible-legacy-ram-load.py
+@@ -0,0 +1,483 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Check legacy-load refusal and the legitimate device-only restore parser.
++
++The source functions are extracted verbatim. File input, VMState registry,
++CPU/device actions and error publication are finite substitutes. These controls
++prove dispatch and first-error order, not a loaded VM, cache retirement or a
++physical backing certificate.
++"""
++
++import argparse
++import json
++import os
++from pathlib import Path
++import re
++import resource
++import shlex
++import subprocess
++
++ROOT = Path(__file__).resolve().parents[2]
++
++
++def extract_function(source_text, function_name):
++    declaration = re.search(
++        r"(?m)^(?:static )?(?:int|bool|void)\s*\n?" + function_name + r"\s*\(",
++        source_text,
++    )
++    assert declaration, function_name
++
++    declaration_start = declaration.start()
++    body_start = source_text.index("{", declaration.end())
++    brace_depth = 1
++    function_end = body_start + 1
++
++    while brace_depth:
++        if source_text[function_end] == "{":
++            brace_depth += 1
++        elif source_text[function_end] == "}":
++            brace_depth -= 1
++        function_end += 1
++
++    return source_text[declaration_start:function_end] + "\n"
++
++
++PRELUDE = r'''
++#include <assert.h>
++#include <stdbool.h>
++#include <stdint.h>
++#include <errno.h>
++#include <stdio.h>
++#include <stdarg.h>
++#include <string.h>
++#include <stdlib.h>
++#include <inttypes.h>
++
++#define ERRP_GUARD()
++#define QEMU_VM_SECTION_START 1
++#define QEMU_VM_SECTION_PART 2
++#define QEMU_VM_SECTION_END 3
++#define QEMU_VM_SECTION_FULL 4
++#define QEMU_VM_COMMAND 5
++#define QEMU_VM_EOF 0
++#define LOADVM_QUIT 10
++#define POSTCOPY_INCOMING_RUNNING 11
++#define trace_qemu_loadvm_state_section(...) ((void)0)
++#define trace_qemu_loadvm_state_section_command(...) ((void)0)
++#define trace_qemu_loadvm_state_section_startfull(...) ((void)0)
++#define trace_vmstate_downtime_load(kind, id, instance, delta) ((void)(delta))
++
++typedef int Error;
++
++typedef struct QEMUFile {
++    uint8_t sections[4];
++    unsigned cursor;
++    int error;
++} QEMUFile;
++
++typedef struct MigrationIncomingState {
++    QEMUFile *postcopy_qemufile_dst;
++    QEMUFile *from_src_file;
++} MigrationIncomingState;
++
++typedef int strList;
++
++typedef struct SaveStateEntry {
++    int version_id, load_version_id, load_section_id;
++    bool iterable;
++    const char *idstr;
++    unsigned instance_id;
++} SaveStateEntry;
++
++static bool requested;
++static int begin_status, begins, ends, uncertainty, cold, full_effects,
++    snapshot_effects, loads, commands, postinit, cacheinit, postcopyinit;
++static MigrationIncomingState state;
++static SaveStateEntry entry = {.version_id = 4, .idstr = "device"};
++
++static bool qemu_crucible_ram_paging_requested(void)
++{
++    return requested;
++}
++
++static int qemu_crucible_selectable_restore_begin(void)
++{
++    begins++;
++    return begin_status;
++}
++
++static void qemu_crucible_selectable_restore_end(void)
++{
++    ends++;
++}
++
++static void qemu_crucible_selectable_restore_uncertain(void)
++{
++    uncertainty++;
++}
++
++static void error_setg(Error **e, const char *s, ...)
++{
++    (void)e;
++    (void)s;
++}
++
++static void error_setg_errno(Error **e, int x, const char *s, ...)
++{
++    (void)e;
++    (void)x;
++    (void)s;
++}
++
++static void error_prepend(Error **e, const char *s, ...)
++{
++    (void)e;
++    (void)s;
++}
++
++static void error_report(const char *s, ...)
++{
++    (void)s;
++}
++
++static int qemu_loadvm_state_without_selectable_reset(QEMUFile *f, Error **e)
++{
++    (void)f;
++    (void)e;
++    full_effects++;
++    return 0;
++}
++
++static bool load_snapshot_without_selectable_reset(const char *n, const char *v,
++                                                   bool d, strList *l, Error **e)
++{
++    (void)n;
++    (void)v;
++    (void)d;
++    (void)l;
++    (void)e;
++    snapshot_effects++;
++    return true;
++}
++
++static void qemu_crucible_cold_stop_invalidate(void)
++{
++    cold++;
++}
++
++static int migration_crucible_load_begin(void)
++{
++    return 0;
++}
++
++static void migration_crucible_load_end(bool x)
++{
++    (void)x;
++}
++
++static uint8_t qemu_get_byte(QEMUFile *f)
++{
++    return f->sections[f->cursor++];
++}
++
++static int qemu_file_get_error_obj_any(QEMUFile *f, QEMUFile *g, Error **e)
++{
++    (void)g;
++    (void)e;
++    return f->error;
++}
++
++static int qemu_file_get_error(QEMUFile *f)
++{
++    return f->error;
++}
++
++static void qemu_file_set_error(QEMUFile *f, int x)
++{
++    f->error = x;
++}
++
++static void dirty_bitmap_mig_cancel_incoming(void)
++{
++}
++
++static int postcopy_state_get(void)
++{
++    return 0;
++}
++
++static bool migrate_postcopy_ram(void)
++{
++    return false;
++}
++
++static bool postcopy_pause_incoming(MigrationIncomingState *m)
++{
++    (void)m;
++    return false;
++}
++
++static void error_free_or_abort(Error **e)
++{
++    (void)e;
++}
++
++static MigrationIncomingState *migration_incoming_get_current(void)
++{
++    return &state;
++}
++
++static void cpu_synchronize_all_post_init(void)
++{
++    postinit++;
++}
++
++static uint32_t qemu_get_be32(QEMUFile *f)
++{
++    (void)f;
++    return 4;
++}
++
++static int qemu_get_counted_string(QEMUFile *f, char *s)
++{
++    (void)f;
++    strcpy(s, entry.idstr);
++    return 1;
++}
++
++static SaveStateEntry *find_se(const char *s, uint32_t i)
++{
++    (void)s;
++    (void)i;
++    return &entry;
++}
++
++static bool qemu_savevm_se_iterable(SaveStateEntry *s)
++{
++    return s->iterable;
++}
++
++static bool xen_enabled(void)
++{
++    return false;
++}
++
++static int64_t qemu_clock_get_us(int x)
++{
++    (void)x;
++    return 0;
++}
++
++#define QEMU_CLOCK_REALTIME 0
++
++static int vmstate_load(QEMUFile *f, SaveStateEntry *s, Error **e)
++{
++    (void)f;
++    (void)s;
++    (void)e;
++    loads++;
++    return 0;
++}
++
++static bool check_section_footer(QEMUFile *f, SaveStateEntry *s)
++{
++    (void)f;
++    (void)s;
++    return true;
++}
++
++static int qemu_loadvm_section_part_end(QEMUFile *f, uint8_t t, Error **e)
++{
++    (void)f;
++    (void)t;
++    (void)e;
++    loads++;
++    return 0;
++}
++
++static int loadvm_process_command(QEMUFile *f, Error **e)
++{
++    (void)f;
++    (void)e;
++    commands++;
++    return 0;
++}
++
++static void xbzrle_load_setup(void)
++{
++    cacheinit++;
++}
++
++static void ramblock_recv_map_init(void)
++{
++    cacheinit++;
++}
++
++static int postcopy_ram_incoming_init(MigrationIncomingState *m, Error **e)
++{
++    (void)m;
++    (void)e;
++    postcopyinit++;
++    return 0;
++}
++'''
++
++CHECKS = r'''
++int main(int argc, char **argv)
++{
++    assert(argc == 2);
++    int mode = atoi(argv[1]);
++    Error *error = NULL;
++    QEMUFile file = {.sections = {QEMU_VM_SECTION_FULL, QEMU_VM_EOF}};
++
++    if (mode != 0 && mode != 11 && mode != 13)
++        requested = true;
++
++    switch (mode) {
++    case 0:
++        assert(qemu_loadvm_state(&file, &error) == 0 &&
++               full_effects == 1 && ends == 1);
++        break;
++
++    case 1:
++        assert(qemu_loadvm_state(&file, &error) == -EPERM &&
++               full_effects == 0 && ends == 1 && uncertainty == 0);
++        break;
++
++    case 2:
++        assert(qemu_loadvm_state_main(&file, &state, &error) == -EPERM &&
++               cold == 0 && file.cursor == 0 && ends == 1);
++        break;
++
++    case 3:
++        assert(!load_snapshot("name", NULL, false, NULL, &error) &&
++               snapshot_effects == 0 && ends == 1 && uncertainty == 0);
++        break;
++
++    case 4:
++        begin_status = -EBUSY;
++
++        assert(qemu_loadvm_state(&file, &error) == -EBUSY &&
++               ends == 0 && full_effects == 0);
++        break;
++
++    case 5:
++        assert(qemu_load_device_state_without_selectable_reset(&file, &error) == 0 &&
++               loads == 1 && postinit == 1);
++        break;
++
++    case 6:
++        entry.iterable = true;
++        entry.idstr = "ram";
++        entry.load_version_id = 99;
++
++        assert(qemu_load_device_state_without_selectable_reset(&file, &error) == -EPERM &&
++               loads == 0 && entry.load_version_id == 99 && uncertainty == 1);
++        break;
++
++    case 7:
++        file.sections[0] = QEMU_VM_COMMAND;
++
++        assert(qemu_load_device_state_without_selectable_reset(&file, &error) == -EPERM &&
++               commands == 0 && uncertainty == 1);
++        break;
++
++    case 8:
++        file.sections[0] = QEMU_VM_SECTION_PART;
++
++        assert(qemu_load_device_state_without_selectable_reset(&file, &error) == -EPERM &&
++               loads == 0 && uncertainty == 1);
++        break;
++
++    case 9:
++        file.error = -EINVAL;
++
++        assert(qemu_load_device_state_without_selectable_reset(&file, &error) == -EINVAL &&
++               loads == 0 && commands == 0);
++        break;
++
++    case 10:
++        assert(ram_load_setup(&file, NULL, &error) == -EPERM && cacheinit == 0);
++        break;
++
++    case 11:
++        assert(ram_load_setup(&file, NULL, &error) == 0 && cacheinit == 2);
++        break;
++
++    case 12:
++        assert(ram_postcopy_incoming_init(&state, &error) == -EPERM && postcopyinit == 0);
++        break;
++
++    case 13:
++        assert(ram_postcopy_incoming_init(&state, &error) == 0 && postcopyinit == 1);
++        break;
++
++    default:
++        abort();
++    }
++
++    return 0;
++}
++'''
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--output-dir", type=Path, required=True)
++    parser.add_argument("--source-root", type=Path, default=ROOT)
++    arguments = parser.parse_args()
++    arguments.output_dir.mkdir(parents=True, exist_ok=True)
++    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
++
++    savevm = (arguments.source_root / "migration/savevm.c").read_text()
++    ram = (arguments.source_root / "migration/ram.c").read_text()
++    names = (
++        "qemu_loadvm_section_start_full",
++        "qemu_loadvm_state_main_without_selectable_reset",
++        "qemu_loadvm_state_main_checked",
++        "qemu_loadvm_state_main",
++        "qemu_loadvm_state",
++        "qemu_load_device_state_without_selectable_reset",
++        "load_snapshot",
++    )
++    bodies = [extract_function(savevm, name) for name in names]
++    bodies.extend(
++        extract_function(ram, name)
++        for name in ("ram_load_setup", "ram_postcopy_incoming_init")
++    )
++    generated = arguments.output_dir / "legacy-ram-load.c"
++    generated.write_text(PRELUDE + "\n\n".join(bodies) + CHECKS)
++    binary = arguments.output_dir / "legacy-ram-load"
++    command = [
++        os.environ.get("CC", "cc"),
++        *shlex.split(os.environ.get("CFLAGS", "")),
++        "-Wno-unused-function",
++        str(generated),
++        "-o",
++        str(binary),
++        *shlex.split(os.environ.get("LDFLAGS", "")),
++    ]
++    (arguments.output_dir / "compile-command.json").write_text(
++        json.dumps({"cwd": os.getcwd(), "argv": command}, indent=2) + "\n",
++    )
++    subprocess.run(command, check=True)
++
++    results = []
++    for mode in range(14):
++        result = subprocess.run(
++            [str(binary), str(mode)],
++            capture_output=True,
++            text=True,
++        )
++        (arguments.output_dir / f"mode-{mode}.log").write_text(
++            result.stdout + result.stderr,
++        )
++        results.append({"mode": mode, "exit": result.returncode})
++        assert result.returncode == 0, (mode, result)
++    (arguments.output_dir / "results.json").write_text(
++        json.dumps(results, indent=2) + "\n",
++    )
++    print("PASS production legacy RAM load: fourteen refusal and device-only controls")
++
++
++if __name__ == "__main__":
++    main()
 diff --git a/tests/unit/test-crucible-lifecycle-projection.py b/tests/unit/test-crucible-lifecycle-projection.py
 new file mode 100644
 index 0000000000000000000000000000000000000000..72322337e9268bd8ff07cb55a376e392ee8668fd
@@ -182127,6 +183951,491 @@ index 0000000000000000000000000000000000000000..436e6345e44c12abd74c89804c07c18b
 +    g_test_add_func("/loongarch/span", test_span);
 +    return g_test_run();
 +}
+diff --git a/tests/unit/test-crucible-memory-service-ticket.py b/tests/unit/test-crucible-memory-service-ticket.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..2f9340efd96835ab50dcc9be1d3b3f21dc4ded6c
+--- /dev/null
++++ b/tests/unit/test-crucible-memory-service-ticket.py
+@@ -0,0 +1,479 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Check CPU memory-service ticket continuation with production state transitions.
++
++CPU lookup, clocks, physical writes and event publication are finite substitutes.
++Ticket staging, replay, identity checks and ready-boundary transitions are copied
++verbatim from the source being checked. The matched predecessor must reproduce
++standalone-store refusal without weakening compound frozen-load ordering. This
++component does not exercise a guest, UFFD population or a physical-writer fence.
++"""
++
++import argparse
++import json
++import os
++from pathlib import Path
++import re
++import resource
++import shlex
++import signal
++import subprocess
++
++ROOT = Path(__file__).resolve().parents[2]
++FUNCTIONS = (
++    "node_cpu_memory_ticket_clear",
++    "node_cpu_memory_ticket_identity",
++    "qemu_crucible_fault_cpu_memory_ticket_pending",
++    "qemu_crucible_fault_cpu_memory_ticket_active",
++    "qemu_crucible_fault_cpu_memory_ticket_replay_load",
++    "qemu_crucible_fault_cpu_memory_ticket_replay_store",
++    "qemu_crucible_fault_cpu_memory_candidate_record",
++    "qemu_crucible_fault_cpu_memory_candidate_discard",
++    "qemu_crucible_fault_cpu_memory_ticket_stage",
++    "node_cpu_memory_service_boundary",
++)
++CONTROLS = (
++    "standalone", "suppressed", "compound", "identity", "load",
++    "class-refusal", "deadlines", "no-delay",
++)
++PREDECESSOR_FAILURES = {"standalone", "suppressed", "identity", "class-refusal"}
++
++
++def definition(source, start):
++    """Extract a brace-balanced definition while ignoring comments and strings."""
++    opening = source.index("{", start)
++    depth = 0
++    state = "code"
++    index = opening
++
++    while index < len(source):
++        character = source[index]
++        pair = source[index:index + 2]
++        if state == "code":
++            if pair == "/*":
++                state = "comment"
++                index += 2
++                continue
++            if pair == "//":
++                state = "line"
++                index += 2
++                continue
++            if character in "\"'":
++                state = character
++            elif character == "{":
++                depth += 1
++            elif character == "}":
++                depth -= 1
++                if depth == 0:
++                    return source[start:index + 1]
++        elif state == "comment":
++            if pair == "*/":
++                state = "code"
++                index += 2
++                continue
++        elif state == "line":
++            if character == "\n":
++                state = "code"
++        elif character == "\\":
++            index += 2
++            continue
++        elif character == state:
++            state = "code"
++        index += 1
++
++    raise AssertionError("unterminated production definition")
++
++
++def function(source, name):
++    match = re.search(
++        r"(?m)^(?:static )?(?:bool|void)\s+" + re.escape(name) +
++        r"\([^;]*?\)\s*\{", source,
++    )
++    assert match is not None, name
++    return definition(source, match.start())
++
++
++def typedef(source, name):
++    start = source.index("typedef struct " + name + " {")
++    end = source.index("} " + name + ";", start) + len("} " + name + ";")
++    return source[start:end]
++
++
++def constant(source, name):
++    match = re.search(r"(?m)^#define " + re.escape(name) + r" [^\n]+$", source)
++    assert match is not None, name
++    return match.group()
++
++
++PRELUDE = r"""
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++#include <assert.h>
++#include <stdbool.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++typedef struct { int identity; } QemuCrucibleFaultRule;
++typedef struct { int identity; } QemuCrucibleFaultEventReservation;
++typedef struct CPUState {
++    uint32_t cpu_index;
++    uint64_t crucible_memory_service_ticks;
++} CPUState;
++"""
++
++PROVIDERS = r"""
++static CPUState only_cpu = { .cpu_index = 6 };
++static CrucibleCpuMemoryTicket current;
++static QemuCrucibleFaultRule rule = { .identity = 11 };
++static QemuCrucibleFaultEventReservation reservation = { .identity = 17 };
++static int64_t now;
++static unsigned writes, publishes, clears;
++static uint8_t physical_byte;
++
++#define CPU_FOREACH(cpu) \
++    for ((cpu) = &only_cpu; (cpu); (cpu) = NULL)
++#define error_report(message) fputs((message), stderr)
++
++static bool qemu_crucible_fault_cpu_memory_ticket_supported(const CPUState *cpu)
++{
++    return cpu == &only_cpu;
++}
++
++static CrucibleCpuMemoryTicket *node_cpu_memory_ticket(CPUState *cpu, bool create)
++{
++    (void)create;
++    return cpu == &only_cpu ? &current : NULL;
++}
++
++static bool qemu_crucible_fault_deferred_service_valid(
++    const QemuCrucibleDeferredMemoryService *service)
++{
++    return service->rule == &rule &&
++           service->event_reservation == &reservation &&
++           service->ready_tick >= service->grant_tick;
++}
++
++static void qemu_crucible_fault_deferred_service_clear(
++    QemuCrucibleDeferredMemoryService *service)
++{
++    clears++;
++    memset(service, 0, sizeof(*service));
++}
++
++static void qemu_crucible_fault_deferred_service_publish(
++    QemuCrucibleDeferredMemoryService *service)
++{
++    assert(service->grant_tick == 55 && service->ready_tick == 77);
++    assert(service->observed_icount == 41);
++    assert(service->rule == &rule && service->event_reservation == &reservation);
++    for (unsigned index = 0; index < 32; index++) {
++        assert(service->opportunity_hash[index] == (uint8_t)(index + 1));
++        assert(service->before_hash[index] == (uint8_t)(index + 33));
++        assert(service->after_hash[index] == (uint8_t)(index + 65));
++    }
++    for (unsigned index = 0; index < sizeof(service->evidence); index++) {
++        assert(service->evidence[index] == (uint8_t)(index ^ 0xa5));
++    }
++    publishes++;
++    service->rule = NULL;
++    service->event_reservation = NULL;
++}
++
++static int64_t icount_crucible_sim_tick_observed(void)
++{
++    return now;
++}
++
++static void physical_memory_write(uint64_t address, const uint8_t *bytes,
++                                  size_t size)
++{
++    assert(address == 0x1234 && size == 1);
++    writes++;
++    physical_byte = *bytes;
++}
++"""
++
++CHECKS = r"""
++static void setup(void)
++{
++    memset(&current, 0, sizeof(current));
++    writes = publishes = clears = 0;
++    physical_byte = 0;
++    now = 55;
++    only_cpu.crucible_memory_service_ticks = 22;
++
++    current.service.grant_tick = 55;
++    current.service.ready_tick = 77;
++    current.service.observed_icount = 41;
++    current.service.rule = &rule;
++    current.service.event_reservation = &reservation;
++    for (unsigned index = 0; index < 32; index++) {
++        current.service.opportunity_hash[index] = (uint8_t)(index + 1);
++        current.service.before_hash[index] = (uint8_t)(index + 33);
++        current.service.after_hash[index] = (uint8_t)(index + 65);
++    }
++    for (unsigned index = 0; index < sizeof(current.service.evidence); index++) {
++        current.service.evidence[index] = (uint8_t)(index ^ 0xa5);
++    }
++}
++
++static void stage_store(bool suppress)
++{
++    assert(qemu_crucible_fault_cpu_memory_ticket_stage(
++        &only_cpu, QEMU_CRUCIBLE_MEMORY_CPU_STORE, 0x2345, 0x1234,
++        0x33, suppress, 0x9999, 4));
++}
++
++static bool replay_store(void)
++{
++    return qemu_crucible_fault_cpu_memory_ticket_replay_store(
++        &only_cpu, 0x2345, 0x9999, 4);
++}
++
++static void complete(void)
++{
++    now = 77;
++    node_cpu_memory_service_boundary(CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY, 100);
++}
++
++static void standalone(void)
++{
++    setup();
++    stage_store(false);
++    assert(current.replay_phase == CRUCIBLE_CPU_MEMORY_REPLAY_ACCESS);
++    assert(qemu_crucible_fault_cpu_memory_ticket_pending(&only_cpu));
++    CrucibleCpuMemoryTicket saved = current;
++
++    assert(!replay_store());
++    assert(memcmp(&saved, &current, sizeof(saved)) == 0);
++    assert(writes == 0 && publishes == 0);
++
++    complete();
++    assert(writes == 1 && physical_byte == 0x33 && publishes == 1);
++    assert(replay_store());
++    assert(!qemu_crucible_fault_cpu_memory_ticket_active(&only_cpu));
++    assert(clears == 1);
++    assert(!replay_store());
++    assert(writes == 1 && publishes == 1 && clears == 1);
++}
++
++static void suppressed(void)
++{
++    setup();
++    stage_store(true);
++    complete();
++
++    assert(writes == 0 && publishes == 1);
++    assert(replay_store());
++    assert(clears == 1 && writes == 0);
++}
++
++static void compound(void)
++{
++    uint8_t value = 0;
++
++    setup();
++    qemu_crucible_fault_cpu_memory_candidate_record(
++        &only_cpu, 0x1111, 0x5a, 0x9999, 4);
++    stage_store(false);
++    assert(current.replay_phase == CRUCIBLE_CPU_MEMORY_REPLAY_LOAD);
++    complete();
++
++    assert(!replay_store());
++    assert(qemu_crucible_fault_cpu_memory_ticket_replay_load(
++        &only_cpu, 0x1111, 0x9999, 4, &value));
++    assert(value == 0x5a);
++    assert(current.replay_phase == CRUCIBLE_CPU_MEMORY_REPLAY_STORE);
++    assert(replay_store());
++    assert(writes == 1 && publishes == 1 && clears == 1);
++}
++
++static void identity(void)
++{
++    setup();
++    stage_store(false);
++    complete();
++    CrucibleCpuMemoryTicket saved = current;
++
++    assert(!qemu_crucible_fault_cpu_memory_ticket_replay_store(
++        &only_cpu, 0x2346, 0x9999, 4));
++    assert(!qemu_crucible_fault_cpu_memory_ticket_replay_store(
++        &only_cpu, 0x2345, 0x9998, 4));
++    assert(!qemu_crucible_fault_cpu_memory_ticket_replay_store(
++        &only_cpu, 0x2345, 0x9999, 5));
++    assert(memcmp(&saved, &current, sizeof(saved)) == 0);
++    assert(replay_store());
++}
++
++static void load(void)
++{
++    uint8_t value = 0;
++
++    setup();
++    assert(qemu_crucible_fault_cpu_memory_ticket_stage(
++        &only_cpu, QEMU_CRUCIBLE_MEMORY_CPU_LOAD, 0x2345, 0x1234,
++        0x7a, false, 0x9999, 4));
++    complete();
++
++    assert(writes == 0 && !replay_store());
++    assert(qemu_crucible_fault_cpu_memory_ticket_replay_load(
++        &only_cpu, 0x2345, 0x9999, 4, &value));
++    assert(value == 0x7a && clears == 1);
++}
++
++static void class_refusal(void)
++{
++    setup();
++    stage_store(false);
++    complete();
++    current.access_class = QEMU_CRUCIBLE_MEMORY_CPU_LOAD;
++    current.replay_phase = CRUCIBLE_CPU_MEMORY_REPLAY_STORE;
++    CrucibleCpuMemoryTicket saved = current;
++
++    assert(!replay_store());
++    assert(memcmp(&saved, &current, sizeof(saved)) == 0);
++}
++
++static void deadlines(void)
++{
++    setup();
++    stage_store(false);
++    now = 76;
++    node_cpu_memory_service_boundary(CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY, 100);
++    assert(writes == 0 && !current.ready);
++
++    now = 77;
++    node_cpu_memory_service_boundary(2, 100);
++    assert(writes == 0 && !current.ready);
++    complete();
++    node_cpu_memory_service_boundary(CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY, 101);
++    assert(writes == 1 && publishes == 1);
++}
++
++static void no_delay(void)
++{
++    setup();
++    only_cpu.crucible_memory_service_ticks = 0;
++    CrucibleCpuMemoryTicket saved = current;
++
++    assert(!qemu_crucible_fault_cpu_memory_ticket_stage(
++        &only_cpu, QEMU_CRUCIBLE_MEMORY_CPU_STORE, 0x2345, 0x1234,
++        0x33, false, 0x9999, 4));
++    assert(memcmp(&saved, &current, sizeof(saved)) == 0);
++    qemu_crucible_fault_cpu_memory_candidate_discard(&only_cpu);
++}
++
++int main(int argc, char **argv)
++{
++    assert(argc == 2);
++    if (!strcmp(argv[1], "standalone")) {
++        standalone();
++    } else if (!strcmp(argv[1], "suppressed")) {
++        suppressed();
++    } else if (!strcmp(argv[1], "compound")) {
++        compound();
++    } else if (!strcmp(argv[1], "identity")) {
++        identity();
++    } else if (!strcmp(argv[1], "load")) {
++        load();
++    } else if (!strcmp(argv[1], "class-refusal")) {
++        class_refusal();
++    } else if (!strcmp(argv[1], "deadlines")) {
++        deadlines();
++    } else if (!strcmp(argv[1], "no-delay")) {
++        no_delay();
++    } else {
++        abort();
++    }
++    puts("PASS");
++    return 0;
++}
++"""
++
++
++def check_variant(output, name, bodies, declarations):
++    directory = output / name
++    directory.mkdir(parents=True, exist_ok=True)
++    for function_name, body in zip(FUNCTIONS, bodies):
++        (directory / (function_name + ".c")).write_text(body + "\n")
++
++    prototypes = "\n".join(body[:body.index("{")].strip() + ";" for body in bodies)
++    generated = directory / "memory-service-ticket.c"
++    generated.write_text(
++        PRELUDE + declarations + PROVIDERS + prototypes + "\n\n" +
++        "\n\n".join(bodies) + CHECKS,
++    )
++    binary = directory / "memory-service-ticket"
++    command = [
++        os.environ.get("CC", "cc"),
++        *shlex.split(os.environ.get("CFLAGS", "")),
++        str(generated), "-o", str(binary),
++        *shlex.split(os.environ.get("LDFLAGS", "")),
++    ]
++    (directory / "compile-command.json").write_text(
++        json.dumps({"cwd": os.getcwd(), "argv": command}, indent=2) + "\n",
++    )
++    subprocess.run(command, check=True)
++
++    results = []
++    for control in CONTROLS:
++        result = subprocess.run(
++            [str(binary), control], cwd=directory,
++            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
++        )
++        (directory / (control + ".log")).write_text(result.stdout)
++        expected_failure = name == "predecessor" and control in PREDECESSOR_FAILURES
++        if expected_failure:
++            assert result.returncode == -signal.SIGABRT, (control, result)
++            expression = "!replay_store()" if control == "class-refusal" else "replay_store()"
++            assert expression in result.stdout and "Assertion" in result.stdout, result
++        else:
++            assert result.returncode == 0 and result.stdout == "PASS\n", result
++        results.append({"control": control, "exit": result.returncode})
++    return results
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--output-dir", type=Path, required=True)
++    parser.add_argument("--source-root", type=Path, default=ROOT)
++    arguments = parser.parse_args()
++    arguments.output_dir.mkdir(parents=True, exist_ok=True)
++    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
++
++    source = (arguments.source_root / "plugins/crucible-fault-node.c").read_text()
++    header = (arguments.source_root / "include/qemu/crucible-fault.h").read_text()
++    abi = (arguments.source_root / "include/aos/crucible/crucible_shmem_abi.h").read_text()
++    enum_start = header.index("enum QemuCrucibleMemoryAccessClass {")
++    access_class = definition(header, enum_start) + ";\n"
++    definitions = [function(source, name) for name in FUNCTIONS]
++    declarations = "\n".join((
++        constant(source, "CRUCIBLE_CPU_MEMORY_REPLAY_ACCESS"),
++        constant(source, "CRUCIBLE_CPU_MEMORY_REPLAY_LOAD"),
++        constant(source, "CRUCIBLE_CPU_MEMORY_REPLAY_STORE"),
++        constant(header, "QEMU_CRUCIBLE_DEFERRED_SERVICE_EVIDENCE_SIZE"),
++        constant(abi, "CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY"),
++        access_class,
++        typedef(header, "QemuCrucibleDeferredMemoryService"),
++        typedef(source, "CrucibleCpuMemoryTicket"),
++    )) + "\n"
++
++    corrected = """        ticket->access_class != QEMU_CRUCIBLE_MEMORY_CPU_STORE ||
++        (ticket->replay_phase != CRUCIBLE_CPU_MEMORY_REPLAY_ACCESS &&
++         ticket->replay_phase != CRUCIBLE_CPU_MEMORY_REPLAY_STORE) ||"""
++    old = """        ticket->replay_phase != CRUCIBLE_CPU_MEMORY_REPLAY_STORE ||"""
++    index = FUNCTIONS.index("qemu_crucible_fault_cpu_memory_ticket_replay_store")
++    assert definitions[index].count(corrected) == 1
++    predecessor = definitions.copy()
++    predecessor[index] = predecessor[index].replace(corrected, old)
++
++    results = {
++        "production": check_variant(arguments.output_dir, "production", definitions, declarations),
++        "predecessor": check_variant(arguments.output_dir, "predecessor", predecessor, declarations),
++    }
++    (arguments.output_dir / "results.json").write_text(json.dumps(results, indent=2) + "\n")
++    print("PASS production memory-service tickets: eight continuation controls; four matched predecessor failures")
++
++
++if __name__ == "__main__":
++    main()
 diff --git a/tests/unit/test-crucible-mips-count-wide-clock.c b/tests/unit/test-crucible-mips-count-wide-clock.c
 new file mode 100644
 index 0000000000000000000000000000000000000000..6c6604e15711f6ed0d12aa6b1cf536f54a5cefaa
@@ -187876,10 +190185,10 @@ index 0000000000000000000000000000000000000000..5de510d543012b6ea7ad7f47bb046431
 +}
 diff --git a/tests/unit/test-crucible-placement-registration.py b/tests/unit/test-crucible-placement-registration.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..78cb9baf16c18926b9369d742402046593982e76
+index 0000000000000000000000000000000000000000..d4bf462887dc1a8c18cbedc8fda8e44d81bc72e2
 --- /dev/null
 +++ b/tests/unit/test-crucible-placement-registration.py
-@@ -0,0 +1,577 @@
+@@ -0,0 +1,617 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Checks placement and write registration in the native post-grant window.
 +
@@ -187922,8 +190231,10 @@ index 0000000000000000000000000000000000000000..78cb9baf16c18926b9369d7424020465
 +#include "qemu/osdep.h"
 +#include <assert.h>
 +#include <errno.h>
++#include <fcntl.h>
 +#include <glib.h>
 +#include <pthread.h>
++#include <poll.h>
 +#include <sched.h>
 +#include <stdbool.h>
 +#include <stdint.h>
@@ -187958,6 +190269,12 @@ index 0000000000000000000000000000000000000000..78cb9baf16c18926b9369d7424020465
 +{
 +    return fixture_vmstop_quiesced;
 +}
++/* The original pause generation is a scalar fixture input, not a VM proof. */
++static uint64_t qemu_plugin_crucible_vmstop_generation(void)
++{
++    return 7;
++}
++
 +static void qemu_plugin_crucible_exact_boundary_enter(void)
 +{
 +    boundary_entries++;
@@ -188394,6 +190711,25 @@ index 0000000000000000000000000000000000000000..78cb9baf16c18926b9369d7424020465
 +    assert(placement_calls == 1 && boundary_entries == boundary_leaves);
 +}
 +
++static void test_selected_failure_cannot_use_ordinary_resume(void)
++{
++    sealed_startup_window();
++    qatomic_set(&research_resident.state, RESEARCH_RESIDENT_FAILED);
++    fixture_paging_requested = false;
++    fixture_bql_owned = false;
++
++    assert(qemu_crucible_ram_placement_before_resume() == -EPERM);
++    assert(qatomic_read(&research_resident.state) == RESEARCH_RESIDENT_FAILED);
++    assert(!placement_calls && !boundary_entries && !boundary_leaves);
++
++    fixture_bql_owned = true;
++    fixture_paused = true;
++    fixture_vmstop_quiesced = true;
++    assert(qemu_crucible_ram_placement_before_resume() == -EPERM);
++    assert(qatomic_read(&research_resident.state) == RESEARCH_RESIDENT_FAILED);
++    assert(!placement_calls && !boundary_entries && !boundary_leaves);
++}
++
 +int main(void)
 +{
 +    test_exact_post_grant_window();
@@ -188403,6 +190739,7 @@ index 0000000000000000000000000000000000000000..78cb9baf16c18926b9369d7424020465
 +    test_write_failed_windows();
 +    test_diagnostic_failure_precedes_resume_effects();
 +    test_resume_fences_unchanged();
++    test_selected_failure_cannot_use_ordinary_resume();
 +    puts("placement registration: exact post-grant window, actual TID, refusal nonpublication and unchanged resume fences PASS");
 +    puts("write registration: original grant window, six null/partial slots, actual TID, unpublished refusals and release-published complete table PASS");
 +    puts("resume diagnostic: retained first failure precedes fences, disabled paging and callback effects PASS");
@@ -188431,6 +190768,11 @@ index 0000000000000000000000000000000000000000..78cb9baf16c18926b9369d7424020465
 +        declaration(native, "int qemu_crucible_ram_diagnostic_failure("),
 +        declaration(native, "int qemu_crucible_ram_diagnostic_fail("),
 +    ]
++    # The before-resume and grant bodies now consult the retained research
++    # class. Extract their actual private dependencies, not a no-op substitute.
++    research_start = source.index("enum ResearchResidentState {")
++    research_end = source.index("static int diagnostic_failure;", research_start)
++    research_types = source[research_start:research_end]
 +    bodies = [definition(source, signature) for signature in [
 +        "int qemu_plugin_crucible_register_ram_write_preparation_v1(",
 +        "int qemu_plugin_crucible_register_ram_placement_v1(",
@@ -188439,9 +190781,16 @@ index 0000000000000000000000000000000000000000..78cb9baf16c18926b9369d7424020465
 +        "int qemu_crucible_ram_diagnostic_fail(",
 +        "int qemu_crucible_ram_placement_before_resume(",
 +    ]]
++    bodies[0:0] = [
++        definition(source, "static int research_resident_cancellation_status("),
++        definition(source, "static int research_resident_before_resume(void)\n{"),
++    ]
 +    if "static bool ram_callback_installation_window(" in source:
 +        bodies.insert(0, definition(source, "static bool ram_callback_installation_window("))
-+    prelude = PRELUDE.replace("static GPtrArray sealed_regions", admission_type + "\n\nstatic GPtrArray sealed_regions")
++    prelude = PRELUDE.replace(
++        "static GPtrArray sealed_regions",
++        admission_type + "\n\n" + research_types + "\n\nstatic GPtrArray sealed_regions",
++    )
 +
 +    args.output_dir.mkdir(parents=True, exist_ok=True)
 +    fixture = args.output_dir / "placement-registration.c"

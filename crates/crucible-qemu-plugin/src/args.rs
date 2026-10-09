@@ -16,6 +16,8 @@ use thiserror::Error;
 mod app_random;
 mod ram_control;
 mod ram_resources;
+#[cfg(feature = "kernel-swap-measurement")]
+pub(crate) mod research_resident;
 mod resource_limits;
 pub use ram_control::PluginRamControlArgs;
 pub use ram_resources::PluginRamResources;
@@ -69,6 +71,8 @@ pub struct PluginArgs {
     ram_outer_cap: Option<crucible_protocol::ram_control::RamControlOuterCap>,
     ram_metadata_budget: Option<u64>,
     ram_resources: Option<PluginRamResources>,
+    #[cfg(feature = "kernel-swap-measurement")]
+    research_resident: Option<research_resident::ResearchResidentArgs>,
     ram_initial_budgets: Option<
         [crucible_protocol::ram_control::RamControlBudget;
             crucible_protocol::ram_control::RAM_CONTROL_BUDGET_COUNT],
@@ -171,6 +175,17 @@ impl PluginArgs {
             return Err(PluginArgsParseError::InvalidRamControl);
         }
 
+        #[cfg(feature = "kernel-swap-measurement")]
+        let research_resident = research_resident::parse(
+            &parsed,
+            sim_fd,
+            inherited_fds,
+            ram_control,
+            ram_spill_descriptor,
+            ram_metadata_budget,
+            ram_resources,
+        )?;
+
         Ok(Self {
             sim_fd,
             ram_control,
@@ -179,6 +194,8 @@ impl PluginArgs {
             ram_outer_cap,
             ram_metadata_budget,
             ram_resources,
+            #[cfg(feature = "kernel-swap-measurement")]
+            research_resident,
             ram_initial_budgets,
             slot,
             fault_node_hash,
@@ -225,6 +242,14 @@ impl PluginArgs {
     #[must_use]
     pub const fn ram_metadata_budget(&self) -> Option<u64> {
         self.ram_metadata_budget
+    }
+
+    /// Returns a classification request, without granting launch authority.
+    #[cfg(feature = "kernel-swap-measurement")]
+    pub(crate) const fn research_resident(
+        &self,
+    ) -> Option<research_resident::ResearchResidentArgs> {
+        self.research_resident
     }
 
     /// Returns the exact independently admitted resource envelope, if supplied.
@@ -373,6 +398,10 @@ impl PluginSwitch {
 /// An error produced while parsing QEMU plugin launch arguments.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum PluginArgsParseError {
+    /// The experimental classification is partial, unsupported, or conflicts.
+    #[cfg(feature = "kernel-swap-measurement")]
+    #[error("invalid experimental resident RAM classification")]
+    InvalidResearchResident,
     /// Spill custody is noncanonical, incomplete, or aliases another native role.
     #[error("invalid private RAM spill descriptor")]
     InvalidRamSpillDescriptor,
@@ -676,6 +705,11 @@ fn parse_inherited_fds(
 }
 
 fn is_known_key(key: &str) -> bool {
+    #[cfg(feature = "kernel-swap-measurement")]
+    if research_resident::is_key(key) {
+        return true;
+    }
+
     matches!(
         key,
         PLUGIN_ARG_SIMFD

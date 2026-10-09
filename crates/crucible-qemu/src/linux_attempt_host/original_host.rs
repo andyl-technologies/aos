@@ -155,8 +155,35 @@ impl LinuxQemuAttemptHostOwner {
         Ok(OriginalNativeControlRetirement::retain(state))
     }
 
-    #[cfg(feature = "private-measurement-domain")]
+    /// Closes physical owners before lending the same native control's terminal cut.
+    ///
+    /// The returned borrow cannot create or replace a host owner. Its identity
+    /// check only selects an existing registry controller for removal; final
+    /// slot closure still requires the actual control's atomic alias gate.
+    ///
+    /// # Errors
+    /// Refuses original cleanup expiry, incomplete process or storage cleanup,
+    /// and missing original account custody. Ordinary owners return `None`.
+    pub fn prepare_original_native_retirement(
+        &mut self,
+    ) -> Result<Option<OriginalNativePhysicalRetirement<'_>>, QemuVmRealizationError> {
+        if self.original_account.is_none() {
+            return Ok(None);
+        }
+        if self.terminal {
+            self.finish()?;
+            return Ok(None);
+        }
+        self.close_original_physical_owners()?;
+        Ok(Some(OriginalNativePhysicalRetirement { host: self }))
+    }
+
     pub(super) fn finish_original_accounts(&mut self) -> Result<(), QemuVmRealizationError> {
+        self.close_original_physical_owners()?;
+        self.close_original_vector()
+    }
+
+    fn close_original_physical_owners(&mut self) -> Result<(), QemuVmRealizationError> {
         let cleanup = self
             .original_account
             .as_ref()
@@ -189,6 +216,10 @@ impl LinuxQemuAttemptHostOwner {
         // Physical success or the actual recoverable owner is recorded before
         // observing original expiry on either outcome. Retry keeps Cleanup.
         original_roster::after_cleanup(result, &cleanup)?;
+        Ok(())
+    }
+
+    fn close_original_vector(&mut self) -> Result<(), QemuVmRealizationError> {
         self.original_account
             .as_ref()
             .ok_or_else(|| missing_authority("close original native vector"))?
@@ -197,5 +228,91 @@ impl LinuxQemuAttemptHostOwner {
         self.terminal = true;
         self.original_account = None;
         Ok(())
+    }
+}
+
+/// Borrows one original-bound host after factual process and storage closure.
+///
+/// This witness is constructed only by the concrete host's guarded physical
+/// cleanup. Dropping it does not release the original slot or certify native
+/// control closure; the real owner remains responsible for retained cleanup.
+#[must_use = "close the same native control or retain the original host"]
+pub struct OriginalNativePhysicalRetirement<'host> {
+    host: &'host mut LinuxQemuAttemptHostOwner,
+}
+
+impl OriginalNativePhysicalRetirement<'_> {
+    /// Compares an existing registry controller with this same retained control.
+    ///
+    /// # Errors
+    /// Refuses missing, poisoned or expired original slot custody.
+    pub fn matches_controller(
+        &self,
+        controller: &LinuxQemuNativeResourceController,
+    ) -> Result<bool, OriginalActorAccountError> {
+        self.host
+            .original_account
+            .as_ref()
+            .ok_or(OriginalActorAccountError::Unavailable)?
+            .matches_controller(controller)
+    }
+
+    /// Checks the same saved Cleanup before registry retirement.
+    ///
+    /// # Errors
+    /// Refuses missing or terminal original cleanup custody.
+    pub fn check_cleanup(&self) -> Result<(), QemuVmRealizationError> {
+        self.host
+            .original_account
+            .as_ref()
+            .ok_or_else(|| missing_authority("retain original registry cleanup"))?
+            .cleanup()
+            .map(|_| ())
+            .map_err(original_roster::original_error)
+    }
+
+    /// Retains registry retirement failure beside its separate original postcut.
+    ///
+    /// # Errors
+    /// Returns the actual retirement failure, original postcheck refusal, or
+    /// both without replacing the actual earlier retirement failure.
+    pub fn after_registry_retirement(
+        &self,
+        result: Result<(), QemuVmRealizationError>,
+    ) -> Result<(), QemuVmRealizationError> {
+        self.host
+            .original_account
+            .as_ref()
+            .ok_or_else(|| missing_authority("retain original registry cleanup"))?
+            .after_registry_retirement(result)
+    }
+
+    /// Closes the same control while its registry row and lease remain retained.
+    ///
+    /// Only the matching registry alias is removed. A surviving borrower
+    /// refuses the atomic close and restores that exact alias before return.
+    ///
+    /// # Errors
+    /// Refuses mismatched controllers, original cleanup expiry, undrained
+    /// authority, and any other strong or weak alias.
+    pub fn close_registry_control(
+        &self,
+        controller: &mut LinuxQemuNativeResourceController,
+    ) -> Result<(), QemuVmRealizationError> {
+        self.host
+            .original_account
+            .as_ref()
+            .ok_or_else(|| missing_authority("close original registry controller"))?
+            .close_registry_control(controller)
+            .map_err(original_roster::original_error)
+    }
+
+    /// Closes the original vector after every other control alias has closed.
+    ///
+    /// # Errors
+    /// Refuses remaining strong or weak aliases and original cleanup failure.
+    /// Refusal keeps the same host, slot generation and external paired credit.
+    pub fn close(self) -> Result<(), QemuVmRealizationError> {
+        self.host.close_original_vector()
     }
 }

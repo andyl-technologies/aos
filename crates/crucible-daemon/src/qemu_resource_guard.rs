@@ -80,6 +80,18 @@ pub trait QemuAttemptHostResourceOwner {
         Ok(None)
     }
 
+    /// Finishes the same original host with its retained registry controller.
+    ///
+    /// # Errors
+    /// Refuses incomplete physical or control retirement under the original.
+    #[cfg(feature = "private-measurement-domain")]
+    fn finish_with_original_registry(
+        &mut self,
+        _registry: &crate::HostOperationalRegistry,
+    ) -> Result<(), QemuVmRealizationError> {
+        self.finish()
+    }
+
     /// Returns the exact resource basis installed by this owner.
     #[must_use]
     fn resource_limits(&self) -> AttemptResourceLimits;
@@ -452,6 +464,17 @@ impl QemuAttemptHostResourceOwner for LinuxQemuAttemptHostResourceOwner {
         self.host.retain_failed_child(child);
     }
 
+    #[cfg(feature = "private-measurement-domain")]
+    fn finish_with_original_registry(
+        &mut self,
+        registry: &crate::HostOperationalRegistry,
+    ) -> Result<(), QemuVmRealizationError> {
+        match self.host.prepare_original_native_retirement()? {
+            Some(physical) => registry.retire_original_native_world(physical),
+            None => self.host.finish(),
+        }
+    }
+
     fn finish(&mut self) -> Result<(), QemuVmRealizationError> {
         self.host.finish()
     }
@@ -511,6 +534,10 @@ where
     quantum_counter: QemuExecutionQuantumCounter,
     cancellation_failure: Arc<Mutex<Option<String>>>,
     cancellation_registration: Option<ExecutionCancellationHookRegistration>,
+    #[cfg(feature = "private-measurement-domain")]
+    original_native_registry: Option<crate::HostOperationalRegistry>,
+    #[cfg(feature = "private-measurement-domain")]
+    original_native_retirement_failed: bool,
     host: H,
     terminal: bool,
 }
@@ -592,6 +619,10 @@ where
             quantum_counter: QemuExecutionQuantumCounter::new(resources),
             cancellation_failure,
             cancellation_registration: Some(cancellation_registration),
+            #[cfg(feature = "private-measurement-domain")]
+            original_native_registry: None,
+            #[cfg(feature = "private-measurement-domain")]
+            original_native_retirement_failed: false,
             host,
             terminal: false,
         };
@@ -658,10 +689,25 @@ where
 {
     fn finish(&mut self) -> Result<(), QemuVmRealizationError> {
         if self.terminal {
+            #[cfg(feature = "private-measurement-domain")]
+            if self.original_native_retirement_failed {
+                // An uncertain physical/control close stays contained. A
+                // repeated facade call cannot attest slot release or retry it.
+                return Err(QemuVmRealizationError::Canceled {
+                    operation: "repeat quarantined original native retirement",
+                });
+            }
             return Ok(());
         }
         self.cancellation_registration = None;
-        match self.host.finish() {
+        #[cfg(feature = "private-measurement-domain")]
+        let result = match self.original_native_registry.as_ref() {
+            Some(registry) => self.host.finish_with_original_registry(registry),
+            None => self.host.finish(),
+        };
+        #[cfg(not(feature = "private-measurement-domain"))]
+        let result = self.host.finish();
+        match result {
             Ok(()) => {
                 self.terminal = true;
                 Ok(())
@@ -669,6 +715,13 @@ where
             Err(error) => {
                 self.host.quarantine();
                 self.terminal = true;
+                #[cfg(feature = "private-measurement-domain")]
+                if self.original_native_registry.is_some() {
+                    self.original_native_retirement_failed = true;
+                    // Move the actual first cause and independent original
+                    // postcheck unchanged; quarantine does not certify reuse.
+                    return Err(error);
+                }
                 Err(QemuVmRealizationError::ReapQuarantined {
                     operation: "release QEMU attempt host resources",
                     message: error.to_string(),
@@ -691,6 +744,21 @@ impl<H> QemuAttemptProcessResourceGuard for ComposedQemuAttemptResourceGuard<H>
 where
     H: QemuAttemptHostResourceOwner,
 {
+    #[cfg(feature = "private-measurement-domain")]
+    fn retain_original_native_registry(
+        &mut self,
+        registry: crate::HostOperationalRegistry,
+    ) -> Result<(), QemuVmRealizationError> {
+        if self.original_native_registry.is_some() || self.terminal {
+            return Err(QemuVmRealizationError::Executor {
+                operation: "retain original native registry",
+                message: String::from("original registry is already bound or guard is terminal"),
+            });
+        }
+        self.original_native_registry = Some(registry);
+        Ok(())
+    }
+
     fn native_resource_controller(
         &mut self,
     ) -> Result<Option<crucible_qemu::LinuxQemuNativeResourceController>, QemuVmRealizationError>

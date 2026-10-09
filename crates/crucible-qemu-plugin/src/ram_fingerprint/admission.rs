@@ -98,6 +98,13 @@ pub(super) extern "C" fn observe_admission(
             return Err(RamError::Invariant("invalid native RAM admission header"));
         }
         let observer = observer()?;
+        #[cfg(all(target_os = "linux", feature = "kernel-swap-measurement"))]
+        let allowance = crate::paged_ram::research_resident::apply_native_grant(
+            header.topology_generation,
+            header.logical_bytes,
+        )?
+        .unwrap_or(allowance);
+
         #[cfg(target_os = "linux")]
         let allowance = crate::paged_ram::controller::admit_native_inventory(
             header.topology_generation,

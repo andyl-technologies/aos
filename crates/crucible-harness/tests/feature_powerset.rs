@@ -72,6 +72,10 @@ fn crucible_manifest_feature_layout_is_explicit() -> Result<(), Box<dyn Error>> 
             ("default", &[][..]),
             ("kernel-swap-measurement", &[][..]),
             (
+                "private-measurement-domain",
+                &["crucible-linux-resource/private-measurement-domain"][..],
+            ),
+            (
                 "test-support",
                 &["crucible/test-double", "crucible-ram/test-support"][..],
             ),

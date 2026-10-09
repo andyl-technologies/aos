@@ -157,6 +157,85 @@ mod tests {
     }
 
     #[test]
+    fn physical_retirement_witness_refuses_terminal_cleanup_before_storage_release() {
+        let (_roster, binding, _supervisor) = roster();
+        let attempt = binding.claim(1, 512 << 20, 1 << 30).unwrap();
+        let cleanup = attempt.cleanup().unwrap();
+        let (root, storage, descriptor) = generic_storage();
+        let mut host = super::super::LinuxQemuAttemptHostOwner {
+            process: None,
+            storage: Some(storage),
+            maximum_vcpus: 1,
+            maximum_resident_bytes: 512 << 20,
+            maximum_writable_bytes: 1 << 30,
+            quarantine: None,
+            native_resources: None,
+            original_retirement_pinned: false,
+            original_account: Some(attempt),
+            terminal: false,
+        };
+        cleanup.complete().unwrap();
+
+        assert!(host.prepare_original_native_retirement().is_err());
+
+        assert!(std::fs::metadata(format!("/proc/self/fd/{descriptor}")).is_ok());
+        assert_eq!(
+            std::fs::read(root.path().join("attempt/retained")).unwrap(),
+            b"owned bytes"
+        );
+        assert!(host.storage.is_some());
+        assert!(binding.claim(1, 512 << 20, 1 << 30).is_err());
+    }
+
+    #[test]
+    fn physical_retirement_witness_closes_actual_storage_before_same_slot_reuse() {
+        let (_roster, binding, _supervisor) = roster();
+        let attempt = binding.claim(1, 512 << 20, 1 << 30).unwrap();
+        let generation = attempt.generation;
+        let (root, storage, descriptor) = generic_storage();
+        use std::os::unix::fs::MetadataExt;
+        let descriptor_path = format!("/proc/self/fd/{descriptor}");
+        let retained = std::fs::metadata(&descriptor_path).unwrap();
+        let original_identity = (retained.dev(), retained.ino());
+        let mut host = super::super::LinuxQemuAttemptHostOwner {
+            process: None,
+            storage: Some(storage),
+            maximum_vcpus: 1,
+            maximum_resident_bytes: 512 << 20,
+            maximum_writable_bytes: 1 << 30,
+            quarantine: None,
+            native_resources: None,
+            original_retirement_pinned: false,
+            original_account: Some(attempt),
+            terminal: false,
+        };
+        assert!(binding.claim(1, 512 << 20, 1 << 30).is_err());
+
+        host.prepare_original_native_retirement()
+            .unwrap()
+            .unwrap()
+            .close()
+            .unwrap();
+
+        // Parallel tests may reuse the numeric slot after the actual close.
+        // The saved inode identity distinguishes reuse from our retained pin.
+        match std::fs::metadata(&descriptor_path) {
+            Ok(current) => assert_ne!((current.dev(), current.ino()), original_identity),
+            Err(error) => assert_eq!(error.kind(), std::io::ErrorKind::NotFound),
+        }
+        assert!(!root.path().join("attempt").exists());
+        assert!(host.storage.is_none());
+        let next = binding.claim(1, 512 << 20, 1 << 30).unwrap();
+        assert_ne!(next.generation, generation);
+        next.require_original().unwrap();
+        // This fixture has no installed cgroup/native control. It proves the
+        // real saved-Cleanup storage close precedes slot generation reuse.
+        let cleanup = next.cleanup().unwrap();
+        next.close_vector().unwrap();
+        drop(cleanup);
+    }
+
+    #[test]
     fn host_unwind_moves_actual_storage_into_the_same_active_slot() {
         let (mut roster, binding, _supervisor) = roster();
         let attempt = binding.claim(1, 512 << 20, 1 << 30).unwrap();
@@ -680,6 +759,97 @@ impl NativeAccountAttempt {
         Ok(())
     }
 
+    pub(super) fn matches_controller(
+        &self,
+        controller: &super::LinuxQemuNativeResourceController,
+    ) -> Result<bool, OriginalActorAccountError> {
+        let roster = self
+            .roster
+            .upgrade()
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        let state = roster
+            .lock()
+            .map_err(|_| OriginalActorAccountError::Unavailable)?;
+        let slot = state
+            .slots
+            .get(self.index)
+            .filter(|slot| slot.active == Some(self.generation) && slot.unsettled.is_none())
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        slot.cleanup
+            .as_ref()
+            .ok_or(OriginalActorAccountError::Unavailable)?
+            .wait_slice()?;
+        Ok(slot
+            .control
+            .as_ref()
+            .is_some_and(|control| control.matches_controller(controller)))
+    }
+
+    pub(super) fn after_registry_retirement(
+        &self,
+        result: Result<(), QemuVmRealizationError>,
+    ) -> Result<(), QemuVmRealizationError> {
+        let observed = (|| {
+            let roster = self
+                .roster
+                .upgrade()
+                .ok_or(OriginalActorAccountError::Unavailable)?;
+            let state = roster
+                .lock()
+                .map_err(|_| OriginalActorAccountError::Unavailable)?;
+            let slot = state
+                .slots
+                .get(self.index)
+                .filter(|slot| slot.active == Some(self.generation) && slot.unsettled.is_none())
+                .ok_or(OriginalActorAccountError::Unavailable)?;
+            slot.cleanup
+                .as_ref()
+                .ok_or(OriginalActorAccountError::Unavailable)?
+                .wait_slice()?;
+            Ok(())
+        })();
+        after_boundary(result, observed)
+    }
+
+    pub(super) fn close_registry_control(
+        &self,
+        controller: &mut super::LinuxQemuNativeResourceController,
+    ) -> Result<(), OriginalActorAccountError> {
+        let roster = self
+            .roster
+            .upgrade()
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        let mut state = roster
+            .lock()
+            .map_err(|_| OriginalActorAccountError::Unavailable)?;
+        let slot = state
+            .slots
+            .get_mut(self.index)
+            .filter(|slot| slot.active == Some(self.generation) && slot.unsettled.is_none())
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        slot.cleanup
+            .as_ref()
+            .ok_or(OriginalActorAccountError::Unavailable)?
+            .wait_slice()?;
+        slot.control
+            .as_ref()
+            .ok_or(OriginalActorAccountError::Unavailable)?
+            .release_registry_alias(controller)
+            .map_err(|source| OriginalActorAccountError::NativeControlBoundary {
+                source,
+                original: None,
+            })?;
+        let result = close_control(slot);
+        if result.is_err()
+            && let Some(control) = slot.control.as_ref()
+        {
+            // An in-flight borrower prevents closure. Restore this same registry
+            // alias before returning; its row and lease remain retained.
+            control.restore_registry_alias(controller);
+        }
+        result
+    }
+
     /// Called only after the same host owner closed its process and storage.
     pub(super) fn close_vector(&self) -> Result<(), OriginalActorAccountError> {
         let roster = self
@@ -729,7 +899,7 @@ fn retain_cleanup(
     Ok(Arc::clone(cleanup))
 }
 
-fn close_slot(slot: &mut NativeSlot) -> Result<(), OriginalActorAccountError> {
+fn close_control(slot: &mut NativeSlot) -> Result<(), OriginalActorAccountError> {
     let cleanup = slot
         .cleanup
         .as_ref()
@@ -747,6 +917,15 @@ fn close_slot(slot: &mut NativeSlot) -> Result<(), OriginalActorAccountError> {
         after?;
     }
     slot.control = None;
+    Ok(())
+}
+
+fn close_slot(slot: &mut NativeSlot) -> Result<(), OriginalActorAccountError> {
+    close_control(slot)?;
+    let cleanup = slot
+        .cleanup
+        .as_ref()
+        .ok_or(OriginalActorAccountError::Unavailable)?;
     cleanup.complete()?;
     slot.cleanup = None;
     // Paired credit remains fully charged after genuine vector closure.

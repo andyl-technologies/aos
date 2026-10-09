@@ -374,8 +374,9 @@ fn selection_authenticates_pin_and_checkpoint_and_survives_restart() {
         )
         .to_hex(),
         // Authenticate the current paged closure before pinning its selection
-        // bytes, including the scheduler continuation and World-bound I/O ledger.
-        "ecd18a83117b26c4b2e543d49666f6566d2e0052a29c8f47d0a747c4f4fd8fd2"
+        // bytes, including the scheduler continuation, World-bound I/O ledger,
+        // and authenticated v5 selectable catalog checked by this fixture.
+        "fbece536dbb678ee2e71665787b985447784e51ebcce7a7f532f49038de93696"
     );
     drop(store);
 
@@ -617,6 +618,7 @@ fn fixture_with_backend(name: &str, backend: Arc<dyn ImmutableBlobBackend>) -> F
         ExactCheckpointStore::new(backend, STORE_LIMIT, repository.ram_retention_authority())
             .expect("checkpoint store")
             .with_ram_root_resources(metadata);
+    assert_current_catalog_continuation(production.closure(), &decoding);
     let prepared = checkpoints
         .prepare_production_closure(production.closure().clone())
         .expect("prepare checkpoint");
@@ -634,6 +636,83 @@ fn fixture_with_backend(name: &str, backend: Arc<dyn ImmutableBlobBackend>) -> F
         pin_fact: pin_fact.expect("exact pin fact"),
         checkpoint,
     }
+}
+
+// Inspect the actual lifecycle object named by the same closure being published.
+// The v5 abandoned-request fields change that object's identity even when zero.
+fn assert_current_catalog_continuation(
+    closure: &crucible_api::ProductionExactCheckpointClosure,
+    original: &crucible::owned_decode::DecodeBudget,
+) {
+    use std::io::Read;
+
+    #[derive(serde::Deserialize)]
+    struct Manifest {
+        lifecycle_state: crucible::ContentHash,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct Lifecycle {
+        selectable_catalog_plans: Vec<Catalog>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct Catalog {
+        node: String,
+        plan: Vec<u8>,
+    }
+
+    let manifest: Manifest = ciborium::from_reader(
+        closure
+            .manifest()
+            .strip_prefix(b"crucible.production-exact-closure.v10\0")
+            .expect("current production manifest"),
+    )
+    .expect("manifest lifecycle identity");
+    let object = closure
+        .objects()
+        .iter()
+        .find(|object| object.identity() == manifest.lifecycle_state)
+        .expect("lifecycle object in the published closure");
+    let length = usize::try_from(object.length()).expect("fixture lifecycle length");
+    let _credit = original
+        .reserve_scratch_array::<u8>(length)
+        .expect("same original lifecycle bytes");
+    let mut bytes = Vec::with_capacity(length);
+    {
+        let mut reader = closure
+            .open_object(object.identity())
+            .expect("actual lifecycle object");
+        bytes.resize(length, 0);
+        reader
+            .read_exact(&mut bytes)
+            .expect("complete lifecycle bytes");
+        let mut extra = [0_u8; 1];
+        assert_eq!(reader.read(&mut extra).expect("lifecycle EOF"), 0);
+    }
+    assert_eq!(bytes.len(), length);
+    assert_eq!(crucible::ContentHash::from_bytes(&bytes), object.identity());
+
+    let lifecycle: Lifecycle =
+        ciborium::from_reader(bytes.as_slice()).expect("actual selectable catalog continuation");
+    assert_eq!(lifecycle.selectable_catalog_plans.len(), 1);
+    let catalog = &lifecycle.selectable_catalog_plans[0];
+    assert_eq!(catalog.node, "vm-a");
+    let plan = &catalog.plan;
+    assert_eq!(&plan[..8], b"CRUCSCP5");
+    assert_eq!(&plan[8..12], &5_u32.to_be_bytes());
+    assert_eq!(&plan[12..16], &136_u32.to_be_bytes());
+    assert_eq!(&plan[112..120], &[0_u8; 8]);
+    assert_eq!(&plan[120..136], &[0_u8; 16]);
+
+    let decoded = crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan::decode(plan)
+        .expect("authenticated v5 catalog plan");
+    assert!(decoded.continuation().abandoned_requests().is_empty());
+    assert_eq!(decoded.continuation().total_abandoned_requests(), 0);
+    assert_eq!(
+        decoded.continuation().last_abandoned_request_sequence(),
+        None
+    );
 }
 
 fn policy(scenario: ScenarioDefId) -> CampaignPolicy {

@@ -1885,6 +1885,8 @@ in
                   "accel-classification",
                   "fault-rule-presence",
                   "rr-sim-barriers",
+                  "memory-service-ticket",
+                  "legacy-ram-load",
               ):
                   with (source_root / f"{name}.result").open("w") as result:
                       subprocess.run([
@@ -1939,6 +1941,13 @@ in
               grep -q '^PASS production-body differential rule-presence fixture' fault-rule-presence.result
               cat rr-sim-barriers.result
               grep -q '^PASS healthy ordinary 8->3 cycles per CPU' rr-sim-barriers.result
+              cat memory-service-ticket.result
+              grep -Fxq 'PASS production memory-service tickets: eight continuation controls; four matched predecessor failures' \
+                memory-service-ticket.result
+              cp memory-service-ticket.result "$out/share/aos/crucible/memory-service-ticket.result"
+              cat legacy-ram-load.result
+              grep -Fxq 'PASS production legacy RAM load: fourteen refusal and device-only controls' legacy-ram-load.result
+              cp legacy-ram-load.result "$out/share/aos/crucible/legacy-ram-load.result"
               # Use each changed translation unit's actual configured command,
               # then compare the reconstructed prior production bodies. Every
               # negative must compile and fail a native ownership assertion.

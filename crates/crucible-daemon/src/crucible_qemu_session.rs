@@ -122,6 +122,20 @@ pub trait QemuAttemptResourceGuard: QemuAttemptOperationalBoundary {
 /// the same pinned physical reservation; neither capability releases cgroup,
 /// quota, watcher or quarantine ownership. Retirement closes their authority.
 pub trait QemuAttemptProcessResourceGuard: QemuAttemptResourceGuard {
+    /// Retains the existing registry through private original control retirement.
+    ///
+    /// This is a custody binding, not a resource grant or retirement assertion.
+    ///
+    /// # Errors
+    /// Refuses replacing a previously retained registry binding.
+    #[cfg(feature = "private-measurement-domain")]
+    fn retain_original_native_registry(
+        &mut self,
+        _registry: crate::HostOperationalRegistry,
+    ) -> Result<(), QemuVmRealizationError> {
+        Ok(())
+    }
+
     /// Lends monotonic kernel control tied to this physical owner's retirement.
     ///
     /// # Errors

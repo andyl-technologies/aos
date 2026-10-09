@@ -56,6 +56,9 @@ impl NativeLifecycle {
 /// installation, or rejected registration. Managed cold mappings require their
 /// separately qualified manager before this function can accept its endpoint.
 pub(crate) fn install(args: &PluginArgs, plugin_id: u64) -> Result<(), RamError> {
+    #[cfg(feature = "kernel-swap-measurement")]
+    super::research_resident::install(args)?;
+
     let budget = args.ram_metadata_budget().ok_or(RamError::Invariant(
         "RAM metadata allowance was not admitted",
     ))?;
@@ -98,6 +101,11 @@ extern "C" fn lifecycle(operation: u32, generation: u64, _opaque: *mut c_void) -
     if generation == 0 {
         return -libc::EINVAL;
     }
+    #[cfg(feature = "kernel-swap-measurement")]
+    if super::research_resident::selected() {
+        return super::research_resident::refuse_transition();
+    }
+
     let result = match operation {
         1 => super::controller::prepare_fork()
             .and_then(|()| crate::ram_fingerprint::prepare_fork())
@@ -133,7 +141,7 @@ extern "C" fn lifecycle(operation: u32, generation: u64, _opaque: *mut c_void) -
     }
 }
 
-fn symbol(name: &'static [u8]) -> Result<*mut c_void, RamError> {
+pub(super) fn symbol(name: &'static [u8]) -> Result<*mut c_void, RamError> {
     // SAFETY: every caller supplies a static NUL-terminated symbol name. The
     // handle selects the current QEMU process and no loaded-library owner escapes.
     let pointer = unsafe { libc::dlsym(libc::RTLD_DEFAULT, name.as_ptr().cast()) };

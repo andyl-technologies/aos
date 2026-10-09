@@ -10,6 +10,7 @@ crate-type = ["cdylib"]
 
 [features]
 native-conformance = []
+kernel-swap-measurement = []
 
 [lints]
 workspace = true

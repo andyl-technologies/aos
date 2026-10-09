@@ -200,7 +200,7 @@ pub use linux_attempt_host::{
     OriginalActorAccountCustody, OriginalActorAccountError, OriginalActorDecodeOwner,
     OriginalActorServicePolicy, OriginalActorSqliteInstallError, OriginalActorSqliteOwner,
     OriginalNativeAccountFactoryBinding, OriginalNativeAccountRoster,
-    OriginalNativeControlRetirement,
+    OriginalNativeControlRetirement, OriginalNativePhysicalRetirement,
 };
 #[cfg(target_os = "linux")]
 pub use linux_attempt_process::{

@@ -260,6 +260,10 @@ fn patched_qapi_commands_have_schema_owners_or_qapi_only_contracts() {
         ),
         ("query-crucible-paused-cpu", "crucible.qemu.paused-cpu"),
         (
+            "crucible-selectable-reset-v1",
+            "crucible.qemu.selectable-reset",
+        ),
+        (
             "query-crucible-kernel-swap-admission-v1",
             "crucible.qemu.kernel-swap.admission",
         ),

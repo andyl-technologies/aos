@@ -176,3 +176,38 @@ fn resolve_symbol<T: Copy>(
 ) -> Result<T, LiveWhiteboxError> {
     Err(LiveWhiteboxError::CapabilityUnavailable { symbol })
 }
+
+/// Registers the required versioned reset owner on the matching loaded native.
+pub(super) fn register_selectable_reset_owner(
+    plugin_id: QemuPluginId,
+    callback: extern "C" fn(
+        u32,
+        *const super::selectable::reset::NativeResetRequest,
+        *mut c_void,
+    ) -> c_int,
+    userdata: *mut c_void,
+) -> Result<(), LiveWhiteboxError> {
+    type RegisterReset = extern "C" fn(
+        QemuPluginId,
+        Option<
+            extern "C" fn(
+                u32,
+                *const super::selectable::reset::NativeResetRequest,
+                *mut c_void,
+            ) -> c_int,
+        >,
+        *mut c_void,
+    ) -> c_int;
+    let symbol = "qemu_plugin_crucible_register_selectable_reset";
+    let register = resolve_symbol::<RegisterReset>(
+        b"qemu_plugin_crucible_register_selectable_reset\0",
+        symbol,
+    )?;
+    let status = register(plugin_id, Some(callback), userdata);
+    if status != 0 {
+        return Err(LiveWhiteboxError::RegistrationPlan {
+            message: format!("{symbol} refused the live catalog owner with status {status}"),
+        });
+    }
+    Ok(())
+}
