@@ -10,10 +10,10 @@
 //! and same-sequence conflict rule. This module only retains the common bounded
 //! framing and durable replay order; a snapshot never grants Mount authority.
 
-use aos_sandbox_core::bounded_codec::BoundedReader;
 use std::marker::PhantomData;
 
 use aos_proto::aos::sandbox::local::v1::{Audience, BrokerClientHello, BrokerMethod};
+use aos_sandbox_core::bounded_codec::BoundedReader;
 use aos_sandbox_core::{ProtocolId, ProtocolVersion};
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
 use aos_sandbox_protocol::ValidatedHeader;
@@ -444,7 +444,8 @@ pub(crate) fn persist_snapshot<Kind: InventorySnapshotKind>(
 }
 
 fn length(reader: &mut BoundedReader<'_, MountAttemptError>) -> Result<usize, MountAttemptError> {
-    usize::try_from(u32::from_be_bytes(reader.array()?)).map_err(|_| MountAttemptError::CorruptState)
+    usize::try_from(u32::from_be_bytes(reader.array()?))
+        .map_err(|_| MountAttemptError::CorruptState)
 }
 
 #[cfg(test)]

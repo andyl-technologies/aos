@@ -177,7 +177,9 @@ impl Record {
     }
 }
 
-fn length(reader: &mut BoundedReader<'_, AttachmentVerificationError>) -> Result<usize, AttachmentVerificationError> {
+fn length(
+    reader: &mut BoundedReader<'_, AttachmentVerificationError>,
+) -> Result<usize, AttachmentVerificationError> {
     usize::try_from(u32::from_be_bytes(reader.array()?))
         .map_err(|_| AttachmentVerificationError::CorruptState)
 }

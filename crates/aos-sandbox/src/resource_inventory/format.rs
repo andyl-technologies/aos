@@ -105,7 +105,9 @@ impl SnapshotRecord {
     }
 }
 
-fn length(reader: &mut BoundedReader<'_, ResourceInventoryError>) -> Result<usize, ResourceInventoryError> {
+fn length(
+    reader: &mut BoundedReader<'_, ResourceInventoryError>,
+) -> Result<usize, ResourceInventoryError> {
     usize::try_from(u32::from_be_bytes(reader.array()?))
         .map_err(|_| ResourceInventoryError::CorruptState)
 }

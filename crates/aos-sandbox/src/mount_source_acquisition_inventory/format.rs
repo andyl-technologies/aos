@@ -62,7 +62,9 @@ impl SnapshotRecord {
     }
 
     pub(super) fn decode(bytes: &[u8]) -> Result<Self, MountSourceAcquisitionInventoryError> {
-        let mut reader = BoundedReader::new(bytes, |_| MountSourceAcquisitionInventoryError::CorruptState);
+        let mut reader = BoundedReader::new(bytes, |_| {
+            MountSourceAcquisitionInventoryError::CorruptState
+        });
 
         if bytes.len() < FIXED_RECORD_BYTES || reader.array::<8>()? != *MAGIC {
             return Err(MountSourceAcquisitionInventoryError::CorruptState);
@@ -103,7 +105,9 @@ impl SnapshotRecord {
     }
 }
 
-fn length(reader: &mut BoundedReader<'_, MountSourceAcquisitionInventoryError>) -> Result<usize, MountSourceAcquisitionInventoryError> {
+fn length(
+    reader: &mut BoundedReader<'_, MountSourceAcquisitionInventoryError>,
+) -> Result<usize, MountSourceAcquisitionInventoryError> {
     usize::try_from(u32::from_be_bytes(reader.array()?))
         .map_err(|_| MountSourceAcquisitionInventoryError::CorruptState)
 }

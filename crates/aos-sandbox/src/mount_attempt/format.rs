@@ -167,5 +167,6 @@ impl Record {
 }
 
 fn length(reader: &mut BoundedReader<'_, MountAttemptError>) -> Result<usize, MountAttemptError> {
-    usize::try_from(u32::from_be_bytes(reader.array()?)).map_err(|_| MountAttemptError::CorruptState)
+    usize::try_from(u32::from_be_bytes(reader.array()?))
+        .map_err(|_| MountAttemptError::CorruptState)
 }
