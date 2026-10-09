@@ -287,9 +287,12 @@ DATA closure. The owning Guard producer already retains its separate initial
 Guard read; this result does not establish a semantic publication bypass.
 Shared correction `8bdceed83d` captures the selected Guard through the original
 held protected reader, validates its exact digest and schema, and includes it
-in that scope's physical ledger. Both corrections await combined qualification;
-the unchanged 1,024-record publication and other five population cases remain
-unrun. No task checkbox or milestone exit advances.
+in that scope's physical ledger. Combined candidate `c0f87d4e56` preserves the
+seven original loading selectors and requires all thirteen new witnesses. Its
+strict native all-target Clippy passes with warnings denied (46.61 seconds;
+`/tmp/terrane-held-node-c0-native-clippy.log`). Runtime qualification remains
+pending; the unchanged 1,024-record publication and other five population cases
+remain unrun. No task checkbox or milestone exit advances.
 The reviewed permanent recovery candidate `b0d2b176f0` retains original
 directory continuity while staging fresh, unselected progress proposals and
 restores full canonical candidate enumeration before preselection directory
@@ -298,8 +301,11 @@ current inputs, absent checkpoint preimages, exclusions and physical recipes
 remain checked. Its production native build passes (25.31 seconds;
 `/tmp/terrane-permanent-stage-build.log`). Eleven new genuine proposal-handoff
 witnesses cover directory and current-input mutation, cancellation and fresh
-recovery of added late residue. Source review requires more precise physical
-refusal assertions in eight of those witnesses before their qualification.
+recovery of added late residue. Source review identified eight overly broad
+Store-failure assertions. Correction `373333121f` now pins the exact unavailable
+kind and first native named-fence, policy, candidate-timestamp or preimage
+diagnostic. Independent source-order review confirms those expectations;
+their actual runtime and changed test-source lint qualification remain pending.
 Strict native all-target Clippy also passes with warnings denied (5 minutes
 5 seconds, including a recorded wait for an external shared-target lock;
 `/tmp/terrane-permanent-stage-clippy.log`). This elapsed observation does not
