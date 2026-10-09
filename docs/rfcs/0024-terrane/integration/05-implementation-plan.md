@@ -310,6 +310,16 @@ dispatch begins at 27.234916705 seconds from the original deadline origin.
 These observations locate the expensive interval without proving a particular
 source correction or relaxing current, physical or deadline predicates. The
 other five populations and twenty-case owning loading check remain unrun.
+Shared source correction `acc3f14622` coalesces original physical input rows
+only when every checked constraint agrees. It retains the first original
+recipe unchanged and ignores only directory link-count differences already
+ignored by native incarnation checks; regular-file link counts, complete bytes,
+policies, ancestry and exclusions remain distinct and freshly checked.
+Its measured benefit and runtime correctness remain unqualified. Registration
+`029dbe2926` preserves the twenty loading selectors and adds three required
+real-filesystem predicate witnesses, expanding the owning loading check to
+twenty-three cases. Those witnesses remain unimplemented at registration;
+requesting the check fails until every declared case exists and passes.
 The reviewed permanent recovery candidate `b0d2b176f0` retains original
 directory continuity while staging fresh, unselected progress proposals and
 restores full canonical candidate enumeration before preselection directory
@@ -326,7 +336,16 @@ their actual runtime and changed test-source lint qualification remain pending.
 Strict native all-target Clippy on corrected witness source `373333121f` now
 passes with warnings denied (59.41 seconds;
 `/tmp/terrane-permanent-stage-clippy-373.log`). The eleven runtime witnesses
-remain unqualified until their original process terminates.
+are now terminal after cancellation of the verified owned coordinator
+(268.360 seconds; run `42c988c9-1701-4860-bb40-0c38ddc2d202`,
+`/tmp/terrane-permanent-stage-focused-373.log`). Three cases fail in shared
+fixture setup before takeover, proposal pause or fault injection because the
+actual reservation directory has not been created. One case is interrupted;
+seven remain unrun. These results establish no staging refusal or recovery
+behavior. Test-only correction `e3ce9e839e` treats actual nofollow `NotFound`
+as empty reservation inventory while preserving safe kind, owner and mode
+checks for existing directories and exposing other failures. Its scoped
+formatting and diff checks pass; corrected runtime qualification remains pending.
 Strict native all-target Clippy also passes with warnings denied (5 minutes
 5 seconds, including a recorded wait for an external shared-target lock;
 `/tmp/terrane-permanent-stage-clippy.log`). This elapsed observation does not
