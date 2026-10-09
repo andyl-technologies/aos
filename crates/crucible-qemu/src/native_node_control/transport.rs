@@ -25,6 +25,7 @@ pub struct NativeLaunchEndpoint {
     socket: UnixDatagram,
     scope_digest: [u8; 32],
     edition: NativeControlEdition,
+    initialization: Option<crucible_protocol::node_control::NativeInitializationPreparation>,
 }
 
 impl NativeLaunchEndpoint {
@@ -36,6 +37,13 @@ impl NativeLaunchEndpoint {
     /// Returns the exact edition to pin in the native launch configuration.
     pub fn edition(&self) -> NativeControlEdition {
         self.edition
+    }
+
+    /// Returns the original construction preparation pinned before native startup.
+    pub fn initialization(
+        &self,
+    ) -> Option<&crucible_protocol::node_control::NativeInitializationPreparation> {
+        self.initialization.as_ref()
     }
 
     /// Transfers the owned socket to the supervised inherited-descriptor launcher.
@@ -57,6 +65,7 @@ pub struct NativeQemuControlTransport {
     prepared_boundary: crucible_node_contract::Position,
     pub(super) cpu_park: Option<NativeCpuParkFacts>,
     pub(super) timer_objects: BTreeMap<u64, super::timers::TimerAssembly>,
+    pub(super) initialization: Option<super::initialization::InitializationJournal>,
     pub(super) writer_objects: BTreeMap<u64, super::writers::WriterAssembly>,
 }
 
@@ -86,6 +95,20 @@ impl NativeQemuControlTransport {
         preparation: NativePreparation,
         edition: NativeControlEdition,
     ) -> Result<(Self, NativeLaunchEndpoint), NativeQemuControlError> {
+        Self::prepare_channel(
+            preparation.clone(),
+            edition,
+            NativeFrame::Prepare(Box::new(preparation)),
+            None,
+        )
+    }
+
+    pub(super) fn prepare_channel(
+        preparation: NativePreparation,
+        edition: NativeControlEdition,
+        first_frame: NativeFrame,
+        initialization: Option<crucible_protocol::node_control::NativeInitializationPreparation>,
+    ) -> Result<(Self, NativeLaunchEndpoint), NativeQemuControlError> {
         let scope_digest = preparation.scope.identity_digest()?;
         let maximum_commands = usize::try_from(preparation.maximum_commands.get())
             .map_err(|_| NativeCommandError::ResourceLimit)?;
@@ -96,7 +119,7 @@ impl NativeQemuControlTransport {
             maximum_commands,
         )?;
         let (channel, provider) = NativeChannel::supervised_pair_for_edition(edition)?;
-        if !channel.send(&NativeFrame::Prepare(Box::new(preparation)))? {
+        if !channel.send(&first_frame)? {
             return Err(NativeCommandError::ResourceLimit.into());
         }
         Ok((
@@ -110,11 +133,15 @@ impl NativeQemuControlTransport {
                 cpu_park: None,
                 timer_objects: BTreeMap::new(),
                 writer_objects: BTreeMap::new(),
+                initialization: initialization
+                    .clone()
+                    .map(super::initialization::InitializationJournal::new),
             },
             NativeLaunchEndpoint {
                 socket: provider.into_prepared_socket(),
                 scope_digest,
                 edition,
+                initialization,
             },
         ))
     }
@@ -153,7 +180,12 @@ impl NativeQemuControlTransport {
         &mut self,
         command: ExecutionCommand,
     ) -> Result<(CommandJournalDisposition, bool), NativeQemuControlError> {
-        if self.source_fault.is_some() {
+        if self.source_fault.is_some()
+            || self
+                .initialization
+                .as_ref()
+                .is_some_and(|journal| !journal.permits_execution())
+        {
             return Err(NativeCommandError::Conflict.into());
         }
         if self.channel.edition() == NativeControlEdition::OwnedCustody
@@ -178,6 +210,11 @@ impl NativeQemuControlTransport {
             return Ok(None);
         };
         match &frame {
+            NativeFrame::InitializationCut(_)
+            | NativeFrame::InitializationStopped(_)
+            | NativeFrame::InitializationAcknowledged(_) => {
+                self.accept_initialization_frame(&frame)?
+            }
             NativeFrame::SourceFault(facts) => self.accept_source_fault(facts)?,
             NativeFrame::TimerChunk(chunk) => self.accept_timer_chunk(chunk)?,
             NativeFrame::WriterChunk(chunk) => self.accept_writer_chunk(chunk)?,

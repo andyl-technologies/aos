@@ -3,7 +3,10 @@
 use std::{
     collections::BTreeMap,
     ffi::c_void,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use crucible_node_contract::{Id, Phase, Position, U64};
@@ -36,6 +39,8 @@ struct State {
 /// activation and original complete input custody before calling `retain`.
 /// This correlation mechanism does not qualify complete native queue closure.
 pub(crate) struct NativeNodeControl {
+    initialization: Option<super::initialization_custody::InitializationCustody>,
+    initialization_registered: AtomicBool,
     state: Mutex<State>,
     protocol_worker: Mutex<Option<std::thread::JoinHandle<()>>>,
     worker_gate: OnceLock<Arc<crate::runtime::worker_quiescence::LiveWorkerQuiescence>>,
@@ -57,6 +62,8 @@ impl NativeNodeControl {
     ) -> Result<Self, NativeCommandError> {
         let prepared_scope_hash = scope.identity_digest()?;
         Ok(Self {
+            initialization: None,
+            initialization_registered: AtomicBool::new(false),
             prepared_scope_hash,
             cpu_query: None,
             timer_query: None,
@@ -114,6 +121,11 @@ impl NativeNodeControl {
             .map_err(|_| NativeCommandError::Conflict)?;
         match received {
             None => Ok(()),
+            Some(
+                frame @ (NativeFrame::QueryInitialization(_)
+                | NativeFrame::Initialize(_)
+                | NativeFrame::AcknowledgeInitialization(_)),
+            ) => self.poll_initialization_frame(frame),
             Some(NativeFrame::Command(command)) => {
                 let sequence = command.sequence;
                 let disposition = self.retain(*command)?;
@@ -163,7 +175,11 @@ impl NativeNodeControl {
                 | NativeFrame::CpuPark(_)
                 | NativeFrame::TimerChunk(_)
                 | NativeFrame::WriterChunk(_)
-                | NativeFrame::SourceFault(_),
+                | NativeFrame::SourceFault(_)
+                | NativeFrame::PrepareInitialization(_)
+                | NativeFrame::InitializationCut(_)
+                | NativeFrame::InitializationStopped(_)
+                | NativeFrame::InitializationAcknowledged(_),
             ) => Err(NativeCommandError::Conflict),
         }
     }
@@ -374,6 +390,7 @@ impl NativeNodeControl {
         &'static self,
         register: RegisterNodeControl,
     ) -> Result<(), NativeCommandError> {
+        self.register_initialization()?;
         let result = register(
             NATIVE_NODE_CONTROL_VERSION,
             Some(get_command),
@@ -383,6 +400,11 @@ impl NativeNodeControl {
         if result == 0 {
             Ok(())
         } else {
+            if self.initialization_registered.load(Ordering::Acquire) {
+                // The source already owns initializer callbacks into this library.
+                // Returning an install refusal could unload still-referenced code.
+                std::process::abort();
+            }
             Err(NativeCommandError::Conflict)
         }
     }
@@ -391,6 +413,13 @@ impl NativeNodeControl {
         &self,
         command: ExecutionCommand,
     ) -> Result<CommandJournalDisposition, NativeCommandError> {
+        if self
+            .initialization
+            .as_ref()
+            .is_some_and(|initialization| !initialization.permits_execution_transport())
+        {
+            return Err(NativeCommandError::Conflict);
+        }
         let snapshot = snapshot(&command)?;
         let mut state = self
             .state
@@ -407,6 +436,13 @@ impl NativeNodeControl {
     }
 
     pub(crate) fn command(&self) -> Option<NativeNodeCommand> {
+        if self
+            .initialization
+            .as_ref()
+            .is_some_and(|initialization| !initialization.permits_execution_transport())
+        {
+            return None;
+        }
         let state = self.state.lock().ok()?;
         if state.quarantined {
             None
@@ -681,3 +717,6 @@ mod timers;
 mod source_fault;
 #[path = "writers.rs"]
 mod writers;
+
+#[path = "initialization_callbacks.rs"]
+mod initialization_callbacks;

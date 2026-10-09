@@ -15,9 +15,14 @@ pub struct NativeNodeControlConfig {
     descriptor: i32,
     scope_digest: [u8; 32],
     edition: crucible_protocol::node_control::NativeControlEdition,
+    initialization: Option<super::NativeInitializationConfig>,
 }
 
 impl NativeNodeControlConfig {
+    /// Returns the separately pinned original construction authorization, if present.
+    pub const fn initialization(self) -> Option<super::NativeInitializationConfig> {
+        self.initialization
+    }
     /// Returns the immutable launch-selected public channel edition.
     pub const fn edition(self) -> crucible_protocol::node_control::NativeControlEdition {
         self.edition
@@ -41,7 +46,8 @@ pub(super) fn parse(
         PLUGIN_ARG_NODE_CONTROL_SCOPE_HASH,
         PLUGIN_ARG_NODE_CONTROL_VERSION,
     ];
-    if keys.iter().all(|key| parsed.value(key).is_none()) {
+    let initialization = super::native_initialization::parse(parsed)?;
+    if keys.iter().all(|key| parsed.value(key).is_none()) && initialization.is_none() {
         return Ok(None);
     }
     for key in keys {
@@ -54,20 +60,27 @@ pub(super) fn parse(
         Some("2") => crucible_protocol::node_control::NativeControlEdition::OwnedCustody,
         _ => return Err(PluginArgsParseError::InvalidNativeNodeControl),
     };
+    if initialization.is_some()
+        && edition != crucible_protocol::node_control::NativeControlEdition::OwnedCustody
+    {
+        return Err(PluginArgsParseError::InvalidNativeNodeControl);
+    }
     Ok(Some(NativeNodeControlConfig {
         descriptor: parse_required_fd(parsed, PLUGIN_ARG_NODE_CONTROL_FD)?,
         scope_digest: parse_required_hash(parsed, PLUGIN_ARG_NODE_CONTROL_SCOPE_HASH)?,
         edition,
+        initialization,
     }))
 }
 
 pub(super) fn is_key(key: &str) -> bool {
-    matches!(
-        key,
-        PLUGIN_ARG_NODE_CONTROL_FD
-            | PLUGIN_ARG_NODE_CONTROL_SCOPE_HASH
-            | PLUGIN_ARG_NODE_CONTROL_VERSION
-    )
+    super::native_initialization::is_key(key)
+        || matches!(
+            key,
+            PLUGIN_ARG_NODE_CONTROL_FD
+                | PLUGIN_ARG_NODE_CONTROL_SCOPE_HASH
+                | PLUGIN_ARG_NODE_CONTROL_VERSION
+        )
 }
 
 #[cfg(test)]
@@ -145,5 +158,85 @@ mod tests {
         assert!(PluginArgs::parse(&format!("{},{}", base(), fields)).is_err());
         let fields = fields.replace("fd=3", "fd=4");
         assert!(PluginArgs::parse(&format!("{},shmemfd=4,wakefd=5,{}", base(), fields)).is_err());
+    }
+}
+
+#[cfg(test)]
+mod initialization_tests {
+    use crate::args::PluginArgs;
+
+    fn fields() -> Vec<String> {
+        vec![
+            format!("node_initialization_commitment={}", "03".repeat(32)),
+            format!("node_initialization_realize_digest={}", "04".repeat(32)),
+            format!("node_initialization_policy_digest={}", "05".repeat(32)),
+            "node_initialization_class_mask=7".into(),
+            "node_initialization_max_callbacks=64".into(),
+        ]
+    }
+
+    fn arguments(fields: &[String], edition: u32) -> String {
+        format!(
+            "simfd=3,slot=0,fault_node_hash={},process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,node_control_fd=9,node_control_scope_hash={},node_control_version={edition},{}",
+            "01".repeat(32),
+            "02".repeat(32),
+            fields.join(",")
+        )
+    }
+
+    #[test]
+    fn construction_requires_every_pinned_field_and_owned_wire_edition() {
+        let fields = fields();
+        let parsed = PluginArgs::parse(&arguments(&fields, 2)).unwrap();
+        let initialization = parsed
+            .native_node_control()
+            .unwrap()
+            .initialization()
+            .unwrap();
+        assert_eq!(initialization.commitment, [3; 32]);
+        assert_eq!(initialization.realize_request_digest, [4; 32]);
+        assert_eq!(initialization.policy_digest, [5; 32]);
+        assert_eq!(initialization.class_mask, 7);
+        assert_eq!(initialization.maximum_callbacks, 64);
+        assert!(PluginArgs::parse(&arguments(&fields, 1)).is_err());
+
+        for missing in 0..fields.len() {
+            let partial: Vec<_> = fields
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| *index != missing)
+                .map(|(_, value)| value.clone())
+                .collect();
+            assert!(PluginArgs::parse(&arguments(&partial, 2)).is_err());
+        }
+    }
+
+    #[test]
+    fn construction_rejects_open_budget_classes_and_missing_identities() {
+        for (index, replacement) in [
+            (
+                0,
+                format!("node_initialization_commitment={}", "00".repeat(32)),
+            ),
+            (
+                1,
+                format!("node_initialization_realize_digest={}", "00".repeat(32)),
+            ),
+            (
+                2,
+                format!("node_initialization_policy_digest={}", "00".repeat(32)),
+            ),
+            (3, "node_initialization_class_mask=0".into()),
+            (3, "node_initialization_class_mask=8".into()),
+            (4, "node_initialization_max_callbacks=0".into()),
+            (4, "node_initialization_max_callbacks=65".into()),
+        ] {
+            let mut changed = fields();
+            changed[index] = replacement;
+            assert!(PluginArgs::parse(&arguments(&changed, 2)).is_err());
+        }
+        let mut duplicate = fields();
+        duplicate.push(duplicate[0].clone());
+        assert!(PluginArgs::parse(&arguments(&duplicate, 2)).is_err());
     }
 }

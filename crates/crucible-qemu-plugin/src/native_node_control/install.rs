@@ -58,8 +58,14 @@ pub(crate) fn install(
     if writer_query.is_some() && cpu_query.is_none() {
         return Err(NativeControlInstallError::MissingCapability);
     }
-    let Some(NativeFrame::Prepare(plan)) = channel.receive()? else {
-        return Err(NativeControlInstallError::MissingPreparation);
+    let (plan, initialization) = match (channel.receive()?, config.initialization()) {
+        (Some(NativeFrame::Prepare(plan)), None) => (*plan, None),
+        (Some(NativeFrame::PrepareInitialization(initialization)), Some(pinned))
+            if pinned.matches(&initialization)? =>
+        {
+            (initialization.preparation.clone(), Some(*initialization))
+        }
+        _ => return Err(NativeControlInstallError::MissingPreparation),
     };
     if plan.scope.identity_digest()? != config.scope_digest() {
         return Err(NativeControlInstallError::ScopeMismatch);
@@ -81,6 +87,10 @@ pub(crate) fn install(
         None
     };
     let control = control.with_source_fault_query(source_fault_query);
+    let control = match initialization {
+        Some(preparation) => control.with_initialization(preparation)?,
+        None => control,
+    };
     // Callback ownership lasts until process termination. A leaked transport
     // token cannot drop this controller or its unresolved native journal.
     // Registration is limited to one controller per process by the native API.

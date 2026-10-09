@@ -105,6 +105,20 @@ impl NativePreparation {
 /// Selects a closed frame of the independently negotiated native channel.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NativeFrame {
+    /// Pins original construction authorization before any native execution.
+    PrepareInitialization(Box<super::NativeInitializationPreparation>),
+    /// Selects the already retained original source construction cut.
+    QueryInitialization(super::NativeInitializationQuery),
+    /// Returns the same finite original native construction callback cut.
+    InitializationCut(Box<super::NativeInitializationCut>),
+    /// Supplies the bound original finite construction command.
+    Initialize(Box<super::NativeInitializationCommand>),
+    /// Preserves an administrative result, with no whole-owner readiness claim.
+    InitializationStopped(Box<super::NativeInitializationReceipt>),
+    /// Settles only the bound original construction journal.
+    AcknowledgeInitialization(super::NativeInitializationAcknowledgement),
+    /// Recovers original construction journal settlement, not native reclamation.
+    InitializationAcknowledged(super::NativeInitializationAcknowledgement),
     /// Preserves the first native source diagnostic without certifying containment.
     SourceFault(Box<super::SourceFaultFacts>),
     /// Selects a retained original held-writer object on an edition-two endpoint.

@@ -181,7 +181,14 @@ fn next_frame(
 ) -> Result<NativeFrame, Box<dyn Error>> {
     loop {
         let frame = next_any_frame(control, child)?;
-        if !matches!(frame, NativeFrame::CpuPark(_) | NativeFrame::WriterChunk(_)) {
+        if !matches!(
+            frame,
+            NativeFrame::CpuPark(_)
+                | NativeFrame::WriterChunk(_)
+                | NativeFrame::InitializationCut(_)
+                | NativeFrame::InitializationStopped(_)
+                | NativeFrame::InitializationAcknowledged(_)
+        ) {
             return Ok(frame);
         }
     }
@@ -219,6 +226,24 @@ fn run_probe(
     writer_custody: bool,
     expect_source_fault: bool,
 ) -> Result<Vec<NativeStopFacts>, Box<dyn Error>> {
+    run_initialized_probe(
+        limits,
+        require_cpu_park,
+        pit_timer,
+        writer_custody,
+        expect_source_fault,
+        false,
+    )
+}
+
+fn run_initialized_probe(
+    limits: &[u64],
+    require_cpu_park: bool,
+    pit_timer: bool,
+    writer_custody: bool,
+    expect_source_fault: bool,
+    initialize: bool,
+) -> Result<Vec<NativeStopFacts>, Box<dyn Error>> {
     let qemu = artifact("CRUCIBLE_NATIVE_PROBE_QEMU")?;
     let plugin = artifact("CRUCIBLE_NATIVE_PROBE_PLUGIN")?;
     let mut pit_firmware = None;
@@ -249,14 +274,27 @@ fn run_probe(
     } else {
         NativeControlEdition::Original
     };
-    let (mut native, endpoint) = NativeQemuControlTransport::prepare_for_edition(
-        NativePreparation {
-            scope: original(1, 0, limits[0]).scope,
-            boundary: position(0),
-            maximum_commands: U64::new(8),
-        },
-        edition,
-    )?;
+    let preparation = NativePreparation {
+        scope: original(1, 0, limits[0]).scope,
+        boundary: position(0),
+        maximum_commands: U64::new(8),
+    };
+    let initialization =
+        initialize.then(
+            || crucible_protocol::node_control::NativeInitializationPreparation {
+                preparation: preparation.clone(),
+                realize_operation: id("mechanical/realize"),
+                realize_request_digest: [11; 32],
+                policy_digest: [12; 32],
+                class_mask: 7,
+                maximum_callbacks: 64,
+            },
+        );
+    let (mut native, endpoint) = if let Some(initialization) = &initialization {
+        NativeQemuControlTransport::prepare_initialization(initialization.clone())?
+    } else {
+        NativeQemuControlTransport::prepare_for_edition(preparation, edition)?
+    };
     let digest = endpoint
         .scope_digest()
         .iter()
@@ -317,13 +355,28 @@ fn run_probe(
         (pins[2].as_raw_fd(), 5),
         (pins[3].as_raw_fd(), 9),
     ];
-    let plugin_args = format!(
+    let mut plugin_args = format!(
         "{},{},node_control_fd=9,node_control_scope_hash={digest},node_control_version={}",
         plugin.display(),
         base.plugin_args_raw(),
         edition.version()
     );
+    if let Some(initialization) = &initialization {
+        let hex = |bytes: &[u8]| {
+            bytes
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        };
+        plugin_args.push_str(&format!(",node_initialization_commitment={},node_initialization_realize_digest={},node_initialization_policy_digest={},node_initialization_class_mask={},node_initialization_max_callbacks={}",
+            hex(&initialization.identity_digest()?), hex(&initialization.realize_request_digest), hex(&initialization.policy_digest), initialization.class_mask, initialization.maximum_callbacks));
+    }
     let mut command = Command::new(qemu);
+    if let Some(initialization) = &initialization {
+        command
+            .arg("-crucible-node-initialization")
+            .arg(initialization.early_launch_argument()?);
+    }
     command
         .args([
             "-machine",
@@ -444,10 +497,29 @@ fn run_probe(
         return Ok(Vec::new());
     }
 
+    let original_initialization_cut = if let Some(preparation) = &initialization {
+        loop {
+            native.request_initialization_cut()?;
+            match next_any_frame(&mut native, &mut child.0)? {
+                NativeFrame::InitializationCut(cut) => {
+                    cut.validate_against(preparation)?;
+                    break Some(*cut);
+                }
+                NativeFrame::CpuPark(_) | NativeFrame::WriterChunk(_) => {}
+                frame => panic!("original construction cut: {frame:?}"),
+            }
+        }
+    } else {
+        None
+    };
     let original_cpu_park = if require_cpu_park {
         assert!(native.request_cpu_park()?);
-        let NativeFrame::CpuPark(facts) = next_any_frame(&mut native, &mut child.0)? else {
-            panic!("actual source CPU-only initial park observation");
+        let facts = loop {
+            match next_any_frame(&mut native, &mut child.0)? {
+                NativeFrame::CpuPark(facts) => break facts,
+                NativeFrame::InitializationCut(_) | NativeFrame::WriterChunk(_) => {}
+                frame => panic!("actual source CPU-only initial park observation: {frame:?}"),
+            }
         };
         assert_eq!(facts.cpu_count, 1);
         assert_eq!(facts.coverage, 1);
@@ -467,13 +539,122 @@ fn run_probe(
     // Startup callbacks may settle before the authentic initial HOLD. Their
     // actual original cut determines refusal; a fixed startup count is not an
     // authored preparation epoch and cannot establish deterministic readiness.
-    let pending_unknown_writers = original_writers.as_ref().is_some_and(|initial| {
-        !initial.work.is_empty()
-            || initial
-                .aio
+    let pending_unknown_writers = !initialize
+        && original_writers.as_ref().is_some_and(|initial| {
+            !initial.work.is_empty()
+                || initial
+                    .aio
+                    .iter()
+                    .any(|context| context.pending_bhs != 0 || context.queued_coroutines != 0)
+        });
+    if let Some(cut) = &original_initialization_cut {
+        use crucible_protocol::node_control::{
+            NativeInitializationClass, NativeInitializationCommand, NativeInitializationStatus,
+        };
+        // This actual PC fixture enrolls its original dispatcher and two IDE
+        // restart callbacks before construction; an empty cut would not prove
+        // the HOME cleanup path this test is intended to exercise.
+        assert_eq!(cut.rows.len(), 3);
+        assert_eq!(
+            cut.rows
                 .iter()
-                .any(|context| context.pending_bhs != 0 || context.queued_coroutines != 0)
-    });
+                .filter(|row| row.class == NativeInitializationClass::QmpDispatcherStartup)
+                .count(),
+            1
+        );
+        assert_eq!(
+            cut.rows
+                .iter()
+                .filter(|row| row.class == NativeInitializationClass::IdeZeroErrorRestart)
+                .count(),
+            2
+        );
+        let writers = original_writers
+            .as_ref()
+            .ok_or("original writer cut absent")?;
+        assert_eq!(writers.current_ps.get(), 0);
+        assert_eq!(writers.retired_count.get(), 0);
+        assert_eq!(writers.gate_generation, cut.hold_generation);
+        for row in &cut.rows {
+            assert!(
+                writers
+                    .bottom_halves
+                    .iter()
+                    .any(|bh| bh.bh_id == row.callback_id
+                        && bh.context_id == row.context_id
+                        && bh.active_callbacks == 0)
+            );
+        }
+        let preparation = initialization
+            .as_ref()
+            .ok_or("original initialization absent")?;
+        let original = NativeInitializationCommand {
+            sequence: U64::new(1),
+            class_mask: preparation.class_mask,
+            maximum_callbacks: preparation.maximum_callbacks,
+            prepared_scope_hash: cut.prepared_scope_hash,
+            initialization_commitment: cut.initialization_commitment,
+            realize_request_digest: preparation.realize_request_digest,
+            policy_digest: preparation.policy_digest,
+            original_cut_digest: cut.original_cut_digest,
+        };
+        assert!(
+            native
+                .transmit_original(self::original(1, 0, limits[0]))
+                .is_err()
+        );
+        assert!(native.transmit_initialization(original.clone())?.1);
+        let receipt = loop {
+            match next_any_frame(&mut native, &mut child.0)? {
+                NativeFrame::InitializationStopped(receipt) => break *receipt,
+                NativeFrame::InitializationCut(_)
+                | NativeFrame::CpuPark(_)
+                | NativeFrame::WriterChunk(_) => {}
+                frame => panic!("original initialization completion: {frame:?}"),
+            }
+        };
+        assert_eq!(receipt.status, NativeInitializationStatus::Applied);
+        assert_eq!(receipt.applied_callbacks as usize, cut.rows.len());
+        assert_eq!(receipt.hold_generation, cut.hold_generation);
+        assert_eq!(native.initialization_cut(), Some(cut));
+        assert!(!native.initialization_acknowledged());
+        assert!(
+            native
+                .transmit_original(self::original(1, 0, limits[0]))
+                .is_err()
+        );
+        native.transmit_initialization(original.clone())?;
+        loop {
+            match next_any_frame(&mut native, &mut child.0)? {
+                NativeFrame::InitializationStopped(retry) => {
+                    assert_eq!(*retry, receipt);
+                    break;
+                }
+                NativeFrame::InitializationCut(_)
+                | NativeFrame::CpuPark(_)
+                | NativeFrame::WriterChunk(_) => {}
+                frame => panic!("same original result: {frame:?}"),
+            }
+        }
+        assert!(native.transmit_initialization_acknowledgement()?);
+        assert!(!native.initialization_acknowledged());
+        assert!(native.transmit_initialization_acknowledgement()?);
+        loop {
+            match next_any_frame(&mut native, &mut child.0)? {
+                NativeFrame::InitializationAcknowledged(_) => break,
+                NativeFrame::InitializationCut(_)
+                | NativeFrame::InitializationStopped(_)
+                | NativeFrame::CpuPark(_)
+                | NativeFrame::WriterChunk(_) => {}
+                frame => panic!("original construction ACK: {frame:?}"),
+            }
+        }
+        assert!(native.initialization_acknowledged());
+        assert_eq!(native.initialization_receipt(), Some(&receipt));
+        let retained = mapped.fault_command_transport_mut(PROBE_VM_SLOT)?;
+        assert_eq!(retained.ring.read_index(), 0);
+        assert_eq!(retained.ring.write_index(), 1);
+    }
     let mut start = 0;
     let mut outcomes = Vec::new();
     let mut windows = limits.to_vec();
@@ -512,7 +693,15 @@ fn run_probe(
             assert_eq!(cut.roster_sha256, initial.roster_sha256);
             assert_eq!(cut.coverage, 7);
             assert_eq!(cut.flags, 15);
-            assert_eq!(cut.bottom_halves, initial.bottom_halves);
+            if initialize {
+                assert!(
+                    cut.aio
+                        .iter()
+                        .all(|context| context.pending_bhs == 0 && context.queued_coroutines == 0)
+                );
+            } else {
+                assert_eq!(cut.bottom_halves, initial.bottom_halves);
+            }
             assert_eq!(cut.work, initial.work);
         }
         native.transmit_original(original)?;
@@ -585,7 +774,13 @@ fn run_probe(
     if let Some(original) = original_cpu_park {
         assert!(native.request_cpu_park()?);
         let mut recovered = next_any_frame(&mut native, &mut child.0)?;
-        while matches!(recovered, NativeFrame::WriterChunk(_)) {
+        while matches!(
+            recovered,
+            NativeFrame::WriterChunk(_)
+                | NativeFrame::InitializationCut(_)
+                | NativeFrame::InitializationStopped(_)
+                | NativeFrame::InitializationAcknowledged(_)
+        ) {
             recovered = next_any_frame(&mut native, &mut child.0)?;
         }
         assert_eq!(recovered, NativeFrame::CpuPark(original.clone()));
@@ -696,5 +891,17 @@ fn actual_native_writer_hold_preserves_original_cuts_and_legacy_fifo() -> Result
 fn actual_native_source_fault_requires_independent_child_containment() -> Result<(), Box<dyn Error>>
 {
     assert!(run_probe(&[110], false, false, true, true)?.is_empty());
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires source-built native initialization QEMU and matching GPL plugin"]
+fn original_construction_epoch_applies_finite_home_cut_and_retains_ack_custody()
+-> Result<(), Box<dyn Error>> {
+    let outcomes = run_initialized_probe(&[110, 200], true, false, true, false, true)?;
+    assert_eq!(outcomes.len(), 2);
+    assert_eq!(outcomes[0].kind, NativeStopKind::HorizonPark);
+    assert_eq!(outcomes[0].retired_count.get(), 2);
+    assert_eq!(outcomes[1].retired_count.get(), 3);
     Ok(())
 }

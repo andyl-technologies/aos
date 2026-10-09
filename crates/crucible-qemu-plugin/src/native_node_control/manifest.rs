@@ -5,6 +5,7 @@ use crate::{QemuPluginResourceManifest, args::NativeNodeControlConfig};
 const NATIVE_RESOURCE: u64 = 1_u64 << 15;
 const NATIVE_CALLBACK: u64 = 1_u64 << 15;
 const NATIVE_WORKER: u64 = 1_u64 << 3;
+const INITIALIZATION: u64 = 1_u64 << 16;
 
 /// Extends the legacy C resource inventory only for a prepared native controller.
 #[repr(C)]
@@ -15,10 +16,17 @@ pub(crate) struct NativeResourceManifest {
     prepared_scope_hash: [u8; 32],
 }
 
+#[repr(C)]
+pub(crate) struct InitializedResourceManifest {
+    native: NativeResourceManifest,
+    initialization_commitment: [u8; 32],
+}
+
 /// Retains the complete edition-specific object during native registration.
 pub(crate) enum RegisteredResourceManifest {
     Legacy(QemuPluginResourceManifest),
     Native(NativeResourceManifest),
+    Initialized(InitializedResourceManifest),
 }
 
 impl RegisteredResourceManifest {
@@ -38,7 +46,7 @@ impl RegisteredResourceManifest {
             return None;
         }
 
-        Some(Self::Native(NativeResourceManifest {
+        let native = NativeResourceManifest {
             legacy: QemuPluginResourceManifest {
                 schema_version: 4,
                 struct_size: 128,
@@ -50,7 +58,29 @@ impl RegisteredResourceManifest {
             node_control_fd: descriptor,
             node_control_version: 1,
             prepared_scope_hash: scope_hash,
-        }))
+        };
+        match (
+            config.initialization(),
+            owner.registered_initialization_commitment(),
+        ) {
+            (None, None) => Some(Self::Native(native)),
+            (Some(pinned), Some(commitment)) if pinned.commitment == commitment => {
+                Some(Self::Initialized(InitializedResourceManifest {
+                    native: NativeResourceManifest {
+                        legacy: QemuPluginResourceManifest {
+                            schema_version: 5,
+                            struct_size: 160,
+                            resource_mask: native.legacy.resource_mask | INITIALIZATION,
+                            callback_mask: native.legacy.callback_mask | INITIALIZATION,
+                            ..native.legacy
+                        },
+                        ..native
+                    },
+                    initialization_commitment: commitment,
+                }))
+            }
+            _ => None,
+        }
     }
 
     /// Returns the versioned prefix while retaining the complete extension.
@@ -58,6 +88,7 @@ impl RegisteredResourceManifest {
         match self {
             Self::Legacy(manifest) => manifest,
             Self::Native(manifest) => &manifest.legacy,
+            Self::Initialized(manifest) => &manifest.native.legacy,
         }
     }
 }
@@ -67,4 +98,6 @@ const _: () = {
     assert!(std::mem::size_of::<NativeResourceManifest>() == 128);
     assert!(std::mem::offset_of!(NativeResourceManifest, node_control_fd) == 88);
     assert!(std::mem::offset_of!(NativeResourceManifest, prepared_scope_hash) == 96);
+    assert!(std::mem::size_of::<InitializedResourceManifest>() == 160);
+    assert!(std::mem::offset_of!(InitializedResourceManifest, initialization_commitment) == 128);
 };

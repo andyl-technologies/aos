@@ -7,6 +7,8 @@
 
 mod abi;
 mod controller;
+mod initialization_abi;
+mod initialization_custody;
 mod install;
 mod manifest;
 mod source_fault_abi;

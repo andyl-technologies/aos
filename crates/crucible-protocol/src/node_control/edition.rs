@@ -43,6 +43,13 @@ pub fn encode_frame_for_edition(
 ) -> Result<Vec<u8>, NativeCommandError> {
     if edition == NativeControlEdition::OwnedCustody {
         let (kind, body) = match frame {
+            NativeFrame::PrepareInitialization(preparation) => (14, preparation.encode()?),
+            NativeFrame::QueryInitialization(query) => (15, query.encode()?.to_vec()),
+            NativeFrame::InitializationCut(cut) => (16, cut.encode()?),
+            NativeFrame::Initialize(command) => (17, command.encode()?.to_vec()),
+            NativeFrame::InitializationStopped(receipt) => (18, receipt.encode()?.to_vec()),
+            NativeFrame::AcknowledgeInitialization(ack) => (19, ack.encode()?.to_vec()),
+            NativeFrame::InitializationAcknowledged(ack) => (20, ack.encode()?.to_vec()),
             NativeFrame::SourceFault(facts) => (13u16, facts.encode()?.to_vec()),
             NativeFrame::QueryWriters(query) => {
                 query.validate()?;
@@ -67,6 +74,9 @@ pub fn encode_frame_for_edition(
                 return Ok(bytes);
             }
         };
+        if body.len() > NODE_CONTROL_MAX_BODY_BYTES {
+            return Err(NativeCommandError::ResourceLimit);
+        }
         let mut bytes = Vec::with_capacity(NODE_CONTROL_HEADER_BYTES + body.len());
         bytes.extend_from_slice(MAGIC);
         bytes.extend_from_slice(&edition.version().to_be_bytes());
@@ -117,6 +127,27 @@ pub fn decode_frame_for_edition(
         return Err(NativeCommandError::Invalid("native frame length mismatch"));
     }
     let frame = match kind {
+        14 => NativeFrame::PrepareInitialization(Box::new(
+            super::NativeInitializationPreparation::decode(cursor.take(cursor.0.len())?)?,
+        )),
+        15 => NativeFrame::QueryInitialization(super::NativeInitializationQuery::decode(
+            cursor.take(cursor.0.len())?,
+        )?),
+        16 => NativeFrame::InitializationCut(Box::new(super::NativeInitializationCut::decode(
+            cursor.take(cursor.0.len())?,
+        )?)),
+        17 => NativeFrame::Initialize(Box::new(super::NativeInitializationCommand::decode(
+            cursor.take(cursor.0.len())?,
+        )?)),
+        18 => NativeFrame::InitializationStopped(Box::new(
+            super::NativeInitializationReceipt::decode(cursor.take(cursor.0.len())?)?,
+        )),
+        19 => NativeFrame::AcknowledgeInitialization(
+            super::NativeInitializationAcknowledgement::decode(cursor.take(cursor.0.len())?)?,
+        ),
+        20 => NativeFrame::InitializationAcknowledged(
+            super::NativeInitializationAcknowledgement::decode(cursor.take(cursor.0.len())?)?,
+        ),
         13 => NativeFrame::SourceFault(Box::new(super::SourceFaultFacts::decode(
             cursor.take(cursor.0.len())?,
         )?)),
@@ -229,3 +260,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "initialization_frame_tests.rs"]
+mod initialization_tests;

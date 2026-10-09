@@ -17,7 +17,14 @@ pub fn encode_frame(frame: &NativeFrame) -> Result<Vec<u8>, NativeCommandError> 
     let (kind, body) = match frame {
         NativeFrame::QueryWriters(_)
         | NativeFrame::WriterChunk(_)
-        | NativeFrame::SourceFault(_) => {
+        | NativeFrame::SourceFault(_)
+        | NativeFrame::PrepareInitialization(_)
+        | NativeFrame::QueryInitialization(_)
+        | NativeFrame::InitializationCut(_)
+        | NativeFrame::Initialize(_)
+        | NativeFrame::InitializationStopped(_)
+        | NativeFrame::AcknowledgeInitialization(_)
+        | NativeFrame::InitializationAcknowledged(_) => {
             return Err(NativeCommandError::UnsupportedVersion(2));
         }
         NativeFrame::QueryTimers(query) => {

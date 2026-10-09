@@ -14,7 +14,9 @@ use std::collections::BTreeSet;
 use thiserror::Error;
 
 mod app_random;
+mod native_initialization;
 mod native_node;
+pub use native_initialization::NativeInitializationConfig;
 pub use native_node::{
     NativeNodeControlConfig, PLUGIN_ARG_NODE_CONTROL_FD, PLUGIN_ARG_NODE_CONTROL_SCOPE_HASH,
     PLUGIN_ARG_NODE_CONTROL_VERSION,

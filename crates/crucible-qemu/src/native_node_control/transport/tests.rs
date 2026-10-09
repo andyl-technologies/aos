@@ -559,3 +559,189 @@ fn timer_assembly_retains_large_original_after_lost_reply_and_rejects_changed_di
     host.poll_original().unwrap();
     assert_eq!(host.timer_observation(U64::new(1)), Some(&observation));
 }
+
+fn initialization_channels() -> (
+    NativeQemuControlTransport,
+    NativeChannel,
+    crucible_protocol::node_control::NativeInitializationPreparation,
+    crucible_protocol::node_control::NativeInitializationCut,
+) {
+    use crucible_protocol::node_control::{
+        NativeInitializationCut, NativeInitializationPreparation,
+    };
+    let preparation = NativeInitializationPreparation {
+        preparation: NativePreparation {
+            scope: command(1, 0, 110).scope,
+            boundary: coordinate(0),
+            maximum_commands: U64::new(4),
+        },
+        realize_operation: id("test/realize"),
+        realize_request_digest: [11; 32],
+        policy_digest: [12; 32],
+        class_mask: 7,
+        maximum_callbacks: 64,
+    };
+    let (mut transport, endpoint) =
+        NativeQemuControlTransport::prepare_initialization(preparation.clone()).unwrap();
+    assert_eq!(endpoint.initialization(), Some(&preparation));
+    let provider = NativeChannel::from_prepared_socket_for_edition(
+        endpoint.into_socket(),
+        NativeControlEdition::OwnedCustody,
+    )
+    .unwrap();
+    assert_eq!(
+        provider.receive().unwrap(),
+        Some(NativeFrame::PrepareInitialization(Box::new(
+            preparation.clone()
+        )))
+    );
+    let mut cut = NativeInitializationCut {
+        hold_generation: U64::new(5),
+        prepared_scope_hash: preparation.preparation.scope.identity_digest().unwrap(),
+        initialization_commitment: preparation.identity_digest().unwrap(),
+        original_cut_digest: [0; 32],
+        rows: Vec::new(),
+    };
+    cut.original_cut_digest = cut.computed_digest().unwrap();
+    provider
+        .send(&NativeFrame::InitializationCut(Box::new(cut.clone())))
+        .unwrap();
+    transport.poll_original().unwrap();
+    (transport, provider, preparation, cut)
+}
+
+#[test]
+fn original_construction_ack_requires_matching_reply_and_never_resamples_cut() {
+    use crucible_protocol::node_control::{
+        NativeInitializationCommand, NativeInitializationReceipt, NativeInitializationStatus,
+    };
+    let (mut transport, provider, preparation, cut) = initialization_channels();
+    let original = NativeInitializationCommand {
+        sequence: U64::new(1),
+        class_mask: preparation.class_mask,
+        maximum_callbacks: preparation.maximum_callbacks,
+        prepared_scope_hash: cut.prepared_scope_hash,
+        initialization_commitment: cut.initialization_commitment,
+        realize_request_digest: preparation.realize_request_digest,
+        policy_digest: preparation.policy_digest,
+        original_cut_digest: cut.original_cut_digest,
+    };
+    assert!(transport.transmit_original(command(1, 0, 110)).is_err());
+    assert!(transport.transmit_initialization_acknowledgement().is_err());
+    assert_eq!(
+        transport
+            .transmit_initialization(original.clone())
+            .unwrap()
+            .0,
+        CommandJournalDisposition::New
+    );
+    assert_eq!(
+        provider.receive().unwrap(),
+        Some(NativeFrame::Initialize(Box::new(original.clone())))
+    );
+    let receipt = NativeInitializationReceipt {
+        status: NativeInitializationStatus::Applied,
+        applied_callbacks: 0,
+        sequence: original.sequence,
+        hold_generation: cut.hold_generation,
+        prepared_scope_hash: cut.prepared_scope_hash,
+        initialization_commitment: cut.initialization_commitment,
+        original_cut_digest: cut.original_cut_digest,
+        realize_request_digest: preparation.realize_request_digest,
+    };
+    provider
+        .send(&NativeFrame::InitializationStopped(Box::new(
+            receipt.clone(),
+        )))
+        .unwrap();
+    transport.poll_original().unwrap();
+    assert!(!transport.initialization_acknowledged());
+    assert!(transport.transmit_original(command(1, 0, 110)).is_err());
+    assert!(transport.transmit_initialization_acknowledgement().unwrap());
+    let Some(NativeFrame::AcknowledgeInitialization(ack)) = provider.receive().unwrap() else {
+        panic!("original ACK")
+    };
+    assert!(!transport.initialization_acknowledged());
+    assert!(transport.transmit_initialization_acknowledgement().unwrap());
+    assert_eq!(
+        provider.receive().unwrap(),
+        Some(NativeFrame::AcknowledgeInitialization(ack.clone()))
+    );
+    provider
+        .send(&NativeFrame::InitializationAcknowledged(ack.clone()))
+        .unwrap();
+    transport.poll_original().unwrap();
+    assert!(transport.initialization_acknowledged());
+    provider
+        .send(&NativeFrame::InitializationAcknowledged(ack))
+        .unwrap();
+    transport.poll_original().unwrap();
+    assert_eq!(transport.initialization_cut(), Some(&cut));
+    assert_eq!(transport.initialization_receipt(), Some(&receipt));
+
+    let mut changed = cut.clone();
+    changed.hold_generation = U64::new(6);
+    changed.original_cut_digest = changed.computed_digest().unwrap();
+    provider
+        .send(&NativeFrame::InitializationCut(Box::new(changed)))
+        .unwrap();
+    assert!(transport.poll_original().is_err());
+    assert!(
+        !transport
+            .initialization
+            .as_ref()
+            .unwrap()
+            .permits_execution()
+    );
+    assert_eq!(transport.initialization_cut(), Some(&cut));
+}
+
+#[test]
+fn unknown_construction_effects_preserve_original_result_but_refuse_ack() {
+    use crucible_protocol::node_control::{
+        NativeInitializationCommand, NativeInitializationReceipt, NativeInitializationStatus,
+    };
+    let (mut transport, provider, preparation, cut) = initialization_channels();
+    let original = NativeInitializationCommand {
+        sequence: U64::new(1),
+        class_mask: preparation.class_mask,
+        maximum_callbacks: preparation.maximum_callbacks,
+        prepared_scope_hash: cut.prepared_scope_hash,
+        initialization_commitment: cut.initialization_commitment,
+        realize_request_digest: preparation.realize_request_digest,
+        policy_digest: preparation.policy_digest,
+        original_cut_digest: cut.original_cut_digest,
+    };
+    transport.transmit_initialization(original.clone()).unwrap();
+    provider.receive().unwrap();
+    let receipt = NativeInitializationReceipt {
+        status: NativeInitializationStatus::EffectsUnknown,
+        applied_callbacks: 0,
+        sequence: original.sequence,
+        hold_generation: cut.hold_generation,
+        prepared_scope_hash: cut.prepared_scope_hash,
+        initialization_commitment: cut.initialization_commitment,
+        original_cut_digest: cut.original_cut_digest,
+        realize_request_digest: preparation.realize_request_digest,
+    };
+    provider
+        .send(&NativeFrame::InitializationStopped(Box::new(
+            receipt.clone(),
+        )))
+        .unwrap();
+    transport.poll_original().unwrap();
+    assert!(transport.transmit_initialization_acknowledgement().is_err());
+    assert_eq!(
+        transport
+            .transmit_initialization(original.clone())
+            .unwrap()
+            .0,
+        CommandJournalDisposition::Stopped
+    );
+    let mut changed = original;
+    changed.sequence = U64::new(2);
+    assert!(transport.transmit_initialization(changed).is_err());
+    assert_eq!(transport.initialization_receipt(), Some(&receipt));
+    assert_eq!(transport.initialization_cut(), Some(&cut));
+    assert!(transport.transmit_original(command(1, 0, 110)).is_err());
+}
