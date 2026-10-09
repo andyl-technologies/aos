@@ -256,6 +256,21 @@ log does not establish per-stage cost or the measured cause of expiry.
 A separate recovery task reviews genuine renewal at borrow-free handoffs.
 Owning checks and the complete T1 floor remain unqualified; no task or exit
 is accepted by these results.
+The reviewed renewal candidate `072c4c5d78` now acknowledges a genuine
+whole-lease renewal at each observation-loop entry, after previous checked
+borrows have ended. It keeps progress and its corresponding reclaim under
+the same exact Planned-event lease. Strict native all-target Clippy passes
+(14.36 seconds; `/tmp/terrane-permanent-renewal-clippy-loop-only.log`). Its
+two-case recovery run is terminal with one pass and one timeout (228.230
+seconds; run `6b69c814-4f03-4a93-b97f-eec2ca8ca073`,
+`/tmp/terrane-permanent-renewal-focused-loop-only.log`). The empty/late-residue
+case passes genuine multiple-renewal ACK and actual selected-chain checks.
+The 4,100-cycle case times out at the unchanged 120-second bound after real
+observation, progress, reclaim and loop-renewal acknowledgments; its next
+progress publication remains unfinished. The ninety-second session, population
+and all lease-equality predicates remain unchanged. The log establishes no
+per-effect cost or measured cause. The owning twenty-three-case check and
+complete T1 floor remain unqualified, and T-GC-1 remains open.
 The shared final-check producer now retains the native permanent-family
 traversal through pre-selection handoffs. Its typed receipt refreshes actual
 enumeration and directory continuity between current-authority checks;
