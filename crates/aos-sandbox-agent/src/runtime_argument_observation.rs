@@ -13,6 +13,7 @@
 //!          || Ed25519(domain || preceding-readback-bytes)[64]
 //! ```
 
+use aos_sandbox_core::bounded_codec::BoundedReader;
 use aos_sandbox_core::{
     AssignmentEpoch, DesiredGeneration, ExecutionRuntimeArgumentLimitV1, ExecutionTargetV1,
     FeatureRef, IncarnationId, NamespaceGeneration, ObjectDigest, PayloadBootId, SandboxId,
@@ -161,37 +162,34 @@ impl GuestRuntimeArgumentObserveRequestV1 {
         if bytes.len() > MAXIMUM_REQUEST_BYTES {
             return Err(GuestRuntimeArgumentObservationErrorV1::InvalidPacket);
         }
-        let mut cursor = bytes;
-        if take::<8>(&mut cursor)? != *ARGUMENT_OBSERVE_REQUEST_MAGIC_V1 {
+        let mut cursor = BoundedReader::new(bytes, |_| {
+            GuestRuntimeArgumentObservationErrorV1::InvalidPacket
+        });
+        if cursor.array::<8>()? != *ARGUMENT_OBSERVE_REQUEST_MAGIC_V1 {
             return Err(GuestRuntimeArgumentObservationErrorV1::InvalidPacket);
         }
         let runtime = AgentRuntimeBindingV1::new(
-            SandboxId::from_bytes(take(&mut cursor)?),
-            IncarnationId::from_bytes(take(&mut cursor)?),
-            AssignmentEpoch::new(u64::from_be_bytes(take(&mut cursor)?)),
-            ObjectDigest::from_bytes(take(&mut cursor)?),
-            DesiredGeneration::new(u64::from_be_bytes(take(&mut cursor)?)),
-            NamespaceGeneration::new(u64::from_be_bytes(take(&mut cursor)?)),
-            take(&mut cursor)?,
+            SandboxId::from_bytes(cursor.array()?),
+            IncarnationId::from_bytes(cursor.array()?),
+            AssignmentEpoch::new(u64::from_be_bytes(cursor.array()?)),
+            ObjectDigest::from_bytes(cursor.array()?),
+            DesiredGeneration::new(u64::from_be_bytes(cursor.array()?)),
+            NamespaceGeneration::new(u64::from_be_bytes(cursor.array()?)),
+            cursor.array()?,
         )
         .map_err(|_| GuestRuntimeArgumentObservationErrorV1::InvalidPacket)?;
         let session =
-            AgentSessionBindingV1::from_digest(ObjectDigest::from_bytes(take(&mut cursor)?))
+            AgentSessionBindingV1::from_digest(ObjectDigest::from_bytes(cursor.array()?))
                 .map_err(|_| GuestRuntimeArgumentObservationErrorV1::InvalidPacket)?;
-        let channel = ObjectDigest::from_bytes(take(&mut cursor)?);
-        let challenge = take(&mut cursor)?;
-        let name_length = usize::from(take::<1>(&mut cursor)?[0]);
-        let name = cursor
-            .get(..name_length)
-            .ok_or(GuestRuntimeArgumentObservationErrorV1::InvalidPacket)?;
-        cursor = cursor
-            .get(name_length..)
-            .ok_or(GuestRuntimeArgumentObservationErrorV1::InvalidPacket)?;
+        let channel = ObjectDigest::from_bytes(cursor.array()?);
+        let challenge = cursor.array()?;
+        let name_length = usize::from(cursor.array::<1>()?[0]);
+        let name = cursor.bytes(name_length)?;
         let name = std::str::from_utf8(name)
             .map_err(|_| GuestRuntimeArgumentObservationErrorV1::InvalidPacket)?;
-        let major = u32::from_be_bytes(take(&mut cursor)?);
-        let minor = u32::from_be_bytes(take(&mut cursor)?);
-        let profile_commitment = ObjectDigest::from_bytes(take(&mut cursor)?);
+        let major = u32::from_be_bytes(cursor.array()?);
+        let minor = u32::from_be_bytes(cursor.array()?);
+        let profile_commitment = ObjectDigest::from_bytes(cursor.array()?);
         if !cursor.is_empty() {
             return Err(GuestRuntimeArgumentObservationErrorV1::InvalidPacket);
         }
@@ -255,23 +253,24 @@ pub fn verify_guest_runtime_argument_readback_v1(
     if packet.len() > MAXIMUM_READBACK_BYTES || packet.len() < 82 {
         return Err(GuestRuntimeArgumentObservationErrorV1::InvalidPacket);
     }
-    let mut cursor = packet;
-    if take::<8>(&mut cursor)? != *READBACK_MAGIC {
+    let mut cursor = BoundedReader::new(packet, |_| {
+            GuestRuntimeArgumentObservationErrorV1::InvalidPacket
+        });
+    if cursor.array::<8>()? != *READBACK_MAGIC {
         return Err(GuestRuntimeArgumentObservationErrorV1::InvalidPacket);
     }
-    let request_length = usize::from(u16::from_be_bytes(take(&mut cursor)?));
+    let request_length = usize::from(u16::from_be_bytes(cursor.array()?));
     let request_bytes = cursor
+        .remaining_bytes()
         .get(..request_length)
         .ok_or(GuestRuntimeArgumentObservationErrorV1::InvalidPacket)?;
     let request = GuestRuntimeArgumentObserveRequestV1::decode(request_bytes)?;
     if request != *expected {
         return Err(GuestRuntimeArgumentObservationErrorV1::CurrentMismatch);
     }
-    cursor = cursor
-        .get(request_length..)
-        .ok_or(GuestRuntimeArgumentObservationErrorV1::InvalidPacket)?;
-    let measured = u64::from_be_bytes(take(&mut cursor)?);
-    let signature_bytes = take::<64>(&mut cursor)?;
+    cursor.bytes(request_length)?;
+    let measured = u64::from_be_bytes(cursor.array()?);
+    let signature_bytes = cursor.array::<64>()?;
     if measured == 0 || !cursor.is_empty() {
         return Err(GuestRuntimeArgumentObservationErrorV1::InvalidPacket);
     }
@@ -346,20 +345,6 @@ fn sign_readback_with_limit(
     message.extend_from_slice(&packet);
     packet.extend_from_slice(&signing_key.sign(&message).to_bytes());
     Ok(packet)
-}
-
-fn take<const N: usize>(
-    cursor: &mut &[u8],
-) -> Result<[u8; N], GuestRuntimeArgumentObservationErrorV1> {
-    let bytes = cursor
-        .get(..N)
-        .ok_or(GuestRuntimeArgumentObservationErrorV1::InvalidPacket)?
-        .try_into()
-        .map_err(|_| GuestRuntimeArgumentObservationErrorV1::InvalidPacket)?;
-    *cursor = cursor
-        .get(N..)
-        .ok_or(GuestRuntimeArgumentObservationErrorV1::InvalidPacket)?;
-    Ok(bytes)
 }
 
 #[cfg(test)]

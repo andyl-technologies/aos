@@ -17,6 +17,7 @@
 //! ```
 
 use aos_sandbox_agent::{GuestRuntimeArgumentObserveRequestV1, GuestRuntimeArgumentReadbackV1};
+use aos_sandbox_core::bounded_codec::BoundedReader;
 use aos_sandbox_core::ObjectDigest;
 use sha2::{Digest as _, Sha256};
 
@@ -121,26 +122,28 @@ impl HostExecutionArgumentFreshReceiptV1 {
         {
             return Err(HostExecutionArgumentReceiptErrorV1::InvalidReceipt);
         }
-        let mut cursor = &bytes[8..];
-        let source = take::<HOST_EXECUTION_ARGUMENT_ATTEMPT_BYTES_V1>(&mut cursor)?;
-        let runtime_handle = ObjectDigest::from_bytes(take(&mut cursor)?);
-        let custody_digest = ObjectDigest::from_bytes(take(&mut cursor)?);
-        let custody_sequence = u64::from_be_bytes(take(&mut cursor)?);
-        let session_binding = ObjectDigest::from_bytes(take(&mut cursor)?);
-        let request_digest = ObjectDigest::from_bytes(take(&mut cursor)?);
-        let packet_digest = ObjectDigest::from_bytes(take(&mut cursor)?);
-        let argument_limit_bytes = u64::from_be_bytes(take(&mut cursor)?);
-        let request_length = usize::from(u16::from_be_bytes(take(&mut cursor)?));
-        let packet_length = usize::from(u16::from_be_bytes(take(&mut cursor)?));
+        let mut cursor = BoundedReader::new(&bytes[8..], |_| {
+            HostExecutionArgumentReceiptErrorV1::InvalidReceipt
+        });
+        let source = cursor.array::<HOST_EXECUTION_ARGUMENT_ATTEMPT_BYTES_V1>()?;
+        let runtime_handle = ObjectDigest::from_bytes(cursor.array()?);
+        let custody_digest = ObjectDigest::from_bytes(cursor.array()?);
+        let custody_sequence = u64::from_be_bytes(cursor.array()?);
+        let session_binding = ObjectDigest::from_bytes(cursor.array()?);
+        let request_digest = ObjectDigest::from_bytes(cursor.array()?);
+        let packet_digest = ObjectDigest::from_bytes(cursor.array()?);
+        let argument_limit_bytes = u64::from_be_bytes(cursor.array()?);
+        let request_length = usize::from(u16::from_be_bytes(cursor.array()?));
+        let packet_length = usize::from(u16::from_be_bytes(cursor.array()?));
         if request_length > MAXIMUM_GUEST_REQUEST_BYTES
             || packet_length > MAXIMUM_SIGNED_GUEST_PACKET_BYTES
-            || cursor.len() != request_length + packet_length + 32
+            || cursor.remaining() != request_length + packet_length + 32
         {
             return Err(HostExecutionArgumentReceiptErrorV1::InvalidReceipt);
         }
-        let canonical_request = take_slice(&mut cursor, request_length)?.to_vec();
-        let signed_packet = take_slice(&mut cursor, packet_length)?.to_vec();
-        let checksum = take::<32>(&mut cursor)?;
+        let canonical_request = cursor.bytes(request_length)?.to_vec();
+        let signed_packet = cursor.bytes(packet_length)?.to_vec();
+        let checksum = cursor.array::<32>()?;
         if !cursor.is_empty()
             || checksum != receipt_checksum(FRESH_DOMAIN, &bytes[..bytes.len() - 32])
         {
@@ -327,19 +330,21 @@ impl HostExecutionArgumentHistoricalReceiptV1 {
         if bytes.len() != HISTORICAL_BYTES || bytes.get(..8) != Some(HISTORICAL_MAGIC.as_slice()) {
             return Err(HostExecutionArgumentReceiptErrorV1::InvalidReceipt);
         }
-        let mut cursor = &bytes[8..];
-        let source = take::<HOST_EXECUTION_ARGUMENT_ATTEMPT_BYTES_V1>(&mut cursor)?;
-        let status = match take::<1>(&mut cursor)?[0] {
+        let mut cursor = BoundedReader::new(&bytes[8..], |_| {
+            HostExecutionArgumentReceiptErrorV1::InvalidReceipt
+        });
+        let source = cursor.array::<HOST_EXECUTION_ARGUMENT_ATTEMPT_BYTES_V1>()?;
+        let status = match cursor.array::<1>()?[0] {
             0 => HistoricalHostArgumentStatusV1::Absent,
             1 => HistoricalHostArgumentStatusV1::Pending,
             2 => HistoricalHostArgumentStatusV1::Complete,
             _ => return Err(HostExecutionArgumentReceiptErrorV1::InvalidReceipt),
         };
-        let request_digest = ObjectDigest::from_bytes(take(&mut cursor)?);
-        let packet_digest = ObjectDigest::from_bytes(take(&mut cursor)?);
-        let custody_digest = ObjectDigest::from_bytes(take(&mut cursor)?);
-        let custody_sequence = u64::from_be_bytes(take(&mut cursor)?);
-        let checksum = take::<32>(&mut cursor)?;
+        let request_digest = ObjectDigest::from_bytes(cursor.array()?);
+        let packet_digest = ObjectDigest::from_bytes(cursor.array()?);
+        let custody_digest = ObjectDigest::from_bytes(cursor.array()?);
+        let custody_sequence = u64::from_be_bytes(cursor.array()?);
+        let checksum = cursor.array::<32>()?;
         if !cursor.is_empty()
             || checksum != receipt_checksum(HISTORICAL_DOMAIN, &bytes[..bytes.len() - 32])
         {
@@ -460,25 +465,6 @@ fn receipt_checksum(domain: &[u8], bytes: &[u8]) -> [u8; 32] {
         .chain_update(bytes)
         .finalize()
         .into()
-}
-
-fn take<const N: usize>(
-    cursor: &mut &[u8],
-) -> Result<[u8; N], HostExecutionArgumentReceiptErrorV1> {
-    take_slice(cursor, N)?
-        .try_into()
-        .map_err(|_| HostExecutionArgumentReceiptErrorV1::InvalidReceipt)
-}
-
-fn take_slice<'a>(
-    cursor: &mut &'a [u8],
-    length: usize,
-) -> Result<&'a [u8], HostExecutionArgumentReceiptErrorV1> {
-    let (head, tail) = cursor
-        .split_at_checked(length)
-        .ok_or(HostExecutionArgumentReceiptErrorV1::InvalidReceipt)?;
-    *cursor = tail;
-    Ok(head)
 }
 
 #[cfg(test)]
