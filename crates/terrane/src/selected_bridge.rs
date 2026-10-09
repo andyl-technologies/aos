@@ -41,6 +41,7 @@ pub(crate) mod effect_test_checks;
 
 use crate::bucket::publication::SelectedObservation;
 use crate::store::StoreFailure;
+use crate::store::native_publication_effects::collection_copied_retirement::NativeBarrier;
 use crate::store::native_publication_effects::collection_permanent_local::NativePermanentObservation;
 use std::sync::Arc;
 use terrane_core::gc::publication::{
@@ -81,6 +82,24 @@ use std::rc::Rc as SharedOwned;
 use std::sync::Arc as SharedOwned;
 
 impl OwnedFinalCheck {
+    /// Retains genuine copied barrier continuity beside current authority.
+    ///
+    /// Each submitted effect retains the opaque preparation and NEW-barrier
+    /// descriptors even if its waiter disappears. Actual elapsed observation
+    /// remains on the original clock; this check neither restarts the wait nor
+    /// grants ownership from a decoded age or proposed record.
+    pub(crate) fn with_copied_barrier(&self, barrier: &NativeBarrier) -> Self {
+        let current = self.clone();
+        let barrier = barrier.retain();
+        Self {
+            check: SharedOwned::new(move || {
+                current.recheck()?;
+                barrier.elapsed().map_err(native_restore_failure)?;
+                current.recheck()
+            }),
+        }
+    }
+
     /// Retains actual collector extraction descriptors beside genuine current authority.
     ///
     /// The closed worker receipt preserves physical source continuity through

@@ -5077,6 +5077,12 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   permission. These shared prerequisites are source-only; their complete native
   dependencies, compilation and genuine journal-less/restoration fixtures remain
   pending. No task is accepted by introducing them.
+  The final copied-owner staging Frames also receive a concrete retained barrier
+  combiner. It keeps the actual preparing and NEW-barrier descriptors and
+  original elapsed clock observation beside genuine current checks through each
+  submitted effect, including disappearance of its waiter. It adds neither a
+  caller callback nor a decoded age constructor. Native implementation and real
+  cancellation/continuity qualification remain pending.
   Actual remote provider qualification belongs to T3. No remote conformance
   or full `gc-two-phase-delete` pass is claimed. D-78
   registers physical creation journals and recoverable deletion intent.
