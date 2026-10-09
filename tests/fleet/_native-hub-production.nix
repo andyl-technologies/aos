@@ -115,8 +115,8 @@
   qualificationImage = {
     aos.image.budgets = {
       maxRuntimeClosureMiB = 3072;
-      # The complete operator image compresses to 832 MiB with current tools.
-      maxDownloadMiB = 864;
+      # The publisher is the largest qualification image at 868 MiB.
+      maxDownloadMiB = 896;
       maxRootMiB = 768;
     };
     # Fleet assertions and the publisher runbook use the same small Unix
