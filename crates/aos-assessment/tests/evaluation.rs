@@ -12,6 +12,50 @@ use aos_assessment::time::Timestamp;
 use aos_contract::Sha256Digest;
 
 #[test]
+fn selected_subjects_are_frozen_without_rewriting_inventory_or_evaluating_other_subjects()
+-> Result<()> {
+    let mut data = common::fixture("1.2.0")?;
+    let mut additional = data.inventory.subjects[0].clone();
+    additional.subject_ref = "subject-extra".into();
+    data.inventory.subjects.push(additional);
+    let inventory_digest = data.inventory.digest()?;
+    let input = data.freeze_selected(
+        vec![Profile::Vulnerabilities],
+        vec!["subject".into()],
+        common::evaluated_at()?,
+    )?;
+    let assessment = evaluate(&input, &data)?;
+    assert_eq!(input.inventory_digest, inventory_digest);
+    assert_eq!(input.subject_refs, ["subject"]);
+    assert_eq!(assessment.subject_results.len(), 1);
+    assert_eq!(assessment.subject_results[0].subject_ref, "subject");
+    assert_eq!(assessment.subject_results[0].findings.len(), 1);
+    let all = data.freeze(vec![Profile::Vulnerabilities], common::evaluated_at()?)?;
+    assert_ne!(input.digest()?, all.digest()?);
+    assert!(
+        data.freeze_selected(vec![Profile::Updates], vec![], common::evaluated_at()?)
+            .is_err()
+    );
+    assert!(
+        data.freeze_selected(
+            vec![Profile::Updates],
+            vec!["absent".into()],
+            common::evaluated_at()?
+        )
+        .is_err()
+    );
+    assert!(
+        data.freeze_selected(
+            vec![Profile::Updates],
+            vec!["subject".into(), "subject".into()],
+            common::evaluated_at()?
+        )
+        .is_err()
+    );
+    Ok(())
+}
+
+#[test]
 fn frozen_inputs_and_canonical_results_reproduce_after_portable_round_trip() -> Result<()> {
     let data = common::fixture("1.2.0")?;
     let input = data.freeze(vec![Profile::Vulnerabilities], common::evaluated_at()?)?;

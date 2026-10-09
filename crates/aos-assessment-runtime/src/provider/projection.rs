@@ -6,6 +6,7 @@ use aos_assessment::discovery::UpstreamObservationV1;
 use aos_assessment::observation::{ProviderCoverage, ProviderObservationV1};
 use aos_assessment::time::Timestamp;
 use aos_contract::Sha256Digest;
+use aos_contract::limits::BoundedWriter;
 use serde::{Deserialize, Serialize};
 
 use super::{PROVIDER_WORK_RESULT_V1, ProviderOperation, ProviderWorkPlanV1};
@@ -40,15 +41,21 @@ impl NormalizedObject {
         let value = match self {
             Self::Observation(object) => {
                 object.validate()?;
-                serde_json::to_value(object)?
+                bounded_value(object)?
             }
             Self::Advisory(object) => {
                 object.validate()?;
-                serde_json::to_value(object)?
+                bounded_value(object)?
             }
             Self::Upstream(object) => {
                 object.validate()?;
-                serde_json::to_value(object)?
+                Timestamp::from_unix_seconds(object.retrieved_at_unix)?;
+                for candidate in &object.candidates {
+                    if let Some(published) = candidate.published_at_unix {
+                        Timestamp::from_unix_seconds(published)?;
+                    }
+                }
+                bounded_value(object)?
             }
             Self::KnownExploit(object) => {
                 if !aos_assessment::advisory::is_cve_id(&object.cve_id) {
@@ -56,7 +63,7 @@ impl NormalizedObject {
                 }
                 text(&object.catalog_version, 128, "KEV catalog revision")?;
                 Timestamp::parse(&format!("{}T00:00:00Z", object.date_added))?;
-                serde_json::to_value(object)?
+                bounded_value(object)?
             }
         };
         if aos_contract::canonical::to_vec(&value)?.len() > 64 * 1024 {
@@ -73,6 +80,13 @@ impl NormalizedObject {
             }
         }
     }
+}
+
+fn bounded_value(object: &impl Serialize) -> Result<serde_json::Value> {
+    let mut writer =
+        BoundedWriter::new(64 * 1024, "normalized object exceeds compact record limit");
+    serde_json::to_writer(&mut writer, object)?;
+    Ok(serde_json::to_value(object)?)
 }
 
 /// Binds compact object bytes to the digest that the coordinator will admit.

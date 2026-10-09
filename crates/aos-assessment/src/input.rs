@@ -133,6 +133,8 @@ pub struct ScanInputV1 {
     pub schema: String,
     /// Exact normalized inventory identity.
     pub inventory_digest: Sha256Digest,
+    /// Sorted exact subjects selected from the immutable inventory.
+    pub subject_refs: Vec<String>,
     /// Independently requested profiles, sorted and unique.
     pub profiles: Vec<Profile>,
     /// Exact normalized observations, sorted and unique.
@@ -164,11 +166,17 @@ impl ScanInputV1 {
             || self.engine_digest != engine_digest()
             || self.profiles.is_empty()
             || self.profiles.len() > 3
+            || self.subject_refs.is_empty()
+            || self.subject_refs.len() > 10_000
             || self.observation_digests.len() > 100_000
         {
             bail!("unsupported or invalid frozen scan input");
         }
         sorted(&self.profiles, "scan profiles")?;
+        sorted(&self.subject_refs, "scan subject references")?;
+        for subject in &self.subject_refs {
+            text(subject, 128, "scan subject reference")?;
+        }
         sorted(&self.observation_digests, "scan observation identities")?;
         if self.profiles.contains(&Profile::Vulnerabilities)
             && self.advisory_snapshot_digest.is_none()
@@ -213,6 +221,34 @@ pub struct EvaluationData {
 }
 
 impl EvaluationData {
+    /// Freezes an exact subject selector without changing retained inventory identity.
+    ///
+    /// # Errors
+    /// Returns an error for invalid evidence, empty/unsorted/duplicate selectors,
+    /// or a selected subject absent from the supplied immutable inventory.
+    pub fn freeze_selected(
+        &self,
+        profiles: Vec<Profile>,
+        subject_refs: Vec<String>,
+        evaluated_at: Timestamp,
+    ) -> Result<ScanInputV1> {
+        let mut input = self.freeze(profiles, evaluated_at)?;
+        let admitted = input
+            .subject_refs
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        if subject_refs
+            .iter()
+            .any(|subject| !admitted.contains(subject.as_str()))
+        {
+            bail!("selected scan subject is absent from the immutable inventory");
+        }
+        input.subject_refs = subject_refs;
+        input.validate()?;
+        Ok(input)
+    }
+
     /// Validates every referenced object and freezes its explicit identities.
     ///
     /// # Errors
@@ -389,6 +425,12 @@ impl EvaluationData {
         let input = ScanInputV1 {
             schema: SCAN_INPUT_V1.into(),
             inventory_digest: self.inventory.digest()?,
+            subject_refs: self
+                .inventory
+                .subjects
+                .iter()
+                .map(|subject| subject.subject_ref.clone())
+                .collect(),
             profiles,
             observation_digests: observation_digests.into_iter().collect(),
             advisory_snapshot_digest: self

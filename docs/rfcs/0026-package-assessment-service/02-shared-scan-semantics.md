@@ -22,6 +22,7 @@ The shared evaluator consumes `aos.scan-input/v1`:
 | --- | --- |
 | `schema` | Exact schema identifier |
 | `inventoryDigest` | Identity of the complete normalized inventory |
+| `subjectRefs` | Sorted exact selected subjects within that immutable inventory |
 | `profiles` | Sorted requested profiles |
 | `observationDigests` | Sorted immutable provider observation references |
 | `advisorySnapshotDigest` | Optional only when vulnerabilities are not requested |
@@ -32,6 +33,10 @@ The shared evaluator consumes `aos.scan-input/v1`:
 | `evaluatedAt` | Explicit whole-second UTC evaluation time |
 
 Every referenced object MUST be available and validated before evaluation.
+The subject selector participates in the input digest. Selection MUST NOT
+rewrite the retained inventory identity, and evaluation MUST NOT emit results
+for unselected subjects. Required runtime dependencies and aggregate members
+remain in the selected subject's evaluated closure.
 Required missing references produce a typed input error, not an invented empty
 set. An advisory snapshot MAY explicitly declare an unavailable source; that
 is valid incomplete evidence and produces unknown coverage.

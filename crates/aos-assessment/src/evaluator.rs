@@ -24,7 +24,12 @@ use crate::security::CoverageState;
 /// invalid graphs, unsupported engine profiles or excessive output scope. Source
 /// uncertainty is represented in coverage/findings rather than a clean result.
 pub fn evaluate(input: &ScanInputV1, data: &EvaluationData) -> Result<PackageAssessmentV1> {
-    if data.freeze(input.profiles.clone(), input.evaluated_at.clone())? != *input {
+    if data.freeze_selected(
+        input.profiles.clone(),
+        input.subject_refs.clone(),
+        input.evaluated_at.clone(),
+    )? != *input
+    {
         bail!("frozen assessment input does not match its supplied evidence closure");
     }
     let definitions = data
@@ -48,7 +53,17 @@ pub fn evaluate(input: &ScanInputV1, data: &EvaluationData) -> Result<PackageAss
         .iter()
         .map(|binding| (binding.component_ref.as_str(), binding))
         .collect::<BTreeMap<_, _>>();
-    for subject in &data.inventory.subjects {
+    let selected = input
+        .subject_refs
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    for subject in data
+        .inventory
+        .subjects
+        .iter()
+        .filter(|subject| selected.contains(subject.subject_ref.as_str()))
+    {
         let scope = graph.components(&subject.subject_ref)?;
         component_budget += scope.len();
         if component_budget > 100_000 {
