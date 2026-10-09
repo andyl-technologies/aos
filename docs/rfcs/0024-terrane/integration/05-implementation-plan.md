@@ -2300,16 +2300,43 @@ with no missing or duplicate boundaries; repeated final failure output is
 excluded from analysis and retained in the original log. Fresh parent checks and
 opens dominate the observed native validation interiors, while the enclosing
 rename spans mostly measure retained checks. These overlapping measurements do
-not establish a speedup. Capacity-only reuse of parent-path scratch is being
-implemented on a separate task branch, preserving every fresh observation and
-the original refusal order. A proposed direct syscall substitution is deferred
+not establish a speedup. Capacity-only reuse of parent-path scratch is committed
+on `0ba9444ee9`, preserving every fresh observation and the original refusal
+order. All nineteen supporting qualification commands finish with exit zero:
+the ten new and one hundred existing native cases pass individually in each
+trace mode; strict Clippy and private rustdoc pass for all three profiles; the
+owning profile-quality and two six-case mutation checks pass; the required
+29-package application-target compilation and both format commands pass.
+The first ten-case observation helper rejects padded Nextest ordinals despite
+actual runtime success. Its original verifier failure is preserved, and
+independent read-only extraction verifies all ten named passes without rerunning
+the test. All 6,102 tracked source contents, modes and symlinks remain unchanged.
+
+The subsequent single ordinary 1,024-record case fails during baseline
+publication with `Denied { verb: "commit", pattern: "refs/heads/_/main" }`,
+taking 76.727 seconds within the unchanged 120-second process bound. Its
+thirty-second writer setting remains unchanged. The trace-off log contains no
+explicit expiry detail; the denied-error contract strips diagnostic sources,
+so neither expiry nor a capacity regression is established by this result.
+Fresh exact discovery and successful source/executable preflight precede the
+run; the source and executable remain unchanged afterward. The original
+transcript and an independently hashed copy of the tested executable are
+retained. No retry or other indexing population runs. The reviewed class
+dictionary witness on `7c71e91bc5` has begun its separate owning qualification.
+That build initially waits for the shared Cargo target lock. Other Cargo jobs
+are observed, but its exact lock owner is not bound; machine-wide exclusive
+execution is not assumed. A proposed direct syscall substitution is deferred
 because the pinned standard library's flags, retries and stat fallback behavior
-are not equivalent to that proposal. No retry or other indexing population runs.
+are not equivalent to that proposal.
 
 The sealed current floor contains 89 aggregate gates, including all 69 T0/T1
 plan-required names and twenty implemented supporting checks. Read-only evaluation
 finds `gc-two-phase-delete` explicitly pending. Output validity establishes no
 full-floor execution result. No task checkbox, milestone exit or freeze advances.
+Current native source still lacks copied-placement preparation and permanent
+owner promotion, and recurring permanent residue recovery, required by GC-15,
+GC-16 and GC-29. Existing local-v1 checks and pure record validation do not close
+those implementation gaps.
 
 Deployable as: a local tool that initializes a store under a `file://`
 root, commits a directory, forks and merges branches, and checks a commit
