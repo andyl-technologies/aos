@@ -34,6 +34,8 @@ permissive notices; they do not relicense the simulator.
 | `se-output-publication.patch` | `src/sim/simulate.hh`, `src/sim/simulate.cc`, `src/sim/syscall_emul.hh`, `src/sim/syscall_emul.cc`, `src/sim/SConscript`, `src/python/pybind11/event.cc`, `src/python/m5/simulate.py`; new `src/sim/crucible_output.hh`, `src/sim/crucible_output.cc` | Original notices retained; new native publication files BSD-3-Clause |
 | `packet-data-definedness.patch` | `src/mem/packet.hh` | Original BSD three-clause notice and copyright holders |
 | `object-state-alias.patch` | `src/python/pybind11/event.cc` | Original BSD three-clause notice and copyright holders |
+| `terminal-output-publication.patch` | `src/dev/serial/Terminal.py`, `src/dev/serial/terminal.hh`, `src/dev/serial/terminal.cc` | Original BSD three-clause notices and copyright holders retained, including Arm's hardware intellectual-property scope statement |
+| `terminal-output-native-witness.patch` | Modified `src/dev/serial/SConscript`; new `src/dev/serial/CrucibleTerminalWitness.py`, `src/dev/serial/crucible_terminal_witness.hh`, `src/dev/serial/crucible_terminal_witness.cc` | Original SConscript BSD three-clause notice retained; new native callback witness files carry explicit MIT notices |
 
 The installed gem5 package retains upstream `LICENSE` and bundled dependency
 license/notice files. The source manifest binds the exact upstream revision,
