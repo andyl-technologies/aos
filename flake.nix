@@ -304,6 +304,9 @@
           inherit (aos.pkgs) erofs-utils util-linux;
           packageRuntime = aos.pkgs.aos.packageRuntime;
         };
+        cargoSourceWrapper = import ./tools/dev/cargo-source-wrapper.nix {
+          pkgs = aos.pkgs;
+        };
         cargoBuildPackages = [
           aos.pkgs.rust
           aos.pkgs.rust.dev
@@ -347,7 +350,7 @@
             if requestedCheckout != ""
             then requestedCheckout
             else ./.;
-          binPath = builtins.concatStringsSep ":" (map (p: "${p}/bin") ([devLauncher aos.pkgs.bash aos.pkgs.nix aos.pkgs.alejandra aos.pkgs.acl] ++ packages));
+          binPath = builtins.concatStringsSep ":" (map (p: "${p}/bin") ([cargoSourceWrapper devLauncher aos.pkgs.bash aos.pkgs.nix aos.pkgs.alejandra aos.pkgs.acl] ++ packages));
         in
           builtins.derivation {
             inherit (configurationLowerCargoEnv) AOS_MKFS_EROFS AOS_FSCK_EROFS AOS_MOUNT AOS_UMOUNT;
