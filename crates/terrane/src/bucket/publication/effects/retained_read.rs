@@ -6,7 +6,7 @@
 
 use super::{
     BucketBinding, ExactRead, FencePolicy, Frame, LocalFs, MetadataStamp, ParentFence, Path,
-    PathBuf, StoreFailure, copy_parents, corrupt, io_failure,
+    PathBuf, StoreFailure, copy_parents, corrupt, io_failure, unsupported,
 };
 use crate::bucket::publication::receipts::RecordRead;
 
