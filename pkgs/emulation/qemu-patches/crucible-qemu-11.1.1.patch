@@ -1,6 +1,6 @@
-From 0277043e50236f5d36bc8f51ff312904b2e75965 Mon Sep 17 00:00:00 2001
+From 1b702f5673868727fde64c2835f3fde0ad848bfd Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Thu, 8 Oct 2026 12:00:00 -0700
+Date: Fri, 9 Oct 2026 12:00:00 -0700
 Subject: [PATCH] Integrate deterministic execution and validated TSC source
  lookup
 
@@ -165,6 +165,19 @@ actual host/plugin/native initialization probe and four V4 native control
 regressions pass against the combined sources. These component results do
 not qualify complete native readiness, phase/input closure, snapshots,
 retained forks, or actual KVM execution on a host lacking the device.
+
+Update the existing extracted native regression adapters for the admitted
+initialization, original timer, CPU fault and native writer identities.
+Keep production implementation files and public legacy layouts unchanged.
+Make absolute instruction-service probes assert the original 50 ps clock
+and explicitly refuse legacy warp or restart under native registration.
+
+Nineteen extracted production proofs and eleven compiled executable
+mutation controls pass. The complete configured default builds pass for
+x86_64 and aarch64, together with forty-six native unit cases and actual
+QMP edition-one/edition-three refusal and malformed-edition probes. These
+fixture corrections do not qualify complete native readiness or KVM
+execution without the accelerator device.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -156970,10 +156983,10 @@ index aa1f719b08169025f3d9f9f0fd82113d27325c78..cfa736135e6e2e50cd1bab20a17004d2
          g_test_add_func("/perf/nesting", perf_nesting);
 diff --git a/tests/unit/test-crucible-accel-classification.py b/tests/unit/test-crucible-accel-classification.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..e2fce3c93f85f69500792a8315cb78bed81dd91b
+index 0000000000000000000000000000000000000000..2e917b15861b54e2dc2d1a71ab77de3657c76657
 --- /dev/null
 +++ b/tests/unit/test-crucible-accel-classification.py
-@@ -0,0 +1,787 @@
+@@ -0,0 +1,789 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise instance classification and hot mode predicates from production.
 +
@@ -157055,6 +157068,8 @@ index 0000000000000000000000000000000000000000..e2fce3c93f85f69500792a8315cb78be
 +const char *current_accel_name(void);
 +int accel_init_machine(AccelState *, MachineState *);
 +bool icount_crucible_sim_mode(void);
++/* This classification proof selects the legacy clock, not native grants. */
++static bool icount_crucible_node_service_active(void) { return false; }
 +uint64_t icount_crucible_rr_switch_quantum(void);
 +int64_t icount_percpu_budget(int);
 +bool qemu_crucible_fault_memory_rules_active(void);
@@ -163513,10 +163528,10 @@ index 0000000000000000000000000000000000000000..33f7c0bc21f8ad5cee75c42fb17882e5
 +    main()
 diff --git a/tests/unit/test-crucible-control-observer.py b/tests/unit/test-crucible-control-observer.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..ba9308ceb3c6ae7ae2b98d8d6b615878bbb00a43
+index 0000000000000000000000000000000000000000..087ae62b7bbb467eac0e709ac06f6c0c0b41ecac
 --- /dev/null
 +++ b/tests/unit/test-crucible-control-observer.py
-@@ -0,0 +1,362 @@
+@@ -0,0 +1,373 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Execute the native OOB template report and guarded RR restart paths.
 +
@@ -163561,6 +163576,9 @@ index 0000000000000000000000000000000000000000..ba9308ceb3c6ae7ae2b98d8d6b615878
 +static bool locked, cold_admitted;
 +static unsigned locks, unlocks, creates, event_changes, snapshot_checks;
 +static RunState state = RUN_STATE_PAUSED;
++static bool native_node_registered;
++static bool crucible_node_control_registered(void)
++{ return native_node_registered; }
 +static int stop_state = 2, flush_status;
 +static bool qemu_plugin_control_boundary_deferred;
 +static uintptr_t qemu_plugin_control_boundary_scheduled;
@@ -163753,6 +163771,14 @@ index 0000000000000000000000000000000000000000..ba9308ceb3c6ae7ae2b98d8d6b615878
 +    CrucibleHotForkTemplateState *report;
 +    Error *error = NULL;
 +    BQLLockAuto *guard;
++
++    /* Native controller workers require a separate authentic rebind path. */
++    native_node_registered = true;
++    g_assert_cmpint(rr_hot_fork_restart_vcpu_thread(), ==, -ENOTSUP);
++    g_assert_cmpuint(locks, ==, 0);
++    g_assert_cmpuint(unlocks, ==, 0);
++    g_assert_false(cpu.created);
++    native_node_registered = false;
 +
 +    cpu.created = true;
 +    cpu.thread = single_tcg_cpu_thread;
@@ -176578,10 +176604,10 @@ index 0000000000000000000000000000000000000000..7c0e740270c5f06ea7e1dde755888dfe
 +    main()
 diff --git a/tests/unit/test-crucible-net-output-stop.py b/tests/unit/test-crucible-net-output-stop.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..2f8c065358238a2d4da1221cef0d3efdffa3f177
+index 0000000000000000000000000000000000000000..3f9bf42ed89cfd0911391d2a2d45574b3a9a403a
 --- /dev/null
 +++ b/tests/unit/test-crucible-net-output-stop.py
-@@ -0,0 +1,681 @@
+@@ -0,0 +1,727 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise production TX, VM-stop, clock completion, and RR parking bodies.
 +
@@ -176690,6 +176716,8 @@ index 0000000000000000000000000000000000000000..2f8c065358238a2d4da1221cef0d3efd
 +static CPUState cpu, *first_cpu = &cpu, *current_cpu;
 +static bool locked = true, self = true, has_control = true, mttcg;
 +static bool terminal_shutdown;
++/* The topology selects native registration without replacing admission logic. */
++static bool native_node_registered;
 +static int count_mode = ICOUNT_PRECISE;
 +static const char *accel = "sim";
 +static RunState runstate = RUN_STATE_RUNNING;
@@ -176738,7 +176766,13 @@ index 0000000000000000000000000000000000000000..2f8c065358238a2d4da1221cef0d3efd
 +static struct {
 +    int vm_clock_seqlock, vm_clock_lock;
 +    int64_t qemu_icount, crucible_sim_tick_bias;
++    bool crucible_node_service_active;
 +} timers_state = {.qemu_icount = 17};
++
++static bool crucible_node_control_registered(void)
++{
++    return native_node_registered;
++}
 +
 +bool qemu_plugin_crucible_vmstop_pending(void);
 +void qemu_plugin_crucible_vmstop_request_stopped(int status);
@@ -177050,6 +177084,8 @@ index 0000000000000000000000000000000000000000..2f8c065358238a2d4da1221cef0d3efd
 +    qemu_plugin_crucible_vmstop_state = QEMU_PLUGIN_CRUCIBLE_VMSTOP_IDLE;
 +    qemu_plugin_crucible_vmstop_flush_result = 0;
 +    timers_state.crucible_sim_tick_bias = 0;
++    timers_state.crucible_node_service_active = false;
++    native_node_registered = false;
 +    frames = stop_requests = waits = pause_delay = control_calls = 0;
 +    completion_calls = wake_publications = 0;
 +    device_effects = 0;
@@ -177065,6 +177101,26 @@ index 0000000000000000000000000000000000000000..2f8c065358238a2d4da1221cef0d3efd
 +    char frame[] = "abc";
 +    struct iovec invalid = {.iov_base = NULL, .iov_len = 3};
 +    uint64_t generation;
++
++    reset();
++    native_node_registered = true;
++    g_assert_cmpint(qemu_plugin_advance_time_ticks(19000), ==, -ENOTSUP);
++    g_assert_cmpint(qemu_plugin_time_advance_pending, ==, 0);
++    g_assert_cmpuint(event_write, ==, 0);
++    g_assert_cmpuint(timer_calls, ==, 0);
++    g_assert_cmpuint(completion_calls, ==, 0);
++    g_assert_cmpint(timers_state.crucible_sim_tick_bias, ==, 0);
++    g_assert_false(cpu.stop || cpu.exit_request);
++
++    native_node_registered = false;
++    timers_state.crucible_node_service_active = true;
++    g_assert_cmpint(icount_advance_virtual_time_to_tick(19000), ==, -ENOTSUP);
++    g_assert_cmpint(timers_state.qemu_icount, ==, 17);
++    g_assert_cmpint(timers_state.crucible_sim_tick_bias, ==, 0);
++    g_assert_cmpuint(timer_calls, ==, 0);
++    g_assert_cmpuint(notifications, ==, 0);
++    g_assert_cmpuint(event_write, ==, 0);
++    g_assert_cmpint(qemu_plugin_time_advance_pending, ==, 0);
 +
 +    reset();
 +    generation = qemu_plugin_crucible_vmstop_generation_value;
@@ -177156,7 +177212,8 @@ index 0000000000000000000000000000000000000000..2f8c065358238a2d4da1221cef0d3efd
 +    parser = argparse.ArgumentParser()
 +    parser.add_argument("--output-dir", type=Path, required=True)
 +    parser.add_argument("--negative-control", choices=["callback-scope",
-+                        "queued-advance-guard", "reservation-guard"])
++                        "queued-advance-guard", "reservation-guard",
++                        "native-registration-guard", "native-service-guard"])
 +    arguments = parser.parse_args()
 +    arguments.output_dir.mkdir(parents=True, exist_ok=True)
 +
@@ -177248,6 +177305,21 @@ index 0000000000000000000000000000000000000000..2f8c065358238a2d4da1221cef0d3efd
 +"""
 +        assert production.count(guard) == 1
 +        production = production.replace(guard, "")
++    elif arguments.negative_control == "native-registration-guard":
++        guard = """    if (crucible_node_control_registered()) {
++        /* Native grants cannot borrow the legacy warp/settlement authority. */
++        return -ENOTSUP;
++    }
++"""
++        assert production.count(guard) == 1
++        production = production.replace(guard, "")
++    elif arguments.negative_control == "native-service-guard":
++        guard = """    if (qatomic_read(&timers_state.crucible_node_service_active)) {
++        return -ENOTSUP;
++    }
++"""
++        assert production.count(guard) == 1
++        production = production.replace(guard, "")
 +    generated = arguments.output_dir / "net-output-stop.c"
 +    generated.write_text(PRELUDE + production + TESTS)
 +    binary = arguments.output_dir / "net-output-stop"
@@ -177265,10 +177337,10 @@ index 0000000000000000000000000000000000000000..2f8c065358238a2d4da1221cef0d3efd
 +    main()
 diff --git a/tests/unit/test-crucible-net-stop-chain.py b/tests/unit/test-crucible-net-stop-chain.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..82814bc08fb1dee688a8350fcfdc220f019318ca
+index 0000000000000000000000000000000000000000..4470785d7a6f65bb6736d9a713581710061147f2
 --- /dev/null
 +++ b/tests/unit/test-crucible-net-stop-chain.py
-@@ -0,0 +1,476 @@
+@@ -0,0 +1,492 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise native stop admission through the actual next-TB decrementer gate.
 +
@@ -177305,6 +177377,8 @@ index 0000000000000000000000000000000000000000..82814bc08fb1dee688a8350fcfdc220f
 +#include "qemu/typedefs.h"
 +#define qemu_build_assert(condition) _Static_assert(condition, #condition)
 +#include "qemu/atomic.h"
++#include "qemu/crucible-node-service.h"
++#define CRUCIBLE_SIM_TICKS_PER_INSTRUCTION 1000
 +
 +#define CONFIG_PLUGIN
 +#define ICOUNT_PRECISE 1
@@ -177357,7 +177431,11 @@ index 0000000000000000000000000000000000000000..82814bc08fb1dee688a8350fcfdc220f
 +static unsigned stop_requests, event_notifications, halt_broadcasts;
 +static bool locked = true, single_rr = true;
 +static int count_mode = ICOUNT_PRECISE;
-+static struct { int64_t qemu_icount; } timers_state;
++static struct {
++    int64_t qemu_icount, crucible_sim_tick_bias;
++    bool crucible_node_service_active;
++    CrucibleNodeService crucible_node_service;
++} timers_state;
 +typedef int (*qemu_plugin_net_tx_cb_t)(const uint8_t *, size_t, uint64_t, void *);
 +static qemu_plugin_net_tx_cb_t crucible_net_tx_cb;
 +static void *crucible_net_tx_userdata;
@@ -177636,6 +177714,15 @@ index 0000000000000000000000000000000000000000..82814bc08fb1dee688a8350fcfdc220f
 +
 +int main(int argc, char **argv)
 +{
++    /* Observe the extracted production clock with a real native service origin. */
++    timers_state.crucible_node_service_active = true;
++    timers_state.crucible_node_service = (CrucibleNodeService) {
++        .anchor_raw = 2, .anchor_ps = 103, .park_ps = 125,
++    };
++    g_assert_cmpint(icount_crucible_sim_tick_locked(2), ==, 125);
++    g_assert_cmpint(icount_crucible_sim_tick_locked(3), ==, 153);
++    timers_state.crucible_node_service_active = false;
++
 +    bool expect_unfenced = argc == 2 && strcmp(argv[1], "unfenced") == 0;
 +    check_stock_kick();
 +    check_generic_wake();
@@ -177661,7 +177748,8 @@ index 0000000000000000000000000000000000000000..82814bc08fb1dee688a8350fcfdc220f
 +        "accel/tcg/icount-common.c": [
 +            "static int64_t icount_get_executed(CPUState *cpu)",
 +            "static void icount_update_locked(CPUState *cpu)",
-+            "static int64_t icount_get_raw_locked(void)",
++            "static int64_t icount_crucible_sim_tick_locked(int64_t raw_icount)",
++            "static int64_t icount_get_raw_locked(void)\n{",
 +        ],
 +        "accel/tcg/tcg-accel-ops-rr.h": [
 +            "static inline bool rr_crucible_sim_wake_state_is_arming(",
@@ -182261,10 +182349,10 @@ index 0000000000000000000000000000000000000000..47c5b0de1b13d148c6b19af3e0bacdf5
 +    main()
 diff --git a/tests/unit/test-crucible-rr-sim-barriers.py b/tests/unit/test-crucible-rr-sim-barriers.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..68da52cf9a0dcc41ab9b45adf5bc212b2f09fe34
+index 0000000000000000000000000000000000000000..9b025dcf03a6f4f27a22702846fd63a5cc482874
 --- /dev/null
 +++ b/tests/unit/test-crucible-rr-sim-barriers.py
-@@ -0,0 +1,633 @@
+@@ -0,0 +1,648 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise production RR FIFO barriers and ordinary CPU event processing.
 +
@@ -182378,12 +182466,17 @@ index 0000000000000000000000000000000000000000..68da52cf9a0dcc41ab9b45adf5bc212b
 +    run_on_cpu_func func;
 +    run_on_cpu_data data;
 +    bool free, exclusive, done;
++    uint64_t crucible_node_work_id;
++    bool crucible_node_birth_unknown;
 +};
 +
 +struct CPUState {
 +    CPUState *next;
 +    int cpu_index, exception_index;
 +    bool stop, stopped, unplug, halted, thread_kicked, exit_request;
++    /* Native ingress is never armed in the legacy RR barrier proof. */
++    bool crucible_node_ingress_armed, crucible_node_work_tracking;
++    uint64_t crucible_node_next_work_id;
 +    QemuMutex work_mutex;
 +    QemuCond *halt_cond;
 +    QSIMPLEQ_HEAD(, qemu_work_item) work_list;
@@ -182396,6 +182489,16 @@ index 0000000000000000000000000000000000000000..68da52cf9a0dcc41ab9b45adf5bc212b
 +    QEMU_PLUGIN_CRUCIBLE_IDLE_CALLBACK_COMPLETE,
 +    QEMU_PLUGIN_CRUCIBLE_IDLE_CALLBACK_RESCAN
 +} QemuPluginCrucibleIdleCallbackDisposition;
++
++#define QEMU_CPU_NODE_INGRESS_WORK 1
++#define QEMU_CPU_NODE_INGRESS_RESUME 5
++static void node_ingress_fault_locked(CPUState *cpu, uint32_t kind,
++                                      uint32_t code, uint64_t payload,
++                                      struct qemu_work_item *work)
++{ g_assert_not_reached(); }
++static void qemu_cpu_node_observe(CPUState *cpu, uint32_t kind, uint64_t payload)
++{ g_assert_false(cpu->crucible_node_ingress_armed); }
++static void error_report(const char *message) { g_error("%s", message); }
 +
 +static CPUState cpus[2], sentinel;
 +static CPUState *first_cpu = cpus, *current_cpu;
