@@ -141,9 +141,14 @@ expose colliding hardlink fixture names and an absent prior-range comparison;
 the dictionary dependency case times out at 120.004 seconds. Public SDK and
 dependent qualification remain unrun. The candidate's registry Nix gate
 passes all 292 mappings and 69 current plan citations.
-Six isolated workers now complete chunking/codecs, pure algebra, pure
-properties, native provenance disclosure, domains and native cold forks with
-disjoint file ownership. Their changes leave the qualification candidate frozen.
+Seven isolated implementation worklines cover chunking/codecs, contextual
+algebra, pure properties, native provenance disclosure, domains, native cold
+forks and contextual indexes with disjoint file ownership. The codec correction
+passes ten focused tests and strict native all-target Clippy; its owning Nix
+gates remain pending. Corrected read candidate `f87a19175a` passes fresh strict
+native all-target Clippy after removing an unused shared registration. Its fresh
+test compilation is running; no changed-source runtime result is inferred.
+The implementation worklines leave this qualification candidate frozen.
 Unchanged-budget runtime tests and the complete current trunk floor remain
 required before task acceptance.
 The frozen `9d122397a6` native recovery run is terminal: all thirty-one

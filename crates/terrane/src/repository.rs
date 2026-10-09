@@ -41,7 +41,7 @@ pub use local::{CommitMetadata, LocalRepositoryLocation, LocalRepositoryPolicy};
 #[cfg(all(feature = "std", unix))]
 pub use local_authority::{LocalAuthority, LocalAuthorityIdentity, LocalAuthorityParameters};
 #[cfg(all(feature = "std", unix))]
-pub use overlay::RetainedOverlayLayer;
+pub use overlay::PublishedOverlayLayer;
 pub use prepared::PreparedTree;
 pub use validator::MetadataValidator;
 

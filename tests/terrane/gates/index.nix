@@ -20,6 +20,9 @@
     "indexing::evaluation_tests::unsupported_conditional_and_overlay_sources_remain_incomplete"
     "indexing::evaluation_tests::source_geometry_identities_and_registered_value_types_are_checked"
     "indexing::evaluation_tests::canonical_internal_routes_check_child_summaries_and_boundaries"
+    "indexing::evaluation::layer_tests::layer_index_preserves_regular_file_rows_and_exact_graft_occurrences"
+    "indexing::evaluation::layer_tests::layer_index_keeps_ordinary_identity_and_rejects_nonnamespace_contexts"
+    "indexing::evaluation::layer_tests::layer_index_rejects_divergent_rows_and_owner_identity"
     "indexing::completion::tests::owner_completion_binds_independent_indexes_to_new_owner"
     "indexing::completion::tests::owner_completion_preserves_bindings_and_unchanged_descendants"
     "indexing::completion::tests::owner_completion_rebuilds_divergent_binding_without_changing_index_bytes"
@@ -70,6 +73,8 @@
     "indexing::tests::index_loader_preserves_physical_and_contextual_node_checks"
     "indexing::tests::index_loader_reports_missing_bindings_and_unavailable_evidence"
     "indexing::tests::index_loader_refuses_divergent_relationships_and_keeps_work_separate"
+    "indexing::tests::layer::load_layer_source_preserves_explicit_usage_and_canonical_closure"
+    "indexing::tests::layer::load_layer_index_checks_complete_owner_binding_without_ordinary_fallback"
   ];
 
   nativeTokioTests = [
