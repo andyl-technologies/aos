@@ -2117,7 +2117,7 @@
       "seed": "0x13d7_a956_b287_f641",
       "models": "144 ordinary unverified models: 12 integer boundaries crossed with all three principal kinds and all four optional-field patterns; text byte lengths 0/1/23/24/255/256; groups 0/1/23/24/256; grants 1/23/24/256 and all 31 nonzero verb masks; token identifiers, next-keys and signatures all zero/all ff/seeded bytes",
       "projection_evidence": "Independent numeric field projection; exact key12 omission; whole canonical map parsing; every body field and next-key sensitivity; signature-only changes preserve bytes; actual stored Token field-codec roundtrip without issuance or verification",
-      "scope_limit": "Private encoder evidence is separate from the 53 public integration cases. Preimages have no standalone decoder by design; this does not instrument allocation or test authenticated authority."
+      "scope_limit": "Private encoder evidence is separate from the 58 public integration cases. Preimages have no standalone decoder by design; this does not instrument allocation or test authenticated authority."
     },
     {
       "codec": "Attenuation signature-preimage projection",
@@ -2131,7 +2131,7 @@
       "seed": "0x57a3_c896_21ef_04bd",
       "models": "192 ordinary unverified models: 12 integer boundaries crossed with all 16 field-presence patterns; all nine caveats in rotated/repeated ordered collections; all eight locality presences and empty/present text; grants 1/23/24/256 and all 31 nonzero verb masks; next-keys/signatures all zero/all ff/seeded bytes",
       "projection_evidence": "Independent numeric field projection; exact key6 omission; whole canonical map parsing; every body field and next-key sensitivity; signature-only changes preserve bytes; actual stored Token field-codec roundtrip without issuance or verification",
-      "scope_limit": "Tests the private block projection, not the previous-signature concatenation or signing/verification workflow. Separate from the 53 public integration cases; no standalone preimage decoder is invented."
+      "scope_limit": "Tests the private block projection, not the previous-signature concatenation or signing/verification workflow. Separate from the 58 public integration cases; no standalone preimage decoder is invented."
     }
   ],
   "gaps_and_deferred_formats": [

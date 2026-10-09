@@ -2360,8 +2360,9 @@ launched before that failure is inspected; it passes, but does not repair the
 failed selection proof. The original failure and execution are retained. An
 additive correction changes only those three selectors to their discovered
 names; independent review verifies all 28 exact nonignored matches and the
-current executable hash. The remaining sequence resumes without repeating
-the successful case. Growing-population and whole-gate results remain pending.
+current executable hash. All 22 exact behavior cases then pass once, with
+distinct run IDs and one-case passing summaries; the first case is not repeated.
+Growing-population and whole-gate results remain pending.
 After the class candidate releases the team's heavy lane, the diagnostic's
 restoration command exits zero but its artifact verifier stops: Cargo reports
 the shared executable as fresh while it still contains the class candidate's
@@ -2403,8 +2404,9 @@ vector or property implementation. The actual golden gate requires twenty
 owning format suites and all 31 assigned reference sections; the fuzz gate
 requires 58 public properties and five private encoder properties. These
 source coverage findings require current-candidate gate execution before
-acceptance. Two descriptive metadata strings retain the older public-case
-count; the authoritative inventory already requires all 58 cases.
+acceptance. The trunk corrects two descriptive metadata strings to the current
+public-case count of 58. Review verifies the unique catalog count and that all
+other JSON values remain unchanged; the required inventory is unchanged.
 
 The sealed current floor contains 89 aggregate gates, including all 69 T0/T1
 plan-required names and twenty implemented supporting checks. Read-only evaluation
