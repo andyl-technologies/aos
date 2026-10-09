@@ -639,8 +639,8 @@ in {
       run_logged /tmp/e2e-rollback.out "$APM" rollback || {
         fail "apm rollback returns e2e-tool to v1"
       }
-      assert_file_contains /tmp/e2e-rollback.out "Rolled back to generation 1" \
-        "apm rollback selects e2e v1 generation"
+      assert_file_contains /tmp/e2e-rollback.out "Restored generation 1 as generation 3" \
+        "apm rollback restores e2e v1 in a new generation"
       "$PROFILE/current/bin/e2e-tool" > /tmp/e2e-run-rollback.out
       assert_file_contains /tmp/e2e-run-rollback.out "e2e-helper 1.0.0 executed" \
         "rolled-back e2e-tool v1 executes dependency"
