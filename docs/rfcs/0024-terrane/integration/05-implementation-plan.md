@@ -5136,6 +5136,18 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   substitutes for a current permission check. Source review and scoped
   formatting pass. Compilation and the five genuine permanent fault witnesses
   remain pending; missing terminal observations cannot prove completion.
+  Private `d03e3b3275` passes strict Tokio production-library Clippy after all
+  nine corrections. This covers the reviewed Open-event production source;
+  the test-only hooks, all-target linting and subsequent recurring-pass changes
+  remain outside that result. Five genuine permanent fault cases are drafted
+  in a separate worktree, with compilation and runtime still pending.
+  Review rejects a recurring-pass prototype whose Discover purpose alone
+  claimed complete Trash-family traversal from fixed caller-listed leaves.
+  Its replacement uses real native enumeration and retained directory evidence,
+  but still imposes a global 4,094-cycle cap. That cap violates D-82's bounded
+  event continuation requirement and remains a source correction obligation
+  under GC-15, GC-16, GC-24 and GC-29. No pass-completion prototype or fixture
+  draft accepts this task or advances the milestone.
   Actual remote provider qualification belongs to T3. No remote conformance
   or full `gc-two-phase-delete` pass is claimed. D-78
   registers physical creation journals and recoverable deletion intent.
