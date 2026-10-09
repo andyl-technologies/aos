@@ -38,13 +38,24 @@ def configured_flags(source):
 
 
 def administrative_body(source):
-    """Extract the complete actual source-owned administrative registry."""
+    """Extract the complete administrative registry without other root owners."""
     text = (source / "accel/tcg/tcg-accel-ops-sim-shmem.c").read_text()
-    first = "static QemuPluginCrucibleNodeAdministrationPolicy node_administration_policy;"
-    last = "bool crucible_node_initialization_launch_pinned(void)"
-    if text.count(first) != 1 or text.count(last) != 1:
+    declarations = "static QemuPluginCrucibleNodeAdministrationPolicy node_administration_policy;"
+    functions = "static bool node_administration_socket_matches("
+    following = "bool crucible_node_initialization_launch_pinned(void)"
+    if any(text.count(marker) != 1 for marker in
+           (declarations, functions, following)):
         raise SystemExit("administrative registry boundaries changed")
-    return text[text.index(first):text.index(last)]
+
+    start = text.index(declarations)
+    finish = text.index("\n#endif\n", start) + len("\n#endif\n")
+    body_start, body_end = text.index(functions), text.index(following)
+    if not start < finish <= body_start < body_end:
+        raise SystemExit("administrative declarations/functions are out of order")
+    # Root policy owners may be defined between these two independent native
+    # spans. The complete administrative declarations and functions remain
+    # original source bytes; synthetic root implementations are not substituted.
+    return text[start:finish] + "\n" + text[body_start:body_end]
 
 
 def compile_model(source, compiler, output, case, implementation):

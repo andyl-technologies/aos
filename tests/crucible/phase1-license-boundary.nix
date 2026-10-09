@@ -195,6 +195,7 @@ in
           test -f "$source_root/build/aos/pkgs/default.nix"
           test -f "$source_root/build/aos/pkgs/emulation/qemu.nix"
           test -z "$(find "$source_root/build/aos" -type f -regex '.*/core[.][0-9]+' -print -quit)"
+          test -z "$(find "$source_root/build/aos" "$source_root/plugin/workspace" -name run-state -print -quit)"
           test -f "$source_root/build/aos/crates/crucible-shmem/include/crucible_shmem_abi.h"
           samba_smbd_version=$(sed -n 's/^qemu_samba_smbd_version=//p' "$source_manifest")
           samba_smbd_source_hash_algo=$(sed -n 's/^qemu_samba_smbd_source_hash_algo=//p' "$source_manifest")

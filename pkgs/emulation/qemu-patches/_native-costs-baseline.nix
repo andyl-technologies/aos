@@ -4,7 +4,18 @@
   revision = "33343f63cb5e8749caadcb251c6b8a90ed0482cf";
   tree = "4f24df196ef8364bf75a61fd22b7f6e054f9fa4c";
   patch = ./_fixtures/native-costs-baseline-reconstruction.patch;
-  patchSha256 = "4a12a90dcc602a01dea127bfe46ada1fa09a1c589289ce34dca0d1a157cc5e55";
+  patchSha256 = "a1ff848637dd84366419a73f49bd78a3412287fe19ae4eb07ddf3a6fe6aac305";
+  # Reconstruct the same frozen baseline after the signed root-census additions.
+  # Only this prototype may differ between the two compiled header sets.
+  reviewedAdaptation = {
+    revision = "d30f55c938098ba47c94d9ebb30634a1b5412781";
+    tree = "eb054f43cad8e39fdeac139adc357800d0673e7c";
+    files = {
+      "include/qemu/crucible-fault.h" = "6812bb0bdec6267f6c5016194cab967933c6ac75e64d1bc53af38826b61dca18";
+      "plugins/crucible-fault-clock.c" = "423fb54eb8ed0fa15449e4b0eac0a59a47f5803f3a891b37d340e4c6879ba272";
+    };
+    headerAddition = "/* Source-only original disabled wander callback/payload lifetime enrollment. */\nint qemu_crucible_fault_clock_root_dormant_enroll(void);\n";
+  };
   clockReference = {
     revision = "79a6ab2419c6bd4f1c8e44a23a43c171b9a3fd22";
     tree = "0bb49a2b3855c2b47f519b78da1450a4ec9b40d8";

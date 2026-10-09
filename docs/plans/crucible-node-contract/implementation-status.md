@@ -407,8 +407,33 @@ reference-provider admission still requires complete behavioral qualification.
 
 The integrated source passes 325 targeted native, protocol, scheduler, state and
 source-quality checks, together with all-target strict checks across nine crates.
-The broader hermetic controller and application builds remain separate required
-qualification steps. Raw original cohorts and build logs remain local.
+The matching hermetic controller cohort passes all 6,399 tests, with 164
+explicitly skipped fixtures. The required application unit and integration
+test-target build also passes. The full license-boundary gate is still building
+its remaining package and corresponding-source dependencies; the controller
+result alone does not complete that gate. Raw original cohorts and build logs
+remain local.
+
+## Fixed microvm constructor lifetimes
+
+The signed QEMU integration `d30f55c938` retains the original native device,
+bus, allocated-timer, BIOS and read-only FW_CFG lifetimes under the explicitly
+selected fixed constructor profile. Its constructor record covers 17 devices,
+10 buses, eight allocated timers and 13 FW_CFG buffers totaling 1,050,696 bytes.
+These are observational roots; they do not authorize Ready, execution, a closed
+input epoch, capture, restore or fork. The [constructor evidence scope](qemu-fixed-microvm-root-evidence.md)
+describes the actual probes and remaining effect-closure requirements.
+
+The registered atomic-patch regeneration check passes with both installed ISA
+binaries, the mandatory constructor/firmware fixtures, compiled mutation
+controls, preserved native cost baselines and default regressions. Matching ABI
+conformance passes. The atomic patch is SHA256 `b6c8780ae6e541b2e8df840898fb0f51ec03d6a907ce7758b0688ab52bc7de08`;
+its co-retained source bundle is SHA256 `e8641ee1b08a5dcc122ed6348ae33dadb64d9081a3f27a8ad93d6e3d423fdd20`.
+The cost-baseline adapter strips only the precisely pinned constructor
+prototype addition and reconstructs every original measured baseline byte.
+Runtime `run-state` journals are excluded from both Cargo rebuild inputs and
+corresponding-source exports, with mandatory export-absence checks. No raw
+process evidence or runtime journal is committed.
 
 ## Performance evidence
 

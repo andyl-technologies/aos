@@ -13,6 +13,8 @@ in
       base
       != ".git"
       && base != ".crucible"
+      # Local daemon journals must not perturb Cargo source identities.
+      && base != "run-state"
       && base != "target"
       && pathString != "${repoRootString}/result"
       && (

@@ -501,3 +501,141 @@ index 38925e9bf24119bd8f97f61ed3a77f0efe331855..1b59d60925d365c2f3747dad8c06d5df
          qatomic_set(&entry->condition_waiter_thread_id, 0);
      }
      crucible_hot_fork_mutex_registry_unlock();
+diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
+index 79d8591f5c..99e2214a7f 100644
+--- a/include/qemu/crucible-fault.h
++++ b/include/qemu/crucible-fault.h
+@@ -479,6 +479,8 @@ typedef struct QemuCrucibleClockSourceDescriptor {
+ int qemu_crucible_fault_clock_source_register(
+     const QemuCrucibleClockSourceDescriptor *descriptor);
+ int qemu_crucible_fault_clock_validate(const QemuCrucibleFaultRule *rule);
++/* Source-only original disabled wander callback/payload lifetime enrollment. */
++int qemu_crucible_fault_clock_root_dormant_enroll(void);
+ size_t qemu_crucible_fault_clock_event_budget(
+     const QemuCrucibleFaultRule *rule);
+ void qemu_crucible_fault_clock_rules_changed(
+diff --git a/plugins/crucible-fault-clock.c b/plugins/crucible-fault-clock.c
+index 8c78247aa6..444588f707 100644
+--- a/plugins/crucible-fault-clock.c
++++ b/plugins/crucible-fault-clock.c
+@@ -10,6 +10,8 @@
+ #include "exec/icount.h"
+ #include "hw/core/cpu.h"
+ #include "qemu/accel.h"
++#include "qemu/main-loop.h"
++#include "qemu/crucible-node-root.h"
+ #include "qemu/bswap.h"
+ #include "qemu/crucible-fault.h"
+ #include "qemu/error-report.h"
+@@ -732,6 +734,65 @@ int qemu_plugin_crucible_fault_clock_bindings_seal(
+     return 0;
+ }
+ 
++int qemu_crucible_fault_clock_root_dormant_enroll(void)
++{
++    unsigned kinds = 0;
++
++    if (!bql_locked() || !crucible_node_root_launch_pinned() ||
++        !crucible_clock_sources || crucible_clock_sources->len != 3 ||
++        !crucible_clock_manifest_finalized || !crucible_clock_bindings_sealed ||
++        !crucible_clock_registered || crucible_clock_terminal ||
++        crucible_clock_restoring || crucible_clock_rearming_timers ||
++        crucible_clock_vmstate_load_depth || crucible_clock_vmstate_load_failed) {
++        return -ENOTSUP;
++    }
++    for (guint index = 0; index < crucible_clock_sources->len; index++) {
++        CrucibleClockSource *source = &g_array_index(
++            crucible_clock_sources, CrucibleClockSource, index);
++        uint32_t role;
++        unsigned kind_bit;
++        int result;
++
++        switch (source->capability.source_kind) {
++        case QEMU_CRUCIBLE_CLOCK_X86_TSC:
++            role = QEMU_TIMER_NODE_ROOT_DORMANT_TSC_WANDER;
++            kind_bit = 1;
++            break;
++        case QEMU_CRUCIBLE_CLOCK_X86_PIT:
++            role = QEMU_TIMER_NODE_ROOT_DORMANT_PIT_WANDER;
++            kind_bit = 2;
++            break;
++        case QEMU_CRUCIBLE_CLOCK_X86_APIC_TIMER:
++            role = QEMU_TIMER_NODE_ROOT_DORMANT_APIC_WANDER;
++            kind_bit = 4;
++            break;
++        default:
++            return -ENOTSUP;
++        }
++        if ((kinds & kind_bit) || source->instance ||
++            source->capability.architecture != QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_X86_64 ||
++            !source->binding.bound || !source->rules || source->rules->len ||
++            source->source_rule || source->frozen || source->synchronizing ||
++            source->terminal || source->source_state != CRUCIBLE_CLOCK_HEALTHY ||
++            source->previous_source_state != CRUCIBLE_CLOCK_HEALTHY ||
++            source->transform_generation != 1 || source->source_transition_generation ||
++            source->drift_numerator != 1 || source->drift_denominator != 1 ||
++            source->impulse_drift_numerator != 1 || source->impulse_drift_denominator != 1 ||
++            source->additive_picos || source->impulse_additive_picos ||
++            source->read_sequence || !source->wander_timer ||
++            source->wander_timer->pending || source->wander_timer->crucible_hot_fork_pending) {
++            return -ENOTSUP;
++        }
++        result = qemu_timer_node_root_enroll(
++            source->wander_timer, role, crucible_clock_wander_timer, source);
++        if (result) {
++            return result;
++        }
++        kinds |= kind_bit;
++    }
++    return kinds == 7 ? 0 : -ENOTSUP;
++}
++
+ static bool crucible_clock_rule_selects(
+     const QemuCrucibleFaultRule *rule, const CrucibleClockSource *source)
+ {
+@@ -1431,6 +1492,10 @@ static bool crucible_clock_emit_wander_transition(
+ 
+ static void crucible_clock_wander_timer(void *opaque)
+ {
++    if (crucible_node_root_launch_pinned()) {
++        error_report("Crucible fixed root profile refuses dormant wander callback");
++        _exit(125);
++    }
+     CrucibleClockSource *source = opaque;
+     int64_t scheduler_ps = qemu_clock_get_ps(QEMU_CLOCK_VIRTUAL);
+     g_autoptr(GArray) transitions = g_array_new(
+@@ -2098,6 +2163,14 @@ void qemu_crucible_fault_clock_rules_changed(
+ {
+     int64_t scheduler_ps;
+ 
++    if (crucible_node_root_launch_pinned() && changed_rule &&
++        (qemu_crucible_fault_rule_command_kind(changed_rule) ==
++            CRUCIBLE_FAULT_COMMAND_CLOCK_TRANSFORM ||
++         qemu_crucible_fault_rule_command_kind(changed_rule) ==
++            CRUCIBLE_FAULT_COMMAND_CLOCK_SOURCE_STATE)) {
++        error_report("Crucible fixed root profile refuses clock-rule commit");
++        _exit(125);
++    }
+     if (!crucible_clock_mode() || !crucible_clock_bindings_sealed ||
+         !crucible_clock_sources) {
+         return;
+@@ -3395,6 +3468,9 @@ int qemu_crucible_fault_clock_validate(const QemuCrucibleFaultRule *rule)
+     CrucibleClockSource *source;
+     uint16_t model_phase;
+ 
++    if (crucible_node_root_launch_pinned()) {
++        return -ENOTSUP;
++    }
+     if (!rule || !crucible_clock_mode() ||
+         !crucible_clock_bindings_sealed) {
+         return -ENOTSUP;
+@@ -3724,6 +3800,9 @@ int qemu_crucible_fault_clock_impulse(
+     bool read_error;
+     uint8_t record[CRUCIBLE_CLOCK_EVIDENCE_BYTES] = { 0 };
+ 
++    if (crucible_node_root_launch_pinned()) {
++        return -ENOTSUP;
++    }
+     if (!rule || !before_hash || !after_hash || !evidence || !outcome ||
+         !event_reservation || !*event_reservation ||
+         !crucible_clock_hash(rule, CRUCIBLE_NODE_FAULT_FIELD_T1, &target)) {

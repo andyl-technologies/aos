@@ -53,6 +53,8 @@
       base
       != ".git"
       && base != ".crucible"
+      # Runtime journals are neither rebuild inputs nor corresponding source.
+      && base != "run-state"
       && base != ".worktrees"
       && base != "target"
       && base != "result"
@@ -287,6 +289,8 @@ in
           test -f "$source_root/build/aos/crates/crucible-shmem/include/crucible_shmem_abi.h"
           test -f "$source_root/build/aos/LICENSES/GPL-2.0-or-later.txt"
           test -z "$(find "$source_root/build/aos" -type f -regex '.*/core[.][0-9]+' -print -quit)"
+          # Runtime journals must never enter either corresponding-source tree.
+          test -z "$(find "$source_root/build/aos" "$source_root/plugin/workspace" -name run-state -print -quit)"
           test -f "$source_root/plugin/workspace/crates/Cargo.lock"
           test -f "$source_root/plugin/workspace/crates/crucible-qemu-plugin/Cargo.toml"
           test -f "$source_root/plugin/workspace/crates/crucible-node-contract/Cargo.toml"

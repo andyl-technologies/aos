@@ -1881,6 +1881,14 @@ in
                 "$PWD" "$CC" "$PWD/native-administration-proof" --mutations
               ${python3}/bin/python3 ${./qemu-patches/_fixtures}/native-administration-argv.py \
                 "$PWD/build/qemu-system-x86_64" "$PWD/build/qemu-system-aarch64"
+              # These compiled source-body oracles use synthetic admission
+              # predicates. They cannot qualify closed roots, Ready or effects.
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures}/native-root-model.py registration \
+                "$PWD" "$CC" "$PWD/native-root-registration-proof" --mutations
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures}/native-root-model.py fwcfg \
+                "$PWD" "$CC" "$PWD/native-fwcfg-root-proof" --mutations
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures}/native-root-argv.py \
+                "$PWD/build/qemu-system-x86_64" "$PWD/build/qemu-system-aarch64"
               ${python3}/bin/python3 ${./qemu-patches/_fixtures}/kvm-userspace-exit-guards.py "$PWD"
               ${python3}/bin/python3 ${./qemu-patches/_fixtures}/kvm-userspace-exit-model.py \
                 "$PWD" "$CC" "$PWD/kvm-userspace-exit-proof"

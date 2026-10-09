@@ -1,0 +1,139 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* Actual FW_CFG custody body; native root/admission predicates are synthetic. */
+#include "qemu/osdep.h"
+#include "qemu/main-loop.h"
+#include "qemu/error-report.h"
+#include "qemu/cutils.h"
+#include "hw/nvram/fw_cfg.h"
+#include "system/address-spaces.h"
+
+AddressSpace address_space_memory;
+
+bool bql_locked(void)
+{
+    return true;
+}
+
+bool buffer_is_zero_ool(const void *bytes, size_t length)
+{
+    const uint8_t *data = bytes;
+
+    for (size_t index = 0; index < length; index++) {
+        if (data[index]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool buffer_is_zero_ge256(const void *bytes, size_t length)
+{
+    return buffer_is_zero_ool(bytes, length);
+}
+
+void error_report(const char *format, ...)
+{
+    va_list arguments;
+
+    va_start(arguments, format);
+    vfprintf(stderr, format, arguments);
+    va_end(arguments);
+}
+
+@NATIVE_FWCFG@
+
+int main(int argc, char **argv)
+{
+    FWCfgState original = { 0 };
+    FWCfgCrucibleRootInventory before, after;
+    const unsigned maximum = FW_CFG_FILE_FIRST + 32;
+    uint8_t bytes[8] = { 0, 1, 2, 3, 4, 5, 6, 7 };
+    uint8_t copied_bytes[8];
+    uint8_t *large_bytes;
+    uint32_t length;
+    uint8_t *data;
+    uint32_t offset;
+    FWCfgFiles *files;
+    FILE *record;
+
+    original.file_slots = 32;
+    original.entries[0] = g_new0(FWCfgEntry, maximum);
+    original.entries[1] = g_new0(FWCfgEntry, maximum);
+    original.entry_order = g_new0(int, maximum);
+    original.files = g_malloc0(sizeof(uint32_t) + 32 * sizeof(FWCfgFile));
+    original.dma_as = &address_space_memory;
+    original.dma_enabled = original.acpi_mr_restore = true;
+    original.files->count = cpu_to_be32(1);
+    original.files->f[0].select = cpu_to_be16(FW_CFG_FILE_FIRST);
+    original.files->f[0].size = cpu_to_be32(sizeof(bytes));
+    strcpy(original.files->f[0].name, "original-test-buffer");
+    original.entries[0][FW_CFG_FILE_FIRST].data = bytes;
+    original.entries[0][FW_CFG_FILE_FIRST].len = sizeof(bytes);
+
+    assert(fw_cfg_crucible_root_firmware_seal(&original) == 0);
+    assert(fw_cfg_crucible_root_firmware_inventory(&before) == 0);
+    assert(before.flags == 7 && before.entry_count == 1);
+    assert(before.retained_bytes == sizeof(bytes));
+    bytes[0] ^= 1;
+    assert(fw_cfg_crucible_root_firmware_seal(&original) == -ESTALE);
+    bytes[0] ^= 1;
+    data = original.entries[0][FW_CFG_FILE_FIRST].data;
+    original.entries[0][FW_CFG_FILE_FIRST].data = NULL;
+    assert(fw_cfg_crucible_root_firmware_seal(&original) == -ENOTSUP);
+    original.entries[0][FW_CFG_FILE_FIRST].data = data;
+    memcpy(copied_bytes, bytes, sizeof(bytes));
+    original.entries[0][FW_CFG_FILE_FIRST].data = copied_bytes;
+    assert(fw_cfg_crucible_root_firmware_seal(&original) == -ESTALE);
+    original.entries[0][FW_CFG_FILE_FIRST].data = data;
+    length = original.entries[0][FW_CFG_FILE_FIRST].len;
+    /* Change both declared extents so file-directory validation cannot mask
+     * the retained backing check. No out-of-bounds read is attempted. */
+    original.entries[0][FW_CFG_FILE_FIRST].len = sizeof(bytes) - 1;
+    original.files->f[0].size = cpu_to_be32(sizeof(bytes) - 1);
+    assert(fw_cfg_crucible_root_firmware_seal(&original) == -ESTALE);
+    original.entries[0][FW_CFG_FILE_FIRST].len = length;
+    original.files->f[0].size = cpu_to_be32(sizeof(bytes));
+    original.entries[0][FW_CFG_FILE_FIRST].allow_write = true;
+    assert(fw_cfg_crucible_root_firmware_seal(&original) == -ENOTSUP);
+    original.entries[0][FW_CFG_FILE_FIRST].allow_write = false;
+    original.entries[0][FW_CFG_FILE_FIRST].callback_opaque = &original;
+    assert(fw_cfg_crucible_root_firmware_seal(&original) == -ENOTSUP);
+    original.entries[0][FW_CFG_FILE_FIRST].callback_opaque = NULL;
+    offset = original.cur_offset;
+    original.cur_offset++;
+    assert(fw_cfg_crucible_root_firmware_seal(&original) == -ESTALE);
+    original.cur_offset = offset;
+    files = original.files;
+    original.files = NULL;
+    assert(fw_cfg_crucible_root_firmware_seal(&original) == -ESTALE);
+    original.files = files;
+    original.entry_order[0] = 1;
+    assert(fw_cfg_crucible_root_firmware_seal(&original) == -ESTALE);
+    original.entry_order[0] = 0;
+    large_bytes = g_malloc0(FW_CFG_CRUCIBLE_ROOT_MAX_BYTES);
+    original.entries[1][0].data = large_bytes;
+    original.entries[1][0].len = FW_CFG_CRUCIBLE_ROOT_MAX_BYTES;
+    assert(fw_cfg_crucible_root_firmware_seal(&original) == -ENOTSUP);
+    original.entries[1][0].data = NULL;
+    original.entries[1][0].len = 0;
+    g_free(large_bytes);
+    ((uint8_t *)&original.crucible_service_ticket)[0] = 1;
+    assert(fw_cfg_crucible_root_firmware_seal(&original) == -ENOTSUP);
+    memset(&original.crucible_service_ticket, 0, sizeof(original.crucible_service_ticket));
+    crucible_firmware_alias.original_process++;
+    assert(fw_cfg_crucible_root_firmware_seal(&original) == -ESTALE);
+    assert(fw_cfg_crucible_root_firmware_inventory(&after) == -EAGAIN);
+    crucible_firmware_alias.original_process = getpid();
+    assert(fw_cfg_crucible_root_firmware_seal(&original) == 0);
+    assert(fw_cfg_crucible_root_firmware_inventory(&after) == 0);
+    assert(!memcmp(&before, &after, sizeof(before)));
+
+    if (argc == 2) {
+        record = fopen(argv[1], "wb");
+        assert(record);
+        assert(fwrite(before.content_digest, 1, 32, record) == 32);
+        assert(fclose(record) == 0);
+    }
+    puts("PASS actual FW_CFG body: bounded original bytes/metadata, twelve adverse cases, restored inventory; synthetic root, no Ready");
+    return 0;
+}

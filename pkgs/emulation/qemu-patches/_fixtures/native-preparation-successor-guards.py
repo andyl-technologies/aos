@@ -14,7 +14,7 @@ def require(label, source, expression):
 def successor_origin(source):
     """Scopes predicates to the unique native origin and adjacent declaration."""
     first = r"^int rr_crucible_node_preparation_successor_origin\("
-    following = r"^int qemu_plugin_crucible_node_query_initialization_cut\("
+    following = r"^bool rr_crucible_node_root_factory_origin\("
     starts = list(re.finditer(first, source, re.M))
     ends = list(re.finditer(following, source, re.M))
     if len(starts) != 1 or len(ends) != 1:
@@ -60,7 +60,7 @@ def check_applied_scope_mutations(rr, origin, expression):
     require("unrelated Applied consumer preserves original scope",
             successor_origin(unrelated), expression)
 
-    following = "int qemu_plugin_crucible_node_query_initialization_cut("
+    following = "bool rr_crucible_node_root_factory_origin("
     unrelated_body = unrelated[len(rr):]
     disguised = rr.replace(origin, removed, 1).replace(
         following, unrelated_body + following, 1

@@ -12,6 +12,8 @@ in
       base
       != ".git"
       && base != ".crucible"
+      # Local daemon journals are runtime state, never package source.
+      && base != "run-state"
       && base != "target"
       && base != "__pycache__"
       && !lib.hasSuffix ".pyc" base
