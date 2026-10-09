@@ -423,6 +423,9 @@
       ++ apmRuntimeTools
       ++ lib.optionals (!isDarwinCross) linuxRuntimeDeps;
 
+    # APM needs this runtime source before a host has a retained descriptor.
+    nukeRefsKeep = [lib.packageModuleLibrary];
+
     # mkDerivation normally constructs one RPATH from every runtimeDep. That
     # is correct for a single-output package, but would make each executable
     # retain the union of all four command closures here. The Rust programs
@@ -930,9 +933,15 @@
         ];
       };
     in
-      import ./_tests.nix {
+      (import ./_tests.nix {
         inherit testing pkgs;
         self = cliSuite;
+      })
+      // {
+        runtime-module-library = callPackage ./_runtime-library-check.nix {
+          package = self;
+          moduleLibrary = lib.packageModuleLibrary;
+        };
       };
 
     meta = {

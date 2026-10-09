@@ -5,6 +5,7 @@ pkgs.mkDerivation {
   version = "1.0.0";
   src = null;
   buildDeps = [pkgs.bash pkgs.coreutils];
+  runtimeDeps = [pkgs.bash];
   platformSupport = {
     build = [{os = ["linux"];}];
     host = [{os = ["linux"];}];

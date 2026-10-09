@@ -32,6 +32,32 @@
 
   nixLibPath = builtins.concatStringsSep ":" (map (pkg: "${pkg}/lib") nixRuntimeDeps);
 
+  fixtureInterpreters = [pkgs.bash];
+  interpreterClosure = builtins.genericClosure {
+    startSet =
+      map (package: {
+        key = toString package;
+        inherit package;
+      })
+      fixtureInterpreters;
+    operator = entry:
+      map (package: {
+        key = toString package;
+        inherit package;
+      }) (entry.package.runtimeDeps or []);
+  };
+  interpreterPackages = pkgs.lib.listToAttrs (map (entry:
+    pkgs.lib.nameValuePair entry.package.pname entry.package)
+  interpreterClosure);
+
+  # Published recipe closures include source archives larger than the guest's
+  # tmpfs. Use the fixture disk for caches and downloaded NARs.
+  setupPublicationStorage = ''
+    mount -o remount,rw /
+    mkdir -p /var/tmp/apm-e2e
+    mount --bind /var/tmp/apm-e2e /tmp
+  '';
+
   setupNixEnv = ''
     export NIX_REMOTE=""
     export NIX_CONF_DIR=/tmp/nix-conf
@@ -51,6 +77,42 @@
   '';
 
   shellHelpers = ''
+    publish_fixture_package() {
+      local project="$1"
+      shift
+      (cd "$project" && publish_vm_package "$@")
+    }
+
+    publish_fixture_interpreters() {
+      local project="$1"
+      local registry="$2"
+      ${pkgs.lib.concatMapStringsSep "\n" (entry: ''
+        publish_fixture_package "$project" ${pkgs.lib.escapeShellArg (toString entry.package)} --registry "$registry" || return
+      '')
+      interpreterClosure}
+    }
+
+    release_fixture_registry() {
+      local registry="$1"
+      local version="$2"
+      local -a channel_options=(--channel stable)
+      if [ "$version" = 1.0.0 ]; then
+        channel_options+=(--init-channel)
+      else
+        channel_options+=(--count 256)
+      fi
+      release_vm_package "$version" --registry "$registry" "''${channel_options[@]}"
+    }
+
+    commit_fixture_changes() {
+      local registry_dir="$1"
+      local message="$2"
+      git -C "$registry_dir" add -A
+      if ! git -C "$registry_dir" diff --cached --quiet; then
+        git -C "$registry_dir" commit -m "$message"
+      fi
+    }
+
     assert_file_not_contains() {
       file="$1"
       pattern="$2"
@@ -77,7 +139,14 @@
     delete_store_path() {
       path="$1"
       label="$2"
-      if nix-store --delete --ignore-liveness "$path" > "/tmp/e2e-delete-$label.out" 2>&1; then
+      # Retained publication inventories also refer to the unused payload.
+      # Remove its fixture referrers so this test exercises a real download.
+      local -a referring_paths
+      local referrers_file="/tmp/e2e-referrers-$label"
+      nix-store --query --referrers-closure "$path" > "$referrers_file"
+      mapfile -t referring_paths < "$referrers_file"
+      rm "$referrers_file"
+      if nix-store --delete --ignore-liveness "''${referring_paths[@]}" > "/tmp/e2e-delete-$label.out" 2>&1; then
         pass "$label deleted before APM download"
       else
         cat "/tmp/e2e-delete-$label.out"
@@ -155,7 +224,18 @@
         pkgs.bash
         pkgs.coreutils
       ];
-      runtimeDeps = extraRuntimeDeps;
+      runtimeDeps = fixtureInterpreters ++ extraRuntimeDeps;
+      platformSupport = {
+        build = [{os = ["linux"];}];
+        host = [{os = ["linux"];}];
+        target = [];
+        role = "public-package";
+      };
+      meta = {
+        description = "End-to-end package lifecycle fixture (${pname})";
+        license = "MIT";
+        maintainers = ["e2e@example.invalid"];
+      };
       phases = [
         {
           name = "build";
@@ -259,6 +339,7 @@
         pkgs.bash
         pkgs.coreutils
       ];
+      runtimeDeps = [pkgs.bash pkgs.coreutils];
       phases = [
         {
           name = "build";
@@ -304,6 +385,29 @@
     serviceDescription = "E2E system v2 service";
   };
 
+  publicationFor = packages:
+    import ../../fleet/_container-publication-project.nix {
+      lib = pkgs.lib;
+      inherit pkgs;
+      packages = interpreterPackages // packages;
+    };
+  e2ePublicationV1 = publicationFor {
+    e2e-helper = e2eHelperV1;
+    e2e-tool = e2eToolV1;
+  };
+  e2ePublicationV2 = publicationFor {
+    e2e-helper = e2eHelperV2;
+    e2e-tool = e2eToolV2;
+  };
+  fleetPublicationV1 = publicationFor {
+    fleet-helper = fleetHelperV1;
+    fleet-tool = fleetToolV1;
+  };
+  fleetPublicationV2 = publicationFor {
+    fleet-helper = fleetHelperV2;
+    fleet-tool = fleetToolV2;
+  };
+
   workflowDeps =
     fixtures.commonDeps
     ++ nixRuntimeDeps
@@ -322,6 +426,10 @@
       fleetHelperV2
       fleetToolV1
       fleetToolV2
+      e2ePublicationV1.project
+      e2ePublicationV2.project
+      fleetPublicationV1.project
+      fleetPublicationV2.project
     ];
 
   systemWorkflowDeps =
@@ -346,6 +454,7 @@ in {
     rootfsDeps = workflowDeps;
     memory = 2048;
     testScript = ''
+      ${setupPublicationStorage}
       ${fixtures.setupPreamble}
       ${setupNixEnv}
       ${shellHelpers}
@@ -365,25 +474,18 @@ in {
         version="$1"
         store_path="$2"
         dep_store_path="$3"
-        run_logged "/tmp/e2e-publish-helper-$version.out" publish_vm_package "$dep_store_path" \
-          --name e2e-helper \
-          --version "$version" \
-          --description "End-to-end package lifecycle dependency" \
-          --license MIT \
-          --maintainer e2e@example.invalid \
-          --registry e2e-reg \
-          --no-commit || {
+        project="$4"
+        run_logged "/tmp/e2e-publish-interpreters-$version.out" publish_fixture_interpreters "$project" e2e-reg || {
+          fail "apr publish fixture interpreter dependencies"
+          return 1
+        }
+        run_logged "/tmp/e2e-publish-helper-$version.out" publish_fixture_package "$project" "$dep_store_path" \
+          --registry e2e-reg || {
           fail "apr publish e2e-helper $version"
         }
 
-        run_logged "/tmp/e2e-publish-$version.out" publish_vm_package "$store_path" \
-          --name e2e-tool \
-          --version "$version" \
-          --description "End-to-end package lifecycle tool" \
-          --license MIT \
-          --maintainer e2e@example.invalid \
-          --registry e2e-reg \
-          --no-commit || {
+        run_logged "/tmp/e2e-publish-$version.out" publish_fixture_package "$project" "$store_path" \
+          --registry e2e-reg || {
           fail "apr publish e2e-tool $version"
         }
 
@@ -400,24 +502,22 @@ in {
           fail "apr cache generate e2e-tool $version"
         }
 
-        git -C "$REG_DIR" add -A
-        git -C "$REG_DIR" commit -m "release: e2e-tool $version"
+        commit_fixture_changes "$REG_DIR" "release: e2e-tool $version"
+        run_logged "/tmp/e2e-release-$version.out" release_fixture_registry e2e-reg "$version" || {
+          fail "apr release authenticates e2e-tool $version"
+          return 1
+        }
       }
 
       create_publish_registry e2e-reg
       REG_DIR="$REG_STORAGE/e2e-reg"
-      DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
-      git init --bare --object-format=sha256 /tmp/e2e-origin.git
-      git -C /tmp/e2e-origin.git symbolic-ref HEAD "refs/heads/$DEFAULT_BRANCH"
-      git -C "$REG_DIR" remote add origin /tmp/e2e-origin.git
-      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+      REGISTRY_TRUST="e2e-reg:Ed25519:$(cut -d ' ' -f2 /tmp/vm-publish-keys/e2e-reg.pub)"
 
-      publish_e2e_tool 1.0.0 "$TOOL_V1_STORE" "$TOOL_V1_DEP_STORE"
+      publish_e2e_tool 1.0.0 "$TOOL_V1_STORE" "$TOOL_V1_DEP_STORE" ${e2ePublicationV1.project}
       assert_file_exists "/tmp/e2e-cache/$TOOL_V1_HASH.narinfo" \
         "static cache has e2e-tool v1 narinfo"
       assert_file_exists "/tmp/e2e-cache/$TOOL_V1_DEP_HASH.narinfo" \
         "static cache has e2e-helper v1 narinfo"
-      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
 
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
@@ -427,9 +527,9 @@ in {
       export USER=e2euser
       PROFILE="/var/lib/profiles/per-user/$USER"
       mkdir -p "$HOME"
-      run_logged /tmp/e2e-registry-add.out "$APM" registry add --no-verify file:///tmp/e2e-origin.git \
+      run_logged /tmp/e2e-registry-add.out "$APM" registry add --trust-key "$REGISTRY_TRUST" "file://$REG_DIR" \
         --name e2e-reg \
-        --branch "$DEFAULT_BRANCH" || {
+        --channel stable || {
         fail "apm registry add syncs e2e registry"
       }
 
@@ -482,12 +582,11 @@ in {
 
       export HOME=/tmp
       APM_CONFIG="$HOME/.config/apm"
-      publish_e2e_tool 2.0.0 "$TOOL_V2_STORE" "$TOOL_V2_DEP_STORE"
+      publish_e2e_tool 2.0.0 "$TOOL_V2_STORE" "$TOOL_V2_DEP_STORE" ${e2ePublicationV2.project}
       assert_file_exists "/tmp/e2e-cache/$TOOL_V2_HASH.narinfo" \
         "static cache has e2e-tool v2 narinfo"
       assert_file_exists "/tmp/e2e-cache/$TOOL_V2_DEP_HASH.narinfo" \
         "static cache has e2e-helper v2 narinfo"
-      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
 
       export HOME=/tmp/e2e-consumer
       export USER=e2euser
@@ -540,8 +639,8 @@ in {
       run_logged /tmp/e2e-rollback.out "$APM" rollback || {
         fail "apm rollback returns e2e-tool to v1"
       }
-      assert_file_contains /tmp/e2e-rollback.out "Rolled back to generation 1" \
-        "apm rollback selects e2e v1 generation"
+      assert_file_contains /tmp/e2e-rollback.out "Restored generation 1 as generation 3" \
+        "apm rollback restores e2e v1 in a new generation"
       "$PROFILE/current/bin/e2e-tool" > /tmp/e2e-run-rollback.out
       assert_file_contains /tmp/e2e-run-rollback.out "e2e-helper 1.0.0 executed" \
         "rolled-back e2e-tool v1 executes dependency"
@@ -605,6 +704,7 @@ in {
     rootfsDeps = systemWorkflowDeps;
     memory = 2048;
     testScript = ''
+      ${setupPublicationStorage}
       ${fixtures.setupPreamble}
       ${setupNixEnv}
       ${shellHelpers}
@@ -644,8 +744,7 @@ in {
           fail "apr cache generate system $version"
         }
 
-        git -C "$REG_DIR" add -A
-        git -C "$REG_DIR" commit -m "release: server $version"
+        commit_fixture_changes "$REG_DIR" "release: server $version"
       }
 
       create_publish_registry e2e-system-reg
@@ -762,6 +861,7 @@ in {
     rootfsDeps = workflowDeps;
     memory = 2048;
     testScript = ''
+      ${setupPublicationStorage}
       ${fixtures.setupPreamble}
       ${setupNixEnv}
       ${shellHelpers}
@@ -781,24 +881,17 @@ in {
         version="$1"
         store_path="$2"
         dep_store_path="$3"
-        run_logged "/tmp/fleet-publish-helper-$version.out" publish_vm_package "$dep_store_path" \
-          --name fleet-helper \
-          --version "$version" \
-          --description "Fleet rolling update dependency" \
-          --license MIT \
-          --maintainer fleet@example.invalid \
-          --registry fleet-reg \
-          --no-commit || {
+        project="$4"
+        run_logged "/tmp/fleet-publish-interpreters-$version.out" publish_fixture_interpreters "$project" fleet-reg || {
+          fail "apr publish fixture interpreter dependencies"
+          return 1
+        }
+        run_logged "/tmp/fleet-publish-helper-$version.out" publish_fixture_package "$project" "$dep_store_path" \
+          --registry fleet-reg || {
           fail "apr publish fleet-helper $version"
         }
-        run_logged "/tmp/fleet-publish-$version.out" publish_vm_package "$store_path" \
-          --name fleet-tool \
-          --version "$version" \
-          --description "Fleet rolling update tool" \
-          --license MIT \
-          --maintainer fleet@example.invalid \
-          --registry fleet-reg \
-          --no-commit || {
+        run_logged "/tmp/fleet-publish-$version.out" publish_fixture_package "$project" "$store_path" \
+          --registry fleet-reg || {
           fail "apr publish fleet-tool $version"
         }
         run_logged "/tmp/fleet-cache-$version.out" "$APR" cache generate \
@@ -809,8 +902,11 @@ in {
           --no-commit || {
           fail "apr cache generate fleet-tool $version"
         }
-        git -C "$REG_DIR" add -A
-        git -C "$REG_DIR" commit -m "release: fleet-tool $version"
+        commit_fixture_changes "$REG_DIR" "release: fleet-tool $version"
+        run_logged "/tmp/fleet-release-$version.out" release_fixture_registry fleet-reg "$version" || {
+          fail "apr release authenticates fleet-tool $version"
+          return 1
+        }
       }
 
       run_fleet_profile() {
@@ -831,18 +927,13 @@ in {
 
       create_publish_registry fleet-reg
       REG_DIR="$REG_STORAGE/fleet-reg"
-      DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
-      git init --bare --object-format=sha256 /tmp/fleet-origin.git
-      git -C /tmp/fleet-origin.git symbolic-ref HEAD "refs/heads/$DEFAULT_BRANCH"
-      git -C "$REG_DIR" remote add origin /tmp/fleet-origin.git
-      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+      REGISTRY_TRUST="fleet-reg:Ed25519:$(cut -d ' ' -f2 /tmp/vm-publish-keys/fleet-reg.pub)"
 
-      publish_fleet_tool 1.0.0 "$FLEET_V1_STORE" "$FLEET_V1_DEP_STORE"
+      publish_fleet_tool 1.0.0 "$FLEET_V1_STORE" "$FLEET_V1_DEP_STORE" ${fleetPublicationV1.project}
       assert_file_exists "/tmp/fleet-cache/$FLEET_V1_HASH.narinfo" \
         "static cache has fleet-tool v1 narinfo"
       assert_file_exists "/tmp/fleet-cache/$FLEET_V1_DEP_HASH.narinfo" \
         "static cache has fleet-helper v1 narinfo"
-      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
 
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
@@ -855,9 +946,9 @@ in {
       export HOME=/tmp/fleet-a
       export USER=fleet_a
       mkdir -p "$HOME"
-      run_logged /tmp/fleet-a-add.out "$APM" registry add --no-verify file:///tmp/fleet-origin.git \
+      run_logged /tmp/fleet-a-add.out "$APM" registry add --trust-key "$REGISTRY_TRUST" "file://$REG_DIR" \
         --name fleet-reg \
-        --branch "$DEFAULT_BRANCH" || {
+        --channel stable || {
         fail "fleet A registry add succeeds"
       }
       run_logged /tmp/fleet-a-install-v1.out "$APM" install fleet-tool --registry fleet-reg --yes || {
@@ -874,9 +965,9 @@ in {
       mkdir -p "$HOME"
       delete_store_path "$FLEET_V1_STORE" "fleet-tool-v1-fleet-b"
       delete_store_path "$FLEET_V1_DEP_STORE" "fleet-helper-v1-fleet-b"
-      run_logged /tmp/fleet-b-add.out "$APM" registry add --no-verify file:///tmp/fleet-origin.git \
+      run_logged /tmp/fleet-b-add.out "$APM" registry add --trust-key "$REGISTRY_TRUST" "file://$REG_DIR" \
         --name fleet-reg \
-        --branch "$DEFAULT_BRANCH" || {
+        --channel stable || {
         fail "fleet B registry add succeeds"
       }
       run_logged /tmp/fleet-b-install-v1.out "$APM" install fleet-tool --registry fleet-reg --yes || {
@@ -893,12 +984,11 @@ in {
 
       export HOME=/tmp
       APM_CONFIG="$HOME/.config/apm"
-      publish_fleet_tool 2.0.0 "$FLEET_V2_STORE" "$FLEET_V2_DEP_STORE"
+      publish_fleet_tool 2.0.0 "$FLEET_V2_STORE" "$FLEET_V2_DEP_STORE" ${fleetPublicationV2.project}
       assert_file_exists "/tmp/fleet-cache/$FLEET_V2_HASH.narinfo" \
         "static cache has fleet-tool v2 narinfo"
       assert_file_exists "/tmp/fleet-cache/$FLEET_V2_DEP_HASH.narinfo" \
         "static cache has fleet-helper v2 narinfo"
-      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
 
       export HOME=/tmp/fleet-a
       export USER=fleet_a
@@ -949,8 +1039,8 @@ in {
       run_logged /tmp/fleet-a-rollback.out "$APM" rollback || {
         fail "fleet A rolls back to v1"
       }
-      assert_file_contains /tmp/fleet-a-rollback.out "Rolled back to generation 1" \
-        "fleet A rollback selects v1 generation"
+      assert_file_contains /tmp/fleet-a-rollback.out "Restored generation 1 as generation 3" \
+        "fleet A rollback restores v1 in a new generation"
       run_fleet_profile fleet_a \
         "fleet-helper 1.0.0 executed" \
         "fleet-tool 1.0.0 executed"
