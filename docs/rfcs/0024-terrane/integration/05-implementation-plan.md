@@ -2403,6 +2403,35 @@ the test's expected trace omits it. The proposed test-only correction requires
 that exact operation and ordering while preserving every equality, nonce,
 association, body, projection and acknowledgment assertion. Original failures
 remain retained; changed-source qualification is still required.
+The test-only correction on `4607ffa0fb` passes SDK build, strict native
+all-target Clippy, Tokio-only all-target Clippy with its retained baseline
+warnings, native test compilation and fresh discovery. Its actual non-fresh
+compiler artifact binds 834 discovered cases to the corrected source. The
+focused creation case passes once, and the whole atomic-write gate passes all
+eighteen exact cases, including the previously failing creation trace. This
+qualifies that frozen gate version; the subsequently expanded registry also
+requires ten Raw durability classification witnesses and remains unqualified.
+The generation-manifest gate then passes four index-policy cases but exits one
+because `physical_exclusion_overrides_live_rows_during_fresh_admission` is absent
+from its actual test inventory. The missing case does not execute. All 6,103
+tracked source images remain unchanged through these executions; the actual
+Nix source contains 5,049 matching included files and excludes 1,054 others.
+The first-failure sequence leaves application-target compilation and the exact
+formatter pair unrun.
+
+Read-only source and history review finds the missing witness was not renamed
+or superseded. It requires genuine native retirement followed by an accepted
+generation containing captured stale Live rows, then verifies that fresh
+admission chooses a different pack without reviving excluded placements or
+quarantine. Existing ordinary retirement/restore and unauthorized mixed-Live
+proposal tests cover different inputs. Both generation-manifest and
+store-idempotent-put require this missing witness; their selectors stay intact
+while its test-only wrapper, module registration and helper are restored in an
+isolated worktree. The separately reviewed Raw durability classifier retains
+all fresh observations, duplicate row order and current checks; its ten new
+witnesses are registered, but compilation and runtime qualification remain
+pending on the composed source. Neither prerequisite accepts a task or closes
+the current floor.
 No task checkbox or milestone status advances.
 After the class candidate releases the team's heavy lane, the diagnostic's
 restoration command exits zero but its artifact verifier stops: Cargo reports
