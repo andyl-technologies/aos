@@ -41,7 +41,8 @@ def verify_inventory_refusal(executable):
 def observe_unavailable_native_inventory(executable):
     """Keep actual device refusal separate from any native execution test."""
     if os.path.exists("/dev/kvm"):
-        print("native device exists: separate hardware qualification remains required")
+        print("/dev/kvm path present in this build namespace: access and API "
+              "availability not probed; native qualification not executed")
         return
     result = subprocess.run([
         executable, "-machine", "none", "-accel",

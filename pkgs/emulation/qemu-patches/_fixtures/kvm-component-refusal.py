@@ -91,7 +91,8 @@ def verify_refusal(executable):
 
 def observe_unavailable_native_device(executable):
     if os.path.exists("/dev/kvm"):
-        print("native KVM device available: qualification must run separately")
+        print("/dev/kvm path present in this build namespace: access and API "
+              "availability not probed; native qualification not executed")
         return
     result = subprocess.run(
         [executable, "-machine", "none", "-accel",
