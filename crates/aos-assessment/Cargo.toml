@@ -1,13 +1,13 @@
 [package]
-name = "aos-maintain"
+name = "aos-assessment"
 version = "0.1.0"
 edition = "2024"
 license.workspace = true
+description = "Pure shared package inventory, upstream policy, and vulnerability assessment contracts"
 
 [dependencies]
 anyhow = { workspace = true }
 aos-contract = { workspace = true }
-aos-assessment = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 semver = { workspace = true }

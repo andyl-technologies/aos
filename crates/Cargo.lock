@@ -274,6 +274,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-assessment"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-contract",
+ "semver",
+ "serde",
+ "serde_json",
+ "url",
+]
+
+[[package]]
 name = "aos-block-storage-provider"
 version = "0.1.0"
 dependencies = [
@@ -705,6 +717,7 @@ name = "aos-maintain"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aos-assessment",
  "aos-contract",
  "semver",
  "serde",

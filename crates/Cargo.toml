@@ -10,6 +10,7 @@ members = [
     "aos-ability-runtime",
     "aos-ability-crucible",
     "aos-maintain",
+    "aos-assessment",
     "aos-core",
     "aos-boot-identity",
     "aos-recovery",
@@ -238,6 +239,7 @@ aos-ability-plan = { path = "aos-ability-plan" }
 aos-ability-runtime = { path = "aos-ability-runtime" }
 aos-ability-crucible = { path = "aos-ability-crucible" }
 aos-maintain = { path = "aos-maintain" }
+aos-assessment = { path = "aos-assessment" }
 crucible-cas = { path = "crucible-cas" }
 crucible-linux-resource = { path = "crucible-linux-resource" }
 crucible-s3-store = { path = "crucible-s3-store" }
