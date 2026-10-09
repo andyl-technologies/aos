@@ -57,9 +57,10 @@ a library-only test invocation would miss. Changes affecting public process
 protocols run `gate:abi-conformance` and `gate:license-boundary`, with matching
 native source artifacts where required.
 
-For this documentation-only change, validate links, source references,
-requirement allocation, example vectors, and consistency. It does not require
-executing native qualification or claiming any new backend support.
+Validate links, source references, requirement allocation, example vectors and
+consistency alongside executable changes. Record actual results and remaining
+qualification gaps in [implementation-status.md](implementation-status.md);
+component tests do not qualify a complete backend.
 
 ## 3. Proposed suites and minimum cases
 
