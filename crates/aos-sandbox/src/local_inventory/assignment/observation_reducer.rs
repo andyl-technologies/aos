@@ -1,8 +1,9 @@
 //! Optional assignment-observation reduction and semantic-plan selection.
 //!
-//! This owner retains the complete warm observation fold for the selected remote
-//! assignment integration. Intent DATA, protected history, and the private plan
-//! factory remain in their original lower owners.
+//! This owner retains the complete warm observation fold and private move-only
+//! plan factory for the selected remote assignment integration. Intent DATA and
+//! protected history remain in their original lower owners; a selected plan
+//! still requires protected commit and independent effect-time verification.
 
 use std::cmp::Ordering;
 

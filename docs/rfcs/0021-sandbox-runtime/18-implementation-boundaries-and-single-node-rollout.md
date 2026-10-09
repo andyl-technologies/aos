@@ -90,6 +90,16 @@ complete authenticated resync inventory and watch-bootstrap validation. Raw
 inventory, cursor and stable-UID semantics, canonical codecs, and retained
 history validation remain available by default.
 
+The complete remote assignment plan and prepared semantic-grant chain also
+requires `multi-node`. `assignment::observation_reducer` retains the private
+move-only plan and its exact effect commitment; `journal::assignment_effect`
+retains the original journal reducer's sealed prepared-grant factory and
+reservoir. The selected protected assignment owner still joins that grant to
+its committed publication and independently current effect-time carrier.
+Default intent and observation models, complete retained-history replay,
+partial-effect recovery and Controller lifecycle transfer inventory remain
+available. This cut adds no authority or distributed qualification.
+
 ## Dependency direction
 
 Arrows below mean "depends on", not IPC or privilege inheritance:

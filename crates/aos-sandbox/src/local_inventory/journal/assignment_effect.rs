@@ -1,3 +1,12 @@
+//! Selected prepared-assignment semantic grants on the original journal reducer.
+//!
+//! This private child retains the complete move-only grant and its sole factory.
+//! The factory borrows the original reducer's current protected row, receipt and
+//! authority commitment; it does not mint a carrier, lease or durable write.
+//! Default canonical history, replay and partial-effect recovery stay in the
+//! parent. Remote publication must still verify the same grant and current
+//! effect-time carrier before handoff.
+
 use aos_sandbox_core::{ObjectDigest, OperationId};
 
 use crate::local_inventory::assignment::{AssignmentEffectPlanV1, AssignmentIntentV1};
