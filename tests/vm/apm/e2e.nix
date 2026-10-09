@@ -32,6 +32,14 @@
 
   nixLibPath = builtins.concatStringsSep ":" (map (pkg: "${pkg}/lib") nixRuntimeDeps);
 
+  # Published recipe closures include source archives larger than the guest's
+  # tmpfs. Use the fixture disk for caches and downloaded NARs.
+  setupPublicationStorage = ''
+    mount -o remount,rw /
+    mkdir -p /var/tmp/apm-e2e
+    mount --bind /var/tmp/apm-e2e /tmp
+  '';
+
   setupNixEnv = ''
     export NIX_REMOTE=""
     export NIX_CONF_DIR=/tmp/nix-conf
@@ -390,6 +398,7 @@ in {
     rootfsDeps = workflowDeps;
     memory = 2048;
     testScript = ''
+      ${setupPublicationStorage}
       ${fixtures.setupPreamble}
       ${setupNixEnv}
       ${shellHelpers}
@@ -638,6 +647,7 @@ in {
     rootfsDeps = systemWorkflowDeps;
     memory = 2048;
     testScript = ''
+      ${setupPublicationStorage}
       ${fixtures.setupPreamble}
       ${setupNixEnv}
       ${shellHelpers}
@@ -795,6 +805,7 @@ in {
     rootfsDeps = workflowDeps;
     memory = 2048;
     testScript = ''
+      ${setupPublicationStorage}
       ${fixtures.setupPreamble}
       ${setupNixEnv}
       ${shellHelpers}
