@@ -2356,10 +2356,28 @@ runtime remain unrun, and the original expected hash is preserved. Read-only
 inspection finds the earlier differing source's timestamp predates the shared
 relative dependency records, which have checksum validation disabled. This
 supports a freshness hypothesis without proving Cargo's internal decision.
-A normal timestamp refresh of that one source file is under review; source
-bytes, modes, cache records and original failed evidence remain unchanged.
+The first timestamp command stops on an unsupported option before changing
+the file. Its source and inode, mode, ownership, modification and change times
+remain unchanged; compilation, discovery and diagnostic runtime stay unrun.
+The bare command also resolves through the host PATH. A replacement uses the
+explicit AOS coreutils executable and its verified modification-time option.
+That finite sequence is authorized with the original executable identity and
+non-fresh compiler-artifact requirement retained. Every stopped invocation
+remains preserved and contains no diagnostic runtime result.
+The replacement timestamp operation and its source/stat checks pass: contents,
+inode, mode and ownership stay fixed while the new modification time exceeds
+the retained dependency timestamps. Cargo begins compiling again; terminal
+compiler identity verification and diagnostic execution remain pending.
 The diagnostic preserves the thirty-second writer and 120-second process
 settings and cannot replace the earlier failed qualification.
+
+A read-only format audit of `7c71e91bc5` finds no concrete missing current-T1
+vector or property implementation. The actual golden gate requires twenty
+owning format suites and all 31 assigned reference sections; the fuzz gate
+requires 58 public properties and five private encoder properties. These
+source coverage findings require current-candidate gate execution before
+acceptance. Two descriptive metadata strings retain the older public-case
+count; the authoritative inventory already requires all 58 cases.
 
 The sealed current floor contains 89 aggregate gates, including all 69 T0/T1
 plan-required names and twenty implemented supporting checks. Read-only evaluation
