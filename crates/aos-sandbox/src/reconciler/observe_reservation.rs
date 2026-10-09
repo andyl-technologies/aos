@@ -63,15 +63,10 @@ fn validate_child(
     if operation.is_none() && effect.is_none() && decision == IdempotencyOutcome::Vacant {
         return Ok(false);
     }
-    let operation = operation.ok_or_else(corrupt).and_then(|bytes| decode_operation(bytes).map_err(ReconcilerError::from))?;
-    if operation
-        != (OperationRecord::new(
-            OperationState::Accepted,
-            1,
-            false,
-            None,
-            None,
-        ))
+    let operation = operation
+        .ok_or_else(corrupt)
+        .and_then(|bytes| decode_operation(bytes).map_err(ReconcilerError::from))?;
+    if operation != (OperationRecord::new(OperationState::Accepted, 1, false, None, None))
         || decision != IdempotencyOutcome::Replay(operation_id)
         || journal
             .get(

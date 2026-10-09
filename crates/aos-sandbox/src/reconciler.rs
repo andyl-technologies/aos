@@ -1830,8 +1830,7 @@ where
                 },
                 effect_count,
                 plan.ownership_gate.is_some(),
-                plan
-                    .runtime_authority
+                plan.runtime_authority
                     .as_ref()
                     .map(RuntimeAuthorityIntentV1::digest),
                 plan.public_operation.as_ref().map(|public| {
@@ -3957,7 +3956,10 @@ impl PendingOperatorRepairLedgerV1 {
                 "Repair operation is not public",
             ))?
             .advance(decision, completion_wall_seconds)?;
-        let operation = encode_operation_record(self.operation.with_state_and_public_operation(decision, Some(public)));
+        let operation = encode_operation_record(
+            self.operation
+                .with_state_and_public_operation(decision, Some(public)),
+        );
         decode_operation(&operation)?;
         Ok([
             JournalRecord::put(
@@ -7440,13 +7442,7 @@ mod tests {
         assert_eq!(&bytes[8..], &[0; OPERATION_RUNTIME_INTENT_DIGEST_BYTES]);
         assert_eq!(
             decode_operation(&bytes).unwrap(),
-            OperationRecord::new(
-                OperationState::Accepted,
-                1,
-                false,
-                None,
-                None,
-            )
+            OperationRecord::new(OperationState::Accepted, 1, false, None, None)
         );
 
         let mut invalid = vec![
@@ -8515,13 +8511,8 @@ mod tests {
         )
         .unwrap()
         .durable();
-        let operation = OperationRecord::new(
-            OperationState::Accepted,
-            1,
-            false,
-            None,
-            Some(metadata),
-        );
+        let operation =
+            OperationRecord::new(OperationState::Accepted, 1, false, None, Some(metadata));
         let bytes = encode_operation_record(operation);
         assert_eq!(bytes.len(), OPERATION_RECORD_V2_BYTES);
         assert_eq!(decode_operation(&bytes).unwrap(), operation);

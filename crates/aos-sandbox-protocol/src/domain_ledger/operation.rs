@@ -82,7 +82,6 @@ pub struct OperationRecord {
     public_operation: Option<DurablePublicOperationV1>,
 }
 
-
 impl OperationRecord {
     /// Assembles the five supplied fields without validating their combination.
     ///
@@ -168,7 +167,9 @@ pub fn decode_operation_key(bytes: &[u8]) -> Result<OperationId, PublicOperation
         .try_into()
         .map_err(|_| PublicOperationDataError::CorruptLedger("invalid operation key length"))?;
     if value == [0; OPERATION_KEY_BYTES] {
-        return Err(PublicOperationDataError::CorruptLedger("zero operation identity"));
+        return Err(PublicOperationDataError::CorruptLedger(
+            "zero operation identity",
+        ));
     }
     Ok(OperationId::from_bytes(value))
 }
@@ -243,7 +244,9 @@ pub fn decode_operation(bytes: &[u8]) -> Result<OperationRecord, PublicOperation
     if effect_count as usize > MAXIMUM_EFFECTS
         || (effect_count == 0 && (state != OperationState::Succeeded || ownership_gated))
     {
-        return Err(PublicOperationDataError::CorruptLedger("invalid effect count"));
+        return Err(PublicOperationDataError::CorruptLedger(
+            "invalid effect count",
+        ));
     }
     if ownership_gated && effect_count as usize > MAXIMUM_GATED_EFFECTS {
         return Err(PublicOperationDataError::CorruptLedger(
