@@ -47,15 +47,20 @@
   # outputs that are not separate published packages. Keep them registered in
   # the fixture store alongside their recipes and package metadata.
   retainArtifact = artifact: [artifact (builtins.unsafeDiscardOutputDependency artifact.drvPath)];
-  sourceOutputs = lib.concatMap (name: let
-    package = publicationPackages.${name};
-  in
+  packageArtifacts = import ../../lib/packages/artifacts.nix {};
+  selectedPackages = builtins.attrValues publicationPackages;
+  # Native envelopes authenticate every declared runtime dependency output,
+  # including development outputs that executable closures do not reference.
+  runtimeDependencies = lib.concatMap (package:
+    packageArtifacts.dependencyValues (package.runtimeDeps or []))
+  selectedPackages;
+  sourceOutputs = lib.concatMap (package:
     map (outputName:
       if outputName == "out"
       then package
       else package.${outputName})
     (package.outputs or ["out"]))
-  names;
+  (selectedPackages ++ runtimeDependencies);
   # The release policy names a distinct deployment companion for each output.
   # Use its retention projection so the fixture and APR select the same roots.
   publicationRoots = policy.releaseDerivationRoots {
