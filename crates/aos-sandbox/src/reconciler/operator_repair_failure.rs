@@ -97,14 +97,14 @@ pub(super) fn validate_operation(
     operation_id: OperationId,
     operation: super::OperationRecord,
 ) -> Result<(), ReconcilerError> {
-    for step in 0..operation.effect_count {
+    for step in 0..operation.effect_count() {
         let effect = super::decode_effect(journal.get(super::RecordNamespace::Effect,
             &super::effect_key(operation_id, step))
             .ok_or(ReconcilerError::CorruptLedger("missing effect record"))?)?;
         if let super::EffectState::Applied { receipt, .. } = &effect.state {
             if classify(receipt)? {
-                if step != 0 || operation.effect_count != 1
-                    || operation.state != super::OperationState::PermanentlyBlocked
+                if step != 0 || operation.effect_count() != 1
+                    || operation.state() != super::OperationState::PermanentlyBlocked
                     || !super::is_operator_storage_repair_effect_v1(&effect.plan)?
                 {
                     return Err(ReconcilerError::CorruptLedger("Repair failure has a nonexact public graph"));

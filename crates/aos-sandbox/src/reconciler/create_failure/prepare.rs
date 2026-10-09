@@ -315,7 +315,7 @@ pub(super) fn validate_settled_host_floor_join(
     let operation_bytes = journal
         .get(RecordNamespace::Operation, floor.operation_id.as_bytes())
         .ok_or_else(invalid_settlement)?;
-    if decode_operation(operation_bytes)?.state != OperationState::FailedBeforeCommit {
+    if decode_operation(operation_bytes)?.state() != OperationState::FailedBeforeCommit {
         return Err(invalid_settlement());
     }
     Ok(())
@@ -369,7 +369,7 @@ pub(super) fn validate_all_floors(journal: &Journal) -> Result<(), ReconcilerErr
             .map(record_digest)
             .collect::<Result<Vec<_>, _>>()?;
         let actual: [ObjectDigest; 3] = digests.try_into().map_err(|_| invalid_settlement())?;
-        match operation.state {
+        match operation.state() {
             OperationState::Applying if actual == floor.predecessor => {
                 let effect = decode_effect(effect_bytes)?;
                 let projection = PublicProjectionStoreV1::new(journal)
@@ -385,10 +385,10 @@ pub(super) fn validate_all_floors(journal: &Journal) -> Result<(), ReconcilerErr
                 let admission =
                     recovered_public_operation_admission_v1(journal, floor.operation_id)?
                         .ok_or_else(invalid_settlement)?;
-                if operation.effect_count != 1
-                    || operation.ownership_gated
-                    || operation.runtime_intent_digest.is_some()
-                    || operation.public_operation.map(|public| public.method())
+                if operation.effect_count() != 1
+                    || operation.ownership_gated()
+                    || operation.runtime_intent_digest().is_some()
+                    || operation.public_operation().map(|public| public.method())
                         != Some(PublicOperationMethodV1::CreateExecution)
                     || effect.plan.public_mutation_method()
                         != Some(PublicOperationMethodV1::CreateExecution)

@@ -4641,7 +4641,7 @@ pub(crate) fn q04_controller_before_rows_digest_v1(
     use crate::controller_service::public_projection::{PublicProjectionKindV1, projection_key};
 
     let desired_key = projection_key(PublicProjectionKindV1::Sandbox, sandbox);
-    let effect_key = crate::reconciler::effect_key(operation_id, 0);
+    let effect_key = aos_sandbox_protocol::domain_ledger::operation::effect_key(operation_id, 0);
     let rows: [(RecordNamespace, &[u8], &[u8]); 3] = [
         (RecordNamespace::Operation, operation_id.as_bytes(), operation),
         (RecordNamespace::DesiredState, &desired_key, desired),

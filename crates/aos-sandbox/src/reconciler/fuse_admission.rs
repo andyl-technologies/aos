@@ -24,11 +24,11 @@ pub(crate) fn accepted_fuse_admission_v1(
             "missing FUSE admission operation",
         ))?;
     let operation = decode_operation(operation_bytes)?;
-    if operation.effect_count != 1
-        || operation.ownership_gated
-        || operation.runtime_intent_digest.is_some()
+    if operation.effect_count() != 1
+        || operation.ownership_gated()
+        || operation.runtime_intent_digest().is_some()
         || !matches!(
-            operation.state,
+            operation.state(),
             OperationState::Accepted | OperationState::Applying | OperationState::Succeeded
         )
     {

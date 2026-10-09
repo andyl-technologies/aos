@@ -27,7 +27,7 @@ impl NixStartAdmissionCarrierV2 {
         }
 
         // Later custody cuts read afresh; reuse is confined to this immutable phase.
-        require_pending_states(readback.operation.state, &readback.effect.state)?;
+        require_pending_states(readback.operation.state(), &readback.effect.state)?;
         let (desired_key, desired_value) = self.desired();
         if &readback.effect.plan != expected_plan
             || readback.effect.dispatch.is_some()

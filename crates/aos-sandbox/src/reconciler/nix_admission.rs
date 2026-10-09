@@ -34,7 +34,7 @@ fn accepted_nix_start_readback_v2(
         return Ok(None);
     };
     let operation = decode_operation(operation_bytes)?;
-    let Some(public) = operation.public_operation else {
+    let Some(public) = operation.public_operation() else {
         return Ok(None);
     };
     if public.method() != PublicOperationMethodV1::StartSandbox {
@@ -55,7 +55,7 @@ fn accepted_nix_start_readback_v2(
     let expected_effect = EffectPlan::authorized_public_mutation(
         PublicOperationMethodV1::StartSandbox, context.clone(),
     )?;
-    if operation.effect_count != 1 || operation.ownership_gated || operation.runtime_intent_digest.is_some()
+    if operation.effect_count() != 1 || operation.ownership_gated() || operation.runtime_intent_digest().is_some()
         || effect.plan != expected_effect
         || !matches!(request.request(), aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::Start(_))
         || carrier.operation() != operation_id

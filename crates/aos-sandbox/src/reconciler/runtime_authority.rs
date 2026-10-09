@@ -17,9 +17,9 @@ pub(crate) fn validate_runtime_authority_pending(
         .ok_or(ReconcilerError::CorruptLedger(
             "runtime authority operation is missing",
         ))
-        .and_then(decode_operation)?;
+        .and_then(|bytes| decode_operation(bytes).map_err(ReconcilerError::from))?;
     let plan = gate_plan(&gate);
-    if operation.runtime_intent_digest != Some(pending.intent_digest())
+    if operation.runtime_intent_digest() != Some(pending.intent_digest())
         || &plan.request_digest != pending.request_digest()
         || plan.publication_draft.manifest() != pending.manifest()
         || plan.publication_draft_digest() != pending.source_draft_digest()
@@ -29,7 +29,7 @@ pub(crate) fn validate_runtime_authority_pending(
         ));
     }
     if pending.state() == RuntimeAuthorityStateV1::Revoked {
-        if operation.effect_count != 1 {
+        if operation.effect_count() != 1 {
             return Err(ReconcilerError::CorruptLedger(
                 "runtime revocation requires one Stop effect",
             ));
@@ -128,7 +128,7 @@ pub(crate) fn validate_runtime_authority_operations(
 ) -> Result<(), ReconcilerError> {
     for (key, bytes) in journal.records(RecordNamespace::Operation) {
         let operation = decode_operation(bytes)?;
-        if let Some(digest) = operation.runtime_intent_digest {
+        if let Some(digest) = operation.runtime_intent_digest() {
             crate::runtime_authority::validate_operation_intent(
                 journal,
                 decode_operation_key(key)?,
@@ -205,7 +205,7 @@ fn runtime_gate(
         .ok_or(ReconcilerError::CorruptLedger(
             "runtime authority operation is missing",
         ))
-        .and_then(decode_operation)?;
+        .and_then(|bytes| decode_operation(bytes).map_err(ReconcilerError::from))?;
     let gate = journal
         .get(RecordNamespace::OwnershipGate, operation_id.as_bytes())
         .ok_or(ReconcilerError::CorruptLedger(
@@ -213,12 +213,12 @@ fn runtime_gate(
         ))
         .and_then(decode_ownership_gate)?;
     let plan = gate_plan(&gate);
-    if !operation.ownership_gated
+    if !operation.ownership_gated()
         || plan.operation_id != operation_id
         || journal.check_idempotency(&plan.idempotency_key, plan.request_digest)
             != IdempotencyOutcome::Replay(operation_id)
         || !matches!(
-            (&gate, operation.state),
+            (&gate, operation.state()),
             (
                 OwnershipGateStatusV1::Pending(_),
                 OperationState::OwnershipPending

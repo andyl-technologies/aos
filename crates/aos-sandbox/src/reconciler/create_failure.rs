@@ -441,14 +441,14 @@ pub(super) fn validate_failed_create_operation(
     operation_id: OperationId,
     operation: OperationRecord,
 ) -> Result<(), ReconcilerError> {
-    if operation.effect_count != 1 {
-        if operation.state == OperationState::FailedBeforeCommit {
+    if operation.effect_count() != 1 {
+        if operation.state() == OperationState::FailedBeforeCommit {
             return Err(invalid_settlement());
         }
 
         // A special receipt on any step of a multi-effect operation must not
         // evade cold replay merely because the operation cannot settle Create.
-        for step in 0..operation.effect_count {
+        for step in 0..operation.effect_count() {
             let bytes = journal
                 .get(RecordNamespace::Effect, &effect_key(operation_id, step))
                 .ok_or_else(invalid_settlement)?;
@@ -478,7 +478,7 @@ pub(super) fn validate_failed_create_operation(
         ),
         _ => (None, 0),
     };
-    if operation.state != OperationState::FailedBeforeCommit {
+    if operation.state() != OperationState::FailedBeforeCommit {
         return if receipt.is_some() {
             Err(invalid_settlement())
         } else {
@@ -490,9 +490,9 @@ pub(super) fn validate_failed_create_operation(
     let receipt = receipt.ok_or_else(invalid_settlement)?;
     let floor = load_floor(journal, operation_id)?.ok_or_else(invalid_settlement)?;
     let marker = receipt.marker.fields();
-    if operation.ownership_gated
-        || operation.runtime_intent_digest.is_some()
-        || operation.public_operation.map(|public| public.method())
+    if operation.ownership_gated()
+        || operation.runtime_intent_digest().is_some()
+        || operation.public_operation().map(|public| public.method())
             != Some(PublicOperationMethodV1::CreateExecution)
         || effect.plan.public_mutation_method() != Some(PublicOperationMethodV1::CreateExecution)
         || marker.create_operation_id != operation_id.into_bytes()
@@ -642,7 +642,7 @@ impl<E: SingleNodeEffectExecutor> Reconciler<E> {
     ) -> Result<Option<ControllerCreateFailureSettlementAckV1>, ReconcilerError> {
         self.journal.ensure_protected_authority()?;
         let Some(floor) = load_floor(&self.journal, operation_id)? else {
-            return if self.load_operation(operation_id)?.state == OperationState::FailedBeforeCommit
+            return if self.load_operation(operation_id)?.state() == OperationState::FailedBeforeCommit
             {
                 Err(invalid_settlement())
             } else {
@@ -651,7 +651,7 @@ impl<E: SingleNodeEffectExecutor> Reconciler<E> {
         };
         prepare::validate_all_floors(&self.journal)?;
         let operation = self.load_operation(operation_id)?;
-        match operation.state {
+        match operation.state() {
             OperationState::Applying => Ok(None),
             OperationState::FailedBeforeCommit => {
                 validate_failed_create_operation(&self.journal, operation_id, operation)?;
@@ -673,11 +673,11 @@ impl<E: SingleNodeEffectExecutor> Reconciler<E> {
         self.ensure_ledger_validated()?;
         let operation = self.load_operation(operation_id)?;
         let marker = proof.marker().fields();
-        if operation.state != OperationState::Applying
-            || operation.effect_count != 1
-            || operation.ownership_gated
-            || operation.runtime_intent_digest.is_some()
-            || operation.public_operation.map(|public| public.method())
+        if operation.state() != OperationState::Applying
+            || operation.effect_count() != 1
+            || operation.ownership_gated()
+            || operation.runtime_intent_digest().is_some()
+            || operation.public_operation().map(|public| public.method())
                 != Some(PublicOperationMethodV1::CreateExecution)
             || marker.create_operation_id != operation_id.into_bytes()
         {

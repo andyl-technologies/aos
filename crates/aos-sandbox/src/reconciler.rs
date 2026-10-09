@@ -116,14 +116,13 @@ pub use project_admission::{
     authorize_controller_project_admission_dispatch_v1,
     prepare_current_create_project_admission_v1, retained_controller_project_admission_v1,
 };
-pub(crate) use operation_ledger::effect_key;
-use operation_ledger::{
+use aos_sandbox_protocol::domain_ledger::operation::{
     MAXIMUM_EFFECTS, MAXIMUM_GATED_EFFECTS, OPERATION_KEY_BYTES, OPERATION_RECORD_V2_BYTES,
-    OperationRecord, decode_operation, decode_operation_key, decode_ownership_gate,
-    encode_operation_record, encode_ownership_gate,
+    OperationRecord, decode_operation, decode_operation_key, effect_key, encode_operation_record,
 };
+use operation_ledger::{decode_ownership_gate, encode_ownership_gate};
 #[cfg(test)]
-use operation_ledger::{
+use aos_sandbox_protocol::domain_ledger::operation::{
     OPERATION_RECORD_V1_BYTES, OPERATION_RUNTIME_INTENT_DIGEST_BYTES, RECORD_VERSION_V1,
     encode_operation,
 };
@@ -1625,8 +1624,8 @@ where
         AuthorityPublicationStore::new(&mut self.journal)
             .validate_gate_successor(&prepared)
             .map_err(|_| ReconcilerError::OwnershipPublicationNotSuccessor)?;
-        self.validate_gated_effects_for_activation(operation_id, operation.effect_count)?;
-        let runtime_records = if operation.runtime_intent_digest.is_some()
+        self.validate_gated_effects_for_activation(operation_id, operation.effect_count())?;
+        let runtime_records = if operation.runtime_intent_digest().is_some()
             || self
                 .journal
                 .records(RecordNamespace::RuntimeAuthority)
@@ -1635,7 +1634,7 @@ where
         {
             let store =
                 RuntimeAuthorityStore::load(&mut self.journal, RuntimeAuthorityLimits::default())?;
-            if operation.runtime_intent_digest.is_none() && store.current(sandbox)?.is_some() {
+            if operation.runtime_intent_digest().is_none() && store.current(sandbox)?.is_some() {
                 return Err(ReconcilerError::InvalidPlan(
                     "a current runtime holder requires an explicit successor intent",
                 ));
@@ -1733,12 +1732,12 @@ where
                         public.durable()
                     }
                 });
-                if recorded.runtime_intent_digest
+                if recorded.runtime_intent_digest()
                     != plan
                         .runtime_authority
                         .as_ref()
                         .map(RuntimeAuthorityIntentV1::digest)
-                    || recorded.public_operation != planned_public_operation
+                    || recorded.public_operation() != planned_public_operation
                     || recorded_authorization.as_ref()
                         != plan
                             .public_operation
@@ -1747,10 +1746,10 @@ where
                 {
                     return Err(ReconcilerError::IdempotencyConflict);
                 }
-                let recorded_local_completion = recorded.effect_count == 0
-                    && recorded.state == OperationState::Succeeded
-                    && !recorded.ownership_gated
-                    && recorded.runtime_intent_digest.is_none();
+                let recorded_local_completion = recorded.effect_count() == 0
+                    && recorded.state() == OperationState::Succeeded
+                    && !recorded.ownership_gated()
+                    && recorded.runtime_intent_digest().is_none();
                 let planned_local_completion =
                     plan.effects.is_empty() && !plan.local_records.is_empty();
                 if recorded_local_completion != planned_local_completion {
@@ -1822,8 +1821,8 @@ where
         records.push(JournalRecord::put(
             RecordNamespace::Operation,
             plan.operation_id.into_bytes().to_vec(),
-            encode_operation_record(OperationRecord {
-                state: if plan.effects.is_empty() && !plan.local_records.is_empty() {
+            encode_operation_record(OperationRecord::new(
+                if plan.effects.is_empty() && !plan.local_records.is_empty() {
                     OperationState::Succeeded
                 } else if plan.ownership_gate.is_some() {
                     OperationState::OwnershipPending
@@ -1831,19 +1830,19 @@ where
                     OperationState::Accepted
                 },
                 effect_count,
-                ownership_gated: plan.ownership_gate.is_some(),
-                runtime_intent_digest: plan
+                plan.ownership_gate.is_some(),
+                plan
                     .runtime_authority
                     .as_ref()
                     .map(RuntimeAuthorityIntentV1::digest),
-                public_operation: plan.public_operation.as_ref().map(|public| {
+                plan.public_operation.as_ref().map(|public| {
                     if plan.effects.is_empty() {
                         public.durable_completed()
                     } else {
                         public.durable()
                     }
                 }),
-            }),
+            )),
         ));
         records.push(JournalRecord::idempotency(
             &plan.idempotency_key,
@@ -1925,7 +1924,7 @@ where
                 continue;
             }
             let operation = decode_operation(value)?;
-            if !operation.state.is_terminal() {
+            if !operation.state().is_terminal() {
                 pending = pending
                     .checked_add(1)
                     .ok_or(ReconcilerError::CorruptLedger(
@@ -1959,7 +1958,7 @@ where
                 continue;
             }
             let operation = decode_operation(value)?;
-            let state = match operation.state {
+            let state = match operation.state() {
                 OperationState::Accepted => UnfinishedOperationStateV1::Accepted,
                 OperationState::Applying => UnfinishedOperationStateV1::Applying,
                 OperationState::OwnershipPending => UnfinishedOperationStateV1::OwnershipPending,
@@ -2063,16 +2062,16 @@ where
             return Ok(ReconcileOutcome::ObserveChildPending);
         }
         let gate = self.load_and_validate_ownership_gate(operation_id, operation)?;
-        match operation.state {
+        match operation.state() {
             OperationState::OwnershipPending => return Ok(ReconcileOutcome::OwnershipPending),
             OperationState::Succeeded | OperationState::PermanentlyBlocked => {
                 if has_operator_repair_settlement_debt_v1(&self.journal, operation_id)? {
                     let effect = decode_effect(self.journal.get(RecordNamespace::Effect,
                         &effect_key(operation_id, 0)).ok_or(ReconcilerError::CorruptLedger("Repair settlement debt lost its effect"))?)?;
-                    return self.reconcile_applying(operation_id, 0, operation.effect_count, 1,
+                    return self.reconcile_applying(operation_id, 0, operation.effect_count(), 1,
                         effect.plan, None, None, wall_seconds);
                 }
-                return Ok(if operation.state == OperationState::Succeeded {
+                return Ok(if operation.state() == OperationState::Succeeded {
                     ReconcileOutcome::Succeeded
                 } else {
                     ReconcileOutcome::PermanentlyBlocked
@@ -2099,7 +2098,7 @@ where
         }
 
         let mut canceled_before_commit = false;
-        for step in 0..operation.effect_count {
+        for step in 0..operation.effect_count() {
             let key = effect_key(operation_id, step);
             let bytes = self
                 .journal
@@ -2127,7 +2126,7 @@ where
                         })?
                         .is_some()
                     {
-                        if operation.effect_count != 1
+                        if operation.effect_count() != 1
                             || step != 0
                             || record.plan.public_mutation_method().is_none()
                         {
@@ -2143,7 +2142,7 @@ where
                     self.store_operation(
                         operation_id,
                         OperationState::PermanentlyBlocked,
-                        operation.effect_count,
+                        operation.effect_count(),
                         wall_seconds,
                     )?;
                     return Ok(ReconcileOutcome::PermanentlyBlocked);
@@ -2201,7 +2200,7 @@ where
                         operation_id,
                         step,
                         &applying,
-                        Some(operation.effect_count),
+                        Some(operation.effect_count()),
                         wall_seconds,
                     )?;
                     return Ok(ReconcileOutcome::Progressed);
@@ -2210,7 +2209,7 @@ where
                     return self.reconcile_applying(
                         operation_id,
                         step,
-                        operation.effect_count,
+                        operation.effect_count(),
                         attempt,
                         record.plan,
                         record.dispatch,
@@ -2236,7 +2235,7 @@ where
         } else {
             (OperationState::Succeeded, ReconcileOutcome::Succeeded)
         };
-        self.store_operation(operation_id, state, operation.effect_count, wall_seconds)?;
+        self.store_operation(operation_id, state, operation.effect_count(), wall_seconds)?;
         Ok(outcome)
     }
 
@@ -2279,9 +2278,9 @@ where
         for (key, value) in self.journal.records(RecordNamespace::Operation) {
             let operation_id = decode_operation_key(key)?;
             let operation = decode_operation(value)?;
-            if (operation.state.is_terminal()
+            if (operation.state().is_terminal()
                 && !has_operator_repair_settlement_debt_v1(&self.journal, operation_id)?)
-                || operation.state == OperationState::OwnershipPending
+                || operation.state() == OperationState::OwnershipPending
             {
                 continue;
             }
@@ -2355,7 +2354,7 @@ where
                     error
                 }
             })?;
-            if operation.public_operation.is_none() {
+            if operation.public_operation().is_none() {
                 return Err(ReconcilerError::CorruptLedger(
                     "authorization binding refers to a non-public operation",
                 ));
@@ -2736,14 +2735,14 @@ where
             .map(decode_ownership_gate)
             .transpose()?;
         let Some(gate) = gate else {
-            return if operation.ownership_gated {
+            return if operation.ownership_gated() {
                 Err(ReconcilerError::CorruptLedger(
                     "ownership-gated operation has no gate",
                 ))
             } else {
                 self.validate_effect_authority_bindings(
                     operation_id,
-                    operation.effect_count,
+                    operation.effect_count(),
                     None,
                     None,
                     validate_current_boot,
@@ -2765,14 +2764,14 @@ where
                 "ownership gate does not match its operation",
             ));
         }
-        if !operation.ownership_gated {
+        if !operation.ownership_gated() {
             return Err(ReconcilerError::CorruptLedger(
                 "ungated operation has an ownership gate",
             ));
         }
         self.validate_effect_authority_bindings(
             operation_id,
-            operation.effect_count,
+            operation.effect_count(),
             Some(plan.publication_draft()),
             match &gate {
                 OwnershipGateStatusV1::Activated {
@@ -2782,7 +2781,7 @@ where
             },
             validate_current_boot,
         )?;
-        match (&gate, operation.state) {
+        match (&gate, operation.state()) {
             (OwnershipGateStatusV1::Pending(_), OperationState::OwnershipPending) => Ok(Some(gate)),
             (
                 OwnershipGateStatusV1::Activated {
@@ -2822,12 +2821,12 @@ where
         operation_id: OperationId,
         operation: OperationRecord,
     ) -> Result<(), ReconcilerError> {
-        if operation.state != OperationState::CanceledBeforeCommit {
+        if operation.state() != OperationState::CanceledBeforeCommit {
             return Ok(());
         }
-        if operation.effect_count != 1
-            || operation.ownership_gated
-            || operation.public_operation.is_none()
+        if operation.effect_count() != 1
+            || operation.ownership_gated()
+            || operation.public_operation().is_none()
         {
             return Err(ReconcilerError::CorruptLedger(
                 "invalid canceled-before-commit operation",
@@ -3353,7 +3352,7 @@ where
             .journal
             .get(RecordNamespace::Operation, operation_id.as_bytes())
             .ok_or(ReconcilerError::OperationNotFound)?;
-        decode_operation(bytes)
+        decode_operation(bytes).map_err(ReconcilerError::from)
     }
 
     fn store_operation(
@@ -3364,7 +3363,7 @@ where
         wall_seconds: Option<i64>,
     ) -> Result<(), ReconcilerError> {
         let operation = self.load_operation(operation_id)?;
-        if operation.effect_count != effect_count {
+        if operation.effect_count() != effect_count {
             return Err(ReconcilerError::CorruptLedger(
                 "operation effect count changed during transition",
             ));
@@ -3424,7 +3423,7 @@ where
         )];
         let operation = self.load_operation(operation_id)?;
         if let Some(effect_count) = operation_effect_count {
-            if operation.effect_count != effect_count {
+            if operation.effect_count() != effect_count {
                 return Err(ReconcilerError::CorruptLedger(
                     "operation effect count changed during transition",
                 ));
@@ -3444,8 +3443,8 @@ where
                 operation_id.into_bytes().to_vec(),
                 encode_operation_record(operation),
             ));
-        } else if operation.public_operation.is_some() {
-            let operation = transition_operation(operation, operation.state, wall_seconds)?;
+        } else if operation.public_operation().is_some() {
+            let operation = transition_operation(operation, operation.state(), wall_seconds)?;
             records.push(JournalRecord::put(
                 RecordNamespace::Operation,
                 operation_id.into_bytes().to_vec(),
@@ -3472,7 +3471,7 @@ pub(crate) fn recovered_public_operation_admission_v1(
         return Ok(None);
     };
     let operation = decode_operation(operation_bytes)?;
-    let Some(public) = operation.public_operation else {
+    let Some(public) = operation.public_operation() else {
         return Ok(None);
     };
     let authorization = journal
@@ -3499,7 +3498,7 @@ pub(crate) fn recovered_public_operation_authorization_v1(
         return Ok(None);
     };
     if decode_operation(operation_bytes)?
-        .public_operation
+        .public_operation()
         .is_none()
     {
         return Ok(None);
@@ -3524,7 +3523,7 @@ pub(crate) fn recovered_public_operation_resource_v1(
         return Ok(None);
     };
     let operation = decode_operation(operation_bytes)?;
-    let Some(public) = operation.public_operation else {
+    let Some(public) = operation.public_operation() else {
         return Ok(None);
     };
     create_failure::validate_failed_create_operation(journal, operation_id, operation)?;
@@ -3536,20 +3535,20 @@ pub(crate) fn recovered_public_operation_resource_v1(
     let mut failed_create_effects = 0_u32;
     let mut failed_repair_effects = 0_u32;
     let mut controller_method = None;
-    let mut effect_records = Vec::with_capacity(operation.effect_count as usize);
-    for step in 0..operation.effect_count {
+    let mut effect_records = Vec::with_capacity(operation.effect_count() as usize);
+    for step in 0..operation.effect_count() {
         let bytes = journal
             .get(RecordNamespace::Effect, &effect_key(operation_id, step))
             .ok_or(ReconcilerError::CorruptLedger("missing effect record"))?;
         let effect = decode_effect(bytes)?;
-        if operation.effect_count == 1 {
+        if operation.effect_count() == 1 {
             controller_method = effect.plan.public_mutation_method();
         }
         match effect.state {
             EffectState::Applied { ref receipt, .. } => {
                 increment_effect_count(&mut applied_effects)?;
                 if operator_repair_failure::classify(receipt)? {
-                    if step != 0 || operation.effect_count != 1
+                    if step != 0 || operation.effect_count() != 1
                         || !is_operator_storage_repair_effect_v1(&effect.plan)?
                     {
                         return Err(ReconcilerError::CorruptLedger("Repair failure has another method or step"));
@@ -3565,7 +3564,7 @@ pub(crate) fn recovered_public_operation_resource_v1(
                     })?
                     .is_some()
                 {
-                    if operation.effect_count != 1
+                    if operation.effect_count() != 1
                         || step != 0
                         || effect.plan.public_mutation_method().is_none()
                     {
@@ -3580,7 +3579,7 @@ pub(crate) fn recovered_public_operation_resource_v1(
                     .map_err(|()| ReconcilerError::CorruptLedger("invalid failed-Create receipt"))?
                     .is_some()
                 {
-                    if operation.effect_count != 1
+                    if operation.effect_count() != 1
                         || step != 0
                         || effect.plan.public_mutation_method()
                             != Some(
@@ -3602,7 +3601,7 @@ pub(crate) fn recovered_public_operation_resource_v1(
         }
         effect_records.push(bytes);
     }
-    let state_matches_effects = match operation.state {
+    let state_matches_effects = match operation.state() {
         OperationState::OwnershipPending | OperationState::Accepted => {
             applied_effects == 0
                 && applying_effects == 0
@@ -3615,12 +3614,12 @@ pub(crate) fn recovered_public_operation_resource_v1(
                 && failed_create_effects == 0
         }
         OperationState::Succeeded => {
-            applied_effects == operation.effect_count
+            applied_effects == operation.effect_count()
                 && canceled_effects == 0
                 && failed_create_effects == 0
         }
         OperationState::CanceledBeforeCommit => {
-            applied_effects == operation.effect_count
+            applied_effects == operation.effect_count()
                 && canceled_effects == 1
                 && failed_create_effects == 0
         }
@@ -3635,7 +3634,7 @@ pub(crate) fn recovered_public_operation_resource_v1(
         }
     };
     if !state_matches_effects
-        || (failed_repair_effects != 0 && operation.state != OperationState::PermanentlyBlocked)
+        || (failed_repair_effects != 0 && operation.state() != OperationState::PermanentlyBlocked)
     {
         return Err(ReconcilerError::CorruptLedger(
             "public operation state contradicts its effects",
@@ -3653,11 +3652,11 @@ pub(crate) fn recovered_public_operation_resource_v1(
     // replacement, but it is never completed execution work.
     Ok(Some(public.project(
         operation_id,
-        operation.state,
-        operation.effect_count,
+        operation.state(),
+        operation.effect_count(),
         applied_effects - failed_create_effects,
         controller_method.is_some(),
-        operation.state == OperationState::Accepted
+        operation.state() == OperationState::Accepted
             && controller_method.is_some_and(|method| {
                 !matches!(
                     method,
@@ -3716,18 +3715,18 @@ fn retained_create_sandbox_admission_revision_v1(
         return Ok(None);
     };
     let operation = decode_operation(operation_bytes)?;
-    let Some(public) = operation.public_operation else {
+    let Some(public) = operation.public_operation() else {
         return Ok(None);
     };
     // Production Create admission installs its immutable first generation.
-    if operation.effect_count != 1
-        || operation.ownership_gated
-        || operation.runtime_intent_digest.is_some()
+    if operation.effect_count() != 1
+        || operation.ownership_gated()
+        || operation.runtime_intent_digest().is_some()
         || public.method() != aos_sandbox_protocol::public_api::PublicOperationMethodV1::CreateSandbox
         || public.accepted_generation() != 1
         || (!allow_terminal_history
             && !matches!(
-                operation.state,
+                operation.state(),
                 OperationState::Accepted | OperationState::Applying
             ))
     {
@@ -3741,13 +3740,13 @@ fn retained_create_sandbox_admission_revision_v1(
         ))?;
     let effect = decode_effect(effect_bytes)?;
     let matching_live_state = matches!(
-        (&operation.state, &effect.state),
+        (&operation.state(), &effect.state),
         (OperationState::Accepted, EffectState::Planned)
             | (OperationState::Applying, EffectState::Applying { .. })
     );
     let matching_terminal_history = allow_terminal_history
         && matches!(
-            (&operation.state, &effect.state),
+            (&operation.state(), &effect.state),
             (
                 OperationState::Succeeded
                     | OperationState::CanceledBeforeCommit
@@ -3813,13 +3812,13 @@ fn retained_create_sandbox_admission_revision_v1(
         ));
     }
 
-    let admitted_operation = encode_operation_record(OperationRecord {
-        state: OperationState::Accepted,
-        effect_count: 1,
-        ownership_gated: false,
-        runtime_intent_digest: None,
-        public_operation: Some(admission.durable()),
-    });
+    let admitted_operation = encode_operation_record(OperationRecord::new(
+        OperationState::Accepted,
+        1,
+        false,
+        None,
+        Some(admission.durable()),
+    ));
     let admitted_effect = encode_effect(&EffectLedgerRecord {
         plan: effect.plan,
         state: EffectState::Planned,
@@ -3954,16 +3953,12 @@ impl PendingOperatorRepairLedgerV1 {
         decode_effect(&effect)?;
         let public = self
             .operation
-            .public_operation
+            .public_operation()
             .ok_or(ReconcilerError::InvalidPlan(
                 "Repair operation is not public",
             ))?
             .advance(decision, completion_wall_seconds)?;
-        let operation = encode_operation_record(OperationRecord {
-            state: decision,
-            public_operation: Some(public),
-            ..self.operation
-        });
+        let operation = encode_operation_record(self.operation.with_state_and_public_operation(decision, Some(public)));
         decode_operation(&operation)?;
         Ok([
             JournalRecord::put(
@@ -4047,12 +4042,12 @@ fn pending_operator_repair_from_exact_rows_v1(
         || sandbox_id == [0; 16]
         || request_digest == [0; 32]
         || !matches!(
-            operation.state,
+            operation.state(),
             OperationState::Accepted | OperationState::Applying
         )
-        || operation.effect_count != 1
-        || operation.ownership_gated
-        || operation.runtime_intent_digest.is_some()
+        || operation.effect_count() != 1
+        || operation.ownership_gated()
+        || operation.runtime_intent_digest().is_some()
         || !matches!(
             &effect.state,
             EffectState::Planned | EffectState::Applying { .. }
@@ -4177,9 +4172,9 @@ pub(crate) fn accepted_create_execution_effect_from_journal_v1(
             "accepted Create operation is absent",
         ))?;
     let operation = decode_operation(bytes)?;
-    if operation.effect_count != 1
+    if operation.effect_count() != 1
         || !matches!(
-            operation.state,
+            operation.state(),
             OperationState::Accepted | OperationState::Applying | OperationState::Succeeded
         )
     {
@@ -4250,14 +4245,10 @@ pub(crate) fn validated_ownership_gate_from_journal_v1(
         .map(decode_ownership_gate)
         .transpose()?;
     let (operation, gate) = match (operation, gate) {
-        (None, None)
-        | (
-            Some(OperationRecord {
-                ownership_gated: false,
-                ..
-            }),
-            None,
-        ) => {
+        (None, None) => {
+            return Ok(None);
+        }
+        (Some(operation), None) if !operation.ownership_gated() => {
             return Ok(None);
         }
         (Some(operation), Some(gate)) => (operation, gate),
@@ -4272,7 +4263,7 @@ pub(crate) fn validated_ownership_gate_from_journal_v1(
             plan
         }
     };
-    if !operation.ownership_gated
+    if !operation.ownership_gated()
         || plan.operation_id() != operation_id
         || journal.check_idempotency(plan.idempotency_key(), plan.request_digest())
             != IdempotencyOutcome::Replay(operation_id)
@@ -4283,7 +4274,7 @@ pub(crate) fn validated_ownership_gate_from_journal_v1(
     }
     match &gate {
         OwnershipGateStatusV1::Pending(_)
-            if operation.state == OperationState::OwnershipPending =>
+            if operation.state() == OperationState::OwnershipPending =>
         {
             Ok(Some(gate))
         }
@@ -4293,7 +4284,7 @@ pub(crate) fn validated_ownership_gate_from_journal_v1(
             lease_generation,
             lease_digest,
         } if matches!(
-            operation.state,
+            operation.state(),
             OperationState::Accepted
                 | OperationState::Applying
                 | OperationState::Succeeded
@@ -4326,18 +4317,14 @@ fn transition_operation(
     wall_seconds: Option<i64>,
 ) -> Result<OperationRecord, ReconcilerError> {
     let public_operation = operation
-        .public_operation
+        .public_operation()
         .map(|public| {
             let wall_seconds = wall_seconds.ok_or(ReconcilerError::PublicOperationClock)?;
             public.advance(state, wall_seconds).map_err(ReconcilerError::from)
         })
         .transpose()?;
 
-    Ok(OperationRecord {
-        state,
-        public_operation,
-        ..operation
-    })
+    Ok(operation.with_state_and_public_operation(state, public_operation))
 }
 
 fn increment_effect_count(count: &mut u32) -> Result<(), ReconcilerError> {
@@ -4432,21 +4419,21 @@ pub(crate) fn validate_delete_batch_admission_records_v1(
     }
 
     let operation = decode_operation(operation_row.value().ok_or_else(invalid)?)?;
-    let public = operation.public_operation.ok_or_else(invalid)?;
+    let public = operation.public_operation().ok_or_else(invalid)?;
     let root = &batch.bytes()[65..81];
     let root_row = batch.rows(0)
         .find(|row| row[0] == 1 && &row[1..17] == root)
         .ok_or_else(invalid)?;
     let idempotency_value = idempotency.value().ok_or_else(invalid)?;
-    if operation.runtime_intent_digest.is_some()
-        || operation.ownership_gated != (local_start == 5)
-        || operation.state != if local_start == 5 {
+    if operation.runtime_intent_digest().is_some()
+        || operation.ownership_gated() != (local_start == 5)
+        || operation.state() != if local_start == 5 {
             OperationState::OwnershipPending
         } else {
             OperationState::Accepted
         }
-        || operation.effect_count as usize != records.len() - effects_start
-        || operation.effect_count == 0
+        || operation.effect_count() as usize != records.len() - effects_start
+        || operation.effect_count() == 0
         || public.method() != PublicOperationMethodV1::DeleteSandbox
         || public.accepted_generation() != crate::lifecycle::delete_batch::raw64(&root_row[60..68])
         || idempotency_value[..32] != batch.request_digest()
@@ -5593,7 +5580,7 @@ mod tests {
             reconciler
                 .load_operation(plan.operation_id())
                 .unwrap()
-                .runtime_intent_digest,
+                .runtime_intent_digest(),
             Some(intent.digest())
         );
         assert!(
@@ -5639,7 +5626,7 @@ mod tests {
             reconciler
                 .load_operation(plan.operation_id())
                 .unwrap()
-                .runtime_intent_digest,
+                .runtime_intent_digest(),
             Some(intent.digest())
         );
         drop(reconciler);
@@ -7439,13 +7426,13 @@ mod tests {
         assert_eq!(&bytes[8..], &[0; OPERATION_RUNTIME_INTENT_DIGEST_BYTES]);
         assert_eq!(
             decode_operation(&bytes).unwrap(),
-            OperationRecord {
-                state: OperationState::Accepted,
-                effect_count: 1,
-                ownership_gated: false,
-                runtime_intent_digest: None,
-                public_operation: None,
-            }
+            OperationRecord::new(
+                OperationState::Accepted,
+                1,
+                false,
+                None,
+                None,
+            )
         );
 
         let mut invalid = vec![
@@ -7471,7 +7458,7 @@ mod tests {
         }
         for malformed in invalid {
             assert!(matches!(
-                decode_operation(&malformed),
+                decode_operation(&malformed).map_err(ReconcilerError::from),
                 Err(ReconcilerError::CorruptLedger(_))
             ));
         }
@@ -7484,7 +7471,7 @@ mod tests {
         assert_eq!(bytes[0], RECORD_VERSION_V1);
         assert_eq!(&bytes[8..], intent.as_bytes());
         assert_eq!(
-            decode_operation(&bytes).unwrap().runtime_intent_digest,
+            decode_operation(&bytes).unwrap().runtime_intent_digest(),
             Some(intent)
         );
 
@@ -7492,7 +7479,7 @@ mod tests {
         assert_eq!(
             decode_operation(&without_intent)
                 .unwrap()
-                .runtime_intent_digest,
+                .runtime_intent_digest(),
             None
         );
 
@@ -8485,7 +8472,7 @@ mod tests {
             )])
             .unwrap();
         let operation = reconciler.load_operation(operation_id).unwrap();
-        assert_eq!(operation.effect_count, 2);
+        assert_eq!(operation.effect_count(), 2);
         assert!(
             create_failure::validate_failed_create_operation(
                 &reconciler.journal,
@@ -8514,13 +8501,13 @@ mod tests {
         )
         .unwrap()
         .durable();
-        let operation = OperationRecord {
-            state: OperationState::Accepted,
-            effect_count: 1,
-            ownership_gated: false,
-            runtime_intent_digest: None,
-            public_operation: Some(metadata),
-        };
+        let operation = OperationRecord::new(
+            OperationState::Accepted,
+            1,
+            false,
+            None,
+            Some(metadata),
+        );
         let bytes = encode_operation_record(operation);
         assert_eq!(bytes.len(), OPERATION_RECORD_V2_BYTES);
         assert_eq!(decode_operation(&bytes).unwrap(), operation);
@@ -8528,7 +8515,7 @@ mod tests {
         let mut reserved = bytes.clone();
         reserved[41] = 1;
         assert!(matches!(
-            decode_operation(&reserved),
+            decode_operation(&reserved).map_err(ReconcilerError::from),
             Err(ReconcilerError::CorruptLedger(_))
         ));
 
@@ -9136,11 +9123,11 @@ mod tests {
         bytes[0] = 0xff;
         bytes[1] = 0;
         assert!(matches!(
-            decode_operation(&bytes),
+            decode_operation(&bytes).map_err(ReconcilerError::from),
             Err(ReconcilerError::CorruptLedger("unknown operation state"))
         ));
         assert!(matches!(
-            decode_operation(&bytes[..39]),
+            decode_operation(&bytes[..39]).map_err(ReconcilerError::from),
             Err(ReconcilerError::CorruptLedger(
                 "invalid operation record version, flags, or length"
             ))
@@ -9148,7 +9135,7 @@ mod tests {
 
         bytes[1] = OperationState::Accepted as u8;
         assert!(matches!(
-            decode_operation(&bytes),
+            decode_operation(&bytes).map_err(ReconcilerError::from),
             Err(ReconcilerError::CorruptLedger(
                 "invalid operation record version, flags, or length"
             ))
@@ -9170,7 +9157,7 @@ mod tests {
         ] {
             let bytes = encode_operation(state, count, false, Some(intent));
             assert!(matches!(
-                decode_operation(&bytes),
+                decode_operation(&bytes).map_err(ReconcilerError::from),
                 Err(ReconcilerError::CorruptLedger(message)) if message == expected
             ));
         }

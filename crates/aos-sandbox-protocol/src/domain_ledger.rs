@@ -11,6 +11,7 @@
 //! scope DATA, the durable method/state registry and established resource projection.
 
 pub mod capacity;
+pub mod operation;
 pub mod public_operation;
 pub mod records;
 pub mod transaction;

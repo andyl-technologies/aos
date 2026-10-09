@@ -676,15 +676,15 @@ impl OriginalQ04ControllerLedgerV1 {
             )?.ok_or(ReconcilerError::CorruptLedger("Q04 original admission is absent"))?;
         let operation_bytes = journal.get(RecordNamespace::Operation, operation.as_bytes())
             .ok_or(ReconcilerError::OperationNotFound)?;
-        let operation_row = decode_operation(operation_bytes)?;
+        let operation_row = decode_operation(operation_bytes).map_err(ReconcilerError::from)?;
         let effect_bytes = journal.get(RecordNamespace::Effect, &effect_key(operation, 0))
             .ok_or(ReconcilerError::CorruptLedger("Q04 original Effect is absent"))?;
         let (effect, gate) = decode_effect_with_q04(effect_bytes)?;
-        if operation_row.state != OperationState::Applying
-            || operation_row.effect_count != 1
-            || operation_row.ownership_gated
-            || operation_row.runtime_intent_digest.is_some()
-            || operation_row.public_operation.is_none()
+        if operation_row.state() != OperationState::Applying
+            || operation_row.effect_count() != 1
+            || operation_row.ownership_gated()
+            || operation_row.runtime_intent_digest().is_some()
+            || operation_row.public_operation().is_none()
             || !matches!(effect.state, EffectState::Applying { .. })
             || effect.dispatch.is_some()
             || effect.plan.authority().is_some()
@@ -1018,12 +1018,12 @@ pub(crate) fn read_original_q04_rows_v1(
     effect_bytes: &[u8],
     binding: Q04OriginalRowBindingV1,
 ) -> Result<Q04OriginalRowDataV1, CreateQ04ErrorV1> {
-    let operation = decode_operation(operation_bytes)?;
-    if operation.state != OperationState::Applying
-        || operation.effect_count != 1
-        || operation.ownership_gated
-        || operation.runtime_intent_digest.is_some()
-        || !operation.public_operation.is_some_and(|public| {
+    let operation = decode_operation(operation_bytes).map_err(ReconcilerError::from)?;
+    if operation.state() != OperationState::Applying
+        || operation.effect_count() != 1
+        || operation.ownership_gated()
+        || operation.runtime_intent_digest().is_some()
+        || !operation.public_operation().is_some_and(|public| {
             public.method() == aos_sandbox_protocol::public_api::PublicOperationMethodV1::CreateSandbox
                 && public.accepted_generation() == binding.accepted_generation
         })
@@ -1107,11 +1107,11 @@ pub(crate) fn require_original_pending(journal: &Journal) -> Result<bool, Reconc
     let operation_bytes = journal.get(RecordNamespace::Operation, operation_id.as_bytes())
         .ok_or(ReconcilerError::CorruptLedger("Q04 Operation is absent"))?;
     let operation = decode_operation(operation_bytes)?;
-    if operation.state != OperationState::Applying
-        || operation.effect_count != 1
-        || operation.ownership_gated
-        || operation.runtime_intent_digest.is_some()
-        || operation.public_operation.is_none()
+    if operation.state() != OperationState::Applying
+        || operation.effect_count() != 1
+        || operation.ownership_gated()
+        || operation.runtime_intent_digest().is_some()
+        || operation.public_operation().is_none()
     {
         return Err(ReconcilerError::CorruptLedger("Q04 Operation is not sole Applying Create"));
     }

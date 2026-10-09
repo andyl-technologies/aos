@@ -63,15 +63,15 @@ fn validate_child(
     if operation.is_none() && effect.is_none() && decision == IdempotencyOutcome::Vacant {
         return Ok(false);
     }
-    let operation = operation.ok_or_else(corrupt).and_then(decode_operation)?;
+    let operation = operation.ok_or_else(corrupt).and_then(|bytes| decode_operation(bytes).map_err(ReconcilerError::from))?;
     if operation
-        != (OperationRecord {
-            state: OperationState::Accepted,
-            effect_count: 1,
-            ownership_gated: false,
-            runtime_intent_digest: None,
-            public_operation: None,
-        })
+        != (OperationRecord::new(
+            OperationState::Accepted,
+            1,
+            false,
+            None,
+            None,
+        ))
         || decision != IdempotencyOutcome::Replay(operation_id)
         || journal
             .get(
@@ -255,13 +255,13 @@ pub fn adopt_execution_observe_child_v1(
         JournalRecord::put(
             RecordNamespace::Operation,
             operation_id.as_bytes().to_vec(),
-            encode_operation_record(OperationRecord {
-                state: OperationState::Accepted,
-                effect_count: 1,
-                ownership_gated: false,
-                runtime_intent_digest: None,
-                public_operation: None,
-            }),
+            encode_operation_record(OperationRecord::new(
+                OperationState::Accepted,
+                1,
+                false,
+                None,
+                None,
+            )),
         ),
         JournalRecord::put(
             RecordNamespace::Effect,
