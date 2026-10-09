@@ -16,6 +16,7 @@
 
 use sha2::{Digest as _, Sha256};
 
+use aos_sandbox_core::bounded_codec::{ReadError, checked_byte_region};
 use aos_sandbox_core::{
     NodeId, ObjectDigest, ObservationSequence, OperationId, ProtocolId, ProtocolVersion,
     supported_protocol_version,
@@ -1580,11 +1581,7 @@ impl<'a> BoundedFrameDecoderV1<'a> {
     ///
     /// Returns [`BoundedFrameDecodeError::Truncated`] for an incomplete integer.
     pub fn read_u16(&mut self) -> Result<u16, BoundedFrameDecodeError> {
-        let bytes: [u8; 2] = self
-            .read_exact(2)?
-            .try_into()
-            .map_err(|_| BoundedFrameDecodeError::Truncated)?;
-        Ok(u16::from_be_bytes(bytes))
+        Ok(u16::from_be_bytes(self.read_array()?))
     }
 
     /// Reads one canonical big-endian `u32`.
@@ -1593,11 +1590,7 @@ impl<'a> BoundedFrameDecoderV1<'a> {
     ///
     /// Returns [`BoundedFrameDecodeError::Truncated`] for an incomplete integer.
     pub fn read_u32(&mut self) -> Result<u32, BoundedFrameDecodeError> {
-        let bytes: [u8; 4] = self
-            .read_exact(4)?
-            .try_into()
-            .map_err(|_| BoundedFrameDecodeError::Truncated)?;
-        Ok(u32::from_be_bytes(bytes))
+        Ok(u32::from_be_bytes(self.read_array()?))
     }
 
     /// Reads one canonical big-endian `u64`.
@@ -1606,11 +1599,7 @@ impl<'a> BoundedFrameDecoderV1<'a> {
     ///
     /// Returns [`BoundedFrameDecodeError::Truncated`] for an incomplete integer.
     pub fn read_u64(&mut self) -> Result<u64, BoundedFrameDecodeError> {
-        let bytes: [u8; 8] = self
-            .read_exact(8)?
-            .try_into()
-            .map_err(|_| BoundedFrameDecodeError::Truncated)?;
-        Ok(u64::from_be_bytes(bytes))
+        Ok(u64::from_be_bytes(self.read_array()?))
     }
 
     /// Reads a `u32`-length-prefixed borrowed byte string under a field ceiling.
@@ -1669,14 +1658,11 @@ impl<'a> BoundedFrameDecoderV1<'a> {
         &mut self,
         length: usize,
     ) -> Result<&'a [u8], BoundedFrameDecodeError> {
-        let end = self
-            .offset
-            .checked_add(length)
-            .ok_or(BoundedFrameDecodeError::LimitExceeded)?;
-        let bytes = self
-            .bytes
-            .get(self.offset..end)
-            .ok_or(BoundedFrameDecodeError::Truncated)?;
+        let (bytes, end) = checked_byte_region(self.bytes, self.offset, length)
+            .map_err(|error| match error {
+                ReadError::LengthOverflow => BoundedFrameDecodeError::LimitExceeded,
+                _ => BoundedFrameDecodeError::Truncated,
+            })?;
         self.offset = end;
         Ok(bytes)
     }

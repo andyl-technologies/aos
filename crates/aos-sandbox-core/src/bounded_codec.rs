@@ -18,6 +18,25 @@ pub enum ReadError {
     TrailingBytes,
 }
 
+/// Borrows one checked byte region and returns its end offset.
+///
+/// This stateless operation neither advances a cursor nor validates a format.
+/// The region borrows the original input without allocating.
+///
+/// # Errors
+///
+/// Returns [`ReadError::LengthOverflow`] before range extraction if offset plus
+/// count overflows, or [`ReadError::Truncated`] when the region is absent.
+pub fn checked_byte_region(
+    bytes: &[u8],
+    offset: usize,
+    count: usize,
+) -> Result<(&[u8], usize), ReadError> {
+    let end = offset.checked_add(count).ok_or(ReadError::LengthOverflow)?;
+    let value = bytes.get(offset..end).ok_or(ReadError::Truncated)?;
+    Ok((value, end))
+}
+
 /// Reads bounded fields while preserving caller-owned error classification.
 pub struct BoundedReader<'a, E> {
     bytes: &'a [u8],
@@ -72,14 +91,8 @@ impl<'a, E> BoundedReader<'a, E> {
     ///
     /// Returns the mapped offset-overflow or truncation error.
     pub fn bytes(&mut self, count: usize) -> Result<&'a [u8], E> {
-        let end = self
-            .offset
-            .checked_add(count)
-            .ok_or_else(|| (self.error)(ReadError::LengthOverflow))?;
-        let value = self
-            .bytes
-            .get(self.offset..end)
-            .ok_or_else(|| (self.error)(ReadError::Truncated))?;
+        let (value, end) = checked_byte_region(self.bytes, self.offset, count)
+            .map_err(self.error)?;
         self.offset = end;
         Ok(value)
     }
