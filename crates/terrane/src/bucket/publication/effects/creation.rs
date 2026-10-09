@@ -262,7 +262,7 @@ async fn recapture_committed<F: LocalFs + BucketBinding>(
             || !matches!(completed.policy, FencePolicy::ProtectedRecord { owner } if owner == frame.owner)
             || previous.key != captured.key
             || previous.nonce != nonce
-            || !matches!(previous.state, JournalState::Pending { .. })
+            || !matches!(previous.state, JournalState::Pending)
         {
             return Err(corrupt());
         }

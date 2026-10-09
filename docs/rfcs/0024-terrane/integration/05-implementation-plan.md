@@ -5121,6 +5121,14 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   cases. The other fifteen copied cases, eleven permanent recovery cases,
   recurring complete passes and the complete local gate set remain pending.
   Production compilation accepts no task and advances no milestone exit.
+  On private `e2302794b9`, all ten Scope classification/rebind regressions pass
+  in the std Nextest profile, including both actual native rebind cases. The
+  207 unselected tests remain outside this result. On later `bd0e671fdb`, strict
+  Tokio production Clippy fails with nine diagnostics. Workers correct private
+  argument grouping, probe feature scope, flags and copy operations; the parent
+  matches the shared Pending unit variant without a struct pattern. Native
+  all-target Clippy, collector runtime and index population deadlines remain
+  unqualified.
   Actual remote provider qualification belongs to T3. No remote conformance
   or full `gc-two-phase-delete` pass is claimed. D-78
   registers physical creation journals and recoverable deletion intent.
