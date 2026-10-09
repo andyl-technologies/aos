@@ -2370,6 +2370,14 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   fresh source/destination checks. Current joint qualification of all five
   task gates remains required; the earlier serial codec results do not advance
   task completion.
+  Reviewed private `7c71e91bc5` adds actual per-class dictionary training to the
+  existing authenticated-selection witness, preserving its original assertions.
+  Distinct text and shebang corpora are trained with the vendored zstd library;
+  classification is computed from plaintext and checked against signed producer
+  evidence before selecting the corresponding chunk-domain dictionary. Ordinary
+  dictionary fetch and verified decoding exercise the selected bytes. This
+  candidate includes the reviewed parent-path buffer prerequisite. Its focused
+  witness, whole derived-data gate and all five CDC gates remain unrun.
   — satisfies
   OBJ-11 to OBJ-18, CDC-1 to CDC-20;
   `checks.terrane.gates.object-identity-from-manifest`,
