@@ -33,7 +33,7 @@ use crate::{
 };
 
 #[path = "image_process.rs"]
-mod image_process;
+pub(crate) mod image_process;
 
 #[path = "preparation.rs"]
 mod preparation;
@@ -50,7 +50,7 @@ mod exact;
 #[path = "containment.rs"]
 mod containment;
 
-pub use containment::{Gem5QuarantineCustody, Gem5ReclamationProof};
+pub use containment::{Gem5CensusDiagnostic, Gem5QuarantineCustody, Gem5ReclamationProof};
 
 pub use exact::{Gem5ExactAuthority, Gem5ExactProfileVerifier};
 use exact::{same_native_state, validate_exact_completion, validate_exact_request};

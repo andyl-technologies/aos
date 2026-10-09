@@ -333,3 +333,24 @@ crucible-daemon	src/node_observed_executor/tests/seeded_storage	std::thread::sle
 # SHA-256: b48638a941e1e1d930f0c52808b57acaffcfc0cdcf2618026ea993128713e608
 crucible	src/node_adapters/cnp/lifecycle_resend_tests	thread::sleep	1
 crucible	src/node_adapters/cnp/lifecycle_resend_tests	std::thread::sleep	1
+
+# ARM Root waits poll original retained actors, not failed test invocations.
+# arm_root_process accepts one peer under its original launch deadline;
+# arm_root_closure waits for one auditor exit and its authentic group retirement
+# under separate fixed ten-second budgets, propagating the first error.
+# The three actual native fixture loops poll original quarantine capsules whose
+# retirement budgets are fixed by begin_quarantine; every assertion is single-shot.
+# arm_root_io sleeps once past the same original socket deadline to prove that a
+# successful fragment cannot renew it. No wait alters native time or receipts.
+crucible-node-provider	src/gem5/arm_root_closure	std::thread::sleep	1
+crucible-node-provider	src/gem5/arm_root_closure	thread::sleep	1
+crucible-node-provider	src/gem5/arm_root_io	std::thread::sleep	1
+crucible-node-provider	src/gem5/arm_root_io	thread::sleep	1
+crucible-node-provider	src/gem5/arm_root_process	std::thread::sleep	1
+crucible-node-provider	src/gem5/arm_root_process	thread::sleep	1
+crucible-node-provider	tests/gem5_arm_root_archive	std::thread::sleep	1
+crucible-node-provider	tests/gem5_arm_root_archive	thread::sleep	1
+crucible-node-provider	tests/gem5_arm_root_cold	std::thread::sleep	1
+crucible-node-provider	tests/gem5_arm_root_cold	thread::sleep	1
+crucible-node-provider	tests/gem5_arm_root_native	std::thread::sleep	1
+crucible-node-provider	tests/gem5_arm_root_native	thread::sleep	1

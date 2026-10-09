@@ -125,11 +125,15 @@ fn await_reclamation<'a>(
     quarantine: &'a mut Option<Gem5QuarantineCustody>,
 ) -> &'a Gem5ReclamationProof {
     for _ in 0..5000 {
-        if poll_reclamation(child, launch, quarantine)
-            .unwrap()
-            .is_some()
-        {
-            return quarantine.as_ref().unwrap().proof.as_ref().unwrap();
+        match poll_reclamation(child, launch, quarantine) {
+            Ok(Some(_)) => return quarantine.as_ref().unwrap().proof.as_ref().unwrap(),
+            Ok(None) => {}
+            Err(error) => panic!(
+                "original reclamation refused: {error}; retained census: {:?}",
+                quarantine
+                    .as_ref()
+                    .and_then(|state| state.census_diagnostic()),
+            ),
         }
         std::thread::sleep(Duration::from_millis(1));
     }
@@ -335,4 +339,62 @@ fn already_reaped_original_child_uses_cached_wait_status_without_recycled_group_
     assert_eq!(body["exit_code"], 23);
     assert_eq!(body["start_ticks"], identity.start_ticks);
     assert_eq!(body["remaining_group_members"], serde_json::json!([]));
+}
+
+#[test]
+fn census_diagnostic_retains_first_bounded_token_without_command_or_row() {
+    let mut diagnostic = None;
+    let row = b"23 (third-party-name-with)paren) R 1 bad\x1b-token 4 5";
+    assert!(matches!(
+        parse_census_group(23, row, &mut diagnostic),
+        Err(ProviderError::Frame("gem5 kernel process group invalid")),
+    ));
+    let first = diagnostic.as_ref().unwrap();
+    assert_eq!(first.pid(), 23);
+    assert_eq!(first.refusal_site(), "pgrp-nondecimal");
+    assert_eq!(first.pgrp_token(), b"bad?-token");
+    assert_eq!(first.original_token_length(), 10);
+    assert_eq!(first.field_count(), Some(5));
+    assert!(!format!("{first:?}").contains("third-party-name"));
+
+    let original = first.clone();
+    assert!(
+        parse_census_group(
+            24,
+            b"24 (other) R 1 9999999999999999999999999999999999999999",
+            &mut diagnostic
+        )
+        .is_err()
+    );
+    assert_eq!(diagnostic.as_ref().unwrap(), &original);
+}
+
+#[test]
+fn census_diagnostic_distinguishes_omission_overflow_and_valid_membership() {
+    let mut omitted = None;
+    assert!(matches!(
+        parse_census_group(17, b"17 (name) R 1", &mut omitted),
+        Err(ProviderError::Frame("gem5 kernel process group omitted")),
+    ));
+    assert_eq!(omitted.as_ref().unwrap().refusal_site(), "pgrp-omitted");
+    assert_eq!(omitted.as_ref().unwrap().field_count(), Some(2));
+    assert_eq!(omitted.as_ref().unwrap().original_token_length(), 0);
+
+    let mut overflow = None;
+    let row = b"24 (name) R 1 9999999999999999999999999999999999999999";
+    assert!(matches!(
+        parse_census_group(24, row, &mut overflow),
+        Err(ProviderError::Frame("gem5 kernel process group invalid")),
+    ));
+    let overflow = overflow.unwrap();
+    assert_eq!(overflow.refusal_site(), "pgrp-numeric-overflow");
+    assert_eq!(overflow.pgrp_token().len(), 32);
+    assert_eq!(overflow.original_token_length(), 40);
+
+    let mut valid = None;
+    assert_eq!(
+        parse_census_group(17, b"17 (name ) x) R 1 17 0", &mut valid).unwrap(),
+        17
+    );
+    assert!(valid.is_none());
 }

@@ -27,15 +27,15 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     ProviderError,
-    gem5::{Gem5CapturedArtifactRole, Gem5CapturedImage, Gem5LaunchArtifact},
+    gem5::{Gem5CapturedArtifactRole, Gem5LaunchArtifact},
 };
 
 const MAXIMUM_FILES: usize = 4096;
 const MAXIMUM_MANIFEST_BYTES: usize = 2 * 1024 * 1024;
 const MAXIMUM_FILE_BYTES: u64 = 64 * 1024 * 1024 * 1024;
 
-pub(super) fn write(
-    image: &Gem5CapturedImage,
+pub(crate) fn write<Source: crate::gem5::images::Gem5ImageSource, Prefix>(
+    image: &crate::gem5::images::Gem5CapturedModelImage<Source, Prefix>,
     target: &Path,
     temporary: &Path,
 ) -> Result<PathBuf, ProviderError> {

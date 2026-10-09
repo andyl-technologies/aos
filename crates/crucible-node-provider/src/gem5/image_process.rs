@@ -20,7 +20,7 @@ use crate::gem5::{
 };
 
 #[path = "saved_files_manifest.rs"]
-mod saved_files_manifest;
+pub(crate) mod saved_files_manifest;
 
 impl Gem5NativeProcess {
     /// Captures genuine native process custody at the unchanged stopped boundary.

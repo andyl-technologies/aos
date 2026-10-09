@@ -466,6 +466,46 @@ This result covers the lifecycle integration before the subsequent ARM source
 changes. Raw original evidence, including failed precursor
 recordings, remains local and is never replaced by a successful later cohort.
 
+## Fixed ARM original-state mechanism
+
+The installed 33-role ARM root profile binds the actual Linux kernel, initramfs,
+native controller and audit helpers separately from the earlier 31-role model
+and the existing SE profile. Its manifest is SHA256
+`497b3d4b6674846f40eeebab3bc73204ad265d9e7fa0d24430ece7dff6292af1`.
+The production package carries the root profile as a runtime dependency; the
+earlier model remains a separate fixture dependency. Execution admission still
+refuses until a complete common-node profile is qualified.
+
+The native mechanism retains original preparation, commands, completion or
+refusal bytes, pending ACKs, process-group custody and opaque process images.
+Historical archive records cannot mint live authority. Fresh reconstructions
+require their own current process audit and exact authority, and distinguish
+restored preparation from original preparation. The installed source verifier
+remains mandatory for archive import; the native fixture authenticates its
+actual original export rather than supplying an installed vendor verifier.
+
+Central verification passes 23 installed/model cases and three separate actual
+native witnesses. These cover preparation and failure custody, deletion of the
+source followed by two coexisting fresh restores, and archive import after the
+entire original source is removed. Each branch independently recertifies its
+current owner, preserves the held original completion and ACK history, matches
+the subsequent UART publication bytes, and reclaims its original native groups.
+The provider library passes 192 cases with three explicit ignored cases: the
+installed-locale witness, subprocess worker entrypoint and earlier SE native
+capture witness. The three ARM witnesses above are separate integration targets.
+One library case starts a nested child test, whose result is not counted again.
+All 37 source-quality cases and all-target strict checks across nine crates pass.
+Required application test-target and broader package qualification for this
+source stage will be recorded when their separate builds complete.
+
+The unchanged strict process-group census now retains its first bounded refusal
+diagnostic. Successful rows keep the original parsing fast path. The earlier
+malformed-row failure remains unexplained because its original row was not
+retained; these changes do not claim to explain or fix it. This mechanism does
+not establish application readiness, complete device parity, CPU timing-model
+accuracy, ordinary common-node activation or vendor admission. Raw evidence,
+images and runtime journals remain local.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

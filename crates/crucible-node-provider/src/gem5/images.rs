@@ -95,11 +95,11 @@ pub struct Gem5CapturedArtifact<'a> {
 /// Partial diagnostic coverage grants no execution authority. A complete native
 /// closure audit and installed closed-profile policy remain separate obligations.
 #[derive(Clone, Debug)]
-pub struct Gem5CapturedImage {
+pub struct Gem5CapturedModelImage<Source, Prefix> {
     pub(crate) capture: Id,
-    pub(crate) source: Gem5Launch,
+    pub(crate) source: Source,
     pub(crate) boundary: Gem5Boundary,
-    pub(crate) completed: BTreeMap<Id, Gem5Completion>,
+    pub(crate) completed: BTreeMap<Id, Prefix>,
     pub(crate) pending: Option<Id>,
     pub(crate) last_acknowledged: Option<Id>,
     source_supplementary_files_root: PathBuf,
@@ -107,15 +107,42 @@ pub struct Gem5CapturedImage {
     resource_files: Vec<CapturedFile>,
 }
 
-impl Gem5CapturedImage {
+/// Retains the existing SE process-image format and complete source identity.
+pub type Gem5CapturedImage = Gem5CapturedModelImage<Gem5Launch, Gem5Completion>;
+
+pub(crate) mod sealed {
+    pub trait ImageSource {}
+}
+
+/// Exposes private image routes from source-owned native model launch records.
+///
+/// The sealed trait conveys resource layout, not execution authority. Only
+/// authenticated native capture can construct a model image seal.
+pub trait Gem5ImageSource: sealed::ImageSource {
+    /// Returns the exact owned image machinery and current capture namespace.
+    fn image_tools(&self) -> Option<&Gem5ProcessImageTools>;
+
+    /// Returns the canonical private root containing modeled runtime resources.
+    fn managed_root(&self) -> &Path;
+}
+
+impl sealed::ImageSource for Gem5Launch {}
+
+impl Gem5ImageSource for Gem5Launch {
+    fn image_tools(&self) -> Option<&Gem5ProcessImageTools> {
+        self.process_images.as_ref()
+    }
+
+    fn managed_root(&self) -> &Path {
+        &self.resource_root
+    }
+}
+
+impl<Source: Gem5ImageSource, Prefix> Gem5CapturedModelImage<Source, Prefix> {
     pub(crate) fn original_image_for_audit(&self) -> Result<PathBuf, ProviderError> {
-        let tools = self
-            .source
-            .process_images
-            .as_ref()
-            .ok_or(ProviderError::Correlation(
-                "gem5 original image tools omitted",
-            ))?;
+        let tools = self.source.image_tools().ok_or(ProviderError::Correlation(
+            "gem5 original image tools omitted",
+        ))?;
         let current = inventory(&tools.image_root, true)?;
         if current.len() != self.image_files.len()
             || current.iter().zip(&self.image_files).any(|(live, saved)| {
@@ -165,12 +192,12 @@ impl Gem5CapturedImage {
     }
 
     /// Iterates immutable original prefixes captured with native continuation state.
-    pub fn completed_prefixes(&self) -> impl ExactSizeIterator<Item = &Gem5Completion> {
+    pub fn completed_prefixes(&self) -> impl ExactSizeIterator<Item = &Prefix> {
         self.completed.values()
     }
 
     /// Returns the original captured output prefix awaiting custody acknowledgment.
-    pub fn pending_completion(&self) -> Option<&Gem5Completion> {
+    pub fn pending_completion(&self) -> Option<&Prefix> {
         self.pending
             .as_ref()
             .and_then(|operation| self.completed.get(operation))
@@ -192,7 +219,7 @@ impl Gem5CapturedImage {
     }
 
     /// Returns the immutable original source realization scope.
-    pub fn source(&self) -> &Gem5Launch {
+    pub fn source(&self) -> &Source {
         &self.source
     }
 
@@ -277,19 +304,16 @@ impl Gem5CapturedImage {
 
     pub(crate) fn collect(
         capture: Id,
-        source: Gem5Launch,
+        source: Source,
         boundary: Gem5Boundary,
         preserved_root: &Path,
-        completed: BTreeMap<Id, Gem5Completion>,
+        completed: BTreeMap<Id, Prefix>,
         pending: Option<Id>,
         last_acknowledged: Option<Id>,
     ) -> Result<Self, ProviderError> {
-        let tools = source
-            .process_images
-            .as_ref()
-            .ok_or(ProviderError::Correlation(
-                "gem5 capture has no measured image tools",
-            ))?;
+        let tools = source.image_tools().ok_or(ProviderError::Correlation(
+            "gem5 capture has no measured image tools",
+        ))?;
         validate_private_directory(preserved_root)?;
         let original_images = inventory(&tools.image_root, true)?;
         if original_images
@@ -309,7 +333,7 @@ impl Gem5CapturedImage {
             &source_supplementary_files_root,
             original_images.iter().map(|file| file.relative.as_path()),
         )?;
-        let original_resources = inventory(&source.resource_root, false)?;
+        let original_resources = inventory(source.managed_root(), false)?;
         if original_images
             .len()
             .checked_add(original_resources.len())
@@ -339,7 +363,7 @@ impl Gem5CapturedImage {
         for file in original_images {
             let target = image_root.join(&file.relative);
             if let Some(parent) = target.parent() {
-                fs::create_dir_all(parent)?;
+                private_directory_chain(&image_root, parent)?;
             }
             copy_verified(&file.artifact, &target, GEM5_MAX_IMAGE_BYTES)?;
             image_files.push(CapturedFile {
@@ -354,7 +378,7 @@ impl Gem5CapturedImage {
         for file in original_resources {
             let target = resource_root.join(&file.relative);
             if let Some(parent) = target.parent() {
-                fs::create_dir_all(parent)?;
+                private_directory_chain(&resource_root, parent)?;
             }
             copy_verified(&file.artifact, &target, MAX_FILE_BYTES)?;
             resource_files.push(CapturedFile {
@@ -391,7 +415,7 @@ impl Gem5CapturedImage {
         for saved in &self.resource_files {
             let target = root.join(&saved.relative);
             if let Some(parent) = target.parent() {
-                fs::create_dir_all(parent)?;
+                private_directory_chain(root, parent)?;
             }
             copy_verified(&saved.artifact, &target, MAX_FILE_BYTES)?;
         }
@@ -710,3 +734,60 @@ fn copy_verified(
     }
     Ok(())
 }
+
+/// Creates each operational directory with private mode before copying a leaf.
+fn private_directory_chain(root: &Path, parent: &Path) -> Result<(), ProviderError> {
+    use std::os::unix::fs::DirBuilderExt;
+    validate_private_directory(root)?;
+    let relative = parent
+        .strip_prefix(root)
+        .map_err(|_| ProviderError::Correlation("gem5 managed parent escapes owned root"))?;
+    let mut current = root.to_owned();
+    for component in relative.components() {
+        let std::path::Component::Normal(name) = component else {
+            return Err(ProviderError::Frame(
+                "gem5 managed directory component differs",
+            ));
+        };
+        current.push(name);
+        match fs::DirBuilder::new().mode(0o700).create(&current) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error.into()),
+        }
+        validate_private_directory(&current)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+// crucible-lint: allow rust-allow -- private directory counterexamples must fail assertions.
+// crucible-lint: allow panic-shortcut -- fixture construction and assertions are test-only.
+#[allow(clippy::unwrap_used)]
+mod private_directories {
+    use super::*;
+
+    #[test]
+    fn nested_materialization_is_private_without_inherited_umask() {
+        let root = std::env::temp_dir().join(format!("gem5-private-chain-{}", std::process::id()));
+        fs::create_dir(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        let nested = root.join("native-diagnostics/child");
+        private_directory_chain(&root, &nested).unwrap();
+        assert_eq!(
+            fs::metadata(root.join("native-diagnostics"))
+                .unwrap()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert_eq!(fs::metadata(&nested).unwrap().mode() & 0o777, 0o700);
+        assert!(private_directory_chain(&root, &root.join("../escape")).is_err());
+        fs::set_permissions(&nested, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(private_directory_chain(&root, &nested).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[path = "arm_root_archive.rs"]
+pub(crate) mod arm_root_archive;

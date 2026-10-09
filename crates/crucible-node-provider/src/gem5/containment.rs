@@ -63,12 +63,88 @@ pub struct Gem5QuarantineCustody {
     deadline: OperationalDeadline,
     reaped: Option<std::process::ExitStatus>,
     proof: Option<Gem5ReclamationProof>,
+    census_diagnostic: Option<Gem5CensusDiagnostic>,
 }
 
 impl Gem5QuarantineCustody {
     /// Returns the original private process group that received termination.
     pub fn process_group(&self) -> u32 {
         self.pid
+    }
+
+    /// Returns the first bounded kernel-census refusal retained by this custody.
+    ///
+    /// The diagnostic contains no process name or full stat row. It proves no
+    /// reclamation and cannot change the original error or signaling policy.
+    pub fn census_diagnostic(&self) -> Option<&Gem5CensusDiagnostic> {
+        self.census_diagnostic.as_ref()
+    }
+}
+
+/// Retains bounded original census geometry without disclosing process names.
+///
+/// One record belongs to the original quarantine custody. The token stores at
+/// most 32 printable ASCII bytes, replacing all other bytes with `?`; its full
+/// original length remains separate. A malformed row still refuses the census.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Gem5CensusDiagnostic {
+    pid: u32,
+    refusal_site: &'static str,
+    token: [u8; 32],
+    stored_token_length: usize,
+    original_token_length: usize,
+    field_count: Option<usize>,
+}
+
+impl Gem5CensusDiagnostic {
+    /// Returns the PID named by the original census entry.
+    pub fn pid(&self) -> u32 {
+        self.pid
+    }
+
+    /// Returns the exact stat-field refusal site, never a native capability.
+    pub fn refusal_site(&self) -> &'static str {
+        self.refusal_site
+    }
+
+    /// Returns the finite sanitized original pgrp token prefix.
+    pub fn pgrp_token(&self) -> &[u8] {
+        &self.token[..self.stored_token_length]
+    }
+
+    /// Returns the original pgrp token length before sanitization or truncation.
+    pub fn original_token_length(&self) -> usize {
+        self.original_token_length
+    }
+
+    /// Returns the number of fields after the command delimiter, when observable.
+    pub fn field_count(&self) -> Option<usize> {
+        self.field_count
+    }
+
+    fn retain_first(
+        target: &mut Option<Self>,
+        pid: u32,
+        refusal_site: &'static str,
+        token: &[u8],
+        field_count: Option<usize>,
+    ) {
+        if target.is_some() {
+            return;
+        }
+        let mut sanitized = [0u8; 32];
+        let stored_token_length = token.len().min(sanitized.len());
+        for (output, byte) in sanitized.iter_mut().zip(token.iter()) {
+            *output = if byte.is_ascii_graphic() { *byte } else { b'?' };
+        }
+        *target = Some(Self {
+            pid,
+            refusal_site,
+            token: sanitized,
+            stored_token_length,
+            original_token_length: token.len(),
+            field_count,
+        });
     }
 }
 
@@ -235,6 +311,7 @@ fn begin_quarantine(
         deadline,
         reaped,
         proof: None,
+        census_diagnostic: None,
     });
     if let Some(stream) = stream.take() {
         stream.shutdown(std::net::Shutdown::Both)?;
@@ -259,7 +336,7 @@ fn poll_reclamation<'a>(
             }
             state.reaped = child.try_wait()?;
         }
-        let members = group_members(state.pid)?;
+        let members = group_members_with_diagnostic(state.pid, &mut state.census_diagnostic)?;
         if let Some(status) = state.reaped.filter(|_| members.is_empty()) {
             let bytes = canonical::canonical_json(&json!({
                 "schema":"crucible.gem5.native-reclamation.v1",
@@ -286,6 +363,13 @@ fn poll_reclamation<'a>(
 }
 
 fn group_members(group: u32) -> Result<Vec<u32>, ProviderError> {
+    group_members_with_diagnostic(group, &mut None)
+}
+
+fn group_members_with_diagnostic(
+    group: u32,
+    diagnostic: &mut Option<Gem5CensusDiagnostic>,
+) -> Result<Vec<u32>, ProviderError> {
     let mut members = Vec::new();
     let mut entries = 0usize;
     for entry in fs::read_dir("/proc")? {
@@ -311,20 +395,7 @@ fn group_members(group: u32) -> Result<Vec<u32>, ProviderError> {
             Err(error) => return Err(error.into()),
         };
         file.take(65537).read_to_end(&mut bytes)?;
-        let text = std::str::from_utf8(&bytes)
-            .map_err(|_| ProviderError::Frame("gem5 kernel process stat encoding"))?;
-        let close = text
-            .rfind(')')
-            .ok_or(ProviderError::Frame("gem5 kernel process stat shape"))?;
-        if bytes.len() > 65536 {
-            return Err(ProviderError::ResourceExhausted("gem5 kernel process stat"));
-        }
-        let pgrp = text[close + 1..]
-            .split_ascii_whitespace()
-            .nth(2)
-            .ok_or(ProviderError::Frame("gem5 kernel process group omitted"))?
-            .parse::<u32>()
-            .map_err(|_| ProviderError::Frame("gem5 kernel process group invalid"))?;
+        let pgrp = parse_census_group(pid, &bytes, diagnostic)?;
         if pgrp == group {
             if members.len() >= 4096 {
                 return Err(ProviderError::ResourceExhausted(
@@ -336,6 +407,55 @@ fn group_members(group: u32) -> Result<Vec<u32>, ProviderError> {
     }
     members.sort_unstable();
     Ok(members)
+}
+
+/// Retains only bounded field facts before returning the original refusal.
+fn parse_census_group(
+    pid: u32,
+    bytes: &[u8],
+    diagnostic: &mut Option<Gem5CensusDiagnostic>,
+) -> Result<u32, ProviderError> {
+    let text = std::str::from_utf8(bytes).map_err(|_| {
+        Gem5CensusDiagnostic::retain_first(diagnostic, pid, "stat-encoding", &[], None);
+        ProviderError::Frame("gem5 kernel process stat encoding")
+    })?;
+    let close = text.rfind(')').ok_or_else(|| {
+        Gem5CensusDiagnostic::retain_first(diagnostic, pid, "stat-command-delimiter", &[], None);
+        ProviderError::Frame("gem5 kernel process stat shape")
+    })?;
+    if bytes.len() > 65536 {
+        Gem5CensusDiagnostic::retain_first(diagnostic, pid, "stat-byte-credit", &[], None);
+        return Err(ProviderError::ResourceExhausted("gem5 kernel process stat"));
+    }
+
+    let mut fields = text[close + 1..].split_ascii_whitespace();
+    let token = fields.nth(2).ok_or_else(|| {
+        if diagnostic.is_none() {
+            let field_count = Some(text[close + 1..].split_ascii_whitespace().count());
+            Gem5CensusDiagnostic::retain_first(diagnostic, pid, "pgrp-omitted", &[], field_count);
+        }
+        ProviderError::Frame("gem5 kernel process group omitted")
+    })?;
+    token.parse::<u32>().map_err(|error| {
+        let site = match error.kind() {
+            std::num::IntErrorKind::PosOverflow | std::num::IntErrorKind::NegOverflow => {
+                "pgrp-numeric-overflow"
+            }
+            std::num::IntErrorKind::Empty => "pgrp-empty",
+            _ => "pgrp-nondecimal",
+        };
+        if diagnostic.is_none() {
+            let field_count = Some(text[close + 1..].split_ascii_whitespace().count());
+            Gem5CensusDiagnostic::retain_first(
+                diagnostic,
+                pid,
+                site,
+                token.as_bytes(),
+                field_count,
+            );
+        }
+        ProviderError::Frame("gem5 kernel process group invalid")
+    })
 }
 
 #[cfg(test)]

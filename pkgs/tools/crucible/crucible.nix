@@ -16,6 +16,8 @@
   linux-crucible,
   crucible-fixtures,
   gem5-closed-profile,
+  gem5-arm-model-profile,
+  gem5-arm-root-model-profile,
   crucible-reference-implementation,
   bash,
   coreutils,
@@ -141,6 +143,10 @@
   rpcProtocolPatch = sourceConst "RPC ABI patch version" "pub const RPC_PROTOCOL_PATCH: u16 = " apiRpcAbi;
   rpcProtocolBuild = sourceStringConst "RPC ABI build tag" "pub const RPC_PROTOCOL_BUILD: &str = \"" apiRpcAbi;
   referenceQualificationInputs = lib.optionals (!stdenv.isCross) [crucible-reference-implementation];
+  # These fixed source-owned bundles remain separate from the SE profile.
+  # Root bytes support the native mechanism API; the older model is fixture-only.
+  armRootMechanismInputs = [gem5-arm-root-model-profile];
+  armModelFixtureInputs = [gem5-arm-model-profile];
   controllerCargoEnv =
     {
       OPENSSL_DIR = "${openssl}";
@@ -153,6 +159,10 @@
       # Native gem5 qualification comes from the source-owned package whose real
       # continuation witnesses passed during its build, never a runtime override.
       CRUCIBLE_GEM5_CLOSED_PROFILE_MANIFEST = "${gem5-closed-profile}/share/crucible/gem5/closed-profile.json";
+      # Distinct compiled bindings cannot turn fixed ARM mechanism evidence
+      # into an ordinary execution selector or substitute the old model profile.
+      CRUCIBLE_GEM5_ARM_ROOT_MODEL_MANIFEST = "${gem5-arm-root-model-profile}/share/crucible/gem5/arm-model-profile.json";
+      CRUCIBLE_GEM5_ARM_MODEL_MANIFEST = "${gem5-arm-model-profile}/share/crucible/gem5/arm-model-profile.json";
     }
     // lib.optionalAttrs (!stdenv.isCross) {
       # This descriptor supplies source identity only. Actual native qualification
@@ -161,7 +171,12 @@
     };
   controllerArtifactContract = {
     family = "crucible-apache-host-release-and-test";
-    nativeInputs = map toString ([buildRustDev buildPkgConfig openssl sqlite buildProtobuf gem5-closed-profile] ++ referenceQualificationInputs);
+    nativeInputs = map toString (
+      [buildRustDev buildPkgConfig openssl sqlite buildProtobuf gem5-closed-profile]
+      ++ referenceQualificationInputs
+      ++ armRootMechanismInputs
+      ++ armModelFixtureInputs
+    );
     licenseScope = "Apache-2.0";
   };
   controllerArtifacts = mkCargoArtifacts {
@@ -179,8 +194,10 @@
     buildDeps =
       [buildRustDev buildPkgConfig openssl sqlite buildProtobuf gem5-closed-profile]
       ++ referenceQualificationInputs
+      ++ armRootMechanismInputs
+      ++ armModelFixtureInputs
       ++ lib.optionals stdenv.isCross [buildPackages.crucible-controller];
-    runtimeDeps = [openssl sqlite gem5-closed-profile] ++ referenceQualificationInputs;
+    runtimeDeps = [openssl sqlite gem5-closed-profile] ++ referenceQualificationInputs ++ armRootMechanismInputs;
   };
   debugGatewayArtifactContract = {
     family = "crucible-gpl-debug-gateway-release-and-test";
@@ -287,8 +304,12 @@
     cargoFlags = packageFlags;
     cargoTestFlags = "${packageFlags} --features crucible-cli/test-double";
     doCheck = true;
-    buildDeps = [buildRustDev buildPkgConfig openssl sqlite buildProtobuf gem5-closed-profile] ++ referenceQualificationInputs;
-    runtimeDeps = [openssl sqlite gem5-closed-profile] ++ referenceQualificationInputs;
+    buildDeps =
+      [buildRustDev buildPkgConfig openssl sqlite buildProtobuf gem5-closed-profile]
+      ++ referenceQualificationInputs
+      ++ armRootMechanismInputs
+      ++ armModelFixtureInputs;
+    runtimeDeps = [openssl sqlite gem5-closed-profile] ++ referenceQualificationInputs ++ armRootMechanismInputs;
     # The controller is the Apache side of a process boundary. Fail the build
     # if any QEMU-side implementation, guest kernel, or fixture enters either
     # its direct references or its runtime closure.
