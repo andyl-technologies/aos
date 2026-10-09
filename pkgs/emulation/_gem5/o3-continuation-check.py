@@ -2,7 +2,10 @@
 """Exercises O3/cache/DRAM continuation; not complete microstate qualification."""
 
 import ctypes
+import importlib.util
 import json
+import os
+import hashlib
 from pathlib import Path
 import sys
 
@@ -15,6 +18,7 @@ from m5.objects import (
     L2XBar,
     MemCtrl,
     Process,
+    RandomRP,
     Root,
     SEWorkload,
     SrcClockDomain,
@@ -25,7 +29,13 @@ from m5.objects import (
 )
 
 
-guest_isa, mode, executable, prefix = sys.argv[1:]
+guest_isa, mode, executable, prefix, coverage_helper, memory_helper = sys.argv[1:]
+helper_spec = importlib.util.spec_from_file_location("cpu_state_coverage", coverage_helper)
+coverage = importlib.util.module_from_spec(helper_spec)
+helper_spec.loader.exec_module(coverage)
+memory_spec = importlib.util.spec_from_file_location("memory_state_coverage", memory_helper)
+memory_coverage = importlib.util.module_from_spec(memory_spec)
+memory_spec.loader.exec_module(memory_coverage)
 if guest_isa not in ("x86_64", "aarch64"):
     raise ValueError(guest_isa)
 m5.core.disableAllListeners()
@@ -41,6 +51,7 @@ system.cpu.icache = Cache(
 system.cpu.dcache = Cache(
     size="32KiB", assoc=2, tag_latency=2, data_latency=2, response_latency=2,
     mshrs=16, tgts_per_mshr=8,
+    replacement_policy=RandomRP(),
 )
 system.l2bus = L2XBar()
 system.l2 = Cache(
@@ -67,7 +78,11 @@ system.mem_ctrl = MemCtrl(dram=DDR3_1600_8x8())
 system.mem_ctrl.dram.range = system.mem_ranges[0]
 system.mem_ctrl.port = system.membus.mem_side_ports
 system.workload = SEWorkload.init_compatible(executable)
-process = Process(cmd=[executable], output=f"{prefix}.guest")
+process = Process(
+    executable=executable,
+    cmd=["crucible-o3-workload"],
+    output=f"{prefix}.guest",
+)
 system.cpu.workload = process
 system.cpu.createThreads()
 root = Root(full_system=False, system=system)
@@ -80,6 +95,29 @@ assert cut.processedEvents == 5000 and cut.exitEvent is None
 assert cut.hasNextEvent
 boundary = (cut.currentTick, cut.nextTick, cut.nextPriority)
 m5.stats.dump()
+inventory = m5.crucibleStateInventory()
+assert inventory == m5.crucibleStateInventory()
+assert inventory["native_tick"] == str(cut.currentTick)
+assert inventory["complete"] is False and inventory["unsupported_domains"]
+assert any(not engine["expired"] for engine in inventory["rng"]["engines"])
+assert coverage.inspect_instruction_inventory(inventory, guest_isa)
+assert memory_coverage.inspect_inventory(inventory, 512 * 1024 * 1024)
+assert memory_coverage.inspect_packet_payloads(inventory)
+try:
+    memory_coverage.require_complete_inventory(inventory, 512 * 1024 * 1024)
+except ValueError:
+    pass
+else:
+    raise AssertionError("partial native memory fields admitted as complete state")
+try:
+    coverage.require_complete_inventory(inventory, guest_isa)
+except ValueError:
+    pass
+else:
+    raise AssertionError("partial native fields admitted as complete state")
+
+if os.environ.get("CRUCIBLE_GEM5_DUMP_INVENTORY"):
+    Path(f"{prefix}.inventory.json").write_text(json.dumps(inventory, sort_keys=True))
 
 status = 1
 if mode == "capture":
@@ -91,6 +129,7 @@ if mode == "capture":
     status = checkpoint()
     if status not in (1, 2):
         raise RuntimeError(f"DMTCP checkpoint failed: {status}")
+    assert m5.crucibleStateInventory() == inventory
 elif mode != "baseline":
     raise ValueError(mode)
 
@@ -102,6 +141,9 @@ assert result.exitEvent is not None
 assert result.exitEvent.getCode() == 0
 summary = {
     "guestIsa": guest_isa,
+    "partialInventorySha256": hashlib.sha256(
+        json.dumps(inventory, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest(),
     "boundary": boundary,
     "futureEvents": result.processedEvents,
     "finalTick": result.currentTick,

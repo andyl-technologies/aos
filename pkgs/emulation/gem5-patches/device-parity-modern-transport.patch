@@ -1,0 +1,1155 @@
+diff --git a/src/dev/virtio/base.hh b/src/dev/virtio/base.hh
+--- a/src/dev/virtio/base.hh
++++ b/src/dev/virtio/base.hh
+@@ -44,6 +44,7 @@
+ 
+ #include "base/bitunion.hh"
+ #include "base/compiler.hh"
++#include "base/logging.hh"
+ #include "base/types.hh"
+ #include "dev/virtio/virtio_ring.h"
+ #include "mem/port_proxy.hh"
+@@ -63,12 +64,10 @@
+  *
+  * VirtIO prior to version 1.0 (legacy versions) normally send values
+  * to the host in the guest systems native byte order. This is going
+- * to change in version 1.0 which mandates little endian. We currently
+- * only support the legacy version of VirtIO (the new and shiny
+- * standard is still in a draft state and not implemented by the
+- * kernel). Once we support the new standard, we should negotiate the
+- * VirtIO version with the guest and automatically use the right type
+- * of byte swapping.
++ * to change in version 1.0 which mandates little endian. Legacy devices retain their configured byte order. Modern transports
++ * require little-endian device models and advertise VIRTIO_F_VERSION_1.
++ * Packed rings, indirect descriptors, and event-index suppression are
++ * not advertised by this implementation.
+  */
+ 
+ template <typename T>
+@@ -334,6 +333,23 @@
+      */
+     Addr getAddress() const { return _address; }
+ 
++    /** Maximum queue size offered before driver selection. */
++    uint16_t maxSize() const { return _maxSize; }
++
++    /** Selects a bounded power-of-two split-ring size while disabled. */
++    void setSize(uint16_t size);
++
++    /** Returns the independent modern driver/device ring address. */
++    Addr driverAddress() const { return _driverAddress; }
++    Addr deviceAddress() const { return _deviceAddress; }
++
++    /** Installs an independent descriptor/driver/device address. */
++    void setModernAddress(unsigned area, Addr address);
++
++    /** Publishes complete ring configuration before servicing descriptors. */
++    void setReady(bool ready);
++    bool ready() const { return _ready; }
++
+     /**
+      * Get the number of descriptors available in this queue.
+      *
+@@ -351,6 +367,7 @@
+      * @return Pointer to a VirtDescriptor.
+      */
+     VirtDescriptor *getDescriptor(VirtDescriptor::Index index) {
++        panic_if(index >= _size, "Descriptor outside selected queue");
+         return &descriptors[index];
+     }
+     /** @} */
+@@ -450,9 +467,14 @@
+     VirtQueue();
+ 
+     /** Queue size in terms of number of descriptors */
+-    const uint16_t _size;
+-    /** Base address of the queue */
++    const uint16_t _maxSize;
++    uint16_t _size;
++    /** Addresses are retained separately for modern split-ring layout. */
+     Addr _address;
++    Addr _driverAddress;
++    Addr _deviceAddress;
++    bool _modern;
++    bool _ready;
+     /** Guest physical memory proxy */
+     PortProxy &memProxy;
+ 
+@@ -495,6 +517,8 @@
+          * @param addr New host physical address
+          */
+         void setAddress(Addr addr) { _base = addr; }
++
++        void setSize(uint16_t size) { ring.resize(size); }
+ 
+         /** Update the ring buffer header with data from the guest. */
+         void
+@@ -543,6 +567,17 @@
+             writeHeader();
+         }
+ 
++        /** Publishes one completed entry without replacing other guest slots. */
++        void
++        writeElement(Index slot, const T &element)
++        {
++            panic_if(!_base || slot >= ring.size(),
++                     "Used ring slot outside configured geometry");
++            const T output = htog(element, byteOrder);
++            _proxy.writeBlob(_base + sizeof(header) + sizeof(T) * slot,
++                             &output, sizeof(output));
++        }
++
+         /** Ring buffer header in host byte order */
+         Header header;
+         /** Elements in ring in host byte order */
+@@ -568,6 +603,8 @@
+     /** Offset of last consumed descriptor in the VirtQueue::avail
+      * ring */
+     uint16_t _last_avail;
++    /** Device-owned used cursor; guest writes never authorize completion. */
++    uint16_t _last_used;
+ 
+     /** Vector of pre-created descriptors indexed by their index into
+      * the queue. */
+@@ -588,7 +625,8 @@
+ {
+   public:
+     typedef uint16_t QueueID;
+-    typedef uint32_t FeatureBits;
++    typedef uint64_t FeatureBits;
++    static constexpr FeatureBits VERSION_1 = FeatureBits(1) << 32;
+     /** This is a VirtQueue address as exposed through the low-level
+      * interface.\ The address needs to be multiplied by the page size
+      * (seems to be hardcoded to 4096 in the spec) to get the real
+@@ -600,6 +638,7 @@
+ 
+     BitUnion8(DeviceStatus)
+         Bitfield<7> failed;
++        Bitfield<3> features_ok;
+         Bitfield<2> driver_ok;
+         Bitfield<1> driver;
+         Bitfield<0> acknowledge;
+@@ -835,7 +874,29 @@
+      * @return Size of the currently active queue in number of
+      * descriptors.
+      */
+-    uint16_t getQueueSize() const { return getCurrentQueue().getSize(); }
++    uint16_t getQueueSize() const {
++        return _queueSelect < _queues.size() ? getCurrentQueue().getSize() : 0;
++    }
++
++    /** Returns a missing queue as zero, as required by modern transports. */
++    uint16_t getQueueMaxSize() const {
++        return _queueSelect < _queues.size() ? getCurrentQueue().maxSize() : 0;
++    }
++    uint16_t getQueueCount() const { return _queues.size(); }
++    void setQueueSize(uint16_t size) { getCurrentQueue().setSize(size); }
++    bool getQueueReady() const {
++        return _queueSelect < _queues.size() && getCurrentQueue().ready();
++    }
++    void setQueueReady(bool ready) { getCurrentQueue().setReady(ready); }
++    Addr getModernQueueAddress(unsigned area) const;
++    void setModernQueueAddress(unsigned area, Addr address);
++
++    /** Modern models use little-endian device and queue structures. */
++    void requireModernByteOrder();
++    FeatureBits offeredFeatures(bool modern) const {
++        return deviceFeatures | (modern ? VERSION_1 : 0);
++    }
++    void setGuestFeatureWord(uint32_t select, uint32_t word);
+ 
+     /**
+      * Update device status and optionally reset device.
+@@ -892,6 +953,8 @@
+      * @see setDeviceStatus
+      */
+     DeviceStatus _deviceStatus;
++    bool _modernTransport;
++    bool _featuresFinalized;
+ 
+     /** Queue select register (set by guest) */
+     QueueID _queueSelect;
+diff --git a/src/dev/virtio/base.cc b/src/dev/virtio/base.cc
+--- a/src/dev/virtio/base.cc
++++ b/src/dev/virtio/base.cc
+@@ -37,6 +37,8 @@
+ 
+ #include "dev/virtio/base.hh"
+ 
++#include <limits>
++
+ #include "base/trace.hh"
+ #include "debug/VIO.hh"
+ #include "params/VirtIODeviceBase.hh"
+@@ -87,6 +89,8 @@
+     vring_desc guest_desc;
+     memProxy->readBlob(desc_addr, &guest_desc, sizeof(guest_desc));
+     desc = gtoh(guest_desc, byteOrder);
++    panic_if(desc.addr > std::numeric_limits<Addr>::max() - desc.len,
++             "Descriptor buffer address span overflows");
+     DPRINTF(VIO,
+             "VirtDescriptor(%i): Addr: 0x%x, Len: %i, Flags: 0x%x, "
+             "Next: 0x%x\n",
+@@ -96,13 +100,14 @@
+ void
+ VirtDescriptor::updateChain()
+ {
+-    VirtDescriptor *desc(this);
++    VirtDescriptor *desc = this;
++    unsigned visited = 0;
+     do {
++        panic_if(++visited > queue->getSize(), "Loop in descriptor chain");
+         desc->update();
+-    } while ((desc = desc->next()) != NULL && desc != this);
+-
+-    if (desc == this)
+-        panic("Loop in descriptor chain!\n");
++        panic_if(desc->desc.flags & VRING_DESC_F_INDIRECT,
++                 "Unnegotiated indirect descriptor");
++    } while ((desc = desc->next()) != nullptr);
+ }
+ 
+ void
+@@ -149,7 +154,10 @@
+ {
+     DPRINTF(VIO, "VirtDescriptor(%p, 0x%x, %i)::read: offset: %i, dst: 0x%x, size: %i\n",
+             this, desc.addr, desc.len, offset, (long)dst, size);
+-    assert(size <= desc.len - offset);
++    panic_if(offset > desc.len || size > desc.len - offset ||
++             desc.addr > std::numeric_limits<Addr>::max() - offset ||
++             size > std::numeric_limits<Addr>::max() - desc.addr - offset,
++             "Descriptor read geometry overflows");
+     if (!isIncoming())
+         panic("Trying to read from outgoing buffer\n");
+ 
+@@ -161,7 +169,10 @@
+ {
+     DPRINTF(VIO, "VirtDescriptor(%p, 0x%x, %i)::write: offset: %i, src: 0x%x, size: %i\n",
+             this, desc.addr, desc.len, offset, (long)src, size);
+-    assert(size <= desc.len - offset);
++    panic_if(offset > desc.len || size > desc.len - offset ||
++             desc.addr > std::numeric_limits<Addr>::max() - offset ||
++             size > std::numeric_limits<Addr>::max() - desc.addr - offset,
++             "Descriptor write geometry overflows");
+     if (!isOutgoing())
+         panic("Trying to write to incoming buffer\n");
+ 
+@@ -220,6 +231,8 @@
+     size_t size(0);
+     const VirtDescriptor *desc(this);
+     do {
++        panic_if(desc->size() > std::numeric_limits<size_t>::max() - size,
++                 "Descriptor chain size overflows");
+         size += desc->size();
+     } while ((desc = desc->next()) != NULL);
+ 
+@@ -229,9 +242,11 @@
+ 
+ 
+ VirtQueue::VirtQueue(PortProxy &proxy, ByteOrder bo, uint16_t size)
+-    : byteOrder(bo), _size(size), _address(0), memProxy(proxy),
++    : byteOrder(bo), _maxSize(size), _size(size), _address(0),
++      _driverAddress(0), _deviceAddress(0), _modern(false), _ready(false),
++      memProxy(proxy),
+       avail(proxy, bo, size), used(proxy, bo, size),
+-      _last_avail(0)
++      _last_avail(0), _last_used(0)
+ {
+     descriptors.reserve(_size);
+     for (int i = 0; i < _size; ++i)
+@@ -243,26 +258,60 @@
+ {
+     SERIALIZE_SCALAR(_address);
+     SERIALIZE_SCALAR(_last_avail);
++    SERIALIZE_SCALAR(_last_used);
++    SERIALIZE_SCALAR(_driverAddress);
++    SERIALIZE_SCALAR(_deviceAddress);
++    SERIALIZE_SCALAR(_modern);
++    SERIALIZE_SCALAR(_ready);
++    SERIALIZE_SCALAR(_size);
+ }
+ 
+ void
+ VirtQueue::unserialize(CheckpointIn &cp)
+ {
+-    Addr addr_in;
+-
+-    paramIn(cp, "_address", addr_in);
++    UNSERIALIZE_SCALAR(_address);
+     UNSERIALIZE_SCALAR(_last_avail);
+-
+-    // Use the address setter to ensure that the ring buffer addresses
+-    // are updated as well.
+-    setAddress(addr_in);
++    UNSERIALIZE_SCALAR(_last_used);
++    UNSERIALIZE_SCALAR(_driverAddress);
++    UNSERIALIZE_SCALAR(_deviceAddress);
++    UNSERIALIZE_SCALAR(_modern);
++    UNSERIALIZE_SCALAR(_ready);
++    UNSERIALIZE_SCALAR(_size);
++    fatal_if(!_size || _size > _maxSize || (_size & (_size - 1)),
++             "Invalid checkpoint virtqueue size");
++    avail.setSize(_size);
++    used.setSize(_size);
++    const bool restoredReady = _ready;
++    _ready = false;
++    if (_modern) {
++        setReady(restoredReady);
++    } else if (_address) {
++        const Addr driver = _driverAddress;
++        const Addr device = _deviceAddress;
++        setAddress(_address);
++        fatal_if(_driverAddress != driver || _deviceAddress != device ||
++                 !restoredReady, "Restored legacy queue geometry differs");
++    } else {
++        fatal_if(restoredReady || _driverAddress || _deviceAddress,
++                 "Restored disabled queue has live addresses");
++    }
++    avail.setAddress(_driverAddress);
++    used.setAddress(_deviceAddress);
+ }
+ 
+ void
+ VirtQueue::reset()
+ {
+     _address = 0;
++    _driverAddress = 0;
++    _deviceAddress = 0;
+     _last_avail = 0;
++    _last_used = 0;
++    _modern = false;
++    _ready = false;
++    _size = _maxSize;
++    avail.setSize(_size);
++    used.setSize(_size);
+ 
+     avail.reset();
+     used.reset();
+@@ -271,20 +320,71 @@
+ void
+ VirtQueue::setAddress(Addr address)
+ {
++    // Include both rings and worst-case alignment before any address addition.
++    const Addr footprint = Addr(_size) *
++        (sizeof(vring_desc) + sizeof(uint16_t) + sizeof(vring_used_elem)) +
++        sizeof(vring_avail) + 8 + ALIGN_SIZE;
++    panic_if(address > std::numeric_limits<Addr>::max() - footprint,
++             "Legacy virtqueue address geometry overflows");
+     const Addr addr_avail(address + _size * sizeof(struct vring_desc));
+     const Addr addr_avail_end(addr_avail + sizeof(struct vring_avail) +
+                               _size * sizeof(uint16_t));
+     const Addr addr_used((addr_avail_end + sizeof(uint16_t) +
+                           (ALIGN_SIZE - 1)) & ~(ALIGN_SIZE - 1));
+     _address = address;
++    _driverAddress = addr_avail;
++    _deviceAddress = addr_used;
++    _modern = false;
++    _ready = address != 0;
+     avail.setAddress(addr_avail);
+     used.setAddress(addr_used);
+ }
+ 
++void
++VirtQueue::setSize(uint16_t size)
++{
++    panic_if(_ready || !size || size > _maxSize || (size & (size - 1)),
++             "Invalid live or non-power-of-two queue resize");
++    _size = size;
++    avail.setSize(size);
++    used.setSize(size);
++}
++
++void
++VirtQueue::setModernAddress(unsigned area, Addr address)
++{
++    panic_if(_ready, "Guest changed a ready split ring");
++    _modern = true;
++    switch (area) {
++      case 0: _address = address; break;
++      case 1: _driverAddress = address; avail.setAddress(address); break;
++      case 2: _deviceAddress = address; used.setAddress(address); break;
++      default: panic("Invalid split ring area");
++    }
++}
++
++void
++VirtQueue::setReady(bool ready)
++{
++    panic_if(ready && (!_address || !_driverAddress || !_deviceAddress ||
++             (_address & 15) || (_driverAddress & 1) || (_deviceAddress & 3)),
++             "Invalid modern split-ring alignment");
++    const Addr maximum = std::numeric_limits<Addr>::max();
++    panic_if(ready && (_address > maximum - Addr(_size) * sizeof(vring_desc) ||
++        _driverAddress > maximum - 4 - Addr(_size) * sizeof(uint16_t) ||
++        _deviceAddress > maximum - 4 - Addr(_size) * sizeof(vring_used_elem)),
++        "Modern virtqueue address geometry overflows");
++    _ready = ready;
++}
++
+ VirtDescriptor *
+ VirtQueue::consumeDescriptor()
+ {
++    if (!_ready)
++        return nullptr;
+     avail.read();
++    panic_if(uint16_t(avail.header.index - _last_avail) > _size,
++             "Guest overran the available descriptor ring");
+     DPRINTF(VIO, "consumeDescriptor: _last_avail: %i, avail.idx: %i (->%i)\n",
+             _last_avail, avail.header.index,
+             avail.ring[_last_avail % used.ring.size()]);
+@@ -292,6 +392,7 @@
+         return NULL;
+ 
+     VirtDescriptor::Index index(avail.ring[_last_avail % used.ring.size()]);
++    panic_if(index >= _size, "Available descriptor outside selected queue");
+     ++_last_avail;
+ 
+     VirtDescriptor *d(&descriptors[index]);
+@@ -303,15 +404,17 @@
+ void
+ VirtQueue::produceDescriptor(VirtDescriptor *desc, uint32_t len)
+ {
+-    used.readHeader();
++    panic_if(!_ready || !_size, "Completion on an unpublished queue");
+     DPRINTF(VIO, "produceDescriptor: dscIdx: %i, len: %i, used.idx: %i\n",
+-            desc->index(), len, used.header.index);
+-
+-    struct vring_used_elem &e(used.ring[used.header.index % used.ring.size()]);
+-    e.id = desc->index();
+-    e.len = len;
+-    used.header.index += 1;
+-    used.write();
++            desc->index(), len, _last_used);
++
++    // Publish the element before its device-owned cursor. Writing only this
++    // slot also preserves earlier completions after guest-RAM restoration.
++    const vring_used_elem element{desc->index(), len};
++    used.writeElement(_last_used % _size, element);
++    ++_last_used;
++    used.header = {0, _last_used};
++    used.writeHeader();
+ }
+ 
+ void
+@@ -342,7 +445,8 @@
+       guestFeatures(0),
+       byteOrder(params.byte_order),
+       deviceId(id), configSize(config_size), deviceFeatures(features),
+-      _deviceStatus(0), _queueSelect(0)
++      _deviceStatus(0), _modernTransport(false), _featuresFinalized(false),
++      _queueSelect(0)
+ {
+ }
+ 
+@@ -355,6 +459,7 @@
+ VirtIODeviceBase::serialize(CheckpointOut &cp) const
+ {
+     SERIALIZE_SCALAR(guestFeatures);
++    SERIALIZE_SCALAR(_featuresFinalized);
+     SERIALIZE_SCALAR(_deviceStatus);
+     SERIALIZE_SCALAR(_queueSelect);
+     for (QueueID i = 0; i < _queues.size(); ++i)
+@@ -365,8 +470,19 @@
+ VirtIODeviceBase::unserialize(CheckpointIn &cp)
+ {
+     UNSERIALIZE_SCALAR(guestFeatures);
++    UNSERIALIZE_SCALAR(_featuresFinalized);
+     UNSERIALIZE_SCALAR(_deviceStatus);
+     UNSERIALIZE_SCALAR(_queueSelect);
++    fatal_if((guestFeatures & ~(deviceFeatures | VERSION_1)) ||
++             (_modernTransport && _deviceStatus.features_ok &&
++              !(guestFeatures & VERSION_1)) ||
++             (_modernTransport && _deviceStatus.driver_ok &&
++              !_deviceStatus.features_ok) ||
++             ((_deviceStatus.driver_ok ||
++               (_modernTransport && _deviceStatus.features_ok)) &&
++              !_featuresFinalized) ||
++             (_featuresFinalized && !_deviceStatus),
++             "Restored VirtIO feature/status commitment is inconsistent");
+     for (QueueID i = 0; i < _queues.size(); ++i)
+         _queues[i]->unserializeSection(cp, csprintf("_queues.%i", i));
+ }
+@@ -377,6 +493,7 @@
+     _queueSelect = 0;
+     guestFeatures = 0;
+     _deviceStatus = 0;
++    _featuresFinalized = false;
+ 
+     for (QueueID i = 0; i < _queues.size(); ++i)
+         _queues[i]->reset();
+@@ -391,6 +508,8 @@
+               "queues registered.\n",
+               idx, _queues.size());
+     }
++    if (!_deviceStatus.driver_ok || !_queues[idx]->ready())
++        return;
+     _queues[idx]->onNotify();
+ }
+ 
+@@ -398,12 +517,14 @@
+ VirtIODeviceBase::setGuestFeatures(FeatureBits features)
+ {
+     DPRINTF(VIO, "Setting guest features: 0x%x\n", features);
+-    if (~deviceFeatures & features) {
++    if (~(deviceFeatures | VERSION_1) & features) {
+         panic("Guest tried to enable unsupported features:\n"
+               "Device features: 0x%x\n"
+               "Requested features: 0x%x\n",
+               deviceFeatures, features);
+     }
++    panic_if(_featuresFinalized && guestFeatures != features,
++             "Guest changed finalized VirtIO features without reset");
+     guestFeatures = features;
+ }
+ 
+@@ -411,6 +532,13 @@
+ void
+ VirtIODeviceBase::setDeviceStatus(DeviceStatus status)
+ {
++    if (status.features_ok && (!(guestFeatures & VERSION_1) ||
++                              (guestFeatures & ~(deviceFeatures | VERSION_1))))
++        status.features_ok = 0;
++    if (_modernTransport && !status.features_ok)
++        status.driver_ok = 0;
++    if ((_modernTransport && status.features_ok) || status.driver_ok)
++        _featuresFinalized = true;
+     _deviceStatus = status;
+     DPRINTF(VIO, "ACK: %i, DRIVER: %i, DRIVER_OK: %i, FAILED: %i\n",
+             status.acknowledge, status.driver, status.driver_ok, status.failed);
+@@ -435,7 +563,7 @@
+ {
+     const unsigned size(pkt->getSize());
+ 
+-    if (cfgOffset + size > configSize)
++    if (cfgOffset > configSize || size > configSize - cfgOffset)
+         panic("Config read out of bounds.\n");
+ 
+     pkt->makeResponse();
+@@ -447,7 +575,7 @@
+ {
+     const unsigned size(pkt->getSize());
+ 
+-    if (cfgOffset + size > configSize)
++    if (cfgOffset > configSize || size > configSize - cfgOffset)
+         panic("Config write out of bounds.\n");
+ 
+     pkt->makeResponse();
+@@ -483,8 +611,52 @@
+ VirtIODeviceBase::getQueueAddress() const
+ {
+     Addr address(getCurrentQueue().getAddress());
+-    assert(!(address & ((1 >> VirtQueue::ALIGN_BITS) - 1)));
++    assert(!(address & ((Addr(1) << VirtQueue::ALIGN_BITS) - 1)));
+     return address >> VirtQueue::ALIGN_BITS;
++}
++
++void
++VirtIODeviceBase::requireModernByteOrder()
++{
++    fatal_if(byteOrder != ByteOrder::little,
++             "Modern VirtIO requires little-endian device structures");
++    _modernTransport = true;
++}
++
++void
++VirtIODeviceBase::setGuestFeatureWord(uint32_t select, uint32_t word)
++{
++    if (select > 1) {
++        panic_if(word, "Unimplemented VirtIO feature word");
++        return;
++    }
++    const unsigned shift = select * 32;
++    const FeatureBits mask = FeatureBits(0xffffffff) << shift;
++    const FeatureBits proposed =
++        (guestFeatures & ~mask) | (FeatureBits(word) << shift);
++    panic_if(_featuresFinalized && guestFeatures != proposed,
++             "Guest changed finalized VirtIO features without reset");
++    guestFeatures = proposed;
++}
++
++Addr
++VirtIODeviceBase::getModernQueueAddress(unsigned area) const
++{
++    if (_queueSelect >= _queues.size())
++        return 0;
++    const VirtQueue &queue = getCurrentQueue();
++    switch (area) {
++      case 0: return queue.getAddress();
++      case 1: return queue.driverAddress();
++      case 2: return queue.deviceAddress();
++      default: panic("Invalid split ring area");
++    }
++}
++
++void
++VirtIODeviceBase::setModernQueueAddress(unsigned area, Addr address)
++{
++    getCurrentQueue().setModernAddress(area, address);
+ }
+ 
+ void
+diff --git a/src/dev/arm/VirtIOMMIO.py b/src/dev/arm/VirtIOMMIO.py
+--- a/src/dev/arm/VirtIOMMIO.py
++++ b/src/dev/arm/VirtIOMMIO.py
+@@ -52,6 +52,7 @@
+     cxx_class = "gem5::MmioVirtIO"
+ 
+     pio_size = Param.Addr(4096, "IO range")
++    modern = Param.Bool(False, "VirtIO 1.x split-ring MMIO transport")
+     interrupt = Param.ArmInterruptPin("Interrupt to use for this device")
+ 
+     vio = Param.VirtIODeviceBase(VirtIODummyDevice(), "VirtIO device")
+diff --git a/src/dev/arm/vio_mmio.hh b/src/dev/arm/vio_mmio.hh
+--- a/src/dev/arm/vio_mmio.hh
++++ b/src/dev/arm/vio_mmio.hh
+@@ -52,6 +52,8 @@
+   public:
+     MmioVirtIO(const MmioVirtIOParams &params);
+     virtual ~MmioVirtIO();
++    void serialize(CheckpointOut &cp) const override;
++    void unserialize(CheckpointIn &cp) override;
+ 
+   protected: // BasicPioDevice
+     Tick read(PacketPtr pkt) override;
+@@ -77,6 +79,14 @@
+         OFF_QUEUE_NUM = 0x38,
+         OFF_QUEUE_ALIGN = 0x3C,
+         OFF_QUEUE_PFN = 0x40,
++        OFF_QUEUE_READY = 0x44,
++        OFF_QUEUE_DESC_LOW = 0x80,
++        OFF_QUEUE_DESC_HIGH = 0x84,
++        OFF_QUEUE_DRIVER_LOW = 0x90,
++        OFF_QUEUE_DRIVER_HIGH = 0x94,
++        OFF_QUEUE_DEVICE_LOW = 0xa0,
++        OFF_QUEUE_DEVICE_HIGH = 0xa4,
++        OFF_CONFIG_GENERATION = 0xfc,
+         OFF_QUEUE_NOTIFY = 0x50,
+         OFF_INTERRUPT_STATUS = 0x60,
+         OFF_INTERRUPT_ACK = 0x64,
+@@ -103,6 +113,7 @@
+     void kick();
+     void setInterrupts(uint32_t value);
+ 
++    const bool modern;
+     uint32_t hostFeaturesSelect;
+     uint32_t guestFeaturesSelect;
+     uint32_t pageSize;
+diff --git a/src/dev/arm/vio_mmio.cc b/src/dev/arm/vio_mmio.cc
+--- a/src/dev/arm/vio_mmio.cc
++++ b/src/dev/arm/vio_mmio.cc
+@@ -47,11 +47,14 @@
+ 
+ MmioVirtIO::MmioVirtIO(const MmioVirtIOParams &params)
+     : BasicPioDevice(params, params.pio_size),
+-      hostFeaturesSelect(0), guestFeaturesSelect(0), pageSize(0),
++      modern(params.modern), hostFeaturesSelect(0), guestFeaturesSelect(0),
++      pageSize(0),
+       interruptStatus(0), vio(*params.vio),
+       interrupt(params.interrupt->get())
+ {
+     fatal_if(!interrupt, "No MMIO VirtIO interrupt specified\n");
++    if (modern)
++        vio.requireModernByteOrder();
+ 
+     vio.registerKickCallback([this]() { kick(); });
+ }
+@@ -92,7 +95,7 @@
+         return MAGIC;
+ 
+       case OFF_VERSION:
+-        return VERSION;
++        return modern ? 2 : VERSION;
+ 
+       case OFF_DEVICE_ID:
+         return vio.deviceId;
+@@ -101,24 +104,19 @@
+         return VENDOR_ID;
+ 
+       case OFF_HOST_FEATURES:
+-        // We only implement 32 bits of this register
+-        if (hostFeaturesSelect == 0)
+-            return vio.deviceFeatures;
+-        else
+-            return 0;
++        return hostFeaturesSelect < (modern ? 2 : 1) ?
++            vio.offeredFeatures(modern) >> (hostFeaturesSelect * 32) : 0;
+ 
+       case OFF_HOST_FEATURES_SELECT:
+         return hostFeaturesSelect;
+ 
+       case OFF_GUEST_FEATURES:
+         // We only implement 32 bits of this register
+-        if (guestFeaturesSelect == 0)
+-            return vio.getGuestFeatures();
+-        else
+-            return 0;
++        return guestFeaturesSelect < (modern ? 2 : 1) ?
++            vio.getGuestFeatures() >> (guestFeaturesSelect * 32) : 0;
+ 
+       case OFF_GUEST_FEATURES_SELECT:
+-        return hostFeaturesSelect;
++        return guestFeaturesSelect;
+ 
+       case OFF_GUEST_PAGE_SIZE:
+         return pageSize;
+@@ -127,7 +125,7 @@
+         return vio.getQueueSelect();
+ 
+       case OFF_QUEUE_NUM_MAX:
+-        return vio.getQueueSize();
++        return vio.getQueueMaxSize();
+ 
+       case OFF_QUEUE_NUM:
+         // TODO: We don't support queue resizing, so ignore this for now.
+@@ -138,7 +136,14 @@
+         return VirtQueue::ALIGN_SIZE;
+ 
+       case OFF_QUEUE_PFN:
+-        return vio.getQueueAddress();
++        return modern ? 0 : vio.getQueueAddress();
++
++      case OFF_QUEUE_READY:
++        return modern && vio.getQueueReady();
++
++      case OFF_CONFIG_GENERATION:
++        // No mutable device configuration is advertised by these models.
++        return 0;
+ 
+       case OFF_INTERRUPT_STATUS:
+         return interruptStatus;
+@@ -188,7 +193,9 @@
+         return;
+ 
+       case OFF_GUEST_FEATURES:
+-        if (guestFeaturesSelect == 0) {
++        if (modern) {
++            vio.setGuestFeatureWord(guestFeaturesSelect, value);
++        } else if (guestFeaturesSelect == 0) {
+             vio.setGuestFeatures(value);
+         } else if (value != 0) {
+             warn("Setting unimplemented guest features register %u: %u\n",
+@@ -212,9 +219,33 @@
+         return;
+ 
+       case OFF_QUEUE_NUM:
+-        // TODO: We don't support queue resizing, so ignore this for now.
+-        warn_once("Ignoring queue resize hint. Requested size: %u\n", value);
+-        return;
++        panic_if(value > 0xffff, "Virtqueue size does not fit 16 bits");
++        vio.setQueueSize(value);
++        return;
++
++      case OFF_QUEUE_READY:
++        if (modern) {
++            panic_if(value > 1, "Invalid QueueReady value");
++            vio.setQueueReady(value);
++        }
++        return;
++
++      case OFF_QUEUE_DESC_LOW:
++      case OFF_QUEUE_DESC_HIGH:
++      case OFF_QUEUE_DRIVER_LOW:
++      case OFF_QUEUE_DRIVER_HIGH:
++      case OFF_QUEUE_DEVICE_LOW:
++      case OFF_QUEUE_DEVICE_HIGH: {
++          if (!modern)
++              return;
++          const unsigned area = (offset - OFF_QUEUE_DESC_LOW) / 0x10;
++          const bool high = offset & 4;
++          const Addr old = vio.getModernQueueAddress(area);
++          const Addr address = high ? (old & 0xffffffffULL) | (Addr(value) << 32)
++              : (old & 0xffffffff00000000ULL) | value;
++          vio.setModernQueueAddress(area, address);
++          return;
++      }
+ 
+       case OFF_QUEUE_ALIGN:
+         // TODO: We currently only support the hard-coded 4k alignment used
+@@ -224,7 +255,8 @@
+         return;
+ 
+       case OFF_QUEUE_PFN:
+-        vio.setQueueAddress(value);
++        if (!modern)
++            vio.setQueueAddress(value);
+         return;
+ 
+       case OFF_QUEUE_NOTIFY:
+@@ -238,6 +270,12 @@
+       case OFF_STATUS:
+         panic_if(value > 0xff, "Unexpected status: 0x%x\n", value);
+         vio.setDeviceStatus(value);
++        if (!value) {
++            hostFeaturesSelect = 0;
++            guestFeaturesSelect = 0;
++            pageSize = 0;
++            setInterrupts(0);
++        }
+         return;
+ 
+         /* Read-only registers */
+@@ -258,6 +296,28 @@
+ }
+ 
+ void
++MmioVirtIO::serialize(CheckpointOut &cp) const
++{
++    BasicPioDevice::serialize(cp);
++    SERIALIZE_SCALAR(hostFeaturesSelect);
++    SERIALIZE_SCALAR(guestFeaturesSelect);
++    SERIALIZE_SCALAR(pageSize);
++    SERIALIZE_SCALAR(interruptStatus);
++}
++
++void
++MmioVirtIO::unserialize(CheckpointIn &cp)
++{
++    BasicPioDevice::unserialize(cp);
++    UNSERIALIZE_SCALAR(hostFeaturesSelect);
++    UNSERIALIZE_SCALAR(guestFeaturesSelect);
++    UNSERIALIZE_SCALAR(pageSize);
++    uint32_t restoredInterrupts;
++    paramIn(cp, "interruptStatus", restoredInterrupts);
++    setInterrupts(restoredInterrupts);
++}
++
++void
+ MmioVirtIO::kick()
+ {
+     DPRINTF(VIOIface, "kick(): Sending interrupt...\n");
+diff --git a/src/dev/virtio/VirtIO.py b/src/dev/virtio/VirtIO.py
+--- a/src/dev/virtio/VirtIO.py
++++ b/src/dev/virtio/VirtIO.py
+@@ -39,6 +39,7 @@
+ from m5.objects.PciDevice import (
+     PciEndpoint,
+     PciIoBar,
++    PciMemBar,
+ )
+ from m5.params import *
+ from m5.proxy import *
+@@ -69,6 +70,7 @@
+     cxx_class = "gem5::PciVirtIO"
+ 
+     vio = Param.VirtIODeviceBase(VirtIODummyDevice(), "VirtIO device")
++    modern = Param.Bool(False, "VirtIO 1.x split-ring PCI transport")
+ 
+     VendorID = 0x1AF4
+     SubsystemVendorID = VendorID
+@@ -80,3 +82,11 @@
+     BAR0 = PciIoBar(size="4B")
+ 
+     InterruptPin = 0x01  # Use #INTA
++
++
++
++class PciVirtIOModern(PciVirtIO):
++    """Selects the modern transport without changing legacy BAR defaults."""
++
++    modern = True
++    BAR1 = PciMemBar(size="4KiB")
+diff --git a/src/dev/virtio/pci.hh b/src/dev/virtio/pci.hh
+--- a/src/dev/virtio/pci.hh
++++ b/src/dev/virtio/pci.hh
+@@ -55,10 +55,17 @@
+     virtual ~PciVirtIO();
+ 
+     void kick();
++    void serialize(CheckpointOut &cp) const override;
++    void unserialize(CheckpointIn &cp) override;
+ 
+   protected:
+     Tick readDevice(PacketPtr pkt) override;
+     Tick writeDevice(PacketPtr pkt) override;
++    Tick readConfig(PacketPtr pkt) override;
++    Tick writeConfig(PacketPtr pkt) override;
++    Tick readModern(PacketPtr pkt, Addr offset);
++    Tick writeModern(PacketPtr pkt, Addr offset);
++    unsigned modernAccessWidth(Addr offset, unsigned size) const;
+ 
+     /** @{ */
+     /** Offsets into VirtIO header (BAR0 relative). */
+@@ -78,6 +85,13 @@
+     static const Addr BAR0_SIZE_BASE = OFF_VIO_DEVICE;
+ 
+ 
++    static constexpr Addr MODERN_NOTIFY = 0x100;
++    static constexpr Addr MODERN_ISR = 0x200;
++    static constexpr Addr MODERN_DEVICE = 0x300;
++
++    const bool modern;
++    uint32_t deviceFeatureSelect;
++    uint32_t driverFeatureSelect;
+     VirtIODeviceBase::QueueID queueNotify;
+ 
+     bool interruptDeliveryPending;
+diff --git a/src/dev/virtio/pci.cc b/src/dev/virtio/pci.cc
+--- a/src/dev/virtio/pci.cc
++++ b/src/dev/virtio/pci.cc
+@@ -37,6 +37,8 @@
+ 
+ #include "dev/virtio/pci.hh"
+ 
++#include <array>
++
+ #include "base/bitfield.hh"
+ #include "base/compiler.hh"
+ #include "debug/VIOIface.hh"
+@@ -47,11 +49,22 @@
+ {
+ 
+ PciVirtIO::PciVirtIO(const Params &params)
+-    : PciEndpoint(params), queueNotify(0), interruptDeliveryPending(false),
++    : PciEndpoint(params), modern(params.modern), deviceFeatureSelect(0),
++      driverFeatureSelect(0), queueNotify(0), interruptDeliveryPending(false),
+       vio(*params.vio)
+ {
+     // Override the subsystem ID with the device ID from VirtIO
+     config().subsystemID = htole(vio.deviceId);
++    if (modern) {
++        vio.requireModernByteOrder();
++        fatal_if(!dynamic_cast<PciMemBar *>(BARs[1]),
++                 "Modern PCI transport requires a memory BAR1");
++        config().device = htole(uint16_t(0x1040 + vio.deviceId));
++        config().revision = 1;
++        config().capabilityPtr = 0x40;
++        config().status = htole(uint16_t(letoh(config().status) | 0x10));
++        BARs[1]->size(alignToPowerOfTwo(MODERN_DEVICE + vio.configSize));
++    }
+ 
+     // The kernel driver expects the BAR size to be an exact power of
+     // two. Nothing else is supported. Therefore, we need to force
+@@ -74,6 +87,8 @@
+     Addr offset;
+     if (!getBAR(pkt->getAddr(), bar, offset))
+         panic("Invalid PCI memory access to unmapped memory.\n");
++    if (modern && bar == 1)
++        return readModern(pkt, offset);
+     assert(bar == 0);
+ 
+     DPRINTF(VIOIface, "Reading offset 0x%x [len: %i]\n", offset, size);
+@@ -155,6 +170,8 @@
+     Addr offset;
+     if (!getBAR(pkt->getAddr(), bar, offset))
+         panic("Invalid PCI memory access to unmapped memory.\n");
++    if (modern && bar == 1)
++        return writeModern(pkt, offset);
+     assert(bar == 0);
+ 
+     DPRINTF(VIOIface, "Writing offset 0x%x [len: %i]\n", offset, size);
+@@ -219,6 +236,215 @@
+     return 0;
+ }
+ 
++unsigned
++PciVirtIO::modernAccessWidth(Addr offset, unsigned size) const
++{
++    switch (offset) {
++      case 0: case 4: case 8: case 12:
++        return 4;
++      case 16: case 18: case 22: case 24: case 26: case 28: case 30:
++      case MODERN_NOTIFY:
++        return 2;
++      case 20: case 21: case MODERN_ISR:
++        return 1;
++      case 32: case 40: case 48:
++        return size == 8 ? 8 : 4;
++      case 36: case 44: case 52:
++        return 4;
++      default:
++        return 0;
++    }
++}
++
++Tick
++PciVirtIO::readConfig(PacketPtr pkt)
++{
++    const unsigned offset = pkt->getAddr() & PCI_CONFIG_SIZE;
++    if (!modern || offset < 0x40)
++        return PciEndpoint::readConfig(pkt);
++
++    // Four vendor capabilities point to disjoint BAR1 regions. The notify
++    // multiplier is zero: every queue writes its index at the same port.
++    std::array<uint8_t, 0x84> caps{};
++    auto capability = [&](unsigned base, uint8_t next, uint8_t type,
++                          uint32_t region, uint32_t length, bool notify) {
++        caps[base] = 0x09;
++        caps[base + 1] = next;
++        caps[base + 2] = notify ? 20 : 16;
++        caps[base + 3] = type;
++        caps[base + 4] = 1;
++        for (unsigned byte = 0; byte < 4; ++byte) {
++            caps[base + 8 + byte] = region >> (8 * byte);
++            caps[base + 12 + byte] = length >> (8 * byte);
++        }
++    };
++    capability(0x40, 0x50, 1, 0, 56, false);
++    capability(0x50, 0x64, 2, MODERN_NOTIFY, 2, true);
++    capability(0x64, 0x74, 3, MODERN_ISR, 1, false);
++    capability(0x74, 0, 4, MODERN_DEVICE, vio.configSize, false);
++
++    const unsigned size = pkt->getSize();
++    panic_if(size != 1 && size != 2 && size != 4, "Invalid PCI config read");
++    uint32_t value = 0;
++    for (unsigned byte = 0; byte < size; ++byte) {
++        if (offset + byte < caps.size())
++            value |= uint32_t(caps[offset + byte]) << (8 * byte);
++    }
++    pkt->makeAtomicResponse();
++    if (size == 1) pkt->setLE<uint8_t>(value);
++    if (size == 2) pkt->setLE<uint16_t>(value);
++    if (size == 4) pkt->setLE<uint32_t>(value);
++    return configDelay;
++}
++
++Tick
++PciVirtIO::writeConfig(PacketPtr pkt)
++{
++    const unsigned offset = pkt->getAddr() & PCI_CONFIG_SIZE;
++    if (!modern || offset < 0x40)
++        return PciEndpoint::writeConfig(pkt);
++    pkt->makeAtomicResponse();
++    return configDelay;
++}
++
++Tick
++PciVirtIO::readModern(PacketPtr pkt, Addr offset)
++{
++    const unsigned size = pkt->getSize();
++    if (offset >= MODERN_DEVICE) {
++        vio.readConfig(pkt, offset - MODERN_DEVICE);
++        return 0;
++    }
++    panic_if(size != modernAccessWidth(offset, size),
++             "Invalid modern VirtIO PCI read width or offset");
++    uint64_t value = 0;
++    unsigned required = 0;
++    switch (offset) {
++      case 0: value = deviceFeatureSelect; required = 4; break;
++      case 4:
++        value = deviceFeatureSelect < 2 ?
++            vio.offeredFeatures(true) >> (deviceFeatureSelect * 32) : 0;
++        required = 4; break;
++      case 8: value = driverFeatureSelect; required = 4; break;
++      case 12:
++        value = driverFeatureSelect < 2 ?
++            vio.getGuestFeatures() >> (driverFeatureSelect * 32) : 0;
++        required = 4; break;
++      case 16: value = 0xffff; required = 2; break;
++      case 18: value = vio.getQueueCount(); required = 2; break;
++      case 20: value = vio.getDeviceStatus(); required = 1; break;
++      case 21: required = 1; break;
++      case 22: value = vio.getQueueSelect(); required = 2; break;
++      case 24: value = vio.getQueueSize(); required = 2; break;
++      case 26: value = 0xffff; required = 2; break;
++      case 28: value = vio.getQueueReady(); required = 2; break;
++      case 30: required = 2; break;
++      case 32: case 36: case 40: case 44: case 48: case 52: {
++          const unsigned area = (offset - 32) / 8;
++          const bool high = offset & 4;
++          value = vio.getModernQueueAddress(area) >> (high ? 32 : 0);
++          required = !high && size == 8 ? 8 : 4;
++          break;
++      }
++      case MODERN_ISR:
++        required = 1;
++        value = interruptDeliveryPending ? 1 : 0;
++        interruptDeliveryPending = false;
++        intrClear();
++        break;
++      default: panic("Invalid modern VirtIO PCI read at %#x", offset);
++    }
++    panic_if(size != required, "Invalid modern VirtIO PCI read width");
++    pkt->makeResponse();
++    if (size == 1) pkt->setLE<uint8_t>(value);
++    if (size == 2) pkt->setLE<uint16_t>(value);
++    if (size == 4) pkt->setLE<uint32_t>(value);
++    if (size == 8) pkt->setLE<uint64_t>(value);
++    return 0;
++}
++
++Tick
++PciVirtIO::writeModern(PacketPtr pkt, Addr offset)
++{
++    const unsigned size = pkt->getSize();
++    if (offset >= MODERN_DEVICE) {
++        vio.writeConfig(pkt, offset - MODERN_DEVICE);
++        return 0;
++    }
++    panic_if(size != modernAccessWidth(offset, size),
++             "Invalid modern VirtIO PCI write width or offset");
++    const uint64_t value = size == 1 ? pkt->getLE<uint8_t>() :
++        size == 2 ? pkt->getLE<uint16_t>() :
++        size == 4 ? pkt->getLE<uint32_t>() : pkt->getLE<uint64_t>();
++    unsigned required = 0;
++    switch (offset) {
++      case 0: deviceFeatureSelect = value; required = 4; break;
++      case 8: driverFeatureSelect = value; required = 4; break;
++      case 12:
++        vio.setGuestFeatureWord(driverFeatureSelect, value);
++        required = 4; break;
++      case 16: required = 2; break;
++      case 20:
++        vio.setDeviceStatus(value);
++        if (!value) {
++            deviceFeatureSelect = 0;
++            driverFeatureSelect = 0;
++            interruptDeliveryPending = false;
++            intrClear();
++        }
++        required = 1; break;
++      case 22: vio.setQueueSelect(value); required = 2; break;
++      case 24: vio.setQueueSize(value); required = 2; break;
++      case 26: required = 2; break;
++      case 28:
++        panic_if(value != 1, "Invalid PCI queue-enable value");
++        vio.setQueueReady(true);
++        required = 2; break;
++      case 32: case 36: case 40: case 44: case 48: case 52: {
++          const unsigned area = (offset - 32) / 8;
++          const bool high = offset & 4;
++          required = !high && size == 8 ? 8 : 4;
++          const Addr old = vio.getModernQueueAddress(area);
++          const Addr address = size == 8 ? value : high ?
++              (old & 0xffffffffULL) | (value << 32) :
++              (old & 0xffffffff00000000ULL) | value;
++          vio.setModernQueueAddress(area, address);
++          break;
++      }
++      case MODERN_NOTIFY:
++        vio.onNotify(value);
++        required = 2; break;
++      default: panic("Invalid modern VirtIO PCI write at %#x", offset);
++    }
++    panic_if(size != required, "Invalid modern VirtIO PCI write width");
++    pkt->makeResponse();
++    return 0;
++}
++
++void
++PciVirtIO::serialize(CheckpointOut &cp) const
++{
++    PciEndpoint::serialize(cp);
++    SERIALIZE_SCALAR(deviceFeatureSelect);
++    SERIALIZE_SCALAR(driverFeatureSelect);
++    SERIALIZE_SCALAR(queueNotify);
++    SERIALIZE_SCALAR(interruptDeliveryPending);
++}
++
++void
++PciVirtIO::unserialize(CheckpointIn &cp)
++{
++    PciEndpoint::unserialize(cp);
++    UNSERIALIZE_SCALAR(deviceFeatureSelect);
++    UNSERIALIZE_SCALAR(driverFeatureSelect);
++    UNSERIALIZE_SCALAR(queueNotify);
++    UNSERIALIZE_SCALAR(interruptDeliveryPending);
++    if (interruptDeliveryPending)
++        intrPost();
++    else
++        intrClear();
++}
++
+ void
+ PciVirtIO::kick()
+ {

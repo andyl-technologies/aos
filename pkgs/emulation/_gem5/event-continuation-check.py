@@ -18,6 +18,12 @@ mode, prefix = sys.argv[1:]
 m5.core.disableAllListeners()
 root = Root(full_system=False)
 m5.instantiate()
+try:
+    m5.crucibleStateInventory()
+except RuntimeError:
+    pass
+else:
+    raise AssertionError("inspection performed model startup")
 queue = getEventQueue(0)
 generator = random.Random(173953)
 memory = [generator.getrandbits(64) for _ in range(128)]
@@ -30,6 +36,12 @@ class PendingEvent(Event):
         self.identifier = identifier
 
     def __call__(self):
+        try:
+            m5.crucibleStateInventory()
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("inspection entered an executing model")
         value = generator.getrandbits(64)
         memory[self.identifier] ^= value
         trace.append((m5.curTick(), self.identifier, value, memory[self.identifier]))
@@ -38,6 +50,15 @@ class PendingEvent(Event):
 events = [PendingEvent(index) for index in range(16)]
 for index, event in enumerate(events):
     queue.schedule(event, 10 + index // 4)
+
+m5.simulateUntilBoundary(0, 0)
+initial_inventory = m5.crucibleStateInventory()
+assert initial_inventory == m5.crucibleStateInventory()
+assert initial_inventory["complete"] is False
+assert initial_inventory["unsupported_domains"]
+assert initial_inventory["native_tick"] == "0"
+identities = [item["event_identity"] for item in initial_inventory["events"]]
+assert len(identities) == 16 and len(set(identities)) == 16
 
 
 def state_fingerprint():
@@ -54,6 +75,7 @@ def state_fingerprint():
             boundary.nextTick,
             boundary.nextPriority,
         ],
+        "native_inventory": m5.crucibleStateInventory(),
     }
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
@@ -71,6 +93,7 @@ if mode in ("bounded", "capture"):
     assert cut.hasNextEvent and cut.nextTick == 10
     assert len(trace) == 1 and trace[0][1] == 3
     assert sum(event.scheduled() for event in events) == 15
+    assert [item["event_identity"] for item in m5.crucibleStateInventory()["events"]] == identities[1:]
     before = state_fingerprint()
 
     if mode == "capture":

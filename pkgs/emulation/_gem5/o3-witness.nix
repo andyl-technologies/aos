@@ -52,17 +52,18 @@ mkDerivation {
         ./native-workload > native.guest
         ${coreutils}/bin/timeout 180 ${gem5}/bin/gem5 \
           --outdir=baseline-output --debug-file=event.trace \
-          ${./o3-continuation-check.py} ${guestIsa} baseline "$PWD/workload" "$PWD/baseline"
+          ${./o3-continuation-check.py} ${guestIsa} baseline "$PWD/workload" "$PWD/baseline" ${./cpu-state-coverage-check.py} ${./memory-state-coverage-check.py}
         test "$(wc -c < baseline.guest)" -eq 8
         cmp native.guest baseline.guest
 
+        cp workload origin/workload
         CRUCIBLE_CAPTURE_RESOURCE_ROOT="$PWD/origin" \
           ${coreutils}/bin/timeout 180 ${dmtcp}/bin/dmtcp_launch \
           --new-coordinator --coord-port 0 --interval 0 --no-gzip \
           --with-plugin ${processCustody}/lib/libcrucible-resource-custody.so \
           --ckpt-signal 40 --ckptdir "$PWD/images" --tmpdir "$PWD/tmp" \
           ${gem5}/bin/gem5 --outdir="$PWD/origin/output" --debug-file=event.trace \
-          ${./o3-continuation-check.py} ${guestIsa} capture "$PWD/workload" "$PWD/origin/capture"
+          ${./o3-continuation-check.py} ${guestIsa} capture "$PWD/origin/workload" "$PWD/origin/capture" ${./cpu-state-coverage-check.py} ${./memory-state-coverage-check.py}
         cmp baseline.original origin/capture.original
         cmp baseline.guest origin/capture.guest
         cmp baseline-output/event.trace origin/output/event.trace

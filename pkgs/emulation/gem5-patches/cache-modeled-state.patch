@@ -1,0 +1,544 @@
+--- a/src/mem/cache/base.cc
++++ b/src/mem/cache/base.cc
+@@ -44,6 +44,7 @@
+  */
+ 
+ #include "mem/cache/base.hh"
++#include "sim/crucible_state.hh"
+ 
+ #include "base/compiler.hh"
+ #include "base/logging.hh"
+@@ -67,6 +68,33 @@
+ 
+ namespace gem5
+ {
++
++std::map<std::string, std::string>
++BaseCache::crucibleModeledFields() const
++{
++    CrucibleStateWriter writer;
++    writer.set("cache.blocked", blocked);
++    writer.set("cache.order", order);
++    writer.set("cache.blocked_cycle", static_cast<uint64_t>(blockedCycle));
++    writer.string("cache.tags", tags ? tags->name() : "null");
++    writer.string("cache.compressor", compressor ? compressor->name() : "null");
++    writer.string("cache.prefetcher", prefetcher ? prefetcher->name() : "null");
++    writer.string("cache.write_allocator", writeAllocator ? writeAllocator->name() : "null");
++    mshrQueue.crucibleFields(writer, "cache.mshr");
++    writeBuffer.crucibleFields(writer, "cache.write_buffer");
++    writer.set("cache.has_temporary_block", tempBlock != nullptr);
++    if (tempBlock && tempBlock->isValid()) {
++        writer.set("cache.temporary_address", tempBlock->getAddr());
++        writer.set("cache.temporary_ready", tempBlock->whenReady);
++        writer.bytes("cache.temporary_data", tempBlock->data, blkSize);
++    }
++    writer.set("cache.has_temporary_writeback", tempBlockWriteback != nullptr);
++    if (tempBlockWriteback)
++        tempBlockWriteback->crucibleFields(writer, "cache.temporary_writeback");
++    writer.string("coverage.unsupported", "ports-crossbar-arbitration-snoop-request-set-prefetch-compression-write-allocation-and-temporary-block-metadata");
++    return std::move(writer.fields);
++}
++
+ 
+ BaseCache::CacheResponsePort::CacheResponsePort(const std::string &_name,
+                                           BaseCache& _cache,
+--- a/src/mem/cache/base.hh
++++ b/src/mem/cache/base.hh
+@@ -113,6 +113,7 @@
+     };
+ 
+   public:
++    std::map<std::string, std::string> crucibleModeledFields() const override;
+     /**
+      * Reasons for caches to be blocked.
+      */
+--- a/src/mem/cache/mshr.hh
++++ b/src/mem/cache/mshr.hh
+@@ -120,6 +120,42 @@
+ 
+   public:
+ 
++    /** Reads allocated miss/target state without servicing or promoting targets. */
++    void crucibleFields(CrucibleStateWriter &writer, const std::string &prefix) const
++    {
++        writer.set(prefix + ".downstream_pending", downstreamPending);
++        writer.set(prefix + ".whole_line_write", wasWholeLineWrite);
++        writer.set(prefix + ".forward", isForward);
++        if (inService) {
++            writer.set(prefix + ".pending_modified", pendingModified);
++            writer.set(prefix + ".post_invalidate", postInvalidate);
++            writer.set(prefix + ".post_downgrade", postDowngrade);
++        }
++        auto visit = [&](const std::string &name, const TargetList &list) {
++            writer.set(name + ".size", list.size());
++            writer.set(name + ".needs_writable", list.needsWritable);
++            writer.set(name + ".has_upgrade", list.hasUpgrade);
++            writer.set(name + ".allocate_on_fill", list.allocOnFill);
++            writer.set(name + ".from_cache", list.hasFromCache);
++            size_t ordinal = 0;
++            for (const auto &target : list) {
++                const auto key = name + "[" + std::to_string(ordinal++) + "]";
++                writer.set(key + ".received_at", target.recvTime);
++                writer.set(key + ".ready_at", target.readyTime);
++                writer.set(key + ".order", target.order);
++                writer.set(key + ".source", target.source);
++                writer.set(key + ".marked_pending", target.markedPending);
++                writer.set(key + ".allocate_on_fill", target.allocOnFill);
++                if (!target.pkt)
++                    throw std::runtime_error("missing modeled miss target packet");
++                target.pkt->crucibleFields(writer, key + ".packet");
++            }
++        };
++        visit(prefix + ".targets", targets);
++        visit(prefix + ".deferred_targets", deferredTargets);
++        writer.string(prefix + ".coverage.unsupported", "write-merging-bitmap-and-list-iterator-references");
++    }
++
+     /** Track if we sent this as a whole line write or not */
+     bool wasWholeLineWrite;
+ 
+--- a/src/mem/cache/queue.hh
++++ b/src/mem/cache/queue.hh
+@@ -124,6 +124,42 @@
+ 
+   public:
+ 
++    /** Reads exact storage identity and native list order without queue effects. */
++    void crucibleFields(CrucibleStateWriter &writer, const std::string &prefix) const
++    {
++        writer.set(prefix + ".capacity", numEntries);
++        writer.set(prefix + ".reserve", numReserve);
++        writer.set(prefix + ".in_service", _numInService);
++        writer.set(prefix + ".allocated", allocated);
++        auto identity = [&](const Entry *entry) {
++            for (size_t i = 0; i < entries.size(); ++i)
++                if (&entries[i] == entry)
++                    return i;
++            throw std::runtime_error("cache queue entry outside owned storage");
++        };
++        auto visit = [&](const std::string &name, const auto &list, bool inspect) {
++            writer.set(name + ".size", list.size());
++            size_t ordinal = 0;
++            for (const auto entry : list) {
++                const auto key = name + "[" + std::to_string(ordinal++) + "]";
++                writer.set(key + ".slot", identity(entry));
++                if (inspect) {
++                    writer.set(key + ".ready_time", entry->readyTime);
++                    writer.set(key + ".uncacheable", entry->_isUncacheable);
++                    writer.set(key + ".in_service", entry->inService);
++                    writer.set(key + ".order", entry->order);
++                    writer.set(key + ".block_address", entry->blkAddr);
++                    writer.set(key + ".block_size", entry->blkSize);
++                    writer.set(key + ".secure", entry->isSecure);
++                    entry->crucibleFields(writer, key);
++                }
++            }
++        };
++        visit(prefix + ".allocation_order", allocatedList, true);
++        visit(prefix + ".ready_order", readyList, false);
++        visit(prefix + ".free_order", freeList, false);
++    }
++
+     /**
+      * Create a queue with a given number of entries.
+      *
+--- a/src/mem/cache/write_queue_entry.hh
++++ b/src/mem/cache/write_queue_entry.hh
+@@ -75,6 +75,23 @@
+     friend class WriteQueue;
+ 
+   public:
++
++    /** Reads retained write targets without packet service or deallocation. */
++    void crucibleFields(CrucibleStateWriter &writer, const std::string &prefix) const
++    {
++        writer.set(prefix + ".targets", targets.size());
++        size_t ordinal = 0;
++        for (const auto &target : targets) {
++            const auto key = prefix + ".target[" + std::to_string(ordinal++) + "]";
++            writer.set(key + ".received_at", target.recvTime);
++            writer.set(key + ".ready_at", target.readyTime);
++            writer.set(key + ".order", target.order);
++            if (!target.pkt)
++                throw std::runtime_error("missing modeled write target packet");
++            target.pkt->crucibleFields(writer, key + ".packet");
++        }
++        writer.string(prefix + ".coverage.unsupported", "list-iterator-references");
++    }
+     class TargetList : public std::list<Target>
+     {
+ 
+--- a/src/mem/mem_ctrl.cc
++++ b/src/mem/mem_ctrl.cc
+@@ -86,6 +86,11 @@
+             writer.set(key + ".address", packet->addr);
+             writer.set(key + ".size", packet->size);
+             writer.set(key + ".qos", packet->_qosValue);
++            writer.reference(key + ".identity", packet, "memory-packet");
++            writer.reference(key + ".burst_helper", packet->burstHelper, "burst-helper");
++            if (!packet->pkt)
++                throw std::runtime_error("missing controller request packet");
++            packet->pkt->crucibleFields(writer, key + ".packet");
+             writer.set(key + ".split", packet->burstHelper != nullptr);
+             if (packet->burstHelper) {
+                 writer.set(key + ".burst_count", packet->burstHelper->burstCount);
+--- a/src/mem/packet.hh
++++ b/src/mem/packet.hh
+@@ -63,6 +63,7 @@
+ #include "mem/htm.hh"
+ #include "mem/request.hh"
+ #include "sim/byteswap.hh"
++#include "sim/crucible_state.hh"
+ 
+ namespace gem5
+ {
+@@ -368,6 +369,59 @@
+   public:
+     typedef MemCmd::Command Command;
+ 
++    /** Reads explicit packet state; ID is pointer-derived and never emitted. */
++    void crucibleFields(CrucibleStateWriter &writer, const std::string &prefix) const
++    {
++        writer.reference(prefix + ".identity", this, "packet");
++        if (!writer.beginBody(this, "packet"))
++            return;
++        writer.reference(prefix + ".request", req.get(), "request");
++        if (req)
++            req->crucibleFields(writer, prefix + ".request_body");
++        writer.reference(prefix + ".sender", senderState, "sender-state");
++        std::unordered_set<const SenderState *> visited;
++        auto sender = senderState;
++        size_t ordinal = 0;
++        while (sender) {
++            if (ordinal >= 65536 || !visited.emplace(sender).second)
++                throw std::runtime_error("invalid modeled sender-state chain");
++            const auto key = prefix + ".sender[" + std::to_string(ordinal++) + "]";
++            writer.reference(key + ".identity", sender, "sender-state");
++            writer.reference(key + ".predecessor", sender->predecessor, "sender-state");
++            if (writer.beginBody(sender, "sender-state")) {
++                writer.string(key + ".native_type", typeid(*sender).name());
++                sender->crucibleFields(writer, key);
++            }
++            sender = sender->predecessor;
++        }
++        writer.set(prefix + ".sender_depth", ordinal);
++        writer.set(prefix + ".command", cmd.toInt());
++        writer.set(prefix + ".flags", unsigned(flags));
++        writer.set(prefix + ".secure", _isSecure);
++        writer.set(prefix + ".qos", _qosValue);
++        writer.set(prefix + ".header_delay", headerDelay);
++        writer.set(prefix + ".snoop_delay", snoopDelay);
++        writer.set(prefix + ".payload_delay", payloadDelay);
++        writer.set(prefix + ".htm_return", htmReturnReason);
++        writer.set(prefix + ".htm_uid", htmTransactionUid);
++        if (flags.isSet(VALID_ADDR))
++            writer.set(prefix + ".address", addr);
++        if (flags.isSet(VALID_SIZE)) {
++            writer.set(prefix + ".size", size);
++            if (data) {
++                if (size > 1048576)
++                    throw std::runtime_error("modeled packet byte extent exceeds admission");
++                writer.bytes(prefix + ".data", data, size);
++            }
++        }
++        writer.set(prefix + ".has_storage", data != nullptr);
++        writer.set(prefix + ".functional_bytes", bytesValid.size());
++        for (size_t i = 0; i < bytesValid.size(); ++i)
++            writer.set(prefix + ".functional_byte[" + std::to_string(i) + "]", bool(bytesValid[i]));
++        writer.string(prefix + ".coverage.unsupported", "request-private-fields-and-polymorphic-sender-payloads");
++    }
++
++
+     /// The command field of the packet.
+     MemCmd cmd;
+ 
+@@ -470,6 +524,13 @@
+         SenderState* predecessor;
+         SenderState() : predecessor(NULL) {}
+         virtual ~SenderState() {}
++
++        /** Unknown subtype payloads remain explicit unsupported state. */
++        virtual void crucibleFields(CrucibleStateWriter &writer,
++                                    const std::string &prefix) const
++        {
++            writer.string(prefix + ".coverage.unsupported", "unknown-polymorphic-sender-state");
++        }
+     };
+ 
+     /**
+--- a/src/mem/request.hh
++++ b/src/mem/request.hh
+@@ -64,6 +64,7 @@
+ #include "cpu/inst_seq.hh"
+ #include "mem/htm.hh"
+ #include "sim/cur_tick.hh"
++#include "sim/crucible_state.hh"
+ 
+ namespace gem5
+ {
+@@ -486,6 +487,65 @@
+      *  _flags and privateFlags are cleared by Flags default
+      *  constructor.)
+      */
++
++    /** Reads request fields with validity guards and preserves shared aliases. */
++    void crucibleFields(CrucibleStateWriter &writer, const std::string &prefix) const
++    {
++        writer.reference(prefix + ".identity", this, "request");
++        if (!writer.beginBody(this, "request"))
++            return;
++        writer.set(prefix + ".flags", uint64_t(_flags));
++        writer.set(prefix + ".coherence_flags", uint64_t(_cacheCoherenceFlags));
++        writer.set(prefix + ".validity", unsigned(privateFlags));
++        writer.set(prefix + ".requestor", _requestorId);
++        writer.set(prefix + ".started_at", _time);
++        writer.set(prefix + ".task", _taskId);
++        writer.set(prefix + ".system_request", _systemReq);
++        writer.set(prefix + ".translation_delta", translateDelta);
++        writer.set(prefix + ".access_delta", accessDelta);
++        writer.set(prefix + ".cache_depth", depth);
++        if (privateFlags.isSet(VALID_PADDR))
++            writer.set(prefix + ".physical_address", _paddr);
++        if (privateFlags.isSet(VALID_VADDR))
++            writer.set(prefix + ".virtual_address", _vaddr);
++        if (privateFlags.isSet(VALID_SIZE))
++            writer.set(prefix + ".size", _size);
++        if (privateFlags.isSet(VALID_INST_SEQ_NUM))
++            writer.set(prefix + ".instruction_sequence", _reqInstSeqNum);
++        if (privateFlags.isSet(VALID_PC))
++            writer.set(prefix + ".pc", _pc);
++        if (privateFlags.isSet(VALID_CONTEXT_ID))
++            writer.set(prefix + ".context", _contextId);
++        if (privateFlags.isSet(VALID_EXTRA_DATA))
++            writer.set(prefix + ".extra_data", _extraData);
++        if (privateFlags.isSet(VALID_STREAM_ID))
++            writer.set(prefix + ".stream", _streamId);
++        if (privateFlags.isSet(VALID_SUBSTREAM_ID))
++            writer.set(prefix + ".substream", _substreamId);
++        if (privateFlags.isSet(VALID_HTM_ABORT_CAUSE))
++            writer.set(prefix + ".htm_abort", _htmAbortCause);
++        if (privateFlags.isSet(VALID_INST_COUNT))
++            writer.set(prefix + ".instruction_count", _instCount);
++        writer.set(prefix + ".byte_enable_count", _byteEnable.size());
++        for (size_t i = 0; i < _byteEnable.size(); ++i)
++            writer.set(prefix + ".byte_enable[" + std::to_string(i) + "]", bool(_byteEnable[i]));
++        writer.set(prefix + ".local_accessor", bool(_localAccessor));
++        writer.reference(prefix + ".atomic_operator", atomicOpFunctor.get(), "atomic-operator");
++        writer.set(prefix + ".extensions", extensions.size());
++        size_t ordinal = 0;
++        for (const auto &extension : extensions) {
++            const auto key = prefix + ".extension[" + std::to_string(ordinal++) + "]";
++            if (!extension)
++                throw std::runtime_error("missing request extension storage");
++            writer.reference(key + ".identity", extension.get(), "request-extension");
++            writer.set(key + ".type_id", extension->getExtensionID());
++            writer.string(key + ".native_type", typeid(*extension).name());
++        }
++        // The minimal/copy upstream constructors do not initialize the GPU
++        // functional flag. CPU-only profiles never qualify or read that field.
++        writer.string(prefix + ".coverage.unsupported", "local-accessor-atomic-extension-payloads-and-unqualified-gpu-state");
++    }
++
+     Request() {}
+ 
+     /**
+--- a/src/python/pybind11/event.cc
++++ b/src/python/pybind11/event.cc
+@@ -47,6 +47,7 @@
+ #include "base/random.hh"
+ #include "sim/async.hh"
+ #include "sim/sim_object.hh"
++#include "sim/crucible_state.hh"
+ #include <stdexcept>
+ #include "sim/eventq.hh"
+ #include "sim/sim_events.hh"
+@@ -128,6 +129,7 @@
+             throw std::runtime_error("model is not at an admitted parked boundary");
+         }
+ 
++        CrucibleStateIdentityScope identities;
+         py::dict result;
+         result["schema"] = "crucible.gem5.modeled-state.v1";
+         result["complete"] = false;
+@@ -147,6 +149,7 @@
+         for (const auto &event : getEventQueue(0)->crucibleEventInventory()) {
+             py::dict item;
+             item["event_identity"] = event.identity;
++            item["event_alias"] = event.alias;
+             item["queue_ordinal"] = std::to_string(ordinal++);
+             item["tick"] = std::to_string(event.when);
+             item["priority"] = std::to_string(event.priority);
+@@ -154,6 +157,7 @@
+             item["native_type"] = event.type;
+             item["description"] = event.description;
+             item["payload_complete"] = false;
++            item["modeled_fields"] = event.fields;
+             events.append(item);
+         }
+         result["events"] = events;
+@@ -185,6 +189,16 @@
+         }
+         random["engines"] = engines;
+         result["rng"] = random;
++        py::list references;
++        ordinal = 0;
++        for (const auto &reference : identities.records) {
++            py::dict item;
++            item["reference_identity"] = std::to_string(ordinal++);
++            item["kind"] = reference.kind;
++            item["payload_complete"] = false;
++            references.append(item);
++        }
++        result["reference_ledger"] = references;
+         return result;
+     });
+     m.def("setMaxTick", &set_max_tick, py::arg("tick"));
+--- a/src/sim/crucible_state.hh
++++ b/src/sim/crucible_state.hh
+@@ -9,10 +9,62 @@
+ #include <stdexcept>
+ #include <string>
+ #include <type_traits>
++#include <unordered_map>
++#include <unordered_set>
++#include <typeinfo>
++#include <vector>
+ #include <openssl/sha.h>
+ 
+ namespace gem5
+ {
++
++/** Per-observation alias identities; private addresses never leave this scope. */
++class CrucibleStateIdentityScope
++{
++  public:
++    struct Record { std::string kind; };
++    std::vector<Record> records;
++    inline static thread_local CrucibleStateIdentityScope *active = nullptr;
++
++    CrucibleStateIdentityScope()
++    {
++        if (active)
++            throw std::runtime_error("nested modeled state inspection");
++        active = this;
++    }
++
++    ~CrucibleStateIdentityScope() { active = nullptr; }
++    CrucibleStateIdentityScope(const CrucibleStateIdentityScope &) = delete;
++    CrucibleStateIdentityScope &operator=(const CrucibleStateIdentityScope &) = delete;
++
++    bool beginBody(const void *pointer, const std::string &kind)
++    {
++        reference(pointer, kind);
++        return bodies.emplace(pointer).second;
++    }
++
++    std::string reference(const void *pointer, const std::string &kind)
++    {
++        if (!pointer)
++            return "null";
++        auto existing = identities.find(pointer);
++        if (existing != identities.end()) {
++            if (records[existing->second].kind != kind)
++                throw std::runtime_error("modeled alias has conflicting kinds");
++            return std::to_string(existing->second);
++        }
++        if (records.size() >= 1048576)
++            throw std::runtime_error("modeled reference inventory limit exceeded");
++        const auto identity = records.size();
++        records.push_back({kind});
++        identities.emplace(pointer, identity);
++        return std::to_string(identity);
++    }
++
++  private:
++    std::unordered_map<const void *, size_t> identities;
++    std::unordered_set<const void *> bodies;
++};
+ 
+ /** Canonical, address-free field values for explicitly audited native visitors. */
+ class CrucibleStateWriter
+@@ -33,6 +85,21 @@
+             set(key, static_cast<std::underlying_type_t<T>>(value));
+         else
+             string(key, std::to_string(value));
++    }
++
++    bool beginBody(const void *private_pointer, const std::string &kind)
++    {
++        if (!CrucibleStateIdentityScope::active)
++            throw std::runtime_error("modeled body outside inventory scope");
++        return CrucibleStateIdentityScope::active->beginBody(private_pointer, kind);
++    }
++
++    void reference(const std::string &key, const void *private_pointer,
++                   const std::string &kind)
++    {
++        if (!CrucibleStateIdentityScope::active)
++            throw std::runtime_error("modeled reference outside inventory scope");
++        string(key, CrucibleStateIdentityScope::active->reference(private_pointer, kind));
+     }
+ 
+     void bytes(const std::string &key, const uint8_t *data, size_t size)
+--- a/src/sim/eventq.cc
++++ b/src/sim/eventq.cc
+@@ -43,6 +43,7 @@
+ #include "debug/Checkpoint.hh"
+ 
+ #include <stdexcept>
++#include "sim/crucible_state.hh"
+ #include <typeinfo>
+ 
+ namespace gem5
+@@ -239,9 +240,14 @@
+                 throw std::runtime_error("native event inventory limit exceeded");
+             }
+ #ifndef NDEBUG
+-            result.push_back({std::to_string(event->instance), event->when(),
++            if (!CrucibleStateIdentityScope::active)
++                throw std::runtime_error("event inventory outside modeled scope");
++            result.push_back({std::to_string(event->instance),
++                              CrucibleStateIdentityScope::active->reference(event, "event"),
++                              event->when(),
+                               event->priority(), unsigned(event->flags),
+-                              typeid(*event).name(), event->description()});
++                              typeid(*event).name(), event->description(),
++                              event->crucibleModeledFields()});
+ #else
+             // Fast builds lack stable native event identities. Never expose
+             // allocator addresses as public or canonical object references.
+--- a/src/sim/eventq.hh
++++ b/src/sim/eventq.hh
+@@ -44,6 +44,7 @@
+ #include <memory>
+ #include <string>
+ #include <vector>
++#include <map>
+ 
+ #include "base/debug.hh"
+ #include "base/flags.hh"
+@@ -66,11 +67,13 @@
+ struct CrucibleQueuedEvent
+ {
+     std::string identity;
++    std::string alias;
+     Tick when;
+     int priority;
+     unsigned flags;
+     std::string type;
+     std::string description;
++    std::map<std::string, std::string> fields;
+ };
+ 
+ 
+@@ -462,6 +465,10 @@
+      * @ingroup api_eventq
+      */
+     virtual void process() = 0;
++
++    /** Reads typed callback payloads; an empty visitor does not close coverage. */
++    virtual std::map<std::string, std::string> crucibleModeledFields() const
++    { return {}; }
+ 
+     /**
+      * Determine if the current event is scheduled
