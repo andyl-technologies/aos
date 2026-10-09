@@ -1761,7 +1761,7 @@
         "Occurrence pointer absent/present; root property binding absent/present"
       ],
       "limits_and_malformed_cases": [
-        "Generic-valid contextual refusals: wrong object suffix, primary/gap terminal, missing/extra targets, empty attrs/xattrs, provenance, unrelated attribute, pointer widths0/1/31/33/64 and scalar/container types",
+        "Empty targets independently framed as raw canonical bytes reject through both generic encoder/decoder with Error::Entry and through contextual classification. Generic-valid contextual refusals cover wrong object suffix, primary/gap terminal, extra targets, empty attrs/xattrs, provenance, unrelated attribute, pointer widths0/1/31/33/64 and scalar/container types",
         "Path grammar, component256 and path4097; forbidden role/nonroot/empty properties; historical revision1 preserves structural pointer as inert data while revision2 rejects it in namespace attributes; unsupported semantic tuples"
       ],
       "shared_evidence": "cbor",
