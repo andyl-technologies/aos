@@ -460,9 +460,10 @@ admission.
 Central verification passes 55 targeted tests: the actual source witness, actual
 Ready/adoption failure-custody witness, eight legacy CNP cases, eight SDK cases
 and 37 source-quality cases. All-target strict checks pass across nine crates.
-The required current-master application test-target build remains running at
-this checkpoint. Its result and broader subsequent qualification must be
-recorded separately. Raw original evidence, including failed precursor
+The required current-master application test-target build passes for commit
+`99fd6c6012`, with output `8y959xbrbrqz7z6sv8g8wmx2jicpznhd-aos-test-targets-0.1.0`.
+This result covers the lifecycle integration before the subsequent ARM source
+changes. Raw original evidence, including failed precursor
 recordings, remains local and is never replaced by a successful later cohort.
 
 ## Performance evidence
