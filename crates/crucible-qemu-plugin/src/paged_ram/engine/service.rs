@@ -8,6 +8,32 @@ use super::*;
 mod actor_lifetime;
 pub(super) use actor_lifetime::ActorLifetime;
 
+/// Borrows the native hasher and callback-local failure destination together.
+///
+/// The destination stays synchronous with this read and its caller records the
+/// failure after the source operation and mutex have closed.
+struct BorrowedRootRead<'a> {
+    hasher: Option<&'a NativePageHasher>,
+    io_failure: &'a mut Option<io::Error>,
+}
+
+/// Leaves root I/O owned until the callback records its original failure cut.
+///
+/// Ordinary callers retain their original conversion point. This private relay
+/// has no persistent storage; the borrowed slot closes in the same callback.
+pub(super) fn source_read_failure(
+    error: super::super::source::SourceFetchError,
+    root_io: Option<&mut Option<io::Error>>,
+) -> RamError {
+    match (error, root_io) {
+        (super::super::source::SourceFetchError::Io(error), Some(slot)) => {
+            *slot = Some(error);
+            RamError::Invariant("root source I/O awaits failure custody")
+        }
+        (error, _) => error.into_ram(),
+    }
+}
+
 pub(super) struct FaultService {
     pub(super) registration: Arc<Registration>,
     pub(super) counters: Arc<PagingCounters>,
@@ -252,7 +278,7 @@ impl FaultService {
         coordinate: usize,
         observation: bool,
         scratch: &mut [u8; PAGE_BYTES],
-        hasher: Option<&NativePageHasher>,
+        root: Option<BorrowedRootRead<'_>>,
     ) -> Result<u32, RamError> {
         let record = self
             .states
@@ -274,6 +300,7 @@ impl FaultService {
                 .try_lock()
                 .map_err(|_| "spill ownership unavailable")?;
             if BORROWED {
+                let hasher = root.as_ref().and_then(|root| root.hasher);
                 spill.read_with_borrowed_hasher(&record, scratch, hasher)?;
             } else {
                 spill.read(&record, scratch)?;
@@ -288,11 +315,16 @@ impl FaultService {
             .as_ref()
             .ok_or("cold page has no authenticated preservation")?;
         let (valid, _) = if BORROWED {
+            let (hasher, root_io) = match root {
+                Some(root) => (root.hasher, Some(root.io_failure)),
+                None => (None, None),
+            };
             source
                 .fetch_with_borrowed_hasher(arena.native.region_index, page_index, scratch, hasher)
-                // The source mutex and operation close before the historical
-                // service error conversion; only logical errors bypass it.
-                .map_err(crate::paged_ram::source::SourceFetchError::into_ram)?
+                // The source mutex and operation close at the historical
+                // conversion boundary. Root I/O stays owned until its caller
+                // records the same first-failure cut.
+                .map_err(|error| source_read_failure(error, root_io))?
         } else if observation {
             source.fetch_for_observation(arena.native.region_index, page_index, scratch)?
         } else {
@@ -627,15 +659,31 @@ fn read_operational_page<const ROOT_SCRATCH: bool>(
                     .resident;
                 if !resident {
                     let length = if ROOT_SCRATCH {
+                        let mut source_io = None;
                         match service.read_cold_with_hasher::<true>(
-                            arena, page_index, coordinate, true, bytes, hasher,
+                            arena,
+                            page_index,
+                            coordinate,
+                            true,
+                            bytes,
+                            Some(BorrowedRootRead {
+                                hasher,
+                                io_failure: &mut source_io,
+                            }),
                         ) {
                             Ok(length) => length,
                             Err(error) => {
-                                owner.retain_operational_failure_owned(
-                                    SourceOperationClass::FingerprintUpdate,
-                                    error,
-                                );
+                                if let Some(original) = source_io {
+                                    owner.retain_operational_io_failure(
+                                        SourceOperationClass::FingerprintUpdate,
+                                        original,
+                                    );
+                                } else {
+                                    owner.retain_operational_failure_owned(
+                                        SourceOperationClass::FingerprintUpdate,
+                                        error,
+                                    );
+                                }
                                 return Err(RamError::Invariant(
                                     "original root source failure is retained",
                                 ));
