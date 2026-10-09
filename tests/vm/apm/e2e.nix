@@ -51,6 +51,12 @@
   '';
 
   shellHelpers = ''
+    publish_fixture_package() {
+      local project="$1"
+      shift
+      (cd "$project" && publish_vm_package "$@")
+    }
+
     assert_file_not_contains() {
       file="$1"
       pattern="$2"
@@ -155,7 +161,18 @@
         pkgs.bash
         pkgs.coreutils
       ];
-      runtimeDeps = extraRuntimeDeps;
+      runtimeDeps = [pkgs.bash] ++ extraRuntimeDeps;
+      platformSupport = {
+        build = [{os = ["linux"];}];
+        host = [{os = ["linux"];}];
+        target = [];
+        role = "public-package";
+      };
+      meta = {
+        description = "End-to-end package lifecycle fixture (${pname})";
+        license = "MIT";
+        maintainers = ["e2e@example.invalid"];
+      };
       phases = [
         {
           name = "build";
@@ -259,6 +276,7 @@
         pkgs.bash
         pkgs.coreutils
       ];
+      runtimeDeps = [pkgs.bash pkgs.coreutils];
       phases = [
         {
           name = "build";
@@ -304,6 +322,28 @@
     serviceDescription = "E2E system v2 service";
   };
 
+  publicationFor = packages:
+    import ../../fleet/_container-publication-project.nix {
+      lib = pkgs.lib;
+      inherit pkgs packages;
+    };
+  e2ePublicationV1 = publicationFor {
+    e2e-helper = e2eHelperV1;
+    e2e-tool = e2eToolV1;
+  };
+  e2ePublicationV2 = publicationFor {
+    e2e-helper = e2eHelperV2;
+    e2e-tool = e2eToolV2;
+  };
+  fleetPublicationV1 = publicationFor {
+    fleet-helper = fleetHelperV1;
+    fleet-tool = fleetToolV1;
+  };
+  fleetPublicationV2 = publicationFor {
+    fleet-helper = fleetHelperV2;
+    fleet-tool = fleetToolV2;
+  };
+
   workflowDeps =
     fixtures.commonDeps
     ++ nixRuntimeDeps
@@ -322,6 +362,10 @@
       fleetHelperV2
       fleetToolV1
       fleetToolV2
+      e2ePublicationV1.project
+      e2ePublicationV2.project
+      fleetPublicationV1.project
+      fleetPublicationV2.project
     ];
 
   systemWorkflowDeps =
@@ -365,25 +409,14 @@ in {
         version="$1"
         store_path="$2"
         dep_store_path="$3"
-        run_logged "/tmp/e2e-publish-helper-$version.out" publish_vm_package "$dep_store_path" \
-          --name e2e-helper \
-          --version "$version" \
-          --description "End-to-end package lifecycle dependency" \
-          --license MIT \
-          --maintainer e2e@example.invalid \
-          --registry e2e-reg \
-          --no-commit || {
+        project="$4"
+        run_logged "/tmp/e2e-publish-helper-$version.out" publish_fixture_package "$project" "$dep_store_path" \
+          --registry e2e-reg || {
           fail "apr publish e2e-helper $version"
         }
 
-        run_logged "/tmp/e2e-publish-$version.out" publish_vm_package "$store_path" \
-          --name e2e-tool \
-          --version "$version" \
-          --description "End-to-end package lifecycle tool" \
-          --license MIT \
-          --maintainer e2e@example.invalid \
-          --registry e2e-reg \
-          --no-commit || {
+        run_logged "/tmp/e2e-publish-$version.out" publish_fixture_package "$project" "$store_path" \
+          --registry e2e-reg || {
           fail "apr publish e2e-tool $version"
         }
 
@@ -412,7 +445,7 @@ in {
       git -C "$REG_DIR" remote add origin /tmp/e2e-origin.git
       git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
 
-      publish_e2e_tool 1.0.0 "$TOOL_V1_STORE" "$TOOL_V1_DEP_STORE"
+      publish_e2e_tool 1.0.0 "$TOOL_V1_STORE" "$TOOL_V1_DEP_STORE" ${e2ePublicationV1.project}
       assert_file_exists "/tmp/e2e-cache/$TOOL_V1_HASH.narinfo" \
         "static cache has e2e-tool v1 narinfo"
       assert_file_exists "/tmp/e2e-cache/$TOOL_V1_DEP_HASH.narinfo" \
@@ -482,7 +515,7 @@ in {
 
       export HOME=/tmp
       APM_CONFIG="$HOME/.config/apm"
-      publish_e2e_tool 2.0.0 "$TOOL_V2_STORE" "$TOOL_V2_DEP_STORE"
+      publish_e2e_tool 2.0.0 "$TOOL_V2_STORE" "$TOOL_V2_DEP_STORE" ${e2ePublicationV2.project}
       assert_file_exists "/tmp/e2e-cache/$TOOL_V2_HASH.narinfo" \
         "static cache has e2e-tool v2 narinfo"
       assert_file_exists "/tmp/e2e-cache/$TOOL_V2_DEP_HASH.narinfo" \
@@ -781,24 +814,13 @@ in {
         version="$1"
         store_path="$2"
         dep_store_path="$3"
-        run_logged "/tmp/fleet-publish-helper-$version.out" publish_vm_package "$dep_store_path" \
-          --name fleet-helper \
-          --version "$version" \
-          --description "Fleet rolling update dependency" \
-          --license MIT \
-          --maintainer fleet@example.invalid \
-          --registry fleet-reg \
-          --no-commit || {
+        project="$4"
+        run_logged "/tmp/fleet-publish-helper-$version.out" publish_fixture_package "$project" "$dep_store_path" \
+          --registry fleet-reg || {
           fail "apr publish fleet-helper $version"
         }
-        run_logged "/tmp/fleet-publish-$version.out" publish_vm_package "$store_path" \
-          --name fleet-tool \
-          --version "$version" \
-          --description "Fleet rolling update tool" \
-          --license MIT \
-          --maintainer fleet@example.invalid \
-          --registry fleet-reg \
-          --no-commit || {
+        run_logged "/tmp/fleet-publish-$version.out" publish_fixture_package "$project" "$store_path" \
+          --registry fleet-reg || {
           fail "apr publish fleet-tool $version"
         }
         run_logged "/tmp/fleet-cache-$version.out" "$APR" cache generate \
@@ -837,7 +859,7 @@ in {
       git -C "$REG_DIR" remote add origin /tmp/fleet-origin.git
       git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
 
-      publish_fleet_tool 1.0.0 "$FLEET_V1_STORE" "$FLEET_V1_DEP_STORE"
+      publish_fleet_tool 1.0.0 "$FLEET_V1_STORE" "$FLEET_V1_DEP_STORE" ${fleetPublicationV1.project}
       assert_file_exists "/tmp/fleet-cache/$FLEET_V1_HASH.narinfo" \
         "static cache has fleet-tool v1 narinfo"
       assert_file_exists "/tmp/fleet-cache/$FLEET_V1_DEP_HASH.narinfo" \
@@ -893,7 +915,7 @@ in {
 
       export HOME=/tmp
       APM_CONFIG="$HOME/.config/apm"
-      publish_fleet_tool 2.0.0 "$FLEET_V2_STORE" "$FLEET_V2_DEP_STORE"
+      publish_fleet_tool 2.0.0 "$FLEET_V2_STORE" "$FLEET_V2_DEP_STORE" ${fleetPublicationV2.project}
       assert_file_exists "/tmp/fleet-cache/$FLEET_V2_HASH.narinfo" \
         "static cache has fleet-tool v2 narinfo"
       assert_file_exists "/tmp/fleet-cache/$FLEET_V2_DEP_HASH.narinfo" \
