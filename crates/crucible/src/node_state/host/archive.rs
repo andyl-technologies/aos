@@ -335,6 +335,33 @@ impl HostArchiveRecord {
         &self.manifest
     }
 
+    /// Copies bounded immutable bytes from the authenticated complete closure.
+    ///
+    /// This read grants no native qualification or execution authority. An
+    /// installed provider must independently match the requested reference to
+    /// its enrolled model input before using these bytes in fresh realization.
+    ///
+    /// # Errors
+    /// Refuses objects outside the authenticated closure, changed reference
+    /// metadata, excess length, or unavailable bounded allocation.
+    pub fn content_bytes(
+        &self,
+        reference: &ContentRef,
+        maximum_bytes: usize,
+    ) -> Result<Vec<u8>, StateError> {
+        let object = self.object(reference)?;
+        if object.bytes.len() > maximum_bytes {
+            return Err(limit("authenticated immutable content read"));
+        }
+        reference.verify(&object.bytes).map_err(schema)?;
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(object.bytes.len())
+            .map_err(|_| limit("authenticated immutable content allocation"))?;
+        bytes.extend_from_slice(&object.bytes);
+        Ok(bytes)
+    }
+
     pub(super) fn object(&self, reference: &ContentRef) -> Result<&Object, StateError> {
         self.index
             .get(&reference.hash)

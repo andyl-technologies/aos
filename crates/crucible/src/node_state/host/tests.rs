@@ -394,6 +394,31 @@ fn durable_archive_restores_actual_clock_and_original_pending_ack_without_reexec
         )
         .unwrap();
     let artifact = record.artifact().clone();
+    let manifest_bytes = crucible_node_contract::canonical::canonical_json(
+        &serde_json::to_value(record.manifest()).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        record
+            .content_bytes(&artifact, manifest_bytes.len())
+            .unwrap(),
+        manifest_bytes
+    );
+    assert!(
+        record
+            .content_bytes(&artifact, manifest_bytes.len() - 1)
+            .is_err()
+    );
+    let mut foreign_metadata = artifact.clone();
+    foreign_metadata.media_type = "application/octet-stream".into();
+    assert!(record.content_bytes(&foreign_metadata, usize::MAX).is_err());
+    let unavailable = crucible_node_contract::canonical::content_ref(
+        b"outside the authenticated closure",
+        "text/plain",
+    )
+    .unwrap();
+    assert!(record.content_bytes(&unavailable, usize::MAX).is_err());
+
     drop(runtime);
     let mut context = Context::from_waker(Waker::noop());
     for _ in 0..8 {
