@@ -19,6 +19,8 @@
          "derived::provenance_tests::disclosure_tests::legacy_inline_carrying_view_does_not_bypass_actual_producer_context"],
         ["derived::tests::effective_requirements_produce_records_accepted_by_changed_entry_validation",
          "derived::tests::store_object_reassembles_verified_chunks_in_manifest_order",
+         "derived::tests::store_object_rejects_invalid_manifest_length_sum_before_chunk_get",
+         "derived::tests::store_object_rejects_missing_plaintext_blake3_before_chunk_get",
          "derived::tests::signed_tests::signed_required_side_records_gain_checked_producer_evidence_and_reuse_metadata",
          "derived::tests::signed_tests::dictionary_selection_requires_checked_class_and_explicit_unique_mapping",
          "derived::tests::dictionary_tests::named_dictionary_fetch_verifies_plaintext_before_object_hashing",

@@ -2432,6 +2432,15 @@ all fresh observations, duplicate row order and current checks; its ten new
 witnesses are registered, but compilation and runtime qualification remain
 pending on the composed source. Neither prerequisite accepts a task or closes
 the current floor.
+The combined `0c771dc7f9` source is reviewed and begins finite qualification.
+A separate OBJ-14/15 receiving review confirms that production validates the
+manifest's length sum and required BLAKE3 declaration before fetching chunks.
+Existing malformed-size tests exercise encoder refusal without actual reader
+GET counters. Two additional receiving witnesses are registered in
+`derived-attr-record`: independently encoded invalid manifests must be refused
+after exactly the manifest GET, with a valid control proving chunk reads occur.
+Their isolated test-only implementation and current-source qualification remain
+pending; whole-file plaintext checksum comparison belongs after chunk reads.
 No task checkbox or milestone status advances.
 After the class candidate releases the team's heavy lane, the diagnostic's
 restoration command exits zero but its artifact verifier stops: Cargo reports
