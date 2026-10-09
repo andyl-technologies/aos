@@ -21,8 +21,8 @@ in {
     ${runTests "indexing::tests::owner_bindings_require_canonical_noninherited_root_values -- --exact"}
     ${runTests "indexing::carrier_tests::gap_bindings_require_primary_root_placement_and_exact_wrapper -- --exact"}
     ${runTests "indexing::carrier_tests::structural_index_names_do_not_become_value_inputs -- --exact"}
-    ${runTests "gc::publication::evidence::validation::policy::tests::property_and_attribute_revisions_bind_structural_index_names_exactly -- --exact"}
-    ${runTests "gc::publication::evidence::validation::policy::tests::legacy_semantic_contexts_preserve_inert_index_carriers -- --exact"}
+    ${runTests "gc::publication::evidence::validation::policy::private_registry_tests::property_and_attribute_revisions_bind_structural_index_names_exactly -- --exact"}
+    ${runTests "gc::publication::evidence::validation::policy::private_registry_tests::legacy_semantic_contexts_preserve_inert_index_carriers -- --exact"}
     ${runTests "properties::semantics::tests::resolution_recorded_revisions_preserve_inert_later_names -- --exact"}
     ${runTests "properties::semantics::tests::resolution_revisions_bind_defaults_and_graft_placement_exactly -- --exact"}
     ${runTests "properties::semantics::tests::resolution_unknown_revisions_and_unregistered_extensions_refuse -- --exact"}

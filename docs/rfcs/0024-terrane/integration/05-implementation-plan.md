@@ -2503,6 +2503,24 @@ Native runtime and final-source strict reruns remain unrun. Dependency
 artifact reuse is a hypothesis requiring direct evidence, not an established
 cause. No cache or timestamp adjustment has occurred, and the original
 compiler failure remains preserved.
+Direct metadata-only probes now establish an exported API difference under
+the same AOS compiler: the retained normal Core library and metadata reject
+`property_selection`, while the Clippy metadata accepts the identical call.
+All nineteen captured inputs remain unchanged and are archived before later
+compilation can replace them. The original Cargo invocation's exact dependency
+argument and internal freshness decision remain unproved. Distinct combined
+candidate `0dd78ed646` contains the reviewed final fixtures and progress record
+at composition; independent review verifies its complete owned source and
+ancestry. Its first ten qualification stages pass: strict Core and all
+three native-library profiles, private documentation checks, the normal SDK
+build and the bound Core test compilation. Stage eleven's discovery command
+exits zero and lists 630 Core tests, but the inventory verifier rejects two
+required names: they actually belong to `policy::private_registry_tests`,
+while the verifier and two Nix definitions use `policy::tests`. Both witnesses
+are present once and nonignored. The shared gate selectors are corrected to
+the actual module paths; no witness or requirement is removed. The original
+failure is preserved, and runtime and owning gates remain unrun. This
+qualification is separate from the worker's two scoped Core passes.
 No task checkbox or milestone status advances.
 After the class candidate releases the team's heavy lane, the diagnostic's
 restoration command exits zero but its artifact verifier stops: Cargo reports

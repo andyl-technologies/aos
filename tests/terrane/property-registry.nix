@@ -4,8 +4,8 @@
     "gc::publication::evidence::cbor::tests::guard::property_revision_vocabulary_mismatches_refuse"
     "gc::publication::evidence::validation::policy::tests::later_property_names_remain_inert_under_their_recorded_revision"
     "gc::publication::evidence::cbor::tests::lineage::enclosing_lineage_preserves_recorded_inert_property_names"
-    "gc::publication::evidence::validation::policy::tests::property_and_attribute_revisions_bind_structural_index_names_exactly"
-    "gc::publication::evidence::validation::policy::tests::legacy_semantic_contexts_preserve_inert_index_carriers"
+    "gc::publication::evidence::validation::policy::private_registry_tests::property_and_attribute_revisions_bind_structural_index_names_exactly"
+    "gc::publication::evidence::validation::policy::private_registry_tests::legacy_semantic_contexts_preserve_inert_index_carriers"
   ];
 
   runTest = name: ''
