@@ -35,6 +35,11 @@ schemas and test adapters establish component behavior, not native support.
 | `ccc87ca2ce` | Script continuation rejects invalid future evaluation and group cursors | Five focused source tests pass |
 | `a109318848` | Original future-publication custody across phase cuts and mathematical-top closure | Five source, one coordinator future-birth and three closure/overflow regressions pass; original pending deliveries survive snapshot restoration |
 | `1061007b83` | Independent complete native process-image custody authentication | Both guest ISAs pass authentic closure, source exit, original resource removal and two fresh restores; collector passes 23 adverse cases |
+| `609e056961` | Bounded authenticated archive content reads | Actual clock archive read, exact limit, foreign metadata and absent reference checks pass |
+| `8ee83d1181` | Streaming native image hashing through the existing BLAKE3 dependency | Actual source vendoring passes; external packages, checksums and dependency edges remain unchanged |
+| `d556fa9318` | Complete original scheduler payload closure before capture authentication | Original-payload regression and actual source-gone Block/9p cold restores pass |
+| `7c46d0bf3b` | Installed exact Source/Block/readonly-9p graph, explicit archive-only bindings and common exact execution planning | 13 ordinary and nine actual native observer regressions pass; two isolated cold continuations preserve original pending bytes, fids, dirty overlay and event history |
+| `1b36fe6ffe` | Versioned native writer custody, retained hold diagnostics and matching signed atomic QEMU source | 144 portable protocol cases, 46 focused plumbing cases, four live native witnesses and strict checks pass; source/tree/signature regeneration passes |
 
 Legacy codec bytes, hash domains, fault identifiers, and existing exact QEMU
 restore semantics remain unchanged by these source extractions. New node
@@ -49,7 +54,7 @@ records use separate public schemas and cannot relabel legacy authority.
 | Whole-graph admission | Ownership, ports, immutable content, installed native evidence, qualifications, mode acceptance and zero-time-cycle checks; complete library and actual connected graphs pass | Complete QEMU/gem5/KVM installation qualification |
 | Runtime | Exclusive owner custody, readiness/activation, retained operations, cancellation, publication and native quarantine; actual mixed daemon graphs and original nonce retries pass | Complete QEMU/gem5 implementations of those interfaces |
 | Causal scheduling | Exact and quantized grants, conservative native bounds, original staged-input acknowledgment, superdense ordering and bounded paused snapshots; real connected-node byte/provenance checks pass | Full native CPU/device timing and broader backend concurrency qualification |
-| Capture and restore | Backend-bound closure authentication, bounded signed archives and inactive all-owner staging; actual clock and pending Block/9p/network queues survive cold isolated branching without redispatch | Production archive commands, connected transfer-state closure and native backend complete-state qualification |
+| Capture and restore | Backend-bound closure authentication, bounded signed archives and inactive all-owner staging; actual clock and pending Block/9p/network queues survive cold isolated branching without redispatch; installed Source/Block/readonly-9p graphs preserve original future publication and connected payload custody after source removal | Production archive commands and native backend complete-state qualification |
 | Common lifecycle | Shared world trigger and debugger policy with API regression coverage; installed profiles use complete-owner activation | Complete native backend initial/restore activation |
 
 These rows distinguish implemented shared behavior from production wiring. An
@@ -105,9 +110,13 @@ cover exclusive retirement, equality ceilings, retained fractional instruction
 credit and partition invariance; existing icount and vCPU-service unit tests
 also pass. Nonzero phases, boundary settlement, halted idle, complete device and
 input queues, fork and native journal preservation remain unsupported in this
-partial path. The CPU/PIT component source is now carried by the verified signed
-atomic artifact. Later writer-cut diagnostics require their own matching atomic
-artifact and live witness before incorporation.
+partial path. CPU/PIT components and the versioned writer-cut diagnostics are
+carried by the verified signed atomic artifact. The actual writer hold retains
+three initial pending bottom-half callbacks without running or discarding them;
+their unknown causal semantics correctly refuse native execution at that cut.
+The GPL reader/worker gate, complete callback birth and payload ownership,
+boundary settlement, device mediation and fresh native continuation remain
+required before qualifying the common QEMU node.
 
 ## Performance evidence
 
