@@ -10,6 +10,7 @@
   cairo,
   dav1d,
   freetype,
+  fontconfig,
   gdk-pixbuf,
   harfbuzz,
   libxml2,
@@ -31,8 +32,102 @@
     else "";
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "librsvg";
-    inherit (sources) version src;
+    qualification.packageProbe = lib.qualification.commandProbe {
+      primary = {
+        input = "A two-by-two red SVG rectangle.";
+        operation = "Render it to PNG and export its drawing as SVG.";
+        expected = "The raster has the expected dimensions and the drawing stays red.";
+        files."red.svg" = ''
+          <svg xmlns="http://www.w3.org/2000/svg" width="2" height="2">
+            <rect width="2" height="2" fill="#ff0000"/>
+          </svg>
+        '';
+        artifacts = [];
+        steps = [
+          {
+            argv = ["@out@/bin/rsvg-convert" "-f" "png" "-o" "red.png" "red.svg"];
+            exit_code = 0;
+            stdout.exact = "";
+            stderr.exact = "";
+          }
+          {
+            argv = ["@out@/bin/rsvg-convert" "-f" "svg" "-o" "rendered.svg" "red.svg"];
+            exit_code = 0;
+            stdout.exact = "";
+            stderr.exact = "";
+          }
+          {
+            argv = [
+              "@python@"
+              "-c"
+              ''
+                from pathlib import Path
+                import struct
+                import xml.etree.ElementTree as xml
+
+                header = Path("red.png").read_bytes()[:24]
+                assert header[:8] == b"\x89PNG\r\n\x1a\n"
+                assert struct.unpack(">II", header[16:24]) == (2, 2)
+
+                drawing = xml.parse("rendered.svg").getroot()
+                assert drawing.attrib["width"] == "2"
+                assert drawing.attrib["height"] == "2"
+                assert any(
+                    node.attrib.get("fill") == "rgb(100%, 0%, 0%)"
+                    for node in drawing.iter()
+                )
+                print("librsvg red rectangle rendering passed")
+              ''
+            ];
+            exit_code = 0;
+            stdout.exact = "librsvg red rectangle rendering passed\n";
+            stderr.exact = "";
+          }
+        ];
+      };
+      badInput = {
+        input = "An SVG document with an unclosed rect element.";
+        operation = "Attempt to render it.";
+        expected = "The converter rejects the malformed XML.";
+        files."bad.svg" = "<svg><rect>\n";
+        artifacts = [];
+        steps = [
+          {
+            argv = ["@out@/bin/rsvg-convert" "-f" "png" "-o" "bad.png" "bad.svg"];
+            exit_code = 1;
+            observes_rejection = true;
+            stdout.exact = "";
+          }
+        ];
+      };
+    };
+    inherit (sources) src;
+    # Micro versions >=90 are beta releases, outside the stable release streams.
+    # https://gnome.pages.gitlab.gnome.org/librsvg/devel-docs/supported_versions.html
+    version = "=${sources.version}";
     passthru.evidenceSources = [sources.src sources.cargoDeps];
 
     buildDeps = [
@@ -47,8 +142,10 @@ in
       buildPackages.gi-docgen
       buildPackages.docutils
     ];
+    # rsvg-convert links Fontconfig directly; relying on Pango's transitive
+    # dependency lets the reference scrubber erase its runtime search path.
     runtimeDeps =
-      [glib cairo dav1d freetype gdk-pixbuf harfbuzz libxml2 pango]
+      [glib cairo dav1d freetype fontconfig gdk-pixbuf harfbuzz libxml2 pango]
       ++ (
         if stdenv.hostPlatform.isLinux
         then [util-linux]

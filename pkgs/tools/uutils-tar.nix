@@ -16,6 +16,28 @@
   };
 in
   mkCargoPackage {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "uutils-tar";
     inherit version src cargoDeps;
 
@@ -51,6 +73,5 @@ in
       homepage = "https://github.com/uutils/tar";
       license = "MIT";
       mainProgram = "tar";
-      platforms = ["x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin"];
     };
   }

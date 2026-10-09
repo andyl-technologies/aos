@@ -27,7 +27,7 @@ Everything else is host policy and must be expressible through `host.nix`.
 - ESP/root image layout and A/B image mechanics;
 - base module library, evaluator, module ABI, and activation machinery;
 - metadata discovery, minimal DHCP/config-drive support, and facts acquisition;
-- restricted provisioning evaluator, repart/format/encryption tools, and
+- complete initrd evaluator, storage provider tools, and
   recovery behavior;
 - initial host-configuration and package-registry verification roots;
 - the minimal package set needed to boot, evaluate, fetch, verify, activate,

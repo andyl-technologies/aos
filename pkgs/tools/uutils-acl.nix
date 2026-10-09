@@ -16,6 +16,23 @@
   };
 in
   mkCargoPackage {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "uutils-acl";
     inherit version src cargoDeps;
 
@@ -59,6 +76,5 @@ in
       homepage = "https://github.com/uutils/acl";
       license = "MIT";
       mainProgram = "getfacl";
-      platforms = ["x86_64-linux" "aarch64-linux"];
     };
   }

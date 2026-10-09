@@ -45,6 +45,7 @@
 //! under the reserved `/` and `/{slug}/-/…` paths, more specific than the
 //! machine-surface facade wildcard, so the two never collide.
 
+mod ability_graph_page;
 pub mod assets;
 pub mod browse;
 pub mod browse_pages;
@@ -58,6 +59,7 @@ pub mod host_delivery;
 pub mod release_browse;
 pub mod release_pages;
 pub mod render;
+pub mod runtime_documentation;
 pub mod session;
 pub mod status_pages;
 pub mod toml_highlight;
@@ -65,5 +67,3 @@ pub mod toml_highlight;
 pub use render::PageChrome;
 
 pub(crate) mod documentation_browser;
-mod documentation_content;
-mod documentation_pages;

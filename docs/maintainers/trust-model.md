@@ -34,7 +34,6 @@ reviewed source and fixed inputs
   -> signed registry history and TUF metadata authorize a release
   -> the signed store realization graph authorizes every selected NAR
   -> APM imports the verified closure into /nix/store
-  -> activation measures exposed package identities and permissions into PCR 15
 ```
 
 Secure Boot does not directly verify the root filesystem or an arbitrary Nix
@@ -43,17 +42,12 @@ by dm-verity, and the authenticated root carries the first registry keys. That
 embedding connects the boot and package trust chains without collapsing their
 authorities.
 
-The connection has two important limits:
-
-- an image without dm-verity does not cryptographically bind its root
-  filesystem to the signed UKI; and
-- PCR 15 records explicitly activated exposed packages and configuration
-  generations, not every object present in `/nix/store`.
+An image without dm-verity does not cryptographically bind its root filesystem
+to the signed UKI.
 
 The signed store graph remains the admission authority for downloaded closure
-members. A signed dm-verity `RootImage=` adds block-level integrity while an
-exposed workload runs. A non-verity store path is read-only to the confined
-workload but is not protected from a host-root compromise after admission.
+members. A non-verity store path is not protected from a host-root compromise
+after admission.
 
 ## Keep trust roles separate
 

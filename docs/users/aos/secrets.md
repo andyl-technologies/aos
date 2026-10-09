@@ -80,58 +80,56 @@ credential in `/var`. Provision `credentials.env` through the deployment's
 external secret system before starting the service. Set restrictive ownership
 and mode, and ensure the service sandbox can read only the required path.
 
-Runtime configuration activation supports an opaque `secretRef` boundary. A
-reference contains a systemd credential name, writable credstore destination,
-encryption policy, consuming units, and resolver handle. There is no plaintext
-`value` or `text` field, and unknown fields fail validation, so secret bytes
-cannot enter the evaluated manifest.
+Native credential delivery uses the package-owned `credential.deliver`
+operation. Its inputs identify a named credential or a resource path, never
+secret bytes. The selected handler resolves the source during activation and
+returns a private runtime path. Typed output references order consuming services
+after delivery; only the reference and resulting path cross the graph boundary.
 
-Activation validates every reference against the package's signed credential
-declaration before consumer reconciliation. Desired-state and system-credential
-references obtain bytes outside evaluation, optionally encrypt them to the
-configured signed-PCR policy, and stage mode-`0600` credstore files without
-placing plaintext in a retained generation. A TPM2-credstore reference instead
-verifies a package-authored sealed artifact in the fully composed staged view
-before any live unit is stopped; it does not fetch plaintext or reseal it. When
-an authenticated reference disappears, activation removes only the source
-recorded in the prior retained manifest, in the same rollback-capable
-transaction as replacements. Credential-triggered restarts are deduplicated,
-dependency ordered, and limited to consumers that were active before
-publication. Every selected consumer is attempted even if an earlier job
-fails. A missing value, unsafe path, unavailable encryption policy, or
-unsupported resolver fails closed before those restarts.
-After the atomic `/etc` swap, activation pauses before any consumer starts,
-publishes the complete credential set under a durable transaction journal, and
-folds changed consumers into the existing unit-reconciliation plan. A later
-publication failure restores every earlier target and enters rescue without
-publishing the generation pointer or activation proof. Boot recovery resolves
-an interrupted prepared or committed journal before the retained configuration
-lower and its consumers are admitted.
-
-The implemented sources are:
-
-- a package-authored TPM2-sealed credstore artifact;
-- a reviewed desired-state credential supplied outside evaluation;
-- a platform/systemd credential under `/run/credentials/@system`.
-
-`host.nix` carries only the handle and policy. It must never contain the bytes:
+For an existing package-defined `web` service, an operator module can connect an
+encrypted named source to the service's credential view:
 
 ```nix
-{
-  aos.apm.installAtBoot.credentials.web.api-token = {
-    source = "/etc/credstore.encrypted/web/api-token";
+{ config, ... }:
+let
+  token = config.aos.abilities.credential.operations.deliver.effects.web-token;
+in {
+  aos.abilities.credential.operations.deliver.effects.web-token.input = {
+    name = "bootstrap-token";
+    scope = "system";
     encrypted = true;
-    units = ["web.service"];
-    ref = "system-credential:bootstrap-token";
   };
+
+  aos.services.web.credentials.views = [{
+    name = "api-token";
+    reference = token.outputs.path;
+    encrypted = false;
+    optional = false;
+  }];
 }
 ```
 
-This assumes the signed `web` package exposes the matching `api-token`
-credential and the deployment platform supplies `bootstrap-token` through the
-systemd credential channel. AOS does not ship a general Vault or cloud secret
-manager backend; those remain external delivery systems. Do not place secret
-bytes in metadata or `host.nix` while attempting to use a reference.
+The source is encrypted; the handler decrypts it into a private mode-`0600`
+runtime view, so the service consumes that view with `encrypted = false`.
+The system must select the credential handler and provision the named source
+before activation. The module does not create the `web` service or its source
+credential. A package may instead provide a typed `resource` output from another
+operation; exactly one of `name` and `resource` is required.
+
+The current systemd handler supports system-scoped sources. Unencrypted names
+resolve below `/run/credentials/@system`; encrypted names must resolve uniquely
+in `/run/credstore.encrypted`, `/etc/credstore.encrypted`, or
+`/usr/lib/credstore.encrypted`. User-scoped delivery is rejected by that handler.
+Encrypted delivery uses the retained `systemd-creds` program. The handler's
+receipt records ownership and content hashes, not plaintext. Observation checks
+that owned state still agrees; removal deletes only its recorded private view.
+
+Delivery does not authorize arbitrary secret lookup, rotate external secrets,
+or provide automatic rollback of external actions. AOS does not ship a general
+Vault or cloud secret-manager backend. Those systems supply runtime material
+through their own deployment integration. See the
+[runtime abilities guide](runtime-abilities.md) for handler selection, typed
+result dependencies, and recovery.
 
 ## Avoid secret command-line arguments
 

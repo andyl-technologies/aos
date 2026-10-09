@@ -25,7 +25,7 @@ promise.
 | DHCP and single-address static networking | Implemented |
 | MTU, VLAN, and bond high-level options | Incomplete rendering |
 | APM machine-wide packages | Add/remove reconciliation implemented; upgrade and rollback incomplete |
-| [Exposed APM service confinement](package-sandbox.md) | Implemented, early preview |
+| [Typed package runtime policy](package-sandbox.md) | Implemented through native ability providers |
 | Stock unprivileged user package profile | Not provisioned |
 | Persistent home directories | `/root` always on the state volume; `/home` opt-in through `aos.homes` |
 | Configuration generation rollback | Implemented |
@@ -35,7 +35,7 @@ promise.
 | System-package/configuration generation pruning | Implemented |
 | A/B image-generation pruning | Not implemented |
 | [Secure Boot, lockdown, measured boot, dm-verity](secure-boot.md) | Fleet-test fixtures implemented |
-| Package supply-chain and runtime attestation | Fleet-test implementation for exposed system packages |
+| Package supply-chain attestation | Fleet-test implementation for signed system packages |
 | SELinux module | Present, not enabled by presets |
 | Audit, firewall, kernel hardening | Implemented in server baseline |
 | Encrypted ZFS bare-metal storage | Supported when configured, at the lowest stability tier (see [filesystem tiers](#filesystem-support-tiers)) |

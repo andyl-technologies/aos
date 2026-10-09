@@ -40,10 +40,12 @@ pub enum MediaType {
     DockerLayerGzip,
     /// Canonical empty JSON object used as an artifact config.
     OciEmptyJson,
-    /// Signed AOS container-release sidecar.
+    /// Signed AOS container-release v1 sidecar.
     AosContainerRelease,
     /// AOS realized Nix closure inventory.
     AosNixClosure,
+    /// AOS static package abilities and unresolved launch obligations.
+    AosContainerStaticAbilities,
     /// AOS corresponding-source closure inventory.
     AosSourceClosure,
     /// Deterministic gzip-compressed AOS corresponding-source archive.
@@ -60,7 +62,7 @@ pub enum MediaType {
 
 impl MediaType {
     /// Every media type admitted by the first-release compatibility contract.
-    pub const ALL: [Self; 21] = [
+    pub const ALL: [Self; 22] = [
         Self::OctetStream,
         Self::OciImageManifest,
         Self::OciImageIndex,
@@ -76,6 +78,7 @@ impl MediaType {
         Self::OciEmptyJson,
         Self::AosContainerRelease,
         Self::AosNixClosure,
+        Self::AosContainerStaticAbilities,
         Self::AosSourceClosure,
         Self::AosSourceArchive,
         Self::AosLicenseReport,
@@ -110,6 +113,9 @@ impl MediaType {
             "application/vnd.oci.empty.v1+json" => Ok(Self::OciEmptyJson),
             "application/vnd.aos.container-release.v1+json" => Ok(Self::AosContainerRelease),
             "application/vnd.aos.nix-closure.v1+json" => Ok(Self::AosNixClosure),
+            "application/vnd.aos.container.static-abilities.v1+json" => {
+                Ok(Self::AosContainerStaticAbilities)
+            }
             "application/vnd.aos.source-closure.v1+json" => Ok(Self::AosSourceClosure),
             "application/vnd.aos.source-closure.v1.tar+gzip" => Ok(Self::AosSourceArchive),
             "application/vnd.aos.license-report.v1+json" => Ok(Self::AosLicenseReport),
@@ -147,6 +153,9 @@ impl MediaType {
             Self::OciEmptyJson => "application/vnd.oci.empty.v1+json",
             Self::AosContainerRelease => "application/vnd.aos.container-release.v1+json",
             Self::AosNixClosure => "application/vnd.aos.nix-closure.v1+json",
+            Self::AosContainerStaticAbilities => {
+                "application/vnd.aos.container.static-abilities.v1+json"
+            }
             Self::AosSourceClosure => "application/vnd.aos.source-closure.v1+json",
             Self::AosSourceArchive => "application/vnd.aos.source-closure.v1.tar+gzip",
             Self::AosLicenseReport => "application/vnd.aos.license-report.v1+json",
@@ -196,6 +205,7 @@ impl MediaType {
             self,
             Self::AosContainerRelease
                 | Self::AosNixClosure
+                | Self::AosContainerStaticAbilities
                 | Self::AosSourceClosure
                 | Self::AosLicenseReport
                 | Self::SpdxJson
@@ -277,6 +287,10 @@ mod tests {
         }
         assert!(matches!(
             MediaType::parse("application/vnd.example.layer.v1+json"),
+            Err(Error::UnsupportedMediaType { .. })
+        ));
+        assert!(matches!(
+            MediaType::parse("application/vnd.aos.container-release.unsupported+json"),
             Err(Error::UnsupportedMediaType { .. })
         ));
         assert!(

@@ -7,18 +7,9 @@
   runtimeSystem = mkSystem [
     ../../systems/server-test.nix
     {
-      aos.packages = {
-        containerd = {
-          package = pkgs.containerd;
-          bundle = true;
-          preset = false;
-        };
-        kubelet = {
-          package = pkgs.kubelet;
-          bundle = true;
-          preset = false;
-        };
-      };
+      environment.systemPackages = [pkgs.containerd pkgs.kubelet];
+      containerd.enable = false;
+      kubelet.enable = false;
     }
   ];
 in {
@@ -33,17 +24,11 @@ in {
     varSizeMiB = 4096;
     packages = [
       "aos-test-agent"
-      "containerd"
-      "kubelet"
     ];
     extraClosures = [pkgs.crictl pkgs.curl pkgs.grep pkgs.jq];
     metadata."host.nix" = ''
       {
         aos.networking.hostName = "standalone-kubelet";
-        environment.etc."aos/policy.toml" = {
-          text = "tier = \"privileged\"\n";
-          mode = "0644";
-        };
       }
     '';
   };
@@ -114,13 +99,6 @@ in {
       node.wait_until_succeeds(
           "systemctl is-active --quiet aos-config.target", timeout=300
       )
-      node.succeed(
-          f"{JQ} -s -e "
-          "'map(select(.apm.name == \"kubelet\"))[0]"
-          ".apm.config_module.artifacts.etc "
-          "== [\"aos/packages/kubelet/config.json\"]' "
-          "/var/lib/profiles/system-packages/current/meta/*.json"
-      )
       node.succeed(f"install -d -m 0700 {CACHE} /run/kubelet-runtime")
       initial = generation()
 
@@ -158,6 +136,18 @@ in {
       apply("/run/kubelet-runtime-apply")
       configured = generation()
       assert configured != initial, (initial, configured)
+      node.succeed(
+          f"{JQ} -e "
+          "'[.inputs.package_modules.modules[] "
+          "| select(.package == \"kubelet\")] "
+          "| length == 1 and "
+          ".[0].entrypoint == \"module.nix\" and "
+          ".[0].origin == \"image\" and "
+          "(.[0].store_path | startswith(\"/nix/store/\")) and "
+          "(.[0].document_digest | test(\"^sha256:[0-9a-f]{64}$\")) and "
+          "(.[0].nar_hash | startswith(\"sha256:\"))' "
+          "/run/aos/manifest.json"
+      )
       assert_running("standalone-a", 42)
 
       invalid = module.replace("maxPods = 42;", "maxPods = 0;")

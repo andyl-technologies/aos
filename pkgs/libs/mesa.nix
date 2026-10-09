@@ -72,6 +72,25 @@
     + builtins.concatStringsSep ":" (map (package: "${package}/${sitePackages}") pythonModules);
 in
   mkDerivation {
+    # The enabled DRM, udev and Rusticl driver stack requires GNU/Linux.
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
+
     pname = "mesa";
     inherit version;
     src = fetchurl {

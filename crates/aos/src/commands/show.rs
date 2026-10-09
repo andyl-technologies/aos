@@ -1,12 +1,13 @@
 //! `aos show` — display a package's metadata.
 //!
-//! Evaluates `pkgs.<package>.meta` and, when the expose manifest is complete at
-//! evaluation time, the package expose manifest passthru data. It pretty-prints
-//! common package fields plus the RFC-0001 expose target, confinement label,
-//! and permission summary. With `--json`, expose packages include an
-//! `exposeManifest` field next to the raw meta attrset.
+//! Evaluates package metadata, the native deployment envelope, and generated
+//! module documentation. JSON includes `deployment` and `documentation` beside
+//! the ordinary metadata; text summarizes their typed declarations. This local
+//! evaluation does not authenticate a publication or inspect live execution.
 
 use anyhow::{Context, Result};
+use aos_doc_model::runtime::RuntimeDocument;
+use aos_package::deployment::model::Envelope;
 
 use aos_core::nix::NixRunner;
 use aos_core::output::Printer;
@@ -15,16 +16,19 @@ use aos_core::output::Printer;
 ///
 /// # Errors
 ///
-/// Returns an error if evaluating the package's `meta` attribute fails
-/// (e.g. the package does not exist).
+/// Returns an error if evaluating package metadata or native declarations fails,
+/// their identities disagree, or the package does not exist.
 pub fn run(nix: &NixRunner, printer: &Printer, package: &str) -> Result<()> {
     let attr = format!("pkgs.{package}.meta");
     let package_name =
         serde_json::to_string(package).context("serializing package name for Nix expression")?;
-    let expose_manifest_expr = format!(
-        "let root = import {}/default.nix {{}}; pkg = builtins.getAttr {} root.pkgs; in if pkg ? expose then pkg.expose.passthru.manifest else null",
-        nix.root().display(),
-        package_name
+    let root = serde_json::to_string(&nix.root().to_string_lossy())
+        .context("serializing repository path for Nix expression")?;
+    let native_views_expr = format!(
+        r#"let
+          root = import (builtins.toPath {root}) {{}};
+          pkg = builtins.getAttr {package_name} root.pkgs;
+        in {{ inherit (pkg) deployment documentation; }}"#
     );
 
     printer.info(&format!("Fetching metadata for '{package}'..."));
@@ -33,18 +37,17 @@ pub fn run(nix: &NixRunner, printer: &Printer, package: &str) -> Result<()> {
     let mut meta = nix
         .eval_json(&attr)
         .with_context(|| format!("evaluating metadata for '{package}'"))?;
-    let expose_manifest = match nix
-        .eval_expr_json(&expose_manifest_expr)
-        .with_context(|| format!("evaluating expose manifest for '{package}'"))?
-    {
-        serde_json::Value::Null => None,
-        value => Some(value),
-    };
+    let (envelope, documentation) = decode_native_views(
+        nix.eval_expr_json(&native_views_expr)
+            .with_context(|| format!("evaluating native package declarations for '{package}'"))?,
+    )?;
     spinner.finish_and_clear();
 
-    if let (Some(object), Some(manifest)) = (meta.as_object_mut(), expose_manifest.as_ref()) {
-        object.insert("exposeManifest".to_string(), manifest.clone());
-    }
+    let object = meta
+        .as_object_mut()
+        .context("package metadata is not an object")?;
+    object.insert("deployment".into(), serde_json::to_value(&envelope)?);
+    object.insert("documentation".into(), documentation.value().clone());
 
     if printer.json_if_active(&meta) {
         return Ok(());
@@ -53,12 +56,8 @@ pub fn run(nix: &NixRunner, printer: &Printer, package: &str) -> Result<()> {
     // Pretty-print selected fields.
     printer.header(&format!("Package: {package}"));
 
-    if let Some(name) = meta.get("name").and_then(|v| v.as_str()) {
-        printer.kv("Name", name);
-    }
-    if let Some(version) = meta.get("version").and_then(|v| v.as_str()) {
-        printer.kv("Version", version);
-    }
+    printer.kv("Name", &envelope.package.name);
+    printer.kv("Version", &envelope.package.version);
     if let Some(desc) = meta.get("description").and_then(|v| v.as_str()) {
         printer.kv("Description", desc);
     }
@@ -99,25 +98,105 @@ pub fn run(nix: &NixRunner, printer: &Printer, package: &str) -> Result<()> {
             printer.kv("Maintainers", &names.join(", "));
         }
     }
-    if let Some(manifest) = expose_manifest.as_ref() {
-        if let Some(target) = manifest
-            .pointer("/expose/target")
-            .and_then(|value| value.as_str())
-        {
-            printer.kv("Expose target", target);
-        }
-        if let Some(label) = manifest
-            .pointer("/confinement/label")
-            .and_then(|value| value.as_str())
-        {
-            printer.kv("Confinement", label);
-        }
-        if let Some(permissions) = manifest.get("permissions") {
-            let rendered =
-                serde_json::to_string(permissions).context("serializing expose permissions")?;
-            printer.kv("Permissions", &rendered);
-        }
+    printer.kv("Target platform", &envelope.system);
+    printer.kv("Payload", &envelope.package.path);
+    printer.kv(
+        "Runtime dependencies",
+        &envelope.runtime_dependencies.len().to_string(),
+    );
+    printer.kv(
+        "Module dependencies",
+        &envelope.module_dependencies.len().to_string(),
+    );
+    if let Some(module) = &envelope.module {
+        printer.kv("Module source", &module.source);
+    }
+    if let Some(reference) = documentation.reference() {
+        let operations = reference
+            .abilities
+            .values()
+            .map(|operations| operations.len())
+            .sum::<usize>();
+        let handlers = reference
+            .abilities
+            .values()
+            .flat_map(|operations| operations.values())
+            .filter(|operation| operation.handler_available)
+            .count();
+        printer.kv(
+            "Generated options",
+            &documentation
+                .options()
+                .iter()
+                .filter(|option| option.visibility != aos_doc_model::Visibility::Hidden)
+                .count()
+                .to_string(),
+        );
+        printer.kv("Declared operations", &operations.to_string());
+        printer.kv("Available handlers", &handlers.to_string());
     }
 
     Ok(())
+}
+
+/// Checks the evaluator's native views through their shared format readers.
+fn decode_native_views(value: serde_json::Value) -> Result<(Envelope, RuntimeDocument)> {
+    let envelope = value
+        .get("deployment")
+        .context("package has no native deployment envelope")?;
+    let envelope = Envelope::decode(&serde_json::to_vec(envelope)?)?;
+    let documentation = value
+        .get("documentation")
+        .context("package has no native module documentation")?;
+    let documentation = RuntimeDocument::from_json(&serde_json::to_vec(documentation)?)?;
+    documentation.verify_package_identity(
+        &envelope.package.name,
+        &envelope.package.version,
+        &envelope.system,
+    )?;
+    Ok((envelope, documentation))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn views() -> serde_json::Value {
+        let root = "/nix/store/00000000000000000000000000000000-example";
+        json!({
+            "deployment": {"schema":"aos.package.deployment","system":"x86_64-linux",
+                "package":{"name":"example","version":"1","path":root,"outputs":{"out":root},"mainProgram":null},
+                "module":null,"runtimeDependencies":{},"moduleDependencies":[]},
+            "documentation":{"schema":"aos.module.documentation","scope":["package","example"],
+                "system":"x86_64-linux","packages":[{"name":"example","version":"1"}],
+                "options":[],"abilities":{}}
+        })
+    }
+
+    #[test]
+    fn native_views_preserve_available_payload_and_declaration_identity() {
+        let value = views();
+        let (envelope, documentation) = decode_native_views(value.clone()).unwrap();
+        assert_eq!(envelope.package.outputs["out"], envelope.package.path);
+        assert_eq!(documentation.value(), &value["documentation"]);
+        assert!(envelope.module.is_none());
+    }
+
+    #[test]
+    fn native_views_reject_documentation_from_another_package_or_platform() {
+        for (field, replacement) in [
+            ("system", json!("aarch64-linux")),
+            ("scope", json!(["package", "other"])),
+        ] {
+            let mut value = views();
+            value["documentation"][field] = replacement;
+            assert!(decode_native_views(value).is_err());
+        }
+    }
+
+    #[test]
+    fn native_views_reject_retired_static_contract_projection() {
+        assert!(decode_native_views(json!({"abilityProjection":{"interfaces":[]}})).is_err());
+    }
 }

@@ -4,7 +4,7 @@
   lib,
   baselineRoot,
   candidateSourceCommit,
-  baselineSourceCommit ? "ee8712f2a6bfb2e63748720068f215a44f293522",
+  baselineSourceCommit,
   abbaBlocks ? 3,
   experimentId ? "paired-public-workflow-${candidateSourceCommit}",
 }: let

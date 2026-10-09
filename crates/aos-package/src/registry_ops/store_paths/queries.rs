@@ -485,7 +485,7 @@ fn dump_records_concurrently(paths: &[String]) -> Result<HashMap<String, PathRec
 
 /// Reads validity records for one bounded set of paths.
 fn dump_records(paths: &[String]) -> Result<Vec<(String, PathRecord)>> {
-    let output = nix_command("nix-store")
+    let output = nix_command("nix-store")?
         .arg("--dump-db")
         .args(paths)
         .output()

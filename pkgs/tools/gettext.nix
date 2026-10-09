@@ -1,5 +1,6 @@
 ##! gettext — GNU internationalization and localization tools
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -11,10 +12,102 @@
   stdenv,
 }: let
   version = "1.0";
+  # Installed scripts need an interpreter, while interactive defaults belong
+  # to the public shell. Cross builds still require their target interpreter.
+  scriptBash =
+    if stdenv.isCross
+    then bash
+    else stdenv.bash;
   splitDarwinRuntime = stdenv.isCross && stdenv.hostPlatform.isDarwin;
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "gettext";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Gettext accepts both source and compiled catalog representations.";
+        "files" = {
+          "catalog.po" = "msgid \"\"\nmsgstr \"\"\n\"Content-Type: text/plain; charset=UTF-8\\n\"\n\nmsgid \"hello\"\nmsgstr \"qualified\"\n";
+        };
+        "input" = "A portable-object catalog with one translated message.";
+        "operation" = "Compile the PO source and decode the resulting MO catalog.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/msgfmt"
+              "--check"
+              "--output-file=catalog.mo"
+              "catalog.po"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@out@/bin/msgunfmt"
+              "--no-wrap"
+              "catalog.mo"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Msgfmt rejects the syntax error with status 1.";
+        "files" = {
+          "invalid.po" = "msgid \"hello\"\nmsgstr \"unterminated\n";
+        };
+        "input" = "A portable-object catalog with an unterminated message string.";
+        "operation" = "Compile the malformed catalog with msgfmt.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/msgfmt"
+              "--check"
+              "--output-file=invalid.mo"
+              "invalid.po"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
     outputs =
       if splitDarwinRuntime
@@ -32,7 +125,7 @@ in
     buildDeps =
       [
         gnumake
-        bash
+        scriptBash
         python3
       ]
       ++ (
@@ -46,7 +139,14 @@ in
       else [
         ncurses
         libxcrypt
-        bash
+        (
+          if stdenv.isCross
+          then scriptBash
+          else {
+            package = scriptBash;
+            closureOnly = true;
+          }
+        )
         python3
       ];
     propagatedDeps = [];
@@ -54,7 +154,7 @@ in
       if splitDarwinRuntime
       then "nukeRefsKeep"
       else null
-    } = [bash python3];
+    } = [scriptBash python3];
     ${
       if splitDarwinRuntime
       then "outputChecks"
@@ -66,7 +166,7 @@ in
         buildPackages.llvm
       ];
       lib.disallowedReferences = [
-        bash
+        scriptBash
         python3
         buildPackages.bash
         buildPackages.python3
@@ -167,7 +267,7 @@ in
             nativeBashRoot=$(dirname "$(dirname "$CONFIG_SHELL")")
             nativePythonRoot=$(dirname "$(dirname "$(command -v python3)")")
             grep -IrlZ -F "$nativeBashRoot" "$out" 2>/dev/null \
-              | xargs -0 -r sed -i "s|$nativeBashRoot|${bash}|g"
+              | xargs -0 -r sed -i "s|$nativeBashRoot|${scriptBash}|g"
             grep -IrlZ -F "$nativePythonRoot" "$out" 2>/dev/null \
               | xargs -0 -r sed -i "s|$nativePythonRoot|${python3}|g"
           ''

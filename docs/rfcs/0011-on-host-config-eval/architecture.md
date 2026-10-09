@@ -56,7 +56,7 @@ APM resolves the desired package set (see
    name-injection idiom already used by `systemd.services.<name>`
    (`lib/modules/systemd/types.nix:71-91`, `lib/default.nix:77-88`).
 3. **The operator's leaf `host.nix`**, delivered as **literal Nix in the cloud
-   user-data** and fetched by the `aos metadata` agent (see
+   user-data** and fetched by the selected metadata provider (see
    [`provisioning.md`](provisioning.md) and
    [`trust-and-secrets.md`](trust-and-secrets.md)).
 
@@ -137,7 +137,7 @@ piecewise. Schematically:
   "presets": [ … ],
   "storePaths": ["/nix/store/<hash>-redis-8.2", "/nix/store/<hash>-curl-8.12"],
   "module_abi": 1,
-  "inputs": { "base_lib": "<hash>", "evaluator": "<hash>", "config_modules": "<closure-hash>",
+  "inputs": { "base_lib": "<hash>", "evaluator": "<hash>", "package_modules": "<closure-hash>",
               "host_nix": "<hash>", "instance_facts": "<facts-hash>" }
 }
 ```
@@ -198,27 +198,26 @@ The chain below is the end state: native metadata acquisition, authenticated
 first-boot storage, systemd-native substrate, and stage-2 evaluation. Ignition
 and its configuration format are absent.
 
-There are two projections of the same authenticated `host.nix`. The initrd
-evaluates only the closed `aos.provisioning` subtree from the in-image base
-library. It has no registry client, package config modules, or `system.build`
-read and therefore does not form the full evaluator/toplevel closure cycle.
-After switch-root, stage 2 performs the complete resolve/eval fixpoint where
-registry trust, DNS, package modules, and the writable store are available.
+The initrd uses the same complete module evaluator as every other stage. Its
+frozen `initrdEvaluationInputs` contain the authenticated base library, selected
+package/provider modules, ordinary ability instances, requests, and bindings.
+The complete fixed point is evaluated once, then the storage provider projects
+the provisioning plan from that result. After switch-root, the host stage runs
+its own complete fixed point over the modules selected for that stage.
 
 ### Ordered chain
 
 **Initrd**:
 
-1. `aos-metadata-detect.service` — writes
-   `/run/aos-metadata/platform.env`.
-2. `aos-metadata-network.service` — baseline DHCP over the initrd
-   `80-dhcp.network` (no config-driven networking yet).
-3. `aos-metadata-fetch.service` fetches exact literal `host.nix` bytes (or
-   resolves a hash-pinned transport pointer).
-4. `aos-metadata-authorize.service` applies the image's `platform` or
-   `signed` policy to those bytes.
-5. The restricted evaluator reads `aos.provisioning`, Rust validates the
-   normalized plan, and the renderer emits per-device `repart.d`. With no
+1. The selected detector returns a typed platform result and early-network
+   requirement.
+2. The checked network-readiness binding prepares the selected substrate.
+3. The selected acquirer returns exact literal `host.nix` bytes (or resolves a
+   hash-pinned transport pointer), its signature, facts, and network bootstrap.
+4. The selected authorizer applies the image's `platform` or `signed` policy
+   directly to that typed result.
+5. The complete initrd evaluator projects `aos.provisioning`; Rust validates
+   the normalized plan, and the renderer emits per-device `repart.d`. With no
    `host.nix` on an uncommitted host, the same path evaluates the base default
    module. Present-but-invalid input never falls through to defaults. With a
    committed marker, a valid current plan is advisory and invalid/unavailable
@@ -260,7 +259,7 @@ the config modules. Resolved by the **gen-0 seed**: baseline DHCP-on-all-`en*`
 baked in the image reaches the registry; config-driven networking (static IPs,
 VLANs, bonds from `host.nix`) takes effect only after the first eval
 materializes a generation and `activate.sh.in` swaps `/etc`. The path is:
-**DHCP seed → metadata agent delivers host.nix → fetch config closures → eval →
+**DHCP seed → selected metadata provider delivers host.nix → fetch config closures → eval →
 materialize → activate (real net applied at swap).**
 
 ### gen-0 seed
@@ -290,7 +289,7 @@ never leave a half-applied configuration.
 
 ### Steady-state reconfiguration
 
-The metadata agent reacquires and authorizes `host.nix` on every boot, and
+The selected metadata providers reacquire and authorize `host.nix` on every boot, and
 stage 2 performs the full evaluation on every boot. The committed GPT marker
 freezes storage mutation only. A changed runtime declaration is therefore
 reconciled without rebuilding the golden image or resetting storage. When
