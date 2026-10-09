@@ -45,6 +45,10 @@ in {
     ${runNativeTest "guard::view_selection::historical_tests::historical_root_witnesses_use_one_candidate_interpretation_for_prior_comparison"}
     ${runTests "provenance::tests::root_context::recorded::historical_execution::recorded_removed_scope_uses_candidate_interpretation_of_raw_prior_roots -- --exact"}
     ${runNativeTest "guard::view_selection::historical_tests::historical_scope_dispatch_preserves_checked_interpretations_and_refusals"}
+    ${runTests "properties::tests::domain_reference_recorded_graft_admission_preserves_trusted_later_bindings -- --exact"}
+    ${runTests "properties::tests::domain_reference_recorded_graft_admission_keeps_placement_and_policy_refusals -- --exact"}
+    ${runNativeTest "guard::view_selection::historical_tests::historical_graft_admission_preserves_inert_overrides_through_publication_and_rollback"}
+    ${runNativeTest "guard::view_selection::historical_tests::historical_graft_admission_refuses_untrusted_malformed_and_unauthorized_overrides_before_publication"}
     printf 'PASS: closed registry and view-path property resolution\n' > "$out/result"
   '';
 

@@ -2955,6 +2955,17 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   targeted gates passing, but its complete aggregate still fails as recorded
   in the milestone status. Protected historical sourcing and native disclosure
   qualification remain open.
+  A source audit of combined candidate `0c771dc7f95b` identifies another
+  PROP-4/PROP-30 admission gap. Changed grafts resolve under the selected
+  historical context, then the pure commit validator checks their raw
+  overrides using current semantics. The native admission context also omits
+  that selected interpretation. Trusted preserve-only bindings can therefore
+  be rejected by newer placement or name rules after historical resolution
+  accepts them. The shared property-resolution gate now requires two pure
+  commit-validator witnesses and two actual historical admission witnesses
+  for preservation, publication/rollback and unchanged refusal controls.
+  Implementation and execution are pending on an isolated task branch;
+  current qualified scopes do not prove these additional contracts.
   — satisfies TREE-14,
   PROP-1 to PROP-30;
   `checks.terrane.gates.property-resolution`,
