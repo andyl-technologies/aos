@@ -1039,8 +1039,8 @@ in {
       run_logged /tmp/fleet-a-rollback.out "$APM" rollback || {
         fail "fleet A rolls back to v1"
       }
-      assert_file_contains /tmp/fleet-a-rollback.out "Rolled back to generation 1" \
-        "fleet A rollback selects v1 generation"
+      assert_file_contains /tmp/fleet-a-rollback.out "Restored generation 1 as generation 3" \
+        "fleet A rollback restores v1 in a new generation"
       run_fleet_profile fleet_a \
         "fleet-helper 1.0.0 executed" \
         "fleet-tool 1.0.0 executed"
