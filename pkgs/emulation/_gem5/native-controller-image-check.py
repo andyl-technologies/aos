@@ -125,6 +125,64 @@ def copy_tree(source, destination, mode=0o600):
     return total
 
 
+def kernel_identity(pid):
+    """Reads a still-owned leader's immutable kernel start/group identity."""
+    body = Path(f"/proc/{pid}/stat").read_text()
+    fields = body[body.rfind(")") + 2:].split()
+    if len(fields) < 20:
+        raise ValueError("native leader kernel identity is incomplete")
+    return (pid, int(fields[2]), fields[19])
+
+
+def own_process(process):
+    """Retains an unreaped original leader before readiness or termination."""
+    retained = getattr(process, "_crucible_group_custody", None)
+    if retained is not None:
+        return retained
+    if process.returncode is not None:
+        raise ValueError("native leader was reaped before original group custody")
+    identity = kernel_identity(process.pid)
+    if identity[1] != process.pid or os.getpgid(process.pid) != process.pid:
+        raise ValueError("native witness does not own a private leader group")
+    retained = {"identity": identity, "signal_attempted": False,
+                "reaped": False, "reclaimed": False, "wait_error": False}
+    process._crucible_group_custody = retained
+    return retained
+
+
+def assert_waitable_anchor(process, retained):
+    if (retained["reaped"] or retained["wait_error"] or process.returncode is not None
+            or kernel_identity(process.pid) != retained["identity"]
+            or os.getpgid(process.pid) != retained["identity"][1]):
+        raise ValueError("original native group lost its unreaped kernel anchor")
+
+
+def observe_exit(process):
+    """Observes natural termination without releasing the original PID anchor."""
+    retained = own_process(process)
+    assert_waitable_anchor(process, retained)
+    # ECHILD is unknown custody, never evidence of a safely absent group.
+    observed = os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+    if observed is not None and (observed.si_pid != process.pid or observed.si_code not in (
+            os.CLD_EXITED, os.CLD_KILLED, os.CLD_DUMPED)):
+        raise ValueError("exit observation does not prove original leader termination")
+    return observed
+
+
+def wait_exited(process, timeout=10):
+    """Waits for an exit observation while leaving the leader waitable."""
+    deadline = time.monotonic() + timeout
+    while True:
+        observed = observe_exit(process)
+        if observed is not None:
+            if observed.si_pid != process.pid:
+                raise ValueError("exit observation belongs to another native leader")
+            return observed.si_status if observed.si_code == os.CLD_EXITED else -observed.si_status
+        if time.monotonic() >= deadline:
+            raise TimeoutError("native witness missed natural exit deadline")
+        time.sleep(0.02)
+
+
 def accept(listener, process):
     listener.settimeout(0.1)
     deadline = time.monotonic() + 180
@@ -134,7 +192,7 @@ def accept(listener, process):
             stream.settimeout(180)
             return stream
         except TimeoutError:
-            if process.poll() is not None or time.monotonic() >= deadline:
+            if observe_exit(process) is not None or time.monotonic() >= deadline:
                 raise RuntimeError("native witness owner exited or missed readiness deadline")
 
 
@@ -157,27 +215,60 @@ def authenticate(stream, process, native, dmtcp=None, guard=None):
         raise ValueError("native witness resource custody helper is not mapped")
 
 
+def group_members(group):
+    members = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdecimal():
+            continue
+        try:
+            body = (entry / "stat").read_text()
+            fields = body[body.rfind(")") + 2:].split()
+            if int(fields[2]) == group:
+                if len(members) >= 4096:
+                    raise ValueError("native helper group census exceeds finite credit")
+                members.append(entry.name)
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+    return members
+
+
 def reclaim(process):
-    """Kills and waits the leader, then verifies the complete group is absent."""
-    try:
-        os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    process.wait(timeout=10)
+    """Signals a waitable original group once, reaps once, and checks absence."""
+    retained = own_process(process)
+    if retained["reclaimed"]:
+        return True
+    if retained["wait_error"]:
+        raise ValueError("native leader retirement has unresolved wait custody")
+    if not retained["reaped"]:
+        assert_waitable_anchor(process, retained)
+        # Preserve waitable child ownership even on the exceptional path. A
+        # failed or repeated cleanup must never signal a retired/reused group.
+        observe_exit(process)
+        if not retained["signal_attempted"]:
+            retained["signal_attempted"] = True
+            try:
+                os.killpg(retained["identity"][1], signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        try:
+            wait_exited(process, timeout=10)
+            pid, status = os.waitpid(process.pid, 0)
+            if pid != process.pid:
+                raise ValueError("native retirement returned another leader identity")
+            process.returncode = os.waitstatus_to_exitcode(status)
+        except TimeoutError:
+            # The original anchor remains retained; a retry can wait again but
+            # cannot repeat its group signal.
+            raise
+        except BaseException:
+            retained["wait_error"] = True
+            raise
+        retained["reaped"] = True
     deadline = time.monotonic() + 10
     while True:
-        members = []
-        for entry in Path("/proc").iterdir():
-            if not entry.name.isdecimal():
-                continue
-            try:
-                body = (entry / "stat").read_text()
-                fields = body[body.rfind(")") + 2:].split()
-                if int(fields[2]) == process.pid:
-                    members.append(entry.name)
-            except (FileNotFoundError, ProcessLookupError):
-                continue
+        members = group_members(retained["identity"][1])
         if not members:
+            retained["reclaimed"] = True
             return True
         if time.monotonic() >= deadline:
             raise ValueError(f"native witness group still has members: {members}")

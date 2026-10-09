@@ -116,6 +116,7 @@ with os.fdopen(os.open(resource / "native.log", os.O_WRONLY | os.O_CREAT | os.O_
     )
 bootstrap.close()
 try:
+    image_check.own_process(child)
     send(parent, {
         "schema": "crucible.gem5.arm-linux-native/1", "owner": "serial-node",
         "incarnation": "source", "generation": "1", "controller_uid": str(os.getuid()),
@@ -207,8 +208,7 @@ try:
     suffix = finish(control)
     assert exchange(control, {"kind": "shutdown"}) == {"kind": "shutdown"}
     control.close()
-    child.wait(timeout=10)
-    assert child.returncode == 0
+    assert image_check.wait_exited(child, timeout=10) == 0
     source_group_reclaimed = image_check.reclaim(child)
     branches = []
     if process_tools:
@@ -260,6 +260,7 @@ try:
                 ], env=environment, cwd=scratch, start_new_session=True,
                    stdout=subprocess.DEVNULL, stderr=errors)
                 try:
+                    image_check.own_process(restored)
                     fresh = image_check.accept(fresh_listener, restored)
                     image_check.authenticate(fresh, restored, native, dmtcp, image_guard)
                     send(fresh, {"kind": "restore_bind", "owner": "serial-node",
@@ -293,7 +294,7 @@ try:
                     assert finish(fresh) == suffix
                     assert exchange(fresh, {"kind": "shutdown"}) == {"kind": "shutdown"}
                     fresh.close()
-                    assert restored.wait(timeout=10) == 0, error_path.read_text(errors="replace")
+                    assert image_check.wait_exited(restored, timeout=10) == 0, error_path.read_text(errors="replace")
                     assert image_check.digest(historical_image) == image_digest
                     assert not source_namespace.exists()
                     return {"branch": name, "fresh_capture_byte_closure": True,
