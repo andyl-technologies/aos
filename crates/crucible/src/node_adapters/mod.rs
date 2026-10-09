@@ -23,7 +23,10 @@ pub use host::{
     HostContinuationInventory, HostModel, HostModelNode, HostModelQualification,
     HostModelResources, host_clock_initial_bytes, validate_host_continuation,
 };
-pub use inventory::{CurrentPort, CurrentPortKind, CurrentWorldInventory, CurrentWorldParticipant};
+pub use inventory::{
+    CurrentPort, CurrentPortKind, CurrentWorldInventory, CurrentWorldParticipant,
+    WorldInventoryError,
+};
 
 pub use reference_device::{
     REFERENCE_DEVICE_QUANTIZED_PROFILE, ReferenceDeviceNode, ReferenceDeviceQualification,

@@ -18,8 +18,9 @@ pub use factory::{
     InstalledPublicReferencePackage, InstalledRecordedWorld, InstalledReferenceQualifier,
     InstalledReferenceRecording, InstalledScriptedSourceProfile, MAX_KVM_CANDIDATE_POLICY_BYTES,
     NativeCapturePoint, NativeWorldOutcome, NativeWorldRecord, NativeWorldRequest,
-    NativeWorldRetention, NativeWorldService, ReferenceQualificationObservation,
-    ReferenceQualificationRun, load_installed_kvm_candidate, prepare_installed_kvm_candidate,
+    NativeWorldRetention, NativeWorldService, QualificationRunError,
+    ReferenceQualificationObservation, ReferenceQualificationRun, load_installed_kvm_candidate,
+    prepare_installed_kvm_candidate,
 };
 pub use service::{
     NodeObservationRetention, NodeObservationService, NodeObservationServiceConfig,

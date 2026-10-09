@@ -18,6 +18,7 @@ mod lifecycle_witness;
 mod native;
 mod package;
 mod qualification;
+mod run_error;
 mod source_probe;
 mod source_probe_execution;
 mod unit;
@@ -25,6 +26,7 @@ mod witness;
 mod world;
 
 pub use package::InstalledPublicReferencePackage;
+pub use run_error::QualificationRunError;
 
 pub use qualification::{
     InstalledReferenceQualifier, ReferenceQualificationObservation, ReferenceQualificationRun,

@@ -9,7 +9,10 @@ use std::{path::PathBuf, sync::mpsc};
 use crucible_cas::content_store::ContentId;
 use crucible_node_contract::ContentRef;
 
-use super::{harness, issuer::SourceIssuedQualification, package::InstalledPublicReferencePackage};
+use super::{
+    harness, issuer::SourceIssuedQualification, package::InstalledPublicReferencePackage,
+    run_error::QualificationRunError,
+};
 
 /// Retains the fixed installed implementation and its qualification invocation.
 pub struct InstalledReferenceQualifier {
@@ -18,7 +21,7 @@ pub struct InstalledReferenceQualifier {
 
 /// Receives the durable original result from the owning installation actor.
 pub struct ReferenceQualificationRun {
-    receiver: mpsc::Receiver<Result<harness::CandidateHarnessResult, String>>,
+    receiver: mpsc::Receiver<Result<harness::CandidateHarnessResult, QualificationRunError>>,
 }
 
 /// Retains original native roots and a complete unresolved behavioral report.
@@ -36,9 +39,8 @@ impl InstalledReferenceQualifier {
     /// # Errors
     /// Refuses absent installation, changed original artifact bytes or an
     /// unsupported package scope. Descriptor validation grants no qualification.
-    pub fn built_in() -> Result<Self, String> {
-        let package =
-            InstalledPublicReferencePackage::built_in().map_err(|error| error.to_string())?;
+    pub fn built_in() -> Result<Self, QualificationRunError> {
+        let package = InstalledPublicReferencePackage::built_in()?;
         Ok(Self {
             implementation: package.identity().clone(),
         })
@@ -53,13 +55,17 @@ impl InstalledReferenceQualifier {
     /// # Errors
     /// Refuses a changed installation, exhausted actor reservation, invalid
     /// thread resources or a directory that cannot be created privately.
-    pub fn start(&self, directory: PathBuf) -> Result<ReferenceQualificationRun, String> {
-        let package =
-            InstalledPublicReferencePackage::built_in().map_err(|error| error.to_string())?;
+    pub fn start(
+        &self,
+        directory: PathBuf,
+    ) -> Result<ReferenceQualificationRun, QualificationRunError> {
+        let package = InstalledPublicReferencePackage::built_in()?;
         if package.identity() != &self.implementation {
-            return Err("installed qualification implementation changed".into());
+            return Err(QualificationRunError::Refused(
+                "installed qualification implementation changed",
+            ));
         }
-        let receiver = harness::start(directory).map_err(|error| error.to_string())?;
+        let receiver = harness::start(directory)?;
         Ok(ReferenceQualificationRun { receiver })
     }
 }
@@ -71,19 +77,23 @@ impl ReferenceQualificationRun {
     /// Reports the original setup failure or unavailable actor result. Missing
     /// source-inspection evidence is represented inside the report, not hidden
     /// by changing the native case or its original verdict.
-    pub fn wait(self) -> Result<ReferenceQualificationObservation, String> {
-        let original = self.receiver.recv().map_err(|error| error.to_string())??;
-        let (_, criteria) = original
-            .qualification_context()
-            .ok_or("original predeclared qualification context unavailable")?;
+    pub fn wait(self) -> Result<ReferenceQualificationObservation, QualificationRunError> {
+        let original = self.receiver.recv()??;
+        let (_, criteria) =
+            original
+                .qualification_context()
+                .ok_or(QualificationRunError::Refused(
+                    "original predeclared qualification context unavailable",
+                ))?;
         let implementation = criteria.plan.unit.implementation.clone();
         let original_root = original.original_result();
         let retirement = original.retirement_result();
         let population = original
             .population_result()
-            .ok_or("original qualification population is not durable")?;
-        let issued =
-            SourceIssuedQualification::issue(original).map_err(|error| error.to_string())?;
+            .ok_or(QualificationRunError::Refused(
+                "original qualification population is not durable",
+            ))?;
+        let issued = SourceIssuedQualification::issue(original)?;
         Ok(ReferenceQualificationObservation {
             implementation,
             original: original_root,
@@ -132,10 +142,10 @@ impl ReferenceQualificationObservation {
     ///
     /// # Errors
     /// Refuses unresolved original review, missing artifacts or changed scope.
-    pub fn require_complete_qualification(&self) -> Result<(), String> {
+    pub fn require_complete_qualification(&self) -> Result<(), QualificationRunError> {
         self.issued
             .admit_current()
             .map(|_| ())
-            .map_err(|error| error.to_string())
+            .map_err(QualificationRunError::from)
     }
 }

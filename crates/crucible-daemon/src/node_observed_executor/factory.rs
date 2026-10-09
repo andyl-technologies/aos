@@ -27,7 +27,7 @@ pub use native_state::{
     NativeWorldRequest, NativeWorldRetention, NativeWorldService,
 };
 pub use reference_public::{
-    InstalledPublicReferencePackage, InstalledReferenceQualifier,
+    InstalledPublicReferencePackage, InstalledReferenceQualifier, QualificationRunError,
     ReferenceQualificationObservation, ReferenceQualificationRun,
 };
 pub use scripted::InstalledScriptedSourceProfile;

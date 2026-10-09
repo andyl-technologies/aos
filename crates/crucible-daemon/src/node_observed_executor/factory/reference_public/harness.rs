@@ -105,7 +105,10 @@ impl CandidateHarnessResult {
 /// Starts a source-owned actor; dropping the receiver cannot drop native custody.
 pub(super) fn start(
     directory: PathBuf,
-) -> Result<mpsc::Receiver<Result<CandidateHarnessResult, String>>, std::io::Error> {
+) -> Result<
+    mpsc::Receiver<Result<CandidateHarnessResult, super::run_error::QualificationRunError>>,
+    std::io::Error,
+> {
     QUALIFICATION_ACTOR_RESERVED
         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
         .map_err(|_| {
@@ -120,7 +123,8 @@ pub(super) fn start(
         .name("reference-qualification".into())
         .spawn(move || {
             let _lease = lease;
-            let result = run_actor(directory).map_err(|error| error.to_string());
+            let result =
+                run_actor(directory).map_err(super::run_error::QualificationRunError::from);
             let _ = sender.send(result);
         })?;
     Ok(receiver)

@@ -4,6 +4,23 @@ use crucible_node_contract::{Direction, Id};
 
 use crate::{BackendIoInventoryAuthority, World, WorldIoNodeKind, WorldNodeDef};
 
+/// Reports an invalid world projection or portable participant identity.
+#[derive(Debug, thiserror::Error)]
+pub enum WorldInventoryError {
+    /// A declared world violates its roster, ownership or resource bounds.
+    #[error("{0}")]
+    InvalidWorld(&'static str),
+    /// A legacy identity cannot be represented by the portable contract.
+    #[error(transparent)]
+    InvalidIdentity(#[from] crucible_node_contract::ContractError),
+}
+
+impl From<&'static str> for WorldInventoryError {
+    fn from(reason: &'static str) -> Self {
+        Self::InvalidWorld(reason)
+    }
+}
+
 /// Names one current-model port family before native qualification.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CurrentPortKind {
@@ -76,7 +93,7 @@ impl CurrentWorldInventory {
         io_authority: BackendIoInventoryAuthority,
         maximum_participants: usize,
         maximum_ports: usize,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, WorldInventoryError> {
         let participant_count = world
             .nodes()
             .len()
@@ -265,14 +282,14 @@ impl CurrentWorldInventory {
     }
 }
 
-fn portable(value: &str) -> Result<Id, String> {
+fn portable(value: &str) -> Result<Id, WorldInventoryError> {
     if value.len() > 128 {
         return Err("legacy logical identity exceeds portable identifier ceiling".into());
     }
-    Id::new(value).map_err(|error| error.to_string())
+    Id::new(value).map_err(WorldInventoryError::InvalidIdentity)
 }
 
-fn owner_id(prefix: &str, node: &Id) -> Result<Id, String> {
+fn owner_id(prefix: &str, node: &Id) -> Result<Id, WorldInventoryError> {
     if prefix
         .len()
         .saturating_add(node.as_str().len())
