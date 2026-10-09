@@ -36,6 +36,7 @@ permissive notices; they do not relicense the simulator.
 | `object-state-alias.patch` | `src/python/pybind11/event.cc` | Original BSD three-clause notice and copyright holders |
 | `terminal-output-publication.patch` | `src/dev/serial/Terminal.py`, `src/dev/serial/terminal.hh`, `src/dev/serial/terminal.cc` | Original BSD three-clause notices and copyright holders retained, including Arm's hardware intellectual-property scope statement |
 | `terminal-output-native-witness.patch` | Modified `src/dev/serial/SConscript`; new `src/dev/serial/CrucibleTerminalWitness.py`, `src/dev/serial/crucible_terminal_witness.hh`, `src/dev/serial/crucible_terminal_witness.cc` | Original SConscript BSD three-clause notice retained; new native callback witness files carry explicit MIT notices |
+| `terminal-publication-inventory.patch` | `src/dev/serial/Terminal.py`, `src/dev/serial/terminal.hh`, `src/dev/serial/terminal.cc` | Original BSD three-clause notices and copyright holders retained, including Arm's hardware intellectual-property scope statement; read-only complete FIFO observation creates no upstream source files |
 | `addr-range-predicate-borrow.patch` | `src/base/addr_range_map.hh` | Original BSD three-clause notices and copyright holders retained, including Arm's hardware intellectual-property scope statement |
 
 The installed gem5 package retains upstream `LICENSE` and bundled dependency
