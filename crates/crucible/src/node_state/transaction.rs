@@ -221,10 +221,10 @@ pub struct RestoreFailure {
     /// Reports what actual evidence establishes about the original world.
     pub original: OriginalWorldDisposition,
     publication: PublicationKnowledge,
-    activation: Option<ActivationRecord>,
-    staging: Option<PreparedNativeCustody>,
-    runtime: Option<QuarantinedRuntime>,
-    rejected_runtime: Option<crate::node_contract::RuntimePreparationFailure>,
+    activation: Option<Box<ActivationRecord>>,
+    staging: Option<Box<PreparedNativeCustody>>,
+    runtime: Option<Box<QuarantinedRuntime>>,
+    rejected_runtime: Option<Box<crate::node_contract::RuntimePreparationFailure>>,
 }
 
 impl RestoreFailure {
@@ -241,8 +241,8 @@ impl RestoreFailure {
             error,
             original,
             publication,
-            activation: Some(activation),
-            staging: Some(staging),
+            activation: Some(Box::new(activation)),
+            staging: Some(Box::new(staging)),
             runtime: None,
             rejected_runtime: None,
         }
@@ -268,7 +268,7 @@ impl RestoreFailure {
 
     /// Returns the exact proposed or attempted generation retained by this failure.
     pub fn original_activation(&self) -> Option<&ActivationRecord> {
-        self.activation.as_ref()
+        self.activation.as_deref()
     }
 
     /// Reconciles only the original uncertain durable record under retained containment.
@@ -303,7 +303,7 @@ impl RestoreFailure {
 
     /// Borrows retained whole-runtime containment for authentic reclamation polling.
     pub fn quarantined_runtime(&mut self) -> Option<&mut QuarantinedRuntime> {
-        self.runtime.as_mut()
+        self.runtime.as_deref_mut()
     }
 
     /// Polls capsule-owned resource reclamation without losing failed native handles.
@@ -347,11 +347,11 @@ pub struct PreparedRestore<'a> {
 #[must_use = "uncertain publication retains the original generation and native custody"]
 pub enum RestorePublication<'a> {
     /// Owns one completely published replacement world and its fresh authority.
-    Committed(RestoredWorld),
+    Committed(Box<RestoredWorld>),
     /// Retains failed replacement resources without exposing a partial world.
     Failed(RestoreFailure),
     /// Retains the exact original generation for reconciliation under closed gates.
-    Uncertain(PendingRestorePublication<'a>),
+    Uncertain(Box<PendingRestorePublication<'a>>),
 }
 
 /// Retains the original whole-world publication attempt without execution permission.
@@ -423,7 +423,7 @@ pub fn stage_restore<'a>(
     stage_restore_inner(graph, capture, activation, driver, limits).map_err(|mut failure| {
         // Allocation and native preparation have no publication permission.
         failure.publication = PublicationKnowledge::NotAttempted;
-        failure.activation = Some(original_activation);
+        failure.activation = Some(Box::new(original_activation));
         failure
     })
 }
@@ -588,7 +588,7 @@ fn stage_restore_inner<'a>(
             PublicationKnowledge::NotAttempted,
             staging,
         );
-        failure.runtime = Some(runtime.into_quarantine());
+        failure.runtime = Some(Box::new(runtime.into_quarantine()));
         return Err(failure);
     }
     Ok(PreparedRestore {
@@ -829,14 +829,14 @@ impl<'a> PreparedRestore<'a> {
                     }
                 };
                 let original = staging.original_disposition();
-                RestorePublication::Committed(RestoredWorld {
+                RestorePublication::Committed(Box::new(RestoredWorld {
                     runtime,
                     activation,
                     staging,
                     artifact: self.capture.artifact.clone(),
                     original,
                     repeatability: self.capture.repeatability,
-                })
+                }))
             }
             Err(_error) if publisher.status == Some(PublicationStatus::Unknown) => {
                 let containment = match self.staging.as_mut() {
@@ -847,9 +847,9 @@ impl<'a> PreparedRestore<'a> {
                     )),
                 };
                 match containment {
-                    Ok(()) => {
-                        RestorePublication::Uncertain(PendingRestorePublication { prepared: self })
-                    }
+                    Ok(()) => RestorePublication::Uncertain(Box::new(PendingRestorePublication {
+                        prepared: self,
+                    })),
                     Err(error) => RestorePublication::Failed(self.fail(error)),
                 }
             }
@@ -869,8 +869,12 @@ impl<'a> PreparedRestore<'a> {
             None => RestoreFailure::refused(error),
         };
         failure.publication = self.publication;
-        failure.activation = Some(self.activation.clone());
-        failure.runtime = self.runtime.take().map(NodeRuntime::into_quarantine);
+        failure.activation = Some(Box::new(self.activation.clone()));
+        failure.runtime = self
+            .runtime
+            .take()
+            .map(NodeRuntime::into_quarantine)
+            .map(Box::new);
         failure
     }
 }

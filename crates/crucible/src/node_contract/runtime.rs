@@ -84,7 +84,7 @@ impl NodeRuntime {
         activation: ActivationRecord,
         limits: RuntimeLimits,
         custody_slot: Box<dyn RuntimeCustodySlot>,
-    ) -> Result<Self, RuntimePreparationFailure> {
+    ) -> Result<Self, Box<RuntimePreparationFailure>> {
         if let Err(error) = custody_slot.validate_world(&activation, limits) {
             return Err(RuntimePreparationFailure::retain(
                 error,
@@ -443,10 +443,10 @@ impl NodeRuntime {
             .get_mut(&token.route.node)
             .ok_or(RuntimeError::UnknownNode)?
             .close_quantum(&admission);
-        if !matches!(result, Submission::Refused(_)) {
-            if let Some(entry) = self.operations.get_mut(token.operation()) {
-                entry.close_submission = Some(result.clone());
-            }
+        if !matches!(result, Submission::Refused(_))
+            && let Some(entry) = self.operations.get_mut(token.operation())
+        {
+            entry.close_submission = Some(result.clone());
         }
         if matches!(result, Submission::Uncertain(_)) {
             self.contain_roster(token.route());
@@ -659,11 +659,11 @@ impl NodeRuntime {
                     close_submission: entry.close_submission.clone(),
                 },
                 RetainedResult::Complete(outcome) => RetainedOperationObservation::Complete {
-                    outcome: outcome.clone(),
+                    outcome: Box::new(outcome.clone()),
                     acknowledged: false,
                 },
                 RetainedResult::Acknowledged(outcome) => RetainedOperationObservation::Complete {
-                    outcome: outcome.clone(),
+                    outcome: Box::new(outcome.clone()),
                     acknowledged: true,
                 },
                 RetainedResult::Failed(failure) => {
@@ -817,12 +817,12 @@ impl NodeRuntime {
 
     fn release_reservation(&mut self, token: &OperationToken) {
         for identity in &token.route.owners {
-            if let Some(owner) = self.owners.get_mut(&identity.owner) {
-                if owner.operation.as_ref() == Some(token.operation()) {
-                    owner.operation = None;
-                    if owner.lifecycle == Lifecycle::Executing {
-                        owner.lifecycle = Lifecycle::Stopped;
-                    }
+            if let Some(owner) = self.owners.get_mut(&identity.owner)
+                && owner.operation.as_ref() == Some(token.operation())
+            {
+                owner.operation = None;
+                if owner.lifecycle == Lifecycle::Executing {
+                    owner.lifecycle = Lifecycle::Stopped;
                 }
             }
         }
@@ -886,10 +886,9 @@ impl NodeRuntime {
                 .owners
                 .iter()
                 .any(|owner| newly_contained.contains(&owner.owner))
+                && let Some(node) = self.nodes.get_mut(node_id)
             {
-                if let Some(node) = self.nodes.get_mut(node_id) {
-                    node.quarantine_resources();
-                }
+                node.quarantine_resources();
             }
         }
     }
@@ -919,14 +918,14 @@ impl RuntimePreparationFailure {
         error: RuntimeError,
         original_activation: ActivationRecord,
         limits: RuntimeLimits,
-    ) -> Self {
-        Self {
+    ) -> Box<Self> {
+        Box::new(Self {
             error,
             nodes: Vec::new(),
             original_activation,
             limits,
             custody_slot: None,
-        }
+        })
     }
 
     pub(super) fn retain(
@@ -935,14 +934,14 @@ impl RuntimePreparationFailure {
         original_activation: ActivationRecord,
         limits: RuntimeLimits,
         custody_slot: Box<dyn RuntimeCustodySlot>,
-    ) -> Self {
-        Self {
+    ) -> Box<Self> {
+        Box::new(Self {
             error,
             nodes,
             original_activation,
             limits,
             custody_slot: Some(custody_slot),
-        }
+        })
     }
 }
 

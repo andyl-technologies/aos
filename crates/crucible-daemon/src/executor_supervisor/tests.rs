@@ -20,6 +20,8 @@ use crate::{
     MemoryAssignmentLedger,
 };
 
+mod node_guarantees;
+
 #[test]
 fn execution_cancellation_wakes_blocked_guards_and_times_out_cleanly() {
     let cancellation = ExecutionCancellation::default();

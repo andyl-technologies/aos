@@ -293,6 +293,8 @@ enum Commands {
     Campaign(CampaignArgs),
     /// Inspect or maintain a configured content store.
     Store(StoreArgs),
+    /// Compile and observe installed simulation nodes through a private local daemon.
+    Node(cli_node::NodeArgs),
     /// Generate shell completions.
     Completions(CompletionsArgs),
 }
@@ -2265,6 +2267,7 @@ enum CliSubcommand {
     Serve,
     Campaign,
     Store,
+    Node,
     Completions,
 }
 
@@ -2284,6 +2287,7 @@ impl CliSubcommand {
             Commands::Serve(_) => Self::Serve,
             Commands::Campaign(_) => Self::Campaign,
             Commands::Store(_) => Self::Store,
+            Commands::Node(_) => Self::Node,
             Commands::Completions(_) => Self::Completions,
         }
     }
@@ -2303,6 +2307,7 @@ impl CliSubcommand {
             Self::Serve => "serve",
             Self::Campaign => "campaign",
             Self::Store => "store",
+            Self::Node => "node",
             Self::Completions => "completions",
         }
     }
@@ -2363,6 +2368,7 @@ enum CliDelegatedDriver {
     TimeTravelDebugger,
     DaemonHost,
     CampaignService,
+    NodeObservationService,
     StoreMaintenance,
     ShellCompletionGenerator,
 }
@@ -2438,6 +2444,7 @@ impl CliThinWrapperPlan {
                 CliSubcommand::Triage
                     | CliSubcommand::Campaign
                     | CliSubcommand::Store
+                    | CliSubcommand::Node
                     | CliSubcommand::Completions
             )
     }
@@ -2679,6 +2686,18 @@ fn plan_cli_invocation(cli: &Cli) -> CliThinWrapperPlan {
             implements_checkpoint_materialization: false,
             extra_control_capabilities: Vec::new(),
         },
+        Commands::Node(_) => CliThinWrapperPlan {
+            subcommand,
+            session_commands: Vec::new(),
+            api_calls: Vec::new(),
+            delegated_drivers: vec![CliDelegatedDriver::NodeObservationService],
+            state_references: vec![CliStateReferenceKind::DaemonConnection],
+            thin_wrapper: true,
+            owns_canonical_run_state: false,
+            implements_scheduler: false,
+            implements_checkpoint_materialization: false,
+            extra_control_capabilities: Vec::new(),
+        },
         Commands::Campaign(_) => CliThinWrapperPlan {
             subcommand,
             session_commands: Vec::new(),
@@ -2750,6 +2769,8 @@ mod cli_campaign_store;
 mod cli_control;
 #[path = "cli/dispatch.rs"]
 mod cli_dispatch;
+#[path = "cli/node.rs"]
+mod cli_node;
 #[path = "cli/exploration.rs"]
 mod cli_exploration;
 #[path = "cli/planning.rs"]

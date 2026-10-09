@@ -255,13 +255,13 @@ impl SimulationNode for TestNode {
                 window: window.clone(),
                 publication: end.clone(),
                 physical: PhysicalState::Active,
-                closure: QuantumClosureEvidence {
+                closure: Box::new(QuantumClosureEvidence {
                     input_batch: input_batch.clone(),
                     close_receipt: blob(),
                     output_inventory: blob(),
                     pending_inventory: blob(),
                     clock_evidence: blob(),
-                },
+                }),
             },
             _ => ProgressEvidence::Administrative,
         };

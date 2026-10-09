@@ -407,7 +407,7 @@ impl SimulationNode for ReferenceDeviceNode {
                 window: grant.window_id,
                 publication: grant.publication,
                 physical: PhysicalState::Unknown,
-                closure,
+                closure: Box::new(closure),
             },
             retained_outputs: outputs,
             scheduling: Some(scheduling),

@@ -660,8 +660,25 @@ fn validate_delivery_lineage(delivery: &Delivery, cap: U64) -> Result<(), Schedu
         {
             return Err(SchedulingError::InvalidSnapshot);
         }
-    } else if !delivery.causal_parents.is_empty() || delivery.publication.microstep.get() != 0 {
-        return Err(SchedulingError::InvalidSnapshot);
+    } else {
+        // Original quantized input parents retain causality at the fixed later
+        // publication boundary without creating an evaluation coordinate. Same-
+        // instant reactions still require an authentic evaluation and microstep.
+        if delivery.publication.microstep.get() != 0
+            || delivery
+                .causal_parents
+                .windows(2)
+                .any(|pair| pair[0] >= pair[1])
+            || delivery
+                .causal_parents
+                .iter()
+                .any(|parent| parent.time_ps >= delivery.publication.time_ps)
+        {
+            return Err(SchedulingError::InvalidSnapshot);
+        }
+        for parent in &delivery.causal_parents {
+            validate_position(*parent, cap)?;
+        }
     }
     Ok(())
 }

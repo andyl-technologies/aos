@@ -57,7 +57,7 @@ impl PreparedRealization {
     pub fn admit(
         mut self,
         graph: &crate::node_admission::AdmittedGraph,
-    ) -> Result<NodeRuntime, RuntimePreparationFailure> {
+    ) -> Result<NodeRuntime, Box<RuntimePreparationFailure>> {
         let Some(custody_slot) = self.custody_slot.take() else {
             // This branch cannot follow public construction; leave handles in
             // this guard rather than returning them without a retention slot.
@@ -94,7 +94,7 @@ pub struct RealizationFailure {
     /// Unmet preparation precondition or actual native failure.
     pub reason: String,
     /// Prepared resources requiring cleanup, absent only if none were allocated.
-    pub retained: Option<PreparedRealization>,
+    pub retained: Option<Box<PreparedRealization>>,
 }
 
 /// Realizes node profiles under owned inactive preparation and host admission.

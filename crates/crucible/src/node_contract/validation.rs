@@ -63,10 +63,10 @@ pub(super) fn validate_roster(
             return Err(RuntimeError::InvalidRoute);
         }
         for owner in &route.owners {
-            if let Some(previous) = owner_roster.insert(owner.owner.clone(), owner.clone()) {
-                if previous != *owner {
-                    return Err(RuntimeError::InvalidRoute);
-                }
+            if let Some(previous) = owner_roster.insert(owner.owner.clone(), owner.clone())
+                && previous != *owner
+            {
+                return Err(RuntimeError::InvalidRoute);
             }
         }
     }
@@ -150,10 +150,10 @@ pub(super) fn valid_outcome(admission: &OperationAdmission, outcome: &OperationO
         if observation.node != outcome.node || observation.owners != outcome.owners {
             return false;
         }
-        if let super::ProgressEvidence::Exact { reached, .. } = outcome.progress {
-            if observation.reached != reached {
-                return false;
-            }
+        if let super::ProgressEvidence::Exact { reached, .. } = outcome.progress
+            && observation.reached != reached
+        {
+            return false;
         }
     }
     let input_progress = outcome

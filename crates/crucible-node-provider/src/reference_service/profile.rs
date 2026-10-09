@@ -64,6 +64,12 @@ pub struct ReferenceProfile {
     content: Vec<ProfileContent>,
 }
 
+enum ProfileSelection {
+    Cnp,
+    Closed,
+    Linked { closed_ingress: bool },
+}
+
 impl ReferenceProfile {
     /// Builds a bounded phase-zero quantized checksum profile.
     ///
@@ -89,7 +95,7 @@ impl ReferenceProfile {
             device_executable,
             quantum_ps,
             host_budget_ns,
-            false,
+            ProfileSelection::Cnp,
         )
     }
 
@@ -119,7 +125,39 @@ impl ReferenceProfile {
             device_executable,
             quantum_ps,
             host_budget_ns,
-            true,
+            ProfileSelection::Closed,
+        )
+    }
+
+    /// Builds an actor-native checksum profile for lossless opaque-byte links.
+    ///
+    /// Original checksum JSON output is carried as opaque octets. A connected
+    /// consumer intentionally checksums those exact octets; no semantic JSON or
+    /// Ethernet conversion is implied. A closed source exposes output only.
+    /// Otherwise every input lane needs an authenticated admitted causal source.
+    /// No public CNP endpoint, capture, or physical suspension is advertised.
+    ///
+    /// # Errors
+    /// Rejects invalid references, zero quantum/budget, malformed records, and
+    /// serialization failure. Native custody and complete graph closure remain
+    /// independently authenticated before effects.
+    pub fn build_native_linked(
+        node: Id,
+        owner: Id,
+        provider_executable: ContentRef,
+        device_executable: ContentRef,
+        quantum_ps: U64,
+        host_budget_ns: U64,
+        closed_ingress: bool,
+    ) -> Result<Self, ProviderError> {
+        Self::build_selected(
+            node,
+            owner,
+            provider_executable,
+            device_executable,
+            quantum_ps,
+            host_budget_ns,
+            ProfileSelection::Linked { closed_ingress },
         )
     }
 
@@ -130,8 +168,17 @@ impl ReferenceProfile {
         device_executable: ContentRef,
         quantum_ps: U64,
         host_budget_ns: U64,
-        closed_ingress: bool,
+        selection: ProfileSelection,
     ) -> Result<Self, ProviderError> {
+        let closed_ingress = matches!(
+            selection,
+            ProfileSelection::Closed
+                | ProfileSelection::Linked {
+                    closed_ingress: true
+                }
+        );
+        let native_linked = matches!(selection, ProfileSelection::Linked { .. });
+        let native_adapter = closed_ingress || native_linked;
         provider_executable.validate()?;
         device_executable.validate()?;
         if quantum_ps.get() == 0 || host_budget_ns.get() == 0 {
@@ -143,7 +190,9 @@ impl ReferenceProfile {
         let mut content = Vec::new();
         let model = put_text(
             &mut content,
-            if closed_ingress {
+            if native_linked {
+                LINKED_MODEL_SPECIFICATION
+            } else if closed_ingress {
                 CLOSED_MODEL_SPECIFICATION
             } else {
                 MODEL_SPECIFICATION
@@ -159,7 +208,7 @@ impl ReferenceProfile {
                 "physical_pause":"unknown",
                 "repeatability":"nondeterministic",
                 "host_budget":"elapsed host time is operational and can fail differently between runs",
-                "native_resource_limits": if closed_ingress {
+                "native_resource_limits": if native_adapter {
                     "The actor-native adapter bounds original windows, staged/output bytes, retained operations and world custody; finite wall-time control and window budgets contain this fixed measured no-fork child. Dedicated CNP-provider RLIMIT partitioning is not selected or claimed by this actor profile."
                 } else {
                     "dedicated provider and fixed measured companion inherit half of admitted RLIMIT_AS, RLIMIT_NOFILE, RLIMIT_FSIZE and integral-second RLIMIT_CPU hard ceilings; smaller CPU allowances are refused"
@@ -182,7 +231,9 @@ impl ReferenceProfile {
         let guarantees_ref = put_json(&mut content, &guarantees)?;
         let window = put_text(
             &mut content,
-            if closed_ingress {
+            if native_linked {
+                LINKED_WINDOW_SPECIFICATION
+            } else if closed_ingress {
                 CLOSED_WINDOW_SPECIFICATION
             } else {
                 WINDOW_SPECIFICATION
@@ -203,6 +254,12 @@ impl ReferenceProfile {
         });
         if closed_ingress {
             configuration_value["input_policy"] = json!("closed-no-ingress");
+        }
+        if native_linked {
+            configuration_value["byte_interface"] = json!("opaque-octets");
+            if !closed_ingress {
+                configuration_value["input_policy"] = json!("admitted-causal-source");
+            }
         }
         let configuration = put_json(&mut content, &configuration_value)?;
         let facet = FacetSelection {
@@ -259,8 +316,20 @@ impl ReferenceProfile {
             }),
         )?;
 
-        let input_schema = schema(&mut content, "reference-device/input-v1", INPUT_SCHEMA)?;
-        let output_schema = schema(&mut content, "reference-device/output-v1", OUTPUT_SCHEMA)?;
+        let input_schema = if native_linked {
+            schema(
+                &mut content,
+                NATIVE_OCTET_SCHEMA_ID,
+                NATIVE_OCTET_SPECIFICATION,
+            )?
+        } else {
+            schema(&mut content, "reference-device/input-v1", INPUT_SCHEMA)?
+        };
+        let output_schema = if native_linked {
+            input_schema.clone()
+        } else {
+            schema(&mut content, "reference-device/output-v1", OUTPUT_SCHEMA)?
+        };
         let domains = vec![Id::new(format!("{owner}/state"))?];
         let ownership_ref = put_json(
             &mut content,
@@ -313,7 +382,9 @@ impl ReferenceProfile {
             ports: vec![PortDescriptor {
                 id: id("data")?,
                 lanes,
-                interface_id: id(if closed_ingress {
+                interface_id: id(if native_linked {
+                    NATIVE_OCTET_INTERFACE_ID
+                } else if closed_ingress {
                     "reference-device/checksum-only-v1"
                 } else {
                     "reference-device/bytes-and-checksum-v1"
@@ -330,7 +401,7 @@ impl ReferenceProfile {
             r#"{"schema":"reference-device/content-possession-v1","semantics":"Verified bounded content remains inert. A selected consuming schema and native authority are required before effects."}"#,
         )?;
         let mut formats = vec![output_schema, content_possession_schema.clone()];
-        if !closed_ingress {
+        if !closed_ingress && !formats.contains(&input_schema) {
             formats.push(input_schema);
         }
         formats.sort_by(|left, right| (&left.id, left.version).cmp(&(&right.id, right.version)));
@@ -360,12 +431,16 @@ impl ReferenceProfile {
 
         let configuration_schema = schema(
             &mut content,
-            if closed_ingress {
+            if native_linked {
+                "reference-device/configuration-linked-v1"
+            } else if closed_ingress {
                 "reference-device/configuration-closed-v1"
             } else {
                 "reference-device/configuration-v1"
             },
-            if closed_ingress {
+            if native_linked {
+                LINKED_CONFIGURATION_SCHEMA
+            } else if closed_ingress {
                 CLOSED_CONFIGURATION_SCHEMA
             } else {
                 CONFIGURATION_SCHEMA
@@ -381,7 +456,13 @@ impl ReferenceProfile {
         let port_templates_ref = put_json(&mut content, &descriptor.ports)?;
         let node_manifest = NodeManifest {
             schema_version: 1,
-            profile_id: id(if closed_ingress {
+            profile_id: id(if native_linked {
+                if closed_ingress {
+                    "reference-device/linked-source-v1"
+                } else {
+                    "reference-device/linked-consumer-v1"
+                }
+            } else if closed_ingress {
                 "reference-device/closed-quantized-v1"
             } else {
                 "reference-device/quantized-v1"
@@ -396,7 +477,7 @@ impl ReferenceProfile {
         };
         let provider_manifest = ProviderManifest {
             schema_version: 1,
-            provider_id: id(if closed_ingress {
+            provider_id: id(if native_adapter {
                 "crucible-host-reference-adapter"
             } else {
                 "crucible-reference-provider"
@@ -404,13 +485,13 @@ impl ReferenceProfile {
             implementation: implementation.clone(),
             // The closed actor profile selects the local native adapter, not
             // the independently launched public CNP provider endpoint.
-            protocol_versions: if closed_ingress {
+            protocol_versions: if native_adapter {
                 Vec::new()
             } else {
                 vec![id("CNP/1")?]
             },
             supported_profiles: vec![node_manifest.clone()],
-            extensions_supported: if closed_ingress {
+            extensions_supported: if native_adapter {
                 Vec::new()
             } else {
                 vec![id("cnp.resume/1")?, id("reference-device/quantized-v1")?]
@@ -632,6 +713,17 @@ const CLOSED_MODEL_SPECIFICATION: &str = "Controlled checksum model, closed-ingr
 const CLOSED_WINDOW_SPECIFICATION: &str = "Closed-ingress quantized checksum window, edition 1. No public input lane or side ingress exists. The exclusive measured controller freezes an authenticated empty cut before begin. Exactly one bounded empty-input window executes with a finite host-time budget. Original output remains invisible until authentic controller close, then publishes at (window_end_ps,0,Publication), without evaluation coordinates. Original retry and output custody persist until acknowledgement; lost responses never authorize reexecution. The native adapter rejects nonempty input before staging or execution. Application park does not certify physical suspension. Capture, fork, reset and continuation are unsupported.";
 
 const CLOSED_CONFIGURATION_SCHEMA: &str = "reference-device/configuration-closed-v1: closed JSON object with schema_version integral 1, positive canonical decimal u64 quantum_ps and host_budget_ns, phase_ps string 0, maximum_input_bytes equal to the installed companion ceiling, ordering_profile string superdense-v1, window_semantics_ref complete CNP ContentRef for closed ingress, checksum_multiplier string 257, checksum_modulus string 18446744073709551616, and input_policy string closed-no-ingress. No extensions, side-input source, or public input lane exists. The exclusive native adapter accepts authenticated empty original input cuts only. Other fields are refused.";
+
+/// Names the installed bounded lossless byte interface for native model links.
+pub const NATIVE_OCTET_INTERFACE_ID: &str = "crucible/octet-stream-v1";
+/// Names the shared inert octet payload schema used by native model links.
+pub const NATIVE_OCTET_SCHEMA_ID: &str = "crucible/octet-stream-v1";
+/// Defines byte-preserving payload semantics; lane credits bound actual length.
+pub const NATIVE_OCTET_SPECIFICATION: &str = "crucible/octet-stream-v1: exactly the original immutable octets in a hash-checked CNP ContentRef. Length is bounded by the admitted lane and connection credits. No text, JSON, Ethernet, address, framing or timing conversion is implied. Media type remains original metadata and does not change the octets. Consuming model semantics and original native input authority are separate from inert byte possession.";
+
+const LINKED_MODEL_SPECIFICATION: &str = "Controlled checksum model, native byte-linked edition 1. Initial quantum/checksum are zero. A linked consumer consumes only the original authenticated causal input cut, concatenated in coordinator order, applying checksum=(checksum*257+b) modulo 2^64 per octet. A source with closed-no-ingress exposes no input lane and accepts only an empty cut. Every original window publishes one original checksum JSON record as opaque octets, without semantic conversion. Native retry/output custody persists. No captures, forks or continuation are supported.";
+const LINKED_WINDOW_SPECIFICATION: &str = "Native byte-linked quantized checksum window, edition 1. Exclusive measured adapter freezes a complete authenticated original input prefix before execution. Exactly that byte sequence is consumed once under the selected finite host budget. Original checksum JSON output becomes visible only at authentic close, at (window_end_ps,0,Publication), without evaluation coordinates. Original retries retain custody, never reexecute. Admitted temporal connections preserve byte order and explicit causal provenance. Closed sources reject every nonempty input before staging. Application park makes no physical suspension claim.";
+const LINKED_CONFIGURATION_SCHEMA: &str = "reference-device/configuration-linked-v1: closed JSON object with the base quantized checksum configuration fields, positive quantum_ps/host_budget_ns, phase_ps 0, installed maximum_input_bytes, ordering_profile superdense-v1, native-linked window_semantics_ref, multiplier257 and modulus2^64, byte_interface opaque-octets, and input_policy either closed-no-ingress or admitted-causal-source. The former selects no input lane; the latter requires complete admitted causal source for its shared bounded octet lane. No implicit side ingress, extensions or conversion is accepted.";
 
 #[cfg(test)]
 #[path = "profile_tests.rs"]

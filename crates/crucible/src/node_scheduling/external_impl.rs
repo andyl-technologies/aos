@@ -82,27 +82,27 @@ impl CausalScheduler {
                     U64::new(0),
                     policy.grid,
                 )?;
-                if let Some(last) = update.native_sequences.get(&inventory.endpoint) {
-                    if input.native_sequence <= *last {
-                        let prior = self
-                            .pending
-                            .values()
-                            .chain(update.deliveries.iter())
-                            .find(|event| {
-                                event.external_root.as_ref() == Some(&inventory.endpoint)
-                                    && event.native_sequence == input.native_sequence
-                            })
-                            .ok_or(SchedulingError::CausalRegression)?;
-                        if prior.publication_id != input.event_id
-                            || prior.publication != input.publication
-                            || prior.delivery != delivery
-                            || prior.payload != input.payload
-                            || prior.provenance_ref != input.provenance_ref
-                        {
-                            return Err(SchedulingError::InvalidReceipt);
-                        }
-                        continue;
+                if let Some(last) = update.native_sequences.get(&inventory.endpoint)
+                    && input.native_sequence <= *last
+                {
+                    let prior = self
+                        .pending
+                        .values()
+                        .chain(update.deliveries.iter())
+                        .find(|event| {
+                            event.external_root.as_ref() == Some(&inventory.endpoint)
+                                && event.native_sequence == input.native_sequence
+                        })
+                        .ok_or(SchedulingError::CausalRegression)?;
+                    if prior.publication_id != input.event_id
+                        || prior.publication != input.publication
+                        || prior.delivery != delivery
+                        || prior.payload != input.payload
+                        || prior.provenance_ref != input.provenance_ref
+                    {
+                        return Err(SchedulingError::InvalidReceipt);
                     }
+                    continue;
                 }
                 if self
                     .external_closed_prefixes

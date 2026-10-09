@@ -171,11 +171,40 @@ impl CausalScheduler {
                     }
                 }
                 OperationRequest::QuantumBegin { end, .. } => {
-                    if publication.publication != *end
-                        || publication.evaluation.is_some()
-                        || !publication.causal_parents.is_empty()
-                    {
+                    if publication.publication != *end || publication.evaluation.is_some() {
                         return Err(SchedulingError::InvalidPublication);
+                    }
+                    // Quantized execution preserves original input provenance
+                    // without claiming an instruction-level evaluation instant.
+                    // Parents can name only deliveries in the authentic consumed
+                    // prefix of this original immutable window input cut.
+                    if !publication.causal_parents.is_empty() {
+                        let batch = self
+                            .input_batches
+                            .get(owner)
+                            .ok_or(SchedulingError::MissingObservation)?;
+                        let progress = observation
+                            .input_progress
+                            .as_ref()
+                            .ok_or(SchedulingError::MissingObservation)?;
+                        let parents = batch
+                            .batch
+                            .deliveries()
+                            .iter()
+                            .take(progress.consumed.len())
+                            .map(|delivery| delivery.delivery)
+                            .collect::<BTreeSet<_>>();
+                        if publication
+                            .causal_parents
+                            .windows(2)
+                            .any(|pair| pair[0] >= pair[1])
+                            || publication
+                                .causal_parents
+                                .iter()
+                                .any(|parent| !parents.contains(parent))
+                        {
+                            return Err(SchedulingError::InvalidPublication);
+                        }
                     }
                 }
                 _ => return Err(SchedulingError::UnsupportedMode),
@@ -318,24 +347,22 @@ impl CausalScheduler {
                 .deliveries
                 .iter()
                 .any(|delivery| delivery.payload == publication.payload)
+                && !self.payloads.contains_key(&publication.payload)
+                && !update
+                    .payloads
+                    .iter()
+                    .any(|(reference, _)| reference == &publication.payload)
             {
-                if !self.payloads.contains_key(&publication.payload)
-                    && !update
-                        .payloads
-                        .iter()
-                        .any(|(reference, _)| reference == &publication.payload)
-                {
-                    retained_payload_bytes = retained_payload_bytes
-                        .checked_add(publication.payload.length.get())
-                        .ok_or(SchedulingError::CapacityExceeded)?;
-                    if retained_payload_bytes > self.maximum_pending_payload_bytes.get() {
-                        return Err(SchedulingError::CapacityExceeded);
-                    }
-                    update.payloads.push((
-                        publication.payload.clone(),
-                        publication.payload_bytes.clone(),
-                    ));
+                retained_payload_bytes = retained_payload_bytes
+                    .checked_add(publication.payload.length.get())
+                    .ok_or(SchedulingError::CapacityExceeded)?;
+                if retained_payload_bytes > self.maximum_pending_payload_bytes.get() {
+                    return Err(SchedulingError::CapacityExceeded);
                 }
+                update.payloads.push((
+                    publication.payload.clone(),
+                    publication.payload_bytes.clone(),
+                ));
             }
         }
         self.prepare_external_inputs(observation, original, &mut update)?;
@@ -413,19 +440,20 @@ impl CausalScheduler {
     }
 
     pub(super) fn apply_observation(&mut self, update: ObservationUpdate) {
-        if let Some((owner, consumed)) = update.consumed {
-            if let Some(state) = self.input_batches.get_mut(&owner) {
-                for identity in &consumed {
-                    if let Some(delivery) =
-                        state.batch.deliveries.iter().find(|delivery| {
-                            super::inputs_impl::input_identity(delivery) == *identity
-                        })
-                    {
-                        self.pending.remove(&delivery.key());
-                    }
+        if let Some((owner, consumed)) = update.consumed
+            && let Some(state) = self.input_batches.get_mut(&owner)
+        {
+            for identity in &consumed {
+                if let Some(delivery) = state
+                    .batch
+                    .deliveries
+                    .iter()
+                    .find(|delivery| super::inputs_impl::input_identity(delivery) == *identity)
+                {
+                    self.pending.remove(&delivery.key());
                 }
-                state.consumed.extend(consumed);
             }
+            state.consumed.extend(consumed);
         }
         self.bounds = update.bounds;
         self.closed_prefixes = update.prefixes;

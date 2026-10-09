@@ -146,12 +146,12 @@ impl NodeRuntime {
                 inputs,
             )
         });
-        if matches!(result, Err(_) | Ok(BeginResult::Refused(_))) {
-            if let Some(scheduler) = &mut self.scheduler {
-                scheduler
-                    .reconcile_no_effect(&admission)
-                    .map_err(|error| RuntimeError::SchedulerRefused(error.to_string()))?;
-            }
+        if matches!(result, Err(_) | Ok(BeginResult::Refused(_)))
+            && let Some(scheduler) = &mut self.scheduler
+        {
+            scheduler
+                .reconcile_no_effect(&admission)
+                .map_err(|error| RuntimeError::SchedulerRefused(error.to_string()))?;
         }
         result
     }

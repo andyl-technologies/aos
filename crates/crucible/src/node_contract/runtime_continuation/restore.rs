@@ -527,17 +527,16 @@ fn validate_operation(
         }
         _ => None,
     };
-    if let Some(outcome) = outcome {
-        if outcome.operation != operation.operation
+    if let Some(outcome) = outcome
+        && (outcome.operation != operation.operation
             || outcome.node != operation.route.node
             || outcome.owners != operation.route.owners
             || outcome.retained_outputs.len() > limits.maximum_retained_outputs
             || outcome.scheduling.as_ref().is_some_and(|observation| {
                 observation.node != outcome.node || observation.owners != outcome.owners
-            })
-        {
-            return Err(RuntimeError::InvalidReceipt);
-        }
+            }))
+    {
+        return Err(RuntimeError::InvalidReceipt);
     }
     if let Some(commit) = &operation.scheduling_commit {
         let outcome = outcome.ok_or(RuntimeError::InvalidReceipt)?;

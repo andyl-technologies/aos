@@ -257,10 +257,10 @@ impl CausalScheduler {
     }
 
     pub(super) fn release_input_activation(&mut self, owner: &Id, operation: &Id) {
-        if let Some(state) = self.input_batches.get_mut(owner) {
-            if state.activated_by.as_ref() == Some(operation) {
-                state.activated_by = None;
-            }
+        if let Some(state) = self.input_batches.get_mut(owner)
+            && state.activated_by.as_ref() == Some(operation)
+        {
+            state.activated_by = None;
         }
     }
 

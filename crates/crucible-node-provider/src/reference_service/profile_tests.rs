@@ -169,3 +169,50 @@ fn closed_ingress_profile_has_distinct_compatibility_and_no_effective_input_lane
         vec![id("CNP/1").unwrap()]
     );
 }
+
+#[test]
+fn native_linked_profiles_share_lossless_octet_interface_without_retyping_cnp_profiles() {
+    let artifact = canonical::content_ref(b"fixture-native", "application/octet-stream").unwrap();
+    let make = |closed| {
+        ReferenceProfile::build_native_linked(
+            id("checksum").unwrap(),
+            id("owner/checksum").unwrap(),
+            artifact.clone(),
+            artifact.clone(),
+            50.into(),
+            1_000_000.into(),
+            closed,
+        )
+        .unwrap()
+    };
+    let source = make(true);
+    let consumer = make(false);
+    let source_port = &source.descriptor.ports[0];
+    let consumer_port = &consumer.descriptor.ports[0];
+
+    assert_eq!(source_port.interface_id.as_str(), NATIVE_OCTET_INTERFACE_ID);
+    assert_eq!(source_port.interface_id, consumer_port.interface_id);
+    assert_eq!(source_port.lanes.len(), 1);
+    assert_eq!(consumer_port.lanes.len(), 2);
+    assert_eq!(
+        source_port.lanes[0].payload_schema,
+        consumer_port.lanes[0].payload_schema
+    );
+    assert_eq!(
+        source_port.lanes[0].payload_schema,
+        consumer_port.lanes[1].payload_schema
+    );
+    assert_eq!(source.implementation.formats.len(), 2);
+    assert_eq!(consumer.implementation.formats.len(), 2);
+    assert_ne!(source.configuration_ref, consumer.configuration_ref);
+    assert_ne!(
+        source.descriptor.identity().unwrap(),
+        consumer.descriptor.identity().unwrap()
+    );
+    assert!(source.provider_manifest.protocol_versions.is_empty());
+    assert!(consumer.provider_manifest.protocol_versions.is_empty());
+    assert_ne!(
+        source_port.lanes[0].payload_schema,
+        profile(50).descriptor.ports[0].lanes[1].payload_schema
+    );
+}

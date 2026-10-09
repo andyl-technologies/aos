@@ -23,13 +23,13 @@ fn completed_evidence() -> (
         window: id("window"),
         publication: position(1000),
         physical: PhysicalState::Active,
-        closure: QuantumClosureEvidence {
+        closure: Box::new(QuantumClosureEvidence {
             input_batch: id("closed-input-batch"),
             close_receipt: reference.clone(),
             output_inventory: reference.clone(),
             pending_inventory: reference.clone(),
             clock_evidence: reference.clone(),
-        },
+        }),
     });
     runtime.close_quantum(&token).unwrap();
     assert!(matches!(poll(&mut runtime, &token), Poll::Ready(Ok(_))));

@@ -438,11 +438,11 @@ impl WholeRuntimeCustody {
                     close_submission: operation.close_submission.clone(),
                 },
                 RetainedResult::Complete(outcome) => RetainedOperationObservation::Complete {
-                    outcome: outcome.clone(),
+                    outcome: Box::new(outcome.clone()),
                     acknowledged: false,
                 },
                 RetainedResult::Acknowledged(outcome) => RetainedOperationObservation::Complete {
-                    outcome: outcome.clone(),
+                    outcome: Box::new(outcome.clone()),
                     acknowledged: true,
                 },
                 RetainedResult::Failed(failure) => {

@@ -17,7 +17,7 @@ use crate::{
 
 enum MemberState {
     Pending,
-    Ready(OperationOutcome),
+    Ready(Box<OperationOutcome>),
     Failed(String),
 }
 
@@ -182,7 +182,7 @@ impl DispatchRound {
             }
             match runtime.poll(&member.token, context) {
                 Poll::Pending => {}
-                Poll::Ready(Ok(outcome)) => member.state = MemberState::Ready(outcome),
+                Poll::Ready(Ok(outcome)) => member.state = MemberState::Ready(Box::new(outcome)),
                 Poll::Ready(Err(error)) => member.state = MemberState::Failed(format!("{error:?}")),
             }
         }
@@ -226,7 +226,7 @@ impl DispatchRound {
                 .ok_or(DispatchError::UnknownOperation)?
                 .state
             {
-                MemberState::Ready(outcome) => outcomes.push(outcome.clone()),
+                MemberState::Ready(outcome) => outcomes.push((**outcome).clone()),
                 MemberState::Pending => return Err(DispatchError::Incomplete),
                 MemberState::Failed(reason) => {
                     return Err(DispatchError::Native {

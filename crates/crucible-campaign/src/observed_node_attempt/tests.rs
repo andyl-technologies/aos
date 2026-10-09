@@ -178,6 +178,9 @@ struct FixtureBackend {
     polls: usize,
     fail_start: bool,
     fail_poll: bool,
+    panic_start: bool,
+    panic_poll: bool,
+    panic_contain: bool,
     containments: usize,
     containment_pending: bool,
 }
@@ -191,6 +194,9 @@ impl FixtureBackend {
             polls: 0,
             fail_start: false,
             fail_poll: false,
+            panic_start: false,
+            panic_poll: false,
+            panic_contain: false,
             containments: 0,
             containment_pending: false,
         }
@@ -202,6 +208,10 @@ impl ObservedAttemptBackend for FixtureBackend {
 
     fn contain(&mut self, _execution: ExecutionId) -> Result<bool, Self::Error> {
         self.containments += 1;
+        if self.panic_contain {
+            self.panic_contain = false;
+            panic!("native containment callback failed");
+        }
         if self.containment_pending {
             self.containment_pending = false;
             Ok(false)
@@ -226,6 +236,9 @@ impl ObservedAttemptBackend for FixtureBackend {
             Some(ObservedAttemptState::Reserved(request.clone()))
         );
         self.starts += 1;
+        if self.panic_start {
+            panic!("native startup callback failed");
+        }
         if self.fail_start {
             Err(std::io::Error::other("uncertain startup"))
         } else {
@@ -239,6 +252,9 @@ impl ObservedAttemptBackend for FixtureBackend {
     ) -> Result<Option<ObservedAttemptResult>, Self::Error> {
         assert_eq!(execution, self.result.request().execution());
         self.polls += 1;
+        if self.panic_poll {
+            panic!("native poll callback failed");
+        }
         if self.fail_poll {
             Err(std::io::Error::other("uncertain completion"))
         } else {
@@ -665,6 +681,34 @@ fn restarted_worker_cannot_reacquire_reserved_dispatch_authority() {
 }
 
 #[test]
+fn cancellation_contains_original_native_world_without_polling_or_restarting_it() {
+    let fixture = Fixture::memory();
+    let mut backend = FixtureBackend::new(&fixture, fixture.result(&fixture.request, true));
+    backend.containment_pending = true;
+    let mut worker = ObservedAttemptWorker::new(fixture.repository.clone(), backend, 1).unwrap();
+    worker
+        .submit("world", &fixture.request, &FixtureAdmission(true))
+        .unwrap();
+
+    let state = worker.cancel(fixture.request.execution()).unwrap();
+
+    assert!(
+        matches!(state, ObservedAttemptState::Quarantined { ref reason, .. }
+        if reason == "executor-cancelled")
+    );
+    assert_eq!(worker.backend().starts, 1);
+    assert_eq!(worker.backend().polls, 0);
+    assert_eq!(worker.backend().containments, 1);
+    assert_eq!(worker.active_executions(), 1);
+    assert_eq!(worker.cancel(fixture.request.execution()).unwrap(), state);
+    assert_eq!(worker.backend().starts, 1);
+    assert_eq!(worker.backend().polls, 0);
+    assert_eq!(worker.backend().containments, 2);
+    assert_eq!(worker.active_executions(), 0);
+    assert_eq!(worker.cancel(fixture.request.execution()).unwrap(), state);
+}
+
+#[test]
 fn quarantined_native_ownership_remains_active_until_complete_containment() {
     let fixture = Fixture::memory();
     let mut backend = FixtureBackend::new(&fixture, fixture.result(&fixture.request, true));
@@ -737,4 +781,43 @@ fn sqlite_and_directory_reopen_preserve_original_observed_identity() {
     assert!(
         matches!(reopened.reserve_observed_attempt("world", &fixture.request, &FixtureAdmission(true)).unwrap(), ObservedReservation::Existing(ObservedAttemptState::Completed(original)) if original.id().unwrap() == result.id().unwrap())
     );
+}
+
+#[test]
+fn native_callback_unwind_retains_original_permit_for_quarantine_without_redispatch() {
+    for at_start in [true, false] {
+        let fixture = Fixture::memory();
+        let mut backend = FixtureBackend::new(&fixture, fixture.result(&fixture.request, true));
+        backend.panic_start = at_start;
+        backend.panic_poll = !at_start;
+        backend.panic_contain = true;
+        let mut worker =
+            ObservedAttemptWorker::new(fixture.repository.clone(), backend, 1).unwrap();
+        let admission = FixtureAdmission(true);
+        if at_start {
+            assert!(
+                worker
+                    .submit("world", &fixture.request, &admission)
+                    .is_err()
+            );
+        } else {
+            worker
+                .submit("world", &fixture.request, &admission)
+                .unwrap();
+            assert!(worker.poll(fixture.request.execution()).is_err());
+        }
+        assert_eq!(worker.active_executions(), 1);
+        assert!(worker.poll(fixture.request.execution()).is_err());
+        assert_eq!(worker.active_executions(), 1);
+        let state = worker.poll(fixture.request.execution()).unwrap();
+        assert!(matches!(state, ObservedAttemptState::Quarantined { .. }));
+        assert_eq!(worker.active_executions(), 0);
+        assert_eq!(worker.backend().starts, 1);
+        assert_eq!(worker.backend().polls, usize::from(!at_start));
+        assert_eq!(worker.backend().containments, 2);
+        worker
+            .submit("world", &fixture.request, &admission)
+            .unwrap();
+        assert_eq!(worker.backend().starts, 1);
+    }
 }

@@ -527,13 +527,13 @@ fn closing_one_quantum_does_not_close_next_input_batch() {
             window: id("window/1"),
             publication: grant.limit(),
             physical: PhysicalState::Suspended,
-            closure: QuantumClosureEvidence {
+            closure: Box::new(QuantumClosureEvidence {
                 input_batch: id("batch/1"),
                 close_receipt: reference(),
                 output_inventory: reference(),
                 pending_inventory: reference(),
                 clock_evidence: reference(),
-            },
+            }),
         },
         Vec::new(),
         Some(empty_quantum_observation(
@@ -1393,3 +1393,6 @@ fn exact_previews_retain_closure_checks_without_reserving_native_operations() {
     assert_eq!(grant.limit(), preview);
     assert_eq!(scheduler.operations.len(), 1);
 }
+
+#[path = "tests/quantized_parents.rs"]
+mod quantized_parents;

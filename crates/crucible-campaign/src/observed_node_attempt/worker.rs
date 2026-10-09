@@ -1,6 +1,7 @@
 //! Reservation-before-dispatch execution with publication-only completion retries.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
 use thiserror::Error;
@@ -66,6 +67,15 @@ pub trait ObservedAttemptBackend {
     /// Returns an error when containment cannot yet be proved. The worker keeps
     /// ownership and retries containment without redispatching execution.
     fn contain(&mut self, execution: ExecutionId) -> Result<bool, Self::Error>;
+
+    /// Inventories immutable evidence retained by native or deferred custody.
+    ///
+    /// The default is suitable only for adapters retaining no unpublished CAS
+    /// objects. Supporting adapters include partial transcripts and evidence
+    /// copied before native acknowledgement, including after cancellation.
+    fn retention_roots(&self) -> BTreeSet<ContentId> {
+        BTreeSet::new()
+    }
 }
 
 /// Reports an independent-observation worker failure.
@@ -100,7 +110,7 @@ enum ActiveExecution {
     Running(ObservedExecutionPermit),
     Publishing {
         permit: ObservedExecutionPermit,
-        result: ObservedAttemptResult,
+        result: Box<ObservedAttemptResult>,
     },
     Quarantining {
         permit: ObservedExecutionPermit,
@@ -204,13 +214,13 @@ impl<B: ObservedAttemptBackend> ObservedAttemptWorker<B> {
             ObservedReservation::Existing(state) => return Ok(state),
             ObservedReservation::Fresh(permit) => permit,
         };
-        match self.backend.start(permit.request()) {
-            Ok(()) => {
+        match catch_unwind(AssertUnwindSafe(|| self.backend.start(permit.request()))) {
+            Ok(Ok(())) => {
                 self.active
                     .insert(request.execution(), ActiveExecution::Running(permit));
                 Ok(ObservedAttemptState::Reserved(request.clone()))
             }
-            Err(error) => {
+            Ok(Err(error)) => {
                 self.active.insert(
                     request.execution(),
                     ActiveExecution::Quarantining {
@@ -222,6 +232,17 @@ impl<B: ObservedAttemptBackend> ObservedAttemptWorker<B> {
                 // Preserve quarantine work in memory if the store is unavailable.
                 let _ = self.poll(request.execution());
                 Err(backend_error("start", &error))
+            }
+            Err(_) => {
+                self.active.insert(
+                    request.execution(),
+                    ActiveExecution::Quarantining {
+                        permit,
+                        reason: "native-start-panicked",
+                        contained: false,
+                    },
+                );
+                Err(callback_panicked("start"))
             }
         }
     }
@@ -250,41 +271,57 @@ impl<B: ObservedAttemptBackend> ObservedAttemptWorker<B> {
             }
         };
         let active = match active {
-            ActiveExecution::Running(permit) => match self.backend.poll(execution) {
-                Ok(None) => {
-                    let state = ObservedAttemptState::Reserved(permit.request().clone());
-                    self.active
-                        .insert(execution, ActiveExecution::Running(permit));
-                    return Ok(state);
-                }
-                Ok(Some(result)) if result.request() == permit.request() => {
-                    ActiveExecution::Publishing { permit, result }
-                }
-                Ok(Some(_)) => {
-                    self.active.insert(
-                        execution,
-                        ActiveExecution::Quarantining {
+            ActiveExecution::Running(permit) => {
+                match catch_unwind(AssertUnwindSafe(|| self.backend.poll(execution))) {
+                    Ok(Ok(None)) => {
+                        let state = ObservedAttemptState::Reserved(permit.request().clone());
+                        self.active
+                            .insert(execution, ActiveExecution::Running(permit));
+                        return Ok(state);
+                    }
+                    Ok(Ok(Some(result))) if result.request() == permit.request() => {
+                        ActiveExecution::Publishing {
                             permit,
-                            reason: "native-result-request-mismatch",
-                            contained: false,
-                        },
-                    );
-                    let _ = self.poll(execution);
-                    return Err(ObservedWorkerError::ResultMismatch);
+                            result: Box::new(result),
+                        }
+                    }
+                    Ok(Ok(Some(_))) => {
+                        self.active.insert(
+                            execution,
+                            ActiveExecution::Quarantining {
+                                permit,
+                                reason: "native-result-request-mismatch",
+                                contained: false,
+                            },
+                        );
+                        let _ = self.poll(execution);
+                        return Err(ObservedWorkerError::ResultMismatch);
+                    }
+                    Ok(Err(error)) => {
+                        self.active.insert(
+                            execution,
+                            ActiveExecution::Quarantining {
+                                permit,
+                                reason: "native-poll-uncertain",
+                                contained: false,
+                            },
+                        );
+                        let _ = self.poll(execution);
+                        return Err(backend_error("poll", &error));
+                    }
+                    Err(_) => {
+                        self.active.insert(
+                            execution,
+                            ActiveExecution::Quarantining {
+                                permit,
+                                reason: "native-poll-panicked",
+                                contained: false,
+                            },
+                        );
+                        return Err(callback_panicked("poll"));
+                    }
                 }
-                Err(error) => {
-                    self.active.insert(
-                        execution,
-                        ActiveExecution::Quarantining {
-                            permit,
-                            reason: "native-poll-uncertain",
-                            contained: false,
-                        },
-                    );
-                    let _ = self.poll(execution);
-                    return Err(backend_error("poll", &error));
-                }
-            },
+            }
             other => other,
         };
 
@@ -293,9 +330,10 @@ impl<B: ObservedAttemptBackend> ObservedAttemptWorker<B> {
         if let ActiveExecution::Quarantining { contained, .. } = &mut active
             && !*contained
         {
-            match self.backend.contain(execution) {
-                Ok(acknowledged) => *contained = acknowledged,
-                Err(error) => containment_error = Some(backend_error("contain", &error)),
+            match catch_unwind(AssertUnwindSafe(|| self.backend.contain(execution))) {
+                Ok(Ok(acknowledged)) => *contained = acknowledged,
+                Ok(Err(error)) => containment_error = Some(backend_error("contain", &error)),
+                Err(_) => containment_error = Some(callback_panicked("contain")),
             }
         }
 
@@ -332,6 +370,35 @@ impl<B: ObservedAttemptBackend> ObservedAttemptWorker<B> {
         }
     }
 
+    /// Contains an original active execution without admitting another dispatch.
+    ///
+    /// Pending completed bytes keep their publication-only path; cancellation
+    /// never replaces an already observed terminal result. An active native run
+    /// becomes a monotonic quarantine under its original permit. Further calls
+    /// retry authentic whole-world containment and ledger publication only.
+    ///
+    /// # Errors
+    /// Returns native containment or durable publication failure while retaining
+    /// original custody, or refuses an execution this worker never owned.
+    pub fn cancel(
+        &mut self,
+        execution: ExecutionId,
+    ) -> Result<ObservedAttemptState, ObservedWorkerError> {
+        if let Some(active) = self.active.remove(&execution) {
+            let contained = match active {
+                ActiveExecution::Running(permit) => ActiveExecution::Quarantining {
+                    permit,
+                    reason: "executor-cancelled",
+                    contained: false,
+                },
+                other => other,
+            };
+            self.active.insert(execution, contained);
+        }
+
+        self.poll(execution)
+    }
+
     /// Returns the number of owned native or pending-publication executions.
     #[must_use]
     pub fn active_executions(&self) -> usize {
@@ -345,7 +412,7 @@ impl<B: ObservedAttemptBackend> ObservedAttemptWorker<B> {
     /// while the authoritative ledger still contains only a dispatch reservation.
     #[must_use]
     pub fn retention_roots(&self) -> BTreeSet<ContentId> {
-        let mut roots = BTreeSet::new();
+        let mut roots = self.backend.retention_roots();
         for active in self.active.values() {
             let permit = match active {
                 ActiveExecution::Running(permit)
@@ -373,4 +440,11 @@ impl<B: ObservedAttemptBackend> ObservedAttemptWorker<B> {
 fn backend_error(operation: &'static str, error: &impl std::fmt::Display) -> ObservedWorkerError {
     let reason: String = error.to_string().chars().take(4096).collect();
     ObservedWorkerError::Backend { operation, reason }
+}
+
+fn callback_panicked(operation: &'static str) -> ObservedWorkerError {
+    ObservedWorkerError::Backend {
+        operation,
+        reason: "native callback panicked; original execution remains quarantined".into(),
+    }
 }

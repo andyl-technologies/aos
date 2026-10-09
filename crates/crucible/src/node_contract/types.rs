@@ -199,7 +199,7 @@ pub enum ProgressEvidence {
         /// Native physical suspension or continued autonomous activity.
         physical: PhysicalState,
         /// Complete closure evidence validated by the authentic native adapter.
-        closure: QuantumClosureEvidence,
+        closure: Box<QuantumClosureEvidence>,
     },
     /// Carries physical stop evidence without inventing a logical coordinate.
     Paused {
@@ -486,7 +486,7 @@ pub enum RetainedOperationObservation {
     /// Original terminal evidence and publication obligation remain retained.
     Complete {
         /// Actual validated native result.
-        outcome: OperationOutcome,
+        outcome: Box<OperationOutcome>,
         /// Whether native custody acknowledgement completed.
         acknowledged: bool,
     },

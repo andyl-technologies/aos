@@ -793,10 +793,10 @@ fn validate_zero_cycles(
                 cycle_owners.insert(start.clone());
                 break;
             }
-            if seen.insert(next.clone()) {
-                if let Some(successors) = adjacency.get(&next) {
-                    pending.extend(successors.iter().filter(|id| !seen.contains(*id)).cloned());
-                }
+            if seen.insert(next.clone())
+                && let Some(successors) = adjacency.get(&next)
+            {
+                pending.extend(successors.iter().filter(|id| !seen.contains(*id)).cloned());
             }
         }
     }

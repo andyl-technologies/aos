@@ -1,0 +1,666 @@
+//! Host-owned installed providers and native enrollment before graph sealing.
+
+mod host_state;
+mod profile;
+mod trust;
+
+pub use host_state::InstalledHostStateFactory;
+
+use std::{
+    collections::BTreeMap,
+    fs::File,
+    io::Read,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
+
+use crucible::{
+    node_adapters::{HostModel, HostModelNode, HostModelResources, ReferenceDeviceNode},
+    node_admission::{AdmissionLimits, AdmittedGraph},
+    node_contract::{
+        ActivationRecord, OwnerIdentity, PreparedRealization, RuntimeCustodyQueue,
+        RuntimeCustodySupervisor, RuntimeLimits, SimulationNode,
+    },
+};
+use crucible_campaign::ExecutionId;
+use crucible_cas::content_store::{
+    BlobHandle, ContentId, ImmutableBlobBackend, MutableRefBackend, ObjectKind, RefName,
+};
+use crucible_device::{
+    clock::VirtualClock,
+    netlink::{LinkFaults, NetLink},
+};
+use crucible_node_contract::{
+    ContentRef, HashRef, Id, LiveAuthority, NodeBinding, Phase, Position, U64, Validate, canonical,
+};
+use crucible_node_provider::reference_device::ReferenceDevice;
+use serde::{Deserialize, Serialize};
+
+use super::{NodeObservedBackend, NodeObservedError, StoredWorldActivationPublisher};
+use crate::node_scenario::{NodeRunConfiguration, NodeScenario};
+
+/// Selects an actual implementation supported by the local installed catalog.
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "implementation", rename_all = "snake_case", deny_unknown_fields)]
+pub enum InstalledNodeKind {
+    /// Runs the owned host integer clock with no timers or autonomous work.
+    HostClock,
+    /// Runs a fault-free byte-preserving exact host link between named nodes.
+    HostNetLink {
+        /// Names the public checksum producer whose output feeds the link.
+        producer: Id,
+        /// Names the public checksum consumer fed by the link output.
+        consumer: Id,
+        /// Binds the native frame source identifier without truncation.
+        source_node: u32,
+        /// Selects positive exact native delivery latency in picoseconds.
+        latency_ps: U64,
+        /// Selects the positive conservative native latency floor.
+        floor_ps: U64,
+    },
+    /// Runs native checksum windows with a shared byte-preserving public schema.
+    ReferenceNativeLinked {
+        /// Selects the positive fixed simulation window in picoseconds.
+        quantum_ps: U64,
+        /// Selects the finite physical host execution budget in nanoseconds.
+        host_budget_ns: U64,
+        /// Selects a source with no ingress or a causally admitted consumer.
+        closed_ingress: bool,
+    },
+    /// Runs output-only controlled checksum windows with permanently closed ingress.
+    ReferenceDevice {
+        /// Selects the positive simulated window duration in picoseconds.
+        quantum_ps: U64,
+        /// Selects the positive physical host budget in nanoseconds.
+        host_budget_ns: U64,
+    },
+}
+
+impl<'de> Deserialize<'de> for InstalledNodeKind {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = InstalledNodeKindWire::deserialize(deserializer)?;
+        Ok(match wire {
+            InstalledNodeKindWire::HostClock {} => Self::HostClock,
+            InstalledNodeKindWire::ReferenceDevice {
+                quantum_ps,
+                host_budget_ns,
+            } => Self::ReferenceDevice {
+                quantum_ps,
+                host_budget_ns,
+            },
+            InstalledNodeKindWire::ReferenceNativeLinked {
+                quantum_ps,
+                host_budget_ns,
+                closed_ingress,
+            } => Self::ReferenceNativeLinked {
+                quantum_ps,
+                host_budget_ns,
+                closed_ingress,
+            },
+            InstalledNodeKindWire::HostNetLink {
+                producer,
+                consumer,
+                source_node,
+                latency_ps,
+                floor_ps,
+            } => Self::HostNetLink {
+                producer,
+                consumer,
+                source_node,
+                latency_ps,
+                floor_ps,
+            },
+        })
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "implementation", rename_all = "snake_case", deny_unknown_fields)]
+enum InstalledNodeKindWire {
+    /// Runs the owned host integer clock with no timers or autonomous work.
+    HostClock {},
+    /// Runs a fault-free byte-preserving exact host link between named nodes.
+    HostNetLink {
+        /// Names the public checksum producer whose output feeds the link.
+        producer: Id,
+        /// Names the public checksum consumer fed by the link output.
+        consumer: Id,
+        /// Binds the native frame source identifier without truncation.
+        source_node: u32,
+        /// Selects positive exact native delivery latency in picoseconds.
+        latency_ps: U64,
+        /// Selects the positive conservative native latency floor.
+        floor_ps: U64,
+    },
+    /// Runs native checksum windows with a shared byte-preserving public schema.
+    ReferenceNativeLinked {
+        /// Selects the positive fixed simulation window in picoseconds.
+        quantum_ps: U64,
+        /// Selects the finite physical host execution budget in nanoseconds.
+        host_budget_ns: U64,
+        /// Selects a source with no ingress or a causally admitted consumer.
+        closed_ingress: bool,
+    },
+    /// Runs output-only controlled checksum windows with permanently closed ingress.
+    ReferenceDevice {
+        /// Selects the positive simulated window duration in picoseconds.
+        quantum_ps: U64,
+        /// Selects the positive physical host budget in nanoseconds.
+        host_budget_ns: U64,
+    },
+}
+
+/// Associates one semantic node and indivisible owner with an installed profile.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InstalledNodeSelection {
+    /// Names the public logical node.
+    pub node: Id,
+    /// Names its complete execution and capture owner.
+    pub owner: Id,
+    /// Selects one actual implemented profile and its bounded timing parameters.
+    pub kind: InstalledNodeKind,
+}
+
+/// Owns one genuinely inactive installed world and its authenticated definition.
+///
+/// Preparation alone grants no RUN or reconstruction authority. The consumer
+/// must retain its reserved retirement custody and use the common all-owner
+/// readiness/activation barrier before any modeled execution.
+pub struct InstalledPreparedWorld {
+    /// Retains the exact immutable authored definition authenticated by admission.
+    pub scenario: NodeScenario,
+    /// Seals the complete measured native owner and implementation inventory.
+    pub graph: AdmittedGraph,
+    /// Owns all original inactive native resources and their retirement slot.
+    pub realization: PreparedRealization,
+}
+
+/// Owns trusted local installation measurements and finite world retirement slots.
+///
+/// This catalog is host configuration, never a provider-supplied claim. The
+/// expected device identity must come from the operator's qualified source-built
+/// package inventory. The host implementation is measured from `/proc/self/exe`.
+/// The catalog regenerates every selected closed profile from installed code and
+/// accepts only its exact immutable world, rather than arbitrary proof strings.
+pub struct InstalledNodeCatalog {
+    host_executable: PathBuf,
+    host_identity: ContentRef,
+    device_executable: PathBuf,
+    device_identity: ContentRef,
+    socket_parent: PathBuf,
+    control_timeout: Duration,
+    custody: RuntimeCustodyQueue,
+}
+
+impl InstalledNodeCatalog {
+    /// Opens a measured source-qualified device installation on the owner thread.
+    ///
+    /// # Errors
+    /// Refuses a relative executable/socket path, absent or changed executable,
+    /// zero/excessive control timeout, malformed expected identity, or unavailable
+    /// finite retirement capacity. Expected hashes are installed host policy.
+    pub fn new(
+        device_executable: PathBuf,
+        expected_device: ContentRef,
+        socket_parent: PathBuf,
+        control_timeout: Duration,
+        maximum_worlds: usize,
+    ) -> Result<Self, NodeObservedError> {
+        if !device_executable.is_absolute()
+            || !socket_parent.is_absolute()
+            || control_timeout.is_zero()
+            || control_timeout > Duration::from_secs(60)
+        {
+            return Err(refused(
+                "invalid installed provider paths or control timeout",
+            ));
+        }
+        expected_device.validate()?;
+        let device_identity = measure_executable(&device_executable)?;
+        if device_identity != expected_device {
+            return Err(refused(
+                "installed device differs from qualified package identity",
+            ));
+        }
+        let host_executable = PathBuf::from("/proc/self/exe");
+        let host_identity = measure_executable(&host_executable)?;
+        let custody = RuntimeCustodyQueue::new(maximum_worlds).map_err(native)?;
+        Ok(Self {
+            host_executable,
+            host_identity,
+            device_executable,
+            device_identity,
+            socket_parent,
+            control_timeout,
+            custody,
+        })
+    }
+
+    /// Resolves selected actual implementations into a complete immutable scenario.
+    ///
+    /// The installed edition supports isolated clock and checksum owners. Public
+    /// transport connections, guest CPUs, external ingress, replay and stateful
+    /// restart require independently qualified catalog entries and are refused.
+    ///
+    /// # Errors
+    /// Refuses duplicate/oversized owner rosters or invalid profile parameters.
+    pub fn scenario(
+        &self,
+        selections: &[InstalledNodeSelection],
+    ) -> Result<NodeScenario, NodeObservedError> {
+        Ok(profile::build_world(selections, &self.host_identity, &self.device_identity)?.scenario)
+    }
+
+    /// Prepares actual inactive resources and seals their complete mixed graph.
+    ///
+    /// One complete retirement slot is reserved before any native child exists.
+    /// All implementation identities and native owners are measured and enrolled
+    /// before graph sealing. Native RUN remains disabled until the observed worker
+    /// reserves the execution nonce and durably publishes the all-owner barrier.
+    ///
+    /// # Errors
+    /// Refuses changed authored bytes, unavailable custody, stale installations,
+    /// native startup, complete graph qualification, or activation-storage setup.
+    pub fn prepare(
+        &mut self,
+        selections: &[InstalledNodeSelection],
+        scenario: NodeScenario,
+        configuration: NodeRunConfiguration,
+        execution: ExecutionId,
+        blobs: Arc<dyn ImmutableBlobBackend>,
+        refs: Arc<dyn MutableRefBackend>,
+    ) -> Result<NodeObservedBackend, NodeObservedError> {
+        let InstalledPreparedWorld {
+            scenario,
+            graph,
+            realization: prepared,
+        } = self.prepare_world(selections, scenario, execution)?;
+        let context = super::backend::input_context_bytes(&scenario, &configuration)?;
+        let inputs = ContentId::for_bytes(ObjectKind::Trace, 1, &context);
+        let receipt = blobs.put_if_absent(inputs, &BlobHandle::from_bytes(context))?;
+        if !receipt.is_durable() {
+            return Err(refused("input context is not durably retained"));
+        }
+        let reference = RefName::new(format!(
+            "node-world-activations/{}",
+            execution_text(execution)
+        ))?;
+        let publisher = StoredWorldActivationPublisher::new(Arc::clone(&blobs), refs, reference)?;
+        NodeObservedBackend::from_prepared(
+            scenario,
+            configuration,
+            graph,
+            prepared,
+            Box::new(publisher),
+            blobs,
+            inputs,
+            execution,
+        )
+    }
+
+    /// Allocates actual inactive resources and seals their complete native graph.
+    ///
+    /// This preparation boundary is reusable by observed execution and installed
+    /// host-state bridges. It performs no activation, grants no observed nonce
+    /// permit, and accepts no imported native capture as authority. Original
+    /// native custody always owns its pre-reserved complete retirement slot.
+    ///
+    /// # Errors
+    /// Refuses mismatched authored profiles, changed installed artifacts, native
+    /// allocation or enrollment failures, incomplete graph qualification, and
+    /// unavailable finite retirement capacity.
+    pub fn prepare_world(
+        &mut self,
+        selections: &[InstalledNodeSelection],
+        scenario: NodeScenario,
+        execution: ExecutionId,
+    ) -> Result<InstalledPreparedWorld, NodeObservedError> {
+        Ok(self
+            .prepare_world_with_source(selections, scenario, execution, None, None)?
+            .0)
+    }
+
+    /// Seals fresh installed clock authority for an authenticated durable source.
+    ///
+    /// This method measures the original installed profiles again and enrolls
+    /// actual inactive clock models before graph admission. It derives fresh
+    /// incarnations from the new execution nonce and advances each original
+    /// owner/world generation. It grants no restoration or activation token.
+    /// Temporary enrollment resources remain in the owning retirement queue.
+    ///
+    /// # Errors
+    /// Refuses nonclock selections, foreign signed source compatibility, reused
+    /// incarnations, generation overflow, changed installations or admission.
+    pub fn prepare_host_restore_graph(
+        &mut self,
+        selections: &[InstalledNodeSelection],
+        scenario: &NodeScenario,
+        record: &crucible::node_state::HostArchiveRecord,
+        execution: ExecutionId,
+    ) -> Result<(AdmittedGraph, ActivationRecord), NodeObservedError> {
+        if selections
+            .iter()
+            .any(|selection| !matches!(selection.kind, InstalledNodeKind::HostClock))
+            || !scenario.world.connections.is_empty()
+            || record.manifest().world_binding_hash != scenario.world.identity()?
+            || record.manifest().scenario_ref != scenario.world.scenario_ref
+        {
+            return Err(refused(
+                "signed source is not the exact installed clock-only world",
+            ));
+        }
+        let source = record.source_activation(4 * 1024 * 1024).map_err(native)?;
+        let (prepared, target) = self.prepare_world_with_source(
+            selections,
+            scenario.clone(),
+            execution,
+            Some(&source),
+            Some(record.manifest().cut),
+        )?;
+        drop(prepared.realization);
+        Ok((prepared.graph, target))
+    }
+
+    fn prepare_world_with_source(
+        &mut self,
+        selections: &[InstalledNodeSelection],
+        scenario: NodeScenario,
+        execution: ExecutionId,
+        source: Option<&crucible::node_contract::SavedRuntimeActivation>,
+        preserved_cut: Option<Position>,
+    ) -> Result<(InstalledPreparedWorld, ActivationRecord), NodeObservedError> {
+        let resolved =
+            profile::build_world(selections, &self.host_identity, &self.device_identity)?;
+        if scenario.canonical_bytes()? != resolved.scenario.canonical_bytes()? {
+            return Err(refused(
+                "authored world differs from complete installed profile selection",
+            ));
+        }
+        if measure_executable(&self.host_executable)? != self.host_identity
+            || measure_executable(&self.device_executable)? != self.device_identity
+        {
+            return Err(refused(
+                "installed implementation changed before native preparation",
+            ));
+        }
+        let session = Id::new(format!("session/{}", execution_text(execution)))?;
+        let activation_id = Id::new(format!("activation/{}", execution_text(execution)))?;
+        let host_receipt_bytes = canonical::canonical_json(&serde_json::json!({
+            "format":"crucible.local-node-enrollment","version":1,"execution":execution_text(execution),
+            "host":self.host_identity,"device":self.device_identity}))?;
+        let host_receipt = canonical::content_ref(&host_receipt_bytes, "application/json")?;
+        let mut bindings = Vec::new();
+        let mut owners = Vec::new();
+        for selected in &scenario.compatibility {
+            let incarnation = Id::new(format!(
+                "incarnation/{}",
+                canonical::hash(
+                    "crucible.local-owner-incarnation.v1",
+                    format!(
+                        "{}:{}",
+                        execution_text(execution),
+                        selected.execution_owner.id
+                    )
+                    .as_bytes()
+                )?
+                .digest
+            ))?;
+            let generation = match source {
+                Some(source) => {
+                    let original = source
+                        .owners
+                        .iter()
+                        .find(|owner| owner.owner == selected.execution_owner.id)
+                        .ok_or_else(|| {
+                            refused("signed source owner roster differs from installed graph")
+                        })?;
+                    if incarnation == original.incarnation {
+                        return Err(refused(
+                            "restore execution reuses original owner incarnation",
+                        ));
+                    }
+                    original.generation.checked_add(U64::new(1))?
+                }
+                None => U64::new(1),
+            };
+            owners.push(OwnerIdentity {
+                owner: selected.execution_owner.id.clone(),
+                incarnation: incarnation.clone(),
+                generation,
+            });
+            bindings.push(NodeBinding {
+                compatibility: selected.clone(),
+                authority: LiveAuthority {
+                    schema_version: 1,
+                    session_id: session.clone(),
+                    incarnation_id: incarnation,
+                    realization_id: session.clone(),
+                    activation_id: None,
+                    world_generation: U64::new(0),
+                    owner_generation: generation,
+                    input_epoch: session.clone(),
+                    host_receipt: host_receipt.clone(),
+                    extensions: Default::default(),
+                },
+                extensions: Default::default(),
+            });
+        }
+        owners.sort();
+        let target = ActivationRecord {
+            generation: match source {
+                Some(source) => source.generation.checked_add(U64::new(1))?,
+                None => U64::new(1),
+            },
+            activation_id,
+            world_binding_hash: scenario.world.identity()?,
+            owners,
+            boundary: preserved_cut.unwrap_or(Position::new(
+                U64::new(0),
+                U64::new(0),
+                Phase::BoundaryControl,
+            )),
+        };
+        let limits = RuntimeLimits {
+            maximum_nodes: selections.len(),
+            maximum_owners: selections.len(),
+            maximum_operations: 65_536,
+            maximum_retained_outputs: 65_536,
+        };
+        let slot = self
+            .custody
+            .reserve_world(&target, limits)
+            .map_err(native)?;
+        let mut devices = BTreeMap::new();
+        let mut models = BTreeMap::new();
+        for (selection, binding) in selections.iter().zip(&bindings) {
+            match &selection.kind {
+                InstalledNodeKind::HostNetLink {
+                    source_node,
+                    latency_ps,
+                    floor_ps,
+                    ..
+                } => {
+                    models.insert(
+                        selection.node.clone(),
+                        HostModel::Link(Box::new(
+                            NetLink::new(
+                                *source_node,
+                                latency_ps.get(),
+                                floor_ps.get(),
+                                LinkFaults::none(),
+                            )
+                            .map_err(native)?,
+                        )),
+                    );
+                }
+                InstalledNodeKind::HostClock => {
+                    models.insert(
+                        selection.node.clone(),
+                        HostModel::Clock(VirtualClock::new()),
+                    );
+                }
+                InstalledNodeKind::ReferenceDevice { .. }
+                | InstalledNodeKind::ReferenceNativeLinked { .. } => {
+                    let child = ReferenceDevice::spawn(
+                        &self.device_executable,
+                        &self.socket_parent,
+                        selection.owner.clone(),
+                        binding.authority.incarnation_id.clone(),
+                        binding.authority.owner_generation,
+                        self.control_timeout,
+                    )
+                    .map_err(native)?;
+                    devices.insert(selection.node.clone(), child);
+                }
+            }
+        }
+        let mut content = scenario
+            .content
+            .iter()
+            .map(|entry| {
+                (
+                    entry.reference.hash.digest.clone(),
+                    (entry.reference.clone(), entry.bytes.clone()),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        content.insert(
+            host_receipt.hash.digest.clone(),
+            (host_receipt, host_receipt_bytes),
+        );
+        let mut installed = BTreeMap::new();
+        installed.insert(
+            self.host_identity.hash.digest.clone(),
+            (self.host_identity.clone(), self.host_executable.clone()),
+        );
+        installed.insert(
+            self.device_identity.hash.digest.clone(),
+            (self.device_identity.clone(), self.device_executable.clone()),
+        );
+        let evidence = trust::InstalledEvidence::new(
+            &scenario, &bindings, &devices, &models, content, installed,
+        )?;
+        let admission_limits = AdmissionLimits {
+            maximum_content_bytes: 512 * 1024 * 1024,
+            maximum_total_content_bytes: 2 * 1024 * 1024 * 1024,
+            ..AdmissionLimits::default()
+        };
+        let graph = scenario.admit(&bindings, &evidence, admission_limits)?;
+        let mut nodes: Vec<Box<dyn SimulationNode>> = Vec::new();
+        for selection in selections {
+            match &selection.kind {
+                InstalledNodeKind::HostClock | InstalledNodeKind::HostNetLink { .. } => {
+                    let model = models
+                        .remove(&selection.node)
+                        .ok_or_else(|| refused("enrolled host model custody disappeared"))?;
+                    nodes.push(Box::new(
+                        HostModelNode::new(
+                            &graph,
+                            &selection.node,
+                            model,
+                            &evidence,
+                            HostModelResources::default(),
+                        )
+                        .map_err(native)?,
+                    ));
+                }
+                InstalledNodeKind::ReferenceDevice { .. }
+                | InstalledNodeKind::ReferenceNativeLinked { .. } => {
+                    let child = devices
+                        .remove(&selection.node)
+                        .ok_or_else(|| refused("enrolled child custody disappeared"))?;
+                    nodes.push(Box::new(
+                        ReferenceDeviceNode::from_prepared(
+                            &graph,
+                            &selection.node,
+                            child,
+                            &evidence,
+                            limits.maximum_operations,
+                        )
+                        .map_err(native)?,
+                    ));
+                }
+            }
+        }
+        let prepared = PreparedRealization::new(nodes, target.clone(), limits, slot);
+        Ok((
+            InstalledPreparedWorld {
+                scenario,
+                graph,
+                realization: prepared,
+            },
+            target,
+        ))
+    }
+
+    /// Returns owning cleanup supervision for polling on every daemon actor turn.
+    pub fn custody(&self) -> &RuntimeCustodyQueue {
+        &self.custody
+    }
+
+    pub(super) fn authenticate_recorded(
+        &self,
+        scenario: &NodeScenario,
+        configuration: &NodeRunConfiguration,
+        request: &crucible_campaign::observed_node_attempt::ObservedAttemptRequest,
+    ) -> Result<(), NodeObservedError> {
+        profile::authenticate_recorded(scenario, configuration, request)
+    }
+}
+
+pub(super) fn measure_executable(path: &Path) -> Result<ContentRef, NodeObservedError> {
+    let mut file = File::open(path).map_err(native)?;
+    let length = file.metadata().map_err(native)?.len();
+    if length == 0 || length > 512 * 1024 * 1024 {
+        return Err(refused(
+            "installed executable exceeds bounded measurement limit",
+        ));
+    }
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"CNP/1\0");
+    hasher.update(&("cnp.blob.v1".len() as u32).to_be_bytes());
+    hasher.update(b"cnp.blob.v1");
+    hasher.update(&length.to_be_bytes());
+    let mut buffer = [0u8; 8192];
+    let mut consumed = 0u64;
+    loop {
+        let count = file.read(&mut buffer).map_err(native)?;
+        if count == 0 {
+            break;
+        }
+        consumed = consumed
+            .checked_add(count as u64)
+            .filter(|total| *total <= length)
+            .ok_or_else(|| refused("installed executable changed during measurement"))?;
+        hasher.update(&buffer[..count]);
+    }
+    if consumed != length {
+        return Err(refused("installed executable changed during measurement"));
+    }
+    Ok(ContentRef {
+        hash: HashRef {
+            algorithm: "blake3-256".into(),
+            domain: "cnp.blob.v1".into(),
+            digest: hasher.finalize().to_hex().to_string(),
+        },
+        length: U64::new(length),
+        media_type: "application/octet-stream".into(),
+    })
+}
+
+fn native(error: impl std::fmt::Debug) -> NodeObservedError {
+    NodeObservedError::Native(format!("{error:?}"))
+}
+fn refused(reason: &str) -> NodeObservedError {
+    NodeObservedError::Native(reason.to_owned())
+}
+
+fn execution_text(execution: ExecutionId) -> String {
+    execution
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
