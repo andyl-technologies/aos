@@ -15,6 +15,21 @@ mod preparation_tests;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod source_enrollment;
+
+#[cfg(test)]
+mod replay_profile;
+
+#[cfg(test)]
+mod cursor_allocation;
+
+#[cfg(test)]
+mod cursor_evidence;
+
+#[cfg(test)]
+mod cursor_policy;
+
 pub use recording::{InstalledRecordedWorld, InstalledReferenceRecording};
 
 use crucible::{
@@ -120,3 +135,15 @@ impl ReferenceRecorder<'_> {
         Ok(Box::new(node))
     }
 }
+
+#[cfg(test)]
+mod replay_execution;
+
+#[cfg(test)]
+mod continuation_factory;
+
+#[cfg(test)]
+mod continuation_restore;
+
+#[cfg(test)]
+mod continuation_publication;

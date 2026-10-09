@@ -130,7 +130,7 @@ impl InputProvenanceClosure {
         }
     }
 
-    pub(super) fn saved(&self) -> &SavedInputProvenance {
+    pub(crate) fn saved(&self) -> &SavedInputProvenance {
         &self.saved
     }
 

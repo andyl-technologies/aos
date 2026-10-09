@@ -14,14 +14,14 @@ use super::{
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct RecordedInput {
-    node: Id,
-    stage_operation: Id,
-    batch: Id,
-    owners: Vec<OwnerIdentity>,
-    cutoff: Position,
-    inventory: ContentRef,
-    deliveries: Vec<Delivery>,
-    payloads: Vec<InputPayload>,
+    pub(super) node: Id,
+    pub(super) stage_operation: Id,
+    pub(super) batch: Id,
+    pub(super) owners: Vec<OwnerIdentity>,
+    pub(super) cutoff: Position,
+    pub(super) inventory: ContentRef,
+    pub(super) deliveries: Vec<Delivery>,
+    pub(super) payloads: Vec<InputPayload>,
     pub(super) provenance: Option<SavedInputProvenance>,
 }
 
@@ -61,15 +61,8 @@ impl RecordedInput {
                     EffectKnowledge::None,
                 ));
             }
-            input.provenance = Some(SavedInputProvenance {
-                schema_version: provenance.version(),
-                node: provenance.node().clone(),
-                stage_operation: provenance.stage_operation().clone(),
-                batch: provenance.batch().clone(),
-                inventory: provenance.inventory().clone(),
-                roots: provenance.roots().to_vec(),
-                objects: provenance.objects().to_vec(),
-            });
+            // Preserve the exact selected codec, including additive dependency rows.
+            input.provenance = Some(provenance.saved().clone());
         }
         Ok(input)
     }

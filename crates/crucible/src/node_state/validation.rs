@@ -11,7 +11,7 @@ use crate::node_admission::{AdmittedGraph, ObjectState};
 use crate::node_contract::{OwnerIdentity, PreparedRuntimeRestore, RuntimeLimits};
 use crate::node_scheduling::SchedulingSnapshot;
 
-use super::closure::{bounded_record, core_references, limit, verify_closure};
+use super::closure::{bounded_record, core_references, limit};
 use super::{
     CaptureEvidence, StateError, StateErrorCode, StateLimits, StateRequirements, StateRestoreMode,
     VerifiedStateContent, schema,
@@ -82,6 +82,24 @@ pub fn admit_capture(
     evidence: &dyn CaptureEvidence,
     limits: StateLimits,
 ) -> Result<VerifiedCapture, StateError> {
+    admit_capture_with_inventory(
+        graph,
+        artifact,
+        requirements,
+        evidence,
+        limits,
+        super::closure::ContentInventoryEdition::Legacy,
+    )
+}
+
+pub(super) fn admit_capture_with_inventory(
+    graph: &AdmittedGraph,
+    artifact: &ContentRef,
+    requirements: StateRequirements,
+    evidence: &dyn CaptureEvidence,
+    limits: StateLimits,
+    edition: super::closure::ContentInventoryEdition,
+) -> Result<VerifiedCapture, StateError> {
     artifact.validate().map_err(schema)?;
     let length = usize::try_from(artifact.length.get()).map_err(|_| limit("manifest bytes"))?;
     if length > limits.maximum_record_bytes || length > limits.maximum_total_content_bytes {
@@ -116,7 +134,7 @@ pub fn admit_capture(
         ));
     }
     roots.extend(immutable);
-    let content = verify_closure(roots, evidence, limits)?;
+    let content = super::closure::verify_closure_with_edition(roots, evidence, limits, edition)?;
     for owner in &manifest.owners {
         let proof =
             evidence.verify_owner_capture(graph, &manifest, owner, &requirements, &content)?;

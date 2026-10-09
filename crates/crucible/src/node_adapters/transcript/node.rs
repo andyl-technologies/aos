@@ -22,6 +22,15 @@ use super::{
     types::*,
 };
 
+#[path = "continuation.rs"]
+mod continuation;
+
+pub use continuation::{
+    AuthenticatedReplayContinuation, TRANSCRIPT_REPLAY_PRESERVATION_PROFILE,
+    authenticate_replay_continuation, transcript_replay_continuation_definition,
+    transcript_replay_continuation_schema,
+};
+
 #[cfg(test)]
 #[path = "node_guards.rs"]
 mod tests;
@@ -66,6 +75,9 @@ pub struct TranscriptReplayNode {
     quarantined: bool,
     reclamations: BTreeMap<OwnerIdentity, NativeReclamationReceipt>,
     owner_binding_hashes: BTreeMap<Id, Vec<HashRef>>,
+    preservation: Option<ReplayFacet>,
+    restored: Option<AuthenticatedReplayContinuation>,
+    custody_objects: BTreeMap<ContentRef, InputPayload>,
 }
 
 impl TranscriptReplayNode {
@@ -74,6 +86,8 @@ impl TranscriptReplayNode {
     /// # Errors
     /// Refuses missing installed source/context qualification, changed semantics,
     /// unsupported replay facets, original-taint promotion or foreign owner scope.
+    /// Complete preservation also refuses original negative or uncertain controls
+    /// outside its selected codec before any readiness or response.
     pub fn prepare(
         source: AuthenticatedTranscript,
         graph: &AdmittedGraph,
@@ -105,6 +119,42 @@ impl TranscriptReplayNode {
             OperatingMode::Quantized => FacetKind::QuantizedExecution,
         };
         let boundary = cursor.source.data.origin.activation.boundary;
+        let preservation = if selected.iter().any(|facet| {
+            facet.id.as_str() == TRANSCRIPT_REPLAY_PRESERVATION_PROFILE && facet.version == 1
+        }) {
+            continuation::validate_preservation_trajectory(&cursor.source)?;
+            let schema =
+                transcript_replay_continuation_schema().map_err(|error| invalid(error.reason))?;
+            if route.owners.len() != 1
+                || binding.compatibility.capture_owner.id != route.owners[0].owner
+                || binding.compatibility.execution_owner.id != route.owners[0].owner
+                || binding
+                    .compatibility
+                    .capture_owner
+                    .participant_ids
+                    .as_slice()
+                    != std::slice::from_ref(&route.node)
+                || !binding
+                    .compatibility
+                    .implementation
+                    .formats
+                    .contains(&schema)
+            {
+                return Err(invalid(
+                    "complete replay capture owner or selected codec differs",
+                ));
+            }
+            Some(ReplayFacet(
+                Id::new(TRANSCRIPT_REPLAY_PRESERVATION_PROFILE).map_err(invalid)?,
+            ))
+        } else {
+            None
+        };
+        let mut facets = vec![execution, FacetKind::Replay];
+        if preservation.is_some() {
+            facets.push(FacetKind::Preservation);
+        }
+        facets.sort();
         let mut owner_binding_hashes = BTreeMap::new();
         for owner in &route.owners {
             let installed = graph.owner(&owner.owner).ok_or_else(|| {
@@ -123,7 +173,7 @@ impl TranscriptReplayNode {
             binding,
             route,
             cursor: Some(cursor),
-            facets: vec![execution, FacetKind::Replay],
+            facets,
             profile: ReplayFacet(Id::new(TRANSCRIPT_REPLAY_PROFILE).map_err(invalid)?),
             thread: std::thread::current().id(),
             boundary,
@@ -134,6 +184,9 @@ impl TranscriptReplayNode {
             quarantined: false,
             reclamations: BTreeMap::new(),
             owner_binding_hashes,
+            preservation,
+            restored: None,
+            custody_objects: BTreeMap::new(),
         })
     }
 
@@ -264,6 +317,61 @@ impl TranscriptReplayNode {
         }
         let input = RecordedInput::with_provenance(batch, self.source_owners()?, provenance)
             .map_err(|_| self.divergence("original input provenance scope differs"))?;
+        // Reserve the complete initial replay-model ACK before consuming its
+        // original source interaction. The physical proof remains unchanged
+        // beneath this distinct current-model custody receipt.
+        let custody = if self.preservation.is_some() {
+            let cursor = self
+                .cursor
+                .as_ref()
+                .ok_or_else(|| failure("replay cursor absent", EffectKnowledge::None))?;
+            let next = cursor.peek().ok_or_else(|| {
+                failure("original input interaction absent", EffectKnowledge::None)
+            })?;
+            let ControlResponse::Input(original) = Self::response(next)? else {
+                return Err(self.divergence("next original response is not input staging"));
+            };
+            if original.owners != self.source_owners()? {
+                return Err(failure(
+                    "original input custody owner differs",
+                    EffectKnowledge::None,
+                ));
+            }
+            let receipt = continuation::ReplayInputCustody {
+                schema: "crucible.transcript-replay.input-admission.v1".into(),
+                source_state: cursor.source.reference().clone(),
+                source_ack: (*original).clone(),
+                target: SavedRuntimeActivation::from(batch.activation().record()),
+                node: self.route.node.clone(),
+                owners: self.route.owners.clone(),
+                batch: batch.batch().clone(),
+                stage_operation: batch.stage_operation().clone(),
+                inventory: batch.inventory().clone(),
+                cutoff: batch.cutoff(),
+            };
+            let bytes = continuation::bounded_canonical(&receipt, 64 * 1024 * 1024)?;
+            let reference = canonical::content_ref(&bytes, "application/json")
+                .map_err(|error| failure(error, EffectKnowledge::None))?;
+            let total = self
+                .custody_objects
+                .values()
+                .try_fold(bytes.len(), |total, object| {
+                    total.checked_add(object.bytes.len())
+                })
+                .filter(|total| *total <= 64 * 1024 * 1024);
+            if total.is_none()
+                || (!self.custody_objects.contains_key(&reference)
+                    && self.custody_objects.len() >= 8192)
+            {
+                return Err(failure(
+                    "initial replay input custody exceeds reserved credit",
+                    EffectKnowledge::None,
+                ));
+            }
+            Some(((*original).clone(), InputPayload { reference, bytes }))
+        } else {
+            None
+        };
         let record = self.replay(
             TranscriptAction::StageInput,
             batch.stage_operation().clone(),
@@ -283,6 +391,19 @@ impl TranscriptReplayNode {
             ));
         }
         ack.owners = self.route.owners.clone();
+        if let Some((original, object)) = custody {
+            let mut expected = ack.clone();
+            expected.owners = original.owners.clone();
+            if expected != original {
+                return Err(failure(
+                    "original input response changed during replay",
+                    EffectKnowledge::MayHaveProgressed,
+                ));
+            }
+            ack.proof_ref = object.reference.clone();
+            self.custody_objects
+                .insert(object.reference.clone(), object);
+        }
         self.inputs.insert(
             batch.batch().clone(),
             (Rc::new(batch.retained_copy()), ack.clone()),
@@ -333,9 +454,17 @@ impl SimulationNode for TranscriptReplayNode {
             .cursor
             .as_ref()
             .ok_or_else(|| failure("replay model unavailable", EffectKnowledge::None))?;
+        if self.preservation.is_some() {
+            continuation::validate_preservation_trajectory(&cursor.source)
+                .map_err(|error| failure(error, EffectKnowledge::None))?;
+        }
+        let cut = self
+            .restored
+            .as_ref()
+            .map_or(self.boundary, |source| source.wire.runtime.capture_cut);
         if self.quarantined
             || world.world_binding_hash != cursor.qualification.target_world
-            || world.boundary != self.boundary
+            || world.boundary != cut
             || self
                 .route
                 .owners
@@ -356,8 +485,11 @@ impl SimulationNode for TranscriptReplayNode {
             .map_err(|error| failure(error, EffectKnowledge::None))?;
         let ready = ReadyAttestation {
             owners: self.route.owners.clone(),
-            boundary: self.boundary,
-            state_inventory: cursor.source.reference.clone(),
+            boundary: world.boundary,
+            state_inventory: self.restored.as_ref().map_or_else(
+                || cursor.source.reference.clone(),
+                |source| source.reference.clone(),
+            ),
             ready_receipt: receipt,
         };
         self.ready = Some((world.clone(), ready.clone()));
@@ -437,7 +569,8 @@ impl SimulationNode for TranscriptReplayNode {
         ready: &ReadyAttestation,
     ) -> Result<(), OperationFailure> {
         self.validate_readiness(world, ready)?;
-        if !self.operations.is_empty()
+        if self.restored.is_some()
+            || !self.operations.is_empty()
             || !self.inputs.is_empty()
             || !self.observations.is_empty()
             || self
@@ -526,10 +659,15 @@ impl SimulationNode for TranscriptReplayNode {
         for reference in references {
             // Reading a future record would leak a response before its original
             // applicability checks. Only the consumed prefix owns evidence here.
-            let object = cursor.source.data.records[..cursor.next]
-                .iter()
-                .flat_map(|record| &record.evidence)
-                .find(|object| object.reference == *reference)
+            let object = self
+                .custody_objects
+                .get(reference)
+                .or_else(|| {
+                    cursor.source.data.records[..cursor.next]
+                        .iter()
+                        .flat_map(|record| &record.evidence)
+                        .find(|object| object.reference == *reference)
+                })
                 .ok_or_else(|| {
                     failure(
                         "proof is absent from consumed original replay prefix",
@@ -578,6 +716,13 @@ impl SimulationNode for TranscriptReplayNode {
         limits: InputProvenanceLimits,
     ) -> Result<Vec<ContentRef>, OperationFailure> {
         self.read_boundary_evidence(activation, std::slice::from_ref(root), limits.maximum_bytes)?;
+        if self.custody_objects.contains_key(root)
+            && self.inputs.values().any(|(_, ack)| ack.proof_ref == *root)
+        {
+            // The installed continuation receipt commits to actual replay
+            // buffers; its source/inventory references grant no body access.
+            return Ok(Vec::new());
+        }
         let cursor = self
             .cursor
             .as_ref()
@@ -910,6 +1055,13 @@ impl SimulationNode for TranscriptReplayNode {
             FacetKind::ExactExecution => Ok(NodeFacet::ExactExecution(&self.profile)),
             FacetKind::QuantizedExecution => Ok(NodeFacet::QuantizedExecution(&self.profile)),
             FacetKind::Replay => Ok(NodeFacet::Replay(&self.profile)),
+            FacetKind::Preservation => self
+                .preservation
+                .as_ref()
+                .map(|facet| NodeFacet::Preservation(facet as &dyn FacetDescription))
+                .ok_or_else(|| Refusal {
+                    reason: "complete replay preservation absent".into(),
+                }),
             _ => Err(Refusal {
                 reason: "replay facet unsupported".into(),
             }),
@@ -920,6 +1072,24 @@ impl SimulationNode for TranscriptReplayNode {
         self.quarantined = true;
     }
 
+    fn capture_native_continuation(
+        &mut self,
+        activation: &WorldActivation,
+        source: &RuntimeSnapshot,
+        limits: NativeCaptureLimits,
+    ) -> Result<InstalledNativeCapture, OperationFailure> {
+        self.capture_replay_state(activation, source, limits)
+    }
+
+    fn install_restored_custody(
+        &mut self,
+        activation: &WorldActivation,
+        source: &RuntimeSnapshot,
+        operations: &[OperationAdmission],
+        inputs: &[Rc<RuntimeInputBatch>],
+    ) -> Result<(), OperationFailure> {
+        self.install_replay_custody(activation, source, operations, inputs)
+    }
     fn poll_reclamation(
         &mut self,
         owner: &OwnerIdentity,
@@ -939,6 +1109,8 @@ impl SimulationNode for TranscriptReplayNode {
         self.operations.clear();
         self.observations.clear();
         self.ready.take();
+        self.restored.take();
+        self.custody_objects.clear();
         let result = (|| {
             let bytes=encode(&serde_json::json!({"format":"crucible.transcript-replay-reclaimed.v1","owner":owner,"boundary":self.boundary,"mutable_cursor_destroyed":true})).map_err(|error|failure(error,EffectKnowledge::None))?;
             let receipt = canonical::content_ref(&bytes, "application/json")

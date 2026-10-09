@@ -175,7 +175,7 @@ fn actual_direct_native_source_records_complete_original_inputs_before_retiremen
         prepared,
         run_configuration.clone(),
         Box::new(publisher),
-        blobs,
+        blobs.clone(),
         inputs,
         execution,
     )
@@ -314,6 +314,47 @@ fn actual_direct_native_source_records_complete_original_inputs_before_retiremen
         );
     }
 
+    let verified =
+        source_enrollment::verify_original_world(&catalog, recorded.clone(), &run_configuration)
+            .unwrap();
+    let mut original_plan = replay_execution::OriginalPlan::new(&verified).unwrap();
+    let ordinary = cursor_allocation::CursorAllocation::allocate(
+        &catalog,
+        verified.clone(),
+        ExecutionId::from_bytes([96; 16]).unwrap(),
+    )
+    .unwrap();
+    let ordinary_graph = ordinary.admit_graph().unwrap();
+    assert!(ordinary_graph.node_ids().all(|node| {
+        ordinary_graph.guarantees(node).unwrap().capture_scope
+            == crucible_node_contract::CaptureScope::None
+    }));
+    drop(ordinary_graph);
+    drop(ordinary);
+    let replay_allocation = std::rc::Rc::new(
+        cursor_allocation::CursorAllocation::allocate_preserving(
+            &catalog,
+            verified,
+            ExecutionId::from_bytes([93; 16]).unwrap(),
+        )
+        .unwrap(),
+    );
+    let replay = replay_allocation.prepare().unwrap();
+    assert_eq!(replay.nodes.len(), 2);
+    assert_eq!(replay.record.owners.len(), 2);
+    assert_eq!(
+        replay.graph.world_repeatability(),
+        crucible_node_contract::Repeatability::Nondeterministic
+    );
+    assert_eq!(
+        replay.configuration.horizon_ps,
+        run_configuration.horizon_ps
+    );
+    assert_eq!(
+        replay.scenario.world.identity().unwrap(),
+        replay.record.world_binding_hash
+    );
+
     drop(worker);
     let waker = std::task::Waker::noop();
     let mut context = std::task::Context::from_waker(waker);
@@ -330,11 +371,276 @@ fn actual_direct_native_source_records_complete_original_inputs_before_retiremen
         std::thread::sleep(Duration::from_millis(1));
     }
     drop(catalog);
-    for source in recorded.values() {
-        let reloaded = archive.load(source.reference()).unwrap();
-        assert_eq!(reloaded.bytes(), source.bytes());
+    // Authenticate the source once, then remove its retrieval namespace before
+    // any fresh replay response. The fresh node owns complete signed raw bytes.
+    drop(archive);
+    std::fs::remove_dir_all(temporary.path().join("transcripts")).unwrap();
+    // Even after native source death, the installed policy refuses a changed
+    // raw context or its order before any fresh readiness or replay response.
+    for node in &replay.nodes {
+        let route = node.route();
+        let source = replay_allocation.source_for(&route.node).unwrap();
+        let original_context = &source.transcript().origin.context;
+        let mut changed = original_context.clone();
+        changed[0].bytes.push(b' ');
+        changed[0].reference =
+            canonical::content_ref(&changed[0].bytes, &changed[0].reference.media_type).unwrap();
+        assert!(
+            crucible::node_adapters::transcript::TranscriptReplayNode::prepare(
+                source.clone(),
+                &replay.graph,
+                route.clone(),
+                &changed,
+                replay_allocation.as_ref(),
+            )
+            .is_err()
+        );
+
+        assert!(original_context.len() >= 2);
+        let mut reordered = original_context.clone();
+        reordered.swap(0, 1);
+        assert!(
+            crucible::node_adapters::transcript::TranscriptReplayNode::prepare(
+                source.clone(),
+                &replay.graph,
+                route.clone(),
+                &reordered,
+                replay_allocation.as_ref(),
+            )
+            .is_err()
+        );
+    }
+    let replay_queue = crucible::node_contract::RuntimeCustodyQueue::new(1).unwrap();
+    let replay_limits = crucible::node_contract::RuntimeLimits::default();
+    let replay_slot = replay_queue
+        .reserve_world(&replay.record, replay_limits)
+        .unwrap();
+    let replay_record = replay.record.clone();
+    let mut replay_runtime = crucible::node_contract::NodeRuntime::new(
+        &replay.graph,
+        replay.nodes,
+        replay.record,
+        replay_limits,
+        replay_slot,
+    )
+    .unwrap_or_else(|failure| panic!("actual replay preparation failed: {}", failure.error));
+    replay_runtime.arm_all().unwrap();
+    let mut replay_publisher = StoredWorldActivationPublisher::new(
+        blobs.clone(),
+        refs.clone(),
+        RefName::new("node-world-activations/original-replay".to_owned()).unwrap(),
+    )
+    .unwrap();
+    let initial_coordinator = replay_runtime
+        .initial_coordinator_snapshot(&replay.graph, 1024 * 1024)
+        .unwrap();
+    replay_publisher = replay_publisher
+        .with_prepared_coordinator(
+            replay_record,
+            replay_runtime.prepared_node_records().unwrap().to_vec(),
+            initial_coordinator,
+        )
+        .unwrap();
+    let replay_activation = replay_runtime.activate(&mut replay_publisher).unwrap();
+    let replay_outcomes = original_plan
+        .execute_to_retained_cut(&mut replay_runtime, &replay.graph, &replay_activation)
+        .unwrap();
+    let archive_limits = crucible::node_state::NativeArchiveLimits {
+        state: crucible::node_state::StateLimits {
+            maximum_content_bytes: 512 * 1024 * 1024,
+            maximum_total_content_bytes: 2 * 1024 * 1024 * 1024,
+            ..crucible::node_state::StateLimits::default()
+        },
+        ..crucible::node_state::NativeArchiveLimits::default()
+    };
+    let replay_archive = crucible::node_state::NativeArchive::open(
+        temporary.path().join("replay-native-archive"),
+        archive_limits,
+    )
+    .unwrap();
+    let replay_factory = continuation_factory::ReplayArchiveFactory {
+        allocation: replay_allocation.clone(),
+    };
+    let requirements = crucible::node_state::StateRequirements {
+        preservation_contract: id("transcript/complete-replay-continuation-v1"),
+        exact_model_continuation: true,
+        deterministic: false,
+        restore_mode: crucible::node_state::StateRestoreMode::DurableRestart,
+    };
+    let cut = {
+        let scheduler = replay_runtime
+            .scheduler(&replay.graph, &replay_activation)
+            .unwrap();
+        replay
+            .graph
+            .node_ids()
+            .map(|node| scheduler.position(node).unwrap())
+            .min()
+            .unwrap()
+    };
+    let replay_capture = replay_archive
+        .capture_world_typed(
+            &replay.graph,
+            &mut replay_runtime,
+            &replay_activation,
+            cut,
+            U64::new(1),
+            id("original-held-replay"),
+            requirements.clone(),
+            &replay_factory,
+            &replay_factory,
+        )
+        .unwrap();
+    let original_snapshot = replay_capture.runtime_snapshot().unwrap();
+    assert!(!original_snapshot.pending_acknowledgements().is_empty());
+    assert!(
+        original_snapshot
+            .inputs
+            .iter()
+            .any(|input| !input.deliveries.is_empty() && input.acknowledgement.is_some())
+    );
+    let branch_queue = crucible::node_contract::RuntimeCustodyQueue::new(4).unwrap();
+    let mut cold_branches = Vec::new();
+    for branch in [94u8, 95u8] {
+        let fresh = std::rc::Rc::new(
+            replay_allocation
+                .fresh_branch(
+                    &replay_capture,
+                    ExecutionId::from_bytes([branch; 16]).unwrap(),
+                )
+                .unwrap(),
+        );
+        let (driver, capture) = continuation_restore::ReplayColdDriver::prepare(
+            fresh,
+            &replay_capture,
+            requirements.clone(),
+            branch_queue.clone(),
+        )
+        .unwrap();
+        let mut plan = replay_execution::OriginalPlan::new(replay_allocation.source()).unwrap();
+        plan.restore_offsets(&driver.cursors().unwrap()).unwrap();
+        cold_branches.push((driver, capture, plan));
+    }
+    let remaining_outcomes = original_plan
+        .execute(&mut replay_runtime, &replay.graph, &replay_activation)
+        .unwrap();
+    assert!(!remaining_outcomes.is_empty());
+    assert!(!replay_outcomes.is_empty());
+    assert_eq!(
+        replay_runtime
+            .scheduler(&replay.graph, &replay_activation)
+            .unwrap()
+            .position(&id("consumer"))
+            .unwrap()
+            .time_ps,
+        run_configuration.horizon_ps
+    );
+    assert_eq!(
+        replay_runtime
+            .scheduler(&replay.graph, &replay_activation)
+            .unwrap()
+            .position(&id("producer"))
+            .unwrap()
+            .time_ps,
+        run_configuration.horizon_ps
+    );
+    drop(replay_runtime);
+    let waker = std::task::Waker::noop();
+    let mut context = std::task::Context::from_waker(waker);
+    while replay_queue.reserved_worlds() != 0 {
+        if let std::task::Poll::Ready(Err(error)) = replay_queue.poll_reclamation(&mut context) {
+            panic!("fresh replay custody reclamation failed: {error:?}");
+        }
+    }
+    drop(replay_capture);
+    drop(replay_archive);
+    std::fs::remove_dir_all(temporary.path().join("replay-native-archive")).unwrap();
+    for (mut driver, capture, mut plan) in cold_branches {
+        let graph = driver.graph.clone();
+        let target = driver.target.clone();
+        let prepared = crucible::node_state::stage_restore(
+            &graph,
+            capture,
+            target,
+            &mut driver,
+            archive_limits.state,
+        )
+        .unwrap_or_else(|failure| {
+            panic!(
+                "actual eager replay restore preparation failed: {:?}",
+                failure.error
+            )
+        });
+        let publisher = StoredWorldActivationPublisher::new(
+            blobs.clone(),
+            refs.clone(),
+            RefName::new(format!(
+                "node-world-activations/{}",
+                driver.target.activation_id
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut publisher = driver.publisher(publisher).unwrap();
+        let mut restored = match prepared.publish(&mut publisher) {
+            crucible::node_state::RestorePublication::Committed(restored) => restored,
+            crucible::node_state::RestorePublication::Failed(failure) => panic!(
+                "actual complete replay publication failed: {:?}",
+                failure.error
+            ),
+            crucible::node_state::RestorePublication::Uncertain(_) => {
+                panic!("actual complete replay publication is uncertain")
+            }
+        };
+        let activation = restored.activation().clone();
+        let before = restored
+            .runtime_mut()
+            .runtime_snapshot(activation.record().boundary, U64::new(1), 16 * 1024 * 1024)
+            .unwrap();
+        assert_eq!(before.operations.len(), original_snapshot.operations.len());
+        assert_eq!(before.inputs.len(), original_snapshot.inputs.len());
         assert_eq!(
-            reloaded.transcript().origin.attempt,
+            before.pending_acknowledgements(),
+            original_snapshot.pending_acknowledgements()
+        );
+        let outcomes = plan
+            .execute(restored.runtime_mut(), &graph, &activation)
+            .unwrap();
+        assert_eq!(outcomes.len(), remaining_outcomes.len());
+        for (actual, original) in outcomes.iter().zip(&remaining_outcomes) {
+            assert_eq!(actual.operation, original.operation);
+            assert_eq!(actual.retained_outputs, original.retained_outputs);
+            assert_eq!(actual.progress, original.progress);
+        }
+        assert_eq!(
+            restored.world_repeatability(),
+            crucible_node_contract::Repeatability::Nondeterministic
+        );
+        for node in [id("consumer"), id("producer")] {
+            assert_eq!(
+                restored
+                    .runtime_mut()
+                    .scheduler(&graph, &activation)
+                    .unwrap()
+                    .position(&node)
+                    .unwrap()
+                    .time_ps,
+                run_configuration.horizon_ps
+            );
+        }
+        drop(restored);
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        while branch_queue.retained_worlds() != 0 {
+            if let std::task::Poll::Ready(Err(error)) = branch_queue.poll_reclamation(&mut context)
+            {
+                panic!("restored replay custody reclamation failed: {error:?}");
+            }
+        }
+    }
+    assert_eq!(branch_queue.reserved_worlds(), 0);
+    for source in recorded.values() {
+        assert_eq!(
+            source.transcript().origin.attempt,
             id(&format!("observed/{}", execution_text(execution)))
         );
     }

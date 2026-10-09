@@ -75,14 +75,13 @@ pub struct NativeOwnerState {
     pub artifacts: Vec<NativeArtifactState>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone)]
 pub(super) struct Index {
     pub schema_version: u16,
     pub artifact: ContentRef,
-    #[serde(with = "pages")]
     pub objects: Vec<Object>,
     pub owners: Vec<NativeOwnerState>,
+    pub selected_extensions: Option<ContentRef>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -219,7 +218,7 @@ impl NativeArchive {
         let body =
             canonical::canonical_json(&serde_json::to_value(&envelope.body).map_err(schema)?)
                 .map_err(schema)?;
-        let mut mac = self.mac()?;
+        let mut mac = self.mac(envelope.body.schema_version)?;
         mac.update(&body);
         mac.verify_slice(&envelope.authentication)
             .map_err(|_| refused("native archive authentication failed"))?;
@@ -233,11 +232,15 @@ impl NativeArchive {
 
     pub(super) fn persist(&self, index: Index) -> Result<NativeArchiveRecord, StateError> {
         let record = self.record(index)?;
+        super::super::closure::bounded_record(
+            record.index.as_ref(),
+            self.limits.state.maximum_record_bytes,
+        )?;
         let body = canonical::canonical_json(
             &serde_json::to_value(record.index.as_ref()).map_err(schema)?,
         )
         .map_err(schema)?;
-        let mut mac = self.mac()?;
+        let mut mac = self.mac(record.index.schema_version)?;
         mac.update(&body);
         let authentication = mac.finalize().into_bytes().into();
         let bytes = canonical::canonical_json(
@@ -309,9 +312,14 @@ impl NativeArchive {
         }
     }
 
-    fn mac(&self) -> Result<ArchiveMac, StateError> {
+    fn mac(&self, edition: u16) -> Result<ArchiveMac, StateError> {
         let mut mac = ArchiveMac::new_from_slice(self.key.as_ref()).map_err(storage_error)?;
-        mac.update(AUTHENTICATION_DOMAIN);
+        let domain = match edition {
+            1 => AUTHENTICATION_DOMAIN,
+            2 => b"crucible.native-world-archive.authentication.v2\0",
+            _ => return Err(refused("unsupported native authentication edition")),
+        };
+        mac.update(domain);
         Ok(mac)
     }
 
@@ -426,34 +434,86 @@ impl NativeArchiveRecord {
 }
 
 fn validate_index(index: &Index, limits: NativeArchiveLimits) -> Result<(), StateError> {
-    if index.schema_version != 1
+    if !matches!(index.schema_version, 1 | 2)
         || index.objects.len() > limits.state.maximum_content_objects
         || index.owners.len() > limits.state.maximum_owners_or_domains
     {
         return Err(limit("native archive index edition or inventory"));
     }
-    let mut identities = BTreeMap::new();
+    if index.selected_extensions.is_some() {
+        // A syntactic signed root is not installed extension qualification.
+        // The selected policy's owning adapter must authenticate this branch
+        // before native continuation is admitted; absent that adapter refuse.
+        return Err(refused(
+            "selected extension preservation policy is not installed",
+        ));
+    }
+    if index.schema_version == 2
+        && index
+            .objects
+            .windows(2)
+            .any(|pair| pair[0].reference >= pair[1].reference)
+    {
+        return Err(refused(
+            "typed native inventory is not a strict canonical set",
+        ));
+    }
+    let mut identities = BTreeSet::new();
+    let mut hashes = BTreeMap::new();
+    let mut dependency_edges = 0usize;
     let mut bytes = 0u64;
     for object in &index.objects {
         object.reference.validate().map_err(schema)?;
         if object.reference.length.get() > limits.state.maximum_content_bytes as u64
             || object.dependencies.len() > limits.state.maximum_content_objects
-            || identities
-                .insert(object.reference.hash.clone(), object.reference.clone())
-                .is_some()
+            || !identities.insert(object.reference.clone())
         {
             return Err(limit("native core object inventory"));
         }
-        bytes = bytes
-            .checked_add(object.reference.length.get())
-            .ok_or_else(|| limit("native core bytes"))?;
+        if let Some(original) =
+            hashes.insert(object.reference.hash.clone(), object.reference.clone())
+        {
+            if original.length != object.reference.length
+                || (index.schema_version == 1 && original != object.reference)
+            {
+                return Err(refused("native digest has inconsistent typed metadata"));
+            }
+        } else {
+            bytes = bytes
+                .checked_add(object.reference.length.get())
+                .ok_or_else(|| limit("native core bytes"))?;
+        }
+        if index.schema_version == 2 {
+            if object
+                .dependencies
+                .windows(2)
+                .any(|pair| pair[0] >= pair[1])
+            {
+                return Err(refused(
+                    "typed role dependencies are not a strict canonical set",
+                ));
+            }
+            dependency_edges = dependency_edges
+                .checked_add(object.dependencies.len())
+                .ok_or_else(|| limit("typed dependency edges"))?;
+            if dependency_edges > limits.state.maximum_dependency_edges {
+                return Err(limit("typed dependency edges"));
+            }
+        }
     }
     if bytes > limits.state.maximum_total_content_bytes as u64
-        || !identities
-            .values()
-            .any(|reference| reference == &index.artifact)
+        || !identities.contains(&index.artifact)
     {
         return Err(limit("native complete core closure"));
+    }
+    if index.schema_version == 2
+        && index
+            .objects
+            .iter()
+            .flat_map(|object| &object.dependencies)
+            .any(|reference| !identities.contains(reference))
+    {
+        return Err(refused("typed dependency is outside signed inventory"));
     }
     let mut owners = BTreeSet::new();
     let mut native_objects = 0usize;
@@ -466,7 +526,7 @@ fn validate_index(index: &Index, limits: NativeArchiveLimits) -> Result<(), Stat
         if !owners.insert(owner.owner.clone())
             || owner.participants.is_empty()
             || owner.participants.windows(2).any(|pair| pair[0] >= pair[1])
-            || identities.get(&owner.state.hash) != Some(&owner.state)
+            || !identities.contains(&owner.state)
         {
             return Err(refused(
                 "native owner identity, state or participants differ",
@@ -476,7 +536,7 @@ fn validate_index(index: &Index, limits: NativeArchiveLimits) -> Result<(), Stat
             participant.validate().map_err(schema)?;
         }
         for reference in &owner.evidence {
-            if identities.get(&reference.hash) != Some(reference) {
+            if !identities.contains(reference) {
                 return Err(refused("native evidence is outside signed core closure"));
             }
         }
@@ -634,13 +694,13 @@ fn limit(component: &str) -> StateError {
 
 // Private index inventories use bounded pages so a large legitimate file roster
 // does not weaken the public canonical parser's per-array element ceiling.
-mod pages {
+pub(super) mod pages {
     use serde::{Deserialize, Deserializer, Serialize, Serializer, ser::SerializeSeq};
 
     const PAGE_SIZE: usize = 256;
     const MAXIMUM_ITEMS: usize = 65_536;
 
-    pub(super) fn serialize<T: Serialize, S: Serializer>(
+    pub(in crate::node_state::native) fn serialize<T: Serialize, S: Serializer>(
         values: &[T],
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
@@ -651,7 +711,11 @@ mod pages {
         sequence.end()
     }
 
-    pub(super) fn deserialize<'de, T: Deserialize<'de>, D: Deserializer<'de>>(
+    pub(in crate::node_state::native) fn deserialize<
+        'de,
+        T: Deserialize<'de>,
+        D: Deserializer<'de>,
+    >(
         deserializer: D,
     ) -> Result<Vec<T>, D::Error> {
         let pages = Vec::<Vec<T>>::deserialize(deserializer)?;

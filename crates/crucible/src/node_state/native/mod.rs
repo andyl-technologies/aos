@@ -1,14 +1,18 @@
 //! Backend-bound installed native archives and inactive complete-world restoration.
 //!
-//! Native archive edition one signs a bounded index of small core records and
-//! separately streamed image/resource files. It is independent of the existing
-//! host archive edition. Installed factories authenticate actual native codecs,
+//! Native archive edition one signs its original digest-keyed metadata table.
+//! Edition two signs independently enrolled full typed references and per-role
+//! dependency rows while retaining one byte object per digest. Both editions
+//! bind bounded core records and separately streamed image/resource files. They
+//! are independent of the host archive edition. Installed factories authenticate
+//! actual native codecs,
 //! original operation custody and complete artifact coverage before a signature
 //! can be issued or an autonomous resource can be reconstructed.
 
 mod capture;
 mod driver;
 mod storage;
+mod typed_index;
 
 #[cfg(test)]
 mod tests;

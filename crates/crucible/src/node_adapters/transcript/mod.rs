@@ -24,7 +24,11 @@ mod tests;
 pub use archive::{AuthenticatedTranscript, TranscriptArchive};
 pub use capture::CapturedTranscript;
 pub use codec::{TranscriptError, context_commitment};
-pub use node::{TRANSCRIPT_REPLAY_PROFILE, TranscriptReplayNode};
+pub use node::{
+    AuthenticatedReplayContinuation, TRANSCRIPT_REPLAY_PRESERVATION_PROFILE,
+    TRANSCRIPT_REPLAY_PROFILE, TranscriptReplayNode, authenticate_replay_continuation,
+    transcript_replay_continuation_definition, transcript_replay_continuation_schema,
+};
 pub use recording::{RecordingHandle, RecordingNode, RecordingPreparationFailure};
 pub use replay::{InstalledReplayPolicy, ReplayCursorSnapshot, ReplayQualification};
 pub use types::{

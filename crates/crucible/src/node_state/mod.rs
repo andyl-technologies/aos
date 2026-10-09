@@ -82,3 +82,6 @@ impl StateError {
 pub(super) fn schema(error: impl std::fmt::Display) -> StateError {
     StateError::new(StateErrorCode::Schema, "capture", error.to_string())
 }
+
+#[cfg(test)]
+mod typed_closure_tests;

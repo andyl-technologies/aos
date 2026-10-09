@@ -8,6 +8,12 @@ use serde::Serialize;
 
 use super::{CaptureEvidence, StateError, StateErrorCode, StateLimits, schema};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ContentInventoryEdition {
+    Legacy,
+    Typed,
+}
+
 /// Retains verified immutable bytes without granting access to native resources.
 ///
 /// Construction is private. Every object passed to a native verifier has already
@@ -16,6 +22,8 @@ use super::{CaptureEvidence, StateError, StateErrorCode, StateLimits, schema};
 pub struct VerifiedStateContent {
     objects: BTreeMap<HashRef, (ContentRef, Vec<u8>)>,
     total_bytes: usize,
+    references: BTreeSet<ContentRef>,
+    edition: ContentInventoryEdition,
 }
 
 impl VerifiedStateContent {
@@ -23,7 +31,11 @@ impl VerifiedStateContent {
     pub fn get(&self, reference: &ContentRef) -> Option<&[u8]> {
         self.objects
             .get(&reference.hash)
-            .filter(|(stored, _)| stored == reference)
+            .filter(|(stored, _)| {
+                stored == reference
+                    || (self.edition == ContentInventoryEdition::Typed
+                        && self.references.contains(reference))
+            })
             .map(|(_, bytes)| bytes.as_slice())
     }
 
@@ -32,15 +44,17 @@ impl VerifiedStateContent {
         self.total_bytes
     }
 
-    /// Returns the number of distinct authenticated content objects.
+    /// Returns the number of independently authenticated typed references.
     pub fn object_count(&self) -> usize {
-        self.objects.len()
+        self.references.len()
     }
 
     pub(super) fn entries(&self) -> impl Iterator<Item = (&ContentRef, &[u8])> {
-        self.objects
-            .values()
-            .map(|(reference, bytes)| (reference, bytes.as_slice()))
+        self.references.iter().filter_map(|reference| {
+            self.objects
+                .get(&reference.hash)
+                .map(|(_, bytes)| (reference, bytes.as_slice()))
+        })
     }
 
     /// Adds original bounded runtime payload bytes without issuing lineage authority.
@@ -58,13 +72,22 @@ impl VerifiedStateContent {
             )
         })?;
         if let Some((stored, original)) = self.objects.get(&reference.hash) {
-            if stored != reference || original.as_slice() != bytes {
+            if (self.edition == ContentInventoryEdition::Legacy && stored != reference)
+                || stored.length != reference.length
+                || original.as_slice() != bytes
+            {
                 return Err(StateError::new(
                     StateErrorCode::Content,
                     reference.hash.digest.clone(),
                     "original payload reference conflicts with verified closure",
                 ));
             }
+            if !self.references.contains(reference)
+                && self.references.len() >= limits.maximum_content_objects
+            {
+                return Err(limit("typed runtime payload inventory"));
+            }
+            self.references.insert(reference.clone());
             return Ok(());
         }
 
@@ -74,7 +97,7 @@ impl VerifiedStateContent {
             .ok_or_else(|| limit("runtime payload byte count"))?;
         if bytes.len() > limits.maximum_content_bytes
             || total > limits.maximum_total_content_bytes
-            || self.objects.len() >= limits.maximum_content_objects
+            || self.references.len() >= limits.maximum_content_objects
         {
             return Err(limit("runtime payload allocation"));
         }
@@ -85,6 +108,7 @@ impl VerifiedStateContent {
         retained.extend_from_slice(bytes);
         self.objects
             .insert(reference.hash.clone(), (reference.clone(), retained));
+        self.references.insert(reference.clone());
         self.total_bytes = total;
         Ok(())
     }
@@ -95,12 +119,23 @@ pub(super) fn verify_closure(
     evidence: &dyn CaptureEvidence,
     limits: StateLimits,
 ) -> Result<VerifiedStateContent, StateError> {
+    verify_closure_with_edition(roots, evidence, limits, ContentInventoryEdition::Legacy)
+}
+
+pub(super) fn verify_closure_with_edition(
+    roots: Vec<ContentRef>,
+    evidence: &dyn CaptureEvidence,
+    limits: StateLimits,
+    edition: ContentInventoryEdition,
+) -> Result<VerifiedStateContent, StateError> {
     if roots.len() > limits.maximum_content_objects {
         return Err(limit("closure roots"));
     }
     let mut content = VerifiedStateContent {
         objects: BTreeMap::new(),
         total_bytes: 0,
+        references: BTreeSet::new(),
+        edition,
     };
     let mut queued = BTreeSet::new();
     let mut pending = VecDeque::new();
@@ -114,6 +149,7 @@ pub(super) fn verify_closure(
             &mut queued,
             &mut references,
             limits,
+            edition,
         )?;
     }
 
@@ -124,7 +160,8 @@ pub(super) fn verify_closure(
             .maximum_total_content_bytes
             .checked_sub(content.total_bytes)
             .ok_or_else(|| limit("total content"))?;
-        if length > limits.maximum_content_bytes || length > remaining {
+        let shared = content.objects.get(&reference.hash);
+        if length > limits.maximum_content_bytes || (shared.is_none() && length > remaining) {
             return Err(limit("content allocation"));
         }
         let bytes = evidence.content(&reference, length)?;
@@ -156,15 +193,27 @@ pub(super) fn verify_closure(
                 &mut queued,
                 &mut references,
                 limits,
+                edition,
             )?;
         }
-        content.total_bytes = content
-            .total_bytes
-            .checked_add(bytes.len())
-            .ok_or_else(|| limit("total content"))?;
-        content
-            .objects
-            .insert(reference.hash.clone(), (reference, bytes));
+        if let Some((_, original)) = content.objects.get(&reference.hash) {
+            if original != &bytes {
+                return Err(StateError::new(
+                    StateErrorCode::Content,
+                    "typed reference",
+                    "same hash has different authenticated octets",
+                ));
+            }
+        } else {
+            content.total_bytes = content
+                .total_bytes
+                .checked_add(bytes.len())
+                .ok_or_else(|| limit("total content"))?;
+            content
+                .objects
+                .insert(reference.hash.clone(), (reference.clone(), bytes));
+        }
+        content.references.insert(reference);
     }
     Ok(content)
 }
@@ -173,14 +222,16 @@ fn enqueue(
     reference: ContentRef,
     depth: usize,
     pending: &mut VecDeque<(ContentRef, usize)>,
-    queued: &mut BTreeSet<HashRef>,
+    queued: &mut BTreeSet<ContentRef>,
     references: &mut BTreeMap<HashRef, ContentRef>,
     limits: StateLimits,
+    edition: ContentInventoryEdition,
 ) -> Result<(), StateError> {
     use crucible_node_contract::Validate;
     reference.validate().map_err(schema)?;
     if let Some(previous) = references.get(&reference.hash)
-        && previous != &reference
+        && ((edition == ContentInventoryEdition::Legacy && previous != &reference)
+            || previous.length != reference.length)
     {
         return Err(StateError::new(
             StateErrorCode::Content,
@@ -188,14 +239,14 @@ fn enqueue(
             "same digest has inconsistent length or media type",
         ));
     }
-    if queued.contains(&reference.hash) {
+    if queued.contains(&reference) {
         return Ok(());
     }
     if depth > limits.maximum_dependency_depth || queued.len() >= limits.maximum_content_objects {
         return Err(limit("content dependency closure"));
     }
     references.insert(reference.hash.clone(), reference.clone());
-    queued.insert(reference.hash.clone());
+    queued.insert(reference.clone());
     pending.push_back((reference, depth));
     Ok(())
 }
@@ -286,6 +337,8 @@ mod payload_tests {
         let mut content = VerifiedStateContent {
             objects: BTreeMap::new(),
             total_bytes: 0,
+            references: BTreeSet::new(),
+            edition: ContentInventoryEdition::Legacy,
         };
 
         content.include_payload(&reference, bytes, limits).unwrap();

@@ -119,6 +119,9 @@ fn model() -> (
         quarantined: false,
         reclamations: BTreeMap::new(),
         owner_binding_hashes: BTreeMap::new(),
+        preservation: None,
+        restored: None,
+        custody_objects: BTreeMap::new(),
     };
     node.arm(activation.record()).unwrap();
     let outcome = OperationOutcome {
@@ -161,6 +164,29 @@ fn changed_ack_inventory_poisoned_branch_cannot_accept_original_ack() {
 }
 
 #[test]
+fn unread_original_evidence_is_unavailable_until_its_record_is_consumed() {
+    let (mut node, _runtime, activation, original) = model();
+    let future = node.source().unwrap().transcript().records[0].evidence[0].clone();
+    let references = [future.reference.clone()];
+
+    assert!(
+        node.read_boundary_evidence(&activation, &references, future.bytes.len())
+            .is_err()
+    );
+    assert_eq!(node.cursor_snapshot().unwrap().next_record.get(), 0);
+
+    node.acknowledge_publication(original.token(), &[id("original/output")])
+        .unwrap();
+    let retained = node
+        .read_boundary_evidence(&activation, &references, future.bytes.len())
+        .unwrap();
+
+    assert_eq!(retained, vec![future]);
+    node.validate_boundary_evidence(&activation, &references, &retained)
+        .unwrap();
+}
+
+#[test]
 fn unrecorded_observation_is_sticky_but_settled_ack_retry_does_not_progress() {
     let (mut node, _runtime, activation, original) = model();
     let outputs = [id("original/output")];
@@ -198,4 +224,87 @@ fn unrecorded_duplicate_begin_retains_original_outcome_and_cursor() {
     assert!(node.cursor_snapshot().unwrap().diverged);
     assert_eq!(node.cursor_snapshot().unwrap().next_record.get(), 0);
     assert_eq!(node.original(original.token()).unwrap().outcome, outcome);
+}
+
+#[test]
+fn complete_preservation_refuses_negative_source_even_with_permissive_model_qualification() {
+    use super::super::{PhysicalTimingUncertainty, capture::CaptureSession};
+
+    let (mut node, _runtime, activation, original) = model();
+    let source = node.source().unwrap();
+    let origin = source.transcript().origin.clone();
+    let limits = source.transcript().limits.clone();
+    let negative = failure("authentic model refusal", EffectKnowledge::None);
+    let operation = original.token().operation().clone();
+    let controls = [
+        (
+            TranscriptAction::Complete,
+            ControlRequest::Complete {
+                operation: operation.clone(),
+            },
+            ControlResponse::Failure(negative.clone()),
+        ),
+        (
+            TranscriptAction::Cancel,
+            ControlRequest::Cancel {
+                operation: operation.clone(),
+            },
+            ControlResponse::Cancel("Rejected".into()),
+        ),
+        (
+            TranscriptAction::Begin,
+            ControlRequest::begin(&original, &origin.route.owners),
+            ControlResponse::Submission(Submission::Uncertain(EffectKnowledge::Unknown)),
+        ),
+    ];
+    for (action, body, response) in controls {
+        let mut recording = CaptureSession::new(origin.clone(), limits.clone()).unwrap();
+        let reservation = recording.reserve().unwrap();
+        let request = request(
+            action,
+            operation.clone(),
+            origin.activation.boundary,
+            recording.context().unwrap(),
+            &body,
+        )
+        .unwrap();
+        let raw_response = encode(&response).unwrap();
+        recording
+            .retain(
+                reservation,
+                request,
+                raw_response.clone(),
+                Vec::new(),
+                Vec::new(),
+                PhysicalTimingUncertainty::Unbounded,
+            )
+            .unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "crucible-preservation-negative-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let archive = TranscriptArchive::open(&path, limits.clone()).unwrap();
+        let authenticated = archive.persist(recording.finish().unwrap()).unwrap();
+        drop(archive);
+        std::fs::remove_dir_all(path).unwrap();
+
+        // This deliberately permissive behavioral qualification fixture accepts
+        // any signed source. It grants no native profile qualification. The
+        // implementation must still refuse unsupported complete-model controls.
+        node.cursor = Some(cursor(authenticated));
+        node.preservation = Some(ReplayFacet(id(TRANSCRIPT_REPLAY_PRESERVATION_PROFILE)));
+        node.ready = None;
+        let before = node.cursor_snapshot().unwrap();
+        let retained_operations = node.operations.len();
+
+        assert!(node.arm(activation.record()).is_err());
+        assert!(node.ready.is_none());
+        assert_eq!(node.cursor_snapshot().unwrap(), before);
+        assert_eq!(node.operations.len(), retained_operations);
+        assert_eq!(
+            node.source().unwrap().transcript().records[0].response_bytes,
+            raw_response
+        );
+    }
 }

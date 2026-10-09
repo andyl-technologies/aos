@@ -41,32 +41,6 @@ fn store(archive: &NativeArchive, mut bytes: &[u8]) -> ContentRef {
     reference
 }
 
-#[test]
-fn existing_empty_extension_admission_preserves_native_archive_gate() {
-    let (graph, _) = crate::node_admission::test_fixture_with_content();
-
-    assert!(graph.selected_extensions().is_empty());
-    require_supported_extensions(&graph).unwrap();
-}
-
-#[test]
-fn selected_extension_graph_refuses_before_native_archive_allocation() {
-    let graph = crate::node_admission::test_model_graph_with_extension();
-    assert!(!graph.selected_extensions().is_empty());
-
-    let failure = require_supported_extensions(&graph).unwrap_err();
-
-    assert_eq!(
-        failure.code,
-        crate::node_state::StateErrorCode::NativeEvidence
-    );
-    assert!(
-        failure
-            .reason
-            .contains("no qualified selected-extension closure codec")
-    );
-}
-
 fn storage_index(archive: &NativeArchive, image: ContentRef) -> Index {
     let (graph, _) = crate::node_admission::test_fixture_host_model(
         "clock",
@@ -98,6 +72,7 @@ fn storage_index(archive: &NativeArchive, image: ContentRef) -> Index {
     let artifact = canonical::content_ref(&bytes, "application/json").unwrap();
     archive.store(&artifact, &mut bytes.as_slice()).unwrap();
     Index {
+        selected_extensions: None,
         schema_version: 1,
         artifact: artifact.clone(),
         objects: vec![
@@ -240,4 +215,189 @@ fn independent_signing_keys_and_backend_metadata_are_bound() {
     envelope["body"]["owners"][0]["key"]["implementation"] = serde_json::json!("other/backend");
     fs::write(left_root.join(name), serde_json::to_vec(&envelope).unwrap()).unwrap();
     assert!(left.load(original.artifact()).is_err());
+}
+
+#[test]
+fn typed_inventory_preserves_two_authentic_media_roles_and_their_adjacency() {
+    let directory = TestDirectory::new();
+    let archive = NativeArchive::open(&directory.0, NativeArchiveLimits::default()).unwrap();
+    let body = b"{\"bytes_processed\":\"0\",\"checksum\":\"0\"}";
+    let json = canonical::content_ref(body, "application/json").unwrap();
+    let payload = canonical::content_ref(body, "application/octet-stream").unwrap();
+    archive.store(&json, &mut body.as_slice()).unwrap();
+    archive.store(&payload, &mut body.as_slice()).unwrap();
+    let mut index = storage_index(&archive, store(&archive, b"image"));
+    index.schema_version = 2;
+    index.objects.push(Object {
+        reference: json.clone(),
+        dependencies: vec![],
+    });
+    index.objects.push(Object {
+        reference: payload.clone(),
+        dependencies: vec![json.clone()],
+    });
+    index
+        .objects
+        .iter_mut()
+        .find(|object| object.reference == index.artifact)
+        .unwrap()
+        .dependencies
+        .push(payload.clone());
+    for object in &mut index.objects {
+        object.dependencies.sort();
+    }
+    index
+        .objects
+        .sort_by(|left, right| left.reference.cmp(&right.reference));
+
+    let record = archive.persist(index.clone()).unwrap();
+    let loaded = archive.load(record.artifact()).unwrap();
+    assert_eq!(loaded.object_bytes(&json, body.len()).unwrap(), body);
+    assert_eq!(loaded.object_bytes(&payload, body.len()).unwrap(), body);
+    let row = loaded
+        .index
+        .objects
+        .iter()
+        .find(|object| object.reference == payload)
+        .unwrap();
+    assert_eq!(row.dependencies, vec![json.clone()]);
+    assert!(
+        loaded
+            .index
+            .objects
+            .iter()
+            .find(|object| object.reference == json)
+            .unwrap()
+            .dependencies
+            .is_empty()
+    );
+
+    index.schema_version = 1;
+    assert!(archive.record(index).is_err());
+}
+
+#[test]
+fn typed_inventory_requires_its_explicit_edition_and_nullable_extension_root() {
+    let directory = TestDirectory::new();
+    let archive = NativeArchive::open(&directory.0, NativeArchiveLimits::default()).unwrap();
+    let mut index = storage_index(&archive, store(&archive, b"image"));
+    let old = serde_json::to_value(&index).unwrap();
+    assert_eq!(
+        old.as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>(),
+        ["schema_version", "artifact", "objects", "owners"]
+            .map(str::to_owned)
+            .into_iter()
+            .collect()
+    );
+    let mut changed = old.clone();
+    changed["selected_extensions"] = serde_json::Value::Null;
+    assert!(serde_json::from_value::<Index>(changed).is_err());
+
+    index.schema_version = 2;
+    index
+        .objects
+        .sort_by(|left, right| left.reference.cmp(&right.reference));
+    let value = serde_json::to_value(&index).unwrap();
+    assert!(value.get("objects").is_none());
+    assert_eq!(value["typed_inventory"]["schema_version"], 2);
+    assert!(value["selected_extensions"].is_null());
+    // Edition two follows the portable integral-number convention without
+    // changing the original edition-one decoder or canonical writer bytes.
+    for spelling in ["2.0", "2e0"] {
+        let number: serde_json::Value = serde_json::from_str(spelling).unwrap();
+        let mut integral = value.clone();
+        integral["schema_version"] = number.clone();
+        integral["typed_inventory"]["schema_version"] = number;
+        let decoded = serde_json::from_value::<Index>(integral).unwrap();
+        assert_eq!(serde_json::to_value(decoded).unwrap(), value);
+    }
+    let mut fractional = value.clone();
+    fractional["schema_version"] = serde_json::from_str("2.5").unwrap();
+    assert!(serde_json::from_value::<Index>(fractional).is_err());
+    let mut missing = value.clone();
+    missing
+        .as_object_mut()
+        .unwrap()
+        .remove("selected_extensions");
+    assert!(serde_json::from_value::<Index>(missing).is_err());
+    let mut legacy_objects = value.clone();
+    legacy_objects["objects"] = old["objects"].clone();
+    assert!(serde_json::from_value::<Index>(legacy_objects).is_err());
+    let mut unsupported = value.clone();
+    unsupported["typed_inventory"]["schema_version"] = 1.into();
+    assert!(serde_json::from_value::<Index>(unsupported).is_err());
+    let mut uninstalled = value;
+    uninstalled["selected_extensions"] = serde_json::to_value(index.artifact.clone()).unwrap();
+    assert!(
+        archive
+            .record(serde_json::from_value(uninstalled).unwrap())
+            .is_err()
+    );
+}
+
+#[test]
+fn typed_inventory_refuses_unenrolled_media_alias_duplicate_and_reordered_rows() {
+    let directory = TestDirectory::new();
+    let archive = NativeArchive::open(&directory.0, NativeArchiveLimits::default()).unwrap();
+    let mut index = storage_index(&archive, store(&archive, b"image"));
+    index.schema_version = 2;
+    index
+        .objects
+        .sort_by(|left, right| left.reference.cmp(&right.reference));
+    let mut unknown = index.clone();
+    let mut alias = unknown.objects[0].reference.clone();
+    alias.media_type = "text/plain".into();
+    unknown.objects[0].dependencies.push(alias);
+    unknown.objects[0].dependencies.sort();
+    assert!(archive.record(unknown).is_err());
+    let mut duplicate = index.clone();
+    duplicate.objects.push(duplicate.objects[0].clone());
+    duplicate
+        .objects
+        .sort_by(|left, right| left.reference.cmp(&right.reference));
+    assert!(archive.record(duplicate).is_err());
+    index.objects.reverse();
+    assert!(archive.record(index).is_err());
+    let expected = canonical::content_ref(b"unwritten original", "application/json").unwrap();
+    assert!(
+        archive
+            .store(&expected, &mut b"different".as_slice())
+            .is_err()
+    );
+}
+
+#[test]
+fn legacy_native_index_retains_exact_original_canonical_wire() {
+    let directory = TestDirectory::new();
+    let archive = NativeArchive::open(&directory.0, NativeArchiveLimits::default()).unwrap();
+    let index = storage_index(&archive, store(&archive, b"image"));
+    // The independent old envelope view has exactly its original four fields,
+    // including the original paged outer object table and dependency rows.
+    let expected = serde_json::json!({
+        "schema_version":1,
+        "artifact":index.artifact,
+        "objects":index.objects.chunks(256).collect::<Vec<_>>(),
+        "owners":index.owners,
+    });
+    let actual = serde_json::to_value(&index).unwrap();
+    assert_eq!(
+        canonical::canonical_json(&actual).unwrap(),
+        canonical::canonical_json(&expected).unwrap()
+    );
+    let decoded: Index = serde_json::from_value(expected).unwrap();
+    assert_eq!(
+        canonical::canonical_json(&serde_json::to_value(decoded).unwrap()).unwrap(),
+        canonical::canonical_json(&actual).unwrap()
+    );
+}
+
+#[test]
+fn unselected_archive_dialect_refuses_extensions_before_native_source_work() {
+    let graph = crate::node_admission::test_model_graph_with_extension();
+    assert!(!graph.selected_extensions().is_empty());
+    assert!(require_supported_extensions(&graph).is_err());
 }

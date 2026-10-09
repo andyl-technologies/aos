@@ -16,10 +16,13 @@ use crate::{
 
 use super::super::{
     CaptureEvidence, NativeCoordinatorCaptureProof, NativeOwnerCaptureProof, StateError,
-    StateRequirements, StateRestoreMode, VerifiedCapture, VerifiedStateContent, admit_capture,
-    closure::{bounded_record, core_references, limit, verify_closure},
+    StateRequirements, StateRestoreMode, VerifiedCapture, VerifiedStateContent,
+    closure::{
+        ContentInventoryEdition, bounded_record, core_references, limit,
+        verify_closure_with_edition,
+    },
     schema,
-    validation::required_immutable_refs,
+    validation::{admit_capture_with_inventory, required_immutable_refs},
 };
 use super::storage::{Index, NativeArtifactState, Object};
 use super::{
@@ -75,6 +78,71 @@ impl NativeArchive {
         immutable: &dyn CaptureEvidence,
         factory: &dyn NativeWorldFactory,
     ) -> Result<NativeArchiveRecord, StateError> {
+        self.capture_world_with_inventory(
+            graph,
+            runtime,
+            activation,
+            cut,
+            ordinal,
+            capture_id,
+            requirements,
+            immutable,
+            factory,
+            ContentInventoryEdition::Legacy,
+        )
+    }
+
+    /// Captures exact typed content roles in an authenticated edition-two inventory.
+    ///
+    /// Each full reference retains its own installed dependency adjacency. Shared
+    /// byte hashes deduplicate storage without changing media roles or native proof.
+    /// This selection does not qualify selected extensions or native capture.
+    ///
+    /// # Errors
+    /// Refuses moving cuts, unavailable native evidence, inconsistent typed roles,
+    /// failed installed authentication, incomplete dependency closure or exceeded
+    /// original object, edge, content and native resource credits.
+    #[allow(clippy::too_many_arguments)]
+    pub fn capture_world_typed(
+        &self,
+        graph: &AdmittedGraph,
+        runtime: &mut NodeRuntime,
+        activation: &WorldActivation,
+        cut: Position,
+        ordinal: U64,
+        capture_id: Id,
+        requirements: StateRequirements,
+        immutable: &dyn CaptureEvidence,
+        factory: &dyn NativeWorldFactory,
+    ) -> Result<NativeArchiveRecord, StateError> {
+        self.capture_world_with_inventory(
+            graph,
+            runtime,
+            activation,
+            cut,
+            ordinal,
+            capture_id,
+            requirements,
+            immutable,
+            factory,
+            ContentInventoryEdition::Typed,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn capture_world_with_inventory(
+        &self,
+        graph: &AdmittedGraph,
+        runtime: &mut NodeRuntime,
+        activation: &WorldActivation,
+        cut: Position,
+        ordinal: U64,
+        capture_id: Id,
+        requirements: StateRequirements,
+        immutable: &dyn CaptureEvidence,
+        factory: &dyn NativeWorldFactory,
+        edition: ContentInventoryEdition,
+    ) -> Result<NativeArchiveRecord, StateError> {
         require_supported_extensions(graph)?;
         if requirements.restore_mode != StateRestoreMode::DurableRestart {
             return Err(refused(
@@ -90,11 +158,16 @@ impl NativeArchive {
             .runtime_snapshot(cut, ordinal, self.limits.state.maximum_record_bytes)
             .map_err(schema)?;
         let immutable_refs = required_immutable_refs(graph, self.limits.state)?;
-        let content = verify_closure(immutable_refs.clone(), immutable, self.limits.state)?;
+        let content = verify_closure_with_edition(
+            immutable_refs.clone(),
+            immutable,
+            self.limits.state,
+            edition,
+        )?;
         let captures = runtime
             .capture_installed_native(graph, activation, &source, self.limits.native)
             .map_err(schema)?;
-        let mut objects = Objects::new(self);
+        let mut objects = Objects::new(self, edition);
         for (reference, bytes) in content.entries() {
             let dependencies = immutable.dependencies(
                 reference,
@@ -213,9 +286,15 @@ impl NativeArchive {
             }),
             vec![],
         )?;
-        let provenance_ref = objects.record(&serde_json::json!({
+        let mut provenance = serde_json::json!({
             "schema_version":1,"source_activation":coordinator.runtime.source_activation,"cut":cut,"ordinal":ordinal,
-        }), vec![])?;
+        });
+        if edition == ContentInventoryEdition::Typed {
+            provenance["native_archive"] = serde_json::json!({
+                "schema_version":2,"content_inventory":2,"selected_extensions":null,
+            });
+        }
+        let provenance_ref = objects.record(&provenance, vec![])?;
         let manifest = CaptureManifest {
             schema_version: 1,
             capture_id,
@@ -252,7 +331,11 @@ impl NativeArchive {
             core_references(&manifest, self.limits.state.maximum_record_bytes)?,
         )?;
         let index = Index {
-            schema_version: 1,
+            schema_version: match edition {
+                ContentInventoryEdition::Legacy => 1,
+                ContentInventoryEdition::Typed => 2,
+            },
+            selected_extensions: None,
             artifact,
             objects: objects.finish(),
             owners: states,
@@ -295,7 +378,7 @@ impl NativeArchiveRecord {
                 "native signed owner inventory differs from complete manifest",
             ));
         }
-        admit_capture(
+        admit_capture_with_inventory(
             graph,
             self.artifact(),
             requirements,
@@ -304,6 +387,11 @@ impl NativeArchiveRecord {
                 factory,
             },
             self.limits.state,
+            match self.index.schema_version {
+                1 => ContentInventoryEdition::Legacy,
+                2 => ContentInventoryEdition::Typed,
+                _ => return Err(refused("unsupported native content inventory")),
+            },
         )
     }
 
@@ -521,15 +609,19 @@ impl CaptureEvidence for Evidence<'_> {
 
 struct Objects<'a> {
     archive: &'a NativeArchive,
-    objects: BTreeMap<HashRef, Object>,
+    objects: BTreeMap<ContentRef, Object>,
+    hashes: BTreeMap<HashRef, ContentRef>,
+    edition: ContentInventoryEdition,
     total: usize,
 }
 
 impl<'a> Objects<'a> {
-    fn new(archive: &'a NativeArchive) -> Self {
+    fn new(archive: &'a NativeArchive, edition: ContentInventoryEdition) -> Self {
         Self {
             archive,
             objects: BTreeMap::new(),
+            hashes: BTreeMap::new(),
+            edition,
             total: 0,
         }
     }
@@ -543,28 +635,37 @@ impl<'a> Objects<'a> {
         reference.verify(bytes).map_err(schema)?;
         dependencies.sort();
         dependencies.dedup();
-        if let Some(old) = self.objects.get(&reference.hash) {
-            if old.reference != reference || old.dependencies != dependencies {
-                return Err(refused(
-                    "native core digest has conflicting metadata or dependencies",
-                ));
+        if let Some(old) = self.objects.get(&reference) {
+            if old.dependencies != dependencies {
+                return Err(refused("native typed role has conflicting dependencies"));
             }
             return Ok(());
         }
-        self.total = self
+        let shared = self.hashes.get(&reference.hash);
+        if let Some(original) = shared
+            && ((self.edition == ContentInventoryEdition::Legacy && original != &reference)
+                || original.length != reference.length)
+        {
+            return Err(refused("native core digest has conflicting typed metadata"));
+        }
+        let total = self
             .total
-            .checked_add(bytes.len())
+            .checked_add(if shared.is_some() { 0 } else { bytes.len() })
             .ok_or_else(|| limit("native core byte count"))?;
         if bytes.len() > self.archive.limits.state.maximum_content_bytes
-            || self.total > self.archive.limits.state.maximum_total_content_bytes
+            || total > self.archive.limits.state.maximum_total_content_bytes
             || self.objects.len() >= self.archive.limits.state.maximum_content_objects
             || dependencies.len() > self.archive.limits.state.maximum_content_objects
         {
             return Err(limit("native core inventory"));
         }
         self.archive.store(&reference, &mut bytes)?;
+        self.total = total;
+        self.hashes
+            .entry(reference.hash.clone())
+            .or_insert_with(|| reference.clone());
         self.objects.insert(
-            reference.hash.clone(),
+            reference.clone(),
             Object {
                 reference,
                 dependencies,
