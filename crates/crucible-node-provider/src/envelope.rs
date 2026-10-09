@@ -91,10 +91,16 @@ pub enum Method {
     BlobFinish,
     /// Discharges resources after reaping or authenticated transfer.
     Release,
+    /// Notifies retained operation status without settling its original request.
+    OperationUpdate,
+    /// Notifies the availability of bounded retained observations.
+    ObservationReady,
+    /// Notifies a provider failure without implying physical containment.
+    ProviderFault,
 }
 
 /// Carries portable correlation fields without native pointers or receipts.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Envelope {
     /// Identifies exactly `CNP/1`.
@@ -125,6 +131,32 @@ pub struct Envelope {
     pub extensions: Extensions,
 }
 
+impl std::fmt::Debug for Envelope {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Control bodies may carry launch/resume tokens or sensitive payloads.
+        // Correlation metadata is enough to diagnose transport ordering.
+        formatter
+            .debug_struct("Envelope")
+            .field("protocol", &self.protocol)
+            .field("message", &self.message)
+            .field("session_id", &self.session_id)
+            .field("incarnation_id", &self.incarnation_id)
+            .field("node_id", &self.node_id)
+            .field("execution_owner_id", &self.execution_owner_id)
+            .field("capture_owner_id", &self.capture_owner_id)
+            .field("request_id", &self.request_id)
+            .field("operation_id", &self.operation_id)
+            .field("sequence", &self.sequence)
+            .field("method", &self.method)
+            .field("body", &"<redacted>")
+            .field(
+                "extension_names",
+                &self.extensions.keys().collect::<Vec<_>>(),
+            )
+            .finish()
+    }
+}
+
 impl Envelope {
     /// Decodes a closed envelope without accepting duplicate object keys.
     ///
@@ -151,6 +183,15 @@ impl Envelope {
         }
         if self.sequence.get() == 0 {
             return Err(ProviderError::Correlation("sequence begins at one"));
+        }
+        let notification = matches!(
+            self.method,
+            Method::OperationUpdate | Method::ObservationReady | Method::ProviderFault
+        );
+        if notification != (self.message == MessageKind::Event) {
+            return Err(ProviderError::Correlation(
+                "method and message kind disagree",
+            ));
         }
         match self.message {
             MessageKind::Event if self.request_id.0.is_some() => {
@@ -186,7 +227,7 @@ impl Envelope {
     /// Rejects non-request envelopes, invalid correlation or noncanonical JSON.
     pub fn request_hash(&self, origin: RequestOrigin) -> Result<HashRef, ProviderError> {
         self.validate()?;
-        if self.message != MessageKind::Request {
+        if self.message != MessageKind::Request || self.method == Method::Hello {
             return Err(ProviderError::Correlation(
                 "only requests have request identity",
             ));
@@ -261,6 +302,19 @@ pub(crate) mod tests {
         value.as_object_mut().unwrap().remove("node_id");
 
         assert!(Envelope::decode(&serde_json::to_vec(&value).unwrap(), 2048).is_err());
+    }
+
+    #[test]
+    fn debug_output_never_discloses_control_body_secrets() {
+        let mut frame = request();
+        frame.body.insert(
+            "admission_token".into(),
+            Value::String("launch-secret-value".into()),
+        );
+
+        let diagnostic = format!("{frame:?}");
+        assert!(diagnostic.contains("<redacted>"));
+        assert!(!diagnostic.contains("launch-secret-value"));
     }
 
     #[test]

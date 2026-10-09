@@ -10,8 +10,15 @@
 #![deny(missing_docs)]
 
 pub mod blob;
+pub mod bodies;
+pub mod connection;
+pub mod conformance;
 pub mod envelope;
+pub mod handshake;
 pub mod journal;
+pub mod native_journal;
+pub mod reference_device;
+pub mod reference_service;
 pub mod session;
 pub mod transport;
 

@@ -77,6 +77,10 @@ impl<R: Read> FrameReader<R> {
         result
     }
 
+    pub(crate) fn stream_mut(&mut self) -> &mut R {
+        &mut self.stream
+    }
+
     fn read_frame(&mut self) -> Result<Option<Value>, ProviderError> {
         let mut header = [0_u8; 4];
         let first = loop {
