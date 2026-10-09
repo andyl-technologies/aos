@@ -506,6 +506,18 @@ not establish application readiness, complete device parity, CPU timing-model
 accuracy, ordinary common-node activation or vendor admission. Raw evidence,
 images and runtime journals remain local.
 
+The first broader package cohort fails in the lightweight reference-binaries
+dependency: 191 library cases pass, one new case incorrectly requires a compiled
+ARM profile, and three cases are ignored. That package deliberately carries no
+ARM binding. A test-only successor leaves the production checker byte-identical,
+runs the old-policy, forged-parent and promoted-flag schema negatives
+unconditionally against inert scope data, and separately checks the actual
+compile-time binding or its precise absent-binding refusal. Both binding
+configurations pass their two cases; the genuine 33-role installed integration
+also passes. All 37 source-quality cases and nine-crate all-target strict checks
+pass for the successor. The failed cohort remains retained; broader package
+qualification must rerun against the corrected source.
+
 ## Native administrative metadata during reply custody
 
 The plugin retains immutable registration facts only after native validation

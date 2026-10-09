@@ -285,15 +285,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn installed_loading_requires_the_actual_compile_time_binding() {
+        let result = InstalledArmRootMechanism::load();
+        match option_env!("CRUCIBLE_GEM5_ARM_ROOT_MODEL_MANIFEST") {
+            None => assert!(matches!(
+                result,
+                Err(ProviderError::Frame(
+                    "no installed ARM model mechanism binding"
+                ))
+            )),
+            Some(_) => {
+                let installed = result.unwrap();
+                validate_scope(installed.document()).unwrap();
+                assert!(installed.require_execution_admission().is_err());
+            }
+        }
+    }
+
+    #[test]
     fn previous_model_or_nonroot_facet_never_falls_back() {
-        let measured = InstalledArmRootMechanism::load().unwrap();
-        let mut previous = measured.document().clone();
+        // This inert schema fixture supplies no installed paths or live authority.
+        // Its negative cases must run even in the lightweight reference package.
+        let document: Value =
+            serde_json::from_str(include_str!("arm-root-scope-fixture.json")).unwrap();
+        validate_scope(&document).unwrap();
+
+        let mut previous = document.clone();
         previous["policy_id"] = "arm-linux-vexpress-atomic-functional-v1".into();
         assert!(validate_scope(&previous).is_err());
-        let mut forged = measured.document().clone();
+        let mut forged = document.clone();
         forged["model"]["exposed_facets"][0]["causal_parent"] = "17".into();
         assert!(validate_scope(&forged).is_err());
-        let mut promoted = measured.document().clone();
+        let mut promoted = document.clone();
         promoted["qualification"]["execution_admission_qualified"] = true.into();
         assert!(validate_scope(&promoted).is_err());
     }
