@@ -469,6 +469,15 @@ The reviewed attribute SDK candidate `376328f9ad` now implements documented
 uses signed producer/tree evidence, retains unsupported and unsigned records,
 checks metadata-only reads and pins storage and invalid-signature failures.
 Scoped source formatting passes; compilation and runtime remain queued.
+Private composition `e64fd484f1` now combines all six reviewed task branches
+without changing the PR branch's implementation or acceptance. Its six merge
+commits preserve task ancestry. Independent source verification matches all
+6,171 tracked files and all 34 expected source paths, retains the newer held
+history/read machinery, and preserves the 59/23/34 format/index/recovery
+inventories and current shared gate metadata. No conflict markers remain.
+This is preparation for the complete T1 floor; it establishes no compiler,
+runtime, gate or milestone result. The format task's original golden-vector
+process remains live, and recovery qualification is queued behind its release.
 The shared final-check producer now retains the native permanent-family
 traversal through pre-selection handoffs. Its typed receipt refreshes actual
 enumeration and directory continuity between current-authority checks;
