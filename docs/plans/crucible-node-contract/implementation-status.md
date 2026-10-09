@@ -55,6 +55,9 @@ schemas and test adapters establish component behavior, not native support.
 | `d6389f1fa8` | Immutable fixed-workload gem5 profile and actual ARM Linux network/block/9p driver gates | Three real Linux driver packages pass; the refreshed profile passes sandbox witnesses and all 25 installed artifact identities independently remeasure; independent host fresh recapture exposed resource-root custody failure, so the successor profile remains unqualified until corrected host gates pass |
 | `1ebca987b0` | Native restored gem5 resource-root rebinding with independent source-death and fresh-recapture qualification | Both ISAs pass forced-private-root builder witnesses and independent host source-death/two-fresh-restore witnesses, including supplementary branch files and fresh recapture; all 25 installed artifacts independently remeasure |
 | `f735a42f96` | Signed atomic QEMU fixture alignment for native control and absolute instruction service | Nineteen extracted proofs, eleven compiled mutation controls, complete configured two-ISA builds and 46 native units pass; signed source/tree/signature reconstruction passes; production binary/source pair build remains in progress |
+| `8eb08881cd` | Exact guarded native headers and timer registration in mandatory QEMU source validation | All 269 static checks and three source mutation controls pass; production binary and matching complete source build, and both installed ISA refusal suites pass |
+| `7e924dfeac` | Complete prepared-world authority, native input provenance, public reference runtime and conditional transcript boundaries | Strict production/all-target checks, 765 core regressions, actual public preparation and two-provider original-byte delivery/checksum/whole-custody reclamation pass; replay continuation and archive relocation remain separate work |
+| `c0c94c9225` | Complete durable public-world activation with separately rooted coordinator bytes | Three actual filesystem-backed public-provider tests pass, including fresh reconciliation, corrupt/missing bytes, partial root writes and lost commit acknowledgment |
 
 Legacy codec bytes, hash domains, fault identifiers, and existing exact QEMU
 restore semantics remain unchanged by these source extractions. New node
@@ -116,6 +119,15 @@ two-fresh-restore and fresh-recapture witnesses on both ISAs. Those tests cover
 actual supplementary branch files; all 25 installed artifacts independently
 remeasure. This qualification remains limited to the fixed freestanding
 workload and does not extend to full-system Linux or other devices.
+
+A subsequent signed mixed-world archive test removed the original checkpoint
+image directory as well as the live resource directory. Its first fresh native
+child failed before readiness: DMTCP still opened a saved supplementary file
+through the deleted image-root spelling. The earlier fixed-workload witnesses
+retained that historical image directory and therefore do not qualify archive
+relocation. Native checkpoint-file rebinding, an explicit signed gem5
+continuation schema, and early-child process-identity custody are being added;
+complete mixed-world cold continuation remains unqualified.
 
 The [KVM audit](kvm-feasibility.md) records the clock/timer/interrupt mediation
 requirements. The current machine does not expose `/dev/kvm`, so native KVM
