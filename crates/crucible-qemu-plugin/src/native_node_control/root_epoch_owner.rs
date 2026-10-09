@@ -118,6 +118,14 @@ impl<'mapping> DormantRootEpochOwner<'mapping> {
     }
 }
 
+/// Retains pending original custody without issuing an executable epoch.
+///
+/// # Safety
+/// Non-NULL userdata must identify the registration's original pinned owner and
+/// its borrowed mapping.
+/// A non-NULL output must be writable, aligned pointer storage for this call,
+/// disjoint from retained custody; it is cleared before validation. The native
+/// source preserves its original root lifetime throughout this synchronous call.
 unsafe extern "C" fn acquire(
     root: *const NativeSourceRootSeal,
     output: *mut *mut c_void,
@@ -138,6 +146,14 @@ unsafe extern "C" fn acquire(
     owner.acquire_pending(root)
 }
 
+/// Refuses effect admission because acquisition has issued no owned epoch.
+///
+/// # Safety
+/// Non-NULL userdata must identify the registration's original pinned owner and
+/// its borrowed mapping.
+/// The native source preserves its original root and cut lifetimes for this
+/// synchronous call. Opaque epoch/root/cut addresses are compared, never adopted
+/// as Rust objects or dereferenced by this dormant bridge.
 unsafe extern "C" fn begin(
     root: *const NativeSourceRootSeal,
     epoch: *mut c_void,
@@ -152,6 +168,12 @@ unsafe extern "C" fn begin(
     owner.refuse_effect(root, epoch, cut)
 }
 
+/// Preserves dormant effect refusal without opening or releasing admission.
+///
+/// # Safety
+/// The caller upholds the same retained userdata and source-object lifetimes as
+/// `begin`; forwarding preserves the exact arguments. This bridge has installed
+/// no effect scope. A future active bridge must revoke scope before error paths.
 unsafe extern "C" fn end(
     root: *const NativeSourceRootSeal,
     epoch: *mut c_void,

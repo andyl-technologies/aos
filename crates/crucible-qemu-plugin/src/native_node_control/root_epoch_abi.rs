@@ -26,12 +26,22 @@ pub(crate) struct NativeSourceEffectCut {
 ///
 /// EAGAIN leaves the output NULL and retains partial original holds privately.
 /// Successful original retries return the same stable owned-epoch pointer.
+///
+/// # Safety
+/// The caller supplies its actual live source root and registration's retained
+/// userdata. A non-NULL output must identify writable, aligned pointer storage
+/// for the synchronous call. It must not alias the retained owner or mapping.
 pub(crate) type AcquireRootEpoch =
     unsafe extern "C" fn(*const NativeSourceRootSeal, *mut *mut c_void, *mut c_void) -> c_int;
 
 /// Installs a scope only for the same epoch and native original effect cut.
 ///
 /// EAGAIN retains the pending original cut and installs no callback/ring scope.
+///
+/// # Safety
+/// The caller preserves the registered userdata allocation and original
+/// source-owned root/cut lifetimes throughout the synchronous callback. An epoch
+/// address must come from that same registration's acquisition, never wire data.
 pub(crate) type BeginRootEffect = unsafe extern "C" fn(
     *const NativeSourceRootSeal,
     *mut c_void,
@@ -46,6 +56,12 @@ pub(crate) type BeginRootEffect = unsafe extern "C" fn(
 pub(crate) type EndRootEffect = BeginRootEffect;
 
 /// Registers original callbacks before the first V9 resource manifest seal.
+///
+/// # Safety
+/// The policy must point to readable, aligned Root328 storage for the call.
+/// Installed callback code and non-NULL userdata must remain valid for the
+/// process lifetime, including failures after the source retains registration.
+/// Each callback must obey its declared source identity and output contract.
 pub(crate) type RegisterRootEpoch = unsafe extern "C" fn(
     u32,
     *const NativeRootPolicy,
