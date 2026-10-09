@@ -7,6 +7,7 @@
 use crucible_node_provider::gem5::InstalledArmRootMechanism;
 
 #[test]
+#[ignore = "requires compiled source-built ARM Root profile"]
 fn actual_source_owned_root_bundle_is_distinct_and_inert() {
     let measured = InstalledArmRootMechanism::load().unwrap();
     assert_eq!(

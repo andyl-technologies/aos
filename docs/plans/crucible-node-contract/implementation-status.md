@@ -495,8 +495,10 @@ installed-locale witness, subprocess worker entrypoint and earlier SE native
 capture witness. The three ARM witnesses above are separate integration targets.
 One library case starts a nested child test, whose result is not counted again.
 All 37 source-quality cases and all-target strict checks across nine crates pass.
-Required application test-target and broader package qualification for this
-source stage will be recorded when their separate builds complete.
+The required application test-target build passes for the fixed ARM source
+stage, with output `b7m5l1525q4hf54xk8q3sg7lb2g35m1g-aos-test-targets-0.1.0`.
+This build predates the administrative metadata and subsequent reference changes.
+Broader package qualification is recorded separately below.
 
 The unchanged strict process-group census now retains its first bounded refusal
 diagnostic. Successful rows keep the original parsing fast path. The earlier
@@ -517,6 +519,18 @@ configurations pass their two cases; the genuine 33-role installed integration
 also passes. All 37 source-quality cases and nine-crate all-target strict checks
 pass for the successor. The failed cohort remains retained; broader package
 qualification must rerun against the corrected source.
+
+The second broader cohort passes the corrected library cases, then exposes the
+same missing-binding assumption in the installed integration target. Its
+original failed log remains retained. That target now has an explicit
+compiled-profile requirement, and the native controller's build always executes
+its exact installed test with `--ignored --exact` before the existing license
+gate. Reference-only packages compile it without pretending an ARM profile is
+installed; cross builds rely on the existing native-controller dependency.
+The mandatory exact test passes centrally with the genuine source-bound profile.
+Its assertions, profile bindings, native inputs and production code are
+unchanged. Source-quality and nine-crate all-target strict checks pass for this
+successor; broader package qualification remains pending.
 
 ## Native administrative metadata during reply custody
 

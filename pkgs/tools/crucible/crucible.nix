@@ -342,6 +342,17 @@
             ${workspaceCargoFlags}
         ''
         else ''
+          # The reference-only package has no ARM profile binding. Require this
+          # installed mechanism check in its native, source-bound controller.
+          cargo test \
+            --frozen \
+            --offline \
+            -j$NIX_BUILD_CORES \
+            -p crucible-node-provider \
+            --test gem5_arm_root_installed \
+            -- \
+            --ignored \
+            --exact actual_source_owned_root_bundle_is_distinct_and_inert
           cargo test \
             --frozen \
             --offline \
