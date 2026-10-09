@@ -229,7 +229,7 @@
     ++ failuresFor "crates/crucible/testing/crucible-test-support/src/lib.rs" gateCatalog [
       {
         label = "fleet equivalence gate catalog implemented";
-        needle = "name: \"gate:fleet-equivalence\",\n        phase: GatePhase::Phase7,\n        owner: \"crucible-harness\",\n        status: GateStatus::Implemented,";
+        needle = "name: \"gate:fleet-equivalence\",\n        phase: GatePhase::Phase7,\n        owner: \"crucible-test-support\",\n        status: GateStatus::Implemented,";
       }
     ]
     ++ failuresFor "crates/crucible/testing/crucible-test-support/tests/gate_catalog.rs" gateCatalogTest [
@@ -241,7 +241,7 @@
     ++ failuresFor "crates/crucible/testing/crucible-test-support/src/gate_targets.rs" gateTargets [
       {
         label = "fleet equivalence gate target implemented";
-        needle = "gate: \"gate:fleet-equivalence\",\n        package: \"crucible\",\n        test_target: \"gate_fleet_equivalence\",\n        required_features: &[],";
+        needle = "gate: \"gate:fleet-equivalence\",\n        package: \"crucible-engine\",\n        test_target: \"gate_fleet_equivalence\",\n        required_features: &[],";
       }
     ]
     ++ failuresFor "crates/crucible/testing/crucible-test-support/tests/gate_target_mapping.rs" gateTargetMappingTest [
@@ -263,13 +263,13 @@
     ++ failuresFor "tests/crucible/phase1-gate-target-mapping.nix" gateTargetMapping [
       {
         label = "phase1 target lint includes fleet equivalence";
-        needle = "gate = \"gate:fleet-equivalence\";\n      package = \"crucible\";\n      testTarget = \"gate_fleet_equivalence\";\n      requiredFeatures = [];";
+        needle = "gate = \"gate:fleet-equivalence\";\n      package = \"crucible-engine\";\n      testTarget = \"gate_fleet_equivalence\";\n      requiredFeatures = [];";
       }
     ]
     ++ failuresFor "tests/crucible/phase1-testing-standards.nix" phase1TestingStandards [
       {
         label = "phase1 testing standards target includes fleet equivalence";
-        needle = "gate = \"gate:fleet-equivalence\";\n      package = \"crucible\";\n      testTarget = \"gate_fleet_equivalence\";\n      requiredFeatures = [];";
+        needle = "gate = \"gate:fleet-equivalence\";\n      package = \"crucible-engine\";\n      testTarget = \"gate_fleet_equivalence\";\n      requiredFeatures = [];";
       }
       {
         label = "phase1 testing standards include fleet equivalence";

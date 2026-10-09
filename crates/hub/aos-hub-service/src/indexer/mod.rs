@@ -30,13 +30,13 @@
 //! # One indexer, both shells
 //!
 //! This module is the single canonical indexer. It is pure logic over the
-//! [`SurfaceFetch`](crate::fetch::SurfaceFetch) read port and the core
-//! [`Database`](aos_hub_db::db::Database) write side — no async runtime, filesystem,
+//! [`SurfaceFetch`] read port and the core
+//! [`Database`] write side — no async runtime, filesystem,
 //! or HTTP client of its own — so it compiles to `wasm32-unknown-unknown` and
 //! runs identically on the native hub (over a `LocalFsFetch`/`HttpFetch`) and in
 //! the Cloudflare Worker's Cron job (over an `R2SurfaceFetch`). The accept/reject
-//! channel-partition decisions and the anti-rollback floor logic live inline in
-//! [`resolve_channels`]/[`enforce_floors`]/[`raise_floors`]; both shells share
+//! channel-partition decisions and the anti-rollback floor checks and updates
+//! live in the shared indexer implementation; both shells share
 //! exactly these rules, so the Worker's eventual index is byte-identical to the
 //! native hub's.
 

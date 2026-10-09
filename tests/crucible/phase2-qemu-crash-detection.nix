@@ -97,7 +97,7 @@
       }
       {
         label = "plugin frame I/O dependency";
-        needle = "use crucible_protocol::FrameIoError";
+        needle = "use crucible_qemu_protocol::FrameIoError";
       }
       {
         label = "detector API";
@@ -236,7 +236,7 @@ in
             tasks=${taskList}
             check_scope=task-level
             related_gates=gate:control-responsive,gate:divergence-bisect
-            rust_test=crucible-qemu::crash_detection
+            rust_test=crucible_qemu_host::crash_detection
             crash_causes=unexpected-child-exit,plugin-ipc-close,qmp-disconnect
             host_hooks=std-process-child,plugin-frame-io,qmp-io
             status=typed-crashed-node

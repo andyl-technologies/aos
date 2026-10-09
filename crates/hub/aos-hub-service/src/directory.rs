@@ -4,7 +4,7 @@
 //! `list_registries` plus a per-registry visibility/index fan-out — the N+1 that
 //! makes the home's latency scale with the registry count. This module
 //! materializes the **public** listing into a single KV value (the directory
-//! projection) that the home reads in one [`KvStore`](crate::kv::KvStore) `get`,
+//! projection) that the home reads in one [`KvStore`] `get`,
 //! with no database round-trip. The projection is [`rebuild`]t off the request
 //! path (on publish via the [`Job::RebuildDirectory`](crate::jobs::Job) queue
 //! job, or by the Cron indexer), so the per-registry fan-out runs there, once,

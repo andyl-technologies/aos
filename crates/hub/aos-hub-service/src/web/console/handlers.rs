@@ -11,13 +11,13 @@
 //! compiles to `wasm32-unknown-unknown` and the native hub and the Cloudflare
 //! Worker mount the same [`console_router`](super::console_router).
 //!
-//! The pre-auth rate-limited paths ([`login_form`], [`login_submit`],
-//! [`login_password`], [`passkey_login_begin`], and the device-approval
-//! [`activate_form`]/[`activate_submit`] surface) live here too: instead of the
+//! The pre-auth rate-limited paths (`login_form`, `login_submit`,
+//! `login_password`, `passkey_login_begin`, and the device-approval
+//! `activate_form`/`activate_submit` surface) live here too: instead of the
 //! native `ConnectInfo` peer socket and a reverse-proxy trust flag, they read the
 //! connecting client's IP from the runtime-neutral [`CLIENT_IP_HEADER`] each
 //! shell stamps on ingress (RFC-0004 Phase 5, console-dedup stages D and E). The
-//! per-org OIDC flow ([`login_sso`], [`oidc_start`], [`oidc_callback`]) lives
+//! per-org OIDC flow (`login_sso`, `oidc_start`, `oidc_callback`) lives
 //! here too (stage F): its token exchange and JWKS fetch go through the
 //! [`HttpClient`](super::ports::HttpClient) port, so it needs no native client.
 //!
@@ -25,8 +25,8 @@
 //!
 //! Every retained mutating ceremony here is reached with an ambient session
 //! cookie, so it is CSRF-able. Each form embeds a per-session synchronizer token
-//! ([`mint_csrf_token`](crate::web::csrf::mint_csrf_token)); the handler verifies
-//! it ([`check_csrf`]) and answers `403` on a bad or missing token.
+//! ([`mint_csrf_token`]); the handler verifies
+//! it (`check_csrf`) and answers `403` on a bad or missing token.
 //!
 //! # Authorization
 //!
@@ -913,15 +913,15 @@ fn urlencode(text: &str) -> String {
 
 /// The request header carrying the deployment-resolved client IP.
 ///
-/// The pre-auth handlers ([`login_submit`], [`login_password`],
-/// [`passkey_login_begin`], and the [`activate_form`]/[`activate_submit`]
+/// The pre-auth handlers (`login_submit`, `login_password`,
+/// `passkey_login_begin`, and the `activate_form`/`activate_submit`
 /// surface) rate-limit on the connecting client's IP, but the connecting peer
 /// address and the reverse-proxy trust model are *runtime-specific* (a native
 /// `ConnectInfo`
 /// socket on the hub, a `cf-connecting-ip` header on the Worker) and so are not
 /// available to these wasm-clean handlers. Each shell resolves the trusted IP in
 /// its own ingress layer and stamps it onto this header; the handlers read it
-/// back through [`resolved_client_ip`].
+/// back through `resolved_client_ip`.
 ///
 /// # Security invariant
 ///
@@ -934,7 +934,7 @@ fn urlencode(text: &str) -> String {
 /// pre-auth login paths.
 ///
 /// An **absent** value (a misconfigured deployment that never stamps the header)
-/// is treated as the empty string by [`resolved_client_ip`]: every caller then
+/// is treated as the empty string by `resolved_client_ip`: every caller then
 /// shares one rate-limit bucket. That fails *safe* for abuse (the bound still
 /// applies, just coarsely) rather than failing open.
 pub const CLIENT_IP_HEADER: &str = "x-aos-client-ip";
@@ -1002,7 +1002,7 @@ pub(crate) struct LoginForm {
 /// address is never revealed as known/unknown.
 ///
 /// Rate-limited on both the target email and the source IP (the
-/// [`resolved_client_ip`] the ingress layer stamped — see [`CLIENT_IP_HEADER`]).
+/// `resolved_client_ip` the ingress layer stamped — see [`CLIENT_IP_HEADER`]).
 pub(crate) async fn login_submit(
     deps: ConsoleDeps,
     headers: HeaderMap,
@@ -1088,7 +1088,7 @@ pub(crate) struct PasswordLoginForm {
 /// *is* rate-limited on both the target email (online password guessing against
 /// one account) and the source IP (credential-stuffing sprays), reusing the
 /// [`RateClass::PasswordEmail`]/[`RateClass::PasswordIp`] classes keyed on the
-/// [`resolved_client_ip`] the ingress layer stamped (see [`CLIENT_IP_HEADER`]).
+/// `resolved_client_ip` the ingress layer stamped (see [`CLIENT_IP_HEADER`]).
 ///
 /// On a correct password it creates a sudo-capable session (a fresh password
 /// sign-in is a re-authentication, `auth_level 1`), sets the `__Host-` cookie,
@@ -1901,7 +1901,7 @@ pub(crate) async fn passkey_login_finish(
 /// [`AssertionChallenge`](crate::auth::webauthn::AssertionChallenge) the inline
 /// login script feeds to `navigator.credentials.get`.
 ///
-/// Rate-limited per source IP — the [`resolved_client_ip`] the ingress layer
+/// Rate-limited per source IP — the `resolved_client_ip` the ingress layer
 /// stamped (see [`CLIENT_IP_HEADER`]) — under the same
 /// [`RateClass::MagicLinkIp`](crate::ratelimit::RateClass::MagicLinkIp) spray
 /// bound as magic-link issuance.
@@ -1944,7 +1944,7 @@ pub(crate) struct ActivateQuery {
 /// (or hijack) other users' in-flight grants (sec L-4). This meters under
 /// [`RateClass::DeviceActivate`](crate::ratelimit::RateClass::DeviceActivate)
 /// keyed on the **session user combined with the client IP** (the
-/// [`resolved_client_ip`] the ingress layer stamped — see [`CLIENT_IP_HEADER`]),
+/// `resolved_client_ip` the ingress layer stamped — see [`CLIENT_IP_HEADER`]),
 /// so neither a single account nor a single source can spin the wheel quickly,
 /// and returns `Some(429)` (with `Retry-After`) when the budget is exhausted.
 /// Both the GET form and the POST submit call it. (The future polling endpoint,

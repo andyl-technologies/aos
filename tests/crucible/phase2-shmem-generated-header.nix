@@ -67,7 +67,7 @@
     ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/examples/crucible-shmem-abi-header.rs" generatorBin [
       {
         label = "command line header generator";
-        needle = "crucible_shmem::generated_c_header()";
+        needle = "crucible_qemu_shmem::generated_c_header()";
       }
     ]
     ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/include/crucible_shmem_abi.h" generatedHeader [

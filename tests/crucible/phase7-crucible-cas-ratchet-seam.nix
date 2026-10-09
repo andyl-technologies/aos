@@ -111,7 +111,7 @@ in
             PASS
             check=${attrPath}
             tasks=${builtins.concatStringsSep "," taskIds}
-            seam=crucible-cas::dag-store
+            seam=crucible_store::dag-store
             interface=put,get,has,invalidation-query
             merge_plan=thin-adapter-behind-unchanged-interface
             merge_bar=gate:content-address,gate:replay-oracle,gate:e2e-determinism

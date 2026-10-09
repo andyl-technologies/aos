@@ -410,7 +410,7 @@ in
             check=${attrPath}
             tasks=${taskList}
             gate=gate:abi-conformance
-            rust_test=crucible-protocol::codec_fuzz
+            rust_test=crucible_qemu_protocol::codec_fuzz
             rust_test=crucible-qemu-plugin::io_wire_fuzz
             corpus=protocol-codec,block-wire,9p-wire,malformed,adversarial,regression
             property=no-panic,typed-error,deterministic-decode,well-formed-round-trip

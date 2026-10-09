@@ -283,7 +283,7 @@
     ++ failuresFor "crates/crucible/testing/crucible-test-support/src/lib.rs" gateCatalog [
       {
         label = "campaign-continuity gate catalog implemented";
-        needle = "name: \"gate:campaign-continuity\",\n        phase: GatePhase::Phase7,\n        owner: \"crucible-harness\",\n        status: GateStatus::Implemented,";
+        needle = "name: \"gate:campaign-continuity\",\n        phase: GatePhase::Phase7,\n        owner: \"crucible-test-support\",\n        status: GateStatus::Implemented,";
       }
     ]
     ++ failuresFor "crates/crucible/testing/crucible-test-support/tests/gate_catalog.rs" gateCatalogTest [
@@ -295,7 +295,7 @@
     ++ failuresFor "crates/crucible/testing/crucible-test-support/src/gate_targets.rs" gateTargets [
       {
         label = "campaign-continuity gate target implemented";
-        needle = "gate: \"gate:campaign-continuity\",\n        package: \"crucible-cas\",\n        test_target: \"gate_campaign_continuity\",\n        required_features: &[],";
+        needle = "gate: \"gate:campaign-continuity\",\n        package: \"crucible-store\",\n        test_target: \"gate_campaign_continuity\",\n        required_features: &[],";
       }
     ]
     ++ failuresFor "crates/crucible/testing/crucible-test-support/tests/gate_target_mapping.rs" gateTargetMappingTest [
@@ -311,7 +311,7 @@
       }
       {
         label = "crucible-cas owns campaign continuity";
-        needle = "package: \"crucible-cas\",\n        gates: &[\"gate:campaign-continuity\"],";
+        needle = "package: \"crucible-store\",\n        gates: &[\"gate:campaign-continuity\"],";
       }
     ]
     ++ failuresFor "crates/crucible/testing/crucible-test-support/tests/support/testing_standards.rs" testingStandardsSupport [
@@ -327,13 +327,13 @@
     ++ failuresFor "tests/crucible/phase1-gate-target-mapping.nix" gateTargetMapping [
       {
         label = "phase1 target lint includes campaign continuity";
-        needle = "gate = \"gate:campaign-continuity\";\n      package = \"crucible-cas\";\n      testTarget = \"gate_campaign_continuity\";\n      requiredFeatures = [];";
+        needle = "gate = \"gate:campaign-continuity\";\n      package = \"crucible-store\";\n      testTarget = \"gate_campaign_continuity\";\n      requiredFeatures = [];";
       }
     ]
     ++ failuresFor "tests/crucible/phase1-testing-standards.nix" phase1TestingStandards [
       {
         label = "phase1 testing standards target includes campaign continuity";
-        needle = "gate = \"gate:campaign-continuity\";\n      package = \"crucible-cas\";\n      testTarget = \"gate_campaign_continuity\";\n      requiredFeatures = [];";
+        needle = "gate = \"gate:campaign-continuity\";\n      package = \"crucible-store\";\n      testTarget = \"gate_campaign_continuity\";\n      requiredFeatures = [];";
       }
       {
         label = "phase1 testing standards include campaign continuity";

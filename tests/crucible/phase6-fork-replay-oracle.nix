@@ -280,7 +280,7 @@ in
             tasks=${taskList}
             gate=gate:replay-oracle
             fork=base-validated,branch-materialized,divergence-localized
-            rust_test=crucible::gate_fork_replay_oracle
+            rust_test=crucible_engine::gate_fork_replay_oracle
             RESULT
           '';
         }

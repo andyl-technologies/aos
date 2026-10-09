@@ -891,7 +891,7 @@
       {
         label = "shmem ABI gate target implemented";
         needle = ''
-          package: "crucible-shmem",
+          package: "crucible-qemu-shmem",
                   test_target: "gate_abi_conformance",
                   required_features: &[],
         '';
@@ -901,7 +901,7 @@
       {
         label = "shmem ABI mapping implemented";
         needle = ''
-          package = "crucible-shmem";
+          package = "crucible-qemu-shmem";
                 testTarget = "gate_abi_conformance";
                 requiredFeatures = [];
         '';
@@ -1611,7 +1611,7 @@ in
             check=${attrPath}
             tasks=${taskList}
             gate=gate:abi-conformance
-            rust_tests=crucible-shmem::gate_abi_conformance,crucible-shmem::preemption_mailbox,crucible-shmem::hot_fork_ring_image
+            rust_tests=crucible_qemu_shmem::gate_abi_conformance,crucible_qemu_shmem::preemption_mailbox,crucible_qemu_shmem::hot_fork_ring_image
             generated_header_diff=checked
             bilateral_static_asserts=compiled
             golden_vector_roundtrip=rust,c

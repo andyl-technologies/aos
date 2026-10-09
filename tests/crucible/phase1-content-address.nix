@@ -1211,7 +1211,7 @@ in
             check=${attrPath}
             gate=gate:content-address
             tasks=${builtins.concatStringsSep "," taskIds}
-            rust_tests=crucible_engine::predicate_dsl,crucible_engine::gate_content_address,crucible-sim::gate_content_address
+            rust_tests=crucible_engine::predicate_dsl,crucible_engine::gate_content_address,crucible_determinism::gate_content_address
             corpus=fixed-vectors-and-collision-sampling
             predicate_dsl=world-plan-resolved-content-addressed-conditions
             predicate_dsl_host_closures=additive-unknown-named-predicates

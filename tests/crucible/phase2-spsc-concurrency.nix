@@ -159,13 +159,13 @@
     ++ failuresFor "crates/crucible/testing/crucible-test-support/src/gate_targets.rs" gateTargets [
       {
         label = "implemented shmem layer1 target";
-        needle = "package: \"crucible-shmem\",\n        test_target: \"gate_layer1_injection\",\n        required_features: &[],";
+        needle = "package: \"crucible-qemu-shmem\",\n        test_target: \"gate_layer1_injection\",\n        required_features: &[],";
       }
     ]
     ++ failuresFor "tests/crucible/phase1-gate-target-mapping.nix" gateTargetMapping [
       {
         label = "implemented shmem layer1 mapping target";
-        needle = "gate = \"gate:layer1-injection\";\n      package = \"crucible-shmem\";\n      testTarget = \"gate_layer1_injection\";\n      requiredFeatures = [];";
+        needle = "gate = \"gate:layer1-injection\";\n      package = \"crucible-qemu-shmem\";\n      testTarget = \"gate_layer1_injection\";\n      requiredFeatures = [];";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
@@ -246,7 +246,7 @@ in
             check=${attrPath}
             gate=gate:layer1-injection
             tasks=${taskList}
-            rust_tests=crucible-shmem::gate_layer1_injection
+            rust_tests=crucible_qemu_shmem::gate_layer1_injection
             queue=Lamport-SPSC
             memory_ordering=release-acquire
             model=source-guarded-exhaustive-memory-order-interleavings

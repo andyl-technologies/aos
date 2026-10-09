@@ -14,7 +14,7 @@ impl RpcService {
     ///
     /// Because the cache is keyed by the token **secret** but revocation is by
     /// token **id**, a naive TTL cache could serve a revoked token until the TTL.
-    /// Instead, [`invalidate_token_cache`] writes a `tokrev:{token_id}` tombstone
+    /// Instead, [`RpcService::invalidate_token_cache`] writes a `tokrev:{token_id}` tombstone
     /// on revoke/rotate, and this method **rejects any cached resolution whose
     /// token id is tombstoned** — so a revoke is observed immediately, not after
     /// the TTL. (After the resolution TTL the entry re-validates from the

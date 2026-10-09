@@ -1018,8 +1018,8 @@ in
             gate=gate:replay-oracle
             tasks=${builtins.concatStringsSep "," taskIds}
             rust_test=crucible_engine::gate_replay_oracle
-            harness_rust_test=crucible-harness::replay_oracle
-            qemu_rust_test=crucible-qemu::realization::replay_oracle
+            harness_rust_test=crucible_test_support::replay_oracle
+            qemu_rust_test=crucible_qemu_host::realization::replay_oracle
             oracle=fat-materialized-equals-thin-from-ancestor
             qemu_oracle=v9-descriptor-restore-equals-replay-from-ancestor
             qemu_oracle_probe_authority=private-descriptor-bound-operation

@@ -363,13 +363,13 @@
       }
       {
         label = "perf-bench gate marked implemented";
-        needle = "name: \"gate:perf-bench\",\n        phase: GatePhase::Phase7,\n        owner: \"crucible-harness\",\n        status: GateStatus::Implemented,";
+        needle = "name: \"gate:perf-bench\",\n        phase: GatePhase::Phase7,\n        owner: \"crucible-test-support\",\n        status: GateStatus::Implemented,";
       }
     ]
     ++ failuresFor "crates/crucible/testing/crucible-test-support/src/gate_targets.rs" gateTargets [
       {
         label = "implemented perf-bench gate target";
-        needle = "gate: \"gate:perf-bench\",\n        package: \"crucible-harness\",\n        test_target: \"gate_perf_bench\",\n        required_features: &[],";
+        needle = "gate: \"gate:perf-bench\",\n        package: \"crucible-test-support\",\n        test_target: \"gate_perf_bench\",\n        required_features: &[],";
       }
     ]
     ++ failuresFor "crates/crucible/testing/crucible-test-support/tests/gate_catalog.rs" gateCatalog [
@@ -381,7 +381,7 @@
     ++ failuresFor "tests/crucible/phase1-gate-target-mapping.nix" gateTargetMapping [
       {
         label = "perf-bench target in mapping lint";
-        needle = "gate = \"gate:perf-bench\";\n      package = \"crucible-harness\";\n      testTarget = \"gate_perf_bench\";\n      requiredFeatures = [];";
+        needle = "gate = \"gate:perf-bench\";\n      package = \"crucible-test-support\";\n      testTarget = \"gate_perf_bench\";\n      requiredFeatures = [];";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -502,7 +502,7 @@
     tasks=${taskList}
     open_tasks=${openTaskList}
     status=component-only
-    owner=crucible-harness
+    owner=crucible-test-support
     phase=phase7
     gate_class=regression
     cost_model=wall_clock=busy/(tcg_ips*P)+amortized_boot+sync_overhead

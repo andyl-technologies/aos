@@ -3,8 +3,8 @@
 //! This module is the protocol kernel shared by the native Hub and the Worker.
 //! It deliberately contains no framework, clock, storage, or platform types:
 //! adapters parse their request headers into these types, run
-//! [`evaluate_request`], and translate the resulting typed decision back into
-//! their HTTP runtime.
+//! [`evaluate_verified_representation`] or [`evaluate_absent_request`], and
+//! translate the resulting typed decision back into their HTTP runtime.
 //!
 //! The kernel owns method admission, entity-tag conditions, second-precision
 //! date conditions, one-range byte serving, response metadata derivation,
@@ -451,7 +451,7 @@ impl IfRangeCondition {
 
 /// Preconditions supplied with a delivery request.
 ///
-/// Field coexistence is intentional: [`evaluate_request`] applies RFC 9110's
+/// Field coexistence is intentional: request evaluation applies RFC 9110's
 /// precedence rules, including ignoring `If-Unmodified-Since` when `If-Match`
 /// is present and ignoring `If-Modified-Since` when `If-None-Match` is present.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

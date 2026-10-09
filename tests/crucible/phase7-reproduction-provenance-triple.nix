@@ -158,7 +158,7 @@
       }
       {
         label = "mock e2e canonical shmem ABI declaration";
-        needle = "pub const CANONICAL_SHMEM_ABI_VERSION: u32 = include!(\"../../crucible-shmem/src/abi_version.in\")";
+        needle = "pub const CANONICAL_SHMEM_ABI_VERSION: u32 =\n    include!(\"../../../protocol/crucible-qemu-shmem/src/abi_version.in\")";
       }
       {
         label = "mock e2e guest-host ABI source";
@@ -242,11 +242,11 @@
       }
       {
         label = "engine replay-oracle shmem ABI source";
-        needle = "shmem_abi_version: crucible_shmem::ABI_VERSION.to_string()";
+        needle = "shmem_abi_version: crucible_qemu_shmem::ABI_VERSION.to_string()";
       }
       {
         label = "engine replay-oracle guest-host ABI source";
-        needle = "guest_host_protocol_version: crucible_protocol::CONTROL_PROTOCOL_VERSION.to_string()";
+        needle = "guest_host_protocol_version: crucible_qemu_protocol::CONTROL_PROTOCOL_VERSION.to_string()";
       }
       {
         label = "engine replay-oracle RPC ABI source";

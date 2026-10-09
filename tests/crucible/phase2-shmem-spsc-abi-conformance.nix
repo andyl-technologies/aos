@@ -192,7 +192,7 @@ in
             check=${attrPath}
             gate=gate:abi-conformance
             tasks=${taskList}
-            rust_tests=crucible-shmem::gate_layer1_injection
+            rust_tests=crucible_qemu_shmem::gate_layer1_injection
             queue=Lamport-SPSC
             memory_ordering=release-acquire
             model=source-guarded-exhaustive-memory-order-interleavings

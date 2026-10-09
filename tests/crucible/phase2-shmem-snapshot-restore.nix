@@ -196,7 +196,7 @@ in
             gate=gate:abi-conformance
             gate=gate:content-address
             gate=gate:replay-oracle
-            rust_tests=crucible-shmem::snapshot_restore
+            rust_tests=crucible_qemu_shmem::snapshot_restore
             snapshot_fifo=true
             restore_normalizes_indices=true
             canonical_bytes=padding_independent

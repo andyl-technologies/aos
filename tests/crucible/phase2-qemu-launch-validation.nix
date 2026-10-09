@@ -265,7 +265,7 @@ in
             tasks=${taskList}
             check_scope=task-level
             related_gates=gate:layer0-determinism,gate:single-vm-fingerprint
-            rust_test=crucible-qemu::deterministic_launch
+            rust_test=crucible_qemu_host::deterministic_launch
             rejected=kvm,non-tcg,missing-icount,shift-auto,mttcg,unpinned-rr-quantum,cpu-host,host-timing,host-entropy
             rr_switch_quantum=4096
             rr_switch_quantum_units=retired-instructions

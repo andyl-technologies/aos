@@ -107,6 +107,8 @@ The implemented base is PR [#715](https://github.com/andyl-technologies/aos/pull
 | Contract JSON, identities, decoding | `aos_core::{json,digest,limits,identity}`; `Sha256Digest` also exported at root |
 | NAR/narinfo/cache/signing | `aos_nar::{cache,info,export,pack,verify}`; extraction/hash verification consumers select `features = ["compression"]` |
 | Nix execution, derivations, store tools | `aos_nix::{drv,env,identity,runner,store,error,executable}`; `NixRunner`, `NixCli`, `PathInfo` at root |
+| Registry readers and producers | `aos_registry_client::{config,registry,security,...}` for verified reads; `aos_registry_authoring::{registry_ops,RegistryCommand,...}` for production and publication |
+| Registry shared contracts | `aos_registry_format::{consumer,release,measurement}`; release entries and measurement digests remain portable format contracts |
 | Terminal presentation and command hints | `aos_cli_ui::{output,invocation}`; command error/exit policy stays with CLI |
 | Ability model and plan | `aos_module_format`; graph validation is `aos_module_format::graph` |
 | Artifact evidence formats/readers | `aos_artifact_evidence::{document,model,identity,consumption,diagnostic,limits}` plus root exports; do not route through module-format |
@@ -117,11 +119,21 @@ The implemented base is PR [#715](https://github.com/andyl-technologies/aos/pull
 | Hub orchestration/client/API | `aos_hub_service`, `aos_hub_client::{hub,login}`, and `aos_hub_api::{hub_v1,...}` |
 | Crucible control | `crucible_control_api`, `crucible_control_client`, `crucible_control_server`; VM creation/lifecycle implementation is `crucible_daemon::vm_lifecycle` |
 
+The CLI Rust library is `aos_cli`; installed command names remain unchanged.
+Deployment input acquisition uses
+`aos_deployment::input::{read_evaluation_input,read_evaluation_input_in,import_evaluation_input,import_evaluation_input_retained}`.
+
+The control API supports native clients and services and retains session/engine
+dependencies; it is not a WebAssembly format library. Live
+`SessionEventLogHub` and `SessionEventLogStream` exports now belong to
+`crucible_control_server`. Client control/watch stream `Rpc` variants contain
+`Box<RpcControlStream>` / `Box<RpcWatchStream>`; wrap direct construction in
+`Box::new` when adapting incoming code. The scratch handoffs include the
+242-symbol ownership map for the former `crucible-api` exports.
+
 Reuse schemas field by field without changing bytes or acceptance behavior. `InstalledPackageRecord` and `PackageInventoryDetails` now live in `aos_deployment_format::inventory`; supply immutable inventory to deployment/image verification rather than depending on package-manager state APIs. Outer installed records retain their established Serde behavior and defaults for `expires_at` and `apm`. The nested `PackageInventoryDetails` retains `deny_unknown_fields`, including optional deployment/module-documentation/qualification metadata and attestation defaults. Do not tighten the outer record or alter omissions/defaults as a side effect of type movement.
 
 OCI canonical JSON intentionally stays in `aos_oci_types::canonical`: it admits extension keys outside ASCII and full-width integer values, and follows its existing Serde schema/duplicate behavior. Strict authenticated AOS JSON in `aos_core::json` has different rules. Compare exact decoding, integer range, duplicate handling, canonical ordering and identity domains before sharing an implementation. Likewise portable node/RAM process formats and Terrane formats retain their existing license/encoding contracts.
-
-
 
 ## Dispatch names reserved by RFC-0027
 

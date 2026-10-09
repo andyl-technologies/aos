@@ -224,7 +224,7 @@ in
             check=${attrPath}
             tasks=${taskList}
             gate=gate:abi-conformance
-            rust_tests=crucible-protocol::codec
+            rust_tests=crucible_qemu_protocol::codec
             codec=pure-owned-buffer
             frame_io=read-write-helpers
             typed_errors=empty,unknown-tag,short-payload,long-payload,oversize-length,truncated-prefix,truncated-payload

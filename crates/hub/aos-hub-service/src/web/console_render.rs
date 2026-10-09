@@ -16,8 +16,8 @@
 //! - Login, account, invitation, and device-approval builders each return a
 //!   complete document.
 //!
-//! The pure primitives ([`escape`], [`table`],
-//! [`human_size`](crate::web::render::human_size), [`key_fingerprint`]) live in
+//! The pure primitives ([`escape`], [`crate::web::render::table`],
+//! [`crate::web::render::human_size`], [`crate::web::render::key_fingerprint`]) live in
 //! [`crate::web::render`] and are re-used here so the console and the shared
 //! browse surface render byte-identically.
 
@@ -351,7 +351,7 @@ pub fn logout_page(email: &str, csrf: &str, started: Instant) -> String {
 /// `crumbs` is the masthead trail as `(href, label)` pairs; the final crumb
 /// should be the current page (empty href renders unlinked). `session` renders
 /// on the right of the masthead — the signed-in email and a logout link, or the
-/// anonymous "log in" link. The brand (from [`brand`]) leads the masthead when
+/// anonymous "log in" link. The configured site brand leads the masthead when
 /// configured; the footer carries the surface commit, index freshness, the app
 /// version, and the render time.
 #[must_use]
@@ -460,9 +460,9 @@ fn table(headers: &[&str], rows: &[Vec<String>]) -> String {
 
 /// Render a table whose header cells are pre-rendered HTML.
 ///
-/// Identical to [`table`] but each header is inserted into its `<th>` as-is
+/// Identical to `table` but each header is inserted into its `<th>` as-is
 /// (not escaped), so callers can embed sort links or other markup; body cells
-/// follow the same as-is contract as [`table`].
+/// follow the same as-is contract as `table`.
 #[must_use]
 pub fn table_raw_headers(headers: &[String], rows: &[Vec<String>]) -> String {
     let mut out = String::from(
@@ -485,7 +485,7 @@ pub fn table_raw_headers(headers: &[String], rows: &[Vec<String>]) -> String {
 
 /// Render a table tagged for the live-search enhancement (`search.js`).
 ///
-/// Identical to [`table`] but adds `data-live-list` and a `data-live-noun`
+/// Identical to `table` but adds `data-live-list` and a `data-live-noun`
 /// so the client script can filter the `<tbody>` rows in place; `noun` is
 /// the plural label shown in the result count ("registries", "packages").
 #[must_use]
@@ -701,9 +701,8 @@ fn release_glyphs(
 
 /// Render the 16×16 partition grid as a `<pre>` block plus its legend table.
 ///
-/// The producer channel rollout console ([`channel_console`]) renders the
-/// identical glyph + color grid the consumer channel page shows — RFC-0004's
-/// "ASCII diagrams are content".
+/// Uses the same glyph and color conventions as the consumer channel page.
+/// The grid is content, following RFC-0004's presentation rules.
 #[must_use]
 pub fn channel_grid_pre(channel: &ChannelSummary) -> String {
     let (release_order, class_for) = release_glyphs(channel);

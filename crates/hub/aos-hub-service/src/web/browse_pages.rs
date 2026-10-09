@@ -1837,9 +1837,9 @@ pub fn cache_closure(
 
 /// Render the 16×16 partition grid as a `<pre>` block plus its legend table.
 ///
-/// Shared by the consumer [`channel_page`] and the producer channel rollout
-/// console ([`crate::web::console_render::channel_console`]) so both show the
-/// identical glyph + color grid — RFC-0004's "ASCII diagrams are content".
+/// The consumer [`channel_page`] uses the same glyph and color conventions as
+/// [`crate::web::console_render::channel_grid_pre`]. The grid is content,
+/// following RFC-0004's presentation rules.
 #[must_use]
 pub fn channel_grid_pre(channel: &ChannelSummary) -> String {
     let (release_order, class_for) = release_glyphs(channel);

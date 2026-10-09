@@ -808,7 +808,7 @@ impl Database {
     /// Builds the canonical slug (`"{org}/{name}"` when `project_path` is
     /// empty, otherwise `"{org}/{project_path}/{name}"`) and delegates to
     /// [`Database::registry_by_slug`] — managed registries store their full
-    /// canonical path as their slug (see the [module docs](self)). Returns
+    /// canonical path as their slug (see the [`crate::db`] module documentation). Returns
     /// `Ok(None)` when no registry has that canonical path.
     ///
     /// # Errors

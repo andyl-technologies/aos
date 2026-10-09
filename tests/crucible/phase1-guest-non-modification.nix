@@ -333,7 +333,7 @@ in
             gate=gate:replay-oracle
             required_gates=gate:any-guest,gate:replay-oracle
             tasks=${builtins.concatStringsSep "," taskIds}
-            rust_test=crucible-qemu::deterministic_launch::launch_profile_enforces_guest_non_modification
+            rust_test=crucible_qemu_host::deterministic_launch::launch_profile_enforces_guest_non_modification
             scope=launch-contract-gate
             guest_writes=copy-on-write-overlay
             guest_backing_state=byte-identical-genesis

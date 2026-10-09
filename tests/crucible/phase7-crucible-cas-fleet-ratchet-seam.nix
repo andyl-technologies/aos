@@ -141,7 +141,7 @@ in
             PASS
             check=${attrPath}
             tasks=${builtins.concatStringsSep "," taskIds}
-            seam=crucible-cas::dag-store
+            seam=crucible_store::dag-store
             shared_seam=SharedDagStore+InvalidationQuery::evaluate
             interface=DagStore::put,DagStore::get,DagStore::has,SharedDagStore,InvalidationQuery::evaluate
             merge_plan=thin-adapter-behind-unchanged-interface

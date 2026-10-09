@@ -1306,7 +1306,7 @@
       '')
       (source "crucible-cli" "src/session.rs" ''
         use crucible_session::SessionDriver;
-        use crucible_control_api::ControlClient;
+        use crucible_control_client::ControlClient;
 
         fn route(client: ControlClient, driver: SessionDriver<()>) {
           submit(client, driver);
@@ -1572,7 +1572,7 @@ in
               check=${attrPath}
               gate=gate:harness-lint
               tasks=T-ASRT-17,T-DET-17,T-HARN-2,T-HARN-27,T-HARN-28,T-CRATE-7,T-CRATE-8,T-STD-3,T-STD-4,T-STD-5,T-STD-6,T-DCE-7
-              rust_test=crucible-harness::harness_lint
+              rust_test=crucible_test_support::harness_lint
               reduction_path=crucible-sim,crucible-assert,crucible,crucible-protocol,crucible-device,crucible-session
               nondeterminism_confinement=crucible-daemon,crucible-cli,crucible-qemu:no-state-leak
               error_logging=typed-errors,no-production-unwrap,main-boundary-anyhow,no-library-stdout

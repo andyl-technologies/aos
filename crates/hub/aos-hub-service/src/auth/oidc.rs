@@ -9,9 +9,9 @@
 //!
 //! The flow makes only two network calls — the token exchange and the JWKS
 //! fetch — and it makes both through the
-//! [`HttpClient`](crate::web::console::ports::HttpClient) port rather than a
+//! [`HttpClient`] port rather than a
 //! concrete client, so it is transport- and runtime-neutral: the native hub
-//! satisfies the port with its hardened [`reqwest`] client (SSRF resolver,
+//! satisfies the port with its hardened `reqwest` client (SSRF resolver,
 //! request timeout, body cap), and the Cloudflare Worker satisfies it through
 //! the fixed authenticated egress gateway. The port already performs the
 //! error-for-status check and the response body cap, so this module never sees
@@ -58,8 +58,8 @@
 //! client secret is held **sealed**; it is unsealed through a [`SecretSealer`]
 //! only at the token exchange. Production seals with
 //! [`AesGcmSealer`](aos_hub_model::auth::seal::AesGcmSealer) (AES-256-GCM, keyed by the
-//! persisted instance key); [`XorSealer`] is a deliberately **placeholder**
-//! sealer (see its docs) used only under `--dev` and in tests.
+//! persisted instance key). The deployment supplies the sealer; this module
+//! uses only its runtime-neutral interface.
 
 use std::collections::BTreeMap;
 

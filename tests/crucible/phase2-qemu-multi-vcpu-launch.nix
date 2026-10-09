@@ -404,7 +404,7 @@ in
             rejects_adaptive_rr_quantum=true
             rejects_realtime_switching=true
             scenario_hash_folds=smp_vcpus,rr_switch_quantum,rr_vcpu_rotation,cpu_model,per_vcpu_entropy,vcpu_topology
-            rust_test=crucible-qemu::deterministic_launch::multi_vcpu_round_robin_launch_is_pinned_validated_and_hashed
+            rust_test=crucible_qemu_host::deterministic_launch::multi_vcpu_round_robin_launch_is_pinned_validated_and_hashed
             RESULT
           '';
         }

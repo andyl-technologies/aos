@@ -10,7 +10,7 @@
 //! [`CLIENT_IP_HEADER`] each shell stamps on ingress rather than on a native
 //! peer socket. The OIDC flow (`/auth/sso`, `/auth/oidc/start`,
 //! `/auth/oidc/callback`, stage F) is shared too: its token exchange and JWKS
-//! fetch go through the [`HttpClient`](ports::HttpClient) port.
+//! fetch go through the [`HttpClient`] port.
 
 pub mod handlers;
 pub mod manifest;

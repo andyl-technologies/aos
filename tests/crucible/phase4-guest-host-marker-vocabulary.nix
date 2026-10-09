@@ -61,7 +61,7 @@
       }
       {
         label = "marker module implementation note";
-        needle = "`crucible-protocol::doorbell_marker`";
+        needle = "`crucible_qemu_protocol::doorbell_marker`";
       }
     ]
     ++ failuresFor "crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs" protocolLib [

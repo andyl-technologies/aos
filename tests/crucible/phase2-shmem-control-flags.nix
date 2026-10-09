@@ -198,7 +198,7 @@ in
             check=${attrPath}
             tasks=${taskList}
             gate=gate:layer1-injection
-            rust_tests=crucible-shmem::control_flags
+            rust_tests=crucible_qemu_shmem::control_flags
             pause_requested=release_store
             shutdown_requested=release_store
             control_observation=acquire_load

@@ -261,8 +261,8 @@ in
             check=${attrPath}
             tasks=${taskList}
             component=crucible-trigger
-            shared_type=crucible::Predicate
-            trigger_alias=crucible::Condition
+            shared_type=crucible_engine::Predicate
+            trigger_alias=crucible_engine::Condition
             consumers=assertion,trigger
             RESULT
           '';

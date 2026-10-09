@@ -130,7 +130,7 @@
       }
       {
         label = "plugin sink maps decoded marker payload";
-        needle = "crucible::observable_event_from_whitebox_marker_payload";
+        needle = "crucible_engine::observable_event_from_whitebox_marker_payload";
       }
       {
         label = "plugin sink appends to event log";

@@ -618,10 +618,10 @@ pub fn token_allows(
         .any(|p| p == perm)
 }
 
-/// The [`Principal`] a JWT's claims identify, if the `owner_kind` is known.
+/// The [`super::Principal`] a JWT's claims identify, if the `owner_kind` is known.
 ///
 /// Returns `None` when `claims.owner_kind` is not a recognized
-/// [`PrincipalKind`]; callers treat that as fail-closed (no principal, no
+/// [`super::PrincipalKind`]; callers treat that as fail-closed (no principal, no
 /// grants).
 #[must_use]
 pub fn claims_principal(claims: &crate::auth::jwt::Claims) -> Option<super::Principal> {

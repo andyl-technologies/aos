@@ -354,11 +354,11 @@
       }
       {
         label = "advanced search strategy mapping";
-        needle = "crucible::SearchStrategy::CoverageGuided";
+        needle = "crucible_engine::SearchStrategy::CoverageGuided";
       }
       {
         label = "coverage fuzz config mapping";
-        needle = "crucible::CoverageGuidedFuzzConfig::new";
+        needle = "crucible_engine::CoverageGuidedFuzzConfig::new";
       }
       {
         label = "local-double search runner";
@@ -610,7 +610,7 @@
       }
       {
         label = "local-double fuzz corpus persistence";
-        needle = "crucible::LocalDagStore::new";
+        needle = "crucible_engine::LocalDagStore::new";
       }
       {
         label = "local-double fuzz replay validation output";

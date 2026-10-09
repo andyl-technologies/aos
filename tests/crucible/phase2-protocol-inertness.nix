@@ -227,7 +227,7 @@ in
             check=${attrPath}
             tasks=${taskList}
             gate=gate:qemu-inert,gate:abi-conformance
-            rust_test=crucible-qemu::protocol_inertness
+            rust_test=crucible_qemu_host::protocol_inertness
             sim_off=stock-tcg-thread-single,no-control-socket,no-control-frames,no-plugin-args,no-sim-accelerator
             sim_on=shared-memory-runtime,no-runtime-control-frames,no-delivery-icounts,run-silent
             full_qemu_inert_gate=checks.crucible.phase2.gates.qemuInert

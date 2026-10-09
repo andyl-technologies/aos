@@ -207,7 +207,7 @@ in
             check=${attrPath}
             tasks=${taskList}
             gate=gate:abi-conformance
-            rust_test=crucible-protocol::golden_vectors
+            rust_test=crucible_qemu_protocol::golden_vectors
             corpus=hello,hello-ack,setup-payload,setup-ack,quit
             version_bump_rule=GOLDEN_VECTOR_PROTOCOL_VERSION==CONTROL_PROTOCOL_VERSION
             RESULT

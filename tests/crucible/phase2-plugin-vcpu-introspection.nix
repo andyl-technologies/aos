@@ -334,7 +334,7 @@ in
             rr_cursor=current-vcpu-position-and-quantum
             side_effects=S-and-T-neutral-reads
             fingerprint_input=N-vCPU-registers-plus-RR-cursor
-            protocol_snapshot=crucible-protocol::PluginNvcpuFingerprintSnapshot
+            protocol_snapshot=crucible_qemu_protocol::PluginNvcpuFingerprintSnapshot
             RESULT
           '';
         }

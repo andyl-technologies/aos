@@ -276,7 +276,7 @@ in
             check=checks.crucible.phase1.crateFeaturePowerset
             gate=gate:harness-lint
             tasks=T-CRATE-6,T-CRATE-16
-            rust_test=crucible-harness::feature_powerset
+            rust_test=crucible_test_support::feature_powerset
             RESULT
           '';
         }

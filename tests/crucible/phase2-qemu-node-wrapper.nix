@@ -363,7 +363,7 @@ in
             tasks=${taskList}
             check_scope=task-level
             related_gates=gate:scheduler-liveness,gate:control-responsive,gate:abi-conformance,gate:layer1-injection
-            rust_test=crucible-qemu::node
+            rust_test=crucible_qemu_host::node
             owner=one-child-qemu-node-wrapper
             channels=plugin-ipc-control,shmem-hot-path,qmp-machine-control
             hot_path=shared-memory-only

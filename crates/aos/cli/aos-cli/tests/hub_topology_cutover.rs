@@ -64,7 +64,9 @@ fn rust_sources(directory: &Path) -> Result<Vec<PathBuf>> {
             sources.extend(rust_sources(&path)?);
         } else if file_type.is_file()
             && path.extension().is_some_and(|extension| extension == "rs")
-            && path.file_name().is_none_or(|name| !name.to_string_lossy().ends_with("_tests.rs"))
+            && path
+                .file_name()
+                .is_none_or(|name| !name.to_string_lossy().ends_with("_tests.rs"))
         {
             sources.push(path);
         }
@@ -114,7 +116,6 @@ fn registry_mutations_are_plan_apply_only() -> Result<()> {
     }
     let mut direct_mutation_files = rust_sources(&root.join("crates/hub/aos-hub-db/src/db"))?;
     direct_mutation_files.extend([
-
         root.join("crates/hub/aos-hub-service/src/config/mod.rs"),
         root.join("crates/hub/aos-hub-service/src/web/console/handlers.rs"),
         root.join("crates/hub/aos-hub-service/src/web/console/router.rs"),
@@ -252,9 +253,8 @@ fn webhook_mutations_are_plan_apply_and_plaintext_secret_free() -> Result<()> {
         "webhook create/delete events must satisfy the final outbox vocabulary"
     );
 
-    let webhook_family = rust_source_text(
-        &root.join("crates/hub/aos-hub-service/src/service/operations/webhooks"),
-    )?;
+    let webhook_family =
+        rust_source_text(&root.join("crates/hub/aos-hub-service/src/service/operations/webhooks"))?;
     assert!(webhook_family.contains("pub async fn plan_create_webhook"));
     assert!(webhook_family.contains("pub async fn apply_delete_webhook"));
     for forbidden in ["generate_token", "secret:"] {
@@ -302,7 +302,8 @@ fn webhook_mutations_are_plan_apply_and_plaintext_secret_free() -> Result<()> {
     assert!(delivery_job.contains("delivery_id"));
     assert!(!delivery_job.contains("webhook_id") && !delivery_job.contains("event"));
 
-    let egress = fs::read_to_string(root.join("crates/hub/aos-hub-service/src/egress_protocol.rs"))?;
+    let egress =
+        fs::read_to_string(root.join("crates/hub/aos-hub-service/src/egress_protocol.rs"))?;
     assert!(egress.contains("aos-hardened-egress-v3"));
     for field in ["webhook_event", "webhook_signature", "webhook_delivery_id"] {
         assert!(egress.contains(field), "egress evidence omits {field}");
@@ -330,9 +331,8 @@ fn pin_resolution_controller_is_fail_closed_and_typed() -> Result<()> {
     assert!(!proto.contains("repeated string live_pin_impacts"));
     assert!(proto.contains("enum PinResolutionAction"));
 
-    let service = rust_source_text(
-        &root.join("crates/hub/aos-hub-service/src/service/operations/topology"),
-    )?;
+    let service =
+        rust_source_text(&root.join("crates/hub/aos-hub-service/src/service/operations/topology"))?;
     for guard in [
         "pinResolutions must contain exactly one action for every live grant pin and no extras",
         "source target for pin",
@@ -355,7 +355,8 @@ fn pin_resolution_controller_is_fail_closed_and_typed() -> Result<()> {
         assert!(service.contains(family), "missing grant family {family}");
     }
 
-    let controller = fs::read_to_string(root.join("crates/hub/aos-hub-service/src/topology_probe.rs"))?;
+    let controller =
+        fs::read_to_string(root.join("crates/hub/aos-hub-service/src/topology_probe.rs"))?;
     for invariant in [
         "consumer_scope_grant_revocation",
         "source route changed before grant revocation",
@@ -712,8 +713,7 @@ fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
         .find(|candidate| {
-            candidate.join("default.nix").is_file()
-                && candidate.join("crates/Cargo.toml").is_file()
+            candidate.join("default.nix").is_file() && candidate.join("crates/Cargo.toml").is_file()
         })
         .expect("Hub cutover fixtures must run from the AOS repository")
         .to_path_buf()

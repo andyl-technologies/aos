@@ -257,7 +257,7 @@
       }
       {
         label = "canonical model scanned for wall-clock";
-        needle = "include_str!(\"../../../../crucible/src/model.rs\")";
+        needle = "include_str!(\"../../../../../engine/crucible-engine/src/model.rs\")";
       }
       {
         label = "canonical session scanned for wall-clock";

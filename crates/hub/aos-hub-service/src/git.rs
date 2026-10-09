@@ -4,7 +4,7 @@
 //! Half of a registry's configuration — `registry.toml`, `keys.toml`,
 //! `packages/` — lives in a committed git tree the hub indexes and the WebUI
 //! shows. This module reads that tree through the surface-read port
-//! ([`SurfaceFetch`](crate::fetch::SurfaceFetch)) without the git CLI: it
+//! ([`SurfaceFetch`]) without the git CLI: it
 //! inflates and hash-verifies loose objects with the pure parsers in
 //! [`aos_registry_format::object`], walks `commit → tree → blob`, and renders
 //! the commit log, config diffs, and the change-request views the
@@ -110,7 +110,7 @@ pub struct LoggedCommit {
     pub parents: Vec<String>,
     /// Commit message body.
     pub message: String,
-    /// Committer identity ("Name <email>").
+    /// Committer identity (`Name <email>`).
     pub author: String,
     /// Committer Unix timestamp.
     pub when: i64,

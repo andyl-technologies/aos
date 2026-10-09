@@ -244,7 +244,7 @@ impl S3Surface {
     /// when the binding is private.
     ///
     /// `now` is the current Unix time in seconds (the signing timestamp); the URL
-    /// is valid for [`PRESIGN_TTL_SECS`]. A public binding returns an unsigned
+    /// is valid for `PRESIGN_TTL_SECS`. A public binding returns an unsigned
     /// direct `GET` URL and refuses mutating methods.
     ///
     /// # Errors

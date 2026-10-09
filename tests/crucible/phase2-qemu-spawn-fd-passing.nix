@@ -347,7 +347,7 @@ in
             tasks=${taskList}
             check_scope=task-level
             related_gates=gate:abi-conformance,gate:control-responsive
-            rust_test=crucible-qemu::spawn::tests
+            rust_test=crucible_qemu_host::spawn::tests
             target=linux
             control_fd=3
             shmem_fd=4

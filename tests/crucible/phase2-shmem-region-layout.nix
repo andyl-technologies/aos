@@ -417,7 +417,7 @@ in
             tasks=${taskList}
             gate=gate:abi-conformance
             gate=gate:layer1-injection
-            rust_tests=crucible-shmem::region_layout
+            rust_tests=crucible_qemu_shmem::region_layout
             layout_target=x86_64-unknown-linux-gnu
             max_nodes_escape=false
             region_header=true

@@ -470,7 +470,7 @@ in
             tasks=${taskList}
             gate=gate:state-space-search
             search=frontier-realized,content-address-dedup,budget-materialized
-            rust_test=crucible::gate_state_space_search
+            rust_test=crucible_engine::gate_state_space_search
             RESULT
           '';
         }

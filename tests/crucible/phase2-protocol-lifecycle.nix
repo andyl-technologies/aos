@@ -328,7 +328,7 @@ in
             check=${attrPath}
             tasks=${taskList}
             gates=gate:abi-conformance,gate:control-responsive
-            rust_tests=crucible-protocol::lifecycle,crucible-protocol::gate_layer1_injection
+            rust_tests=crucible_qemu_protocol::lifecycle,crucible_qemu_protocol::gate_layer1_injection
             lifecycle=connect,Hello,HelloAck,Setup,SetupAck,run-via-shmem,Quit
             run_control_channel=silent-until-Quit
             transport=connected-Unix-stream-socket-pair

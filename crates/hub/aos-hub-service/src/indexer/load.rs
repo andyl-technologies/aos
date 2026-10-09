@@ -10,7 +10,7 @@
 //! [`aos_registry_format::manifest`] schema/parsers, so the hub, the Worker,
 //! and `apm` cannot drift on what they accept.
 //!
-//! This module is pure logic over the [`SurfaceFetch`](crate::fetch::SurfaceFetch)
+//! This module is pure logic over the [`SurfaceFetch`]
 //! port and the dependency-light surface reader; it pulls in no async runtime,
 //! filesystem, or HTTP client and compiles to `wasm32-unknown-unknown` (RFC-0004
 //! Phase 5).

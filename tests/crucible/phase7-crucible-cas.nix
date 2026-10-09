@@ -39,24 +39,24 @@
     ]
     ++ failuresFor "crates/Cargo.toml" (builtins.readFile ../../crates/Cargo.toml) [
       {
-        label = "crucible-cas workspace member";
-        needle = "\"crucible-cas\"";
+        label = "crucible-store workspace member";
+        needle = "\"crucible/storage/crucible-store\"";
       }
       {
         label = "crucible-cas workspace dependency";
-        needle = "crucible-cas = { path = \"crucible-cas\" }";
+        needle = "crucible-store = { path = \"crucible/storage/crucible-store\" }";
       }
     ]
     ++ failuresFor "pkgs/tools/crucible/_packages.nix" (builtins.readFile ../../pkgs/tools/crucible/_packages.nix) [
       {
         label = "crucible-cas package inventory member";
-        needle = "\"crucible-cas\"";
+        needle = "\"crucible-store\"";
       }
     ]
     ++ failuresFor "crates/crucible/storage/crucible-store/Cargo.toml" (builtins.readFile ../../crates/crucible/storage/crucible-store/Cargo.toml) [
       {
         label = "crucible-cas package name";
-        needle = "name = \"crucible-cas\"";
+        needle = "name = \"crucible-store\"";
       }
       {
         label = "BLAKE3 dependency";

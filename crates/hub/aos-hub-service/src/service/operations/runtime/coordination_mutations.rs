@@ -96,7 +96,7 @@ impl RpcService {
     /// [`keymap::content_type`]/[`keymap::cache_control`].
     ///
     /// Reads follow registry visibility exactly as the other read RPCs do (see
-    /// [`Self::require_read`]): a `public` registry serves anonymously, while an
+    /// `Self::require_read`): a `public` registry serves anonymously, while an
     /// `internal`/`private` registry requires a bearer JWT granting
     /// [`Permission::Read`] on the registry scope — so the read primitive never
     /// discloses a hidden registry's bytes to an unauthorized caller.

@@ -303,7 +303,7 @@ in
             gate=gate:search-reductions
             reductions=symmetry,partial-order
             scope=content-addressed-dag-node-dedup
-            rust_test=crucible::gate_search_reductions
+            rust_test=crucible_engine::gate_search_reductions
             RESULT
           '';
         }

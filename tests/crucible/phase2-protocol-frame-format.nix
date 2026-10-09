@@ -196,7 +196,7 @@ in
             check=${attrPath}
             tasks=${taskList}
             gate=gate:abi-conformance
-            rust_tests=crucible-protocol::frame_format
+            rust_tests=crucible_qemu_protocol::frame_format
             frame=[u32-be-length][u8-tag][payload]
             max_frame_size=64
             tags=Setup:0x01,SetupAck:0x02,Quit:0x12,Hello:0xF0,HelloAck:0xF1

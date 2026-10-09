@@ -51,7 +51,7 @@ pub struct IdpConfigRecord {
 
 /// A validated provisioning token: who owns it and what it may do.
 ///
-/// Produced by [`Database::validate_token`] after a secret checks out
+/// Produced by the database token validator after a secret checks out
 /// (hash matches, not expired, not hard-revoked, and — if rotated — still
 /// inside the rotation grace window). The `scope`/`permissions` here are
 /// the token's *own* grants. The RPC plane additionally intersects them

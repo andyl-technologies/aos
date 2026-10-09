@@ -152,7 +152,7 @@ in
             gate=gate:harness-lint
             tasks=T-CRATE-15
             forbidden_prefixes=ratchet-,aos-nix-
-            seam=crucible-sim::content-addressing
+            seam=crucible_determinism::content-addressing
             RESULT
           '';
         }

@@ -339,7 +339,7 @@ in
             evidence_scope=decision-recorder-model
             crate=crucible
             recorder=DecisionRecorder
-            rng_source=crucible-sim::DecisionRng
+            rng_source=crucible_determinism::DecisionRng
             app_random_source=single-seeded-decision-rng
             app_random_stream_fork=per-node-stream-name
             app_random_records=RngDraw+Selection

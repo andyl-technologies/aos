@@ -332,7 +332,7 @@ in
             component=crucible-scheduler
             ordering_path=no-unordered-map-set-default-random-hasher
             custom_static_tier=hash-iteration,default-random-hasher
-            rust_tests=crucible-harness::harness_lint-focused,crucible::scheduler_event_order
+            rust_tests=crucible_test_support::harness_lint-focused,crucible_engine::scheduler_event_order
             RESULT
           '';
         }

@@ -17,7 +17,7 @@ pub struct RegistryRecord {
     ///
     /// For phase-1 unowned registries this is a flat slug (`"cdn"`); for
     /// phase-2 managed registries it is the full canonical path
-    /// (`"acme/infra/prod/cdn"`) — see the [module docs](self).
+    /// (`"acme/infra/prod/cdn"`) — see the [`crate::db`] module documentation.
     pub slug: String,
     /// Pinned trust anchors in `name:Ed25519:<base64>` form.
     pub trust_keys: Vec<String>,

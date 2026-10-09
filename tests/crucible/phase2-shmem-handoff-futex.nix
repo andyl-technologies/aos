@@ -255,7 +255,7 @@ in
             tasks=${taskList}
             gate=gate:layer1-injection
             gate=gate:abi-conformance
-            rust_tests=crucible-shmem::advance_ceiling_handoff
+            rust_tests=crucible_qemu_shmem::advance_ceiling_handoff
             advance_ceiling=release-store-acquire-load
             publish_gen=seqlock
             futex=non-private

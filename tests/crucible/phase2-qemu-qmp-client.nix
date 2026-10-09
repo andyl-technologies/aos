@@ -147,7 +147,7 @@
       }
       {
         label = "checkpoint model import";
-        needle = "use crucible::{Checkpoint, ContentHash}";
+        needle = "use crucible_engine::{Checkpoint, ContentHash}";
       }
     ]
     ++ forbiddenFor "crates/crucible/qemu/crucible-qemu-host/src/qmp*.rs" qmpSurface [
@@ -260,7 +260,7 @@ in
             tasks=${taskList}
             check_scope=task-level
             related_gates=gate:control-responsive,gate:replay-oracle,gate:content-address
-            rust_test=crucible-qemu::qmp
+            rust_test=crucible_qemu_host::qmp
             commands=qmp_capabilities,snapshot-save,crucible-checkpoint-restore,snapshot-delete,query-jobs,crucible-hot-fork-plugin-barrier,crucible-hot-fork-rcu-barrier,crucible-hot-fork-async-worker-barrier,crucible-hot-fork-block-barrier,crucible-hot-fork-template,crucible-hot-fork-private-rings,query-crucible-hot-fork-plugin-resource-inventory,quit
             client_api=connect-with-policies-and-typed-bounded-commands
             capabilities=oob-required

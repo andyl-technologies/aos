@@ -219,7 +219,7 @@ in
             tasks=${builtins.concatStringsSep "," taskIds}
             canonical_gates=${toString (builtins.length catalogGates)}
             phase_gate_targets=${toString (builtins.length phaseGateTargets)}
-            rust_test=crucible-harness::gate_catalog
+            rust_test=crucible_test_support::gate_catalog
             RESULT
           '';
         }

@@ -435,7 +435,7 @@ in
             tasks=${taskList}
             check_scope=task-level
             related_gates=gate:content-address,gate:single-vm-fingerprint,gate:layer0-determinism
-            rust_test=crucible-qemu::deterministic_launch
+            rust_test=crucible_qemu_host::deterministic_launch
             launch_builder=typed
             qemu_binary=AOS-store-path-required
             plugin_path=AOS-store-path-required

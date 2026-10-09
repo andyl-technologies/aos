@@ -367,7 +367,7 @@ in
             check=${attrPath}
             gate=gate:divergence-bisect
             tasks=${builtins.concatStringsSep "," taskIds}
-            rust_test=crucible-harness::gate_divergence_bisect
+            rust_test=crucible_test_support::gate_divergence_bisect
             localization=coarse-fingerprint-plus-exact-icount-bisection
             oracle_failure_localization=fat-thin-divergence-bisection
             replay_oracle_search_bisection=sampled-mismatch-localized

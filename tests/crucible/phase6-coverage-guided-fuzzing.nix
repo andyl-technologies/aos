@@ -257,7 +257,7 @@
       }
       {
         label = "accepted schedule override observation";
-        needle = "matches!(decision, crucible::Decision::Override(_))";
+        needle = "matches!(decision, crucible_engine::Decision::Override(_))";
       }
       {
         label = "accepted schedule replay closure validation";

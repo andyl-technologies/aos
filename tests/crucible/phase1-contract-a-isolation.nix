@@ -262,7 +262,7 @@ in
             check=checks.crucible.phase1.contractAIsolation
             gate=gate:layer0-determinism
             tasks=T-DET-7,T-DET-28
-            driver=crucible-sim::contract_a::ContractADriver
+            driver=crucible_determinism::contract_a::ContractADriver
             inputs=icount-stamped-recorded-list
             live_scheduler_transport=false
             rr_vcpu_cursor=fixed-content-addressed
@@ -271,7 +271,7 @@ in
             aggregate_icount_trajectory=bit-identical-across-runs
             fingerprint_key=node-aggregate-icount
             recorded_inputs_enforced=monotonic-within-run
-            rust_test=crucible-sim::contract_a
+            rust_test=crucible_determinism::contract_a
             status=contract-a-isolated-single-vm-and-multi-vcpu-model
             RESULT
           '';

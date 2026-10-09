@@ -173,7 +173,7 @@ impl RpcService {
 
     /// `RegistryService.ListRegistries` — the registries the caller may read.
     ///
-    /// Visibility-filters every record through [`Self::can_read`]: anonymous
+    /// Visibility-filters every record through `Self::can_read`: anonymous
     /// callers see the public slice, members additionally see their orgs'
     /// registries; hidden records are dropped, not errored.
     ///

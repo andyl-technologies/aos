@@ -1351,7 +1351,7 @@ impl RpcService {
 
     /// Upload one part (`part_number`, 1-based) of the in-progress multipart
     /// upload `upload_id` for `(slug, path)`, returning its
-    /// [`PartTag`](crate::surface_write::PartTag).
+    /// [`PartTag`].
     ///
     /// Re-authorizes the caller and rebuilds the backend writer, then streams
     /// the single sub-cap part straight to the backend — peak memory is one part.

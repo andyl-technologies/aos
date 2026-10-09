@@ -203,7 +203,7 @@ in
             check=${attrPath}
             tasks=${taskList}
             ladder=exact-determinism,save-restore,fork,search,coverage-feedback,fuzzing
-            rust_test=crucible-harness::phase_plan::advanced_feature
+            rust_test=crucible_test_support::phase_plan::advanced_feature
             RESULT
           '';
         }

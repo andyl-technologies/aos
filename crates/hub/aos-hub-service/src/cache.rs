@@ -3,7 +3,7 @@
 //! Phase C moves the request hot path's point-key lookups — sessions, API
 //! tokens, instance config, the host→registry routing table, trust rosters —
 //! off the relational `Backend` (which carries a per-request session
-//! cost) and in front of a [`KvStore`](crate::kv::KvStore). The pattern is
+//! cost) and in front of a [`KvStore`]. The pattern is
 //! **cache-aside / read-through with write-through**: look the key up in KV,
 //! and on a miss load it from the database and populate KV with a short TTL, so
 //! the next request is served from the edge-cached store.

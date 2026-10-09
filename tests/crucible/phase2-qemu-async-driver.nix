@@ -470,7 +470,7 @@ in
             lifecycle_awaits=handshake-qmp-process-event-bounded
             qmp_io=read-write-timeouts-required
             node_path=advance-to-ceiling-uses-bounded-driver
-            rust_tests=crucible-qemu::async_driver::tests,node::tests,qmp
+            rust_tests=crucible_qemu_host::async_driver::tests,node::tests,qmp
             RESULT
           '';
         }

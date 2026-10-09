@@ -4,7 +4,7 @@
 //! one code path on both deployment targets, **identically branded, searchable,
 //! session-aware, and private-visibility-aware**. These functions sit one level
 //! below the transport: each takes the shared
-//! [`RpcService`](crate::service::RpcService) and the request's headers/query,
+//! [`RpcService`] and the request's headers/query,
 //! resolves the caller's session (so a member sees their org's internal and any
 //! granted-private registries while an anonymous visitor sees public only),
 //! reads the rich [`db`](aos_hub_db::db) record types, and returns a [`Rendered`]
@@ -64,7 +64,7 @@
 //! the control-plane router it attaches the host's enabled routes as a
 //! [`HostRoutes`]; the hub home then badges registries without a ready route
 //! on this host, and the registry home explains why (see
-//! [`host_delivery`](crate::web::host_delivery)). Content negotiation keeps a
+//! [`host_delivery`]). Content negotiation keeps a
 //! registry with no enabled route on this host a `404` for machine clients.
 
 use aos_hub_model::clock::Instant;

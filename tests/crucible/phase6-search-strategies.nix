@@ -360,7 +360,7 @@ in
             tasks=${taskList}
             gate=gate:search-strategies
             strategy=bfs,dfs,priority,coverage-guided
-            rust_test=crucible::gate_search_strategies
+            rust_test=crucible_engine::gate_search_strategies
             RESULT
           '';
         }

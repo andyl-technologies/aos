@@ -13,7 +13,7 @@ impl RpcService {
     /// hit. Expiry is still enforced exactly: the cached `expires_at` is
     /// re-checked against the current clock, so an expired session is never
     /// served from cache even within the TTL window. Revocation lag is bounded
-    /// to the TTL (≤60 s) plus any explicit [`invalidate_session_cache`] on
+    /// to the TTL (≤60 s) plus any explicit [`RpcService::invalidate_session_cache`] on
     /// logout — the eventual-consistency contract this tier accepts.
     ///
     /// With no `kv` attached this is exactly

@@ -54,7 +54,7 @@ pub struct EmailContent {
 /// case rather than emitting "Sign in to ".
 const DEFAULT_BRAND: &str = "the registry hub";
 
-/// Returns `brand` if non-empty, otherwise the [`DEFAULT_BRAND`] fallback.
+/// Returns `brand` if non-empty, otherwise the `DEFAULT_BRAND` fallback.
 fn brand_or_default(brand: &str) -> &str {
     if brand.is_empty() {
         DEFAULT_BRAND
@@ -65,7 +65,7 @@ fn brand_or_default(brand: &str) -> &str {
 
 /// Renders the magic-link sign-in email.
 ///
-/// `brand` is the hub's display name (empty falls back to [`DEFAULT_BRAND`]);
+/// `brand` is the hub's display name (empty falls back to `DEFAULT_BRAND`);
 /// `link_url` is the fully-formed single-use sign-in URL. The HTML body offers a
 /// styled button to `link_url` and notes that the link expires in 15 minutes and
 /// can be ignored if unexpected; the plaintext body carries the URL verbatim.
@@ -114,7 +114,7 @@ pub fn magic_link_email(brand: &str, link_url: &str) -> EmailContent {
 
 /// Renders the org-invite notification email.
 ///
-/// `brand` is the hub's display name (empty falls back to [`DEFAULT_BRAND`]);
+/// `brand` is the hub's display name (empty falls back to `DEFAULT_BRAND`);
 /// `org_slug` and `role` identify the org the recipient was added to and the
 /// role they were granted; `link_url` is a fully-formed sign-in URL to the
 /// console. The bodies explain the grant and offer the sign-in link;

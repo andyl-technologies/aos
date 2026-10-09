@@ -126,11 +126,11 @@
     ++ failuresFor "crates/crucible/guest/crucible-guest/Cargo.toml" guestCargo [
       {
         label = "guest depends on protocol ABI";
-        needle = "crucible-protocol = { path = \"../crucible-protocol\" }";
+        needle = "crucible-qemu-protocol = { path = \"../../protocol/crucible-qemu-protocol\" }";
       }
       {
         label = "guest depends on shared typed choice model";
-        needle = "crucible-campaign = { path = \"../crucible-campaign\" }";
+        needle = "crucible-campaign = { path = \"../../engine/crucible-campaign\" }";
       }
     ]
     ++ failuresFor "crates/crucible/guest/crucible-guest/src/lib.rs" guestLib [
@@ -174,7 +174,7 @@
     ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhiteboxDoorbell [
       {
         label = "plugin re-exports protocol ABI";
-        needle = "pub use crucible_protocol";
+        needle = "pub use crucible_qemu_protocol";
       }
       {
         label = "x86 trap value";
@@ -319,7 +319,7 @@ in
             instruction_abi_version=4
             x86_64_doorbell_bytes=e6-e7
             aarch64_doorbell_bytes=9f2903d5
-            abi_source=crucible-protocol::doorbell_abi::WHITEBOX_DOORBELL_ABIS
+            abi_source=crucible_qemu_protocol::doorbell_abi::WHITEBOX_DOORBELL_ABIS
             RESULT
           '';
         }

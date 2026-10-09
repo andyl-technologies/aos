@@ -173,11 +173,11 @@
     ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/Cargo.toml" pluginCargo [
       {
         label = "plugin depends on protocol";
-        needle = "crucible-protocol = { path = \"../crucible-protocol\" }";
+        needle = "crucible-qemu-protocol = { path = \"../../protocol/crucible-qemu-protocol\" }";
       }
       {
         label = "plugin depends on shmem";
-        needle = "crucible-shmem = { path = \"../crucible-shmem\" }";
+        needle = "crucible-qemu-shmem = { path = \"../../protocol/crucible-qemu-shmem\" }";
       }
     ]
     ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs" pluginLib [
@@ -378,7 +378,7 @@ in
             check=${attrPath}
             tasks=${taskList}
             gates=gate:abi-conformance,gate:control-responsive
-            rust_tests=crucible-protocol::setup_completion,crucible-shmem::setup_validation,crucible-qemu-plugin::setup,crucible-qemu-plugin::time_control
+            rust_tests=crucible_qemu_protocol::setup_completion,crucible_qemu_shmem::setup_validation,crucible-qemu-plugin::setup,crucible-qemu-plugin::time_control
             setup_region=mmap-region_len
             setup_header_validation=REGION_MAGIC+ABI_VERSION+region_size
             wake_fd_order=armed-before-SetupAck

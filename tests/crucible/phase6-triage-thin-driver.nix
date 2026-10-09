@@ -214,7 +214,7 @@
       }
       {
         label = "markdown format support";
-        needle = "Markdown => crucible::FailureClusterReportFormat::Markdown";
+        needle = "Markdown => crucible_engine::FailureClusterReportFormat::Markdown";
       }
       {
         label = "triage planner";
@@ -230,7 +230,7 @@
       }
       {
         label = "local DagStore open";
-        needle = "crucible::LocalDagStore::new";
+        needle = "crucible_engine::LocalDagStore::new";
       }
       {
         label = "ledger loader";
@@ -238,11 +238,11 @@
       }
       {
         label = "real clustering call";
-        needle = "crucible::FailureClusteringResult::from_findings";
+        needle = "crucible_engine::FailureClusteringResult::from_findings";
       }
       {
         label = "real result assembly";
-        needle = "crucible::FailureTriageResult::from_parts";
+        needle = "crucible_engine::FailureTriageResult::from_parts";
       }
       {
         label = "result store call";

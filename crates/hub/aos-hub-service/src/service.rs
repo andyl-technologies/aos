@@ -1521,7 +1521,7 @@ pub struct RpcService {
     /// `CreateOrg` per principal.
     pub ratelimit: Arc<dyn RateLimiter>,
     /// The per-registry surface-read port (the [`SurfaceProvider`]), resolving a
-    /// [`SurfaceFetch`](crate::fetch::SurfaceFetch) for the `GitService` reads.
+    /// [`SurfaceFetch`] for the `GitService` reads.
     ///
     /// The native hub resolves a filesystem or HTTP fetcher per the registry's
     /// binding; the Worker returns an R2-backed fetcher scoped to the

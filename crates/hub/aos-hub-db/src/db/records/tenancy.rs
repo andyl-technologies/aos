@@ -24,7 +24,7 @@ pub struct OrgRecord {
 /// Mirrors the `org_quotas` row. Every cap is optional: `None` means *that*
 /// dimension is unlimited (an org with no `org_quotas` row at all is
 /// unlimited on every dimension). Quotas are enforced at typed upload admission
-/// (bytes/objects, via [`Database::would_exceed_quota`]) and in the
+/// (bytes/objects, via [`crate::db::Database::would_exceed_quota`]) and in the
 /// registry/token create paths (counts).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OrgQuota {
@@ -41,7 +41,7 @@ pub struct OrgQuota {
 /// Per-org running usage totals (system-of-record row).
 ///
 /// Mirrors the `org_usage` row. The totals are maintained incrementally on
-/// each upload ([`Database::add_org_usage`]) and are *approximate* — they
+/// each upload ([`crate::db::Database::add_org_usage`]) and are *approximate* — they
 /// count bytes as written, so a deleted object's bytes linger until a
 /// re-index/GC reconciliation (a later refinement) rebuilds them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -57,7 +57,7 @@ pub struct OrgUsage {
 /// The instance-wide policy gating who may create organizations.
 ///
 /// Stored in `instance_config` under the key `signup_policy`; see
-/// [`Database::signup_policy`]. The default is [`SignupPolicy::InviteOnly`]
+/// [`crate::db::Database::signup_policy`]. The default is [`SignupPolicy::InviteOnly`]
 /// (the hosted-instance posture: free hub-managed storage behind open signup
 /// is an abuse magnet).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]

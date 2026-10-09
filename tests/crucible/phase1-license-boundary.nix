@@ -343,7 +343,7 @@ in
           check=${attrPath}
           gate=gate:license-boundary
           tasks=${builtins.concatStringsSep "," taskIds}
-          rust_test=crucible-harness::gate_license_boundary
+          rust_test=crucible_test_support::gate_license_boundary
           controller_package=crucible-controller
           controller_license=Apache-2.0
           qemu_corresponding_source_package=qemu-crucible-source

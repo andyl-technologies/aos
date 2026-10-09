@@ -50,7 +50,7 @@ impl RpcService {
     /// each to the surface and updates the index in one round-trip, so a bulk
     /// push is bounded by direct-to-origin NAR throughput rather than per-object
     /// Worker round-trips. Each narinfo goes through the same admitted write
-    /// path as [`Self::write_cache_object`]: auth, server-side signing for a
+    /// path as `Self::write_cache_object`: auth, server-side signing for a
     /// key-bearing cache, surface write, quota, and index write-through.
     ///
     /// # Errors
@@ -79,7 +79,7 @@ impl RpcService {
     ///
     /// Breadth-first over `cache_objects.refs` from `store_hash` (root first); a
     /// reference absent from the cache appears with `present = false`. Bounded at
-    /// [`MAX_CLOSURE_NODES`] to keep the response finite.
+    /// `MAX_CLOSURE_NODES` to keep the response finite.
     ///
     /// # Errors
     ///
@@ -174,7 +174,7 @@ impl RpcService {
     /// and the Worker stream NAR/narinfo through the *same* code: visibility gate
     /// → generated `nix-cache-info` → placement selection/failover → a
     /// streaming body from
-    /// [`SurfaceFetch::fetch_stream`](crate::fetch::SurfaceFetch::fetch_stream)
+    /// [`SurfaceFetch::fetch_stream`]
     /// honoring `Range:` (`206` + `Content-Range`). Each shell's fetcher supplies
     /// the stream (native: a `tokio` file `ReaderStream`; Worker: an R2 ranged
     /// GET), so a large NAR never buffers into memory on either.

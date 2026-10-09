@@ -47,7 +47,7 @@
     ++ failuresFor "crates/crucible/testing/crucible-test-support/src/lib.rs" harnessLib [
       {
         label = "implemented canonical e2e gate";
-        needle = "name: \"gate:e2e-determinism\",\n        phase: GatePhase::Phase4,\n        owner: \"crucible-harness\",\n        status: GateStatus::Implemented,";
+        needle = "name: \"gate:e2e-determinism\",\n        phase: GatePhase::Phase4,\n        owner: \"crucible-test-support\",\n        status: GateStatus::Implemented,";
       }
     ]
     ++ failuresFor "tests/crucible/_e2e-determinism-native-runner.sh" nativeRunnerSource [

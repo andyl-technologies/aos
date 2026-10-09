@@ -31,7 +31,7 @@ pub struct WebhookRecord {
 
 /// A due delivery joined with its webhook's URL and signing-secret reference.
 ///
-/// Produced by [`Database::claim_due_deliveries`]; a delivery runtime resolves
+/// Produced by [`crate::db::Database::claim_due_deliveries`]; a delivery runtime resolves
 /// the exact secret version only while signing the payload to `POST`.
 #[derive(Clone)]
 pub struct DueDelivery {

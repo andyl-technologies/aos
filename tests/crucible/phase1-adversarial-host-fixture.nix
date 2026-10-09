@@ -201,7 +201,7 @@ in
             tasks=${builtins.concatStringsSep "," taskIds}
             fixture=canonical-host-adversary-matrix
             dimensions=seeded-scheduling,seeded-affinity,bounded-seeded-work-yield,core-counts,producer-consumer-skew
-            rust_tests=crucible-harness::adversarial_host_fixture
+            rust_tests=crucible_test_support::adversarial_host_fixture
             RESULT
           '';
         }

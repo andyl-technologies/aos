@@ -27,7 +27,7 @@
 //! An empty request body is accepted and decoded as the default message (the
 //! Connect convention for no-argument calls). The bearer JWT, when present,
 //! rides in the `Authorization` header and is verified inside
-//! [`RpcService`](crate::service::RpcService); these handlers are pure
+//! [`RpcService`]; these handlers are pure
 //! transport glue.
 
 mod instance_oci;
@@ -1850,7 +1850,7 @@ async fn dispatch_route(
 /// typed delivery handler). The middleware captures `service` directly, so it composes
 /// regardless of the wrapped router's axum state type.
 ///
-/// Native-only (see [`dispatch_route`]); the Worker bridges
+/// Native-only (see `dispatch_route`); the Worker bridges
 /// [`rewrite_for_route`] directly.
 #[cfg(not(target_arch = "wasm32"))]
 #[must_use]

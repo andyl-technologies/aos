@@ -289,7 +289,7 @@ in
             check=${attrPath}
             tasks=${taskList}
             restore=replay-from-seed,snapshot-restore
-            rust_test=crucible::gate_restore_strategies
+            rust_test=crucible_engine::gate_restore_strategies
             RESULT
           '';
         }

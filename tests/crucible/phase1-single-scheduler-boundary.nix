@@ -125,7 +125,7 @@ in
             PASS
             check=checks.crucible.phase1.singleSchedulerBoundary
             tasks=T-ARCH-5
-            rust_test=crucible-harness::single_scheduler_boundary
+            rust_test=crucible_test_support::single_scheduler_boundary
             engine_boundary=crucible_engine::scheduler::QuantumLoop
             session_driver=crucible_session::SessionDriver
             RESULT

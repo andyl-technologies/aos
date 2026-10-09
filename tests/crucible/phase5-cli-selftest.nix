@@ -48,7 +48,7 @@
     ++ failuresFor "crates/crucible/control/crucible-cli/Cargo.toml" cliManifest [
       {
         label = "CLI dev-tests against canonical gate catalog";
-        needle = "crucible-harness = { path = \"../crucible-harness\" }";
+        needle = "crucible-test-support = { path = \"../../testing/crucible-test-support\" }";
       }
     ]
     ++ failuresFor "crates/crucible/control/crucible-cli/src/main.rs" cliMain [
@@ -84,7 +84,7 @@
       }
       {
         label = "dev-test canonical gate catalog source";
-        needle = "crucible_harness::canonical_gates()";
+        needle = "crucible_test_support::canonical_gates()";
       }
       {
         label = "selftest gate planner";
@@ -108,7 +108,7 @@
       }
       {
         label = "built-in corpus runner";
-        needle = "crucible::built_in_example_corpus";
+        needle = "crucible_engine::built_in_example_corpus";
       }
       {
         label = "corpus manifest loader";

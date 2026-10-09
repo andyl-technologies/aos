@@ -398,7 +398,7 @@ in
             plugin_rx=direct-delivery-with-canonical-shmem-retention
             plugin_device_io=device_io_active-submit-clear-release-wake
             plugin_idle_loop=device_io_freeze-and-rx-injection
-            rust_tests=crucible-qemu::quantum::tests,crucible-qemu-plugin::inbound/network_rx/device_io/idle_loop::tests
+            rust_tests=crucible_qemu_host::quantum::tests,crucible-qemu-plugin::inbound/network_rx/device_io/idle_loop::tests
             RESULT
           '';
         }

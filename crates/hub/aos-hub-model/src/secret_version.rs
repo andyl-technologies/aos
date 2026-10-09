@@ -1,7 +1,7 @@
 //! Runtime resolution of immutable provider-managed secret versions.
 //!
-//! Control-plane records carry only an opaque [`SecretVersionRef`]-shaped
-//! string and a required SHA-256 fingerprint. Platform adapters resolve the
+//! Control-plane records carry only an opaque provider-managed version
+//! reference and a required SHA-256 fingerprint. Platform adapters resolve the
 //! reference at the last possible moment; plaintext is never represented in a
 //! plan, API response, revision, audit record, or topology event.
 

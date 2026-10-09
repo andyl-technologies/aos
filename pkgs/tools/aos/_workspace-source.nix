@@ -37,6 +37,7 @@ in
     filter = path: type: let
       pathString = toString path;
       base = baseNameOf path;
+      daemonRunState = "${cratesRoot}/crucible/control/crucible-daemon/run-state";
       generatedDir =
         type
         == "directory"
@@ -98,5 +99,7 @@ in
         || pathString == "${repoRootString}/justfile";
     in
       !generatedDir
+      && pathString != daemonRunState
+      && !lib.hasPrefix "${daemonRunState}/" pathString
       && (workspaceInput || (includeIntegrationInputs && integrationInput));
   }

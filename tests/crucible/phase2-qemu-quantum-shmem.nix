@@ -294,7 +294,7 @@ in
             qmp_per_quantum=forbidden
             plugin_ipc_per_quantum=forbidden
             exact_injection_contract=qemu-level
-            rust_tests=crucible-qemu::quantum::tests
+            rust_tests=crucible_qemu_host::quantum::tests
             RESULT
           '';
         }

@@ -31,7 +31,7 @@
       }
       {
         label = "protocol Quit dependency";
-        needle = "crucible-protocol = { path = \"../crucible-protocol\" }";
+        needle = "crucible-qemu-protocol = { path = \"../../protocol/crucible-qemu-protocol\" }";
       }
     ]
     ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/lib.rs" qemuLib [
@@ -297,8 +297,8 @@ in
             check=${attrPath}
             tasks=${taskList}
             gate=gate:control-responsive
-            rust_test=crucible-qemu::shutdown
-            real_qemu_proof=crucible-qemu::shutdown::unix_adapter_reaps_real_qemu_child_when_polite_channels_fail
+            rust_test=crucible_qemu_host::shutdown
+            real_qemu_proof=crucible_qemu_host::shutdown::unix_adapter_reaps_real_qemu_child_when_polite_channels_fail
             order=Quit,QMP-quit,SIGTERM,SIGKILL,reap
             no_leak=real-qemu-child-reaped
             RESULT

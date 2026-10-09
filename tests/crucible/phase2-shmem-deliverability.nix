@@ -210,7 +210,7 @@ in
             gate=gate:layer1-injection
             gate=gate:content-address
             gate=gate:divergence-bisect
-            rust_tests=crucible-shmem::icount_stamped_injection,crucible-shmem::lookahead_gate
+            rust_tests=crucible_qemu_shmem::icount_stamped_injection,crucible_qemu_shmem::lookahead_gate
             deliverability=delivery_icount_lte_current_icount
             deterministic_order=delivery_icount,src_node,seq
             late_enqueue_policy=fail_loudly

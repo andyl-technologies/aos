@@ -194,7 +194,7 @@ impl Database {
     /// Hard-delete a cache row, cascading its links/policy/roots/objects/usage/runs.
     ///
     /// Does not remove the cache's surface content on the storage backend (that
-    /// lives outside SQL), mirroring [`Database::delete_registry`]. Returns
+    /// lives outside SQL). Returns
     /// `false` if no cache has `id`.
     ///
     /// # Errors

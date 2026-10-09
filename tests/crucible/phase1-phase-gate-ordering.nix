@@ -202,7 +202,7 @@ in
             PASS
             check=${attrPath}
             tasks=${builtins.concatStringsSep "," taskIds}
-            rust_test=crucible-harness::phase_plan
+            rust_test=crucible_test_support::phase_plan
             phase_gate_ordering=green-before-advance
             terminal_gate=gate:signal-fault-system
             sim_double_available=phase1

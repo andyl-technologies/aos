@@ -209,7 +209,7 @@ in
             check=${attrPath}
             tasks=${taskList}
             gate=gate:abi-conformance
-            rust_tests=crucible-protocol::handshake
+            rust_tests=crucible_qemu_protocol::handshake
             handshake=Hello,HelloAck
             proto_negotiation=exact-current-version
             abi_check=exact

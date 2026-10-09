@@ -22,11 +22,8 @@
   };
   sessionExplorationForkTest = builtins.readFile ../../crates/crucible/control/crucible-session/tests/gate_exploration_fork.rs;
   sessionExplorationLifecycleTest = builtins.readFile ../../crates/crucible/control/crucible-session/tests/gate_exploration_lifecycle.rs;
-  apiManifest = builtins.concatStringsSep "\n" [
-    (builtins.readFile ../../crates/crucible/control/crucible-control-client/Cargo.toml)
-    (builtins.readFile ../../crates/crucible/control/crucible-control-server/Cargo.toml)
-  ];
-  apiGateTest = builtins.readFile ../../crates/crucible/control/crucible-control-server/tests/gate_control_responsive.rs;
+  controlServerManifest = builtins.readFile ../../crates/crucible/control/crucible-control-server/Cargo.toml;
+  controlServerGateTest = builtins.readFile ../../crates/crucible/control/crucible-control-server/tests/gate_control_responsive.rs;
   daemonManifest = builtins.readFile ../../crates/crucible/control/crucible-daemon/Cargo.toml;
   daemonGateTest = builtins.readFile ../../crates/crucible/control/crucible-daemon/tests/gate_control_responsive.rs;
   schedulerGateTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/gate_scheduler_liveness.rs;
@@ -219,47 +216,47 @@
     ++ forbiddenFor "crates/crucible/control/crucible-session/tests/gate_control_responsive.rs" sessionGateTest qemuBackendForbidden
     ++ forbiddenFor "crates/crucible/control/crucible-session/tests/gate_exploration_fork.rs" sessionExplorationForkTest qemuBackendForbidden
     ++ forbiddenFor "crates/crucible/control/crucible-session/tests/gate_exploration_lifecycle.rs" sessionExplorationLifecycleTest qemuBackendForbidden
-    ++ failuresFor "crates/crucible/control/crucible-control-api/Cargo.toml" apiManifest [
+    ++ failuresFor "crates/crucible/control/crucible-control-server/Cargo.toml" controlServerManifest [
       {
-        label = "control transport test-double and test-support dev features";
+        label = "control server test-double and test-support dev features";
         needle = "crucible-engine = { path = \"../../engine/crucible-engine\", features = [\"test-double\", \"test-support\"] }";
       }
       {
-        label = "API session test-support dev feature";
+        label = "control server session test-support dev feature";
         needle = "crucible-session = { path = \"../crucible-session\", features = [\"test-support\"] }";
       }
       {
-        label = "control transport protocol dependency";
+        label = "control server protocol dependency";
         needle = "crucible-qemu-protocol = { path = \"../../protocol/crucible-qemu-protocol\" }";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-control-server/tests/gate_control_responsive.rs" apiGateTest [
+    ++ failuresFor "crates/crucible/control/crucible-control-server/tests/gate_control_responsive.rs" controlServerGateTest [
       {
-        label = "API gate declares SimDouble adapter";
+        label = "control server gate declares SimDouble adapter";
         needle = "const CONTROL_RESPONSIVE_BACKEND: &str = \"crucible::SimDouble quantum-loop adapter\";";
       }
       {
-        label = "API gate uses live SimDouble fixture";
+        label = "control server gate uses live SimDouble fixture";
         needle = "RunningSimDoubleControlPlane::spawn().await";
       }
       {
-        label = "API loop owns exported SimDouble";
+        label = "control server loop owns exported SimDouble";
         needle = "backend: SimDouble";
       }
       {
-        label = "API loop constructs exported SimDouble";
+        label = "control server loop constructs exported SimDouble";
         needle = "SimDouble::new(SimDoubleConfig::default())";
       }
       {
-        label = "API loop drives SimulationBackend";
+        label = "control server loop drives SimulationBackend";
         needle = "SimulationBackend::step_to";
       }
       {
-        label = "API gate uses in-process quantum loop";
+        label = "control server gate uses in-process quantum loop";
         needle = "SimDoubleQuantumLoop::new";
       }
     ]
-    ++ forbiddenFor "crates/crucible/control/crucible-control-server/tests/gate_control_responsive.rs" apiGateTest qemuBackendForbidden
+    ++ forbiddenFor "crates/crucible/control/crucible-control-server/tests/gate_control_responsive.rs" controlServerGateTest qemuBackendForbidden
     ++ failuresFor "crates/crucible/control/crucible-daemon/Cargo.toml" daemonManifest [
       {
         label = "daemon test-double dev feature";

@@ -623,10 +623,10 @@ in
             check=checks.crucible.phase1.crateUnsafeFence
             gate=gate:harness-lint
             tasks=T-CRATE-2,T-STD-7
-            runtime_safe_crates=9
-            runtime_unsafe_boundary_crates=5
+            runtime_safe_crates=${toString (builtins.length (builtins.filter (spec: !spec.unsafeBoundary && spec.package != "crucible-test-support") specs))}
+            runtime_unsafe_boundary_crates=${toString (builtins.length (builtins.filter (spec: spec.unsafeBoundary) specs))}
             test_only_safe_crates=1
-            unsafe_policy=root-fences,no-fifth-unsafe-crate,immediate-safety-invariants,no-unsafe-callable-items,no-public-unsafe-api,safe-wrapper-contracts
+            unsafe_policy=root-fences,enumerated-unsafe-boundary,immediate-safety-invariants,no-unsafe-callable-items,no-public-unsafe-api,safe-wrapper-contracts
             RESULT
           '';
         }
