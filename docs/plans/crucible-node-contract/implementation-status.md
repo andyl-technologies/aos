@@ -30,6 +30,11 @@ schemas and test adapters establish component behavior, not native support.
 | `b92a9da932` | Installed mixed-node daemon execution and private CLI control | 446 campaign, 344 CLI and 20 daemon tests pass; six actual connected-node witnesses and the CLI restart scenario pass |
 | `c5dd8e0346` | Exact scripted request nodes and native pending-queue archive branching | 19 native adapter tests and three actual Block/9p/network archive branch regressions pass; expanded complete core suite passes 699 tests |
 | `6f79344ee4` | Existing SHA256 dependency for process-image auditing | Locked metadata and actual source-vendor derivation pass; external package selection is unchanged |
+| `8130c7dfa9` | Signed atomic QEMU source for native CPU, PIT and KVM components | Atomic source/tree/signature regeneration and exact patch-license ledger pass |
+| `52a34a1780` | Process-separated native QEMU command and observation plumbing | 17 portable, nine GPL-side and five host tests pass; three live CPU/PIT partition witnesses pass |
+| `ccc87ca2ce` | Script continuation rejects invalid future evaluation and group cursors | Five focused source tests pass |
+| `a109318848` | Original future-publication custody across phase cuts and mathematical-top closure | Five source, one coordinator future-birth and three closure/overflow regressions pass; original pending deliveries survive snapshot restoration |
+| `1061007b83` | Independent complete native process-image custody authentication | Both guest ISAs pass authentic closure, source exit, original resource removal and two fresh restores; collector passes 23 adverse cases |
 
 Legacy codec bytes, hash domains, fault identifiers, and existing exact QEMU
 restore semantics remain unchanged by these source extractions. New node
@@ -72,6 +77,15 @@ concurrent restorations. Read-only native observers currently expose partial
 event, RNG and object inventories. Typed CPU, cache, memory and device visitors
 are being implemented; partial observers do not qualify exact admission.
 
+The independently audited process-image mechanism now establishes complete
+opaque native closure for the fixed freestanding checksum workload on both
+guest ISAs. It checks captured map, thread-context, descriptor and supplementary
+file bytes, then survives source exit and two independent restorations. The
+[process-image evidence](gem5-process-image-evidence.md) fixes the tested source,
+artifacts, host ABI and limits. This result does not qualify arbitrary guest
+programs, Linux devices or complete typed diagnostics. The common runtime,
+installed qualification and mixed-world native archive bridge remain in progress.
+
 The [KVM audit](kvm-feasibility.md) records the clock/timer/interrupt mediation
 requirements. The current machine does not expose `/dev/kvm`, so native KVM
 execution and qualification have not occurred. Quantized protocol and external
@@ -91,8 +105,9 @@ cover exclusive retirement, equality ceilings, retained fractional instruction
 credit and partition invariance; existing icount and vCPU-service unit tests
 also pass. Nonzero phases, boundary settlement, halted idle, complete device and
 input queues, fork and native journal preservation remain unsupported in this
-partial path. Diagnostic binaries retain the previous source identity until the
-new atomic source artifacts are reconstructed and checked.
+partial path. The CPU/PIT component source is now carried by the verified signed
+atomic artifact. Later writer-cut diagnostics require their own matching atomic
+artifact and live witness before incorporation.
 
 ## Performance evidence
 
