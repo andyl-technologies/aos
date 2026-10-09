@@ -1,4 +1,4 @@
-//! Bounded byte decoding without format, signature, or authority policy.
+//! Bounded byte codecs without format, signature, or authority policy.
 //!
 //! Callers map mechanical failures into their own errors and retain ownership
 //! of framing, version checks, semantic limits, and canonical validation.
