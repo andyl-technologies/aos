@@ -595,7 +595,7 @@ pub fn recover_fixed_root_project_admission_outcome_v1(
         .get(&outcome_key(stage_digest))?
         .map(RootProjectAdmissionOutcomeV1::from_record_bytes)
         .transpose()?;
-    if outcome.is_some_and(|row| row.stage != stage_digest) {
+    if outcome.is_some_and(|row| row.stage() != stage_digest) {
         return Err(PolicyDeploymentHeadErrorV1::StaleHead);
     }
     Ok(outcome)
