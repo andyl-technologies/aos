@@ -8,6 +8,7 @@
 
 use std::collections::BTreeMap;
 
+use aos_sandbox_core::bounded_codec::checked_byte_region;
 use aos_sandbox_core::{ObjectDigest, OperationId, PrincipalId};
 use sha2::{Digest as _, Sha256};
 
@@ -1380,9 +1381,9 @@ fn idempotency_floor_digest(floor: &CacheIdempotencyCompactionFloorV1) -> Object
 }
 
 fn read_array<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N], CacheFormatError> {
-    let end = offset.checked_add(N).ok_or(CacheFormatError::Malformed)?;
-    let slice = bytes.get(offset..end).ok_or(CacheFormatError::Malformed)?;
-    <[u8; N]>::try_from(slice).map_err(|_| CacheFormatError::Malformed)
+    let (value, _) = checked_byte_region(bytes, offset, N)
+        .map_err(|_| CacheFormatError::Malformed)?;
+    value.try_into().map_err(|_| CacheFormatError::Malformed)
 }
 
 fn read_u16(bytes: &[u8], offset: usize) -> Result<u16, CacheFormatError> {

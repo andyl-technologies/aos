@@ -8,6 +8,8 @@
 //!        candidate-length-u32 | canonical-Candidate
 //! ```
 
+use aos_sandbox_core::bounded_codec::checked_byte_region;
+
 use super::ConsumerReadFlightErrorV1 as Error;
 
 /// Discriminates only the additive PRE-ROOT state-first request.
@@ -115,12 +117,8 @@ pub(super) fn maximum_state_bytes() -> Result<usize, Error> {
 }
 
 pub(super) fn take<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N], Error> {
-    let end = offset.checked_add(N).ok_or(Error::Protocol)?;
-    bytes
-        .get(offset..end)
-        .ok_or(Error::Protocol)?
-        .try_into()
-        .map_err(|_| Error::Protocol)
+    let (value, _) = checked_byte_region(bytes, offset, N).map_err(|_| Error::Protocol)?;
+    value.try_into().map_err(|_| Error::Protocol)
 }
 
 #[cfg(test)]

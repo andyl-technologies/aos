@@ -17,6 +17,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use aos_sandbox_core::bounded_codec::checked_byte_region;
 use aos_sandbox_core::{ObjectDigest, ProjectId};
 use sha2::{Digest as _, Sha256};
 
@@ -1310,8 +1311,9 @@ pub(crate) fn require_exact_capacity_family(
 }
 
 pub(crate) fn array<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N], JournalError> {
-    bytes.get(offset..offset.checked_add(N).ok_or(JournalError::ProtectedBoundary)?)
-        .and_then(|bytes| bytes.try_into().ok()).ok_or(JournalError::ProtectedBoundary)
+    let (value, _) = checked_byte_region(bytes, offset, N)
+        .map_err(|_| JournalError::ProtectedBoundary)?;
+    value.try_into().map_err(|_| JournalError::ProtectedBoundary)
 }
 
 pub(crate) fn digest_at(bytes: &[u8], offset: usize) -> Result<ObjectDigest, JournalError> {

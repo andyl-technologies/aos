@@ -27,6 +27,7 @@ use aos_sandbox_broker_session_protocol::{
 use aos_sandbox_broker_session_protocol::manifest::{
     BROKER_SESSION_MANIFEST_BYTES, BrokerSessionManifestAudienceV1, BrokerSessionManifestV1,
 };
+use aos_sandbox_core::bounded_codec::checked_byte_region;
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodOutcomeAdmissionV1, AuthenticatedBrokerMethodRequestAdmissionV1,
@@ -625,8 +626,6 @@ fn digest(domain: &[u8], bytes: &[u8]) -> [u8; 32] {
 }
 
 fn array<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N], Error> {
-    let end = offset.checked_add(N).ok_or(Error::Invalid)?;
-    bytes.get(offset..end)
-        .and_then(|value| value.try_into().ok())
-        .ok_or(Error::Invalid)
+    let (value, _) = checked_byte_region(bytes, offset, N).map_err(|_| Error::Invalid)?;
+    value.try_into().map_err(|_| Error::Invalid)
 }

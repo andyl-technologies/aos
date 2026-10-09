@@ -22,6 +22,7 @@ use std::fmt;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 
+use aos_sandbox_core::bounded_codec::checked_byte_region;
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_linux::seqpacket::RetainedSeqpacketReceiveErrorV1;
 use aos_sandbox_linux::unix_stream::{RetainedUnixStream, UnixStreamSubjectChunk};
@@ -186,9 +187,8 @@ fn require_sequence(phase: Phase, sequence: u32) -> Result<(), Failure> {
 }
 
 fn take<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N], Failure> {
-    let end = offset.checked_add(N).ok_or(Failure::Protocol)?;
-    bytes.get(offset..end).ok_or(Failure::Protocol)?
-        .try_into().map_err(|_| Failure::Protocol)
+    let (value, _) = checked_byte_region(bytes, offset, N).map_err(|_| Failure::Protocol)?;
+    value.try_into().map_err(|_| Failure::Protocol)
 }
 
 #[derive(Debug, thiserror::Error)]

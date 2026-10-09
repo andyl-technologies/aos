@@ -8,6 +8,7 @@
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
 
+use aos_sandbox_core::bounded_codec::checked_byte_region;
 use aos_sandbox_core::{
     AttachmentId, IncarnationId, ObjectDescriptor, ObjectDigest, ProjectId, SandboxId, ViewId,
 };
@@ -1138,9 +1139,8 @@ fn pin_compaction_floor_digest(
 }
 
 fn read_pin_array<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N], PinError> {
-    let end = offset.checked_add(N).ok_or(PinError::InvalidFloor)?;
-    let slice = bytes.get(offset..end).ok_or(PinError::InvalidFloor)?;
-    <[u8; N]>::try_from(slice).map_err(|_| PinError::InvalidFloor)
+    let (value, _) = checked_byte_region(bytes, offset, N).map_err(|_| PinError::InvalidFloor)?;
+    value.try_into().map_err(|_| PinError::InvalidFloor)
 }
 
 fn increment(value: &mut u64) -> Result<(), AccountingError> {

@@ -18,6 +18,7 @@
 
 mod input;
 
+use aos_sandbox_core::bounded_codec::checked_byte_region;
 use aos_sandbox_core::{ObjectDigest, OperationId, ProjectId, SandboxId};
 use aos_sandbox_core::ownership_lease::{
     OwnershipLeaseVerificationError, RawClockProvenance, RawPairedClockSample,
@@ -1357,8 +1358,7 @@ impl VerifiedCurrentNixSourceObservationV1 {
 pub(super) fn take<const N: usize>(
     bytes: &[u8], offset: usize,
 ) -> Result<[u8; N], CurrentNixPreflightDataErrorV1> {
-    let end = offset.checked_add(N).ok_or(CurrentNixPreflightDataErrorV1::Changed)?;
-    bytes.get(offset..end)
-        .ok_or(CurrentNixPreflightDataErrorV1::Changed)?
-        .try_into().map_err(|_| CurrentNixPreflightDataErrorV1::Changed)
+    let (value, _) = checked_byte_region(bytes, offset, N)
+        .map_err(|_| CurrentNixPreflightDataErrorV1::Changed)?;
+    value.try_into().map_err(|_| CurrentNixPreflightDataErrorV1::Changed)
 }
