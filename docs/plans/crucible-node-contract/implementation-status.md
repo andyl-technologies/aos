@@ -79,6 +79,13 @@ schemas and test adapters establish component behavior, not native support.
 | `64711d6bbf` | QEMU package metadata formatting | Source formatting preserves package behavior; changed raw-recipe identity requires rebuilding the production binary and corresponding source before final comparison |
 | `6c22368da4` | Allocation-free borrowed gem5 address-range lookup predicates | More than 850,000 semantic comparisons and five matched lookup rounds pass; both installed fixed-workload ISA witnesses remove original resources and pass two fresh continuations/recaptures with all 27 bindings independently measured |
 | `b6839fa7a1` | Bounded original KVM userspace-response completion and retry hooks | Public stage-five check builds actual x86/ARM objects, preserves earlier source/arithmetic checks and passes ABI/response/admission controls with six independently compiled rejected mutants; no live KVM execution or node qualification |
+| `0380f47c6d` | Focused core lint cleanup | Production semantics and public formats are unchanged; subsequent central strict checks cover the registered source |
+| `7fc5a56bbf` | Frozen extension semantics and complete selected dependency validation | Twenty-nine focused extension admission and semantics cases pass; broader native extension preservation remains profile-specific |
+| `319ab8c710` | Protocol and GPL-side test lint cleanup | Test-only allowances remain scoped; subsequent complete registered protocol/GPL test groups pass |
+| `bac1f09163` | Source formatting | No functional change; subsequent central checks cover the coherent formatted source |
+| `ddc791bf66` | Production native actor, host-state/control/CLI integration, installed public qualification and matching package pins | Actual original Pending capture and two-fresh cold continuation pass in 159.79 seconds; actual actor-panic custody passes in 49.49 seconds; eight ledger and three control cases pass; ordinary daemon and CLI suites pass 882 and 360 cases respectively |
+| `a530518937` | CLI native preservation through fresh daemon processes | Actual source daemon retirement, signed-state restart, exact original retry and two fresh completions pass in 158.93 seconds; help and strict target checks pass |
+| `9dbb8a28de` | Campaign and daemon test-local lint cleanup | Scoped test allowances and equivalent reverse lookup pass strict checks; all 446 campaign library cases pass |
 
 Legacy codec bytes, hash domains, fault identifiers, and existing exact QEMU
 restore semantics remain unchanged by these source extractions. New node
@@ -173,8 +180,14 @@ payload coordinates, original scheduling reservation and native acknowledgment,
 and both produce the same future checksum. Every original poll budget is bound
 into the signed configuration; cross-ISA or historical budget mismatches refuse
 before materialization. The 256-MiB byte allowance is unchanged. Diagnostic-credit
-preflight is a separate, unpromoted protocol successor. These mixed native tests currently use a private
-test factory; production installed selection and CLI integration remain required.
+preflight is a separate, unpromoted protocol successor. The production native actor and control/CLI route now expose these explicit
+original Pending and HeldPublication preservation points. The installed fixed
+checksum plus HostClock scenario passes source retirement and two fresh worlds,
+original completion/commit/acknowledgment, durable receipt retention and complete
+custody reclamation. A separate actual panic proves that original native backing
+remains owned through unwind. General fresh run-to-horizon, broader devices and
+complete Linux/full-system qualification remain required; finite capture points
+do not supply those claims.
 
 The extension checkpoint passes the complete core library: 799 cases pass and
 five actual-provider fixtures are explicitly excluded from that run. The public
@@ -208,6 +221,35 @@ their unknown causal semantics correctly refuse native execution at that cut.
 The GPL reader/worker gate, complete callback birth and payload ownership,
 boundary settlement, device mediation and fresh native continuation remain
 required before qualifying the common QEMU node.
+
+## Latest registered checkpoint
+
+The current central all-target strict and test-target compilation checks pass.
+The core suite passes 809 cases with five actual-provider fixtures explicitly
+excluded; the selected-extension subset passes all 29 cases.
+The ordinary daemon suite passes 882 cases with 57 native fixtures explicitly
+excluded, and the ordinary CLI suite passes 360 cases. Separate actual issuer
+checks pass two cases in 49.31 seconds; eight review cases also pass. The public
+native protocol/GPL/host trio passes all-target strict checks and its registered
+protocol, GPL and host test groups: 208 protocol cases with one declared fixture
+excluded, 628 GPL cases, 770 QEMU library cases with five declared fixtures
+excluded, and the complete registered integration groups including 33 QMP cases.
+These source checkpoints do not replace an ordinary production package build.
+
+The new signed QEMU production regeneration currently fails a mandatory fresh
+fixture requiring the original `Applied` status. That failure remains under
+investigation; the production QEMU/source pair is not green at this checkpoint.
+The latest whole license gate is still not green: its all-target lint stage
+identified missing test-local panic allowances in two campaign test modules.
+Neither result is inferred from
+previous package, protocol or source gates.
+
+A separate, unregistered terminal assertion overlay passes a 20.01-second
+installed source-gone/two-fresh continuation witness. Its closed scope is one
+input-free assertion program plus integer HostClock participants, preserving the
+original barrier, once-only assertion report and acknowledgment. It is private
+prototype evidence, not committed production terminal support or completion of
+fault, RNG, controller, debugger, input-provenance or general workflow state.
 
 ## Performance evidence
 
