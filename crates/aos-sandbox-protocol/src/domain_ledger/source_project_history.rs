@@ -1,3 +1,28 @@
+//! Owns the complete canonical Source project-admission history DATA.
+//!
+//! Five fixed rows share one terminal tag and full historical join. Decoding
+//! checks their existing framing, canonical fields and domain-separated hashes;
+//! it neither authenticates signatures nor acquires current protected custody.
+//! Native selection, mutation fences, Root proofs and the held Controller
+//! acceptance loan remain with their actual upper owners.
+//!
+//! Each row has an eight-byte magic, BE version, reserved header bytes and a
+//! domain-separated SHA-256 checksum. The established fixed layouts are:
+//!
+//! ```text
+//! AOSQPV01 v2 (136): issue | nonce | project | names | checksum
+//! AOSQPA01 v2 (232): kind | issue | nonce | cut | project | ancestry |
+//!                    stage | names | checksum
+//! AOSQPC02 v1 (120): issue | reservation | Root cancellation | checksum
+//! AOSQPC01 v1 (152): issue | challenge | stage | Root outcome | checksum
+//! AOSQPT01 v1 (152): issue | reservation | Source terminal | Root floor | checksum
+//! terminal transport: settlement, or cancellation followed by 32 zero bytes
+//! ```
+//!
+//! Terminal hashing covers the actual unpadded row. Unchecked constructors and
+//! encoders preserve supplied DATA, including negative fixtures; joined-history
+//! validation remains an explicit operation rather than a native authority grant.
+
 use aos_sandbox_core::{ObjectDigest, ProjectId};
 use sha2::{Digest as _, Sha256};
 
@@ -8,6 +33,7 @@ const MAGIC: &[u8; 8] = b"AOSQPA01";
 const CHECKSUM_DOMAIN: &[u8] = b"aos.sandbox.source-project-admission-challenge.v1\0";
 const RECORD_BYTES: usize = 232;
 const RESERVATION_MAGIC: &[u8; 8] = b"AOSQPV01";
+/// Defines the established reservation checksum domain, including its terminator.
 pub const RESERVATION_DOMAIN: &[u8] = b"aos.sandbox.source-project-admission-reservation.v1\0";
 const RESERVATION_BYTES: usize = 136;
 const CANCELLATION_MAGIC: &[u8; 8] = b"AOSQPC02";
@@ -30,6 +56,7 @@ const SETTLEMENT_BYTES: usize = 152;
 /// Bounds a canonical Source settlement, or a zero-padded cancellation.
 pub const SOURCE_PROJECT_ADMISSION_TERMINAL_BYTES_V1: usize = SETTLEMENT_BYTES;
 
+/// Describes a historical Source terminal retirement ACK.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SourceProjectTerminalRetirementAckV1 {
     issue: u64,
@@ -39,6 +66,7 @@ pub struct SourceProjectTerminalRetirementAckV1 {
 }
 
 impl SourceProjectTerminalRetirementAckV1 {
+    /// Assembles unchecked historical fields without validating custody or joins.
     pub const fn from_historical_fields(
         issue: u64,
         reservation: ObjectDigest,
@@ -53,22 +81,27 @@ impl SourceProjectTerminalRetirementAckV1 {
         }
     }
 
+    /// Returns the historical Source admission issue.
     pub const fn issue(self) -> u64 {
         self.issue
     }
 
+    /// Returns the digest of the historical reservation row.
     pub const fn reservation(self) -> ObjectDigest {
         self.reservation
     }
 
+    /// Returns the digest of the actual unpadded Source terminal.
     pub const fn source_terminal(self) -> ObjectDigest {
         self.source_terminal
     }
 
+    /// Returns the retained Root history-floor digest.
     pub const fn root_floor(self) -> ObjectDigest {
         self.root_floor
     }
 
+    /// Encodes the fixed historical fields without validating their claims.
     pub fn encode(self) -> [u8; RETIREMENT_ACK_BYTES] {
         let mut bytes = [0; RETIREMENT_ACK_BYTES];
         bytes[..8].copy_from_slice(RETIREMENT_ACK_MAGIC);
@@ -85,6 +118,11 @@ impl SourceProjectTerminalRetirementAckV1 {
         bytes
     }
 
+    /// Decodes canonical historical DATA without authenticating custody.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed framing, fields or canonical checksum bytes.
     pub fn decode(bytes: &[u8]) -> Result<Self, ProtectedHistoryDataErrorV1> {
         if bytes.len() != RETIREMENT_ACK_BYTES
             || bytes.get(..8) != Some(RETIREMENT_ACK_MAGIC.as_slice())
@@ -111,9 +149,12 @@ impl SourceProjectTerminalRetirementAckV1 {
     }
 }
 
+/// Distinguishes the two established historical Source terminal rows.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SourceProjectTerminalRecordV1 {
+    /// Carries a historical settlement after a Root outcome.
     Settlement(SourceProjectAdmissionSettlementV1),
+    /// Carries a historical cancellation before challenge acquisition.
     Cancellation(SourceProjectReservationCancellationV1),
 }
 
@@ -129,6 +170,7 @@ pub struct SourceProjectAdmissionTerminalV1 {
 }
 
 impl SourceProjectAdmissionTerminalV1 {
+    /// Assembles unchecked historical fields without validating custody or joins.
     pub const fn from_historical_fields(
         reservation: SourceProjectAdmissionReservationV1,
         challenge: Option<SourceProjectAdmissionChallengeV1>,
@@ -181,6 +223,11 @@ impl SourceProjectAdmissionTerminalV1 {
         }
     }
 
+    /// Decodes a padded terminal and checks its complete historical row join.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed rows, cancellation padding or conflicting history.
     pub fn from_record_parts(
         reservation: SourceProjectAdmissionReservationV1,
         challenge: Option<SourceProjectAdmissionChallengeV1>,
@@ -217,6 +264,7 @@ impl SourceProjectAdmissionTerminalV1 {
     }
 }
 
+/// Describes a historical cancellation of an unconsumed Source reservation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SourceProjectReservationCancellationV1 {
     issue: u64,
@@ -225,6 +273,7 @@ pub struct SourceProjectReservationCancellationV1 {
 }
 
 impl SourceProjectReservationCancellationV1 {
+    /// Assembles unchecked historical fields without validating custody or joins.
     pub const fn from_historical_fields(
         issue: u64,
         reservation: ObjectDigest,
@@ -237,14 +286,17 @@ impl SourceProjectReservationCancellationV1 {
         }
     }
 
+    /// Returns the historical Source admission issue.
     pub const fn issue(self) -> u64 {
         self.issue
     }
 
+    /// Returns the digest of the historical reservation row.
     pub const fn reservation(self) -> ObjectDigest {
         self.reservation
     }
 
+    /// Encodes the fixed historical fields without validating their claims.
     pub fn encode(self) -> [u8; CANCELLATION_BYTES] {
         let mut bytes = [0; CANCELLATION_BYTES];
         bytes[..8].copy_from_slice(CANCELLATION_MAGIC);
@@ -260,6 +312,11 @@ impl SourceProjectReservationCancellationV1 {
         bytes
     }
 
+    /// Decodes canonical historical DATA without authenticating custody.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed framing, fields or canonical checksum bytes.
     pub fn decode(bytes: &[u8]) -> Result<Self, ProtectedHistoryDataErrorV1> {
         if bytes.len() != CANCELLATION_BYTES
             || bytes.get(..8) != Some(CANCELLATION_MAGIC.as_slice())
@@ -284,6 +341,7 @@ impl SourceProjectReservationCancellationV1 {
     }
 }
 
+/// Describes a historical settlement of a Source challenge.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SourceProjectAdmissionSettlementV1 {
     issue: u64,
@@ -293,6 +351,7 @@ pub struct SourceProjectAdmissionSettlementV1 {
 }
 
 impl SourceProjectAdmissionSettlementV1 {
+    /// Assembles unchecked historical fields without validating custody or joins.
     pub const fn from_historical_fields(
         issue: u64,
         challenge: ObjectDigest,
@@ -307,22 +366,27 @@ impl SourceProjectAdmissionSettlementV1 {
         }
     }
 
+    /// Returns the historical Source admission issue.
     pub const fn issue(self) -> u64 {
         self.issue
     }
 
+    /// Returns the digest of the historical challenge row.
     pub const fn challenge(self) -> ObjectDigest {
         self.challenge
     }
 
+    /// Returns the retained Root stage digest.
     pub const fn stage(self) -> ObjectDigest {
         self.stage
     }
 
+    /// Returns the retained Root outcome digest.
     pub const fn outcome(self) -> ObjectDigest {
         self.outcome
     }
 
+    /// Encodes the fixed historical fields without validating their claims.
     pub fn encode(self) -> [u8; SETTLEMENT_BYTES] {
         let mut bytes = [0; SETTLEMENT_BYTES];
         bytes[..8].copy_from_slice(SETTLEMENT_MAGIC);
@@ -339,6 +403,11 @@ impl SourceProjectAdmissionSettlementV1 {
         bytes
     }
 
+    /// Decodes canonical historical DATA without authenticating custody.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed framing, fields or canonical checksum bytes.
     pub fn decode(bytes: &[u8]) -> Result<Self, ProtectedHistoryDataErrorV1> {
         if bytes.len() != SETTLEMENT_BYTES
             || bytes.get(..8) != Some(SETTLEMENT_MAGIC.as_slice())
@@ -364,6 +433,7 @@ impl SourceProjectAdmissionSettlementV1 {
         Ok(row)
     }
 
+    /// Compares historical settlement issue and challenge digest.
     pub fn matches(self, challenge: SourceProjectAdmissionChallengeV1) -> bool {
         self.issue == challenge.issue && self.challenge == challenge.record_digest()
     }
@@ -375,7 +445,7 @@ pub const SOURCE_PROJECT_ADMISSION_CHALLENGE_BYTES_V1: usize = RECORD_BYTES;
 /// Bounds the canonical pre-stage Source reservation row.
 pub const SOURCE_PROJECT_ADMISSION_RESERVATION_BYTES_V1: usize = RESERVATION_BYTES;
 
-/// Retains Source journal headroom before Root may create a project stage.
+/// Describes a retained Source reservation for historical readback.
 ///
 /// The reservation does not assert ancestry or authorize Root admission. Its
 /// immutable row is retained through the later Source challenge and outcome.
@@ -388,6 +458,7 @@ pub struct SourceProjectAdmissionReservationV1 {
 }
 
 impl SourceProjectAdmissionReservationV1 {
+    /// Assembles unchecked historical fields without validating custody or joins.
     pub const fn from_historical_fields(
         issue: u64,
         client_nonce: [u8; 16],
@@ -443,6 +514,7 @@ impl SourceProjectAdmissionReservationV1 {
         Self::decode(bytes)
     }
 
+    /// Encodes the fixed historical fields without validating their claims.
     pub fn encode(self) -> [u8; RESERVATION_BYTES] {
         let mut bytes = [0; RESERVATION_BYTES];
         bytes[..8].copy_from_slice(RESERVATION_MAGIC);
@@ -459,6 +531,11 @@ impl SourceProjectAdmissionReservationV1 {
         bytes
     }
 
+    /// Decodes canonical historical DATA without authenticating custody.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed framing, fields or canonical checksum bytes.
     pub fn decode(bytes: &[u8]) -> Result<Self, ProtectedHistoryDataErrorV1> {
         if bytes.len() != RESERVATION_BYTES
             || bytes.get(..8) != Some(RESERVATION_MAGIC.as_slice())
@@ -498,6 +575,7 @@ pub struct SourceProjectAdmissionChallengeV1 {
 }
 
 impl SourceProjectAdmissionChallengeV1 {
+    /// Assembles unchecked historical fields without validating custody or joins.
     #[allow(clippy::too_many_arguments)]
     pub const fn from_historical_fields(
         kind: SourceProjectAdmissionChallengeKindV1,
@@ -580,6 +658,7 @@ impl SourceProjectAdmissionChallengeV1 {
     pub fn from_record_bytes(bytes: &[u8]) -> Result<Self, ProtectedHistoryDataErrorV1> {
         Self::decode(bytes)
     }
+    /// Encodes the fixed historical fields without validating their claims.
     pub fn encode(self) -> [u8; RECORD_BYTES] {
         let mut bytes = [0; RECORD_BYTES];
         bytes[..8].copy_from_slice(MAGIC);
@@ -603,6 +682,11 @@ impl SourceProjectAdmissionChallengeV1 {
         bytes
     }
 
+    /// Decodes canonical historical DATA without authenticating custody.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed framing, fields or canonical checksum bytes.
     pub fn decode(bytes: &[u8]) -> Result<Self, ProtectedHistoryDataErrorV1> {
         if bytes.len() != RECORD_BYTES
             || bytes.get(..8) != Some(MAGIC.as_slice())
@@ -653,6 +737,7 @@ fn take<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N], Protecte
         .and_then(|field| field.try_into().ok())
         .ok_or(ProtectedHistoryDataErrorV1::Malformed)
 }
+/// Carries the five historical Source row claims without currentness custody.
 #[derive(Clone, Copy)]
 pub struct SourceProjectAdmissionHistoryV1 {
     reservation: Option<SourceProjectAdmissionReservationV1>,
@@ -663,6 +748,7 @@ pub struct SourceProjectAdmissionHistoryV1 {
 }
 
 impl SourceProjectAdmissionHistoryV1 {
+    /// Assembles unchecked historical fields without validating custody or joins.
     pub const fn from_historical_fields(
         reservation: Option<SourceProjectAdmissionReservationV1>,
         cancellation: Option<SourceProjectReservationCancellationV1>,
@@ -679,26 +765,34 @@ impl SourceProjectAdmissionHistoryV1 {
         }
     }
 
+    /// Returns the historical Source reservation claim.
     pub const fn reservation(self) -> Option<SourceProjectAdmissionReservationV1> {
         self.reservation
     }
 
+    /// Returns the historical reservation-cancellation claim.
     pub const fn cancellation(self) -> Option<SourceProjectReservationCancellationV1> {
         self.cancellation
     }
 
+    /// Returns the historical Source challenge claim.
     pub const fn challenge(self) -> Option<SourceProjectAdmissionChallengeV1> {
         self.challenge
     }
 
+    /// Returns the historical challenge-settlement claim.
     pub const fn settlement(self) -> Option<SourceProjectAdmissionSettlementV1> {
         self.settlement
     }
 
+    /// Returns the historical terminal-retirement ACK claim.
     pub const fn retirement_ack(self) -> Option<SourceProjectTerminalRetirementAckV1> {
         self.retirement_ack
     }
 
+    /// Projects a historical terminal without authenticating or validating the join.
+    ///
+    /// Returns None for a missing reservation or ambiguous terminal rows.
     pub fn terminal(self) -> Option<SourceProjectAdmissionTerminalV1> {
         let terminal = match (self.settlement, self.cancellation) {
             (Some(row), None) => SourceProjectTerminalRecordV1::Settlement(row),
@@ -712,6 +806,13 @@ impl SourceProjectAdmissionHistoryV1 {
         })
     }
 
+    /// Checks the complete historical challenge, terminal and ACK relationships.
+    ///
+    /// An all-absent history is permitted; this check creates no currentness proof.
+    ///
+    /// # Errors
+    ///
+    /// Rejects conflicting or missing rows required by another supplied claim.
     pub fn require_joined(self) -> Result<(), ProtectedHistoryDataErrorV1> {
         if self.challenge.is_some_and(|row| {
             !self.reservation.is_some_and(|reserved| {

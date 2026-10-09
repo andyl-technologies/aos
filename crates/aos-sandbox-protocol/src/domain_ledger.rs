@@ -11,6 +11,9 @@
 //! scope DATA, the durable method/state registry and established resource projection.
 //! `operation` owns both established Operation record versions and their native
 //! Operation/Effect keys, without acquiring live admission or commit authority.
+//! [`protected_names`] owns historical physical-name pairs; [`source_project_history`]
+//! owns all five canonical Source rows, their terminal tag and complete historical
+//! join. Native currentness, signing, protected proofs and writer loans stay upper.
 
 pub mod capacity;
 pub mod operation;
@@ -23,8 +26,10 @@ pub mod transaction;
 use aos_sandbox_journal::framing::FrameError;
 use aos_sandbox_journal::record::RecordError;
 
+/// Reports malformed canonical protected-history DATA without native causes.
 #[derive(Debug, thiserror::Error)]
 pub enum ProtectedHistoryDataErrorV1 {
+    /// A physical-name or Source row claim is malformed or conflicts with its join.
     #[error("protected history DATA is malformed")]
     Malformed,
 }

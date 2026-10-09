@@ -1,6 +1,18 @@
+//! Owns historical directory, journal and lock device/inode DATA.
+//!
+//! These six numbers describe physical names; they retain no descriptors or
+//! lock/currentness proof. Native identity sampling and protected custody remain
+//! with the physical owner. Unchecked assembly preserves historical claims;
+//! byte decoding rejects zero identities in the established order.
+//!
+//! ```text
+//! directory(device:u64be, inode:u64be) |
+//! journal(device:u64be, inode:u64be) | lock(device:u64be, inode:u64be)
+//! ```
+
 use super::ProtectedHistoryDataErrorV1;
 
-/// Identifies the three fixed physical names shared by a Source writer and signer view.
+/// Describes historical directory, journal and lock device/inode pairs.
 ///
 /// Device/inode equality is necessary for a same-cut proof, but does not by
 /// itself prove a held flock or authorize a policy effect.
@@ -12,6 +24,7 @@ pub struct ProtectedJournalNamesV1 {
 }
 
 impl ProtectedJournalNamesV1 {
+    /// Assembles unchecked historical fields without validating custody or joins.
     pub const fn from_historical_fields(
         directory: (u64, u64),
         journal: (u64, u64),
@@ -24,14 +37,17 @@ impl ProtectedJournalNamesV1 {
         }
     }
 
+    /// Returns the historical directory device/inode pair.
     pub const fn directory(self) -> (u64, u64) {
         self.directory
     }
 
+    /// Returns the historical journal device/inode pair.
     pub const fn journal(self) -> (u64, u64) {
         self.journal
     }
 
+    /// Returns the historical lock device/inode pair.
     pub const fn lock(self) -> (u64, u64) {
         self.lock
     }
