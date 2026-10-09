@@ -2352,6 +2352,16 @@ compiler invocation stops before compilation because the sandbox makes the
 prescribed shared target read-only. That result is retained while the same
 command resumes with the required filesystem access. No candidate test result
 is established by the preflight or stopped command.
+The resumed compilation and both strict Clippy profiles pass. Actual compiler
+output binds a newly compiled native executable to the frozen candidate, and
+fresh discovery lists 832 cases. The first selection proof stops because three
+producer names have incorrect module prefixes. One scope case is mistakenly
+launched before that failure is inspected; it passes, but does not repair the
+failed selection proof. The original failure and execution are retained. An
+additive correction changes only those three selectors to their discovered
+names; independent review verifies all 28 exact nonignored matches and the
+current executable hash. The remaining sequence resumes without repeating
+the successful case. Growing-population and whole-gate results remain pending.
 After the class candidate releases the team's heavy lane, the diagnostic's
 restoration command exits zero but its artifact verifier stops: Cargo reports
 the shared executable as fresh while it still contains the class candidate's
