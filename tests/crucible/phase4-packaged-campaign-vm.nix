@@ -924,6 +924,35 @@ assert !interruptedTransfer
             || true
           if ! wait "$envoy_test"; then
             cat "$envoy_log"
+            # A closed private child channel does not identify its exit cause.
+            # Retain bounded kernel and owned-cgroup evidence before shutdown.
+            printf '%s\n' 'campaign-envoy-kernel-diagnostics-begin max_lines=160 max_bytes=16384'
+            if ! (
+              set -o pipefail
+              ${pkgs.util-linux}/bin/dmesg 2>&1 \
+                | ${pkgs.coreutils}/bin/tail -n 160 \
+                | ${pkgs.coreutils}/bin/tail -c 16384
+            ); then
+              printf '\n%s\n' 'campaign-envoy-kernel-diagnostics-read=failed'
+            else
+              printf '\n%s\n' 'campaign-envoy-kernel-diagnostics-read=ok'
+            fi
+            printf '%s\n' 'campaign-envoy-kernel-diagnostics-end'
+
+            memory_events=/sys/fs/cgroup/crucible/memory.events
+            printf '%s\n' "campaign-envoy-memory-events-begin path=$memory_events max_bytes=4096"
+            if test -e "$memory_events"; then
+              printf '%s\n' 'campaign-envoy-memory-events-present=true'
+              if ${pkgs.coreutils}/bin/head -c 4096 "$memory_events" 2>&1; then
+                printf '\n%s\n' 'campaign-envoy-memory-events-read=ok'
+              else
+                printf '\n%s\n' 'campaign-envoy-memory-events-read=failed'
+              fi
+            else
+              printf '%s\n' 'campaign-envoy-memory-events-present=false'
+              printf '%s\n' 'campaign-envoy-memory-events-read=unavailable'
+            fi
+            printf '%s\n' 'campaign-envoy-memory-events-end'
             exit 1
           fi
           cat "$envoy_log"
