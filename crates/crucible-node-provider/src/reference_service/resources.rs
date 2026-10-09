@@ -8,13 +8,14 @@ use std::rc::Rc;
 use crucible_node_contract::*;
 use serde::{Deserialize, Serialize};
 
+use super::native_child::ReferenceChild;
 use crate::ProviderError;
 use crate::blob::{
     BlobLimits, BlobQuarantine, BlobReceiver, BlobSupervisor, OperationContentPin, VerifiedTransfer,
 };
 use crate::connection::{ConnectionIncident, ConnectionSupervisor};
 use crate::native_journal::{NativeCustody, NativeJournalSupervisor, NativeSupervision};
-use crate::reference_device::{DeviceGrant, DeviceReceipt, ReferenceDevice};
+use crate::reference_device::{DeviceGrant, DeviceReceipt};
 
 use super::bootstrap::ReferenceServiceBootstrap;
 use super::profile::ReferenceProfile;
@@ -154,7 +155,7 @@ pub(super) struct Resources {
     pub(super) profile: ReferenceProfile,
     pub(super) child_path: PathBuf,
     pub(super) socket_parent: PathBuf,
-    pub(super) child: Option<ReferenceDevice>,
+    pub(super) child: Option<ReferenceChild>,
     pub(super) binding: NodeBinding,
     pub(super) owner_binding: OwnerBinding,
     pub(super) realized: bool,
@@ -165,6 +166,8 @@ pub(super) struct Resources {
     pub(super) ready_receipt: Option<ContentRef>,
     pub(super) contents: BTreeMap<String, (ContentRef, Vec<u8>)>,
     pub(super) content_bytes: usize,
+    pub(super) lineage_evidence: Option<super::source_evidence::SourceEvidence>,
+    pub(super) lineage_predecessor: Option<super::lineage_measurement::LineagePublicPredecessor>,
     pub(super) blobs: BlobReceiver,
     pub(super) verified: BTreeMap<String, VerifiedTransfer>,
     pub(super) pins: Vec<OperationContentPin>,
@@ -180,6 +183,21 @@ pub(super) struct Resources {
 
 impl Resources {
     pub(super) fn content(&self, reference: &ContentRef) -> Result<&[u8], ProviderError> {
+        if let Some(evidence) = &self.lineage_evidence {
+            let bytes = evidence
+                .content(reference)
+                .or_else(|| {
+                    self.child
+                        .as_ref()
+                        .and_then(|child| child.evidence(reference))
+                        .map(|object| object.bytes())
+                })
+                .ok_or(ProviderError::Correlation(
+                    "lineage typed role is not in original source custody",
+                ))?;
+            reference.verify(bytes)?;
+            return Ok(bytes);
+        }
         let (installed, bytes) =
             self.contents
                 .get(&reference.hash.digest)
@@ -201,6 +219,9 @@ impl Resources {
         media_type: &str,
     ) -> Result<ContentRef, ProviderError> {
         let reference = canonical::content_ref(&bytes, media_type)?;
+        if let Some(evidence) = &mut self.lineage_evidence {
+            return evidence.store(reference, bytes);
+        }
         if let Some((original, original_bytes)) = self.contents.get(&reference.hash.digest) {
             if original != &reference || original_bytes != &bytes {
                 return Err(ProviderError::Conflict("content identity changed"));
@@ -222,6 +243,28 @@ impl Resources {
             .insert(reference.hash.digest.clone(), (reference.clone(), bytes));
         self.content_bytes = total;
         Ok(reference)
+    }
+
+    pub(super) fn reserve_lineage_window(&mut self) -> Result<(), ProviderError> {
+        if let Some(evidence) = &mut self.lineage_evidence {
+            evidence.reserve_native_window()?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn content_key(&self, reference: &ContentRef) -> Result<String, ProviderError> {
+        if self.profile.is_lineage() {
+            super::source_evidence::typed_key(reference)
+        } else {
+            Ok(reference.hash.digest.clone())
+        }
+    }
+
+    pub(super) fn transferred(&self, reference: &ContentRef) -> Result<bool, ProviderError> {
+        Ok(self
+            .transferred
+            .borrow()
+            .contains(&self.content_key(reference)?))
     }
 
     pub(super) fn store_json(

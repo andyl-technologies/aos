@@ -8,6 +8,7 @@ mod gem5_profile;
 mod host_state;
 mod io;
 mod kvm;
+pub(super) mod recorded_ingress;
 
 mod native_state;
 mod profile;
@@ -44,6 +45,7 @@ pub use native_state::{
     InstalledGem5Isa, NativeCapturePoint, NativeWorldOutcome, NativeWorldRecord,
     NativeWorldRequest, NativeWorldRetention, NativeWorldService,
 };
+pub use recorded_ingress::InstalledRecordedIngressProfile;
 pub use reference_public::{
     InstalledPublicReferencePackage, InstalledReferenceQualifier, QualificationRunError,
     ReferenceQualificationObservation, ReferenceQualificationRun,
@@ -122,7 +124,12 @@ pub enum InstalledNodeKind {
         /// Binds the native storage codec, immutable input and positive timing.
         profile: InstalledHostIoProfile,
     },
-    /// Publishes independently enrolled finite immutable native request events.
+    /// Runs exact Block requests from an independently enrolled finite logical source.
+    HostRecordedBlock {
+        /// Binds the complete source file, native storage and precise run context.
+        profile: InstalledRecordedIngressProfile,
+    },
+    /// Evaluates the exact independently enrolled finite native request script.
     HostScripted {
         /// Binds the complete source script and its ordinary public consumer.
         profile: InstalledScriptedSourceProfile,
@@ -177,6 +184,9 @@ impl<'de> Deserialize<'de> for InstalledNodeKind {
                 Self::Gem5ClosedEpochPreserving { isa }
             }
             InstalledNodeKindWire::HostIo { profile } => Self::HostIo { profile },
+            InstalledNodeKindWire::HostRecordedBlock { profile } => {
+                Self::HostRecordedBlock { profile }
+            }
             InstalledNodeKindWire::HostScripted { profile } => Self::HostScripted { profile },
             InstalledNodeKindWire::HostSeededLink { profile } => Self::HostSeededLink { profile },
             InstalledNodeKindWire::ReferenceDevice {
@@ -231,6 +241,11 @@ enum InstalledNodeKindWire {
     },
     HostIo {
         profile: InstalledHostIoProfile,
+    },
+    /// Runs exact Block requests from an independently enrolled finite logical source.
+    HostRecordedBlock {
+        /// Binds the complete source file, native storage and precise run context.
+        profile: InstalledRecordedIngressProfile,
     },
     HostScripted {
         profile: InstalledScriptedSourceProfile,
@@ -846,6 +861,12 @@ impl InstalledNodeCatalog {
                         seeded::build_model(selection, profile, artifacts)?,
                     );
                 }
+                InstalledNodeKind::HostRecordedBlock { profile } => {
+                    models.insert(
+                        selection.node.clone(),
+                        io::build_model(selection, &profile.storage, artifacts)?,
+                    );
+                }
                 InstalledNodeKind::HostIo { profile } => {
                     models.insert(
                         selection.node.clone(),
@@ -959,6 +980,25 @@ impl InstalledNodeCatalog {
                 | InstalledNodeKind::Gem5ClosedEpochPreserving { .. } => {
                     return Err(refused(
                         "closed gem5 native custody cannot become a host model",
+                    ));
+                }
+                InstalledNodeKind::HostRecordedBlock { profile } => {
+                    let model = models.remove(&selection.node).ok_or_else(|| {
+                        refused("recorded Block original native custody disappeared")
+                    })?;
+                    let definition = recorded_ingress::from_scenario(&scenario, &selection.node)?;
+                    recorded_ingress::check_configuration(&profile.configuration, &definition)?;
+                    nodes.push(Box::new(
+                        HostModelNode::new(
+                            &graph,
+                            &selection.node,
+                            model,
+                            &evidence,
+                            HostModelResources::default(),
+                        )
+                        .map_err(native)?
+                        .with_recorded_ingress(&graph, definition, &evidence)
+                        .map_err(native)?,
                     ));
                 }
                 InstalledNodeKind::HostClock

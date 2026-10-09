@@ -14,6 +14,7 @@ mod implementation;
 mod input;
 mod lifecycle;
 mod lifecycle_resend;
+mod lineage;
 mod original_conflict;
 mod pending;
 mod preparation;
@@ -25,6 +26,7 @@ mod readiness;
 mod windows;
 
 pub use control::CnpControlledReference;
+pub use lineage::{OriginalRuntimeLineage, with_original_runtime_lineage};
 pub use preparation::{CnpPreparationFailure, CnpReferencePreparation, CnpReferenceQualification};
 pub use process::{CnpLaunchFailure, CnpLaunchGuard, CnpPeerCustody, CnpProcessCustodySlot};
 

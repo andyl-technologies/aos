@@ -400,3 +400,78 @@ crucible-qemu-plugin	src/runtime/native_run_control_tests	retry	1
 # SHA-256: 1f44a6b6afcd319e3fdf9bf2e8d80ef57d3fd5141a16f0e5969f394043173ff6
 crucible-daemon	src/node_observed_executor/factory/capabilities/host_exact_tests	std::thread::sleep	1
 crucible-daemon	src/node_observed_executor/factory/capabilities/host_exact_tests	thread::sleep	1
+
+# The recorded-ingress CLI fixture polls only its original queued request under
+# one absolute twenty-second deadline checked before and after each bounded
+# control exchange. Failed commands and assertions terminate that fixture.
+crucible-cli	tests/node_process/recorded_ingress	thread::sleep	1
+crucible-cli	tests/node_process/recorded_ingress	std::thread::sleep	1
+
+# Distinct ordered-consumption source operational waits and original idempotence.
+
+# The fixed1ms polls wait for actual original native quarantine under one5s absolute watchdog, then compare the original PID/start/ACK/closed receipt. No failed case is repeated.
+# Source: crates/crucible-node-provider/src/reference_lineage/association_tests.rs
+# SHA-256: 32d6f42c8114f771f7bb0a43e34cd9ee3d92a538d4d99cc331b414399867c0e5
+crucible-node-provider	src/reference_lineage/association_tests	thread::sleep	1
+crucible-node-provider	src/reference_lineage/association_tests	std::thread::sleep	1
+
+# The production10ms supervisor cadence polls retained original capsules and real Child/group reclamation. It conveys no modeled time and cannot redispatch a command or release unresolved custody.
+# Source: crates/crucible-node-provider/src/reference_lineage/custody.rs
+# SHA-256: 088cb94447c505a9b556e74e9760215cad56e62a4201e80c609a117cc6290d2c
+crucible-node-provider	src/reference_lineage/custody	thread::sleep	1
+crucible-node-provider	src/reference_lineage/custody	std::thread::sleep	1
+
+# The300ms final-read delay is an adversarial response input crossing one200ms original allowance; complete raw bytes remain Unknown. Other fixed polls use original group/readiness watchdogs. The30s auxiliary child is a finite hostile group member killed/reaped through its actual Child. retry in the loss-case name forbids retransmission and never repeats a failed test.
+# Source: crates/crucible-node-provider/src/reference_lineage/driver_tests.rs
+# SHA-256: 0958b5da05f7a86427c7fcc421a2ae7b239666a780e588d18da9383e6a62623b
+crucible-node-provider	src/reference_lineage/driver_tests	retry	1
+crucible-node-provider	src/reference_lineage/driver_tests	thread::sleep	1
+crucible-node-provider	src/reference_lineage/driver_tests	std::thread::sleep	1
+
+# The1ms readiness polls have one5s original watchdog and actual Child/peer checks. retry names the same original Close receipt idempotence assertion, not repeated execution of a failed case.
+# Source: crates/crucible-node-provider/src/reference_lineage/tests.rs
+# SHA-256: ad3ffc4b2473a81b21a1373ffa75dae791c07e6b18eab6464845994e036d46fb
+crucible-node-provider	src/reference_lineage/tests	retry	1
+crucible-node-provider	src/reference_lineage/tests	thread::sleep	1
+crucible-node-provider	src/reference_lineage/tests	std::thread::sleep	1
+
+# The production1ms readiness polls use one unchanged opaque allowance and actual child exit/peer credentials; no socket fragment renews it.
+# Source: crates/crucible-node-provider/src/reference_lineage/transport.rs
+# SHA-256: dcc66087e9ccec6338c00e4c97d6ae36e97cc8aecfddf794a71dfbb3f2e43c92
+crucible-node-provider	src/reference_lineage/transport	thread::sleep	1
+crucible-node-provider	src/reference_lineage/transport	std::thread::sleep	1
+
+# The single300ms adversarial delay expires the same200ms socket allowance after a positive first fragment. The test requires unread original input and no emitted replacement bytes, without failed-case retry.
+# Source: crates/crucible-node-provider/src/reference_lineage/transport_tests.rs
+# SHA-256: e733a90b8166992df02c18345b80e66cabe1c9972c9003a92b31c2ad51e8fb4f
+crucible-node-provider	src/reference_lineage/transport_tests	thread::sleep	1
+crucible-node-provider	src/reference_lineage/transport_tests	std::thread::sleep	1
+
+# The1ms loop waits for actual original companion quarantine under one3s opaque watchdog; exact original receipts remain retained and the first failed assertion terminates the case.
+# Source: crates/crucible-node-provider/src/reference_service/native_child_tests.rs
+# SHA-256: 0ad40931add0d72dfcab46a197bcd00561eac2b300c0f95d976b033b7d7925d7
+crucible-node-provider	src/reference_service/native_child_tests	thread::sleep	1
+
+# The production1ms reaper polling uses one opaque original quarantine allowance and returns unresolved without dropping the driver/journal. No modeled coordinates or execution retry arise.
+# Source: crates/crucible-node-provider/src/reference_service/native_supervision.rs
+# SHA-256: 5eb6138bb8c3c21d5f9767f20f946ffaba69e91192463fc61abb0c8109c1dbf8
+crucible-node-provider	src/reference_service/native_supervision	thread::sleep	1
+crucible-node-provider	src/reference_service/native_supervision	std::thread::sleep	1
+
+# The original two-group capsule is polled at most300times with10ms cadence after genuine source-owned Shutdown; actual original receipt/ACK and group reclamation are asserted once.
+# Source: crates/crucible-node-provider/tests/lineage_guarded.rs
+# SHA-256: f9e3cecb2054b88bd4608d69f1c26d7d1acf0f7c306c53ba44603cf10bbdc37f
+crucible-node-provider	tests/lineage_guarded	thread::sleep	1
+crucible-node-provider	tests/lineage_guarded	std::thread::sleep	1
+
+# The provider launch has one300-step10ms socket watchdog checking the same original PID. It never repeats realization or a failed assertion.
+# Source: crates/crucible-node-provider/tests/lineage_guarded/fixture.rs
+# SHA-256: eb786cdd91be03e048f2b4c7876f610bd28b17a2225f55a66b721ad3a54a0a86
+crucible-node-provider	tests/lineage_guarded/fixture	thread::sleep	1
+crucible-node-provider	tests/lineage_guarded/fixture	std::thread::sleep	1
+
+# The provider launch has one300-step10ms socket watchdog checking actual original Child.try_wait. No source model event or failed test is repeated.
+# Source: crates/crucible-node-provider/tests/lineage_source/fixture.rs
+# SHA-256: e7cfff159b7ac2dca2ed0ee66695fe796e5afaf5f112362636988aa54ffd48e2
+crucible-node-provider	tests/lineage_source/fixture	thread::sleep	1
+crucible-node-provider	tests/lineage_source/fixture	std::thread::sleep	1

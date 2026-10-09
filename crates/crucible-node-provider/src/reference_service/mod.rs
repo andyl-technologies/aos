@@ -9,11 +9,16 @@ mod control;
 mod effects;
 mod installed;
 mod limits;
+mod lineage_launch;
+mod lineage_measurement;
+mod native_child;
+mod native_supervision;
 pub mod profile;
 mod resources;
 mod retirement;
 mod security;
 mod server;
+mod source_evidence;
 mod transfer;
 
 pub use bootstrap::{
@@ -21,9 +26,10 @@ pub use bootstrap::{
     ReferenceServiceLaunchBootstrap,
 };
 pub use installed::ReferenceServiceInstalledLaunchBootstrap;
+pub use lineage_launch::ReferenceLineageLaunchBootstrap;
 pub use profile::{ProfileContent, ReferenceProfile};
 pub use resources::{ConsumedRequest, PublicationConsumption, RequestConsumption};
-pub use server::{serve, serve_installed, serve_selected};
+pub use server::{serve, serve_installed, serve_lineage, serve_selected};
 
 use crucible_node_contract::ContractError;
 use serde::Serialize;

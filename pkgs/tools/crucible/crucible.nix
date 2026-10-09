@@ -19,6 +19,7 @@
   gem5-arm-model-profile,
   gem5-arm-root-model-profile,
   crucible-reference-implementation,
+  crucible-reference-lineage-implementation,
   bash,
   coreutils,
   grep,
@@ -143,6 +144,9 @@
   rpcProtocolPatch = sourceConst "RPC ABI patch version" "pub const RPC_PROTOCOL_PATCH: u16 = " apiRpcAbi;
   rpcProtocolBuild = sourceStringConst "RPC ABI build tag" "pub const RPC_PROTOCOL_BUILD: &str = \"" apiRpcAbi;
   referenceQualificationInputs = lib.optionals (!stdenv.isCross) [crucible-reference-implementation];
+  # This distinct installation pins ordered-consumption source identity only;
+  # its native association/source-class qualification remains independently gated.
+  referenceLineageMechanismInputs = lib.optionals (!stdenv.isCross) [crucible-reference-lineage-implementation];
   # These fixed source-owned bundles remain separate from the SE profile.
   # Root bytes support the native mechanism API; the older model is fixture-only.
   armRootMechanismInputs = [gem5-arm-root-model-profile];
@@ -168,12 +172,14 @@
       # This descriptor supplies source identity only. Actual native qualification
       # retains its original complete population and cannot infer passing review.
       CRUCIBLE_REFERENCE_IMPLEMENTATION_MANIFEST = "${crucible-reference-implementation}/share/crucible/reference/implementation.json";
+      CRUCIBLE_REFERENCE_LINEAGE_IMPLEMENTATION_MANIFEST = "${crucible-reference-lineage-implementation}/share/crucible/reference-lineage/implementation.json";
     };
   controllerArtifactContract = {
     family = "crucible-apache-host-release-and-test";
     nativeInputs = map toString (
       [buildRustDev buildPkgConfig openssl sqlite buildProtobuf gem5-closed-profile]
       ++ referenceQualificationInputs
+      ++ referenceLineageMechanismInputs
       ++ armRootMechanismInputs
       ++ armModelFixtureInputs
     );
@@ -194,10 +200,11 @@
     buildDeps =
       [buildRustDev buildPkgConfig openssl sqlite buildProtobuf gem5-closed-profile]
       ++ referenceQualificationInputs
+      ++ referenceLineageMechanismInputs
       ++ armRootMechanismInputs
       ++ armModelFixtureInputs
       ++ lib.optionals stdenv.isCross [buildPackages.crucible-controller];
-    runtimeDeps = [openssl sqlite gem5-closed-profile] ++ referenceQualificationInputs ++ armRootMechanismInputs;
+    runtimeDeps = [openssl sqlite gem5-closed-profile] ++ referenceQualificationInputs ++ referenceLineageMechanismInputs ++ armRootMechanismInputs;
   };
   debugGatewayArtifactContract = {
     family = "crucible-gpl-debug-gateway-release-and-test";
@@ -307,9 +314,10 @@
     buildDeps =
       [buildRustDev buildPkgConfig openssl sqlite buildProtobuf gem5-closed-profile]
       ++ referenceQualificationInputs
+      ++ referenceLineageMechanismInputs
       ++ armRootMechanismInputs
       ++ armModelFixtureInputs;
-    runtimeDeps = [openssl sqlite gem5-closed-profile] ++ referenceQualificationInputs ++ armRootMechanismInputs;
+    runtimeDeps = [openssl sqlite gem5-closed-profile] ++ referenceQualificationInputs ++ referenceLineageMechanismInputs ++ armRootMechanismInputs;
     # The controller is the Apache side of a process boundary. Fail the build
     # if any QEMU-side implementation, guest kernel, or fixture enters either
     # its direct references or its runtime closure.
@@ -362,6 +370,31 @@
             -- \
             --ignored \
             --exact actual_source_installed_arm_bundle_remeasures_and_never_grants_admission
+          # The implementation depends on provider binaries, so its installed
+          # guard cohort runs only here, after that package is fully built.
+          # Missing runtime binding must fail this selected test before Child.
+          export CRUCIBLE_REFERENCE_LINEAGE_IMPLEMENTATION_MANIFEST="${crucible-reference-lineage-implementation}/share/crucible/reference-lineage/implementation.json"
+          cargo test \
+            --frozen \
+            --offline \
+            -j$NIX_BUILD_CORES \
+            -p crucible-node-provider \
+            --test lineage_guarded \
+            -- \
+            --ignored \
+            --list > lineage-installed-tests.txt
+          ${grep}/bin/grep -Fxq \
+            'borrowed_installed_callback_unwind_keeps_original_window_and_both_groups: test' \
+            lineage-installed-tests.txt
+          cargo test \
+            --frozen \
+            --offline \
+            -j$NIX_BUILD_CORES \
+            -p crucible-node-provider \
+            --test lineage_guarded \
+            -- \
+            --ignored \
+            --exact borrowed_installed_callback_unwind_keeps_original_window_and_both_groups
           cargo test \
             --frozen \
             --offline \

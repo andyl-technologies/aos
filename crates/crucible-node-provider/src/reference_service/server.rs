@@ -65,7 +65,13 @@ pub fn serve_selected(
     bootstrap: ReferenceServiceBootstrap,
     selection: PublicReferenceProfile,
 ) -> Result<(), ProviderError> {
-    serve_bound(socket, child, bootstrap, selection, &[])
+    serve_bound(
+        socket,
+        child,
+        bootstrap,
+        SourceSelection::Legacy(selection),
+        &[],
+    )
 }
 
 /// Serves a privately installed qualified binding without minting provider proof.
@@ -87,16 +93,46 @@ pub fn serve_installed(
         socket,
         child,
         launch.bootstrap,
-        launch.profile,
+        SourceSelection::Legacy(launch.profile),
         &launch.qualification_refs,
     )
+}
+
+/// Serves only the distinct private ordered-consumption source candidate.
+///
+/// Complete source admission and qualification remain independently installed;
+/// the original launch dialects cannot select this companion or proof codec.
+///
+/// # Errors
+/// Refuses another launch edition, changed measured binding, absent original
+/// host admission, invalid native resource bounds or transport installation.
+pub fn serve_lineage(
+    socket: &Path,
+    child: &Path,
+    launch: super::ReferenceLineageLaunchBootstrap,
+) -> Result<(), ProviderError> {
+    launch.validate()?;
+    serve_bound(
+        socket,
+        child,
+        launch.bootstrap,
+        SourceSelection::Lineage {
+            closed_ingress: launch.closed_ingress,
+        },
+        &launch.qualification_refs,
+    )
+}
+
+enum SourceSelection {
+    Legacy(PublicReferenceProfile),
+    Lineage { closed_ingress: bool },
 }
 
 fn serve_bound(
     socket: &Path,
     child: &Path,
     bootstrap: ReferenceServiceBootstrap,
-    selection: PublicReferenceProfile,
+    selection: SourceSelection,
     qualifications: &[ContentRef],
 ) -> Result<(), ProviderError> {
     bootstrap.validate()?;
@@ -116,7 +152,7 @@ fn serve_bound(
     let provider_executable = crate::conformance::measure_executable(&std::env::current_exe()?)?;
     let device_executable = crate::conformance::measure_executable(child)?;
     let profile = match selection {
-        PublicReferenceProfile::ChecksumJsonV1 => ReferenceProfile::build(
+        SourceSelection::Legacy(PublicReferenceProfile::ChecksumJsonV1) => ReferenceProfile::build(
             bootstrap.node_id.clone(),
             bootstrap.owner_id.clone(),
             provider_executable,
@@ -124,7 +160,7 @@ fn serve_bound(
             bootstrap.quantum_ps,
             bootstrap.host_budget_ns,
         ),
-        PublicReferenceProfile::ByteLinkedV1 { closed_ingress } => {
+        SourceSelection::Legacy(PublicReferenceProfile::ByteLinkedV1 { closed_ingress }) => {
             ReferenceProfile::build_public_linked(
                 bootstrap.node_id.clone(),
                 bootstrap.owner_id.clone(),
@@ -135,6 +171,15 @@ fn serve_bound(
                 closed_ingress,
             )
         }
+        SourceSelection::Lineage { closed_ingress } => ReferenceProfile::build_public_lineage(
+            bootstrap.node_id.clone(),
+            bootstrap.owner_id.clone(),
+            provider_executable,
+            device_executable,
+            bootstrap.quantum_ps,
+            bootstrap.host_budget_ns,
+            closed_ingress,
+        ),
     }?;
     let (binding, owner_binding) =
         profile.bind_qualified(bootstrap.authority.clone(), qualifications)?;
@@ -161,6 +206,14 @@ fn serve_bound(
         ready_receipt: None,
         contents: BTreeMap::new(),
         content_bytes: 0,
+        lineage_evidence: if profile.is_lineage() {
+            Some(super::source_evidence::SourceEvidence::new(bounded(
+                bootstrap.resource_limits.content_bytes,
+            )?)?)
+        } else {
+            None
+        },
+        lineage_predecessor: None,
         blobs,
         verified: BTreeMap::new(),
         pins: Vec::new(),

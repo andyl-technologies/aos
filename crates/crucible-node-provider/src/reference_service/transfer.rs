@@ -16,6 +16,16 @@ use super::object;
 use super::resources::Resources;
 
 mod closure;
+mod lineage;
+
+pub(super) fn verify_lineage_input_closure(
+    resources: &Resources,
+    original_parents: &[ContentRef],
+) -> Result<(), ProviderError> {
+    let value = object(serde_json::json!({"original_input_provenance":original_parents}))?;
+    lineage::control_closure(resources, &value)?;
+    Ok(())
+}
 
 pub(super) fn publish_control(
     connection: &mut Connection<UnixStream>,
@@ -63,23 +73,19 @@ fn publish_references(
     content: Vec<ContentRef>,
 ) -> Result<(), ProviderError> {
     for reference in content {
-        if journal
-            .resources()
-            .transferred
-            .borrow()
-            .contains(&reference.hash.digest)
-        {
+        if journal.resources().transferred(&reference)? {
             continue;
         }
+        let key = journal.resources().content_key(&reference)?;
         let bytes = journal.resources().content(&reference)?.to_vec();
-        let transfer_id = Id::new(format!("output-{}", reference.hash.digest))?;
+        let transfer_id = Id::new(format!("output-{key}"))?;
         let result = exchange(
             connection,
             authority,
             journal,
             sequence,
             Method::BlobBegin,
-            Id::new(format!("output-begin-{}", reference.hash.digest))?,
+            Id::new(format!("output-begin-{key}"))?,
             object(BlobBeginRequest {
                 transfer_id: transfer_id.clone(),
                 content: reference.clone(),
@@ -128,7 +134,7 @@ fn publish_references(
                 journal,
                 sequence,
                 Method::BlobChunk,
-                Id::new(format!("output-chunk-{}-{offset}", reference.hash.digest))?,
+                Id::new(format!("output-chunk-{key}-{offset}"))?,
                 object(BlobChunkRequest {
                     transfer_id: transfer_id.clone(),
                     offset: offset_value,
@@ -152,7 +158,7 @@ fn publish_references(
             journal,
             sequence,
             Method::BlobFinish,
-            Id::new(format!("output-finish-{}", reference.hash.digest))?,
+            Id::new(format!("output-finish-{key}"))?,
             object(BlobFinishRequest {
                 transfer_id: transfer_id.clone(),
                 extensions: Extensions::new(),
@@ -166,11 +172,7 @@ fn publish_references(
         }
         // This marks authenticated byte custody only. Native publication remains
         // blocked until a separate exact host consumption receipt is verified.
-        journal
-            .resources()
-            .transferred
-            .borrow_mut()
-            .insert(reference.hash.digest);
+        journal.resources().transferred.borrow_mut().insert(key);
     }
     Ok(())
 }
@@ -290,12 +292,18 @@ fn validate_ack(
         }
         (RequestBody::BlobFinish(request), MethodResult::BlobFinish(result)) => {
             request.transfer_id == result.transfer_id
-                && request
-                    .transfer_id
-                    .as_str()
-                    .strip_prefix("output-")
-                    .and_then(|digest| resources.contents.get(digest))
-                    .is_some_and(|(reference, _)| reference == &result.content)
+                && if resources.profile.is_lineage() {
+                    request.transfer_id.as_str()
+                        == format!("output-{}", resources.content_key(&result.content)?)
+                        && resources.content(&result.content).is_ok()
+                } else {
+                    request
+                        .transfer_id
+                        .as_str()
+                        .strip_prefix("output-")
+                        .and_then(|digest| resources.contents.get(digest))
+                        .is_some_and(|(reference, _)| reference == &result.content)
+                }
         }
         _ => false,
     };

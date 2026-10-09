@@ -780,6 +780,41 @@ runtime repair stack ending at `cbb361f8cb`, output
 that compilation result to these later semantic and phase changes. Their
 coherent application-target build remains required.
 
+## Source-owned lineage and recorded Block ingress
+
+The reference provider now exposes a distinct ordered-consumption source
+mechanism with borrowed original native rows, two-group custody and an opaque
+runtime association. Existing reference selection and exports remain available.
+Transport fragments share the original operational deadline; an expired final
+response is retained as unknown before quarantine, rather than accepting a
+late close or acknowledgement. These operational deadlines do not advance
+modeled time.
+
+The suite retains a source-built lineage implementation together with its
+source archive, contract, recipe, runtime closure and executable identities.
+The installed guard measures the supplied current tuple before launching a
+child and uses it for both original groups. The controller requires the exact
+test selector to exist and then runs it explicitly after package construction.
+An absent manifest binding refuses; historical scratch store paths are no
+longer a fallback. This qualifies component custody, not a source class,
+higher-hop causal lineage, native capture or admission readiness.
+
+Recorded Block ingress preserves authored input bodies and FIFO order through
+the owning executor. Whole-batch phase checks still precede native effects.
+Actual CLI submission and completed-record restart tests preserve result status
+and nonce after source removal; constructing another execution without its
+source refuses. Completed-record continuity does not restore an original input
+cursor or establish cold native continuation.
+
+Central verification passes 341 selected cases across the provider, CNP,
+recorded ingress, CLI, semantic timing, input-phase, QAPI and source-quality
+cohorts. The final provider cohort passes 276 default cases and the explicitly
+selected current installed guard passes separately. All 88 owned Rust files
+pass formatting; nine affected crates pass all-target strict checks. Earlier
+zero-selection command errors and failed historical package-binding attempts
+remain local evidence and are excluded from successful counts. Fresh coherent
+hermetic application, installed-package and boundary checks remain pending.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the

@@ -33,3 +33,15 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
 rustix = { workspace = true, features = ["net", "process"] }
+
+[[bin]]
+name = "crucible-reference-lineage-device"
+path = "src/bin/crucible-reference-lineage-device.rs"
+
+[[bin]]
+name = "crucible-reference-lineage-provider"
+path = "src/bin/crucible-reference-lineage-provider.rs"
+
+[[bin]]
+name = "crucible-reference-lineage-manifest"
+path = "src/bin/crucible-reference-lineage-manifest.rs"

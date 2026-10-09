@@ -5,6 +5,9 @@
 //! execution authority. The service obtains live authority from its private
 //! host bootstrap and verifies it independently of these content identities.
 
+#[path = "profile/lineage.rs"]
+mod lineage;
+
 use std::collections::BTreeMap;
 
 use crucible_node_contract::{
@@ -73,6 +76,7 @@ enum ProfileSelection {
     Closed,
     Linked { closed_ingress: bool },
     PublicLinked { closed_ingress: bool },
+    PublicLineage { closed_ingress: bool },
 }
 
 impl ReferenceProfile {
@@ -196,6 +200,38 @@ impl ReferenceProfile {
         )
     }
 
+    /// Builds the distinct source-owned ordered-consumption public candidate.
+    ///
+    /// Exact input event boundaries, native state ancestry and paired provenance
+    /// are selected separately from baseline same-time scalar parent semantics.
+    /// This profile declaration grants no source qualification or preservation.
+    ///
+    /// # Errors
+    /// Refuses malformed measured artifacts, zero bounds or invalid records.
+    pub fn build_public_lineage(
+        node: Id,
+        owner: Id,
+        provider_executable: ContentRef,
+        device_executable: ContentRef,
+        quantum_ps: U64,
+        host_budget_ns: U64,
+        closed_ingress: bool,
+    ) -> Result<Self, ProviderError> {
+        Self::build_selected(
+            node,
+            owner,
+            provider_executable,
+            device_executable,
+            quantum_ps,
+            host_budget_ns,
+            ProfileSelection::PublicLineage { closed_ingress },
+        )
+    }
+
+    pub(crate) fn is_lineage(&self) -> bool {
+        matches!(self.selection, ProfileSelection::PublicLineage { .. })
+    }
+
     /// Returns the selected public launch profile without granting authority.
     ///
     /// # Errors
@@ -206,16 +242,19 @@ impl ReferenceProfile {
             ProfileSelection::PublicLinked { closed_ingress } => {
                 Ok(PublicReferenceProfile::ByteLinkedV1 { closed_ingress })
             }
-            ProfileSelection::Closed | ProfileSelection::Linked { .. } => {
-                Err(ProviderError::Frame(
-                    "actor-native reference profile has no public launch selection",
-                ))
-            }
+            ProfileSelection::Closed
+            | ProfileSelection::Linked { .. }
+            | ProfileSelection::PublicLineage { .. } => Err(ProviderError::Frame(
+                "actor-native reference profile has no public launch selection",
+            )),
         }
     }
 
     pub(super) fn output_media_type(&self) -> &'static str {
-        if matches!(self.selection, ProfileSelection::PublicLinked { .. }) {
+        if matches!(
+            self.selection,
+            ProfileSelection::PublicLinked { .. } | ProfileSelection::PublicLineage { .. }
+        ) {
             "application/octet-stream"
         } else {
             "application/json"
@@ -240,9 +279,14 @@ impl ReferenceProfile {
                 | ProfileSelection::PublicLinked {
                     closed_ingress: true
                 }
+                | ProfileSelection::PublicLineage {
+                    closed_ingress: true
+                }
         );
         let native_linked = matches!(selection, ProfileSelection::Linked { .. });
-        let public_linked = matches!(selection, ProfileSelection::PublicLinked { .. });
+        let public_lineage = matches!(selection, ProfileSelection::PublicLineage { .. });
+        let public_linked =
+            matches!(selection, ProfileSelection::PublicLinked { .. }) || public_lineage;
         let byte_linked = native_linked || public_linked;
         let native_adapter = matches!(
             selection,
@@ -259,7 +303,9 @@ impl ReferenceProfile {
         let mut content = Vec::new();
         let model = put_text(
             &mut content,
-            if public_linked {
+            if public_lineage {
+                lineage::MODEL_SPECIFICATION
+            } else if public_linked {
                 PUBLIC_LINKED_MODEL_SPECIFICATION
             } else if native_linked {
                 LINKED_MODEL_SPECIFICATION
@@ -302,7 +348,9 @@ impl ReferenceProfile {
         let guarantees_ref = put_json(&mut content, &guarantees)?;
         let window = put_text(
             &mut content,
-            if public_linked {
+            if public_lineage {
+                lineage::WINDOW_SPECIFICATION
+            } else if public_linked {
                 PUBLIC_LINKED_WINDOW_SPECIFICATION
             } else if native_linked {
                 LINKED_WINDOW_SPECIFICATION
@@ -334,9 +382,23 @@ impl ReferenceProfile {
                 configuration_value["input_policy"] = json!("admitted-causal-source");
             }
         }
+        if public_lineage {
+            configuration_value["native_dialect"] = json!(crate::reference_lineage::DIALECT);
+            configuration_value["native_consumption_schema"] =
+                json!("crucible.reference.consumption-relation.v1");
+            configuration_value["maximum_input_events"] = json!("64");
+            configuration_value["maximum_native_windows"] = json!("64");
+            configuration_value["maximum_native_commands"] = json!("512");
+            configuration_value["maximum_native_journal_bytes"] = json!("8388608");
+            configuration_value["relation_reserved_bytes"] = json!("614400");
+        }
         let configuration = put_json(&mut content, &configuration_value)?;
         let facet = FacetSelection {
-            id: id("reference-device/quantized-v1")?,
+            id: id(if public_lineage {
+                "reference-device/quantized-lineage-v1"
+            } else {
+                "reference-device/quantized-v1"
+            })?,
             version: 1,
             configuration_ref: configuration.clone(),
             guarantees_ref: guarantees_ref.clone(),
@@ -477,10 +539,17 @@ impl ReferenceProfile {
         if !closed_ingress && !formats.contains(&input_schema) {
             formats.push(input_schema);
         }
+        if public_lineage {
+            lineage::add_formats(&mut content, &mut formats)?;
+        }
         formats.sort_by(|left, right| (&left.id, left.version).cmp(&(&right.id, right.version)));
         let implementation = ImplementationIdentity {
             schema_version: 1,
-            implementation_id: id("crucible-reference-device")?,
+            implementation_id: id(if public_lineage {
+                "crucible-reference-lineage"
+            } else {
+                "crucible-reference-device"
+            })?,
             artifacts: vec![
                 artifact("device", "device-executable", device_executable)?,
                 artifact("provider", "provider-executable", provider_executable)?,
@@ -504,7 +573,9 @@ impl ReferenceProfile {
 
         let configuration_schema = schema(
             &mut content,
-            if public_linked {
+            if public_lineage {
+                "reference-device/configuration-public-lineage-v1"
+            } else if public_linked {
                 "reference-device/configuration-public-linked-v1"
             } else if native_linked {
                 "reference-device/configuration-linked-v1"
@@ -513,7 +584,9 @@ impl ReferenceProfile {
             } else {
                 "reference-device/configuration-v1"
             },
-            if public_linked {
+            if public_lineage {
+                lineage::CONFIGURATION_SCHEMA
+            } else if public_linked {
                 PUBLIC_LINKED_CONFIGURATION_SCHEMA
             } else if native_linked {
                 LINKED_CONFIGURATION_SCHEMA
@@ -533,7 +606,13 @@ impl ReferenceProfile {
         let port_templates_ref = put_json(&mut content, &descriptor.ports)?;
         let node_manifest = NodeManifest {
             schema_version: 1,
-            profile_id: id(if public_linked {
+            profile_id: id(if public_lineage {
+                if closed_ingress {
+                    "reference-device/cnp-lineage-source-v1"
+                } else {
+                    "reference-device/cnp-lineage-consumer-v1"
+                }
+            } else if public_linked {
                 if closed_ingress {
                     "reference-device/cnp-linked-source-v1"
                 } else {
@@ -560,7 +639,9 @@ impl ReferenceProfile {
         };
         let provider_manifest = ProviderManifest {
             schema_version: 1,
-            provider_id: id(if native_adapter {
+            provider_id: id(if public_lineage {
+                "crucible-reference-lineage-provider"
+            } else if native_adapter {
                 "crucible-host-reference-adapter"
             } else {
                 "crucible-reference-provider"
@@ -580,7 +661,11 @@ impl ReferenceProfile {
                 vec![
                     id("cnp.control-evidence/1")?,
                     id("cnp.resume/1")?,
-                    id("reference-device/quantized-v1")?,
+                    id(if public_lineage {
+                        "reference-device/quantized-lineage-v1"
+                    } else {
+                        "reference-device/quantized-v1"
+                    })?,
                 ]
             } else {
                 vec![id("cnp.resume/1")?, id("reference-device/quantized-v1")?]

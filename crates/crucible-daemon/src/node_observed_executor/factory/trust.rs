@@ -454,6 +454,37 @@ impl ReferenceDeviceQualification for InstalledEvidence {
 }
 
 impl HostModelQualification for InstalledEvidence {
+    fn authenticate_recorded_ingress(
+        &self,
+        definition: &crucible::node_adapters::RecordedIngressDefinition,
+        descriptor: &NodeDescriptor,
+        binding: &NodeBinding,
+    ) -> Result<(), OperationFailure> {
+        self.authenticate_authority(binding).map_err(no_effect)?;
+        let enrollment = self.enrollment(&descriptor.id).map_err(no_effect)?;
+        if self.descriptors.get(&descriptor.id) != Some(descriptor)
+            || enrollment.model_bytes.is_none()
+            || binding
+                .compatibility
+                .implementation
+                .implementation_id
+                .as_str()
+                != "crucible-host-recorded-block-v1"
+        {
+            return Err(no_effect(evidence(
+                "recorded input has no original installed Block enrollment",
+            )));
+        }
+        let expected = super::recorded_ingress::from_content(descriptor, &self.content)
+            .map_err(|error| no_effect(evidence(&error.to_string())))?;
+        if &expected != definition {
+            return Err(no_effect(evidence(
+                "recorded input complete source closure differs from regenerated installation",
+            )));
+        }
+        Ok(())
+    }
+
     fn authenticate_model(
         &self,
         model: &HostModel,

@@ -9,6 +9,11 @@
 pub mod cnp;
 pub mod gem5;
 mod host;
+mod host_ingress;
+pub use host_ingress::{
+    RecordedIngressDefinition, RecordedLogicalInput, RecordedLogicalInputSource,
+    validate_recorded_input_source,
+};
 mod inventory;
 mod preparation_state;
 mod reference_device;

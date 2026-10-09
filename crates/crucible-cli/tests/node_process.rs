@@ -293,3 +293,6 @@ fn actual_cli_daemon_retains_mixed_node_provenance_without_redispatch_after_rest
         retained
     );
 }
+
+#[path = "node_process/recorded_ingress.rs"]
+mod recorded_ingress;

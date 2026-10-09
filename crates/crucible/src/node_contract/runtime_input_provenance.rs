@@ -303,7 +303,7 @@ impl NodeRuntime {
     }
 }
 
-fn reserve_objects(
+pub(super) fn reserve_objects(
     retained: &BTreeMap<ContentRef, InputPayload>,
     references: &[ContentRef],
     limits: InputProvenanceLimits,
@@ -337,7 +337,7 @@ fn reserve_objects(
     Ok(())
 }
 
-fn retain_objects(
+pub(super) fn retain_objects(
     retained: &mut BTreeMap<ContentRef, InputPayload>,
     references: &[ContentRef],
     objects: Vec<InputPayload>,

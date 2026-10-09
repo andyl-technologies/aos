@@ -44,16 +44,39 @@ impl Resources {
             publication,
             host_budget_ns: arguments.wall_budget_ns,
         };
+        if self.profile.is_lineage()
+            && (grant.quantum.get() == 0) != self.lineage_predecessor.is_none()
+        {
+            return Err(ProviderError::Correlation(
+                "lineage original public predecessor is incomplete",
+            ));
+        }
+        self.reserve_lineage_window()?;
         let child = self
             .child
             .as_mut()
             .ok_or(ProviderError::Correlation("native child disappeared"))?;
-        child.stage(grant.clone(), &self.input_bytes)?;
+        child.stage(grant.clone(), &input, &self.input_bytes)?;
         child.activate(&grant)?;
         let native = child.close(&grant)?;
         child.validate_receipt(&native)?;
         super::limits::verify_processes(Some(child.child_pid()))?;
-        let measurement = self.store_json(&native)?;
+        let relation_ref = child
+            .relation(&grant)?
+            .map(|relation| relation.reference().clone());
+        let measurement = if let Some(relation) = relation_ref {
+            self.store_json(super::lineage_measurement::LineageMeasurement {
+                schema: "crucible.reference.lineage-measurement.v1".into(),
+                native: native.clone(),
+                consumption_relation: relation,
+                accepted_input_custody: self.input_custody.clone().ok_or(
+                    ProviderError::Correlation("lineage accepted public input proof disappeared"),
+                )?,
+                previous_publication: self.lineage_predecessor.clone(),
+            })?
+        } else {
+            self.store_json(&native)?
+        };
         let output = serde_json::to_value(&native.output)
             .map_err(crucible_node_contract::ContractError::from)?;
         let output = canonical::canonical_json(&output)?;

@@ -14,11 +14,13 @@ mod session;
 pub use content::ClientContent;
 pub use deadline::{DeadlineStream, ExchangeDeadline};
 pub use reference::{
-    ObservationHandle, ObservationLimits, ObservationScope, ObservedContent, ObservedRequest,
-    ObservedRequestKey, OriginalConflictLimits, OriginalConflictObservation,
-    OriginalConflictObservationHandle, OriginalResponseLossObservation,
-    OriginalResponseLossObservationHandle, OriginalResponseLossQualification,
-    RecordedReferenceObservation, ReferenceController, ReferenceObservationSnapshot,
-    TransmissionLimits, TransmissionObservation, TransmissionObservationHandle,
+    LineageWindowRequests, ObservationHandle, ObservationLimits, ObservationScope, ObservedContent,
+    ObservedRequest, ObservedRequestKey, OriginalConflictLimits, OriginalConflictObservation,
+    OriginalConflictObservationHandle, OriginalLineageAcknowledgement, OriginalLineageEvidence,
+    OriginalLineageObject, OriginalLineageRealization, OriginalLineageWindow,
+    OriginalResponseLossObservation, OriginalResponseLossObservationHandle,
+    OriginalResponseLossQualification, RecordedReferenceObservation, ReferenceController,
+    ReferenceObservationSnapshot, TransmissionLimits, TransmissionObservation,
+    TransmissionObservationHandle,
 };
 pub use session::{ClientCustody, ClientOriginal, ClientPeer, ClientSession};

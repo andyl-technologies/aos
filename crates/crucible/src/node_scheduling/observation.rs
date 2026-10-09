@@ -159,6 +159,11 @@ impl ValidatedSchedulingObservation {
         }
     }
 
+    /// Borrows the original runtime-validated native data without issuing permissions.
+    pub fn native(&self) -> &NativeSchedulingObservation {
+        &self.observation
+    }
+
     /// Returns the native reached coordinate without converting it to input closure.
     pub fn reached(&self) -> Position {
         self.observation.reached

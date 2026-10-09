@@ -163,8 +163,8 @@ impl NodeObservedBackend {
     ///
     /// The caller supplies authenticated immutable input context in the same CAS
     /// namespace as the campaign repository. The initial implementation accepts
-    /// no authored external root events: actual external ingress requires the
-    /// scheduler's authenticated inventory path. It never invents empty closure.
+    /// only the independently installed recorded Block source for external root
+    /// events, through authentic owned inventories. It never invents empty closure.
     ///
     /// # Errors
     /// Refuses changed graph/artifact relations, unavailable input bytes, invalid
@@ -223,14 +223,26 @@ impl NodeObservedBackend {
                 "sealed graph differs from planned scenario bytes".into(),
             ));
         }
-        if !graph.coordinator_policy().external_inputs.is_empty() {
+        let declared_recorded: Vec<_> = scenario
+            .compatibility
+            .iter()
+            .filter(|binding| {
+                binding.implementation.implementation_id.as_str()
+                    == "crucible-host-recorded-block-v1"
+            })
+            .map(|binding| {
+                super::factory::recorded_ingress::from_scenario(&scenario, &binding.node_id)
+                    .map(|definition| definition.source().endpoint.clone())
+            })
+            .collect::<Result<_, _>>()?;
+        if graph.coordinator_policy().external_inputs != declared_recorded {
             return Err(NodeObservedError::Native(
-                "authored external ingress requires a qualified live inventory source".into(),
+                "external ingress has no exact selected recorded-source ownership".into(),
             ));
         }
-        // This edition accepts a closed no-ingress/no-fault context only. Exact
-        // canonical bytes bind the complete world and run policy; opaque labels
-        // or an arbitrary trace object cannot authenticate a different context.
+        // Nonempty ingress is accepted only by the distinct installed recorded
+        // source codec. Its complete input context is regenerated below; the
+        // admitted graph and actual adapter retain its original owned FIFO.
         let actual_inputs = blobs.read(inputs, None)?.read_all(16 * 1024 * 1024)?;
         if actual_inputs != input_context_bytes(&scenario, &configuration)? {
             return Err(NodeObservedError::Native(
@@ -600,6 +612,49 @@ impl ObservedAttemptBackend for NodeObservedBackend {
             }
         }
         self.activation = Some(runtime.activate(self.publisher.as_mut()).map_err(native)?);
+        let activation = self
+            .activation
+            .as_ref()
+            .ok_or_else(|| NodeObservedError::Native("original activation disappeared".into()))?;
+        for endpoint in &self.graph.coordinator_policy().external_inputs {
+            let observed = runtime
+                .observe_scheduling(activation, &endpoint.node_id)
+                .map_err(native)?;
+            let objects = runtime
+                .scheduling_evidence(
+                    &observed,
+                    crucible::node_contract::InputProvenanceLimits {
+                        maximum_objects: 32,
+                        maximum_bytes: 2 * 1024 * 1024,
+                    },
+                )
+                .map_err(native)?;
+            let event = serde_json::json!({
+                "format":"crucible.recorded-input-initial-boundary","version":1,
+                "observation":observed.native(),
+                "objects":objects.into_iter().map(|object| serde_json::json!({
+                    "reference":object.reference,"bytes":crucible_node_contract::Bytes::new(object.bytes),
+                })).collect::<Vec<_>>(),
+            });
+            let bytes = canonical::canonical_json(&event)?;
+            let id = ContentId::for_bytes(ObjectKind::Trace, 1, &bytes);
+            // Preserve GC visibility even if placement reports uncertain durability.
+            self.evidence_roots.insert(id);
+            retain_event(&mut self.native_evidence, &mut self.provenance_bytes, event)?;
+            let receipt = self
+                .blobs
+                .put_if_absent(id, &BlobHandle::from_bytes(bytes))?;
+            if receipt.id != id || !receipt.is_durable() {
+                return Err(NodeObservedError::Native(
+                    "original input boundary is not durable".into(),
+                ));
+            }
+            runtime
+                .scheduler(&self.graph, activation)
+                .map_err(native)?
+                .accept_boundary_observation(observed)
+                .map_err(native)?;
+        }
         Ok(())
     }
 
@@ -787,6 +842,44 @@ pub(super) fn input_context_bytes(
     scenario: &NodeScenario,
     configuration: &NodeRunConfiguration,
 ) -> Result<Vec<u8>, NodeObservedError> {
+    let mut ingress = Vec::new();
+    for descriptor in &scenario.descriptors {
+        let binding = scenario
+            .compatibility
+            .iter()
+            .find(|binding| binding.node_id == descriptor.id)
+            .ok_or_else(|| NodeObservedError::Native("input context node binding absent".into()))?;
+        if binding.implementation.implementation_id.as_str() == "crucible-host-recorded-block-v1" {
+            let definition =
+                super::factory::recorded_ingress::from_scenario(scenario, &descriptor.id)?;
+            super::factory::recorded_ingress::check_configuration(configuration, &definition)?;
+            let objects: Vec<_> = definition
+                .objects()
+                .iter()
+                .map(|object| crate::node_scenario::ScenarioContent {
+                    reference: object.reference.clone(),
+                    bytes: object.bytes.clone(),
+                })
+                .collect();
+            ingress.push(serde_json::json!({"endpoint":definition.source().endpoint,
+                "root":definition.root(),"original_objects":objects}));
+        }
+    }
+    if !ingress.is_empty() {
+        if ingress.len() != 1 || scenario.descriptors.len() != 1 {
+            return Err(NodeObservedError::Native(
+                "recorded input context exceeds selected single Block scope".into(),
+            ));
+        }
+        return Ok(canonical::canonical_json(&serde_json::json!({
+            "format":"crucible.node-input-context","version":2,
+            "world":scenario.world.identity()?,
+            "configuration":configuration.artifact(scenario)?.id()?.to_text(),
+            "external_inputs":ingress,"faults":[],"ordering_profile":"superdense-v1",
+            "clock_policy":"authored Publication microstep0; actual common Delivery/InputLatch/Reaction",
+            "physical_sampling":false,"capture_restore":"unqualified"
+        }))?);
+    }
     Ok(canonical::canonical_json(&serde_json::json!({
         "format":"crucible.node-input-context","version":1,
         "world":scenario.world.identity()?,

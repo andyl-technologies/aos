@@ -409,3 +409,11 @@ fn references(value: &Value, output: &mut Vec<ContentRef>) -> Result<(), Provide
     }
     Ok(())
 }
+
+#[path = "reference/lineage.rs"]
+mod lineage;
+
+pub use lineage::{
+    LineageWindowRequests, OriginalLineageAcknowledgement, OriginalLineageEvidence,
+    OriginalLineageObject, OriginalLineageRealization, OriginalLineageWindow,
+};

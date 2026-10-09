@@ -255,8 +255,28 @@ impl NativeInputVerifier<Resources> for NativeVerifier {
                 "closed reference source cannot accept nonempty input",
             ));
         }
+        if resources.profile.is_lineage() && batch.events.len() > 64 {
+            return Err(ProviderError::ResourceExhausted(
+                "lineage original input event slots",
+            ));
+        }
+        if resources.profile.is_lineage() {
+            let original_parents: Vec<_> = batch
+                .events
+                .iter()
+                .map(|event| event.provenance_ref.clone())
+                .collect();
+            super::transfer::verify_lineage_input_closure(resources, &original_parents)?;
+        }
         let mut total = 0usize;
         for event in &batch.events {
+            if resources.profile.is_lineage()
+                && event.payload.media_type != "application/octet-stream"
+            {
+                return Err(ProviderError::Correlation(
+                    "selected lineage byte role differs",
+                ));
+            }
             if event.destination.node_id != resources.bootstrap.node_id
                 || event.destination.port_id.as_str() != "data"
                 || event.destination.lane_id.as_str() != "input"
@@ -273,7 +293,7 @@ impl NativeInputVerifier<Resources> for NativeVerifier {
             if total > crate::reference_device::MAX_INPUT_BYTES {
                 return Err(ProviderError::ResourceExhausted("reference input bytes"));
             }
-            if !resources.contents.contains_key(&event.payload.hash.digest)
+            if resources.content(&event.payload).is_err()
                 && !resources.verified.contains_key(&event.payload.hash.digest)
             {
                 return Err(ProviderError::Correlation(

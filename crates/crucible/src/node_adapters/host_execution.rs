@@ -224,6 +224,11 @@ impl HostModelNode {
                 "host original input staging identity or history ceiling exhausted",
             ));
         }
+        if let Some(ingress) = &self.recorded_ingress {
+            for (index, delivery) in batch.deliveries().iter().enumerate() {
+                ingress.validate_delivery(delivery, index)?;
+            }
+        }
         let mut total = 0usize;
         for delivery in batch.deliveries() {
             if self.input_endpoint.as_ref() != Some(&delivery.consumer_endpoint)
@@ -561,6 +566,13 @@ impl HostModelNode {
                 evidence.push(object);
             }
         }
+        if let Some(ingress) = &self.recorded_ingress {
+            for object in ingress.objects() {
+                if references.insert(object.reference.clone()) {
+                    evidence.push(object.clone());
+                }
+            }
+        }
         for publication in &publications {
             if references.insert(publication.payload.clone()) {
                 evidence.push(InputPayload {
@@ -608,7 +620,7 @@ impl HostModelNode {
             }],
             publications,
             input_progress,
-            external_inputs: Vec::new(),
+            external_inputs: self.recorded_inventory()?,
             proof_ref,
         };
         Ok((
@@ -688,6 +700,9 @@ impl HostModelNode {
             .get(staged.consumed)
             .ok_or_else(|| failure("original host input prefix exhausted"))?;
         let bytes = payload(&staged.original, &delivery.payload)?;
+        if let Some(ingress) = &self.recorded_ingress {
+            ingress.validate_delivery(delivery, 0)?;
+        }
         let cause = vec![delivery.delivery];
         let input_reaction = self.input_reaction(delivery.delivery)?;
         match self.model.as_mut() {
@@ -762,6 +777,9 @@ impl HostModelNode {
         }
         if self.pending_causes.len() > self.limits.maximum_operations {
             return Err(failure("host causal continuation exceeds event ceiling"));
+        }
+        if let Some(ingress) = &mut self.recorded_ingress {
+            ingress.consumed();
         }
         if let Some(staged) = self.staged.as_mut() {
             staged.consumed += 1;
@@ -1010,7 +1028,7 @@ impl HostModelNode {
             }],
             publications: Vec::new(),
             input_progress: None,
-            external_inputs: Vec::new(),
+            external_inputs: self.recorded_inventory()?,
             proof_ref,
         };
         self.activation_authority = Some(Rc::clone(&activation.authority));
@@ -1033,6 +1051,7 @@ impl HostModelNode {
             || retained != observation
             || observation.reached != self.boundary
             || observation.proof_ref != self.native_state_ref()?
+            || observation.external_inputs != self.recorded_inventory()?
         {
             return Err(failure(
                 "host observation lost actual complete state custody",

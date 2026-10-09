@@ -13,6 +13,9 @@ pub(super) fn control_closure(
     resources: &Resources,
     result: &Map<String, Value>,
 ) -> Result<Vec<ContentRef>, ProviderError> {
+    if resources.profile.is_lineage() {
+        return super::lineage::control_closure(resources, result);
+    }
     let mut output = Vec::new();
     let mut visited = BTreeMap::new();
     visit(

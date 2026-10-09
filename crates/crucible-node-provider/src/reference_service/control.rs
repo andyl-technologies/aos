@@ -3,11 +3,12 @@
 use crucible_node_contract::*;
 use serde_json::json;
 
+use super::native_child::ReferenceChild;
 use crate::ProviderError;
 use crate::blob::{BlobSchemaVerifier, TransferKey};
 use crate::bodies::*;
 use crate::envelope::{Envelope, RequestOrigin};
-use crate::reference_device::{DeviceStatus, ReferenceDevice};
+use crate::reference_device::DeviceStatus;
 
 use super::completed;
 use super::resources::{PublicationConsumption, Resources};
@@ -165,13 +166,17 @@ impl Resources {
                 "realization differs from privately admitted immutable resources",
             ));
         }
-        self.child = Some(ReferenceDevice::spawn(
+        if let Some(evidence) = &self.lineage_evidence {
+            evidence.preflight_initialization()?;
+        }
+        self.child = Some(ReferenceChild::spawn(
             &self.child_path,
             &self.socket_parent,
             self.bootstrap.owner_id.clone(),
             self.bootstrap.authority.incarnation_id.clone(),
             self.bootstrap.authority.owner_generation,
             self.timeout(),
+            self.profile.is_lineage(),
         )?);
         let child = self.child.as_ref().ok_or(ProviderError::Correlation(
             "actual child failed to establish custody",
@@ -195,10 +200,45 @@ impl Resources {
                 "actual child executable differs from installed measurement",
             ));
         }
-        let native = self.store_json(
-            json!({"child_pid":U64::new(u64::from(child.child_pid())),"application_status":"parked",
-            "native_executable":measured,"physical_pause":"unknown"}),
-        )?;
+        let origin = child
+            .origin()?
+            .map(|origin| {
+                Ok::<_, ProviderError>((
+                    origin.child_pid(),
+                    origin.start_ticks(),
+                    origin.owner().clone(),
+                    origin.incarnation().clone(),
+                    origin.generation(),
+                    origin.initialization().request_bytes().to_vec(),
+                    origin.initialization().response_wire_bytes().to_vec(),
+                ))
+            })
+            .transpose()?;
+        let native = if let Some((
+            pid,
+            start_ticks,
+            owner,
+            incarnation,
+            generation,
+            request,
+            response,
+        )) = origin
+        {
+            let initialize_request = self.store(request, "application/json")?;
+            let initialize_response_wire =
+                self.store(response, "application/vnd.crucible.reference-native-wire")?;
+            self.store_json(json!({
+                "schema":"crucible.reference.lineage-origin.v1",
+                "child_pid":U64::new(u64::from(pid)),"original_kernel_start_ticks":start_ticks,
+                "owner":owner,"incarnation":incarnation,"owner_generation":generation,
+                "dialect":crate::reference_lineage::DIALECT,"application_status":"parked",
+                "native_executable":measured,"physical_pause":"unknown",
+                "initialize_request":initialize_request,"initialize_response_wire":initialize_response_wire,
+            }))?
+        } else {
+            self.store_json(json!({"child_pid":U64::new(u64::from(child.child_pid())),"application_status":"parked",
+                "native_executable":measured,"physical_pause":"unknown"}))?
+        };
         let record = ClosedGateRecord {
             schema_version: 1,
             gate_id: self.bootstrap.gate_id.clone(),
@@ -602,22 +642,35 @@ impl Resources {
             || receipt.observation_batch_hash != window.observation.identity()?
             || receipt.stop_receipt != window.stop
             || receipt.publication != window.grant.publication
-            || !self.transferred.borrow().contains(&window.stop.hash.digest)
-            || !self
-                .transferred
-                .borrow()
-                .contains(&window.observation_ref.hash.digest)
-            || window.observation.events.iter().any(|event| {
-                !self
-                    .transferred
-                    .borrow()
-                    .contains(&event.payload.hash.digest)
-            })
+            || !self.transferred(&window.stop)?
+            || !self.transferred(&window.observation_ref)?
+            || window
+                .observation
+                .events
+                .iter()
+                .try_fold(false, |missing, event| {
+                    Ok::<_, ProviderError>(missing || !self.transferred(&event.payload)?)
+                })?
         {
             return Err(ProviderError::Correlation(
                 "semantic output consumption lacks original native and transferred custody",
             ));
         }
+        let predecessor = if self.profile.is_lineage() {
+            Some(super::lineage_measurement::LineagePublicPredecessor {
+                measurement: window.measurement.clone(),
+                stop_receipt: window.stop.clone(),
+                observation_batch: window.observation_ref.clone(),
+                publication_consumption: reference.clone(),
+                committed_observation: window.committed_ref.clone().ok_or(
+                    ProviderError::Correlation(
+                        "lineage original committed public observation unavailable",
+                    ),
+                )?,
+            })
+        } else {
+            None
+        };
         let grant = window.grant.clone();
         self.child
             .as_mut()
@@ -629,6 +682,7 @@ impl Resources {
             .as_mut()
             .ok_or(ProviderError::Correlation("native output disappeared"))?
             .publication_acknowledged = true;
+        self.lineage_predecessor = predecessor;
         self.consumed.insert(reference.hash.digest.clone());
         self.next_quantum = self.next_quantum.checked_add(U64::new(1))?;
         self.input = None;

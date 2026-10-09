@@ -1139,6 +1139,9 @@ mod initial;
 #[path = "runtime_evidence.rs"]
 mod evidence;
 
+#[path = "runtime_boundary_evidence.rs"]
+mod boundary_evidence;
+
 #[path = "runtime_continuation.rs"]
 mod continuation;
 

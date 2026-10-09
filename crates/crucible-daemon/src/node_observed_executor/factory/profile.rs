@@ -5,6 +5,7 @@ mod direct_recording_pair;
 
 mod io;
 mod linked;
+mod recorded_ingress;
 mod scripted;
 mod seeded;
 mod semantic_connections;
@@ -41,6 +42,34 @@ pub(super) fn build_world(
     device: &ContentRef,
     artifacts: &BTreeMap<String, super::InstalledIoArtifact>,
 ) -> Result<ResolvedWorld, NodeObservedError> {
+    let selected: Vec<_> = selections
+        .iter()
+        .filter_map(|selected| match &selected.kind {
+            InstalledNodeKind::HostRecordedBlock { profile } => Some((selected, profile)),
+            _ => None,
+        })
+        .collect();
+    if selected.is_empty() {
+        return build_world_once(selections, host, device, artifacts, None);
+    }
+    if selections.len() != 1 || selected.len() != 1 {
+        return Err(refused(
+            "recorded ingress currently requires one complete installed Block owner",
+        ));
+    }
+    let original = build_world_once(selections, host, device, artifacts, None)?;
+    let projection =
+        super::recorded_ingress::projection(&original.scenario, &selected[0].1.configuration)?;
+    build_world_once(selections, host, device, artifacts, Some(&projection))
+}
+
+fn build_world_once(
+    selections: &[InstalledNodeSelection],
+    host: &ContentRef,
+    device: &ContentRef,
+    artifacts: &BTreeMap<String, super::InstalledIoArtifact>,
+    projection: Option<&crucible::node_scheduling::InputPayload>,
+) -> Result<ResolvedWorld, NodeObservedError> {
     if selections.is_empty()
         || selections.len() > 64
         || selections
@@ -62,6 +91,11 @@ pub(super) fn build_world(
     let qualification = put(
         &mut contents,
         if selections
+            .iter()
+            .any(|selection| matches!(selection.kind, InstalledNodeKind::HostRecordedBlock { .. }))
+        {
+            b"crucible installed recorded Block ingress v1: independently measured host implementation and enrolled immutable base/source record; complete original logical FIFO, source IDs/ordinals, exact Publication0 conversion and actual native semantic consumption; all-owner durable activation; no physical capture, live append, host-time conversion, cursor capture/restore, faults, debug or fork".to_vec()
+        } else if selections
             .iter()
             .any(|selection| matches!(selection.kind, InstalledNodeKind::HostSeededLink { .. }))
         {
@@ -154,6 +188,18 @@ pub(super) fn build_world(
                     artifacts,
                     host,
                     &qualification,
+                    &mut contents,
+                )?
+            }
+            InstalledNodeKind::HostRecordedBlock { profile } => {
+                accepted_limited.push(selection.node.clone());
+                recorded_ingress::profile(
+                    selection,
+                    profile,
+                    artifacts,
+                    host,
+                    &qualification,
+                    projection,
                     &mut contents,
                 )?
             }
@@ -298,19 +344,28 @@ pub(super) fn build_world(
         inventory_proof_ref: qualification.clone(),
     };
     let ownership_ref = put_json(&mut contents, &ownership)?;
+    let external_inputs = selections
+        .iter()
+        .filter_map(|selection| match selection.kind {
+            InstalledNodeKind::HostRecordedBlock { .. } => {
+                Some(super::recorded_ingress::endpoint(&selection.node))
+            }
+            _ => None,
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let coordinator = CoordinatorPolicy {
         schema_version: 1,
         state_closure_ref: qualification.clone(),
         maximum_microsteps_per_instant: U64::new(1024),
         same_time_closure: Vec::new(),
         operational_policy_ref: qualification.clone(),
-        external_inputs: Vec::new(),
+        external_inputs: external_inputs.clone(),
     };
     let coordinator_ref = put_json(&mut contents, &coordinator)?;
     let scenario_ref = put_json(
         &mut contents,
         &serde_json::json!({"format":"crucible.installed-node-selection",
-        "version":1,"nodes":selections,"connections":connections,"external_inputs":[],"faults":[]}),
+        "version":1,"nodes":selections,"connections":connections,"external_inputs":external_inputs,"faults":[]}),
     )?;
     let initialization_ref = put_json(
         &mut contents,

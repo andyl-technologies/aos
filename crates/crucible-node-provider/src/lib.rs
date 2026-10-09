@@ -22,6 +22,7 @@ pub mod handshake;
 pub mod journal;
 pub mod native_journal;
 pub mod reference_device;
+pub mod reference_lineage;
 pub mod reference_service;
 pub mod session;
 pub mod transport;
