@@ -865,39 +865,6 @@ const fn live_state(state: LifecycleStateKind) -> LiveStateKind {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn continue_acknowledges_an_immediate_breakpoint_pause() {
-        let mut observed = LiveSnapshotView {
-            state_kind: LiveStateKind::Paused,
-            outcome: None,
-            terminal_savepoint: None,
-            configuration: crucible_engine::ContentHash::default(),
-            virtual_time: crucible_engine::VirtualTime::default(),
-            event_log_len: 0,
-            quanta_stepped: 0,
-            control_acknowledgements: 0,
-            state_transition_sequence: 7,
-        };
-        assert!(!streaming_state_satisfies_ack(
-            SessionCommandKind::Continue,
-            LiveStateKind::Running,
-            &observed,
-            7,
-        ));
-        observed.state_transition_sequence = 9;
-        assert!(streaming_state_satisfies_ack(
-            SessionCommandKind::Continue,
-            LiveStateKind::Running,
-            &observed,
-            7,
-        ));
-    }
-}
-
 impl crucible_control_client::LocalWatchStream for ControlStream {
     fn attached(&self) -> &Attached {
         ControlStream::attached(self)
@@ -959,5 +926,38 @@ impl crucible_control_client::LocalWatchStream for WatchStream {
         Box<dyn std::future::Future<Output = Option<StreamingStateUpdateFrame>> + Send + '_>,
     > {
         Box::pin(WatchStream::recv_state_update(self))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn continue_acknowledges_an_immediate_breakpoint_pause() {
+        let mut observed = LiveSnapshotView {
+            state_kind: LiveStateKind::Paused,
+            outcome: None,
+            terminal_savepoint: None,
+            configuration: crucible_engine::ContentHash::default(),
+            virtual_time: crucible_engine::VirtualTime::default(),
+            event_log_len: 0,
+            quanta_stepped: 0,
+            control_acknowledgements: 0,
+            state_transition_sequence: 7,
+        };
+        assert!(!streaming_state_satisfies_ack(
+            SessionCommandKind::Continue,
+            LiveStateKind::Running,
+            &observed,
+            7,
+        ));
+        observed.state_transition_sequence = 9;
+        assert!(streaming_state_satisfies_ack(
+            SessionCommandKind::Continue,
+            LiveStateKind::Running,
+            &observed,
+            7,
+        ));
     }
 }
