@@ -12,6 +12,7 @@
 //! The modules divide responsibility as follows:
 //!
 //! - [`pidfd`] pins a process and obtains typed namespace descriptors;
+//! - [`self_execution`] retains and revalidates the calling process's kernel identity;
 //! - [`inherited_fd`] safely duplicates unowned process-start descriptors;
 //! - [`fixed_spawn`] executes one absolute program with an exact inherited descriptor table;
 //! - [`path`] resolves descendants beneath a pre-opened directory;

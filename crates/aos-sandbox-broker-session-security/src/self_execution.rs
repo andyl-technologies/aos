@@ -1,4 +1,8 @@
-//! Retained pidfd guard for the custody process itself.
+//! Private endpoint currentness and native-observation error policy.
+//!
+//! Linux retains the process descriptor and execution baseline. This wrapper
+//! preserves endpoint custody's error vocabulary and private currentness test
+//! seam while mapping every native refusal to `ExecutionChanged`.
 
 use aos_sandbox_linux::self_execution::RetainedSelfExecutionGuard as NativeRetainedSelfExecutionGuard;
 

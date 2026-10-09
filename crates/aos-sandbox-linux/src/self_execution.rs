@@ -14,11 +14,30 @@ use std::num::NonZeroU32;
 use crate::boot::KernelBootId;
 use crate::pidfd::{PidFd, PidFdCredentials, PidFdInfo, PidFdProcessIdentity};
 
+/// A redacted refusal to capture or revalidate the current process.
+///
+/// Native errors, incomplete observations, and identity mismatches all return
+/// this error without disclosing observed identifiers or kernel causes.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 #[error("retained process execution observation refused")]
 pub struct SelfExecutionObservationError;
 
-/// Retains the loading process's pidfd and stable execution baseline.
+/// Retains the current process's pidfd and stable execution baseline.
+///
+/// Capture selects the calling process through the kernel. The descriptor and
+/// baseline remain private, and revalidation reuses that same descriptor.
+/// This guard establishes observed process identity without granting role or
+/// session authority.
+///
+/// # Examples
+///
+/// ```no_run
+/// use aos_sandbox_linux::self_execution::RetainedSelfExecutionGuard;
+///
+/// let guard = RetainedSelfExecutionGuard::capture()?;
+/// guard.validate_current()?;
+/// # Ok::<(), aos_sandbox_linux::self_execution::SelfExecutionObservationError>(())
+/// ```
 pub struct RetainedSelfExecutionGuard {
     pidfd: PidFd,
     baseline: ExecutionBaseline,
@@ -26,6 +45,12 @@ pub struct RetainedSelfExecutionGuard {
 
 impl RetainedSelfExecutionGuard {
     /// Captures and validates the current process through one newly opened pidfd.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SelfExecutionObservationError`] if a native observation fails,
+    /// required credentials or a nonzero cgroup identity are absent, or the
+    /// scalar, pidfd, procfs identity, and liveness observations disagree.
     pub fn capture() -> Result<Self, SelfExecutionObservationError> {
         let mut source = KernelObservationSource;
         let (pidfd, baseline) = capture_with(&mut source)?;
@@ -39,6 +64,18 @@ impl RetainedSelfExecutionGuard {
 }
 
 impl RetainedSelfExecutionGuard {
+    /// Validates the current process against its original retained baseline.
+    ///
+    /// Checks boot identity, PID, TGID, start time, every credential dimension,
+    /// cgroup identity, and liveness through the original retained descriptor.
+    /// Parent identity may change between calls but must agree within each
+    /// observation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SelfExecutionObservationError`] if a native observation fails,
+    /// required observations are absent or inconsistent, the process is no
+    /// longer alive, or its stable execution baseline has changed.
     pub fn validate_current(&self) -> Result<(), SelfExecutionObservationError> {
         let mut source = KernelObservationSource;
         validate_with(&mut source, &self.pidfd, self.baseline)
