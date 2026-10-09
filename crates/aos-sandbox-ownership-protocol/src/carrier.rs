@@ -741,6 +741,20 @@ mod tests {
             decode_client_hello_v1(&trailing),
             Err(OwnershipCarrierErrorV1::Malformed)
         );
+
+        let mut zero_nonce = encode_client_hello_v1(&hello);
+        zero_nonce[8..40].fill(0);
+        assert_eq!(
+            decode_client_hello_v1(&zero_nonce),
+            Err(OwnershipCarrierErrorV1::Protocol(
+                OwnershipProtocolValidationError::InvalidNonce
+            ))
+        );
+        zero_nonce.push(0);
+        assert_eq!(
+            decode_client_hello_v1(&zero_nonce),
+            Err(OwnershipCarrierErrorV1::Malformed)
+        );
     }
 
     #[test]
@@ -813,6 +827,26 @@ mod tests {
             decode_response_v1(&session, &request, &truncated),
             Err(OwnershipCarrierErrorV1::Malformed)
         );
+
+        // Exercise artifact bounds and EOF with valid outer framing.
+        for length in [0, MAXIMUM_LEASE_BYTES as u32 + 1] {
+            let mut invalid_length = encoded.clone();
+            invalid_length[HEADER_BYTES..HEADER_BYTES + 4]
+                .copy_from_slice(&length.to_be_bytes());
+            assert_eq!(
+                decode_response_v1(&session, &request, &invalid_length),
+                Err(OwnershipCarrierErrorV1::Malformed)
+            );
+        }
+        for mut malformed in [truncated, [encoded.as_slice(), &[0]].concat()] {
+            let body_length = (malformed.len() - HEADER_BYTES) as u32;
+            malformed[HEADER_BYTES - 4..HEADER_BYTES]
+                .copy_from_slice(&body_length.to_be_bytes());
+            assert_eq!(
+                decode_response_v1(&session, &request, &malformed),
+                Err(OwnershipCarrierErrorV1::Malformed)
+            );
+        }
 
         let mut wrong_transaction = encoded;
         wrong_transaction[44] ^= 1;
