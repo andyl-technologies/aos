@@ -12,9 +12,11 @@ mod service;
 pub use activation::StoredWorldActivationPublisher;
 pub use backend::{NodeObservedAdmission, NodeObservedBackend, NodeObservedError};
 pub use factory::{
-    InstalledHostIoProfile, InstalledHostStateFactory, InstalledIoArtifact,
-    InstalledIoArtifactSource, InstalledNodeCatalog, InstalledNodeKind, InstalledNodeSelection,
-    InstalledPreparedWorld, InstalledScriptedSourceProfile,
+    InstalledGem5ClosedProfile, InstalledHostIoProfile, InstalledHostStateFactory,
+    InstalledIoArtifact, InstalledIoArtifactSource, InstalledNodeCatalog, InstalledNodeKind,
+    InstalledNodeSelection, InstalledPreparedWorld, InstalledRecordedWorld,
+    InstalledReferenceRecording, InstalledScriptedSourceProfile, MAX_KVM_CANDIDATE_POLICY_BYTES,
+    load_installed_kvm_candidate, prepare_installed_kvm_candidate,
 };
 pub use service::{
     NodeObservationRetention, NodeObservationService, NodeObservationServiceConfig,

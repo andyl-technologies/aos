@@ -295,7 +295,7 @@ pub(super) fn build_world(
     })
 }
 
-fn clock_profile(
+pub(super) fn clock_profile(
     selection: &InstalledNodeSelection,
     host: &ContentRef,
     qualification: &ContentRef,
@@ -448,7 +448,7 @@ fn placeholder_authority(receipt: &ContentRef) -> Result<LiveAuthority, NodeObse
     })
 }
 
-fn put_json(
+pub(super) fn put_json(
     contents: &mut BTreeMap<String, ScenarioContent>,
     value: &impl Serialize,
 ) -> Result<ContentRef, NodeObservedError> {
@@ -459,7 +459,7 @@ fn put_json(
     )
 }
 
-fn put(
+pub(super) fn put(
     contents: &mut BTreeMap<String, ScenarioContent>,
     bytes: Vec<u8>,
     media_type: &str,

@@ -1,18 +1,29 @@
 //! Host-owned installed providers and native enrollment before graph sealing.
 
 mod archive_artifacts;
+mod gem5_profile;
 mod host_state;
 mod io;
+mod kvm;
+
+#[cfg(test)]
+mod native_state;
 mod profile;
 mod scripted;
+mod transcript;
 mod trust;
 
 #[cfg(test)]
 mod artifact_tests;
 
+pub use gem5_profile::InstalledGem5ClosedProfile;
 pub use host_state::InstalledHostStateFactory;
 pub use io::{InstalledHostIoProfile, InstalledIoArtifact, InstalledIoArtifactSource};
+pub use kvm::{
+    MAX_KVM_CANDIDATE_POLICY_BYTES, load_installed_kvm_candidate, prepare_installed_kvm_candidate,
+};
 pub use scripted::InstalledScriptedSourceProfile;
+pub use transcript::{InstalledRecordedWorld, InstalledReferenceRecording};
 
 use std::{
     collections::BTreeMap,
@@ -201,6 +212,12 @@ pub struct InstalledPreparedWorld {
     pub graph: AdmittedGraph,
     /// Owns all original inactive native resources and their retirement slot.
     pub realization: PreparedRealization,
+}
+
+#[derive(Default)]
+struct PreparationSource<'a> {
+    activation: Option<&'a crucible::node_contract::SavedRuntimeActivation>,
+    preserved_cut: Option<Position>,
 }
 
 /// Owns trusted local installation measurements and finite world retirement slots.
@@ -416,7 +433,14 @@ impl InstalledNodeCatalog {
     ) -> Result<InstalledPreparedWorld, NodeObservedError> {
         let artifacts = self.artifacts.clone();
         Ok(self
-            .prepare_world_with_source(selections, scenario, execution, None, None, &artifacts)?
+            .prepare_world_with_source(
+                selections,
+                scenario,
+                execution,
+                PreparationSource::default(),
+                &artifacts,
+                None,
+            )?
             .0)
     }
 
@@ -458,9 +482,12 @@ impl InstalledNodeCatalog {
             selections,
             scenario.clone(),
             execution,
-            Some(&source),
-            Some(record.manifest().cut),
+            PreparationSource {
+                activation: Some(&source),
+                preserved_cut: Some(record.manifest().cut),
+            },
             artifacts.registry(),
+            None,
         )?;
         drop(prepared.realization);
         Ok((prepared.graph, target))
@@ -471,9 +498,9 @@ impl InstalledNodeCatalog {
         selections: &[InstalledNodeSelection],
         scenario: NodeScenario,
         execution: ExecutionId,
-        source: Option<&crucible::node_contract::SavedRuntimeActivation>,
-        preserved_cut: Option<Position>,
+        source: PreparationSource<'_>,
         artifacts: &BTreeMap<String, InstalledIoArtifact>,
+        mut recorder: Option<&mut transcript::ReferenceRecorder<'_>>,
     ) -> Result<(InstalledPreparedWorld, ActivationRecord), NodeObservedError> {
         let resolved = profile::build_world(
             selections,
@@ -515,7 +542,7 @@ impl InstalledNodeCatalog {
                 )?
                 .digest
             ))?;
-            let generation = match source {
+            let generation = match source.activation {
                 Some(source) => {
                     let original = source
                         .owners
@@ -557,14 +584,14 @@ impl InstalledNodeCatalog {
         }
         owners.sort();
         let target = ActivationRecord {
-            generation: match source {
+            generation: match source.activation {
                 Some(source) => source.generation.checked_add(U64::new(1))?,
                 None => U64::new(1),
             },
             activation_id,
             world_binding_hash: scenario.world.identity()?,
             owners,
-            boundary: preserved_cut.unwrap_or(Position::new(
+            boundary: source.preserved_cut.unwrap_or(Position::new(
                 U64::new(0),
                 U64::new(0),
                 Phase::BoundaryControl,
@@ -706,6 +733,29 @@ impl InstalledNodeCatalog {
                     ));
                 }
             }
+        }
+        if let Some(recorder) = recorder.as_mut() {
+            let mut wrapped = Vec::new();
+            if let Err(error) = wrapped.try_reserve_exact(nodes.len()) {
+                drop(PreparedRealization::new(nodes, target, limits, slot));
+                return Err(native(error));
+            }
+            let mut remaining = nodes.into_iter();
+            while let Some(node) = remaining.next() {
+                match recorder.wrap(&graph, &target, node) {
+                    Ok(node) => wrapped.push(node),
+                    Err(failure) => {
+                        wrapped.push(failure.node);
+                        wrapped.extend(remaining);
+                        // Construction refusal transfers every native handle,
+                        // including earlier wrappers, to the original reserved
+                        // world slot. No standalone drop loses its roster.
+                        drop(PreparedRealization::new(wrapped, target, limits, slot));
+                        return Err(failure.error);
+                    }
+                }
+            }
+            nodes = wrapped;
         }
         let prepared = PreparedRealization::new(nodes, target.clone(), limits, slot);
         Ok((
