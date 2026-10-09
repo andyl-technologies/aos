@@ -8,6 +8,7 @@
   parityRouteKeys,
   pkgs,
   processSampler,
+  publication,
   qualificationKeys,
   releasePublicationKeys,
   releaseReceiptKey,
@@ -1335,9 +1336,8 @@
         "$registry" "$key" > "$HOME/.config/apm/registries.d/containers.toml"
       # The signed image identity requires its exact package/version in
       # the signed release tree, alongside the changing helper package.
-      {APR} publish ${pkgs.aos} --registry containers --name aos --version 0.1.0 \\
-        --description 'AOS command-line package for the base-image release' \\
-        --license Apache-2.0 --maintainer fleet-publisher@example.test --key-id initial
+      AOS_ROOT=${publication.project} {APR} publish ${pkgs.aos} \\
+        --registry containers --key-id initial
       {APR} origin upload --registry containers \\
         --upload-url file:///tmp/hybrid-bootstrap-surface
   """), timeout=600)

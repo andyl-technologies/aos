@@ -33,6 +33,10 @@
     then "database"
     else "native";
   fixture = import ./_native-hub-production.nix {inherit lib mkSystem pkgs;};
+  publication = import ./_container-publication-project.nix {
+    inherit lib pkgs;
+    packages.aos = pkgs.aos;
+  };
   garage =
     if externalDirect
     then import ./_hub-garage-refusal-drain.nix {inherit pkgs;}
@@ -666,7 +670,6 @@
     pname = "hub-hybrid-fleet-tool-closure-info";
     rootPaths =
       [
-        pkgs.aos
         pkgs.aos.apr
         pkgs.aos-hub
         workerDist
@@ -692,6 +695,7 @@
         pkgs.util-linux
         fixture.helperV1
         fixture.helperV2
+        publication.project
         containerPublicationInputs
         pkgs.aos-hub-console-dist
         databaseUrl
@@ -713,6 +717,7 @@
         workerOptions
         parityRouteKeys
       ]
+      ++ publication.nativeRoots
       ++ lib.optionals externalDirect [
         pkgs.openssl
         pkgs.aos-hub-worker-dist
@@ -1364,7 +1369,7 @@ in {
         ''
       else
         import ./_hub-hybrid-legacy.nix {
-          inherit channelReceiptKey containerPublicationInputs databaseUrl fixture parityRouteKeys pkgs processSampler qualificationKeys releasePublicationKeys releaseReceiptKey secretVersionManifest serverCertificate serverPrivateKey storageKey workerOptions workerRunner;
+          inherit channelReceiptKey containerPublicationInputs databaseUrl fixture parityRouteKeys pkgs processSampler publication qualificationKeys releasePublicationKeys releaseReceiptKey secretVersionManifest serverCertificate serverPrivateKey storageKey workerOptions workerRunner;
         }
     );
 }

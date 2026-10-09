@@ -911,7 +911,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
   # ---------------------------------------------------------------------------
   apmTests = import ./tests/vm/apm {inherit testing pkgs;};
   hubNativeOperationsTest = import ./tests/vm/hub-native-operations.nix {
-    inherit testing pkgs;
+    inherit lib testing pkgs;
   };
   hubSettingsTest = import ./tests/vm/hub-settings.nix {
     inherit testing pkgs;
