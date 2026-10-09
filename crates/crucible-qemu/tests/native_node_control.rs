@@ -1,0 +1,530 @@
+//! Actual QEMU/GPL plugin boundary probes, without provider qualification claims.
+
+#![cfg(target_os = "linux")]
+
+use std::{
+    error::Error,
+    fs::File,
+    io::{self, Write},
+    os::{
+        fd::{AsFd, AsRawFd, FromRawFd, OwnedFd},
+        unix::{net::UnixStream, process::CommandExt},
+    },
+    path::PathBuf,
+    process::{Child, Command, Stdio},
+    time::{Duration, Instant},
+};
+
+use crucible_node_contract::{HashRef, Id, Phase, Position, U64};
+use crucible_protocol::{
+    CONTROL_PROTOCOL_VERSION, ControlLifecycleStream, HostHandshakeConfig, SetupDescriptorFds,
+    app_random_branch_plan::AppRandomBranchPlan,
+    node_control::{
+        BoundaryPolicy, ExecutionCommand, ExecutionKind, NativeFrame, NativePreparation,
+        NativeStopFacts, NativeStopKind, NativeTimerObservation, OwnerScope,
+    },
+    plugin_setup_plan::PluginSetupPlan,
+    selectable_catalog_plan::{
+        SelectableCatalogPlan, SelectablePlanContinuation, SelectablePlanLimits,
+    },
+};
+use crucible_qemu::{QemuLaunchPluginConfig, native_node_control::NativeQemuControlTransport};
+use crucible_shmem::{
+    ABI_VERSION, AdvanceStopCondition, FAULT_COMMAND_ABI_MAJOR, FAULT_COMMAND_ABI_MINOR,
+    FAULT_COMMAND_SEMANTIC_VERSION, FaultBoundaryPhase, FaultCommandHeaderV1, FaultCommandKind,
+    RegionAllocation, RegionConfig, authorize_advance_ceiling, enqueue_fault_command,
+    mmap_setup_region,
+};
+
+const PROBE_VM_SLOT: u32 = 0;
+
+struct ChildCustody(Child);
+
+impl Drop for ChildCustody {
+    fn drop(&mut self) {
+        // The test owns this exact Child; every failure contains and reaps it.
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn position(time: u64) -> Position {
+    Position {
+        time_ps: U64::new(time),
+        microstep: U64::new(0),
+        phase: Phase::BoundaryControl,
+    }
+}
+
+fn id(value: &str) -> Id {
+    Id::new(value).unwrap()
+}
+
+fn hash(domain: &str) -> HashRef {
+    HashRef {
+        algorithm: "blake3-256".into(),
+        domain: domain.into(),
+        digest: "01".repeat(32),
+    }
+}
+
+fn original(sequence: u64, start: u64, limit: u64) -> ExecutionCommand {
+    ExecutionCommand {
+        sequence: U64::new(sequence),
+        scope: OwnerScope {
+            session: id("mechanical/session"),
+            incarnation: id("mechanical/incarnation"),
+            activation: id("mechanical/activation"),
+            node: id("mechanical/node"),
+            owner: id("mechanical/owner"),
+            world_generation: U64::new(1),
+            owner_generation: U64::new(1),
+            world_binding: hash("cnp.world-binding.v1"),
+            owner_binding: hash("cnp.owner-binding.v1"),
+        },
+        operation: id(&format!("mechanical/operation/{sequence}")),
+        grant: id(&format!("mechanical/grant/{sequence}")),
+        input_epoch: id("mechanical/input-epoch"),
+        input_batch: id("mechanical/input-batch"),
+        input_batch_hash: hash("cnp.input-batch.v1"),
+        closed_input_prefix: position(limit),
+        authorization_digest: [7; 32],
+        kind: ExecutionKind::ExactRun {
+            start: position(start),
+            limit: position(limit),
+            boundary_policy: BoundaryPolicy::HorizonPark,
+        },
+    }
+}
+
+fn memfd(bytes: &[u8], sealed: bool) -> io::Result<File> {
+    // SAFETY: The static name is NUL terminated; successful creation returns
+    // a uniquely owned descriptor, immediately retained by File below.
+    let descriptor = unsafe {
+        libc::memfd_create(
+            c"crucible-native-probe".as_ptr(),
+            libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
+        )
+    };
+    if descriptor < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: A successful memfd_create returns this new unique descriptor.
+    let mut file = unsafe { File::from_raw_fd(descriptor) };
+    file.write_all(bytes)?;
+    // Writable shared mappings still require a fixed-size backing object;
+    // immutable setup plans additionally reject writes before SCM transfer.
+    let seals = libc::F_SEAL_GROW
+        | libc::F_SEAL_SHRINK
+        | libc::F_SEAL_SEAL
+        | if sealed { libc::F_SEAL_WRITE } else { 0 };
+    // SAFETY: The owned descriptor is live; the command takes scalar flags.
+    let result = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_ADD_SEALS, seals) };
+    if result < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(file)
+}
+
+fn pin_descriptor(descriptor: i32) -> io::Result<OwnedFd> {
+    // Keep all sources beyond fixed target numbers before fork; dup2 cannot
+    // overwrite another captured source, even when the parent assigned fd3.
+    // SAFETY: fcntl duplicates a live descriptor without consuming its owner.
+    let pinned = unsafe { libc::fcntl(descriptor, libc::F_DUPFD_CLOEXEC, 64) };
+    if pinned < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: The duplicate is uniquely owned by this result.
+    Ok(unsafe { OwnedFd::from_raw_fd(pinned) })
+}
+
+fn artifact(variable: &str) -> Result<PathBuf, Box<dyn Error>> {
+    let path = PathBuf::from(
+        std::env::var_os(variable)
+            .ok_or_else(|| io::Error::other(format!("set {variable} to the built artifact")))?,
+    );
+    if !path.is_file() {
+        return Err(
+            io::Error::other(format!("missing {variable} artifact: {}", path.display())).into(),
+        );
+    }
+    Ok(path)
+}
+
+fn next_any_frame(
+    control: &mut NativeQemuControlTransport,
+    child: &mut Child,
+) -> Result<NativeFrame, Box<dyn Error>> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(frame) = control.poll_original()? {
+            return Ok(frame);
+        }
+        if let Some(status) = child.try_wait()? {
+            return Err(io::Error::other(format!("native QEMU exited early: {status}")).into());
+        }
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "native original receipt unavailable",
+            )
+            .into());
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+fn next_frame(
+    control: &mut NativeQemuControlTransport,
+    child: &mut Child,
+) -> Result<NativeFrame, Box<dyn Error>> {
+    loop {
+        let frame = next_any_frame(control, child)?;
+        if !matches!(frame, NativeFrame::CpuPark(_)) {
+            return Ok(frame);
+        }
+    }
+}
+
+fn read_timers(
+    native: &mut NativeQemuControlTransport,
+    child: &mut Child,
+    sequence: U64,
+) -> Result<NativeTimerObservation, Box<dyn Error>> {
+    loop {
+        assert!(native.request_timer_observation(sequence)?);
+        let NativeFrame::TimerChunk(_) = next_frame(native, child)? else {
+            panic!("original native timer slice");
+        };
+        if let Some(observation) = native.timer_observation(sequence) {
+            return Ok(observation.clone());
+        }
+    }
+}
+
+fn run_windows(
+    limits: &[u64],
+    require_cpu_park: bool,
+    pit_timer: bool,
+) -> Result<Vec<NativeStopFacts>, Box<dyn Error>> {
+    let qemu = artifact("CRUCIBLE_NATIVE_PROBE_QEMU")?;
+    let plugin = artifact("CRUCIBLE_NATIVE_PROBE_PLUGIN")?;
+    let mut pit_firmware = None;
+    let bios = if pit_timer {
+        let mut rom = vec![0x90u8; 65_536];
+        let program = [
+            0xfa, 0x31, 0xc0, 0x8e, 0xd8, 0xb0, 0x30, 0xe6, 0x43, 0xb0, 0x04, 0xe6, 0x40, 0x30,
+            0xc0, 0xe6, 0x40, 0xeb, 0xfe,
+        ];
+        rom[..program.len()].copy_from_slice(&program);
+        rom[0xfff0..0xfff5].copy_from_slice(&[0xea, 0, 0, 0, 0xf0]);
+        let mut firmware = tempfile::NamedTempFile::new()?;
+        firmware.write_all(&rom)?;
+        let path = firmware.path().to_path_buf();
+        pit_firmware = Some(firmware);
+        path
+    } else {
+        artifact("CRUCIBLE_NATIVE_PROBE_BIOS")?
+    };
+    let (mut native, endpoint) = NativeQemuControlTransport::prepare(NativePreparation {
+        scope: original(1, 0, limits[0]).scope,
+        boundary: position(0),
+        maximum_commands: U64::new(8),
+    })?;
+    let digest = endpoint
+        .scope_digest()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let native_socket = endpoint.into_socket();
+    let (host_stream, plugin_stream) = UnixStream::pair()?;
+    host_stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+    host_stream.set_write_timeout(Some(Duration::from_secs(10)))?;
+    let allocation = RegionAllocation::new(RegionConfig::new(1, 8))?;
+    let region_bytes = allocation.setup_region_bytes()?;
+    let shared = memfd(&region_bytes, false)?;
+    let base = QemuLaunchPluginConfig::new(plugin.to_string_lossy(), PROBE_VM_SLOT);
+    let mut mapped = mmap_setup_region(shared.as_fd(), region_bytes.len() as u64)?;
+    let transport = mapped.fault_command_transport_mut(PROBE_VM_SLOT)?;
+    enqueue_fault_command(
+        transport.ring,
+        transport.slots,
+        transport.arena_header,
+        transport.arena,
+        transport.arena_region_offset,
+        FaultCommandHeaderV1 {
+            abi_major: FAULT_COMMAND_ABI_MAJOR,
+            abi_minor: FAULT_COMMAND_ABI_MINOR,
+            command_kind: FaultCommandKind::QueryCapabilities,
+            command_flags: 0,
+            phase: FaultBoundaryPhase::NodeBoundary,
+            semantic_version: FAULT_COMMAND_SEMANTIC_VERSION,
+            command_sequence: 1,
+            target_node_hash: base.fault_node_hash(),
+            target_icount: 0,
+            authorization_ceiling_icount: 0,
+            binding_hash: [1; 32],
+            opportunity_hash: [0; 32],
+            expected_precondition_hash: [0; 32],
+            payload_hash: [0; 32],
+            payload_offset: 0,
+            payload_length: 0,
+        },
+        &[],
+    )?;
+    // SAFETY: eventfd creates a fresh descriptor with no pointer arguments.
+    let raw_wake = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
+    if raw_wake < 0 {
+        return Err(io::Error::last_os_error().into());
+    }
+    // SAFETY: This new eventfd has no other descriptor owner.
+    let wake = unsafe { OwnedFd::from_raw_fd(raw_wake) };
+    let pins = [
+        pin_descriptor(plugin_stream.as_raw_fd())?,
+        pin_descriptor(shared.as_raw_fd())?,
+        pin_descriptor(wake.as_raw_fd())?,
+        pin_descriptor(native_socket.as_raw_fd())?,
+    ];
+    let mappings = [
+        (pins[0].as_raw_fd(), 3),
+        (pins[1].as_raw_fd(), 4),
+        (pins[2].as_raw_fd(), 5),
+        (pins[3].as_raw_fd(), 9),
+    ];
+    let plugin_args = format!(
+        "{},{},node_control_fd=9,node_control_scope_hash={digest},node_control_version=1",
+        plugin.display(),
+        base.plugin_args_raw()
+    );
+    let mut command = Command::new(qemu);
+    command
+        .args([
+            "-machine",
+            if pit_timer { "pc,hpet=off" } else { "pc" },
+            "-accel",
+            "sim",
+            "-icount",
+            "shift=0,align=off,sleep=off",
+            "-m",
+            "32",
+            "-nodefaults",
+            "-display",
+            "none",
+            "-serial",
+            "none",
+            "-monitor",
+            "none",
+            "-bios",
+        ])
+        .arg(bios)
+        .arg("-plugin")
+        .arg(plugin_args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit());
+    // SAFETY: The child closure uses only async-signal-safe dup2/close syscalls
+    // over prevalidated disjoint scalar mappings. Pins remain live through exec.
+    unsafe {
+        command.pre_exec(move || {
+            for (source, target) in mappings {
+                if libc::dup2(source, target) < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+            }
+            for (source, _) in mappings {
+                libc::close(source);
+            }
+            Ok(())
+        });
+    }
+    let mut child = ChildCustody(command.spawn()?);
+    drop(pins);
+    drop(plugin_stream);
+    drop(native_socket);
+
+    let selectable = SelectableCatalogPlan::new(
+        SelectablePlanLimits::new(1, 1, 1)?,
+        Vec::new(),
+        SelectablePlanContinuation::cold(),
+    )?;
+    let plan = memfd(
+        &PluginSetupPlan::new(AppRandomBranchPlan::default(), selectable).encode()?,
+        true,
+    )?;
+    let mut legacy = ControlLifecycleStream::connected_unix_stream(host_stream)?;
+    legacy.host_accept_handshake(HostHandshakeConfig {
+        proto_version: CONTROL_PROTOCOL_VERSION,
+        abi_version: ABI_VERSION,
+        slot_index: PROBE_VM_SLOT,
+        node_count: allocation.layout().node_count,
+    })?;
+    legacy.host_send_setup_with_descriptors(
+        region_bytes.len() as u64,
+        SetupDescriptorFds {
+            shmem_fd: shared.as_raw_fd(),
+            wake_fd: wake.as_raw_fd(),
+            plugin_setup_plan_fd: plan.as_raw_fd(),
+        },
+    )?;
+    if let Err(error) = legacy.host_accept_setup_ack() {
+        // Let the child flush its install refusal before owned cleanup kills it.
+        std::thread::sleep(Duration::from_millis(100));
+        return Err(error.into());
+    }
+    legacy.enter_run_via_shared_memory()?;
+    // Release only the legacy install barrier. The registered native controller
+    // still withholds every modeled transition until its original command.
+    mapped.node_slot(PROBE_VM_SLOT)?.publish_scheduler_advance(
+        authorize_advance_ceiling(0, 1, None)?,
+        AdvanceStopCondition::Ceiling,
+    )?;
+
+    let original_cpu_park = if require_cpu_park {
+        assert!(native.request_cpu_park()?);
+        let NativeFrame::CpuPark(facts) = next_any_frame(&mut native, &mut child.0)? else {
+            panic!("actual source CPU-only initial park observation");
+        };
+        assert_eq!(facts.cpu_count, 1);
+        assert_eq!(facts.coverage, 1);
+        assert_eq!(facts.current_ps.get(), 0);
+        assert_eq!(facts.retired_count.get(), 0);
+        assert_eq!(native.prepared_cpu_park(), Some(&facts));
+        Some(facts)
+    } else {
+        None
+    };
+    let mut start = 0;
+    let mut outcomes = Vec::new();
+    let mut windows = limits.to_vec();
+    let mut index = 0;
+    let mut pit_arm = None;
+    while index < windows.len() {
+        let limit = windows[index];
+        let original = original(index as u64 + 1, start, limit);
+        assert!(native.transmit_original(original.clone())?.1);
+        let NativeFrame::Stopped(facts) = next_frame(&mut native, &mut child.0)? else {
+            panic!("original native stop");
+        };
+        assert_eq!(facts.kind, NativeStopKind::HorizonPark);
+        assert_eq!(facts.pending_classes, u32::MAX);
+        assert_eq!(facts.reached, position(limit));
+        assert_eq!(facts.command_digest, original.identity_digest()?);
+        native.transmit_original(original)?;
+        assert_eq!(
+            next_frame(&mut native, &mut child.0)?,
+            NativeFrame::Stopped(facts.clone())
+        );
+        if pit_timer {
+            let sequence = U64::new(index as u64 + 1);
+            let observation = read_timers(&mut native, &mut child.0, sequence)?;
+            assert_eq!(observation.sequence, sequence);
+            assert_eq!(observation.current_ps, facts.reached.time_ps);
+            assert_eq!(observation.command_digest, facts.command_digest);
+            // Recovery after assembly returns the exact same canonical object.
+            assert!(native.request_timer_observation(sequence)?);
+            assert!(matches!(
+                next_frame(&mut native, &mut child.0)?,
+                NativeFrame::TimerChunk(_)
+            ));
+            assert_eq!(native.timer_observation(sequence), Some(&observation));
+            if index == 0 {
+                let deadline = facts
+                    .next_native_deadline_ps
+                    .ok_or("actual pending PIT deadline")?;
+                let arm = observation
+                    .timers
+                    .iter()
+                    .find(|arm| arm.expiry_ps == deadline)
+                    .cloned()
+                    .ok_or("authentic original pending timer arm")?;
+                assert!(deadline.get() > limit);
+                windows.push(deadline.get());
+                windows.push(
+                    deadline
+                        .get()
+                        .checked_add(50)
+                        .ok_or("PIT deadline overflow")?,
+                );
+                pit_arm = Some(arm);
+            } else {
+                let original_arm = pit_arm.as_ref().ok_or("original PIT arm retained")?;
+                if index == 1 {
+                    assert!(
+                        observation.timers.contains(original_arm),
+                        "exclusive horizon retains same original arm"
+                    );
+                } else {
+                    assert!(
+                        !observation.timers.contains(original_arm),
+                        "next native window consumes original PIT arm"
+                    );
+                }
+            }
+        }
+        assert!(native.transmit_acknowledgement(U64::new(index as u64 + 1))?);
+        assert!(matches!(
+            next_frame(&mut native, &mut child.0)?,
+            NativeFrame::Acknowledged(_)
+        ));
+        outcomes.push(facts);
+        start = limit;
+        index += 1;
+    }
+    if let Some(original) = original_cpu_park {
+        assert!(native.request_cpu_park()?);
+        assert_eq!(
+            next_any_frame(&mut native, &mut child.0)?,
+            NativeFrame::CpuPark(original.clone())
+        );
+        // Recovery returns historical bytes, not invented current readiness.
+        assert!(original.current_ps.get() < limits[limits.len() - 1]);
+    }
+    // Even a well-formed legacy FIFO entry is not a native staged input cut.
+    // Setup and every native grant preserve the same original unread entry.
+    let retained = mapped.fault_command_transport_mut(PROBE_VM_SLOT)?;
+    assert_eq!(retained.ring.read_index(), 0);
+    assert_eq!(retained.ring.write_index(), 1);
+    drop(pit_firmware);
+    Ok(outcomes)
+}
+
+#[test]
+#[ignore = "requires built strict-native QEMU, GPL plugin and BIOS artifact environment"]
+fn actual_native_channel_preserves_exclusive_retirement_and_partitioned_service_credit()
+-> Result<(), Box<dyn Error>> {
+    let loose = run_windows(&[200], false, false)?;
+    let split = run_windows(&[110, 200], false, false)?;
+    let credit = run_windows(&[110, 151], false, false)?;
+    let equal = run_windows(&[100, 101], false, false)?;
+
+    assert_eq!(loose[0].retired_count.get(), 3);
+    assert_eq!(split[0].retired_count.get(), 2);
+    assert_eq!(split[0].next_service_deadline_ps, Some(U64::new(150)));
+    assert_eq!(split[1].retired_count, loose[0].retired_count);
+    assert_eq!(
+        split[1].next_service_deadline_ps,
+        loose[0].next_service_deadline_ps
+    );
+    assert_eq!(credit[1].retired_count.get(), 3);
+    assert_eq!(equal[0].retired_count.get(), 1);
+    assert_eq!(equal[1].retired_count.get(), 2);
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires built CPU-park source query, matched GPL plugin and BIOS artifacts"]
+fn actual_native_cpu_park_preserves_original_scoped_history_without_readiness_claim()
+-> Result<(), Box<dyn Error>> {
+    let observations = run_windows(&[200], true, false)?;
+    assert_eq!(observations[0].retired_count.get(), 3);
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires native timer inventory, matched GPL plugin and QEMU artifacts"]
+fn actual_native_pit_inventory_retains_original_arm_at_horizon_and_across_slice_retry()
+-> Result<(), Box<dyn Error>> {
+    let observations = run_windows(&[10_000], true, true)?;
+    assert_eq!(observations.len(), 3);
+    Ok(())
+}

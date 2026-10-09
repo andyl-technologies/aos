@@ -1417,7 +1417,7 @@ fn plugin_resource_manifest(
     plugin_id: QemuPluginId,
     args: &PluginArgs,
     callbacks: &RequiredOwnedCallbacksRegistered,
-) -> Result<crate::QemuPluginResourceManifest, PluginRuntimeInstallError> {
+) -> Result<crate::native_node_control::RegisteredResourceManifest, PluginRuntimeInstallError> {
     let setup = callbacks.setup();
     let node_count = setup.mapped_region().header_snapshot().node_count;
     let wake_fd = setup
@@ -1445,7 +1445,7 @@ fn plugin_resource_manifest(
         resource_mask |= PLUGIN_RESOURCE_APP_RANDOM;
     }
 
-    Ok(crate::QemuPluginResourceManifest {
+    let legacy = crate::QemuPluginResourceManifest {
         schema_version: PLUGIN_RESOURCE_MANIFEST_VERSION,
         struct_size,
         process_generation: args.process_generation(),
@@ -1460,7 +1460,12 @@ fn plugin_resource_manifest(
         node_count,
         control_fd: args.sim_fd(),
         wake_fd,
-    })
+    };
+    crate::native_node_control::RegisteredResourceManifest::from_prepared(
+        legacy,
+        args.native_node_control(),
+    )
+    .ok_or(PluginRuntimeInstallError::ResourceManifestShape)
 }
 
 /// Registers the callback families whose C adapters own live device behavior.
@@ -2520,7 +2525,8 @@ where
                     ));
                 }
             };
-        let manifest_status = (capabilities.register_resource_manifest)(&resource_manifest);
+        let manifest_status =
+            (capabilities.register_resource_manifest)(resource_manifest.as_legacy_prefix());
         if manifest_status != 0 {
             return Err(fail_post_registration_before_ready_ack_lifecycle(
                 &mut control_stream,

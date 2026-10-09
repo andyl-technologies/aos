@@ -781,6 +781,12 @@ pub enum QemuPluginAbiError {
         /// Missing QEMU symbol.
         symbol: &'static str,
     },
+    /// Independently negotiated native control preparation or callback registration failed.
+    #[error("native node-control preparation failed: {reason}")]
+    NativeNodeControl {
+        /// Underlying independently versioned controller failure.
+        reason: String,
+    },
     /// QEMU rejected the launch-provisioned process generation.
     #[error("QEMU rejected process generation {generation} with status {status}")]
     ProcessGenerationProvision {
@@ -2122,6 +2128,13 @@ fn install_owned_boundary(
         register_accelerator,
         fault_commands,
     };
+    if let Some(config) = boundary.args.native_node_control() {
+        crate::native_node_control::install(config).map_err(|source| {
+            QemuPluginAbiError::NativeNodeControl {
+                reason: source.to_string(),
+            }
+        })?;
+    }
     let callback_registrar = crate::runtime::FailClosedOwnedCallbackRegistrar::production(
         plugin_id,
         boundary.execution_model,
@@ -2201,9 +2214,17 @@ where
         Ok(Ok(())) => QEMU_PLUGIN_INSTALL_OK,
         Ok(Err(error)) => {
             crate::runtime::emit_install_failure_diagnostic(&error);
+            if crate::native_node_control::registered_owner().is_some() {
+                // Returning an install refusal lets QEMU unload code that its
+                // registered native callback owner still references.
+                std::process::abort();
+            }
             QEMU_PLUGIN_INSTALL_ERROR
         }
         Err(_panic) => {
+            if crate::native_node_control::registered_owner().is_some() {
+                std::process::abort();
+            }
             use std::io::Write as _;
 
             let _write_result = std::io::stderr()

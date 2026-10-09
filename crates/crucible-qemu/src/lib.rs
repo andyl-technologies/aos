@@ -51,6 +51,8 @@ mod fault_implementation;
 #[cfg(target_os = "linux")]
 mod host_setup;
 mod inertness;
+#[cfg(target_os = "linux")]
+pub mod native_node_control;
 mod launch;
 #[cfg(target_os = "linux")]
 mod linux_attempt_host;

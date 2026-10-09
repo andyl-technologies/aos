@@ -55,6 +55,7 @@ mod golden_vectors;
 pub mod guest_introspection;
 pub mod guest_introspection_doorbell;
 pub mod plugin_setup_plan;
+pub mod node_control;
 mod preemption;
 mod selectable;
 pub mod selectable_catalog_plan;

@@ -2202,6 +2202,11 @@ impl LiveVcpuTimeCallbackState {
     }
 
     fn on_block_wait(&self, _request_id: u32) -> Result<(), LiveVcpuTimeCallbackError> {
+        if crate::native_node_control::registered_owner().is_some() {
+            // Strict native device settlement remains unavailable. Preserve
+            // this parked waiter without granting a legacy queued time jump.
+            return Ok(());
+        }
         if self.idle_advance_is_pending() {
             return Ok(());
         }
@@ -2512,6 +2517,12 @@ impl LiveVcpuTimeCallbackState {
     }
 
     fn pump_fault_commands(&self, raw_icount: u64) -> Result<bool, LiveVcpuTimeCallbackError> {
+        if crate::native_node_control::registered_owner().is_some() {
+            // Legacy FIFO occupancy is not an authenticated staged input cut.
+            // Preserve its original bytes without applying faults during setup
+            // or native execution until typed native custody is implemented.
+            return Ok(false);
+        }
         if self
             .fault_command_pump_active
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -2730,6 +2741,12 @@ pub(crate) extern "C" fn crucible_qemu_plugin_live_vcpu_idle_cb(
     raw_icount: u64,
     userdata: *mut c_void,
 ) {
+    if crate::native_node_control::registered_owner().is_some() {
+        // The independent native controller owns time and original command
+        // custody. Legacy scalar publication or idle/control work cannot grant
+        // a transition or reconstruct administrative park service credit.
+        return;
+    }
     let state = callback_userdata_or_abort(userdata);
     let Some(_in_flight) = state.callback_guard() else {
         return;
@@ -2744,6 +2761,12 @@ pub(crate) extern "C" fn crucible_qemu_plugin_live_vcpu_resume_cb(
     raw_icount: u64,
     userdata: *mut c_void,
 ) {
+    if crate::native_node_control::registered_owner().is_some() {
+        // The independent native controller owns time and original command
+        // custody. Legacy scalar publication or idle/control work cannot grant
+        // a transition or reconstruct administrative park service credit.
+        return;
+    }
     let state = callback_userdata_or_abort(userdata);
     let Some(_in_flight) = state.callback_guard() else {
         return;
@@ -2757,6 +2780,12 @@ pub(crate) extern "C" fn crucible_qemu_plugin_live_publish_icount_cb(
     current_icount: u64,
     userdata: *mut c_void,
 ) {
+    if crate::native_node_control::registered_owner().is_some() {
+        // The independent native controller owns time and original command
+        // custody. Legacy scalar publication or idle/control work cannot grant
+        // a transition or reconstruct administrative park service credit.
+        return;
+    }
     let state = callback_userdata_or_abort(userdata);
     let Some(_in_flight) = state.callback_guard() else {
         return;
@@ -2774,6 +2803,12 @@ pub(crate) extern "C" fn crucible_qemu_plugin_live_control_boundary_cb(
     raw_icount: u64,
     userdata: *mut c_void,
 ) {
+    if crate::native_node_control::registered_owner().is_some() {
+        // The independent native controller owns time and original command
+        // custody. Legacy scalar publication or idle/control work cannot grant
+        // a transition or reconstruct administrative park service credit.
+        return;
+    }
     let state = callback_userdata_or_abort(userdata);
     state.control_callback_with_witness(raw_icount);
 }
