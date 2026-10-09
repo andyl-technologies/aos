@@ -70,7 +70,6 @@ const GATE_IDENTITY_DOMAIN: &[u8] = b"aos.sandbox.create-q04.effect-gate-identit
 const DECISION_DOMAIN: &[u8] = b"aos.sandbox.create-q04.root-decision.v1\0";
 const PREHOLD_RESPONSE_DOMAIN: &[u8] = b"aos.sandbox.create-q04.prefund-response.v1\0";
 
-
 /// Selects the historical transaction-identity domain and phase bound.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Q04TransactionOwnerV1 {
@@ -121,7 +120,6 @@ impl Q04TransactionOwnerV1 {
     }
 }
 
-
 // Every offset below is fixed by the versioned contract. Accessors read only
 // a fully length/checksum/shape-checked array, never a caller's unchecked slice.
 /// Retains the canonical original cut and its fixed comparison identities.
@@ -162,7 +160,9 @@ impl Q04CutIdentityV1 {
             || read_u64(&bytes, 160)? == 0
             || read_u64(&bytes, 136)?.checked_sub(read_u64(&bytes, 128)?) != Some(60_000_000_000)
             || read_u64(&bytes, 152)?.checked_sub(read_u64(&bytes, 144)?) != Some(65_000_000_000)
-            || (200..648).step_by(32).any(|offset| nonzero::<32>(&bytes, offset).is_err())
+            || (200..648)
+                .step_by(32)
+                .any(|offset| nonzero::<32>(&bytes, offset).is_err())
         {
             return Err(ProtectedHistoryDataErrorV1::Malformed);
         }
@@ -318,12 +318,7 @@ impl Q04RootDecisionV1 {
         bytes: &[u8],
         identity: &Q04CutIdentityV1,
     ) -> Result<Self, ProtectedHistoryDataErrorV1> {
-        let bytes = checked_record::<DECISION_BYTES>(
-            bytes,
-            b"AOSQ4D01",
-            None,
-            DECISION_DOMAIN,
-        )?;
+        let bytes = checked_record::<DECISION_BYTES>(bytes, b"AOSQ4D01", None, DECISION_DOMAIN)?;
         if bytes[16..48] != *identity.digest().as_bytes()
             || nonzero::<16>(&bytes, 48).is_err()
             || bytes[64..80] != identity.publication_id()
@@ -385,7 +380,6 @@ pub struct Q04PhaseRecordV1 {
     bytes: [u8; PHASE_BYTES],
 }
 
-
 impl Q04PhaseRecordV1 {
     /// Finishes and validates a canonical historical record from fixed body DATA.
     ///
@@ -420,7 +414,9 @@ impl Q04PhaseRecordV1 {
             Q04PhaseOwnerV1::Controller => (b"AOSQ4C01", CONTROLLER_PHASE_DOMAIN, 8),
             Q04PhaseOwnerV1::Root => (b"AOSQ4R01", ROOT_PHASE_DOMAIN, 7),
         };
-        let phase = *bytes.get(10).ok_or(ProtectedHistoryDataErrorV1::Malformed)?;
+        let phase = *bytes
+            .get(10)
+            .ok_or(ProtectedHistoryDataErrorV1::Malformed)?;
         if phase == 0 || phase > last {
             return Err(ProtectedHistoryDataErrorV1::Malformed);
         }
@@ -524,18 +520,24 @@ fn require_phase_shape(
     for (index, first) in held_first.into_iter().enumerate() {
         let held = 288 + index * 64;
         require_presence(&bytes[held..held + 32], phase >= first)?;
-        require_presence(&bytes[held + 32..held + 64], phase >= match owner {
-            Q04PhaseOwnerV1::Controller => 5,
-            Q04PhaseOwnerV1::Root => 6,
-        })?;
+        require_presence(
+            &bytes[held + 32..held + 64],
+            phase
+                >= match owner {
+                    Q04PhaseOwnerV1::Controller => 5,
+                    Q04PhaseOwnerV1::Root => 6,
+                },
+        )?;
     }
     require_presence(&bytes[64..96], phase > 1)?;
-    require_presence(&bytes[480..512], match owner {
-        Q04PhaseOwnerV1::Controller => phase >= 3,
-        Q04PhaseOwnerV1::Root => phase >= 4,
-    })
+    require_presence(
+        &bytes[480..512],
+        match owner {
+            Q04PhaseOwnerV1::Controller => phase >= 3,
+            Q04PhaseOwnerV1::Root => phase >= 4,
+        },
+    )
 }
-
 
 /// Selects the Source or Cache historical pending grammar.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -585,12 +587,21 @@ impl Q04PendingRecordV1 {
             Q04PendingOwnerV1::Source => (b"AOSQ4S01", SOURCE_PENDING_DOMAIN),
             Q04PendingOwnerV1::Cache => (b"AOSQ4K01", CACHE_PENDING_DOMAIN),
         };
-        let phase = *bytes.get(10).ok_or(ProtectedHistoryDataErrorV1::Malformed)?;
+        let phase = *bytes
+            .get(10)
+            .ok_or(ProtectedHistoryDataErrorV1::Malformed)?;
         if !matches!(phase, 1 | 2) {
             return Err(ProtectedHistoryDataErrorV1::Malformed);
         }
         let bytes = checked_record::<PENDING_BYTES>(bytes, magic, Some(phase), domain)?;
-        let fields = [(16, 32), (48, 16), (64, 32), (104, 32), (136, 32), (200, 32)];
+        let fields = [
+            (16, 32),
+            (48, 16),
+            (64, 32),
+            (104, 32),
+            (136, 32),
+            (200, 32),
+        ];
         for (offset, width) in fields {
             require_presence(&bytes[offset..offset + width], true)?;
         }
@@ -616,7 +627,10 @@ impl Q04PendingRecordV1 {
     /// # Errors
     ///
     /// Rejects changed original-cut or historical decision comparison fields.
-    pub fn require_identity(&self, identity: &Q04CutIdentityV1) -> Result<(), ProtectedHistoryDataErrorV1> {
+    pub fn require_identity(
+        &self,
+        identity: &Q04CutIdentityV1,
+    ) -> Result<(), ProtectedHistoryDataErrorV1> {
         if self.bytes[16..48] != *identity.digest().as_bytes()
             || self.bytes[48..64] != identity.nonce()
             || self.bytes[64..96] != *identity.binding().as_bytes()
@@ -672,15 +686,18 @@ impl Q04EffectSubgateV1 {
     /// Rejects malformed framing, checksum, padding, phase or historical bindings.
     pub fn decode(bytes: &[u8]) -> Result<Self, ProtectedHistoryDataErrorV1> {
         let bytes = checked_record::<GATE_BYTES>(bytes, b"AOSQ4G01", None, GATE_DOMAIN)?;
-        if !matches!(bytes[184], 1..=4)
-            || bytes[185..192] != [0; 7]
-            || read_u64(&bytes, 176)? != 1
+        if !matches!(bytes[184], 1..=4) || bytes[185..192] != [0; 7] || read_u64(&bytes, 176)? != 1
         {
             return Err(ProtectedHistoryDataErrorV1::Malformed);
         }
         let fields = [
-            (16, 32), (48, 32), (80, 16), (96, 32),
-            (128, 32), (160, 16), (224, 32),
+            (16, 32),
+            (48, 32),
+            (80, 16),
+            (96, 32),
+            (128, 32),
+            (160, 16),
+            (224, 32),
         ];
         for (offset, width) in fields {
             require_presence(&bytes[offset..offset + width], true)?;
@@ -826,26 +843,40 @@ impl Q04PreholdPublicationDataV1 {
     /// transfer bounds. Framing precedes comparisons; names precede counts.
     pub fn decode(bytes: &[u8], nonce: [u8; 16]) -> Result<Self, Q04HistoryDataErrorV1> {
         let body = checked_record::<PREHOLD_RESPONSE_BYTES>(
-            bytes, b"AOSQ4J01", None, PREHOLD_RESPONSE_DOMAIN,
+            bytes,
+            b"AOSQ4J01",
+            None,
+            PREHOLD_RESPONSE_DOMAIN,
         )?;
-        if nonce == [0; 16] || body[16..32] != nonce
-            || (32..128).step_by(32).any(|offset| nonzero::<32>(&body, offset).is_err())
+        if nonce == [0; 16]
+            || body[16..32] != nonce
+            || (32..128)
+                .step_by(32)
+                .any(|offset| nonzero::<32>(&body, offset).is_err())
             || nonzero::<16>(&body, 128).is_err()
             || nonzero::<16>(&body, 144).is_err()
             || body[128..144] == body[144..160]
-            || (160..384).step_by(32).any(|offset| nonzero::<32>(&body, offset).is_err())
+            || (160..384)
+                .step_by(32)
+                .any(|offset| nonzero::<32>(&body, offset).is_err())
             || read_u64(&body, 384)? == 0
             || read_u64(&body, 392)? == 0
-            || (456..472).step_by(4).any(|offset| read_u32(&body, offset).map_or(true, |value| value == 0))
+            || (456..472)
+                .step_by(4)
+                .any(|offset| read_u32(&body, offset).map_or(true, |value| value == 0))
         {
             return Err(Q04HistoryDataErrorV1::ChangedCut);
         }
         super::protected_names::ProtectedJournalNamesV1::from_bytes(&body[400..448])
             .map_err(Q04HistoryDataErrorV1::from)?;
-        let total = usize::try_from(read_u32(&body, 448)?).map_err(|_| Q04HistoryDataErrorV1::Bounds)?;
+        let total =
+            usize::try_from(read_u32(&body, 448)?).map_err(|_| Q04HistoryDataErrorV1::Bounds)?;
         let chunks = u16::from_be_bytes(fixed(&body, 452));
         let groups = u16::from_be_bytes(fixed(&body, 454));
-        let expected_groups = chunks.checked_add(127).ok_or(Q04HistoryDataErrorV1::Bounds)? / 128;
+        let expected_groups = chunks
+            .checked_add(127)
+            .ok_or(Q04HistoryDataErrorV1::Bounds)?
+            / 128;
         if total < 3432 || chunks != claim_chunk_count(total)? || groups != expected_groups {
             return Err(Q04HistoryDataErrorV1::Bounds);
         }
@@ -914,7 +945,9 @@ fn checked_record<const SIZE: usize>(
     {
         return Err(ProtectedHistoryDataErrorV1::Malformed);
     }
-    bytes.try_into().map_err(|_| ProtectedHistoryDataErrorV1::Malformed)
+    bytes
+        .try_into()
+        .map_err(|_| ProtectedHistoryDataErrorV1::Malformed)
 }
 
 fn require_presence(bytes: &[u8], present: bool) -> Result<(), ProtectedHistoryDataErrorV1> {
@@ -924,7 +957,10 @@ fn require_presence(bytes: &[u8], present: bool) -> Result<(), ProtectedHistoryD
     Ok(())
 }
 
-fn nonzero<const SIZE: usize>(bytes: &[u8], offset: usize) -> Result<[u8; SIZE], ProtectedHistoryDataErrorV1> {
+fn nonzero<const SIZE: usize>(
+    bytes: &[u8],
+    offset: usize,
+) -> Result<[u8; SIZE], ProtectedHistoryDataErrorV1> {
     let end = offset
         .checked_add(SIZE)
         .ok_or(ProtectedHistoryDataErrorV1::Malformed)?;
@@ -933,7 +969,9 @@ fn nonzero<const SIZE: usize>(bytes: &[u8], offset: usize) -> Result<[u8; SIZE],
     let field = &prefix[offset..end];
 
     require_presence(field, true)?;
-    field.try_into().map_err(|_| ProtectedHistoryDataErrorV1::Malformed)
+    field
+        .try_into()
+        .map_err(|_| ProtectedHistoryDataErrorV1::Malformed)
 }
 
 fn fixed<const SIZE: usize>(bytes: &[u8], offset: usize) -> [u8; SIZE] {
@@ -964,8 +1002,6 @@ fn read_integer_bytes<const SIZE: usize>(
         .map_err(|_| ProtectedHistoryDataErrorV1::Malformed)
 }
 
-
-
 /// Computes the canonical number of chunks for a bounded claim transfer.
 ///
 /// # Errors
@@ -984,7 +1020,9 @@ pub fn chunk_count(total: usize, maximum: usize) -> Result<u16, Q04HistoryDataEr
     if total == 0 || total > maximum {
         return Err(Q04HistoryDataErrorV1::Bounds);
     }
-    let count = total.checked_add(CLAIM_CHUNK_BYTES - 1)
-        .ok_or(Q04HistoryDataErrorV1::Bounds)? / CLAIM_CHUNK_BYTES;
+    let count = total
+        .checked_add(CLAIM_CHUNK_BYTES - 1)
+        .ok_or(Q04HistoryDataErrorV1::Bounds)?
+        / CLAIM_CHUNK_BYTES;
     u16::try_from(count).map_err(|_| Q04HistoryDataErrorV1::Bounds)
 }

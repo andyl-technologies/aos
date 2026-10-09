@@ -19,7 +19,7 @@ pub(crate) use aos_sandbox_protocol::domain_ledger::create_q04_history::{
     PENDING_BYTES, PHASE_BYTES, PREHOLD_RESPONSE_BYTES, Q04CutIdentityV1, Q04EffectSubgateV1,
     Q04HistoryDataErrorV1, Q04PendingOwnerV1, Q04PendingRecordV1, Q04PhaseOwnerV1,
     Q04PhaseRecordV1, Q04PreholdPublicationDataV1, Q04RootDecisionV1, Q04TransactionOwnerV1,
-    claim_chunk_count, chunk_count,
+    chunk_count, claim_chunk_count,
 };
 #[cfg(test)]
 const GATE_IDENTITY_DOMAIN: &[u8] = b"aos.sandbox.create-q04.effect-gate-identity.v1\0";
