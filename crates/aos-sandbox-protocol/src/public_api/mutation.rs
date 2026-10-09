@@ -16,13 +16,13 @@
 use aos_proto::aos::sandbox::v1 as wire;
 use buffa::Message as _;
 
+use super::PublicOperationMethodV1;
+use crate::domain_ledger::transaction::IdempotencyKey;
 use aos_proto::aos::sandbox::v1::{MutationContext, ObjectDescriptor as ProtoObjectDescriptor};
 use aos_sandbox_core::{
-    CapabilityId, MediaType, ObjectDescriptor, ObjectDigest, Operation, ProjectId,
-    ResourceId, ResourceKind, Selector,
+    CapabilityId, MediaType, ObjectDescriptor, ObjectDigest, Operation, ProjectId, ResourceId,
+    ResourceKind, Selector,
 };
-use crate::domain_ledger::transaction::IdempotencyKey;
-use super::PublicOperationMethodV1;
 
 use super::method::PublicApiAuditMethodV1;
 use super::request::{
@@ -755,7 +755,7 @@ fn exact_identity(bytes: &[u8]) -> Result<[u8; 16], PublicMutationResolutionErro
 /// # Errors
 ///
 /// Returns [`PublicMutationResolutionErrorV1::InvalidDescriptor`] when the
-/// digest is not exactly32 bytes or is all zero, size is zero, or media type is
+/// digest is not exactly 32 bytes or is all zero, size is zero, or media type is
 /// invalid.
 pub fn object_descriptor(
     value: &ProtoObjectDescriptor,

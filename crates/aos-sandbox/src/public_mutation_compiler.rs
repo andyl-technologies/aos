@@ -6,17 +6,17 @@
 //! Domain lowering consumes the private admitted value with current state;
 //! structural request decoding does not produce that authority.
 
-use aos_sandbox_core::{CapabilityId, PrincipalId, ProjectId};
 #[cfg(test)]
 use aos_sandbox_core::ObjectDigest;
+use aos_sandbox_core::{CapabilityId, PrincipalId, ProjectId};
 
 #[cfg(test)]
 use crate::cli_model::{PublicApiAuditMethodV1, PublicMutationRequestV1};
-use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1;
-#[cfg(test)]
-use aos_sandbox_protocol::public_api::PublicOperationMethodV1;
 use crate::public_api_session::PublicApiPeer;
 use crate::{Journal, JournalError};
+#[cfg(test)]
+use aos_sandbox_protocol::public_api::PublicOperationMethodV1;
+use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1;
 
 /// Carries a resolved mutation only after current protected authorization.
 ///
@@ -423,9 +423,11 @@ mod handle_decode_tests {
         assert!(structural.selector().is_none());
 
         let uid = CapabilityId::from_bytes([11; 16]);
-        let protected =
-            ResolvedPublicMutationRequestV1::decode_with_historical_capability_id(&encoded, Some(uid))
-                .unwrap();
+        let protected = ResolvedPublicMutationRequestV1::decode_with_historical_capability_id(
+            &encoded,
+            Some(uid),
+        )
+        .unwrap();
         assert_eq!(
             protected.selector(),
             Some(&Selector::Resource {
