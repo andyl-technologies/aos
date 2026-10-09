@@ -6,7 +6,7 @@
 //! manifest and config bytes remain storage-local.
 
 use crate::oci_projection::manifest_original_digest;
-use aos_oci_types::{ManifestReference, MediaType, Sha256Digest};
+use aos_oci_types::{ManifestReference, Sha256Digest};
 use axum::body::{Body, to_bytes};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse as _, Response};

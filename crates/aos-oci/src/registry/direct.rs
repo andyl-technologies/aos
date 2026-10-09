@@ -344,6 +344,10 @@ struct ProvedAllocationToken {
 }
 
 impl DirectOciAuthority {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "External OCI token expiry uses UTC outside Crucible state paths."
+    )]
     async fn proved_token(
         &self,
         client: &RegistryClient,

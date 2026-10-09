@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{bail, Result};
-use aos_oci_types::RepositoryName;
+use aos_oci_types::{MediaType, RepositoryName};
 
 use super::*;
 use crate::auth::jwt::JwtKeys;

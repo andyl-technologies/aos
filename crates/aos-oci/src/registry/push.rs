@@ -168,8 +168,10 @@ pub(super) async fn run_with_mounts(
         direct.as_ref(),
         reference,
         &verified.manifest.digest.to_string(),
-        verified.manifest.media_type,
-        manifest_bytes,
+        ManifestPayload {
+            media_type: verified.manifest.media_type,
+            bytes: manifest_bytes,
+        },
         &scope,
         Some(&options.cancellation),
     )
@@ -181,8 +183,10 @@ pub(super) async fn run_with_mounts(
         direct.as_ref(),
         reference,
         &index_digest.to_string(),
-        MediaType::OciImageIndex,
-        index_bytes.clone(),
+        ManifestPayload {
+            media_type: MediaType::OciImageIndex,
+            bytes: index_bytes.clone(),
+        },
         &scope,
         Some(&options.cancellation),
     )
@@ -200,8 +204,10 @@ pub(super) async fn run_with_mounts(
                 direct.as_ref(),
                 reference,
                 &tag.to_string(),
-                MediaType::OciImageIndex,
-                index_bytes,
+                ManifestPayload {
+                    media_type: MediaType::OciImageIndex,
+                    bytes: index_bytes,
+                },
                 &scope,
                 None,
             )
@@ -287,8 +293,10 @@ pub(super) async fn run_release_graph(
             direct.as_ref(),
             reference,
             &document.descriptor.digest.to_string(),
-            document.descriptor.media_type,
-            document.bytes.clone(),
+            ManifestPayload {
+                media_type: document.descriptor.media_type,
+                bytes: document.bytes.clone(),
+            },
             &scope,
             Some(&options.cancellation),
         )
@@ -920,24 +928,28 @@ async fn query_upload(
     Ok(Some((next, offset)))
 }
 
+struct ManifestPayload {
+    media_type: MediaType,
+    bytes: Vec<u8>,
+}
+
 async fn put_manifest(
     client: &RegistryClient,
     #[cfg(unix)] direct: Option<&super::direct::DirectOciAuthority>,
     reference: &RegistryReference,
     manifest_reference: &str,
-    media_type: MediaType,
-    bytes: Vec<u8>,
+    payload: ManifestPayload,
     scope: &str,
     cancellation: Option<&CancellationToken>,
 ) -> Result<()> {
     let repository = repository_path(reference);
     let path = format!("v2/{repository}/manifests/{manifest_reference}");
     let url = client.url(&path)?;
-    let headers = build_headers([header("content-type", media_type.as_str())?]);
+    let headers = build_headers([header("content-type", payload.media_type.as_str())?]);
     let commit = CancellationToken::new();
     let cancellation = cancellation.unwrap_or(&commit);
-    let expected_digest = Sha256Digest::digest(&bytes);
-    let bytes = Bytes::from(bytes);
+    let expected_digest = Sha256Digest::digest(&payload.bytes);
+    let bytes = Bytes::from(payload.bytes);
     #[cfg(unix)]
     let response = if let Some(direct) = direct {
         // Hybrid receives this bounded document at the Worker only. Its

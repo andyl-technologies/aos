@@ -171,7 +171,7 @@ pub fn finalize_container_publication(
     ensure!(
         output
             .parent()
-            .map_or(true, |candidate| candidate == output_parent(output)),
+            .is_none_or(|candidate| candidate == output_parent(output)),
         "finalized bundle output path is malformed"
     );
     ensure!(
@@ -387,7 +387,7 @@ fn validate_publication_roots(inputs: &Path, input: &ContainerSignatureInput) ->
     );
     let mut expected = unsigned_evidence(input)
         .into_iter()
-        .map(|descriptor| serde_json::to_value(descriptor))
+        .map(serde_json::to_value)
         .collect::<std::result::Result<Vec<_>, _>>()?;
     expected.sort_by_key(Value::to_string);
     let mut observed = roots["referrers"]
