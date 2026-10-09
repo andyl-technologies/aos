@@ -829,7 +829,10 @@ in {
           if externalDirect
           then 32768
           else 16384;
-        memoryMiB = 2048;
+        # Preparing signed source closures is separate from Hub throughput.
+        # Give APR enough parallel compression capacity for the real corpus.
+        memoryMiB = 8192;
+        vcpuCount = 8;
         varProvisioning = "repart";
       };
       native = {

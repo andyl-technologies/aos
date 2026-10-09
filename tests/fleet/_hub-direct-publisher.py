@@ -146,7 +146,7 @@ def prepare_direct_signed_surface(client, python, apr, git, openssh, nix,
         os.umask(0o077)
 
         def run(arguments):
-            # Release compresses the real closure on the small client VM.
+            # Release compresses the real closure on the client VM.
             # Match the fleet's existing container-publication time budget.
             timeout = 1200 if arguments[1] == 'release' else 180
             result = subprocess.run(arguments, cwd={publication_project!r}, env=environment, capture_output=True,
