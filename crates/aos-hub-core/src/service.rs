@@ -12206,18 +12206,8 @@ impl RpcService {
         req: pb::ReportPackageAbilityDeploymentRequest,
     ) -> Result<pb::PackageAbilityDeploymentResponse, RpcError> {
         let claims = self.require_claims(auth)?;
-        let principal = claims_principal(&claims)
-            .ok_or_else(|| RpcError::PermissionDenied("active principal required".into()))?;
-        if !self
-            .db
-            .principal_is_live(principal.kind.as_str(), principal.id)
-            .await
-            .map_err(RpcError::internal)?
-        {
-            return Err(RpcError::PermissionDenied(
-                "active principal required".into(),
-            ));
-        }
+        let principal = self.current_principal(&claims).await?;
+
         let registry = self.registry_or_not_found(&req.registry).await?;
         let reporter = self
             .db
@@ -38472,11 +38462,14 @@ pub(crate) mod cache_upload_tests {
             .create_user("other-reporter@example.test", None)
             .await
             .unwrap();
+        db.grant_membership("user", other_user, "instance", Role::Owner.as_str())
+            .await
+            .unwrap();
         let other_authority = crate::service::authentication::provisioned_test_auth(
             &db,
             Principal::user(other_user),
             Scope::root(),
-            &[],
+            &[Permission::Read],
         )
         .await;
         let other_token = JwtKeys::from_secret(b"injected-write-flow-test-key")
@@ -38501,6 +38494,41 @@ pub(crate) mod cache_upload_tests {
                 .report_package_ability_deployment(Some(&reporter_auth), report.clone())
                 .await,
             Err(RpcError::InvalidArgument(_))
+        ));
+
+        let reporter_user = db
+            .user_by_email("writer@example.test")
+            .await
+            .unwrap()
+            .unwrap();
+        let report_authority = crate::service::authentication::provisioned_test_auth(
+            &db,
+            Principal::user(reporter_user),
+            Scope::root(),
+            &[Permission::Read],
+        )
+        .await;
+        let report_token = JwtKeys::from_secret(b"injected-write-flow-test-key")
+            .mint(&report_authority, 3600)
+            .unwrap();
+        let report_auth = format!("Bearer {report_token}");
+
+        assert!(matches!(
+            service
+                .report_package_ability_deployment(Some(&report_auth), report.clone())
+                .await,
+            Err(RpcError::InvalidArgument(_))
+        ));
+
+        db.revoke_token(&report_authority.token_id).await.unwrap();
+
+        // A revoked token must fail before parsing, even while its owner's
+        // enrollment and account remain active.
+        assert!(matches!(
+            service
+                .report_package_ability_deployment(Some(&report_auth), report.clone())
+                .await,
+            Err(RpcError::PermissionDenied(_))
         ));
 
         let revoke_plan = service

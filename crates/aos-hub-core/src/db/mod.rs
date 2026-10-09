@@ -26943,13 +26943,18 @@ requires-features = ["image-artifact-contract-v1"]
     }
 
     #[tokio::test]
-    async fn native_reference_schema_upgrades_from_released_production_versions() {
-        // Released versions 2 through 5 add the channel ledger, private stages, OCI
-        // retirement, and namespace routes before native reference migrations.
+    async fn native_reference_schema_refuses_noncanonical_released_prefixes_without_writes() {
+        use sha2::Digest as _;
+
+        // Earlier feature prefixes do not identify this branch's canonical
+        // serving schema. Preserve them for an explicit reset or manual import.
         for baseline_version in [1, 2, 3, 4, 5] {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("hub.db");
             let connection = Connection::open(&path).unwrap();
+            // Released Hub databases already use WAL. Avoid mistaking the
+            // driver's journal-mode configuration for a migration write.
+            connection.pragma_update(None, "journal_mode", "WAL").unwrap();
             connection
                 .execute_batch("CREATE TABLE schema_version (version INTEGER NOT NULL);")
                 .unwrap();
@@ -26963,24 +26968,11 @@ requires-features = ["image-artifact-contract-v1"]
                 )
                 .unwrap();
             drop(connection);
+            let before = sha2::Sha256::digest(std::fs::read(&path).unwrap());
 
-            drop(Database::open(&path).await.unwrap());
+            assert!(Database::open(&path).await.is_err());
 
-            let connection = Connection::open(&path).unwrap();
-            let version: i64 = connection
-                .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
-                .unwrap();
-            let graph_table: i64 = connection
-                .query_row(
-                    "SELECT COUNT(*) FROM sqlite_master
-                     WHERE type = 'table' AND name = 'release_ability_graphs'",
-                    [],
-                    |row| row.get(0),
-                )
-                .unwrap();
-
-            assert_eq!(version, MIGRATIONS.len() as i64);
-            assert_eq!(graph_table, 1);
+            assert_eq!(sha2::Sha256::digest(std::fs::read(&path).unwrap()), before);
         }
     }
 

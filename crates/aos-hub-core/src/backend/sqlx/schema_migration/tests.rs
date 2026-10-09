@@ -54,7 +54,7 @@ async fn empty_initializes_and_current_reopens_without_writes() {
         .query("SELECT version FROM schema_version", &[])
         .await
         .unwrap();
-    assert_eq!(current[0].get::<i64>(0).unwrap(), 13);
+    assert_eq!(current[0].get::<i64>(0).unwrap(), MIGRATIONS.len() as i64);
     let identity = backend
         .query("SELECT identity FROM hub_schema_identity", &[])
         .await
@@ -93,9 +93,11 @@ async fn divergent_master_two_refuses_without_any_write() {
 
     let error = backend.migrate_schema().await.unwrap_err();
 
-    assert!(error
-        .to_string()
-        .contains("explicitly initialize a new canonical database"));
+    assert!(
+        error
+            .to_string()
+            .contains("explicitly initialize a new canonical database")
+    );
     assert_eq!(fingerprint(&backend).await, before);
 }
 
@@ -156,7 +158,7 @@ async fn canonical_startup_waits_beyond_the_statement_busy_timeout() {
         .await
         .unwrap();
     assert_eq!(versions.len(), 1);
-    assert_eq!(versions[0].get::<i64>(0).unwrap(), 13);
+    assert_eq!(versions[0].get::<i64>(0).unwrap(), MIGRATIONS.len() as i64);
     pool.close().await;
 }
 
@@ -181,7 +183,7 @@ async fn concurrent_fresh_starters_share_actual_file_lock() {
         .await
         .unwrap();
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].get::<i64>(0).unwrap(), 13);
+    assert_eq!(rows[0].get::<i64>(0).unwrap(), MIGRATIONS.len() as i64);
 }
 
 #[cfg(any(feature = "postgres", feature = "mysql"))]
