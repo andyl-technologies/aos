@@ -291,6 +291,7 @@ fn digest(bytes: &[u8]) -> String {
 
 // A bounded process-local clock avoids assigning remote UTC authority. The
 // hosted controller must retain its own process-start/first-record brackets.
+#[allow(clippy::disallowed_methods, reason = "Physical network observation measures elapsed host time; it does not enter Crucible state.")]
 fn elapsed_ns() -> Option<u64> {
     let origin = CLOCK_ORIGIN.get_or_init(Instant::now);
     Instant::now()
@@ -298,6 +299,7 @@ fn elapsed_ns() -> Option<u64> {
         .and_then(|elapsed| elapsed.as_nanos().try_into().ok())
 }
 
+#[allow(clippy::disallowed_methods, reason = "Physical network observation brackets remote UTC events; it does not enter Crucible state.")]
 fn now() -> Option<u64> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

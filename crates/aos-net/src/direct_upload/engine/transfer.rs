@@ -688,6 +688,7 @@ async fn finish_batch<C: DirectUploadControl, S: DirectCheckpointStore>(
 
 use sha2::Digest as _;
 
+#[allow(clippy::disallowed_methods, reason = "Signed remote upload deadlines require real UTC; this is outside Crucible state.")]
 fn latest_now() -> Result<u64, DirectClientError> {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

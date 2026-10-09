@@ -527,13 +527,11 @@ impl State {
                     .ok_or_else(|| anyhow::anyhow!("completion without dispatch"))?;
                 match invocation.action {
                     Action::Apply => {
-                        if let Some(previous) = self.retained.get(&invocation.id) {
-                            if artifact(&previous.invocation.effect).is_some()
-                                && artifact(&previous.invocation.effect)
-                                    != artifact(&invocation.effect)
-                            {
-                                self.releases.push_back(previous.invocation.effect.clone());
-                            }
+                        if let Some(previous) = self.retained.get(&invocation.id)
+                            && artifact(&previous.invocation.effect).is_some()
+                            && artifact(&previous.invocation.effect) != artifact(&invocation.effect)
+                        {
+                            self.releases.push_back(previous.invocation.effect.clone());
                         }
                         if self.startup_desired.contains(&invocation.id) {
                             self.startup_established.insert(invocation.id.clone());

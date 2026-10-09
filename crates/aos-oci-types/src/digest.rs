@@ -64,7 +64,10 @@ impl Sha256Digest {
         }
 
         let mut bytes = [0_u8; 32];
-        for (output, pair) in bytes.iter_mut().zip(encoded.as_bytes().chunks_exact(2)) {
+        for (output, pair) in bytes
+            .iter_mut()
+            .zip(encoded.as_bytes().as_chunks::<2>().0.iter())
+        {
             let high = decode_nibble(pair[0]);
             let low = decode_nibble(pair[1]);
             *output = (high << 4) | low;
