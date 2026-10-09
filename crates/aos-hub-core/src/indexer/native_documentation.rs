@@ -10,6 +10,34 @@ use sha2::{Digest, Sha256};
 
 use crate::fetch::SurfaceFetch;
 
+/// Projects a standard narinfo reference onto the signed store-hash identity.
+///
+/// # Errors
+/// Rejects malformed hashes, empty names and noncanonical store basenames.
+pub(super) fn narinfo_reference_hash(reference: &str) -> Result<String> {
+    let hash = match reference.split_once('-') {
+        Some((hash, name)) => {
+            ensure!(
+                !name.is_empty()
+                    && name
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || b"+._?=-".contains(&byte)),
+                "documentation narinfo has an invalid reference name"
+            );
+            hash
+        }
+        None => reference,
+    };
+    ensure!(
+        hash.len() == 32
+            && hash
+                .bytes()
+                .all(|byte| b"0123456789abcdfghijklmnpqrsvwxyz".contains(&byte)),
+        "documentation narinfo has an invalid reference hash"
+    );
+    Ok(hash.to_owned())
+}
+
 /// Fetches a native reference bound to an exact authenticated release coordinate.
 ///
 /// # Errors
@@ -238,17 +266,18 @@ mod tests {
             store_path: "/nix/store/11111111111111111111111111111111-options".into(),
             nar_hash: format!("sha256:{nar_digest}"),
             nar_size: nar.len() as u64,
-            references: Vec::new(),
+            references: vec!["2".repeat(32)],
             document_sha256: format!("sha256:{}", hex::encode(Sha256::digest(bytes))),
             document_size: bytes.len() as u64,
         };
         let narinfo = format!(
-            "StorePath: {}\nURL: nar/options.nar\nCompression: none\nFileHash: {}\nFileSize: {}\nNarHash: {}\nNarSize: {}\nReferences: \n",
+            "StorePath: {}\nURL: nar/options.nar\nCompression: none\nFileHash: {}\nFileSize: {}\nNarHash: {}\nNarSize: {}\nReferences: {}-source\n",
             artifact.store_path,
             artifact.nar_hash,
             artifact.nar_size,
             artifact.nar_hash,
-            artifact.nar_size
+            artifact.nar_size,
+            artifact.references[0]
         );
         let mut fetch = Fetch(BTreeMap::from([
             (
@@ -262,6 +291,17 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(document.reference().unwrap().packages[0].version, "1");
+        let mut changed_references = artifact.clone();
+        changed_references.references = vec!["3".repeat(32)];
+        assert!(fetch_native_documentation(
+            &fetch,
+            "sample",
+            "1",
+            "x86_64-linux",
+            &changed_references,
+        )
+        .await
+        .is_err());
         assert!(
             fetch_native_documentation(&fetch, "sample", "2", "x86_64-linux", &artifact)
                 .await
@@ -279,5 +319,24 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[test]
+    fn narinfo_references_require_canonical_names_and_store_hashes() {
+        let hash = "2".repeat(32);
+        assert_eq!(narinfo_reference_hash(&hash).unwrap(), hash);
+        assert_eq!(
+            narinfo_reference_hash(&format!("{hash}-source")).unwrap(),
+            hash
+        );
+        for reference in [
+            format!("{hash}-"),
+            format!("{hash}-../source"),
+            format!("/nix/store/{hash}-source"),
+            "e".repeat(32),
+            "2".repeat(31),
+        ] {
+            assert!(narinfo_reference_hash(&reference).is_err());
+        }
     }
 }
