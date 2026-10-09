@@ -175,7 +175,13 @@ granting authority. Their exact selectors are registered in the owning GET
 and algebra gates. Scoped formatting and whitespace checks pass; compilation
 and runtime qualification remain pending. Native deletion candidate
 `26dc8998b0` passes its required native build and strict all-target Clippy;
-its original test compilation remains in progress. Native overlay review also
+its test compilation and exact 983-case inventory pass. The three native
+deletion cases pass in 124.015 seconds overall and the two native domain
+storage cases pass in 5.070 seconds, using the default profile, one test worker
+and no phase tracing. Source, inventory and all three executable seals remain
+unchanged. The held-read candidate `45dbc23e3c` now includes the reviewed
+materializer prerequisite and owning gate registrations; its fresh native
+build is in progress. Native overlay review also
 identifies inherited index bindings that need authentication against their
 signed source and recomputation for the actual output. Source corrections
 and fixtures remain in that workline; none of these results accepts a task.
