@@ -99,21 +99,6 @@ pub fn decode_operation_key(bytes: &[u8]) -> Result<OperationId, PublicOperation
     Ok(OperationId::from_bytes(value))
 }
 
-pub fn encode_operation(
-    state: OperationState,
-    effect_count: u32,
-    ownership_gated: bool,
-    runtime_intent_digest: Option<ObjectDigest>,
-) -> Vec<u8> {
-    encode_operation_record(OperationRecord {
-        state,
-        effect_count,
-        ownership_gated,
-        runtime_intent_digest,
-        public_operation: None,
-    })
-}
-
 pub fn encode_operation_record(operation: OperationRecord) -> Vec<u8> {
     let public = operation.public_operation;
     let mut bytes = Vec::with_capacity(if public.is_some() {
@@ -212,4 +197,3 @@ pub fn decode_operation(bytes: &[u8]) -> Result<OperationRecord, PublicOperation
         public_operation,
     })
 }
-

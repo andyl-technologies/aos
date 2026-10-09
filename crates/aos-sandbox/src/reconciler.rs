@@ -124,7 +124,6 @@ use operation_ledger::{decode_ownership_gate, encode_ownership_gate};
 #[cfg(test)]
 use aos_sandbox_protocol::domain_ledger::operation::{
     OPERATION_RECORD_V1_BYTES, OPERATION_RUNTIME_INTENT_DIGEST_BYTES, RECORD_VERSION_V1,
-    encode_operation,
 };
 pub use operation_ledger::{OwnershipGatePlanV1, OwnershipGateStatusV1};
 use aos_sandbox_protocol::domain_ledger::public_operation::{OperationState, resource_version};
@@ -4527,6 +4526,21 @@ pub(crate) fn validate_delete_batch_admission_records_v1(
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
+
+    fn encode_operation(
+        state: OperationState,
+        effect_count: u32,
+        ownership_gated: bool,
+        runtime_intent_digest: Option<ObjectDigest>,
+    ) -> Vec<u8> {
+        encode_operation_record(OperationRecord::new(
+            state,
+            effect_count,
+            ownership_gated,
+            runtime_intent_digest,
+            None,
+        ))
+    }
 
     use std::collections::{BTreeMap, VecDeque};
     use std::fs;
