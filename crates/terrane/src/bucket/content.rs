@@ -1,5 +1,7 @@
 //! Validates opaque admissions and verifies complete bodies before ranged reads.
 
+#[cfg(all(feature = "tokio", unix))]
+pub(in crate::bucket) mod held_nodes;
 mod meta_batch;
 
 pub(crate) use meta_batch::BatchOutcome;

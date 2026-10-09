@@ -6,6 +6,7 @@
 )]
 
 pub(crate) use super::content::BatchOutcome;
+#[cfg(all(feature = "tokio", unix))]
 pub(crate) use super::content::held_nodes::NodeReads;
 
 use super::{BucketBinding, FileBucket, files};
