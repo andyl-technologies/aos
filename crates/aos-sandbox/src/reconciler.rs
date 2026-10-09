@@ -1285,14 +1285,18 @@ pub enum ReconcilerError {
 impl From<aos_sandbox_protocol::domain_ledger::public_operation::PublicOperationDataError>
     for ReconcilerError
 {
-    fn from(error: aos_sandbox_protocol::domain_ledger::public_operation::PublicOperationDataError) -> Self {
+    fn from(
+        error: aos_sandbox_protocol::domain_ledger::public_operation::PublicOperationDataError,
+    ) -> Self {
         use aos_sandbox_protocol::domain_ledger::public_operation::PublicOperationDataError;
 
         match error {
             PublicOperationDataError::InvalidPlan(reason) => Self::InvalidPlan(reason),
             PublicOperationDataError::CorruptLedger(reason) => Self::CorruptLedger(reason),
             PublicOperationDataError::PublicOperationClock => Self::PublicOperationClock,
-            PublicOperationDataError::PublicOperationSequenceExhausted => Self::PublicOperationSequenceExhausted,
+            PublicOperationDataError::PublicOperationSequenceExhausted => {
+                Self::PublicOperationSequenceExhausted
+            }
         }
     }
 }
@@ -8542,7 +8546,8 @@ mod tests {
         let last = authorization_bytes.len() - 1;
         authorization_bytes[last] ^= 1;
         assert!(matches!(
-            PublicOperationAuthorizationV1::decode(&authorization_bytes).map_err(ReconcilerError::from),
+            PublicOperationAuthorizationV1::decode(&authorization_bytes)
+                .map_err(ReconcilerError::from),
             Err(ReconcilerError::CorruptLedger(_))
         ));
     }

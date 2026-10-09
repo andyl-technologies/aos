@@ -269,7 +269,9 @@ impl PublicOperationAuthorizationV1 {
             ));
         }
         let selector_length = u32::try_from(selector.len()).map_err(|_| {
-            PublicOperationDataError::InvalidPlan("public operation selector exceeds its durable bound")
+            PublicOperationDataError::InvalidPlan(
+                "public operation selector exceeds its durable bound",
+            )
         })?;
         let mut bytes =
             Vec::with_capacity(PUBLIC_OPERATION_AUTHORIZATION_FIXED_BYTES + selector.len());
@@ -327,10 +329,12 @@ impl PublicOperationAuthorizationV1 {
         }
         let selector_end = 36 + selector_length;
         let selector_bytes = &bytes[36..selector_end];
-        let selector: Selector = serde_json::from_slice(selector_bytes)
-            .map_err(|_| PublicOperationDataError::CorruptLedger("invalid public operation selector"))?;
-        let canonical = serde_json::to_vec(&selector)
-            .map_err(|_| PublicOperationDataError::CorruptLedger("invalid public operation selector"))?;
+        let selector: Selector = serde_json::from_slice(selector_bytes).map_err(|_| {
+            PublicOperationDataError::CorruptLedger("invalid public operation selector")
+        })?;
+        let canonical = serde_json::to_vec(&selector).map_err(|_| {
+            PublicOperationDataError::CorruptLedger("invalid public operation selector")
+        })?;
         let recorded_digest = &bytes[selector_end..];
         let expected_digest: [u8; 32] = Sha256::new()
             .chain_update(PUBLIC_OPERATION_AUTHORIZATION_DIGEST_DOMAIN)
@@ -554,9 +558,9 @@ impl DurablePublicOperationV1 {
         }
         let accepted_generation = read_u64(&bytes[8..16])?;
         let observation_sequence = read_u64(&bytes[16..24])?;
-        let audit_id: [u8; 16] = bytes[24..40]
-            .try_into()
-            .map_err(|_| PublicOperationDataError::CorruptLedger("invalid public operation audit ID"))?;
+        let audit_id: [u8; 16] = bytes[24..40].try_into().map_err(|_| {
+            PublicOperationDataError::CorruptLedger("invalid public operation audit ID")
+        })?;
         let accepted_wall_seconds = read_i64(&bytes[40..48])?;
         let last_reconciliation_wall_seconds = read_i64(&bytes[48..56])?;
         let completion = read_i64(&bytes[56..64])?;
@@ -757,7 +761,9 @@ fn read_i64(bytes: &[u8]) -> Result<i64, PublicOperationDataError> {
 fn read_array<const N: usize>(bytes: &[u8]) -> Result<[u8; N], PublicOperationDataError> {
     bytes
         .try_into()
-        .map_err(|_| PublicOperationDataError::CorruptLedger("truncated public operation authorization"))
+        .map_err(|_| {
+            PublicOperationDataError::CorruptLedger("truncated public operation authorization")
+        })
 }
 
 const fn resource_kind_code(kind: ResourceKind) -> u8 {
