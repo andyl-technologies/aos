@@ -288,6 +288,7 @@ impl CompletionRecord {
         if !decoder.is_empty() {
             return Err(DestinationSlotEffectError::CorruptState);
         }
+        // Receipt and commitment validation remains with the attempt-bound history.
         Ok(Self {
             request_id,
             attempt_digest,

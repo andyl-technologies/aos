@@ -641,6 +641,7 @@ impl Record {
         let body = decoder.bytes(body_len)?.to_vec();
         let packet = decoder.bytes(packet_len)?.to_vec();
         let digest = decoder.array()?;
+        // Keep EOF ahead of record commitments and signed-artifact validation.
         if !decoder.is_empty() {
             return Err(DestinationSlotEffectError::CorruptState);
         }
