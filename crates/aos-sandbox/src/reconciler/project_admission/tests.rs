@@ -246,17 +246,12 @@ fn historical_dispatch_claims_rejoin_actual_original_effect_without_current_publ
     assert!(dispatch_readback_from_original_graph(&fixture.journal, fixture.operation).is_err());
     let effect = fixture.effect();
     let metadata = effect.project_admission.clone().unwrap();
-    transfer_metadata(
-        &mut fixture.journal,
-        fixture.operation,
-        effect,
-        {
-            let next_phase = ProjectAdmissionPhase::DispatchAuthorized;
-            let mut next = metadata.clone();
-            next.set_historical_phase(next_phase);
-            next
-        },
-    )
+    transfer_metadata(&mut fixture.journal, fixture.operation, effect, {
+        let next_phase = ProjectAdmissionPhase::DispatchAuthorized;
+        let mut next = metadata.clone();
+        next.set_historical_phase(next_phase);
+        next
+    })
     .unwrap();
     fixture.reopen();
     let claims =
@@ -320,22 +315,23 @@ fn original_graph_and_dispatch_suffix_survive_cold_replay_without_source_row() {
             .unwrap()
             .is_none()
     );
-    transfer_metadata(
-        &mut fixture.journal,
-        fixture.operation,
-        effect,
-        {
-            let next_phase = ProjectAdmissionPhase::DispatchAuthorized;
-            let mut next = metadata.clone();
-            next.set_historical_phase(next_phase);
-            next
-        },
-    )
+    transfer_metadata(&mut fixture.journal, fixture.operation, effect, {
+        let next_phase = ProjectAdmissionPhase::DispatchAuthorized;
+        let mut next = metadata.clone();
+        next.set_historical_phase(next_phase);
+        next
+    })
     .unwrap();
     let authorized = fixture.effect().project_admission.unwrap();
-    assert_eq!(authorized.admission_revision(), metadata.admission_revision());
+    assert_eq!(
+        authorized.admission_revision(),
+        metadata.admission_revision()
+    );
     assert_eq!(authorized.source_commitment(), metadata.source_commitment());
-    assert_eq!(authorized.original_projection(), metadata.original_projection());
+    assert_eq!(
+        authorized.original_projection(),
+        metadata.original_projection()
+    );
     assert_eq!(
         fixture
             .journal
@@ -478,17 +474,12 @@ fn dispatch_without_root_artifact_keeps_exact_flight_when_credentials_expire_or_
     let mut fixture = Fixture::prepared();
     let effect = fixture.effect();
     let metadata = effect.project_admission.clone().unwrap();
-    transfer_metadata(
-        &mut fixture.journal,
-        fixture.operation,
-        effect,
-        {
-            let next_phase = ProjectAdmissionPhase::DispatchAuthorized;
-            let mut next = metadata;
-            next.set_historical_phase(next_phase);
-            next
-        },
-    )
+    transfer_metadata(&mut fixture.journal, fixture.operation, effect, {
+        let next_phase = ProjectAdmissionPhase::DispatchAuthorized;
+        let mut next = metadata;
+        next.set_historical_phase(next_phase);
+        next
+    })
     .unwrap();
     fixture.reopen();
     let retained = fixture.effect().project_admission.unwrap();

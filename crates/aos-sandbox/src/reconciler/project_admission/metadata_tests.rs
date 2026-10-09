@@ -92,7 +92,9 @@ fn metadata_phase_cannot_substitute_terminal_or_retirement_authority() {
     );
     let cancellation =
         crate::policy_compiler::test_root_project_reservation_cancellation_v1(row.reservation());
-    row.set_historical_terminal(Some(RetainedRootProjectTerminal::Cancellation(cancellation)));
+    row.set_historical_terminal(Some(RetainedRootProjectTerminal::Cancellation(
+        cancellation,
+    )));
     let accepted = row.acceptance_digest().unwrap();
     row.set_historical_phase(ProjectAdmissionPhase::RootRetired);
     assert!(

@@ -46,7 +46,6 @@ const FIXED_BODY_BYTES: usize = 1024;
 pub const MAXIMUM_RECORD_BYTES: usize =
     FIXED_BODY_BYTES + MAXIMUM_RETAINED_PUBLIC_PROJECTION_BYTES + 32;
 
-
 /// Distinguishes historical Controller phase claims without authorizing transitions.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
@@ -227,7 +226,10 @@ impl ProjectAdmissionMetadataV1 {
     }
 
     /// Replaces the unchecked historical Source challenge.
-    pub fn set_historical_challenge(&mut self, challenge: Option<SourceProjectAdmissionChallengeV1>) {
+    pub fn set_historical_challenge(
+        &mut self,
+        challenge: Option<SourceProjectAdmissionChallengeV1>,
+    ) {
         self.challenge = challenge;
     }
 
@@ -240,7 +242,6 @@ impl ProjectAdmissionMetadataV1 {
     pub fn set_historical_retired_floor(&mut self, retired_floor: Option<ObjectDigest>) {
         self.retired_floor = retired_floor;
     }
-
 
     /// Hashes the complete row normalized to its historical accepted phase.
     ///
@@ -472,14 +473,15 @@ impl ProjectAdmissionMetadataV1 {
         match self.terminal {
             None => {}
             Some(RetainedRootProjectTerminalV1::Outcome(outcome)) => {
-                let challenge = self.challenge.ok_or_else(|| ProjectAdmissionMetadataDataErrorV1::InvalidMetadata)?;
+                let challenge = self
+                    .challenge
+                    .ok_or_else(|| ProjectAdmissionMetadataDataErrorV1::InvalidMetadata)?;
                 if outcome.project() != self.project
                     || outcome.client_nonce() != self.reservation.client_nonce()
                     || outcome.stage() != challenge.stage()
                     || outcome.source_row() != challenge.record_digest()
                     || (outcome.kind() == RootProjectAdmissionOutcomeKindV1::Committed
-                        && (challenge.kind()
-                            != SourceProjectAdmissionChallengeKindV1::Admission
+                        && (challenge.kind() != SourceProjectAdmissionChallengeKindV1::Admission
                             || outcome.sandbox() != *self.sandbox.as_bytes()
                             || outcome.source_commitment() != self.source_commitment))
                 {
@@ -500,7 +502,10 @@ impl ProjectAdmissionMetadataV1 {
     }
 }
 
-fn take<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N], ProjectAdmissionMetadataDataErrorV1> {
+fn take<const N: usize>(
+    bytes: &[u8],
+    offset: usize,
+) -> Result<[u8; N], ProjectAdmissionMetadataDataErrorV1> {
     bytes
         .get(offset..offset + N)
         .ok_or_else(|| ProjectAdmissionMetadataDataErrorV1::InvalidMetadata)?

@@ -225,7 +225,9 @@ fn dispatch_readback_from_original_graph(
         source_commitment: metadata.source_commitment(),
         admission_revision: metadata.admission_revision(),
         admission_generation: metadata.admission_generation(),
-        metadata: ObjectDigest::from_bytes(Sha256::digest(metadata.encode().map_err(ReconcilerError::from)?).into()),
+        metadata: ObjectDigest::from_bytes(
+            Sha256::digest(metadata.encode().map_err(ReconcilerError::from)?).into(),
+        ),
         reservation: metadata.reservation(),
     })
 }
@@ -256,7 +258,9 @@ pub(crate) fn accepted_controller_project_terminal_v1(
         source_commitment: metadata.source_commitment(),
         admission_revision: metadata.admission_revision(),
         admission_generation: metadata.admission_generation(),
-        accepted_metadata: metadata.acceptance_digest().map_err(ReconcilerError::from)?,
+        accepted_metadata: metadata
+            .acceptance_digest()
+            .map_err(ReconcilerError::from)?,
         reservation: metadata.reservation(),
         challenge: metadata.challenge(),
         root_terminal: terminal.record_digest(),
@@ -576,17 +580,12 @@ pub fn authorize_controller_project_admission_dispatch_v1(
     if metadata.phase() != ProjectAdmissionPhase::Prepared {
         return Err(invalid_metadata().into());
     }
-    transfer_metadata(
-        journal,
-        operation,
-        effect,
-        {
-            let next_phase = ProjectAdmissionPhase::DispatchAuthorized;
-            let mut next = metadata;
-            next.set_historical_phase(next_phase);
-            next
-        },
-    )?;
+    transfer_metadata(journal, operation, effect, {
+        let next_phase = ProjectAdmissionPhase::DispatchAuthorized;
+        let mut next = metadata;
+        next.set_historical_phase(next_phase);
+        next
+    })?;
     require_controller_writer(journal)?;
     validate_all(journal)?;
     Ok(())
@@ -672,7 +671,8 @@ pub fn accept_controller_project_reservation_cancellation_v1(
         .ok_or_else(invalid_metadata)?;
     let (reservation, _) =
         read_source_project_reservation_status_v1(owner)?.ok_or_else(invalid_metadata)?;
-    if reservation != prior.reservation() || read_source_project_admission_status_v1(owner)?.is_some()
+    if reservation != prior.reservation()
+        || read_source_project_admission_status_v1(owner)?.is_some()
     {
         return Err(invalid_metadata().into());
     }
@@ -1004,7 +1004,8 @@ pub(super) fn validate_all(journal: &Journal) -> Result<(), ReconcilerError> {
             if !expected_capacity.insert(metadata.capacity_id()) {
                 return Err(invalid_metadata());
             }
-            let retained = journal.recover_global_capacity_reservation_v1(metadata.capacity_id())?;
+            let retained =
+                journal.recover_global_capacity_reservation_v1(metadata.capacity_id())?;
             let request = retained.request();
             let (transactions, records) = match metadata.phase() {
                 ProjectAdmissionPhase::Prepared => (3, 8),
