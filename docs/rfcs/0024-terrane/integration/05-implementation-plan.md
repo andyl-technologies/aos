@@ -252,6 +252,34 @@ neither takeover nor destructive recovery. Source formatting and diff checks
 pass; compilation, runtime and owning-gate qualification remain unrun while
 the existing recovery process owns the build lane. No task is accepted.
 
+The copied portion of that run completes fourteen passes, three refusal-oracle
+failures and three timeouts. The queued public renewal trace and source expose
+a genuine lock-order cycle: renewal retains namespace exclusion while waiting
+for Original controls retained by the barrier, whose runner needs the namespace
+again. A test-only inherited-control seam would not fix the public API. The
+administrative writer audit also finds live association/import/trust writers,
+so changing every Original lock to shared would be unsafe. Production acquisition
+handling remains pending under GC-22 and GC-24, with all writer exclusions and
+native in-flight retention preserved. Reopen times out at final ownership
+submission; the unused-Memo case times out during native index setup before any
+copied preparation. Those observations establish neither the same lock cycle
+nor a deadline remedy.
+
+The first permanent cancellation matrix times out before any permanent request:
+all three independent fixtures have submitted first ownership without an ACK.
+The parent registers every fault scenario as its own exact process, expanding
+the auxiliary permanent inventory from eleven to twenty-three while retaining
+all existing helpers, sixty-second barriers, fault assertions and the ordinary
+120-second process bound. Outer Nextest scheduling reserves the runner slots
+for copied and permanent cases. Isolated source adaptation and runtime proof
+remain pending; the current thirty-one-case run is unchanged and still live.
+Separately, the private Raw durability candidate `01f22fb6f4` merges immutable
+ordinal indexes for consumed rows and current-target outputs. Full diff review
+finds preserved duplicate attempts, physical check order, fault pre-scan and
+first-refusal diagnostic prefixes, with an independent full-scan oracle.
+Formatting and diff checks pass; compilation, regression gates and the six
+unchanged index populations remain unrun. No speedup or acceptance is claimed.
+
 All ten
 exact native Active completion cases pass on `4e6c14a7f3`. The eight-case native
 Legacy cold-fork gate now passes on `e2416dcdec`, including the exact fresh
