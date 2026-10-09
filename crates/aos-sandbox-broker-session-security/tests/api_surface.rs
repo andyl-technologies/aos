@@ -82,9 +82,15 @@ fn executable_and_http_registration_ownership_is_outside_security() {
 fn host_scheduling_stays_above_fixed_session_admission() {
     let activation = include_str!("../src/production_activation.rs");
     let host = include_str!("../src/production_activation/host.rs");
-    let service = include_str!("../src/production_service.rs");
+    let service = [
+        include_str!("../src/production_service.rs"),
+        include_str!("../src/production_service/mount.rs"),
+        include_str!("../src/production_service/nix_generation.rs"),
+        include_str!("../src/production_service/storage_output.rs"),
+    ]
+    .concat();
 
-    for source in [LIBRARY_SOURCE, activation, host, service] {
+    for source in [LIBRARY_SOURCE, activation, host, service.as_str()] {
         assert!(!source.contains("ProductionHostBrokerServiceV1"));
         assert!(!source.contains("into_host_service"));
         assert!(!source.contains("serve_production_host_request"));
