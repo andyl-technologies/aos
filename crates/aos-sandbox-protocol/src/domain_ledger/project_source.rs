@@ -18,6 +18,7 @@ use aos_sandbox_core::{ObjectDigest, OperationId, ProjectId, RevocationScopeId, 
 use sha2::{Digest as _, Sha256};
 
 const SOURCE_DOMAIN: &[u8] = b"aos.sandbox.public-create-project-source.v2\0";
+
 /// Retains source hash inputs only; it cannot establish current publisher heads.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HistoricalCreateProjectSourceHeadsV1 {
