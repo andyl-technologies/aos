@@ -218,6 +218,9 @@ in {
 
       # The native service must boot under its hardened unit before any local
       # recovery/bootstrap action is taken. The database starts empty.
+      # The guest agent becomes ready before the host graph finishes creating
+      # application units. Wait for the production manager to realize the Hub.
+      hub.wait_until_succeeds("systemctl is-active --quiet aos-hub.service", timeout=180)
       hub.succeed(textwrap.dedent("""
           systemctl is-active --quiet aos-hub.service || {
             systemctl status --no-pager --full aos-hub.service || true
