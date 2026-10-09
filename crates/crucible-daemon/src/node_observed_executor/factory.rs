@@ -1,10 +1,18 @@
 //! Host-owned installed providers and native enrollment before graph sealing.
 
+mod archive_artifacts;
 mod host_state;
+mod io;
 mod profile;
+mod scripted;
 mod trust;
 
+#[cfg(test)]
+mod artifact_tests;
+
 pub use host_state::InstalledHostStateFactory;
+pub use io::{InstalledHostIoProfile, InstalledIoArtifact, InstalledIoArtifactSource};
+pub use scripted::InstalledScriptedSourceProfile;
 
 use std::{
     collections::BTreeMap,
@@ -46,6 +54,16 @@ use crate::node_scenario::{NodeRunConfiguration, NodeScenario};
 pub enum InstalledNodeKind {
     /// Runs the owned host integer clock with no timers or autonomous work.
     HostClock,
+    /// Runs native block or 9p storage with independently enrolled immutable input.
+    HostIo {
+        /// Binds the native storage codec, immutable input and positive timing.
+        profile: InstalledHostIoProfile,
+    },
+    /// Publishes independently enrolled finite immutable native request events.
+    HostScripted {
+        /// Binds the complete source script and its ordinary public consumer.
+        profile: InstalledScriptedSourceProfile,
+    },
     /// Runs a fault-free byte-preserving exact host link between named nodes.
     HostNetLink {
         /// Names the public checksum producer whose output feeds the link.
@@ -82,6 +100,8 @@ impl<'de> Deserialize<'de> for InstalledNodeKind {
         let wire = InstalledNodeKindWire::deserialize(deserializer)?;
         Ok(match wire {
             InstalledNodeKindWire::HostClock {} => Self::HostClock,
+            InstalledNodeKindWire::HostIo { profile } => Self::HostIo { profile },
+            InstalledNodeKindWire::HostScripted { profile } => Self::HostScripted { profile },
             InstalledNodeKindWire::ReferenceDevice {
                 quantum_ps,
                 host_budget_ns,
@@ -120,6 +140,12 @@ impl<'de> Deserialize<'de> for InstalledNodeKind {
 enum InstalledNodeKindWire {
     /// Runs the owned host integer clock with no timers or autonomous work.
     HostClock {},
+    HostIo {
+        profile: InstalledHostIoProfile,
+    },
+    HostScripted {
+        profile: InstalledScriptedSourceProfile,
+    },
     /// Runs a fault-free byte-preserving exact host link between named nodes.
     HostNetLink {
         /// Names the public checksum producer whose output feeds the link.
@@ -192,6 +218,7 @@ pub struct InstalledNodeCatalog {
     socket_parent: PathBuf,
     control_timeout: Duration,
     custody: RuntimeCustodyQueue,
+    artifacts: BTreeMap<String, InstalledIoArtifact>,
 }
 
 impl InstalledNodeCatalog {
@@ -235,14 +262,76 @@ impl InstalledNodeCatalog {
             socket_parent,
             control_timeout,
             custody,
+            artifacts: BTreeMap::new(),
         })
+    }
+
+    /// Enrolls independently qualified immutable host artifacts before admission.
+    ///
+    /// Paths are private operator configuration. Portable node selections only
+    /// refer to their content identities and cannot install or replace artifacts.
+    /// Path entries are opened without following their final symlink and measured
+    /// before any registry entry changes. Explicit archive-only entries enroll
+    /// expected identities for signed recovery; they cannot construct fresh
+    /// native resources. Recovery independently authenticates complete archive
+    /// bytes against these expected identities before native allocation.
+    ///
+    /// # Errors
+    /// Refuses changed files, malformed references, reused identities with another
+    /// source, any artifact exceeding 4 MiB, more than 64 artifacts, or an
+    /// aggregate exceeding 16 MiB. A refusal leaves the installed registry
+    /// unchanged. Missing path entries never become archive-only enrollment.
+    pub fn install_artifacts(
+        &mut self,
+        artifacts: Vec<InstalledIoArtifact>,
+    ) -> Result<(), NodeObservedError> {
+        if artifacts.len() > 64 {
+            return Err(refused(
+                "installed artifact enrollment exceeds its finite count ceiling",
+            ));
+        }
+        let mut installed = self.artifacts.clone();
+        for artifact in artifacts {
+            artifact.expected.validate()?;
+            if artifact.expected.length.get() > io::MAXIMUM_IO_ARTIFACT_BYTES as u64 {
+                return Err(refused(
+                    "installed artifact exceeds its finite byte ceiling",
+                ));
+            }
+            let key = artifact.expected.hash.digest.clone();
+            if let Some(original) = installed.get(&key) {
+                if original.expected != artifact.expected || original.source != artifact.source {
+                    return Err(refused("installed artifact identity cannot be replaced"));
+                }
+            } else {
+                installed.insert(key, artifact);
+            }
+        }
+        let total = installed
+            .values()
+            .try_fold(0u64, |total, artifact| {
+                total.checked_add(artifact.expected.length.get())
+            })
+            .ok_or_else(|| refused("installed immutable artifact byte count overflowed"))?;
+        if installed.len() > 64 || total > 16 * 1024 * 1024 {
+            return Err(refused(
+                "installed immutable artifact registry exceeds its finite ceiling",
+            ));
+        }
+        for artifact in installed.values() {
+            if matches!(artifact.source, InstalledIoArtifactSource::Path(_)) {
+                io::read_artifact(artifact)?;
+            }
+        }
+        self.artifacts = installed;
+        Ok(())
     }
 
     /// Resolves selected actual implementations into a complete immutable scenario.
     ///
-    /// The installed edition supports isolated clock and checksum owners. Public
-    /// transport connections, guest CPUs, external ingress, replay and stateful
-    /// restart require independently qualified catalog entries and are refused.
+    /// Installed profiles include clocks, checksum windows, byte-preserving links
+    /// and finite scripted requests feeding native storage. Guest CPUs and
+    /// external ingress require independently qualified catalog entries.
     ///
     /// # Errors
     /// Refuses duplicate/oversized owner rosters or invalid profile parameters.
@@ -250,7 +339,13 @@ impl InstalledNodeCatalog {
         &self,
         selections: &[InstalledNodeSelection],
     ) -> Result<NodeScenario, NodeObservedError> {
-        Ok(profile::build_world(selections, &self.host_identity, &self.device_identity)?.scenario)
+        Ok(profile::build_world(
+            selections,
+            &self.host_identity,
+            &self.device_identity,
+            &self.artifacts,
+        )?
+        .scenario)
     }
 
     /// Prepares actual inactive resources and seals their complete mixed graph.
@@ -289,10 +384,12 @@ impl InstalledNodeCatalog {
         ))?;
         let publisher = StoredWorldActivationPublisher::new(Arc::clone(&blobs), refs, reference)?;
         NodeObservedBackend::from_prepared(
-            scenario,
+            InstalledPreparedWorld {
+                scenario,
+                graph,
+                realization: prepared,
+            },
             configuration,
-            graph,
-            prepared,
             Box::new(publisher),
             blobs,
             inputs,
@@ -317,21 +414,22 @@ impl InstalledNodeCatalog {
         scenario: NodeScenario,
         execution: ExecutionId,
     ) -> Result<InstalledPreparedWorld, NodeObservedError> {
+        let artifacts = self.artifacts.clone();
         Ok(self
-            .prepare_world_with_source(selections, scenario, execution, None, None)?
+            .prepare_world_with_source(selections, scenario, execution, None, None, &artifacts)?
             .0)
     }
 
-    /// Seals fresh installed clock authority for an authenticated durable source.
+    /// Seals fresh installed host authority for an authenticated complete source.
     ///
     /// This method measures the original installed profiles again and enrolls
-    /// actual inactive clock models before graph admission. It derives fresh
+    /// actual inactive native models before graph admission. It derives fresh
     /// incarnations from the new execution nonce and advances each original
     /// owner/world generation. It grants no restoration or activation token.
     /// Temporary enrollment resources remain in the owning retirement queue.
     ///
     /// # Errors
-    /// Refuses nonclock selections, foreign signed source compatibility, reused
+    /// Refuses unsupported selections, foreign signed source compatibility, reused
     /// incarnations, generation overflow, changed installations or admission.
     pub fn prepare_host_restore_graph(
         &mut self,
@@ -340,24 +438,29 @@ impl InstalledNodeCatalog {
         record: &crucible::node_state::HostArchiveRecord,
         execution: ExecutionId,
     ) -> Result<(AdmittedGraph, ActivationRecord), NodeObservedError> {
-        if selections
-            .iter()
-            .any(|selection| !matches!(selection.kind, InstalledNodeKind::HostClock))
-            || !scenario.world.connections.is_empty()
-            || record.manifest().world_binding_hash != scenario.world.identity()?
+        if selections.iter().any(|selection| {
+            !matches!(
+                selection.kind,
+                InstalledNodeKind::HostClock
+                    | InstalledNodeKind::HostIo { .. }
+                    | InstalledNodeKind::HostScripted { .. }
+            )
+        }) || record.manifest().world_binding_hash != scenario.world.identity()?
             || record.manifest().scenario_ref != scenario.world.scenario_ref
         {
             return Err(refused(
-                "signed source is not the exact installed clock-only world",
+                "signed source is not the exact supported installed host world",
             ));
         }
         let source = record.source_activation(4 * 1024 * 1024).map_err(native)?;
+        let artifacts = archive_artifacts::materialize(&self.artifacts, selections, record)?;
         let (prepared, target) = self.prepare_world_with_source(
             selections,
             scenario.clone(),
             execution,
             Some(&source),
             Some(record.manifest().cut),
+            artifacts.registry(),
         )?;
         drop(prepared.realization);
         Ok((prepared.graph, target))
@@ -370,9 +473,14 @@ impl InstalledNodeCatalog {
         execution: ExecutionId,
         source: Option<&crucible::node_contract::SavedRuntimeActivation>,
         preserved_cut: Option<Position>,
+        artifacts: &BTreeMap<String, InstalledIoArtifact>,
     ) -> Result<(InstalledPreparedWorld, ActivationRecord), NodeObservedError> {
-        let resolved =
-            profile::build_world(selections, &self.host_identity, &self.device_identity)?;
+        let resolved = profile::build_world(
+            selections,
+            &self.host_identity,
+            &self.device_identity,
+            artifacts,
+        )?;
         if scenario.canonical_bytes()? != resolved.scenario.canonical_bytes()? {
             return Err(refused(
                 "authored world differs from complete installed profile selection",
@@ -495,6 +603,18 @@ impl InstalledNodeCatalog {
                         )),
                     );
                 }
+                InstalledNodeKind::HostIo { profile } => {
+                    models.insert(
+                        selection.node.clone(),
+                        io::build_model(selection, profile, artifacts)?,
+                    );
+                }
+                InstalledNodeKind::HostScripted { profile } => {
+                    models.insert(
+                        selection.node.clone(),
+                        scripted::build_model(selection, profile, artifacts)?,
+                    );
+                }
                 InstalledNodeKind::HostClock => {
                     models.insert(
                         selection.node.clone(),
@@ -551,7 +671,10 @@ impl InstalledNodeCatalog {
         let mut nodes: Vec<Box<dyn SimulationNode>> = Vec::new();
         for selection in selections {
             match &selection.kind {
-                InstalledNodeKind::HostClock | InstalledNodeKind::HostNetLink { .. } => {
+                InstalledNodeKind::HostClock
+                | InstalledNodeKind::HostNetLink { .. }
+                | InstalledNodeKind::HostIo { .. }
+                | InstalledNodeKind::HostScripted { .. } => {
                     let model = models
                         .remove(&selection.node)
                         .ok_or_else(|| refused("enrolled host model custody disappeared"))?;

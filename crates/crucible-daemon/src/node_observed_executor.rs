@@ -12,7 +12,9 @@ mod service;
 pub use activation::StoredWorldActivationPublisher;
 pub use backend::{NodeObservedAdmission, NodeObservedBackend, NodeObservedError};
 pub use factory::{
-    InstalledHostStateFactory, InstalledNodeCatalog, InstalledNodeKind, InstalledNodeSelection, InstalledPreparedWorld,
+    InstalledHostIoProfile, InstalledHostStateFactory, InstalledIoArtifact,
+    InstalledIoArtifactSource, InstalledNodeCatalog, InstalledNodeKind, InstalledNodeSelection,
+    InstalledPreparedWorld, InstalledScriptedSourceProfile,
 };
 pub use service::{
     NodeObservationRetention, NodeObservationService, NodeObservationServiceConfig,

@@ -1,5 +1,8 @@
 //! Exercises actual source-built native owners through durable observed storage.
 
+// Test assertions panic deliberately; host deadlines only bound native test waits.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::disallowed_methods)]
+
 use super::*;
 use crate::node_scenario::{NodeRunConfiguration, NodeScenario};
 use crucible_campaign::{
@@ -224,6 +227,7 @@ fn owning_actor_completes_original_world_and_authenticates_idempotent_retries() 
     let execution = ExecutionId::from_bytes([32; 16]).unwrap();
     let service = NodeObservationService::start(
         NodeObservationServiceConfig {
+            installed_artifacts: Vec::new(),
             device_executable: executable,
             expected_device: expected,
             socket_parent: temporary.path().to_owned(),
@@ -331,6 +335,7 @@ fn dropping_submission_handle_keeps_independent_gc_owner_until_original_native_c
     let execution = ExecutionId::from_bytes([33; 16]).unwrap();
     let service = NodeObservationService::start(
         NodeObservationServiceConfig {
+            installed_artifacts: Vec::new(),
             device_executable: executable,
             expected_device: expected,
             socket_parent: temporary.path().to_owned(),
@@ -383,3 +388,7 @@ fn activation_publisher_refuses_nondurable_ref_authority_before_native_activatio
 
 #[path = "tests/connected.rs"]
 mod connected;
+
+mod storage;
+
+mod ninep_storage;

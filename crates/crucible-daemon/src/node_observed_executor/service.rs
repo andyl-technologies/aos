@@ -1,7 +1,10 @@
 //! Bounded owning daemon actor for portable submissions and native cleanup.
 
-use super::{InstalledNodeCatalog, InstalledNodeSelection, NodeObservedBackend};
+use super::{
+    InstalledIoArtifact, InstalledNodeCatalog, InstalledNodeSelection, NodeObservedBackend,
+};
 use crate::node_scenario::{MAX_NODE_SCENARIO_BYTES, NodeRunConfiguration, NodeScenario};
+use crate::supervision::ProcessDeadline;
 use crucible_campaign::{
     CampaignRepository, ExecutionId,
     observed_node_attempt::{ObservedAttemptState, ObservedAttemptWorker},
@@ -17,13 +20,15 @@ use std::{
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError, SyncSender},
     },
-    task::{Context, Wake, Waker},
+    task::{Context, Waker},
     thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 /// Configures host installation and finite execution/transport capacity.
 pub struct NodeObservationServiceConfig {
+    /// Retains independently enrolled private operator artifact paths and identities.
+    pub installed_artifacts: Vec<InstalledIoArtifact>,
     /// Names the actual operator-qualified source-built native companion.
     pub device_executable: PathBuf,
     /// Binds its expected installed artifact bytes independently of provider claims.
@@ -77,6 +82,19 @@ struct ActorWorker {
     worker: ObservedAttemptWorker<NodeObservedBackend>,
     request: crucible_campaign::observed_node_attempt::ObservedAttemptRequest,
     admission: super::NodeObservedAdmission,
+}
+
+struct ActorStorage {
+    repository: Arc<CampaignRepository>,
+    blobs: Arc<dyn ImmutableBlobBackend>,
+    refs: Arc<dyn MutableRefBackend>,
+}
+
+struct ActorControl {
+    receiver: Receiver<Command>,
+    stopping: Arc<AtomicBool>,
+    roots: Arc<Mutex<BTreeSet<ContentId>>>,
+    retired: Arc<AtomicBool>,
 }
 
 /// Retains GC inventory independently of the service submission handle.
@@ -159,20 +177,28 @@ impl NodeObservationService {
                     configuration.socket_parent,
                     configuration.control_timeout,
                     configuration.maximum_worlds,
-                );
+                )
+                .and_then(|mut catalog| {
+                    catalog.install_artifacts(configuration.installed_artifacts)?;
+                    Ok(catalog)
+                });
                 match catalog {
                     Ok(catalog) => {
                         let _ = ready_sender.send(Ok(()));
                         run_actor(
                             catalog,
                             configuration.maximum_worlds,
-                            repository,
-                            blobs,
-                            refs,
-                            receiver,
-                            actor_stopping,
-                            actor_roots,
-                            actor_retired,
+                            ActorStorage {
+                                repository,
+                                blobs,
+                                refs,
+                            },
+                            ActorControl {
+                                receiver,
+                                stopping: actor_stopping,
+                                roots: actor_roots,
+                                retired: actor_retired,
+                            },
                         );
                     }
                     Err(error) => {
@@ -309,20 +335,25 @@ impl Drop for NodeObservationService {
 fn run_actor(
     mut catalog: InstalledNodeCatalog,
     maximum_worlds: usize,
-    repository: Arc<CampaignRepository>,
-    blobs: Arc<dyn ImmutableBlobBackend>,
-    refs: Arc<dyn MutableRefBackend>,
-    receiver: Receiver<Command>,
-    stopping: Arc<AtomicBool>,
-    roots: Arc<Mutex<BTreeSet<ContentId>>>,
-    retired: Arc<AtomicBool>,
+    storage: ActorStorage,
+    control: ActorControl,
 ) {
+    let ActorStorage {
+        repository,
+        blobs,
+        refs,
+    } = storage;
+    let ActorControl {
+        receiver,
+        stopping,
+        roots,
+        retired,
+    } = control;
     let mut workers: BTreeMap<ExecutionId, ActorWorker> = BTreeMap::new();
     let mut retired_roots: BTreeMap<ExecutionId, BTreeSet<ContentId>> = BTreeMap::new();
-    let waker = Waker::from(Arc::new(ActorWake));
-    let mut context = Context::from_waker(&waker);
+    let mut context = Context::from_waker(Waker::noop());
     loop {
-        let turn_started = Instant::now();
+        let turn_deadline = ProcessDeadline::after(Duration::from_millis(1));
         let command = match receiver.recv_timeout(Duration::from_millis(1)) {
             Ok(command) => Some(command),
             Err(RecvTimeoutError::Timeout) => None,
@@ -428,8 +459,10 @@ fn run_actor(
         // A disconnected command channel is immediately ready. The retirement
         // actor still needs a bounded timer to avoid spinning on unavailable
         // storage or a native provider that repeatedly panics during cleanup.
-        if let Some(remaining) = Duration::from_millis(1).checked_sub(turn_started.elapsed()) {
-            thread::sleep(remaining);
+        if let Some(deadline) = turn_deadline {
+            deadline.pause(Duration::from_millis(1));
+        } else {
+            thread::sleep(Duration::from_millis(1));
         }
     }
 }
@@ -576,10 +609,6 @@ fn reply_refusal(command: Command, error: NodeObservationServiceError) {
     }
 }
 
-struct ActorWake;
-impl Wake for ActorWake {
-    fn wake(self: Arc<Self>) {}
-}
 fn refused(error: impl std::fmt::Display) -> NodeObservationServiceError {
     NodeObservationServiceError::Refused(error.to_string().chars().take(4096).collect())
 }

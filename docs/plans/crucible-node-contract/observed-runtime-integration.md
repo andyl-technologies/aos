@@ -11,7 +11,8 @@ execution or deterministic reuse of nondeterministic results.
 ## Installed factories and admission
 
 `InstalledNodeCatalog` supports the owned exact virtual clock, a fault-free
-exact byte-preserving link, and the actual source-built reference-device child. Each node selects its implementation
+exact byte-preserving link, deterministic block and 9p models, finite immutable
+request sources, and the actual source-built reference-device child. Each node selects its implementation
 independently. The catalog regenerates the complete immutable descriptors,
 ownership/capture inventory, schema set, clock policies, and requirements from
 its installed profiles, then requires exact submitted bytes. It measures the
@@ -48,11 +49,53 @@ outputs retain original consumed-input causal parents without inventing an
 instruction-level evaluation timestamp. Connection FIFO, credit and custody
 domains belong to actual endpoint owners and enumerate every execution writer.
 
-Connected transfer state and reference native state have no installed durable
-archive. The observed factory also refuses authored external ingress, faults,
+The connected reference topology and reference native state have no installed
+durable archive. The observed factory also refuses authored external ingress, faults,
 QEMU, gem5, KVM and fork until their independent native qualifications are
 installed. Unsupported selections and policies fail closed; provider names or
 proof labels do not create capabilities.
+
+## Immutable request sources and storage
+
+Private operator policy enrolls immutable artifact paths and independently
+expected content references. Remote selections contain only the complete
+`ContentRef` and native model/timing configuration; they cannot install host
+paths. The catalog checks finite count and byte limits and opens original files
+without following their final symlink. It rechecks complete bytes before native
+construction. Block models retain private copy-on-write overlays over immutable
+base images. Filesystem models use a canonical `FsTree` with deterministic
+sessions and native 9p request/response codecs.
+
+Operator enrollment distinguishes a source pathname from an explicit archive-only
+expected identity. Archive-only entries authorize verification of signed recovery
+content and refuse fresh scenario construction or native allocation. They permit
+restarting the owning daemon after original asset paths have been removed without
+letting a missing pathname silently change policy. Changing an installed entry's
+source mode or exact content metadata is refused; remote selections cannot enroll
+either mode.
+
+An installed `HostScripted` node retains a finite immutable original request
+script, its execution cursor and original public sequence. It emits actual
+ordinary public requests to a `HostIo` input lane; no caller input-buffer label
+or fabricated external closure authorizes those requests. Exact direct
+connections bind the same native wire schema, ordering, correlation and finite
+credits at both endpoints. Completed scripts authenticate closure through all
+representable instants. The scheduler represents that strict bound internally
+as no finite future arrival. Genuine finite timestamp and counter overflow still
+refuse progress and retain the original reservation.
+
+Complete native preservation includes immutable base/tree/script content in
+addition to mutable native codecs, which intentionally exclude immutable storage
+inputs. Signed source reconstruction accepts only archive references already
+enrolled by independent operator policy. It materializes bounded temporary
+source files for native constructors and leaves the catalog unchanged. Fresh
+world authority still requires measured installed code, an exact complete graph,
+fresh owner incarnations and increased generations. Transfer preservation
+is qualified for the installed finite-source block and read-only 9p topology:
+the signed archive includes complete native envelopes, original coordinator
+payload objects, pending transfers, credits, input acknowledgement state and
+immutable source content. Node-only codecs do not establish transfer closure.
+Original observed execution alone does not qualify another topology or fork.
 
 ## Original execution and custody
 
@@ -108,9 +151,11 @@ refusal, and owning-actor cleanup after command-channel disconnection. Campaign
 worker tests separately exercise transaction and callback-unwind semantics with
 explicit host test doubles; they do not qualify native execution or clocks.
 
-Local functional verification passed six daemon tests, including the actual
-connected producer/link/consumer path, six immutable-profile tests, and fourteen
-observed-worker transaction tests. The connected native test verifies original
+Local functional verification passed sixteen daemon tests, including the actual
+connected producer/link/consumer path, finite-source block write/read and complete
+9p file-session executions. The gate includes five native I/O artifact/configuration
+tests and three source/enrollment/schema tests. Six immutable reference-profile
+tests and fourteen observed-worker transaction tests also passed. The connected native test verifies original
 bytes and checksum, quantized input-parent provenance, finite-credit progress,
 unchanged retries and complete mixed-world nondeterministic classification. Native evidence tests verify every copied receipt's exact
 content hash after complete original-world reclamation. The profile tests also
@@ -119,3 +164,12 @@ extension; the separately launched public reference provider retains those
 capabilities. These focused development tests do not replace the production
 build, complete test-target compilation, process ABI/license gates, or complete
 vendor conformance qualification.
+
+Two actual signed cold storage tests also passed. They retired the original
+native worlds and catalog, removed base/tree and script paths, and independently
+enrolled archive-only expected identities in a fresh catalog. Two isolated
+restored branches preserved the original pending request FIFO, original causal
+coordinates, private block overlays, read-only 9p fids and delayed replies. Later
+reads returned the original expected bytes without duplicate source publication.
+The public exact-state command remains scoped by its independently tested
+admission policy; these factory tests do not widen its accepted selections.

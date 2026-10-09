@@ -3,14 +3,15 @@
 use std::{
     collections::BTreeSet,
     sync::Arc,
-    task::{Context, Poll, Wake, Waker},
-    time::{Duration, Instant},
+    task::{Context, Poll, Waker},
+    time::Duration,
 };
 
 use crucible::{
     node_admission::AdmittedGraph,
     node_contract::{
-        ActivationPublisher, NodeRuntime, PreparedRealization, QuarantinedRuntime, WorldActivation,
+        ActivationPublisher, NodeRuntime, QuarantinedRuntime, RuntimeError, RuntimePollFailure,
+        WorldActivation,
     },
     node_dispatch::DispatchRound,
     node_scheduling::{ExecutionPolicy, SchedulingError},
@@ -30,8 +31,12 @@ use crucible_node_contract::{Id, Phase, Position, U64, canonical};
 
 use crate::{
     executor_node_capabilities::roster_from_admitted_graph,
+    node_execution::{ExactOperationNames, ExactOperationRequest, plan_exact_operation},
     node_scenario::{NodeRunConfiguration, NodeScenario, NodeScenarioError},
+    supervision::ProcessDeadline,
 };
+
+use super::InstalledPreparedWorld;
 
 /// Authenticates exact planned artifacts against one complete sealed realization.
 #[derive(Clone)]
@@ -87,10 +92,28 @@ pub enum NodeObservedError {
     Contract(#[from] crucible_node_contract::ContractError),
 }
 
+impl From<RuntimeError> for NodeObservedError {
+    fn from(error: RuntimeError) -> Self {
+        native(error)
+    }
+}
+
+impl From<SchedulingError> for NodeObservedError {
+    fn from(error: SchedulingError) -> Self {
+        native(error)
+    }
+}
+
+impl From<RuntimePollFailure> for NodeObservedError {
+    fn from(error: RuntimePollFailure) -> Self {
+        native(error)
+    }
+}
+
 struct ActiveRound {
     round: DispatchRound,
     quantized: Vec<Id>,
-    close_at: Instant,
+    close_at: ProcessDeadline,
     closed: bool,
 }
 
@@ -138,15 +161,18 @@ impl NodeObservedBackend {
     /// Refuses changed graph/artifact relations, unavailable input bytes, invalid
     /// native preparation, or authored external ingress unsupported by this path.
     pub fn from_prepared(
-        scenario: NodeScenario,
+        world: InstalledPreparedWorld,
         configuration: NodeRunConfiguration,
-        graph: AdmittedGraph,
-        prepared: PreparedRealization,
         publisher: Box<dyn ActivationPublisher>,
         blobs: Arc<dyn ImmutableBlobBackend>,
         inputs: ContentId,
         execution: ExecutionId,
     ) -> Result<Self, NodeObservedError> {
+        let InstalledPreparedWorld {
+            scenario,
+            graph,
+            realization: prepared,
+        } = world;
         let scenario_artifact = scenario.artifact()?;
         let configuration_artifact = configuration.artifact(&scenario)?;
         if graph.world() != &scenario.world
@@ -317,60 +343,25 @@ impl NodeObservedBackend {
             })?;
             match policy {
                 ExecutionPolicy::Exact { .. } => {
-                    let has_inputs = self.graph.descriptor(node).is_some_and(|descriptor| {
-                        descriptor.ports.iter().any(|port| {
-                            port.lanes.iter().any(|lane| {
-                                lane.direction == crucible_node_contract::Direction::Input
-                            })
-                        })
-                    });
-                    if has_inputs {
-                        let cutoff = match runtime
-                            .scheduler(&self.graph, activation)
-                            .map_err(native)?
-                            .preview_exact_input_cut(node, self.configuration.horizon_ps)
-                        {
-                            Ok(cutoff) => cutoff,
-                            Err(
-                                SchedulingError::InputBlocked(_) | SchedulingError::NoSafeProgress,
-                            ) => continue,
-                            Err(error) => return Err(native(error)),
-                        };
-                        let input = match runtime
-                            .scheduler(&self.graph, activation)
-                            .map_err(native)?
-                            .prepare_input_batch(
-                                node,
-                                Id::new(format!("stage/{}/{node}", self.rounds))?,
-                                Id::new(format!("batch/{}/{node}", self.rounds))?,
-                                cutoff,
-                            ) {
-                            Ok(input) => input,
-                            Err(
-                                SchedulingError::InputBlocked(_) | SchedulingError::NoSafeProgress,
-                            ) => continue,
-                            Err(error) => return Err(native(error)),
-                        };
-                        let observed = serde_json::json!({"node":node,"batch":input.batch(),"inventory":input.inventory(),"cutoff":input.cutoff(),"deliveries":input.deliveries(),"payloads":input.payloads()});
-                        let acknowledgement = runtime.stage_inputs(input).map_err(native)?;
-                        let commit = runtime
-                            .commit_input_acknowledgement(acknowledgement)
-                            .map_err(native)?;
-                        runtime.commit_input_staging(&commit).map_err(native)?;
-                        retain_event(&mut self.incoming, &mut self.provenance_bytes, observed)?;
-                    }
-                    match runtime
-                        .scheduler(&self.graph, activation)
-                        .map_err(native)?
-                        .admit_exact(node, operation, self.configuration.horizon_ps)
-                    {
-                        Ok(grant) => grants.push(grant),
-                        Err(SchedulingError::InputBlocked(_) | SchedulingError::NoSafeProgress)
-                            if !has_inputs =>
-                        {
-                            continue;
-                        }
-                        Err(error) => return Err(native(error)),
+                    let grant = plan_exact_operation(
+                        runtime,
+                        ExactOperationRequest {
+                            graph: &self.graph,
+                            activation,
+                            node,
+                            horizon: self.configuration.horizon_ps,
+                            names: ExactOperationNames {
+                                operation,
+                                stage: Id::new(format!("stage/{}/{node}", self.rounds))?,
+                                batch: Id::new(format!("batch/{}/{node}", self.rounds))?,
+                            },
+                        },
+                        |observed| {
+                            retain_event(&mut self.incoming, &mut self.provenance_bytes, observed)
+                        },
+                    )?;
+                    if let Some(grant) = grant {
+                        grants.push(grant);
                     }
                 }
                 ExecutionPolicy::Quantized {
@@ -445,7 +436,7 @@ impl NodeObservedBackend {
             }
             return Ok(false);
         }
-        let close_at = Instant::now().checked_add(maximum_budget).ok_or_else(|| {
+        let close_at = ProcessDeadline::after(maximum_budget).ok_or_else(|| {
             NodeObservedError::Native("host budget overflows monotonic clock".into())
         })?;
         let round = DispatchRound::start(runtime, grants, self.graph.node_ids().count())
@@ -568,8 +559,7 @@ impl ObservedAttemptBackend for NodeObservedBackend {
         if let Some(result) = &self.result {
             return Ok(Some(result.clone()));
         }
-        let waker = Waker::from(Arc::new(ObservationWake));
-        let mut context = Context::from_waker(&waker);
+        let mut context = Context::from_waker(Waker::noop());
         if self.completed.is_some() {
             let outcome = {
                 let completed = self.completed.as_mut().ok_or_else(|| {
@@ -616,7 +606,7 @@ impl ObservedAttemptBackend for NodeObservedBackend {
             .runtime
             .as_mut()
             .ok_or_else(|| NodeObservedError::Native("native runtime disappeared".into()))?;
-        if !round.closed && Instant::now() >= round.close_at {
+        if !round.closed && round.close_at.expired() {
             for operation in &round.quantized {
                 let closure = round
                     .round
@@ -710,8 +700,7 @@ impl ObservedAttemptBackend for NodeObservedBackend {
         if self.completed.is_none() {
             self.begin_completion(ObservedAttemptOutcome::Cancelled)?;
         }
-        let waker = Waker::from(Arc::new(ObservationWake));
-        let mut context = Context::from_waker(&waker);
+        let mut context = Context::from_waker(Waker::noop());
         match self
             .completed
             .as_mut()
@@ -726,12 +715,6 @@ impl ObservedAttemptBackend for NodeObservedBackend {
             Poll::Ready(Err(error)) => Err(native(error)),
         }
     }
-}
-
-struct ObservationWake;
-
-impl Wake for ObservationWake {
-    fn wake(self: Arc<Self>) {}
 }
 
 fn native(error: impl std::fmt::Debug) -> NodeObservedError {

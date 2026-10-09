@@ -259,6 +259,10 @@ impl AdmissionEvidence for InstalledEvidence {
                     | "reference-device/content-possession-v1"
                     | "crucible/octet-stream-v1"
                     | "host/native-continuation-v1"
+                    | "crucible/block-request-v1"
+                    | "crucible/block-response-v1"
+                    | "crucible/filesystem-request-v1"
+                    | "crucible/filesystem-response-v1"
             )
             || !self.enrollments.values().any(|enrollment| {
                 enrollment
@@ -270,7 +274,7 @@ impl AdmissionEvidence for InstalledEvidence {
             })
         {
             return Err(evidence(
-                "selected schema has no installed bounded checksum validator",
+                "selected schema has no installed bounded native codec validator",
             ));
         }
         Ok(())
@@ -453,7 +457,7 @@ impl HostModelQualification for InstalledEvidence {
                 != Some(&model.initialization_bytes(4 * 1024 * 1024)?)
         {
             return Err(no_effect(evidence(
-                "actual clock differs from complete enrolled model state",
+                "actual native model differs from complete enrolled state",
             )));
         }
         Ok(())

@@ -9,9 +9,13 @@ and retains its actual overlay, filesystem session and pending response queue.
 
 The installed source profile names an independently enrolled script content
 reference and its consumer node. Portable selections never contain host paths.
-The operator registry supplies a complete regular-file artifact under bounded
-no-follow reads; the factory verifies its expected content before decoding or
-allocating a native source. Schema definitions, interface IDs, ordering and
+The operator registry supplies either a complete regular-file artifact under
+bounded no-follow reads or an explicit archive-only expected identity. Fresh
+construction refuses archive-only entries. Signed recovery verifies archived
+bytes against independently enrolled identities before materializing scoped
+temporary files; a missing ordinary path never changes its policy. The factory
+verifies complete expected content before decoding or allocating a native
+source. Schema definitions, interface IDs, ordering and
 correlation definitions match the installed storage request lane exactly.
 
 ## Native inventory and timing
@@ -24,26 +28,31 @@ decreasing instants, excessive inventories and trailing bytes are refused.
 The source retains independent verified payload identities as well as the
 complete original script bytes.
 
-Every group of requests at an instant has two distinct native transitions:
+Every group of requests is evaluated at reaction microstep zero and births
+immutable future publications at microstep one. The original evaluation grant
+retains those complete octets and their original evaluation coordinate even
+when the visible publication lies beyond its exclusive cut. The coordinator
+accepts the future publication into pending delivery and payload custody before
+native acknowledgement. Advancing the source cursor consumes that original
+group; later grants never reevaluate it or emit its publication again.
 
-1. Evaluation at reaction microstep zero marks the group evaluated.
-2. Publication at microstep one advances the cursor and returns the original
-   request octets in native FIFO order.
-
-A half-open grant that reaches the publication coordinate can evaluate the
-group while retaining its unpublished transition. Parking never skips an
-unexecuted request. The next producer bound comes from the actual remaining
+Parking never skips an unexecuted request. The next producer bound comes from the actual remaining
 script and its retained cursor; an exhausted source reports `AfterInstant`
-at the maximum representable instant. No ingress, autonomous worker, guest
-timer, cancellation queue, seeded fault or independent clock input can create
+at the maximum representable instant. The scheduler treats this authenticated
+complete no-future-output bound as unbounded without taking its successor.
+Finite coordinate arithmetic continues to refuse overflow. No ingress,
+autonomous worker, guest timer, cancellation queue, seeded fault or independent clock input can create
 an earlier output in this installed profile.
 
 ## Exact continuation
 
 The source native codec retains its complete immutable script, cursor,
-administrative clock and evaluated-but-unpublished flag. Reconstruction checks
-the original script byte-for-byte, rejects impossible or partial equal-time
-group cursors, and preserves the pending transition without reevaluation.
+administrative clock and a structural evaluation flag. Actual host grants
+complete future-publication birth atomically, so their captured cursors have
+the flag clear. Reconstruction checks the original script byte-for-byte and
+rejects impossible or partial equal-time group cursors. The original host
+receipt and coordinator pending-delivery closure retain future visibility
+without reevaluation.
 The surrounding `HostModelNode` codec additionally retains actual original
 operation receipts, immutable staged input cuts, publication sequence,
 acknowledgement status and payload/evidence custody. Source reconstruction
@@ -67,9 +76,11 @@ or nondeterministic execution qualification.
 Focused native tests cover truncated and trailing script records, changed
 immutable futures, payload/response bounds, skipped-request refusal and two
 independent cold cursor reconstructions with identical subsequent FIFO bytes.
-The actual host-adapter test executes a split evaluation/publication cut,
-retains original retry receipts, and reconstructs two fresh inactive native
-nodes from that pending cut before comparing their actual publications.
+The actual host-adapter test cuts between evaluation and future publication,
+retains original future-publication bytes and retry receipts, and reconstructs
+two fresh inactive native nodes from that cut. Both preserve the original
+receipt, refuse further execution before acknowledgement, and avoid reemitting
+the future publication in later grants.
 Installed source-to-storage integration additionally checks ordinary directed
 connections, real request effects and response custody; the central installed
 factory owns that enrollment and its acceptance evidence.

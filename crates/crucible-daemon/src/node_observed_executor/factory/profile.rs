@@ -1,6 +1,9 @@
 //! Regenerates installed native profiles and complete directed-owner inventories.
 
+mod io;
 mod linked;
+mod scripted;
+mod storage_connections;
 
 use super::{InstalledNodeKind, InstalledNodeSelection, NodeObservedError, native, refused};
 use crate::node_scenario::{NodeScenario, ScenarioContent};
@@ -29,6 +32,7 @@ pub(super) fn build_world(
     selections: &[InstalledNodeSelection],
     host: &ContentRef,
     device: &ContentRef,
+    artifacts: &BTreeMap<String, super::InstalledIoArtifact>,
 ) -> Result<ResolvedWorld, NodeObservedError> {
     if selections.is_empty()
         || selections.len() > 64
@@ -120,6 +124,28 @@ pub(super) fn build_world(
                     &mut contents,
                 )?
             }
+            InstalledNodeKind::HostIo { profile } => {
+                accepted_limited.push(selection.node.clone());
+                io::io_profile(
+                    selection,
+                    profile,
+                    artifacts,
+                    host,
+                    &qualification,
+                    &mut contents,
+                )?
+            }
+            InstalledNodeKind::HostScripted { profile } => {
+                accepted_limited.push(selection.node.clone());
+                scripted::scripted_profile(
+                    selection,
+                    profile,
+                    artifacts,
+                    host,
+                    &qualification,
+                    &mut contents,
+                )?
+            }
             InstalledNodeKind::HostClock => {
                 clock_profile(selection, host, &qualification, &mut contents)?
             }
@@ -155,7 +181,12 @@ pub(super) fn build_world(
             complete_model: complete,
             unchanged_cut: complete,
             exact_continuation: complete,
-            durable_restart: matches!(selection.kind, InstalledNodeKind::HostClock),
+            durable_restart: matches!(
+                selection.kind,
+                InstalledNodeKind::HostClock
+                    | InstalledNodeKind::HostIo { .. }
+                    | InstalledNodeKind::HostScripted { .. }
+            ),
             isolated_fork: false,
             dependencies: Vec::new(),
             cut_procedure_ref: qualification.clone(),
@@ -164,7 +195,7 @@ pub(super) fn build_world(
         compatibility.push(binding);
         owners.push(owner);
     }
-    let connections = linked::connections(
+    let mut connections = linked::connections(
         selections,
         &mut compatibility,
         &mut owners,
@@ -172,6 +203,16 @@ pub(super) fn build_world(
         &qualification,
         &mut contents,
     )?;
+    connections.extend(storage_connections::connections(
+        selections,
+        &descriptors,
+        &mut compatibility,
+        &mut owners,
+        (&mut domains, &mut objects, &mut captures),
+        &mut contents,
+        &qualification,
+    )?);
+    connections.sort_by(|left, right| left.id.cmp(&right.id));
     owners.sort_by(|left, right| left.owner.id.cmp(&right.owner.id));
     domains.sort_by(|left, right| left.id.cmp(&right.id));
     captures.sort_by(|left, right| left.owner_id.cmp(&right.owner_id));
