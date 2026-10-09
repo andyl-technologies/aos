@@ -445,8 +445,14 @@ retains the independently encoded contextual refusal; no property is removed.
 The actual `core-fuzz` gate passes all 59 public groups and five required
 private encoder cases. `canonical-cbor` also passes. Their original logs are
 `/tmp/terrane-format-7724-core-fuzz.log` and
-`/tmp/terrane-format-7724-canonical-cbor.log`. The twenty-consumer
-`golden-vectors` build is still running; these results do not qualify T-TEST-1.
+`/tmp/terrane-format-7724-canonical-cbor.log`. The original `golden-vectors`
+request is now terminal with exit zero: all twenty mandatory owning suites,
+thirty-one reviewed sections and 104 exact runtime invocations pass. Its
+result is `/nix/store/s5m57zgzfsq9gprlrlaljdsc5q2ac6i0-terrane-gate-golden-vectors-0.1.0/result`;
+the original log is `/tmp/terrane-format-7724-golden-vectors.log`. Final private
+`6e1f256ad4` adds only the reviewed coverage-text correction; Rust and gate
+inputs remain byte-identical to qualified `7724cb4ded`. These scoped results
+do not qualify the complete T1 floor or advance T-TEST-1.
 Shared source `51d39c7771` batches payload namespace ancestor metadata while
 retaining the separate root check, ordered first refusal, exact batch length
 and final leaf observation. The bucket-file-layout gate now requires three
@@ -476,8 +482,10 @@ commits preserve task ancestry. Independent source verification matches all
 history/read machinery, and preserves the 59/23/34 format/index/recovery
 inventories and current shared gate metadata. No conflict markers remain.
 This is preparation for the complete T1 floor; it establishes no compiler,
-runtime, gate or milestone result. The format task's original golden-vector
-process remains live, and recovery qualification is queued behind its release.
+runtime, gate or milestone result. With the format request terminal, recovery
+qualification has started on its frozen source. Its original strict native
+Clippy process currently waits for the shared Cargo build-directory lock;
+no compiler or recovery runtime result follows from that wait.
 The shared final-check producer now retains the native permanent-family
 traversal through pre-selection handoffs. Its typed receipt refreshes actual
 enumeration and directory continuity between current-authority checks;
