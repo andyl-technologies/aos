@@ -186,7 +186,7 @@ fn sixty_four_pending_pages_overlap_only_independent_actual_cache_copy_loans() {
     let baseline = quota.used();
     let mut boundary = || Ok(());
     let mut work = Work::new(store.limits, &parent, &mut boundary).unwrap();
-    store.begin_capture_batch(&mut work).unwrap();
+    store.begin_publication_batch(&mut work).unwrap();
     for index in 0_u64..64 {
         let mut page = [0; 4096];
         page[..8].copy_from_slice(&index.to_be_bytes());
@@ -201,7 +201,7 @@ fn sixty_four_pending_pages_overlap_only_independent_actual_cache_copy_loans() {
     }
     assert!(quota.used() > pending_peak);
     assert!(quota.used() < METADATA_BYTES);
-    store.flush_capture_batch(&mut work).unwrap();
+    store.flush_publication_batch(&mut work).unwrap();
     assert_eq!(cache.object_count().unwrap(), 64);
     let copies_only = quota.used();
     assert!(
@@ -973,7 +973,7 @@ fn canonical_readers_do_not_retain_the_shared_input_phase() {
     let baseline = quota.used();
     let mut boundary = || Ok(());
     let mut work = Work::new(store.limits, &parent, &mut boundary).unwrap();
-    store.begin_capture_batch(&mut work).unwrap();
+    store.begin_publication_batch(&mut work).unwrap();
     store
         .put_page(&[7; 4096], &OriginalRetention, &mut work)
         .unwrap();
@@ -1038,13 +1038,13 @@ fn batch_array_refusal_keeps_the_namespace_healthy_and_the_failed_operation_stic
         .reserve(0, METADATA_BYTES - prepared - 4096)
         .unwrap();
 
-    let error = store.begin_capture_batch(&mut work).unwrap_err();
+    let error = store.begin_publication_batch(&mut work).unwrap_err();
     assert!(contains_original_quota(&error));
     assert!(work.pending.is_none());
     let first = operation.failure().unwrap().unwrap();
     drop(competitor);
     let reservations = quota.reservations.load(Ordering::SeqCst);
-    let repeated_refusal = store.begin_capture_batch(&mut work).unwrap_err();
+    let repeated_refusal = store.begin_publication_batch(&mut work).unwrap_err();
     let RamStoreError::Store(StoreError::DecodeAdmission { source, .. }) = &repeated_refusal else {
         panic!("expected the same original admission failure: {repeated_refusal:?}")
     };
@@ -1067,15 +1067,15 @@ fn batch_array_refusal_keeps_the_namespace_healthy_and_the_failed_operation_stic
 
     let operation = parent.child().unwrap();
     let mut work = Work::new(store.limits, &operation, &mut boundary).unwrap();
-    store.begin_capture_batch(&mut work).unwrap();
+    store.begin_publication_batch(&mut work).unwrap();
     let array_used = quota.used();
     assert!(
         array_used >= baseline + 64 * std::mem::size_of::<crate::ram::PendingPublication>() as u64
     );
-    let error = store.begin_capture_batch(&mut work).unwrap_err();
+    let error = store.begin_publication_batch(&mut work).unwrap_err();
     assert!(matches!(
         error,
-        RamStoreError::Invalid("capture batch already present")
+        RamStoreError::Invalid("RAM publication batch already present")
     ));
     assert_eq!(quota.used(), array_used);
     drop(error);

@@ -330,7 +330,7 @@ fn committed_batch_readback_detects_corruption_after_original_inputs_close() {
     let retention = Retention::default();
     let mut no_boundary = || Ok(());
     let mut work = Work::new(store.limits, &original, &mut no_boundary).unwrap();
-    store.begin_capture_batch(&mut work).unwrap();
+    store.begin_publication_batch(&mut work).unwrap();
     let (id, _) = store.put_page(&[7; 4096], &retention, &mut work).unwrap();
     store.put_page(&[8; 4096], &retention, &mut work).unwrap();
 
@@ -353,7 +353,7 @@ fn committed_batch_readback_detects_corruption_after_original_inputs_close() {
         Ok(())
     };
     work.boundary = &mut boundary;
-    let error = store.flush_capture_batch(&mut work).unwrap_err();
+    let error = store.flush_publication_batch(&mut work).unwrap_err();
     drop(work);
 
     assert!(altered);
@@ -393,10 +393,10 @@ fn committed_batch_late_readback_refusal_retains_full_original_cause_and_outcome
             }
         };
         let mut work = Work::new(store.limits, &original, &mut boundary).unwrap();
-        store.begin_capture_batch(&mut work).unwrap();
+        store.begin_publication_batch(&mut work).unwrap();
         store.put_page(&[7; 4096], &retention, &mut work).unwrap();
         store.put_page(&[8; 4096], &retention, &mut work).unwrap();
-        let result = store.flush_capture_batch(&mut work);
+        let result = store.flush_publication_batch(&mut work);
         drop(work);
 
         if refuse {

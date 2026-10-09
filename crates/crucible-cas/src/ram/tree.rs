@@ -84,7 +84,7 @@ impl RamStore {
     ) -> Result<LeasedRamRoot, RamStoreError> {
         self.admit_ram_publication(&topology, scope)?;
         let mut work = Work::new(self.limits, original, boundary)?;
-        self.begin_capture_batch(&mut work)?;
+        self.begin_publication_batch(&mut work)?;
         let mut regions = Vec::new();
         let mut roots = Vec::new();
 
@@ -110,7 +110,7 @@ impl RamStore {
             regions.push(catalog);
         }
 
-        self.flush_capture_batch(&mut work)?;
+        self.flush_publication_batch(&mut work)?;
         work.pending = None;
         let record = RootRecord::new(topology, scope, roots).map_err(logical)?;
         let id = self.put_root(&record, &regions, retention, &mut work)?;

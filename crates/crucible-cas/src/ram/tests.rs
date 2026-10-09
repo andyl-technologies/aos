@@ -23,6 +23,7 @@ mod checked_graph_adapters;
 mod comparison_identity;
 mod metadata_lifecycle;
 mod packed_volume;
+mod receiver_batch;
 mod transfer_object;
 mod wire_state;
 
@@ -836,37 +837,23 @@ fn canceled_wire_transfer_leaves_root_unpublished_and_retries_from_actual_conten
             }
         },
     );
-    // This fixture cancels at the first catalog's actual committed readback.
-    // It must retain that commit beside the unchanged callback's first cause.
-    let Err(RamStoreError::Store(StoreError::SqliteScope { source: scope })) = &result else {
-        panic!("the current transfer stage retains its actual commit: {result:?}");
-    };
-    let Some(StoreError::RamReadBoundary {
+    // The original 120-check budget now expires during authenticated staging,
+    // before the first batch becomes durable. Preserve the actual first cause.
+    let Err(RamStoreError::Store(StoreError::RamReadBoundary {
         source: first_cause,
-    }) = scope.work_failure()
+    })) = &result
     else {
-        panic!("committed publication retains its original refusal: {scope:?}");
+        panic!("the bounded staging refusal retains its original cause: {result:?}");
     };
     assert!(matches!(
         first_cause.first_boundary(),
         Some(RamStoreError::Canceled)
     ));
-    assert!(
-        matches!(
-            first_cause.storage_failure(),
-            RamStoreError::Store(StoreError::RamBoundary { .. })
-        ),
-        "the unused native scratch must not wrap the direct sealed marker"
-    );
-    assert_eq!(
-        scope.outcome(),
-        crate::content_store::SqliteCommitOutcome::Committed
-    );
-    assert!(scope.rollback_failure().is_none());
-    assert!(scope.restoration_failure().is_none());
-    assert!(scope.blob_close_failure().is_none());
-    assert!(scope.metadata_completion_failure().is_none());
-    assert!(scope.metadata_finalization_failure().is_none());
+    assert!(matches!(
+        first_cause.storage_failure(),
+        RamStoreError::Store(StoreError::RamBoundary { .. })
+    ));
+    assert!(!destination.backend.contains(root.regions[0].id).unwrap());
     assert_eq!(boundaries, 121);
     assert!(!destination.backend.contains(root.object_id()).unwrap());
     let retry = source
@@ -882,7 +869,7 @@ fn canceled_wire_transfer_leaves_root_unpublished_and_retries_from_actual_conten
             &mut || Ok(()),
         )
         .unwrap();
-    assert!(retry.report().authenticated_existing_objects > 0);
+    assert_eq!(retry.report().authenticated_existing_objects, 0);
     assert_eq!(
         destination
             .verify(

@@ -1,7 +1,7 @@
 //! Receives a complete archive RAM closure with bounded discovery and credits.
 //!
-//! Discovery authenticates one object at a time. Each validated catalog is
-//! persisted before its child walk; the complete root is published last.
+//! Discovery authenticates one object at a time. Validated catalogs and pages
+//! share bounded publication batches; the complete root is published last.
 //! Incomplete closure progress has no root lease or readiness claim. Unnamed
 //! catalogs remain collectable after operation retention closes. Missing-content
 //! requests follow authenticated parent metadata and a logical coordinate.
@@ -167,8 +167,10 @@ impl<'a> RamTransferReceiver<'a> {
         let result = self.receive_inner(exchange, &mut work);
         self.terminal = true;
         if result.is_err() {
-            // Stack unwinding disposed all bounded object buffers. The peer
+            // Dispose unpublished batch bodies before asking the peer to stop.
+            // Completed batches remain retained, without a complete root. The peer
             // acknowledgment concerns buffer disposition, never archive commit.
+            drop(work.pending.take());
             let cancel = self.message(RamTransferControl::Cancel);
             let _ = exchange(cancel);
         }
@@ -190,6 +192,7 @@ impl<'a> RamTransferReceiver<'a> {
             return Err(RamStoreError::Invalid("transfer offered logical root"));
         }
         self.store.validate_root_catalogs(&record, &regions)?;
+        self.store.begin_publication_batch(work)?;
         for (region, reference) in record
             .topology()
             .regions()
@@ -199,6 +202,8 @@ impl<'a> RamTransferReceiver<'a> {
         {
             self.region(region, *reference, 0, exchange, work)?;
         }
+        self.store.flush_publication_batch(work)?;
+        work.pending = None;
         self.publish(self.root, &envelope, existing, work)?;
         let lease = super::metadata::retain_resources(
             self.retention.retain_root(self.root)?,
@@ -244,8 +249,9 @@ impl<'a> RamTransferReceiver<'a> {
         };
         let (envelope, existing) = self.object(reference.id, request, exchange, work)?;
         let node = validate_tree(&envelope, reference)?;
-        // This receipt establishes only the complete catalog's durable bytes.
-        // Descendant possession and root ownership still require the full walk.
+        // Authentication authorizes child discovery. Bounded pending bodies
+        // retain their original credits; batches must be durable before root
+        // publication.
         self.publish(reference.id, &envelope, existing, work)?;
         match node {
             TreeNode::Padding => {}
@@ -280,6 +286,16 @@ impl<'a> RamTransferReceiver<'a> {
         exchange: &mut dyn FnMut(RamTransferMessage) -> Result<RamTransferResponse, RamStoreError>,
         work: &mut Work<'_>,
     ) -> Result<(super::codec_ownership::OwnedEnvelope, bool), RamStoreError> {
+        if work
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.iter().any(|object| object.id == id))
+        {
+            // Repeated references authenticate actual durable destination bytes.
+            // Flush the bounded batch before its ordinary read, preserving
+            // missing-only requests and existing-object report semantics.
+            self.store.flush_publication_batch(work)?;
+        }
         let account = work
             .original()
             .child()

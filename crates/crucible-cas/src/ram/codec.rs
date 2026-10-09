@@ -32,8 +32,8 @@ pub(super) const PAGE_SCHEMA: &str = "crucible.ram.page";
 pub(super) const TREE_SCHEMA: &str = "crucible.ram.tree";
 pub(super) const ROOT_SCHEMA: &str = "crucible.ram.root";
 pub(super) const SCHEMA_VERSION: u32 = 1;
-const MAX_CAPTURE_BATCH_OBJECTS: usize = 64;
-const MAX_CAPTURE_BATCH_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_PUBLICATION_BATCH_OBJECTS: usize = 64;
+const MAX_PUBLICATION_BATCH_BYTES: u64 = 4 * 1024 * 1024;
 
 pub(super) fn object_limits(id: ContentId) -> Result<(u64, usize), RamStoreError> {
     match id.kind() {
@@ -120,14 +120,14 @@ impl RamStore {
             let buffered_bytes = pending.iter().try_fold(0_u64, |total, object| {
                 total
                     .checked_add(object.source.logical_length())
-                    .ok_or(RamStoreError::Limit("capture batch bytes"))
+                    .ok_or(RamStoreError::Limit("RAM publication batch bytes"))
             })?;
             if buffered_bytes
                 .checked_add(source.logical_length())
-                .is_none_or(|total| total > MAX_CAPTURE_BATCH_BYTES)
-                || pending.len() == MAX_CAPTURE_BATCH_OBJECTS
+                .is_none_or(|total| total > MAX_PUBLICATION_BATCH_BYTES)
+                || pending.len() == MAX_PUBLICATION_BATCH_OBJECTS
             {
-                self.flush_capture_batch(work)?;
+                self.flush_publication_batch(work)?;
             }
             if let Some(pending) = &mut work.pending {
                 let envelope = input.into_pending(account, source.logical_length() as usize)?;
@@ -164,15 +164,15 @@ impl RamStore {
         Ok(id)
     }
 
-    pub(super) fn flush_capture_batch(&self, work: &mut Work<'_>) -> Result<(), RamStoreError> {
+    pub(super) fn flush_publication_batch(&self, work: &mut Work<'_>) -> Result<(), RamStoreError> {
         let Some(pending) = work.pending.take() else {
             return Ok(());
         };
         if !pending.is_empty() {
-            if pending.len() > MAX_CAPTURE_BATCH_OBJECTS {
-                return Err(RamStoreError::Limit("capture batch object count"));
+            if pending.len() > MAX_PUBLICATION_BATCH_OBJECTS {
+                return Err(RamStoreError::Limit("RAM publication batch object count"));
             }
-            let mut expected = [None; MAX_CAPTURE_BATCH_OBJECTS];
+            let mut expected = [None; MAX_PUBLICATION_BATCH_OBJECTS];
             for (slot, object) in expected.iter_mut().zip(pending.iter()) {
                 *slot = Some((object.id, object.source.logical_length()));
             }
@@ -204,7 +204,9 @@ impl RamStore {
                     let result = (|| {
                         let count = expected.iter().flatten().count();
                         if receipts.len() != count {
-                            return Err(RamStoreError::Invalid("capture batch receipt count"));
+                            return Err(RamStoreError::Invalid(
+                                "RAM publication batch receipt count",
+                            ));
                         }
                         for ((id, length), receipt) in
                             expected.iter().flatten().zip(receipts.iter())
@@ -223,25 +225,27 @@ impl RamStore {
         } else {
             drop(pending);
         }
-        self.begin_capture_batch(work)?;
+        self.begin_publication_batch(work)?;
         Ok(())
     }
 
-    pub(super) fn begin_capture_batch(&self, work: &mut Work<'_>) -> Result<(), RamStoreError> {
+    pub(super) fn begin_publication_batch(&self, work: &mut Work<'_>) -> Result<(), RamStoreError> {
         if work.pending.is_some() {
-            return Err(RamStoreError::Invalid("capture batch already present"));
+            return Err(RamStoreError::Invalid(
+                "RAM publication batch already present",
+            ));
         }
         let account = work.original();
         let extent = (std::mem::size_of::<PendingPublication>() as u64)
-            .checked_mul(MAX_CAPTURE_BATCH_OBJECTS as u64)
+            .checked_mul(MAX_PUBLICATION_BATCH_OBJECTS as u64)
             .and_then(|bytes| bytes.checked_add(std::mem::size_of::<PendingBatch>() as u64))
-            .ok_or(RamStoreError::Limit("capture batch allocation"))?;
+            .ok_or(RamStoreError::Limit("RAM publication batch allocation"))?;
         let credit = account.reserve_scratch_bytes(extent).map_err(admission)?;
         let mut objects = Vec::new();
         objects
-            .try_reserve_exact(MAX_CAPTURE_BATCH_OBJECTS)
+            .try_reserve_exact(MAX_PUBLICATION_BATCH_OBJECTS)
             .map_err(|source| StoreError::StreamIo {
-                operation: "allocate RAM capture batch",
+                operation: "allocate RAM publication batch",
                 source: std::io::Error::other(source),
             })?;
         work.pending = Some(PendingBatch {

@@ -30,12 +30,12 @@ fn corrupt_catalog_never_persists_or_requests_a_child() {
 }
 
 #[test]
-fn corrupt_child_keeps_completed_catalog_without_publishing_root() {
+fn corrupt_child_discards_unpublished_catalog_without_publishing_root() {
     catalog_fault(SourceFault::Page);
 }
 
 #[test]
-fn absent_child_keeps_completed_catalog_without_claiming_closure() {
+fn absent_child_discards_unpublished_catalog_without_claiming_closure() {
     catalog_fault(SourceFault::MissingPage);
 }
 
@@ -122,8 +122,8 @@ fn catalog_fault(fault: SourceFault) {
                 if matches!(&message.control, RamTransferControl::WantObject { .. }) {
                     page_requests += 1;
                     assert!(
-                        destination.backend.contains(catalog).unwrap(),
-                        "the complete authenticated catalog is durable before actual child demand"
+                        !destination.backend.contains(catalog).unwrap(),
+                        "the authenticated catalog remains bounded staged progress before a batch commits"
                     );
                     assert!(!destination.backend.contains(root.object_id()).unwrap());
                 }
@@ -161,7 +161,7 @@ fn catalog_fault(fault: SourceFault) {
         }
         SourceFault::Page | SourceFault::MissingPage => {
             assert_eq!(page_requests, 1);
-            assert!(destination.backend.contains(catalog).unwrap());
+            assert!(!destination.backend.contains(catalog).unwrap());
             assert!(!destination.backend.contains(page).unwrap());
         }
     }
