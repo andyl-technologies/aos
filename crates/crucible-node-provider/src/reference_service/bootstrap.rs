@@ -11,6 +11,73 @@ use crate::{ProviderError, handshake::Limits};
 
 use super::profile::ReferenceProfile;
 
+/// Selects an independently described public reference-provider byte interface.
+///
+/// This choice belongs to the private launcher. It does not authenticate a
+/// deployment or extend the provider's admitted execution guarantees.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PublicReferenceProfile {
+    /// Retains the original octet-input and structured-checksum-output profile.
+    ChecksumJsonV1,
+    /// Carries original checksum JSON as unchanged opaque output octets.
+    ByteLinkedV1 {
+        /// Permanently removes ingress and accepts only an empty input cut.
+        closed_ingress: bool,
+    },
+}
+
+impl<'de> Deserialize<'de> for PublicReferenceProfile {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // Serde's internally tagged unit variant can ignore leftover fields.
+        // An empty struct variant enforces the same closed shape as the linked
+        // choice, while preserving the public enum's ordinary unit constructor.
+        #[derive(Deserialize)]
+        #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+        enum Selection {
+            ChecksumJsonV1 {},
+            ByteLinkedV1 { closed_ingress: bool },
+        }
+
+        Ok(match Selection::deserialize(deserializer)? {
+            Selection::ChecksumJsonV1 {} => Self::ChecksumJsonV1,
+            Selection::ByteLinkedV1 { closed_ingress } => Self::ByteLinkedV1 { closed_ingress },
+        })
+    }
+}
+
+/// Wraps private launch authority with an explicit public profile selection.
+///
+/// ```json
+/// {"schema_version":2,"profile":{"kind":"byte_linked_v1","closed_ingress":true},
+///  "bootstrap":{}}
+/// ```
+/// The abbreviated bootstrap denotes the complete private authorization record.
+/// The original unwrapped record retains its original wire representation.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReferenceServiceLaunchBootstrap {
+    /// Selects the closed version-two private launch envelope.
+    pub schema_version: u16,
+    /// Selects the public profile independently of the actor-native adapter.
+    pub profile: PublicReferenceProfile,
+    /// Retains the original private authority, resource limits and content.
+    pub bootstrap: ReferenceServiceBootstrap,
+}
+
+impl Validate for ReferenceServiceLaunchBootstrap {
+    fn validate(&self) -> Result<(), ContractError> {
+        if self.schema_version != 2 {
+            return Err(crate::bodies::invalid(
+                "schema_version",
+                "unsupported private launch envelope",
+            ));
+        }
+
+        self.bootstrap.validate()
+    }
+}
+
 /// Supplies exact privately installed content without interpreting references as paths.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

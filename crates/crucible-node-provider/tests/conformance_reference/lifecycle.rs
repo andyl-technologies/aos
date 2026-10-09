@@ -13,6 +13,15 @@ use super::scenario::{assertion, envelope, error, exchange, hello};
 
 pub(super) fn native_window(service: &NativeService) -> ProbePlan {
     let bootstrap = &service.bootstrap;
+    let has_input = service.profile.descriptor.ports.iter().any(|port| {
+        port.lanes
+            .iter()
+            .any(|lane| lane.direction == Direction::Input)
+    });
+    let byte_linked = matches!(
+        service.profile.public_profile(),
+        Ok(crucible_node_provider::reference_service::PublicReferenceProfile::ByteLinkedV1 { .. })
+    );
     let (binding, owner) = service.profile.bind(bootstrap.authority.clone()).unwrap();
     let owner_hash = owner.identity().unwrap();
     let payload = canonical::content_ref(&[1, 2], "application/octet-stream").unwrap();
@@ -49,6 +58,10 @@ pub(super) fn native_window(service: &NativeService) -> ProbePlan {
         }],
         extensions: Extensions::new(),
     };
+    let mut batch = batch;
+    if !has_input {
+        batch.events.clear();
+    }
     batch.validate().unwrap();
     let batch_value = serde_json::to_value(&batch).unwrap();
     let batch_bytes = canonical::canonical_json(&batch_value).unwrap();
@@ -270,7 +283,11 @@ pub(super) fn native_window(service: &NativeService) -> ProbePlan {
         vec![
             assertion(
                 "/body/result/accepted_event_ids",
-                json!(["fixture-input/1"]),
+                json!(if has_input {
+                    vec!["fixture-input/1"]
+                } else {
+                    vec![]
+                }),
             ),
             assertion("/body/result/input_watermark", json!("1")),
         ],
@@ -319,6 +336,23 @@ pub(super) fn native_window(service: &NativeService) -> ProbePlan {
         Vec::new(),
         capture("original-capacity-refusal", "/body"),
     ));
+    let mut output_assertions = vec![assertion(
+        "/body/result/observations/0/visibility",
+        json!("staged"),
+    )];
+    if byte_linked {
+        // This profile carries opaque octets. Pin the independently specified
+        // complete bytes rather than asking the JSON oracle to reinterpret them.
+        let expected: &[u8] = if has_input {
+            br#"{"bytes_processed":"2","checksum":"259"}"#
+        } else {
+            br#"{"bytes_processed":"0","checksum":"0"}"#
+        };
+        output_assertions.push(assertion(
+            "/body/result/observations/0/events/0/payload",
+            json!(canonical::content_ref(expected, "application/octet-stream").unwrap()),
+        ));
+    }
     steps.push(exchange(
         "observe-original-native-output",
         CheckKind::Publication,
@@ -335,10 +369,7 @@ pub(super) fn native_window(service: &NativeService) -> ProbePlan {
             }),
         ),
         Expectation::Completed,
-        vec![assertion(
-            "/body/result/observations/0/visibility",
-            json!("staged"),
-        )],
+        output_assertions,
         BTreeMap::from([
             (
                 "payload-ref".into(),
@@ -356,16 +387,18 @@ pub(super) fn native_window(service: &NativeService) -> ProbePlan {
     ] {
         receive(&mut steps, name, reference);
     }
-    steps.push(ProbeStep::InspectContent {
-        id: id("actual-checksum-oracle"),
-        reference: bound("received-payload-ref"),
-        bytes: bound("received-payload-bytes"),
-        assertions: vec![
-            assertion("/bytes_processed", json!("2")),
-            assertion("/checksum", json!("259")),
-        ],
-        captures: BTreeMap::new(),
-    });
+    if !byte_linked {
+        steps.push(ProbeStep::InspectContent {
+            id: id("actual-checksum-oracle"),
+            reference: bound("received-payload-ref"),
+            bytes: bound("received-payload-bytes"),
+            assertions: vec![
+                assertion("/bytes_processed", json!(if has_input { "2" } else { "0" })),
+                assertion("/checksum", json!(if has_input { "259" } else { "0" })),
+            ],
+            captures: BTreeMap::new(),
+        });
+    }
     steps.push(ProbeStep::Identity {
         id: id("original-batch-identity"),
         kind: IdentityKind::ObservationBatch,

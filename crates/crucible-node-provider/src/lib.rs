@@ -11,6 +11,7 @@
 
 pub mod blob;
 pub mod bodies;
+pub mod client;
 pub mod connection;
 pub mod conformance;
 pub mod envelope;

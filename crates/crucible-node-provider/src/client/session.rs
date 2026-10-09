@@ -1,0 +1,416 @@
+//! Original controller requests and verified content on an authenticated CNP stream.
+
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::rc::Rc;
+use std::time::Duration;
+
+use crucible_node_contract::{ContentRef, Extensions, HashRef, Id, U64, canonical};
+use serde_json::{Map, Value};
+
+use crate::ProviderError;
+use crate::bodies::*;
+use crate::connection::{
+    BodySchemaVerifier, Connection, ConnectionSupervisor, EndpointRole, ReceivedBody,
+};
+use crate::envelope::{Envelope, MessageKind, RequestOrigin};
+use crate::handshake::{ConnectionAuthority, Handshake, TrustedHandshakeVerifier};
+use crate::transport::{FrameReader, write_frame_with_limits};
+
+use super::{ClientContent, DeadlineStream, ExchangeDeadline};
+
+/// Binds the actual socket peer to independently measured launch facts.
+pub struct ClientPeer {
+    /// Names the original retained provider process, never a provider JSON claim.
+    pub pid: u32,
+    /// Names the locally admitted native process user.
+    pub uid: u32,
+    /// Commits to the actual source-installed provider executable bytes.
+    pub executable: ContentRef,
+}
+
+/// Retains one immutable original request and its last authentic transport response.
+#[derive(Clone)]
+pub struct ClientOriginal {
+    /// Contains the complete original method, IDs, scope and request body.
+    pub request: Envelope,
+    /// Commits to the original identity independently of connection sequence.
+    pub identity: HashRef,
+    /// Retains a received original response, or none after uncertain transport loss.
+    pub response: Option<Envelope>,
+}
+
+/// Keeps finite original request and content custody across connection replacement.
+pub struct ClientCustody {
+    maximum_requests: usize,
+    maximum_bytes: usize,
+    retained_bytes: usize,
+    controller: BTreeMap<Id, ClientOriginal>,
+    provider: BTreeMap<Id, ClientOriginal>,
+    content: ClientContent,
+}
+
+impl ClientCustody {
+    /// Creates bounded ledgers before admitting any wire request.
+    ///
+    /// # Errors
+    /// Refuses zero or greater-than4096 original request capacity.
+    pub fn new(maximum_requests: usize, content: ClientContent) -> Result<Self, ProviderError> {
+        if maximum_requests == 0 || maximum_requests > 4096 {
+            return Err(ProviderError::ResourceExhausted(
+                "client original request ceiling",
+            ));
+        }
+        Ok(Self {
+            maximum_requests,
+            maximum_bytes: content.byte_ceiling(),
+            retained_bytes: 0,
+            controller: BTreeMap::new(),
+            provider: BTreeMap::new(),
+            content,
+        })
+    }
+
+    /// Returns retained originals including requests whose effects remain unknown.
+    pub fn originals(&self) -> impl Iterator<Item = &ClientOriginal> {
+        self.controller.values().chain(self.provider.values())
+    }
+
+    /// Returns immutable byte custody for independent installed receipt verification.
+    pub fn content(&self) -> &ClientContent {
+        &self.content
+    }
+
+    /// Returns mutable byte custody for independently verified installation content.
+    pub fn content_mut(&mut self) -> &mut ClientContent {
+        &mut self.content
+    }
+
+    fn ensure_journal_room(&self, bytes: usize) -> Result<(), ProviderError> {
+        if self
+            .retained_bytes
+            .checked_add(bytes)
+            .is_none_or(|total| total > self.maximum_bytes)
+        {
+            return Err(ProviderError::ResourceExhausted(
+                "client original journal bytes",
+            ));
+        }
+        Ok(())
+    }
+
+    fn retain_journal_bytes(&mut self, bytes: usize) -> Result<(), ProviderError> {
+        self.ensure_journal_room(bytes)?;
+        self.retained_bytes += bytes;
+        Ok(())
+    }
+}
+
+/// Owns one host-authenticated connection without granting native receipt authority.
+pub struct ClientSession {
+    connection: Connection<DeadlineStream>,
+    authority: ConnectionAuthority,
+    deadline: ExchangeDeadline,
+    sequence: U64,
+}
+
+impl ClientSession {
+    /// Authenticates actual peer identity and admits a complete original hello exchange.
+    ///
+    /// The caller retains native child custody and supplies a trusted installation
+    /// verifier. Kernel peer checks and measured executable bytes are independent
+    /// of the provider's self-advertised manifest. The stream starts at sequence2.
+    ///
+    /// # Errors
+    /// Refuses foreign peers, missing or changed executable measurement, failed
+    /// hello authentication, invalid schemas, exhausted limits or transport failure.
+    // crucible-lint: allow rust-allow -- separate trusted verifiers and original hello limits are explicit admission dependencies.
+    #[allow(clippy::too_many_arguments)]
+    pub fn negotiate(
+        stream: std::os::unix::net::UnixStream,
+        peer: &ClientPeer,
+        hello: &Envelope,
+        connection_id: Id,
+        handshake: &mut Handshake,
+        verifier: &mut impl TrustedHandshakeVerifier,
+        supervisor: Rc<dyn ConnectionSupervisor>,
+        schemas: Rc<dyn BodySchemaVerifier>,
+        budget: Duration,
+        maximum_bytes: usize,
+        maximum_nesting: usize,
+    ) -> Result<Self, ProviderError> {
+        let credentials =
+            rustix::net::sockopt::socket_peercred(&stream).map_err(std::io::Error::from)?;
+        let expected_pid = i32::try_from(peer.pid)
+            .map_err(|_| ProviderError::Correlation("invalid retained provider PID"))?;
+        if expected_pid <= 0
+            || credentials.pid.as_raw_nonzero().get() != expected_pid
+            || credentials.uid.as_raw() != peer.uid
+        {
+            return Err(ProviderError::Correlation(
+                "CNP peer differs from retained launch",
+            ));
+        }
+        let measured = crate::conformance::measure_executable(&PathBuf::from(format!(
+            "/proc/{}/exe",
+            peer.pid
+        )))?;
+        if measured != peer.executable {
+            return Err(ProviderError::Correlation(
+                "CNP peer executable differs from installation",
+            ));
+        }
+        let (mut writer, deadline) = DeadlineStream::new(stream, budget)?;
+        let mut reader =
+            FrameReader::with_limits(writer.try_clone()?, maximum_bytes, maximum_nesting)?;
+        write_frame_with_limits(
+            &mut writer,
+            &serde_json::to_value(hello).map_err(crucible_node_contract::ContractError::from)?,
+            maximum_bytes,
+            maximum_nesting,
+        )?;
+        let value = reader
+            .read()?
+            .ok_or(ProviderError::Correlation("CNP hello response unavailable"))?;
+        let response = Envelope::decode(&canonical::canonical_json(&value)?, maximum_bytes)?;
+        let authority = handshake.admit_envelopes(hello, &response, connection_id, verifier)?;
+        let connection = Connection::new(
+            writer,
+            authority.clone(),
+            supervisor,
+            schemas,
+            EndpointRole::Controller,
+        )?;
+        Ok(Self {
+            connection,
+            authority,
+            deadline,
+            sequence: U64::new(2),
+        })
+    }
+
+    /// Returns the original opaque registration lease for separately checked host routing.
+    pub fn authority(&self) -> &ConnectionAuthority {
+        &self.authority
+    }
+
+    /// Sends one original request or returns its unchanged retained response.
+    ///
+    /// Only the transport sequence is updated. The caller supplies immutable IDs,
+    /// scope and body from its original admission. The ledger records the original
+    /// before publication and keeps it on partial write, EOF or malformed traffic.
+    /// Accepted responses discharge transport credit only.
+    ///
+    /// # Errors
+    /// Refuses changed original material, bounded ledger exhaustion, an uncertain
+    /// transport, foreign responses or unsupported unsolicited notifications.
+    pub fn exchange(
+        &mut self,
+        custody: &mut ClientCustody,
+        mut request: Envelope,
+        budget: Duration,
+    ) -> Result<Envelope, ProviderError> {
+        self.authority.ensure_live()?;
+        self.deadline.reset(budget)?;
+        request.sequence = self.sequence;
+        let id = request
+            .request_id
+            .0
+            .clone()
+            .ok_or(ProviderError::Correlation("client request ID missing"))?;
+        let identity = request.request_hash(RequestOrigin::Controller)?;
+        let response_room = usize::try_from(self.authority.limits().frame_bytes.get())
+            .map_err(|_| ProviderError::ResourceExhausted("client response platform bound"))?;
+        if let Some(original) = custody.controller.get(&id) {
+            if original.identity != identity {
+                return Err(ProviderError::Conflict(
+                    "original controller request changed",
+                ));
+            }
+            if let Some(response) = &original.response {
+                return Ok(response.clone());
+            }
+            custody.ensure_journal_room(response_room)?;
+        } else {
+            if custody.controller.len() >= custody.maximum_requests {
+                return Err(ProviderError::ResourceExhausted(
+                    "client original request custody",
+                ));
+            }
+            let original_bytes = envelope_bytes(&request)?;
+            custody.ensure_journal_room(original_bytes.checked_add(response_room).ok_or(
+                ProviderError::ResourceExhausted("client original response reservation"),
+            )?)?;
+            custody.retain_journal_bytes(original_bytes)?;
+            custody.controller.insert(
+                id.clone(),
+                ClientOriginal {
+                    request: request.clone(),
+                    identity,
+                    response: None,
+                },
+            );
+        }
+        self.send(request.clone())?;
+        loop {
+            let frame = self
+                .connection
+                .receive()?
+                .ok_or(ProviderError::Correlation("original CNP response unknown"))?;
+            match frame.body {
+                ReceivedBody::Response(_) => {
+                    request.matches_response(&frame.envelope)?;
+                    custody.retain_journal_bytes(envelope_bytes(&frame.envelope)?)?;
+                    let original = custody
+                        .controller
+                        .get_mut(&id)
+                        .ok_or(ProviderError::Correlation("original CNP custody missing"))?;
+                    original.response = Some(frame.envelope.clone());
+                    return Ok(frame.envelope);
+                }
+                ReceivedBody::Request(body) => {
+                    self.receive_transfer(custody, frame.envelope, *body)?
+                }
+                ReceivedBody::Notification(_) => {
+                    return Err(ProviderError::Correlation("unsupported CNP notification"));
+                }
+            }
+        }
+    }
+
+    /// Receives actual content until every requested receipt root is in verified byte custody.
+    ///
+    /// The source-installed provider sends dependencies before their referring
+    /// roots. This function verifies hashes and transfer order only; installed
+    /// native evidence validation remains the caller's separate responsibility.
+    ///
+    /// # Errors
+    /// Refuses missing, changed, oversized, noncontiguous or mismatched content;
+    /// unexpected control traffic; and the whole exchange's absolute deadline.
+    pub fn receive_content(
+        &mut self,
+        custody: &mut ClientCustody,
+        roots: &[ContentRef],
+        budget: Duration,
+    ) -> Result<(), ProviderError> {
+        if roots.len() > 4096 {
+            return Err(ProviderError::ResourceExhausted(
+                "client evidence root count",
+            ));
+        }
+        self.deadline.tighten(budget)?;
+        while roots
+            .iter()
+            .any(|reference| custody.content.get(reference).is_err())
+        {
+            let frame = self
+                .connection
+                .receive()?
+                .ok_or(ProviderError::Correlation(
+                    "promised CNP evidence unavailable",
+                ))?;
+            let ReceivedBody::Request(body) = frame.body else {
+                return Err(ProviderError::Correlation(
+                    "expected original content transfer",
+                ));
+            };
+            self.receive_transfer(custody, frame.envelope, *body)?;
+        }
+        Ok(())
+    }
+
+    /// Fences this stream without implying provider termination or operation completion.
+    pub fn close(&mut self) {
+        self.connection.close();
+    }
+
+    fn send(&mut self, envelope: Envelope) -> Result<(), ProviderError> {
+        self.connection.send(envelope)?;
+        self.sequence = self.sequence.checked_add(U64::new(1))?;
+        Ok(())
+    }
+
+    fn receive_transfer(
+        &mut self,
+        custody: &mut ClientCustody,
+        request: Envelope,
+        body: RequestBody,
+    ) -> Result<(), ProviderError> {
+        let id = request
+            .request_id
+            .0
+            .clone()
+            .ok_or(ProviderError::Correlation("provider transfer ID missing"))?;
+        let identity = request.request_hash(RequestOrigin::Provider)?;
+        if let Some(original) = custody.provider.get(&id) {
+            if original.identity != identity {
+                return Err(ProviderError::Conflict("original provider request changed"));
+            }
+            if let Some(retained) = &original.response {
+                let mut response = retained.clone();
+                response.sequence = self.sequence;
+                return self.send(response);
+            }
+        } else {
+            if custody.provider.len() >= custody.maximum_requests {
+                return Err(ProviderError::ResourceExhausted(
+                    "client provider request custody",
+                ));
+            }
+            let original_bytes = envelope_bytes(&request)?;
+            let response_room = usize::try_from(self.authority.limits().frame_bytes.get())
+                .map_err(|_| ProviderError::ResourceExhausted("client response platform bound"))?;
+            custody.ensure_journal_room(original_bytes.checked_add(response_room).ok_or(
+                ProviderError::ResourceExhausted("client incoming response reservation"),
+            )?)?;
+            custody.retain_journal_bytes(original_bytes)?;
+            custody.provider.insert(
+                id.clone(),
+                ClientOriginal {
+                    request: request.clone(),
+                    identity,
+                    response: None,
+                },
+            );
+        }
+        let result = match body {
+            RequestBody::BlobBegin(body) => object(custody.content.begin(&body)?)?,
+            RequestBody::BlobChunk(body) => object(custody.content.chunk(&body)?)?,
+            RequestBody::BlobFinish(body) => object(custody.content.finish(&body)?)?,
+            _ => {
+                return Err(ProviderError::Correlation(
+                    "provider originated non-content control",
+                ));
+            }
+        };
+        let mut response = request;
+        response.message = MessageKind::Response;
+        response.sequence = self.sequence;
+        response.body = object(ResponseShape::Completed {
+            operation_state: OperationState::Completed,
+            result,
+            extensions: Extensions::new(),
+        })?;
+        custody.retain_journal_bytes(envelope_bytes(&response)?)?;
+        custody
+            .provider
+            .get_mut(&id)
+            .ok_or(ProviderError::Correlation("provider custody missing"))?
+            .response = Some(response.clone());
+        self.send(response)
+    }
+}
+
+fn envelope_bytes(envelope: &Envelope) -> Result<usize, ProviderError> {
+    let value =
+        serde_json::to_value(envelope).map_err(crucible_node_contract::ContractError::from)?;
+    Ok(canonical::canonical_json(&value)?.len())
+}
+
+pub(super) fn object(value: impl serde::Serialize) -> Result<Map<String, Value>, ProviderError> {
+    serde_json::to_value(value)
+        .map_err(crucible_node_contract::ContractError::from)?
+        .as_object()
+        .cloned()
+        .ok_or(ProviderError::Frame("client body is not an object"))
+}

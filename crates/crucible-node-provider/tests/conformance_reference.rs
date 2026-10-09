@@ -136,6 +136,56 @@ fn actual_native_window_preserves_input_and_output_custody_until_explicit_consum
 }
 
 #[test]
+fn public_linked_launch_preserves_actual_native_checksum_and_original_custody() {
+    let service = fixture::NativeService::launch_public_linked(provider(), device(), 1, false);
+    let plan = lifecycle::native_window(&service);
+    let mut connector = UnixProbeConnector::new(
+        service.socket(),
+        rustix::process::geteuid().as_raw(),
+        provider(),
+        Duration::from_secs(3),
+    )
+    .unwrap();
+
+    let report = run(&plan, &mut connector, service.private_bindings.clone()).unwrap();
+
+    assert!(report.passed(), "{:?}", report.results);
+    assert!(report.protocol_only);
+    assert_eq!(
+        service.profile.descriptor.ports[0].lanes[0].payload_schema,
+        service.profile.descriptor.ports[0].lanes[1].payload_schema
+    );
+    assert!(
+        report
+            .endpoints
+            .iter()
+            .all(|endpoint| endpoint.peer_pid.get() == u64::from(service.process.id()))
+    );
+}
+
+#[test]
+fn public_closed_source_uses_distinct_measured_profile_through_versioned_launch() {
+    let service = fixture::NativeService::launch_public_linked(provider(), device(), 1, true);
+    let plan = lifecycle::native_window(&service);
+    let mut connector = UnixProbeConnector::new(
+        service.socket(),
+        rustix::process::geteuid().as_raw(),
+        provider(),
+        Duration::from_secs(3),
+    )
+    .unwrap();
+
+    let report = run(&plan, &mut connector, service.private_bindings.clone()).unwrap();
+
+    assert!(report.passed(), "{:?}", report.results);
+    assert_eq!(service.profile.descriptor.ports[0].lanes.len(), 1);
+    assert_eq!(
+        service.profile.descriptor.ports[0].lanes[0].direction,
+        crucible_node_contract::Direction::Output
+    );
+}
+
+#[test]
 fn actual_provider_enforces_receiving_limits_features_and_malformed_stream_fencing() {
     for scenario in [
         scenario::negotiated_limits,

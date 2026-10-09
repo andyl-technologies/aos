@@ -15,10 +15,13 @@ mod security;
 mod server;
 mod transfer;
 
-pub use bootstrap::{InstalledContent, ReferenceServiceBootstrap};
+pub use bootstrap::{
+    InstalledContent, PublicReferenceProfile, ReferenceServiceBootstrap,
+    ReferenceServiceLaunchBootstrap,
+};
 pub use profile::{ProfileContent, ReferenceProfile};
 pub use resources::{ConsumedRequest, PublicationConsumption, RequestConsumption};
-pub use server::serve;
+pub use server::{serve, serve_selected};
 
 use crucible_node_contract::ContractError;
 use serde::Serialize;

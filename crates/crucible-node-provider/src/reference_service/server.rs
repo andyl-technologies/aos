@@ -22,7 +22,7 @@ use crate::journal::JournalLimits;
 use crate::native_journal::*;
 use crate::transport::{FrameReader, write_frame};
 
-use super::bootstrap::ReferenceServiceBootstrap;
+use super::bootstrap::{PublicReferenceProfile, ReferenceServiceBootstrap};
 use super::profile::ReferenceProfile;
 use super::resources::{Resources, Supervisor};
 use super::security::{NativeVerifier, SchemaVerifier};
@@ -42,6 +42,29 @@ pub fn serve(
     child: &Path,
     bootstrap: ReferenceServiceBootstrap,
 ) -> Result<(), ProviderError> {
+    serve_selected(
+        socket,
+        child,
+        bootstrap,
+        PublicReferenceProfile::ChecksumJsonV1,
+    )
+}
+
+/// Serves an explicitly selected public profile under original private authority.
+///
+/// The selected profile is regenerated from the actual measured executables.
+/// Its binding must match the privately installed admission before any native
+/// companion is realized. Actor-native profiles cannot be selected here.
+///
+/// # Errors
+/// Refuses invalid bootstrap, mismatched profile/admission, unavailable native
+/// resource enforcement, nonprivate endpoints or transport installation failure.
+pub fn serve_selected(
+    socket: &Path,
+    child: &Path,
+    bootstrap: ReferenceServiceBootstrap,
+    selection: PublicReferenceProfile,
+) -> Result<(), ProviderError> {
     bootstrap.validate()?;
     super::limits::enforce(&bootstrap)?;
     let parent = socket
@@ -58,14 +81,27 @@ pub fn serve(
     }
     let provider_executable = crate::conformance::measure_executable(&std::env::current_exe()?)?;
     let device_executable = crate::conformance::measure_executable(child)?;
-    let profile = ReferenceProfile::build(
-        bootstrap.node_id.clone(),
-        bootstrap.owner_id.clone(),
-        provider_executable,
-        device_executable,
-        bootstrap.quantum_ps,
-        bootstrap.host_budget_ns,
-    )?;
+    let profile = match selection {
+        PublicReferenceProfile::ChecksumJsonV1 => ReferenceProfile::build(
+            bootstrap.node_id.clone(),
+            bootstrap.owner_id.clone(),
+            provider_executable,
+            device_executable,
+            bootstrap.quantum_ps,
+            bootstrap.host_budget_ns,
+        ),
+        PublicReferenceProfile::ByteLinkedV1 { closed_ingress } => {
+            ReferenceProfile::build_public_linked(
+                bootstrap.node_id.clone(),
+                bootstrap.owner_id.clone(),
+                provider_executable,
+                device_executable,
+                bootstrap.quantum_ps,
+                bootstrap.host_budget_ns,
+                closed_ingress,
+            )
+        }
+    }?;
     let (binding, owner_binding) = profile.bind(bootstrap.authority.clone())?;
     let supervisor = Supervisor::new();
     let blobs = BlobReceiver::new(
@@ -240,6 +276,28 @@ pub fn serve(
                         .borrow()
                         .contains(&reference.hash.digest)
                 });
+            let selected_control_evidence = authority
+                .selected_features()
+                .iter()
+                .any(|feature| feature.as_str() == "cnp.control-evidence/1");
+            let control_evidence = completed_response
+                && selected_control_evidence
+                && matches!(
+                    body.as_ref(),
+                    RequestBody::Realize(_)
+                        | RequestBody::Activate(_)
+                        | RequestBody::Input(_)
+                        | RequestBody::WorldActivate(_)
+                        | RequestBody::Begin(_)
+                        | RequestBody::Poll(_)
+                        | RequestBody::Observe(_)
+                        | RequestBody::QuantumClose(_)
+                        | RequestBody::Abort(_)
+                        | RequestBody::Release(_)
+                );
+            // Keep the original terminal response immutable while its referenced
+            // receipt closure is transferred on the opposite request lane.
+            let retained_response = control_evidence.then(|| response.clone());
             let mut envelope = frame.envelope.clone();
             envelope.message = MessageKind::Response;
             envelope.sequence = sequence;
@@ -248,7 +306,20 @@ pub fn serve(
             if connection.send(envelope).is_err() {
                 break;
             }
+            if let Some(response) = retained_response
+                && super::transfer::publish_control(
+                    &mut connection,
+                    &authority,
+                    &mut journal,
+                    &mut sequence,
+                    &response,
+                )
+                .is_err()
+            {
+                break;
+            }
             if completed_response
+                && !selected_control_evidence
                 && (has_observations || pending_committed)
                 && matches!(
                     body.as_ref(),

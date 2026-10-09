@@ -15,6 +15,19 @@ use crate::native_journal::*;
 use super::object;
 use super::resources::Resources;
 
+mod closure;
+
+pub(super) fn publish_control(
+    connection: &mut Connection<UnixStream>,
+    authority: &ConnectionAuthority,
+    journal: &mut NativeJournal<Resources>,
+    sequence: &mut U64,
+    result: &Map<String, Value>,
+) -> Result<(), ProviderError> {
+    let references = closure::control_closure(journal.resources(), result)?;
+    publish_references(connection, authority, journal, sequence, references)
+}
+
 pub(super) fn publish(
     connection: &mut Connection<UnixStream>,
     authority: &ConnectionAuthority,
@@ -39,6 +52,16 @@ pub(super) fn publish(
     if let Some(committed) = &window.committed_ref {
         content.push(committed.clone());
     }
+    publish_references(connection, authority, journal, sequence, content)
+}
+
+fn publish_references(
+    connection: &mut Connection<UnixStream>,
+    authority: &ConnectionAuthority,
+    journal: &mut NativeJournal<Resources>,
+    sequence: &mut U64,
+    content: Vec<ContentRef>,
+) -> Result<(), ProviderError> {
     for reference in content {
         if journal
             .resources()

@@ -13,7 +13,8 @@ use crucible_node_contract::*;
 use crucible_node_provider::conformance::measure_executable;
 use crucible_node_provider::handshake::Limits;
 use crucible_node_provider::reference_service::{
-    InstalledContent, ReferenceProfile, ReferenceServiceBootstrap,
+    InstalledContent, PublicReferenceProfile, ReferenceProfile, ReferenceServiceBootstrap,
+    ReferenceServiceLaunchBootstrap,
 };
 use serde_json::{Value, json};
 
@@ -33,6 +34,29 @@ pub(super) struct NativeService {
 
 impl NativeService {
     pub(super) fn launch(provider: &Path, device: &Path, maximum_operations: u64) -> Self {
+        Self::launch_selected(provider, device, maximum_operations, None)
+    }
+
+    pub(super) fn launch_public_linked(
+        provider: &Path,
+        device: &Path,
+        maximum_operations: u64,
+        closed_ingress: bool,
+    ) -> Self {
+        Self::launch_selected(
+            provider,
+            device,
+            maximum_operations,
+            Some(PublicReferenceProfile::ByteLinkedV1 { closed_ingress }),
+        )
+    }
+
+    fn launch_selected(
+        provider: &Path,
+        device: &Path,
+        maximum_operations: u64,
+        selection: Option<PublicReferenceProfile>,
+    ) -> Self {
         let directory = std::env::temp_dir().join(format!(
             "cnp-native-conformance-{}-{}",
             std::process::id(),
@@ -42,14 +66,27 @@ impl NativeService {
             .mode(0o700)
             .create(&directory)
             .unwrap();
-        let profile = ReferenceProfile::build(
-            id("checksum"),
-            id("checksum-owner"),
-            measure_executable(provider).unwrap(),
-            measure_executable(device).unwrap(),
-            U64::new(1000),
-            U64::new(1_000_000_000),
-        )
+        let profile = match selection {
+            Some(PublicReferenceProfile::ByteLinkedV1 { closed_ingress }) => {
+                ReferenceProfile::build_public_linked(
+                    id("checksum"),
+                    id("checksum-owner"),
+                    measure_executable(provider).unwrap(),
+                    measure_executable(device).unwrap(),
+                    U64::new(1000),
+                    U64::new(1_000_000_000),
+                    closed_ingress,
+                )
+            }
+            _ => ReferenceProfile::build(
+                id("checksum"),
+                id("checksum-owner"),
+                measure_executable(provider).unwrap(),
+                measure_executable(device).unwrap(),
+                U64::new(1000),
+                U64::new(1_000_000_000),
+            ),
+        }
         .unwrap();
         let placeholder =
             canonical::content_ref(b"private authorization constructed below", "text/plain")
@@ -159,9 +196,18 @@ impl NativeService {
             bootstrap,
             private_bindings,
         };
+        let private_launch = match selection {
+            Some(profile) => serde_json::to_value(ReferenceServiceLaunchBootstrap {
+                schema_version: 2,
+                profile,
+                bootstrap: service.bootstrap.clone(),
+            })
+            .unwrap(),
+            None => serde_json::to_value(&service.bootstrap).unwrap(),
+        };
         crucible_node_provider::transport::write_frame(
             &mut service.process.stdin.take().unwrap(),
-            &serde_json::to_value(&service.bootstrap).unwrap(),
+            &private_launch,
             16 * 1024 * 1024,
         )
         .unwrap();

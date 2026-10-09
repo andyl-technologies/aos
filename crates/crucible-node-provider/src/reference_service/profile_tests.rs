@@ -216,3 +216,107 @@ fn native_linked_profiles_share_lossless_octet_interface_without_retyping_cnp_pr
         profile(50).descriptor.ports[0].lanes[1].payload_schema
     );
 }
+
+#[test]
+fn public_linked_profiles_preserve_public_protocol_and_distinct_native_admission() {
+    let ordinary = profile(50);
+    let artifact = canonical::content_ref(b"fixture-native", "application/octet-stream").unwrap();
+    let make = |closed| {
+        ReferenceProfile::build_public_linked(
+            id("checksum").unwrap(),
+            id("owner/checksum").unwrap(),
+            artifact.clone(),
+            artifact.clone(),
+            50.into(),
+            1_000_000.into(),
+            closed,
+        )
+        .unwrap()
+    };
+    let source = make(true);
+    let consumer = make(false);
+    let actor = ReferenceProfile::build_native_linked(
+        id("checksum").unwrap(),
+        id("owner/checksum").unwrap(),
+        artifact.clone(),
+        artifact,
+        50.into(),
+        1_000_000.into(),
+        true,
+    )
+    .unwrap();
+
+    assert_eq!(source.descriptor.ports[0].lanes.len(), 1);
+    assert_eq!(consumer.descriptor.ports[0].lanes.len(), 2);
+    assert_eq!(
+        source.descriptor.ports[0].lanes[0].payload_schema,
+        consumer.descriptor.ports[0].lanes[0].payload_schema
+    );
+    assert_eq!(
+        source.provider_manifest.protocol_versions,
+        vec![id("CNP/1").unwrap()]
+    );
+    assert_eq!(
+        source.provider_manifest.provider_id.as_str(),
+        "crucible-reference-provider"
+    );
+    assert!(
+        source
+            .provider_manifest
+            .extensions_supported
+            .contains(&id("cnp.control-evidence/1").unwrap())
+    );
+    assert_eq!(
+        source.public_profile().unwrap(),
+        PublicReferenceProfile::ByteLinkedV1 {
+            closed_ingress: true
+        }
+    );
+    assert!(actor.public_profile().is_err());
+    assert_ne!(source.configuration_ref, actor.configuration_ref);
+    assert_ne!(source.descriptor.model_ref, actor.descriptor.model_ref);
+    assert_eq!(ordinary.output_media_type(), "application/json");
+    assert_eq!(source.output_media_type(), "application/octet-stream");
+    assert_eq!(source.guarantees.capture_scope, CaptureScope::None);
+    assert!(!source.guarantees.conditional_replay);
+
+    let limitations: serde_json::Value =
+        serde_json::from_slice(source.content(&source.guarantees.limitations_ref).unwrap())
+            .unwrap();
+    assert!(
+        limitations["native_resource_limits"]
+            .as_str()
+            .unwrap()
+            .contains("RLIMIT_AS")
+    );
+    assert_eq!(
+        ordinary.provider_manifest.extensions_supported,
+        vec![
+            id("cnp.resume/1").unwrap(),
+            id("reference-device/quantized-v1").unwrap(),
+        ]
+    );
+}
+
+#[test]
+fn public_profile_selection_is_closed_and_does_not_accept_actor_profiles() {
+    for value in [
+        json!({"kind":"checksum_json_v1","closed_ingress":true}),
+        json!({"kind":"byte_linked_v1","closed_ingress":true,"unknown":1}),
+        json!({"kind":"byte_linked_v1"}),
+        json!({"kind":"linked","closed_ingress":true}),
+    ] {
+        assert!(serde_json::from_value::<PublicReferenceProfile>(value).is_err());
+    }
+
+    let selected: PublicReferenceProfile = serde_json::from_value(json!({
+        "kind":"byte_linked_v1","closed_ingress":false
+    }))
+    .unwrap();
+    assert_eq!(
+        selected,
+        PublicReferenceProfile::ByteLinkedV1 {
+            closed_ingress: false
+        }
+    );
+}

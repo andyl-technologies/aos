@@ -54,7 +54,10 @@ impl Resources {
         child.validate_receipt(&native)?;
         super::limits::verify_processes(Some(child.child_pid()))?;
         let measurement = self.store_json(&native)?;
-        let payload = self.store_json(&native.output)?;
+        let output = serde_json::to_value(&native.output)
+            .map_err(crucible_node_contract::ContractError::from)?;
+        let output = canonical::canonical_json(&output)?;
+        let payload = self.store(output, self.profile.output_media_type())?;
         let sequence = self.next_observation;
         let successor = sequence.checked_add(U64::new(1))?;
         let observation = ObservationBatch {

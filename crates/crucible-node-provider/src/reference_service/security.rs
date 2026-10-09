@@ -242,6 +242,19 @@ impl NativeInputVerifier<Resources> for NativeVerifier {
                 "reference input cannot replace occupied native custody",
             ));
         }
+        if !batch.events.is_empty()
+            && !resources
+                .profile
+                .descriptor
+                .ports
+                .iter()
+                .flat_map(|port| &port.lanes)
+                .any(|lane| lane.direction == Direction::Input)
+        {
+            return Err(ProviderError::Correlation(
+                "closed reference source cannot accept nonempty input",
+            ));
+        }
         let mut total = 0usize;
         for event in &batch.events {
             if event.destination.node_id != resources.bootstrap.node_id
@@ -283,14 +296,12 @@ impl NativeInputVerifier<Resources> for NativeVerifier {
             .iter()
             .find(|port| port.id.as_str() == "data")
             .and_then(|port| port.lanes.iter().find(|lane| lane.id.as_str() == "input"))
-            .ok_or(ProviderError::Frame(
-                "installed reference input schema unavailable",
-            ))?
-            .payload_schema
-            .definition
-            .clone();
+            .map(|lane| lane.payload_schema.definition.clone());
         let mut bytes = Vec::new();
         for event in &batch.events {
+            let schema = schema.as_ref().ok_or(ProviderError::Frame(
+                "installed reference input schema unavailable",
+            ))?;
             if let Some(verified) = resources.verified.get(&event.payload.hash.digest) {
                 let pin = resources.blobs.pin_operation(
                     verified,

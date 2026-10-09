@@ -20,6 +20,8 @@ use serde_json::json;
 
 use crate::{ProviderError, reference_device::MAX_INPUT_BYTES};
 
+use super::bootstrap::PublicReferenceProfile;
+
 /// Retains one complete immutable profile object and its exact bytes.
 #[derive(Clone, Debug)]
 pub struct ProfileContent {
@@ -62,12 +64,15 @@ pub struct ReferenceProfile {
     guarantees_ref: ContentRef,
     ownership_ref: ContentRef,
     content: Vec<ProfileContent>,
+    selection: ProfileSelection,
 }
 
+#[derive(Clone, Copy, Debug)]
 enum ProfileSelection {
     Cnp,
     Closed,
     Linked { closed_ingress: bool },
+    PublicLinked { closed_ingress: bool },
 }
 
 impl ReferenceProfile {
@@ -161,6 +166,62 @@ impl ReferenceProfile {
         )
     }
 
+    /// Builds a public CNP profile for lossless opaque-byte connections.
+    ///
+    /// The provider retains its public protocol, authenticated native admission
+    /// and dedicated resource ceilings. Original checksum output bytes use the
+    /// same octet schema as connected input. No conversion, capture, physical
+    /// suspension or repeatability guarantee is introduced.
+    ///
+    /// # Errors
+    /// Rejects invalid references, zero budgets, malformed records or failed
+    /// serialization. A closed source has no input lane and rejects ingress.
+    pub fn build_public_linked(
+        node: Id,
+        owner: Id,
+        provider_executable: ContentRef,
+        device_executable: ContentRef,
+        quantum_ps: U64,
+        host_budget_ns: U64,
+        closed_ingress: bool,
+    ) -> Result<Self, ProviderError> {
+        Self::build_selected(
+            node,
+            owner,
+            provider_executable,
+            device_executable,
+            quantum_ps,
+            host_budget_ns,
+            ProfileSelection::PublicLinked { closed_ingress },
+        )
+    }
+
+    /// Returns the selected public launch profile without granting authority.
+    ///
+    /// # Errors
+    /// Refuses actor-native profiles, which do not expose a public endpoint.
+    pub fn public_profile(&self) -> Result<PublicReferenceProfile, ProviderError> {
+        match self.selection {
+            ProfileSelection::Cnp => Ok(PublicReferenceProfile::ChecksumJsonV1),
+            ProfileSelection::PublicLinked { closed_ingress } => {
+                Ok(PublicReferenceProfile::ByteLinkedV1 { closed_ingress })
+            }
+            ProfileSelection::Closed | ProfileSelection::Linked { .. } => {
+                Err(ProviderError::Frame(
+                    "actor-native reference profile has no public launch selection",
+                ))
+            }
+        }
+    }
+
+    pub(super) fn output_media_type(&self) -> &'static str {
+        if matches!(self.selection, ProfileSelection::PublicLinked { .. }) {
+            "application/octet-stream"
+        } else {
+            "application/json"
+        }
+    }
+
     fn build_selected(
         node: Id,
         owner: Id,
@@ -176,9 +237,17 @@ impl ReferenceProfile {
                 | ProfileSelection::Linked {
                     closed_ingress: true
                 }
+                | ProfileSelection::PublicLinked {
+                    closed_ingress: true
+                }
         );
         let native_linked = matches!(selection, ProfileSelection::Linked { .. });
-        let native_adapter = closed_ingress || native_linked;
+        let public_linked = matches!(selection, ProfileSelection::PublicLinked { .. });
+        let byte_linked = native_linked || public_linked;
+        let native_adapter = matches!(
+            selection,
+            ProfileSelection::Closed | ProfileSelection::Linked { .. }
+        );
         provider_executable.validate()?;
         device_executable.validate()?;
         if quantum_ps.get() == 0 || host_budget_ns.get() == 0 {
@@ -190,7 +259,9 @@ impl ReferenceProfile {
         let mut content = Vec::new();
         let model = put_text(
             &mut content,
-            if native_linked {
+            if public_linked {
+                PUBLIC_LINKED_MODEL_SPECIFICATION
+            } else if native_linked {
                 LINKED_MODEL_SPECIFICATION
             } else if closed_ingress {
                 CLOSED_MODEL_SPECIFICATION
@@ -231,7 +302,9 @@ impl ReferenceProfile {
         let guarantees_ref = put_json(&mut content, &guarantees)?;
         let window = put_text(
             &mut content,
-            if native_linked {
+            if public_linked {
+                PUBLIC_LINKED_WINDOW_SPECIFICATION
+            } else if native_linked {
                 LINKED_WINDOW_SPECIFICATION
             } else if closed_ingress {
                 CLOSED_WINDOW_SPECIFICATION
@@ -255,7 +328,7 @@ impl ReferenceProfile {
         if closed_ingress {
             configuration_value["input_policy"] = json!("closed-no-ingress");
         }
-        if native_linked {
+        if byte_linked {
             configuration_value["byte_interface"] = json!("opaque-octets");
             if !closed_ingress {
                 configuration_value["input_policy"] = json!("admitted-causal-source");
@@ -316,7 +389,7 @@ impl ReferenceProfile {
             }),
         )?;
 
-        let input_schema = if native_linked {
+        let input_schema = if byte_linked {
             schema(
                 &mut content,
                 NATIVE_OCTET_SCHEMA_ID,
@@ -325,7 +398,7 @@ impl ReferenceProfile {
         } else {
             schema(&mut content, "reference-device/input-v1", INPUT_SCHEMA)?
         };
-        let output_schema = if native_linked {
+        let output_schema = if byte_linked {
             input_schema.clone()
         } else {
             schema(&mut content, "reference-device/output-v1", OUTPUT_SCHEMA)?
@@ -382,7 +455,7 @@ impl ReferenceProfile {
             ports: vec![PortDescriptor {
                 id: id("data")?,
                 lanes,
-                interface_id: id(if native_linked {
+                interface_id: id(if byte_linked {
                     NATIVE_OCTET_INTERFACE_ID
                 } else if closed_ingress {
                     "reference-device/checksum-only-v1"
@@ -431,14 +504,18 @@ impl ReferenceProfile {
 
         let configuration_schema = schema(
             &mut content,
-            if native_linked {
+            if public_linked {
+                "reference-device/configuration-public-linked-v1"
+            } else if native_linked {
                 "reference-device/configuration-linked-v1"
             } else if closed_ingress {
                 "reference-device/configuration-closed-v1"
             } else {
                 "reference-device/configuration-v1"
             },
-            if native_linked {
+            if public_linked {
+                PUBLIC_LINKED_CONFIGURATION_SCHEMA
+            } else if native_linked {
                 LINKED_CONFIGURATION_SCHEMA
             } else if closed_ingress {
                 CLOSED_CONFIGURATION_SCHEMA
@@ -456,7 +533,13 @@ impl ReferenceProfile {
         let port_templates_ref = put_json(&mut content, &descriptor.ports)?;
         let node_manifest = NodeManifest {
             schema_version: 1,
-            profile_id: id(if native_linked {
+            profile_id: id(if public_linked {
+                if closed_ingress {
+                    "reference-device/cnp-linked-source-v1"
+                } else {
+                    "reference-device/cnp-linked-consumer-v1"
+                }
+            } else if native_linked {
                 if closed_ingress {
                     "reference-device/linked-source-v1"
                 } else {
@@ -493,6 +576,12 @@ impl ReferenceProfile {
             supported_profiles: vec![node_manifest.clone()],
             extensions_supported: if native_adapter {
                 Vec::new()
+            } else if public_linked {
+                vec![
+                    id("cnp.control-evidence/1")?,
+                    id("cnp.resume/1")?,
+                    id("reference-device/quantized-v1")?,
+                ]
             } else {
                 vec![id("cnp.resume/1")?, id("reference-device/quantized-v1")?]
             },
@@ -533,6 +622,7 @@ impl ReferenceProfile {
             guarantees_ref,
             ownership_ref,
             content,
+            selection,
         })
     }
 
@@ -724,6 +814,39 @@ pub const NATIVE_OCTET_SPECIFICATION: &str = "crucible/octet-stream-v1: exactly 
 const LINKED_MODEL_SPECIFICATION: &str = "Controlled checksum model, native byte-linked edition 1. Initial quantum/checksum are zero. A linked consumer consumes only the original authenticated causal input cut, concatenated in coordinator order, applying checksum=(checksum*257+b) modulo 2^64 per octet. A source with closed-no-ingress exposes no input lane and accepts only an empty cut. Every original window publishes one original checksum JSON record as opaque octets, without semantic conversion. Native retry/output custody persists. No captures, forks or continuation are supported.";
 const LINKED_WINDOW_SPECIFICATION: &str = "Native byte-linked quantized checksum window, edition 1. Exclusive measured adapter freezes a complete authenticated original input prefix before execution. Exactly that byte sequence is consumed once under the selected finite host budget. Original checksum JSON output becomes visible only at authentic close, at (window_end_ps,0,Publication), without evaluation coordinates. Original retries retain custody, never reexecute. Admitted temporal connections preserve byte order and explicit causal provenance. Closed sources reject every nonempty input before staging. Application park makes no physical suspension claim.";
 const LINKED_CONFIGURATION_SCHEMA: &str = "reference-device/configuration-linked-v1: closed JSON object with the base quantized checksum configuration fields, positive quantum_ps/host_budget_ns, phase_ps 0, installed maximum_input_bytes, ordering_profile superdense-v1, native-linked window_semantics_ref, multiplier257 and modulus2^64, byte_interface opaque-octets, and input_policy either closed-no-ingress or admitted-causal-source. The former selects no input lane; the latter requires complete admitted causal source for its shared bounded octet lane. No implicit side ingress, extensions or conversion is accepted.";
+
+const PUBLIC_LINKED_MODEL_SPECIFICATION: &str = concat!(
+    "Public CNP byte-linked checksum model, edition 1. The measured provider and ",
+    "its sole companion retain complete original request, input and output custody ",
+    "under dedicated native resource ceilings. Each frozen input byte updates the ",
+    "rolling checksum modulo 2^64. Exactly one original canonical checksum JSON ",
+    "record is published as unchanged opaque octets. A closed source exposes no ",
+    "input lane and consumes only authenticated empty cuts. This profile does not ",
+    "select the actor-native adapter, capture, fork, replay or physical suspension."
+);
+
+const PUBLIC_LINKED_WINDOW_SPECIFICATION: &str = concat!(
+    "Public CNP byte-linked quantized checksum window, edition 1. Private host ",
+    "admission binds measured provider/companion artifacts and hard resource ",
+    "ceilings. A complete immutable original input cut is staged once before ",
+    "execution under a finite host budget. The original checksum JSON octets ",
+    "remain invisible until authentic window close and publish at ",
+    "(window_end_ps,0,Publication), without an evaluation coordinate. Original ",
+    "retry, reconnect and consumption acknowledgement preserve native custody ",
+    "without reexecution. Closed sources reject nonempty input before effects. ",
+    "Application park makes no physical suspension or repeatability claim."
+);
+
+const PUBLIC_LINKED_CONFIGURATION_SCHEMA: &str = concat!(
+    "reference-device/configuration-public-linked-v1: closed base quantized ",
+    "checksum configuration with schema_version 1, positive quantum_ps and ",
+    "host_budget_ns, phase_ps 0, installed maximum_input_bytes, ordering_profile ",
+    "superdense-v1, public-linked window_semantics_ref, checksum_multiplier 257, ",
+    "checksum_modulus 18446744073709551616, byte_interface opaque-octets and ",
+    "input_policy closed-no-ingress or admitted-causal-source. Public CNP/1 ",
+    "transport and dedicated resource ceilings remain selected. No additional ",
+    "fields, side ingress or implicit byte conversion are accepted."
+);
 
 #[cfg(test)]
 #[path = "profile_tests.rs"]
