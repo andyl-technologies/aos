@@ -35,6 +35,9 @@ PREFIX = r"""// SPDX-License-Identifier: GPL-2.0-only
 #include <stdio.h>
 #include <linux/kvm.h>
 
+/* Header-only later declarations need an opaque CPU type, not a CPU model. */
+typedef struct CPUState CPUState;
+
 typedef struct KVMState {
     uint32_t crucible_clock_kernel_edition;
 } KVMState;

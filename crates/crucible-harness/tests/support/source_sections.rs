@@ -35,10 +35,9 @@ pub(super) fn source_role_line_counts(
 pub(super) fn is_test_only_source(package_dir: &Path, source: &Path) -> bool {
     source.strip_prefix(package_dir).is_ok_and(|relative| {
         relative.components().any(|component| {
-            matches!(
-                component.as_os_str().to_str(),
-                Some("tests" | "test_support")
-            )
+            component.as_os_str().to_str().is_some_and(|name| {
+                matches!(name, "tests" | "test_support") || name.ends_with("_tests")
+            })
         }) || relative.file_name().is_some_and(|name| {
             name == "tests.rs"
                 || name == "test_support.rs"

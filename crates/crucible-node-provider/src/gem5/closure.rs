@@ -569,7 +569,7 @@ fn execute_auditor(
                 }
                 break;
             }
-            if operational_now() >= end {
+            if end.is_expired() {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::TimedOut,
                     "gem5 capture auditor deadline",

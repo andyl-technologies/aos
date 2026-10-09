@@ -17,9 +17,18 @@ pub struct NativeNodeControlConfig {
     edition: crucible_protocol::node_control::NativeControlEdition,
     initialization: Option<super::NativeInitializationConfig>,
     phase: Option<super::NativePhaseConfig>,
+    administration: Option<super::NativeAdministrationConfig>,
+    fingerprint_worker: bool,
 }
 
 impl NativeNodeControlConfig {
+    pub(crate) const fn fingerprint_worker(self) -> bool {
+        self.fingerprint_worker
+    }
+    /// Returns the separately pinned original reader enrollment, if present.
+    pub const fn administration(self) -> Option<super::NativeAdministrationConfig> {
+        self.administration
+    }
     /// Returns the separately pinned original source projection, if present.
     pub const fn phase(self) -> Option<super::NativePhaseConfig> {
         self.phase
@@ -53,9 +62,11 @@ pub(super) fn parse(
     ];
     let initialization = super::native_initialization::parse(parsed)?;
     let phase = super::native_phase::parse(parsed)?;
+    let administration = super::native_administration::parse(parsed)?;
     if keys.iter().all(|key| parsed.value(key).is_none())
         && initialization.is_none()
         && phase.is_none()
+        && administration.is_none()
     {
         return Ok(None);
     }
@@ -73,6 +84,9 @@ pub(super) fn parse(
         Some("4") if phase.is_some() => {
             crucible_protocol::node_control::NativeControlEdition::PreparationSuccessor
         }
+        Some("5") if phase.is_some() && administration.is_some() => {
+            crucible_protocol::node_control::NativeControlEdition::Administration
+        }
         _ => return Err(PluginArgsParseError::InvalidNativeNodeControl),
     };
     if (initialization.is_some()
@@ -80,7 +94,10 @@ pub(super) fn parse(
         || (phase.is_some()
             && (initialization.is_none()
                 || !matches!(edition, crucible_protocol::node_control::NativeControlEdition::PhaseProjection
-                    | crucible_protocol::node_control::NativeControlEdition::PreparationSuccessor)))
+                    | crucible_protocol::node_control::NativeControlEdition::PreparationSuccessor
+                    | crucible_protocol::node_control::NativeControlEdition::Administration)))
+        || (administration.is_some()
+            && edition != crucible_protocol::node_control::NativeControlEdition::Administration)
     {
         return Err(PluginArgsParseError::InvalidNativeNodeControl);
     }
@@ -90,11 +107,14 @@ pub(super) fn parse(
         edition,
         initialization,
         phase,
+        administration,
+        fingerprint_worker: parsed.value(super::PLUGIN_ARG_FINGERPRINT) == Some("on"),
     }))
 }
 
 pub(super) fn is_key(key: &str) -> bool {
-    super::native_phase::is_key(key)
+    super::native_administration::is_key(key)
+        || super::native_phase::is_key(key)
         || super::native_initialization::is_key(key)
         || matches!(
             key,
@@ -105,6 +125,7 @@ pub(super) fn is_key(key: &str) -> bool {
 }
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- These native node tests deliberately panic on invalid fixtures or failed invariants.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use crate::args::PluginArgs;
@@ -184,6 +205,8 @@ mod tests {
 }
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- These native node tests deliberately panic on invalid fixtures or failed invariants.
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod initialization_tests {
     use crate::args::PluginArgs;
 

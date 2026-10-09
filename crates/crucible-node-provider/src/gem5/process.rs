@@ -1,5 +1,7 @@
 //! Private native process ownership and retained original event-prefix receipts.
 
+use crate::operational_time::OperationalDeadline;
+
 use std::{
     collections::BTreeMap,
     fs::{self, File},
@@ -14,7 +16,7 @@ use std::{
     },
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use crucible_node_contract::{ContentRef, Id, Phase, Position, U64, Validate};
@@ -819,7 +821,7 @@ fn connect(
                 "gem5 native child exited before controller readiness",
             ));
         }
-        if operational_now() >= end {
+        if end.is_expired() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
                 "gem5 native readiness timeout",
@@ -842,21 +844,20 @@ fn exchange_read(stream: &mut UnixStream, timeout: Duration) -> Result<Value, Pr
         ))
 }
 
-fn deadline(timeout: Duration) -> Result<Instant, ProviderError> {
-    operational_now()
-        .checked_add(timeout)
+fn deadline(timeout: Duration) -> Result<OperationalDeadline, ProviderError> {
+    OperationalDeadline::after(timeout)
         .ok_or(ProviderError::ResourceExhausted("gem5 native deadline"))
 }
 
 struct DeadlineIo<'a> {
     stream: &'a mut UnixStream,
-    deadline: Instant,
+    deadline: OperationalDeadline,
 }
 
 impl DeadlineIo<'_> {
     fn remaining(&self) -> std::io::Result<Duration> {
         self.deadline
-            .checked_duration_since(operational_now())
+            .remaining()
             .filter(|value| !value.is_zero())
             .ok_or_else(|| {
                 std::io::Error::new(
@@ -882,14 +883,4 @@ impl Write for DeadlineIo<'_> {
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
-}
-
-// crucible-lint: allow clippy-disallowed-method -- Native transport deadlines are operational budgets, never modeled time
-// crucible-lint: allow rust-allow -- Native transport deadlines are operational budgets, never modeled time
-#[allow(
-    clippy::disallowed_methods,
-    reason = "Native transport deadlines are operational budgets, never modeled time"
-)]
-fn operational_now() -> Instant {
-    Instant::now()
 }

@@ -1,0 +1,180 @@
+//! Installed raw-inbox custody beside a separately created modeled worker owner.
+//!
+//! The source-owned reader role observes the actual endpoint/thread. This owner
+//! retains raw original preparation and each complete consumed packet before
+//! decode, with maximum reply credit reserved before dequeue. It never captures
+//! unread kernel backlog, grants modeled dispatch, or supplies complete Ready.
+
+use std::sync::{Arc, Mutex, MutexGuard};
+
+use crucible_protocol::node_control::{NativeChannel, NativeFrame};
+use thiserror::Error;
+
+use super::administrative_mailbox::{
+    NativeAdministrativeError, NativeAdministrativeMailbox, NativeAdministrativeReceive,
+    NativeAdministrativeReplyCredit,
+};
+use crate::runtime::worker_quiescence::{
+    LiveWorkerQuiescence, WORKER_FINGERPRINT, WORKER_REQUIRED,
+};
+
+/// Refuses inbox ownership without releasing original resources or admission.
+#[derive(Debug, Error)]
+pub(crate) enum NativeAdministrativeInboxError {
+    #[error("original administrative inbox ownership is unavailable")]
+    Busy,
+    #[error("original administrative inbox allocation credit is exhausted")]
+    Credit,
+    #[error(transparent)]
+    Mailbox(#[from] NativeAdministrativeError),
+}
+
+/// Owns the only actual socket reader and its separately enrolled modeled workers.
+pub(crate) struct NativeAdministrativeInbox {
+    scope: [u8; 32],
+    modeled_workers: Arc<LiveWorkerQuiescence>,
+    mailbox: Mutex<NativeAdministrativeMailbox>,
+}
+
+#[cfg(test)]
+#[path = "administrative_inbox_tests.rs"]
+mod tests;
+
+impl NativeAdministrativeInbox {
+    /// Takes endpoint custody only after fallible original-credit preflight.
+    ///
+    /// The installed factory/source must separately verify complete preparation
+    /// against the early pin. Failure preserves the caller's exact socket and
+    /// unread datagrams. Neither constructor nor a role observation permits work.
+    ///
+    /// # Errors
+    /// Refuses absent scope/endpoint, invalid credit or physical metadata failure.
+    pub(crate) fn from_pinned_endpoint(
+        endpoint: &mut Option<NativeChannel>,
+        scope: [u8; 32],
+        fingerprint_worker: bool,
+        maximum_records: usize,
+        maximum_bytes: usize,
+    ) -> Result<Self, NativeAdministrativeInboxError> {
+        let worker_mask = WORKER_REQUIRED
+            | if fingerprint_worker {
+                WORKER_FINGERPRINT
+            } else {
+                0
+            };
+        let modeled_workers = LiveWorkerQuiescence::new(worker_mask);
+        let mailbox = NativeAdministrativeMailbox::from_pinned_endpoint(
+            endpoint,
+            scope,
+            maximum_records,
+            maximum_bytes,
+        )?;
+        Ok(Self {
+            scope,
+            modeled_workers,
+            mailbox: Mutex::new(mailbox),
+        })
+    }
+
+    pub(crate) fn scope(&self) -> &[u8; 32] {
+        &self.scope
+    }
+
+    pub(crate) fn modeled_workers(&self) -> &Arc<LiveWorkerQuiescence> {
+        &self.modeled_workers
+    }
+
+    /// Returns a non-owning descriptor for the only enrolled reader's polling.
+    ///
+    /// # Errors
+    /// Refuses busy/poisoned custody. No additional receiver is created.
+    pub(crate) fn descriptor(&self) -> Result<i32, NativeAdministrativeInboxError> {
+        Ok(self.try_mailbox()?.descriptor())
+    }
+
+    /// Returns the actual endpoint identity captured before the first receive.
+    ///
+    /// # Errors
+    /// Refuses busy/poisoned custody without replacing the original endpoint.
+    pub(crate) fn socket_identity(&self) -> Result<(u64, u64), NativeAdministrativeInboxError> {
+        Ok(self.try_mailbox()?.socket_identity())
+    }
+
+    /// Retains one complete original packet with response credit before dequeue.
+    ///
+    /// # Errors
+    /// Refuses ambiguous, malformed or oversized input, retaining consumed bytes
+    /// or leaving an unretainable complete packet unread in its kernel endpoint.
+    pub(crate) fn receive_one(
+        &self,
+    ) -> Result<NativeAdministrativeReceive, NativeAdministrativeInboxError> {
+        Ok(self.try_mailbox()?.receive()?)
+    }
+
+    /// Copies an already retained original packet without another socket read.
+    ///
+    /// # Errors
+    /// Refuses busy custody, an unknown cursor or allocation failure.
+    pub(crate) fn original(&self, cursor: u64) -> Result<Vec<u8>, NativeAdministrativeInboxError> {
+        let mailbox = self.try_mailbox()?;
+        let original = mailbox
+            .original(cursor)
+            .ok_or(NativeAdministrativeError::Conflict)?;
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(original.len())
+            .map_err(|_| NativeAdministrativeInboxError::Credit)?;
+        bytes.extend_from_slice(original);
+        Ok(bytes)
+    }
+
+    /// Decodes the unchanged original packet under the immutable endpoint edition.
+    ///
+    /// # Errors
+    /// Refuses unknown or malformed original bytes without receiving again.
+    pub(crate) fn original_frame(
+        &self,
+        cursor: u64,
+    ) -> Result<NativeFrame, NativeAdministrativeInboxError> {
+        Ok(self.try_mailbox()?.decode_original(cursor)?)
+    }
+
+    /// Borrows the original pre-dequeue response allowance, never native effect authority.
+    ///
+    /// # Errors
+    /// Refuses busy, unknown, modeled, invalid or completed original requests.
+    pub(crate) fn reserve_reply(
+        &self,
+        cursor: u64,
+    ) -> Result<NativeAdministrativeReplyCredit, NativeAdministrativeInboxError> {
+        Ok(self.try_mailbox()?.reserve_reply(cursor)?)
+    }
+
+    /// Retains an independently authenticated original reply before socket publication.
+    ///
+    /// # Errors
+    /// Refuses foreign credit, mismatched original correlation or changed reply.
+    pub(crate) fn retain_reply(
+        &self,
+        credit: NativeAdministrativeReplyCredit,
+        reply: &NativeFrame,
+    ) -> Result<(), NativeAdministrativeInboxError> {
+        Ok(self.try_mailbox()?.retain_reply(credit, reply)?)
+    }
+
+    /// Sends only bytes already retained as this original request's response.
+    ///
+    /// # Errors
+    /// Refuses absent history, busy custody or physical socket failure.
+    pub(crate) fn send_reply(&self, cursor: u64) -> Result<bool, NativeAdministrativeInboxError> {
+        Ok(self.try_mailbox()?.send_reply(cursor)?)
+    }
+
+    fn try_mailbox(
+        &self,
+    ) -> Result<MutexGuard<'_, NativeAdministrativeMailbox>, NativeAdministrativeInboxError> {
+        self.mailbox
+            .try_lock()
+            .map_err(|_| NativeAdministrativeInboxError::Busy)
+    }
+}

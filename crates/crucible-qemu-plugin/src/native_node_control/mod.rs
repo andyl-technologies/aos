@@ -6,6 +6,10 @@
 //! capture, producer bounds or same-time event-phase integration.
 
 mod abi;
+mod administration_abi;
+mod administration_custody;
+mod administrative_inbox;
+mod administrative_mailbox;
 mod controller;
 mod initialization_abi;
 mod initialization_custody;

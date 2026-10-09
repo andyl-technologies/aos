@@ -206,3 +206,88 @@ crucible-qemu-plugin	src/block_io_tests	retry	1
 crucible-qemu-plugin	src/ninep_io	retry	1
 crucible-qemu-plugin	src/block_io_tests/inbound_head	retry	1
 crucible-qemu-plugin	src/idle_loop/tests/inbound_cases	retry	1
+
+# RFC-0025 retry names identify original requests, cached receipts or negative
+# retry-authority tests; they never rerun failed tests. Process fixtures poll
+# the same original child or inject one adversarial delay, and every failed
+# assertion remains terminal. Production service/reaper loops pace one owning
+# actor while genuine reclamation or durable publication remains pending.
+# Their lifetime is intentionally not bounded by the sleep interval; they retain
+# original resources and failures instead of redispatching native work.
+crucible	src/node_adapters/cnp/tests	thread::sleep	1
+crucible	src/node_adapters/cnp/tests	std::thread::sleep	1
+crucible	src/node_adapters/cnp/world_tests	thread::sleep	1
+crucible	src/node_adapters/cnp/world_tests	std::thread::sleep	1
+crucible	src/node_adapters/host_scripted_tests	retry	1
+crucible	src/node_adapters/transcript/node_guards	retry	1
+crucible	src/node_state/publication_tests	retry	1
+crucible-campaign	src/observed_node_attempt/tests	retry	1
+crucible-cli	tests/node_host_state_process	thread::sleep	1
+crucible-cli	tests/node_host_state_process	std::thread::sleep	1
+crucible-cli	tests/node_native_state_process	thread::sleep	1
+crucible-cli	tests/node_native_state_process	std::thread::sleep	1
+crucible-cli	tests/node_process	thread::sleep	1
+crucible-cli	tests/node_process	std::thread::sleep	1
+crucible-cli	tests/node_storage_process/host_state	thread::sleep	1
+crucible-cli	tests/node_storage_process/host_state	std::thread::sleep	1
+crucible-cli	tests/node_storage_process	thread::sleep	1
+crucible-cli	tests/node_storage_process	std::thread::sleep	1
+crucible-daemon	src/node_control/daemon	thread::sleep	1
+crucible-daemon	src/node_control/daemon	std::thread::sleep	1
+crucible-daemon	src/node_control/host_state_execution	thread::sleep	1
+crucible-daemon	src/node_control/host_state_service	thread::sleep	1
+crucible-daemon	src/node_observed_executor/activation/tests/native	thread::sleep	1
+crucible-daemon	src/node_observed_executor/activation/tests/native	std::thread::sleep	1
+crucible-daemon	src/node_observed_executor/factory/gem5_profile/schema	retry	1
+crucible-daemon	src/node_observed_executor/factory/native_state/custody	thread::sleep	1
+crucible-daemon	src/node_observed_executor/factory/native_state/ledger_tests	retry	1
+crucible-daemon	src/node_observed_executor/factory/native_state/service	thread::sleep	1
+crucible-daemon	src/node_observed_executor/factory/native_state/tests	thread::sleep	1
+crucible-daemon	src/node_observed_executor/factory/native_state/tests	std::thread::sleep	1
+crucible-daemon	src/node_observed_executor/factory/reference_public/harness	thread::sleep	1
+crucible-daemon	src/node_observed_executor/factory/reference_public/harness	std::thread::sleep	1
+crucible-daemon	src/node_observed_executor/factory/transcript/preparation_tests	thread::sleep	1
+crucible-daemon	src/node_observed_executor/factory/transcript/preparation_tests	std::thread::sleep	1
+crucible-daemon	src/node_observed_executor/factory/transcript/tests	thread::sleep	1
+crucible-daemon	src/node_observed_executor/factory/transcript/tests	std::thread::sleep	1
+crucible-daemon	src/node_observed_executor/service	thread::sleep	1
+crucible-daemon	src/node_observed_executor/tests/connected	thread::sleep	1
+crucible-daemon	src/node_observed_executor/tests/connected	std::thread::sleep	1
+crucible-daemon	src/node_observed_executor/tests/ninep_storage	thread::sleep	1
+crucible-daemon	src/node_observed_executor/tests/ninep_storage	std::thread::sleep	1
+crucible-daemon	src/node_observed_executor/tests/storage	thread::sleep	1
+crucible-daemon	src/node_observed_executor/tests/storage	std::thread::sleep	1
+crucible-daemon	src/node_observed_executor/tests	thread::sleep	1
+crucible-daemon	src/node_observed_executor/tests	std::thread::sleep	1
+crucible-daemon	src/node_qualification/issuance/tests	retry	1
+crucible-node-provider	src/conformance/tests	retry	1
+crucible-node-provider	src/conformance/tests	thread::sleep	1
+crucible-node-provider	src/connection/tests	retry	1
+crucible-node-provider	src/gem5/closure	thread::sleep	1
+crucible-node-provider	src/gem5/closure	std::thread::sleep	1
+crucible-node-provider	src/gem5/containment_tests	thread::sleep	1
+crucible-node-provider	src/gem5/containment_tests	std::thread::sleep	1
+crucible-node-provider	src/gem5/process	thread::sleep	1
+crucible-node-provider	src/gem5/process	std::thread::sleep	1
+crucible-node-provider	src/gem5/service/tests	retry	1
+crucible-node-provider	src/gem5/tests	retry	1
+crucible-node-provider	src/gem5/tests	thread::sleep	1
+crucible-node-provider	src/gem5/tests	std::thread::sleep	1
+crucible-node-provider	src/journal	retry	1
+crucible-node-provider	src/native_journal/tests	retry	1
+crucible-node-provider	src/reference_device/process	thread::sleep	1
+crucible-node-provider	src/reference_device/process	std::thread::sleep	1
+crucible-node-provider	src/reference_device/supervision	thread::sleep	1
+crucible-node-provider	src/reference_device/supervision	std::thread::sleep	1
+crucible-node-provider	tests/conformance_reference/fixture	thread::sleep	1
+crucible-node-provider	tests/conformance_reference/fixture	std::thread::sleep	1
+crucible-node-provider	tests/reference_device	thread::sleep	1
+crucible-node-provider	tests/reference_device	std::thread::sleep	1
+crucible-qemu	src/native_node_control/administration_tests	retry	1
+crucible-qemu	tests/native_node_control/administration	thread::sleep	1
+crucible-qemu	tests/native_node_control/administration	std::thread::sleep	1
+crucible-qemu	tests/native_node_control	retry	1
+crucible-qemu	tests/native_node_control	thread::sleep	1
+crucible-qemu	tests/native_node_control	std::thread::sleep	1
+crucible-qemu-plugin	src/native_node_control/administration_custody_tests	retry	1
+crucible-qemu-plugin	src/native_node_control/phase_custody_tests	retry	1

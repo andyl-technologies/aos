@@ -45,5 +45,3 @@ error-logging	crates/crucible-api/src/vm_lifecycle/quantum_loop/lifecycle/persis
 error-logging	crates/crucible-daemon/src/assignment_ledger.rs	erased error	dyn Error		3
 error-logging	crates/crucible-daemon/src/qemu_campaign_lifecycle/app_random_branch_replay.rs	stringly error	Result<_, String>		1
 error-logging	crates/crucible-daemon/src/qemu_hot_fork_world_factory.rs	stringly error	Result<_, String>		7
-error-logging	crates/crucible-qemu/src/node_tests/fault_event_budget.rs	erased error	dyn Error		7
-error-logging	crates/crucible-qemu/src/node_tests/fingerprint.rs	erased error	dyn Error		1

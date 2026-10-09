@@ -15,6 +15,10 @@
 //! 16      N      closed command body, no pointers or native enum layouts
 //! ```
 
+#[cfg(test)]
+mod administrative_frame_tests;
+mod administrative_preparation;
+mod administrative_role;
 mod channel;
 mod codec;
 mod edition;
@@ -35,6 +39,9 @@ mod timers;
 mod types;
 mod writer_frames;
 mod writers;
+
+pub use administrative_preparation::NativeAdministrativePreparation;
+pub use administrative_role::NativeAdministrativeFacts;
 
 #[cfg(unix)]
 pub use channel::NativeChannel;

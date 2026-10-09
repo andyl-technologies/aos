@@ -5,7 +5,8 @@
 //! builds the public `crucible` binary, `crucible-debug-gateway` builds the
 //! GPL-side gateway process, `crucible-guest` builds its optional in-guest
 //! emitter binary, `crucible-cas` builds the fleet-store binary, and every
-//! other Crucible package remains a library crate.
+//! provider reference/conformance tool is explicitly declared alongside its
+//! safe library. Other Crucible packages remain library crates.
 
 #![forbid(unsafe_code)]
 
@@ -23,6 +24,7 @@ enum ExpectedArtifact {
     DebugGatewayBinary,
     FleetStoreBinary,
     GuestEmitter,
+    NodeProviderTools,
     Library,
 }
 
@@ -33,6 +35,14 @@ struct ArtifactSpec {
 }
 
 const ARTIFACT_SPECS: &[ArtifactSpec] = &[
+    ArtifactSpec {
+        package: "crucible-node-contract",
+        expected: ExpectedArtifact::Library,
+    },
+    ArtifactSpec {
+        package: "crucible-node-provider",
+        expected: ExpectedArtifact::NodeProviderTools,
+    },
     ArtifactSpec {
         package: "crucible-sim",
         expected: ExpectedArtifact::Library,
@@ -303,6 +313,54 @@ struct PackageLayout {
     has_src_bin_dir: bool,
 }
 
+#[test]
+fn provider_tools_reject_implicit_missing_renamed_and_native_outputs() -> Result<(), Box<dyn Error>>
+{
+    let manifest: Value =
+        fs::read_to_string(workspace_crates_dir()?.join("crucible-node-provider/Cargo.toml"))?
+            .parse()?;
+    let spec = ArtifactSpec {
+        package: "crucible-node-provider",
+        expected: ExpectedArtifact::NodeProviderTools,
+    };
+    let layout = PackageLayout {
+        has_lib_rs: true,
+        has_main_rs: false,
+        has_src_bin_dir: true,
+    };
+    assert!(artifact_type_failures(&spec, &manifest, &layout).is_empty());
+
+    let mut implicit = manifest.clone();
+    implicit["package"]["autobins"] = Value::Boolean(true);
+    assert!(!artifact_type_failures(&spec, &implicit, &layout).is_empty());
+
+    let mut missing = manifest.clone();
+    missing["bin"]
+        .as_array_mut()
+        .ok_or("binary list missing")?
+        .pop();
+    assert!(!artifact_type_failures(&spec, &missing, &layout).is_empty());
+
+    let mut renamed = manifest.clone();
+    renamed["bin"][0]["name"] = Value::String("unreviewed-provider".into());
+    assert!(!artifact_type_failures(&spec, &renamed, &layout).is_empty());
+
+    let mut native = manifest;
+    native
+        .as_table_mut()
+        .ok_or("manifest table missing")?
+        .insert(
+            "lib".into(),
+            Value::Table(toml::map::Map::from_iter([(
+                "crate-type".into(),
+                Value::Array(vec![Value::String("cdylib".into())]),
+            )])),
+        );
+    assert!(!artifact_type_failures(&spec, &native, &layout).is_empty());
+
+    Ok(())
+}
+
 impl PackageLayout {
     fn from_package_dir(package_dir: &Path) -> Self {
         let src_dir = package_dir.join("src");
@@ -570,6 +628,45 @@ fn artifact_type_failures(
                     "{}: guest emitter must not add extra implicit binary targets under src/bin",
                     spec.package
                 ));
+            }
+        }
+        ExpectedArtifact::NodeProviderTools => {
+            if !declares_or_implies_lib_target(manifest, layout)
+                || lib_crate_types(manifest)
+                    .iter()
+                    .any(|kind| !matches!(kind.as_str(), "lib" | "rlib"))
+            {
+                failures.push(format!(
+                    "{}: provider must expose only a Rust library target",
+                    spec.package
+                ));
+            }
+
+            let expected = [
+                "crucible-node-conformance",
+                "crucible-reference-device",
+                "crucible-reference-manifest",
+                "crucible-reference-provider",
+            ];
+            let mut actual = bin_targets(manifest)
+                .into_iter()
+                .map(|bin| (bin.name, bin.path))
+                .collect::<Vec<_>>();
+            actual.sort();
+            let required = expected
+                .into_iter()
+                .map(|name| (Some(name.to_owned()), Some(format!("src/bin/{name}.rs"))))
+                .collect::<Vec<_>>();
+            if actual != required
+                || manifest
+                    .get("package")
+                    .and_then(|package| package.get("autobins"))
+                    .and_then(Value::as_bool)
+                    != Some(false)
+                || layout.has_main_rs
+                || !layout.has_src_bin_dir
+            {
+                failures.push(format!("{}: provider must explicitly declare its four process tools and disable implicit binaries", spec.package));
             }
         }
         ExpectedArtifact::Library => {

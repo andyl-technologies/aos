@@ -1,5 +1,7 @@
 //! Node-level applicability and original custody regressions using model fixtures.
 
+#![cfg(test)]
+// crucible-lint: allow panic-shortcut -- These node guards tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Failed test invariants deliberately panic.
 
 use super::super::{

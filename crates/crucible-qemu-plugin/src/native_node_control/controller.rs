@@ -39,6 +39,10 @@ struct State {
 /// activation and original complete input custody before calling `retain`.
 /// This correlation mechanism does not qualify complete native queue closure.
 pub(crate) struct NativeNodeControl {
+    administration_faulted: AtomicBool,
+    pub(super) administrative_actor:
+        Option<Arc<super::administrative_inbox::NativeAdministrativeInbox>>,
+    pub(super) administration: Option<super::administration_custody::AdministrationCustody>,
     initialization: Option<super::initialization_custody::InitializationCustody>,
     initialization_registered: AtomicBool,
     phase_projection: Option<super::phase_custody::PhaseProjectionCustody>,
@@ -57,7 +61,15 @@ pub(crate) struct NativeNodeControl {
     channel: Option<crucible_protocol::node_control::NativeChannel>,
 }
 
+#[path = "administration_reader.rs"]
+mod administration_reader;
+
 impl NativeNodeControl {
+    pub(crate) fn administrative_modeled_workers(
+        &self,
+    ) -> Option<&Arc<crate::runtime::worker_quiescence::LiveWorkerQuiescence>> {
+        Some(self.administrative_actor.as_ref()?.modeled_workers())
+    }
     pub(crate) fn new(
         scope: OwnerScope,
         boundary: Position,
@@ -65,6 +77,9 @@ impl NativeNodeControl {
     ) -> Result<Self, NativeCommandError> {
         let prepared_scope_hash = scope.identity_digest()?;
         Ok(Self {
+            administration_faulted: AtomicBool::new(false),
+            administrative_actor: None,
+            administration: None,
             initialization: None,
             phase_projection: None,
             preparation_successor: None,
@@ -188,6 +203,9 @@ impl NativeNodeControl {
                 | NativeFrame::PreparePhase(_)
                 | NativeFrame::PhaseTimerChunk(_)
                 | NativeFrame::PreparationSuccessorChunk(_)
+                | NativeFrame::PrepareAdministration(_)
+                | NativeFrame::QueryAdministration { .. }
+                | NativeFrame::AdministrationFacts(_)
                 | NativeFrame::PrepareInitialization(_)
                 | NativeFrame::InitializationCut(_)
                 | NativeFrame::InitializationStopped(_)
@@ -219,6 +237,9 @@ impl NativeNodeControl {
         &'static self,
         workers: Arc<crate::runtime::worker_quiescence::LiveWorkerQuiescence>,
     ) -> Result<(), std::io::Error> {
+        if self.administrative_actor.is_some() {
+            return self.start_administration_reader(workers);
+        }
         let notify = self
             .protocol_notify
             .ok_or_else(|| std::io::Error::other("native protocol wake was not prepared"))?;
@@ -276,8 +297,12 @@ impl NativeNodeControl {
     pub(crate) fn prepared_resources(&self) -> Option<(i32, [u8; 32])> {
         use std::os::fd::AsRawFd;
 
-        if !self.has_protocol_worker() {
+        if self.administration_faulted.load(Ordering::Acquire) || !self.has_protocol_worker() {
             return None;
+        }
+        if let Some(actor) = &self.administrative_actor {
+            self.administration.as_ref()?.retained_original()?;
+            return Some((actor.descriptor().ok()?, self.prepared_scope_hash));
         }
         let workers = self.worker_gate.get()?;
         if workers.worker_mask() & crate::runtime::worker_quiescence::WORKER_NATIVE_CONTROL == 0 {
@@ -430,6 +455,9 @@ impl NativeNodeControl {
         &self,
         command: ExecutionCommand,
     ) -> Result<CommandJournalDisposition, NativeCommandError> {
+        if self.administration_faulted.load(Ordering::Acquire) {
+            return Err(NativeCommandError::Conflict);
+        }
         if self
             .initialization
             .as_ref()
@@ -453,6 +481,9 @@ impl NativeNodeControl {
     }
 
     pub(crate) fn command(&self) -> Option<NativeNodeCommand> {
+        if self.administration_faulted.load(Ordering::Acquire) {
+            return None;
+        }
         if self
             .initialization
             .as_ref()
@@ -478,6 +509,9 @@ impl NativeNodeControl {
     }
 
     pub(crate) fn record_stop(&self, receipt: NativeNodeReceipt) -> Result<(), NativeCommandError> {
+        if self.administration_faulted.load(Ordering::Acquire) {
+            return Err(NativeCommandError::Conflict);
+        }
         let mut state = self
             .state
             .lock()
@@ -496,6 +530,9 @@ impl NativeNodeControl {
         sequence: U64,
         original_authorization: &[u8; 32],
     ) -> Result<(), NativeCommandError> {
+        if self.administration_faulted.load(Ordering::Acquire) {
+            return Err(NativeCommandError::Conflict);
+        }
         let mut state = self
             .state
             .lock()
@@ -699,6 +736,7 @@ extern "C" fn publish_stop(receipt: *const NativeNodeReceipt, userdata: *mut c_v
     // SAFETY: QEMU supplies an ABI-sized immutable receipt during this callback;
     // userdata remains the original registered process-lifetime owner.
     let owner = unsafe { &*userdata.cast::<NativeNodeControl>() };
+    // SAFETY: The source keeps this complete immutable receipt alive for the callback.
     let receipt = unsafe { receipt.read() };
     // Invalid native evidence withholds all future modeled execution. The host
     // must reconcile or contain the original request rather than replay it.
@@ -726,6 +764,7 @@ extern "C" fn publish_stop(receipt: *const NativeNodeReceipt, userdata: *mut c_v
 
 #[cfg(test)]
 #[path = "tests.rs"]
+// crucible-lint: allow panic-shortcut -- These controller tests deliberately panic on invalid fixtures or failed invariants.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests;
 

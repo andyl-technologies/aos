@@ -141,6 +141,7 @@ impl NativeChannel {
 }
 
 #[cfg(all(test, unix))]
+// crucible-lint: allow panic-shortcut -- These channel tests deliberately panic on invalid fixtures or failed invariants.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
@@ -201,6 +202,7 @@ mod tests {
                 NativeControlEdition::OwnedCustody
                 | NativeControlEdition::PhaseProjection
                 | NativeControlEdition::PreparationSuccessor => NativeControlEdition::Original,
+                NativeControlEdition::Administration => NativeControlEdition::Original,
             };
             let frame = NativeFrame::QueryCpuPark([7; 32]);
             let foreign = super::super::encode_frame_for_edition(other, &frame).unwrap();

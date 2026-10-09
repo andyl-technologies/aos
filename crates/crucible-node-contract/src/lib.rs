@@ -1,10 +1,12 @@
 //! Portable values, identities, and closed schemas for the Crucible node contract.
 //!
-//! [`values`] defines bounded wire scalars, [`time`] owns checked coordinator
+//! Module map: [`values`] defines bounded wire scalars, [`time`] owns checked coordinator
 //! coordinates, [`schema`] describes portable graph and binding records, and
 //! [`canonical`] implements strict JSON decoding and CNP/1 content identity.
 //! These records describe claims; they do not authenticate custody, resolve
 //! referenced content, or establish that a provider is qualified.
+//!
+//! Spec index: RFC-0025 files 00, 01, 02, 03, 04, 05, 06, 08, 09.
 
 #![forbid(unsafe_code)]
 

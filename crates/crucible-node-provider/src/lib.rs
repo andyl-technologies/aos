@@ -1,10 +1,12 @@
 //! Bounded process transport and request custody for Crucible node providers.
 //!
-//! [`transport`] owns CNP/1 stream framing, [`envelope`] defines correlation
+//! Module map: [`transport`] owns CNP/1 stream framing, [`envelope`] defines correlation
 //! and request identity, and [`session`] checks connection sequence and scope.
 //! These components do not authenticate native state or qualify a provider.
 //! The host verifies implementation identity, referenced schemas and receipts
 //! before a decoded request can authorize any model effect.
+//!
+//! Spec index: RFC-0025 files 06, 07, 08.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -46,3 +48,6 @@ pub enum ProviderError {
     #[error("provider request conflict: {0}")]
     Conflict(&'static str),
 }
+
+// Operational host clocks remain private to audited process/transport paths.
+mod operational_time;

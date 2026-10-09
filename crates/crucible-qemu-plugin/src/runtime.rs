@@ -383,7 +383,10 @@ impl OwnedCallbackRuntimeState {
     ) -> Pin<Box<Self>> {
         Box::pin(Self {
             quiescence: Arc::new(LiveCallbackQuiescence::new()),
-            workers: LiveWorkerQuiescence::new(worker_mask),
+            workers: crate::native_node_control::registered_owner()
+                .and_then(|owner| owner.administrative_modeled_workers())
+                .map(Arc::clone)
+                .unwrap_or_else(|| LiveWorkerQuiescence::new(worker_mask)),
             teardown_router,
             live_vcpu_time: None,
             live_whitebox: None,

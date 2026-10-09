@@ -52,6 +52,14 @@ fn harness_lint_recognizes_split_test_modules() {
         package,
         Path::new("crucible-example/src/protocol.rs")
     ));
+    assert!(is_test_only_source(
+        package,
+        Path::new("crucible-example/src/world_tests/graph.rs")
+    ));
+    assert!(!is_test_only_source(
+        package,
+        Path::new("crucible-example/src/world_tests_public/graph.rs")
+    ));
 }
 
 #[test]

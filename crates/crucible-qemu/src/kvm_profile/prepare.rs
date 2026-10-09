@@ -44,10 +44,11 @@ impl KvmNativePreparation {
                 requirement: "VM-specific capability queries are unsupported".to_owned(),
             });
         }
-        // SAFETY: KVM_CHECK_EXTENSION uses a scalar capability identifier, not a
-        // user-memory pointer. `vm` owns this live newly-created VM descriptor.
-        let value =
-            unsafe { libc::ioctl(self.vm.as_raw_fd(), 0xae03, libc::c_ulong::from(extension)) };
+        let value = unsafe {
+            // SAFETY: KVM_CHECK_EXTENSION takes a scalar capability, and `vm`
+            // owns this live VM descriptor; no caller memory is dereferenced.
+            libc::ioctl(self.vm.as_raw_fd(), 0xae03, libc::c_ulong::from(extension))
+        };
         if value < 0 {
             return Err(KvmProfileError::Kernel {
                 operation: "VM KVM_CHECK_EXTENSION",
@@ -100,6 +101,7 @@ pub fn prepare_native_kvm(
 }
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- These prepare tests deliberately panic on invalid fixtures or failed invariants.
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;

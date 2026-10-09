@@ -4,6 +4,23 @@ version = "0.1.0"
 edition = "2024"
 license.workspace = true
 publish = false
+autobins = false
+
+[[bin]]
+name = "crucible-node-conformance"
+path = "src/bin/crucible-node-conformance.rs"
+
+[[bin]]
+name = "crucible-reference-device"
+path = "src/bin/crucible-reference-device.rs"
+
+[[bin]]
+name = "crucible-reference-manifest"
+path = "src/bin/crucible-reference-manifest.rs"
+
+[[bin]]
+name = "crucible-reference-provider"
+path = "src/bin/crucible-reference-provider.rs"
 
 [lints]
 workspace = true

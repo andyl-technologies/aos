@@ -60,7 +60,7 @@ pub(super) fn observe_exit(child: &Child) -> Result<Option<WaitIdStatus>, Provid
 pub struct Gem5QuarantineCustody {
     pid: u32,
     start_ticks: String,
-    deadline: Instant,
+    deadline: OperationalDeadline,
     reaped: Option<std::process::ExitStatus>,
     proof: Option<Gem5ReclamationProof>,
 }
@@ -276,7 +276,7 @@ fn poll_reclamation<'a>(
                 evidence: canonical::content_ref(&bytes, "application/json")?,
                 bytes,
             });
-        } else if operational_now() >= state.deadline {
+        } else if state.deadline.is_expired() {
             return Err(ProviderError::Conflict(
                 "gem5 private group reclamation deadline expired",
             ));

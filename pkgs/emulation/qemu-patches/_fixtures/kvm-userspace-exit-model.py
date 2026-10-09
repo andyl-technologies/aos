@@ -352,8 +352,24 @@ def main():
         state_put.index("kvm_crucible_userspace_allow_state_put")
         < state_put.index("kvm_arch_put_registers")
     )
+    if 'CrucibleKvmCompletionJournal' in definition:
+        definition = definition.replace('int kvm_crucible_completion_configure(KVMState *state);', '')
+        # This fixture preserves legacy clock-only bookkeeping. The separate
+        # completion proof compiles the actual enabled geometry/caller paths.
+        disabled_completion_geometry = """static bool completion_geometry(KVMState *state, CPUState *cpu,
+                                CrucibleKvmUserspaceExit *entry, bool retain)
+{
+    (void)cpu; (void)entry; (void)retain;
+    assert(!state->crucible_completion_configured);
+    return false;
+}
+
+@FUNCTIONS@"""
+        prefix = PREFIX.replace("@FUNCTIONS@", disabled_completion_geometry)
+    else:
+        prefix = PREFIX
     code = (
-        PREFIX.replace("@EXIT_NUMBERS@", "\n".join(numbers))
+        prefix.replace("@EXIT_NUMBERS@", "\n".join(numbers))
         .replace("@ENTRY_DEFINITION@", definition)
         .replace("@STATE_FIELDS@", fields)
         .replace("@FUNCTIONS@", "\n".join(function(body, name) for name in names))

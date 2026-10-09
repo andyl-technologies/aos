@@ -105,6 +105,17 @@ impl NativePreparation {
 /// Selects a closed frame of the independently negotiated native channel.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NativeFrame {
+    /// Pins the original reader role and complete preparation before enrollment.
+    PrepareAdministration(Box<super::NativeAdministrativePreparation>),
+    /// Recovers the same source-owned historical reader enrollment.
+    QueryAdministration {
+        /// Names the complete original native owner scope.
+        prepared_scope_hash: [u8; 32],
+        /// Names the complete original administrative preparation.
+        administration_commitment: [u8; 32],
+    },
+    /// Preserves observed endpoint/thread facts with other sources still unknown.
+    AdministrationFacts(Box<super::NativeAdministrativeFacts>),
     /// Recovers a separately identified historical post-initialization object.
     QueryPreparationSuccessor(super::NativePreparationSuccessorQuery),
     /// Preserves bounded original source bytes without ACK or readiness claims.

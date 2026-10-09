@@ -56,7 +56,7 @@ def verify_refused_kernel_edition(executable):
 def observe_unavailable_native_device(executable):
     """Keep an actual unavailable hardware launch separate from native qualification."""
     if os.path.exists("/dev/kvm"):
-        print("native KVM device exists: runtime qualification must run separately")
+        print("/dev/kvm path present in this namespace; access/API unprobed, native qualification not executed")
         return
     result = subprocess.run(
         [executable, "-machine", "none", "-accel",

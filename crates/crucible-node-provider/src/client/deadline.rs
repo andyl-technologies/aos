@@ -5,13 +5,15 @@ use std::io::{self, Read, Write};
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use crate::operational_time::OperationalDeadline;
 
 use crate::connection::ProviderStream;
 
 /// Bounds a whole exchange instead of renewing its budget on every byte.
 #[derive(Clone)]
-pub struct ExchangeDeadline(Rc<Cell<Instant>>);
+pub struct ExchangeDeadline(Rc<Cell<OperationalDeadline>>);
 
 impl ExchangeDeadline {
     /// Installs a positive finite budget for the next complete exchange.
@@ -25,7 +27,7 @@ impl ExchangeDeadline {
                 "zero exchange budget",
             ));
         }
-        let deadline = transport_now().checked_add(budget).ok_or_else(|| {
+        let deadline = OperationalDeadline::after(budget).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "exchange deadline overflow")
         })?;
         self.0.set(deadline);
@@ -44,7 +46,7 @@ impl ExchangeDeadline {
                 "zero evidence budget",
             ));
         }
-        let limit = transport_now().checked_add(budget).ok_or_else(|| {
+        let limit = OperationalDeadline::after(budget).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "evidence deadline overflow")
         })?;
         self.0.set(self.0.get().min(limit));
@@ -54,7 +56,7 @@ impl ExchangeDeadline {
     fn remaining(&self) -> io::Result<Duration> {
         self.0
             .get()
-            .checked_duration_since(transport_now())
+            .remaining()
             .filter(|remaining| !remaining.is_zero())
             .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "exchange deadline expired"))
     }
@@ -72,7 +74,7 @@ impl DeadlineStream {
     /// # Errors
     /// Rejects zero or unrepresentable budgets before exposing the stream.
     pub fn new(stream: UnixStream, budget: Duration) -> io::Result<(Self, ExchangeDeadline)> {
-        let deadline = ExchangeDeadline(Rc::new(Cell::new(transport_now())));
+        let deadline = ExchangeDeadline(Rc::new(Cell::new(OperationalDeadline::at_current())));
         deadline.reset(budget)?;
         Ok((
             Self {
@@ -122,15 +124,6 @@ impl ProviderStream for DeadlineStream {
     }
 }
 
-// Host time only bounds blocking transport. It never supplies modeled time,
-// execution progress, event ordering, persisted state or a provider guarantee.
-// crucible-lint: allow rust-allow -- operational socket deadline outside modeled state.
-// crucible-lint: allow clippy-disallowed-method -- Operational socket deadlines bound blocking I/O and never supply modeled state or progress.
-#[allow(clippy::disallowed_methods)]
-fn transport_now() -> Instant {
-    Instant::now()
-}
-
 #[cfg(test)]
 // crucible-lint: allow rust-allow -- invalid socket/deadline fixtures must fail assertions.
 // crucible-lint: allow panic-shortcut -- These deadline tests deliberately panic on invalid fixtures or failed invariants.
@@ -143,7 +136,7 @@ mod tests {
         let (stream, _peer) = UnixStream::pair().unwrap();
         let (mut original, deadline) = DeadlineStream::new(stream, Duration::from_secs(1)).unwrap();
         let mut cloned = original.try_clone().unwrap();
-        deadline.0.set(transport_now() - Duration::from_millis(1));
+        deadline.0.set(OperationalDeadline::expired_fixture());
 
         assert_eq!(
             original.read(&mut [0]).unwrap_err().kind(),

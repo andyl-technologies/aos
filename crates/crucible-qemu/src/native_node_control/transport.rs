@@ -9,6 +9,9 @@ use crucible_protocol::node_control::{
     NativeStopFacts, NativeStopKind, ReceiptAcknowledgement,
 };
 
+#[path = "administration.rs"]
+pub(super) mod administration;
+
 /// Reports physical transport failure or conflicting original native material.
 #[derive(Debug, thiserror::Error)]
 pub enum NativeQemuControlError {
@@ -107,7 +110,9 @@ impl NativeQemuControlTransport {
     ) -> Result<(Self, NativeLaunchEndpoint), NativeQemuControlError> {
         if matches!(
             edition,
-            NativeControlEdition::PhaseProjection | NativeControlEdition::PreparationSuccessor
+            NativeControlEdition::PhaseProjection
+                | NativeControlEdition::PreparationSuccessor
+                | NativeControlEdition::Administration
         ) {
             // This edition requires the complete original construction companion.
             return Err(NativeCommandError::Conflict.into());

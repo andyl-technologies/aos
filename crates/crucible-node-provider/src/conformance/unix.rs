@@ -5,7 +5,9 @@ use std::io::{Read, Write};
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use crate::operational_time::OperationalDeadline;
 
 use crucible_node_contract::{ContentRef, U64, canonical};
 use serde_json::Value;
@@ -106,12 +108,12 @@ struct UnixProbeSession {
     stream: UnixStream,
     measurement: EndpointMeasurement,
     timeout: Duration,
-    deadline: Option<Instant>,
+    deadline: Option<OperationalDeadline>,
 }
 
 impl UnixProbeSession {
     fn begin_exchange(&mut self) -> Result<(), ProviderError> {
-        self.deadline = Some(operational_now().checked_add(self.timeout).ok_or(
+        self.deadline = Some(OperationalDeadline::after(self.timeout).ok_or(
             ProviderError::ResourceExhausted("probe deadline representation"),
         )?);
         Ok(())
@@ -182,13 +184,13 @@ impl Drop for UnixProbeSession {
 
 struct DeadlineIo<'a> {
     stream: &'a mut UnixStream,
-    deadline: Instant,
+    deadline: OperationalDeadline,
 }
 
 impl DeadlineIo<'_> {
     fn remaining(&self) -> std::io::Result<Duration> {
         self.deadline
-            .checked_duration_since(operational_now())
+            .remaining()
             .filter(|remaining| !remaining.is_zero())
             .ok_or_else(|| {
                 std::io::Error::new(
@@ -197,16 +199,6 @@ impl DeadlineIo<'_> {
                 )
             })
     }
-}
-
-// crucible-lint: allow clippy-disallowed-method -- host time bounds independent transport probes and never enters modeled state or report identities
-// crucible-lint: allow rust-allow -- host time bounds independent transport probes and never enters modeled state or report identities
-#[allow(
-    clippy::disallowed_methods,
-    reason = "host time bounds independent transport probes and never enters modeled state or report identities"
-)]
-fn operational_now() -> Instant {
-    Instant::now()
 }
 
 impl Read for DeadlineIo<'_> {

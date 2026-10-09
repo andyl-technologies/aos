@@ -11,7 +11,9 @@ use std::os::unix::{
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use crate::operational_time::{OperationalDeadline, PhysicalMeasurement};
 
 use crucible_node_contract::{Id, U64};
 
@@ -288,14 +290,14 @@ impl ReferenceDevice {
                 "reference device window cannot activate",
             ));
         }
-        let started = operational_now();
+        let started = PhysicalMeasurement::begin();
         let response = self.request(
             &Request::Activate {
                 window: grant.window_id.clone(),
             },
             Duration::from_nanos(grant.host_budget_ns.get()),
         )?;
-        let measured = operational_now().duration_since(started);
+        let measured = started.elapsed();
         let output = match response {
             Response::Completed { window, output }
                 if window == grant.window_id
@@ -449,7 +451,7 @@ impl ReferenceDevice {
                 self.status = DeviceStatus::Reaped;
                 return Ok(true);
             }
-            if operational_now() >= deadline {
+            if deadline.is_expired() {
                 return Ok(false);
             }
             std::thread::sleep(Duration::from_millis(1));
@@ -584,7 +586,7 @@ fn connect_child(
                 "reference child exited before connection",
             ));
         }
-        if operational_now() >= deadline {
+        if deadline.is_expired() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
                 "reference child connection timed out",
@@ -595,23 +597,21 @@ fn connect_child(
     }
 }
 
-fn deadline(duration: Duration) -> Result<Instant, ProviderError> {
-    operational_now()
-        .checked_add(duration)
-        .ok_or(ProviderError::ResourceExhausted(
-            "device deadline representation",
-        ))
+fn deadline(duration: Duration) -> Result<OperationalDeadline, ProviderError> {
+    OperationalDeadline::after(duration).ok_or(ProviderError::ResourceExhausted(
+        "device deadline representation",
+    ))
 }
 
 struct DeadlineIo<'a> {
     stream: &'a mut UnixStream,
-    deadline: Instant,
+    deadline: OperationalDeadline,
 }
 
 impl DeadlineIo<'_> {
     fn remaining(&self) -> std::io::Result<Duration> {
         self.deadline
-            .checked_duration_since(operational_now())
+            .remaining()
             .filter(|duration| !duration.is_zero())
             .ok_or_else(|| {
                 std::io::Error::new(
@@ -638,14 +638,4 @@ impl Write for DeadlineIo<'_> {
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
-}
-
-// crucible-lint: allow clippy-disallowed-method -- Quantized host budgets use operational time, never modeled publication time
-// crucible-lint: allow rust-allow -- Quantized host budgets use operational time, never modeled publication time
-#[allow(
-    clippy::disallowed_methods,
-    reason = "Quantized host budgets use operational time, never modeled publication time"
-)]
-fn operational_now() -> Instant {
-    Instant::now()
 }

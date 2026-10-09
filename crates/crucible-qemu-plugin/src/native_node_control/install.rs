@@ -54,13 +54,74 @@ pub(crate) fn install(
             super::writer_abi::resolve_query_writers()
                 .ok_or(NativeControlInstallError::MissingCapability)?,
         ),
+        crucible_protocol::node_control::NativeControlEdition::Administration => Some(
+            super::writer_abi::resolve_query_writers()
+                .ok_or(NativeControlInstallError::MissingCapability)?,
+        ),
     };
-    let channel = NativeChannel::from_prepared_socket_for_edition(socket, config.edition())?;
+    let mut channel = Some(NativeChannel::from_prepared_socket_for_edition(
+        socket,
+        config.edition(),
+    )?);
     let cpu_query = super::abi::resolve_query_cpu_park();
     if writer_query.is_some() && cpu_query.is_none() {
         return Err(NativeControlInstallError::MissingCapability);
     }
-    let (plan, initialization, phase) = match (channel.receive()?, config.initialization()) {
+    let mut actor = None;
+    let mut administration = None;
+    let first = if config.administration().is_some() {
+        let owner = std::sync::Arc::new(
+            super::administrative_inbox::NativeAdministrativeInbox::from_pinned_endpoint(
+                &mut channel,
+                config.scope_digest(),
+                config.fingerprint_worker(),
+                1024,
+                16 * 1024 * 1024,
+            )
+            .map_err(|_| NativeControlInstallError::MissingPreparation)?,
+        );
+        let super::administrative_mailbox::NativeAdministrativeReceive::Retained(
+            cursor,
+            super::administrative_mailbox::NativeAdministrativeClass::Preparation,
+        ) = owner
+            .receive_one()
+            .map_err(|_| NativeControlInstallError::MissingPreparation)?
+        else {
+            return Err(NativeControlInstallError::MissingPreparation);
+        };
+        let original = owner
+            .original(cursor)
+            .map_err(|_| NativeControlInstallError::MissingPreparation)?;
+        actor = Some(owner);
+        Some(crucible_protocol::node_control::decode_frame_for_edition(
+            config.edition(),
+            &original,
+        )?)
+    } else {
+        channel
+            .as_ref()
+            .ok_or(NativeControlInstallError::MissingPreparation)?
+            .receive()?
+    };
+    let (plan, initialization, phase) = match (first, config.initialization()) {
+        (Some(NativeFrame::PrepareAdministration(preparation)), Some(pinned))
+            if config
+                .administration()
+                .is_some_and(|pin| pin.matches(&preparation) == Ok(true))
+                && pinned.matches(&preparation.phase.initialization)?
+                && config
+                    .phase()
+                    .is_some_and(|pin| pin.matches(&preparation.phase) == Ok(true))
+                && preparation.descriptor_slot == config.descriptor() =>
+        {
+            let phase = preparation.phase.clone();
+            administration = Some(*preparation);
+            (
+                phase.initialization.preparation.clone(),
+                Some(phase.initialization.clone()),
+                Some(phase),
+            )
+        }
         (Some(NativeFrame::Prepare(plan)), None) => (*plan, None, None),
         (Some(NativeFrame::PrepareInitialization(initialization)), Some(pinned))
             if config.phase().is_none() && pinned.matches(&initialization)? =>
@@ -90,8 +151,12 @@ pub(crate) fn install(
     }
     let maximum_commands = usize::try_from(plan.maximum_commands.get())
         .map_err(|_| crucible_protocol::node_control::NativeCommandError::ResourceLimit)?;
-    let control = NativeNodeControl::new(plan.scope, plan.boundary, maximum_commands)?
-        .with_prepared_channel(channel)
+    let control = NativeNodeControl::new(plan.scope, plan.boundary, maximum_commands)?;
+    let control = match channel {
+        Some(channel) => control.with_prepared_channel(channel),
+        None => control,
+    };
+    let control = control
         .with_cpu_park_query(cpu_query)
         .with_timer_query(super::abi::resolve_query_timers());
     let control = control
@@ -111,6 +176,11 @@ pub(crate) fn install(
     let control = match phase {
         Some(preparation) => control.with_phase_projection(preparation)?,
         None => control,
+    };
+    let control = match (administration, actor) {
+        (Some(preparation), Some(actor)) => control.with_administration(preparation, actor)?,
+        (None, None) => control,
+        _ => return Err(NativeControlInstallError::MissingPreparation),
     };
     let control = if config.edition()
         == crucible_protocol::node_control::NativeControlEdition::PreparationSuccessor
@@ -158,10 +228,11 @@ fn validate_descriptor(descriptor: i32) -> Result<(), NativeControlInstallError>
     }
     let mut address = std::mem::MaybeUninit::<libc::sockaddr_storage>::zeroed();
     let mut address_length = std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
-    // SAFETY: The storage and length are writable and correctly sized. A successful
-    // call writes at least the address family before the following read.
-    let result =
-        unsafe { libc::getpeername(descriptor, address.as_mut_ptr().cast(), &mut address_length) };
+    let result = unsafe {
+        // SAFETY: Both writable buffers have their declared sizes; a successful
+        // call initializes the reported prefix before its address family is read.
+        libc::getpeername(descriptor, address.as_mut_ptr().cast(), &mut address_length)
+    };
     if result != 0 || address_length < std::mem::size_of::<libc::sa_family_t>() as libc::socklen_t {
         return Err(NativeControlInstallError::InvalidDescriptor);
     }

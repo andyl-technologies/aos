@@ -70,9 +70,9 @@ impl Worker {
 
     fn exit(&mut self) {
         self.0.stdin.as_mut().unwrap().write_all(&[1]).unwrap();
-        let end = operational_now() + Duration::from_secs(5);
+        let end = deadline(Duration::from_secs(5)).unwrap();
         while observe_exit(&self.0).unwrap().is_none() {
-            assert!(operational_now() < end, "worker did not exit");
+            assert!(!end.is_expired(), "worker did not exit");
             std::thread::sleep(Duration::from_millis(1));
         }
     }

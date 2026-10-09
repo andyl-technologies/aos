@@ -28,6 +28,8 @@ The atomic integration patch creates these QEMU source files:
 | `include/qemu/crucible-hot-fork-async.h` | GPL-2.0-or-later | Explicit file notice |
 | `include/qemu/crucible-idle-wait.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `include/qemu/crucible-node-service.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qemu/crucible-timer-selection.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `util/crucible-timer-selection.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `accel/kvm/crucible-clock.c` | GPL-2.0-only | Explicit SPDX identifier |
 | `include/system/crucible-kvm-clock.h` | GPL-2.0-only | Explicit SPDX identifier |
 | `plugins/crucible-fault.c` | GPL-2.0-or-later | Explicit SPDX identifier |

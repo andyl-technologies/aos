@@ -1,6 +1,7 @@
 //! Actual QEMU/GPL plugin boundary probes, without provider qualification claims.
 
 #![cfg(target_os = "linux")]
+// crucible-lint: allow panic-shortcut -- These native node control tests deliberately panic on invalid fixtures or failed invariants.
 #![allow(clippy::unwrap_used)]
 
 use std::{
@@ -154,6 +155,7 @@ fn artifact(variable: &str) -> Result<PathBuf, Box<dyn Error>> {
 }
 
 // Wall time bounds this external-process test watchdog; it is never a modeled clock.
+// crucible-lint: allow clippy-disallowed-method -- Operational deadlines in these native node control tests bound native supervision and never enter modeled state.
 #[allow(clippy::disallowed_methods)]
 fn next_any_frame(
     control: &mut NativeQemuControlTransport,
@@ -965,6 +967,7 @@ fn actual_native_pit_inventory_retains_original_arm_at_horizon_and_across_slice_
 }
 
 // Wall time bounds this external-process test watchdog; it is never a modeled clock.
+// crucible-lint: allow clippy-disallowed-method -- Operational deadlines in these native node control tests bound native supervision and never enter modeled state.
 #[allow(clippy::disallowed_methods)]
 fn read_writers(
     native: &mut NativeQemuControlTransport,
@@ -1044,6 +1047,7 @@ fn original_construction_epoch_applies_finite_home_cut_and_retains_ack_custody()
 }
 
 // Wall time bounds this external-process test watchdog; it is never a modeled clock.
+// crucible-lint: allow clippy-disallowed-method -- Operational deadlines in these native node control tests bound native supervision and never enter modeled state.
 #[allow(clippy::disallowed_methods)]
 fn read_phase_timers(
     native: &mut NativeQemuControlTransport,
@@ -1091,6 +1095,7 @@ fn actual_native_pit_instruction_birth_is_excluded_at350_and_mapped_at351()
 }
 
 // Wall time bounds only the native child watchdog; no modeled clock uses it.
+// crucible-lint: allow clippy-disallowed-method -- Operational deadlines in these native node control tests bound native supervision and never enter modeled state.
 #[allow(clippy::disallowed_methods)]
 fn read_successor(
     native: &mut NativeQemuControlTransport,
@@ -1145,3 +1150,6 @@ fn actual_native_successor_keeps_pre_home_evidence_and_original_ack_distinct()
     assert_eq!(stops[1].retired_count.get(), 7);
     Ok(())
 }
+
+#[path = "native_node_control/administration.rs"]
+mod administration;

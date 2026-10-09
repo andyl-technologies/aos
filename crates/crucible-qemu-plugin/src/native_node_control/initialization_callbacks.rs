@@ -147,6 +147,9 @@ extern "C" fn get_initialization_command(
     // SAFETY: Source registration retains this process-lifetime owner and supplies
     // a writable ABI-sized output only at the authentic preparation callback seam.
     let owner = unsafe { &*userdata.cast::<NativeNodeControl>() };
+    if owner.administration_faulted.load(Ordering::Acquire) {
+        return false;
+    }
     if owner
         .state
         .lock()
@@ -212,6 +215,7 @@ extern "C" fn publish_initialization_receipt(
     // SAFETY: Source callback lifetime supplies one complete immutable ABI receipt
     // and the original registered process-lifetime owner, both in this GPL process.
     let owner = unsafe { &*userdata.cast::<NativeNodeControl>() };
+    // SAFETY: The source keeps this complete immutable receipt alive for the callback.
     let raw = unsafe { receipt.read() };
     let Some(initialization) = &owner.initialization else {
         owner.fail_initialization();

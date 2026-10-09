@@ -1,4 +1,4 @@
-From 0729c9712e25c18ae8a9c537900412a6a9222713 Mon Sep 17 00:00:00 2001
+From 2e7331609eb3a947a44b0ae282990cec9f011a2e Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Fri, 9 Oct 2026 12:00:00 -0700
 Subject: [PATCH] Integrate deterministic execution and validated TSC source
@@ -225,6 +225,30 @@ authenticate the original scope, sequence and content digest and never resample
 later execution state. Creation requires the original RR/BQL hold before any
 execution command; cached observations grant neither acknowledgment nor Ready.
 
+Retain separately opted-in finite original timer selections and their first
+dequeued, cancelled or rearmed disposition. Distinguish replacement births
+from the original selected identity and generation; refuse changed original
+HOLD observations before copying cached data. Keep unknown roots and ordering
+explicit and grant no phase execution permission from these observations.
+
+Enroll native administrative readers using genuine inherited Unix datagram
+socket identity, operating-system thread identity and thread-local ownership.
+Preserve the edition-six manifest prefix while adding bounded edition-seven
+role facts. Refuse foreign threads, forked readers and descriptor replacement;
+retain unknown worker roots and the complete original worker bitmap.
+
+Add separately opted-in completion-only KVM response handling with bounded
+original callback response geometry, exact retry and immutable exit identity.
+Preserve sticky uncertainty across interrupted responses and refuse register
+state writes beneath unresolved callbacks. Dispatch remains closed without
+exclusive genuine CPU callback custody; no live KVM hardware qualification
+is claimed on a host without the accelerator device.
+
+Configured default builds for both ISAs, existing source proofs, native
+compatibility probes and compiled negative mutations pass for these
+components. These mechanisms do not authorize full native readiness,
+whole-world phase closure, exact capture or device-profile qualification.
+
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
 diff --git a/MAINTAINERS b/MAINTAINERS
@@ -345,10 +369,10 @@ index 9176665202d2ba7613911882f4bfffcf7e6f92b2..37da92cd4affa94060db893faf85e263
      AccelState *accel = ms->accelerator;
 diff --git a/accel/kvm/crucible-clock.c b/accel/kvm/crucible-clock.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..c71b5460e2e00a80de1f632911a33c900e32d78e
+index 0000000000000000000000000000000000000000..0513d49c87a08ea40cb9eaf199711fe0bb5e46c3
 --- /dev/null
 +++ b/accel/kvm/crucible-clock.c
-@@ -0,0 +1,550 @@
+@@ -0,0 +1,912 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/* Experimental native clock component. Kernel counter coverage is incomplete;
 + * these controls cannot qualify timer/IRQ/device custody or a runnable CNP node.
@@ -545,6 +569,9 @@ index 0000000000000000000000000000000000000000..c71b5460e2e00a80de1f632911a33c90
 +/* Only these exit families have the documented KVM_RUN completion obligation.
 + * Unsupported handlers remain opaque even after their kernel response is consumed.
 + */
++static bool completion_geometry(KVMState *state, CPUState *cpu,
++                                CrucibleKvmUserspaceExit *entry, bool retain);
++
 +static bool userspace_exit_requires_completion(uint32_t reason)
 +{
 +    switch (reason) {
@@ -693,6 +720,9 @@ index 0000000000000000000000000000000000000000..c71b5460e2e00a80de1f632911a33c90
 +    /* Assign once BEFORE pre-create hooks and KVM_CREATE_VCPU. Failed creation
 +     * does not reopen this slot; neither pointer nor fd-number reuse is identity.
 +     */
++    if (state->crucible_completion_configured && native_id > UINT32_MAX) {
++        goto out;
++    }
 +    entry->kernel_vcpu_id = native_id;
 +    entry->assigned = true;
 +    accepted = true;
@@ -733,7 +763,9 @@ index 0000000000000000000000000000000000000000..c71b5460e2e00a80de1f632911a33c90
 +    entry = userspace_entry_locked(state, cpu);
 +    accepted = !state->crucible_userspace_faulted && entry &&
 +        entry->phase == CRUCIBLE_KVM_USERSPACE_READY &&
-+        entry->consumed_sequence == entry->exit_sequence;
++        entry->consumed_sequence == entry->exit_sequence &&
++        (!state->crucible_completion_configured ||
++         (!entry->uncertain_effects && !entry->opaque_effects));
 +    qemu_mutex_unlock(&state->crucible_userspace_lock);
 +    return accepted;
 +}
@@ -753,6 +785,9 @@ index 0000000000000000000000000000000000000000..c71b5460e2e00a80de1f632911a33c90
 +    accepted = !state->crucible_userspace_faulted && entry &&
 +        available >= state->crucible_userspace_reserved_revisions &&
 +        available - state->crucible_userspace_reserved_revisions >= 3 &&
++        (!state->crucible_completion_configured ||
++         (entry->phase == CRUCIBLE_KVM_USERSPACE_READY &&
++          !entry->uncertain_effects && !entry->opaque_effects)) &&
 +        userspace_run_start(entry);
 +    if (accepted) {
 +        /* Reserve return and possible IO dispatch receipts BEFORE KVM_RUN.
@@ -806,7 +841,9 @@ index 0000000000000000000000000000000000000000..c71b5460e2e00a80de1f632911a33c90
 +    qemu_mutex_lock(&state->crucible_userspace_lock);
 +    entry = userspace_entry_locked(state, cpu);
 +    accepted = entry && entry->reserved_revisions == 1 &&
-+        userspace_dispatch_return(entry);
++        userspace_dispatch_return(entry) &&
++        (!state->crucible_completion_configured ||
++         completion_geometry(state, cpu, entry, true));
 +    if (accepted) {
 +        entry->reserved_revisions = 0;
 +        state->crucible_userspace_reserved_revisions--;
@@ -899,8 +936,357 @@ index 0000000000000000000000000000000000000000..c71b5460e2e00a80de1f632911a33c90
 +    info->profile_qualified = false;
 +    return info;
 +}
++
++G_STATIC_ASSERT(sizeof(struct kvm_crucible_completion) == 96);
++G_STATIC_ASSERT(offsetof(struct kvm_crucible_completion, reserved) == 64);
++
++int kvm_crucible_completion_configure(KVMState *state)
++{
++    struct kvm_enable_cap cap = { .cap = KVM_CAP_CRUCIBLE_COMPLETION_V1 };
++    int result, mmap_size;
++
++    if (!state->crucible_completion_experiment) {
++        return 0;
++    }
++    if (!state->crucible_clock_configured ||
++        !state->crucible_userspace_configured || autostart ||
++        state->crucible_completion_configured ||
++        kvm_vm_check_extension(state, KVM_CAP_CRUCIBLE_COMPLETION_V1) != 1) {
++        error_report("completion-only requires the original stopped ledger "
++                     "and actual compatible kernel component");
++        return -ENOTSUP;
++    }
++    mmap_size = kvm_ioctl(state, KVM_GET_VCPU_MMAP_SIZE, 0);
++    if (mmap_size < (int)sizeof(struct kvm_run)) {
++        return mmap_size < 0 ? mmap_size : -EPROTO;
++    }
++    result = kvm_vm_ioctl(state, KVM_ENABLE_CAP, &cap);
++    if (result < 0) {
++        return result;
++    }
++    state->crucible_completion_mmap_size = mmap_size;
++    state->crucible_completion_configured = true;
++    return 0;
++}
++
++static bool completion_geometry(KVMState *state, CPUState *cpu,
++                                CrucibleKvmUserspaceExit *entry, bool retain)
++{
++    struct kvm_run *run = cpu->kvm_run;
++    CrucibleKvmResponseGeometry value = { .reason = run->exit_reason };
++    CrucibleKvmResponseGeometry *original = &entry->response;
++    const uint8_t *bytes;
++
++    if (value.reason == KVM_EXIT_MMIO) {
++        value.address = run->mmio.phys_addr;
++        value.length = run->mmio.len;
++        value.direction = run->mmio.is_write;
++        if (!value.length || value.length > sizeof(run->mmio.data) ||
++            value.direction > 1) {
++            return false;
++        }
++        bytes = run->mmio.data;
++    } else if (value.reason == KVM_EXIT_IO) {
++        value.address = run->io.port;
++        value.data_offset = run->io.data_offset;
++        value.count = run->io.count;
++        value.size = run->io.size;
++        value.direction = run->io.direction;
++        if (!value.count || (value.size != 1 && value.size != 2 && value.size != 4) ||
++            value.count > sizeof(value.response) / value.size ||
++            value.direction > KVM_EXIT_IO_OUT) {
++            return false;
++        }
++        value.length = value.count * value.size;
++        if (value.data_offset > state->crucible_completion_mmap_size ||
++            value.length > state->crucible_completion_mmap_size - value.data_offset) {
++            return false;
++        }
++        bytes = (const uint8_t *)run + value.data_offset;
++    } else {
++        return false;
++    }
++    if (!retain) {
++        return original->prepared && original->reason == value.reason &&
++            original->address == value.address &&
++            original->data_offset == value.data_offset &&
++            original->length == value.length && original->count == value.count &&
++            original->size == value.size && original->direction == value.direction &&
++            !memcmp(original->response, bytes, value.length);
++    }
++    memcpy(value.response, bytes, value.length);
++    value.prepared = true;
++    *original = value;
++    return true;
++}
++
++static bool completion_result_valid(
++    const struct kvm_crucible_completion *original,
++    const struct kvm_crucible_completion *result, uint64_t native_id)
++{
++    size_t index;
++
++    if (result->version != 1 || result->operation != original->operation ||
++        result->operation_id != original->operation_id ||
++        result->expected_sequence != original->expected_sequence ||
++        result->native_vcpu_id != native_id ||
++        result->consumed_sequence > result->pending_sequence ||
++        result->phase > KVM_CRUCIBLE_COMPLETION_UNSUPPORTED ||
++        (result->flags & ~(KVM_CRUCIBLE_COMPLETION_UNCERTAIN |
++                           KVM_CRUCIBLE_COMPLETION_OPAQUE))) {
++        return false;
++    }
++    for (index = 0; index < ARRAY_SIZE(result->reserved); index++) {
++        if (result->reserved[index]) {
++            return false;
++        }
++    }
++    if (original->operation == KVM_CRUCIBLE_COMPLETION_QUERY) {
++        return true;
++    }
++    if (result->callback_result < 0) {
++        return result->phase == KVM_CRUCIBLE_COMPLETION_UNKNOWN &&
++            (result->flags & KVM_CRUCIBLE_COMPLETION_UNCERTAIN) &&
++            result->pending_sequence == original->expected_sequence &&
++            result->consumed_sequence < original->expected_sequence;
++    }
++    if (result->flags || result->consumed_sequence != original->expected_sequence) {
++        return false;
++    }
++    return (result->phase == KVM_CRUCIBLE_COMPLETION_DONE &&
++            result->pending_sequence == original->expected_sequence) ||
++        (original->expected_sequence != UINT64_MAX &&
++         result->phase == KVM_CRUCIBLE_COMPLETION_MORE &&
++         result->pending_sequence == original->expected_sequence + 1);
++}
++
++static void completion_fill_info(CrucibleKvmCompletionInfo *info,
++                                uint32_t index, CrucibleKvmUserspaceExit *entry,
++                                const CrucibleKvmCompletionJournal *journal)
++{
++    info->schema_version = 1;
++    info->vcpu_index = index;
++    info->kernel_vcpu_id = entry->kernel_vcpu_id;
++    info->operation_id = journal->original_request.operation_id;
++    info->expected_exit_sequence = journal->original_exit_sequence;
++    info->exit_sequence = journal->resulting_exit_sequence;
++    info->consumed_sequence = journal->resulting_consumed_sequence;
++    info->native_pending_sequence = journal->result.pending_sequence;
++    info->native_consumed_sequence = journal->result.consumed_sequence;
++    info->native_revision = journal->result.revision;
++    info->native_phase = journal->result.phase;
++    info->callback_result = journal->result.callback_result;
++    info->native_errno = journal->native_errno;
++    info->result_known = journal->known;
++    info->uncertain_effects = entry->uncertain_effects;
++    info->opaque_effects = entry->opaque_effects;
++    info->handler_pending = journal->known &&
++        journal->result.phase == KVM_CRUCIBLE_COMPLETION_MORE;
++    /* Never infer native node authority from this one-response component. */
++    info->device_closure = false;
++    info->input_custody = false;
++    info->output_custody = false;
++    info->profile_qualified = false;
++}
++
++CrucibleKvmCompletionInfo *qmp_x_crucible_kvm_completion(
++    CrucibleKvmCompletionOperation operation, uint32_t vcpu_index,
++    uint64_t operation_id, uint64_t expected_exit_sequence, Error **errp)
++{
++    struct kvm_crucible_clock clock = { .operation = KVM_CRUCIBLE_CLOCK_QUERY };
++    struct kvm_crucible_completion request = {
++        .version = 1, .operation = KVM_CRUCIBLE_COMPLETION_QUERY,
++    };
++    CrucibleKvmCompletionJournal query = { 0 };
++    CrucibleKvmCompletionJournal *journal;
++    CrucibleKvmUserspaceExit *entry;
++    CrucibleKvmCompletionInfo *info;
++    CPUState *cpu, *original_cpu = NULL;
++    KVMState *state = kvm_state;
++    uint64_t available;
++    bool retry;
++    int result;
++
++    assert(bql_locked());
++    if (!kvm_enabled() || !state->crucible_completion_configured ||
++        (!runstate_check(RUN_STATE_PAUSED) &&
++         !runstate_check(RUN_STATE_PRELAUNCH))) {
++        error_setg(errp, "completion-only requires configured paused native CPUs");
++        return NULL;
++    }
++    CPU_FOREACH(cpu) {
++        if (cpu->created && !cpu->stopped) {
++            error_setg(errp, "completion-only awaits original CPU stop acknowledgement");
++            return NULL;
++        }
++        if (cpu->cpu_index >= 0 && (uint32_t)cpu->cpu_index == vcpu_index) {
++            original_cpu = cpu;
++        }
++    }
++    if (!original_cpu || !original_cpu->created ||
++        vcpu_index >= state->crucible_userspace_capacity) {
++        error_setg(errp, "completion-only requires the original created vCPU");
++        return NULL;
++    }
++    if (operation == CRUCIBLE_KVM_COMPLETION_OPERATION_DISPATCH) {
++        /* Ordinary run_on_cpu can drain unrelated queued work. Until an original
++         * exclusive callback class is enrolled, retain More as Handling custody.
++         */
++        error_setg(errp, "original exclusive paused-vCPU response work is not enrolled");
++        return NULL;
++    }
++    if (operation != CRUCIBLE_KVM_COMPLETION_OPERATION_QUERY &&
++        operation != CRUCIBLE_KVM_COMPLETION_OPERATION_COMPLETE) {
++        error_setg(errp, "unsupported completion-only operation");
++        return NULL;
++    }
++    if ((operation == CRUCIBLE_KVM_COMPLETION_OPERATION_QUERY &&
++         (operation_id || expected_exit_sequence)) ||
++        (operation == CRUCIBLE_KVM_COMPLETION_OPERATION_COMPLETE &&
++         (!operation_id || !expected_exit_sequence))) {
++        error_setg(errp, "completion-only command fields are not canonical");
++        return NULL;
++    }
++
++    /* Reserve the serialization object before a native effect can occur. */
++    info = g_try_new0(CrucibleKvmCompletionInfo, 1);
++    if (!info) {
++        error_setg(errp, "completion-only reply credit is unavailable");
++        return NULL;
++    }
++    qemu_mutex_lock(&state->crucible_userspace_lock);
++    entry = userspace_entry_locked(state, original_cpu);
++    if (!entry || !entry->assigned) {
++        error_setg(errp, "completion-only original roster is unavailable");
++        goto refused;
++    }
++    journal = &entry->completion;
++    retry = journal->issued && journal->original_request.operation_id == operation_id;
++    if (operation == CRUCIBLE_KVM_COMPLETION_OPERATION_COMPLETE && retry) {
++        if (journal->original_exit_sequence != expected_exit_sequence) {
++            error_setg(errp, "completion-only retry changed the original response");
++            goto refused;
++        }
++        if (journal->known) {
++            completion_fill_info(info, vcpu_index, entry, journal);
++            goto finished;
++        }
++    }
++    if (state->crucible_userspace_faulted) {
++        error_setg(errp, "completion-only original roster is faulted");
++        goto refused;
++    }
++    clock.version = state->crucible_clock_kernel_edition;
++    result = clock_control(state, &clock);
++    if (result < 0 || clock.active || clock.run_owners || !clock.close_acknowledged) {
++        error_setg(errp, "completion-only requires the actual closed native clock component");
++        goto refused;
++    }
++    if (operation == CRUCIBLE_KVM_COMPLETION_OPERATION_QUERY) {
++        query.original_request = request;
++        result = kvm_vcpu_ioctl(original_cpu, KVM_CRUCIBLE_COMPLETION, &request);
++        if (result < 0 || !completion_result_valid(&query.original_request,
++                                                 &request, entry->kernel_vcpu_id)) {
++            error_setg(errp, "completion-only original native query failed");
++            goto refused;
++        }
++        query.result = request;
++        query.known = true;
++        query.resulting_exit_sequence = entry->exit_sequence;
++        query.resulting_consumed_sequence = entry->consumed_sequence;
++        completion_fill_info(info, vcpu_index, entry, &query);
++        goto finished;
++    }
++    if (!retry) {
++        if (journal->original_request.operation_id == UINT64_MAX ||
++            operation_id != journal->original_request.operation_id + 1 ||
++            entry->phase != CRUCIBLE_KVM_USERSPACE_PENDING ||
++            entry->uncertain_effects || entry->opaque_effects ||
++            entry->exit_sequence != expected_exit_sequence ||
++            entry->exit_sequence == UINT64_MAX ||
++            !completion_geometry(state, original_cpu, entry, false)) {
++            error_setg(errp, "completion-only original response is not admissible");
++            goto refused;
++        }
++        query.original_request = request;
++        result = kvm_vcpu_ioctl(original_cpu, KVM_CRUCIBLE_COMPLETION, &request);
++        if (result < 0 || !completion_result_valid(&query.original_request,
++                                                 &request, entry->kernel_vcpu_id) ||
++            request.flags || request.pending_sequence != entry->exit_sequence ||
++            (request.phase != KVM_CRUCIBLE_COMPLETION_PENDING &&
++             request.phase != KVM_CRUCIBLE_COMPLETION_MORE)) {
++            error_setg(errp, "completion-only native response lineage does not match");
++            goto refused;
++        }
++    }
++    available = UINT64_MAX - state->crucible_userspace_revision;
++    if (entry->reserved_revisions ||
++        available < state->crucible_userspace_reserved_revisions ||
++        available - state->crucible_userspace_reserved_revisions < 3) {
++        error_setg(errp, "completion-only native revision credits are exhausted");
++        goto refused;
++    }
++    if (!retry) {
++        memset(journal, 0, sizeof(*journal));
++        journal->original_request = (struct kvm_crucible_completion) {
++            .version = 1, .operation = KVM_CRUCIBLE_COMPLETION_STEP,
++            .operation_id = operation_id,
++            .expected_sequence = request.pending_sequence,
++        };
++        journal->original_exit_sequence = expected_exit_sequence;
++        journal->issued = true;
++    }
++    request = journal->original_request;
++    entry->reserved_revisions = 2;
++    state->crucible_userspace_reserved_revisions += 2;
++    state->crucible_userspace_revision++;
++    result = kvm_vcpu_ioctl(original_cpu, KVM_CRUCIBLE_COMPLETION, &request);
++
++    entry->reserved_revisions--;
++    state->crucible_userspace_reserved_revisions--;
++    state->crucible_userspace_revision++;
++    if (result < 0 || !completion_result_valid(&journal->original_request,
++                                             &request, entry->kernel_vcpu_id)) {
++        journal->native_errno = result < 0 ? -result : EPROTO;
++        entry->uncertain_effects = true;
++        entry->phase = CRUCIBLE_KVM_USERSPACE_UNKNOWN;
++    } else {
++        journal->result = request;
++        journal->native_errno = 0;
++        journal->known = true;
++        if (request.callback_result < 0) {
++            entry->uncertain_effects = true;
++            entry->phase = CRUCIBLE_KVM_USERSPACE_UNKNOWN;
++        } else {
++            entry->consumed_sequence = journal->original_exit_sequence;
++            entry->response.prepared = false;
++            if (request.phase == KVM_CRUCIBLE_COMPLETION_MORE) {
++                entry->exit_sequence++;
++                entry->exit_reason = original_cpu->kvm_run->exit_reason;
++                entry->phase = CRUCIBLE_KVM_USERSPACE_HANDLING;
++            } else {
++                entry->phase = CRUCIBLE_KVM_USERSPACE_READY;
++            }
++        }
++    }
++    if (entry->phase != CRUCIBLE_KVM_USERSPACE_HANDLING) {
++        entry->reserved_revisions = 0;
++        state->crucible_userspace_reserved_revisions--;
++    }
++    journal->resulting_exit_sequence = entry->exit_sequence;
++    journal->resulting_consumed_sequence = entry->consumed_sequence;
++    completion_fill_info(info, vcpu_index, entry, journal);
++
++finished:
++    qemu_mutex_unlock(&state->crucible_userspace_lock);
++    return info;
++refused:
++    qemu_mutex_unlock(&state->crucible_userspace_lock);
++    g_free(info);
++    return NULL;
++}
 diff --git a/accel/kvm/kvm-all.c b/accel/kvm/kvm-all.c
-index 83cbd120a84784e3128812c22be952e7af2b5480..f1c9f8f8480eb8ecaa2a550f68911d6391dcb35b 100644
+index 83cbd120a84784e3128812c22be952e7af2b5480..dbcf3b766495ef33e88823481dd2ad07e2775979 100644
 --- a/accel/kvm/kvm-all.c
 +++ b/accel/kvm/kvm-all.c
 @@ -14,6 +14,7 @@
@@ -954,7 +1340,7 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..f1c9f8f8480eb8ecaa2a550f68911d63
      /*
       * bail if the current architecture does not support VM file
       * descriptor change.
-@@ -2968,6 +2984,15 @@ static int kvm_init(AccelState *as, MachineState *ms)
+@@ -2968,6 +2984,20 @@ static int kvm_init(AccelState *as, MachineState *ms)
      }
  
      s->vmfd = ret;
@@ -967,10 +1353,15 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..f1c9f8f8480eb8ecaa2a550f68911d63
 +    if (ret < 0) {
 +        goto err;
 +    }
++
++    ret = kvm_crucible_completion_configure(s);
++    if (ret < 0) {
++        goto err;
++    }
  
      s->nr_as = kvm_vm_check_extension(s, KVM_CAP_MULTI_ADDRESS_SPACE);
      if (s->nr_as <= 1) {
-@@ -3101,6 +3126,7 @@ static int kvm_init(AccelState *as, MachineState *ms)
+@@ -3101,6 +3131,7 @@ static int kvm_init(AccelState *as, MachineState *ms)
  
  err:
      assert(ret < 0);
@@ -978,7 +1369,7 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..f1c9f8f8480eb8ecaa2a550f68911d63
      if (s->vmfd >= 0) {
          close(s->vmfd);
      }
-@@ -3215,7 +3241,16 @@ static bool kvm_cpu_synchronize_put(CPUState *cpu, KvmPutState state,
+@@ -3215,7 +3246,16 @@ static bool kvm_cpu_synchronize_put(CPUState *cpu, KvmPutState state,
                                      const char *desc)
  {
      Error *err = NULL;
@@ -996,7 +1387,7 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..f1c9f8f8480eb8ecaa2a550f68911d63
      if (ret) {
          if (err) {
              error_reportf_err(err, "Restoring resisters %s: ", desc);
-@@ -3461,7 +3496,15 @@ int kvm_cpu_exec(CPUState *cpu)
+@@ -3461,7 +3501,15 @@ int kvm_cpu_exec(CPUState *cpu)
              kvm_cpu_kick_self();
          }
  
@@ -1012,7 +1403,7 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..f1c9f8f8480eb8ecaa2a550f68911d63
  
          /*
           * After writing cpu->exit_request, cpu_exit() sends a signal that writes
-@@ -3514,7 +3557,7 @@ int kvm_cpu_exec(CPUState *cpu)
+@@ -3514,7 +3562,7 @@ int kvm_cpu_exec(CPUState *cpu)
                            run->io.direction,
                            run->io.size,
                            run->io.count);
@@ -1021,7 +1412,7 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..f1c9f8f8480eb8ecaa2a550f68911d63
              break;
          case KVM_EXIT_MMIO:
              /* Called outside BQL */
-@@ -3523,7 +3566,7 @@ int kvm_cpu_exec(CPUState *cpu)
+@@ -3523,7 +3571,7 @@ int kvm_cpu_exec(CPUState *cpu)
                               run->mmio.data,
                               run->mmio.len,
                               run->mmio.is_write);
@@ -1030,7 +1421,7 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..f1c9f8f8480eb8ecaa2a550f68911d63
              break;
          case KVM_EXIT_IRQ_WINDOW_OPEN:
              ret = EXCP_INTERRUPT;
-@@ -4266,9 +4309,110 @@ static void kvm_accel_instance_init(Object *obj)
+@@ -4266,9 +4314,126 @@ static void kvm_accel_instance_init(Object *obj)
      s->xen_evtchn_max_pirq = 256;
      s->device = NULL;
      s->msr_energy.enable = false;
@@ -1040,6 +1431,22 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..f1c9f8f8480eb8ecaa2a550f68911d63
      s->honor_guest_pat = ON_OFF_AUTO_OFF;
  }
  
++static bool kvm_get_crucible_completion(Object *obj, Error **errp)
++{
++    return KVM_STATE(obj)->crucible_completion_experiment;
++}
++
++static void kvm_set_crucible_completion(Object *obj, bool enabled, Error **errp)
++{
++    KVMState *state = KVM_STATE(obj);
++
++    if (state->fd != -1) {
++        error_setg(errp, "native completion cannot change after initialization");
++        return;
++    }
++    state->crucible_completion_experiment = enabled;
++}
++
 +static bool kvm_get_crucible_userspace(Object *obj, Error **errp)
 +{
 +    return KVM_STATE(obj)->crucible_userspace_experiment;
@@ -1141,10 +1548,13 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..f1c9f8f8480eb8ecaa2a550f68911d63
  static void kvm_accel_class_init(ObjectClass *oc, const void *data)
  {
      AccelClass *ac = ACCEL_CLASS(oc);
-@@ -4311,6 +4455,20 @@ static void kvm_accel_class_init(ObjectClass *oc, const void *data)
+@@ -4311,6 +4476,23 @@ static void kvm_accel_class_init(ObjectClass *oc, const void *data)
      object_class_property_set_description(oc, "rapl-helper-socket",
          "Socket Path for comminucating with the Virtual MSR helper daemon");
  
++    object_class_property_add_bool(oc, "x-crucible-completion-only",
++                                  kvm_get_crucible_completion,
++                                  kvm_set_crucible_completion);
 +    object_class_property_add_bool(oc, "x-crucible-userspace-exit-ledger",
 +                                  kvm_get_crucible_userspace,
 +                                  kvm_set_crucible_userspace);
@@ -1162,7 +1572,7 @@ index 83cbd120a84784e3128812c22be952e7af2b5480..f1c9f8f8480eb8ecaa2a550f68911d63
      kvm_arch_accel_class_init(oc);
  }
  
-@@ -4318,6 +4476,7 @@ static void kvm_accel_finalize(Object *obj)
+@@ -4318,6 +4500,7 @@ static void kvm_accel_finalize(Object *obj)
  {
      KVMState *s = KVM_STATE(obj);
  
@@ -1183,7 +1593,7 @@ index 397a1fe1fd1e398254d96a65239503203d0b749c..6a909bfc3156f8e293100c3c40bd71f7
  ))
  
 diff --git a/accel/stubs/kvm-stub.c b/accel/stubs/kvm-stub.c
-index 32b4b074035062edfd751a1a08c694e561d26c89..552dd980496053cefef5ec24a30f9b91431c3ae7 100644
+index 32b4b074035062edfd751a1a08c694e561d26c89..efa928eb8eb7f2044aa1ac6a2b58ead8a485e4de 100644
 --- a/accel/stubs/kvm-stub.c
 +++ b/accel/stubs/kvm-stub.c
 @@ -11,9 +11,34 @@
@@ -1221,7 +1631,7 @@ index 32b4b074035062edfd751a1a08c694e561d26c89..552dd980496053cefef5ec24a30f9b91
  KVMState *kvm_state;
  bool kvm_kernel_irqchip;
  bool kvm_async_interrupts_allowed;
-@@ -143,3 +168,9 @@ int kvm_create_guest_memfd(uint64_t size, uint64_t flags, Error **errp)
+@@ -143,3 +168,17 @@ int kvm_create_guest_memfd(uint64_t size, uint64_t flags, Error **errp)
  {
      return -ENOSYS;
  }
@@ -1229,6 +1639,14 @@ index 32b4b074035062edfd751a1a08c694e561d26c89..552dd980496053cefef5ec24a30f9b91
 +CrucibleKvmUserspaceInfo *qmp_x_crucible_kvm_userspace_exits(Error **errp)
 +{
 +    error_setg(errp, "native KVM userspace exit inventory is unavailable in this build");
++    return NULL;
++}
++
++CrucibleKvmCompletionInfo *qmp_x_crucible_kvm_completion(
++    CrucibleKvmCompletionOperation operation, uint32_t vcpu_index,
++    uint64_t operation_id, uint64_t expected_exit_sequence, Error **errp)
++{
++    error_setg(errp, "native KVM completion-only component is unavailable");
 +    return NULL;
 +}
 diff --git a/accel/tcg/atomic_template.h b/accel/tcg/atomic_template.h
@@ -5685,10 +6103,10 @@ index 0000000000000000000000000000000000000000..76140d303d1b89512472ebc4f0d0577a
 +    }
 +}
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index cdaa3e118082d7f100dd7655e57e28b55418d294..cb3a992403eff358834c7308e89f11249e38b06f 100644
+index cdaa3e118082d7f100dd7655e57e28b55418d294..360f8f38749f98d78d9098ca4d8c67dba6fd1731 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
-@@ -27,45 +27,3002 @@
+@@ -27,45 +27,3073 @@
  #include "qemu/lockable.h"
  #include "system/tcg.h"
  #include "system/replay.h"
@@ -5702,6 +6120,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..cb3a992403eff358834c7308e89f1124
 +#include "qemu/error-report.h"
 +#include "qemu/plugin.h"
 +#include "qemu/timer.h"
++#include "qemu/crucible-timer-selection.h"
 +#include "qemu/aio.h"
  #include "exec/cpu-common.h"
  #include "accel/tcg/cpu-loop.h"
@@ -7474,6 +7893,26 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..cb3a992403eff358834c7308e89f1124
 +    return true;
 +}
 +
++static bool rr_crucible_node_selection_cause(QemuTimerNodeSelectionCause *cause)
++{
++    const QemuPluginCrucibleNodePhasePolicy *policy;
++
++    if (!bql_locked() || !first_cpu || !qemu_cpu_is_self(first_cpu) ||
++        !rr_node_writer_dispatch || !rr_node_phase_sealed ||
++        !rr_node_command_valid || rr_node_command_stopped) {
++        return false;
++    }
++    policy = crucible_node_phase_policy();
++    if (!policy || !crucible_node_phase_prepared_scope_matches(
++            policy->prepared_scope_hash, policy->phase_preparation_commitment)) {
++        return false;
++    }
++    cause->source_original_sequence = rr_node_command.sequence;
++    memcpy(cause->source_original_digest, rr_node_command.grant_hash, 32);
++    memcpy(cause->prepared_scope_hash, policy->prepared_scope_hash, 32);
++    return true;
++}
++
 +void rr_crucible_node_install_phase_sampler(void)
 +{
 +    /* SIM installs plugins after board/vCPU realization. Install at the actual
@@ -7486,6 +7925,8 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..cb3a992403eff358834c7308e89f1124
 +            rr_crucible_node_virtual_timer_owner);
 +        rr_node_timer_owner_registered = true;
 +    }
++    qemu_timer_node_selection_register_cause_sampler(
++        rr_crucible_node_selection_cause);
 +}
 +
 +int qemu_plugin_crucible_node_query_timer_births(
@@ -7601,6 +8042,54 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..cb3a992403eff358834c7308e89f1124
 +        any |= digest[i];
 +    }
 +    return any != 0;
++}
++
++int qemu_plugin_crucible_node_capture_timer_selection(
++    const uint8_t scope[32], uint64_t expected_generation,
++    QemuPluginCrucibleNodeTimerSelection *selection,
++    QemuPluginCrucibleNodeTimerBirth *timers, uint32_t capacity)
++{
++    QemuPluginCrucibleNodeCpuParkFacts park;
++    QemuPluginCrucibleNodeTimerSelection origin = { 0 };
++    int result;
++
++    if (!selection) {
++        return -EINVAL;
++    }
++    memset(selection, 0, sizeof(*selection));
++    if (!scope || !expected_generation || !timers ||
++        capacity > QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_SELECTION_MAX) {
++        return -EINVAL;
++    }
++    memset(timers, 0, capacity * sizeof(*timers));
++    result = qemu_plugin_crucible_node_query_cpu_park(scope, &park);
++    if (result < 0) {
++        return result;
++    }
++    if (!crucible_node_phase_registered() || !rr_initialization_complete ||
++        !rr_initialization_result_retained || rr_initialization_home_pending ||
++        rr_node_writer_dispatch ||
++        rr_initialization_receipt.status !=
++            QEMU_PLUGIN_CRUCIBLE_NODE_INITIALIZATION_APPLIED) {
++        return -ENOTSUP;
++    }
++    if (rr_node_writer_gate != expected_generation) {
++        return -ESTALE;
++    }
++    origin.version = QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_SELECTION_VERSION;
++    origin.size = sizeof(origin);
++    origin.flags = QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_SELECTION_UNKNOWN_ROOTS |
++                   QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_SELECTION_UNKNOWN_ORDER;
++    origin.gate_generation = expected_generation;
++    origin.current_ps = park.current_ps;
++    origin.next_service_deadline_ps = park.next_service_deadline_ps;
++    origin.pending_service_credit_ps = park.pending_service_credit_ps;
++    memcpy(origin.prepared_scope_hash, scope, 32);
++    if (rr_node_command_valid) {
++        origin.source_original_sequence = rr_node_command.sequence;
++        memcpy(origin.source_original_digest, rr_node_command.grant_hash, 32);
++    }
++    return qemu_timer_node_selection_capture(&origin, selection, timers, capacity);
 +}
 +
 +static bool rr_node_command_shape(const QemuPluginCrucibleNodeCommand *command)
@@ -8710,7 +9199,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..cb3a992403eff358834c7308e89f1124
  }
  
  /* Kick the currently round-robin scheduled vCPU to next */
-@@ -84,18 +3041,30 @@ static void rr_kick_next_cpu(void)
+@@ -84,18 +3112,30 @@ static void rr_kick_next_cpu(void)
  
  static void rr_kick_thread(void *opaque)
  {
@@ -8743,7 +9232,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..cb3a992403eff358834c7308e89f1124
      }
  }
  
-@@ -110,15 +3079,131 @@ static void rr_wait_io_event(void)
+@@ -110,15 +3150,131 @@ static void rr_wait_io_event(void)
  {
      CPUState *cpu;
  
@@ -8877,7 +9366,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..cb3a992403eff358834c7308e89f1124
      }
  }
  
-@@ -140,6 +3225,18 @@ static void rr_deal_with_unplugged_cpus(void)
+@@ -140,6 +3296,18 @@ static void rr_deal_with_unplugged_cpus(void)
  
  static void rr_force_rcu(Notifier *notify, void *data)
  {
@@ -8896,7 +9385,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..cb3a992403eff358834c7308e89f1124
      rr_kick_next_cpu();
  }
  
-@@ -184,6 +3281,8 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -184,6 +3352,8 @@ static void *rr_cpu_thread_fn(void *arg)
      CPUState *cpu = arg;
  
      assert(tcg_enabled());
@@ -8905,7 +9394,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..cb3a992403eff358834c7308e89f1124
      rcu_register_thread();
      force_rcu.notify = rr_force_rcu;
      rcu_add_force_rcu_notifier(&force_rcu);
-@@ -204,41 +3303,209 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -204,41 +3374,209 @@ static void *rr_cpu_thread_fn(void *arg)
          /* process any pending work */
          CPU_FOREACH(cpu) {
              current_cpu = cpu;
@@ -9133,7 +9622,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..cb3a992403eff358834c7308e89f1124
  
          if (icount_enabled()) {
              int cpu_count = rr_cpu_count();
-@@ -252,13 +3519,34 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -252,13 +3590,34 @@ static void *rr_cpu_thread_fn(void *arg)
              icount_handle_deadline();
  
              cpu_budget = icount_percpu_budget(cpu_count);
@@ -9169,7 +9658,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..cb3a992403eff358834c7308e89f1124
  
          while (cpu && cpu_work_list_empty(cpu)) {
              /*
-@@ -276,28 +3564,123 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -276,28 +3635,123 @@ static void *rr_cpu_thread_fn(void *arg)
              qemu_clock_enable(QEMU_CLOCK_VIRTUAL,
                                (cpu->singlestep_flags & SSTEP_NOTIMER) == 0);
  
@@ -9308,7 +9797,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..cb3a992403eff358834c7308e89f1124
              } else if (cpu->stop) {
                  if (cpu->unplug) {
                      cpu = CPU_NEXT(cpu);
-@@ -305,11 +3688,137 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -305,11 +3759,137 @@ static void *rr_cpu_thread_fn(void *arg)
                  break;
              }
  
@@ -9448,7 +9937,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..cb3a992403eff358834c7308e89f1124
      }
  
      g_assert_not_reached();
-@@ -318,13 +3827,39 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -318,13 +3898,39 @@ static void *rr_cpu_thread_fn(void *arg)
  void rr_start_vcpu_thread(CPUState *cpu)
  {
      char thread_name[VCPU_THREAD_NAME_SIZE];
@@ -9748,10 +10237,10 @@ index 2a76a296127e81edc61f45a59785a89705daae90..cee022c189b36ad77f77b6d75bd223e6
  #endif /* TCG_ACCEL_OPS_RR_H */
 diff --git a/accel/tcg/tcg-accel-ops-sim-shmem.c b/accel/tcg/tcg-accel-ops-sim-shmem.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..844fc73e89546f2956b9385cd30707891796bb32
+index 0000000000000000000000000000000000000000..a926041f025f2d38e3657f26222cff9993032fa9
 --- /dev/null
 +++ b/accel/tcg/tcg-accel-ops-sim-shmem.c
-@@ -0,0 +1,529 @@
+@@ -0,0 +1,766 @@
 +/*
 + * QEMU TCG Crucible deterministic simulation shmem dispatch glue
 + */
@@ -9768,6 +10257,10 @@ index 0000000000000000000000000000000000000000..844fc73e89546f2956b9385cd3070789
 +#include "qemu/timer.h"
 +#include "qemu/main-loop.h"
 +#include "qemu/bswap.h"
++#include "qemu/sockets.h"
++#ifdef CONFIG_POSIX
++#include <pthread.h>
++#endif
 +#include "tcg-accel-ops-sim-shmem.h"
 +
 +G_STATIC_ASSERT(sizeof(QemuPluginCrucibleNodeCommand) == 168);
@@ -10139,6 +10632,239 @@ index 0000000000000000000000000000000000000000..844fc73e89546f2956b9385cd3070789
 +    return 0;
 +}
 +
++/* Enrollment describes one actual reader. It cannot remove a worker or turn
++ * an administrative socket into a closed modeled-input root. */
++static QemuPluginCrucibleNodeAdministrationPolicy node_administration_policy;
++static bool node_administration_pinned;
++static uint64_t node_administration_launch_process;
++#ifdef CONFIG_POSIX
++static pthread_mutex_t node_administration_mutex = PTHREAD_MUTEX_INITIALIZER;
++static QemuPluginCrucibleNodeAdministrationFacts node_administration_facts;
++static __thread uint64_t node_administration_registration;
++#endif
++
++static bool node_administration_socket_matches(
++    const QemuPluginCrucibleNodeAdministrationPolicy *policy)
++{
++#ifdef CONFIG_POSIX
++    struct stat identity;
++    struct sockaddr_storage local, peer;
++    socklen_t local_length = sizeof(local);
++    socklen_t peer_length = sizeof(peer);
++    int type = 0;
++    socklen_t type_length = sizeof(type);
++
++    return policy->descriptor >= 0 &&
++        !fstat(policy->descriptor, &identity) && S_ISSOCK(identity.st_mode) &&
++        identity.st_dev == policy->socket_device &&
++        identity.st_ino == policy->socket_inode &&
++        !getsockopt(policy->descriptor, SOL_SOCKET, SO_TYPE,
++                    &type, &type_length) && type_length == sizeof(type) &&
++        type == SOCK_DGRAM &&
++        !getsockname(policy->descriptor, (struct sockaddr *)&local,
++                     &local_length) && local_length >= sizeof(sa_family_t) &&
++        local.ss_family == AF_UNIX &&
++        !getpeername(policy->descriptor, (struct sockaddr *)&peer,
++                     &peer_length) && peer_length >= sizeof(sa_family_t) &&
++        peer.ss_family == AF_UNIX;
++#else
++    return false;
++#endif
++}
++
++int crucible_node_administration_pin_early(const char *argument)
++{
++    uint8_t bytes[160];
++    QemuPluginCrucibleNodeAdministrationPolicy policy = {
++        .version = QEMU_PLUGIN_CRUCIBLE_NODE_ADMINISTRATION_VERSION,
++        .size = sizeof(policy),
++    };
++
++    G_STATIC_ASSERT(sizeof(policy) == 168);
++    G_STATIC_ASSERT(sizeof(QemuPluginCrucibleNodeAdministrationFacts) == 192);
++    if (!argument || node_administration_pinned ||
++        strlen(argument) != 3 + 2 * sizeof(bytes) ||
++        memcmp(argument, "v1:", 3)) {
++        return -EINVAL;
++    }
++    for (uint32_t index = 0; index < sizeof(bytes); index++) {
++        int upper = initialization_hex_digit(argument[3 + index * 2]);
++        int lower = initialization_hex_digit(argument[4 + index * 2]);
++
++        if (upper < 0 || lower < 0) {
++            return -EINVAL;
++        }
++        bytes[index] = upper * 16 + lower;
++    }
++    memcpy(policy.prepared_scope_hash, bytes, 32);
++    memcpy(policy.administration_commitment, bytes + 32, 32);
++    memcpy(policy.realize_request_digest, bytes + 64, 32);
++    memcpy(policy.policy_digest, bytes + 96, 32);
++    policy.kind = ldl_le_p(bytes + 128);
++    policy.count = ldl_le_p(bytes + 132);
++    /* An inherited descriptor is nonnegative and bounded by signed int. */
++    if (ldl_le_p(bytes + 136) > INT32_MAX) {
++        return -EINVAL;
++    }
++    policy.descriptor = ldl_le_p(bytes + 136);
++    policy.reserved = ldl_le_p(bytes + 140);
++    policy.socket_device = ldq_le_p(bytes + 144);
++    policy.socket_inode = ldq_le_p(bytes + 152);
++    if (policy.kind != QEMU_PLUGIN_CRUCIBLE_NODE_ADMINISTRATION_READER ||
++        policy.count != 1 || policy.reserved || !policy.socket_inode ||
++        !initialization_digest_present(bytes) ||
++        !initialization_digest_present(bytes + 32) ||
++        !initialization_digest_present(bytes + 64) ||
++        !initialization_digest_present(bytes + 96) ||
++        !node_administration_socket_matches(&policy)) {
++        return -EINVAL;
++    }
++    node_administration_policy = policy;
++    node_administration_launch_process = getpid();
++    node_administration_pinned = true;
++    return 0;
++}
++
++bool crucible_node_administration_launch_pinned(void)
++{
++    return node_administration_pinned;
++}
++
++bool crucible_node_administration_pin_matches_phase(void)
++{
++    return node_administration_pinned && node_phase_launch_pinned &&
++        initialization_launch_pinned &&
++        !memcmp(node_administration_policy.prepared_scope_hash,
++                node_phase_policy.prepared_scope_hash, 32) &&
++        !memcmp(node_administration_policy.realize_request_digest,
++                node_phase_policy.realize_request_digest, 32) &&
++        !memcmp(node_administration_policy.prepared_scope_hash,
++                initialization_authorization.prepared_scope_hash, 32) &&
++        !memcmp(node_administration_policy.realize_request_digest,
++                initialization_authorization.realize_request_digest, 32);
++}
++
++int qemu_plugin_register_crucible_node_administration(
++    const QemuPluginCrucibleNodeAdministrationPolicy *policy,
++    QemuPluginCrucibleNodeAdministrationFacts *facts)
++{
++#ifdef CONFIG_POSIX
++    int64_t thread_id = qemu_get_thread_id();
++    int status, result = 0;
++
++    if (!facts) {
++        return -EINVAL;
++    }
++    memset(facts, 0, sizeof(*facts));
++    /* The controller is installed before spawning this sole reader; its
++     * immutable policy is never replaced while the reader exists. */
++    if (!policy || !node_administration_pinned ||
++        memcmp(policy, &node_administration_policy, sizeof(*policy)) ||
++        !crucible_node_administration_pin_matches_phase() ||
++        !crucible_node_control_registered() || thread_id <= 0 ||
++        node_administration_launch_process != getpid() ||
++        !current_accel_is_sim() || !icount_crucible_sim_configuration_valid() ||
++        !node_administration_socket_matches(policy)) {
++        return -EINVAL;
++    }
++    status = pthread_mutex_lock(&node_administration_mutex);
++    assert(status == 0);
++    if (node_administration_facts.registration_id) {
++        /* TLS, not a reusable OS TID alone, proves an original thread retry. */
++        if (node_administration_registration !=
++                node_administration_facts.registration_id ||
++            node_administration_facts.thread_id != thread_id ||
++            node_administration_facts.process_id != getpid()) {
++            result = -EALREADY;
++        }
++    } else if (qemu_plugin_icount_raw() != 0) {
++        result = -ESTALE;
++    } else {
++        node_administration_facts = (QemuPluginCrucibleNodeAdministrationFacts) {
++            .version = QEMU_PLUGIN_CRUCIBLE_NODE_ADMINISTRATION_VERSION,
++            .size = sizeof(node_administration_facts),
++            .kind = policy->kind,
++            .flags = QEMU_PLUGIN_CRUCIBLE_NODE_ADMINISTRATION_SOCKET_OBSERVED |
++                QEMU_PLUGIN_CRUCIBLE_NODE_ADMINISTRATION_THREAD_OBSERVED |
++                QEMU_PLUGIN_CRUCIBLE_NODE_ADMINISTRATION_UNKNOWN_ROOTS,
++            .registration_id = 1,
++            .thread_id = thread_id,
++            .socket_device = policy->socket_device,
++            .socket_inode = policy->socket_inode,
++            .process_id = getpid(),
++            .descriptor = policy->descriptor,
++        };
++        memcpy(node_administration_facts.prepared_scope_hash,
++               policy->prepared_scope_hash, 32);
++        memcpy(node_administration_facts.administration_commitment,
++               policy->administration_commitment, 32);
++        memcpy(node_administration_facts.realize_request_digest,
++               policy->realize_request_digest, 32);
++        memcpy(node_administration_facts.policy_digest, policy->policy_digest, 32);
++        node_administration_registration = 1;
++    }
++    if (!result) {
++        *facts = node_administration_facts;
++    }
++    status = pthread_mutex_unlock(&node_administration_mutex);
++    assert(status == 0);
++    return result;
++#else
++    if (facts) {
++        memset(facts, 0, sizeof(*facts));
++    }
++    return -ENOTSUP;
++#endif
++}
++
++int qemu_plugin_crucible_node_query_administration(
++    const uint8_t scope[32], const uint8_t commitment[32],
++    QemuPluginCrucibleNodeAdministrationFacts *facts)
++{
++#ifdef CONFIG_POSIX
++    int status, result = 0;
++
++    if (!facts) {
++        return -EINVAL;
++    }
++    memset(facts, 0, sizeof(*facts));
++    /* A fork may inherit a locked parent mutex. Refuse before touching it. */
++    if (node_administration_launch_process != getpid()) {
++        return -ESTALE;
++    }
++    status = pthread_mutex_lock(&node_administration_mutex);
++    assert(status == 0);
++    if (!scope || !commitment ||
++        !node_administration_facts.registration_id ||
++        node_administration_facts.process_id != getpid() ||
++        memcmp(scope, node_administration_facts.prepared_scope_hash, 32) ||
++        memcmp(commitment, node_administration_facts.administration_commitment, 32)) {
++        result = -ESTALE;
++    } else {
++        *facts = node_administration_facts;
++    }
++    status = pthread_mutex_unlock(&node_administration_mutex);
++    assert(status == 0);
++    return result;
++#else
++    if (facts) {
++        memset(facts, 0, sizeof(*facts));
++    }
++    return -ENOTSUP;
++#endif
++}
++
++bool crucible_node_administration_manifest_matches(
++    const uint8_t scope[32], const uint8_t commitment[32], int descriptor)
++{
++    QemuPluginCrucibleNodeAdministrationFacts facts;
++
++    return !qemu_plugin_crucible_node_query_administration(scope, commitment,
++                                                          &facts) &&
++        descriptor == facts.descriptor &&
++        node_administration_socket_matches(&node_administration_policy);
++}
++
 +bool crucible_node_initialization_launch_pinned(void)
 +{
 +    return initialization_launch_pinned;
@@ -10283,10 +11009,10 @@ index 0000000000000000000000000000000000000000..844fc73e89546f2956b9385cd3070789
 +}
 diff --git a/accel/tcg/tcg-accel-ops-sim-shmem.h b/accel/tcg/tcg-accel-ops-sim-shmem.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..18cded2ad70992d6c31191d5282f38811c23a3db
+index 0000000000000000000000000000000000000000..d506a17778955afeb3b2e51a939fb79e2cb8946d
 --- /dev/null
 +++ b/accel/tcg/tcg-accel-ops-sim-shmem.h
-@@ -0,0 +1,56 @@
+@@ -0,0 +1,61 @@
 +#ifndef TCG_ACCEL_OPS_SIM_SHMEM_H
 +#define TCG_ACCEL_OPS_SIM_SHMEM_H
 +
@@ -10308,6 +11034,11 @@ index 0000000000000000000000000000000000000000..18cded2ad70992d6c31191d5282f3881
 +bool crucible_sim_shmem_may_advance_to(uint64_t candidate_icount);
 +
 +int crucible_node_phase_pin_early(const char *argument);
++int crucible_node_administration_pin_early(const char *argument);
++bool crucible_node_administration_launch_pinned(void);
++bool crucible_node_administration_pin_matches_phase(void);
++bool crucible_node_administration_manifest_matches(
++    const uint8_t scope[32], const uint8_t commitment[32], int descriptor);
 +/* Installs the actual RR source at original phase registration, not CPU creation. */
 +void rr_crucible_node_install_phase_sampler(void);
 +bool crucible_node_phase_launch_pinned(void);
@@ -62864,7 +63595,7 @@ index 890497b0d22ede109c03bcc24fbc3aa24b09e59c..36c355bf303715c91112dcceb32fb779
  
  int monitor_puts(Monitor *mon, const char *str);
 diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
-index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..f2ae79e77c8f354ec0da39569c9a2229c26dbd49 100644
+index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..e8942f4a3ba54eb4b5de7652e5a64a24e259ca32 100644
 --- a/include/plugins/qemu-plugin.h
 +++ b/include/plugins/qemu-plugin.h
 @@ -198,6 +198,326 @@ typedef void (*qemu_plugin_vcpu_discon_cb_t)(unsigned int vcpu_index,
@@ -63194,21 +63925,70 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..f2ae79e77c8f354ec0da39569c9a2229
  /**
   * qemu_plugin_uninstall() - Uninstall a plugin
   * @id: this plugin's opaque ID
-@@ -826,6 +1146,908 @@ const void *qemu_plugin_request_time_control(void);
- QEMU_PLUGIN_API
+@@ -827,224 +1147,1206 @@ QEMU_PLUGIN_API
  void qemu_plugin_update_ns(const void *handle, int64_t time);
  
-+/**
+ /**
+- * typedef qemu_plugin_vcpu_syscall_cb_t - vCPU syscall callback function type
+- * @vcpu_index: the executing vCPU
+- * @num: the syscall number
+- * @a1: the 1st syscall argument
+- * @a2: the 2nd syscall argument
+- * @a3: the 3rd syscall argument
+- * @a4: the 4th syscall argument
+- * @a5: the 5th syscall argument
+- * @a6: the 6th syscall argument
+- * @a7: the 7th syscall argument
+- * @a8: the 8th syscall argument
+- * @userdata: user data for callback
+- */
+-typedef void
+-(*qemu_plugin_vcpu_syscall_cb_t)(unsigned int vcpu_index,
+-                                 int64_t num, uint64_t a1, uint64_t a2,
+-                                 uint64_t a3, uint64_t a4, uint64_t a5,
+-                                 uint64_t a6, uint64_t a7, uint64_t a8,
+-                                 void *userdata);
+-
+-/**
+- * typedef qemu_plugin_vcpu_syscall_filter_cb_t - vCPU syscall filter callback
+- * function type
+- * @vcpu_index: the executing vCPU
+- * @num: the syscall number
+- * @a1: the 1st syscall argument
+- * @a2: the 2nd syscall argument
+- * @a3: the 3rd syscall argument
+- * @a4: the 4th syscall argument
+- * @a5: the 5th syscall argument
+- * @a6: the 6th syscall argument
+- * @a7: the 7th syscall argument
+- * @a8: the 8th syscall argument
+- * @sysret: reference of the syscall return value, must set this if filtered
+- * @userdata: user data for callback
 + * qemu_plugin_has_time_control() - report whether a plugin owns virtual time
-+ *
+  *
+- * Returns true if you want to filter this syscall (i.e. stop it being
+- * handled further), otherwise returns false.
 + * Returns true after qemu_plugin_request_time_control() grants ownership to a
 + * plugin. Crucible uses this predicate to suppress realtime icount warp while
 + * the deterministic scheduler owns idle virtual-time advancement.
-+ */
+  */
+-typedef bool
+-(*qemu_plugin_vcpu_syscall_filter_cb_t)(unsigned int vcpu_index,
+-                                        int64_t num, uint64_t a1, uint64_t a2,
+-                                        uint64_t a3, uint64_t a4, uint64_t a5,
+-                                        uint64_t a6, uint64_t a7, uint64_t a8,
+-                                        int64_t *sysret,
+-                                        void *userdata);
 +QEMU_PLUGIN_API
 +bool qemu_plugin_has_time_control(void);
-+
-+/**
+ 
+ /**
+- * typedef qemu_plugin_vcpu_syscall_ret_cb_t - vCPU syscall return callback
+- * function type
+- * @vcpu_index: the executing vCPU
+- * @num: the syscall number
+- * @ret: the syscall return value
+- * @userdata: user data for callback
 + * typedef qemu_plugin_time_advance_cb_t - queued time-advance completion
 + * @status: zero on success or a negative errno-style failure
 + * @time: requested absolute Crucible logical instruction tick
@@ -63217,29 +63997,52 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..f2ae79e77c8f354ec0da39569c9a2229
 + * The callback runs from QEMU's normal main-loop bottom-half context after a
 + * preceding main-loop bottom half has advanced virtual time and dispatched due
 + * virtual timers. It never runs nested inside a vCPU/plugin callback.
-+ */
+  */
+-typedef void
+-(*qemu_plugin_vcpu_syscall_ret_cb_t)(unsigned int vcpu_index,
+-                                     int64_t num, int64_t ret,
+-                                     void *userdata);
 +typedef void (*qemu_plugin_time_advance_cb_t)(int status, int64_t time,
 +                                              void *userdata);
-+
-+/**
+ 
+ /**
+- * qemu_plugin_register_vcpu_syscall_cb() - register a syscall entry callback
+- * @id: plugin id
+- * @cb: callback of type qemu_plugin_vcpu_syscall_cb_t
+- * @userdata: user data for callback
 + * qemu_plugin_register_time_advance_cb() - register advance completion
 + * @cb: completion callback, or NULL to clear it
 + * @userdata: opaque pointer passed to @cb
-+ *
+  *
+- * This registers a callback for every syscall executed by the guest. The @cb
+- * function is executed before a syscall is handled by the host.
 + * Time-advance completion is supported only by the single-threaded sim RR
 + * accelerator.
 + *
 + * Returns: zero on success, -EPERM when registering a callback outside sim
 + * RR, or -EBUSY while an advance is outstanding.
-+ */
-+QEMU_PLUGIN_API
+  */
+ QEMU_PLUGIN_API
+-void qemu_plugin_register_vcpu_syscall_cb(qemu_plugin_id_t id,
+-                                          qemu_plugin_vcpu_syscall_cb_t cb,
+-                                          void *userdata);
 +int qemu_plugin_register_time_advance_cb(qemu_plugin_time_advance_cb_t cb,
 +                                         void *userdata);
-+
-+/**
+ 
+ /**
+- * qemu_plugin_register_vcpu_syscall_filter_cb() - register a syscall filter
+- * callback
+- * @id: plugin id
+- * @cb: callback of type qemu_plugin_vcpu_syscall_filter_cb_t
+- * @userdata: user data for callback
 + * qemu_plugin_advance_time_ticks() - enqueue an exact logical-tick advance
 + * @target_tick: absolute Crucible logical instruction tick
-+ *
+  *
+- * This registers a callback for every syscall executed by the guest. The @cb
+- * function is executed before a syscall is handled by the host. If the
+- * callback returns true, the syscall is filtered and will not be executed by
+- * the host. The callback must then set the syscall return value via the
+- * corresponding pointer passed to it.
 + * This callback-safe entry point queues work on the normal main-loop
 + * AioContext. The queued bottom half advances the clock and dispatches due
 + * virtual timers while holding BQL, then hands completion to a later main-loop
@@ -63253,34 +64056,58 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..f2ae79e77c8f354ec0da39569c9a2229
 + * If a VM stop wins after reservation but before clock mutation, the queued
 + * advance completes with -EBUSY and releases its reservation without advancing
 + * time. A regressing target fails through the completion callback.
-+ */
-+QEMU_PLUGIN_API
+  */
+ QEMU_PLUGIN_API
+-void
+-qemu_plugin_register_vcpu_syscall_filter_cb(qemu_plugin_id_t id,
+-                                            qemu_plugin_vcpu_syscall_filter_cb_t cb,
+-                                            void *userdata);
 +int qemu_plugin_advance_time_ticks(int64_t target_tick);
-+
-+/**
+ 
+ /**
+- * qemu_plugin_register_vcpu_syscall_ret_cb() - register a syscall entry
+- * callback
+- * @id: plugin id
+- * @cb: callback of type qemu_plugin_vcpu_syscall_ret_cb_t
+- * @userdata: user data for callback
 + * qemu_plugin_sim_tick_observed() - observe the authoritative sim clock
-+ *
+  *
+- * This registers a callback for every syscall executed by the guest. The @cb
+- * function is executed upon return from the host syscall before execution is
+- * handed back to the guest.
 + * Returns the exact logical instruction tick, including idle and fault-model
 + * time advances. Returns -1 outside precise sim mode or on clock overflow.
-+ */
-+QEMU_PLUGIN_API
+  */
+ QEMU_PLUGIN_API
+-void
+-qemu_plugin_register_vcpu_syscall_ret_cb(qemu_plugin_id_t id,
+-                                         qemu_plugin_vcpu_syscall_ret_cb_t cb,
+-                                         void *userdata);
 +int64_t qemu_plugin_sim_tick_observed(void);
-+
-+/**
+ 
+ /**
+- * qemu_plugin_insn_disas() - return disassembly string for instruction
+- * @insn: instruction reference
 + * qemu_plugin_icount_raw() - return raw retired-instruction count
-+ *
+  *
+- * Returns an allocated string containing the disassembly
 + * Returns QEMU's raw icount value without the virtual-clock bias used by
 + * qemu_plugin_update_ns() and the ns conversion path. Crucible uses this as the
 + * fingerprint and divergence-bisection instruction axis.
-+ */
-+QEMU_PLUGIN_API
+  */
+ QEMU_PLUGIN_API
+-char *qemu_plugin_insn_disas(const struct qemu_plugin_insn *insn);
 +uint64_t qemu_plugin_icount_raw(void);
-+
-+/**
+ 
+ /**
+- * qemu_plugin_insn_symbol() - best effort symbol lookup
+- * @insn: instruction reference
 + * qemu_plugin_icount_at_tb_entry() - observe the exact TB-entry icount
 + * @tb_insns: instruction count from qemu_plugin_tb_n_insns() for this TB
 + * @entry_icount: output for the raw icount before the TB's first instruction
-+ *
+  *
+- * Return a static string referring to the symbol. This is dependent
+- * on the binary QEMU is running having provided a symbol table.
 + * Valid only from this TB's execution callback: gen_tb_start has subtracted the
 + * full reservation, so observed = committed + budget - remaining and
 + * entry = observed - @tb_insns. A pre-callback budget exit never invokes it;
@@ -63289,24 +64116,43 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..f2ae79e77c8f354ec0da39569c9a2229
 + *
 + * Returns: 0 on success, nonzero outside precise single-threaded sim RR
 + * execution or for an invalid output pointer/instruction count.
-+ */
-+QEMU_PLUGIN_API
+  */
+ QEMU_PLUGIN_API
+-const char *qemu_plugin_insn_symbol(const struct qemu_plugin_insn *insn);
 +int qemu_plugin_icount_at_tb_entry(uint64_t tb_insns,
 +                                   uint64_t *entry_icount);
-+
-+/**
+ 
+ /**
+- * qemu_plugin_vcpu_for_each() - iterate over the existing vCPU
+- * @id: plugin ID
+- * @cb: callback function
+- * @userdata: user data for callback
+- *
+- * The @cb function is called once for each existing vCPU.
 + * qemu_plugin_force_vcpu_exit() - force the current vCPU out of cpu_exec
-+ *
+  *
+- * See also: qemu_plugin_register_vcpu_init_cb()
 + * Sets the exit request for the current vCPU so Crucible can normalize the
 + * first tcg_cpu_exec exit/run phase from a vCPU-init callback. Calls made
 + * before a current vCPU exists are ignored.
-+ */
-+QEMU_PLUGIN_API
+  */
+ QEMU_PLUGIN_API
+-void qemu_plugin_vcpu_for_each(qemu_plugin_id_t id,
+-                               qemu_plugin_vcpu_udata_cb_t cb,
+-                               void *userdata);
 +void qemu_plugin_force_vcpu_exit(void);
-+
-+/**
+ 
+ /**
+- * qemu_plugin_register_flush_cb() - register code cache flush callback
+- * @id: plugin ID
+- * @cb: callback
+- * @userdata: user data for callback
 + * qemu_plugin_crucible_force_vcpu_tb_exit() - exit before the next chained TB
-+ *
+  *
+- * The @cb function is called every time the code cache is flushed.
+- * The callback can be used to free resources associated with existing
+- * translated blocks in a plugin. @cb is guaranteed to run with all cpus being
+- * stopped, thus no lock is required within it.
 + * Requests an exit from the current translated execution batch and sets the
 + * TCG decrementer's high half so the prologue of a directly chained TB returns
 + * to cpu_exec before executing a guest instruction. This operation is valid
@@ -63315,42 +64161,65 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..f2ae79e77c8f354ec0da39569c9a2229
 + *
 + * Returns zero after requesting the exit, or -EINVAL outside the required
 + * execution context.
-+ */
-+QEMU_PLUGIN_API
+  */
+ QEMU_PLUGIN_API
+-void qemu_plugin_register_flush_cb(qemu_plugin_id_t id,
+-                                   qemu_plugin_udata_cb_t cb,
+-                                   void *userdata);
 +int qemu_plugin_crucible_force_vcpu_tb_exit(void);
-+
-+/**
+ 
+ /**
+- * qemu_plugin_register_atexit_cb() - register exit callback
+- * @id: plugin ID
+- * @cb: callback
+- * @userdata: user data for callback
 + * qemu_plugin_request_vmstop() - stop the VM from an exact plugin boundary
-+ *
+  *
+- * The @cb function is called once execution has finished. Plugins
+- * should be able to free all their resources at this point much like
+- * after a reset/uninstall callback is called.
 + * Admits QEMU's native RUN_STATE_PAUSED transition from an RR-owned exact
 + * callback.  A drained main-loop control wake stops synchronously before
 + * another TCG slice can dispatch.  Device-completion and vCPU callbacks queue
 + * the transition behind the RR-global dispatch fence so they cannot recurse
 + * into their own drain path.  Instruction, memory, syscall, and other callbacks
 + * outside exact scopes are rejected.
-+ *
+  *
+- * In user-mode it is possible a few un-instrumented instructions from
+- * child threads may run before the host kernel reaps the threads.
 + * Returns: 0 when admitted, -EPERM outside an exact single-threaded sim RR
 + * boundary, or -EALREADY while a prior request awaits stop/resume completion.
 + * The caller must use QMP stop/query-status as the authoritative completion
 + * channel; stop also reports a retained block flush failure from the request.
-+ */
-+QEMU_PLUGIN_API
+  */
+ QEMU_PLUGIN_API
+-void qemu_plugin_register_atexit_cb(qemu_plugin_id_t id,
+-                                    qemu_plugin_udata_cb_t cb, void *userdata);
+-
+-/* returns how many vcpus were started at this point */
+-QEMU_PLUGIN_API
+-int qemu_plugin_num_vcpus(void);
 +int qemu_plugin_request_vmstop(void);
-+
-+/**
+ 
+ /**
+- * qemu_plugin_outs() - output string via QEMU's logging system
+- * @string: a string
 + * qemu_plugin_crucible_single_threaded_rr() - report the live sim execution mode
 + *
 + * Returns one only while the Crucible sim accelerator is active with MTTCG
 + * disabled, proving that QEMU serializes the round-robin vCPU execution path.
 + * Returns zero for every other accelerator or threading mode.
-+ */
-+QEMU_PLUGIN_API
+  */
+ QEMU_PLUGIN_API
+-void qemu_plugin_outs(const char *string);
 +int qemu_plugin_crucible_single_threaded_rr(void);
 +
 +#define QEMU_PLUGIN_PREEMPTION_KIND_VCPU_SWITCH 1U
 +#define QEMU_PLUGIN_PREEMPTION_KIND_INTERRUPT_AT 2U
-+
-+/**
+ 
+ /**
+- * qemu_plugin_bool_parse() - parses a boolean argument in the form of
+- * "<argname>=[on|yes|true|off|no|false]"
 + * qemu_plugin_inject_preemption() - command a sim RR preemption
 + * @at_tick: exact logical picosecond tick where the preemption is applied
 + * @deadline_tick: inclusive lower bound authorized by the scheduler
@@ -63359,27 +64228,38 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..f2ae79e77c8f354ec0da39569c9a2229
 + * @arg0: kind-specific first operand
 + * @arg1: kind-specific second operand
 + * @arg2: reserved operand, currently zero
-+ *
+  *
+- * @name: argument name, the part before the equals sign
+- * @val: argument value, what's after the equals sign
+- * @ret: output return value
 + * Queues a single commanded vCPU switch or interrupt delivery for the sim
 + * accelerator's precise-icount round-robin path. The command is rejected when
 + * sim precise-icount RR mode is inactive, another command is pending, operands
 + * are malformed, @at_tick falls outside [@deadline_tick, @ceiling_tick],
 + * @at_tick is in the past, or @ceiling_tick is beyond the current
 + * scheduler-published max-advance ceiling.
-+ *
+  *
+- * returns true if the combination @name=@val parses correctly to a boolean
+- * argument, and false otherwise
 + * Returns: 0 when the command is accepted, nonzero when it is rejected.
-+ */
-+QEMU_PLUGIN_API
+  */
+ QEMU_PLUGIN_API
+-bool qemu_plugin_bool_parse(const char *name, const char *val, bool *ret);
 +int qemu_plugin_inject_preemption(uint64_t at_tick,
 +                                  uint64_t deadline_tick,
 +                                  uint64_t ceiling_tick,
 +                                  unsigned int kind, uint32_t arg0,
 +                                  uint32_t arg1, uint32_t arg2);
-+
-+/**
+ 
+ /**
+- * qemu_plugin_path_to_binary() - path to binary file being executed
 + * qemu_plugin_register_wake_fd() - register a scheduler wake fd
 + * @fd: nonblocking eventfd or pipe descriptor owned by the plugin
-+ *
+  *
+- * Return a string representing the path to the binary. For user-mode
+- * this is the main executable. For system emulation we currently
+- * return NULL. The user should g_free() the string once no longer
+- * needed.
 + * Registers @fd on QEMU's main AioContext. Read readiness is therefore serviced
 + * by both the outer main loop and nested aio_poll() waits used by synchronous
 + * block I/O. The handler drains the descriptor, resumes device waiters, and
@@ -63387,15 +64267,22 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..f2ae79e77c8f354ec0da39569c9a2229
 + * publishing wake decisions.
 + *
 + * Returns: 0 on successful registration, nonzero on invalid input.
-+ */
-+QEMU_PLUGIN_API
+  */
+ QEMU_PLUGIN_API
+-const char *qemu_plugin_path_to_binary(void);
 +int qemu_plugin_register_wake_fd(int fd);
-+
+ 
+-/**
+- * qemu_plugin_start_code() - returns start of text segment
+- *
+- * Returns the nominal start address of the main text segment in
+- * user-mode. Currently returns 0 for system emulation.
 +/* Versioned Crucible plugin resource manifest. */
 +#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_MANIFEST_VERSION 3
 +#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_MANIFEST_NODE_VERSION 4
 +#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_MANIFEST_INITIALIZATION_VERSION 5
 +#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_MANIFEST_PHASE_VERSION 6
++#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_MANIFEST_ADMINISTRATION_VERSION 7
 +
 +#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_CONTROL_SOCKET (UINT64_C(1) << 0)
 +#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_SHMEM_MAPPING (UINT64_C(1) << 1)
@@ -63414,6 +64301,10 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..f2ae79e77c8f354ec0da39569c9a2229
 +#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_NODE_CONTROL (UINT64_C(1) << 15)
 +#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_NODE_INITIALIZATION (UINT64_C(1) << 16)
 +#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_NODE_PHASE (UINT64_C(1) << 17)
++#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_NODE_ADMINISTRATION (UINT64_C(1) << 18)
++#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_ADMINISTRATION_ALL \
++    (QEMU_PLUGIN_CRUCIBLE_RESOURCE_PHASE_ALL | \
++     QEMU_PLUGIN_CRUCIBLE_RESOURCE_NODE_ADMINISTRATION)
 +#define QEMU_PLUGIN_CRUCIBLE_RESOURCE_PHASE_ALL \
 +    (QEMU_PLUGIN_CRUCIBLE_RESOURCE_INITIALIZATION_ALL | \
 +     QEMU_PLUGIN_CRUCIBLE_RESOURCE_NODE_PHASE)
@@ -63510,6 +64401,81 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..f2ae79e77c8f354ec0da39569c9a2229
 +    struct qemu_plugin_crucible_resource_manifest_v5 initialization;
 +    uint8_t phase_preparation_commitment[32];
 +};
++
++/* V7 observes the actual reader without exempting worker bit 3. */
++struct qemu_plugin_crucible_resource_manifest_v7 {
++    struct qemu_plugin_crucible_resource_manifest_v6 phase;
++    uint8_t administration_commitment[32];
++};
++
++#define QEMU_PLUGIN_CRUCIBLE_NODE_ADMINISTRATION_VERSION 1
++#define QEMU_PLUGIN_CRUCIBLE_NODE_ADMINISTRATION_READER 1U
++#define QEMU_PLUGIN_CRUCIBLE_NODE_ADMINISTRATION_SOCKET_OBSERVED 1U
++#define QEMU_PLUGIN_CRUCIBLE_NODE_ADMINISTRATION_THREAD_OBSERVED 2U
++#define QEMU_PLUGIN_CRUCIBLE_NODE_ADMINISTRATION_UNKNOWN_ROOTS 4U
++
++typedef struct QemuPluginCrucibleNodeAdministrationPolicy {
++    uint32_t version;
++    uint32_t size;
++    uint8_t prepared_scope_hash[32];
++    uint8_t administration_commitment[32];
++    uint8_t realize_request_digest[32];
++    uint8_t policy_digest[32];
++    uint32_t kind;
++    uint32_t count;
++    int32_t descriptor;
++    uint32_t reserved;
++    uint64_t socket_device;
++    uint64_t socket_inode;
++} QemuPluginCrucibleNodeAdministrationPolicy;
++
++typedef struct QemuPluginCrucibleNodeAdministrationFacts {
++    uint32_t version;
++    uint32_t size;
++    uint32_t kind;
++    uint32_t flags;
++    uint64_t registration_id;
++    uint64_t thread_id;
++    uint64_t socket_device;
++    uint64_t socket_inode;
++    uint64_t process_id;
++    int32_t descriptor;
++    uint32_t reserved;
++    uint8_t prepared_scope_hash[32];
++    uint8_t administration_commitment[32];
++    uint8_t realize_request_digest[32];
++    uint8_t policy_digest[32];
++} QemuPluginCrucibleNodeAdministrationFacts;
++
++/**
++ * qemu_plugin_register_crucible_node_administration() - observe original reader
++ * @policy: exact early-pinned policy and inherited socket identity
++ * @facts: receives historical source-observed process and thread facts
++ *
++ * The actual reader calls this after native control registration and before V7
++ * resource sealing. Only that original thread may retry. This records no input
++ * closure, dispatch permission, physical stop or readiness. Worker bit 3 remains
++ * required. Forked children cannot reuse this registration.
++ *
++ * Returns: 0 on an original observation, or negative refusal with zero facts.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_register_crucible_node_administration(
++    const QemuPluginCrucibleNodeAdministrationPolicy *policy,
++    QemuPluginCrucibleNodeAdministrationFacts *facts);
++
++/**
++ * qemu_plugin_crucible_node_query_administration() - read historical observation
++ * @scope: exact original prepared scope
++ * @commitment: exact original reader preparation commitment
++ * @facts: receives retained original facts, never a liveness attestation
++ *
++ * Returns: 0 on a matching original query, or negative refusal with zero facts.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_node_query_administration(
++    const uint8_t scope[32], const uint8_t commitment[32],
++    QemuPluginCrucibleNodeAdministrationFacts *facts);
 +
 +#define QEMU_PLUGIN_CRUCIBLE_NODE_INITIALIZATION_VERSION 1
 +#define QEMU_PLUGIN_CRUCIBLE_NODE_INITIALIZATION_MAX 64
@@ -64100,13 +65066,239 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..f2ae79e77c8f354ec0da39569c9a2229
 +void qemu_plugin_register_net_tx_cb(qemu_plugin_net_tx_cb_t tx_cb,
 +                                    void *userdata);
 +
- /**
-  * typedef qemu_plugin_vcpu_syscall_cb_t - vCPU syscall callback function type
-  * @vcpu_index: the executing vCPU
-@@ -1178,6 +2400,59 @@ QEMU_PLUGIN_API
- bool qemu_plugin_read_memory_vaddr(uint64_t addr,
-                                    GByteArray *data, size_t len);
- 
++/**
++ * typedef qemu_plugin_vcpu_syscall_cb_t - vCPU syscall callback function type
++ * @vcpu_index: the executing vCPU
++ * @num: the syscall number
++ * @a1: the 1st syscall argument
++ * @a2: the 2nd syscall argument
++ * @a3: the 3rd syscall argument
++ * @a4: the 4th syscall argument
++ * @a5: the 5th syscall argument
++ * @a6: the 6th syscall argument
++ * @a7: the 7th syscall argument
++ * @a8: the 8th syscall argument
++ * @userdata: user data for callback
++ */
++typedef void
++(*qemu_plugin_vcpu_syscall_cb_t)(unsigned int vcpu_index,
++                                 int64_t num, uint64_t a1, uint64_t a2,
++                                 uint64_t a3, uint64_t a4, uint64_t a5,
++                                 uint64_t a6, uint64_t a7, uint64_t a8,
++                                 void *userdata);
++
++/**
++ * typedef qemu_plugin_vcpu_syscall_filter_cb_t - vCPU syscall filter callback
++ * function type
++ * @vcpu_index: the executing vCPU
++ * @num: the syscall number
++ * @a1: the 1st syscall argument
++ * @a2: the 2nd syscall argument
++ * @a3: the 3rd syscall argument
++ * @a4: the 4th syscall argument
++ * @a5: the 5th syscall argument
++ * @a6: the 6th syscall argument
++ * @a7: the 7th syscall argument
++ * @a8: the 8th syscall argument
++ * @sysret: reference of the syscall return value, must set this if filtered
++ * @userdata: user data for callback
++ *
++ * Returns true if you want to filter this syscall (i.e. stop it being
++ * handled further), otherwise returns false.
++ */
++typedef bool
++(*qemu_plugin_vcpu_syscall_filter_cb_t)(unsigned int vcpu_index,
++                                        int64_t num, uint64_t a1, uint64_t a2,
++                                        uint64_t a3, uint64_t a4, uint64_t a5,
++                                        uint64_t a6, uint64_t a7, uint64_t a8,
++                                        int64_t *sysret,
++                                        void *userdata);
++
++/**
++ * typedef qemu_plugin_vcpu_syscall_ret_cb_t - vCPU syscall return callback
++ * function type
++ * @vcpu_index: the executing vCPU
++ * @num: the syscall number
++ * @ret: the syscall return value
++ * @userdata: user data for callback
++ */
++typedef void
++(*qemu_plugin_vcpu_syscall_ret_cb_t)(unsigned int vcpu_index,
++                                     int64_t num, int64_t ret,
++                                     void *userdata);
++
++/**
++ * qemu_plugin_register_vcpu_syscall_cb() - register a syscall entry callback
++ * @id: plugin id
++ * @cb: callback of type qemu_plugin_vcpu_syscall_cb_t
++ * @userdata: user data for callback
++ *
++ * This registers a callback for every syscall executed by the guest. The @cb
++ * function is executed before a syscall is handled by the host.
++ */
++QEMU_PLUGIN_API
++void qemu_plugin_register_vcpu_syscall_cb(qemu_plugin_id_t id,
++                                          qemu_plugin_vcpu_syscall_cb_t cb,
++                                          void *userdata);
++
++/**
++ * qemu_plugin_register_vcpu_syscall_filter_cb() - register a syscall filter
++ * callback
++ * @id: plugin id
++ * @cb: callback of type qemu_plugin_vcpu_syscall_filter_cb_t
++ * @userdata: user data for callback
++ *
++ * This registers a callback for every syscall executed by the guest. The @cb
++ * function is executed before a syscall is handled by the host. If the
++ * callback returns true, the syscall is filtered and will not be executed by
++ * the host. The callback must then set the syscall return value via the
++ * corresponding pointer passed to it.
++ */
++QEMU_PLUGIN_API
++void
++qemu_plugin_register_vcpu_syscall_filter_cb(qemu_plugin_id_t id,
++                                            qemu_plugin_vcpu_syscall_filter_cb_t cb,
++                                            void *userdata);
++
++/**
++ * qemu_plugin_register_vcpu_syscall_ret_cb() - register a syscall entry
++ * callback
++ * @id: plugin id
++ * @cb: callback of type qemu_plugin_vcpu_syscall_ret_cb_t
++ * @userdata: user data for callback
++ *
++ * This registers a callback for every syscall executed by the guest. The @cb
++ * function is executed upon return from the host syscall before execution is
++ * handed back to the guest.
++ */
++QEMU_PLUGIN_API
++void
++qemu_plugin_register_vcpu_syscall_ret_cb(qemu_plugin_id_t id,
++                                         qemu_plugin_vcpu_syscall_ret_cb_t cb,
++                                         void *userdata);
++
++/**
++ * qemu_plugin_insn_disas() - return disassembly string for instruction
++ * @insn: instruction reference
++ *
++ * Returns an allocated string containing the disassembly
++ */
++QEMU_PLUGIN_API
++char *qemu_plugin_insn_disas(const struct qemu_plugin_insn *insn);
++
++/**
++ * qemu_plugin_insn_symbol() - best effort symbol lookup
++ * @insn: instruction reference
++ *
++ * Return a static string referring to the symbol. This is dependent
++ * on the binary QEMU is running having provided a symbol table.
++ */
++QEMU_PLUGIN_API
++const char *qemu_plugin_insn_symbol(const struct qemu_plugin_insn *insn);
++
++/**
++ * qemu_plugin_vcpu_for_each() - iterate over the existing vCPU
++ * @id: plugin ID
++ * @cb: callback function
++ * @userdata: user data for callback
++ *
++ * The @cb function is called once for each existing vCPU.
++ *
++ * See also: qemu_plugin_register_vcpu_init_cb()
++ */
++QEMU_PLUGIN_API
++void qemu_plugin_vcpu_for_each(qemu_plugin_id_t id,
++                               qemu_plugin_vcpu_udata_cb_t cb,
++                               void *userdata);
++
++/**
++ * qemu_plugin_register_flush_cb() - register code cache flush callback
++ * @id: plugin ID
++ * @cb: callback
++ * @userdata: user data for callback
++ *
++ * The @cb function is called every time the code cache is flushed.
++ * The callback can be used to free resources associated with existing
++ * translated blocks in a plugin. @cb is guaranteed to run with all cpus being
++ * stopped, thus no lock is required within it.
++ */
++QEMU_PLUGIN_API
++void qemu_plugin_register_flush_cb(qemu_plugin_id_t id,
++                                   qemu_plugin_udata_cb_t cb,
++                                   void *userdata);
++
++/**
++ * qemu_plugin_register_atexit_cb() - register exit callback
++ * @id: plugin ID
++ * @cb: callback
++ * @userdata: user data for callback
++ *
++ * The @cb function is called once execution has finished. Plugins
++ * should be able to free all their resources at this point much like
++ * after a reset/uninstall callback is called.
++ *
++ * In user-mode it is possible a few un-instrumented instructions from
++ * child threads may run before the host kernel reaps the threads.
++ */
++QEMU_PLUGIN_API
++void qemu_plugin_register_atexit_cb(qemu_plugin_id_t id,
++                                    qemu_plugin_udata_cb_t cb, void *userdata);
++
++/* returns how many vcpus were started at this point */
++QEMU_PLUGIN_API
++int qemu_plugin_num_vcpus(void);
++
++/**
++ * qemu_plugin_outs() - output string via QEMU's logging system
++ * @string: a string
++ */
++QEMU_PLUGIN_API
++void qemu_plugin_outs(const char *string);
++
++/**
++ * qemu_plugin_bool_parse() - parses a boolean argument in the form of
++ * "<argname>=[on|yes|true|off|no|false]"
++ *
++ * @name: argument name, the part before the equals sign
++ * @val: argument value, what's after the equals sign
++ * @ret: output return value
++ *
++ * returns true if the combination @name=@val parses correctly to a boolean
++ * argument, and false otherwise
++ */
++QEMU_PLUGIN_API
++bool qemu_plugin_bool_parse(const char *name, const char *val, bool *ret);
++
++/**
++ * qemu_plugin_path_to_binary() - path to binary file being executed
++ *
++ * Return a string representing the path to the binary. For user-mode
++ * this is the main executable. For system emulation we currently
++ * return NULL. The user should g_free() the string once no longer
++ * needed.
++ */
++QEMU_PLUGIN_API
++const char *qemu_plugin_path_to_binary(void);
++
++/**
++ * qemu_plugin_start_code() - returns start of text segment
++ *
++ * Returns the nominal start address of the main text segment in
++ * user-mode. Currently returns 0 for system emulation.
+  */
+ QEMU_PLUGIN_API
+ uint64_t qemu_plugin_start_code(void);
+@@ -1172,125 +2474,838 @@ void qemu_plugin_set_pc(uint64_t vaddr);
+  * avoid attempting to read data which may not yet be written and should use
+  * the memory callback API instead.
+  *
+- * Returns true on success and false on failure.
++ * Returns true on success and false on failure.
++ */
++QEMU_PLUGIN_API
++bool qemu_plugin_read_memory_vaddr(uint64_t addr,
++                                   GByteArray *data, size_t len);
++
 +/**
 + * qemu_plugin_crucible_read_memory_paddr() - read guest physical memory
 + * @addr: guest physical address at which to begin the read
@@ -64160,13 +65352,120 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..f2ae79e77c8f354ec0da39569c9a2229
 +bool qemu_plugin_crucible_write_memory_vaddr_for_vcpu(
 +    unsigned int vcpu_index, uint64_t addr, const uint8_t *data, size_t len);
 +
- /**
-  * qemu_plugin_write_memory_vaddr() - write to memory using a virtual address
-  *
-@@ -1292,6 +2567,666 @@ qemu_plugin_write_memory_hwaddr(uint64_t addr, GByteArray *data);
- QEMU_PLUGIN_API
- bool qemu_plugin_translate_vaddr(uint64_t vaddr, uint64_t *hwaddr);
- 
++/**
++ * qemu_plugin_write_memory_vaddr() - write to memory using a virtual address
++ *
++ * @addr: A virtual address to write to
++ * @data: A byte array containing the data to write
++ *
++ * The contents of @data will be written to memory starting at the virtual
++ * address @addr.
++ *
++ * This function does not guarantee consistency of writes, nor does it ensure
++ * that pending writes are flushed either before or after the write takes place,
++ * so callers should take care to only call this function in vCPU context (i.e.
++ * in callbacks) and avoid depending on the existence of data written using this
++ * function which may be overwritten afterward.
++ *
++ * Returns true on success and false on failure.
++ */
++QEMU_PLUGIN_API
++bool qemu_plugin_write_memory_vaddr(uint64_t addr,
++                                   GByteArray *data);
++
++/**
++ * enum qemu_plugin_hwaddr_operation_result - result of a memory operation
++ *
++ * @QEMU_PLUGIN_HWADDR_OPERATION_OK: hwaddr operation succeeded
++ * @QEMU_PLUGIN_HWADDR_OPERATION_ERROR: unexpected error occurred
++ * @QEMU_PLUGIN_HWADDR_OPERATION_DEVICE_ERROR: error in memory device
++ * @QEMU_PLUGIN_HWADDR_OPERATION_ACCESS_DENIED: permission error
++ * @QEMU_PLUGIN_HWADDR_OPERATION_INVALID_ADDRESS: address was invalid
++ * @QEMU_PLUGIN_HWADDR_OPERATION_INVALID_ADDRESS_SPACE: invalid address space
++ */
++enum qemu_plugin_hwaddr_operation_result {
++    QEMU_PLUGIN_HWADDR_OPERATION_OK,
++    QEMU_PLUGIN_HWADDR_OPERATION_ERROR,
++    QEMU_PLUGIN_HWADDR_OPERATION_DEVICE_ERROR,
++    QEMU_PLUGIN_HWADDR_OPERATION_ACCESS_DENIED,
++    QEMU_PLUGIN_HWADDR_OPERATION_INVALID_ADDRESS,
++    QEMU_PLUGIN_HWADDR_OPERATION_INVALID_ADDRESS_SPACE,
++};
++
++/**
++ * qemu_plugin_read_memory_hwaddr() - read from memory using a hardware address
++ *
++ * @addr: The physical address to read from
++ * @data: A byte array to store data into
++ * @len: The number of bytes to read, starting from @addr
++ *
++ * @len bytes of data is read from the current memory space for the current
++ * vCPU starting at @addr and stored into @data. If @data is not large enough to
++ * hold @len bytes, it will be expanded to the necessary size, reallocating if
++ * necessary. @len must be greater than 0.
++ *
++ * This function does not ensure writes are flushed prior to reading, so
++ * callers should take care when calling this function in plugin callbacks to
++ * avoid attempting to read data which may not yet be written and should use
++ * the memory callback API instead.
++ *
++ * This function is only valid for softmmu targets.
++ *
++ * Returns a qemu_plugin_hwaddr_operation_result indicating the result of the
++ * operation.
++ */
++QEMU_PLUGIN_API
++enum qemu_plugin_hwaddr_operation_result
++qemu_plugin_read_memory_hwaddr(uint64_t addr, GByteArray *data, size_t len);
++
++/**
++ * qemu_plugin_write_memory_hwaddr() - write to memory using a hardware address
++ *
++ * @addr: A physical address to write to
++ * @data: A byte array containing the data to write
++ *
++ * The contents of @data will be written to memory starting at the hardware
++ * address @addr in the current address space for the current vCPU.
++ *
++ * This function does not guarantee consistency of writes, nor does it ensure
++ * that pending writes are flushed either before or after the write takes place,
++ * so callers should take care when calling this function in plugin callbacks to
++ * avoid depending on the existence of data written using this function which
++ * may be overwritten afterward. In addition, this function requires that the
++ * pages containing the address are not locked. Practically, this means that you
++ * should not write instruction memory in a current translation block inside a
++ * callback registered with qemu_plugin_register_vcpu_tb_trans_cb.
++ *
++ * You can, for example, write instruction memory in a current translation block
++ * in a callback registered with qemu_plugin_register_vcpu_tb_exec_cb, although
++ * be aware that the write will not be flushed until after the translation block
++ * has finished executing.  In general, this function should be used to write
++ * data memory or to patch code at a known address, not in a current translation
++ * block.
++ *
++ * This function is only valid for softmmu targets.
++ *
++ * Returns a qemu_plugin_hwaddr_operation_result indicating the result of the
++ * operation.
++ */
++QEMU_PLUGIN_API
++enum qemu_plugin_hwaddr_operation_result
++qemu_plugin_write_memory_hwaddr(uint64_t addr, GByteArray *data);
++
++/**
++ * qemu_plugin_translate_vaddr() - translate virtual address for current vCPU
++ *
++ * @vaddr: virtual address to translate
++ * @hwaddr: pointer to store the physical address
++ *
++ * This function is only valid in vCPU context (i.e. in callbacks) and is only
++ * valid for softmmu targets.
++ *
++ * Returns true on success and false on failure.
++ */
++QEMU_PLUGIN_API
++bool qemu_plugin_translate_vaddr(uint64_t vaddr, uint64_t *hwaddr);
++
 +/** Sealed material returned by one exact-boundary fingerprint capture. */
 +struct qemu_plugin_crucible_fingerprint_material {
 +    /** Owned sealed memfd containing the length-framed writable-RAM preimage. */
@@ -64555,15 +65854,20 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..f2ae79e77c8f354ec0da39569c9a2229
 + * or an incomplete callback is rejected without returning partial evidence.
 + *
 + * Returns: zero on success or a negative errno-style status.
-+ */
-+QEMU_PLUGIN_API
+  */
+ QEMU_PLUGIN_API
+-bool qemu_plugin_read_memory_vaddr(uint64_t addr,
+-                                   GByteArray *data, size_t len);
 +int qemu_plugin_crucible_query_virtual_timer_witness(
 +    uint64_t generation,
 +    struct qemu_plugin_crucible_virtual_timer_witness *witness);
-+
-+/**
+ 
+ /**
+- * qemu_plugin_write_memory_vaddr() - write to memory using a virtual address
 + * struct qemu_plugin_crucible_fault_command - validated fault command copy
-+ *
+  *
+- * @addr: A virtual address to write to
+- * @data: A byte array containing the data to write
 + * This GPL-side structure is populated only after the plugin validates the
 + * public byte ABI and copies its payload out of shared memory. QEMU revalidates
 + * every scalar bound before retaining it.
@@ -64589,7 +65893,9 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..f2ae79e77c8f354ec0da39569c9a2229
 +
 +/**
 + * struct qemu_plugin_crucible_fault_result - QEMU mutation result
-+ *
+  *
+- * The contents of @data will be written to memory starting at the virtual
+- * address @addr.
 + * The plugin converts this fixed GPL-side value and its separately copied
 + * payload into the public byte-level result ABI.
 + */
@@ -64613,23 +65919,45 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..f2ae79e77c8f354ec0da39569c9a2229
 +/**
 + * qemu_plugin_crucible_lifecycle_set_process_generation() - bind generation
 + * @process_generation: nonzero host-provisioned process generation
-+ *
+  *
+- * This function does not guarantee consistency of writes, nor does it ensure
+- * that pending writes are flushed either before or after the write takes place,
+- * so callers should take care to only call this function in vCPU context (i.e.
+- * in callbacks) and avoid depending on the existence of data written using this
+- * function which may be overwritten afterward.
 + * Binds the immutable generation before fault commands are admitted.  A second
 + * call, including one that repeats the same value, is rejected.
-+ *
+  *
+- * Returns true on success and false on failure.
 + * Returns zero on success or a negative errno value on failure.
-+ */
-+QEMU_PLUGIN_API
+  */
+ QEMU_PLUGIN_API
+-bool qemu_plugin_write_memory_vaddr(uint64_t addr,
+-                                   GByteArray *data);
 +int qemu_plugin_crucible_lifecycle_set_process_generation(
 +    uint64_t process_generation);
-+
-+/**
+ 
+ /**
+- * enum qemu_plugin_hwaddr_operation_result - result of a memory operation
 + * struct qemu_plugin_crucible_fault_event - one real rule occurrence
-+ *
+  *
+- * @QEMU_PLUGIN_HWADDR_OPERATION_OK: hwaddr operation succeeded
+- * @QEMU_PLUGIN_HWADDR_OPERATION_ERROR: unexpected error occurred
+- * @QEMU_PLUGIN_HWADDR_OPERATION_DEVICE_ERROR: error in memory device
+- * @QEMU_PLUGIN_HWADDR_OPERATION_ACCESS_DENIED: permission error
+- * @QEMU_PLUGIN_HWADDR_OPERATION_INVALID_ADDRESS: address was invalid
+- * @QEMU_PLUGIN_HWADDR_OPERATION_INVALID_ADDRESS_SPACE: invalid address space
 + * The separately copied payload contains the mandatory versioned request and
 + * evidence envelope. Event sequence is owned and checkpointed by QEMU, not by
 + * the plugin.
-+ */
+  */
+-enum qemu_plugin_hwaddr_operation_result {
+-    QEMU_PLUGIN_HWADDR_OPERATION_OK,
+-    QEMU_PLUGIN_HWADDR_OPERATION_ERROR,
+-    QEMU_PLUGIN_HWADDR_OPERATION_DEVICE_ERROR,
+-    QEMU_PLUGIN_HWADDR_OPERATION_ACCESS_DENIED,
+-    QEMU_PLUGIN_HWADDR_OPERATION_INVALID_ADDRESS,
+-    QEMU_PLUGIN_HWADDR_OPERATION_INVALID_ADDRESS_SPACE,
 +struct qemu_plugin_crucible_fault_event {
 +    uint16_t command_kind;
 +    uint16_t outcome;
@@ -64654,11 +65982,25 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..f2ae79e77c8f354ec0da39569c9a2229
 +    QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_X86_64 = 2,
 +    QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_AARCH64 = 3,
 +    QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_VIRTIO = 4,
-+};
-+
-+/**
+ };
+ 
+ /**
+- * qemu_plugin_read_memory_hwaddr() - read from memory using a hardware address
+- *
+- * @addr: The physical address to read from
+- * @data: A byte array to store data into
+- * @len: The number of bytes to read, starting from @addr
+- *
+- * @len bytes of data is read from the current memory space for the current
+- * vCPU starting at @addr and stored into @data. If @data is not large enough to
+- * hold @len bytes, it will be expanded to the necessary size, reallocating if
+- * necessary. @len must be greater than 0.
 + * struct qemu_plugin_crucible_fault_capability - immutable handler descriptor
-+ *
+  *
+- * This function does not ensure writes are flushed prior to reading, so
+- * callers should take care when calling this function in plugin callbacks to
+- * avoid attempting to read data which may not yet be written and should use
+- * the memory callback API instead.
 + * Strings have process lifetime and are copied synchronously by the plugin.
 + */
 +struct qemu_plugin_crucible_fault_capability {
@@ -64677,7 +66019,8 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..f2ae79e77c8f354ec0da39569c9a2229
 + * qemu_plugin_crucible_fault_capabilities() - copy the sorted registry
 + * @out: destination array, or NULL to query the required row count
 + * @capacity: number of rows available at @out
-+ *
+  *
+- * This function is only valid for softmmu targets.
 + * Returns the required row count. No rows are copied unless @capacity is large
 + * enough for the complete immutable registry.
 + */
@@ -64701,7 +66044,9 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..f2ae79e77c8f354ec0da39569c9a2229
 + * @marker_len: exact nonzero marker length, bounded to 255 bytes
 + * @observed_icount: exact raw icount at the guest observation callback when
 + *                   the marker names a pending policy
-+ *
+  *
+- * Returns a qemu_plugin_hwaddr_operation_result indicating the result of the
+- * operation.
 + * Returns QEMU_PLUGIN_CRUCIBLE_READY_MARKER_QUEUED when a matching guest
 + * observation is queued for exact completion,
 + * QEMU_PLUGIN_CRUCIBLE_READY_MARKER_UNMATCHED when no pending policy names it,
@@ -64709,17 +66054,22 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..f2ae79e77c8f354ec0da39569c9a2229
 + * observations are inert in any callback context. A queued match forces exit
 + * before another chained TB and completes from the following drained
 + * deterministic control boundary.
-+ */
-+QEMU_PLUGIN_API
+  */
+ QEMU_PLUGIN_API
+-enum qemu_plugin_hwaddr_operation_result
+-qemu_plugin_read_memory_hwaddr(uint64_t addr, GByteArray *data, size_t len);
 +int qemu_plugin_crucible_fault_ready_marker(
 +    const char *marker, size_t marker_len, uint64_t observed_icount);
-+
-+/**
+ 
+ /**
+- * qemu_plugin_write_memory_hwaddr() - write to memory using a hardware address
 + * qemu_plugin_crucible_fault_submit() - copy and arm a validated command
 + * @command: plugin-validated fixed command fields
 + * @payload: copied canonical payload bytes
 + * @payload_len: exact payload byte count
-+ *
+  *
+- * @addr: A physical address to write to
+- * @data: A byte array containing the data to write
 + * Returns zero after arming or queuing a canonical rejection, or a negative
 + * errno when transport resources cannot preserve a result.
 + */
@@ -64731,7 +66081,9 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..f2ae79e77c8f354ec0da39569c9a2229
 +/**
 + * qemu_plugin_crucible_fault_cancel() - cancel one command not yet applied
 + * @command_sequence: exact live sequence to cancel
-+ *
+  *
+- * The contents of @data will be written to memory starting at the hardware
+- * address @addr in the current address space for the current vCPU.
 + * Returns zero on cancellation or -ENOENT once absent or applied.
 + */
 +QEMU_PLUGIN_API
@@ -64741,7 +66093,15 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..f2ae79e77c8f354ec0da39569c9a2229
 + * qemu_plugin_crucible_fault_peek() - inspect one completed result
 + * @result: fixed result destination
 + * @payload_length: exact result payload byte count
-+ *
+  *
+- * This function does not guarantee consistency of writes, nor does it ensure
+- * that pending writes are flushed either before or after the write takes place,
+- * so callers should take care when calling this function in plugin callbacks to
+- * avoid depending on the existence of data written using this function which
+- * may be overwritten afterward. In addition, this function requires that the
+- * pages containing the address are not locked. Practically, this means that you
+- * should not write instruction memory in a current translation block inside a
+- * callback registered with qemu_plugin_register_vcpu_tb_trans_cb.
 + * Returns one when a result is ready, zero when none is ready, or -EINVAL for
 + * an invalid pointer contract. This call never consumes or changes the result.
 + */
@@ -64756,7 +66116,13 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..f2ae79e77c8f354ec0da39569c9a2229
 + * @payload: result payload destination
 + * @payload_capacity: bytes available at @payload
 + * @payload_length: required/copied result payload bytes
-+ *
+  *
+- * You can, for example, write instruction memory in a current translation block
+- * in a callback registered with qemu_plugin_register_vcpu_tb_exec_cb, although
+- * be aware that the write will not be flushed until after the translation block
+- * has finished executing.  In general, this function should be used to write
+- * data memory or to patch code at a known address, not in a current translation
+- * block.
 + * Returns one when a result was consumed, zero when none is ready, -ENOSPC
 + * without consumption when the payload buffer is too small, or -EINVAL for an
 + * invalid pointer contract.
@@ -64770,7 +66136,8 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..f2ae79e77c8f354ec0da39569c9a2229
 + * qemu_plugin_crucible_fault_event_peek() - inspect one occurrence
 + * @event: fixed event destination
 + * @payload_length: exact evidence payload byte count
-+ *
+  *
+- * This function is only valid for softmmu targets.
 + * Returns one when an event is ready, zero when none is ready, or -EINVAL.
 + * The event is not consumed.
 + */
@@ -64780,21 +66147,28 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..f2ae79e77c8f354ec0da39569c9a2229
 +
 +/**
 + * qemu_plugin_crucible_fault_event_envelope_version() - event payload schema
-+ *
+  *
+- * Returns a qemu_plugin_hwaddr_operation_result indicating the result of the
+- * operation.
 + * Returns the mandatory private event-envelope version. Version one carries
 + * the canonical originating node request and raw occurrence evidence so a
 + * fresh plugin process can validate events from restored VM state.
-+ */
-+QEMU_PLUGIN_API
+  */
+ QEMU_PLUGIN_API
+-enum qemu_plugin_hwaddr_operation_result
+-qemu_plugin_write_memory_hwaddr(uint64_t addr, GByteArray *data);
 +int qemu_plugin_crucible_fault_event_envelope_version(void);
-+
-+/**
+ 
+ /**
+- * qemu_plugin_translate_vaddr() - translate virtual address for current vCPU
 + * qemu_plugin_crucible_fault_event_poll() - copy one occurrence
 + * @event: fixed event destination
 + * @payload: evidence destination
 + * @payload_capacity: bytes available at @payload
 + * @payload_length: required/copied evidence byte count
-+ *
+  *
+- * @vaddr: virtual address to translate
+- * @hwaddr: pointer to store the physical address
 + * Returns one when consumed, zero when empty, -ENOSPC without consumption, or
 + * -EINVAL for an invalid pointer contract.
 + */
@@ -64806,7 +66180,9 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..f2ae79e77c8f354ec0da39569c9a2229
 +/**
 + * qemu_plugin_crucible_fault_dispatch_node_boundary() - commit due node faults
 + * @raw_icount: exact raw retired-instruction coordinate
-+ *
+  *
+- * This function is only valid in vCPU context (i.e. in callbacks) and is only
+- * valid for softmmu targets.
 + * Commits every due node-boundary fault while the caller owns the BQL-held
 + * Crucible control-boundary scope. Returns zero on success and a negative errno
 + * when the scope or coordinate is invalid.
@@ -64818,19 +66194,20 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..f2ae79e77c8f354ec0da39569c9a2229
 + * qemu_plugin_register_crucible_fault_completion_cb() - register completion
 + * @cb: callback invoked after each boundary-dispatched result, or NULL to clear
 + * @userdata: opaque pointer supplied to @cb
-+ *
+  *
+- * Returns true on success and false on failure.
 + * Registering a callback lets a GPL-side controller complete a prepare/commit
 + * transaction without allowing the guest to retire another instruction.  A
 + * callback may poll and submit, but must not recursively dispatch boundaries.
-+ */
-+QEMU_PLUGIN_API
+  */
+ QEMU_PLUGIN_API
+-bool qemu_plugin_translate_vaddr(uint64_t vaddr, uint64_t *hwaddr);
 +void qemu_plugin_register_crucible_fault_completion_cb(
 +    qemu_plugin_crucible_fault_completion_cb_t cb, void *userdata);
-+
+ 
  /**
   * qemu_plugin_scoreboard_new() - alloc a new scoreboard
-  *
-@@ -1363,6 +3298,636 @@ void qemu_plugin_u64_set(qemu_plugin_u64 entry, unsigned int vcpu_index,
+@@ -1363,6 +3378,737 @@ void qemu_plugin_u64_set(qemu_plugin_u64 entry, unsigned int vcpu_index,
  QEMU_PLUGIN_API
  uint64_t qemu_plugin_u64_sum(qemu_plugin_u64 entry);
  
@@ -65304,6 +66681,107 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..f2ae79e77c8f354ec0da39569c9a2229
 +    QemuPluginCrucibleNodeTimerBirthInventory *inventory,
 +    QemuPluginCrucibleNodeTimerList *lists, uint32_t list_capacity,
 +    QemuPluginCrucibleNodeTimerBirth *timers, uint32_t timer_capacity);
++
++/* Finite native selections observe original arms; they grant no dispatch. */
++#define QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_SELECTION_VERSION 1
++#define QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_SELECTION_MAX 64
++#define QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_SELECTION_RETAINED_MAX 16
++#define QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_SELECTION_UNKNOWN_ROOTS 1
++#define QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_SELECTION_UNKNOWN_ORDER 2
++
++#define QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_DISPOSITION_PENDING 0
++#define QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_DISPOSITION_CANCELLED 1
++#define QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_DISPOSITION_REARMED 2
++#define QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_DISPOSITION_DEQUEUED 3
++#define QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_DISPOSITION_NATIVE_ONLY 1
++#define QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_DISPOSITION_PARENT 2
++#define QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_DISPOSITION_COMMAND 4
++
++typedef struct QemuPluginCrucibleNodeTimerSelection {
++    uint32_t version;
++    uint32_t size;
++    uint32_t flags;
++    uint32_t row_count;
++    uint64_t selection_id;
++    uint64_t gate_generation;
++    uint64_t mutation_generation;
++    uint64_t current_ps;
++    uint64_t native_deadline_ps;
++    uint64_t source_original_sequence;
++    uint8_t prepared_scope_hash[32];
++    uint8_t source_original_digest[32];
++    uint8_t selection_digest[32];
++    uint64_t next_service_deadline_ps;
++    uint64_t pending_service_credit_ps;
++} QemuPluginCrucibleNodeTimerSelection;
++
++typedef struct QemuPluginCrucibleNodeTimerDisposition {
++    uint32_t status;
++    uint32_t flags;
++    uint32_t reserved[2];
++    uint64_t timer_id;
++    uint64_t arm_generation;
++    uint64_t mutation_generation;
++    uint64_t parent_timer_id;
++    uint64_t parent_arm_generation;
++    uint64_t source_original_sequence;
++    uint8_t prepared_scope_hash[32];
++    uint8_t source_original_digest[32];
++} QemuPluginCrucibleNodeTimerDisposition;
++
++/**
++ * qemu_plugin_crucible_node_capture_timer_selection() - retain native frontier
++ * @scope: exact original V6 prepared scope
++ * @expected_generation: original retained asynchronous writer HOLD
++ * @selection: receives the immutable native selection identity
++ * @timers: receives original arm rows at the first native service/timer deadline
++ * @capacity: available rows, at most 64
++ *
++ * The genuine BQL-held stopped RR seam retains at most 64 native arm identities,
++ * their original generations, FIFO positions and observed birth records. The
++ * independent pending CPU service deadline and credit remain explicit. The
++ * cross-source semantic order, input roots and callback-owner lifetimes remain
++ * unknown: this selection contains no modeled Position or dispatch permission.
++ *
++ * Each process retains at most 16 selections. Exact original retries return the
++ * first bytes; exhaustion refuses before changing any native model state. The
++ * digest hashes the NUL-terminated tag "crucible.qemu-native-timer-selection.v1"
++ * and explicitly big-endian summary fields (omitting selection_digest), followed
++ * by the original 200-byte arm rows. No model pointer is retained in a selection.
++ * Returns zero or negative errno. Failure zeroes the summary and keeps HOLD.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_node_capture_timer_selection(
++    const uint8_t scope[32], uint64_t expected_generation,
++    QemuPluginCrucibleNodeTimerSelection *selection,
++    QemuPluginCrucibleNodeTimerBirth *timers, uint32_t capacity);
++
++/**
++ * qemu_plugin_crucible_node_query_timer_selection() - read original dispositions
++ * @scope: original prepared scope
++ * @selection_id: original positive native selection identity
++ * @selection_digest: exact immutable original identity
++ * @selection: receives the historical original summary
++ * @timers: receives original arm rows unchanged by cancellation or rearm
++ * @dispositions: receives the first observed removal of each selected arm
++ * @capacity: available arm/disposition rows, at most 64
++ *
++ * Each disposition changes from Pending at most once. Rearm, cancellation and
++ * genuine callback dequeue record the original ID/generation before its native
++ * pointer can disappear. Actual callback-parent and accepted-command ancestry
++ * remain diagnostics without a birth Position or semantic authorization.
++ * Dequeued proves queue removal, never callback success or operation completion.
++ * A callback-born successor with the same ID and new generation is not selected.
++ * Reading retained rows grants no execution, ACK, capture or all-source Ready.
++ * Returns zero or negative errno; failure zeroes the summary and exposed rows.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_node_query_timer_selection(
++    const uint8_t scope[32], uint64_t selection_id,
++    const uint8_t selection_digest[32],
++    QemuPluginCrucibleNodeTimerSelection *selection,
++    QemuPluginCrucibleNodeTimerBirth *timers,
++    QemuPluginCrucibleNodeTimerDisposition *dispositions, uint32_t capacity);
 +
 +/* The source successor is historical Applied evidence, never ACK or Ready. */
 +#define QEMU_PLUGIN_CRUCIBLE_NODE_PREPARATION_SUCCESSOR_VERSION 1
@@ -67056,10 +68534,10 @@ index 0000000000000000000000000000000000000000..af115a7c8f106667ceca6af7304a72e3
 +#endif
 diff --git a/include/qemu/crucible-hot-fork-plugin.h b/include/qemu/crucible-hot-fork-plugin.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..2fe5f3f53d526164dd8de5ebf59bf92d9aa4cd6a
+index 0000000000000000000000000000000000000000..e80fe23ae4f836547e0be51547a70d3d5c3a9205
 --- /dev/null
 +++ b/include/qemu/crucible-hot-fork-plugin.h
-@@ -0,0 +1,58 @@
+@@ -0,0 +1,60 @@
 +/*
 + * Crucible plugin resource inventory shared by QEMU subsystems and QMP.
 + *
@@ -67087,6 +68565,8 @@ index 0000000000000000000000000000000000000000..2fe5f3f53d526164dd8de5ebf59bf92d
 +    bool initialization_registered;
 +    struct qemu_plugin_crucible_resource_manifest_v6 phase_manifest;
 +    bool phase_registered;
++    struct qemu_plugin_crucible_resource_manifest_v7 administration_manifest;
++    bool administration_registered;
 +} QemuPluginCrucibleHotForkInventory;
 +
 +typedef struct QemuPluginCrucibleHotForkBarrierInventory {
@@ -67315,6 +68795,56 @@ index 0000000000000000000000000000000000000000..aa8fa71be9f5904b9e6329a79f9b40c5
 +                                           uint8_t digest_out[32]);
 +
 +#endif /* QEMU_CRUCIBLE_PROCESS_H */
+diff --git a/include/qemu/crucible-timer-selection.h b/include/qemu/crucible-timer-selection.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..a3624e19da4ba73accead5ee7e9cf1783107913b
+--- /dev/null
++++ b/include/qemu/crucible-timer-selection.h
+@@ -0,0 +1,44 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++#ifndef QEMU_CRUCIBLE_TIMER_SELECTION_H
++#define QEMU_CRUCIBLE_TIMER_SELECTION_H
++
++#include "plugins/qemu-plugin.h"
++
++/* Native command ancestry is observational and has no semantic Position. */
++typedef struct QemuTimerNodeSelectionCause {
++    uint64_t source_original_sequence;
++    uint8_t prepared_scope_hash[32];
++    uint8_t source_original_digest[32];
++} QemuTimerNodeSelectionCause;
++
++typedef bool QemuTimerNodeSelectionCauseSampler(
++    QemuTimerNodeSelectionCause *cause);
++
++void qemu_timer_node_selection_register_cause_sampler(
++    QemuTimerNodeSelectionCauseSampler *sample);
++
++/* Actual queue mutations call this under the existing timer custody guard. */
++void qemu_timer_node_selection_note(uint64_t timer_id, uint64_t arm_generation,
++    uint32_t disposition, uint64_t mutation_generation,
++    uint64_t parent_timer_id, uint64_t parent_arm_generation);
++
++/* Publication takes queue custody before selection custody. It cannot execute
++ * callbacks or store timer pointers; a changed observed generation refuses. */
++int qemu_timer_node_selection_publish(
++    uint64_t expected_mutation_generation,
++    const QemuPluginCrucibleNodeTimerSelection *candidate,
++    const QemuPluginCrucibleNodeTimerBirth *timers,
++    QemuPluginCrucibleNodeTimerSelection *selection);
++
++int qemu_timer_node_selection_install(
++    const QemuPluginCrucibleNodeTimerSelection *candidate,
++    const QemuPluginCrucibleNodeTimerBirth *timers,
++    QemuPluginCrucibleNodeTimerSelection *selection);
++
++/* RR supplies the actual stopped source origin; callers cannot grant effects. */
++int qemu_timer_node_selection_capture(
++    const QemuPluginCrucibleNodeTimerSelection *origin,
++    QemuPluginCrucibleNodeTimerSelection *selection,
++    QemuPluginCrucibleNodeTimerBirth *timers, uint32_t capacity);
++
++#endif
 diff --git a/include/qemu/guest-random.h b/include/qemu/guest-random.h
 index 5060d49d6092e77344ec7e59bd6a232aa9aad0bb..e6d56f256e2b8a287bbc38f5a39fd215e412aab9 100644
 --- a/include/qemu/guest-random.h
@@ -69929,10 +71459,10 @@ index 0000000000000000000000000000000000000000..4a4d665eb7262cd2b9fff0ab1ceed514
 +#endif
 diff --git a/include/system/crucible-kvm-clock.h b/include/system/crucible-kvm-clock.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..b965770691810c1324d610b10bf80a968701b6e3
+index 0000000000000000000000000000000000000000..1853327ac4ea30615c37de498ff751937afcea8c
 --- /dev/null
 +++ b/include/system/crucible-kvm-clock.h
-@@ -0,0 +1,84 @@
+@@ -0,0 +1,144 @@
 +/* SPDX-License-Identifier: GPL-2.0-only */
 +/* Native kernel component ABI, separated from SIM instruction-clock control. */
 +#ifndef QEMU_CRUCIBLE_KVM_CLOCK_H
@@ -69994,6 +71524,64 @@ index 0000000000000000000000000000000000000000..b965770691810c1324d610b10bf80a96
 +    CRUCIBLE_KVM_USERSPACE_UNSUPPORTED,
 +} CrucibleKvmUserspacePhase;
 +
++
++#ifndef KVM_CAP_CRUCIBLE_COMPLETION_V1
++#define KVM_CAP_CRUCIBLE_COMPLETION_V1 0xa028
++#define KVM_CRUCIBLE_COMPLETION_QUERY 1
++#define KVM_CRUCIBLE_COMPLETION_STEP 2
++#define KVM_CRUCIBLE_COMPLETION_EMPTY 0
++#define KVM_CRUCIBLE_COMPLETION_PENDING 1
++#define KVM_CRUCIBLE_COMPLETION_MORE 2
++#define KVM_CRUCIBLE_COMPLETION_DONE 3
++#define KVM_CRUCIBLE_COMPLETION_UNKNOWN 4
++#define KVM_CRUCIBLE_COMPLETION_UNSUPPORTED 5
++#define KVM_CRUCIBLE_COMPLETION_UNCERTAIN 1
++#define KVM_CRUCIBLE_COMPLETION_OPAQUE 2
++
++/* Exact stage-five kernel ABI. Private native state stays behind the ioctl. */
++struct kvm_crucible_completion {
++    uint32_t version;
++    uint32_t operation;
++    uint64_t operation_id;
++    uint64_t expected_sequence;
++    uint64_t pending_sequence;
++    uint64_t consumed_sequence;
++    uint64_t revision;
++    int32_t callback_result;
++    uint32_t phase;
++    uint32_t native_vcpu_id;
++    uint32_t flags;
++    uint64_t reserved[4];
++};
++#define KVM_CRUCIBLE_COMPLETION _IOWR(KVMIO, 0xd6, struct kvm_crucible_completion)
++#endif
++
++/* Preallocated with the original fixed vCPU roster, never a portable codec. */
++typedef struct CrucibleKvmResponseGeometry {
++    uint64_t address;
++    uint64_t data_offset;
++    uint32_t reason;
++    uint32_t length;
++    uint32_t count;
++    uint32_t size;
++    uint32_t direction;
++    uint8_t response[4096];
++    bool prepared;
++} CrucibleKvmResponseGeometry;
++
++typedef struct CrucibleKvmCompletionJournal {
++    struct kvm_crucible_completion original_request;
++    struct kvm_crucible_completion result;
++    uint64_t original_exit_sequence;
++    uint64_t resulting_exit_sequence;
++    uint64_t resulting_consumed_sequence;
++    int native_errno;
++    bool issued;
++    bool known;
++} CrucibleKvmCompletionJournal;
++
++int kvm_crucible_completion_configure(KVMState *state);
++
 +typedef struct CrucibleKvmUserspaceExit {
 +    CrucibleKvmUserspacePhase phase;
 +    uint64_t exit_sequence;
@@ -70005,6 +71593,8 @@ index 0000000000000000000000000000000000000000..b965770691810c1324d610b10bf80a96
 +    bool opaque_effects;
 +    bool uncertain_effects;
 +    uint8_t reserved_revisions;
++    CrucibleKvmResponseGeometry response;
++    CrucibleKvmCompletionJournal completion;
 +} CrucibleKvmUserspaceExit;
 +
 +int kvm_crucible_userspace_configure(KVMState *state, uint32_t capacity);
@@ -70222,7 +71812,7 @@ index a1ef7696cb56c7e8ef0bd269898c9185419287c2..6bb18f133e987699c4467b5283bc1bb8
   * Returns true if executing within IOThread context,
   * false otherwise.
 diff --git a/include/system/kvm_int.h b/include/system/kvm_int.h
-index 0876aac938d3b3565c6a26eb1f569c3c78f87c98..fdd9995680514aa2bcd26dbb00881324d5981f38 100644
+index 0876aac938d3b3565c6a26eb1f569c3c78f87c98..dda634ebc1c9b2872fd1d55034ddf9ed4182f7b0 100644
 --- a/include/system/kvm_int.h
 +++ b/include/system/kvm_int.h
 @@ -14,6 +14,7 @@
@@ -70233,7 +71823,7 @@ index 0876aac938d3b3565c6a26eb1f569c3c78f87c98..fdd9995680514aa2bcd26dbb00881324
  #include "accel/accel-ops.h"
  #include "hw/core/boards.h"
  #include "hw/i386/topology.h"
-@@ -108,6 +109,19 @@ struct KVMState
+@@ -108,6 +109,22 @@ struct KVMState
      int nr_slots_max;
      int fd;
      int vmfd;
@@ -70242,6 +71832,9 @@ index 0876aac938d3b3565c6a26eb1f569c3c78f87c98..fdd9995680514aa2bcd26dbb00881324
 +    uint32_t crucible_clock_numerator;
 +    uint32_t crucible_clock_denominator;
 +    uint32_t crucible_clock_kernel_edition;
++    bool crucible_completion_experiment;
++    bool crucible_completion_configured;
++    uint32_t crucible_completion_mmap_size;
 +    bool crucible_userspace_experiment;
 +    bool crucible_userspace_configured;
 +    bool crucible_userspace_faulted;
@@ -80723,10 +82316,10 @@ index 9e9941fe73e77a7b3bcc3ca1ab7ad4bec58f0151..66e2d8cd64d01e2304aa51675bfe4959
  
  static int net_slirp_init(NetClientState *peer, const char *model,
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index fbf905cd63e4cc109748b379f4209f6ad6547c2c..6174b2781f291aa162f5a9a7fb04a2ae25d03d0d 100644
+index fbf905cd63e4cc109748b379f4209f6ad6547c2c..4a5f328cffaec96abdb3fd2129169729349e6330 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
-@@ -11,12 +11,47 @@
+@@ -11,12 +11,48 @@
   */
  
  #include "qemu/osdep.h"
@@ -80771,10 +82364,11 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..6174b2781f291aa162f5a9a7fb04a2ae
 +G_STATIC_ASSERT(sizeof(struct qemu_plugin_crucible_resource_manifest_v4) == 128);
 +G_STATIC_ASSERT(sizeof(struct qemu_plugin_crucible_resource_manifest_v5) == 160);
 +G_STATIC_ASSERT(sizeof(struct qemu_plugin_crucible_resource_manifest_v6) == 192);
++G_STATIC_ASSERT(sizeof(struct qemu_plugin_crucible_resource_manifest_v7) == 224);
  
  /*
   * In system mode we cannot trace the binary being executed so the
-@@ -101,14 +136,1148 @@ const char *qemu_plugin_hwaddr_device_name(const struct qemu_plugin_hwaddr *h)
+@@ -101,14 +137,1183 @@ const char *qemu_plugin_hwaddr_device_name(const struct qemu_plugin_hwaddr *h)
   */
  static bool has_control;
  static Error *migration_blocker;
@@ -81169,6 +82763,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..6174b2781f291aa162f5a9a7fb04a2ae
 +    uint64_t allowed_workers = QEMU_PLUGIN_CRUCIBLE_WORKER_ALL;
 +    uint64_t allowed_callbacks = QEMU_PLUGIN_CRUCIBLE_CALLBACK_ALL &
 +        ~QEMU_PLUGIN_CRUCIBLE_CALLBACK_NODE_INITIALIZATION;
++    const struct qemu_plugin_crucible_resource_manifest_v7 *administration = NULL;
 +    const struct qemu_plugin_crucible_resource_manifest_v6 *phase = NULL;
 +    const struct qemu_plugin_crucible_resource_manifest_v5 *initialization = NULL;
 +    const struct qemu_plugin_crucible_resource_manifest_v4 *native = NULL;
@@ -81179,8 +82774,25 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..6174b2781f291aa162f5a9a7fb04a2ae
 +        return -EINVAL;
 +    }
 +    if (manifest->schema_version ==
++            QEMU_PLUGIN_CRUCIBLE_RESOURCE_MANIFEST_ADMINISTRATION_VERSION &&
++        manifest->struct_size == sizeof(*administration)) {
++        administration =
++            (const struct qemu_plugin_crucible_resource_manifest_v7 *)manifest;
++        if (!crucible_node_administration_manifest_matches(
++                administration->phase.initialization.native.prepared_scope_hash,
++                administration->administration_commitment,
++                administration->phase.initialization.native.node_control_fd) ||
++            !(manifest->resource_mask &
++              QEMU_PLUGIN_CRUCIBLE_RESOURCE_NODE_ADMINISTRATION)) {
++            return -EINVAL;
++        }
++    } else if (crucible_node_administration_launch_pinned()) {
++        /* An observed reader cannot be hidden by a pre-V7 resource record. */
++        return -EINVAL;
++    }
++    if (administration || (manifest->schema_version ==
 +            QEMU_PLUGIN_CRUCIBLE_RESOURCE_MANIFEST_PHASE_VERSION &&
-+        manifest->struct_size == sizeof(*phase)) {
++        manifest->struct_size == sizeof(*phase))) {
 +        phase = (const struct qemu_plugin_crucible_resource_manifest_v6 *)manifest;
 +        if (!crucible_node_phase_registered() ||
 +            !crucible_node_phase_authorization_matches(
@@ -81209,7 +82821,9 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..6174b2781f291aa162f5a9a7fb04a2ae
 +              QEMU_PLUGIN_CRUCIBLE_CALLBACK_NODE_INITIALIZATION)) {
 +            return -EINVAL;
 +        }
-+        allowed_resources = phase ? QEMU_PLUGIN_CRUCIBLE_RESOURCE_PHASE_ALL :
++        allowed_resources = administration ?
++            QEMU_PLUGIN_CRUCIBLE_RESOURCE_ADMINISTRATION_ALL :
++            phase ? QEMU_PLUGIN_CRUCIBLE_RESOURCE_PHASE_ALL :
 +            QEMU_PLUGIN_CRUCIBLE_RESOURCE_INITIALIZATION_ALL;
 +        allowed_callbacks = QEMU_PLUGIN_CRUCIBLE_CALLBACK_ALL;
 +    }
@@ -81272,6 +82886,16 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..6174b2781f291aa162f5a9a7fb04a2ae
 +        return -EINVAL;
 +    }
 +    if (qemu_plugin_crucible_resource_inventory.registered) {
++        if (administration) {
++            QemuPluginCrucibleHotForkInventory *retained =
++                &qemu_plugin_crucible_resource_inventory;
++
++            return retained->administration_registered &&
++                retained->native_fd_device == native_identity.st_dev &&
++                retained->native_fd_inode == native_identity.st_ino &&
++                !memcmp(&retained->administration_manifest, administration,
++                        sizeof(*administration)) ? 0 : -EALREADY;
++        }
 +        if (phase) {
 +            QemuPluginCrucibleHotForkInventory *retained =
 +                &qemu_plugin_crucible_resource_inventory;
@@ -81351,6 +82975,11 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..6174b2781f291aa162f5a9a7fb04a2ae
 +    if (phase) {
 +        qemu_plugin_crucible_resource_inventory.phase_manifest = *phase;
 +        qemu_plugin_crucible_resource_inventory.phase_registered = true;
++    }
++    if (administration) {
++        qemu_plugin_crucible_resource_inventory.administration_manifest =
++            *administration;
++        qemu_plugin_crucible_resource_inventory.administration_registered = true;
 +    }
 +    qemu_plugin_crucible_resource_inventory.manifest = *manifest;
 +    qemu_plugin_crucible_resource_inventory.registered = true;
@@ -81926,7 +83555,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..6174b2781f291aa162f5a9a7fb04a2ae
          return &has_control;
      }
      return NULL;
-@@ -123,9 +1292,1998 @@ static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
+@@ -123,9 +1328,1998 @@ static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
  void qemu_plugin_update_ns(const void *handle, int64_t new_time)
  {
      if (handle == &has_control) {
@@ -122945,7 +124574,7 @@ index 22b7afed9f650c866f81aa154e6ba03dcc606c44..1d42273ed53a18559b7b421cf756f415
  # @CommandLineParameterType:
  #
 diff --git a/qapi/run-state.json b/qapi/run-state.json
-index a5771ad46815528fef2c2ebfa538d4e023a19969..0713c6561d5f9055a666e30fc0b13f70970dc5e5 100644
+index a5771ad46815528fef2c2ebfa538d4e023a19969..3b7ff0614b5eecc34ce6102dfb67fe60bba20151 100644
 --- a/qapi/run-state.json
 +++ b/qapi/run-state.json
 @@ -132,6 +132,3082 @@
@@ -126031,7 +127660,7 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..0713c6561d5f9055a666e30fc0b13f70
  ##
  # @SHUTDOWN:
  #
-@@ -749,3 +3825,208 @@
+@@ -749,3 +3825,289 @@
  ##
  { 'enum': 'NotifyVmexitOption',
    'data': [ 'run', 'internal-error', 'disable' ] }
@@ -126240,8 +127869,89 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..0713c6561d5f9055a666e30fc0b13f70
 +##
 +{ 'command': 'x-crucible-kvm-userspace-exits',
 +  'returns': 'CrucibleKvmUserspaceInfo' }
++
++
++##
++# @CrucibleKvmCompletionOperation:
++#
++# @query: Reads original native response state without completion.
++# @complete: Completes exactly one original kernel response.
++# @dispatch: Refused until exclusive original CPU work is enrolled.
++#
++# Since: 11.1
++##
++{ 'enum': 'CrucibleKvmCompletionOperation',
++  'data': [ 'query', 'complete', 'dispatch' ] }
++
++##
++# @CrucibleKvmCompletionInfo:
++#
++# @schema-version: Independent completion component edition, always
++#     one.
++# @vcpu-index: Original fixed QEMU vCPU slot.
++# @kernel-vcpu-id: Original native vCPU ID.
++# @operation-id: Original completion command ID, zero for query.
++# @expected-exit-sequence: Original userspace response sequence.
++# @exit-sequence: Retained current original userspace sequence.
++# @consumed-sequence: Last acknowledged original userspace response.
++# @native-pending-sequence: Actual kernel response sequence.
++# @native-consumed-sequence: Actual kernel consumed response sequence.
++# @native-revision: Original native journal revision.
++# @native-phase: Private kernel phase, zero through five.
++# @callback-result: Original completion callback result when known.
++# @native-errno: Failed ioctl attempt, zero for a received result.
++# @result-known: Original kernel result was received and validated.
++# @uncertain-effects: Any uncertain attempt remains historical state.
++# @opaque-effects: Original unsupported state remains retained.
++# @handler-pending: A new MMIO fragment has not been dispatched.
++# @device-closure: Always false; no whole-device closure is claimed.
++# @input-custody: Always false; no input cut is authenticated.
++# @output-custody: Always false; no output publication is
++#     authenticated.
++# @profile-qualified: Always false; this is not node authority.
++#
++# Since: 11.1
++##
++{ 'struct': 'CrucibleKvmCompletionInfo',
++  'data': { 'schema-version': 'uint32', 'vcpu-index': 'uint32',
++            'kernel-vcpu-id': 'uint64', 'operation-id': 'uint64',
++            'expected-exit-sequence': 'uint64', 'exit-sequence': 'uint64',
++            'consumed-sequence': 'uint64', 'native-pending-sequence': 'uint64',
++            'native-consumed-sequence': 'uint64', 'native-revision': 'uint64',
++            'native-phase': 'uint32', 'callback-result': 'int32',
++            'native-errno': 'int32', 'result-known': 'bool',
++            'uncertain-effects': 'bool', 'opaque-effects': 'bool',
++            'handler-pending': 'bool', 'device-closure': 'bool',
++            'input-custody': 'bool', 'output-custody': 'bool',
++            'profile-qualified': 'bool' } }
++
++##
++# @x-crucible-kvm-completion:
++#
++# Controls one original kernel response on acknowledged paused CPUs.
++# Requires immutable pre-vCPU x-crucible-completion-only opt-in,
++# the original userspace ledger and the actual stage-five kernel ABI.
++# Complete never invokes KVM_RUN or a normal guest-entry loop.
++# A new fragment remains handling; dispatch is currently refused.
++# Known retries return the retained result without another ioctl.
++# An uncertain retry uses the same original kernel operation ID.
++#
++# @operation: Query, single completion, or refused dispatch.
++# @vcpu-index: Original fixed CPU slot, never a replacement owner.
++# @operation-id: Consecutive completion ID; zero for query.
++# @expected-exit-sequence: Exact original sequence; zero for query.
++#
++# Returns: Bounded component facts; all whole-node guarantees false.
++#
++# Since: 11.1
++##
++{ 'command': 'x-crucible-kvm-completion',
++  'data': { 'operation': 'CrucibleKvmCompletionOperation',
++            'vcpu-index': 'uint32', 'operation-id': 'uint64',
++            'expected-exit-sequence': 'uint64' },
++  'returns': 'CrucibleKvmCompletionInfo' }
 diff --git a/qemu-options.hx b/qemu-options.hx
-index 34970fffc94b4d79b6c2cbfc12efab9ad88855f2..3b3320f88f07f62bcf8377b9ce421eb2d60e80d2 100644
+index 34970fffc94b4d79b6c2cbfc12efab9ad88855f2..9b0956f12812be0f79c01f7f481c8e30061f56d5 100644
 --- a/qemu-options.hx
 +++ b/qemu-options.hx
 @@ -232,7 +232,7 @@ SRST
@@ -126253,10 +127963,15 @@ index 34970fffc94b4d79b6c2cbfc12efab9ad88855f2..3b3320f88f07f62bcf8377b9ce421eb2
      "                select accelerator (kvm, xen, hvf, nitro, nvmm, whpx, mshv or tcg; use 'help' for a list)\n"
      "                igd-passthru=on|off (enable Xen integrated Intel graphics passthrough, default=off)\n"
      "                kernel-irqchip=on|off|split controls accelerated irqchip support (default=on)\n"
-@@ -5313,16 +5313,30 @@ SRST
+@@ -5313,16 +5313,35 @@ SRST
      Windows guest and will re-inject them.
  ERST
  
++DEF("crucible-node-administration", HAS_ARG,
++    QEMU_OPTION_crucible_node_administration,
++    "-crucible-node-administration v1:HEX original reader observation pin\n",
++    QEMU_ARCH_ALL)
++
 +DEF("crucible-node-phase", HAS_ARG,
 +    QEMU_OPTION_crucible_node_phase,
 +    "-crucible-node-phase v1:HEX original source projection pin\n",
@@ -126288,7 +128003,7 @@ index 34970fffc94b4d79b6c2cbfc12efab9ad88855f2..3b3320f88f07f62bcf8377b9ce421eb2
      then the virtual cpu speed will be automatically adjusted to keep
      virtual time within a few seconds of real time.
  
-@@ -5348,7 +5362,14 @@ SRST
+@@ -5348,7 +5367,14 @@ SRST
      option. Whenever the guest clock is behind the host clock and if
      ``align=on`` is specified then we print a message to the user to
      inform about the delay. Currently this option does not work when
@@ -133801,7 +135516,7 @@ index 08acf801b0e6cdbade400a64a3de6e2d1f08d1ca..c626b250aa82fd28d11e0f31dff17639
      notifier_list_notify(&shutdown_notifiers, &cause);
  }
 diff --git a/system/vl.c b/system/vl.c
-index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..dfea38ca2c0092ce39d6fd6ecd5add33378183c4 100644
+index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..e9aaaa24443a3ed4d130a42a3b2bbb4104c60770 100644
 --- a/system/vl.c
 +++ b/system/vl.c
 @@ -43,7 +43,9 @@
@@ -133834,7 +135549,7 @@ index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..dfea38ca2c0092ce39d6fd6ecd5add33
          }, {
              .name = "rr",
              .type = QEMU_OPT_STRING,
-@@ -1678,6 +1686,81 @@ static const QEMUOption *lookup_opt(int argc, char **argv,
+@@ -1678,6 +1686,98 @@ static const QEMUOption *lookup_opt(int argc, char **argv,
      return popt;
  }
  
@@ -133852,7 +135567,9 @@ index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..dfea38ca2c0092ce39d6fd6ecd5add33
 +        if (!strcmp(argv[scan], "-crucible-node-initialization") ||
 +            !strcmp(argv[scan], "--crucible-node-initialization") ||
 +            !strcmp(argv[scan], "-crucible-node-phase") ||
-+            !strcmp(argv[scan], "--crucible-node-phase")) {
++            !strcmp(argv[scan], "--crucible-node-phase") ||
++            !strcmp(argv[scan], "-crucible-node-administration") ||
++            !strcmp(argv[scan], "--crucible-node-administration")) {
 +            candidate = true;
 +            break;
 +        }
@@ -133870,6 +135587,15 @@ index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..dfea38ca2c0092ce39d6fd6ecd5add33
 +            option->index == QEMU_OPTION_incoming ||
 +            option->index == QEMU_OPTION_preconfig) {
 +            restores_or_defers_machine = true;
++        }
++        if (option->index == QEMU_OPTION_crucible_node_administration) {
++#ifdef CONFIG_TCG
++            if (crucible_node_administration_pin_early(argument) == 0) {
++                continue;
++            }
++#endif
++            error_report("invalid or duplicate original native reader pin");
++            exit(EXIT_FAILURE);
 +        }
 +        if (option->index == QEMU_OPTION_crucible_node_phase) {
 +#ifdef CONFIG_TCG
@@ -133893,10 +135619,16 @@ index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..dfea38ca2c0092ce39d6fd6ecd5add33
 +    }
 +#ifdef CONFIG_TCG
 +    if ((crucible_node_initialization_launch_pinned() ||
-+         crucible_node_phase_launch_pinned()) && restores_or_defers_machine) {
++         crucible_node_phase_launch_pinned() ||
++         crucible_node_administration_launch_pinned()) && restores_or_defers_machine) {
 +        /* An original constructor epoch cannot adopt or clean an unchanged
 +         * captured/restore cut, including a zero-time VM image. */
 +        error_report("native initialization requires an original fresh machine");
++        exit(EXIT_FAILURE);
++    }
++    if (crucible_node_administration_launch_pinned() &&
++        !crucible_node_administration_pin_matches_phase()) {
++        error_report("native reader pin requires its original phase Realize");
 +        exit(EXIT_FAILURE);
 +    }
 +    if (crucible_node_phase_launch_pinned() &&
@@ -133916,7 +135648,7 @@ index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..dfea38ca2c0092ce39d6fd6ecd5add33
  static MachineClass *select_machine(QDict *qdict, Error **errp)
  {
      ERRP_GUARD();
-@@ -2716,16 +2799,23 @@ static void qemu_init_displays(void)
+@@ -2716,16 +2816,23 @@ static void qemu_init_displays(void)
      }
  }
  
@@ -133943,7 +135675,7 @@ index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..dfea38ca2c0092ce39d6fd6ecd5add33
      if (machine_class->auto_create_sdcard) {
          bool ambigous;
  
-@@ -2808,6 +2898,8 @@ static bool qemu_machine_creation_done(Error **errp)
+@@ -2808,6 +2915,8 @@ static bool qemu_machine_creation_done(Error **errp)
                      "type does not use that option; "
                      "No VGA device has been created");
      }
@@ -133952,7 +135684,7 @@ index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..dfea38ca2c0092ce39d6fd6ecd5add33
      return true;
  }
  
-@@ -2820,6 +2912,27 @@ void qmp_x_exit_preconfig(Error **errp)
+@@ -2820,6 +2929,27 @@ void qmp_x_exit_preconfig(Error **errp)
  
      qemu_init_board();
      qemu_create_cli_devices();
@@ -133980,7 +135712,7 @@ index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..dfea38ca2c0092ce39d6fd6ecd5add33
      if (!qemu_machine_creation_done(errp)) {
          return;
      }
-@@ -2906,6 +3019,7 @@ void qemu_init(int argc, char **argv)
+@@ -2906,6 +3036,7 @@ void qemu_init(int argc, char **argv)
      module_init_info(qemu_modinfo);
      module_allow_arch(target_name());
  
@@ -133988,10 +135720,11 @@ index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..dfea38ca2c0092ce39d6fd6ecd5add33
      qemu_init_subsystems();
  
      /* first pass of option parsing */
-@@ -3549,6 +3663,10 @@ void qemu_init(int argc, char **argv)
+@@ -3549,6 +3680,11 @@ void qemu_init(int argc, char **argv)
                      exit(1);
                  }
                  break;
++            case QEMU_OPTION_crucible_node_administration:
 +            case QEMU_OPTION_crucible_node_phase:
 +            case QEMU_OPTION_crucible_node_initialization:
 +                /* Already strictly pinned before original model construction. */
@@ -133999,7 +135732,7 @@ index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..dfea38ca2c0092ce39d6fd6ecd5add33
              case QEMU_OPTION_icount:
                  icount_opts = qemu_opts_parse_noisily(qemu_find_opts("icount"),
                                                        optarg, true);
-@@ -3768,6 +3886,9 @@ void qemu_init(int argc, char **argv)
+@@ -3768,6 +3904,9 @@ void qemu_init(int argc, char **argv)
      trace_init_file();
  
      qemu_init_main_loop(&error_fatal);
@@ -198001,6 +199734,419 @@ index 0000000000000000000000000000000000000000..e7eee6cdc9d8a4c33a3545864fd8b193
 +    return qemu_crucible_hot_fork_verify_mapping_table(
 +        transaction, shared_mappings, shared_mapping_count);
 +}
+diff --git a/util/crucible-timer-selection.c b/util/crucible-timer-selection.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..550e5b30dde948675fb883530c8340bed9d0c8bb
+--- /dev/null
++++ b/util/crucible-timer-selection.c
+@@ -0,0 +1,407 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/* Bounded original arm observations, independent of callback dispatch. */
++#include "qemu/osdep.h"
++#include "qemu/atomic.h"
++#include "qemu/bswap.h"
++#include "qemu/crucible-timer-selection.h"
++#include "qemu/main-loop.h"
++#include "qemu/timer.h"
++
++#ifdef CONFIG_POSIX
++#include <pthread.h>
++
++typedef struct TimerSelection {
++    QemuPluginCrucibleNodeTimerSelection summary;
++    QemuPluginCrucibleNodeTimerBirth timers[
++        QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_SELECTION_MAX];
++    QemuPluginCrucibleNodeTimerDisposition dispositions[
++        QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_SELECTION_MAX];
++} TimerSelection;
++
++static TimerSelection selections[
++    QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_SELECTION_RETAINED_MAX];
++static uint32_t selection_count;
++static uint32_t pending_dispositions;
++static bool selections_pending;
++static pthread_mutex_t selection_mutex = PTHREAD_MUTEX_INITIALIZER;
++static QemuTimerNodeSelectionCauseSampler *cause_sampler;
++
++static void selection_lock(void)
++{
++    int status = pthread_mutex_lock(&selection_mutex);
++
++    assert(status == 0);
++}
++
++static void selection_unlock(void)
++{
++    int status = pthread_mutex_unlock(&selection_mutex);
++
++    assert(status == 0);
++}
++
++static bool selection_original_matches(const TimerSelection *selection,
++    const QemuPluginCrucibleNodeTimerSelection *origin)
++{
++    return selection->summary.source_original_sequence ==
++               origin->source_original_sequence &&
++        !memcmp(selection->summary.source_original_digest,
++                origin->source_original_digest, 32) &&
++        !memcmp(selection->summary.prepared_scope_hash,
++                origin->prepared_scope_hash, 32);
++}
++
++static int selection_copy_original(
++    const QemuPluginCrucibleNodeTimerSelection *origin,
++    QemuPluginCrucibleNodeTimerSelection *summary,
++    QemuPluginCrucibleNodeTimerBirth *timers, uint32_t capacity)
++{
++    int result = -ENOENT;
++
++    selection_lock();
++    for (uint32_t index = 0; index < selection_count; index++) {
++        const TimerSelection *selection = &selections[index];
++
++        if (!selection_original_matches(selection, origin)) {
++            continue;
++        }
++        /* A fresh writer lifetime cannot adopt an older original cut, even
++         * before execution when the command identity is still sequence zero. */
++        if (origin->gate_generation != selection->summary.gate_generation) {
++            result = -ESTALE;
++            break;
++        }
++        if (capacity < selection->summary.row_count) {
++            result = -ENOSPC;
++            break;
++        }
++        *summary = selection->summary;
++        memcpy(timers, selection->timers,
++               summary->row_count * sizeof(*timers));
++        result = 0;
++        break;
++    }
++    selection_unlock();
++    return result;
++}
++
++static void selection_hash_u32(GChecksum *checksum, uint32_t value)
++{
++    uint8_t bytes[4];
++
++    stl_be_p(bytes, value);
++    g_checksum_update(checksum, bytes, sizeof(bytes));
++}
++
++static void selection_hash_u64(GChecksum *checksum, uint64_t value)
++{
++    uint8_t bytes[8];
++
++    stq_be_p(bytes, value);
++    g_checksum_update(checksum, bytes, sizeof(bytes));
++}
++
++static int selection_digest(QemuPluginCrucibleNodeTimerSelection *summary,
++    const QemuPluginCrucibleNodeTimerBirth *timers)
++{
++    static const char tag[] = "crucible.qemu-native-timer-selection.v1";
++    GChecksum *checksum = g_checksum_new(G_CHECKSUM_SHA256);
++    size_t digest_length = sizeof(summary->selection_digest);
++
++    if (!checksum) {
++        return -ENOMEM;
++    }
++    g_checksum_update(checksum, (const uint8_t *)tag, sizeof(tag));
++    selection_hash_u32(checksum, summary->version);
++    selection_hash_u32(checksum, summary->size);
++    selection_hash_u32(checksum, summary->flags);
++    selection_hash_u32(checksum, summary->row_count);
++    selection_hash_u64(checksum, summary->selection_id);
++    selection_hash_u64(checksum, summary->gate_generation);
++    selection_hash_u64(checksum, summary->mutation_generation);
++    selection_hash_u64(checksum, summary->current_ps);
++    selection_hash_u64(checksum, summary->native_deadline_ps);
++    selection_hash_u64(checksum, summary->source_original_sequence);
++    g_checksum_update(checksum, summary->prepared_scope_hash, 32);
++    g_checksum_update(checksum, summary->source_original_digest, 32);
++    selection_hash_u64(checksum, summary->next_service_deadline_ps);
++    selection_hash_u64(checksum, summary->pending_service_credit_ps);
++
++    for (uint32_t index = 0; index < summary->row_count; index++) {
++        const QemuPluginCrucibleNodeTimerBirth *timer = &timers[index];
++
++        selection_hash_u64(checksum, timer->timer.timer_id);
++        selection_hash_u64(checksum, timer->timer.list_id);
++        selection_hash_u64(checksum, timer->timer.arm_generation);
++        selection_hash_u64(checksum, timer->timer.expiry_ps);
++        selection_hash_u64(checksum, timer->timer.fifo_ordinal);
++        selection_hash_u32(checksum, timer->timer.attributes);
++        selection_hash_u32(checksum, timer->timer.scale);
++        selection_hash_u32(checksum, timer->birth_kind);
++        selection_hash_u32(checksum, timer->birth_phase);
++        selection_hash_u32(checksum, timer->birth_flags);
++        selection_hash_u32(checksum, timer->reserved);
++        selection_hash_u64(checksum, timer->birth_time_ps);
++        selection_hash_u64(checksum, timer->birth_microstep);
++        selection_hash_u64(checksum, timer->source_original_sequence);
++        selection_hash_u64(checksum, timer->parent_timer_id);
++        selection_hash_u64(checksum, timer->parent_arm_generation);
++        g_checksum_update(checksum, timer->prepared_scope_hash, 32);
++        g_checksum_update(checksum, timer->source_original_digest, 32);
++        g_checksum_update(checksum, timer->construction_commitment, 32);
++    }
++    g_checksum_get_digest(checksum, summary->selection_digest, &digest_length);
++    g_checksum_free(checksum);
++    return digest_length == 32 ? 0 : -EIO;
++}
++#endif
++
++void qemu_timer_node_selection_register_cause_sampler(
++    QemuTimerNodeSelectionCauseSampler *sample)
++{
++#ifdef CONFIG_POSIX
++    assert(sample && !cause_sampler && bql_locked());
++    qatomic_store_release(&cause_sampler, sample);
++#endif
++}
++
++void qemu_timer_node_selection_note(uint64_t timer_id, uint64_t arm_generation,
++    uint32_t disposition, uint64_t mutation_generation,
++    uint64_t parent_timer_id, uint64_t parent_arm_generation)
++{
++#ifdef CONFIG_POSIX
++    QemuTimerNodeSelectionCause cause = { 0 };
++    QemuTimerNodeSelectionCauseSampler *sample;
++    bool has_command = false;
++
++    if (!qatomic_load_acquire(&selections_pending)) {
++        return;
++    }
++    assert(timer_id && arm_generation && mutation_generation);
++    assert(disposition >= QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_DISPOSITION_CANCELLED &&
++           disposition <= QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_DISPOSITION_DEQUEUED);
++    assert(!!parent_timer_id == !!parent_arm_generation);
++    sample = qatomic_load_acquire(&cause_sampler);
++    if (sample) {
++        has_command = sample(&cause);
++    }
++
++    /* The timer queue/custody guard already precedes this mutex. No native
++     * callback, model lookup or allocation occurs while both are held. */
++    selection_lock();
++    for (uint32_t selection_index = 0;
++         selection_index < selection_count; selection_index++) {
++        TimerSelection *selection = &selections[selection_index];
++
++        for (uint32_t index = 0; index < selection->summary.row_count; index++) {
++            QemuPluginCrucibleNodeTimerDisposition *row =
++                &selection->dispositions[index];
++
++            if (row->status != QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_DISPOSITION_PENDING ||
++                row->timer_id != timer_id || row->arm_generation != arm_generation) {
++                continue;
++            }
++            row->status = disposition;
++            row->flags = QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_DISPOSITION_NATIVE_ONLY;
++            row->mutation_generation = mutation_generation;
++            if (parent_timer_id) {
++                row->flags |= QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_DISPOSITION_PARENT;
++                row->parent_timer_id = parent_timer_id;
++                row->parent_arm_generation = parent_arm_generation;
++            }
++            if (has_command && !memcmp(cause.prepared_scope_hash,
++                    selection->summary.prepared_scope_hash, 32)) {
++                row->flags |= QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_DISPOSITION_COMMAND;
++                row->source_original_sequence = cause.source_original_sequence;
++                memcpy(row->prepared_scope_hash, cause.prepared_scope_hash, 32);
++                memcpy(row->source_original_digest, cause.source_original_digest, 32);
++            }
++            assert(pending_dispositions > 0);
++            pending_dispositions--;
++        }
++    }
++    if (!pending_dispositions) {
++        qatomic_store_release(&selections_pending, false);
++    }
++    selection_unlock();
++#endif
++}
++
++int qemu_timer_node_selection_install(
++    const QemuPluginCrucibleNodeTimerSelection *candidate,
++    const QemuPluginCrucibleNodeTimerBirth *timers,
++    QemuPluginCrucibleNodeTimerSelection *summary)
++{
++#ifdef CONFIG_POSIX
++    TimerSelection *selection;
++    int result = 0;
++
++    /* Caller still owns the actual timer custody guard and has compared the
++     * complete inventory generation. This function never takes a queue lock. */
++    selection_lock();
++    if (selection_count == QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_SELECTION_RETAINED_MAX) {
++        result = -ENOSPC;
++        goto out;
++    }
++    selection = &selections[selection_count];
++    selection->summary = *candidate;
++    selection->summary.selection_id = selection_count + 1;
++    memcpy(selection->timers, timers,
++           candidate->row_count * sizeof(*timers));
++    if (candidate->selection_id != selection_count + 1) {
++        memset(selection, 0, sizeof(*selection));
++        result = -EAGAIN;
++        goto out;
++    }
++    for (uint32_t index = 0; index < candidate->row_count; index++) {
++        selection->dispositions[index] =
++            (QemuPluginCrucibleNodeTimerDisposition) {
++                .timer_id = timers[index].timer.timer_id,
++                .arm_generation = timers[index].timer.arm_generation,
++            };
++    }
++    pending_dispositions += candidate->row_count;
++    selection_count++;
++    *summary = selection->summary;
++    qatomic_store_release(&selections_pending, pending_dispositions != 0);
++
++out:
++    selection_unlock();
++    return result;
++#else
++    return -ENOTSUP;
++#endif
++}
++
++int qemu_timer_node_selection_capture(
++    const QemuPluginCrucibleNodeTimerSelection *origin,
++    QemuPluginCrucibleNodeTimerSelection *summary,
++    QemuPluginCrucibleNodeTimerBirth *timers, uint32_t capacity)
++{
++#ifdef CONFIG_POSIX
++    QemuPluginCrucibleNodeTimerInventory inventory;
++    QemuPluginCrucibleNodeTimerList lists[QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_LIST_MAX];
++    QemuPluginCrucibleNodeTimerBirth selected[
++        QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_SELECTION_MAX];
++    g_autofree QemuPluginCrucibleNodeTimerBirth *observed = NULL;
++    QemuPluginCrucibleNodeTimerSelection candidate = *origin;
++    uint32_t count = 0;
++    int result;
++
++    G_STATIC_ASSERT(sizeof(*summary) == 176);
++    G_STATIC_ASSERT(sizeof(QemuPluginCrucibleNodeTimerDisposition) == 128);
++    memset(summary, 0, sizeof(*summary));
++    if (!bql_locked() || !origin->gate_generation ||
++        capacity > QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_SELECTION_MAX || !timers) {
++        return -EINVAL;
++    }
++    result = selection_copy_original(origin, summary, timers, capacity);
++    if (result != -ENOENT) {
++        return result;
++    }
++    observed = g_try_new0(QemuPluginCrucibleNodeTimerBirth,
++                         QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_MAX);
++    if (!observed) {
++        return -ENOMEM;
++    }
++    result = qemu_timer_crucible_node_birth_inventory(&inventory,
++        lists, QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_LIST_MAX,
++        observed, QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_MAX);
++    if (result < 0) {
++        return result;
++    }
++    if (inventory.current_ps != origin->current_ps) {
++        return -EAGAIN;
++    }
++    if (inventory.timer_count > QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_MAX) {
++        return -EOVERFLOW;
++    }
++    candidate.native_deadline_ps = origin->next_service_deadline_ps;
++    for (uint32_t index = 0; index < inventory.timer_count; index++) {
++        candidate.native_deadline_ps = MIN(candidate.native_deadline_ps,
++                                          observed[index].timer.expiry_ps);
++    }
++    for (uint32_t index = 0; index < inventory.timer_count; index++) {
++        if (observed[index].timer.expiry_ps != candidate.native_deadline_ps) {
++            continue;
++        }
++        if (count == QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_SELECTION_MAX) {
++            return -ENOSPC;
++        }
++        selected[count++] = observed[index];
++    }
++    if (capacity < count) {
++        return -ENOSPC;
++    }
++    candidate.row_count = count;
++    candidate.mutation_generation = inventory.mutation_generation;
++    selection_lock();
++    if (selection_count == QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_SELECTION_RETAINED_MAX) {
++        selection_unlock();
++        return -ENOSPC;
++    }
++    candidate.selection_id = selection_count + 1;
++    selection_unlock();
++
++    /* Hash bounded data before taking any queue/custody guard. Publication
++     * rechecks the actual mutation generation and next unused identity. */
++    result = selection_digest(&candidate, selected);
++    if (result < 0) {
++        return result;
++    }
++    result = qemu_timer_node_selection_publish(inventory.mutation_generation,
++                                               &candidate, selected, summary);
++    if (result < 0) {
++        return result;
++    }
++    memcpy(timers, selected, count * sizeof(*timers));
++    return 0;
++#else
++    return -ENOTSUP;
++#endif
++}
++
++int qemu_plugin_crucible_node_query_timer_selection(
++    const uint8_t scope[32], uint64_t selection_id,
++    const uint8_t selection_digest[32],
++    QemuPluginCrucibleNodeTimerSelection *summary,
++    QemuPluginCrucibleNodeTimerBirth *timers,
++    QemuPluginCrucibleNodeTimerDisposition *dispositions, uint32_t capacity)
++{
++    if (!summary) {
++        return -EINVAL;
++    }
++    memset(summary, 0, sizeof(*summary));
++    if (!scope || !selection_digest || !selection_id || !timers || !dispositions ||
++        capacity > QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_SELECTION_MAX) {
++        return -EINVAL;
++    }
++    memset(timers, 0, capacity * sizeof(*timers));
++    memset(dispositions, 0, capacity * sizeof(*dispositions));
++#ifdef CONFIG_POSIX
++    int result = -ESTALE;
++
++    selection_lock();
++    if (selection_id <= selection_count) {
++        const TimerSelection *selection = &selections[selection_id - 1];
++
++        if (!memcmp(scope, selection->summary.prepared_scope_hash, 32) &&
++            !memcmp(selection_digest, selection->summary.selection_digest, 32)) {
++            if (capacity < selection->summary.row_count) {
++                result = -ENOSPC;
++            } else {
++                *summary = selection->summary;
++                memcpy(timers, selection->timers,
++                       summary->row_count * sizeof(*timers));
++                memcpy(dispositions, selection->dispositions,
++                       summary->row_count * sizeof(*dispositions));
++                result = 0;
++            }
++        }
++    }
++    selection_unlock();
++    return result;
++#else
++    return -ENOTSUP;
++#endif
++}
 diff --git a/util/fdmon-epoll.c b/util/fdmon-epoll.c
 index 61118e1ee644360eb936f2a89f2d0a6a7706b2f3..b46734137788f99b684079d6a8cc3458f9327402 100644
 --- a/util/fdmon-epoll.c
@@ -198405,7 +200551,7 @@ index 65e5dbcc941bd2d397c42befad5b212959329714..d86c66d40d6fca1d7120748e7d31228b
  
  /* Functions to operate on the main QEMU AioContext.  */
 diff --git a/util/meson.build b/util/meson.build
-index fa174c07a57a422f19315e990147ea9364782ba7..5ee896ab013f8d99c3ce57bbfce329c6d739c522 100644
+index fa174c07a57a422f19315e990147ea9364782ba7..c4c9cb0b7e7bbcb42a7de312f7a038debdd4039c 100644
 --- a/util/meson.build
 +++ b/util/meson.build
 @@ -71,6 +71,7 @@ if have_system
@@ -198416,6 +200562,14 @@ index fa174c07a57a422f19315e990147ea9364782ba7..5ee896ab013f8d99c3ce57bbfce329c6
      util_ss.add(files('userfaultfd.c'))
    endif
  endif
+@@ -83,6 +84,7 @@ if have_block or have_ga
+   util_ss.add(files('qemu-coroutine.c', 'qemu-coroutine-lock.c', 'qemu-coroutine-io.c'))
+   util_ss.add(files(f'coroutine-@coroutine_backend@.c'))
+   util_ss.add(files('thread-pool.c', 'qemu-timer.c'))
++  util_ss.add(files('crucible-timer-selection.c'))
+   util_ss.add(files('qemu-sockets.c'))
+ endif
+ if have_block
 diff --git a/util/qemu-coroutine-sleep.c b/util/qemu-coroutine-sleep.c
 index 19ded0b6fd7d154f8e5baeb9da5cdcd11deb4b17..160d2a2b656c8ebe266622beca7362a82bebfd25 100644
 --- a/util/qemu-coroutine-sleep.c
@@ -200207,10 +202361,10 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..1b59d60925d365c2f3747dad8c06d5df
      pthread_sigmask(SIG_SETMASK, &oldset, NULL);
  
 diff --git a/util/qemu-timer.c b/util/qemu-timer.c
-index d93a020064fe2a82602c5739f4cb39a930d64a0e..36f65680ecf308e87595cd737c27d452bb81ed86 100644
+index d93a020064fe2a82602c5739f4cb39a930d64a0e..96dad2c39805bc8df21e63f1d22b799289804b39 100644
 --- a/util/qemu-timer.c
 +++ b/util/qemu-timer.c
-@@ -23,6 +23,8 @@
+@@ -23,14 +23,19 @@
   */
  
  #include "qemu/osdep.h"
@@ -200218,8 +202372,10 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..36f65680ecf308e87595cd737c27d452
 +#include "qemu/crucible-hot-fork-async.h"
  #include "qemu/main-loop.h"
  #include "qemu/timer.h"
++#include "qemu/crucible-timer-selection.h"
  #include "qemu/lockable.h"
-@@ -31,6 +33,8 @@
+ #include "system/cpu-timers.h"
+ #include "exec/icount.h"
  #include "system/replay.h"
  #include "system/cpus.h"
  #include "hw/core/cpu.h"
@@ -200228,7 +202384,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..36f65680ecf308e87595cd737c27d452
  
  #ifdef CONFIG_POSIX
  #include <pthread.h>
-@@ -57,6 +61,68 @@ typedef struct QEMUClock {
+@@ -57,6 +62,68 @@ typedef struct QEMUClock {
  
  QEMUTimerListGroup main_loop_tlg;
  static QEMUClock qemu_clocks[QEMU_CLOCK_MAX];
@@ -200297,7 +202453,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..36f65680ecf308e87595cd737c27d452
  
  /* A QEMUTimerList is a list of timers attached to a clock. More
   * than one QEMUTimerList can be attached to each clock, for instance
-@@ -75,8 +141,346 @@ struct QEMUTimerList {
+@@ -75,8 +142,365 @@ struct QEMUTimerList {
  
      /* lightweight method to mark the end of timerlist's running */
      QemuEvent timers_done_ev;
@@ -200468,6 +202624,9 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..36f65680ecf308e87595cd737c27d452
 +    }
 +    crucible_hot_fork_timer_lock();
 +    if (pending) {
++        uint64_t original_arm = timer->crucible_node_arm_generation;
++        bool rearmed = timer->crucible_hot_fork_pending;
++
 +        if (!timer->crucible_hot_fork_pending) {
 +            timer->crucible_hot_fork_next = NULL;
 +            timer->crucible_hot_fork_prev =
@@ -200479,6 +202638,12 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..36f65680ecf308e87595cd737c27d452
 +        timer->crucible_hot_fork_pending = true;
 +        timer->crucible_hot_fork_expire_time = timer->expire_time;
 +        crucible_hot_fork_timer_advance_generation();
++        if (rearmed) {
++            qemu_timer_node_selection_note(timer->crucible_hot_fork_id,
++                original_arm, QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_DISPOSITION_REARMED,
++                crucible_hot_fork_timer_generation,
++                crucible_node_parent_timer_id, crucible_node_parent_arm_generation);
++        }
 +        timer->crucible_node_arm_generation = crucible_hot_fork_timer_generation;
 +        if (capture_birth) {
 +            timer->crucible_node_birth = birth;
@@ -200497,6 +202662,11 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..36f65680ecf308e87595cd737c27d452
 +        timer->crucible_hot_fork_next = NULL;
 +        timer->crucible_hot_fork_prev = NULL;
 +        crucible_hot_fork_timer_advance_generation();
++        qemu_timer_node_selection_note(timer->crucible_hot_fork_id,
++            timer->crucible_node_arm_generation,
++            QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_DISPOSITION_CANCELLED,
++            crucible_hot_fork_timer_generation,
++            crucible_node_parent_timer_id, crucible_node_parent_arm_generation);
 +    }
 +    crucible_hot_fork_timer_unlock();
 +}
@@ -200533,6 +202703,11 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..36f65680ecf308e87595cd737c27d452
 +    *crucible_hot_fork_timer_callbacks_tail = callback;
 +    crucible_hot_fork_timer_callbacks_tail = &callback->next;
 +    crucible_hot_fork_timer_advance_generation();
++    qemu_timer_node_selection_note(timer->crucible_hot_fork_id,
++        timer->crucible_node_arm_generation,
++        QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_DISPOSITION_DEQUEUED,
++        crucible_hot_fork_timer_generation,
++        timer->crucible_hot_fork_id, timer->crucible_node_arm_generation);
 +    crucible_hot_fork_timer_unlock();
 +}
 +
@@ -200644,7 +202819,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..36f65680ecf308e87595cd737c27d452
  /**
   * qemu_clock_ptr:
   * @type: type of clock
-@@ -90,11 +494,366 @@ static inline QEMUClock *qemu_clock_ptr(QEMUClockType type)
+@@ -90,11 +514,394 @@ static inline QEMUClock *qemu_clock_ptr(QEMUClockType type)
      return &qemu_clocks[type];
  }
  
@@ -200665,7 +202840,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..36f65680ecf308e87595cd737c27d452
 +
 +bool qemu_time_split_ps(__int128 time_ps, int64_t *time_ns,
 +                        uint16_t *phase_ps)
-+{
+ {
 +    __int128 quotient = time_ps / PICOSECONDS_PER_NANOSECOND;
 +    int64_t remainder = time_ps % PICOSECONDS_PER_NANOSECOND;
 +
@@ -200749,7 +202924,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..36f65680ecf308e87595cd737c27d452
 +static int64_t timer_deadline_internal_to_ns(QEMUClockType type,
 +                                             __int128 expire_time,
 +                                             __int128 now)
- {
++{
 +    unsigned __int128 delta;
 +
 +    if (expire_time <= now) {
@@ -201009,10 +203184,38 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..36f65680ecf308e87595cd737c27d452
 +        inventory, lists, list_capacity, NULL, timers, timer_capacity);
 +}
 +
++int qemu_timer_node_selection_publish(
++    uint64_t expected_mutation_generation,
++    const QemuPluginCrucibleNodeTimerSelection *candidate,
++    const QemuPluginCrucibleNodeTimerBirth *timers,
++    QemuPluginCrucibleNodeTimerSelection *selection)
++{
++#ifdef CONFIG_POSIX
++    int result;
++
++    if (!bql_locked() || !candidate || !timers || !selection ||
++        candidate->row_count > QEMU_PLUGIN_CRUCIBLE_NODE_TIMER_SELECTION_MAX) {
++        return -EINVAL;
++    }
++    /* Native timer mutation retains queue lock before this custody guard.
++     * No timer or parent pointer is copied into the selection registry. */
++    crucible_hot_fork_timer_lock();
++    if (crucible_hot_fork_timer_generation != expected_mutation_generation) {
++        result = -EAGAIN;
++    } else {
++        result = qemu_timer_node_selection_install(candidate, timers, selection);
++    }
++    crucible_hot_fork_timer_unlock();
++    return result;
++#else
++    return -ENOTSUP;
++#endif
++}
++
  QEMUTimerList *timerlist_new(QEMUClockType type,
                               QEMUTimerListNotifyCB *cb,
                               void *opaque)
-@@ -102,24 +861,32 @@ QEMUTimerList *timerlist_new(QEMUClockType type,
+@@ -102,24 +909,32 @@ QEMUTimerList *timerlist_new(QEMUClockType type,
      QEMUTimerList *timer_list;
      QEMUClock *clock = qemu_clock_ptr(type);
  
@@ -201045,7 +203248,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..36f65680ecf308e87595cd737c27d452
  }
  
  static void qemu_clock_init(QEMUClockType type, QEMUTimerListNotifyCB *notify_cb)
-@@ -144,9 +911,12 @@ void qemu_clock_notify(QEMUClockType type)
+@@ -144,9 +959,12 @@ void qemu_clock_notify(QEMUClockType type)
  {
      QEMUTimerList *timer_list;
      QEMUClock *clock = qemu_clock_ptr(type);
@@ -201058,7 +203261,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..36f65680ecf308e87595cd737c27d452
  }
  
  /* Disabling the clock will wait for related timerlists to stop
-@@ -160,7 +930,10 @@ void qemu_clock_enable(QEMUClockType type, bool enabled)
+@@ -160,7 +978,10 @@ void qemu_clock_enable(QEMUClockType type, bool enabled)
  {
      QEMUClock *clock = qemu_clock_ptr(type);
      QEMUTimerList *tl;
@@ -201070,7 +203273,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..36f65680ecf308e87595cd737c27d452
      clock->enabled = enabled;
      if (enabled && !old) {
          qemu_clock_notify(type);
-@@ -169,6 +942,7 @@ void qemu_clock_enable(QEMUClockType type, bool enabled)
+@@ -169,6 +990,7 @@ void qemu_clock_enable(QEMUClockType type, bool enabled)
              qemu_event_wait(&tl->timers_done_ev);
          }
      }
@@ -201078,7 +203281,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..36f65680ecf308e87595cd737c27d452
  }
  
  bool timerlist_has_timers(QEMUTimerList *timer_list)
-@@ -184,7 +958,7 @@ bool qemu_clock_has_timers(QEMUClockType type)
+@@ -184,7 +1006,7 @@ bool qemu_clock_has_timers(QEMUClockType type)
  
  bool timerlist_expired(QEMUTimerList *timer_list)
  {
@@ -201087,7 +203290,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..36f65680ecf308e87595cd737c27d452
  
      if (!qatomic_read(&timer_list->active_timers)) {
          return false;
-@@ -194,10 +968,11 @@ bool timerlist_expired(QEMUTimerList *timer_list)
+@@ -194,10 +1016,11 @@ bool timerlist_expired(QEMUTimerList *timer_list)
          if (!timer_list->active_timers) {
              return false;
          }
@@ -201100,7 +203303,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..36f65680ecf308e87595cd737c27d452
  }
  
  bool qemu_clock_expired(QEMUClockType type)
-@@ -213,8 +988,7 @@ bool qemu_clock_expired(QEMUClockType type)
+@@ -213,8 +1036,7 @@ bool qemu_clock_expired(QEMUClockType type)
  
  int64_t timerlist_deadline_ns(QEMUTimerList *timer_list)
  {
@@ -201110,7 +203313,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..36f65680ecf308e87595cd737c27d452
  
      if (!qatomic_read(&timer_list->active_timers)) {
          return -1;
-@@ -232,16 +1006,14 @@ int64_t timerlist_deadline_ns(QEMUTimerList *timer_list)
+@@ -232,16 +1054,14 @@ int64_t timerlist_deadline_ns(QEMUTimerList *timer_list)
          if (!timer_list->active_timers) {
              return -1;
          }
@@ -201132,7 +203335,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..36f65680ecf308e87595cd737c27d452
  }
  
  /* Calculate the soonest deadline across all timerlists attached
-@@ -252,8 +1024,7 @@ int64_t timerlist_deadline_ns(QEMUTimerList *timer_list)
+@@ -252,8 +1072,7 @@ int64_t timerlist_deadline_ns(QEMUTimerList *timer_list)
  int64_t qemu_clock_deadline_ns_all(QEMUClockType type, int attr_mask)
  {
      int64_t deadline = -1;
@@ -201142,7 +203345,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..36f65680ecf308e87595cd737c27d452
      QEMUTimer *ts;
      QEMUTimerList *timer_list;
      QEMUClock *clock = qemu_clock_ptr(type);
-@@ -276,25 +1047,91 @@ int64_t qemu_clock_deadline_ns_all(QEMUClockType type, int attr_mask)
+@@ -276,25 +1095,91 @@ int64_t qemu_clock_deadline_ns_all(QEMUClockType type, int attr_mask)
              qemu_mutex_unlock(&timer_list->active_timers_lock);
              continue;
          }
@@ -201238,7 +203441,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..36f65680ecf308e87595cd737c27d452
  }
  
  /* Transition function to convert a nanosecond timeout to ms
-@@ -353,6 +1190,7 @@ void timer_init_full(QEMUTimer *ts,
+@@ -353,6 +1238,7 @@ void timer_init_full(QEMUTimer *ts,
                       int scale, int attributes,
                       QEMUTimerCB *cb, void *opaque)
  {
@@ -201246,7 +203449,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..36f65680ecf308e87595cd737c27d452
      if (!timer_list_group) {
          timer_list_group = &main_loop_tlg;
      }
-@@ -362,12 +1200,23 @@ void timer_init_full(QEMUTimer *ts,
+@@ -362,12 +1248,23 @@ void timer_init_full(QEMUTimer *ts,
      ts->scale = scale;
      ts->attributes = attributes;
      ts->expire_time = -1;
@@ -201271,7 +203474,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..36f65680ecf308e87595cd737c27d452
  }
  
  static void timer_del_locked(QEMUTimerList *timer_list, QEMUTimer *ts)
-@@ -375,6 +1224,7 @@ static void timer_del_locked(QEMUTimerList *timer_list, QEMUTimer *ts)
+@@ -375,6 +1272,7 @@ static void timer_del_locked(QEMUTimerList *timer_list, QEMUTimer *ts)
      QEMUTimer **pt, *t;
  
      ts->expire_time = -1;
@@ -201279,7 +203482,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..36f65680ecf308e87595cd737c27d452
      pt = &timer_list->active_timers;
      for(;;) {
          t = *pt;
-@@ -395,8 +1245,8 @@ static void timer_fire(CPUState *cpu, run_on_cpu_data data)
+@@ -395,8 +1293,8 @@ static void timer_fire(CPUState *cpu, run_on_cpu_data data)
      t->cb(t->opaque);
  }
  
@@ -201290,7 +203493,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..36f65680ecf308e87595cd737c27d452
  {
      QEMUTimer **pt, *t;
  
-@@ -416,7 +1266,7 @@ static bool timer_mod_ns_locked(QEMUTimerList *timer_list,
+@@ -416,7 +1314,7 @@ static bool timer_mod_ns_locked(QEMUTimerList *timer_list,
      if (replay_mode != REPLAY_MODE_NONE &&
          timer_list->clock->type == QEMU_CLOCK_VIRTUAL &&
          !(ts->attributes & QEMU_TIMER_ATTR_EXTERNAL) &&
@@ -201299,7 +203502,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..36f65680ecf308e87595cd737c27d452
          async_run_on_cpu(first_cpu, timer_fire,
                           RUN_ON_CPU_HOST_PTR(ts));
          return false;
-@@ -426,12 +1276,14 @@ static bool timer_mod_ns_locked(QEMUTimerList *timer_list,
+@@ -426,12 +1324,14 @@ static bool timer_mod_ns_locked(QEMUTimerList *timer_list,
      pt = &timer_list->active_timers;
      for (;;) {
          t = *pt;
@@ -201316,7 +203519,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..36f65680ecf308e87595cd737c27d452
      ts->next = *pt;
      qatomic_set(pt, ts);
  
-@@ -448,11 +1300,16 @@ void timer_del(QEMUTimer *ts)
+@@ -448,11 +1348,16 @@ void timer_del(QEMUTimer *ts)
  {
      QEMUTimerList *timer_list = ts->timer_list;
  
@@ -201333,7 +203536,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..36f65680ecf308e87595cd737c27d452
  }
  
  /* modify the current timer so that it will be fired when current_time
-@@ -460,32 +1317,122 @@ void timer_del(QEMUTimer *ts)
+@@ -460,32 +1365,122 @@ void timer_del(QEMUTimer *ts)
  void timer_mod_ns(QEMUTimer *ts, int64_t expire_time)
  {
      QEMUTimerList *timer_list = ts->timer_list;
@@ -201461,7 +203664,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..36f65680ecf308e87595cd737c27d452
          } else {
              rearm = false;
          }
-@@ -493,6 +1440,56 @@ void timer_mod_anticipate_ns(QEMUTimer *ts, int64_t expire_time)
+@@ -493,6 +1488,56 @@ void timer_mod_anticipate_ns(QEMUTimer *ts, int64_t expire_time)
      if (rearm) {
          timerlist_rearm(timer_list);
      }
@@ -201518,7 +203721,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..36f65680ecf308e87595cd737c27d452
  }
  
  void timer_mod(QEMUTimer *ts, int64_t expire_time)
-@@ -507,25 +1504,60 @@ void timer_mod_anticipate(QEMUTimer *ts, int64_t expire_time)
+@@ -507,25 +1552,60 @@ void timer_mod_anticipate(QEMUTimer *ts, int64_t expire_time)
  
  bool timer_pending(const QEMUTimer *ts)
  {
@@ -201583,7 +203786,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..36f65680ecf308e87595cd737c27d452
  
      qemu_event_reset(&timer_list->timers_done_ev);
      if (!timer_list->clock->enabled) {
-@@ -560,10 +1592,10 @@ bool timerlist_run_timers(QEMUTimerList *timer_list)
+@@ -560,10 +1640,10 @@ bool timerlist_run_timers(QEMUTimerList *timer_list)
       * the checkpoint can be issued at a time until no timers are left and we are
       * done".
       */
@@ -201596,7 +203799,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..36f65680ecf308e87595cd737c27d452
              /* No expired timers left.  The checkpoint can be skipped
               * if no timers fired or they were all external.
               */
-@@ -584,13 +1616,79 @@ bool timerlist_run_timers(QEMUTimerList *timer_list)
+@@ -584,13 +1664,79 @@ bool timerlist_run_timers(QEMUTimerList *timer_list)
          /* remove timer from the list before calling the callback */
          timer_list->active_timers = ts->next;
          ts->next = NULL;
@@ -201677,7 +203880,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..36f65680ecf308e87595cd737c27d452
          qemu_mutex_lock(&timer_list->active_timers_lock);
  
          progress = true;
-@@ -599,6 +1697,7 @@ bool timerlist_run_timers(QEMUTimerList *timer_list)
+@@ -599,6 +1745,7 @@ bool timerlist_run_timers(QEMUTimerList *timer_list)
  
  out:
      qemu_event_set(&timer_list->timers_done_ev);
@@ -201685,7 +203888,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..36f65680ecf308e87595cd737c27d452
      return progress;
  }
  
-@@ -639,6 +1738,15 @@ int64_t timerlistgroup_deadline_ns(QEMUTimerListGroup *tlg)
+@@ -639,6 +1786,15 @@ int64_t timerlistgroup_deadline_ns(QEMUTimerListGroup *tlg)
      int64_t deadline = -1;
      QEMUClockType type;
      for (type = 0; type < QEMU_CLOCK_MAX; type++) {
@@ -201701,7 +203904,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..36f65680ecf308e87595cd737c27d452
          if (qemu_clock_use_for_deadline(type)) {
              deadline = qemu_soonest_timeout(deadline,
                                              timerlist_deadline_ns(tlg->tl[type]));
-@@ -662,6 +1770,18 @@ int64_t qemu_clock_get_ns(QEMUClockType type)
+@@ -662,6 +1818,18 @@ int64_t qemu_clock_get_ns(QEMUClockType type)
      }
  }
  
@@ -201720,7 +203923,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..36f65680ecf308e87595cd737c27d452
  static void qemu_virtual_clock_set_ns(int64_t time)
  {
      return cpus_set_virtual_clock(time);
-@@ -670,6 +1790,8 @@ static void qemu_virtual_clock_set_ns(int64_t time)
+@@ -670,6 +1838,8 @@ static void qemu_virtual_clock_set_ns(int64_t time)
  void qemu_init_clocks(QEMUTimerListNotifyCB *notify_cb)
  {
      QEMUClockType type;
@@ -201729,7 +203932,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..36f65680ecf308e87595cd737c27d452
      for (type = 0; type < QEMU_CLOCK_MAX; type++) {
          qemu_clock_init(type, notify_cb);
      }
-@@ -681,7 +1803,80 @@ void qemu_init_clocks(QEMUTimerListNotifyCB *notify_cb)
+@@ -681,7 +1851,80 @@ void qemu_init_clocks(QEMUTimerListNotifyCB *notify_cb)
  
  uint64_t timer_expire_time_ns(const QEMUTimer *ts)
  {
@@ -201811,7 +204014,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..36f65680ecf308e87595cd737c27d452
  }
  
  bool qemu_clock_run_all_timers(void)
-@@ -700,8 +1895,11 @@ bool qemu_clock_run_all_timers(void)
+@@ -700,8 +1943,11 @@ bool qemu_clock_run_all_timers(void)
  
  int64_t qemu_clock_advance_virtual_time(int64_t dest)
  {
@@ -201824,7 +204027,7 @@ index d93a020064fe2a82602c5739f4cb39a930d64a0e..36f65680ecf308e87595cd737c27d452
      aio_context = qemu_get_aio_context();
      while (clock < dest) {
          int64_t deadline = qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL,
-@@ -716,5 +1914,6 @@ int64_t qemu_clock_advance_virtual_time(int64_t dest)
+@@ -716,5 +1962,6 @@ int64_t qemu_clock_advance_virtual_time(int64_t dest)
      }
      qemu_clock_notify(QEMU_CLOCK_VIRTUAL);
  

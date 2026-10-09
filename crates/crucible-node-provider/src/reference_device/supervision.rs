@@ -17,7 +17,7 @@ use super::protocol::{DeviceGrant, DeviceOutput, DeviceReceipt};
 pub const MAX_SUPERVISED_DEVICES: usize = 64;
 
 static STATE: OnceLock<Mutex<State>> = OnceLock::new();
-static WORKER: OnceLock<Result<(), String>> = OnceLock::new();
+static WORKER: OnceLock<std::io::Result<()>> = OnceLock::new();
 
 struct State {
     next_token: u64,
@@ -83,7 +83,6 @@ pub(super) fn reserve(owner: Id, incarnation: Id, generation: U64) -> Result<U64
                 }
             })
             .map(|_| ())
-            .map_err(|error| error.to_string())
     });
     if worker.is_err() {
         return Err(ProviderError::ResourceExhausted(
@@ -260,6 +259,7 @@ pub fn acknowledge_supervised_containment(token: U64) -> Result<(), ProviderErro
 }
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- These supervision tests deliberately panic on invalid fixtures or failed invariants.
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;

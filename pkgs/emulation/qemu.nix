@@ -1871,6 +1871,16 @@ in
               # execution. Compiled mutation failures must reach actual assertions.
               # Historical Applied evidence cannot grant acknowledgment or Ready.
               ${python3}/bin/python3 ${./qemu-patches/_fixtures}/native-preparation-successor-guards.py "$PWD"
+              # Compile genuine original observation bodies with configured AOS
+              # flags. Synthetic root predicates remain explicit; these tests
+              # never qualify Ready, execution, capture or timer dispatch.
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures}/native-observation-guards.py "$PWD"
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures}/native-observation-model.py finite \
+                "$PWD" "$CC" "$PWD/native-finite-arm-proof" --mutations
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures}/native-observation-model.py administration \
+                "$PWD" "$CC" "$PWD/native-administration-proof" --mutations
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures}/native-administration-argv.py \
+                "$PWD/build/qemu-system-x86_64" "$PWD/build/qemu-system-aarch64"
               ${python3}/bin/python3 ${./qemu-patches/_fixtures}/kvm-userspace-exit-guards.py "$PWD"
               ${python3}/bin/python3 ${./qemu-patches/_fixtures}/kvm-userspace-exit-model.py \
                 "$PWD" "$CC" "$PWD/kvm-userspace-exit-proof"
@@ -1880,6 +1890,23 @@ in
                 "$PWD/build/qemu-system-x86_64" "$PWD/build/qemu-system-aarch64"
               ${python3}/bin/python3 ${./qemu-patches/_fixtures}/kvm-userspace-exit-refusal.py \
                 "$PWD/build/qemu-system-x86_64" "$PWD/build/qemu-system-aarch64"
+              # Compile the original completion-only commands against the exact
+              # kernel ABI/policy. No source/model result qualifies a live node.
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures}/kvm-component-v3-model.py \
+                "$PWD" "$CC" "$PWD/kvm-component-v3-proof"
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures}/kvm-component-v3-refusal.py \
+                "$PWD/build/qemu-system-x86_64" "$PWD/build/qemu-system-aarch64"
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures}/kvm-completion-guards.py "$PWD"
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures}/kvm-completion-model.py \
+                "$PWD" "$CC" "$PWD/kvm-completion-proof" \
+                ${../kernel/crucible-controller-completion-stage5-7.2.3.patch}
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures}/kvm-completion-mutations.py \
+                "$PWD" "$CC" "$PWD/kvm-completion-mutations" \
+                ${../kernel/crucible-controller-completion-stage5-7.2.3.patch} \
+                ${./qemu-patches/_fixtures}/kvm-completion-model.py
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures}/kvm-completion-refusal.py \
+                "$PWD/build/qemu-system-x86_64" "$PWD/build/qemu-system-aarch64" \
+                ${./qemu-patches/_fixtures}/kvm-component-refusal.py
               # Use each changed translation unit's actual configured command,
               # then compare the reconstructed prior production bodies. Every
               # negative must compile and fail a native ownership assertion.

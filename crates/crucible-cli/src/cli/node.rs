@@ -207,6 +207,7 @@ fn serve(policy: &std::path::Path) -> Result<(), CliError> {
         .spawn(move || {
             runtime.block_on(async {
                 tokio::select! {
+                    biased;
                     _ = interrupt.recv() => {},
                     _ = terminate.recv() => {},
                 }

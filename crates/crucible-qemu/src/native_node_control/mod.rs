@@ -7,6 +7,7 @@
 //! using a command or releasing any native resources.
 
 mod transport;
+pub use transport::administration::NativeAdministrationTransport;
 
 pub use transport::{NativeLaunchEndpoint, NativeQemuControlError, NativeQemuControlTransport};
 

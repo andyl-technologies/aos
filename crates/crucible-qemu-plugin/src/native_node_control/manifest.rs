@@ -7,6 +7,7 @@ const NATIVE_CALLBACK: u64 = 1_u64 << 15;
 const NATIVE_WORKER: u64 = 1_u64 << 3;
 const INITIALIZATION: u64 = 1_u64 << 16;
 const PHASE_PROJECTION: u64 = 1_u64 << 17;
+const ADMINISTRATION: u64 = 1_u64 << 18;
 
 /// Extends the legacy C resource inventory only for a prepared native controller.
 #[repr(C)]
@@ -29,12 +30,19 @@ pub(crate) struct PhaseResourceManifest {
     phase_preparation_commitment: [u8; 32],
 }
 
+#[repr(C)]
+pub(crate) struct AdministrativeResourceManifest {
+    phase: PhaseResourceManifest,
+    administration_commitment: [u8; 32],
+}
+
 /// Retains the complete edition-specific object during native registration.
 pub(crate) enum RegisteredResourceManifest {
     Legacy(QemuPluginResourceManifest),
     Native(NativeResourceManifest),
     Initialized(InitializedResourceManifest),
     Phase(PhaseResourceManifest),
+    Administration(AdministrativeResourceManifest),
 }
 
 impl RegisteredResourceManifest {
@@ -89,7 +97,7 @@ impl RegisteredResourceManifest {
             }
             _ => None,
         }?;
-        match (
+        let phase = match (
             config.phase(),
             owner.registered_phase_commitment(),
             initialized,
@@ -107,6 +115,25 @@ impl RegisteredResourceManifest {
                 }))
             }
             _ => None,
+        }?;
+        match (
+            config.administration(),
+            owner.registered_administration_commitment(),
+            phase,
+        ) {
+            (None, None, phase) => Some(phase),
+            (Some(pinned), Some(commitment), Self::Phase(mut phase))
+                if pinned.commitment == commitment =>
+            {
+                phase.initialization.native.legacy.schema_version = 7;
+                phase.initialization.native.legacy.struct_size = 224;
+                phase.initialization.native.legacy.resource_mask |= ADMINISTRATION;
+                Some(Self::Administration(AdministrativeResourceManifest {
+                    phase,
+                    administration_commitment: commitment,
+                }))
+            }
+            _ => None,
         }
     }
 
@@ -117,6 +144,7 @@ impl RegisteredResourceManifest {
             Self::Native(manifest) => &manifest.legacy,
             Self::Initialized(manifest) => &manifest.native.legacy,
             Self::Phase(manifest) => &manifest.initialization.native.legacy,
+            Self::Administration(manifest) => &manifest.phase.initialization.native.legacy,
         }
     }
 }
@@ -127,6 +155,8 @@ const _: () = {
     assert!(std::mem::offset_of!(NativeResourceManifest, node_control_fd) == 88);
     assert!(std::mem::offset_of!(NativeResourceManifest, prepared_scope_hash) == 96);
     assert!(std::mem::size_of::<PhaseResourceManifest>() == 192);
+    assert!(std::mem::size_of::<AdministrativeResourceManifest>() == 224);
+    assert!(std::mem::offset_of!(AdministrativeResourceManifest, administration_commitment) == 192);
     assert!(std::mem::offset_of!(PhaseResourceManifest, phase_preparation_commitment) == 160);
     assert!(std::mem::size_of::<InitializedResourceManifest>() == 160);
     assert!(std::mem::offset_of!(InitializedResourceManifest, initialization_commitment) == 128);
