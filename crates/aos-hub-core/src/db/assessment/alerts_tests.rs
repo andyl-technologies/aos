@@ -70,16 +70,15 @@ async fn assessment_events_and_episodes_preserve_acknowledgements_through_uncert
         acknowledged_at: db.assessment_database_time().await?,
         reason: Some("Investigating the evidence gap".into()),
     };
-    assert!(
-        db.acknowledge_assessment_alert(
+    assert!(db
+        .acknowledge_assessment_alert(
             registry_id,
             resource.authorization_revision + 1,
             opened.sequence,
             acknowledgement.clone(),
         )
         .await
-        .is_err()
-    );
+        .is_err());
     assert_eq!(
         db.assessment_event_page(registry_id, 0, 100).await?.len(),
         2
@@ -101,16 +100,15 @@ async fn assessment_events_and_episodes_preserve_acknowledgements_through_uncert
         .await?;
     assert_eq!(acknowledged.state, AttentionState::Open);
     assert_eq!(acknowledged.acknowledgements.len(), 1);
-    assert!(
-        db.acknowledge_assessment_alert(
+    assert!(db
+        .acknowledge_assessment_alert(
             registry_id,
             resource.authorization_revision,
             opened.sequence,
             acknowledgement,
         )
         .await
-        .is_err()
-    );
+        .is_err());
     request.idempotency_key = "refresh-unknown".into();
     commit_fixture(&db, registry_id, &request, None).await?;
     let uncertain = db
@@ -131,17 +129,16 @@ async fn assessment_events_and_episodes_preserve_acknowledgements_through_uncert
         events[1].payload,
         AssessmentEventPayload::ScanCompleted { .. }
     ));
-    assert!(
-        db.assessment_event_page(registry_id, 4, 100)
-            .await?
-            .is_empty()
-    );
+    assert!(db
+        .assessment_event_page(registry_id, 4, 100)
+        .await?
+        .is_empty());
     Ok(())
 }
 
 #[tokio::test]
-async fn fresh_complete_evidence_resolves_coverage_and_reopening_creates_an_independent_episode()
--> Result<()> {
+async fn fresh_complete_evidence_resolves_coverage_and_reopening_creates_an_independent_episode(
+) -> Result<()> {
     let (db, registry_id, mut request) = setup().await?;
     commit_fixture(&db, registry_id, &request, None).await?;
     let original = db
@@ -188,7 +185,12 @@ async fn fresh_complete_evidence_resolves_coverage_and_reopening_creates_an_inde
     assert_eq!(resolved.state, AttentionState::Resolved);
     assert_eq!(resolved.episode, 1);
     request.idempotency_key = "lost-source".into();
-    commit_fixture(&db, registry_id, &request, None).await?;
+    // An offline read now preserves committed source evidence. Reopening
+    // requires an explicit failed-refresh observation rather than an empty read.
+    data.upstream[0].observation.coverage = ObservationCoverage::Truncated {
+        reason: "source-acquisition-incomplete".into(),
+    };
+    commit_fixture(&db, registry_id, &request, Some(data)).await?;
     let reopened = db
         .assessment_alert(registry_id, original.issue_key)
         .await?

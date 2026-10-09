@@ -25,12 +25,29 @@ pub trait AssessmentAuthority: RuntimeBounds {
     /// Requires the current principal, delegated scan scope and resource revision.
     ///
     /// Hosts recheck current membership, token/job delegation and the exact
-    /// registry incarnation. Revocation must also advance the resource's SQL
-    /// authorization generation so the final checked transaction fences it.
+    /// registry incarnation. Final admission additionally holds the current
+    /// granting authority in the same checked transaction as profile heads.
     ///
     /// # Errors
     /// Returns an error for revoked or unavailable authority or a changed scope.
     async fn require_current(&self, scan: &AssessmentScanRecord) -> Result<()>;
+
+    /// Commits only while current granting authority remains transactionally held.
+    ///
+    /// Production hosts include current principal, credential and membership
+    /// locks and eligibility checks in `commit_assessment_evaluation_fenced`.
+    /// A prior asynchronous permission check alone cannot authorize this effect.
+    ///
+    /// # Errors
+    /// Returns an error for revoked authority, a lost operation fence or failed
+    /// deterministic result admission.
+    async fn commit_current(
+        &self,
+        db: &Database,
+        scan: &AssessmentScanRecord,
+        claim: &TaskClaim,
+        assessment: &PackageAssessmentV1,
+    ) -> Result<()>;
 }
 
 /// Supplies an installed provider route under independent current source authority.
@@ -107,8 +124,7 @@ where
         authority.require_current(&scan).await?;
         let result = aos_assessment::evaluator::evaluate(&input, &data)?;
         authority.require_current(&scan).await?;
-        db.commit_assessment_evaluation(registry_id, &claim, &result)
-            .await?;
+        authority.commit_current(db, &scan, &claim, &result).await?;
         return Ok(result);
     }
     let port = DatabaseAcquisition {
@@ -157,8 +173,7 @@ where
         .await?;
     let result = aos_assessment::evaluator::evaluate(&input, &data)?;
     authority.require_current(&scan).await?;
-    db.commit_assessment_evaluation(registry_id, &claim, &result)
-        .await?;
+    authority.commit_current(db, &scan, &claim, &result).await?;
     Ok(result)
 }
 

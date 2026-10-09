@@ -100,6 +100,8 @@ impl Database {
             .await?
             .context("assessment policy custody is absent")?;
         data.policy = serde_json::from_slice::<AssessmentPolicyV1>(&policy)?;
+        self.restore_assessment_committed_evidence(&scan, &mut data)
+            .await?;
         if scan
             .request
             .profiles
@@ -307,6 +309,27 @@ impl Database {
         claim: &TaskClaim,
         assessment: &PackageAssessmentV1,
     ) -> Result<()> {
+        self.commit_assessment_evaluation_fenced(registry_id, claim, assessment, vec![])
+            .await
+    }
+
+    /// Commits reproduced results while holding the host's current authority fences.
+    ///
+    /// The host supplies checked principal, credential and granting-membership
+    /// locks. They precede operation, profile-head, alert and event mutations in
+    /// one transaction. A lost authority check rolls back every admission effect;
+    /// independently retained immutable objects confer no result authority.
+    ///
+    /// # Errors
+    /// Returns an error for lost authority, invalid results, stale operation
+    /// claims, changed targets, exhausted limits or persistence failure.
+    pub async fn commit_assessment_evaluation_fenced(
+        &self,
+        registry_id: i64,
+        claim: &TaskClaim,
+        assessment: &PackageAssessmentV1,
+        authority_fences: Vec<crate::backend::CheckedStatement>,
+    ) -> Result<()> {
         let scan = self
             .assessment_scan(registry_id, &claim.scan_id)
             .await?
@@ -369,13 +392,14 @@ impl Database {
             state
         ]);
         let clock = self.backend.dialect().unix_time_expression();
-        let mut statements = vec![Statement::new(format!(
+        let mut statements = authority_fences;
+        statements.push(Statement::new(format!(
             "UPDATE assessment_scans SET state = ?13, assessment_digest = ?9,
                  usage_json = ?11, claim_token = NULL, lease_expires_at = NULL,
                  completed_at = {clock}, updated_at = {clock}, resource_version = resource_version + 1
              WHERE {} AND evaluation_input_digest = ?10 AND resource_version = ?12
                AND NOT EXISTS(SELECT 1 FROM assessment_tasks WHERE scan_id = ?2 AND state IN('pending', 'leased', 'waiting'))",
-            self.assessment_claim_guard()), values).expecting(1)];
+            self.assessment_claim_guard()), values).expecting(1));
         let mut deadlines = std::collections::BTreeMap::new();
         for subject in &assessment.subject_results {
             for coverage in &subject.coverage {

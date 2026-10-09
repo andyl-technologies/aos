@@ -6,6 +6,7 @@
 
 mod alerts;
 mod budgets;
+mod cache;
 mod clock;
 mod evaluation;
 mod inventory;

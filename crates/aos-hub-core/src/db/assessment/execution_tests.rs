@@ -63,6 +63,17 @@ struct Authority<'a> {
 
 #[async_trait::async_trait]
 impl AssessmentAuthority for Authority<'_> {
+    async fn commit_current(
+        &self,
+        db: &Database,
+        scan: &AssessmentScanRecord,
+        claim: &aos_assessment_runtime::scan::TaskClaim,
+        assessment: &aos_assessment::result::PackageAssessmentV1,
+    ) -> Result<()> {
+        db.commit_assessment_evaluation(scan.registry_id, claim, assessment)
+            .await
+    }
+
     async fn require_current(&self, scan: &AssessmentScanRecord) -> Result<()> {
         let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
         if self.deny {
@@ -258,6 +269,253 @@ async fn reclaimed_frozen_refresh_reuses_the_checkpoint_without_provider_effects
 }
 
 struct InvalidResultTransport;
+
+struct RevocationAtCommit<'a> {
+    db: &'a Database,
+    claims: crate::auth::jwt::Claims,
+    mutation: &'static str,
+}
+
+#[async_trait::async_trait]
+impl AssessmentAuthority for RevocationAtCommit<'_> {
+    async fn require_current(&self, _: &AssessmentScanRecord) -> Result<()> {
+        anyhow::ensure!(
+            self.db
+                .current_authenticated_actor(&self.claims)
+                .await?
+                .is_some(),
+            "fixture actor is absent"
+        );
+        Ok(())
+    }
+
+    async fn commit_current(
+        &self,
+        db: &Database,
+        scan: &AssessmentScanRecord,
+        claim: &aos_assessment_runtime::scan::TaskClaim,
+        assessment: &aos_assessment::result::PackageAssessmentV1,
+    ) -> Result<()> {
+        // The existing read grant exercises the general transactional IAM
+        // primitive. This fixture does not install assessment role permissions.
+        let now = db.assessment_database_time().await?.unix_seconds() as i64;
+        let fences = db
+            .direct_iam_statements(
+                &self.claims,
+                &scan.request.resource_scope,
+                crate::domain::Permission::Read,
+                now,
+            )
+            .await?;
+        match self.mutation {
+            "membership" => {
+                db.backend.execute("DELETE FROM memberships WHERE principal_kind = 'user' AND principal_id = ?1", &vals![@slice self.claims.owner_id]).await?;
+            }
+            "credential" => {
+                db.backend
+                    .execute(
+                        "UPDATE tokens SET revoked_at = ?2 WHERE id = ?1",
+                        &vals![@slice self.claims.sub, now],
+                    )
+                    .await?;
+            }
+            "incarnation" => {
+                db.backend
+                    .execute(
+                        "UPDATE users SET principal_incarnation = ?2 WHERE id = ?1",
+                        &vals![@slice self.claims.owner_id, uuid::Uuid::new_v4().to_string()],
+                    )
+                    .await?;
+            }
+            _ => bail!("unsupported revocation fixture"),
+        }
+        db.commit_assessment_evaluation_fenced(scan.registry_id, claim, assessment, fences)
+            .await
+    }
+}
+
+#[tokio::test]
+async fn final_iam_revocation_rolls_back_scan_heads_alerts_and_events_together() -> Result<()> {
+    use crate::auth::jwt::{Claims, AUTHORIZATION_CLAIMS_VERSION};
+    use crate::domain::{Permission, Principal};
+
+    for mutation in ["membership", "credential", "incarnation"] {
+        let (db, registry_id, mut request) = setup().await?;
+        request.profiles = vec![Profile::Vulnerabilities];
+        let user = db
+            .create_user("assessment-fence@fixture.invalid", None)
+            .await?;
+        db.grant_membership("user", user, "instance", "owner")
+            .await?;
+        let (token, _) = db
+            .create_token(
+                Principal::user(user),
+                "instance",
+                &[Permission::Read],
+                None,
+                None,
+            )
+            .await?;
+        let now = db.assessment_database_time().await?.unix_seconds() as i64;
+        let claims = Claims {
+            sub: token,
+            owner_kind: "user".into(),
+            owner_id: user,
+            owner_incarnation: db.principal_incarnation(Principal::user(user)).await?,
+            browser_session_id_hash: None,
+            scope: "instance".into(),
+            perms: vec![Permission::Read.as_str().into()],
+            authz_version: AUTHORIZATION_CLAIMS_VERSION.into(),
+            iat: now,
+            exp: now + 900,
+        };
+        let scan = db.request_assessment_scan(registry_id, &request).await?;
+        let authority = RevocationAtCommit {
+            db: &db,
+            claims,
+            mutation,
+        };
+
+        assert!(
+            run_scan(
+                &db,
+                registry_id,
+                &scan.scan_id,
+                &authority,
+                &NoEffects,
+                &NoEffects,
+                &NoEffects
+            )
+            .await
+            .is_err(),
+            "{mutation}"
+        );
+        let completed = db
+            .assessment_scan(registry_id, &scan.scan_id)
+            .await?
+            .context("uncommitted scan")?;
+        assert_eq!(completed.state, ScanState::Running, "{mutation}");
+        assert!(completed.assessment_digest.is_none(), "{mutation}");
+        let status = db
+            .assessment_status_page(registry_id, &request.profiles, "", 100)
+            .await?;
+        assert_eq!(
+            status.subjects[0].profiles[0].committed_generation, 0,
+            "{mutation}"
+        );
+        assert!(
+            db.assessment_alert_page(registry_id, "", 100)
+                .await?
+                .is_empty(),
+            "{mutation}"
+        );
+        assert!(
+            db.assessment_event_page(registry_id, 0, 100)
+                .await?
+                .is_empty(),
+            "{mutation}"
+        );
+        let (input, data) = db
+            .assessment_frozen_evaluation(registry_id, &scan.scan_id)
+            .await?;
+        let digest = aos_assessment::evaluator::evaluate(&input, &data)?.digest()?;
+        assert!(
+            !db.has_admitted_assessment(registry_id, digest).await?,
+            "{mutation}"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn cached_and_offline_scans_reuse_committed_observations_without_provider_effects(
+) -> Result<()> {
+    let (db, registry_id, mut request) = setup().await?;
+    let first = db.request_assessment_scan(registry_id, &request).await?;
+    let claim = db
+        .claim_assessment_scan(registry_id, &first.scan_id, 900)
+        .await?;
+    let mut data = db.assessment_evaluation_base(registry_id, &claim).await?;
+    let observed_at = db.assessment_database_time().await?;
+    let candidate = aos_assessment::discovery::ObservationCandidate {
+        raw_id: "v1.3.0".into(),
+        raw_version: "1.3.0".into(),
+        published_at_unix: Some(1_700_000_000),
+        first_observed_at_unix: observed_at.unix_seconds(),
+        prerelease: false,
+        yanked: false,
+        release_url: None,
+        status: None,
+        vulnerable: None,
+        licenses: vec![],
+    };
+    data.history.push(aos_assessment::input::CandidateHistory {
+        provider: "github-releases".into(),
+        project: "example/fixture".into(),
+        raw_id: candidate.raw_id.clone(),
+        first_observed_at: observed_at.clone(),
+    });
+    data.upstream.push(aos_assessment::input::UpstreamBinding {
+        component_ref: "component".into(),
+        response_byte_length: 2,
+        source_refs: vec![],
+        observation: aos_assessment::discovery::UpstreamObservationV1 {
+            schema: aos_assessment::UPSTREAM_OBSERVATION_V1.into(),
+            provider: "github-releases".into(),
+            project: "example/fixture".into(),
+            retrieved_at_unix: observed_at.unix_seconds(),
+            request_url: "https://api.github.com/repos/example/fixture/releases".into(),
+            adapter_version: "fixture/v1".into(),
+            coverage: aos_assessment::discovery::ObservationCoverage::Complete,
+            response_digest: Sha256Digest::of_bytes("[]"),
+            candidates: vec![candidate],
+        },
+    });
+    let input = db
+        .freeze_assessment_evaluation(registry_id, &claim, &data)
+        .await?;
+    let assessment = aos_assessment::evaluator::evaluate(&input, &data)?;
+    db.commit_assessment_evaluation(registry_id, &claim, &assessment)
+        .await?;
+
+    for (key, freshness) in [
+        ("cached", FreshnessMode::Cached),
+        ("offline", FreshnessMode::Offline),
+    ] {
+        request.idempotency_key = key.into();
+        request.freshness = freshness;
+        let next = db.request_assessment_scan(registry_id, &request).await?;
+        let authority = Authority {
+            db: &db,
+            calls: AtomicUsize::new(0),
+            deny: false,
+            cancel_at: None,
+        };
+        let result = run_scan(
+            &db,
+            registry_id,
+            &next.scan_id,
+            &authority,
+            &NoEffects,
+            &NoEffects,
+            &NoEffects,
+        )
+        .await?;
+        let (_, reused) = db
+            .assessment_frozen_evaluation(registry_id, &next.scan_id)
+            .await?;
+        assert_eq!(reused.upstream, data.upstream);
+        assert_eq!(reused.history, data.history);
+        assert_eq!(result.subject_results, assessment.subject_results);
+        let completed = db
+            .assessment_scan(registry_id, &next.scan_id)
+            .await?
+            .context("cached scan")?;
+        assert_eq!(completed.state, ScanState::Succeeded);
+        assert_eq!(completed.usage.provider_requests, 0);
+    }
+    Ok(())
+}
 
 #[async_trait::async_trait]
 impl ProviderTransport for InvalidResultTransport {
