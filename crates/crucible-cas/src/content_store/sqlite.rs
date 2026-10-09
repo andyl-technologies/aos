@@ -138,7 +138,16 @@ impl SqliteBlobBackend {
         root: impl Into<PathBuf>,
         heap: &SqliteProcessHeap,
     ) -> Result<Self, StoreError> {
-        Self::open_inner(name.into(), root.into(), None, None, heap)
+        // Ordinary graphs retain this same finite process heap as well.
+        // Checked diagnostics need its actual native message bound; losing
+        // that identity here must not turn a capped connection into None.
+        Self::open_inner(
+            name.into(),
+            root.into(),
+            Some(heap.maximum_heap_bytes()),
+            None,
+            heap,
+        )
     }
 
     /// Opens a physically quota-bound catalog with a hard SQLite heap ceiling.
