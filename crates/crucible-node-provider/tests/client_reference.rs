@@ -26,6 +26,9 @@ use serde_json::{Map, Value, json};
 #[allow(dead_code)]
 mod fixture;
 
+#[path = "client_reference/observation.rs"]
+mod observation;
+
 struct Installed<'a>(&'a fixture::NativeService);
 
 impl TrustedHandshakeVerifier for Installed<'_> {

@@ -24,6 +24,14 @@ pub struct ClientContent {
 }
 
 impl ClientContent {
+    /// Enumerates finite verified object references without granting native authority.
+    ///
+    /// These references describe byte custody, not a complete semantic receipt
+    /// closure. Consumers independently select and validate their actual use.
+    pub fn references(&self) -> impl Iterator<Item = &ContentRef> {
+        self.objects.values().map(|(reference, _)| reference)
+    }
+
     pub(super) fn byte_ceiling(&self) -> usize {
         self.maximum_bytes
     }

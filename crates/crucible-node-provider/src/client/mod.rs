@@ -13,5 +13,9 @@ mod session;
 
 pub use content::ClientContent;
 pub use deadline::{DeadlineStream, ExchangeDeadline};
-pub use reference::ReferenceController;
+pub use reference::{
+    ObservationHandle, ObservationLimits, ObservationScope, ObservedContent, ObservedRequest,
+    ObservedRequestKey, RecordedReferenceObservation, ReferenceController,
+    ReferenceObservationSnapshot,
+};
 pub use session::{ClientCustody, ClientOriginal, ClientPeer, ClientSession};

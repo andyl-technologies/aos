@@ -263,6 +263,7 @@ pub struct Handshake {
     registration_gate: Arc<Mutex<()>>,
     epoch: u64,
     current_connection: Option<Id>,
+    selected_features: Option<IdSet>,
     resume_token: Option<[u8; 32]>,
     contained: bool,
     hello_request_ids: BTreeSet<Id>,
@@ -398,6 +399,7 @@ impl Handshake {
             registration_gate: Arc::new(Mutex::new(())),
             epoch: 0,
             current_connection: None,
+            selected_features: None,
             resume_token: None,
             contained: false,
             hello_request_ids: BTreeSet::new(),
@@ -465,6 +467,16 @@ impl Handshake {
         if result.limits != request.limits.intersection(self.policy.provider_limits)? {
             return Err(ProviderError::Correlation(
                 "receiving limits differ from advertised intersection",
+            ));
+        }
+        // A selected optional behavior becomes part of this admitted session.
+        // Refuse changes before any retained journal check, stream fence, or
+        // secret/epoch rotation; an invalid proposal cannot revoke old custody.
+        if request.resume_session.is_some()
+            && self.selected_features.as_ref() != Some(&result.selected_features)
+        {
+            return Err(ProviderError::Correlation(
+                "resume changed original selected semantic features",
             ));
         }
         verifier.authenticate_exchange(&connection, &self.installation, request, result)?;
@@ -589,6 +601,7 @@ impl Handshake {
         });
         self.epoch = next;
         self.current_connection = Some(connection.clone());
+        self.selected_features = Some(result.selected_features.clone());
         self.shared_epoch.store(next, Ordering::Release);
         let envelope_extensions = self
             .policy

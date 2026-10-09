@@ -13,6 +13,14 @@ use crate::reference_service::{ReferenceProfile, ReferenceServiceBootstrap};
 use super::session::object;
 use super::{ClientCustody, ClientSession};
 
+#[path = "reference/evidence.rs"]
+mod evidence;
+
+pub use evidence::{
+    ObservationHandle, ObservationLimits, ObservationScope, ObservedContent, ObservedRequest,
+    ObservedRequestKey, RecordedReferenceObservation, ReferenceObservationSnapshot,
+};
+
 /// Owns original public control and receipt bytes beneath a separately retained native peer.
 ///
 /// The enclosing installed adapter retains the actual provider Child, private
@@ -27,6 +35,7 @@ pub struct ReferenceController {
     custody: ClientCustody,
     budget: Duration,
     qualifications: Vec<ContentRef>,
+    observer: Option<evidence::ObservationRecorder>,
 }
 
 impl ReferenceController {
@@ -113,6 +122,7 @@ impl ReferenceController {
             custody,
             budget,
             qualifications,
+            observer: None,
         })
     }
 
@@ -143,6 +153,25 @@ impl ReferenceController {
     /// Rejects invalid body schemas, changed originals, exhausted native control
     /// budgets, transport loss or incomplete dynamic receipt closure.
     pub fn call(
+        &mut self,
+        request_id: Id,
+        operation_id: Option<Id>,
+        method: Method,
+        owned: bool,
+        body: impl serde::Serialize,
+    ) -> Result<ResponseBody, ProviderError> {
+        let attempt = self.observer.as_ref().map(|observer| observer.attempt());
+        let result = self.call_original(request_id, operation_id, method, owned, body);
+        if let Some(observer) = &self.observer {
+            observer.record(self, &result);
+        }
+        if let Some(attempt) = attempt {
+            attempt.finish();
+        }
+        result
+    }
+
+    fn call_original(
         &mut self,
         request_id: Id,
         operation_id: Option<Id>,

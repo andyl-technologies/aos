@@ -76,6 +76,30 @@ impl ClientCustody {
         self.controller.values().chain(self.provider.values())
     }
 
+    /// Returns one original from its explicit endpoint namespace.
+    ///
+    /// Equal request IDs from opposite endpoints remain independent. A lookup
+    /// grants no native authority and does not retry or release the original.
+    pub fn original(&self, origin: RequestOrigin, request_id: &Id) -> Option<&ClientOriginal> {
+        match origin {
+            RequestOrigin::Controller => self.controller.get(request_id),
+            RequestOrigin::Provider => self.provider.get(request_id),
+        }
+    }
+
+    /// Enumerates finite retained originals from one explicit endpoint namespace.
+    ///
+    /// Enumeration does not infer origin from a method, envelope body, or ID.
+    pub fn originals_by_origin(
+        &self,
+        origin: RequestOrigin,
+    ) -> impl Iterator<Item = &ClientOriginal> {
+        match origin {
+            RequestOrigin::Controller => self.controller.values(),
+            RequestOrigin::Provider => self.provider.values(),
+        }
+    }
+
     /// Returns immutable byte custody for independent installed receipt verification.
     pub fn content(&self) -> &ClientContent {
         &self.content

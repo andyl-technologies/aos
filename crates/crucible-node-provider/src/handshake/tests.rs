@@ -2,6 +2,9 @@
 
 use super::*;
 
+#[path = "selection_tests.rs"]
+mod selection_tests;
+
 fn id(value: &str) -> Id {
     Id::new(value).unwrap()
 }
