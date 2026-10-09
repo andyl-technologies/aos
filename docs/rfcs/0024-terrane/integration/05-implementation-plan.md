@@ -271,6 +271,25 @@ progress publication remains unfinished. The ninety-second session, population
 and all lease-equality predicates remain unchanged. The log establishes no
 per-effect cost or measured cause. The owning twenty-three-case check and
 complete T1 floor remain unqualified, and T-GC-1 remains open.
+The retained native Node scope candidate `90648cf430` passes strict all-target
+Clippy with warnings denied (46.87 seconds;
+`/tmp/terrane-held-node-scope-native-clippy-final.log`). Its thirteen-case
+runtime selection is terminal: nine passes and four failures, with 913 unrelated
+tests skipped (58.422 seconds; run `1648dc15-9de1-46e9-af61-f948826c30e7`,
+`/tmp/terrane-held-node-scope-13-nextest.log`). Three fixtures assume that two
+Nodes occupy the same pack, but actual native batching and existing-member
+deduplication place them separately. Correction `bca8f05fdc` stages two distinct
+new ordinary Nodes in one actual metadata run and preserves the exact pack,
+cancellation and incompatible-role assertions. The fourth failure shows that
+the retained selected scope omits the selected protected Guard's original
+physical recipe: an equal-byte Guard inode replacement survives its test-only
+DATA closure. The owning Guard producer already retains its separate initial
+Guard read; this result does not establish a semantic publication bypass.
+Shared correction `8bdceed83d` captures the selected Guard through the original
+held protected reader, validates its exact digest and schema, and includes it
+in that scope's physical ledger. Both corrections await combined qualification;
+the unchanged 1,024-record publication and other five population cases remain
+unrun. No task checkbox or milestone exit advances.
 The shared final-check producer now retains the native permanent-family
 traversal through pre-selection handoffs. Its typed receipt refreshes actual
 enumeration and directory continuity between current-authority checks;
