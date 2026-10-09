@@ -59,6 +59,14 @@ schemas and test adapters establish component behavior, not native support.
 | `7e924dfeac` | Complete prepared-world authority, native input provenance, public reference runtime and conditional transcript boundaries | Strict production/all-target checks, 765 core regressions, actual public preparation and two-provider original-byte delivery/checksum/whole-custody reclamation pass; replay continuation and archive relocation remain separate work |
 | `c0c94c9225` | Complete durable public-world activation with separately rooted coordinator bytes | Three actual filesystem-backed public-provider tests pass, including fresh reconciliation, corrupt/missing bytes, partial root writes and lost commit acknowledgment |
 | `fd472ff836` | Authenticated native gem5 saved-copy relocation and co-retained patched DMTCP source | Both installed ISA witnesses remove the complete original image/resource/temporary namespace before two fresh continuations and recaptures; 25 native relocation controls and all 26 artifact identity checks pass |
+| `3e245e6095` | Immutable negotiated provider features and bounded observation-only evidence | 151 provider unit cases, four actual client cases, six public conformance cases and seven companion cases pass; strict checks pass; observer handles cannot execute or acknowledge operations |
+| `612f13bd63` | Original native phase/timer inventories and deterministic preparation barriers, with matching signed QEMU source | 190 protocol and 605 GPL-side cases, 13 host checks and strict checks pass; both installed ISA refusal suites, live PIT ordering and source-fault probes pass; production signed-source regeneration and matching corresponding source pass |
+| `ac2b78c6d7` | Backend-neutral attempt evidence and bounded modeled event retention | 29 attempt, sealing and modeled-choice regressions pass with original bytes and compatibility aliases preserved |
+| `3c769248d1` | Accepted-input bookkeeping failure retains original provider custody | Three actual two-provider/input-failure cases and production/all-target strict checks pass |
+| `6b275160cc` | Native DMTCP restores captured file permissions | Original private files remain mode 0600 across two fresh restores and another source-gone continuation; both installed ISA namespace-deletion/private-mode witnesses pass and all 27 artifact bindings independently remeasure |
+| `ba1f14accc` | Qualified logical property namespaces and read-only assertion deadline inspection | Four property admission/legacy identity regressions and strict production checks pass |
+| `04892b92ae` | Signed continuation edition two, complete saved-copy manifests and original native process custody | 33 provider and 28 core gem5 checks pass; an actual umask-000 subprocess proves exclusive private file installation; the mixed x86 in-flight operation witness passes with two complete fresh worlds |
+| `8e2c95a6fb` | Source-built independently measured public reference implementation | Package runs 152 provider unit cases, seven emitter cases, four actual client cases, six public conformance cases, seven companion cases and production Clippy; independent installed measurement verifies the complete runtime/build graphs and 290 regular ELF objects |
 
 Legacy codec bytes, hash domains, fault identifiers, and existing exact QEMU
 restore semantics remain unchanged by these source extractions. New node
@@ -132,9 +140,22 @@ two independent imported saved-file roots. The required signed continuation
 edition two and early-child kernel identity custody pass 61 focused core/provider
 tests; the complete core suite passes 771 tests with three native fixtures
 excluded, and production strict checks pass against the newly measured profile.
-The next actual mixed-world cold test reaches a distinct copied-artifact managed
-route refusal during native staging. That route discrepancy is under diagnosis;
-complete mixed-world cold continuation remains unqualified.
+The subsequent managed-route discrepancy is corrected. Native reconstruction
+also preserves the original private file permissions rather than DMTCP's
+previous hard-coded mode 0640. Both installed ISA witnesses now require private
+mode preservation and remove the entire original namespace; all 27 artifact
+bindings independently remeasure.
+
+The actual mixed x86 in-flight operation test passes after source destruction:
+two independently restored complete worlds retain the same cut, original
+operation ID and native prefix history, produce the same future checksum, and
+complete the original commit, acknowledgment and native reclamation. Its
+selected policy uses 65,536 callbacks per poll and retains every original raw
+diagnostic body. The ARM held-publication test fails before capture because ten
+full native inventories consume 254,801,355 bytes of the unchanged 256-MiB
+diagnostic allowance. A separately selected ARM policy and diagnostic-credit
+preflight remain in progress. These mixed native tests currently use a private
+test factory; production installed selection and CLI integration remain required.
 
 The [KVM audit](kvm-feasibility.md) records the clock/timer/interrupt mediation
 requirements. The current machine does not expose `/dev/kvm`, so native KVM
