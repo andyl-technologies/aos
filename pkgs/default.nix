@@ -1942,6 +1942,13 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       };
       kernel-interface = callPackage ./kernel/kernel-interface.nix {};
       linux = callPackage ./kernel/linux.nix {inherit linuxSource;};
+      linux-controller-clock = callPackage ./kernel/linux.nix {
+        inherit linuxSource;
+        extraPatches = [./kernel/crucible-controller-clock-7.2.3.patch];
+      };
+      linux-controller-clock-check = callPackage ./kernel/linux-controller-clock-check.nix {
+        inherit linuxSource;
+      };
       # Build a kernel variant with extra kconfig appended. Use this — not
       # `linux.override { extraConfig = …; }` — for deployment kernels:
       # `extraConfig` is a linux.nix function arg consumed before
