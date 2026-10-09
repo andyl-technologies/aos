@@ -43,13 +43,20 @@
     inherit system names;
     packages = publicationPackages;
   };
-  # Recipe paths retain source evidence without requesting every compiler or
-  # sibling output that the recipe's original evaluation made available.
+  # APR authenticates every output of the evaluated source build, including
+  # outputs that are not separate published packages. Keep them registered in
+  # the fixture store alongside their recipes and package metadata.
   retainArtifact = artifact: [artifact (builtins.unsafeDiscardOutputDependency artifact.drvPath)];
   nativeRoots = lib.uniqueBy builtins.toString (lib.concatMap (name: let
     package = publicationPackages.${name};
+    sourceOutputs = map (outputName:
+      if outputName == "out"
+      then package
+      else package.${outputName})
+    (package.outputs or ["out"]);
     artifacts =
-      [package package.deploymentArtifact package.documentationArtifact]
+      sourceOutputs
+      ++ [package.deploymentArtifact package.documentationArtifact]
       ++ lib.optional (package ? qualificationArtifact && package.qualificationArtifact != null) package.qualificationArtifact;
   in
     lib.concatMap retainArtifact artifacts)
