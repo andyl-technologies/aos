@@ -161,6 +161,20 @@ reconciliation and restore cases are running from this frozen source; no runtime
 result is inferred before terminal evidence. A separately reviewed copied-sync
 change removes only redundant whole-projection scans after complete worker
 refreshes; it retains every consumed input and remains unqualified.
+That seven-case run is terminal: four passes, two failures and one timeout
+(473.940 seconds; run `e6e57598-6c63-4bb3-ba2f-6636a4c03039`,
+`/tmp/terrane-original-lock-restore-focused-nextest.log`). Both actual
+administrative lock tests pass, as do missing/corrupt-source refusal and fresh
+secure restore preserving the permanent burn owner. Queued public renewal
+now receives a genuine durable lease ACK; its old runner reports the exact
+nested `LeaseLost`, instead of the fixture's expected Store denial. The reviewed
+oracle correction preserves all subsequent physical, phase and source checks.
+Recurring reconciliation now installs real mark/fence/event records, then
+refuses its attempted portable projection of non-projectable GC keys. The
+reviewed producer correction retains an empty portable delta with its genuine
+predecessor and preserves every GC transaction change and cache repair. Both
+corrections and the smaller copied-sync scan reduction await changed-source
+qualification. Restore-preservation remains timed out; no task or exit is green.
 The shared final-check producer now retains the native permanent-family
 traversal through pre-selection handoffs. Its typed receipt refreshes actual
 enumeration and directory continuity between current-authority checks;
