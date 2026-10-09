@@ -3916,8 +3916,11 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   metadata packs. Private parent-owned change `331b2fd87d` preserves physical
   checks and native acknowledgment while incrementally reclassifying only
   successfully rebound or consumed paths. Independent source parity review and
-  scoped formatting pass; regression coverage, compilation and timed workload
-  qualification remain pending. No deadline or output layout changes.
+  scoped formatting pass. A separate private parent change `bceb6b16ea` reuses
+  lexical ancestor-path capacity across named fences; independent review
+  confirms unchanged leaf, ancestor and descriptor checks and refusal order.
+  Regression coverage, compilation and timed workload qualification remain
+  pending for both native changes. No deadline or output layout changes.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
   codec, value-plus-object opaque keys and D-104's contextual primary/gap/route
