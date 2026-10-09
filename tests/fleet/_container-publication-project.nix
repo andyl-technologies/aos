@@ -15,7 +15,7 @@
       })
       packages;
     operator = record:
-      lib.mapAttrsToList (name: definition: let
+      (lib.mapAttrsToList (name: definition: let
         package = packages.${name} or pkgs.${name}
         or (throw "Fixture source build declares unavailable subpackage '${name}'.");
         output = record.package.${definition.output};
@@ -26,7 +26,12 @@
           key = name;
           inherit package;
         })
-      (record.package.outputPackages or {});
+      (record.package.outputPackages or {}))
+      ++ map (package: {
+        key = packageArtifacts.nameFor package;
+        inherit package;
+      })
+      (packageArtifacts.dependencyValues (record.package.runtimeDeps or []));
   };
   publicationPackages = builtins.listToAttrs (map (record: {
       name = record.key;
@@ -54,6 +59,11 @@
   runtimeDependencies = lib.concatMap (package:
     packageArtifacts.dependencyValues (package.runtimeDeps or []))
   selectedPackages;
+  # Runtime dependency envelopes must be published as signed package entries;
+  # retaining their payloads alone does not authenticate an APM installation.
+  runtimePublicationRoots = lib.filter (package:
+    !(builtins.elem package.drvPath (map (root: root.drvPath) (builtins.attrValues packages))))
+  (lib.uniqueBy (package: package.drvPath) runtimeDependencies);
   sourceOutputs = lib.concatMap (package:
     map (outputName:
       if outputName == "out"
@@ -86,5 +96,5 @@
     '';
   };
 in {
-  inherit project inventory inventoryFile nativeRoots;
+  inherit project inventory inventoryFile nativeRoots runtimePublicationRoots;
 }
