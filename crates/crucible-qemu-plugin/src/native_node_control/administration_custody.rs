@@ -5,7 +5,10 @@
 //! Native self-registration is invoked by the installed sole reader; every retry
 //! still calls the source's TLS check, even when historical facts are cached.
 
-use std::sync::{Mutex, TryLockError};
+use std::sync::{
+    Mutex, OnceLock, TryLockError,
+    atomic::{AtomicBool, Ordering},
+};
 
 use crucible_protocol::node_control::{
     NativeAdministrativeFacts, NativeAdministrativePreparation, NativeCommandError,
@@ -35,6 +38,8 @@ pub(crate) struct AdministrationCustody {
     register: RegisterAdministration,
     query: QueryAdministration,
     original: Mutex<OriginalRegistration>,
+    retained: OnceLock<NativeAdministrativeFacts>,
+    failed: AtomicBool,
 }
 
 impl AdministrationCustody {
@@ -42,12 +47,18 @@ impl AdministrationCustody {
     ///
     /// This historical view carries no current thread-life or readiness proof.
     pub(crate) fn retained_original(&self) -> Option<NativeAdministrativeFacts> {
-        let original = self.original.try_lock().ok()?;
-        if original.failed {
+        if self.failed.load(Ordering::Acquire) || self.original.is_poisoned() {
             return None;
         }
-        original.facts.clone()
+        // Startup publishes this original only after native self-registration,
+        // full validation and actual PID/TID checks. Reply work never replaces it.
+        let facts = self.retained.get().cloned();
+        if self.failed.load(Ordering::Acquire) || self.original.is_poisoned() {
+            return None;
+        }
+        facts
     }
+
     /// Retains complete original policy before the reader invokes native enrollment.
     ///
     /// # Errors
@@ -64,6 +75,8 @@ impl AdministrationCustody {
             register,
             query,
             original: Mutex::new(OriginalRegistration::default()),
+            retained: OnceLock::new(),
+            failed: AtomicBool::new(false),
         })
     }
 
@@ -83,24 +96,31 @@ impl AdministrationCustody {
         if original.failed {
             return Err(NativeCommandError::Conflict);
         }
-        let mut raw = NativeAdministrationFacts::default();
-        let status = (self.register)(&self.policy, &mut raw);
-        if status != 0 {
-            original.retain_failed_output(raw);
-            return Err(NativeCommandError::Conflict);
+        let result = (|| {
+            let mut raw = NativeAdministrationFacts::default();
+            let status = (self.register)(&self.policy, &mut raw);
+            if status != 0 {
+                original.retain_failed_output(raw);
+                return Err(NativeCommandError::Conflict);
+            }
+            let facts = original.retain_successful_output(raw, &self.preparation)?;
+            // SAFETY: SYS_gettid takes no pointers and observes this actual Linux
+            // calling thread. It grants no native effect or scheduling permission.
+            let thread = unsafe { libc::syscall(libc::SYS_gettid) };
+            if facts.process_id.get() != u64::from(std::process::id())
+                || thread <= 0
+                || facts.thread_id.get() != thread as u64
+            {
+                original.failed = true;
+                return Err(NativeCommandError::Conflict);
+            }
+            self.retained.get_or_init(|| facts.clone());
+            Ok(facts)
+        })();
+        if original.failed {
+            self.failed.store(true, Ordering::Release);
         }
-        let facts = original.retain_successful_output(raw, &self.preparation)?;
-        // SAFETY: SYS_gettid takes no pointers and observes this actual Linux
-        // calling thread. It grants no native effect or scheduling permission.
-        let thread = unsafe { libc::syscall(libc::SYS_gettid) };
-        if facts.process_id.get() != u64::from(std::process::id())
-            || thread <= 0
-            || facts.thread_id.get() != thread as u64
-        {
-            original.failed = true;
-            return Err(NativeCommandError::Conflict);
-        }
-        Ok(facts)
+        result
     }
 
     /// Recovers the original historical record without another registration.
@@ -116,26 +136,32 @@ impl AdministrationCustody {
         if original.failed || original.facts.is_none() {
             return Err(NativeCommandError::Conflict);
         }
-        let mut raw = NativeAdministrationFacts::default();
-        let scope = self
-            .preparation
-            .phase
-            .initialization
-            .preparation
-            .scope
-            .identity_digest()?;
-        let commitment = self.preparation.identity_digest()?;
-        let status = (self.query)(scope.as_ptr(), commitment.as_ptr(), &mut raw);
-        if status != 0 {
-            original.retain_failed_output(raw);
-            return Err(NativeCommandError::Conflict);
+        let result = (|| {
+            let mut raw = NativeAdministrationFacts::default();
+            let scope = self
+                .preparation
+                .phase
+                .initialization
+                .preparation
+                .scope
+                .identity_digest()?;
+            let commitment = self.preparation.identity_digest()?;
+            let status = (self.query)(scope.as_ptr(), commitment.as_ptr(), &mut raw);
+            if status != 0 {
+                original.retain_failed_output(raw);
+                return Err(NativeCommandError::Conflict);
+            }
+            let facts = original.retain_successful_output(raw, &self.preparation)?;
+            if facts.process_id.get() != u64::from(std::process::id()) {
+                original.failed = true;
+                return Err(NativeCommandError::Conflict);
+            }
+            Ok(facts)
+        })();
+        if original.failed {
+            self.failed.store(true, Ordering::Release);
         }
-        let facts = original.retain_successful_output(raw, &self.preparation)?;
-        if facts.process_id.get() != u64::from(std::process::id()) {
-            original.failed = true;
-            return Err(NativeCommandError::Conflict);
-        }
-        Ok(facts)
+        result
     }
 
     fn try_original(

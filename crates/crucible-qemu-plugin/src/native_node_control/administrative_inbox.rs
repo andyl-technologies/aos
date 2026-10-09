@@ -23,6 +23,8 @@ use crate::runtime::worker_quiescence::{
 pub(crate) enum NativeAdministrativeInboxError {
     #[error("original administrative inbox ownership is unavailable")]
     Busy,
+    #[error("original administrative inbox ownership is poisoned")]
+    Poisoned,
     #[error("original administrative inbox allocation credit is exhausted")]
     Credit,
     #[error(transparent)]
@@ -32,6 +34,7 @@ pub(crate) enum NativeAdministrativeInboxError {
 /// Owns the only actual socket reader and its separately enrolled modeled workers.
 pub(crate) struct NativeAdministrativeInbox {
     scope: [u8; 32],
+    descriptor: i32,
     modeled_workers: Arc<LiveWorkerQuiescence>,
     mailbox: Mutex<NativeAdministrativeMailbox>,
 }
@@ -69,8 +72,10 @@ impl NativeAdministrativeInbox {
             maximum_records,
             maximum_bytes,
         )?;
+        let descriptor = mailbox.descriptor();
         Ok(Self {
             scope,
+            descriptor,
             modeled_workers,
             mailbox: Mutex::new(mailbox),
         })
@@ -86,10 +91,19 @@ impl NativeAdministrativeInbox {
 
     /// Returns a non-owning descriptor for the only enrolled reader's polling.
     ///
+    /// The original mailbox owns the constructor-validated descriptor for this
+    /// inbox's lifetime; no additional receiver is created.
+    ///
     /// # Errors
-    /// Refuses busy/poisoned custody. No additional receiver is created.
+    /// Refuses poisoned reply custody. Concurrent reader custody does not prevent
+    /// observation of this historical descriptor.
     pub(crate) fn descriptor(&self) -> Result<i32, NativeAdministrativeInboxError> {
-        Ok(self.try_mailbox()?.descriptor())
+        // Manifest installation must not borrow the mutable reader ledger:
+        // an original reply can hold it immediately after startup publication.
+        if self.mailbox.is_poisoned() {
+            return Err(NativeAdministrativeInboxError::Poisoned);
+        }
+        Ok(self.descriptor)
     }
 
     /// Returns the actual endpoint identity captured before the first receive.
@@ -168,6 +182,18 @@ impl NativeAdministrativeInbox {
     /// Refuses absent history, busy custody or physical socket failure.
     pub(crate) fn send_reply(&self, cursor: u64) -> Result<bool, NativeAdministrativeInboxError> {
         Ok(self.try_mailbox()?.send_reply(cursor)?)
+    }
+
+    /// Holds the original ledger for contention and poison tests.
+    ///
+    /// # Panics
+    /// Panics when the test ledger is already poisoned.
+    #[cfg(test)]
+    // crucible-lint: allow rust-allow -- This private test helper deliberately panics when ledger custody is poisoned.
+    // crucible-lint: allow panic-shortcut -- Child tests hold this exact ledger to verify contention and poison refusal.
+    #[allow(clippy::unwrap_used)]
+    fn test_hold_mailbox(&self) -> MutexGuard<'_, NativeAdministrativeMailbox> {
+        self.mailbox.lock().unwrap()
     }
 
     fn try_mailbox(

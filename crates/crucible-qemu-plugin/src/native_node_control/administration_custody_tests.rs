@@ -159,3 +159,44 @@ fn preparation() -> NativeAdministrativePreparation {
         socket_inode: 31,
     }
 }
+
+#[test]
+fn manifest_metadata_remains_available_during_original_reply_custody() {
+    let custody = custody();
+    let original = custody.register_current_reader().unwrap();
+    let held = custody.try_original().unwrap();
+
+    // A query reply holds mutable journal custody after reader startup. The
+    // installer still needs the immutable already validated original record.
+    assert_eq!(custody.retained_original(), Some(original));
+    QUERY_CALLS.with(|count| assert_eq!(count.get(), 0));
+    drop(held);
+}
+
+#[test]
+fn published_manifest_metadata_is_withdrawn_after_original_source_divergence() {
+    let custody = custody();
+    let original = custody.register_current_reader().unwrap();
+    assert_eq!(custody.retained_original(), Some(original.clone()));
+    RAW.with(|raw| *raw.borrow_mut() = Some(NativeAdministrationFacts::default()));
+
+    assert!(custody.query_original().is_err());
+    assert!(custody.retained_original().is_none());
+    let held = custody.try_original().unwrap();
+    assert_eq!(held.facts, Some(original));
+    assert!(held.failed);
+}
+
+#[test]
+fn poisoned_reply_custody_cannot_supply_published_manifest_metadata() {
+    let custody = custody();
+    custody.register_current_reader().unwrap();
+    let failure = std::panic::catch_unwind(|| {
+        let _held = custody.try_original().unwrap();
+        panic!("intentional original reply custody failure");
+    });
+
+    assert!(failure.is_err());
+    assert!(custody.retained_original().is_none());
+    assert!(custody.query_original().is_err());
+}

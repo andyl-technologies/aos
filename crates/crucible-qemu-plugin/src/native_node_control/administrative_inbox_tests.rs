@@ -82,3 +82,40 @@ fn exhausted_reply_credit_leaves_next_complete_packet_unread() {
     );
     assert_eq!(inbox.original_frame(1).unwrap(), query());
 }
+
+#[test]
+fn manifest_descriptor_remains_available_while_reader_holds_mailbox() {
+    let (_, native) =
+        NativeChannel::supervised_pair_for_edition(NativeControlEdition::Administration).unwrap();
+    let mut endpoint = Some(native);
+    let inbox =
+        NativeAdministrativeInbox::from_pinned_endpoint(&mut endpoint, [1; 32], false, 8, 65536)
+            .unwrap();
+    let original = inbox.descriptor().unwrap();
+    let held = inbox.test_hold_mailbox();
+
+    // The installer observes the original owned endpoint, without borrowing
+    // the reader's mutable receive/reply ledger or making another receiver.
+    assert_eq!(inbox.descriptor().unwrap(), original);
+    drop(held);
+}
+
+#[test]
+fn poisoned_reader_custody_refuses_the_retained_manifest_descriptor() {
+    let (_, native) =
+        NativeChannel::supervised_pair_for_edition(NativeControlEdition::Administration).unwrap();
+    let mut endpoint = Some(native);
+    let inbox =
+        NativeAdministrativeInbox::from_pinned_endpoint(&mut endpoint, [1; 32], false, 8, 65536)
+            .unwrap();
+    let failure = std::panic::catch_unwind(|| {
+        let _held = inbox.test_hold_mailbox();
+        panic!("intentional original inbox custody failure");
+    });
+
+    assert!(failure.is_err());
+    assert!(matches!(
+        inbox.descriptor(),
+        Err(NativeAdministrativeInboxError::Poisoned)
+    ));
+}

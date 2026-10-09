@@ -506,6 +506,26 @@ not establish application readiness, complete device parity, CPU timing-model
 accuracy, ordinary common-node activation or vendor admission. Raw evidence,
 images and runtime journals remain local.
 
+## Native administrative metadata during reply custody
+
+The plugin retains immutable registration facts only after native validation
+and actual reader PID/TID checks. It also retains the original owned inbox
+descriptor independently of the mutable reply ledger. Startup can therefore
+read its already validated manifest while the sole reader holds journal locks.
+These historical facts do not prove current thread life, Ready or execution
+authority. Native divergence and poisoned original custody withdraw them;
+each registration retry still authenticates the source's actual reader.
+
+Five new adverse cases cover held original locks, source divergence and poison.
+Central verification passes all 633 plugin library cases, including six
+registration and five inbox cases, plus all 37 source-quality cases and strict
+all-target checks across nine crates. The first runner stopped after six passing
+registration cases because its minimum-count assertion incorrectly expected
+nine; its original log remains retained. The successor runs the remaining
+targets with their actual inventories. Broader package qualification will be
+recorded separately. No protocol schema, native callback or admission selector
+changes in this stage.
+
 ## Performance evidence
 
 The frozen parent, with its documented vendor-hash correction, passes the
