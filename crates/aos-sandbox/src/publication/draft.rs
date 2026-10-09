@@ -344,26 +344,23 @@ pub(super) fn decode_draft(
                 && maximum_body <= grant.maximum_request_bytes()
                 && descriptor_count <= grant.maximum_descriptors()
         });
-        if matching_grant.is_none()
-            || durable_template_digest(
-                plan_descriptor.digest(),
-                plan_signature,
-                method_code,
-                body,
-                &role_codes,
-                verb,
-                target_bytes,
-                commitment,
-            ) != stored_template_digest
-        {
-            return Err(AuthorityPublicationError::InvalidDraft);
-        }
         let grant = matching_grant.ok_or(AuthorityPublicationError::InvalidDraft)?;
         let semantics = BrokerDispatchSemanticIdentityV1::new(
             grant.verb(),
             grant.target(),
             grant.argument_commitment(),
         );
+        if crate::dispatch::template_digest_from_parts(
+            plan_descriptor.digest(),
+            plan_signature,
+            method,
+            body,
+            &descriptor_roles,
+            semantics,
+        ) != stored_template_digest
+        {
+            return Err(AuthorityPublicationError::InvalidDraft);
+        }
         recovered_templates.push(RecoveredBrokerDispatchTemplateV1 {
             digest: stored_template_digest,
             audience,

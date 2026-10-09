@@ -52,7 +52,6 @@ use format::{decode_current, decode_prepared, encode_current, validate_encoded_p
 const MAGIC: &[u8; 8] = b"AOSCPUB1";
 const VERSION: u16 = 1;
 const DIGEST_DOMAIN: &[u8] = b"aos.sandbox.controller-publication.v1\0";
-const TEMPLATE_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.broker-dispatch-template.v1\0";
 const MAXIMUM_TEMPLATES: usize = 256;
 const JOURNAL_RECORD_BYTES: usize = 16 * 1024 * 1024;
 const JOURNAL_RECORD_HEADER_BYTES: usize = 7;
@@ -1354,39 +1353,6 @@ fn publication_digest(bytes: &[u8]) -> ObjectDigest {
     let mut digest = Sha256::new();
     digest.update(DIGEST_DOMAIN);
     digest.update(bytes);
-    ObjectDigest::from_bytes(digest.finalize().into())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn durable_template_digest(
-    plan_digest: ObjectDigest,
-    plan_signature: &[u8],
-    method: i32,
-    body: &[u8],
-    roles: &[i32],
-    verb: u32,
-    target: &[u8],
-    commitment: ObjectDigest,
-) -> ObjectDigest {
-    let mut digest = Sha256::new();
-    digest.update(TEMPLATE_DIGEST_DOMAIN);
-    digest.update(plan_digest.as_bytes());
-    digest.update(
-        u64::try_from(plan_signature.len())
-            .unwrap_or(u64::MAX)
-            .to_be_bytes(),
-    );
-    digest.update(plan_signature);
-    digest.update(method.to_be_bytes());
-    digest.update(verb.to_be_bytes());
-    digest.update(target);
-    digest.update(commitment.as_bytes());
-    digest.update(u64::try_from(body.len()).unwrap_or(u64::MAX).to_be_bytes());
-    digest.update(body);
-    digest.update(u16::try_from(roles.len()).unwrap_or(u16::MAX).to_be_bytes());
-    for role in roles {
-        digest.update(role.to_be_bytes());
-    }
     ObjectDigest::from_bytes(digest.finalize().into())
 }
 
