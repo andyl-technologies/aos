@@ -125,6 +125,14 @@ empty `terrane` binary.
 ### T1 — Local repository
 
 **Status:** In progress; eight of twenty-two T1 tasks are complete.
+The combined read candidate `be832963c4` fails strict native all-target
+Clippy on two large enum variants in the bounded reader. No tests ran from
+that candidate. Separate T1 worktrees now implement the enum correction,
+PACK-16 detached-index attribution, genuine native backfill-hook forwarding,
+one paired producer-history completion, and adjacent GC observation fence
+coalescing. Their source checks do not qualify task or milestone acceptance;
+unchanged-budget runtime tests and the complete current trunk floor remain
+required before a task merge or push.
 The frozen `9d122397a6` native recovery run is terminal: all thirty-one
 registered cases ran, with fourteen passes, eight failures and nine timeouts
 (2,770.386 seconds; run `cf52bbd2-6224-4a3c-bf53-54dba13b7583`, raw log
