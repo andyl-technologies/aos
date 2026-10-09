@@ -37,6 +37,53 @@ pub fn checked_byte_region(
     Ok((value, end))
 }
 
+/// Identifies a bounded byte-append failure without choosing caller diagnostics.
+#[derive(Debug, thiserror::Error)]
+pub enum BoundedAppendError {
+    /// The resulting byte length overflows or exceeds the supplied maximum.
+    #[error("bounded byte append exceeds its limit")]
+    LimitExceeded,
+    /// The exact reservation failed before any input bytes were appended.
+    #[error("bounded byte append allocation failed: {0}")]
+    Allocation(#[source] std::collections::TryReserveError),
+}
+
+/// Appends bytes using checked length and capped doubling of the actual capacity.
+///
+/// Existing vector ownership and initial capacity remain with the caller. A
+/// required growth uses one exact reservation before the complete input append.
+///
+/// # Errors
+///
+/// Returns [`BoundedAppendError::LimitExceeded`] before reservation on length
+/// overflow or a crossed maximum. Returns [`BoundedAppendError::Allocation`]
+/// with the original reservation cause if allocation fails.
+pub fn append_with_capped_doubling(
+    output: &mut Vec<u8>,
+    input: &[u8],
+    maximum: usize,
+) -> Result<usize, BoundedAppendError> {
+    let next = output
+        .len()
+        .checked_add(input.len())
+        .ok_or(BoundedAppendError::LimitExceeded)?;
+    if next > maximum {
+        return Err(BoundedAppendError::LimitExceeded);
+    }
+    if next > output.capacity() {
+        let capacity = output
+            .capacity()
+            .saturating_mul(2)
+            .max(next)
+            .min(maximum);
+        output
+            .try_reserve_exact(capacity - output.len())
+            .map_err(BoundedAppendError::Allocation)?;
+    }
+    output.extend_from_slice(input);
+    Ok(input.len())
+}
+
 /// Reads bounded fields while preserving caller-owned error classification.
 pub struct BoundedReader<'a, E> {
     bytes: &'a [u8],

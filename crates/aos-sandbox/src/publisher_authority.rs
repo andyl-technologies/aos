@@ -46,6 +46,7 @@
 use std::collections::BTreeMap;
 use std::io;
 
+use aos_sandbox_core::bounded_codec::{BoundedAppendError, append_with_capped_doubling};
 use aos_sandbox_core::{CapabilityId, CapabilityRecord, ChannelBinding, PrincipalId};
 use rand::{TryRngCore as _, rngs::OsRng};
 use serde::{Deserialize, Serialize};
@@ -1135,27 +1136,13 @@ impl BoundedWriter {
 
 impl io::Write for BoundedWriter {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        let Some(next_length) = self.bytes.len().checked_add(bytes.len()) else {
-            self.exceeded = true;
-            return Err(io::Error::other("publisher authority record is too large"));
-        };
-        if next_length > self.maximum_bytes {
-            self.exceeded = true;
-            return Err(io::Error::other("publisher authority record is too large"));
-        }
-        if next_length > self.bytes.capacity() {
-            let target_capacity = self
-                .bytes
-                .capacity()
-                .saturating_mul(2)
-                .max(next_length)
-                .min(self.maximum_bytes);
-            self.bytes
-                .try_reserve_exact(target_capacity - self.bytes.len())
-                .map_err(io::Error::other)?;
-        }
-        self.bytes.extend_from_slice(bytes);
-        Ok(bytes.len())
+        append_with_capped_doubling(&mut self.bytes, bytes, self.maximum_bytes).map_err(|error| match error {
+            BoundedAppendError::LimitExceeded => {
+                self.exceeded = true;
+                io::Error::other("publisher authority record is too large")
+            }
+            BoundedAppendError::Allocation(error) => io::Error::other(error),
+        })
     }
 
     fn flush(&mut self) -> io::Result<()> {

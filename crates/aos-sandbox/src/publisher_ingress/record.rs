@@ -20,6 +20,7 @@ use aos_sandbox_core::format::{
     decode_publisher_admission_request_v1, encode_publisher_admission_request_v1,
 };
 use aos_sandbox_core::{DecodeLimits, PublisherChallengeV1, PublisherInstanceId};
+use aos_sandbox_core::bounded_codec::{BoundedAppendError, append_with_capped_doubling};
 use std::io::{self, Write};
 
 const EXECUTION_MAGIC: &[u8; 8] = b"AOSPEX01";
@@ -188,24 +189,10 @@ struct BoundedBuffer {
 }
 impl Write for BoundedBuffer {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        let next = self
-            .bytes
-            .len()
-            .checked_add(bytes.len())
-            .ok_or_else(|| io::Error::other("record limit"))?;
-        if next > self.maximum {
-            return Err(io::Error::other("record limit"));
-        }
-        if next > self.bytes.capacity() {
-            let capacity = next
-                .max(self.bytes.capacity().saturating_mul(2))
-                .min(self.maximum);
-            self.bytes
-                .try_reserve_exact(capacity - self.bytes.len())
-                .map_err(io::Error::other)?;
-        }
-        self.bytes.extend_from_slice(bytes);
-        Ok(bytes.len())
+        append_with_capped_doubling(&mut self.bytes, bytes, self.maximum).map_err(|error| match error {
+            BoundedAppendError::LimitExceeded => io::Error::other("record limit"),
+            BoundedAppendError::Allocation(error) => io::Error::other(error),
+        })
     }
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
