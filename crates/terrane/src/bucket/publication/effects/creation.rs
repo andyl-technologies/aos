@@ -250,6 +250,24 @@ async fn recapture_committed<F: LocalFs + BucketBinding>(
     if record.key != captured.key || record.nonce != nonce || binding != captured.binding {
         return Err(corrupt());
     }
+
+    // The native commit replaces the Pending body outside Frame::install.
+    // Keep the final durability inventory aligned with the same acknowledged
+    // replacement, rather than asking a later publication to sync old bytes.
+    if let Some(writes) = &mut frame.writes {
+        let completed = writes.records.get_mut(journal_path).ok_or_else(corrupt)?;
+        let previous = CreationJournal::decode(completed.expected.as_deref().ok_or_else(corrupt)?)
+            .map_err(|_| corrupt())?;
+        if completed.root.join(&captured.journal_key) != journal_path
+            || !matches!(completed.policy, FencePolicy::ProtectedRecord { owner } if owner == frame.owner)
+            || previous.key != captured.key
+            || previous.nonce != nonce
+            || !matches!(previous.state, JournalState::Pending { .. })
+        {
+            return Err(corrupt());
+        }
+        completed.expected = Some(bytes);
+    }
     Ok(())
 }
 

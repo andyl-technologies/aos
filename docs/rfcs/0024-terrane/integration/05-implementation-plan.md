@@ -5099,6 +5099,17 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   The closed restoration producer must still retain genuine current owner,
   lease, Original and source descriptors and consume a real native durability
   acknowledgment. This access change grants no collector or serving permission.
+  The next production build on private `6b1c92b383` clears the module-path
+  failures and reports eleven actual record-access/ownership errors. The next
+  build on `48772a48b6` reports only one wrong merged-row pack field. Both
+  terminal failures are retained; genuine native test qualification remains
+  pending. Independent restoration review also requires fresh Q payload and
+  creation-journal absence even for equal orphan bytes, and finds the tracked
+  durability inventory still expected Pending after native Committed replacement.
+  The worker seals fresh-only target checks, and the parent corrects the shared
+  journal recapture to replace only the matching tracked Pending body with the
+  actual native-acknowledged Committed body. Ordinary dedup staging is preserved;
+  fresh-placement, collision and durability regressions remain unqualified.
   Actual remote provider qualification belongs to T3. No remote conformance
   or full `gc-two-phase-delete` pass is claimed. D-78
   registers physical creation journals and recoverable deletion intent.
