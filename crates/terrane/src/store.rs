@@ -43,6 +43,8 @@ pub use native_effect::publication::initialization_inputs::{
 pub(crate) use native_effect::{EffectFault, EffectFaultProbe};
 #[cfg(feature = "std")]
 pub use native_effect::{NativeEffectFailure, NativeExclusion, NativeFsEffect};
+#[cfg(feature = "std")]
+pub use native_effect::{NativePayloadRangeRead, NativePayloadRangeRecord};
 #[cfg(all(feature = "tokio", unix))]
 pub(crate) use ordinary_read::OrdinaryReadOutcome;
 #[cfg(feature = "std")]
@@ -1054,6 +1056,26 @@ pub trait LocalFs {
         &self,
         _read: NativeOrdinaryRead,
     ) -> std::io::Result<Option<NativeOrdinaryRecord>> {
+        Ok(None)
+    }
+
+    /// Executes a sealed payload range recipe without mutation or authority.
+    ///
+    /// Supported bindings retain the original leaf and ancestor descriptors
+    /// through actual worker completion. Reads and closing checks use those
+    /// same descriptors and freshly validate names, metadata and exact ranges.
+    /// Cancelling the waiter discards its result while the worker finishes.
+    /// The default returns `None` without I/O. A supported failure must never
+    /// be retried through a whole-file fallback.
+    ///
+    /// # Errors
+    /// Returns runtime, worker, original ancestry, descriptor, bounds or actual
+    /// range-read failures in recipe order. A binding capability probe performs
+    /// no filesystem operation and conveys no actor or publication permission.
+    async fn read_payload_ranges(
+        &self,
+        _read: NativePayloadRangeRead,
+    ) -> std::io::Result<Option<NativePayloadRangeRecord>> {
         Ok(None)
     }
 

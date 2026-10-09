@@ -501,6 +501,18 @@ verified-get gate additionally requires nine request-local closing witnesses.
 Missing selectors fail explicitly. No task or runtime result follows from
 these source prerequisites; deadlines, populations and failure evidence remain
 unchanged.
+Reviewed range-receipt source `6f8daefd82` now supplies original leaf and ancestor
+descriptors, actual bounded reads and fresh closing checks without publication
+or actor authority. The shared LocalFs hook returns explicit unsupported
+execution by default; its native binding executes owned recipes through the
+blocking worker. Eight exact helper witnesses join runtime-agnostic without
+removing existing cases. Private adapters remain native-only; opaque hook types
+preserve portable trait compilation. Source formatting passes, but compilation,
+helper execution and range integration remain unqualified. Ordinary whole
+artifact and selected snapshot/log receipts still need an ordinary read policy;
+existing strict publication recipes cannot impose new owner or hardlink rules
+on copied ordinary payloads. The selected-get candidate remains unqualified
+until that compatibility bridge and complete closing witnesses are implemented.
 The shared final-check producer now retains the native permanent-family
 traversal through pre-selection handoffs. Its typed receipt refreshes actual
 enumeration and directory continuity between current-authority checks;

@@ -19,6 +19,11 @@ use super::StoreFailure;
 #[path = "native_effect/range.rs"]
 mod range;
 
+#[path = "native_effect/payload_ranges.rs"]
+mod payload_ranges;
+
+pub use payload_ranges::{NativePayloadRangeRead, NativePayloadRangeRecord};
+
 #[path = "native_effect/directory_retention.rs"]
 mod directory_retention;
 

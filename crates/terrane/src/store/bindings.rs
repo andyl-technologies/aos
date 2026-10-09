@@ -483,6 +483,25 @@ impl LocalFs for TokioLocalFs {
         }
     }
 
+    async fn read_payload_ranges(
+        &self,
+        read: super::NativePayloadRangeRead,
+    ) -> std::io::Result<Option<super::NativePayloadRangeRecord>> {
+        #[cfg(unix)]
+        {
+            tokio::runtime::Handle::try_current().map_err(std::io::Error::other)?;
+            tokio::task::spawn_blocking(move || read.execute())
+                .await
+                .map_err(std::io::Error::other)?
+                .map(Some)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = read;
+            Ok(None)
+        }
+    }
+
     async fn remove_file(&self, path: &std::path::Path) -> std::io::Result<()> {
         tokio::fs::remove_file(path).await
     }

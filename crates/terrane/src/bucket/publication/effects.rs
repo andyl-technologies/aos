@@ -33,6 +33,8 @@ pub(crate) mod collection_permanent_local;
 mod capture;
 #[path = "effects/retained_read.rs"]
 mod retained_read;
+#[cfg(all(feature = "tokio", unix))]
+pub(crate) use super::payload_ranges::{PayloadRangeCapture, RetainedPayloadRanges};
 pub(crate) use retained_read::{PayloadReadCapture, RetainedPayloadRead};
 #[cfg(all(feature = "tokio", unix))]
 #[path = "effects/history_inputs.rs"]

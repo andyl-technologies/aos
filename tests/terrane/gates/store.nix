@@ -51,6 +51,14 @@ in {
     run_store_test store::ordinary_read::tests::ordinary_recipe_preserves_body_error_and_after_read_disappearance --features tokio
     run_store_test store::ordinary_read::tests::ordinary_recipe_rejects_same_bytes_named_inode_replacement --features tokio
     run_store_test store::ordinary_read::tests::ordinary_recipe_cancellation_delivers_no_result_or_authority --features tokio
+    run_store_test store::native_effect::payload_ranges::tests::original_ranges_read_exact_bytes_and_revalidate_without_whole_body --features tokio
+    run_store_test store::native_effect::payload_ranges::tests::zero_range_at_original_end_is_checked_and_overflow_refuses --features tokio
+    run_store_test store::native_effect::payload_ranges::tests::equal_bytes_replaced_leaf_cannot_rebind_original_descriptor --features tokio
+    run_store_test store::native_effect::payload_ranges::tests::replaced_original_ancestor_refuses_before_bounded_read --features tokio
+    run_store_test store::native_effect::payload_ranges::tests::ordinary_capture_rejects_symlinks_and_nondirectory_ancestors --features tokio
+    run_store_test store::native_effect::payload_ranges::tests::in_place_changes_refuse_original_range_and_final_closure --features tokio
+    run_store_test store::native_effect::payload_ranges::tests::cancelled_waiter_retains_descriptor_until_actual_worker_finishes --features tokio
+    run_store_test store::native_effect::payload_ranges::tests::ordinary_ranges_preserve_public_hardlinks_without_protected_authority --features tokio
     run_store_test store::tests::native_clock_ticks_do_not_move_backward --features tokio
     run_store_test store::bindings::tests::native_timer_waits_and_rejects_duration_overflow --features tokio
     run_store_test store::bindings::tests::native_metadata_preserves_links_permissions_and_nofollow_attributes --features tokio
