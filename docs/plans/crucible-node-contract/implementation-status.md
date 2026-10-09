@@ -239,12 +239,32 @@ These source checkpoints do not replace an ordinary production package build.
 The signed `2e733` QEMU production regeneration now passes its mandatory fresh
 original-status fixture, all new mandatory models, and the 13 plus 10 adversarial
 mutants (`waqx` build). Matching production plugin generation, corresponding
-source closure and final live pair probes now pass: the exact current pair is
-QEMU `2sp`, plugin `hd0`, and corresponding source `c5`; the packaged plugin
-passes all 632 cases. Eight production native probes pass in 0.29 seconds.
-The latest whole license gate failed 15 engineering gates; source hygiene and
-API error documentation are still being repaired. These results do not replace
-that publication check.
+source closure and final live pair probes pass. The registered `9fd9c5ee96`
+checkpoint uses QEMU `2sp`, plugin `nqag`, and corresponding source `8ds`; the
+packaged plugin passes all 632 cases. Eight current production native probes
+pass in 0.26 seconds. All-target strict checks, ABI conformance (`p0y`) and
+required hermetic application test-target compilation (`ixx`) also pass.
+
+The original whole license attempt failed 15 engineering gates. After explicit
+source inventory, typed-error, documentation and responsibility corrections,
+all 6,305 controller tests pass, with 136 declared native fixtures excluded
+(339.098 seconds). That attempt then failed an outdated packaging assertion
+which omitted the already-packaged BSL-1.0 JCS formatter license. The correction
+requires the exact expanded license list, formatter choice, nonempty license
+file and byte equality with the canonical license. The complete frozen packaging
+and source-reconstruction gate passes as `8fq`. Every one of the 85 staged
+implementation files was independently compared byte for byte with that tested
+source before commit; the additional file corrects the packaging assertion.
+The original failures remain retained. This result covers the registered native
+checkpoint, not later consolidated or private implementation stages.
+
+The same checkpoint confines provider host deadlines to one private opaque
+operational primitive. Raw clock coordinates have no accessor or codec; physical
+elapsed reference-device evidence remains explicitly separate from modeled time.
+Both SDK crates enter the dependency, artifact, unsafe-code and specification
+inventories. Their four process tools are explicit Cargo targets. Opaque world
+and operation comparisons retain actual local custody and complete immutable
+scope; typed inventory and actor failures preserve original diagnostics.
 
 The later source-probe checkpoint `d4d13e9edf` passes 12 source-probe guards and
 the central controller all-target strict gate (83 seconds). The fresh core suite
