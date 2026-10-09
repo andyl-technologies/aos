@@ -189,7 +189,15 @@ lock continuity assertions. Its native build passes; strict Clippy detects the
 same fixture source included twice. A parent-owned test-only visibility change
 allows reuse of the original fixture without copying it or suppressing the lint;
 candidate `019e904fc7` passes its native build and strict all-target Clippy;
-actual test compilation is running. Parallel review also identifies CDC-19's
+actual test compilation and executable-bound inventory pass. Its seven held
+cases finish with three passes and four `Unsupported` failures in 12.001
+seconds at the unchanged deadlines. The initial observed-only selection lacks
+the retained physical recipes required by the closing ledger. A reviewed
+read-only retained-selection helper supports both actual held roles, preserves
+strict protected receipts and fresh selected checks, and performs no repair.
+Physical fault assertions now require corruption or unavailability so generic
+unsupported refusal cannot qualify original-input closing. Fresh build and
+runtime qualification remain pending. Parallel review also identifies CDC-19's
 final manifest chunk boundary gap in admission, restoration and guarded reads.
 An isolated codec/manifest witness workline owns the correction; the exact native
 nonfinal and final admission selectors are registered in `cdc-boundaries`.
