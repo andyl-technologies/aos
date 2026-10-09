@@ -440,3 +440,6 @@ fn take<const N: usize>(bytes: &mut &[u8]) -> Result<[u8; N], AttachmentSourceEr
         .map_err(|_| AttachmentSourceError::CorruptState)?;
     Ok(value)
 }
+
+#[cfg(test)]
+mod tests;
