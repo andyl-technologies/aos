@@ -3,7 +3,7 @@
 //! These tests authenticate no source provider. Directory CAS proves original
 //! request custody; source applicability remains the owning native fixture's job.
 
-// A panic identifies a codec or durable custody regression in these tests.
+// crucible-lint: allow panic-shortcut -- Original-request codec and durable custody regressions fail on their first unmet assertion; no failed test is rerun.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::ledger::ConditionalPreparationLedger;

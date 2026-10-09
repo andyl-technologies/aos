@@ -3,7 +3,7 @@
 //! These records do not create a native seal or qualify an implementation. The
 //! installed native witness separately checks identical-cut image reuse.
 
-// Panics intentionally make a violated custody or certainty invariant fail its test.
+// crucible-lint: allow panic-shortcut -- Data-only custody and certainty regressions fail on their first unmet assertion; these records qualify no native model.
 #![allow(clippy::unwrap_used)]
 
 use super::*;

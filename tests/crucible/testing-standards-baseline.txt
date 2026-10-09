@@ -306,3 +306,21 @@ crucible-daemon	src/node_observed_executor/factory/native_state/initial_preparat
 crucible-daemon	src/node_observed_executor/factory/transcript/production_tests	retry	1
 crucible-daemon	src/node_observed_executor/tests/cache_workflow	thread::sleep	1
 crucible-daemon	src/node_observed_executor/tests/cache_workflow	std::thread::sleep	1
+
+# Capability CLI and installed capability/seeded-storage fixtures poll one
+# original child, worker or custody queue under their fixed absolute deadlines;
+# every failed command/assertion remains terminal. The native-state capture
+# retry checks unchanged original image/seal reuse without rerunning a test.
+# Capability/conditional retry names check immutable original reservations and
+# nonce isolation; production replay rechecks its same original queued request
+# before dispatch and never reexecutes a failed assertion or test invocation.
+crucible-cli	tests/node_capability_process	thread::sleep	1
+crucible-cli	tests/node_capability_process	std::thread::sleep	1
+crucible-daemon	src/node_observed_executor/factory/capabilities/tests	thread::sleep	1
+crucible-daemon	src/node_observed_executor/factory/capabilities/tests	std::thread::sleep	1
+crucible-daemon	src/node_observed_executor/factory/native_state/tests	retry	1
+crucible-daemon	src/node_observed_executor/service/capability_preparation/tests	retry	1
+crucible-daemon	src/node_observed_executor/service/conditional_preparation/tests	retry	1
+crucible-daemon	src/node_observed_executor/service/replay	retry	1
+crucible-daemon	src/node_observed_executor/tests/seeded_storage	thread::sleep	1
+crucible-daemon	src/node_observed_executor/tests/seeded_storage	std::thread::sleep	1

@@ -145,8 +145,8 @@ fn encode(value: &impl Serialize) -> Result<Vec<u8>, crucible_node_contract::Con
     canonical::canonical_json(&serde_json::to_value(value)?)
 }
 
-// crucible-lint: allow panic-shortcut -- Seeded transport tests panic when original native state or rejection invariants fail.
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- Seeded transport tests panic when original native state or rejection invariants fail.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;

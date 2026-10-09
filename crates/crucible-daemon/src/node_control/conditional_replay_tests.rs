@@ -1,6 +1,6 @@
 //! Tests the explicit conditional wire mode without issuing replay authority.
 
-// Panics identify portable codec and mode-isolation regression failures.
+// crucible-lint: allow panic-shortcut -- Portable codec and mode-isolation regressions deliberately fail on their first unmet assertion; these records issue no replay authority.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::collections::BTreeMap;

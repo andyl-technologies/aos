@@ -193,7 +193,8 @@ fn complete_roster_and_architecture_device_demand_cannot_be_inferred() {
 
 #[test]
 #[ignore = "requires CRUCIBLE_REFERENCE_DEVICE pointing to the actual source-built companion"]
-// crucible-lint: allow nondeterministic-clock -- Host monotonic time only bounds the original fixture's wait for actual native reclamation/completion; it never enters simulation state.
+// crucible-lint: allow clippy-disallowed-method -- Host monotonic time only bounds the original native fixture's completion or reclamation wait; it never enters modeled state.
+// crucible-lint: allow rust-allow -- The existing diagnostic reason documents this test-local host watchdog exception.
 #[allow(
     clippy::disallowed_methods,
     reason = "Host time is only an absolute fixture watchdog, never a modeled clock"
@@ -393,7 +394,8 @@ fn actual_capability_selected_clock_and_reference_execute_without_legacy_retaggi
 
 #[test]
 #[ignore = "requires CRUCIBLE_REFERENCE_DEVICE pointing to the actual source-built companion"]
-// crucible-lint: allow nondeterministic-clock -- Host monotonic time only bounds the original fixture's wait for actual native reclamation/completion; it never enters simulation state.
+// crucible-lint: allow clippy-disallowed-method -- Host monotonic time only bounds the original native fixture's completion or reclamation wait; it never enters modeled state.
+// crucible-lint: allow rust-allow -- The existing diagnostic reason documents this test-local host watchdog exception.
 #[allow(
     clippy::disallowed_methods,
     reason = "Host time is only an absolute fixture watchdog, never a modeled clock"

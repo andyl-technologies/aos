@@ -579,7 +579,7 @@ fn seeded_pending_native_frame_retains_rng_and_future_draws_across_two_source_go
     drop(left);
     drop(right);
     reclaim(&catalog);
-    // The later cut owns the actual link→disk transfer under the original
+    // The later cut owns the actual link-to-disk transfer under the original
     // coordinator FIFO, including its native receipt and causal position.
     for nonce in [114, 115] {
         let fifo_record = archive.load(&fifo_artifact).unwrap();
