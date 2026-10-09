@@ -137,6 +137,19 @@ and its build and runtime checks remain pending. The reviewed next change
 chooses read or write access before acquisition, refuses busy coordination
 without retaining the namespace holder, and preserves exclusive live record
 writers. No task acceptance or T1 exit follows from these source changes.
+The composed prerequisite source `3fa2d42f1e` now passes strict native all-target
+Clippy with warnings denied (34.87 seconds; raw log
+`/tmp/terrane-reviewed-recovery-prerequisites-clippy-path.log`). The first check
+found the explicit lease test module's child-path mismatch; the parent-owned
+registration now names the existing witness file. The real known-empty
+collection and both native try-lock witnesses pass all three selected tests
+(0.835 seconds; `/tmp/terrane-reviewed-recovery-prerequisites-nextest.log`).
+The inventory-verified Raw durability module also passes all twenty-eight
+classification, actual syscall, freshness, refusal and cancellation cases
+(0.315 seconds; `/tmp/terrane-current-durability-regressions-nextest.log`).
+These are prerequisite results only. The public Original-mode conversion,
+restore corrections, owning gates and complete current trunk floor remain
+unqualified.
 The shared final-check producer now retains the native permanent-family
 traversal through pre-selection handoffs. Its typed receipt refreshes actual
 enumeration and directory continuity between current-authority checks;
