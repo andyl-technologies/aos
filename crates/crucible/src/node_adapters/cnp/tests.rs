@@ -257,6 +257,15 @@ fn installation(provider: &std::path::Path, device: &std::path::Path) -> Install
 }
 
 fn connect(guard: &mut CnpLaunchGuard, socket: &std::path::Path, installed: &mut Installed) {
+    connect_with_schema(guard, socket, installed, Rc::new(Schemas));
+}
+
+fn connect_with_schema(
+    guard: &mut CnpLaunchGuard,
+    socket: &std::path::Path,
+    installed: &mut Installed,
+    schemas: Rc<dyn BodySchemaVerifier>,
+) {
     let bootstrap = installed.bootstrap.clone();
     let features = vec![id("cnp.control-evidence/1"), id("cnp.core/1")];
     let (binding, _) = installed
@@ -334,7 +343,7 @@ fn connect(guard: &mut CnpLaunchGuard, socket: &std::path::Path, installed: &mut
         &mut handshake,
         installed,
         Rc::new(Supervisor::default()),
-        Rc::new(Schemas),
+        schemas,
         Duration::from_secs(3),
         1_048_576,
         64,

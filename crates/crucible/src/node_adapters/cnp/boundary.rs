@@ -44,7 +44,11 @@ impl CnpControlledReference {
             .try_fold(object.bytes.len(), |size, object| {
                 size.checked_add(object.bytes.len())
             });
-        if self.boundary_evidence.len() >= 4096 || total.is_none_or(|size| size > 16 * 1024 * 1024)
+        let maximum_objects = 4096;
+        #[cfg(test)]
+        let maximum_objects = input_test_credit::maximum_objects(maximum_objects);
+        if self.boundary_evidence.len() >= maximum_objects
+            || total.is_none_or(|size| size > 16 * 1024 * 1024)
         {
             return Err(refused(
                 "retained public boundary evidence exceeds finite custody",
@@ -173,5 +177,37 @@ impl CnpControlledReference {
         }
         visited.remove(root);
         Ok(visited.into_iter().collect())
+    }
+}
+
+// This owning-thread fixture seam can only reduce the real registry ceiling.
+// It models a finite bookkeeping refusal after a genuine remote acceptance.
+#[cfg(test)]
+pub(crate) mod input_test_credit {
+    use std::cell::Cell;
+
+    thread_local! {
+        static MAXIMUM_OBJECTS: Cell<Option<usize>> = const { Cell::new(None) };
+    }
+
+    pub(super) fn maximum_objects(production: usize) -> usize {
+        MAXIMUM_OBJECTS.with(|limit| {
+            limit
+                .get()
+                .map_or(production, |value| value.min(production))
+        })
+    }
+
+    pub(crate) fn with_exhausted_registry<T>(operation: impl FnOnce() -> T) -> T {
+        struct Restore(Option<usize>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                MAXIMUM_OBJECTS.with(|limit| limit.set(self.0));
+            }
+        }
+        let restore = Restore(MAXIMUM_OBJECTS.with(|limit| limit.replace(Some(0))));
+        let result = operation();
+        drop(restore);
+        result
     }
 }

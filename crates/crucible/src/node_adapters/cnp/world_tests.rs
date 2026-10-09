@@ -6,6 +6,9 @@ mod graph;
 #[path = "world_tests/custody.rs"]
 mod custody;
 
+#[path = "world_tests/input_failure.rs"]
+mod input_failure;
+
 use std::{
     collections::BTreeMap,
     path::Path,
@@ -74,6 +77,7 @@ fn launch(
     installed: &mut Installed,
     directory: PathBuf,
     retained: Rc<RefCell<Vec<CnpPeerCustody>>>,
+    schemas: Rc<dyn BodySchemaVerifier>,
 ) -> CnpReferencePreparation {
     std::fs::DirBuilder::new()
         .mode(0o700)
@@ -118,7 +122,7 @@ fn launch(
         socket.exists(),
         "actual public endpoint did not become available"
     );
-    connect(&mut guard, &socket, installed);
+    connect_with_schema(&mut guard, &socket, installed, schemas);
     match CnpReferencePreparation::prepare(guard, installed) {
         Ok(prepared) => prepared,
         Err(failure) => panic!(
@@ -245,6 +249,10 @@ fn quantum(
 #[test]
 #[ignore = "requires source-built CRUCIBLE_REFERENCE_PROVIDER_EXECUTABLE and CRUCIBLE_REFERENCE_DEVICE_EXECUTABLE"]
 fn actual_two_public_providers_publish_complete_initial_world_and_consume_original_bytes() {
+    run_actual_world(input_failure::FailureMode::None);
+}
+
+fn run_actual_world(failure: input_failure::FailureMode) {
     let provider = PathBuf::from(
         std::env::var_os("CRUCIBLE_REFERENCE_PROVIDER_EXECUTABLE")
             .expect("set source-built provider"),
@@ -288,6 +296,7 @@ fn actual_two_public_providers_publish_complete_initial_world_and_consume_origin
     ];
     let limits = RuntimeLimits::default();
     let (world_supervisor, world_slot) = custody::WorldSupervisor::reserve(limits);
+    let transcript = Rc::new(input_failure::InputTranscript::default());
     let mut prepared = Vec::new();
     for (index, installed) in installed.iter_mut().enumerate() {
         prepared.push(launch(
@@ -296,6 +305,7 @@ fn actual_two_public_providers_publish_complete_initial_world_and_consume_origin
             installed,
             directory.join(installed.profile.descriptor.id.as_str()),
             Rc::clone(&retained[index]),
+            transcript.clone(),
         ));
     }
     let pids = prepared
@@ -373,14 +383,27 @@ fn actual_two_public_providers_publish_complete_initial_world_and_consume_origin
     let source = quantum(&mut runtime, &graph, &activation, &id("producer"), 0);
     assert_eq!(source, br#"{"bytes_processed":"0","checksum":"0"}"#);
     quantum(&mut runtime, &graph, &activation, &id("consumer"), 0);
-    let consumed = quantum(&mut runtime, &graph, &activation, &id("consumer"), 1);
-    let output: crucible_node_provider::reference_device::DeviceOutput =
-        serde_json::from_slice(&consumed).unwrap();
-    let expected = source.iter().fold(0u64, |checksum, byte| {
-        checksum.wrapping_mul(257).wrapping_add(u64::from(*byte))
-    });
-    assert_eq!(output.bytes_processed.get(), source.len() as u64);
-    assert_eq!(output.checksum.get(), expected);
+    let failed_input = if failure != input_failure::FailureMode::None {
+        Some(input_failure::fail_original_input(
+            &mut runtime,
+            &graph,
+            &activation,
+            &transcript,
+            failure,
+        ))
+    } else {
+        None
+    };
+    if failed_input.is_none() {
+        let consumed = quantum(&mut runtime, &graph, &activation, &id("consumer"), 1);
+        let output: crucible_node_provider::reference_device::DeviceOutput =
+            serde_json::from_slice(&consumed).unwrap();
+        let expected = source.iter().fold(0u64, |checksum, byte| {
+            checksum.wrapping_mul(257).wrapping_add(u64::from(*byte))
+        });
+        assert_eq!(output.bytes_processed.get(), source.len() as u64);
+        assert_eq!(output.checksum.get(), expected);
+    }
     let mut quarantined = runtime.into_quarantine();
     let mut context = Context::from_waker(Waker::noop());
     for _ in 0..300 {
@@ -396,7 +419,10 @@ fn actual_two_public_providers_publish_complete_initial_world_and_consume_origin
     assert_eq!(complete.activation(), &publisher.record);
     assert_eq!(complete.node_preparations(), publisher.nodes);
     assert_eq!(complete.native_handle_count(), 2);
-    assert_eq!(complete.operation_count(), 3);
+    assert_eq!(
+        complete.operation_count(),
+        if failed_input.is_some() { 2 } else { 3 }
+    );
     assert_eq!(complete.input_batch_count(), 3);
     let original_world = complete.prepared_world_publication().unwrap();
     assert_eq!(original_world.nodes(), publisher.nodes);
@@ -425,12 +451,32 @@ fn actual_two_public_providers_publish_complete_initial_world_and_consume_origin
         );
         assert_eq!(journals.active.as_ref(), Some(&publisher.record));
         assert!(journals.pending.is_none());
-        assert!(journals.input.is_none());
-        let expected = if journals.binding.compatibility.node_id == id("producer") {
-            1
+        if journals.binding.compatibility.node_id == id("consumer") {
+            if let Some(failed) = &failed_input {
+                let (_, response, result) = transcript.accepted(failed.stage_operation());
+                let public = journals.input.as_ref().unwrap().public.clone();
+                let reference = journals.input.as_ref().unwrap().reference.clone();
+                input_failure::assert_retained_input(&original[0], failed, &public, &response);
+                if failure == input_failure::FailureMode::RegistryCredit {
+                    input_failure::assert_peer_input(
+                        original[0].controller.as_ref().unwrap(),
+                        &result,
+                        &public,
+                        &reference,
+                    );
+                }
+            } else {
+                assert!(journals.input.is_none());
+            }
         } else {
-            2
-        };
+            assert!(journals.input.is_none());
+        }
+        let expected =
+            if journals.binding.compatibility.node_id == id("producer") || failed_input.is_some() {
+                1
+            } else {
+                2
+            };
         assert_eq!(journals.windows.len(), expected);
         assert!(journals.windows.values().all(|window| window.consumed));
         drop(original);
