@@ -7,12 +7,24 @@ use crucible_linux_resource::host_supervision::{
 use super::*;
 
 /// Uses a live original-start owner when admitted, with a fixture-only fallback.
-pub(crate) enum OperationPollBudget {
+pub(crate) enum OperationPollBudget<'a> {
+    Borrowed(&'a HostOperationGuard),
     Supervised(HostOperationGuard),
     Fixture(HostSupervisionDeadline),
 }
 
-impl OperationPollBudget {
+impl<'a> OperationPollBudget<'a> {
+    /// Borrows the caller's live operation without creating or completing one.
+    pub(crate) fn borrow_original(
+        original: &'a HostOperationGuard,
+        operation: &'static str,
+    ) -> Result<Self, QemuAsyncDriverRuntimeError> {
+        original
+            .wait_slice()
+            .map_err(|source| Self::failure(operation, source))?;
+        Ok(Self::Borrowed(original))
+    }
+
     pub(crate) fn begin(
         supervisor: Option<&HostOperationSupervisor>,
         class: HostOperationClass,
@@ -39,6 +51,10 @@ impl OperationPollBudget {
         operation: &'static str,
     ) -> Result<Option<Duration>, QemuAsyncDriverRuntimeError> {
         match self {
+            Self::Borrowed(guard) => guard
+                .wait_slice()
+                .map(Some)
+                .map_err(|source| Self::failure(operation, source)),
             Self::Supervised(guard) => guard
                 .wait_slice()
                 .map(Some)
@@ -53,6 +69,9 @@ impl OperationPollBudget {
         operation: &'static str,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
         match self {
+            Self::Borrowed(guard) => guard
+                .wait_for_change()
+                .map_err(|source| Self::failure(operation, source)),
             Self::Supervised(guard) => guard
                 .wait_for_change()
                 .map_err(|source| Self::failure(operation, source)),
@@ -69,6 +88,11 @@ impl OperationPollBudget {
         &self,
         operation: &'static str,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        if let Self::Borrowed(guard) = self {
+            guard
+                .wait_slice()
+                .map_err(|source| Self::failure(operation, source))?;
+        }
         if let Self::Supervised(guard) = self {
             guard
                 .complete()

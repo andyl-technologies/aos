@@ -38,7 +38,7 @@ impl QemuLiveHostIoRuntime {
     pub(super) fn drain_fault_events_for_operation(
         &mut self,
         maximum_event_records: usize,
-        deadline: &super::OperationPollBudget,
+        deadline: &super::OperationPollBudget<'_>,
         timeout: Duration,
         operation: &'static str,
     ) -> Result<usize, QemuAsyncDriverRuntimeError> {
@@ -155,7 +155,7 @@ impl QemuLiveHostIoRuntime {
         &mut self,
         request: PendingControlBoundary,
         timeout: Duration,
-        deadline: &super::OperationPollBudget,
+        deadline: &super::OperationPollBudget<'_>,
         maximum_event_records: usize,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
         let last_ack = loop {

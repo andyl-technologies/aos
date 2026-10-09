@@ -8,11 +8,11 @@
 //!
 //! ```text
 //! offset  size  field
-//! 0       8     magic = "CRUCSCP4"
-//! 8       4     schema version = 4, big-endian
-//! 12      4     header length = 112
+//! 0       8     magic = "CRUCSCP5"
+//! 8       4     schema version = 5, big-endian
+//! 12      4     header length = 136
 //! 16      4     total byte length
-//! 20      4     flags: frozen, last-registration, last-request, pending
+//! 20      4     flags: frozen, last-registration, last-request, pending, last-abandoned
 //! 24      4     declaration limit
 //! 28      4     expected declaration count
 //! 32      4     registered identifier count
@@ -27,13 +27,17 @@
 //! 92      4     pending SelectionRequestV1 byte length or zero
 //! 96      8     pending guest virtual reply address or zero
 //! 104     8     pending pre-instruction simulation tick (ps) or zero
-//! 112     ...   expected entries, registered IDs, completed counters, pending
+//! 112     4     abandoned-counter count
+//! 116     4     reserved zero
+//! 120     8     total abandoned requests
+//! 128     8     last abandoned request sequence or zero
+//! 136     ...   expected entries, registered IDs, completed/abandoned counters, pending
 //! ```
 //!
 //! Expected entries are `presence:u8`, three zero bytes, `length:u32`, and one
 //! canonical sequence-zero [`crate::SelectableRegister`]. Registered IDs are
 //! `length:u16` plus identifier bytes. Completed counters append one big-endian
-//! `u64` count to that identifier form. All three collections are strictly
+//! `u64` count to that identifier form, as do abandoned counters. All collections are strictly
 //! ordered by identifier and exact; no trailing bytes are admitted.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -45,16 +49,16 @@ use crate::{
 };
 
 /// Frozen magic at the start of every selectable catalog plan.
-pub const SELECTABLE_CATALOG_PLAN_MAGIC: [u8; 8] = *b"CRUCSCP4";
+pub const SELECTABLE_CATALOG_PLAN_MAGIC: [u8; 8] = *b"CRUCSCP5";
 /// Canonical selectable catalog plan schema version.
-pub const SELECTABLE_CATALOG_PLAN_VERSION: u32 = 4;
+pub const SELECTABLE_CATALOG_PLAN_VERSION: u32 = 5;
 /// Fixed plan header bytes.
-pub const SELECTABLE_CATALOG_PLAN_HEADER_BYTES: usize = 112;
+pub const SELECTABLE_CATALOG_PLAN_HEADER_BYTES: usize = 136;
 /// Maximum canonical bytes in one node-local plan.
 pub const SELECTABLE_CATALOG_PLAN_MAX_BYTES: usize = 32 * 1024 * 1024;
 /// Maximum expected or registered declarations in one node-local plan.
 pub const SELECTABLE_CATALOG_PLAN_MAX_DECLARATIONS: usize = 4_096;
-/// Maximum completed requests represented by one node-local plan.
+/// Maximum completed and abandoned requests represented by one node-local plan.
 pub const SELECTABLE_CATALOG_PLAN_MAX_REQUESTS: u64 = 1_000_000;
 /// Instructions retired between a selectable trap and its exact VM-stop boundary.
 ///
@@ -69,7 +73,11 @@ const FLAG_FROZEN: u32 = 1 << 0;
 const FLAG_LAST_REGISTRATION: u32 = 1 << 1;
 const FLAG_LAST_REQUEST: u32 = 1 << 2;
 const FLAG_PENDING: u32 = 1 << 3;
-const KNOWN_FLAGS: u32 = FLAG_FROZEN | FLAG_LAST_REGISTRATION | FLAG_LAST_REQUEST | FLAG_PENDING;
+const FLAG_LAST_ABANDONED: u32 = 1 << 4;
+const KNOWN_FLAGS: u32 =
+    FLAG_FROZEN | FLAG_LAST_REGISTRATION | FLAG_LAST_REQUEST | FLAG_PENDING | FLAG_LAST_ABANDONED;
+
+mod reset_abandonment;
 const EXPECTED_ENTRY_HEADER_BYTES: usize = 8;
 /// Whether one expected guest declaration is required at catalog freeze.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -317,6 +325,9 @@ pub struct SelectablePlanContinuation {
     completed_requests: BTreeMap<String, u64>,
     total_completed_requests: u64,
     last_completed_request_sequence: Option<u64>,
+    abandoned_requests: BTreeMap<String, u64>,
+    total_abandoned_requests: u64,
+    last_abandoned_request_sequence: Option<u64>,
     pending: Option<SelectablePlanPendingRequest>,
 }
 
@@ -443,6 +454,9 @@ impl SelectablePlanContinuation {
             completed_requests,
             total_completed_requests,
             last_completed_request_sequence,
+            abandoned_requests: BTreeMap::new(),
+            total_abandoned_requests: 0,
+            last_abandoned_request_sequence: None,
             pending,
         })
     }
@@ -457,6 +471,9 @@ impl SelectablePlanContinuation {
             completed_requests: BTreeMap::new(),
             total_completed_requests: 0,
             last_completed_request_sequence: None,
+            abandoned_requests: BTreeMap::new(),
+            total_abandoned_requests: 0,
+            last_abandoned_request_sequence: None,
             pending: None,
         }
     }
@@ -615,6 +632,7 @@ impl SelectableCatalogPlan {
             declarations: indexed,
             continuation,
         };
+        value.validate_attempt_limits()?;
         let bytes = value.encoded_len()?;
         if bytes > SELECTABLE_CATALOG_PLAN_MAX_BYTES {
             return Err(SelectableCatalogPlanError::PlanTooLarge {
@@ -759,7 +777,7 @@ impl SelectableCatalogPlan {
         }
         if self
             .continuation
-            .last_completed_request_sequence
+            .last_attempt_sequence()
             .is_some_and(|prior| pending.request.sequence() <= prior)
         {
             return Err(SelectableCatalogPlanError::SequenceDidNotAdvance { field: "request" });
@@ -771,19 +789,14 @@ impl SelectableCatalogPlan {
                 identifier: selectable_id.to_owned(),
             });
         }
-        if self.continuation.total_completed_requests >= self.limits.total_requests {
+        if self.continuation.attempted_requests()? >= self.limits.total_requests {
             return Err(SelectableCatalogPlanError::RequestLimitExceeded {
                 field: "total_requests",
-                actual: self.continuation.total_completed_requests.saturating_add(1),
+                actual: self.continuation.attempted_requests()?.saturating_add(1),
                 maximum: self.limits.total_requests,
             });
         }
-        let completed = self
-            .continuation
-            .completed_requests
-            .get(selectable_id)
-            .copied()
-            .unwrap_or(0);
+        let completed = self.continuation.attempts_for(selectable_id)?;
         if completed >= self.limits.requests_per_selectable {
             return Err(SelectableCatalogPlanError::RequestLimitExceeded {
                 field: "requests_per_selectable",
@@ -867,6 +880,9 @@ impl SelectableCatalogPlan {
         if self.continuation.pending.is_some() {
             flags |= FLAG_PENDING;
         }
+        if self.continuation.last_abandoned_request_sequence.is_some() {
+            flags |= FLAG_LAST_ABANDONED;
+        }
         let pending_bytes = self
             .continuation
             .pending
@@ -942,6 +958,20 @@ impl SelectableCatalogPlan {
                 .map_or(0, SelectablePlanPendingRequest::trap_tick_ps),
         )?;
 
+        write_u32(
+            &mut bytes,
+            112,
+            u32_len(self.continuation.abandoned_requests.len())?,
+        )?;
+        write_u64(&mut bytes, 120, self.continuation.total_abandoned_requests)?;
+        write_u64(
+            &mut bytes,
+            128,
+            self.continuation
+                .last_abandoned_request_sequence
+                .unwrap_or(0),
+        )?;
+
         for declaration in self.declarations.values() {
             let registration = declaration.registration.encode()?;
             bytes.push(declaration.presence.wire_value());
@@ -953,6 +983,10 @@ impl SelectableCatalogPlan {
             append_identifier(&mut bytes, identifier)?;
         }
         for (identifier, count) in &self.continuation.completed_requests {
+            append_identifier(&mut bytes, identifier)?;
+            bytes.extend_from_slice(&count.to_be_bytes());
+        }
+        for (identifier, count) in &self.continuation.abandoned_requests {
             append_identifier(&mut bytes, identifier)?;
             bytes.extend_from_slice(&count.to_be_bytes());
         }
@@ -1018,6 +1052,20 @@ impl SelectableCatalogPlan {
             read_u32(bytes, 36)?,
             "completed",
             SELECTABLE_CATALOG_PLAN_MAX_DECLARATIONS,
+        )?;
+        let abandoned_count = bounded_count(
+            read_u32(bytes, 112)?,
+            "abandoned",
+            SELECTABLE_CATALOG_PLAN_MAX_DECLARATIONS,
+        )?;
+        if read_u32(bytes, 116)? != 0 {
+            return Err(SelectableCatalogPlanError::NonzeroReserved);
+        }
+        let total_abandoned = read_u64(bytes, 120)?;
+        let last_abandoned = optional_u64(
+            flags & FLAG_LAST_ABANDONED != 0,
+            read_u64(bytes, 128)?,
+            "last_abandoned_request_sequence",
         )?;
         let total_completed = read_u64(bytes, 56)?;
         let last_registration = optional_u64(
@@ -1102,6 +1150,19 @@ impl SelectableCatalogPlan {
             completed.insert(identifier, count);
         }
 
+        let mut abandoned = BTreeMap::new();
+        previous_identifier = None;
+        for _ in 0..abandoned_count {
+            let identifier = decode_identifier(bytes, &mut cursor, "abandoned")?;
+            require_strict_identifier_order(&mut previous_identifier, &identifier, "abandoned")?;
+            let count = u64::from_be_bytes(
+                take(bytes, &mut cursor, 8)?
+                    .try_into()
+                    .map_err(|_| SelectableCatalogPlanError::Truncated)?,
+            );
+            abandoned.insert(identifier, count);
+        }
+
         let pending = if flags & FLAG_PENDING != 0 {
             let request = SelectionRequest::decode(take(bytes, &mut cursor, pending_len)?)?;
             Some(SelectablePlanPendingRequest::new(
@@ -1131,7 +1192,13 @@ impl SelectableCatalogPlan {
             completed,
             last_request,
             pending,
-        )?;
+        )?
+        .with_abandoned_requests(abandoned, last_abandoned)?;
+        if continuation.total_abandoned_requests != total_abandoned {
+            return Err(SelectableCatalogPlanError::InvalidContinuation {
+                reason: "encoded total abandoned requests differs from counter sum",
+            });
+        }
         if continuation.total_completed_requests != total_completed {
             return Err(SelectableCatalogPlanError::InvalidContinuation {
                 reason: "encoded total completed requests differs from counter sum",
@@ -1155,7 +1222,12 @@ impl SelectableCatalogPlan {
             total = checked_add(total, 2)?;
             total = checked_add(total, identifier.len())?;
         }
-        for identifier in self.continuation.completed_requests.keys() {
+        for identifier in self
+            .continuation
+            .completed_requests
+            .keys()
+            .chain(self.continuation.abandoned_requests.keys())
+        {
             total = checked_add(total, 2)?;
             total = checked_add(total, identifier.len())?;
             total = checked_add(total, 8)?;

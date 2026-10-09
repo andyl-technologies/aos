@@ -275,6 +275,25 @@ pub trait QemuHostIoRuntime: Send {
         timeout: Duration,
     ) -> Result<(), QemuAsyncDriverRuntimeError>;
 
+    /// Forces a fresh capture using the caller's retained original operation.
+    ///
+    /// The live runtime publishes a new request and waits for its exact release
+    /// acknowledgement. It neither starts another operation nor completes this
+    /// one. Scripted runtimes refuse unless they implement this boundary.
+    ///
+    /// # Errors
+    /// Returns the actual operational or transport error, or refuses unsupported
+    /// runtimes before publishing a capture request.
+    fn publish_current_execution_fingerprint_under_original(
+        &mut self,
+        _original: &crucible_linux_resource::host_supervision::HostOperationGuard,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        Err(QemuAsyncDriverRuntimeError::new(
+            "publish current execution fingerprint",
+            "runtime has no original-owned capture boundary",
+        ))
+    }
+
     /// Requests a coordinated shared-memory pause and waits for quiescence.
     ///
     /// Runtimes without a live external executor have nothing to pause. A live
