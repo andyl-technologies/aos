@@ -25,8 +25,12 @@
   quietKernelBoot ? false,
   liveProgressDiagnostics ? false,
   nativeCoreDiagnostics ? false,
+  hostStackSamples ? false,
 }:
 assert builtins.isBool nativeCoreDiagnostics;
+assert builtins.isBool hostStackSamples;
+# Stack samples explain normal five-node Envoy throughput only.
+assert !hostStackSamples || (envoyNetwork && singleGuest == null && !envoyKnownFinding);
 assert !nativeCoreDiagnostics
 || singleGuest == "materialization"
 || (
@@ -140,6 +144,7 @@ assert !interruptedTransfer
 ); let
   singleGuestMaterialization = singleGuest == "materialization";
   nativeCore = import ./_native-core-diagnostics.nix {inherit pkgs;};
+  hostStacks = import ./_host-stack-samples.nix {inherit pkgs;};
   envoyDirect = assert builtins.elem twoNodeHttpServer ["nginx" "envoy-direct" "envoy-proxy"];
   assert twoNodeHttpServer == "nginx" || twoNodeHttp;
     twoNodeHttpServer == "envoy-direct";
@@ -202,6 +207,8 @@ assert !interruptedTransfer
     cargoBuildCommands = campaignFlightBuildCommands;
     installBins = false;
     doCheck = false;
+    # Stack samples need the service's symbol table to name host functions.
+    dontStrip = lib.optionalString hostStackSamples "1";
 
     buildDeps = [pkgs.rust.dev pkgs.pkg-config pkgs.openssl pkgs.protobuf pkgs.sqlite];
     runtimeDeps = [pkgs.openssl pkgs.sqlite];
@@ -422,6 +429,7 @@ assert !interruptedTransfer
     rootfsDeps =
       [flight deployment gateway pkgs.qemu-crucible pkgs.crucible-qemu-plugin pkgs.linux pkgs.e2fsprogs pkgs.coreutils pkgs.util-linux pkgs.grep]
       ++ (lib.optionals nativeCoreDiagnostics nativeCore.rootfsDeps)
+      ++ (lib.optionals hostStackSamples hostStacks.rootfsDeps)
       ++ (lib.optional envoyProduct envoyNetworkRootImage)
       ++ (lib.optional twoNodeHttp httpRootImage)
       ++ (lib.optionals storageRecovery [storageRecoveryRunner pkgs.garage pkgs.bash pkgs.gawk])
@@ -939,6 +947,7 @@ assert !interruptedTransfer
             ${flight}/bin/campaign-store-process-flight --ignored --exact \
             "$envoy_selector" --nocapture > "$envoy_log" 2>&1 &
           envoy_test=$!
+          ${lib.optionalString hostStackSamples (hostStacks.start "${flight}/bin/crucible")}
           ${pkgs.coreutils}/bin/timeout -k 5 3610 \
             ${pkgs.coreutils}/bin/tail --pid="$envoy_test" -n +1 -F "$envoy_log" \
             | ${pkgs.grep}/bin/grep --line-buffered '^CRUCIBLE-ENVOY-WAIT-V1 ' \
@@ -975,6 +984,7 @@ assert !interruptedTransfer
             fi
             printf '%s\n' 'campaign-envoy-memory-events-end'
             ${lib.optionalString nativeCoreDiagnostics "inspect_native_cores"}
+            ${lib.optionalString hostStackSamples hostStacks.report}
             exit 1
           fi
           cat "$envoy_log"

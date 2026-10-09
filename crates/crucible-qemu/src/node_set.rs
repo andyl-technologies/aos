@@ -54,6 +54,7 @@ mod disk_seal;
 mod fault_events;
 #[path = "node_set/lifecycle.rs"]
 mod lifecycle;
+mod run_window;
 
 #[cfg(target_os = "linux")]
 pub use block_boundary::QemuNodeSetBlockBoundaryCheckpoint;
@@ -462,6 +463,7 @@ pub struct QemuNodeSet {
     parked_campaign_markers: BTreeMap<NodeId, QemuParkedCampaignMarker>,
     retained_observable_events: Vec<ObservableEvent>,
     last_host_parallelism: Option<QemuHostParallelismEvidence>,
+    run_window: run_window::RunWindow,
     #[cfg(test)]
     console_sentinel_probe: Option<std::sync::Arc<console_sentinel::ConsoleSentinelProbe>>,
 }
@@ -1996,6 +1998,140 @@ impl SimulationBackend for QemuNodeSet {
         node: &NodeId,
         ceiling: VirtualTime,
     ) -> Result<StepObservation, BackendError> {
+        let started = self.run_window.begin();
+        let result = self.step_node_to_untimed(node, ceiling);
+        self.run_window.finish_serial(started);
+        result
+    }
+
+    fn drain_observable_events(&mut self) -> Result<Vec<ObservableEvent>, BackendError> {
+        let mut events = std::mem::take(&mut self.retained_observable_events);
+        for node in self.nodes.values_mut() {
+            events.extend(node.drain_observable_events()?);
+        }
+        Ok(events)
+    }
+
+    fn drain_rng_evidence(&mut self) -> Result<Vec<BackendRngEvidence>, BackendError> {
+        let mut decisions = Vec::new();
+        for node in self.nodes.values_mut() {
+            decisions.extend(node.drain_rng_evidence()?);
+        }
+        Ok(decisions)
+    }
+
+    fn drain_network_outputs(&mut self) -> Result<Vec<BackendNetworkOutput>, BackendError> {
+        let mut outputs = Vec::new();
+        for node in self.nodes.values_mut() {
+            outputs.extend(node.drain_network_outputs()?);
+        }
+        Ok(outputs)
+    }
+
+    fn apply(&mut self, effect: &BackendEffect, at: VirtualTime) -> Result<(), BackendError> {
+        match effect {
+            BackendEffect::DeliverInput(input) => self.node_mut(&input.node)?.apply(effect, at),
+            BackendEffect::Preemption(preemption) => {
+                self.node_mut(&preemption.node)?.apply(effect, at)
+            }
+            BackendEffect::Shutdown => self.shutdown(),
+            BackendEffect::Noop => Ok(()),
+        }
+    }
+
+    fn apply_to_node(
+        &mut self,
+        node: &NodeId,
+        effect: &BackendEffect,
+        at: VirtualTime,
+    ) -> Result<(), BackendError> {
+        self.node_mut(node)?.apply(effect, at)
+    }
+
+    fn snapshot(&mut self) -> Result<BackendSnapshot, BackendError> {
+        Err(BackendError::Unsupported {
+            capability: "QEMU node-set snapshot without realization admission",
+        })
+    }
+
+    fn restore(&mut self, snapshot: &BackendSnapshot) -> Result<(), BackendError> {
+        let _ = snapshot;
+        Err(BackendError::Unsupported {
+            capability: "QEMU node-set restore without realization admission",
+        })
+    }
+
+    fn now(&self) -> VirtualTime {
+        self.nodes
+            .values()
+            .map(SimulationBackend::now)
+            .min()
+            .unwrap_or_default()
+    }
+
+    fn node_now(&self, node: &NodeId) -> Result<VirtualTime, BackendError> {
+        self.nodes
+            .get(node)
+            .map(SimulationBackend::now)
+            .ok_or_else(|| BackendError::Rejected {
+                message: format!("QEMU backend set has no node `{}`", node.name),
+            })
+    }
+
+    fn fingerprint(&mut self, node: NodeId) -> Result<FingerprintSample, BackendError> {
+        self.node_mut(&node)?.fingerprint(node)
+    }
+
+    fn activate_debug_guest(&mut self, node: &NodeId) -> Result<(), BackendError> {
+        Ok(self.node_mut(node)?.activate_debug_guest()?)
+    }
+
+    fn send_guest_introspection(
+        &mut self,
+        node: &NodeId,
+        record: GuestIntrospectionRecord,
+    ) -> Result<(), BackendError> {
+        Ok(self.node_mut(node)?.send_guest_introspection(record)?)
+    }
+
+    fn receive_guest_introspection(
+        &mut self,
+        node: &NodeId,
+    ) -> Result<Option<GuestIntrospectionRecord>, BackendError> {
+        Ok(self.node_mut(node)?.receive_guest_introspection()?)
+    }
+
+    fn shutdown(&mut self) -> Result<(), BackendError> {
+        let mut first_error = None;
+        for (id, node) in &mut self.nodes {
+            if self.permanently_closed.contains(id) {
+                continue;
+            }
+            if let Err(error) = SimulationBackend::shutdown(node)
+                && first_error.is_none()
+            {
+                first_error = Some(error);
+            }
+        }
+        if let Some(error) = first_error {
+            return Err(error);
+        }
+
+        // Reaping children is not enough to release unlinked attempt files:
+        // node-owned channels and host-I/O descriptors must close before the
+        // launch authority attests zero project-quota usage.
+        self.nodes.clear();
+        Ok(())
+    }
+}
+
+impl QemuNodeSet {
+    /// Advances one node to `ceiling`, reissuing bounded quanta as needed.
+    fn step_node_to_untimed(
+        &mut self,
+        node: &NodeId,
+        ceiling: VirtualTime,
+    ) -> Result<StepObservation, BackendError> {
         if let Some(parked) = self.parked_campaign_marker(node)? {
             return Ok(StepObservation {
                 requested_ceiling: ceiling,
@@ -2127,126 +2263,6 @@ impl SimulationBackend for QemuNodeSet {
                 node.name, ceiling.ticks, MAX_STEP_REISSUES
             ),
         })
-    }
-
-    fn drain_observable_events(&mut self) -> Result<Vec<ObservableEvent>, BackendError> {
-        let mut events = std::mem::take(&mut self.retained_observable_events);
-        for node in self.nodes.values_mut() {
-            events.extend(node.drain_observable_events()?);
-        }
-        Ok(events)
-    }
-
-    fn drain_rng_evidence(&mut self) -> Result<Vec<BackendRngEvidence>, BackendError> {
-        let mut decisions = Vec::new();
-        for node in self.nodes.values_mut() {
-            decisions.extend(node.drain_rng_evidence()?);
-        }
-        Ok(decisions)
-    }
-
-    fn drain_network_outputs(&mut self) -> Result<Vec<BackendNetworkOutput>, BackendError> {
-        let mut outputs = Vec::new();
-        for node in self.nodes.values_mut() {
-            outputs.extend(node.drain_network_outputs()?);
-        }
-        Ok(outputs)
-    }
-
-    fn apply(&mut self, effect: &BackendEffect, at: VirtualTime) -> Result<(), BackendError> {
-        match effect {
-            BackendEffect::DeliverInput(input) => self.node_mut(&input.node)?.apply(effect, at),
-            BackendEffect::Preemption(preemption) => {
-                self.node_mut(&preemption.node)?.apply(effect, at)
-            }
-            BackendEffect::Shutdown => self.shutdown(),
-            BackendEffect::Noop => Ok(()),
-        }
-    }
-
-    fn apply_to_node(
-        &mut self,
-        node: &NodeId,
-        effect: &BackendEffect,
-        at: VirtualTime,
-    ) -> Result<(), BackendError> {
-        self.node_mut(node)?.apply(effect, at)
-    }
-
-    fn snapshot(&mut self) -> Result<BackendSnapshot, BackendError> {
-        Err(BackendError::Unsupported {
-            capability: "QEMU node-set snapshot without realization admission",
-        })
-    }
-
-    fn restore(&mut self, snapshot: &BackendSnapshot) -> Result<(), BackendError> {
-        let _ = snapshot;
-        Err(BackendError::Unsupported {
-            capability: "QEMU node-set restore without realization admission",
-        })
-    }
-
-    fn now(&self) -> VirtualTime {
-        self.nodes
-            .values()
-            .map(SimulationBackend::now)
-            .min()
-            .unwrap_or_default()
-    }
-
-    fn node_now(&self, node: &NodeId) -> Result<VirtualTime, BackendError> {
-        self.nodes
-            .get(node)
-            .map(SimulationBackend::now)
-            .ok_or_else(|| BackendError::Rejected {
-                message: format!("QEMU backend set has no node `{}`", node.name),
-            })
-    }
-
-    fn fingerprint(&mut self, node: NodeId) -> Result<FingerprintSample, BackendError> {
-        self.node_mut(&node)?.fingerprint(node)
-    }
-
-    fn activate_debug_guest(&mut self, node: &NodeId) -> Result<(), BackendError> {
-        Ok(self.node_mut(node)?.activate_debug_guest()?)
-    }
-
-    fn send_guest_introspection(
-        &mut self,
-        node: &NodeId,
-        record: GuestIntrospectionRecord,
-    ) -> Result<(), BackendError> {
-        Ok(self.node_mut(node)?.send_guest_introspection(record)?)
-    }
-
-    fn receive_guest_introspection(
-        &mut self,
-        node: &NodeId,
-    ) -> Result<Option<GuestIntrospectionRecord>, BackendError> {
-        Ok(self.node_mut(node)?.receive_guest_introspection()?)
-    }
-
-    fn shutdown(&mut self) -> Result<(), BackendError> {
-        let mut first_error = None;
-        for (id, node) in &mut self.nodes {
-            if self.permanently_closed.contains(id) {
-                continue;
-            }
-            if let Err(error) = SimulationBackend::shutdown(node)
-                && first_error.is_none()
-            {
-                first_error = Some(error);
-            }
-        }
-        if let Some(error) = first_error {
-            return Err(error);
-        }
-
-        // Reaping children is not enough to release unlinked attempt files:
-        // node-owned channels and host-I/O descriptors must close before the
-        // launch authority attests zero project-quota usage.
-        self.nodes.clear();
-        Ok(())
     }
 }
 

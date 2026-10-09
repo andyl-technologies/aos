@@ -233,6 +233,7 @@ impl ConcurrentSimulationBackend for QemuNodeSet {
             }
         }
         self.arm_concurrent_fault_event_staging(&runs)?;
+        let started = self.run_window.begin();
 
         #[cfg(test)]
         let console_sentinel_probe = self.console_sentinel_probe.clone();
@@ -266,6 +267,8 @@ impl ConcurrentSimulationBackend for QemuNodeSet {
                         let console_sentinel_probe = console_sentinel_probe.clone();
                         scope.spawn(move || {
                             let mut one = QemuNodeSet::new();
+                            // The owning set accounts for the whole RUN set.
+                            one.run_window = super::run_window::RunWindow::disabled();
                             one.nodes.insert(run.node().clone(), backend);
                             let operation = catch_unwind(AssertUnwindSafe(|| {
                                 #[cfg(target_os = "linux")]
@@ -372,10 +375,13 @@ impl ConcurrentSimulationBackend for QemuNodeSet {
                 message: String::from("QEMU host worker outcome cardinality changed"),
             });
         }
+        let realized_parallelism = peak.load(Ordering::SeqCst);
+        self.run_window
+            .finish_concurrent(started, outcomes.len(), realized_parallelism);
         self.last_host_parallelism = Some(QemuHostParallelismEvidence {
             requested_runs: outcomes.len(),
             maximum_workers: max_host_workers,
-            realized_parallelism: peak.load(Ordering::SeqCst),
+            realized_parallelism,
             commit_order: runs.into_iter().map(|run| run.node().clone()).collect(),
         });
         Ok(outcomes)

@@ -766,6 +766,27 @@ pub(super) fn wait_for_public_attempt(
     })
 }
 
+/// Prints the run's parallel-boot arming and sampled RUN-window records.
+///
+/// The service stderr tail keeps only the last minutes of a long discovery;
+/// these bounded records cover the whole run so a timeout can be split into
+/// guest execution, host-parallel overlap, and scheduler work.
+fn emit_host_throughput_records(service: &CampaignServiceChild) {
+    for (prefix, maximum_lines) in [
+        ("CRUCIBLE-ENVOY-BOOT-PROGRESS-V1 armed=", 16),
+        ("CRUCIBLE-HOST-RUN-WINDOW-V1 ", 1_100),
+    ] {
+        match service.stderr_lines_with_prefix(prefix, maximum_lines, 512) {
+            Ok(lines) => {
+                for line in lines {
+                    eprintln!("{line}");
+                }
+            }
+            Err(error) => eprintln!("host throughput records `{prefix}` unavailable: {error}"),
+        }
+    }
+}
+
 fn initial_discovery_diagnostics(
     fixture: &FlightFixture,
     service: &CampaignServiceChild,
@@ -773,6 +794,7 @@ fn initial_discovery_diagnostics(
     status: Option<&Value>,
     explanation: Option<&Value>,
 ) -> String {
+    emit_host_throughput_records(service);
     let public_status = status.map(|head| {
         serde_json::json!({
             "snapshot": head["snapshot"],
