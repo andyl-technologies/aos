@@ -483,22 +483,27 @@ in {
 
         git -C "$REG_DIR" add -A
         git -C "$REG_DIR" commit -m "release: e2e-tool $version"
+        run_logged "/tmp/e2e-release-$version.out" release_vm_package "$version" --registry e2e-reg || {
+          fail "apr release authenticates e2e-tool $version"
+          return 1
+        }
       }
 
       create_publish_registry e2e-reg
       REG_DIR="$REG_STORAGE/e2e-reg"
+      REGISTRY_TRUST="e2e-reg:Ed25519:$(cut -d ' ' -f2 /tmp/vm-publish-keys/e2e-reg.pub)"
       DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
       git init --bare --object-format=sha256 /tmp/e2e-origin.git
       git -C /tmp/e2e-origin.git symbolic-ref HEAD "refs/heads/$DEFAULT_BRANCH"
       git -C "$REG_DIR" remote add origin /tmp/e2e-origin.git
-      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH" --tags
 
       publish_e2e_tool 1.0.0 "$TOOL_V1_STORE" "$TOOL_V1_DEP_STORE" ${e2ePublicationV1.project}
       assert_file_exists "/tmp/e2e-cache/$TOOL_V1_HASH.narinfo" \
         "static cache has e2e-tool v1 narinfo"
       assert_file_exists "/tmp/e2e-cache/$TOOL_V1_DEP_HASH.narinfo" \
         "static cache has e2e-helper v1 narinfo"
-      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH" --tags
 
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
@@ -508,9 +513,9 @@ in {
       export USER=e2euser
       PROFILE="/var/lib/profiles/per-user/$USER"
       mkdir -p "$HOME"
-      run_logged /tmp/e2e-registry-add.out "$APM" registry add --no-verify file:///tmp/e2e-origin.git \
+      run_logged /tmp/e2e-registry-add.out "$APM" registry add --trust-key "$REGISTRY_TRUST" file:///tmp/e2e-origin.git \
         --name e2e-reg \
-        --branch "$DEFAULT_BRANCH" || {
+        --version '*' || {
         fail "apm registry add syncs e2e registry"
       }
 
@@ -568,7 +573,7 @@ in {
         "static cache has e2e-tool v2 narinfo"
       assert_file_exists "/tmp/e2e-cache/$TOOL_V2_DEP_HASH.narinfo" \
         "static cache has e2e-helper v2 narinfo"
-      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH" --tags
 
       export HOME=/tmp/e2e-consumer
       export USER=e2euser
@@ -887,6 +892,10 @@ in {
         }
         git -C "$REG_DIR" add -A
         git -C "$REG_DIR" commit -m "release: fleet-tool $version"
+        run_logged "/tmp/fleet-release-$version.out" release_vm_package "$version" --registry fleet-reg || {
+          fail "apr release authenticates fleet-tool $version"
+          return 1
+        }
       }
 
       run_fleet_profile() {
@@ -907,18 +916,19 @@ in {
 
       create_publish_registry fleet-reg
       REG_DIR="$REG_STORAGE/fleet-reg"
+      REGISTRY_TRUST="fleet-reg:Ed25519:$(cut -d ' ' -f2 /tmp/vm-publish-keys/fleet-reg.pub)"
       DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
       git init --bare --object-format=sha256 /tmp/fleet-origin.git
       git -C /tmp/fleet-origin.git symbolic-ref HEAD "refs/heads/$DEFAULT_BRANCH"
       git -C "$REG_DIR" remote add origin /tmp/fleet-origin.git
-      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH" --tags
 
       publish_fleet_tool 1.0.0 "$FLEET_V1_STORE" "$FLEET_V1_DEP_STORE" ${fleetPublicationV1.project}
       assert_file_exists "/tmp/fleet-cache/$FLEET_V1_HASH.narinfo" \
         "static cache has fleet-tool v1 narinfo"
       assert_file_exists "/tmp/fleet-cache/$FLEET_V1_DEP_HASH.narinfo" \
         "static cache has fleet-helper v1 narinfo"
-      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH" --tags
 
       ${pkgs.iproute2}/sbin/ip link set lo up || true
       ${pkgs.iproute2}/sbin/ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
@@ -931,9 +941,9 @@ in {
       export HOME=/tmp/fleet-a
       export USER=fleet_a
       mkdir -p "$HOME"
-      run_logged /tmp/fleet-a-add.out "$APM" registry add --no-verify file:///tmp/fleet-origin.git \
+      run_logged /tmp/fleet-a-add.out "$APM" registry add --trust-key "$REGISTRY_TRUST" file:///tmp/fleet-origin.git \
         --name fleet-reg \
-        --branch "$DEFAULT_BRANCH" || {
+        --version '*' || {
         fail "fleet A registry add succeeds"
       }
       run_logged /tmp/fleet-a-install-v1.out "$APM" install fleet-tool --registry fleet-reg --yes || {
@@ -950,9 +960,9 @@ in {
       mkdir -p "$HOME"
       delete_store_path "$FLEET_V1_STORE" "fleet-tool-v1-fleet-b"
       delete_store_path "$FLEET_V1_DEP_STORE" "fleet-helper-v1-fleet-b"
-      run_logged /tmp/fleet-b-add.out "$APM" registry add --no-verify file:///tmp/fleet-origin.git \
+      run_logged /tmp/fleet-b-add.out "$APM" registry add --trust-key "$REGISTRY_TRUST" file:///tmp/fleet-origin.git \
         --name fleet-reg \
-        --branch "$DEFAULT_BRANCH" || {
+        --version '*' || {
         fail "fleet B registry add succeeds"
       }
       run_logged /tmp/fleet-b-install-v1.out "$APM" install fleet-tool --registry fleet-reg --yes || {
@@ -974,7 +984,7 @@ in {
         "static cache has fleet-tool v2 narinfo"
       assert_file_exists "/tmp/fleet-cache/$FLEET_V2_DEP_HASH.narinfo" \
         "static cache has fleet-helper v2 narinfo"
-      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
+      git -C "$REG_DIR" push origin "$DEFAULT_BRANCH" --tags
 
       export HOME=/tmp/fleet-a
       export USER=fleet_a
