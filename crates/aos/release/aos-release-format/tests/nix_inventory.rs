@@ -46,20 +46,25 @@ fn evaluate<T: DeserializeOwned>(
 #[test]
 #[ignore = "requires the complete source checkout and Nix evaluation inputs"]
 fn source_inventory_materializes_the_linux_release_and_retains_reviewed_deferrals() -> Result<()> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../..");
-    let inventory: PackageInventoryV1 = evaluate(&root, "releasePackageInventory", None)?;
-    let build_platform: String = evaluate(&root, "stdenv.buildPlatform.system", None)?;
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .find(|directory| {
+            directory.join("default.nix").is_file() && directory.join("crates/Cargo.toml").is_file()
+        })
+        .context("release format package has no enclosing AOS source checkout")?;
+    let inventory: PackageInventoryV1 = evaluate(root, "releasePackageInventory", None)?;
+    let build_platform: String = evaluate(root, "stdenv.buildPlatform.system", None)?;
     let derivations = Platform::ALL
         .into_iter()
         .map(|platform| {
             let target = (platform.as_str() != build_platform).then_some(platform);
-            evaluate::<DerivationInventoryV1>(&root, "releasePackageDerivations", target)
+            evaluate::<DerivationInventoryV1>(root, "releasePackageDerivations", target)
         })
         .collect::<Result<Vec<_>>>()?;
 
     let packages = inventory.package_plan(&derivations)?;
 
-    let contract: QualificationContract = evaluate(&root, "releaseQualification", None)?;
+    let contract: QualificationContract = evaluate(root, "releaseQualification", None)?;
     let inventoried: BTreeSet<_> = packages
         .iter()
         .map(|package| package.name.as_str())

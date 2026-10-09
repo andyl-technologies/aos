@@ -1218,8 +1218,8 @@ genuinely unresolved and is tracked as a spike in
 - **Affects:** [INV-3], [DET-12], [SCHED-6], [SCHED-20], [G-9]; [IO-33], [IO-34],
   [PERF-4]; files 08, 15 (§15.4.2), 25; constant
   `crucible_engine::MIN_LINK_LATENCY` (`model.rs:57`); errors
-  `CrucibleModelError::LinkLatencyBelowFloor` (`crucible-device/src/error.rs`);
-  the `NetLink` sub-node (`crucible-device/src/netlink.rs`); gates
+  `CrucibleModelError::LinkLatencyBelowFloor` (`crucible/engine/crucible-device/src/error.rs`);
+  the `NetLink` sub-node (`crucible/engine/crucible-device/src/netlink.rs`); gates
   `checks.crucible.phase3.schedulerLinkLatencyFloor`,
   `checks.crucible.phase0.multiVmParallelism`,
   `checks.crucible.phase7.gates.perfBench`; the sweep

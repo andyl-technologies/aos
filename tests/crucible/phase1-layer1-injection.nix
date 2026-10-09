@@ -40,7 +40,7 @@
     failuresFor "crates/crucible/engine/crucible-device/Cargo.toml" deviceManifest [
       {
         label = "shmem dev dependency for Contract B double";
-        needle = "crucible-shmem = { path = \"../crucible-shmem\" }";
+        needle = "crucible-qemu-shmem = { path = \"../crucible-qemu-shmem\" }";
       }
     ]
     ++ failuresFor "crates/crucible/engine/crucible-device/tests/gate_layer1_injection.rs" deviceGate [

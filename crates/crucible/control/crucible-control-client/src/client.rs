@@ -740,11 +740,8 @@ impl ControlClient for RpcControlClient {
                 .post_rpc_stream(CONTROL_ATTACH_RPC_PATH, encode_attach_request(&request))
                 .await?;
             let (attached, events) = decode_attached_stream_response(response).await?;
-            Ok(ClientControlStream::Rpc(RpcControlStream::new(
-                attached,
-                events,
-                self.clone(),
-            )))
+            let stream = RpcControlStream::new(attached, events, self.clone());
+            Ok(ClientControlStream::Rpc(Box::new(stream)))
         })
     }
 
@@ -764,9 +761,8 @@ impl ControlClient for RpcControlClient {
                 .post_rpc_stream(WATCH_ATTACH_RPC_PATH, encode_attach_request(&request))
                 .await?;
             let (attached, events) = decode_attached_stream_response(response).await?;
-            Ok(ClientWatchStream::Rpc(RpcWatchStream::new(
-                attached, events,
-            )))
+            let stream = RpcWatchStream::new(attached, events);
+            Ok(ClientWatchStream::Rpc(Box::new(stream)))
         })
     }
 

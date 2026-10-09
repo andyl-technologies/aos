@@ -1255,10 +1255,10 @@ pub struct Facts {
 
 | Need | Reused symbol | Location |
 |---|---|---|
-| GET/PUT + custom headers + plain `http://` | `TransferEngine::execute(TransferRequest)`; `TransferRequest::{get,put,with_header}` | `aos-net/src/transfer.rs:132`, `types.rs:125,151,218` |
-| Read body | `TransferResult::body`, `body_string()`, `header()` | `aos-net/src/types.rs` |
-| Retry/backoff | `RetryConfig` (default `max_attempts=3`, jitter on); engine auto-retries transient | `aos-net/src/retry.rs:13` |
-| Content-pin on pointer fetch | `TransferRequest::with_hash(HashAlgorithm::Sha256, &pin)` | `aos-net/src/types.rs:209` |
+| GET/PUT + custom headers + plain `http://` | `TransferEngine::execute(TransferRequest)`; `TransferRequest::{get,put,with_header}` | `shared/aos-transfer/src/transfer.rs:132`, `types.rs:125,151,218` |
+| Read body | `TransferResult::body`, `body_string()`, `header()` | `shared/aos-transfer/src/types.rs` |
+| Retry/backoff | `RetryConfig` (default `max_attempts=3`, jitter on); engine auto-retries transient | `shared/aos-transfer/src/retry.rs:13` |
+| Content-pin on pointer fetch | `TransferRequest::with_hash(HashAlgorithm::Sha256, &pin)` | `shared/aos-transfer/src/types.rs:209` |
 | Per-request timeout | `tokio::time::timeout` shim wrapping `execute` | net-new, [§8](#8-net-new-pieces) |
 
 The engine's `AuthStore` and `AuthStore::refresh_token` (OAuth2, `auth.rs:219`) are **not** used — IMDS auth is per-request `with_header`. The S3/SFTP protocol handlers and the git-object signature paths (`verify_commit_signature`, `check_downgrade`) are out of scope.

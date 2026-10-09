@@ -29,7 +29,7 @@ pub use debug_gateway::{
     DEBUG_GATEWAY_STARTUP_TIMEOUT, DEBUG_GATEWAY_V1_CAPABILITY, DebugGatewayClientError,
     DebugGatewayControlClient, DebugGatewayProcess,
 };
-pub use event_log_stream::ControlPlaneEventLog;
+pub use event_log_stream::{ControlPlaneEventLog, SessionEventLogHub, SessionEventLogStream};
 pub use in_process::InProcessControlClient;
 pub use lifecycle::{
     DebugRepositionDispatch, GuestIntrospectionDispatch, InProcessLifecycleClient,

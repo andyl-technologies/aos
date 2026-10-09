@@ -283,7 +283,7 @@ below is reusable as-is.
 - `resolve_mirror` picks the first (highest-priority) cache, else falls back to
   the registry URL itself (`crates/aos/packages/aos-package-manager/src/download.rs:85-97`).
 
-**Consumer is narinfo-driven and DONE (CURRENT, `aos-package/src/download.rs`).**
+**Consumer is narinfo-driven and DONE (CURRENT, `aos/packages/aos-package-manager/src/download.rs`).**
 This is the half that is genuinely complete and consumes a **dumb static narinfo
 cache as-is** — no server required on the origin. Since
 commit `7149acf6`, `apm` resolves NARs **from the narinfo**, not from package

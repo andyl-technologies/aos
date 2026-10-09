@@ -1258,11 +1258,11 @@ pub enum SessionError {
   node crash — instead of entering `Stopped` with a fixed verdict, and forbid any
   surface from synthesizing a terminal status the engine did not produce.
   — satisfies [ASRT-23], [SESS-6]; spec §4, §9 of 18.
-  - Defect (audit 2026-07-28): `crucible-session/src/session/engine.rs` has one
+  - Defect (audit 2026-07-28): `crucible/control/crucible-session/src/session/engine.rs` has one
     production site that supplies a terminal outcome other than `Stopped`, and it
     is hardcoded `Outcome::Passed`; `Outcome::Failed`, `Outcome::Timeout`, and
     `Outcome::Crashed` are unreachable outside tests. The CLI compensates in
-    `crucible-cli/src/cli/control.rs` by reporting `Failed` when the observed
+    `crucible/control/crucible-cli/src/cli/control.rs` by reporting `Failed` when the observed
     outcome is `Passed` under `--until property-violation`, and by deriving
     `Timeout` from a CLI-side budget comparison. A harness whose purpose is
     finding failures therefore cannot report one from its engine.

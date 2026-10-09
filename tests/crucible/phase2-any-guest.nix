@@ -53,7 +53,7 @@
         label = "gate:any-guest implemented catalog status";
         needle = ''          name: "gate:any-guest",
                   phase: GatePhase::Phase2,
-                  owner: "crucible-qemu",
+                  owner: "crucible-qemu-host",
                   status: GateStatus::Implemented,'';
       }
     ]
@@ -61,7 +61,7 @@
       {
         label = "gate:any-guest non-placeholder target";
         needle = ''          gate: "gate:any-guest",
-                  package: "crucible-qemu",
+                  package: "crucible-qemu-host",
                   test_target: "deterministic_launch",
                   required_features: &[],'';
       }
@@ -70,7 +70,7 @@
       {
         label = "gate:any-guest mapping non-placeholder";
         needle = ''          gate = "gate:any-guest";
-                package = "crucible-qemu";
+                package = "crucible-qemu-host";
                 testTarget = "deterministic_launch";
                 requiredFeatures = [];'';
       }

@@ -34,6 +34,15 @@ class CrateMigrationTests(unittest.TestCase):
         source = "use crucible_core as crucible;\nlet value = crucible::Configuration::genesis();\n"
         self.assertEqual(self.rewrite(source), source)
 
+    def test_bare_build_source_paths_follow_the_workspace_hierarchy(self):
+        source = 'cp aos-hub-core/src/web/static_assets/app.js "$out/assets/app.js"'
+        expected = 'cp hub/aos-hub-service/src/web/static_assets/app.js "$out/assets/app.js"'
+        self.assertEqual(MIGRATION["source_path"](source), expected)
+
+    def test_installed_license_paths_keep_their_package_labels(self):
+        source = 'cp notice "$out/share/licenses/aos-hub-core/src/NOTICE"'
+        self.assertEqual(MIGRATION["source_path"](source), source)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1930,7 +1930,10 @@ mod production_vm_coverage {
         collect_native_leaves(&Cli::command(), &mut Vec::new(), &mut leaves);
         leaves.sort();
 
-        let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .find(|candidate| candidate.join("crates/Cargo.toml").is_file())
+            .expect("native operation coverage requires the AOS source workspace");
         let source = fs::read_to_string(repository.join("tests/vm/hub-native-operations.nix"))
             .expect("native Hub operation test must be readable")
             .lines()

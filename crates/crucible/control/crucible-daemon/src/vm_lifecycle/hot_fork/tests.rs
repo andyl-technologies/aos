@@ -208,6 +208,37 @@ fn sibling_continuations_share_captured_backing_until_one_branch_changes() {
 
 #[test]
 fn host_continuation_clone_cost_is_bounded_across_siblings() {
+    const ISOLATION_MARKER: &str = "CRUCIBLE_HOST_CLONE_COST_ISOLATED";
+
+    // Private_Dirty measures the whole process. Other daemon tests allocate
+    // large checkpoint buffers, so measure this bound in a single-test child.
+    if std::env::var_os(ISOLATION_MARKER).is_none() {
+        let test_module = module_path!()
+            .split_once("::")
+            .map_or(module_path!(), |(_, module)| module);
+        let test_name =
+            format!("{test_module}::host_continuation_clone_cost_is_bounded_across_siblings");
+        let executable = std::env::current_exe()
+            .unwrap_or_else(|error| panic!("locate host clone cost test executable: {error}"));
+        let output = std::process::Command::new(executable)
+            .args([test_name.as_str(), "--exact", "--test-threads=1"])
+            .env(ISOLATION_MARKER, "1")
+            .output()
+            .unwrap_or_else(|error| panic!("run isolated host clone cost test: {error}"));
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert!(
+            output.status.success(),
+            "isolated host clone cost test failed:\n{stdout}\n{stderr}"
+        );
+        assert!(
+            stdout.contains("test result: ok. 1 passed;"),
+            "isolated host clone cost test did not execute exactly one test:\n{stdout}"
+        );
+        return;
+    }
+
     const SIBLINGS: usize = 64;
     const OBJECT_BYTES: usize = 16 * 1024 * 1024;
     const MAX_PRIVATE_GROWTH_KIB: u64 = 64 * 1024;

@@ -36,7 +36,21 @@ def relocate(path):
 def source_path(text):
     """Updates explicit repository source paths without renaming binaries."""
     pattern = r"(?<![\w])(?:" + "|".join(map(re.escape, SORTED_PATHS)) + r")(?=/|$|[^\w/-])"
-    return re.sub(pattern, lambda match: PATHS[match[0]], text)
+    text = re.sub(pattern, lambda match: PATHS[match[0]], text)
+
+    # Package phases often change into crates/ before copying source inputs.
+    # Restrict bare paths to source-shaped suffixes; installed paths retain their
+    # executable and license-directory names.
+    bare_paths = {
+        row["old"]: row["target"].removeprefix("crates/")
+        for row in ROWS
+    }
+    bare_pattern = (
+        r"(?<![\w/.-])(?:"
+        + "|".join(map(re.escape, sorted(bare_paths, key=len, reverse=True)))
+        + r")(?=/(?:src|tests|assets|Cargo\.toml|proto|examples|build\.rs)(?:/|[^\w.-]|$))"
+    )
+    return re.sub(bare_pattern, lambda match: bare_paths[match[0]], text)
 
 
 def crate_root(path):

@@ -221,7 +221,7 @@
     ++ failuresFor "crates/crucible/engine/crucible-engine/Cargo.toml" manifest [
       {
         label = "engine depends on deterministic L0 primitives";
-        needle = "crucible-sim = { path = \"../crucible-sim\" }";
+        needle = "crucible-determinism = { path = \"../crucible-determinism\" }";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [

@@ -27,9 +27,9 @@
 > superset — AOT static on the CDN) and **§11** / **§14** (the one shared key;
 > cache base in the committed `registry.toml` `[[caches]]`), reconciled with the
 > reference doc [`nix-cache-compatibility.md`](../../registry/nix-cache-compatibility.md)
-> and the actual code: `aos-nar/src/info.rs`, `aos-server/src/{narinfo.rs,
-> compress.rs,sign.rs,routes.rs}`, `aos-package/src/download.rs`,
-> `aos-package/src/types.rs`, `aos-package/src/registry/parse.rs`. The code wins for
+> and the actual code: `shared/aos-nar/src/info.rs`, `aos/packages/aos-build-server/src/{narinfo.rs,
+> compress.rs,sign.rs,routes.rs}`, `aos/packages/aos-package-manager/src/download.rs`,
+> `aos/packages/aos-package-manager/src/types.rs`, `aos/packages/aos-package-manager/src/registry/parse.rs`. The code wins for
 > *current state*; the design brief is authoritative for *target intent* (AOT static
 > generation, not a running server).
 >
@@ -92,7 +92,7 @@ Deriver from the Nix store) and keyed by store hash. The git registry's TOMLs ar
 the *metadata* layer; the *bytes* are the static cache files.
 
 > **CURRENT(reusable), NOT a server.** A full nix-serve-style cache server exists
-> in [`aos-server/src/routes.rs`](../../../crates/aos/packages/aos-build-server/src/routes.rs)
+> in [`aos/packages/aos-build-server/src/routes.rs`](../../../crates/aos/packages/aos-build-server/src/routes.rs)
 > (`cache_info_handler` [`routes.rs:123`](../../../crates/aos/packages/aos-build-server/src/routes.rs),
 > `narinfo_handler` [`routes.rs:157`](../../../crates/aos/packages/aos-build-server/src/routes.rs),
 > `nar_handler` [`routes.rs:223`](../../../crates/aos/packages/aos-build-server/src/routes.rs)) — but
@@ -117,7 +117,7 @@ the *metadata* layer; the *bytes* are the static cache files.
 
 - `NarInfo` struct + `parse` / `format` / `from_path_info` / `store_hash` /
   `basename` live in
-  [`aos-nar/src/info.rs`](../../../crates/shared/aos-nar/src/info.rs).
+  [`shared/aos-nar/src/info.rs`](../../../crates/shared/aos-nar/src/info.rs).
   `format(&NarInfo) -> String` ([`info.rs:81`](../../../crates/shared/aos-nar/src/info.rs))
   emits the canonical line-oriented `Key: value` text
   (StorePath/URL/Compression/FileHash/FileSize/NarHash/NarSize/References/Deriver/
@@ -125,7 +125,7 @@ the *metadata* layer; the *bytes* are the static cache files.
   builds a `NarInfo` from path metadata + compressed-NAR metadata. **This is the
   shared type the AOT generator emits and the consumer parses** — no new format.
 - `narinfo::format_narinfo(&DbPathInfo, store_dir, &CompressionConfig, Option<&NarInfoSigner>)`
-  ([`aos-server/src/narinfo.rs:27`](../../../crates/aos/packages/aos-build-server/src/narinfo.rs))
+  ([`aos/packages/aos-build-server/src/narinfo.rs:27`](../../../crates/aos/packages/aos-build-server/src/narinfo.rs))
   builds and renders the narinfo, populating **every** field including the NAR
   `URL:` ([`narinfo.rs:37`](../../../crates/aos/packages/aos-build-server/src/narinfo.rs)), References
   basename-expansion ([`narinfo.rs:71-74`](../../../crates/aos/packages/aos-build-server/src/narinfo.rs)),
@@ -165,11 +165,11 @@ compressed-NAR hash/size — the static narinfo is their single source of truth.
 
 ### 2.3 The Ed25519 `Sig:` (Nix fingerprint) — REUSE `NarInfoSigner`
 
-[`aos-server/src/sign.rs`](../../../crates/aos/packages/aos-build-server/src/sign.rs) implements the
+[`aos/packages/aos-build-server/src/sign.rs`](../../../crates/aos/packages/aos-build-server/src/sign.rs) implements the
 exact Nix narinfo fingerprint and Ed25519 signature reusing a single key:
 
 ```rust
-// aos-server/src/sign.rs:57-60  — the Nix narinfo fingerprint
+// aos/packages/aos-build-server/src/sign.rs:57-60  — the Nix narinfo fingerprint
 pub fn fingerprint(store_path: &str, nar_hash: &str, nar_size: i64, refs: &[String]) -> String {
     let refs_str = refs.join(",");
     format!("1;{store_path};{nar_hash};{nar_size};{refs_str}")
@@ -198,7 +198,7 @@ recomputes. REUSING `format_narinfo` gets this for free.
 ### 2.5 The narinfo-driven consumer — DONE (no work)
 
 `apm`'s downloader is narinfo-first (commit `7149acf6`,
-[`aos-package/src/download.rs`](../../../crates/aos/packages/aos-package-manager/src/download.rs)) and
+[`aos/packages/aos-package-manager/src/download.rs`](../../../crates/aos/packages/aos-package-manager/src/download.rs)) and
 consumes a **dumb static** narinfo cache as-is:
 
 - `fetch_narinfos` GETs `<mirror_url>/<storeHash>.narinfo` and parses it via

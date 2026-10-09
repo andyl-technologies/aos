@@ -56,7 +56,7 @@ pub enum ClientControlStream {
     /// Same-process stream whose commands return through the lifecycle registry.
     InProcessLifecycle(InProcessLifecycleControlStream),
     /// HTTP/2 RPC stream.
-    Rpc(RpcControlStream),
+    Rpc(Box<RpcControlStream>),
 }
 
 impl ClientControlStream {
@@ -187,7 +187,7 @@ pub enum ClientWatchStream {
     /// Same-process stream over the session event-log hub.
     InProcess(Box<dyn LocalWatchStream>),
     /// HTTP/2 RPC stream.
-    Rpc(RpcWatchStream),
+    Rpc(Box<RpcWatchStream>),
 }
 
 impl ClientWatchStream {

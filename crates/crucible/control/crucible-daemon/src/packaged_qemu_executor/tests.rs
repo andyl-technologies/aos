@@ -420,7 +420,13 @@ fn packaged_executor_config_rejects_workers_beyond_slots() {
         "x86_64",
         "deterministic-tcg-v1",
         CampaignHash::derive("crucible.test.packaged-executor-store.v1", b"overflow"),
-        ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", "run-state"),
+        ProductionVmLifecycleConfig::new(
+            "qemu",
+            "plugin",
+            "kernel",
+            "root",
+            directory.path().join("run-state"),
+        ),
         config(&directory, 1).host.clone(),
     )
     .expect_err("worker count should exceed slots");
@@ -500,7 +506,13 @@ fn packaged_executor_config_rejects_an_empty_campaign_set() {
         "x86_64",
         "deterministic-tcg-v1",
         CampaignHash::derive("crucible.test.packaged-executor-store.v1", b"empty"),
-        ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", "run-state"),
+        ProductionVmLifecycleConfig::new(
+            "qemu",
+            "plugin",
+            "kernel",
+            "root",
+            directory.path().join("run-state"),
+        ),
         fixture.host.clone(),
     )
     .expect_err("empty campaign set must fail");

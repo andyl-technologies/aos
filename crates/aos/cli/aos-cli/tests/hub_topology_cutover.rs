@@ -20,12 +20,12 @@ const VERIFICATION_SIGNER_ID: &str = "key/verification/example";
 fn topology_api_has_no_legacy_endpoint_update_surface() -> Result<()> {
     let root = workspace_root();
     let mut sources = vec![
-        root.join("crates/aos/packages/aos-build-api/src/proto/aos/hub/v1/hub.proto"),
+        root.join("api/proto/aos/hub/v1/hub.proto"),
         root.join("crates/hub/aos-hub-service/src/connect.rs"),
-        root.join("crates/aos/packages/aos-build-client/src/hub.rs"),
+        root.join("crates/hub/aos-hub-client/src/hub.rs"),
         root.join("docs/rfcs/0012-hub-surface-topology/hub-api-manifest-v1.json"),
     ];
-    sources.extend(hub_command_sources(
+    sources.extend(rust_sources(
         &root.join("crates/aos/cli/aos-cli/src/commands/hub"),
     )?);
     for path in sources {
@@ -36,7 +36,7 @@ fn topology_api_has_no_legacy_endpoint_update_surface() -> Result<()> {
             path.display()
         );
     }
-    let proto = fs::read_to_string(root.join("crates/aos/packages/aos-build-api/src/proto/aos/hub/v1/hub.proto"))?;
+    let proto = fs::read_to_string(root.join("api/proto/aos/hub/v1/hub.proto"))?;
     for method in [
         "ListEndpointGenerations",
         "GetEndpointGeneration",
@@ -53,16 +53,18 @@ fn topology_api_has_no_legacy_endpoint_update_surface() -> Result<()> {
     Ok(())
 }
 
-/// Collects every Rust source beneath the hub command directory, including nested families.
-fn hub_command_sources(directory: &Path) -> Result<Vec<PathBuf>> {
+/// Collects production Rust sources recursively beneath a source directory.
+fn rust_sources(directory: &Path) -> Result<Vec<PathBuf>> {
     let mut sources = Vec::new();
     for entry in fs::read_dir(directory)? {
         let entry = entry?;
         let path = entry.path();
         let file_type = entry.file_type()?;
-        if file_type.is_dir() {
-            sources.extend(hub_command_sources(&path)?);
-        } else if file_type.is_file() && path.extension().is_some_and(|extension| extension == "rs")
+        if file_type.is_dir() && path.file_name().is_none_or(|name| name != "tests") {
+            sources.extend(rust_sources(&path)?);
+        } else if file_type.is_file()
+            && path.extension().is_some_and(|extension| extension == "rs")
+            && path.file_name().is_none_or(|name| !name.to_string_lossy().ends_with("_tests.rs"))
         {
             sources.push(path);
         }
@@ -71,13 +73,23 @@ fn hub_command_sources(directory: &Path) -> Result<Vec<PathBuf>> {
     Ok(sources)
 }
 
+/// Reads the implementation of a capability distributed across focused modules.
+fn rust_source_text(directory: &Path) -> Result<String> {
+    rust_sources(directory)?
+        .into_iter()
+        .map(fs::read_to_string)
+        .collect::<std::io::Result<Vec<_>>>()
+        .map(|sources| sources.join("\n"))
+        .map_err(Into::into)
+}
+
 #[test]
 fn registry_mutations_are_plan_apply_only() -> Result<()> {
     let root = workspace_root();
     let files = [
-        root.join("crates/aos/packages/aos-build-api/src/proto/aos/hub/v1/hub.proto"),
+        root.join("api/proto/aos/hub/v1/hub.proto"),
         root.join("crates/hub/aos-hub-service/src/connect.rs"),
-        root.join("crates/aos/packages/aos-build-client/src/hub.rs"),
+        root.join("crates/hub/aos-hub-client/src/hub.rs"),
         root.join("docs/rfcs/0012-hub-surface-topology/hub-api-manifest-v1.json"),
     ];
     for path in files {
@@ -100,13 +112,14 @@ fn registry_mutations_are_plan_apply_only() -> Result<()> {
             );
         }
     }
-    let direct_mutation_files = [
-        root.join("crates/hub/aos-hub-service/src/db/mod.rs"),
+    let mut direct_mutation_files = rust_sources(&root.join("crates/hub/aos-hub-db/src/db"))?;
+    direct_mutation_files.extend([
+
         root.join("crates/hub/aos-hub-service/src/config/mod.rs"),
         root.join("crates/hub/aos-hub-service/src/web/console/handlers.rs"),
         root.join("crates/hub/aos-hub-service/src/web/console/router.rs"),
         root.join("crates/hub/aos-hub-service/src/web/console/manifest.rs"),
-    ];
+    ]);
     for path in direct_mutation_files {
         let source = fs::read_to_string(&path)?;
         for forbidden in [
@@ -133,7 +146,7 @@ fn registry_mutations_are_plan_apply_only() -> Result<()> {
 #[test]
 fn project_mutations_are_plan_apply_only() -> Result<()> {
     let root = workspace_root();
-    let proto = fs::read_to_string(root.join("crates/aos/packages/aos-build-api/src/proto/aos/hub/v1/hub.proto"))?;
+    let proto = fs::read_to_string(root.join("api/proto/aos/hub/v1/hub.proto"))?;
     for method in [
         "ListProjects",
         "GetProject",
@@ -167,7 +180,7 @@ fn project_mutations_are_plan_apply_only() -> Result<()> {
 #[test]
 fn webhook_mutations_are_plan_apply_and_plaintext_secret_free() -> Result<()> {
     let root = workspace_root();
-    let proto = fs::read_to_string(root.join("crates/aos/packages/aos-build-api/src/proto/aos/hub/v1/hub.proto"))?;
+    let proto = fs::read_to_string(root.join("api/proto/aos/hub/v1/hub.proto"))?;
     for method in [
         "PlanCreateWebhook",
         "CreateWebhook",
@@ -203,7 +216,7 @@ fn webhook_mutations_are_plan_apply_and_plaintext_secret_free() -> Result<()> {
             .any(|line| line.trim_start().starts_with("string secret ="))
     );
 
-    let schema = fs::read_to_string(root.join("crates/hub/aos-hub-service/src/db/schema.sql"))?;
+    let schema = fs::read_to_string(root.join("crates/hub/aos-hub-db/src/db/schema.sql"))?;
     let webhooks = schema
         .split("CREATE TABLE webhooks(")
         .nth(1)
@@ -239,12 +252,11 @@ fn webhook_mutations_are_plan_apply_and_plaintext_secret_free() -> Result<()> {
         "webhook create/delete events must satisfy the final outbox vocabulary"
     );
 
-    let service = fs::read_to_string(root.join("crates/hub/aos-hub-service/src/service.rs"))?;
-    let webhook_family = service
-        .split("pub async fn plan_create_webhook")
-        .nth(1)
-        .and_then(|tail| tail.split("pub async fn apply_delete_webhook").next())
-        .context("webhook service family")?;
+    let webhook_family = rust_source_text(
+        &root.join("crates/hub/aos-hub-service/src/service/operations/webhooks"),
+    )?;
+    assert!(webhook_family.contains("pub async fn plan_create_webhook"));
+    assert!(webhook_family.contains("pub async fn apply_delete_webhook"));
     for forbidden in ["generate_token", "secret:"] {
         assert!(
             !webhook_family.contains(forbidden),
@@ -298,13 +310,14 @@ fn webhook_mutations_are_plan_apply_and_plaintext_secret_free() -> Result<()> {
     let webhook = fs::read_to_string(root.join("crates/hub/aos-hub-service/src/webhook.rs"))?;
     assert!(webhook.contains("enqueue_operational_webhook_event"));
     assert!(!webhook.contains("enqueue_delivery"));
+    let taxonomy = fs::read_to_string(root.join("crates/hub/aos-hub-model/src/webhook.rs"))?;
     for event in [
         "webhook.created",
         "topology.gateway.created",
         "topology.route.revised",
         "topology.endpoint.generation_activated",
     ] {
-        assert!(webhook.contains(event), "webhook taxonomy omits {event}");
+        assert!(taxonomy.contains(event), "webhook taxonomy omits {event}");
     }
     Ok(())
 }
@@ -312,12 +325,14 @@ fn webhook_mutations_are_plan_apply_and_plaintext_secret_free() -> Result<()> {
 #[test]
 fn pin_resolution_controller_is_fail_closed_and_typed() -> Result<()> {
     let root = workspace_root();
-    let proto = fs::read_to_string(root.join("crates/aos/packages/aos-build-api/src/proto/aos/hub/v1/hub.proto"))?;
+    let proto = fs::read_to_string(root.join("api/proto/aos/hub/v1/hub.proto"))?;
     assert!(proto.contains("repeated TopologyPinImpact live_pin_impacts = 13;"));
     assert!(!proto.contains("repeated string live_pin_impacts"));
     assert!(proto.contains("enum PinResolutionAction"));
 
-    let service = fs::read_to_string(root.join("crates/hub/aos-hub-service/src/service.rs"))?;
+    let service = rust_source_text(
+        &root.join("crates/hub/aos-hub-service/src/service/operations/topology"),
+    )?;
     for guard in [
         "pinResolutions must contain exactly one action for every live grant pin and no extras",
         "source target for pin",
@@ -695,9 +710,12 @@ fn assert_failure_code(output: &Output, expected_code: &str) -> Result<()> {
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")))
+        .ancestors()
+        .find(|candidate| {
+            candidate.join("default.nix").is_file()
+                && candidate.join("crates/Cargo.toml").is_file()
+        })
+        .expect("Hub cutover fixtures must run from the AOS repository")
         .to_path_buf()
 }
 

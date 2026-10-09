@@ -89,7 +89,7 @@
       }
       {
         label = "plugin API version source";
-        needle = "done < crucible-qemu-plugin/src/abi.rs";
+        needle = "done < crucible/qemu/crucible-qemu-plugin/src/abi.rs";
       }
       {
         label = "installed QEMU plugin path";

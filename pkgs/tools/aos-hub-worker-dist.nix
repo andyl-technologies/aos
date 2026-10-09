@@ -523,17 +523,17 @@ in
           # file gives stable browse assets a bounded lifetime and the generated,
           # content-addressed console bundle an immutable lifetime.
           mkdir -p "$out/assets/_assets"
-          cp aos-hub-core/src/web/static_assets/style.css "$out/assets/_assets/style.css"
-          cp aos-hub-core/src/web/static_assets/app.js    "$out/assets/_assets/app.js"
-          cp aos-hub-core/src/web/static_assets/theme.js  "$out/assets/_assets/theme.js"
-          cp aos-hub-core/src/web/static_assets/Geist-Variable.woff2 \
+          cp hub/aos-hub-service/src/web/static_assets/style.css "$out/assets/_assets/style.css"
+          cp hub/aos-hub-service/src/web/static_assets/app.js    "$out/assets/_assets/app.js"
+          cp hub/aos-hub-service/src/web/static_assets/theme.js  "$out/assets/_assets/theme.js"
+          cp hub/aos-hub-service/src/web/static_assets/Geist-Variable.woff2 \
             "$out/assets/_assets/geist-sans-variable.woff2"
-          cp aos-hub-core/src/web/static_assets/GeistMono-Variable.woff2 \
+          cp hub/aos-hub-service/src/web/static_assets/GeistMono-Variable.woff2 \
             "$out/assets/_assets/geist-mono-variable.woff2"
-          cp aos-hub-core/src/web/static_assets/OFL.txt   "$out/assets/_assets/OFL.txt"
-          cat aos-hub-core/src/web/static_assets/style.css \
-            aos-hub-core/src/web/static_assets/app.js \
-            aos-hub-core/src/web/static_assets/theme.js \
+          cp hub/aos-hub-service/src/web/static_assets/OFL.txt   "$out/assets/_assets/OFL.txt"
+          cat hub/aos-hub-service/src/web/static_assets/style.css \
+            hub/aos-hub-service/src/web/static_assets/app.js \
+            hub/aos-hub-service/src/web/static_assets/theme.js \
             ${buildConsoleDist}/hub-console.js \
             ${buildConsoleDist}/hub-console_bg.wasm \
             ${buildConsoleDist}/hub-console.css \

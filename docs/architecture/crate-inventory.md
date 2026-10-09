@@ -49,7 +49,7 @@ change dependency identity. The authoritative membership is
 | `aos-release-format` | [aos/release/aos-release-format](../../crates/aos/release/aos-release-format/Cargo.toml) | Pure release contracts and offline verification for canonical AOS publication |
 | `aos-release-signer` | [aos/release/aos-release-signer](../../crates/aos/release/aos-release-signer/Cargo.toml) | File-backed signing process for the release signer-exchange protocol |
 | `crucible-cli` | [crucible/control/crucible-cli](../../crates/crucible/control/crucible-cli/Cargo.toml) | Command parsing and presentation for the Crucible control plane |
-| `crucible-control-api` | [crucible/control/crucible-control-api](../../crates/crucible/control/crucible-control-api/Cargo.toml) | Portable Crucible control messages, canonical codecs, and compatibility contracts |
+| `crucible-control-api` | [crucible/control/crucible-control-api](../../crates/crucible/control/crucible-control-api/Cargo.toml) | Native transport-independent control messages, canonical codecs, and compatibility contracts |
 | `crucible-control-client` | [crucible/control/crucible-control-client](../../crates/crucible/control/crucible-control-client/Cargo.toml) | Crucible HTTP/2 RPC clients and typed transport interfaces |
 | `crucible-control-server` | [crucible/control/crucible-control-server](../../crates/crucible/control/crucible-control-server/Cargo.toml) | Crucible lifecycle dispatch, actor adapters, and authenticated HTTP/2 servers |
 | `crucible-daemon` | [crucible/control/crucible-daemon](../../crates/crucible/control/crucible-daemon/Cargo.toml) | Host process, VM lifecycle, campaigns, and interactive replay coordination |
@@ -120,6 +120,12 @@ exception; its installed name remains `aos-boot-preparations`.
   `crucible-control-api` owns message/codecs/compatibility contracts,
   `crucible-control-client` owns client transport, and `crucible-control-server`
   owns server integration. Production VM lifecycle belongs to `crucible-daemon`.
+
+The control API is independently consumable by native clients and services, but
+it retains session and engine dependencies and is not a WebAssembly format
+library. Live event-log hub and stream adapters belong to the control server.
+Extracting a smaller platform-independent session model would require a separate
+review of its command and debugger contracts.
 
 The [mechanical migration map](../../tools/dev/crate-migration.json) records the
 original 67-package move. Its five temporary merge entries are historical inputs,

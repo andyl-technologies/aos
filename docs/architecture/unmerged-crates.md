@@ -4,14 +4,15 @@ The implemented base is [PR #715](https://github.com/andyl-technologies/aos/pull
 
 | PR | Audited head | Added top-level / fixture crates | Ownership |
 |---|---|---|---|
-| [#713](https://github.com/andyl-technologies/aos/pull/713) | `d6be7eafc32f84ab54845704cc99818ae85523ce` | 3 / 0 | AOS maintenance |
-| [#711](https://github.com/andyl-technologies/aos/pull/711) | `9a0a305a980e02d3b9b45563cd6ed913bd639ff4` | 2 / 0 | Crucible node protocol/transport |
-| [#696](https://github.com/andyl-technologies/aos/pull/696) | `bcc9391f87998a4939a151295280985842a48272` | 2 / 0 | Crucible RAM/host resources |
-| [#673](https://github.com/andyl-technologies/aos/pull/673) | `9421f9140964c6c3bb1cae142de90dc7695779a4` | 0 / 0 | Crucible campaigns |
+| [#713](https://github.com/andyl-technologies/aos/pull/713) | `4baf11f742e3bf3904bd01c34f7420c334765076` | 3 / 0 | AOS maintenance |
+| [#711](https://github.com/andyl-technologies/aos/pull/711) | `fa3508865aba6ed03ca3ac08e7eb2df314e41f79` | 2 / 0 | Crucible node protocol/transport |
+| [#696](https://github.com/andyl-technologies/aos/pull/696) | `b9aa885eb16e2b799f178be44aba4a6dfa69cd3a` | 2 / 0 | Crucible RAM/host resources |
+| [#673](https://github.com/andyl-technologies/aos/pull/673) | `b01ddab52230194645697efc4397d812b3fd6d6c` | 0 / 0 | Crucible campaigns |
 | [#420](https://github.com/andyl-technologies/aos/pull/420) | `412bc8cd1f75fa3b851f5cd1186ab9c21b7d1430` | 5 / 0 | Terrane |
-| [#374](https://github.com/andyl-technologies/aos/pull/374) | `223c3d9e76ef35c730a3ea77a052ccc719a56eec` | 0 / 0 | Hub |
+| [#374](https://github.com/andyl-technologies/aos/pull/374) | `81679049e6cdda9e6a7ee44ec6f238d54c84f38a` | 0 / 0 | Hub |
 | [#232](https://github.com/andyl-technologies/aos/pull/232) | `4280e3ba24cc15ae8f302de14b654649ef69b748` | 34 / 6 | Sandbox |
 | [#231](https://github.com/andyl-technologies/aos/pull/231) | `69cc082e8c1b7be564556a4ef2d4c70fb9c67b78` | 0 / 0 | Darwin tooling |
+| [#716](https://github.com/andyl-technologies/aos/pull/716) | `8cc3be107abd3b7e53e6875d831f513530e2a533` | 0 / 0 | Dispatch RFC/native dependency preparation |
 
 Future names below are proposed for code outside the base workspace. Generic journal, descriptor and SQLite promotion require API review; base extractions are already implemented.
 
@@ -104,10 +105,8 @@ The implemented base is PR [#715](https://github.com/andyl-technologies/aos/pull
 | Former ownership | Current dependency / namespace |
 |---|---|
 | Contract JSON, identities, decoding | `aos_core::{json,digest,limits,identity}`; `Sha256Digest` also exported at root |
-| NAR/narinfo/cache/signing | `aos_nar::{cache,info,export,pack,verify}` |
+| NAR/narinfo/cache/signing | `aos_nar::{cache,info,export,pack,verify}`; extraction/hash verification consumers select `features = ["compression"]` |
 | Nix execution, derivations, store tools | `aos_nix::{drv,env,identity,runner,store,error,executable}`; `NixRunner`, `NixCli`, `PathInfo` at root |
-| Registry readers and producers | `aos_registry_client::{config,registry,security,...}` for verified reads; `aos_registry_authoring::{registry_ops,RegistryCommand,...}` for production and publication |
-| Registry shared contracts | `aos_registry_format::{consumer,release,measurement}`; release entries and package measurement digests are portable format contracts |
 | Terminal presentation and command hints | `aos_cli_ui::{output,invocation}`; command error/exit policy stays with CLI |
 | Ability model and plan | `aos_module_format`; graph validation is `aos_module_format::graph` |
 | Artifact evidence formats/readers | `aos_artifact_evidence::{document,model,identity,consumption,diagnostic,limits}` plus root exports; do not route through module-format |
@@ -118,8 +117,16 @@ The implemented base is PR [#715](https://github.com/andyl-technologies/aos/pull
 | Hub orchestration/client/API | `aos_hub_service`, `aos_hub_client::{hub,login}`, and `aos_hub_api::{hub_v1,...}` |
 | Crucible control | `crucible_control_api`, `crucible_control_client`, `crucible_control_server`; VM creation/lifecycle implementation is `crucible_daemon::vm_lifecycle` |
 
-The CLI Rust library is `aos_cli`; installed `aos`, `apm`, `apr`, and private runtime command names remain unchanged. Deployment input acquisition moved from methods to `aos_deployment::input::{read_evaluation_input,read_evaluation_input_in,import_evaluation_input,import_evaluation_input_retained}`. Generic NAR verification is in `aos_nar::verify` behind its optional `compression` feature.
-
 Reuse schemas field by field without changing bytes or acceptance behavior. `InstalledPackageRecord` and `PackageInventoryDetails` now live in `aos_deployment_format::inventory`; supply immutable inventory to deployment/image verification rather than depending on package-manager state APIs. Outer installed records retain their established Serde behavior and defaults for `expires_at` and `apm`. The nested `PackageInventoryDetails` retains `deny_unknown_fields`, including optional deployment/module-documentation/qualification metadata and attestation defaults. Do not tighten the outer record or alter omissions/defaults as a side effect of type movement.
 
 OCI canonical JSON intentionally stays in `aos_oci_types::canonical`: it admits extension keys outside ASCII and full-width integer values, and follows its existing Serde schema/duplicate behavior. Strict authenticated AOS JSON in `aos_core::json` has different rules. Compare exact decoding, integer range, duplicate handling, canonical ordering and identity domains before sharing an implementation. Likewise portable node/RAM process formats and Terrane formats retain their existing license/encoding contracts.
+
+
+
+## Dispatch names reserved by RFC-0027
+
+PR #716 currently changes no Rust source or Cargo manifests. Its planned independent library family is `dispatch-model`, `dispatch-protocol`, `dispatch-runtime` and a consumer facade presently called `dispatch` in the RFC. Proposed package naming makes that facade `dispatch-sdk`, under `crates/dispatch/{model,protocol,runtime,sdk}`. An eventual `dispatch-cli` package may own the unchanged `dispatch` executable. The trusted worker can initially remain with its runtime owner; the C++ Rebalancer backend stays a separate process. These are planned classifications, not current workspace members. Pure model/evaluation must remain independent of native engines and async runtimes; AOS/Hub/Crucible application policy stays outside Dispatch libraries. Explicit package licenses and exact field-level schema reuse require review when implementation is created.
+
+## Final open-head refresh
+
+The final snapshot contains ten open PRs, including migration PR #715 and nine owning PRs above. Advanced heads for #713, #711, #696, #673 and #374 were inspected as exact local Git objects. None changes the added-package manifests or full crate inventory relative to the preceding audit. #711 expands native gem5/custody and CNP lifecycle code under existing owners; #696 additionally exports `crucible_device::DeviceSnapshotAllocation`; the latter remains a device capability. Updated handoffs retain those changes and the existing 242-symbol control API ownership map. Owning branch builds/tests remain required after migration.

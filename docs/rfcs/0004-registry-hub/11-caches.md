@@ -371,7 +371,7 @@ indexer with a cache-GC pass (no new Worker plumbing).
   `aos-registry-spa` SPA renders the interactive closure graph — reusing
   RFC-0005's store/ realisation-graph model so there is one closure renderer.
 - **NAR file explorer + downloader.** A `ListNarContents(store_hash)` RPC
-  lists a NAR's internal file tree (parsed via the existing `aos-core/src/nar`
+  lists a NAR's internal file tree (parsed via the existing `shared/aos-nar/src`
   reader, which already runs on wasm); the browse page renders the tree with
   per-file and whole-NAR download links, all served through the existing
   `facade_fetch` / `head_machine_path` machinery — a new content shape, not a

@@ -1479,7 +1479,7 @@ branch on the verdict without parsing output:
   symbol table, not by scanning the file for symbol-name bytes, so a file that
   merely contains the string cannot impersonate a plugin.
   — satisfies [CLI-13], [CLI-14]; spec §7.
-  - Defect (audit 2026-07-28): `crucible-cli/src/cli/backend.rs` accepts any
+  - Defect (audit 2026-07-28): `crucible/control/crucible-cli/src/cli/backend.rs` accepts any
     candidate whose bytes contain `qemu_plugin_install` / `qemu_plugin_version`
     anywhere — including a comment, a string literal, or `.strtab`. The CLI's own
     test fixture passes validation by writing exactly those byte sequences into a
@@ -1504,7 +1504,7 @@ branch on the verdict without parsing output:
   - Defect (audit 2026-07-28): `proves_t_cli_3` inspects only fields written as
     constants in the arm of `plan_backend_selection` that builds the plan, so it
     cannot return false and both of its guard sites are dead. Separately,
-    `crucible-cli/tests/machine_readable.rs` sets
+    `crucible/control/crucible-cli/tests/machine_readable.rs` sets
     `CRUCIBLE_TEST_SKIP_LIVE_QEMU_PROBE=1`, and the verify probe helper returns an
     empty vector under `#[cfg(test)]`, so the divergence check over probe reports
     iterates nothing — the tests that certify `--backend qemu` are the ones that

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 license.workspace = true
 publish = false
-description = "Portable Crucible control messages, canonical codecs, and compatibility contracts"
+description = "Native transport-independent Crucible control contracts and canonical codecs"
 
 [lints]
 workspace = true

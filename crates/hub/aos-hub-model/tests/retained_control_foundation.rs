@@ -88,10 +88,9 @@ fn hard_cut_fixture_scans_the_complete_production_source_universe() {
     ))
     .unwrap();
     let repository_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(|path| path.parent())
-        .and_then(|path| path.parent())
-        .unwrap();
+        .ancestors()
+        .find(|candidate| candidate.join("crates/Cargo.toml").is_file())
+        .expect("retained-control inventory requires the AOS source workspace");
     let matches = fixture.scan_repository_root(repository_root).unwrap();
     assert!(
         matches.is_empty(),

@@ -7,10 +7,10 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use crucible_control_api::{
-    AttachRequest, EventLogCursor, SendRequest, SessionEventLogHub, SessionId, SessionRef,
+use crucible_control_api::{AttachRequest, EventLogCursor, SendRequest, SessionId, SessionRef};
+use crucible_control_server::{
+    ControlPlaneEventLog, InProcessStreamingSession, SessionEventLogHub,
 };
-use crucible_control_server::{ControlPlaneEventLog, InProcessStreamingSession};
 use crucible_engine::test_support::condition_payload_entry_for_test;
 use crucible_engine::{
     Checkpoint, CheckpointKind, Configuration, Decision, EventAttributeValue,

@@ -203,7 +203,7 @@
           }
           {
             label = "adaptive campaign source coverage";
-            needle = "crucible/src/model/adaptive_campaign.rs";
+            needle = "crucible/engine/crucible-engine/src/model/adaptive_campaign.rs";
           }
         ];
       };

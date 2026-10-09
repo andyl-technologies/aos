@@ -48,7 +48,7 @@ manifest diff (gen-7 → candidate)
 
 The `--json` form extends the existing planned-status envelope (`desired.rs:214`)
 with `etc_diff`, `resource_changes`, `fetch_plan` (closure delta vs the local store,
-enumerated by `aos-cache/src/discover.rs:18`), and `resolution_trace`.
+enumerated by `aos/packages/aos-nix-cache/src/discover.rs:18`), and `resolution_trace`.
 
 **Off-host CI preflight.** A `checks.config-eval` derivation
 (`default.nix` `checks` rec) evaluates the same expression with

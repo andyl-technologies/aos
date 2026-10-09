@@ -307,7 +307,7 @@
     ++ failuresFor "crates/crucible/engine/crucible-engine/Cargo.toml" cargoManifest [
       {
         label = "replay-oracle dev dependency";
-        needle = "crucible-harness = { path = \"../crucible-harness\" }";
+        needle = "crucible-test-support = { path = \"../../testing/crucible-test-support\" }";
       }
       {
         label = "test-double replay oracle target";

@@ -1,10 +1,17 @@
-//! Portable Crucible control messages, encodings, and compatibility rules.
+//! Native transport-independent Crucible control contracts, encodings, and compatibility rules.
 //!
 //! Spec index: RFC-0010 files 21.
 //!
 //! Module map: lifecycle and streaming own request/response values; rpc_abi
 //! owns frozen encodings; open_set and session_mapping own capability vocabulary.
 //! The crate does not start servers, instantiate actors, or launch QEMU.
+//!
+//! Native clients and services reuse session command, debugger, and event-log
+//! value contracts here. The existing session and engine dependencies still
+//! carry Tokio and native host support. This dependency graph is validated on
+//! Linux; WASM reuse requires separating those upstream contracts from their
+//! runtime implementations. Live event-log hubs and subscriptions are exposed
+//! by crucible-control-server and crucible-session.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -24,8 +31,7 @@ pub use debug_relay::{
 pub mod event_log_stream;
 pub use event_log_stream::{
     EventLogCursor, SESSION_EVENT_LOG_BROADCAST_CAPACITY, SESSION_EVENT_LOG_REPLAY_BATCH_SIZE,
-    SessionEventLogFrame, SessionEventLogHub, SessionEventLogSnapshot, SessionEventLogStream,
-    SessionEventLogStreamError,
+    SessionEventLogFrame, SessionEventLogSnapshot, SessionEventLogStreamError,
 };
 pub mod lifecycle;
 pub use lifecycle::{

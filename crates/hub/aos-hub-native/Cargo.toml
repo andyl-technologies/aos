@@ -94,3 +94,6 @@ path = "src/main.rs"
 [[bin]]
 name = "aos-hub-egress"
 path = "src/bin/aos-hub-egress.rs"
+
+[package.metadata.aos]
+test_source_inputs = ["tests/vm/hub-native-operations.nix"]

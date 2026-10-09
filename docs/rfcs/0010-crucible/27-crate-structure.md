@@ -533,8 +533,8 @@ members = [
   # L0
   "crucible/engine/crucible-determinism",
   # L1
-  "crucible/protocol/crucible-qemu-shmem",
-  "crucible/protocol/crucible-qemu-protocol",
+  "crucible/engine/crucible-engine/protocol/crucible-qemu-shmem",
+  "crucible/engine/crucible-engine/protocol/crucible-qemu-protocol",
   "crucible/engine/crucible-device",
   # L2
   "crucible/qemu/crucible-qemu-host",

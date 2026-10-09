@@ -12,8 +12,8 @@ across which the CLI ([`23-cli.md`](23-cli.md)), the search/fuzzing driver
 a running scenario.
 
 The Rust implementation separates this shared surface from its realizations:
-`crucible-control-api` owns portable request/response values, capability models,
-and frozen RPC encodings; `crucible-control-client` owns the `ControlClient`
+`crucible-control-api` owns native transport-independent request/response values,
+capability models, and frozen RPC encodings; `crucible-control-client` owns the `ControlClient`
 interface and HTTP/2 client; `crucible-control-server` owns in-process actor
 adapters, lifecycle registries, authentication, and HTTP/2 dispatch. Server-owned
 streams implement typed local transport interfaces without making remote clients
@@ -21,6 +21,13 @@ depend on the server implementation. Production VM lifecycle composition belongs
 to `crucible-daemon`; remote clients and API messages do not depend on the QEMU
 host crate. Package and directory names do not change wire identifiers, version
 negotiation, or golden vectors.
+
+The contract crate shares existing session command, debugger, and event-log
+values with native clients and services. Its session and engine dependencies
+still include Tokio and native host support; the validated dependency graph is
+Linux-native. A WASM contract library requires a separate upstream values/runtime
+boundary. Live event-log hubs and subscriptions are exported by
+`crucible-control-server` and `crucible-session`, not by the contract crate.
 
 Crucible has **no web UI** ([INV/NG-4], [`01-goals-nongoals-invariants.md`](01-goals-nongoals-invariants.md)).
 This file specifies a programmatic API plus a machine-to-machine RPC surface, and
@@ -675,7 +682,8 @@ ran in-process against the double or over the wire against QEMU.
   `crucible_control_api::streaming` defines shared attach metadata, unary
   `SendRequest`/`SendResponse`, typed `CommandResult`, and optional `StateUpdate`.
   `crucible_control_server::streaming` defines the in-process `ControlStream`
-  and `WatchStream` implementations over those portable contracts. `ControlClient`/`RpcControlClient` expose transport
+  and `WatchStream` implementations over those shared contracts.
+  `ControlClient`/`RpcControlClient` expose transport
   paths for `Control` attach/send, `Watch` attach, and unary `Send`; accepted
   lifecycle stops preserve the joined actor's exact terminal snapshot in the
   response after registry cleanup, while rejected stops retain the session and

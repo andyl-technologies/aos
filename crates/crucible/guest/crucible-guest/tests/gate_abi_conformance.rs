@@ -257,19 +257,15 @@ fn guest_static_build_contract_is_declared_for_aos_package() {
     assert!(cargo_toml.contains("crucible-qemu-protocol = { path = \"../../protocol/crucible-qemu-protocol\" }"));
     assert!(!cargo_toml.contains("clap"));
 
-    // The standalone `pkgs.aos` package intentionally copies only `crates/`
-    // into its build source. The dedicated Crucible ABI gate copies the
-    // repository packaging files too and exercises these assertions there.
-    if let Some(package) = repo_file("pkgs/tools/crucible-guest.nix") {
-        assert!(package.contains("CARGO_TARGET_"));
-        assert!(package.contains("target-feature=+crt-static"));
-        assert!(package.contains("-p crucible-guest --bin crucible-guest"));
-        assert!(package.contains("patchelf --print-interpreter"));
-        assert!(package.contains("packaged_guest_system=${stdenv.hostPlatform.system}"));
-        assert!(package.contains("instruction_abi_architectures=x86_64,aarch64"));
-        assert!(package.contains("licenseScope = \"Apache-2.0\""));
-        assert!(package.contains("license = \"Apache-2.0\""));
-    }
+    let package = repo_file("pkgs/tools/crucible-guest.nix");
+    assert!(package.contains("CARGO_TARGET_"));
+    assert!(package.contains("target-feature=+crt-static"));
+    assert!(package.contains("-p crucible-guest --bin crucible-guest"));
+    assert!(package.contains("patchelf --print-interpreter"));
+    assert!(package.contains("packaged_guest_system=${stdenv.hostPlatform.system}"));
+    assert!(package.contains("instruction_abi_architectures=x86_64,aarch64"));
+    assert!(package.contains("licenseScope = \"Apache-2.0\""));
+    assert!(package.contains("license = \"Apache-2.0\""));
 }
 
 fn payload_from_args(args: &[&str]) -> WhiteboxMarkerPayload {
@@ -301,9 +297,13 @@ fn manifest_file(path: &str) -> String {
     }
 }
 
-fn repo_file(path: &str) -> Option<String> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../..");
-    std::fs::read_to_string(root.join(path)).ok()
+fn repo_file(path: &str) -> String {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .find(|candidate| candidate.join("crates/Cargo.toml").is_file())
+        .expect("guest test must be inside the repository Cargo workspace");
+    std::fs::read_to_string(root.join(path))
+        .unwrap_or_else(|error| panic!("failed to read repository file {path}: {error}"))
 }
 
 fn must<T, E>(result: Result<T, E>) -> T
