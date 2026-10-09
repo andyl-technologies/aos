@@ -272,26 +272,29 @@ in {
 
       # Authenticate the root browser identity, then exchange its same-origin
       # session for the short-lived API bearer used for reviewed setup.
-      token = hub.succeed(textwrap.dedent(f"""
-          set -eu
-          headers=/tmp/hub-login.headers
-          page=/tmp/hub-console.html
-          {CURL} -sS -D "$headers" -o /dev/null -X POST \\
-            --data-urlencode 'email=fleet-root@example.test' \\
-            --data-urlencode 'password=fleet-root-password' \\
-            {HUB}/login/password
-          cookie=$(sed -n 's/^set-cookie: \\([^;]*\\).*/\\1/ip' "$headers" | head -n1)
-          test -n "$cookie"
-          {CURL} -sS -H "Cookie: $cookie" {HUB}/-/instance > "$page"
-          csrf=$(sed -n 's/.*name="aos-session-csrf" content="\\([^"]*\\)".*/\\1/p' "$page" | head -n1)
-          test -n "$csrf"
-          {CURL} -fsS -X POST \\
-            -H "Cookie: $cookie" \\
-            -H 'Origin: {HUB}' \\
-            -H "x-aos-csrf: $csrf" \\
-            -H 'x-aos-console-route: /-/instance' \\
-            {HUB}/-/auth/session-token | {JQ} -er .accessToken
-      """), timeout=120).strip()
+      def refresh_browser_token():
+          return hub.succeed(textwrap.dedent(f"""
+              set -eu
+              headers=/tmp/hub-login.headers
+              page=/tmp/hub-console.html
+              {CURL} -sS -D "$headers" -o /dev/null -X POST \\
+                --data-urlencode 'email=fleet-root@example.test' \\
+                --data-urlencode 'password=fleet-root-password' \\
+                {HUB}/login/password
+              cookie=$(sed -n 's/^set-cookie: \\([^;]*\\).*/\\1/ip' "$headers" | head -n1)
+              test -n "$cookie"
+              {CURL} -sS -H "Cookie: $cookie" {HUB}/-/instance > "$page"
+              csrf=$(sed -n 's/.*name="aos-session-csrf" content="\\([^"]*\\)".*/\\1/p' "$page" | head -n1)
+              test -n "$csrf"
+              {CURL} -fsS -X POST \\
+                -H "Cookie: $cookie" \\
+                -H 'Origin: {HUB}' \\
+                -H "x-aos-csrf: $csrf" \\
+                -H 'x-aos-console-route: /-/instance' \\
+                {HUB}/-/auth/session-token | {JQ} -er .accessToken
+          """), timeout=120).strip()
+
+      token = refresh_browser_token()
       assert token.startswith("ey"), "browser session did not mint a JWT"
 
       identity = json.loads(publisher.succeed(hub_command("whoami", token)))
@@ -635,9 +638,6 @@ in {
             --channel stable --init-channel --cache-url {REGISTRY} \\
             --upload-url file:///var/tmp/aos-publication-v1
           {APR} verify --registry production
-          {AOS} --json hub registry publish upload acme/production \\
-            --hub {HUB} --token {shlex.quote(token)} \\
-            --root /var/tmp/aos-publication-v1
       """), timeout=1800)
       if publication_status != 0:
           print("--- native Hub journal after publication failure ---")
@@ -648,6 +648,15 @@ in {
               "initial registry publication failed "
               f"(status={publication_status}): {publication}\n{publication_stderr}"
           )
+      # Browser API grants last five minutes; local compression must not
+      # consume the grant intended for the following authenticated transfer.
+      token = refresh_browser_token()
+      publication = publisher.succeed(
+          f"{AOS} --json hub registry publish upload acme/production "
+          f"--hub {HUB} --token {shlex.quote(token)} "
+          "--root /var/tmp/aos-publication-v1",
+          timeout=900,
+      )
       publication_data = json.loads(publication)["data"]
       assert publication_data["state"] == "ready", publication_data
 
@@ -910,10 +919,14 @@ in {
             --channel stable --count 256 --cache-url {REGISTRY} \\
             --upload-url file:///var/tmp/aos-publication-v2
           {APR} verify --registry production
-          {AOS} --json hub registry publish upload acme/production \\
-            --hub {HUB} --token {shlex.quote(token)} \\
-            --root /var/tmp/aos-publication-v2
       """), timeout=900)
+      token = refresh_browser_token()
+      publication_v2 = publisher.succeed(
+          f"{AOS} --json hub registry publish upload acme/production "
+          f"--hub {HUB} --token {shlex.quote(token)} "
+          "--root /var/tmp/aos-publication-v2",
+          timeout=900,
+      )
       publication_v2_data = json.loads(publication_v2)["data"]
       assert publication_v2_data["state"] == "ready", publication_v2_data
       publisher.wait_until_succeeds(
