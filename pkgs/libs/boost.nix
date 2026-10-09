@@ -248,6 +248,11 @@ in
             mv "$out/lib/cmake" "$dev/lib/cmake"
           fi
 
+          # The development output owns CMake metadata while shared libraries
+          # remain in the runtime output. Relative library paths cross that split.
+          find "$dev/lib/cmake" -name '*-config.cmake' -exec \
+            sed -i "s|get_filename_component(_BOOST_LIBDIR .*|set(_BOOST_LIBDIR \"$out/lib\")|" {} +
+
           mkdir -p "$tools/bin"
           if [ -z "''${AOS_CROSS_COMPILING:-}" ]; then
             cp ./b2 "$tools/bin/b2"
