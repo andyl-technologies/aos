@@ -718,9 +718,18 @@ review hash; formatting across all five Rust inputs, the five unsafe checks,
 size check, 37 quality checks and nine-crate strict checks pass again.
 Independent review confirms those final bytes. Eight earlier native diagnostic
 selectors exercise the extracted worker body; they are not installed-package
-qualification of this final version. The broader hermetic gate is rerun
-separately before its result can be extended to the repaired stack. This repair
-does not issue native execution epochs, authorize effects or qualify capture.
+qualification of this final version.
+
+The complete hermetic license-boundary gate now passes on the repaired stack
+ending at `cbb361f8cb`, output
+`3iykmi0gg3y8khn15zq2ywdbdizvb0l1-crucible-phase1-license-boundary-0`.
+Its controller cohort passes all 6,469 tests across 292 binaries in 377.368
+seconds, with 207 explicit skips. The final 18 license-boundary checks also
+pass. Matching complete corresponding QEMU source is retained in
+`db2x9iwp1mpxwz5v2grqgpk8kpscnwpf-qemu-crucible-source-11.1.1`.
+This result does not qualify the subsequent semantic, phase or source-lineage
+changes. Original failed cohorts remain local. This repair does not issue
+native execution epochs, authorize effects or qualify capture.
 
 ## Canonical semantic profiles and exclusive reaction cuts
 
