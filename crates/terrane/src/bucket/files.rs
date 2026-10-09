@@ -55,6 +55,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
     /// # Errors
     /// Rejects symlinked ancestors and nonregular present payload nodes while
     /// preserving exact absence and unavailable metadata as distinct outcomes.
+    /// Rejects incomplete metadata batches before observing a payload leaf.
     pub(super) async fn check_payload_namespace(
         &self,
         key: &BucketKey,
@@ -62,15 +63,34 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         let mut path = self.inner.config.root.clone();
         self.check_directory(&path).await?;
         let relative = Path::new(key.as_str()).parent().ok_or_else(malformed)?;
+        let mut parents = Vec::new();
         for part in relative.components() {
             path.push(part);
-            match self.inner.fs.symlink_metadata(&path).await {
-                Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
-                Ok(_) => return Err(layout_corrupt()),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-                Err(error) => return Err(io_failure(error)),
+            parents.push(path.clone());
+        }
+
+        if !parents.is_empty() {
+            let observations = self
+                .inner
+                .fs
+                .symlink_metadata_batch(&parents)
+                .await
+                .map_err(io_failure)?;
+            if observations.len() != parents.len() {
+                return Err(layout_corrupt());
+            }
+            // Batch dispatch is not an atomic observation. Classify every
+            // ancestor in order before asking for any payload leaf metadata.
+            for observation in observations {
+                match observation {
+                    Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+                    Ok(_) => return Err(layout_corrupt()),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                    Err(error) => return Err(io_failure(error)),
+                }
             }
         }
+
         match self.inner.fs.symlink_metadata(&self.path(key)).await {
             Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => Ok(()),
             Ok(_) => Err(layout_corrupt()),
@@ -430,3 +450,6 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         self.install(key, new, current.is_some()).await
     }
 }
+
+#[cfg(all(test, feature = "tokio", unix))]
+mod payload_namespace_tests;

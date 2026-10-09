@@ -173,6 +173,9 @@ in {
     printf 'PASS: bucket-key-registry native layout and pure protected-key conformance\n' > "$out/result"
   '';
   bucket-file-layout = gate "bucket-file-layout" [
+    "files::payload_namespace_tests::payload_namespace_batches_present_parents_and_keeps_root_keys_scalar"
+    "files::payload_namespace_tests::payload_namespace_rejects_unsafe_root_or_ordered_parent_before_leaf"
+    "files::payload_namespace_tests::payload_namespace_preserves_absence_errors_and_rejects_incomplete_batches"
     "files::ordinary_read_tests::ordinary_consumer_matches_native_and_scalar_outcomes"
     "files::ordinary_read_tests::ordinary_consumer_rejects_ordered_parents_before_leaf_hook"
     "files::ordinary_read_tests::ordinary_consumer_rejects_short_parent_batch_before_leaf_hook"
