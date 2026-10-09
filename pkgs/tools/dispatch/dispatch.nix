@@ -93,7 +93,7 @@
       #!${bash}/bin/bash
       export DISPATCH_WORKER="\''${DISPATCH_WORKER:-$out/bin/dispatch-worker}"
       export DISPATCH_BACKEND="\''${DISPATCH_BACKEND:-${dispatch-rebalancer}/bin/dispatch-rebalancer}"
-      exec "$out/bin/.dispatch-unwrapped" "\$@"
+      exec -a dispatch "$out/bin/.dispatch-unwrapped" "\$@"
       EOF
       chmod +x "$out/bin/dispatch"
       ln -s ${dispatch-rebalancer}/bin/dispatch-rebalancer "$out/bin/dispatch-rebalancer"
