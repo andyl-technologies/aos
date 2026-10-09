@@ -127,6 +127,21 @@ mod tests {
             4
         );
 
+        fs::write(directory.path().join(SEED_NAME), [7; 31]).expect("short seed");
+        assert!(SourceSignerCredentialV1::from_directory(directory.path()).is_err());
+
+        fs::write(directory.path().join(SEED_NAME), [0; 32]).expect("all-zero seed");
+        assert!(SourceSignerCredentialV1::from_directory(directory.path()).is_err());
+        fs::write(directory.path().join(SEED_NAME), seed).expect("restore seed");
+
+        let mismatched_pin = encode_source_hold_readback_signer_credential_v1(
+            4,
+            &SigningKey::from_bytes(&[8; 32]).verifying_key(),
+        )
+        .expect("mismatched Source pin");
+        fs::write(directory.path().join(PIN_NAME), mismatched_pin).expect("mismatched pin");
+        assert!(SourceSignerCredentialV1::from_directory(directory.path()).is_err());
+
         fs::write(directory.path().join(PIN_NAME), [0; 80]).expect("foreign pin");
         assert!(SourceSignerCredentialV1::from_directory(directory.path()).is_err());
         fs::write(directory.path().join(PIN_NAME), pin).expect("restore pin");
