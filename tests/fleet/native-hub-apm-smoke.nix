@@ -93,6 +93,9 @@ in {
       # Nix's canonical NAR writer can transiently exceed 6 GiB while hashing
       # the production-sized raw disk and A/B payload imported over 9p.
       memoryMiB = 8192;
+      # Match the signed publisher's compression pool rather than serializing
+      # its source preparation on the harness's two-CPU default.
+      vcpuCount = 8;
       varProvisioning = "repart";
     };
   };
@@ -599,6 +602,8 @@ in {
           export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
           export NIX_REMOTE=""
           export NIX_CONF_DIR="$HOME/.config/nix"
+          export TMPDIR=/var/tmp/aos-publication-work
+          mkdir -p "$TMPDIR"
           cd ${publicationProject.project}
           mkdir -p "$NIX_CONF_DIR" /var/tmp/aos-publication-v1
           printf 'experimental-features = nix-command\\nsandbox = false\\nbuild-users-group =\\n' \\
@@ -633,7 +638,7 @@ in {
           {AOS} --json hub registry publish upload acme/production \\
             --hub {HUB} --token {shlex.quote(token)} \\
             --root /var/tmp/aos-publication-v1
-      """), timeout=900)
+      """), timeout=1800)
       if publication_status != 0:
           print("--- native Hub journal after publication failure ---")
           print(hub.succeed(
@@ -894,6 +899,7 @@ in {
           export NIX_CONF_DIR="$HOME/.config/nix"
           rm -rf /var/tmp/aos-publication-v2
           mkdir -p /var/tmp/aos-publication-v2
+          export TMPDIR=/var/tmp/aos-publication-work
           cd ${updateProject.project}
           {APR} publish {HELPER_V2} --registry production \\
             --previous 1.0.0 --key-id initial

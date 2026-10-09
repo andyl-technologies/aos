@@ -874,7 +874,9 @@
 
   trust_key = client.succeed(textwrap.dedent(f"""
       set -eu
-      export HOME=/tmp/hybrid-apr-home
+      export HOME=/var/lib/hybrid-apr-home
+      export TMPDIR="$HOME/.cache/tmp"
+      mkdir -p "$TMPDIR"
       mkdir -p "$HOME"
       {APR} keys generate initial --registry containers 2>&1 | \\
         ${pkgs.gawk}/bin/awk '/Public key:/ {{print $NF; exit}}'
@@ -1322,7 +1324,9 @@
   # Complete source evidence exceeds /tmp's memory-backed capacity.
   finalized_container = json.loads(client.succeed(textwrap.dedent(f"""
       set -euo pipefail
-      export HOME=/tmp/hybrid-apr-home USER=fleet-publisher
+      export HOME=/var/lib/hybrid-apr-home USER=fleet-publisher
+      export TMPDIR="$HOME/.cache/tmp"
+      mkdir -p "$TMPDIR"
       export PATH=${pkgs.git}/bin:${pkgs.openssh}/bin:$PATH
       key="$HOME/.config/apm/keys/containers-initial.key"
       {AOS} --json --progress off --color never container prepare-signature \\
@@ -1338,7 +1342,9 @@
   assert finalized_container["release_identity"] == "1.0.0", finalized_container
   client.succeed(textwrap.dedent(f"""
       set -eu
-      export HOME=/tmp/hybrid-apr-home USER=fleet-publisher
+      export HOME=/var/lib/hybrid-apr-home USER=fleet-publisher
+      export TMPDIR="$HOME/.cache/tmp"
+      mkdir -p "$TMPDIR"
       export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
       export NIX_REMOTE=""
       export NIX_CONF_DIR="$HOME/.config/nix"
@@ -1392,7 +1398,9 @@
 
   client.succeed(textwrap.dedent(f"""
       set -euo pipefail
-      export HOME=/tmp/hybrid-apr-home USER=fleet-publisher
+      export HOME=/var/lib/hybrid-apr-home USER=fleet-publisher
+      export TMPDIR="$HOME/.cache/tmp"
+      mkdir -p "$TMPDIR"
       export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
       export NIX_REMOTE="" NIX_CONF_DIR="$HOME/.config/nix"
       registry="$HOME/.local/share/apm/registries/containers"
@@ -1440,7 +1448,9 @@
   assert container_stage["missing_paths"] == [], container_stage
   client.succeed(textwrap.dedent(f"""
       set -eu
-      export HOME=/tmp/hybrid-apr-home USER=fleet-publisher
+      export HOME=/var/lib/hybrid-apr-home USER=fleet-publisher
+      export TMPDIR="$HOME/.cache/tmp"
+      mkdir -p "$TMPDIR"
       export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
       export NIX_REMOTE="" NIX_CONF_DIR="$HOME/.config/nix"
       registry="$HOME/.local/share/apm/registries/containers"
@@ -1457,11 +1467,11 @@
         --key-id initial \\
         --channel stable --init-channel \\
         --cache-url https://aos.fleet.test/fleet/containers \\
-        --upload-url file:///tmp/hybrid-publication-surface
+        --upload-url file:///var/tmp/hybrid-publication-surface
       {APR} verify --registry containers
-      mkdir -p /tmp/hybrid-publication-surface/web
+      mkdir -p /var/tmp/hybrid-publication-surface/web
       ${pkgs.coreutils}/bin/head -c {publication_size} /dev/zero \\
-        > /tmp/hybrid-publication-surface/{publication_path}
+        > /var/tmp/hybrid-publication-surface/{publication_path}
   """), timeout=600)
   # Authoring and uploading the signed channel can each exceed a browser
   # token lifetime. Resume only the exact publication after JWT expiry.
@@ -1472,7 +1482,7 @@
           client,
           lambda token: (
               f"{AOS} --json hub registry publish upload fleet/containers "
-              "--root /tmp/hybrid-publication-surface --hub https://aos.fleet.test "
+              "--root /var/tmp/hybrid-publication-surface --hub https://aos.fleet.test "
               "--direct-upload-journal /var/lib/hybrid-client/publication-journals/containers.sqlite "
               f"--token {shlex.quote(token)}"
           ),
@@ -1582,7 +1592,7 @@
   assert len(indexed_releases) == 2, indexed_releases
   for version, row in zip(("1.0.0", "2.0.0"), indexed_releases):
       expected_tag = client.succeed(
-          f"${pkgs.git}/bin/git -C /tmp/hybrid-apr-home/.local/share/apm/registries/containers "
+          f"${pkgs.git}/bin/git -C /var/lib/hybrid-apr-home/.local/share/apm/registries/containers "
           f"rev-parse refs/tags/{version}"
       ).strip()
       semver, tag_oid, signer = row.split("|")
@@ -1608,7 +1618,9 @@
   # whose immutable releases contain package metadata and no image roots.
   metadata_trust_key = client.succeed(textwrap.dedent(f"""
       set -eu
-      export HOME=/tmp/hybrid-apr-home
+      export HOME=/var/lib/hybrid-apr-home
+      export TMPDIR="$HOME/.cache/tmp"
+      mkdir -p "$TMPDIR"
       {APR} keys generate initial --registry metadata 2>&1 | \\
         ${pkgs.gawk}/bin/awk '/Public key:/ {{print $NF; exit}}'
   """), timeout=120).strip()
@@ -1644,7 +1656,9 @@
   )
   client.succeed(textwrap.dedent(f"""
       set -eu
-      export HOME=/tmp/hybrid-apr-home
+      export HOME=/var/lib/hybrid-apr-home
+      export TMPDIR="$HOME/.cache/tmp"
+      mkdir -p "$TMPDIR"
       export PATH=${pkgs.git}/bin:${pkgs.openssh}/bin:$PATH
       key="$HOME/.config/apm/keys/metadata-initial.key"
       {APR} create metadata --trust-key {shlex.quote(metadata_trust_key)} \\
@@ -2055,7 +2069,7 @@
   try:
       client.succeed(
           f"{CURL} -fsS -X PATCH -H 'Authorization: Bearer {oci_token}' "
-          f"--data-binary @/tmp/hybrid-publication-surface/{publication_path} "
+          f"--data-binary @/var/tmp/hybrid-publication-surface/{publication_path} "
           f"{shlex.quote(large_upload_url)} -o /dev/null",
           timeout=180,
       )
