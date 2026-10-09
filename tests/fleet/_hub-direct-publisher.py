@@ -146,8 +146,11 @@ def prepare_direct_signed_surface(client, python, apr, git, openssh, nix,
         os.umask(0o077)
 
         def run(arguments):
+            # Release compresses the real closure on the small client VM.
+            # Match the fleet's existing container-publication time budget.
+            timeout = 1200 if arguments[1] == 'release' else 180
             result = subprocess.run(arguments, cwd={publication_project!r}, env=environment, capture_output=True,
-                timeout=180, check=False)
+                timeout=timeout, check=False)
             if result.returncode:
                 # The enclosing private command retains this traceback in
                 # owner-private files, without rendering it in the driver log.
@@ -191,7 +194,7 @@ def prepare_direct_signed_surface(client, python, apr, git, openssh, nix,
             'surfaceRoot': surface, 'publisherHome': str(home),
             'scope': 'actual APR release and verifier; provider admission pending'}}))
         DIRECT_SIGNED_SURFACE
-    """), timeout=900))
+    """), timeout=1800))
     if not result["trustKey"].startswith(authoring_name + ":Ed25519:"):
         raise RuntimeError("signed publisher returned another registry anchor")
     return result
