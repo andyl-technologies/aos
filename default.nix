@@ -1644,6 +1644,7 @@ in rec {
   # Pure package-maintenance content. Git and local-clone identities are added
   # only by the local controller after strict canonical evaluation.
   maintenanceInventory = pkgs.maintenanceInventory;
+  assessmentInventory = pkgs.assessmentInventory;
 
   # Auto-discovered golden image systems.
   # Each system has .config, .options, .build, and .checks.

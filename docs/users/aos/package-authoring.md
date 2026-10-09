@@ -439,6 +439,50 @@ file's removal semantics.
 
 ## Ship a new version
 
+### Declare advisory identities
+
+Package assessment uses explicit upstream identities. An AOS package name is
+not sufficient to identify a product in OSV or NVD. In a `mkUpstream`
+component, declare security metadata alongside its current version and
+discovery policy:
+
+```nix
+security = {
+  identities = [{
+    kind = "ecosystem";
+    ecosystem = "crates.io";
+    name = "example";
+  }];
+  advisorySources = [{provider = "osv";}];
+  versionScheme = "semver";
+  dependencyCoverage = {
+    state = "unknown";
+    basis = "Source metadata does not prove built dependency inclusion.";
+  };
+};
+```
+
+Attach `assessment = upstream.assessment;` to the package derivation together
+with its existing `update = upstream.forPackage "example";` declaration.
+`mkGithubUpstream` and `mkManualUpstream` also accept a `security` argument and
+return the same assessment sidecar. Assessment metadata is passthru data:
+changing an advisory mapping does not change the package's build inputs.
+
+Identities can name an OSV ecosystem/package, canonical Package URL, exact
+HTTPS Git repository/commit, explicit CPE product, or an explicitly unmapped
+product. Declare only reviewed mappings. Lists must be sorted and unique;
+unknown fields, executable callbacks, credentials and optional null members
+are rejected. Unsupported comparators and missing dependency inclusion proof
+remain visible as incomplete coverage. Packages without security metadata
+export an explicit unmapped declaration.
+
+The evaluation-only `assessmentInventory` export contains unchanged
+`maintenanceInventory` metadata and separate versioned security sidecars.
+See [RFC-0026's metadata contract](../../rfcs/0026-package-assessment-service/01-package-metadata-and-inventory.md)
+for the complete schema and artifact provenance requirements.
+
+### Publish an update
+
 Change the package version and source hash, build it, and run its checks. Then
 publish the new store path and a new registry release. On a canary host, refresh
 metadata and inspect the candidate:

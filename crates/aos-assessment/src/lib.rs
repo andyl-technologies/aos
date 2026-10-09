@@ -14,6 +14,7 @@
 //! - [`time`] validates explicit portable evaluation and observation timestamps.
 //! - [`security`] declares product identities, advisory profiles and coverage.
 //! - [`definition`] binds reusable package-authored scan semantics.
+//! - [`metadata`] projects evaluated package sidecars without changing build inputs.
 //! - [`scan_inventory`] binds source/artifact subjects and dependency graphs.
 //! - [`observation`] binds immutable provider evidence, completeness and freshness.
 //! - [`advisory`] binds normalized advisory revisions and query snapshots.
@@ -41,6 +42,7 @@ pub mod findings;
 pub mod identity;
 pub mod input;
 pub mod inventory;
+pub mod metadata;
 pub mod nvd;
 pub mod observation;
 pub mod ranges;
