@@ -9,6 +9,8 @@
 //! physical custody and role-specific admission stay with their actual owners.
 //! [`public_operation`] owns immutable public-operation metadata, authorization
 //! scope DATA, the durable method/state registry and established resource projection.
+//! `operation` owns both established Operation record versions and their native
+//! Operation/Effect keys, without acquiring live admission or commit authority.
 
 pub mod capacity;
 pub mod operation;

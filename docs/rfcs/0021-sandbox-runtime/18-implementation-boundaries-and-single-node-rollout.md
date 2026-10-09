@@ -193,6 +193,19 @@ checks and current public authorization remain Domain-owned. Historical DATA
 construction and projection grant no authority and do not complete the
 Controller ledger or protected Journal dependency cut.
 
+Protocol's complete `domain_ledger::operation` DATA owner now holds both native
+Operation record versions, their full decoder and unchecked encoder, all five
+private Copy fields, and the Operation/Effect key grammar. Public DATA getters,
+infallible field assembly and state/metadata replacement are an explicit
+undeployed API cutover; they perform no admission or semantic transition checks.
+Domain keeps the original protected Journal, Effect, OwnershipGate, draft,
+Idempotency, clock, recovery and currentness recipes and converts lower DATA
+errors to the original Reconciler causes at their existing boundaries. Journal's
+actual materialized-row Effect key uses Protocol directly. This cohesive format
+owner relocates one complete recipe and earns no engine-deletion credit; it does
+not remove the separate capacity/Delete admission validation backreferences or
+complete the protected Controller/Journal boundary.
+
 Protocol transaction DATA extent accounting and its duplicate-key index share the lower
 journal's `NativeRecordValidation` owner with native suffix measurement. Keys
 borrow the actual records; domain Idempotency checks remain between the extent

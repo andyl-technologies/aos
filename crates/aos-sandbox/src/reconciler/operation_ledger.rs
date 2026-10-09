@@ -1,19 +1,14 @@
-//! Canonical Operation and OwnershipGate ledger DATA and their key layouts.
+//! Owns the upper OwnershipGate ledger DATA and its protected draft bindings.
 //!
 //! This private owner bounds and decodes durable inputs; it neither authenticates
 //! activation facts nor reads a journal, supplies currentness, or grants effects.
 //! Admission, state transitions, publication joins, and recovery remain with the
-//! Reconciler. The V2 operation tail delegates to the existing public-metadata
-//! owner rather than duplicating that format.
+//! Reconciler. Complete Operation records and their keys now use the existing
+//! Protocol `domain_ledger::operation` DATA owner directly.
 //!
 //! The established records have these layouts:
 //!
 //! ```text
-//! Operation V1 (40 bytes):
-//!   version:u8 || state:u8 || flags:u8 || reserved:u8 || effect_count:u32le
-//!   || runtime_intent_digest_or_zero:32bytes
-//! Operation V2 (104 bytes):
-//!   V1 header with version=2/public flag || public_metadata:64bytes
 //! OwnershipGate V1:
 //!   magic:AOSOGT01 || version:u16be || state:u8 || reserved:5bytes
 //!   || operation_id:16bytes || request_digest:32bytes
