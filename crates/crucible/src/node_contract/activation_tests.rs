@@ -1,5 +1,7 @@
 //! Model-only activation regressions for original preparation and publication custody.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use crucible_node_contract::{Extensions, Phase, PreparedOwner, canonical};
 
 use super::*;

@@ -1,5 +1,7 @@
 //! Executes real runtime dispatch while controlling native completion readiness.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use super::*;
 use crate::node_dispatch::{DispatchError, DispatchRound};
 

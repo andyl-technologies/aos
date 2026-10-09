@@ -1,5 +1,7 @@
 //! Data-only proof-integrity and legacy-format regressions; no native authority.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use super::*;
 use crucible_node_contract::{Phase, Position, canonical};
 

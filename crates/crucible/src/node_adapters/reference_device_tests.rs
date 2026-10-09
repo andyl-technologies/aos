@@ -1,5 +1,7 @@
 //! Actual child-process integration and bounded executable authentication tests.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::{
     fs,
     path::PathBuf,

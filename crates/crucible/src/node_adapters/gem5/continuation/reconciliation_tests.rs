@@ -1,5 +1,7 @@
 //! Data-only adversarial cache checks; these records grant no native authority.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use crucible_node_contract::Endpoint;
 use crucible_node_provider::gem5::{Gem5ConsolePublication, Gem5ExactRange, Gem5Run};
 

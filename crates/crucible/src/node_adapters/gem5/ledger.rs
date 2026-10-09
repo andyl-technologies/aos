@@ -343,6 +343,7 @@ impl OperationLedger {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use crucible_node_contract::{HashRef, Phase, Position};
 

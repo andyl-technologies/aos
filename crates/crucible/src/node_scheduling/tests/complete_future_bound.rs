@@ -1,5 +1,7 @@
 //! Complete original future closure without fictitious producer progress.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use super::*;
 use crate::node_scheduling::event::Delivery;
 

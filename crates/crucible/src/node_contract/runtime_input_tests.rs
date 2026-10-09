@@ -1,5 +1,7 @@
 //! Synthetic sealed-world tests of original native input-buffer custody.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::{
     cell::RefCell,
     rc::Rc,

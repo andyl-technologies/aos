@@ -1,5 +1,7 @@
 //! Native source codec, pending same-instant transition and cold future tests.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use super::*;
 
 fn source() -> ScriptedSource {

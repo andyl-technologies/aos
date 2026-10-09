@@ -1,5 +1,7 @@
 //! Adversarial owner-custody and complete-world activation tests.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::{cell::RefCell, task::Waker, time::Duration};
 
 use crucible_node_contract::{

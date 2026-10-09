@@ -1,5 +1,7 @@
 //! Actual World projection tests for source/model capture custody separation.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use super::*;
 use crate::{
     ComputeNodeDef, ContentAddressedBlobRef, ContentHash, Icount, LinkDef, NodeId, ReadyPoint,

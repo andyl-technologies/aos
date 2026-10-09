@@ -1,5 +1,7 @@
 //! Adversarial codec tests; no fixture constructs native or archive authority.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use crucible_node_contract::{HashRef, Phase};
 
 use super::*;

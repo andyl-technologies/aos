@@ -1,5 +1,7 @@
 //! Original future-publication custody across a split exact cut and restoration.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use super::*;
 
 #[test]

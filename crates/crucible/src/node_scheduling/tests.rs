@@ -1,5 +1,7 @@
 //! Adversarial causal, reservation, equality and publication regression tests.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use super::*;
 use crate::node_contract::{
     ActivationRecord, OwnerIdentity, PhysicalState, QuantumClosureEvidence,
