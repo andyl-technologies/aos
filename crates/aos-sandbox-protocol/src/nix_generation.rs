@@ -16,6 +16,7 @@
 use aos_proto::aos::sandbox::local::v1::{
     PrepareNixStorageGenerationRequestV1, PrepareStorageCatalogRequest,
 };
+use aos_sandbox_core::bounded_codec::{BoundedReader, ReadError};
 use aos_sandbox_core::{BrokerArgumentCommitment, ObjectDescriptor, PortableMediaType};
 use buffa::Message as _;
 use ed25519_dalek::{Signature, VerifyingKey};
@@ -251,24 +252,33 @@ impl NixGenerationStartPrefixV1 {
         if bytes.len() > NIX_GENERATION_PREFIX_MAXIMUM_BYTES_V1 {
             return Err(invalid("generation prefix bound"));
         }
-        let mut reader = Reader(bytes);
-        if reader.fixed::<8>()? != *b"AOSNXS01" {
+        let mut reader = BoundedReader::new(bytes, generation_read_error);
+        if read_generation_fixed::<8>(&mut reader)? != *b"AOSNXS01" {
             return Err(invalid("generation prefix magic"));
         }
         let value = Self {
-            operation: reader.fixed()?, step: u32::from_be_bytes(reader.fixed()?),
-            assignment: reader.fixed()?, desired: reader.fixed()?, effect: reader.fixed()?,
-            recipe: reader.fixed()?, input_set: reader.fixed()?, presentation: reader.fixed()?,
-            domain: reader.fixed()?, project: reader.fixed()?, sandbox: reader.fixed()?,
-            incarnation: reader.fixed()?, origin: reader.fixed()?,
-            source_generation: u64::from_be_bytes(reader.fixed()?),
-            next_generation: u64::from_be_bytes(reader.fixed()?),
-            host_boot_id: reader.fixed()?,
-            first_wall_seconds: i64::from_be_bytes(reader.fixed()?),
-            first_boottime_nanoseconds: u64::from_be_bytes(reader.fixed()?),
-            deadline_boottime_nanoseconds: u64::from_be_bytes(reader.fixed()?),
+            operation: read_generation_fixed(&mut reader)?,
+            step: u32::from_be_bytes(read_generation_fixed(&mut reader)?),
+            assignment: read_generation_fixed(&mut reader)?,
+            desired: read_generation_fixed(&mut reader)?,
+            effect: read_generation_fixed(&mut reader)?,
+            recipe: read_generation_fixed(&mut reader)?,
+            input_set: read_generation_fixed(&mut reader)?,
+            presentation: read_generation_fixed(&mut reader)?,
+            domain: read_generation_fixed(&mut reader)?,
+            project: read_generation_fixed(&mut reader)?,
+            sandbox: read_generation_fixed(&mut reader)?,
+            incarnation: read_generation_fixed(&mut reader)?,
+            origin: read_generation_fixed(&mut reader)?,
+            source_generation: u64::from_be_bytes(read_generation_fixed(&mut reader)?),
+            next_generation: u64::from_be_bytes(read_generation_fixed(&mut reader)?),
+            host_boot_id: read_generation_fixed(&mut reader)?,
+            first_wall_seconds: i64::from_be_bytes(read_generation_fixed(&mut reader)?),
+            first_boottime_nanoseconds: u64::from_be_bytes(read_generation_fixed(&mut reader)?),
+            deadline_boottime_nanoseconds: u64::from_be_bytes(read_generation_fixed(&mut reader)?),
         };
-        reader.finish()?;
+        reader.finish()
+            .map_err(|_| invalid("generation trailing bytes"))?;
         value.validate()?;
         Ok(value)
     }
@@ -347,11 +357,11 @@ impl VerifiedNixGenerationInputFamilyV2 {
             return Err(invalid("generation family bound"));
         }
         let signed_end = bytes.len() - 64;
-        let mut reader = Reader(&bytes[..signed_end]);
-        if reader.fixed::<8>()? != *b"AOSNXV02" {
+        let mut reader = BoundedReader::new(&bytes[..signed_end], generation_read_error);
+        if read_generation_fixed::<8>(&mut reader)? != *b"AOSNXV02" {
             return Err(invalid("generation family magic"));
         }
-        let original = reader.variable(NIX_GENERATION_FAMILY_MAXIMUM_BYTES_V2)?;
+        let original = read_generation_variable(&mut reader, NIX_GENERATION_FAMILY_MAXIMUM_BYTES_V2)?;
         if original.len() < 77 || original.get(..8) != Some(b"AOSNXV01") {
             return Err(invalid("original input artifact framing"));
         }
@@ -360,8 +370,9 @@ impl VerifiedNixGenerationInputFamilyV2 {
         if original_body.checked_add(76) != Some(original.len()) {
             return Err(invalid("original input artifact length"));
         }
-        let json = reader.variable(NIX_GENERATION_FAMILY_MAXIMUM_BYTES_V2)?;
-        reader.finish()?;
+        let json = read_generation_variable(&mut reader, NIX_GENERATION_FAMILY_MAXIMUM_BYTES_V2)?;
+        reader.finish()
+            .map_err(|_| invalid("generation trailing bytes"))?;
 
         let key = VerifyingKey::from_bytes(&issuer)
             .map_err(|_| invalid("generation family issuer"))?;
@@ -528,27 +539,30 @@ fn invalid(field: &'static str) -> ProtocolValidationError {
     ProtocolValidationError::InvalidField(field)
 }
 
-struct Reader<'bytes>(&'bytes [u8]);
+fn generation_read_error(_: ReadError) -> ProtocolValidationError {
+    invalid("generation record truncation")
+}
 
-impl<'bytes> Reader<'bytes> {
-    fn fixed<const SIZE: usize>(&mut self) -> Result<[u8; SIZE], ProtocolValidationError> {
-        let value = self.0.get(..SIZE).ok_or_else(|| invalid("generation record truncation"))?;
-        let value = value.try_into().map_err(|_| invalid("generation record width"))?;
-        self.0 = &self.0[SIZE..];
-        Ok(value)
-    }
+fn read_generation_fixed<const SIZE: usize>(
+    reader: &mut BoundedReader<'_, ProtocolValidationError>,
+) -> Result<[u8; SIZE], ProtocolValidationError> {
+    reader
+        .bytes(SIZE)?
+        .try_into()
+        .map_err(|_| invalid("generation record width"))
+}
 
-    fn variable(&mut self, maximum: usize) -> Result<&'bytes [u8], ProtocolValidationError> {
-        let length = u32::from_be_bytes(self.fixed()?) as usize;
-        if length > maximum { return Err(invalid("generation field bound")); }
-        let value = self.0.get(..length).ok_or_else(|| invalid("generation field truncation"))?;
-        self.0 = &self.0[length..];
-        Ok(value)
+fn read_generation_variable<'bytes>(
+    reader: &mut BoundedReader<'bytes, ProtocolValidationError>,
+    maximum: usize,
+) -> Result<&'bytes [u8], ProtocolValidationError> {
+    let length = u32::from_be_bytes(read_generation_fixed(reader)?) as usize;
+    if length > maximum {
+        return Err(invalid("generation field bound"));
     }
-
-    fn finish(self) -> Result<(), ProtocolValidationError> {
-        if self.0.is_empty() { Ok(()) } else { Err(invalid("generation trailing bytes")) }
-    }
+    reader
+        .bytes(length)
+        .map_err(|_| invalid("generation field truncation"))
 }
 
 #[cfg(test)]
@@ -610,6 +624,29 @@ mod tests {
         prefix = original_prefix();
         prefix.deadline_boottime_nanoseconds = prefix.first_boottime_nanoseconds;
         assert!(prefix.encode().is_err());
+    }
+
+    #[test]
+    fn original_prefix_preserves_framing_errors_before_semantic_fields() {
+        let mut bytes = original_prefix().encode().unwrap();
+        bytes[8..24].fill(0);
+
+        for length in 0..bytes.len() {
+            assert!(matches!(
+                NixGenerationStartPrefixV1::decode(&bytes[..length]),
+                Err(ProtocolValidationError::InvalidField("generation record truncation"))
+            ));
+        }
+        assert!(matches!(
+            NixGenerationStartPrefixV1::decode(&bytes),
+            Err(ProtocolValidationError::InvalidField("generation prefix coordinates"))
+        ));
+
+        bytes.push(0);
+        assert!(matches!(
+            NixGenerationStartPrefixV1::decode(&bytes),
+            Err(ProtocolValidationError::InvalidField("generation trailing bytes"))
+        ));
     }
 
     #[test]

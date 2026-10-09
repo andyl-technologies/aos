@@ -7,6 +7,7 @@
 //! Paths and kernel descriptors are deliberately absent from this value.
 
 use aos_proto::aos::sandbox::local::v1::MountSourceConsistency;
+use aos_sandbox_core::bounded_codec::{BoundedReader, ReadError};
 use aos_sandbox_core::{
     DecodeLimits, DescriptorRole, MediaType, ObjectDescriptor, ObjectDigest, decode_view_source,
     encode_view_source, model::ViewSource, validate_descriptor_role,
@@ -283,7 +284,7 @@ impl SourceRealizationBindingV1 {
     /// versions or closed codes, noncanonical lengths, malformed source CBOR,
     /// invalid descriptors, sentinels, or incompatible source semantics.
     pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, SourceBindingError> {
-        let mut decoder = BindingDecoder::new(bytes);
+        let mut decoder = BoundedReader::new(bytes, binding_read_error);
         let format_version = decoder.u16()?;
         if !matches!(
             format_version,
@@ -293,27 +294,29 @@ impl SourceRealizationBindingV1 {
         }
         let source_view_id = decoder.array()?;
         let source_view_revision = decoder.u64()?;
-        let media_length = decoder.length()?;
+        let media_length = usize::try_from(decoder.u64()?)
+            .map_err(|_| SourceBindingError::MalformedCanonical)?;
         let media_type = std::str::from_utf8(decoder.bytes(media_length)?)
             .map_err(|_| SourceBindingError::MalformedCanonical)?;
         let media_type = MediaType::new(media_type.to_owned())
             .map_err(|_| SourceBindingError::MalformedCanonical)?;
         let view_digest = ObjectDigest::from_bytes(decoder.array()?);
         let encoded_size = decoder.u64()?;
-        let source_length = decoder.length()?;
+        let source_length = usize::try_from(decoder.u64()?)
+            .map_err(|_| SourceBindingError::MalformedCanonical)?;
         let source_bytes = decoder.bytes(source_length)?;
         let source = decode_view_source(source_bytes, DecodeLimits::default())
             .map_err(|_| SourceBindingError::MalformedCanonical)?;
         if encode_view_source(&source) != source_bytes {
             return Err(SourceBindingError::MalformedCanonical);
         }
-        let consistency = match decoder.byte()? {
+        let consistency = match decoder.u8()? {
             1 => MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_IMMUTABLE_REVISION,
             2 => MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_LOCAL_LIVE,
             4 => MountSourceConsistency::MOUNT_SOURCE_CONSISTENCY_BEST_EFFORT_REPLICA,
             _ => return Err(SourceBindingError::MalformedCanonical),
         };
-        let source_incarnation_id = match decoder.byte()? {
+        let source_incarnation_id = match decoder.u8()? {
             0 => None,
             1 => Some(decoder.array()?),
             _ => return Err(SourceBindingError::MalformedCanonical),
@@ -348,58 +351,8 @@ impl SourceRealizationBindingV1 {
     }
 }
 
-struct BindingDecoder<'a> {
-    bytes: &'a [u8],
-    offset: usize,
-}
-
-impl<'a> BindingDecoder<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, offset: 0 }
-    }
-
-    fn bytes(&mut self, length: usize) -> Result<&'a [u8], SourceBindingError> {
-        let end = self
-            .offset
-            .checked_add(length)
-            .ok_or(SourceBindingError::MalformedCanonical)?;
-        let value = self
-            .bytes
-            .get(self.offset..end)
-            .ok_or(SourceBindingError::MalformedCanonical)?;
-        self.offset = end;
-        Ok(value)
-    }
-
-    fn array<const N: usize>(&mut self) -> Result<[u8; N], SourceBindingError> {
-        self.bytes(N)?
-            .try_into()
-            .map_err(|_| SourceBindingError::MalformedCanonical)
-    }
-
-    fn byte(&mut self) -> Result<u8, SourceBindingError> {
-        Ok(self.array::<1>()?[0])
-    }
-
-    fn u16(&mut self) -> Result<u16, SourceBindingError> {
-        Ok(u16::from_be_bytes(self.array()?))
-    }
-
-    fn u64(&mut self) -> Result<u64, SourceBindingError> {
-        Ok(u64::from_be_bytes(self.array()?))
-    }
-
-    fn length(&mut self) -> Result<usize, SourceBindingError> {
-        usize::try_from(self.u64()?).map_err(|_| SourceBindingError::MalformedCanonical)
-    }
-
-    fn finish(self) -> Result<(), SourceBindingError> {
-        if self.offset == self.bytes.len() {
-            Ok(())
-        } else {
-            Err(SourceBindingError::MalformedCanonical)
-        }
-    }
+fn binding_read_error(_: ReadError) -> SourceBindingError {
+    SourceBindingError::MalformedCanonical
 }
 
 const fn consistency_code(consistency: MountSourceConsistency) -> u8 {
@@ -668,6 +621,23 @@ mod tests {
         let mut trailing = bytes;
         trailing.push(0);
         assert!(SourceRealizationBindingV1::from_canonical_bytes(&trailing).is_err());
+    }
+
+    #[test]
+    fn canonical_framing_errors_precede_semantic_identity_validation() {
+        let mut bytes = live_binding().canonical_bytes();
+        bytes[2..18].fill(0);
+
+        assert_eq!(
+            SourceRealizationBindingV1::from_canonical_bytes(&bytes),
+            Err(SourceBindingError::Missing("source view identity"))
+        );
+
+        bytes.push(0);
+        assert_eq!(
+            SourceRealizationBindingV1::from_canonical_bytes(&bytes),
+            Err(SourceBindingError::MalformedCanonical)
+        );
     }
 
     #[test]

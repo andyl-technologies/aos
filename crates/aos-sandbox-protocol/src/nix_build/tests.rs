@@ -543,3 +543,72 @@ fn store_and_output_names_are_closed_not_command_options() {
         assert!(!valid_output_name(name));
     }
 }
+
+#[test]
+fn generation_family_preserves_field_errors_and_signature_before_json() {
+    use crate::nix_generation::{
+        NIX_GENERATION_FAMILY_MAXIMUM_BYTES_V2, VerifiedNixGenerationInputFamilyV2,
+    };
+
+    let key = SigningKey::from_bytes(&[23; 32]);
+    let issuer = key.verifying_key().to_bytes();
+    let artifact = signed_recipe(&recipe(), &key);
+    let verified = verify_nix_recipe_artifact_v2(&artifact, issuer).unwrap();
+    let mut original = b"AOSNXV01".to_vec();
+    original.extend_from_slice(&1_u32.to_be_bytes());
+    original.resize(77, 0);
+
+    let family = |suffix: &[u8]| {
+        let mut bytes = b"AOSNXV02".to_vec();
+        bytes.extend_from_slice(&(original.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(&original);
+        bytes.extend_from_slice(suffix);
+        bytes.extend_from_slice(&[0; 64]);
+        bytes
+    };
+    let excessive = (NIX_GENERATION_FAMILY_MAXIMUM_BYTES_V2 as u32 + 1).to_be_bytes();
+    let mut first_bound = b"AOSNXV02".to_vec();
+    first_bound.extend_from_slice(&excessive);
+    first_bound.resize(85, 0);
+    let mut first_truncation = first_bound.clone();
+    first_truncation[8..12].copy_from_slice(&80_u32.to_be_bytes());
+    let mut wrong_original = family(&[]);
+    wrong_original[12] = 0;
+    let mut malformed_json = 1_u32.to_be_bytes().to_vec();
+    malformed_json.push(b'{');
+
+    let cases = [
+        (first_bound, "generation field bound"),
+        (first_truncation, "generation field truncation"),
+        (wrong_original, "original input artifact framing"),
+        (family(&[0]), "generation record truncation"),
+        (family(&excessive), "generation field bound"),
+        (family(&1_u32.to_be_bytes()), "generation field truncation"),
+        (family(&[0, 0, 0, 0, 7]), "generation trailing bytes"),
+        (family(&malformed_json), "generation family signature"),
+    ];
+
+    for (bytes, expected) in cases {
+        let error = VerifiedNixGenerationInputFamilyV2::decode(&bytes, issuer, &verified)
+            .err()
+            .unwrap();
+        assert!(
+            matches!(
+                &error,
+                ProtocolValidationError::InvalidField(actual) if *actual == expected
+            ),
+            "expected {expected}, got {error}"
+        );
+    }
+
+    let mut authenticated_json = family(&malformed_json);
+    let signed_end = authenticated_json.len() - 64;
+    let mut preimage = b"aos.sandbox.nix.online-store.snapshot.v2\0".to_vec();
+    preimage.extend_from_slice(&authenticated_json[..signed_end]);
+    authenticated_json[signed_end..].copy_from_slice(&key.sign(&preimage).to_bytes());
+
+    assert!(matches!(
+        VerifiedNixGenerationInputFamilyV2::decode(&authenticated_json, issuer, &verified),
+        Err(ProtocolValidationError::InvalidField("generation family JSON"))
+    ));
+}
