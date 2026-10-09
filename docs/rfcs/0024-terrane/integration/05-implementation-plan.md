@@ -2531,15 +2531,22 @@ Native compilation succeeds and records the actual current Core dependency
 and its artifact hashes. The ten new classifier and 110 existing native cases
 pass with tracing both disabled and enabled: 240 executions over 120 distinct
 names. Together with the eleven receiving, graft and retirement executions,
-the current scoped runtime count is 251. Eight owning checks now pass on the
+the current scoped runtime count is 251. Twelve owning checks now pass on the
 same actual Nix source: property resolution, required attributes, domain
 references, manifest identity, derived attributes, Core without std, native
-profile quality and checked mutation publication. Core without std is compile
+profile quality, checked mutation publication, written mutation sync, atomic
+writes, idempotent puts and index generation. Core without std is compile
 only; native profile quality proves three Clippy and three private rustdoc
 profiles. Checked publication executes all six exact acknowledgment cases.
-Written mutation sync and the remaining supporting checks, population cases,
-ultimate owning gates and full trunk floor remain pending. No task checkbox
-or milestone status advances.
+Written sync, atomic writes, idempotent puts and index generation execute their
+six, twenty-eight, four and fifteen exact cases. Application unit/integration
+targets compile across all twenty-nine selected packages, with 112 actual test
+artifacts; its package-path observer correction preserves the original failure
+and does not replay compilation. Both mandatory format commands pass with
+unchanged source. All thirty-nine supporting stages are qualified, including
+the explicit source-equivalent reuse of their initial ten stages. Population
+cases, ultimate owning gates and the full trunk floor remain pending. No task
+checkbox or milestone status advances.
 After the class candidate releases the team's heavy lane, the diagnostic's
 restoration command exits zero but its artifact verifier stops: Cargo reports
 the shared executable as fresh while it still contains the class candidate's
