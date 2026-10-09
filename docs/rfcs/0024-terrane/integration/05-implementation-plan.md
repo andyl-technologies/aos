@@ -290,9 +290,14 @@ held protected reader, validates its exact digest and schema, and includes it
 in that scope's physical ledger. Combined candidate `c0f87d4e56` preserves the
 seven original loading selectors and requires all thirteen new witnesses. Its
 strict native all-target Clippy passes with warnings denied (46.61 seconds;
-`/tmp/terrane-held-node-c0-native-clippy.log`). Runtime qualification remains
-pending; the unchanged 1,024-record publication and other five population cases
-remain unrun. No task checkbox or milestone exit advances.
+`/tmp/terrane-held-node-c0-native-clippy.log`). The corrected thirteen-case
+runtime selection now passes all thirteen with 913 unrelated tests skipped
+(59.158 seconds; run `c630e668-cdc3-4e3d-8b59-451f1da60d14`,
+`/tmp/terrane-held-node-c0-scope-13-nextest.log`). This closes the four reported
+fixture and selected-Guard physical-ledger failures. The unchanged 1,024-record
+publication, other five population cases, twenty-case owning loading check
+and complete T1 floor remain unqualified. No task checkbox or milestone exit
+advances.
 The reviewed permanent recovery candidate `b0d2b176f0` retains original
 directory continuity while staging fresh, unselected progress proposals and
 restores full canonical candidate enumeration before preselection directory
