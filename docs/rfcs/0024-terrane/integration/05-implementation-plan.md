@@ -2474,8 +2474,14 @@ the two receiving witnesses and the selected graft-admission correction.
 Independent review verifies all 6,107 committed file images, modes and symlink
 targets. Its finite 39-stage qualification covers strict profiles, actual
 compiled inventories, focused regressions, owning gates, application targets
-and both formatters. New-source runtime qualification remains pending; the
-failed original is not retried and no earlier runtime passes transfer.
+and both formatters. Its first strict Core check exits 101 with E0505 in the
+new graft fixture: a vector moves into the entry while the resolved target
+still borrows it. Source checks pass before and after the failed command;
+all thirty retained artifact hashes match. Stages 2 through 39 remain unrun.
+Reviewed test-only correction `1209048a33` clones that vector for the entry,
+retaining the target's borrow and every original assertion. Compilation and
+runtime on corrected source remain pending; the failed original is not retried
+and no earlier runtime passes transfer.
 No task checkbox or milestone status advances.
 After the class candidate releases the team's heavy lane, the diagnostic's
 restoration command exits zero but its artifact verifier stops: Cargo reports
