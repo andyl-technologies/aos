@@ -207,6 +207,20 @@ It preserves complete renewal/effect authority and cancellation poisoning;
 its new native ACK observer is followed by actual selected-slot, transaction
 and physical whole-lease checks. Changed-source runtime qualification remains
 pending, including the two previously timed-out recovery cases.
+The cadence focused run is terminal: five passes, one failure and one timeout
+(487.450 seconds; run `56ed6a69-03e1-4d69-a16a-ca2e37814e54`,
+`/tmp/terrane-copied-renewal-cadence-focused-nextest.log`). All three new
+skipped-renewal refusals, actual queued public renewal/expiry, and the full G/D
+witness with two genuine midwait ACKs pass. Recurring recovery reaches its
+second completed pass, then its oracle incorrectly compares an initial null
+proposal pointer with the hydrated original selecting slot. The reviewed
+test correction independently resolves that immutable commit and transaction
+and requires the exact original slot, preserving all other owner and state
+assertions. Private composition `daf84d1cf0` passes strict native all-target
+Clippy (10.27 seconds; `/tmp/terrane-original-owner-slot-oracle-clippy.log`);
+its changed recurring runtime remains pending. Restore-preservation still
+times out before its copied-barrier request returns. Owning checks and the
+complete T1 floor remain unqualified; these results accept no task or exit.
 The shared final-check producer now retains the native permanent-family
 traversal through pre-selection handoffs. Its typed receipt refreshes actual
 enumeration and directory continuity between current-authority checks;
