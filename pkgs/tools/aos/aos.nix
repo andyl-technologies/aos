@@ -100,6 +100,9 @@
   apmRuntimeTools =
     apmPortableRuntimeTools
     ++ lib.optionals (!isDarwinCross) [util-linux];
+  # Profile evaluation imports this source tree at runtime. Declaring it keeps
+  # reference scrubbing from replacing the packaged wrapper's store identity.
+  apmRuntimeData = [lib.packageModuleLibrary];
   referenceRemovalArguments = dependencies:
     builtins.concatStringsSep " \\\n            " (map (dependency: "-t ${dependency}") dependencies);
   runtimeBinPath = tools:
@@ -360,7 +363,7 @@
           ++ (
             if output == "apr"
             then aprRuntimeTools
-            else apmRuntimeTools
+            else apmRuntimeTools ++ apmRuntimeData
           )
           ++ lib.optionals (output != "apr" && !isDarwinCross) linuxRuntimeDeps;
       })
@@ -421,6 +424,7 @@
       ++ aosRuntimeTools
       ++ aprRuntimeTools
       ++ apmRuntimeTools
+      ++ apmRuntimeData
       ++ lib.optionals (!isDarwinCross) linuxRuntimeDeps;
 
     # mkDerivation normally constructs one RPATH from every runtimeDep. That
