@@ -6,6 +6,7 @@
 )]
 
 pub(crate) use super::content::BatchOutcome;
+pub(crate) use super::content::held_nodes::{HeldNodeReads, NodeReads};
 
 use super::{BucketBinding, FileBucket, files};
 use crate::store::{
