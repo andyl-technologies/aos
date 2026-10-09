@@ -183,6 +183,16 @@ This includes the thirty-one actual copied/permanent test functions, the
 cancellation boundaries. The matching serial Nextest run has started with
 unchanged clocks and bounds; runtime results and owning Nix gates remain
 pending. No additional task or milestone exit is accepted by compilation.
+That run now executes its actual thirty-one-case inventory (run
+`577042b0-9809-47d7-8434-384e67f8853f`, raw log
+`/tmp/terrane-native-recovery-full-nextest.log`). Multiple copied first-owner
+fixtures fail before ownership with a missing exact detached-index preimage;
+the copied producer submits an eligible DATA-pair check before retaining its
+genuine observed index read. Several dependent hook cases reach the existing
+120-second process timeout. A separate fallback fixture compares encoded
+chunk bytes with an unencoded payload. These are failed runtime evidence;
+the producer and fixture corrections remain pending, the original run remains
+live, and no native gate or task acceptance follows (GC-15, GC-24, GC-29).
 
 All ten
 exact native Active completion cases pass on `4e6c14a7f3`. The eight-case native
