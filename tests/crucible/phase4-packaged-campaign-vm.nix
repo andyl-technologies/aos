@@ -24,7 +24,24 @@
   twoNodeHttpServer ? "nginx",
   quietKernelBoot ? false,
   liveProgressDiagnostics ? false,
+  nativeCoreDiagnostics ? false,
 }:
+assert builtins.isBool nativeCoreDiagnostics;
+assert !nativeCoreDiagnostics
+|| singleGuest == "materialization"
+|| (
+  envoyNetwork
+  && singleGuest == null
+  && !twoNodeHttp
+  && !tierMaintenance
+  && !packedMaintenance
+  && !storageRecovery
+  && !policyTimeout
+  && !interruptedTransfer
+  && !maintenanceTransfer
+  && !hotForkFlight
+  && !envoyKnownFinding
+);
 assert builtins.isBool quietKernelBoot;
 assert !quietKernelBoot || (twoNodeHttp && twoNodeHttpServer == "envoy-direct");
 assert builtins.isBool liveProgressDiagnostics;
@@ -122,6 +139,7 @@ assert !interruptedTransfer
   && twoNodeHttpServer == "nginx"
 ); let
   singleGuestMaterialization = singleGuest == "materialization";
+  nativeCore = import ./_native-core-diagnostics.nix {inherit pkgs;};
   envoyDirect = assert builtins.elem twoNodeHttpServer ["nginx" "envoy-direct" "envoy-proxy"];
   assert twoNodeHttpServer == "nginx" || twoNodeHttp;
     twoNodeHttpServer == "envoy-direct";
@@ -403,6 +421,7 @@ assert !interruptedTransfer
       else 0;
     rootfsDeps =
       [flight deployment gateway pkgs.qemu-crucible pkgs.crucible-qemu-plugin pkgs.linux pkgs.e2fsprogs pkgs.coreutils pkgs.util-linux pkgs.grep]
+      ++ (lib.optionals nativeCoreDiagnostics nativeCore.rootfsDeps)
       ++ (lib.optional envoyProduct envoyNetworkRootImage)
       ++ (lib.optional twoNodeHttp httpRootImage)
       ++ (lib.optionals storageRecovery [storageRecoveryRunner pkgs.garage pkgs.bash pkgs.gawk])
@@ -465,6 +484,7 @@ assert !interruptedTransfer
       setup_step run-directories mkdir -m 700 /tmp/attempts/run /tmp/run-state
       setup_step deployment install -m 600 ${deployment} /tmp/executor.toml
       echo 'campaign-host-setup-complete=true'
+      ${lib.optionalString nativeCoreDiagnostics nativeCore.setup}
       ${pkgs.coreutils}/bin/head -n 200 "$setup_log"
       export CRUCIBLE_PROCESS_FLIGHT_BINARY=${flight}/bin/crucible
       ${lib.optionalString (findingExactBundle || findingSignalBundle || findingForkWrite || envoyKnownFinding) "export CRUCIBLE_EXACT_BUNDLE_BINARY=${pkgs.crucible}/bin/crucible"}
@@ -540,6 +560,7 @@ assert !interruptedTransfer
           if ! wait "$single_test"; then
             wait "$single_tail" || true
             cat "$single_log"
+            ${lib.optionalString nativeCoreDiagnostics "inspect_native_cores"}
             exit 1
           fi
           wait "$single_tail" || true
@@ -953,6 +974,7 @@ assert !interruptedTransfer
               printf '%s\n' 'campaign-envoy-memory-events-read=unavailable'
             fi
             printf '%s\n' 'campaign-envoy-memory-events-end'
+            ${lib.optionalString nativeCoreDiagnostics "inspect_native_cores"}
             exit 1
           fi
           cat "$envoy_log"
