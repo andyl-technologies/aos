@@ -1,15 +1,15 @@
-//! Original compiler derivation retained in the publisher's revision record.
+//! Owns native compiled-revision preparation and Publisher store publication.
 //!
-//! Only the real compiler produces a [`CompiledPublisherPolicyRevisionV2`].
-//! Cold decoding retains bytes and commitments, never authenticated model
-//! constructors. Recompilation requires independently reconstructed typed
-//! inputs with the original target; it cannot invert a resolved Policy.
+//! Only the real compiler producer constructs [`CompiledPublisherPolicyRevisionV2`].
+//! The lower Policy owner supplies bounded canonical revision and retained-origin
+//! DATA. Cold decoding preserves bytes and commitments without reconstructing
+//! authenticated model constructors; comparison requires independently typed
+//! original inputs and their original target.
 //!
-//! ```text
-//! AOSPCO03 | project[16] | original-target[16] | normalized-input[32] |
-//! candidate[32] | authority/namespace/hard/advisory/explanation[5][32] |
-//! u32be-length + bytes, repeated for full-input/project/request/four-outputs
-//! ```
+//! The native producer retains its sealed wrapper and complete record ceiling.
+//! Publication still uses the existing protected Publisher store's trusted
+//! Controller contract; neither DATA consistency nor this wrapper alone proves
+//! independently current inputs, publication authority or an effect handoff.
 
 use aos_sandbox_core::DecodeLimits;
 use crate::CommitResult;

@@ -11,6 +11,10 @@
 //!
 //! The private model module owns bounded inputs and candidate DATA. The compiler
 //! module orders authority, namespace, resources and advisory lowering.
+//! [`PreparedPublisherPolicyRevisionV1`] and [`RetainedPublisherCompilerOriginV3`]
+//! share the complete canonical publisher-revision and provenance codecs.
+//! Their checked DATA operations and normalized input digest do not create
+//! native compiled wrappers, current admissions or protected owner loans.
 
 mod advisory;
 mod authority;

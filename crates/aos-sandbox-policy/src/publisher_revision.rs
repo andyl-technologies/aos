@@ -1,5 +1,24 @@
-//! Owns checked canonical publisher revisions and retained compiler provenance DATA.
-//! It creates no native compiled revision, current admission, Journal loan or publication authority.
+//! Owns bounded canonical publisher revisions and retained compiler provenance.
+//!
+//! [`PreparedPublisherPolicyRevisionV1`] freezes canonical Policy bytes and an
+//! optional original compiler record. [`RetainedPublisherCompilerOriginV3`]
+//! preserves the original typed-input serialization and four compiler outputs;
+//! its decoder checks framing and byte cross-links without authenticating JSON.
+//! The normalized-input digest preserves the existing publication transcript.
+//!
+//! A retained origin uses this fixed, big-endian record layout:
+//!
+//! ```text
+//! AOSPCO03 | project[16] | original-target[16] | normalized-input[32] |
+//! candidate[32] | authority/namespace/hard/advisory/explanation[5][32] |
+//! u32be-length + bytes, repeated for full-input/project/request/four-outputs
+//! ```
+//!
+//! The fixed header is 264 bytes; the complete record is bounded to 4 MiB.
+//! Decoding and checked attachment establish DATA consistency, not live input
+//! custody, antirollback, current publication or effect authority. Native
+//! callers retain their actual compiled wrapper, signing, Journal and held-cut
+//! owners and independently qualify derivation against genuine typed inputs.
 
 use aos_sandbox_core::format::{decode_policy, encode_policy};
 use aos_sandbox_core::model::{CacheDomainKind, Policy};
@@ -15,7 +34,10 @@ const MAXIMUM_TOTAL_ITEMS: usize = 65_536;
 const MAXIMUM_STRING_BYTES: usize = 64 * 1024;
 const MAXIMUM_DEPTH: usize = 64;
 
-/// Reports invalid checked revision or retained provenance DATA.
+/// Reports invalid canonical revision or retained provenance data.
+///
+/// These errors describe bounded decoding, canonicalization and byte links.
+/// They do not report protected Journal admission or owner currentness.
 #[derive(Debug, thiserror::Error)]
 pub enum PublisherPolicyDataError {
     /// A bounded dimension was exceeded.
@@ -29,12 +51,21 @@ pub enum PublisherPolicyDataError {
     CorruptState,
 }
 
-/// Reports sentinel identities/descriptors or unrepresentable normalized input.
+/// Reports an invalid canonical normalized-input transcript.
+///
+/// The transcript rejects sentinel identities or descriptors, zero encoded
+/// sizes and a rule count that cannot be represented by its u64 field. This
+/// error conveys no protected currentness or compiler-publication authority.
 #[derive(Debug, thiserror::Error)]
 #[error("compiled policy publication is noncanonical")]
 pub struct NormalizedPolicyInputErrorV1;
 
 /// Freezes one bounded canonical resolved policy revision.
+///
+/// Construction validates the interval, Policy format, required features and
+/// project cache domain before retaining canonical bytes. Optional compiler
+/// provenance remains nonauthorizing historical data and drops after the
+/// original seven revision fields.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreparedPublisherPolicyRevisionV1 {
     project: ProjectId,
@@ -100,7 +131,7 @@ impl PreparedPublisherPolicyRevisionV1 {
         })
     }
 
-    /// Returns the project authority domain.
+    /// Returns the project identity recorded in the revision.
     #[must_use]
     pub const fn project(&self) -> ProjectId {
         self.project
@@ -153,6 +184,17 @@ impl PreparedPublisherPolicyRevisionV1 {
         self.compiler_origin.as_ref()
     }
 
+    /// Attaches checked retained provenance matching this revision's bytes.
+    ///
+    /// Attachment compares the project and exact Policy output. It does not
+    /// prove that retained input bytes were authenticated or independently
+    /// current, and it cannot create a native compiled-revision wrapper.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PublisherPolicyDataError::InvalidPolicyRevision`] when the
+    /// origin names another project or its Policy output differs from this
+    /// revision's canonical bytes. A rejected origin leaves the revision intact.
     pub fn retain_compiler_origin(
         &mut self,
         origin: RetainedPublisherCompilerOriginV3,
@@ -332,8 +374,17 @@ impl RetainedPublisherCompilerOriginV3 {
         self.compare_compiled_derivation(expected, &candidate)
     }
 
-    // Reuses an already freshly compiled candidate for compare-only consumers.
-    // It does not authenticate model constructors or confer owner currentness.
+    /// Compares complete retained provenance to an independently typed candidate.
+    ///
+    /// This reuses the supplied candidate instead of compiling again. Callers
+    /// must establish its genuine input and currentness custody separately;
+    /// equality does not grant a resource read or publication authority.
+    ///
+    /// # Errors
+    ///
+    /// Rejects nonparentless input, invalid normalized or serialized input,
+    /// invalid output links or oversized origin data, and any difference in
+    /// the complete freshly retained value, including original target and bytes.
     pub fn compare_compiled_derivation(
         &self,
         expected: &PolicyCompilerInputV1,
@@ -346,6 +397,16 @@ impl RetainedPublisherCompilerOriginV3 {
         Ok(())
     }
 
+    /// Encodes the complete bounded origin after validating its byte links.
+    ///
+    /// The encoding retains the fixed header, all five plan commitments and
+    /// all seven original/output byte strings in their existing order.
+    ///
+    /// # Errors
+    ///
+    /// Rejects inconsistent identities, output descriptors or cross-links,
+    /// checked-size overflow, field lengths outside u32, or a complete record
+    /// exceeding the 4 MiB ceiling.
     pub fn to_record_bytes(&self) -> Result<Vec<u8>, PublisherPolicyDataError> {
         self.validate_links()?;
         let size = self.fields.iter().try_fold(FIXED_BYTES, |size, field| {
@@ -372,6 +433,17 @@ impl RetainedPublisherCompilerOriginV3 {
         Ok(bytes)
     }
 
+    /// Decodes bounded framing and validates retained output cross-links.
+    ///
+    /// It copies the seven byte strings and rejects trailing bytes before
+    /// validating the assembled value. Full-input JSON remains uninterpreted
+    /// data; decoding never reconstructs authenticated compiler inputs.
+    ///
+    /// # Errors
+    ///
+    /// Rejects invalid magic or complete length, truncated or overflowing
+    /// fields, trailing bytes, sentinel identities or plans, empty fields,
+    /// malformed canonical Policy, or inconsistent candidate/output links.
     pub fn from_record_bytes(bytes: &[u8]) -> Result<Self, PublisherPolicyDataError> {
         if bytes.len() < FIXED_BYTES || bytes.len() > MAXIMUM_BYTES || bytes.get(..8) != Some(MAGIC)
         {
@@ -457,6 +529,17 @@ impl RetainedPublisherCompilerOriginV3 {
     }
 }
 
+/// Retains checked original input bytes and one candidate's complete outputs.
+///
+/// The recipe records normalized input, canonical full-input JSON, the project
+/// and request layers, all four outputs and five plan commitments, then validates
+/// the whole bounded record. It does not authenticate its supplied inputs or
+/// construct a native compiled revision, protected admission or currentness loan.
+///
+/// # Errors
+///
+/// Rejects nonparentless input, invalid normalized input, failed canonical input
+/// serialization, inconsistent output links, or an oversized retained record.
 pub fn retain_publisher_compiler_derivation_v3(
     input: &PolicyCompilerInputV1,
     candidate: &CompiledPolicyCandidateV1,
@@ -505,8 +588,9 @@ const NORMALIZED_INPUT_DOMAIN: &[u8] = b"aos.sandbox.policy-compiler.normalized-
 ///
 /// # Errors
 ///
-/// Returns [`NormalizedPolicyInputErrorV1`] if an
-/// input descriptor or target identity is sentinel-valued.
+/// Returns [`NormalizedPolicyInputErrorV1`] for sentinel project or target IDs,
+/// a descriptor with a zero digest or encoded size, or a rule count that cannot
+/// fit its u64 transcript field. Hashing establishes a commitment, not authority.
 pub fn normalized_policy_input_digest_v1(
     input: &PolicyCompilerInputV1,
 ) -> Result<ObjectDigest, NormalizedPolicyInputErrorV1> {
