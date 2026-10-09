@@ -522,6 +522,14 @@ impl LocalFs for FaultFs {
                     eprintln!("lease publication slot {}", path.display());
                     "lease publication"
                 }
+                crate::store::EffectFaultProbe::CopiedPreparation(_) => "copied preparation",
+                crate::store::EffectFaultProbe::CopiedBarrier(_) => "copied barrier",
+                crate::store::EffectFaultProbe::CopiedOwnership(_) => "copied ownership",
+                crate::store::EffectFaultProbe::PermanentLocalObservation(_) => {
+                    "permanent observation"
+                }
+                crate::store::EffectFaultProbe::PermanentLocalReclaim(_) => "permanent reclaim",
+                crate::store::EffectFaultProbe::PermanentLocalProgress(_) => "permanent progress",
                 crate::store::EffectFaultProbe::Other => "other effect",
             };
             eprintln!(

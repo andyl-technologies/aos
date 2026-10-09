@@ -155,6 +155,16 @@ Clippy with warnings denied (raw log
 `/tmp/terrane-bounded-traversal-production-clippy.log`). Each event still scans
 the complete family and reconstructs history; this pass does not prove runtime
 fairness, large-family performance or the new native test-target compilation.
+All nineteen copied-retirement and eleven permanent-recovery test functions are
+now privately composed on `36f987ad14`. The first actual strict all-target check
+with the owning `tokio,surface-sdk` profile stops on four exhaustive probe
+matches in existing ref, cold-fork and creation harnesses (raw log
+`/tmp/terrane-native-recovery-all-target-clippy.log`, exit 101). The shared
+harnesses now classify the six new closed native effect kinds explicitly while
+preserving existing forwarding and fault predicates. The two descendant helper
+files are carried from the frozen private composition; their only subsequent
+changes are these classifications. Combined compilation, lint and runtime
+remain pending; this is no native gate pass or task acceptance.
 
 All ten
 exact native Active completion cases pass on `4e6c14a7f3`. The eight-case native

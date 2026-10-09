@@ -215,6 +215,30 @@ impl LocalFs for ProbeFs {
             }
             EffectFaultProbe::Rename(path) => ("Rename", Some(path.to_owned()), false, false),
             EffectFaultProbe::FileSync => ("FileSync", None, false, false),
+            EffectFaultProbe::CopiedPreparation(path) => {
+                ("CopiedPreparation", Some(path.to_owned()), false, false)
+            }
+            EffectFaultProbe::CopiedBarrier(path) => {
+                ("CopiedBarrier", Some(path.to_owned()), false, false)
+            }
+            EffectFaultProbe::CopiedOwnership(path) => {
+                ("CopiedOwnership", Some(path.to_owned()), false, false)
+            }
+            EffectFaultProbe::PermanentLocalObservation(path) => (
+                "PermanentLocalObservation",
+                Some(path.to_owned()),
+                false,
+                false,
+            ),
+            EffectFaultProbe::PermanentLocalReclaim(path) => {
+                ("PermanentLocalReclaim", Some(path.to_owned()), false, false)
+            }
+            EffectFaultProbe::PermanentLocalProgress(path) => (
+                "PermanentLocalProgress",
+                Some(path.to_owned()),
+                false,
+                false,
+            ),
             EffectFaultProbe::Other => ("Other", None, false, false),
         };
         let observed = if final_slot || name == "SealRawPublication" {
