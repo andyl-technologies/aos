@@ -31,6 +31,9 @@ pub(crate) mod collection_permanent_local;
 
 #[path = "effects/capture.rs"]
 mod capture;
+#[path = "effects/retained_read.rs"]
+mod retained_read;
+pub(crate) use retained_read::{PayloadReadCapture, RetainedPayloadRead};
 #[path = "effects/commands.rs"]
 mod commands;
 #[path = "effects/raw.rs"]

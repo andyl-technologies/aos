@@ -221,6 +221,27 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         Ok(self.read_optional_observed(key).await?.into_bytes())
     }
 
+    /// Retains original physical ancestry before consuming a payload value.
+    ///
+    /// # Errors
+    /// Refuses unsafe or unavailable original ancestors, payload observations
+    /// and any change found by the complete closing physical check.
+    pub(super) async fn read_optional_retained(
+        &self,
+        key: &BucketKey,
+    ) -> Result<RecordRead, StoreFailure> {
+        let capture = crate::store::native_publication_effects::PayloadReadCapture::capture(
+            &self.inner.fs,
+            &self.path(key),
+            self.publication_operator_uid().ok_or_else(layout_corrupt)?,
+        )
+        .await?;
+        let observed = self.read_optional_observed(key).await?;
+        let retained = capture.finish(&observed)?;
+        retained.revalidate(&self.inner.fs).await?;
+        Ok(observed.with_retained_payload(retained))
+    }
+
     /// Reads a registered regular file while rejecting symlinked layout nodes.
     ///
     /// # Errors
