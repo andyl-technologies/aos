@@ -1,8 +1,15 @@
 //! Deadline-bounded record exchange for record-subject services.
 //!
-//! Plain and closed descriptor-reply adapters share one retry engine. These
-//! operations return transport data only; peers, descriptor roles, authority,
-//! currentness, acknowledgements, and worker quiescence remain caller-owned.
+//! Plain, closed descriptor-reply, and provisioned worker adapters share one
+//! retry engine. Its private profiles preserve each carrier's interruption and
+//! clock ordering. Worker records provision capacity first and wait after both
+//! backpressure and interrupted attempts; one fixed receive profile rejects
+//! io_uring rights before its success bookend.
+//!
+//! These operations return transport data only; peers, descriptor roles,
+//! authority, currentness, acknowledgements, framing, and worker quiescence
+//! remain caller-owned. Received records retain their original subject and
+//! complete ordered descriptor table until returned or dropped on failure.
 
 use std::os::fd::{AsFd, BorrowedFd};
 use std::time::Duration;
@@ -26,32 +33,55 @@ pub enum BoundedRecordError {
     Clock,
 }
 
+/// Reports a provisioned worker exchange failure with its original owned cause.
 #[derive(Debug, thiserror::Error)]
 pub enum WorkerRecordError {
+    /// The native record carrier or capacity provision failed.
     #[error(transparent)]
     Transport(#[from] SeqpacketError),
+    /// Readiness polling failed.
     #[error(transparent)]
     Poll(#[from] rustix::io::Errno),
+    /// The fixed received-descriptor inspection failed.
     #[error(transparent)]
     Linux(#[from] crate::Error),
+    /// Clock conversion, timeout conversion, or the deadline check failed.
     #[error(transparent)]
     Clock(#[from] WorkerRecordClockError),
 }
 
+/// Identifies a worker record clock or deadline failure without service policy.
 #[derive(Debug, thiserror::Error)]
 pub enum WorkerRecordClockError {
+    /// Boot time seconds could not be represented as an unsigned integer.
     #[error("CLOCK_BOOTTIME seconds are invalid")]
     InvalidSeconds,
+    /// Boot time nanoseconds could not be represented as an unsigned integer.
     #[error("CLOCK_BOOTTIME nanoseconds are invalid")]
     InvalidNanoseconds,
+    /// Converting the sampled boot time to nanoseconds overflowed.
     #[error("CLOCK_BOOTTIME overflowed")]
     Overflow,
+    /// The whole-transfer deadline elapsed or readiness timed out.
     #[error("worker record transfer deadline elapsed")]
     Expired,
+    /// The remaining duration could not be represented as a polling timeout.
     #[error("worker record transfer deadline is invalid")]
     InvalidTimeout,
 }
 
+/// Sends one worker record and its exact borrowed descriptor table before a deadline.
+///
+/// Capacity is provisioned once before sampling `CLOCK_BOOTTIME`. An empty
+/// table uses the native plain sender; a nonempty table uses the native bounded
+/// descriptor sender. Backpressure and interrupted attempts both wait for
+/// readiness. The call borrows the original socket and rights throughout the
+/// exchange and checks the deadline again after atomic success.
+///
+/// # Errors
+///
+/// Returns [`WorkerRecordError`] for capacity, native transport, polling, clock,
+/// or deadline failure. Native fatal-outcome disposal remains carrier-owned.
 pub fn send_provisioned_worker_record(
     socket: &mut DescriptorSubjectSocket,
     payload: &[u8],
@@ -68,6 +98,18 @@ pub fn send_provisioned_worker_record(
     })
 }
 
+/// Receives one complete worker record with an exact descriptor count before a deadline.
+///
+/// Capacity precedes the first clock check; descriptor-count validation remains
+/// inside the native receive attempt. Backpressure and interruption both wait
+/// for readiness. A late success drops the complete received record, including
+/// its original kernel subject and ordered owned descriptor table.
+///
+/// # Errors
+///
+/// Returns [`WorkerRecordError`] for capacity, native transport, polling, clock,
+/// or deadline failure. Peer authentication and descriptor roles remain upper
+/// protocol responsibilities.
 pub fn receive_provisioned_worker_record(
     socket: &mut DescriptorSubjectSocket,
     maximum: usize,
@@ -80,6 +122,18 @@ pub fn receive_provisioned_worker_record(
     })
 }
 
+/// Receives one worker record and rejects io_uring rights before its success clock check.
+///
+/// Uses the same capacity, exact-count, retry, and custody rules as
+/// [`receive_provisioned_worker_record`]. Each received right is inspected in
+/// its original table order before sampling the final clock. Inspection failure
+/// therefore precedes competing late expiry and drops the complete record.
+///
+/// # Errors
+///
+/// Returns [`WorkerRecordError`] for the underlying exchange, unavailable
+/// descriptor inspection, or a forbidden io_uring descriptor. This mechanical
+/// restriction assigns no descriptor role and grants no worker authority.
 pub fn receive_provisioned_worker_record_without_io_uring(
     socket: &mut DescriptorSubjectSocket,
     maximum: usize,
@@ -239,6 +293,8 @@ enum InterruptedAttempt {
     Wait,
 }
 
+// Only the concrete native profiles below select these stages in production.
+// The private operation seam carries the original mutable socket loan.
 trait RecordProfile<Socket, Record> {
     type Error: From<SeqpacketError>;
 
@@ -367,6 +423,8 @@ fn check_worker_deadline(deadline: u64) -> Result<(), WorkerRecordError> {
     Ok(())
 }
 
+// The sole production adapter directly samples and polls native objects.
+// Alternate stage implementations exist only in the test module.
 trait WorkerWait {
     fn boottime(&self) -> Result<u64, WorkerRecordError>;
     fn poll(
