@@ -25,7 +25,10 @@
 //! digest of the trusted resolver-policy catalog and its exact assignment row.
 
 use aos_proto::aos::sandbox::local::v1::PrepareStorageCatalogResponse;
-use aos_sandbox_core::{BrokerArgumentCommitment, ObjectDigest};
+use aos_sandbox_core::{
+    BrokerArgumentCommitment, ObjectDigest,
+    bounded_codec::{BoundedReader, ReadError},
+};
 use aos_sandbox_protocol::semantics::storage_prepare::{
     CanonicalStoragePreparationSemanticsV1, StoragePreparationOperationV1,
 };
@@ -467,24 +470,24 @@ impl RetainedStorageCatalogPreparationV1 {
     }
 
     pub(crate) fn decode_payload(bytes: &[u8]) -> Result<Self, StorageCatalogPreparationError> {
-        let mut decoder = Decoder::new(bytes);
-        if decoder.fixed::<8>()? != *RECORD_MAGIC {
+        let mut decoder = PreparationReader::new(bytes, corrupt_preparation);
+        if decoder.array::<8>()? != *RECORD_MAGIC {
             return Err(StorageCatalogPreparationError::CorruptRecord);
         }
-        let version = u16::from_be_bytes(decoder.fixed()?);
+        let version = u16::from_be_bytes(decoder.array()?);
         if !matches!(version, 1 | 2) {
             return Err(StorageCatalogPreparationError::CorruptRecord);
         }
-        let operation_id = decoder.nonzero::<16>()?;
-        let sandbox_id = decoder.nonzero::<16>()?;
-        let request_id = decoder.nonzero::<16>()?;
-        let preparation_digest = ObjectDigest::from_bytes(decoder.nonzero()?);
-        let consumption_state = decoder.fixed::<1>()?[0];
-        let apply_request_id = decoder.fixed::<16>()?;
-        let apply_transport_digest = ObjectDigest::from_bytes(decoder.fixed()?);
-        let apply_semantic_digest = ObjectDigest::from_bytes(decoder.fixed()?);
-        let apply_plan_digest = ObjectDigest::from_bytes(decoder.fixed()?);
-        let apply_lease_digest = ObjectDigest::from_bytes(decoder.fixed()?);
+        let operation_id = decode_nonzero::<16>(&mut decoder)?;
+        let sandbox_id = decode_nonzero::<16>(&mut decoder)?;
+        let request_id = decode_nonzero::<16>(&mut decoder)?;
+        let preparation_digest = ObjectDigest::from_bytes(decode_nonzero(&mut decoder)?);
+        let consumption_state = decoder.array::<1>()?[0];
+        let apply_request_id = decoder.array::<16>()?;
+        let apply_transport_digest = ObjectDigest::from_bytes(decoder.array()?);
+        let apply_semantic_digest = ObjectDigest::from_bytes(decoder.array()?);
+        let apply_plan_digest = ObjectDigest::from_bytes(decoder.array()?);
+        let apply_lease_digest = ObjectDigest::from_bytes(decoder.array()?);
         let consumption = match consumption_state {
             1 if apply_request_id == [0; 16]
                 && [
@@ -510,29 +513,29 @@ impl RetainedStorageCatalogPreparationV1 {
         if version == 2 && consumption.is_some() {
             return Err(StorageCatalogPreparationError::CorruptRecord);
         }
-        let catalog_binding = decoder.binding()?;
-        let inventory = decoder.binding()?;
-        let expected_head = decoder.binding()?;
-        let host_boot_id = decoder.nonzero::<16>()?;
-        let expires_boottime_nanoseconds = u64::from_be_bytes(decoder.nonzero()?);
-        let plan_digest = ObjectDigest::from_bytes(decoder.nonzero()?);
-        let lease_digest = ObjectDigest::from_bytes(decoder.nonzero()?);
-        let assignment_digest = ObjectDigest::from_bytes(decoder.nonzero()?);
-        let catalog_format = u16::from_be_bytes(decoder.fixed()?);
-        let root_policy_digest = ObjectDigest::from_bytes(decoder.fixed()?);
-        let clone_identity_digest = ObjectDigest::from_bytes(decoder.fixed()?);
+        let catalog_binding = decode_binding(&mut decoder)?;
+        let inventory = decode_binding(&mut decoder)?;
+        let expected_head = decode_binding(&mut decoder)?;
+        let host_boot_id = decode_nonzero::<16>(&mut decoder)?;
+        let expires_boottime_nanoseconds = u64::from_be_bytes(decode_nonzero(&mut decoder)?);
+        let plan_digest = ObjectDigest::from_bytes(decode_nonzero(&mut decoder)?);
+        let lease_digest = ObjectDigest::from_bytes(decode_nonzero(&mut decoder)?);
+        let assignment_digest = ObjectDigest::from_bytes(decode_nonzero(&mut decoder)?);
+        let catalog_format = u16::from_be_bytes(decoder.array()?);
+        let root_policy_digest = ObjectDigest::from_bytes(decoder.array()?);
+        let clone_identity_digest = ObjectDigest::from_bytes(decoder.array()?);
         let resolver_policy_binding = StorageResolverPolicyBindingV1::from_authenticated_parts(
-            u64::from_be_bytes(decoder.fixed()?),
-            ObjectDigest::from_bytes(decoder.fixed()?),
-            ObjectDigest::from_bytes(decoder.fixed()?),
+            u64::from_be_bytes(decoder.array()?),
+            ObjectDigest::from_bytes(decoder.array()?),
+            ObjectDigest::from_bytes(decoder.array()?),
         )
         .map_err(|_| StorageCatalogPreparationError::CorruptRecord)?;
-        let sealed_fence = decoder.variable(MAXIMUM_AUTHORITY_RECORD_BYTES)?.to_vec();
-        let sealed_effect = decoder.variable(MAXIMUM_AUTHORITY_RECORD_BYTES)?.to_vec();
-        let sealed_operation_fence = decoder.variable(MAXIMUM_AUTHORITY_RECORD_BYTES)?.to_vec();
-        let canonical_request = decoder.variable(MAXIMUM_CANONICAL_REQUEST_BYTES)?.to_vec();
-        let catalog_bytes = decoder.variable(MAXIMUM_RESOLVED_CATALOG_BYTES)?;
-        let receipt = decoder.variable(MAXIMUM_RECEIPT_BYTES)?.to_vec();
+        let sealed_fence = decode_variable(&mut decoder, MAXIMUM_AUTHORITY_RECORD_BYTES)?.to_vec();
+        let sealed_effect = decode_variable(&mut decoder, MAXIMUM_AUTHORITY_RECORD_BYTES)?.to_vec();
+        let sealed_operation_fence = decode_variable(&mut decoder, MAXIMUM_AUTHORITY_RECORD_BYTES)?.to_vec();
+        let canonical_request = decode_variable(&mut decoder, MAXIMUM_CANONICAL_REQUEST_BYTES)?.to_vec();
+        let catalog_bytes = decode_variable(&mut decoder, MAXIMUM_RESOLVED_CATALOG_BYTES)?;
+        let receipt = decode_variable(&mut decoder, MAXIMUM_RECEIPT_BYTES)?.to_vec();
         decoder.finish()?;
         if sealed_fence.is_empty()
             || sealed_effect.is_empty()
@@ -987,64 +990,41 @@ impl Encoder {
     }
 }
 
-struct Decoder<'a> {
-    bytes: &'a [u8],
-    cursor: usize,
+type PreparationReader<'a> = BoundedReader<'a, StorageCatalogPreparationError>;
+
+fn corrupt_preparation(_: ReadError) -> StorageCatalogPreparationError {
+    StorageCatalogPreparationError::CorruptRecord
 }
 
-impl<'a> Decoder<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, cursor: 0 }
-    }
-
-    fn fixed<const N: usize>(&mut self) -> Result<[u8; N], StorageCatalogPreparationError> {
-        self.take(N)?
-            .try_into()
-            .map_err(|_| StorageCatalogPreparationError::CorruptRecord)
-    }
-
-    fn nonzero<const N: usize>(&mut self) -> Result<[u8; N], StorageCatalogPreparationError> {
-        let value = self.fixed()?;
-        if value == [0; N] {
-            Err(StorageCatalogPreparationError::CorruptRecord)
-        } else {
-            Ok(value)
-        }
-    }
-
-    fn binding(&mut self) -> Result<CatalogBindingV1, StorageCatalogPreparationError> {
-        let generation = u64::from_be_bytes(self.nonzero()?);
-        let digest = ObjectDigest::from_bytes(self.nonzero()?);
-        CatalogBindingV1::from_publisher(generation, digest)
-            .map_err(|_| StorageCatalogPreparationError::CorruptRecord)
-    }
-
-    fn variable(&mut self, maximum: usize) -> Result<&'a [u8], StorageCatalogPreparationError> {
-        let length = u32::from_be_bytes(self.fixed()?) as usize;
-        if length > maximum {
-            return Err(StorageCatalogPreparationError::CorruptRecord);
-        }
-        self.take(length)
-    }
-
-    fn take(&mut self, length: usize) -> Result<&'a [u8], StorageCatalogPreparationError> {
-        let end = self
-            .cursor
-            .checked_add(length)
-            .filter(|end| *end <= self.bytes.len())
-            .ok_or(StorageCatalogPreparationError::CorruptRecord)?;
-        let value = &self.bytes[self.cursor..end];
-        self.cursor = end;
+fn decode_nonzero<const N: usize>(
+    reader: &mut PreparationReader<'_>,
+) -> Result<[u8; N], StorageCatalogPreparationError> {
+    let value = reader.array()?;
+    if value == [0; N] {
+        Err(StorageCatalogPreparationError::CorruptRecord)
+    } else {
         Ok(value)
     }
+}
 
-    fn finish(self) -> Result<(), StorageCatalogPreparationError> {
-        if self.cursor == self.bytes.len() {
-            Ok(())
-        } else {
-            Err(StorageCatalogPreparationError::CorruptRecord)
-        }
+fn decode_binding(
+    reader: &mut PreparationReader<'_>,
+) -> Result<CatalogBindingV1, StorageCatalogPreparationError> {
+    let generation = u64::from_be_bytes(decode_nonzero(reader)?);
+    let digest = ObjectDigest::from_bytes(decode_nonzero(reader)?);
+    CatalogBindingV1::from_publisher(generation, digest)
+        .map_err(|_| StorageCatalogPreparationError::CorruptRecord)
+}
+
+fn decode_variable<'a>(
+    reader: &mut PreparationReader<'a>,
+    maximum: usize,
+) -> Result<&'a [u8], StorageCatalogPreparationError> {
+    let length = u32::from_be_bytes(reader.array()?) as usize;
+    if length > maximum {
+        return Err(StorageCatalogPreparationError::CorruptRecord);
     }
+    reader.bytes(length)
 }
 
 #[cfg(test)]
