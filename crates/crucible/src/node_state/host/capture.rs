@@ -84,7 +84,7 @@ impl HostArchive {
             .runtime_snapshot(cut, ordinal, self.limits.maximum_record_bytes)
             .map_err(schema)?;
         let immutable_refs = required_immutable_refs(graph, self.limits)?;
-        let immutable_content = verify_closure(immutable_refs.clone(), immutable, self.limits)?;
+        let mut immutable_content = verify_closure(immutable_refs.clone(), immutable, self.limits)?;
         let captures = runtime
             .capture_host_native(
                 activation,
@@ -107,6 +107,13 @@ impl HostArchive {
             runtime: source,
             world_repeatability: graph.world_repeatability(),
         };
+        // Original scheduler custody retains dynamic request bytes separately
+        // from immutable graph definitions. Verify their bounded identities
+        // before native and coordinator validators authenticate their lineage.
+        for payload in &coordinator.scheduler.payload_objects {
+            immutable_content.include_payload(&payload.reference, &payload.bytes, self.limits)?;
+            objects.insert(payload.reference.clone(), payload.bytes.clone(), vec![])?;
+        }
         factory.authenticate_coordinator(
             graph,
             &coordinator.runtime,
@@ -117,9 +124,6 @@ impl HostArchive {
             &coordinator,
             core_references(&coordinator, self.limits.maximum_record_bytes)?,
         )?;
-        for payload in &coordinator.scheduler.payload_objects {
-            objects.insert(payload.reference.clone(), payload.bytes.clone(), vec![])?;
-        }
         let mut owners = Vec::new();
         owners
             .try_reserve_exact(captures.len())

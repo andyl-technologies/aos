@@ -42,6 +42,52 @@ impl VerifiedStateContent {
             .values()
             .map(|(reference, bytes)| (reference, bytes.as_slice()))
     }
+
+    /// Adds original bounded runtime payload bytes without issuing lineage authority.
+    pub(super) fn include_payload(
+        &mut self,
+        reference: &ContentRef,
+        bytes: &[u8],
+        limits: StateLimits,
+    ) -> Result<(), StateError> {
+        reference.verify(bytes).map_err(|error| {
+            StateError::new(
+                StateErrorCode::Content,
+                reference.hash.digest.clone(),
+                error.to_string(),
+            )
+        })?;
+        if let Some((stored, original)) = self.objects.get(&reference.hash) {
+            if stored != reference || original.as_slice() != bytes {
+                return Err(StateError::new(
+                    StateErrorCode::Content,
+                    reference.hash.digest.clone(),
+                    "original payload reference conflicts with verified closure",
+                ));
+            }
+            return Ok(());
+        }
+
+        let total = self
+            .total_bytes
+            .checked_add(bytes.len())
+            .ok_or_else(|| limit("runtime payload byte count"))?;
+        if bytes.len() > limits.maximum_content_bytes
+            || total > limits.maximum_total_content_bytes
+            || self.objects.len() >= limits.maximum_content_objects
+        {
+            return Err(limit("runtime payload allocation"));
+        }
+        let mut retained = Vec::new();
+        retained
+            .try_reserve_exact(bytes.len())
+            .map_err(|_| limit("runtime payload allocation"))?;
+        retained.extend_from_slice(bytes);
+        self.objects
+            .insert(reference.hash.clone(), (reference.clone(), retained));
+        self.total_bytes = total;
+        Ok(())
+    }
 }
 
 pub(super) fn verify_closure(
@@ -217,4 +263,60 @@ pub(super) fn limit(component: &str) -> StateError {
         component,
         "finite state operation ceiling exceeded",
     )
+}
+
+#[cfg(test)]
+mod payload_tests {
+    use super::*;
+    use crucible_node_contract::canonical;
+
+    #[test]
+    fn original_runtime_payloads_respect_shared_closure_bounds_and_metadata() {
+        let bytes = b"original future publication";
+        let reference = canonical::content_ref(bytes, "application/octet-stream").unwrap();
+        let limits = StateLimits {
+            maximum_content_bytes: bytes.len(),
+            maximum_total_content_bytes: bytes.len(),
+            maximum_content_objects: 1,
+            ..StateLimits::default()
+        };
+        let mut content = VerifiedStateContent {
+            objects: BTreeMap::new(),
+            total_bytes: 0,
+        };
+
+        content.include_payload(&reference, bytes, limits).unwrap();
+        content.include_payload(&reference, bytes, limits).unwrap();
+        assert_eq!(content.get(&reference), Some(bytes.as_slice()));
+        assert_eq!(content.total_bytes(), bytes.len());
+        assert_eq!(content.object_count(), 1);
+
+        let second = canonical::content_ref(b"next", "application/octet-stream").unwrap();
+        assert_eq!(
+            content
+                .include_payload(&second, b"next", limits)
+                .unwrap_err()
+                .code,
+            StateErrorCode::ResourceLimit
+        );
+        let mut foreign = reference.clone();
+        foreign.media_type = "text/plain".into();
+        assert_eq!(
+            content
+                .include_payload(&foreign, bytes, limits)
+                .unwrap_err()
+                .code,
+            StateErrorCode::Content
+        );
+        assert_eq!(
+            content
+                .include_payload(&reference, b"substitution", limits)
+                .unwrap_err()
+                .code,
+            StateErrorCode::Content
+        );
+        assert_eq!(content.get(&reference), Some(bytes.as_slice()));
+        assert_eq!(content.total_bytes(), bytes.len());
+        assert_eq!(content.object_count(), 1);
+    }
 }
