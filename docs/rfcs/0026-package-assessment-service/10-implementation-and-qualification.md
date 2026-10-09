@@ -198,6 +198,7 @@ compilation and generated API/client consistency are required when those
 layers change. Nix metadata changes require pure evaluation/format checks
 with valid/invalid declaration fixtures and without building scanned packages.
 
-This RFC-only change requires documentation link/anchor checks, fenced-example
-validation, numbering verification against open RFC PRs, and whitespace/diff
-review. It does not claim scanner implementation or runtime test qualification.
+The specification text also requires documentation link/anchor checks,
+fenced-example validation, numbering verification against open RFC PRs, and
+whitespace/diff review. Documentation checks do not substitute for scanner,
+runtime, database, or end-to-end qualification.

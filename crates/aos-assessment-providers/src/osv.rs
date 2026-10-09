@@ -55,7 +55,7 @@ impl Query {
     /// # Errors
     ///
     /// Returns an error for invalid identities, control-bearing/oversized
-    /// versions, commits or page tokens. No URL is accepted as a page token.
+    /// versions, commits or page tokens. Opaque tokens cannot select a request URL.
     pub fn request(&self, page_token: Option<&str>) -> Result<Value> {
         let mut request = match self {
             Self::Ecosystem {

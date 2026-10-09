@@ -15,8 +15,26 @@ use crate::provider::{
 };
 use crate::scan::{ScanRequestV1, TaskClaim};
 
+/// Supplies target-specific thread bounds for runtime effect ports.
+///
+/// Native servers move futures between threads. Single-threaded Worker ports
+/// may hold JavaScript handles and use non-Send futures without changing the
+/// shared orchestration or wire contracts.
+#[cfg(not(target_arch = "wasm32"))]
+pub trait RuntimeBounds: Send + Sync {}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: Send + Sync> RuntimeBounds for T {}
+
+/// Supplies the unrestricted marker used by single-threaded Worker ports.
+#[cfg(target_arch = "wasm32")]
+pub trait RuntimeBounds {}
+
+#[cfg(target_arch = "wasm32")]
+impl<T> RuntimeBounds for T {}
+
 /// Reads explicit runtime time without entering deterministic assessment policy.
-pub trait Clock {
+pub trait Clock: RuntimeBounds {
     /// Returns an exact whole-second UTC timestamp from the runtime clock.
     ///
     /// # Errors
@@ -27,7 +45,7 @@ pub trait Clock {
 /// Runs one admitted physical provider invocation under its current capability.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-pub trait ProviderTransport {
+pub trait ProviderTransport: RuntimeBounds {
     /// Returns authenticated installed profiles bound to a fresh paired challenge.
     ///
     /// # Errors
@@ -47,7 +65,7 @@ pub trait ProviderTransport {
 /// Retains and reads exact immutable evidence in an authorization partition.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-pub trait EvidenceStore {
+pub trait EvidenceStore: RuntimeBounds {
     /// Retains exact bounded bytes under independently admitted write authority.
     ///
     /// # Errors
@@ -64,7 +82,7 @@ pub trait EvidenceStore {
 /// Owns atomic generations, lease fencing, budgets and assessment/event admission.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
-pub trait ScanJournal {
+pub trait ScanJournal: RuntimeBounds {
     /// Admits a bounded idempotent request and returns its durable operation identity.
     ///
     /// # Errors

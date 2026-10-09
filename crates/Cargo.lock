@@ -316,6 +316,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "url",
  "zeroize",
 ]
 
@@ -613,6 +614,9 @@ dependencies = [
  "aes-gcm",
  "anyhow",
  "aos-ability-model",
+ "aos-assessment",
+ "aos-assessment-providers",
+ "aos-assessment-runtime",
  "aos-contract",
  "aos-doc-model",
  "aos-hub-console-contract",

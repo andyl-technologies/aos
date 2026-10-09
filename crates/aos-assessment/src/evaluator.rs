@@ -47,7 +47,7 @@ pub fn evaluate(input: &ScanInputV1, data: &EvaluationData) -> Result<PackageAss
     let mut subject_results = Vec::new();
     let mut component_budget = 0;
     let mut finding_budget = 0;
-    let graph = ScopeGraph::new(data);
+    let graph = ScopeGraph::new(data)?;
     let upstream = data
         .upstream
         .iter()
@@ -219,13 +219,26 @@ pub fn evaluate(input: &ScanInputV1, data: &EvaluationData) -> Result<PackageAss
     Ok(assessment)
 }
 
-struct ScopeGraph<'a> {
+/// Indexes exact runtime/containment scope while excluding build-only dependencies.
+pub struct ScopeGraph<'a> {
+    subjects: BTreeSet<&'a str>,
     components: BTreeMap<&'a str, &'a ComponentInstance>,
     edges: BTreeMap<&'a str, BTreeSet<&'a str>>,
 }
 
 impl<'a> ScopeGraph<'a> {
-    fn new(data: &'a EvaluationData) -> Self {
+    /// Builds one reusable traversal index from the validated inventory graph.
+    ///
+    /// # Errors
+    /// Returns an error for invalid inventory, unresolved edges or graph bounds.
+    pub fn new(data: &'a EvaluationData) -> Result<Self> {
+        data.inventory.validate()?;
+        let subjects = data
+            .inventory
+            .subjects
+            .iter()
+            .map(|subject| subject.subject_ref.as_str())
+            .collect();
         let components = data
             .inventory
             .components
@@ -256,10 +269,21 @@ impl<'a> ScopeGraph<'a> {
                     .insert(&edge.to_ref);
             }
         }
-        Self { components, edges }
+        Ok(Self {
+            subjects,
+            components,
+            edges,
+        })
     }
 
-    fn components(&self, subject: &'a str) -> Result<Vec<&'a ComponentInstance>> {
+    /// Returns exact contained/runtime component instances in canonical reference order.
+    ///
+    /// # Errors
+    /// Returns an error for an unknown subject or excessive dependency traversal.
+    pub fn components(&self, subject: &str) -> Result<Vec<&'a ComponentInstance>> {
+        if !self.subjects.contains(subject) {
+            bail!("assessment subject is absent from the inventory graph");
+        }
         let mut pending = vec![subject];
         let mut visited = BTreeSet::new();
         let mut components = BTreeMap::new();

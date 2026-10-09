@@ -75,7 +75,7 @@ remains blocked until its required scanning capability is restored.
 | `authorizationPartition` | Public or tenant-scoped execution identity |
 | `credentialRef` | Optional immutable permitted credential reference |
 | `budgetReservation` | Source budget identity, reservation ID, request allowance and deadline |
-| `cacheRef` | Optional exact prior response/validator reference |
+| `cacheRef` | Optional exact prior response/validator reference and bounded admitted observation |
 | `continuation` | Optional source-bound continuation from an earlier result |
 | `limits` | Effective source, result, item, request, duration and concurrency limits |
 

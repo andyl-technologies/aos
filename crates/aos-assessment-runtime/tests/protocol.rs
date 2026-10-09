@@ -1,6 +1,6 @@
 //! Provider domain isolation, exact projections, positional paging and quota fences.
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use aos_assessment::input::{FreshnessMode, Profile};
 use aos_assessment::observation::{
     PROVIDER_OBSERVATION_V1, ProviderCoverage, ProviderObservationV1, SourceEvidenceRef,
@@ -13,6 +13,246 @@ use aos_contract::Sha256Digest;
 
 fn now() -> Result<Timestamp> {
     Timestamp::parse("2026-10-09T12:00:00Z")
+}
+
+#[test]
+fn conditional_revalidation_preserves_the_admitted_original_source_time_and_exact_validators()
+-> Result<()> {
+    use aos_assessment::observation::HttpValidators;
+    let mut plan = plan()?;
+    plan.operation = ProviderOperation::RefreshNvd {
+        modified_start: Timestamp::from_unix_seconds(now()?.unix_seconds() - 3600)?,
+        modified_end: now()?,
+        start_index: 0,
+    };
+    plan.adapter_version = plan.operation.adapter_version().into();
+    let fixture = result(&plan)?;
+    let NormalizedObject::Observation(mut previous) = fixture.normalized_objects[0].object.clone()
+    else {
+        anyhow::bail!("fixture observation is absent");
+    };
+    previous.provider = "nvd".into();
+    previous.project = "modifications".into();
+    previous.source_refs[0].origin = "nvd".into();
+    previous.retrieved_at = Timestamp::from_unix_seconds(now()?.unix_seconds() - 120)?;
+    previous.validated_at = Timestamp::from_unix_seconds(now()?.unix_seconds() - 60)?;
+    let validators = HttpValidators {
+        etag: Some("fixture-etag".into()),
+        last_modified: None,
+    };
+    previous.validators = Some(validators.clone());
+    plan.cache_ref = Some(CachedResponse {
+        evidence: previous.source_refs[0].clone(),
+        validators,
+        observation_digest: previous.digest()?,
+        observation: previous.clone(),
+    });
+    plan.validate_at(&now()?)?;
+    let mut revalidated = previous.clone();
+    revalidated.validated_at = now()?;
+    let mut result = fixture;
+    result.plan_digest = plan.digest()?;
+    result.outcome = WorkOutcome::NotModified;
+    result.normalized_objects = vec![ObjectProjection {
+        digest: revalidated.digest()?,
+        object: NormalizedObject::Observation(revalidated.clone()),
+    }];
+    result.observation_refs = vec![revalidated.digest()?];
+    result.validate_for(&plan, &now()?)?;
+    revalidated.retrieved_at = now()?;
+    result.normalized_objects = vec![ObjectProjection {
+        digest: revalidated.digest()?,
+        object: NormalizedObject::Observation(revalidated.clone()),
+    }];
+    result.observation_refs = vec![revalidated.digest()?];
+    assert!(result.validate_for(&plan, &now()?).is_err());
+    let mut changed = plan;
+    changed
+        .cache_ref
+        .as_mut()
+        .context("fixture cache")?
+        .validators
+        .etag = Some("different-etag".into());
+    assert!(changed.validate_at(&now()?).is_err());
+    Ok(())
+}
+
+#[test]
+fn sparse_osv_pagination_retains_original_positions_and_keeps_tokens_out_of_endpoint_selection()
+-> Result<()> {
+    let queries = ["first", "finished", "third"]
+        .into_iter()
+        .map(|name| Query::Ecosystem {
+            ecosystem: "crates.io".into(),
+            name: name.into(),
+            version: "1.2.0".into(),
+        })
+        .collect();
+    let operation = ProviderOperation::QueryOsv {
+        queries,
+        projects: vec![
+            "first-query".into(),
+            "finished-query".into(),
+            "third-query".into(),
+        ],
+        continuations: vec![
+            QueryContinuation {
+                position: 0,
+                token: "https://unrelated.invalid/?token=first".into(),
+            },
+            QueryContinuation {
+                position: 2,
+                token: "third&other=value".into(),
+            },
+        ],
+    };
+    let requests = operation.source_requests()?;
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, SourceMethod::Post);
+    assert_eq!(
+        requests[0].url.as_str(),
+        "https://api.osv.dev/v1/querybatch"
+    );
+    assert_eq!(requests[0].original_positions, vec![0, 2]);
+    let body: serde_json::Value =
+        serde_json::from_slice(requests[0].body.as_ref().context("query body")?)?;
+    assert_eq!(body["queries"].as_array().context("query array")?.len(), 2);
+    assert_eq!(body["queries"][1]["package"]["name"], "third");
+    assert_eq!(body["queries"][1]["page_token"], "third&other=value");
+    assert!(
+        ProviderOperation::ObserveReleases {
+            repository: "owner/project?host=elsewhere".into(),
+            tag_prefix: "v".into(),
+            page: 1,
+        }
+        .source_requests()
+        .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn compact_source_pages_retain_ids_and_exact_scope_without_claiming_full_record_coverage()
+-> Result<()> {
+    let plan = plan()?;
+    let mut acquired = result(&plan)?;
+    let source = match &acquired.normalized_objects[0].object {
+        NormalizedObject::Observation(observation) => observation.response_digest,
+        _ => anyhow::bail!("fixture observation is absent"),
+    };
+    let mut next = plan.operation.clone();
+    if let ProviderOperation::QueryOsv { continuations, .. } = &mut next {
+        continuations.push(QueryContinuation {
+            position: 0,
+            token: "source-issued-next-token".into(),
+        });
+    }
+    let page = ProviderPageV1 {
+        schema: "aos.provider-page/v1".into(),
+        operation: plan.operation.clone(),
+        project: "fixture-query".into(),
+        source_digest: source,
+        records: vec![AdvisoryRevisionReference {
+            id: "OSV-2026-1".into(),
+            modified: "2026-10-09T00:00:00Z".into(),
+        }],
+        next: Some(next.clone()),
+    };
+    page.validate()?;
+    let digest = page.digest()?;
+    acquired.normalized_objects.push(ObjectProjection {
+        digest,
+        object: NormalizedObject::Page(page.clone()),
+    });
+    acquired
+        .normalized_objects
+        .sort_by_key(|object| object.digest);
+    acquired.continuation = Some(digest);
+    acquired.coverage = ProviderCoverage::Partial {
+        reason: "source-pagination-pending".into(),
+        continuation: Some(digest),
+    };
+    acquired.outcome = WorkOutcome::Partial;
+    acquired.validate_for(&plan, &now()?)?;
+    assert_eq!(
+        ProviderPageV1::from_slice(&aos_contract::canonical::to_vec(&page)?)?,
+        page
+    );
+    let mut changed = page.clone();
+    if let Some(ProviderOperation::QueryOsv { projects, .. }) = &mut changed.next {
+        projects[0] = "unrelated-query".into();
+    }
+    assert!(changed.validate().is_err());
+    let mut changed = acquired.clone();
+    changed.coverage = ProviderCoverage::Complete {
+        proof: "http-success".into(),
+    };
+    changed.outcome = WorkOutcome::Observed;
+    assert!(changed.validate_for(&plan, &now()?).is_err());
+    let mut changed = acquired;
+    changed.continuation = Some(Sha256Digest::of_bytes("unretained continuation"));
+    assert!(changed.validate_for(&plan, &now()?).is_err());
+    Ok(())
+}
+
+#[test]
+fn successors_cannot_change_repositories_checkpoint_windows_or_original_source_positions()
+-> Result<()> {
+    let operation = ProviderOperation::ObserveTags {
+        repository: "owner/project".into(),
+        tag_prefix: "v".into(),
+        page: 1,
+    };
+    operation.require_successor(&ProviderOperation::ObserveTags {
+        repository: "owner/project".into(),
+        tag_prefix: "v".into(),
+        page: 2,
+    })?;
+    assert!(
+        operation
+            .require_successor(&ProviderOperation::ObserveTags {
+                repository: "other/project".into(),
+                tag_prefix: "v".into(),
+                page: 2,
+            })
+            .is_err()
+    );
+    assert!(
+        operation
+            .require_successor(&ProviderOperation::ObserveTags {
+                repository: "owner/project".into(),
+                tag_prefix: "v".into(),
+                page: 1,
+            })
+            .is_err()
+    );
+    let start = now()?;
+    let end = Timestamp::from_unix_seconds(start.unix_seconds() + 3600)?;
+    let operation = ProviderOperation::RefreshNvd {
+        modified_start: start.clone(),
+        modified_end: end.clone(),
+        start_index: 0,
+    };
+    operation.require_successor(&ProviderOperation::RefreshNvd {
+        modified_start: start.clone(),
+        modified_end: end.clone(),
+        start_index: 100,
+    })?;
+    assert!(
+        operation
+            .require_successor(&ProviderOperation::RefreshNvd {
+                modified_start: start.clone(),
+                modified_end: start,
+                start_index: 100
+            })
+            .is_err()
+    );
+    assert!(
+        operation
+            .require_successor(&ProviderOperation::RefreshKev { offset: 100 })
+            .is_err()
+    );
+    Ok(())
 }
 
 fn plan() -> Result<ProviderWorkPlanV1> {

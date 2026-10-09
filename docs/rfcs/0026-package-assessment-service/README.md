@@ -1,6 +1,6 @@
 # RFC-0026: Continuous package assessment in AOS Hub
 
-- **Status:** Proposed; specification only.
+- **Status:** Proposed; implementation in progress.
 - **Date:** 2026-10-08.
 - **Category:** AOS protocol and application specification.
 - **Audience:** Package, Hub, CLI, security, release, and platform maintainers.
@@ -35,11 +35,17 @@ inventory-ingestion adapter; it is not the assessment service's data model.
 
 This is a project RFC, not an IETF publication. Its requirements define the
 proposed implementation and interoperability contract; they do not describe
-already shipped scanner features. The current local maintenance implementation
-has reusable version policy and bounded provider adapters, but its Repology
-vulnerability signals do not constitute the structured CVE service specified
-here. Existing contribution, release, and publication requirements remain in
-force throughout rollout.
+already shipped scanner features. Shared Rust crates now implement portable
+inventory, deterministic assessment, provider normalization, execution contracts,
+attention reduction and evidence bundles. Package metadata exports preserve
+derivation identity. Hub persistence implements bounded semantic objects,
+inventory admission, generation-fenced scans, provider budgets and receipts,
+profile heads, attention episodes and replayable events. Application integration
+and runtime adapters are being implemented against the qualification requirements
+in Chapter 10. The legacy
+Repology vulnerability signals do not constitute the structured CVE service
+specified here. Existing contribution, release, and publication requirements
+remain in force throughout rollout.
 
 ## Specification organization
 

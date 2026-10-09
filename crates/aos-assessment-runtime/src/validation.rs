@@ -32,7 +32,7 @@ pub(crate) fn decode<T: DeserializeOwned>(bytes: &[u8], label: &str) -> Result<T
     Ok(serde_json::from_value(value)?)
 }
 
-fn reject_null(value: &Value) -> Result<()> {
+pub(crate) fn reject_null(value: &Value) -> Result<()> {
     match value {
         Value::Null => bail!("optional runtime fields must be absent rather than null"),
         Value::Array(values) => values.iter().try_for_each(reject_null),

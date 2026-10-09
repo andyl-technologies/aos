@@ -51,6 +51,7 @@ impl PostgresSource {
             12 => include_str!("../../../backend/postgres_snapshot/current12.sha256"),
             13 => include_str!("../../../backend/postgres_snapshot/current13.sha256"),
             16 => include_str!("../../../backend/postgres_snapshot/current16.sha256"),
+            17 => include_str!("../../../backend/postgres_snapshot/current17.sha256"),
             _ => return None,
         };
         Some(Self::new(digest.trim().into()))
@@ -88,6 +89,7 @@ pub(super) enum MigrationDigests {
     Generation12([String; 12]),
     Generation13([String; 13]),
     Generation16([String; 16]),
+    Generation17([String; 17]),
 }
 
 impl MigrationDigests {
@@ -118,6 +120,9 @@ impl MigrationDigests {
                 anyhow::anyhow!("snapshot migration shape differs")
             })?)),
             16 => Ok(Self::Generation16(values.try_into().map_err(|_| {
+                anyhow::anyhow!("snapshot migration shape differs")
+            })?)),
+            17 => Ok(Self::Generation17(values.try_into().map_err(|_| {
                 anyhow::anyhow!("snapshot migration shape differs")
             })?)),
             _ => anyhow::bail!("snapshot migration generation is unsupported"),

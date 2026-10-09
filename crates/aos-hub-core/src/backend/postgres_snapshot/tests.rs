@@ -24,7 +24,7 @@ async fn current_catalogue_is_derived_from_actual_translated_serving_schema() {
         .await
         .unwrap();
     assert_eq!(identity, crate::db::SCHEMA_IDENTITY);
-    assert_eq!(generation, 16);
+    assert_eq!(generation, 17);
     let storage: String = sqlx::query_scalar("SELECT data_type FROM information_schema.columns WHERE table_schema='public' AND table_name='oci_provider_inventory_generations' AND column_name='object_progress'")
         .fetch_one(&pool).await.unwrap();
     assert_eq!(storage, "bytea");
@@ -111,7 +111,7 @@ async fn held_snapshot_covers_original_rows_and_refuses_mutation_schema_and_over
     let mut source = PostgresSnapshotReader::open(url.trim(), PostgresSnapshotLimits::default())
         .await
         .unwrap();
-    assert_eq!(source.schema().version, 16);
+    assert_eq!(source.schema().version, 17);
     assert_eq!(
         source.audit().catalogue_sha256(),
         catalogue::expected_sha256()

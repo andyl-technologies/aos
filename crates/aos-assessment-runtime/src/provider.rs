@@ -15,13 +15,17 @@ use serde::{Deserialize, Serialize};
 
 mod auth;
 mod capabilities;
+mod page;
 mod projection;
+mod requests;
 
 pub use auth::ProviderWorkAuth;
 pub use capabilities::{CapabilityChallenge, ProviderCapabilitiesV1};
+pub use page::{AdvisoryRevisionReference, ProviderPageV1};
 pub use projection::{
     NormalizedObject, ObjectProjection, ProviderUsage, ProviderWorkResultV1, WorkOutcome,
 };
+pub use requests::{SourceMethod, SourceRequest};
 
 use crate::scan::TaskClaim;
 use crate::validation::{decode, encoded, sorted, text};
@@ -150,6 +154,8 @@ pub struct CachedResponse {
     pub validators: HttpValidators,
     /// Exact compatible normalized prior observation.
     pub observation_digest: Sha256Digest,
+    /// Exact admitted compact observation for source, validators and original time.
+    pub observation: aos_assessment::observation::ProviderObservationV1,
 }
 
 /// Preserves one positional OSV continuation without null/empty placeholder tokens.
@@ -241,6 +247,27 @@ pub enum ProviderOperation {
 }
 
 impl ProviderOperation {
+    fn supports_project(&self, project: &str) -> bool {
+        match self {
+            Self::QueryOsv { projects, .. } => {
+                projects.iter().any(|candidate| candidate == project)
+            }
+            Self::RetrieveAdvisories {
+                project: candidate, ..
+            }
+            | Self::QueryNvd {
+                project: candidate, ..
+            }
+            | Self::ObserveRepology { project: candidate } => candidate == project,
+            Self::ObserveReleases { repository, .. } | Self::ObserveTags { repository, .. } => {
+                repository == project
+            }
+            Self::ObserveGoReleases => project == "go",
+            Self::RefreshNvd { .. } => project == "modifications",
+            Self::RefreshKev { .. } => project == "catalog",
+        }
+    }
+
     /// Computes the source request identity before any execution effects.
     ///
     /// # Errors
@@ -518,8 +545,24 @@ impl ProviderWorkPlanV1 {
         }
         if let Some(cache) = &self.cache_ref {
             text(&cache.evidence.origin, 128, "cached response origin")?;
+            cache.observation.validate()?;
             if cache.evidence.byte_length > self.limits.response_bytes {
                 bail!("cached response exceeds provider bound");
+            }
+            if cache.observation.digest()? != cache.observation_digest
+                || cache.observation.provider != self.operation.provider()
+                || !self.operation.supports_project(&cache.observation.project)
+                || cache.observation.adapter_version != self.adapter_version
+                || cache.observation.request_identity_digest != self.operation.digest()?
+                || cache.observation.response_digest != cache.evidence.digest
+                || cache.evidence.origin != self.operation.provider()
+                || !cache.observation.source_refs.contains(&cache.evidence)
+                || cache.observation.validators.as_ref() != Some(&cache.validators)
+                || cache.observation.validated_at > self.issued_at
+                || matches!(self.operation, ProviderOperation::QueryOsv { .. })
+                || matches!(&self.operation, ProviderOperation::RetrieveAdvisories { ids, .. } if ids.len() != 1)
+            {
+                bail!("cached response differs from its admitted exact source request");
             }
             for value in [&cache.validators.etag, &cache.validators.last_modified]
                 .into_iter()

@@ -1,0 +1,237 @@
+//! Bounded database status projections without implicit provider acquisition.
+
+use anyhow::{Context as _, Result, bail};
+use aos_assessment::input::Profile;
+use aos_assessment::time::Timestamp;
+use aos_assessment_runtime::scan::ScanState;
+use aos_contract::Sha256Digest;
+
+use super::scans::profile_name;
+use crate::db::Database;
+
+/// Describes one independently selected profile's current and desired generations.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AssessmentProfileStatus {
+    /// Independently requested assessment profile.
+    pub profile: Profile,
+    /// Latest desired generation, or zero when never requested.
+    pub desired_generation: u64,
+    /// Latest successfully committed generation, or zero when unassessed.
+    pub committed_generation: u64,
+    /// Exact retained result, absent when unassessed.
+    pub assessment_digest: Option<Sha256Digest>,
+    /// Exact frozen input, absent when unassessed.
+    pub input_digest: Option<Sha256Digest>,
+    /// Exclusive policy/source freshness deadline for complete coverage only.
+    pub validated_until: Option<Timestamp>,
+    /// Whether complete evidence remains fresh at this page's database time.
+    pub fresh: bool,
+    /// Whether a newer desired generation has yet to commit.
+    pub pending: bool,
+}
+
+/// Groups selected profile status for one exact admitted subject.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AssessmentSubjectStatus {
+    /// Portable subject identity within the active immutable inventory.
+    pub subject_ref: String,
+    /// Selected independently evaluated profiles in canonical order.
+    pub profiles: Vec<AssessmentProfileStatus>,
+}
+
+/// Returns a finite status page with an exact inventory and observation time.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AssessmentStatusPage {
+    /// Database time used for every effective freshness projection in this page.
+    pub as_of: Timestamp,
+    /// Exact resource revision used for this status query.
+    pub resource: super::AssessmentResource,
+    /// Status for admitted subjects, including unassessed inventory.
+    pub subjects: Vec<AssessmentSubjectStatus>,
+    /// Exclusive next subject cursor; absent only on the final page.
+    pub next_subject: Option<String>,
+}
+
+/// Describes a scan list row without copying its full selector or evidence graph.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AssessmentScanSummary {
+    /// Public unpredictable operation identity.
+    pub scan_id: String,
+    /// Exact immutable request identity available from the operation detail read.
+    pub request_digest: Sha256Digest,
+    /// Current runtime state, independent of package coverage or risk.
+    pub state: ScanState,
+    /// Monotonic desired generation.
+    pub generation: u64,
+    /// Current state revision used for cancellation.
+    pub resource_version: u64,
+    /// Database admission time.
+    pub created_at: Timestamp,
+    /// Exact committed result, when available.
+    pub assessment_digest: Option<Sha256Digest>,
+}
+
+impl Database {
+    /// Reads a bounded inventory-complete status page for selected profiles.
+    ///
+    /// The caller independently authorizes the registry. A missing head is an
+    /// unassessed subject, rather than an absent inventory member or clean result.
+    /// Resource replacement during the read rejects the page for an explicit retry.
+    ///
+    /// # Errors
+    /// Returns an error for invalid cursors/profiles/limits, missing inventory,
+    /// changed resource versions or unavailable persistence.
+    pub async fn assessment_status_page(
+        &self,
+        registry_id: i64,
+        profiles: &[Profile],
+        after_subject: &str,
+        limit: u32,
+    ) -> Result<AssessmentStatusPage> {
+        validate_page(after_subject, limit)?;
+        if profiles.is_empty()
+            || profiles.len() > 3
+            || profiles.windows(2).any(|pair| pair[0] >= pair[1])
+        {
+            bail!("assessment status profiles must be sorted and unique");
+        }
+        let resource = self
+            .assessment_resource(registry_id)
+            .await?
+            .context("assessment inventory is absent")?;
+        let rows = self.backend.query(
+            "SELECT subject_ref FROM assessment_subjects WHERE registry_id = ?1 AND inventory_digest = ?2
+             AND subject_ref > ?3 ORDER BY subject_ref LIMIT ?4",
+            &vals![@slice registry_id, resource.inventory_digest.to_string(), after_subject, u64::from(limit) + 1],
+        ).await?;
+        let mut subjects = Vec::with_capacity(limit as usize);
+        let has_more = rows.len() > limit as usize;
+        let last = rows
+            .iter()
+            .take(limit as usize)
+            .next_back()
+            .map(|row| row.get::<String>(0))
+            .transpose()?;
+        let heads = if let Some(last) = &last {
+            self.backend.query(
+                "SELECT subject_ref, profile, desired_generation, committed_generation, assessment_digest,
+                    input_digest, validated_until FROM assessment_heads
+                 WHERE registry_id = ?1 AND inventory_digest = ?2 AND policy_digest = ?3
+                   AND subject_ref > ?4 AND subject_ref <= ?5 ORDER BY subject_ref, profile LIMIT ?6",
+                &vals![@slice registry_id, resource.inventory_digest.to_string(), resource.policy_digest.to_string(), after_subject, last, u64::from(limit) * 3],
+            ).await?
+        } else {
+            Vec::new()
+        };
+        // Read time after the rows so a just-committed result cannot appear
+        // to have been evaluated after the page's declared observation time.
+        let now = self.assessment_database_time().await?;
+        let mut indexed = std::collections::BTreeMap::new();
+        for row in heads {
+            indexed.insert((row.get::<String>(0)?, row.get::<String>(1)?), row);
+        }
+        for row in rows.into_iter().take(limit as usize) {
+            let subject_ref = row.get::<String>(0)?;
+            let mut states = Vec::with_capacity(profiles.len());
+            for profile in profiles {
+                let head = indexed.get(&(subject_ref.clone(), profile_name(*profile).into()));
+                let state = if let Some(head) = head {
+                    let desired = head.get::<u64>(2)?;
+                    let committed = head.get::<u64>(3)?;
+                    let validated_until = head
+                        .get::<Option<u64>>(6)?
+                        .map(Timestamp::from_unix_seconds)
+                        .transpose()?;
+                    AssessmentProfileStatus {
+                        profile: *profile,
+                        desired_generation: desired,
+                        committed_generation: committed,
+                        assessment_digest: head
+                            .get::<Option<String>>(4)?
+                            .map(|value| Sha256Digest::parse(&value))
+                            .transpose()?,
+                        input_digest: head
+                            .get::<Option<String>>(5)?
+                            .map(|value| Sha256Digest::parse(&value))
+                            .transpose()?,
+                        fresh: validated_until
+                            .as_ref()
+                            .is_some_and(|deadline| &now < deadline),
+                        pending: desired > committed,
+                        validated_until,
+                    }
+                } else {
+                    AssessmentProfileStatus {
+                        profile: *profile,
+                        desired_generation: 0,
+                        committed_generation: 0,
+                        assessment_digest: None,
+                        input_digest: None,
+                        validated_until: None,
+                        fresh: false,
+                        pending: false,
+                    }
+                };
+                states.push(state);
+            }
+            subjects.push(AssessmentSubjectStatus {
+                subject_ref,
+                profiles: states,
+            });
+        }
+        if self.assessment_resource(registry_id).await?.as_ref() != Some(&resource) {
+            bail!("assessment resource changed during status read; restart pagination");
+        }
+        Ok(AssessmentStatusPage {
+            as_of: now,
+            resource,
+            subjects,
+            next_subject: if has_more { last } else { None },
+        })
+    }
+
+    /// Lists finite compact operation summaries using an exclusive operation cursor.
+    ///
+    /// The opaque operation IDs determine stable pagination order. The detail
+    /// endpoint returns each exact immutable request; hidden partial admissions
+    /// remain excluded from the listing.
+    ///
+    /// # Errors
+    /// Returns an error for invalid cursor/limit, malformed stored contracts or SQL failure.
+    pub async fn assessment_scan_summaries(
+        &self,
+        registry_id: i64,
+        after_scan: &str,
+        limit: u32,
+    ) -> Result<Vec<AssessmentScanSummary>> {
+        validate_page(after_scan, limit)?;
+        let rows = self.backend.query(
+            "SELECT scan_id, request_digest, state, generation, resource_version, created_at, assessment_digest
+             FROM assessment_scans WHERE registry_id = ?1 AND scan_id > ?2 AND admission_complete = 1
+             ORDER BY scan_id LIMIT ?3", &vals![@slice registry_id, after_scan, limit],
+        ).await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(AssessmentScanSummary {
+                    scan_id: row.get(0)?,
+                    request_digest: Sha256Digest::parse(&row.get::<String>(1)?)?,
+                    state: serde_json::from_value(serde_json::Value::String(row.get(2)?))?,
+                    generation: row.get(3)?,
+                    resource_version: row.get(4)?,
+                    created_at: Timestamp::from_unix_seconds(row.get(5)?)?,
+                    assessment_digest: row
+                        .get::<Option<String>>(6)?
+                        .map(|value| Sha256Digest::parse(&value))
+                        .transpose()?,
+                })
+            })
+            .collect()
+    }
+}
+
+fn validate_page(cursor: &str, limit: u32) -> Result<()> {
+    if cursor.len() > 128 || cursor.chars().any(char::is_control) || !(1..=100).contains(&limit) {
+        bail!("assessment page has an invalid cursor or limit");
+    }
+    Ok(())
+}

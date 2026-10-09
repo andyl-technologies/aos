@@ -155,6 +155,19 @@ pub struct Translated {
 }
 
 impl Dialect {
+    /// Returns the database clock as a signed integer Unix timestamp.
+    ///
+    /// Lease predicates embed this expression inside their checked transaction;
+    /// they never grant a lease from a caller or worker supplied clock.
+    #[must_use]
+    pub const fn unix_time_expression(self) -> &'static str {
+        match self {
+            Self::Sqlite => "CAST(strftime('%s', 'now') AS INTEGER)",
+            Self::Postgres => "CAST(FLOOR(EXTRACT(EPOCH FROM clock_timestamp())) AS BIGINT)",
+            Self::Mysql => "CAST(UNIX_TIMESTAMP() AS SIGNED)",
+        }
+    }
+
     /// Translates a source (sqlite-flavored) statement into this dialect.
     ///
     /// Rewrites placeholders and DDL types per the [module rules](self), and

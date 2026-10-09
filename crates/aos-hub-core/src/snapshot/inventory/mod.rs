@@ -45,17 +45,31 @@ static GENERATION13_COVERAGE: LazyLock<String> = LazyLock::new(|| {
 });
 static GENERATION13_SOURCE: LazyLock<String> =
     LazyLock::new(|| [GENERATION12_SOURCE, include_str!("../schema-v13-delta.tsv")].concat());
-static COVERAGE: LazyLock<String> = LazyLock::new(|| {
+static GENERATION16_COVERAGE: LazyLock<String> = LazyLock::new(|| {
     [
         GENERATION13_COVERAGE.as_str(),
         include_str!("coverage-v16-delta.tsv"),
     ]
     .concat()
 });
-static SOURCE: LazyLock<String> = LazyLock::new(|| {
+static GENERATION16_SOURCE: LazyLock<String> = LazyLock::new(|| {
     [
         GENERATION13_SOURCE.as_str(),
         include_str!("../schema-v16-delta.tsv"),
+    ]
+    .concat()
+});
+static COVERAGE: LazyLock<String> = LazyLock::new(|| {
+    [
+        GENERATION16_COVERAGE.as_str(),
+        include_str!("coverage-v17-delta.tsv"),
+    ]
+    .concat()
+});
+static SOURCE: LazyLock<String> = LazyLock::new(|| {
+    [
+        GENERATION16_SOURCE.as_str(),
+        include_str!("../schema-v17-delta.tsv"),
     ]
     .concat()
 });
@@ -173,16 +187,28 @@ impl ObjectRequirementsCoverage {
         )
     }
 
-    /// Admits the current Native documentation and deployment requirements.
+    /// Admits immutable Native documentation and deployment requirements.
     ///
     /// # Errors
     /// Refuses changed columns or inconsistent confidentiality policies.
     pub fn current16() -> Result<Self> {
+        Self::from_generation_contract(
+            GENERATION16_COVERAGE.as_str(),
+            GENERATION16_SOURCE.as_str(),
+            16,
+        )
+    }
+
+    /// Admits current package assessment object, coordination and outbox requirements.
+    ///
+    /// # Errors
+    /// Refuses changed columns, missing custody dependencies or inconsistent privacy.
+    pub fn current17() -> Result<Self> {
         Self::from_contract(COVERAGE.as_str())
     }
 
     fn from_contract(coverage: &str) -> Result<Self> {
-        Self::from_generation_contract(coverage, SOURCE.as_str(), 16)
+        Self::from_generation_contract(coverage, SOURCE.as_str(), 17)
     }
 
     fn from_generation_contract(coverage: &str, source: &str, generation: usize) -> Result<Self> {

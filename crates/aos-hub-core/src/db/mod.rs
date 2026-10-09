@@ -292,12 +292,16 @@ use crate::value::{Row, Value};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::backend::SqlxBackend;
 
-/// Builds a `Vec<Value>` parameter list from a heterogeneous set of bindable
-/// values, mirroring rusqlite's `params!` ergonomics for the [`Backend`] API.
+/// Builds SQL parameters from heterogeneous bindable values for the [`Backend`] API.
 ///
 /// Each argument is converted via [`ToValue`], so `i64`, `Option<i64>`,
 /// `&str`, `String`, `bool`, `u32`, … all bind directly.
+/// The default arm owns a vector for statements; `@slice` supplies a stack array
+/// for query calls that only borrow parameters for the duration of the future.
 macro_rules! vals {
+    (@slice $($v:expr),* $(,)?) => {
+        [$($crate::value::ToValue::to_value(&$v)),*]
+    };
     ($($v:expr),* $(,)?) => {
         vec![$( crate::value::ToValue::to_value(&$v) ),*]
     };
@@ -439,13 +443,13 @@ mod snapshot_insert_tests {
 }
 
 mod binding_identity;
+#[deny(clippy::all)]
+mod assessment;
+pub use assessment::*;
 mod cache_write_admission;
 mod credential_probe;
 mod credential_registration;
-pub(crate) use binding_identity::{
-    decode_binding_delete_history, validate_binding_delete_history, BindingDeleteHistory,
-    BindingDeletePlanInput,
-};
+pub(crate) use binding_identity::BindingDeletePlanInput;
 pub use binding_identity::{
     validate_binding_identity_plan_confirmation, validate_binding_identity_snapshot_history,
     BindingIdentityReservation,
@@ -554,6 +558,7 @@ pub(crate) fn portable_relational_id(incarnation: uuid::Uuid) -> i64 {
 ///
 /// Versions 1 through 13 retain the Hybrid production history. Versions 14
 /// through 16 append Native ability references, documentation, and deployment reports.
+/// Version 17 adds bounded package assessment coordination and evidence references.
 pub const MIGRATIONS: &[&str] = &[
     include_str!("schema.sql"),
     include_str!("002-r2-gc-incarnation.sql"),
@@ -571,6 +576,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("migration-0006-release-ability-graphs.sql"),
     include_str!("migration-0007-native-documentation.sql"),
     include_str!("migration-0008-native-deployment-report.sql"),
+    include_str!("017-package-assessment.sql"),
 ];
 
 // Shared by production initialization and trusted disposable schema compilation.
@@ -581,7 +587,10 @@ pub(crate) const SCHEMA_VERSION_DDL: &str =
 ///
 /// Historical development ledgers are incompatible even when their integer
 /// version happens to match a production migration.
-pub const SCHEMA_IDENTITY: &str = "aos-hub/canonical-serving/16";
+pub const SCHEMA_IDENTITY: &str = "aos-hub/canonical-serving/17";
+
+/// Identifies immutable generation-sixteen archives independently of assessment DDL.
+pub const SNAPSHOT_SCHEMA_IDENTITY_16: &str = "aos-hub/canonical-serving/16";
 
 /// Identifies immutable generation-thirteen archives independently of serving DDL.
 pub const SNAPSHOT_SCHEMA_IDENTITY_13: &str = "aos-hub/canonical-serving/13";
@@ -608,7 +617,8 @@ pub fn snapshot_schema_identity(generation: usize) -> Result<&'static str> {
         8 => Ok(SNAPSHOT_SCHEMA_IDENTITY_8),
         12 => Ok(SNAPSHOT_SCHEMA_IDENTITY_12),
         13 => Ok(SNAPSHOT_SCHEMA_IDENTITY_13),
-        16 => Ok(SCHEMA_IDENTITY),
+        16 => Ok(SNAPSHOT_SCHEMA_IDENTITY_16),
+        17 => Ok(SCHEMA_IDENTITY),
         _ => anyhow::bail!("unsupported snapshot schema generation"),
     }
 }
@@ -26827,8 +26837,8 @@ requires-features = ["image-artifact-contract-v1"]
     fn fresh_schema_is_final_and_foreign_key_clean() {
         assert_eq!(
             MIGRATIONS.len(),
-            16,
-            "immutable Hybrid history plus Native ability and documentation projections"
+            17,
+            "immutable Hybrid history, Native projections and package assessment coordination"
         );
         let connection = Connection::open_in_memory().unwrap();
         connection

@@ -30,6 +30,8 @@ pub enum NormalizedObject {
     Upstream(UpstreamObservationV1),
     /// One attributed KEV catalog member.
     KnownExploit(KnownExploit),
+    /// Source-bound query IDs and continuation; not a complete advisory snapshot.
+    Page(super::ProviderPageV1),
 }
 
 impl NormalizedObject {
@@ -65,6 +67,10 @@ impl NormalizedObject {
                 Timestamp::parse(&format!("{}T00:00:00Z", object.date_added))?;
                 bounded_value(object)?
             }
+            Self::Page(object) => {
+                object.validate()?;
+                bounded_value(object)?
+            }
         };
         if aos_contract::canonical::to_vec(&value)?.len() > 64 * 1024 {
             bail!("normalized object exceeds compact record limit");
@@ -78,6 +84,7 @@ impl NormalizedObject {
             Self::KnownExploit(object) => {
                 Sha256Digest::of_canonical("aos.known-exploit/v1", object)
             }
+            Self::Page(object) => object.digest(),
         }
     }
 }
@@ -202,25 +209,12 @@ impl ProviderWorkResultV1 {
             }
             match &projection.object {
                 NormalizedObject::Observation(observation) => {
-                    let in_scope = match &plan.operation {
-                        ProviderOperation::QueryOsv { projects, .. } => {
-                            projects.contains(&observation.project)
-                        }
-                        ProviderOperation::RetrieveAdvisories { project, .. }
-                        | ProviderOperation::QueryNvd { project, .. } => {
-                            project == &observation.project
-                        }
-                        ProviderOperation::RefreshNvd { .. } => {
-                            observation.project == "modifications"
-                        }
-                        ProviderOperation::RefreshKev { .. } => observation.project == "catalog",
-                        _ => false,
-                    };
                     if observation.provider != plan.operation.provider()
                         || observation.adapter_version != plan.adapter_version
                         || observation.request_identity_digest != plan.operation.digest()?
+                        || observation.validated_at < plan.issued_at
                         || observation.validated_at > self.completed_at
-                        || !in_scope
+                        || !plan.operation.supports_project(&observation.project)
                     {
                         bail!("normalized observation differs from its exact provider operation");
                     }
@@ -231,6 +225,7 @@ impl ProviderWorkResultV1 {
                             .ok_or_else(|| anyhow::anyhow!("304 lacks admitted prior response"))?;
                         if observation.response_digest != cache.evidence.digest
                             || !observation.source_refs.contains(&cache.evidence)
+                            || observation.retrieved_at != cache.observation.retrieved_at
                         {
                             bail!("304 changed the exact retained response identity");
                         }
@@ -261,14 +256,30 @@ impl ProviderWorkResultV1 {
                     if observation.provider != plan.operation.provider()
                         || observation.project != project
                         || observation.adapter_version != plan.adapter_version
+                        || observation.retrieved_at_unix < plan.issued_at.unix_seconds()
                         || observation.retrieved_at_unix > self.completed_at.unix_seconds()
                     {
                         bail!("upstream observation differs from its exact admitted source");
+                    }
+                    if self.outcome == WorkOutcome::NotModified
+                        && plan.cache_ref.as_ref().is_none_or(|cache| {
+                            observation.response_digest != cache.evidence.digest
+                        })
+                    {
+                        bail!("304 upstream projection changed its retained response identity");
                     }
                 }
                 NormalizedObject::KnownExploit(_) => {
                     if !matches!(plan.operation, ProviderOperation::RefreshKev { .. }) {
                         bail!("known-exploitation projection is outside KEV work scope");
+                    }
+                }
+                NormalizedObject::Page(page) => {
+                    if page.operation != plan.operation {
+                        bail!("source page changed the exact admitted operation");
+                    }
+                    if self.continuation == Some(projection.digest) && page.next.is_none() {
+                        bail!("continuation points to an exhausted source page");
                     }
                 }
             }
@@ -280,6 +291,44 @@ impl ProviderWorkResultV1 {
             }
         }
         sorted(&self.observation_refs, "provider observation references")?;
+        for projection in &self.normalized_objects {
+            let source = match &projection.object {
+                NormalizedObject::Advisory(record) => Some(record.source_digest),
+                NormalizedObject::KnownExploit(record) => Some(record.source_digest),
+                NormalizedObject::Page(page) => Some(page.source_digest),
+                _ => None,
+            };
+            if let Some(source) = source
+                && !self
+                    .normalized_objects
+                    .iter()
+                    .any(|candidate| match &candidate.object {
+                        NormalizedObject::Observation(observation) => observation
+                            .source_refs
+                            .iter()
+                            .any(|reference| reference.digest == source),
+                        NormalizedObject::Upstream(observation) => {
+                            observation.response_digest == source
+                        }
+                        _ => false,
+                    })
+            {
+                bail!("provider projection lacks its exact normalized source custody reference");
+            }
+        }
+        if let ProviderCoverage::Partial { continuation, .. } = &self.coverage
+            && continuation != &self.continuation
+        {
+            bail!("provider coverage differs from its retained continuation identity");
+        }
+        if let Some(continuation) = self.continuation
+            && !self.normalized_objects.iter().any(|projection| {
+                projection.digest == continuation
+                    && matches!(&projection.object, NormalizedObject::Page(page) if page.next.is_some())
+            })
+        {
+            bail!("provider continuation lacks its exact retained source page");
+        }
         if self
             .observation_refs
             .iter()
@@ -298,6 +347,9 @@ impl ProviderWorkResultV1 {
         }
         if self.outcome == WorkOutcome::Observed && !self.coverage.is_complete() {
             bail!("observed outcome lacks complete source coverage");
+        }
+        if self.outcome == WorkOutcome::Observed && self.continuation.is_some() {
+            bail!("complete provider result retains an unconsumed source continuation");
         }
         if self.outcome == WorkOutcome::Observed && self.normalized_objects.is_empty() {
             bail!("observed outcome lacks normalized source evidence");
