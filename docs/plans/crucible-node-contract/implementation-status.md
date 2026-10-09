@@ -21,6 +21,15 @@ schemas and test adapters establish component behavior, not native support.
 | `15167101c9` | Source-built gem5 and DMTCP, nondraining event cuts and private-resource restoration | x86 and ARM O3/cache/DDR3 continuation fixtures survive source death and fresh restoration; complete state coverage remains unqualified |
 | `d494cb3b67` | Runnable authenticated public checksum provider, native operation journal and independent conformance tool | 90 provider unit tests, four public-endpoint integrations and seven child-process tests pass; strict Clippy passes |
 | `746d9f6407` | Capped KVM pvclock and software LAPIC timer source mediation | Common KVM, x86, VMX, SVM and LAPIC objects compile; 400,000 arithmetic cases and the native admission-policy truth table pass; no live KVM execution |
+| `1b86797ab8` | Coherent workspace manifests, lock, shared source-vendor identity and crate-layer inventory | Locked metadata, actual source vendoring and crate-layer gate pass |
+| `de7080cf59` | ARM architectural counter/timer source mediation and retained completion acknowledgment | Native x86 and ARM objects compile; 600,000 arithmetic cases pass; no live KVM execution |
+| `e4e228d1a3` | Shared world trigger and debugger policy | 23 focused API regressions pass |
+| `4088d46711` | Complete coupled-owner executor guarantees | Six executor capability regressions pass |
+| `2ceb03754c` | Whole-graph admission, original causal scheduling, exclusive native runtime and authenticated host archives | Complete core library passes 690 tests with one pre-existing native fixture excluded; required application test-target compilation passes |
+| `832a5c1a96` | Autonomous kernel run-ceiling gate and strict architecture admission | Native x86 and ARM objects compile; 700,000 arithmetic/admission cases pass; unsupported ARM event-stream mediation refuses strict admission |
+| `b92a9da932` | Installed mixed-node daemon execution and private CLI control | 446 campaign, 344 CLI and 20 daemon tests pass; six actual connected-node witnesses and the CLI restart scenario pass |
+| `c5dd8e0346` | Exact scripted request nodes and native pending-queue archive branching | 19 native adapter tests and three actual Block/9p/network archive branch regressions pass; expanded complete core suite passes 699 tests |
+| `6f79344ee4` | Existing SHA256 dependency for process-image auditing | Locked metadata and actual source-vendor derivation pass; external package selection is unchanged |
 
 Legacy codec bytes, hash domains, fault identifiers, and existing exact QEMU
 restore semantics remain unchanged by these source extractions. New node
@@ -32,11 +41,11 @@ records use separate public schemas and cannot relabel legacy authority.
 | --- | --- | --- |
 | Portable contract | Bounded scalar values, checked coordinates, closed CNP schemas, strict JSON, RFC 8785 canonical identity and normative vectors; 21 tests pass | Installed implementations and live native state require host authentication beyond these records |
 | Provider transport and custody | Typed bounded framing, authenticated negotiation/reconnect, fatal fencing, original native journals, method correlation, bounded content custody and runnable public checksum endpoint | Additional native backend implementations and their complete lifecycle qualification |
-| Whole-graph admission | Ownership, ports, immutable content, host-selected schemas, qualifications, mode acceptance and zero-time-cycle checks | Combined engine tests and real installed-provider evidence |
-| Runtime | Exclusive owner custody, readiness/activation, retained operations, cancellation, publication and native quarantine interfaces; actual checksum child passes two admitted quantums | Connected production worlds and complete QEMU/gem5 implementations of those interfaces |
-| Causal scheduling | Exact and quantized grants, conservative bounds, superdense ordering and bounded paused snapshots | Authentic native bounds, input acknowledgment, output coordinates and concurrent dispatch |
-| Capture and restore | Backend-bound closure authentication and inactive all-owner staging; four actual host-clock archive tests pass, including cold restoration and original pending acknowledgment recovery | Final bounded archive decoder hardening, production factory wiring, native complete-state writers and complete continuation comparisons |
-| Common lifecycle | World trigger and debugger-policy extraction | API regressions and complete new-profile initial/restore activation |
+| Whole-graph admission | Ownership, ports, immutable content, installed native evidence, qualifications, mode acceptance and zero-time-cycle checks; complete library and actual connected graphs pass | Complete QEMU/gem5/KVM installation qualification |
+| Runtime | Exclusive owner custody, readiness/activation, retained operations, cancellation, publication and native quarantine; actual mixed daemon graphs and original nonce retries pass | Complete QEMU/gem5 implementations of those interfaces |
+| Causal scheduling | Exact and quantized grants, conservative native bounds, original staged-input acknowledgment, superdense ordering and bounded paused snapshots; real connected-node byte/provenance checks pass | Full native CPU/device timing and broader backend concurrency qualification |
+| Capture and restore | Backend-bound closure authentication, bounded signed archives and inactive all-owner staging; actual clock and pending Block/9p/network queues survive cold isolated branching without redispatch | Production archive commands, connected transfer-state closure and native backend complete-state qualification |
+| Common lifecycle | Shared world trigger and debugger policy with API regression coverage; installed profiles use complete-owner activation | Complete native backend initial/restore activation |
 
 These rows distinguish implemented shared behavior from production wiring. An
 unsupported native operation must refuse admission or execution; passing a
@@ -69,11 +78,13 @@ execution and qualification have not occurred. Quantized protocol and external
 reference-device work can proceed independently; it cannot substitute for KVM
 clock, device, architectural capture or multi-vCPU tests.
 
-The real Linux patches implement VM-wide capped/frozen x86 TSC read/write
-mediation, run-owner accounting, pvclock and software LAPIC timer control. The
-helper, common KVM, x86 core, VMX, SVM and LAPIC source compile; integer and ABI
-checks run locally. ARM and complete device mediation remain absent from this
-tested stage, so it cannot qualify a runnable KVM node by itself.
+The Linux patches implement VM-wide capped/frozen x86 TSC read/write mediation,
+run-owner accounting, pvclock, software LAPIC timers, ARM architectural
+counters/timers and an autonomous run-ceiling admission gate. Native source
+objects and integer/ABI checks pass locally. Strict ARM admission refuses an
+unmediated architectural event stream. Complete device mediation and live
+execution remain unqualified, so these components cannot qualify a runnable
+KVM node by themselves.
 
 The opt-in QEMU source mechanics build for x86_64 and aarch64. Actual x86 probes
 cover exclusive retirement, equality ceilings, retained fractional instruction
