@@ -1124,6 +1124,118 @@ mod tests {
     }
 
     #[test]
+    fn complete_retained_versions_reject_every_truncation_and_trailing_bytes() {
+        let ordinary = retained();
+        let consumed = ordinary.consume(
+            [91; 16],
+            ObjectDigest::from_bytes([92; 32]),
+            ObjectDigest::from_bytes([93; 32]),
+            ObjectDigest::from_bytes([94; 32]),
+            ObjectDigest::from_bytes([95; 32]),
+        ).unwrap();
+        let mut selected = ordinary.clone();
+        selected.version = 2;
+
+        for record in [ordinary, consumed, selected] {
+            let encoded = record.encode_payload().unwrap();
+            let decoded = RetainedStorageCatalogPreparationV1::decode_payload(&encoded).unwrap();
+            assert_eq!(decoded.encode_payload().unwrap(), encoded);
+            assert_eq!(decoded.consumption(), record.consumption());
+
+            for end in 0..encoded.len() {
+                assert!(matches!(
+                    RetainedStorageCatalogPreparationV1::decode_payload(&encoded[..end]),
+                    Err(StorageCatalogPreparationError::CorruptRecord)
+                ), "version {}, consumed {}, prefix {end}", record.version, record.consumption().is_some());
+            }
+
+            let mut trailing = encoded;
+            trailing.push(0);
+            assert!(matches!(
+                RetainedStorageCatalogPreparationV1::decode_payload(&trailing),
+                Err(StorageCatalogPreparationError::CorruptRecord)
+            ));
+        }
+    }
+
+    #[test]
+    fn retained_record_enforces_variable_ceilings_and_consumption_sentinels() {
+        let mut record = retained();
+        record.sealed_fence = vec![44; MAXIMUM_AUTHORITY_RECORD_BYTES];
+        record.sealed_effect = vec![45; MAXIMUM_AUTHORITY_RECORD_BYTES];
+        record.sealed_operation_fence = vec![46; MAXIMUM_AUTHORITY_RECORD_BYTES];
+        record.canonical_request = vec![31; MAXIMUM_CANONICAL_REQUEST_BYTES];
+        record.preparation_digest = BrokerArgumentCommitment::for_canonical_bytes(
+            &record.canonical_request,
+        ).digest();
+        record.receipt = vec![47; MAXIMUM_RECEIPT_BYTES];
+        let encoded = record.encode_payload().unwrap();
+
+        let decoded = RetainedStorageCatalogPreparationV1::decode_payload(&encoded).unwrap();
+        assert_eq!(decoded.encode_payload().unwrap(), encoded);
+        let fields = [
+            (MAXIMUM_AUTHORITY_RECORD_BYTES, record.sealed_fence.as_slice()),
+            (MAXIMUM_AUTHORITY_RECORD_BYTES, record.sealed_effect.as_slice()),
+            (MAXIMUM_AUTHORITY_RECORD_BYTES, record.sealed_operation_fence.as_slice()),
+            (MAXIMUM_CANONICAL_REQUEST_BYTES, record.canonical_request.as_slice()),
+            (MAXIMUM_RESOLVED_CATALOG_BYTES, record.catalog.canonical_bytes()),
+            (MAXIMUM_RECEIPT_BYTES, record.receipt.as_slice()),
+        ];
+
+        // The complete fixed preparation prefix ends after resolver-policy binding.
+        let mut length_offset = 613;
+        for (field, (maximum, payload)) in fields.into_iter().enumerate() {
+            let mut oversized_payload = payload.to_vec();
+            oversized_payload.resize(maximum + 1, 1);
+            let mut oversized = encoded.clone();
+            oversized[length_offset..length_offset + 4]
+                .copy_from_slice(&((maximum + 1) as u32).to_be_bytes());
+            oversized.splice(length_offset + 4..length_offset + 4 + payload.len(), oversized_payload.iter().copied());
+            if field == 3 {
+                let commitment = BrokerArgumentCommitment::for_canonical_bytes(&oversized_payload);
+                oversized[58..90].copy_from_slice(commitment.digest().as_bytes());
+            }
+            assert!(matches!(
+                RetainedStorageCatalogPreparationV1::decode_payload(&oversized),
+                Err(StorageCatalogPreparationError::CorruptRecord)
+            ), "variable field at {length_offset}");
+            length_offset += 4 + payload.len();
+        }
+        assert_eq!(length_offset, encoded.len());
+
+        for (first, last) in [(10, 26), (235, 243)] {
+            let mut zero = encoded.clone();
+            zero[first..last].fill(0);
+            assert!(matches!(
+                RetainedStorageCatalogPreparationV1::decode_payload(&zero),
+                Err(StorageCatalogPreparationError::CorruptRecord)
+            ));
+        }
+        for (offset, value) in [(90, 3), (91, 1)] {
+            let mut malformed_consumption = encoded.clone();
+            malformed_consumption[offset] = value;
+            assert!(matches!(
+                RetainedStorageCatalogPreparationV1::decode_payload(&malformed_consumption),
+                Err(StorageCatalogPreparationError::CorruptRecord)
+            ));
+        }
+
+        let consumed = record.consume(
+            [91; 16],
+            ObjectDigest::from_bytes([92; 32]),
+            ObjectDigest::from_bytes([93; 32]),
+            ObjectDigest::from_bytes([94; 32]),
+            ObjectDigest::from_bytes([95; 32]),
+        ).unwrap();
+        let mut selected_consumed = consumed.encode_payload().unwrap();
+        selected_consumed[8..10].copy_from_slice(&2_u16.to_be_bytes());
+        assert!(matches!(
+            RetainedStorageCatalogPreparationV1::decode_payload(&selected_consumed),
+            Err(StorageCatalogPreparationError::CorruptRecord)
+        ));
+    }
+
+    #[test]
     fn current_v1_record_replays_exact_bytes_and_digest() {
         let record = retained();
         let encoded = record.encode_payload().unwrap();
