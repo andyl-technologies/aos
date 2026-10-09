@@ -290,6 +290,19 @@ held protected reader, validates its exact digest and schema, and includes it
 in that scope's physical ledger. Both corrections await combined qualification;
 the unchanged 1,024-record publication and other five population cases remain
 unrun. No task checkbox or milestone exit advances.
+The reviewed permanent recovery candidate `b0d2b176f0` retains original
+directory continuity while staging fresh, unselected progress proposals and
+restores full canonical candidate enumeration before preselection directory
+synchronization, keeping it through selection and acknowledgment. Actual
+current inputs, absent checkpoint preimages, exclusions and physical recipes
+remain checked. Its production native build passes (25.31 seconds;
+`/tmp/terrane-permanent-stage-build.log`). Eleven new genuine proposal-handoff
+witnesses cover directory and current-input mutation, cancellation and fresh
+recovery of added late residue. Source review requires more precise physical
+refusal assertions in eight of those witnesses before their qualification.
+Strict Clippy, the expanded thirty-four-case owning reconciliation gate and
+the unchanged large-family recovery bound remain unqualified. Neither staging
+continuity nor the passing production build establishes collection coverage.
 The shared final-check producer now retains the native permanent-family
 traversal through pre-selection handoffs. Its typed receipt refreshes actual
 enumeration and directory continuity between current-authority checks;
