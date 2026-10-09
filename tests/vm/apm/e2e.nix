@@ -32,6 +32,24 @@
 
   nixLibPath = builtins.concatStringsSep ":" (map (pkg: "${pkg}/lib") nixRuntimeDeps);
 
+  fixtureInterpreters = [pkgs.bash];
+  interpreterClosure = builtins.genericClosure {
+    startSet =
+      map (package: {
+        key = toString package;
+        inherit package;
+      })
+      fixtureInterpreters;
+    operator = entry:
+      map (package: {
+        key = toString package;
+        inherit package;
+      }) (entry.package.runtimeDeps or []);
+  };
+  interpreterPackages = pkgs.lib.listToAttrs (map (entry:
+    pkgs.lib.nameValuePair entry.package.pname entry.package)
+  interpreterClosure);
+
   # Published recipe closures include source archives larger than the guest's
   # tmpfs. Use the fixture disk for caches and downloaded NARs.
   setupPublicationStorage = ''
@@ -65,6 +83,15 @@
       (cd "$project" && publish_vm_package "$@")
     }
 
+    publish_fixture_interpreters() {
+      local project="$1"
+      local registry="$2"
+      ${pkgs.lib.concatMapStringsSep "\n" (entry: ''
+        publish_fixture_package "$project" ${pkgs.lib.escapeShellArg (toString entry.package)} --registry "$registry" || return
+      '')
+      interpreterClosure}
+    }
+
     assert_file_not_contains() {
       file="$1"
       pattern="$2"
@@ -91,7 +118,11 @@
     delete_store_path() {
       path="$1"
       label="$2"
-      if nix-store --delete --ignore-liveness "$path" > "/tmp/e2e-delete-$label.out" 2>&1; then
+      # Retained publication inventories also refer to the unused payload.
+      # Remove its fixture referrers so this test exercises a real download.
+      local -a referring_paths
+      mapfile -t referring_paths < <(nix-store --query --referrers-closure "$path")
+      if nix-store --delete --ignore-liveness "''${referring_paths[@]}" > "/tmp/e2e-delete-$label.out" 2>&1; then
         pass "$label deleted before APM download"
       else
         cat "/tmp/e2e-delete-$label.out"
@@ -169,7 +200,7 @@
         pkgs.bash
         pkgs.coreutils
       ];
-      runtimeDeps = [pkgs.bash] ++ extraRuntimeDeps;
+      runtimeDeps = fixtureInterpreters ++ extraRuntimeDeps;
       platformSupport = {
         build = [{os = ["linux"];}];
         host = [{os = ["linux"];}];
@@ -333,7 +364,8 @@
   publicationFor = packages:
     import ../../fleet/_container-publication-project.nix {
       lib = pkgs.lib;
-      inherit pkgs packages;
+      inherit pkgs;
+      packages = interpreterPackages // packages;
     };
   e2ePublicationV1 = publicationFor {
     e2e-helper = e2eHelperV1;
@@ -419,6 +451,10 @@ in {
         store_path="$2"
         dep_store_path="$3"
         project="$4"
+        run_logged "/tmp/e2e-publish-interpreters-$version.out" publish_fixture_interpreters "$project" e2e-reg || {
+          fail "apr publish fixture interpreter dependencies"
+          return 1
+        }
         run_logged "/tmp/e2e-publish-helper-$version.out" publish_fixture_package "$project" "$dep_store_path" \
           --registry e2e-reg || {
           fail "apr publish e2e-helper $version"
@@ -826,6 +862,10 @@ in {
         store_path="$2"
         dep_store_path="$3"
         project="$4"
+        run_logged "/tmp/fleet-publish-interpreters-$version.out" publish_fixture_interpreters "$project" fleet-reg || {
+          fail "apr publish fixture interpreter dependencies"
+          return 1
+        }
         run_logged "/tmp/fleet-publish-helper-$version.out" publish_fixture_package "$project" "$dep_store_path" \
           --registry fleet-reg || {
           fail "apr publish fleet-helper $version"
