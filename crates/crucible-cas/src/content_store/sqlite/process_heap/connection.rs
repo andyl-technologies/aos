@@ -167,6 +167,12 @@ impl DerefMut for SqliteConnectionGuard<'_> {
 }
 
 impl SqliteConnection {
+    // Diagnostics borrow the actual connection's retained nominal heap.
+    // A backend/source no longer carries a separately losable ceiling copy.
+    pub(in crate::content_store::sqlite) fn maximum_heap_bytes(&self) -> u64 {
+        self.heap.maximum_heap_bytes()
+    }
+
     pub(in crate::content_store::sqlite) fn lock(
         &self,
     ) -> Result<SqliteConnectionGuard<'_>, StoreError> {

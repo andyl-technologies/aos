@@ -287,8 +287,8 @@ fn borrowed_sqlite_accounts_reject_substitution_and_late_checks()
         ),
         (
             "src/content_store/sqlite/checked_reader",
-            "super::super::checked_reader::check(&original,boundary)?;letdiagnostic=diagnostic::admit(&original,backend.maximum_sqlite_heap_bytes,None)?;",
-            "let diagnostic = diagnostic::admit(&original, backend.maximum_sqlite_heap_bytes, None)?; super::super::checked_reader::check(&original, boundary)?;",
+            "super::super::checked_reader::check(&original,boundary)?;letdiagnostic=diagnostic::admit(&original,&backend.connection,None)?;",
+            "let diagnostic = diagnostic::admit(&original, &backend.connection, None)?; super::super::checked_reader::check(&original, boundary)?;",
         ),
     ] {
         let contract = CONTRACTS
@@ -350,6 +350,45 @@ fn borrowed_sqlite_accounts_reject_substitution_and_late_checks()
                 contract.target
             );
         }
+    }
+    Ok(())
+}
+
+#[test]
+fn checked_row_eof_contract_rejects_stale_lengths_and_missing_current_row_reads()
+-> Result<(), Box<dyn std::error::Error>> {
+    let contract = CONTRACTS
+        .iter()
+        .find(|contract| contract.target == "src/content_store/sqlite/batch/reader")
+        .expect("reviewed checked current-row reader");
+    let source = local_source(contract)?;
+    let companions = read_companions(contract)?;
+    assert!(!has_escape(&mask_with_companions(
+        contract,
+        &source,
+        &companions
+    )));
+
+    for (before, after) in [
+        (
+            "params![encoded,sqlite_offset,lengthasi64,self.logical_length]",
+            "params![encoded, sqlite_offset, length as i64, 0_u64]",
+        ),
+        (
+            "drop(self.chunk_with_boundary(original,0,0,boundary)?);",
+            "skip_current_row_validation();",
+        ),
+        ("iflength==0", "if length != 0"),
+    ] {
+        assert!(
+            pattern(&source).contains(before),
+            "applicable row-auth mutation"
+        );
+        let changed = replace_all_patterns(&source, before, after);
+        assert!(
+            has_escape(&mask_with_companions(contract, &changed, &companions)),
+            "changed current row/EOF obligation must retain retry lint: {before}"
+        );
     }
     Ok(())
 }

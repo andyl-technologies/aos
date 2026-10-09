@@ -316,6 +316,7 @@ fn operational_boundary_regression_failures() -> Vec<String> {
             "src/host_supervision/bootstrap.rs",
         ),
         ("crucible-daemon", "src/host_operational_registry.rs"),
+        ("crucible-qemu", "src/linux_cgroup/original_finish.rs"),
         ("crucible-qemu", "src/node/shutdown_budget.rs"),
         ("crucible-qemu", "src/ram_control/supervision.rs"),
         ("crucible-qemu-plugin", "src/paged_ram/supervision.rs"),
@@ -421,6 +422,41 @@ fn operational_boundary_regression_failures() -> Vec<String> {
                 path.display()
             ));
         }
+    }
+
+    // The watcher result and cleanup method are opaque crate-private authority.
+    // Naming them explicitly cannot admit a raw clock or a neighboring export.
+    let finish_path = Path::new("crucible-qemu/src/linux_cgroup/original_finish.rs");
+    let finish_exports =
+        operational_public_exports("crucible-qemu", Path::new("crucible-qemu"), finish_path);
+    let opaque = "pub(crate) struct OriginalWatcherRefusal { source: Error } pub(crate) fn remove_under_original(original: &Guard) -> Result<(), Error> { Ok(()) }";
+    let findings = public_export_findings(finish_path, opaque, finish_exports);
+    if !findings.is_empty() {
+        failures.push(format!(
+            "reviewed original watcher cleanup authority rejected: {findings:?}"
+        ));
+    }
+    for source in [
+        "pub(crate) fn remove_under_original() -> std::time::Instant { std::time::Instant::now() }",
+        "pub(crate) struct OriginalWatcherRefusal { clock: std::time::Instant }",
+    ] {
+        let findings = public_export_findings(finish_path, source, finish_exports);
+        if !finding_contains(&findings, "raw host clock in public operational signature") {
+            failures.push(format!(
+                "original watcher authority admits a raw clock: {source}"
+            ));
+        }
+    }
+    let sibling_exports = public_export_findings(
+        finish_path,
+        "pub(crate) struct UnreviewedWatcherAuthority;",
+        finish_exports,
+    );
+    if !finding_contains(
+        &sibling_exports,
+        "public export from nondeterministic boundary source",
+    ) {
+        failures.push("original watcher inventory admits a neighboring export".to_string());
     }
 
     let registry_path = "crucible-daemon/src/host_operational_registry.rs";
@@ -618,6 +654,151 @@ fn operational_boundary_regression_failures() -> Vec<String> {
             ));
         }
     }
+    let origin = "crucible-linux-resource/src/measurement_origin.rs";
+    for source in [
+        "pub(crate) struct MeasurementClock { pub(crate) start_ns: u64, pub(crate) end_ns: u64 }",
+        "pub(crate) fn supervision_coordinates(&self) -> Result<(Instant, MeasurementClock), Error> {}",
+    ] {
+        if !public_export_findings(Path::new(origin), source, &[]).is_empty() {
+            failures.push(format!(
+                "authenticated crate-private origin coordinate rejected: {source}"
+            ));
+        }
+    }
+    for (path, source) in [
+        (origin, "pub struct MeasurementClock { pub start_ns: u64 }"),
+        (origin, "pub fn supervision_coordinates() -> Instant {}"),
+        (origin, "pub(crate) fn unrelated_clock() -> Instant {}"),
+        (
+            "crucible-linux-resource/src/other.rs",
+            "pub(crate) fn supervision_coordinates() -> Instant {}",
+        ),
+    ] {
+        if public_export_findings(Path::new(path), source, &[]).is_empty() {
+            failures.push(format!(
+                "origin private route admits public/sibling clock: {path}: {source}"
+            ));
+        }
+    }
+
+    for (source, accepted) in [
+        (
+            "pub struct MeasurementInvocationOrigin { started: std::time::Instant }",
+            true,
+        ),
+        (
+            "pub struct MeasurementInvocationOrigin { pub started: std::time::Instant }",
+            false,
+        ),
+        (
+            "pub fn remaining() -> std::time::Instant { todo!() }",
+            false,
+        ),
+        (
+            "pub fn unreviewed_clock() { std::time::Instant::now(); }",
+            false,
+        ),
+    ] {
+        let findings = package_source_confinement_findings(
+            "crucible-linux-resource",
+            Path::new("crucible-linux-resource"),
+            &source_pairs(&[(origin, source)]),
+        );
+        if findings.is_empty() != accepted {
+            failures.push(format!(
+                "private origin boundary contract misclassified {source}: {findings:?}"
+            ));
+        }
+    }
+
+    // These are the exact current grouped origin exports, not a general
+    // wildcard or alias allowance for the nondeterministic boundary.
+    for source in [
+        "pub use actor_partition::{CertifiedActorPartition, CertifiedNativeStage};",
+        "pub use parent_evidence::{AuthenticatedParentInvocation, CertifiedMeasurementMode, CertifiedNativeRoleEvidence, VerifiedImageInventory,};",
+    ] {
+        let approved = operational_public_exports(
+            "crucible-linux-resource",
+            Path::new("crucible-linux-resource"),
+            Path::new(origin),
+        );
+        let findings = public_export_findings(Path::new(origin), source, approved);
+        if !findings.is_empty() {
+            failures.push(format!(
+                "exact current origin identity group refused: {source}: {findings:?}"
+            ));
+        }
+    }
+    for (path, source) in [
+        (
+            origin,
+            "pub use actor_partition::{CertifiedActorPartition, UnreviewedStage};",
+        ),
+        (
+            origin,
+            "pub use actor_partition::{CertifiedActorPartition as CertifiedNativeStage};",
+        ),
+        (origin, "pub use actor_partition::*;"),
+        (
+            "crucible-linux-resource/src/other.rs",
+            "pub use actor_partition::{CertifiedActorPartition, CertifiedNativeStage};",
+        ),
+        (origin, "pub fn receive_original() -> std::time::Instant {}"),
+        (
+            origin,
+            "pub struct MeasurementInvocationOrigin { pub(crate) started: std::time::Instant }",
+        ),
+    ] {
+        let approved = operational_public_exports(
+            "crucible-linux-resource",
+            Path::new("crucible-linux-resource"),
+            Path::new(path),
+        );
+        let findings = public_export_findings(Path::new(path), source, approved);
+        if findings.is_empty() {
+            failures.push(format!(
+                "origin group admits alias, sibling or raw clock: {path}: {source}"
+            ));
+        }
+    }
+    let cgroup = "crucible-qemu/src/linux_cgroup.rs";
+    let findings = package_source_confinement_findings(
+        "crucible-qemu",
+        Path::new("crucible-qemu"),
+        &source_pairs(&[(
+            cgroup,
+            "pub fn remove_if_empty(self) -> Result<(), ReleaseError> {}",
+        )]),
+    );
+    if !findings.is_empty() {
+        failures.push(format!(
+            "existing opaque cgroup removal refused: {findings:?}"
+        ));
+    }
+    for (path, source) in [
+        (
+            cgroup,
+            "pub fn remove_if_empty(self) -> std::time::Instant {}",
+        ),
+        (cgroup, "pub fn unreviewed_remove(self) {}"),
+        (
+            "crucible-qemu/src/linux_cgroup/sibling.rs",
+            "pub fn remove_if_empty(self) {}",
+        ),
+    ] {
+        let approved = operational_public_exports(
+            "crucible-qemu",
+            Path::new("crucible-qemu"),
+            Path::new(path),
+        );
+        let findings = public_export_findings(Path::new(path), source, approved);
+        if findings.is_empty() {
+            failures.push(format!(
+                "cgroup removal admits clock or sibling: {path}: {source}"
+            ));
+        }
+    }
+
     let bootstrap = "crucible-linux-resource/src/host_supervision/bootstrap.rs";
     let root = "crucible-linux-resource/src/host_supervision.rs";
     for (path, source) in [

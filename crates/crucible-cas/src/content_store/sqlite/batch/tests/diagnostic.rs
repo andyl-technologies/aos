@@ -9,53 +9,6 @@ fn isolated(name: &str) -> bool {
 }
 
 #[test]
-fn missing_native_bound_refuses_without_changing_generic_routes() {
-    let root = tempfile::tempdir().expect("ordinary catalog");
-    let mut backend = SqliteBlobBackend::open(
-        "ordinary",
-        root.path(),
-        &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
-    )
-    .expect("generic catalog");
-    // An actual ordinary heap is now retained at construction. This negative
-    // deliberately removes that evidence inside the private test seam;
-    // checked entry still refuses an absent bound without changing generic SQL.
-    backend.maximum_sqlite_heap_bytes = None;
-    let inputs = objects();
-    let account = DecodeBudget::for_store(original_quota()).expect("original component account");
-    let _scope = account.enter();
-
-    assert!(matches!(
-        backend.put_many_if_absent_with_boundary(&account, &inputs, &mut || Ok(())),
-        Err(StoreError::Unsupported {
-            capability: "sqlite-diagnostic-native-heap-bound"
-        })
-    ));
-    assert!(
-        !backend
-            .contains(inputs[0].0)
-            .expect("checked refusal publishes nothing")
-    );
-    backend
-        .put_many_if_absent(&inputs)
-        .expect("ordinary batch remains available");
-    let source = backend.read(inputs[0].0, None).expect("ordinary source");
-    assert!(matches!(
-        source.read_all_with_boundary(&account, 1024, &mut || Ok(())),
-        Err(StoreError::Unsupported {
-            capability: "sqlite-diagnostic-native-heap-bound"
-        })
-    ));
-    assert_eq!(
-        source.read_all(1024).expect("generic source unchanged"),
-        b"first"
-    );
-    backend
-        .put_if_absent(inputs[0].0, &inputs[0].1)
-        .expect("ordinary singleton unchanged");
-}
-
-#[test]
 fn ordinary_backend_retains_its_genuine_heap_bound_for_checked_diagnostics() {
     if isolated("ordinary_backend_retains_its_genuine_heap_bound_for_checked_diagnostics") {
         return;
@@ -66,8 +19,8 @@ fn ordinary_backend_retains_its_genuine_heap_bound_for_checked_diagnostics() {
     let backend = SqliteBlobBackend::open("ordinary", root.path(), &heap)
         .expect("same heap ordinary catalog");
     assert_eq!(
-        backend.maximum_sqlite_heap_bytes,
-        Some(heap.maximum_heap_bytes())
+        backend.connection.maximum_heap_bytes(),
+        heap.maximum_heap_bytes()
     );
 
     let guard = original_quota();
@@ -83,6 +36,19 @@ fn ordinary_backend_retains_its_genuine_heap_bound_for_checked_diagnostics() {
         &*source
             .read_all_with_boundary(&account, 1024, &mut || guard.verify())
             .expect("same bound reaches checked source"),
+        b"first"
+    );
+
+    backend
+        .put_many_if_absent(&inputs)
+        .expect("ordinary batch remains available");
+    backend
+        .put_if_absent(inputs[0].0, &inputs[0].1)
+        .expect("ordinary singleton remains available");
+    assert_eq!(
+        source
+            .read_all(1024)
+            .expect("ordinary source remains available"),
         b"first"
     );
 }

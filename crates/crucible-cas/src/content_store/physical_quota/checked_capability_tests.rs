@@ -1,4 +1,4 @@
-//! Physical wrappers refuse sources that cannot preserve their owning checks.
+//! Physical wrappers retain authority across synchronous and owning checked reads.
 
 use super::*;
 use crate::content_store::test_resources::FixtureResourceBudget;
@@ -206,7 +206,7 @@ impl BlobSource for WholeOnlySource {
 }
 
 #[test]
-fn physical_owning_contract_never_retries_a_whole_only_or_opaque_child() {
+fn physical_checked_contract_preserves_whole_and_refuses_opaque_without_raw_reads() {
     for access in [CheckedReadAccess::Whole, CheckedReadAccess::Unsupported] {
         let quota = Arc::new(Quota(FixtureResourceBudget::new(8, 4 * 1024 * 1024)));
         let caller = DecodeBudget::for_store(quota.clone()).unwrap();
@@ -230,24 +230,212 @@ fn physical_owning_contract_never_retries_a_whole_only_or_opaque_child() {
         });
         let retained = quota.0.usage().unwrap();
 
-        let error = wrapped
-            .read_all_with_boundary(&caller, 1, &mut || Ok(()))
-            .unwrap_err();
-
-        assert!(matches!(
-            error.original_failure(),
-            StoreError::Unsupported { .. }
-        ));
-        assert_eq!(source.whole_attempts.load(Ordering::SeqCst), 0);
+        let result = wrapped.read_all_with_boundary(&caller, 1, &mut || Ok(()));
+        match access {
+            CheckedReadAccess::Whole => {
+                let bytes = result.unwrap();
+                assert_eq!(&*bytes, &[7]);
+                assert_eq!(source.whole_attempts.load(Ordering::SeqCst), 1);
+                drop(bytes);
+            }
+            CheckedReadAccess::Unsupported => {
+                let error = result.unwrap_err();
+                assert!(matches!(
+                    error.original_failure(),
+                    StoreError::Unsupported { .. }
+                ));
+                assert_eq!(source.whole_attempts.load(Ordering::SeqCst), 0);
+                drop(error);
+            }
+            CheckedReadAccess::Owning => unreachable!(),
+        }
         assert_eq!(source.raw_attempts.load(Ordering::SeqCst), 0);
         assert_eq!(
             quota.0.usage().unwrap(),
             retained,
-            "failed owning controls refund after drop"
+            "synchronous read resources refund after output or error closes"
         );
-        drop(error);
         drop(wrapped);
         drop(caller);
         assert_eq!(quota.0.usage().unwrap(), (0, 0));
+    }
+}
+
+#[derive(Clone, Copy)]
+enum WholeCut {
+    Healthy,
+    PhysicalDuringChild,
+    OriginalDuringChild,
+    ChildErrorBeforePhysical,
+    PhysicalAfterChild,
+}
+
+struct CutWholeSource {
+    guard: Arc<OrderedQuota>,
+    calls: Arc<AtomicUsize>,
+    cut: WholeCut,
+}
+
+impl BlobSource for CutWholeSource {
+    fn checked_read_access(&self) -> CheckedReadAccess {
+        CheckedReadAccess::Whole
+    }
+
+    fn logical_length(&self) -> u64 {
+        1
+    }
+
+    fn open(&self) -> Result<Box<dyn Read + Send>, StoreError> {
+        panic!("checked Whole forwarding must never open an ordinary reader")
+    }
+
+    fn read_all_with_boundary(
+        &self,
+        original: &DecodeBudget,
+        maximum: u64,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<OwnedBlobBytes, StoreError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        match self.cut {
+            WholeCut::PhysicalDuringChild => {
+                self.guard.refusal.store(1, Ordering::SeqCst);
+                boundary()?;
+            }
+            WholeCut::OriginalDuringChild => {
+                original.charge_bytes(u64::MAX).unwrap_err();
+                boundary()?;
+            }
+            WholeCut::ChildErrorBeforePhysical => {
+                self.guard.refusal.store(1, Ordering::SeqCst);
+                return Err(StoreError::Corrupt {
+                    id: ContentId::for_bytes(ObjectKind::RamTree, 1, &[7]),
+                });
+            }
+            WholeCut::Healthy | WholeCut::PhysicalAfterChild => {}
+        }
+        let bytes =
+            BlobHandle::from_bytes([7]).read_all_with_boundary(original, maximum, boundary)?;
+        if matches!(self.cut, WholeCut::PhysicalAfterChild) {
+            self.guard.refusal.store(1, Ordering::SeqCst);
+        }
+        Ok(bytes)
+    }
+}
+
+fn cut_whole_handle(
+    guard: &Arc<OrderedQuota>,
+    original: &DecodeBudget,
+    calls: Arc<AtomicUsize>,
+    cut: WholeCut,
+) -> BlobHandle {
+    let resources = guard
+        .reserve_resources(0, deferred_source_metadata_bytes() as u64)
+        .unwrap();
+    let credit = original
+        .reserve_scratch_bytes(deferred_source_metadata_bytes() as u64)
+        .unwrap();
+    BlobHandle::new(PhysicalQuotaBlobSource {
+        handle: BlobHandle::new(CutWholeSource {
+            guard: guard.clone(),
+            calls,
+            cut,
+        }),
+        guard: guard.clone(),
+        reader_bytes: 0,
+        _credit: Some(credit),
+        _resources: resources,
+    })
+}
+
+#[test]
+fn physical_whole_preserves_child_cause_before_later_physical_refusal() {
+    for cut in [
+        WholeCut::PhysicalDuringChild,
+        WholeCut::OriginalDuringChild,
+        WholeCut::ChildErrorBeforePhysical,
+        WholeCut::PhysicalAfterChild,
+    ] {
+        let guard = OrderedQuota::new();
+        let namespace = DecodeBudget::for_store(guard.clone()).unwrap();
+        let original = namespace.child().unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let source = cut_whole_handle(&guard, &original, calls.clone(), cut);
+        let retained = guard.resources.usage().unwrap();
+
+        let error = source
+            .read_all_with_boundary(&original, 1, &mut || Ok(()))
+            .unwrap_err();
+
+        match cut {
+            WholeCut::ChildErrorBeforePhysical => assert!(matches!(
+                error.original_failure(),
+                StoreError::Corrupt { .. }
+            )),
+            WholeCut::OriginalDuringChild => assert!(matches!(
+                error.original_failure(),
+                StoreError::DecodeAdmission { .. }
+            )),
+            _ => assert!(matches!(error.original_failure(), StoreError::Unauthorized)),
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(guard.resources.usage().unwrap(), retained);
+        drop(error);
+        drop(source);
+        drop(original);
+        // The fixture's physical refusal is independent of the released
+        // child account. Restore that test policy before checking its parent.
+        guard.refusal.store(0, Ordering::SeqCst);
+        namespace.verify_live().unwrap();
+        drop(namespace);
+        assert_eq!(guard.resources.usage().unwrap(), (0, 0));
+    }
+}
+
+#[test]
+fn physical_whole_retains_saved_guard_and_refuses_before_child_effects() {
+    for exhaust_resources in [false, true] {
+        let guard = OrderedQuota::new();
+        let replacement = OrderedQuota::new();
+        replacement.refusal.store(1, Ordering::SeqCst);
+        let original = DecodeBudget::for_store(guard.clone()).unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let source = cut_whole_handle(&guard, &original, calls.clone(), WholeCut::Healthy);
+        // A separate replacement owner cannot change the retained source's
+        // physical authority. The actual retained guard alone accepts it.
+        let bytes = source
+            .read_all_with_boundary(&original, 1, &mut || Ok(()))
+            .unwrap();
+        assert_eq!(&*bytes, &[7]);
+        drop(bytes);
+        assert_eq!(replacement.calls.load(Ordering::SeqCst), 0);
+        calls.store(0, Ordering::SeqCst);
+        let retained = guard.resources.usage().unwrap();
+        let blocker = if exhaust_resources {
+            Some(
+                guard
+                    .reserve_resources(0, (256 << 20) - retained.1)
+                    .unwrap(),
+            )
+        } else {
+            guard.refusal.store(1, Ordering::SeqCst);
+            None
+        };
+
+        let error = source
+            .read_all_with_boundary(&original, 1, &mut || Ok(()))
+            .unwrap_err();
+
+        if exhaust_resources {
+            assert!(matches!(error.original_failure(), StoreError::Quota));
+        } else {
+            assert!(matches!(error.original_failure(), StoreError::Unauthorized));
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        drop(error);
+        drop(blocker);
+        assert_eq!(guard.resources.usage().unwrap(), retained);
+        drop(source);
+        drop(original);
+        assert_eq!(guard.resources.usage().unwrap(), (0, 0));
     }
 }

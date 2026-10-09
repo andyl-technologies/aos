@@ -93,7 +93,7 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
     let selectable_catalog = rows
         .get("crucible.guest-selectable.catalog-plan")
         .expect("missing selectable catalog-plan schema");
-    assert_eq!(selectable_catalog[1], "4");
+    assert_eq!(selectable_catalog[1], "5");
     assert_eq!(
         selectable_catalog[2],
         "crucible-protocol::selectable_catalog_plan"

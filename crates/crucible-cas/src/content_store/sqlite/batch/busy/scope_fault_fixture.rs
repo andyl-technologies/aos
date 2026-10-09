@@ -50,13 +50,13 @@ impl SqliteBlobBackend {
         let mut backend = Self::open_inner(
             name.to_owned(),
             root.to_owned(),
-            Some(8 * 1024 * 1024),
+            8 * 1024 * 1024,
             Some(supervisor),
             heap,
         )?;
         backend.resident_lease = lease.into();
         operation.complete()?;
-        let credit = diagnostic::admit(original, backend.maximum_sqlite_heap_bytes, Some(root))?;
+        let credit = diagnostic::admit(original, &backend.connection, Some(root))?;
         let mut connection = backend.lock_connection()?;
 
         let result = diagnostic::retain_failure(credit, || {

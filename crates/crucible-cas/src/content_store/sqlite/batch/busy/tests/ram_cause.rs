@@ -24,12 +24,8 @@ fn pending_validation_retains_committed_sql_and_distinct_outer_failure() {
 fn pending_validation_cleanup(committed: bool) {
     let (root, guard, backend, account) = backend();
     let entered = account.enter();
-    let diagnostic_credit = diagnostic::admit(
-        &account,
-        backend.maximum_sqlite_heap_bytes,
-        Some(root.path()),
-    )
-    .unwrap();
+    let diagnostic_credit =
+        diagnostic::admit(&account, &backend.connection, Some(root.path())).unwrap();
     let mut connection = backend.lock_connection().unwrap();
     let mut alias = None;
     let error = crate::ram::with_pending_validation_for_test(&account, |seal| {
@@ -152,12 +148,8 @@ fn failed_work_keeps_first_validation_and_actual_committed_sql_outcome() {
 fn retained_work_cleanup(committed: bool) {
     let (root, guard, backend, account) = backend();
     let entered = account.enter();
-    let diagnostic_credit = diagnostic::admit(
-        &account,
-        backend.maximum_sqlite_heap_bytes,
-        Some(root.path()),
-    )
-    .expect("unchanged actual SQL diagnostic prepayment");
+    let diagnostic_credit = diagnostic::admit(&account, &backend.connection, Some(root.path()))
+        .expect("unchanged actual SQL diagnostic prepayment");
     let mut connection = backend.lock_connection().expect("actual capped connection");
     let mut first_identity = None;
     let error = crate::ram::with_failed_work_for_test(&account, |fail| {
@@ -265,12 +257,8 @@ fn exercise(committed: bool) {
     let (root, guard, backend, account) = backend();
     let entered = account.enter();
     let prepared = PreparedRamFailure::<io::Error>::new(&account).expect("prepaid typed carrier");
-    let credit = diagnostic::admit(
-        &account,
-        backend.maximum_sqlite_heap_bytes,
-        Some(root.path()),
-    )
-    .expect("actual diagnostic copy loan");
+    let credit = diagnostic::admit(&account, &backend.connection, Some(root.path()))
+        .expect("actual diagnostic copy loan");
     let mut connection = backend.lock_connection().expect("actual capped connection");
     let started = Cell::new(false);
     let calls = Cell::new(0);

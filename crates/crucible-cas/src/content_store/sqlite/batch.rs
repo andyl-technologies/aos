@@ -76,7 +76,7 @@ impl SqliteBlobBackend {
 
         let mut diagnostic_credit = Some(diagnostic::admit(
             account,
-            self.maximum_sqlite_heap_bytes,
+            &self.connection,
             Some(&self.root),
         )?);
         let result = (|| {

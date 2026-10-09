@@ -40,6 +40,10 @@ impl AuthenticatingSqliteReader {
             return Ok(length);
         }
         self.scan_with_boundary(original, self.logical_length, boundary)?;
+        // Even an empty original must prove that its row still exists at EOF.
+        // This zero-byte projection validates current total length under the
+        // same checked SQL scope; it never treats an old digest as possession.
+        drop(self.chunk_with_boundary(original, 0, 0, boundary)?);
         if *self.hasher.finalize().as_bytes() != self.id.digest() {
             return Err(StoreError::Corrupt { id: self.id });
         }
@@ -106,9 +110,20 @@ impl AuthenticatingSqliteReader {
                         .map_err(|source| database_error("prepare-sqlite-batch-source", source))?;
                     with_id_text(self.id, |encoded| {
                         statement
-                            .query_row(params![encoded, sqlite_offset, length as i64], |row| {
-                                row.get::<_, Vec<u8>>(0)
-                            })
+                            .query_row(
+                                params![encoded, sqlite_offset, length as i64, self.logical_length],
+                                |row| {
+                                    if length == 0 {
+                                        // SQLite projects an empty BLOB's zero-byte substring as
+                                        // NULL. The predicate already proves a present row with
+                                        // its saved length; a NULL body cannot match it.
+                                        row.get::<_, Option<Vec<u8>>>(0)
+                                            .map(Option::unwrap_or_default)
+                                    } else {
+                                        row.get::<_, Vec<u8>>(0)
+                                    }
+                                },
+                            )
                             .optional()
                             .map_err(|source| database_error("read-sqlite-batch-source", source))
                     })

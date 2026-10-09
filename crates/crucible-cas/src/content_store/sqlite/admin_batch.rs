@@ -37,11 +37,7 @@ fn acquire_owned<'a>(
     let credit = account
         .reserve_scratch_array::<CheckedFence<'_>>(1)
         .map_err(|error| admission_under(&account, error))?;
-    let diagnostic = diagnostic::admit(
-        &account,
-        backend.maximum_sqlite_heap_bytes,
-        Some(&backend.root),
-    )?;
+    let diagnostic = diagnostic::admit(&account, &backend.connection, Some(&backend.root))?;
     let result = (|| {
         let mut original = || check(backend, &account, boundary);
         let staging = catalog::write_gate_with_boundary(&mut original)?;

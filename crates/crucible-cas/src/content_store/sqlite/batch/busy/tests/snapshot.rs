@@ -38,7 +38,7 @@ fn actual_producer_busy_metadata_keeps_original_refusal_and_restores_timeout() {
         .unwrap()
         .busy_timeout(Duration::from_millis(654))
         .unwrap();
-    let heap = backend.maximum_sqlite_heap_bytes.unwrap();
+    let heap = backend.connection.maximum_heap_bytes();
     let _foreign_resources = guard.reserve_resources(3, heap).unwrap();
     let foreign = foreign_connection(root.path());
     foreign.execute_batch("BEGIN EXCLUSIVE").unwrap();
@@ -182,7 +182,7 @@ fn actual_producer_body_remains_in_admitted_snapshot_during_external_replacement
         .query_row("PRAGMA journal_mode=WAL", [], |row| row.get::<_, String>(0))
         .unwrap();
     assert_eq!(wal, "wal");
-    let heap = backend.maximum_sqlite_heap_bytes.unwrap();
+    let heap = backend.connection.maximum_heap_bytes();
     let _foreign_resources = guard.reserve_resources(3, heap).unwrap();
     let foreign = foreign_connection(root.path());
     let mut admissions = 0;
@@ -480,7 +480,7 @@ fn refused_metadata_performs_no_body_query_and_restores_timeout() {
     connection
         .busy_timeout(Duration::from_millis(1234))
         .unwrap();
-    let diagnostic = diagnostic::admit(&account, backend.maximum_sqlite_heap_bytes, None).unwrap();
+    let diagnostic = diagnostic::admit(&account, &backend.connection, None).unwrap();
     // The prototype's longer CASE query has its own exact copied-SQL-name
     // envelope, under the SAME original finite bank, before SQL preparation.
     let _query_names = query_names(&account);
@@ -554,10 +554,10 @@ fn external_oversized_replacement_cannot_change_admitted_snapshot_body() {
 
     // The additional adversarial connection uses this fixture's existing
     // finite physical bank; it does not admit a second logical namespace.
-    let heap = backend.maximum_sqlite_heap_bytes.unwrap();
+    let heap = backend.connection.maximum_heap_bytes();
     let _foreign_resources = guard.reserve_resources(3, heap).unwrap();
     let foreign = foreign_connection(root.path());
-    let diagnostic = diagnostic::admit(&account, Some(heap), None).unwrap();
+    let diagnostic = diagnostic::admit(&account, &backend.connection, None).unwrap();
     let _query_names = query_names(&account);
     let mut connection = backend.read_connection.lock().unwrap();
     connection.busy_timeout(Duration::from_millis(987)).unwrap();
@@ -613,7 +613,7 @@ fn external_oversized_replacement_cannot_change_admitted_snapshot_body() {
 
     // A NEW operation observes the replacement, refuses its actual metadata
     // before body projection, and never grants trust to the stale content ID.
-    let diagnostic = diagnostic::admit(&account, Some(heap), None).unwrap();
+    let diagnostic = diagnostic::admit(&account, &backend.connection, None).unwrap();
     let mut following = Queries::default();
     let error = diagnostic::retain_failure(diagnostic, || {
         super::super::snapshot::with_snapshot(
@@ -659,8 +659,7 @@ fn final_callback_original_poisoning_refuses_value_after_real_snapshot_cleanup()
     let operation = namespace.child().unwrap();
     let mut connection = backend.read_connection.lock().unwrap();
     connection.busy_timeout(Duration::from_millis(321)).unwrap();
-    let diagnostic =
-        diagnostic::admit(&operation, backend.maximum_sqlite_heap_bytes, None).unwrap();
+    let diagnostic = diagnostic::admit(&operation, &backend.connection, None).unwrap();
     let mut calls = 0;
     let completed = std::cell::Cell::new(false);
     let mut first = None;

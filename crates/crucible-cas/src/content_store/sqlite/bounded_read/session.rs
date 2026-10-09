@@ -47,7 +47,7 @@ impl<'backend, 'original> SqliteRamReadSession<'backend, 'original> {
         busy::healthy(&backend.quarantined)?;
         let diagnostic = diagnostic::admit_for_query(
             original,
-            backend.maximum_sqlite_heap_bytes,
+            &backend.connection,
             None,
             METADATA.len().max(BODY.len()),
         )?;

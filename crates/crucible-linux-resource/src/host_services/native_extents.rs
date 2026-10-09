@@ -48,7 +48,7 @@ impl HostServiceAllocator {
 }
 
 #[cfg(all(test, feature = "test-support"))]
-// crucible-lint: allow rust-allow -- these exact admission and allocation controls panic only when the original-counter invariant fails.
+// crucible-lint: allow panic-shortcut -- these exact admission and allocation controls panic only when the original-counter invariant fails.
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;

@@ -10,6 +10,7 @@ use crate::owned_decode::DecodeBudget;
 mod checked_readers;
 mod composition;
 mod publication_acceptance;
+mod whole_reads;
 
 struct OriginalResources {
     used: AtomicU64,
@@ -358,7 +359,7 @@ pub(super) fn bounded_leaf(name: &str, root: &Path, guard: &Arc<Quota>) -> Sqlit
     let mut backend = SqliteBlobBackend::open_inner(
         name.to_owned(),
         root.to_owned(),
-        Some(8 * 1024 * 1024),
+        8 * 1024 * 1024,
         Some(supervisor),
         &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
     )

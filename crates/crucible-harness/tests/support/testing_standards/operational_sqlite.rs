@@ -315,11 +315,7 @@ pub(super) const CONTRACTS: &[Contract] = &[
     foreign
         .execute_batch("BEGIN; SELECT * FROM objects;")
         .expect("retained SHARED read lock");
-    let credit = diagnostic::admit(
-        &account,
-        backend.maximum_sqlite_heap_bytes,
-        Some(root.path()),
-    )
+    let credit = diagnostic::admit(&account, &backend.connection, Some(root.path()))
     .expect("original diagnostic loan");
     let mut connection = backend.lock_connection().expect("actual connection");
     connection
@@ -356,7 +352,7 @@ pub(super) const CONTRACTS: &[Contract] = &[
     let _scope = account.enter();
     let connection = backend.lock_connection().expect("actual connection");
     for (code, transactional) in [(6, false), (261, false), (517, false), (5, true)] {
-        let credit = diagnostic::admit(&account, backend.maximum_sqlite_heap_bytes, None)
+        let credit = diagnostic::admit(&account, &backend.connection, None)
             .expect("original copy loan");
         let mut statements = 0;
         let error = diagnostic::retain_failure(credit, || {
@@ -374,11 +370,7 @@ pub(super) const CONTRACTS: &[Contract] = &[
         .expect("held actual writer lock");
     let attempts = std::cell::Cell::new(0);
     let mut released = false;
-    let credit = diagnostic::admit(
-        &account,
-        backend.maximum_sqlite_heap_bytes,
-        Some(root.path()),
-    )
+    let credit = diagnostic::admit(&account, &backend.connection, Some(root.path()))
     .expect("original copy loan");
     let mut connection = backend.lock_connection().expect("original connection");
 
@@ -571,7 +563,8 @@ pub(super) const CONTRACTS: &[Contract] = &[
     Contract {
         package: "crucible-cas",
         target: "src/content_store/sqlite/batch/reader",
-        required: &[r#"fn chunk_with_boundary(
+        required: &[
+            r#"fn chunk_with_boundary(
         &self,
         original: &crate::owned_decode::DecodeBudget,
         offset: u64,
@@ -613,9 +606,17 @@ pub(super) const CONTRACTS: &[Contract] = &[
                         .map_err(|source| database_error("prepare-sqlite-batch-source", source))?;
                     with_id_text(self.id, |encoded| {
                         statement
-                            .query_row(params![encoded, sqlite_offset, length as i64], |row| {
-                                row.get::<_, Vec<u8>>(0)
-                            })
+                            .query_row(
+                                params![encoded, sqlite_offset, length as i64, self.logical_length],
+                                |row| {
+                                    if length == 0 {
+                                        row.get::<_, Option<Vec<u8>>>(0)
+                                            .map(Option::unwrap_or_default)
+                                    } else {
+                                        row.get::<_, Vec<u8>>(0)
+                                    }
+                                },
+                            )
                             .optional()
                             .map_err(|source| database_error("read-sqlite-batch-source", source))
                     })
@@ -633,7 +634,16 @@ pub(super) const CONTRACTS: &[Contract] = &[
                 _credit: credit,
             })
         })
-    }"#],
+    }"#,
+            r#"self.scan_with_boundary(original, self.logical_length, boundary)?;
+        drop(self.chunk_with_boundary(original, 0, 0, boundary)?);
+        if *self.hasher.finalize().as_bytes() != self.id.digest() {
+            return Err(StoreError::Corrupt { id: self.id });
+        }
+        self.finalized = true;
+        boundary()?;
+        Ok(0)"#,
+        ],
         expressions: &[(
             r#"busy::retry(connection, false, &self.quarantined, boundary, |_| {
                     let mut statement = connection
@@ -641,9 +651,17 @@ pub(super) const CONTRACTS: &[Contract] = &[
                         .map_err(|source| database_error("prepare-sqlite-batch-source", source))?;
                     with_id_text(self.id, |encoded| {
                         statement
-                            .query_row(params![encoded, sqlite_offset, length as i64], |row| {
-                                row.get::<_, Vec<u8>>(0)
-                            })
+                            .query_row(
+                                params![encoded, sqlite_offset, length as i64, self.logical_length],
+                                |row| {
+                                    if length == 0 {
+                                        row.get::<_, Option<Vec<u8>>>(0)
+                                            .map(Option::unwrap_or_default)
+                                    } else {
+                                        row.get::<_, Vec<u8>>(0)
+                                    }
+                                },
+                            )
                             .optional()
                             .map_err(|source| database_error("read-sqlite-batch-source", source))
                     })
@@ -735,7 +753,7 @@ pub(super) const CONTRACTS: &[Contract] = &[
 
         let mut diagnostic_credit = Some(diagnostic::admit(
             account,
-            self.maximum_sqlite_heap_bytes,
+            &self.connection,
             Some(&self.root),
         )?);
         let result = (|| {
@@ -823,7 +841,7 @@ pub(super) const CONTRACTS: &[Contract] = &[
         required: &[
             r#"let original = caller.clone();
     super::super::checked_reader::check(&original, boundary)?;
-    let diagnostic = diagnostic::admit(&original, backend.maximum_sqlite_heap_bytes, None)?;
+    let diagnostic = diagnostic::admit(&original, &backend.connection, None)?;
     diagnostic::retain_failure(diagnostic, || {
         busy::healthy(&backend.quarantined)?;
         let mut check = || {

@@ -506,7 +506,7 @@ fn late_actual_commit_failure_preserves_cached_generation_and_last_error_credit(
     let mut backend = SqliteBlobBackend::open_inner(
         "component".into(),
         root.path().into(),
-        Some(8 * 1024 * 1024),
+        8 * 1024 * 1024,
         Some(Arc::new(Supervisor(guard.clone()))),
         &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
     )
@@ -637,7 +637,7 @@ fn unwind_after_actual_delete_quarantines_every_alias_without_hidden_cleanup() {
     let backend = SqliteBlobBackend::open_inner(
         "component".into(),
         root.path().into(),
-        Some(8 * 1024 * 1024),
+        8 * 1024 * 1024,
         Some(Arc::new(Supervisor(guard.clone()))),
         &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
     )
@@ -913,7 +913,7 @@ fn cancellation_after_actual_delete_rolls_back_before_exact_timeout_restoration(
     let backend = SqliteBlobBackend::open_inner(
         "component".into(),
         root.path().into(),
-        Some(8 * 1024 * 1024),
+        8 * 1024 * 1024,
         Some(Arc::new(Supervisor(guard.clone()))),
         &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
     )

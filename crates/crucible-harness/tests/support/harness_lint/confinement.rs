@@ -257,6 +257,14 @@ fn public_export_findings(path: &Path, content: &str, approved_exports: &[&str])
         }
 
         if let Some((export, name)) = exported_item_after_visibility(&tokens, index) {
+            // These crate-private coordinates carry the authenticated original
+            // interval into its own supervisor. The exact route does not make
+            // an externally public clock or sibling export admissible.
+            if private_origin_coordinates(path, &tokens, index, export, name)
+                || reviewed_origin_reexport(path, &tokens, index)
+            {
+                continue;
+            }
             if name.is_some_and(|name| approved_exports.contains(&name)) {
                 if public_signature_contains_clock(&tokens, index, export) {
                     push_finding(
@@ -284,6 +292,56 @@ fn public_export_findings(path: &Path, content: &str, approved_exports: &[&str])
     }
 
     filter_cfg_test_findings(content, findings)
+}
+
+// Grouped exports are exact closed identity types from the authenticated
+// origin modules. Aliases, wildcards and neighboring names remain refused.
+fn reviewed_origin_reexport(path: &Path, tokens: &[Token], index: usize) -> bool {
+    if !path.ends_with("crucible-linux-resource/src/measurement_origin.rs") {
+        return false;
+    }
+    let Some(end) = tokens[index..]
+        .iter()
+        .position(|token| token.kind == TokenKind::Punct(';'))
+    else {
+        return false;
+    };
+    let actual = &tokens[index..=index + end];
+    [
+        "pub use actor_partition::{CertifiedActorPartition, CertifiedNativeStage};",
+        "pub use parent_evidence::{AuthenticatedParentInvocation, CertifiedMeasurementMode, CertifiedNativeRoleEvidence, VerifiedImageInventory,};",
+    ]
+    .iter()
+    .any(|source| {
+        let expected = tokenize(source);
+        actual.len() == expected.len()
+            && actual.iter().zip(&expected).all(|(actual, expected)| actual.kind == expected.kind)
+    })
+}
+
+fn private_origin_coordinates(
+    path: &Path,
+    tokens: &[Token],
+    index: usize,
+    export: &str,
+    name: Option<&str>,
+) -> bool {
+    path.ends_with("crucible-linux-resource/src/measurement_origin.rs")
+        && tokens
+            .get(index + 1)
+            .is_some_and(|token| matches!(token.kind, TokenKind::Punct('(')))
+        && tokens
+            .get(index + 2)
+            .and_then(|token| token.kind.as_ident())
+            == Some("crate")
+        && tokens
+            .get(index + 3)
+            .is_some_and(|token| matches!(token.kind, TokenKind::Punct(')')))
+        && matches!(
+            (export, name),
+            ("struct", Some("MeasurementClock"))
+                | ("fn", Some("span" | "elapsed" | "supervision_coordinates"))
+        )
 }
 
 fn parent_module_visibility(tokens: &[Token], index: usize) -> bool {
@@ -383,8 +441,12 @@ fn exported_item_after_visibility(tokens: &[Token], index: usize) -> Option<(&st
 // clock values through an otherwise accepted constructor or public state field.
 fn public_signature_contains_clock(tokens: &[Token], index: usize, declaration: &str) -> bool {
     if declaration == "struct"
-        && exported_item_after_visibility(tokens, index)
-            .is_some_and(|(_, name)| name == Some("HostSupervisionBootstrap"))
+        && exported_item_after_visibility(tokens, index).is_some_and(|(_, name)| {
+            matches!(
+                name,
+                Some("HostSupervisionBootstrap" | "MeasurementInvocationOrigin")
+            )
+        })
     {
         return opaque_bootstrap_signature_contains_clock(tokens, index);
     }

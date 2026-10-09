@@ -316,6 +316,7 @@ fn publish_one(
     )
 }
 
+// crucible-lint: allow rust-allow -- The existing state lock and authenticated placement are borrowed without repeating lookup effects.
 #[allow(
     clippy::too_many_arguments,
     reason = "The existing state lock and authenticated placement are borrowed without repeating lookup effects."

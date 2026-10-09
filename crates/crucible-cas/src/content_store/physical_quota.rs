@@ -568,13 +568,34 @@ pub(super) const fn deferred_source_metadata_bytes() -> usize {
 
 impl BlobSource for PhysicalQuotaBlobSource {
     fn checked_read_access(&self) -> super::CheckedReadAccess {
-        match self.handle.checked_read_access() {
-            super::CheckedReadAccess::Unsupported => super::CheckedReadAccess::Unsupported,
-            // This wrapper preserves physical checks only through its owning
-            // reader. A whole-only child still must support checked opening;
-            // otherwise the single owning attempt refuses without raw I/O.
-            _ => super::CheckedReadAccess::Owning,
-        }
+        self.handle.checked_read_access()
+    }
+
+    fn read_all_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        maximum: u64,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<super::OwnedBlobBytes, StoreError> {
+        let mut check = || {
+            super::checked_reader::check(original, boundary)?;
+            self.guard.verify()
+        };
+        check()?;
+        // This synchronous borrower retains the same physical source and
+        // reader reservation through child EOF and the final acceptance cut.
+        // Streaming opens continue to own their checked reader separately.
+        let _resources = self.guard.reserve_resources(
+            0,
+            (std::mem::size_of::<PhysicalCheckedReader>() as u64)
+                .checked_add(self.reader_bytes)
+                .ok_or(StoreError::Quota)?,
+        )?;
+        let bytes = self
+            .handle
+            .read_all_with_boundary(original, maximum, &mut check)?;
+        check()?;
+        Ok(bytes)
     }
 
     fn open_with_boundary(

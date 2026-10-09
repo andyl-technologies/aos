@@ -13,7 +13,7 @@ pub(super) fn lookup(
 ) -> Result<BlobHandle, StoreError> {
     let original = caller.clone();
     super::super::checked_reader::check(&original, boundary)?;
-    let diagnostic = diagnostic::admit(&original, backend.maximum_sqlite_heap_bytes, None)?;
+    let diagnostic = diagnostic::admit(&original, &backend.connection, None)?;
     diagnostic::retain_failure(diagnostic, || {
         busy::healthy(&backend.quarantined)?;
         let mut check = || {
@@ -84,7 +84,6 @@ pub(super) fn lookup(
                 catalog_supervisor: backend.catalog_supervisor.clone(),
                 quarantined: backend.quarantined.clone(),
                 resident_lease: backend.resident_lease.clone(),
-                maximum_sqlite_heap_bytes: backend.maximum_sqlite_heap_bytes,
                 original: original.clone().into(),
                 _source_lease: source_lease.into(),
                 _source_credit: Some(credit),
@@ -112,7 +111,7 @@ pub(super) fn open(
         None => caller.clone(),
     };
     super::super::checked_reader::check_pair(caller, &original, boundary)?;
-    let diagnostic = diagnostic::admit(&original, source.maximum_sqlite_heap_bytes, None)?;
+    let diagnostic = diagnostic::admit(&original, &source.connection, None)?;
     let credit = original
         .reserve_scratch_array::<Reader>(1)
         .map_err(|error| super::super::batch::admission_under(&original, error))?;
@@ -138,6 +137,45 @@ pub(super) fn open(
     result.map_err(|error| match diagnostic {
         Some(credit) => diagnostic::retain_error(credit, error),
         None => error,
+    })
+}
+
+// The concrete source lends its authenticating reader for this synchronous
+// whole read. Streaming opens retain their ordinary owning wrapper; arbitrary
+// readers still use the unchanged generic output/length/EOF boundary checks.
+pub(super) fn read_all(
+    source: &SqliteBlobSource,
+    caller: &DecodeBudget,
+    maximum: u64,
+    boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+) -> Result<super::super::OwnedBlobBytes, StoreError> {
+    let original = source.original.as_ref().unwrap_or(caller);
+    super::super::checked_reader::check_pair(caller, original, boundary)?;
+    let diagnostic = diagnostic::admit(original, &source.connection, None)?;
+    diagnostic::retain_failure(diagnostic, || {
+        busy::healthy(&source.quarantined)?;
+        let bytes = {
+            let mut reader = source.reader()?;
+            super::super::batch::read_reader_under(
+                original,
+                caller,
+                source.range.length,
+                maximum,
+                boundary,
+                &mut |output, boundary| {
+                    let mut check = || {
+                        super::super::checked_reader::check_pair(caller, original, boundary)?;
+                        busy::healthy(&source.quarantined)
+                    };
+                    reader.read_with_boundary(original, output, &mut check)
+                },
+            )?
+        };
+        // The reader and its resident loan close before accepting the output.
+        // The source, diagnostic bank and owned byte credit still retain the
+        // same accounts while this final physical/original cut runs.
+        super::super::checked_reader::check_pair(caller, original, boundary)?;
+        Ok(bytes)
     })
 }
 

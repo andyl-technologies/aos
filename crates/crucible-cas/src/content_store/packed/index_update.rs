@@ -217,6 +217,7 @@ impl Update {
         })
     }
 
+    // crucible-lint: allow rust-allow -- One frame records the exact bounded child and key interval.
     #[allow(
         clippy::too_many_arguments,
         reason = "One frame records the exact bounded child and key interval."
@@ -373,6 +374,7 @@ impl Update {
         )
     }
 
+    // crucible-lint: allow rust-allow -- The two borrowed payloads share one fixed-width page geometry.
     #[allow(
         clippy::too_many_arguments,
         reason = "The two borrowed payloads share one fixed-width page geometry."
@@ -545,6 +547,7 @@ impl Update {
         })
     }
 
+    // crucible-lint: allow rust-allow -- The load validates one exact reference and its parent interval.
     #[allow(
         clippy::too_many_arguments,
         reason = "The load validates one exact reference and its parent interval."

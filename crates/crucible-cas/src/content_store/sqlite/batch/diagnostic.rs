@@ -23,7 +23,8 @@ const ROLLBACK_DIAGNOSTIC_BYTES: usize = 42;
 pub(in crate::content_store::sqlite) const PRESENCE_SQL: &str =
     "SELECT EXISTS(SELECT 1 FROM objects WHERE id = ?1)";
 pub(super) const INSERT_SQL: &str = "INSERT INTO objects (id, body) VALUES (?1, ?2)";
-pub(super) const SOURCE_SQL: &str = "SELECT substr(body, ?2, ?3) FROM objects WHERE id = ?1";
+pub(super) const SOURCE_SQL: &str =
+    "SELECT substr(body, ?2, ?3) FROM objects WHERE id = ?1 AND length(body) = ?4";
 pub(super) const METADATA_SQL: &str =
     "SELECT instance, generation, checksum FROM metadata WHERE singleton = 1";
 pub(in crate::content_store::sqlite) const INVENTORY_SQL: &str =
@@ -69,7 +70,7 @@ impl std::error::Error for SqliteDiagnosticError {
 
 pub(in super::super) fn admit(
     original: &crate::owned_decode::DecodeBudget,
-    native_heap: Option<u64>,
+    native_heap: &SqliteConnection,
     root: Option<&Path>,
 ) -> Result<DecodeScratch, StoreError> {
     admit_for_query(original, native_heap, root, 0)
@@ -77,11 +78,11 @@ pub(in super::super) fn admit(
 
 pub(in crate::content_store::sqlite) fn admit_for_query(
     original: &crate::owned_decode::DecodeBudget,
-    native_heap: Option<u64>,
+    native_heap: &SqliteConnection,
     root: Option<&Path>,
     query_width: usize,
 ) -> Result<DecodeScratch, StoreError> {
-    let heap = reviewed_heap(native_heap, rusqlite::version_number())?;
+    let heap = reviewed_heap(native_heap.maximum_heap_bytes(), rusqlite::version_number())?;
     original
         .reserve_scratch_bytes(peak_bytes_for_query(heap, root, query_width)?)
         .map_err(|error| admission_under(original, error))
@@ -94,19 +95,16 @@ pub(in crate::content_store::sqlite) fn admit_for_query(
 // Arbitrary callback errors retain their separate original allocation custody.
 pub(in crate::content_store::sqlite) fn admit_for_single_record_query(
     original: &crate::owned_decode::DecodeBudget,
-    native_heap: Option<u64>,
+    native_heap: &SqliteConnection,
     query_width: usize,
 ) -> Result<DecodeScratch, StoreError> {
-    let heap = reviewed_heap(native_heap, rusqlite::version_number())?;
+    let heap = reviewed_heap(native_heap.maximum_heap_bytes(), rusqlite::version_number())?;
     original
         .reserve_scratch_bytes(single_record_peak_bytes(heap, query_width)?)
         .map_err(|error| admission_under(original, error))
 }
 
-fn reviewed_heap(native_heap: Option<u64>, version: i32) -> Result<u64, StoreError> {
-    let heap = native_heap.ok_or(StoreError::Unsupported {
-        capability: "sqlite-diagnostic-native-heap-bound",
-    })?;
+fn reviewed_heap(heap: u64, version: i32) -> Result<u64, StoreError> {
     if version != AUDITED_SQLITE_VERSION {
         return Err(StoreError::Unsupported {
             capability: "sqlite-diagnostic-reviewed-version",
@@ -296,19 +294,13 @@ mod tests {
     #[test]
     fn single_record_route_requires_the_actual_reviewed_native_heap() {
         assert!(matches!(
-            reviewed_heap(None, AUDITED_SQLITE_VERSION),
-            Err(StoreError::Unsupported {
-                capability: "sqlite-diagnostic-native-heap-bound"
-            })
-        ));
-        assert!(matches!(
-            reviewed_heap(Some(8 << 20), AUDITED_SQLITE_VERSION - 1),
+            reviewed_heap(8 << 20, AUDITED_SQLITE_VERSION - 1),
             Err(StoreError::Unsupported {
                 capability: "sqlite-diagnostic-reviewed-version"
             })
         ));
         assert_eq!(
-            reviewed_heap(Some(8 << 20), AUDITED_SQLITE_VERSION).unwrap(),
+            reviewed_heap(8 << 20, AUDITED_SQLITE_VERSION).unwrap(),
             8 << 20
         );
     }

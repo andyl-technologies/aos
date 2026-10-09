@@ -332,7 +332,7 @@ impl NativeResourceState {
 }
 
 #[cfg(all(test, feature = "private-measurement-domain"))]
-// crucible-lint: allow rust-allow -- these terminal allocation and original-counter controls deliberately panic on a failed invariant.
+// crucible-lint: allow panic-shortcut -- these terminal allocation and original-counter controls deliberately panic on a failed invariant.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod original_retirement_tests {
     use super::*;

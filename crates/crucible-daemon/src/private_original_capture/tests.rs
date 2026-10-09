@@ -257,7 +257,7 @@ impl Drop for PublicationRelease {
     }
 }
 
-// crucible-lint: allow rust-allow -- Host monotonic time only bounds the test interlock; it never enters campaign state.
+// crucible-lint: allow clippy-disallowed-method -- Host monotonic time only bounds the test interlock; it never enters campaign state.
 #[allow(clippy::disallowed_methods)]
 #[test]
 fn observed_sibling_setup_refusal_survives_later_cancel_and_finish() {

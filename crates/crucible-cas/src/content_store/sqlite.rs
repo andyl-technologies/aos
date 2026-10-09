@@ -100,7 +100,6 @@ pub struct SqliteBlobBackend {
     catalog_supervisor: Option<Arc<dyn SqliteCatalogSupervisor>>,
     quarantined: Arc<std::sync::atomic::AtomicBool>,
     resident_lease: crate::owned_decode::ResourceLoanSlot,
-    maximum_sqlite_heap_bytes: Option<u64>,
 }
 
 /// Bounds cached private SQLite backend and quota-facade Rust allocations.
@@ -140,11 +139,11 @@ impl SqliteBlobBackend {
     ) -> Result<Self, StoreError> {
         // Ordinary graphs retain this same finite process heap as well.
         // Checked diagnostics need its actual native message bound; losing
-        // that identity here must not turn a capped connection into None.
+        // that identity here must not detach diagnostics from its managed owner.
         Self::open_inner(
             name.into(),
             root.into(),
-            Some(heap.maximum_heap_bytes()),
+            heap.maximum_heap_bytes(),
             None,
             heap,
         )
@@ -218,7 +217,7 @@ impl SqliteBlobBackend {
         let mut backend = Self::open_inner(
             name.clone(),
             root,
-            Some(maximum_sqlite_heap_bytes),
+            maximum_sqlite_heap_bytes,
             Some(supervisor),
             heap,
         )?;
@@ -234,18 +233,18 @@ impl SqliteBlobBackend {
     fn open_inner(
         name: String,
         root: PathBuf,
-        maximum_sqlite_heap_bytes: Option<u64>,
+        maximum_sqlite_heap_bytes: u64,
         catalog_supervisor: Option<Arc<dyn SqliteCatalogSupervisor>>,
         heap: &SqliteProcessHeap,
     ) -> Result<Self, StoreError> {
         heap.verify_live()?;
-        if let Some(maximum) = maximum_sqlite_heap_bytes {
-            let representable = i64::try_from(maximum).ok().filter(|limit| *limit > 0);
-            if representable.is_none() || heap.maximum_heap_bytes() > maximum {
-                return Err(StoreError::InvalidComposition {
-                    reason: "SQLite process heap exceeds this catalog entitlement",
-                });
-            }
+        let representable = i64::try_from(maximum_sqlite_heap_bytes)
+            .ok()
+            .filter(|limit| *limit > 0);
+        if representable.is_none() || heap.maximum_heap_bytes() > maximum_sqlite_heap_bytes {
+            return Err(StoreError::InvalidComposition {
+                reason: "SQLite process heap exceeds this catalog entitlement",
+            });
         }
         super::directory::create_dir_all_durable(&root)?;
 
@@ -396,7 +395,6 @@ impl SqliteBlobBackend {
             read_connection: managed_read_connection,
             catalog_supervisor,
             resident_lease: Default::default(),
-            maximum_sqlite_heap_bytes,
             quarantined: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
     }
@@ -480,7 +478,6 @@ impl SqliteBlobBackend {
             range,
             catalog_supervisor: self.catalog_supervisor.clone(),
             resident_lease: self.resident_lease.clone(),
-            maximum_sqlite_heap_bytes: self.maximum_sqlite_heap_bytes,
             quarantined: self.quarantined.clone(),
             original: crate::owned_decode::DecodeBudgetSlot::default(),
             _source_lease: source_lease.into(),
@@ -1019,7 +1016,6 @@ struct SqliteBlobSource {
     catalog_supervisor: Option<Arc<dyn SqliteCatalogSupervisor>>,
     quarantined: Arc<std::sync::atomic::AtomicBool>,
     resident_lease: crate::owned_decode::ResourceLoanSlot,
-    maximum_sqlite_heap_bytes: Option<u64>,
     original: crate::owned_decode::DecodeBudgetSlot,
     _source_lease: crate::owned_decode::ResourceLoanSlot,
     _source_credit: Option<crate::owned_decode::DecodeScratch>,
@@ -1027,7 +1023,7 @@ struct SqliteBlobSource {
 
 impl BlobSource for SqliteBlobSource {
     fn checked_read_access(&self) -> super::CheckedReadAccess {
-        super::CheckedReadAccess::Owning
+        super::CheckedReadAccess::Whole
     }
 
     fn logical_length(&self) -> u64 {
@@ -1044,6 +1040,15 @@ impl BlobSource for SqliteBlobSource {
         boundary: &mut dyn FnMut() -> Result<(), StoreError>,
     ) -> Result<super::CheckedReader, StoreError> {
         checked_reader::open(self, caller, boundary)
+    }
+
+    fn read_all_with_boundary(
+        &self,
+        caller: &crate::owned_decode::DecodeBudget,
+        maximum: u64,
+        boundary: &mut dyn FnMut() -> Result<(), StoreError>,
+    ) -> Result<super::OwnedBlobBytes, StoreError> {
+        checked_reader::read_all(self, caller, maximum, boundary)
     }
 }
 
@@ -1578,7 +1583,7 @@ mod tests {
         let backend = SqliteBlobBackend::open_inner(
             "private".into(),
             root.path().into(),
-            Some(128 << 20),
+            128 << 20,
             Some(Arc::new(TestCatalogSupervisor)),
             &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
         )
@@ -1629,7 +1634,7 @@ mod tests {
             SqliteBlobBackend::open_inner(
                 "refused".into(),
                 legacy.clone(),
-                Some(128 << 20),
+                128 << 20,
                 Some(Arc::new(TestCatalogSupervisor)),
                 &crate::content_store::fixture_sqlite_heap()
                     .expect("authored SQLite fixture process")
@@ -1662,7 +1667,7 @@ mod tests {
         let backend = SqliteBlobBackend::open_inner(
             "bounded-memory".into(),
             root.path().into(),
-            Some(8 << 20),
+            8 << 20,
             Some(Arc::new(TestCatalogSupervisor)),
             &crate::content_store::fixture_sqlite_heap().expect("authored SQLite fixture process"),
         )

@@ -26,7 +26,7 @@ impl SqliteBlobBackend {
         super::super::checked_reader::check(original, boundary)?;
         let credit = diagnostic::admit_for_single_record_query(
             original,
-            self.maximum_sqlite_heap_bytes,
+            &self.connection,
             busy::single_record::METADATA.len(),
         )?;
         diagnostic::retain_failure(credit, || {
@@ -81,7 +81,7 @@ impl SqliteBlobBackend {
         super::super::checked_reader::check(original, boundary)?;
         let credit = diagnostic::admit_for_query(
             original,
-            self.maximum_sqlite_heap_bytes,
+            &self.connection,
             None,
             METADATA.len().max(BODY.len()),
         )?;

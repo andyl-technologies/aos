@@ -100,12 +100,8 @@ fn quota_after_actual_commit_keeps_typed_category_and_diagnostic_credit() {
     let account = DecodeBudget::for_store(guard.clone()).expect("original finite bank");
     let _scope = account.enter();
     let baseline = guard.0.used.load(Ordering::SeqCst);
-    let credit = retained_diagnostic::admit(
-        &account,
-        backend.maximum_sqlite_heap_bytes,
-        Some(root.path()),
-    )
-    .expect("original diagnostic preloan");
+    let credit = retained_diagnostic::admit(&account, &backend.connection, Some(root.path()))
+        .expect("original diagnostic preloan");
     let mut connection = backend.lock_connection().expect("actual connection");
 
     let error = retained_diagnostic::retain_failure(credit, || {

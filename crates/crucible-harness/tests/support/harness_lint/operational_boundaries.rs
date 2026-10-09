@@ -46,6 +46,10 @@ const SUPERVISION_EXPORTS: &[&str] = &[
     "cancel",
     "complete",
     "HostOperationGuard",
+    "OriginalCaptureSupervisionError",
+    "original_capture_service_owner",
+    "begin_original_capture_supervisor",
+    "begin_original_cleanup_control",
     "status",
     "wait_slice",
     "wait_for_change",
@@ -57,9 +61,34 @@ const SUPERVISION_EXPORTS: &[&str] = &[
 const SUPERVISION_BOOTSTRAP_EXPORTS: &[&str] = &[
     "HostSupervisionBootstrap",
     "new",
+    "from_measurement_origin",
     "wait_slice",
     "publish",
     "structure_bytes",
+];
+
+// The private PID1/socket origin carries one original interval. These reviewed
+// methods authenticate or supervise that invocation; none expose an Instant.
+const MEASUREMENT_ORIGIN_EXPORTS: &[&str] = &[
+    "CertifiedActorPartition",
+    "CertifiedNativeStage",
+    "IssuerCustodyRefusal",
+    "AuthenticatedParentInvocation",
+    "CertifiedMeasurementMode",
+    "CertifiedNativeRoleEvidence",
+    "VerifiedImageInventory",
+    "MeasurementOriginError",
+    "OriginalClockRefusal",
+    "MeasurementInvocationOrigin",
+    "MeasurementActorAccountCeilings",
+    "tasks",
+    "descriptors",
+    "resident_bytes",
+    "metadata_bytes",
+    "actor_account_ceilings",
+    "receive_original",
+    "remaining",
+    "run_original_pid1",
 ];
 
 const REGISTRY_EXPORTS: &[&str] = &[
@@ -101,11 +130,13 @@ pub(super) fn operational_boundary_source(package: &str, package_dir: &Path, pat
     matches!(
         (package, relative.as_str()),
         ("crucible-linux-resource", "src/host_supervision.rs")
+            | ("crucible-linux-resource", "src/measurement_origin.rs")
             | (
                 "crucible-linux-resource",
                 "src/host_supervision/bootstrap.rs"
             )
             | ("crucible-daemon", "src/host_operational_registry.rs")
+            | ("crucible-qemu", "src/linux_cgroup/original_finish.rs")
             | ("crucible-qemu", "src/node/shutdown_budget.rs")
             | ("crucible-qemu", "src/ram_control/supervision.rs")
             | ("crucible-qemu-plugin", "src/paged_ram/supervision.rs")
@@ -122,12 +153,14 @@ pub(super) fn operational_public_exports(
     };
     match (package, relative.as_str()) {
         ("crucible-linux-resource", "src/host_supervision.rs") => SUPERVISION_EXPORTS,
+        ("crucible-linux-resource", "src/measurement_origin.rs") => MEASUREMENT_ORIGIN_EXPORTS,
         ("crucible-linux-resource", "src/host_supervision/bootstrap.rs") => {
             SUPERVISION_BOOTSTRAP_EXPORTS
         }
         ("crucible-daemon", "src/host_operational_registry.rs") => REGISTRY_EXPORTS,
         ("crucible-daemon", "src/supervision.rs") => &[
             "HOST_WATCHDOG_STACK_BYTES",
+            "for_original_capture",
             "PublicationSupervision",
             // Original credit retention and synchronous scope restoration expose no clock.
             "retain_metadata",
@@ -138,7 +171,16 @@ pub(super) fn operational_public_exports(
             "guard",
             "finish",
         ],
-        ("crucible-qemu", "src/linux_cgroup.rs") => &["LinuxQemuCgroupMemoryControl"],
+        // The actual retained watcher closes under its borrowed original Cleanup.
+        // These crate-private results contain typed causes, never raw clocks.
+        ("crucible-qemu", "src/linux_cgroup/original_finish.rs") => {
+            &["remove_under_original", "OriginalWatcherRefusal"]
+        }
+        ("crucible-qemu", "src/linux_cgroup.rs") => &[
+            "LinuxQemuCgroupMemoryControl",
+            "measurement_domain",
+            "remove_if_empty",
+        ],
         _ => &[],
     }
 }

@@ -1,5 +1,7 @@
 //! Original-operation refusal before any fingerprint request or doorbell.
 
+#![cfg(test)]
+
 use super::*;
 use crucible_linux_resource::host_supervision::{
     HostOperationBudgets, HostOperationClass, HostOperationSupervisor,
