@@ -2452,10 +2452,20 @@ three strict Clippy profiles and all three strict private documentation
 profiles pass. The original native documentation process clears the shared
 Cargo build-directory lock and exits zero without a restart. The native SDK
 build also passes; independent review verifies both original exits, exact
-commands, log hashes and unchanged 6,105-file source. Native test compilation
-is now live; its actual compiler artifact, discovery and runtime remain
-unqualified. Original handles and source proofs are retained; no runtime
-result follows from these compile checks.
+commands, log hashes and unchanged 6,105-file source. Actual native test
+compilation then passes with a unique nonfresh executable bound to that
+source. Discovery includes all 129 required names in the 845-case suite, and
+all ten new classifier cases pass with tracing disabled. The restored
+stale-Live retirement witness then fails its whole-state comparison at
+27.788 seconds: loss generation is three instead of the expected two.
+The original run exits 100; the other two retirement cases and all twelve
+later stages remain unrun. All post-source and executable checks pass;
+independent review verifies 160 retained artifact hashes and preserves a
+copy of the actual tested executable. Source review identifies the existing
+Raw loss fence when the exact nominal Live placement changes. A reviewed
+test-only correction adds that one expected increment while retaining the
+complete state comparison and every other assertion. New-source runtime
+qualification remains pending; the failed original is not retried.
 No task checkbox or milestone status advances.
 After the class candidate releases the team's heavy lane, the diagnostic's
 restoration command exits zero but its artifact verifier stops: Cargo reports
