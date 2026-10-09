@@ -2669,6 +2669,53 @@ impl LifecycleEffectRequestV1 {
     }
 }
 
+/// Builds codec-test DATA without protected admission or currentness.
+#[cfg(test)]
+pub(super) fn atomic_snapshot_effect_fixture() -> LifecycleEffectRequestV1 {
+    let operation = OperationId::from_bytes([1; 16]);
+    let target = [2; 16];
+    let prerequisite = ObjectDigest::from_bytes([11; 32]);
+    let plan = ObjectDigest::from_bytes([12; 32]);
+    let admission = ObjectDigest::from_bytes([13; 32]);
+    let attempt = 1_u32;
+    let body = lifecycle_effect_body_v2(
+        operation,
+        LifecycleEffectDomainV1::Storage,
+        4,
+        0,
+        LifecycleEffectDirectionV1::Forward,
+        target,
+        prerequisite,
+        plan,
+    );
+    let payload = ObjectDigest::from_bytes(
+        Sha256::new()
+            .chain_update(b"aos.sandbox.lifecycle.phase6-dispatch.v1\0")
+            .chain_update(body)
+            .chain_update(attempt.to_be_bytes())
+            .chain_update(admission.as_bytes())
+            .finalize()
+            .into(),
+    );
+
+    LifecycleEffectRequestV1 {
+        operation,
+        operation_revision: Revision::new(1),
+        domain: LifecycleEffectDomainV1::Storage,
+        ordinal: 4,
+        step: 0,
+        direction: LifecycleEffectDirectionV1::Forward,
+        attempt,
+        admission,
+        logical: LifecycleStepRequestDigestV1::from_stored(ObjectDigest::from_bytes([14; 32]))
+            .unwrap(),
+        target,
+        prerequisite,
+        plan,
+        payload,
+    }
+}
+
 fn active_step_attempt(
     step: &super::LifecycleStepV1,
 ) -> Option<(

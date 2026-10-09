@@ -184,3 +184,144 @@ fn decode_resource(
     let identity = reader.array()?;
     LifecycleResourceV1::from_code(code, identity).map_err(|_| LifecyclePhase6ErrorV1::InvalidInput)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn recommit(plan: &mut LifecycleAtomicDatasetSnapshotPlanV1) {
+        plan.commitment = atomic_dataset_snapshot_plan_commitment(
+            plan.operation,
+            plan.snapshot,
+            plan.transaction,
+            plan.effect,
+            plan.inventory_generation,
+            plan.inventory_source,
+            plan.inventory_head,
+            plan.inventory,
+            &plan.closed_resources,
+            &plan.members,
+        );
+    }
+
+    fn plan_fixture() -> LifecycleAtomicDatasetSnapshotPlanV1 {
+        let effect = crate::lifecycle::phase6::atomic_snapshot_effect_fixture();
+        let resources = [
+            LifecycleResourceV1::Sandbox(SandboxId::from_bytes([2; 16])),
+            LifecycleResourceV1::Sandbox(SandboxId::from_bytes([3; 16])),
+        ];
+        let mut plan = LifecycleAtomicDatasetSnapshotPlanV1 {
+            operation: effect.operation(),
+            snapshot: SnapshotId::from_bytes([4; 16]),
+            transaction: crate::lifecycle::LifecycleTransactionIdV1::new(ResourceId::from_bytes(
+                [5; 16],
+            ))
+            .unwrap(),
+            effect,
+            inventory_generation: 1,
+            inventory_source: ObjectDigest::from_bytes([6; 32]),
+            inventory_head: ObjectDigest::from_bytes([7; 32]),
+            inventory: ObjectDigest::from_bytes([8; 32]),
+            closed_resources: resources.to_vec(),
+            members: resources
+                .into_iter()
+                .enumerate()
+                .map(|(index, resource)| LifecycleAtomicDatasetSnapshotMemberV1 {
+                    resource,
+                    storage_handle: ObjectDigest::from_bytes([20 + index as u8; 32]),
+                    physical_identity: ObjectDigest::from_bytes([22 + index as u8; 32]),
+                    creating_request: ObjectDigest::from_bytes([24 + index as u8; 32]),
+                })
+                .collect(),
+            commitment: ObjectDigest::from_bytes([0; 32]),
+        };
+        recommit(&mut plan);
+        plan
+    }
+
+    #[test]
+    fn canonical_plan_round_trips_and_rejects_every_short_prefix_and_trailing_byte() {
+        let plan = plan_fixture();
+        let bytes = plan.canonical_wire_bytes().unwrap();
+
+        let decoded =
+            LifecycleAtomicDatasetSnapshotPlanV1::from_canonical_wire_bytes(&bytes).unwrap();
+        assert_eq!(decoded, plan);
+        assert_eq!(decoded.canonical_wire_bytes().unwrap(), bytes);
+        for length in 0..bytes.len() {
+            assert_eq!(
+                LifecycleAtomicDatasetSnapshotPlanV1::from_canonical_wire_bytes(&bytes[..length]),
+                Err(LifecyclePhase6ErrorV1::InvalidInput),
+                "short prefix {length}",
+            );
+        }
+
+        let mut trailing = bytes;
+        trailing.push(0);
+        assert_eq!(
+            LifecycleAtomicDatasetSnapshotPlanV1::from_canonical_wire_bytes(&trailing),
+            Err(LifecyclePhase6ErrorV1::InvalidInput),
+        );
+    }
+
+    #[test]
+    fn canonical_plan_preserves_capacity_count_and_effect_commitment_errors() {
+        let oversized_wrong_magic = vec![0; MAXIMUM_PLAN_BYTES + 1];
+        assert_eq!(
+            LifecycleAtomicDatasetSnapshotPlanV1::from_canonical_wire_bytes(&oversized_wrong_magic),
+            Err(LifecyclePhase6ErrorV1::Capacity),
+        );
+
+        let plan = plan_fixture();
+        let bytes = plan.canonical_wire_bytes().unwrap();
+        let closed_count_offset = 8 + 16 * 3 + 214 + 8 + 32 * 3;
+        let member_count_offset = closed_count_offset + 2 + 17 * plan.closed_resources.len();
+        let excessive_count =
+            u16::try_from(crate::lifecycle::MAXIMUM_LIFECYCLE_EXPECTATIONS + 1).unwrap();
+        for offset in [closed_count_offset, member_count_offset] {
+            for count in [0_u16, excessive_count] {
+                let mut invalid = bytes.clone();
+                invalid[offset..offset + 2].copy_from_slice(&count.to_be_bytes());
+
+                assert_eq!(
+                    LifecycleAtomicDatasetSnapshotPlanV1::from_canonical_wire_bytes(&invalid),
+                    Err(LifecyclePhase6ErrorV1::InvalidInput),
+                );
+            }
+        }
+
+        // The embedded effect's domain and payload are validated before the outer commitment.
+        for offset in [8 + 16 * 3 + 24, 8 + 16 * 3 + 213, bytes.len() - 1] {
+            let mut substituted = bytes.clone();
+            substituted[offset] ^= 0xff;
+
+            assert_eq!(
+                LifecycleAtomicDatasetSnapshotPlanV1::from_canonical_wire_bytes(&substituted),
+                Err(LifecyclePhase6ErrorV1::InvalidInput),
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_plan_rejects_unordered_duplicate_sets_and_shared_storage_handles() {
+        for variant in 0..5 {
+            let mut plan = plan_fixture();
+            match variant {
+                0 => plan.closed_resources.swap(0, 1),
+                1 => plan.closed_resources[1] = plan.closed_resources[0],
+                2 => plan.members.swap(0, 1),
+                3 => plan.members[1] = plan.members[0],
+                4 => plan.members[1].storage_handle = plan.members[0].storage_handle,
+                _ => unreachable!(),
+            }
+            // Recommit each malformed set so its semantic check must reject it.
+            recommit(&mut plan);
+            let bytes = plan.canonical_wire_bytes().unwrap();
+
+            assert_eq!(
+                LifecycleAtomicDatasetSnapshotPlanV1::from_canonical_wire_bytes(&bytes),
+                Err(LifecyclePhase6ErrorV1::InvalidInput),
+            );
+        }
+    }
+}
