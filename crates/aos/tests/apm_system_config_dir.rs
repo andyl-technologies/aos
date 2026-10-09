@@ -981,7 +981,7 @@ fn run_aos_package_output(
     fs::create_dir_all(root.join("etc"))?;
     fs::write(
         root.join("etc/os-release"),
-        "NAME=AOS test root\nID=aos\nAOS_MODULE_ABI=1\n",
+        "NAME=AOS test root\nID=aos\nAOS_PACKAGE_MODULE_LIBRARY=/nix/store/00000000000000000000000000000000-aos-module-library\n",
     )?;
 
     let mut command = Command::new(env!("CARGO_BIN_EXE_apm"));

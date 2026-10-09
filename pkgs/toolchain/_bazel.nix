@@ -41,11 +41,20 @@
   version,
   srcHash,
   vendorDepsHash,
+  platformSupport,
   source ? null,
   update ? null,
+  qualification ? null,
   # Major version string for the version check test (e.g. "7.7", "8.6", "9.0")
   versionCheck ? builtins.substring 0 3 version,
 }: let
+  mkQualifiedDerivation = attrs:
+    mkDerivation (attrs
+      // (
+        if qualification == null
+        then {}
+        else {inherit qualification;}
+      ));
   isCross = stdenv.isCross;
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
   bootstrapJavaRuntime =
@@ -1372,12 +1381,13 @@
     preferLocalBuild = true;
   };
 in
-  mkDerivation {
+  mkQualifiedDerivation {
     passthru.sourceBootstrap = buildBazelBootstrap;
     passthru.sourceJavaTools = sourceRemoteJavaTools;
     passthru.sourcePythonRuntime = sourcePythonRuntime;
     passthru.sourceModules = sourceModules;
     pname = "bazel";
+    inherit platformSupport;
     inherit version;
     inherit update;
 

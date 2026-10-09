@@ -1,5 +1,6 @@
 ##! LZ4 — Extremely fast compression algorithm
 {
+  lib,
   mkDerivation,
   mkGithubUpstream,
   gnumake,
@@ -53,7 +54,95 @@
   inherit (upstream) version;
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "lz4";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The recovered bytes equal the original string.";
+        "files" = {
+          "primary.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"lz4 primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"lz4 rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <string.h>\n#include <lz4.h>\nint main(void) {\n    const char input[] = \"AOS qualification\"; char compressed[128], output[128];\n    int size = LZ4_compress_default(input, compressed, sizeof(input), sizeof(compressed));\n    if (size <= 0) return 2;\n    int recovered = LZ4_decompress_safe(compressed, output, size, sizeof(output));\n    return recovered == sizeof(input) && memcmp(input, output, sizeof(input)) == 0 ? pass() : 3;\n}\n\n";
+        };
+        "input" = "A fixed string compressed into a bounded block.";
+        "operation" = "Compress and decompress the bytes through the LZ4 block API.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "primary.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-llz4"
+              "-o"
+              "primary-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/primary/primary-check"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "lz4 primary passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "LZ4_decompress_safe returns a negative corruption status.";
+        "files" = {
+          "bad-input.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"lz4 primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"lz4 rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <lz4.h>\nint main(void) {\n    const char invalid[] = {(char)0xf0}; char output[32];\n    if (LZ4_decompress_safe(invalid, output, sizeof(invalid), sizeof(output)) >= 0) return 2;\n    return reject();\n}\n\n";
+        };
+        "input" = "A truncated LZ4 block whose token declares missing literal bytes.";
+        "operation" = "Decompress the invalid block with the safe decoder.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "bad-input.c"
+              "-I@out@/include"
+              "-L@out@/lib"
+              "-Wl,-rpath,@out@/lib"
+              "-llz4"
+              "-o"
+              "bad-input-check"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@work@/bad-input/bad-input-check"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "lz4 rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = upstream.components.main.sources.source;

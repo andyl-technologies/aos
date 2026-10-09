@@ -1,15 +1,14 @@
 //! On-disk caching of the documentation index.
 //!
-//! Building a [`DocIndex`] requires walking and parsing every `.nix` file in
-//! the repository (and optionally evaluating the module system), so the
-//! result is cached as JSON between runs. Local repositories cache in-tree
+//! Building a [`DocIndex`] requires walking and parsing the documented Nix
+//! library files in the repository, so the result is cached as JSON between
+//! runs. Local repositories cache in-tree
 //! (`<root>/.aos-doc-cache.json`); remote/flake sources cache under
 //! `~/.cache/aos/doc/` keyed by a source hash.
 //!
 //! Staleness is detected by schema version and a cheap mtime scan: the cache
-//! is invalid when its schema is outdated or any `.nix` file under `lib/`,
-//! `modules/`, or `pkgs/` is newer than the index's `built_at` timestamp (see
-//! [`is_cache_valid`]).
+//! is invalid when its schema is outdated or a `.nix` file under `lib/` is
+//! newer than the index's `built_at` timestamp (see [`is_cache_valid`]).
 
 use std::path::{Path, PathBuf};
 
@@ -78,10 +77,9 @@ pub fn save_cache(cache_file: &Path, index: &DocIndex) -> Result<()> {
 /// Checks whether a cached index is still valid.
 ///
 /// The cache is considered stale if its schema version is outdated or any
-/// `.nix` file under the root's `lib/`, `modules/`, or `pkgs/` directories has
-/// an mtime newer than the index's `built_at` timestamp. Directories that
-/// cannot be read are treated as unchanged, so I/O problems never force a
-/// rebuild loop.
+/// `.nix` file under the root's `lib/` directory has an mtime newer than the
+/// index's `built_at` timestamp. Directories that cannot be read are treated
+/// as unchanged, so I/O problems never force a rebuild loop.
 pub fn is_cache_valid(root: &Path, index: &DocIndex) -> bool {
     if index.schema_version != DOC_INDEX_SCHEMA_VERSION {
         return false;
@@ -89,7 +87,7 @@ pub fn is_cache_valid(root: &Path, index: &DocIndex) -> bool {
 
     let built_at = index.built_at;
 
-    for dir_name in &["lib", "modules", "pkgs"] {
+    for dir_name in &["lib"] {
         let dir = root.join(dir_name);
         if dir.is_dir() && has_newer_nix_file(&dir, built_at) {
             return false;

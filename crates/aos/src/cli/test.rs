@@ -1,8 +1,9 @@
 //! Arguments for `aos test` — the test-layer runner.
 //!
 //! `TestCmd` selects one of the five test layers (`eval`, `rust`, `build`,
-//! `vm`, `fleet`), each mapping to a `checks.*` attribute in the Nix tree; with
-//! no subcommand, `aos test` runs all layers in sequence. The `fleet`
+//! `vm`, `fleet`). `eval` runs the independent `checks.eval-suites` derivations;
+//! the other layers map to `checks.*` attributes. With no subcommand, `aos test`
+//! runs all layers in sequence. The `fleet`
 //! layer additionally supports `--interactive` for booting the fleet VMs
 //! outside the Nix sandbox with SSH access.
 //!
@@ -13,8 +14,11 @@ use clap::Subcommand;
 
 #[derive(Subcommand)]
 pub enum TestCmd {
-    /// Run evaluation tests
-    Eval,
+    /// Run evaluation suites
+    Eval {
+        /// Evaluation suite name
+        suite: Option<String>,
+    },
     /// Run parallel Rust tests
     Rust {
         /// Test suite name

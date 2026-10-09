@@ -1,5 +1,6 @@
 ##! GNU Texinfo — Documentation system
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -38,7 +39,61 @@
     else "";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "texinfo";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Makeinfo emits the expected heading and emphasized value.";
+        "files" = {
+          "answer.texi" = "@node Top\n@top Answer\nThe answer is @emph{42}.\n";
+        };
+        "input" = "A minimal Texinfo document containing emphasized text.";
+        "operation" = "Render the document as plain text.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/makeinfo"
+              "--plaintext"
+              "answer.texi"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "Answer\n******\n\nThe answer is _42_.\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Makeinfo rejects the undefined command.";
+        "files" = {
+          "invalid.texi" = "@node Top\n@top Invalid\n@qualificationUnknown{value}\n";
+        };
+        "input" = "A Texinfo document containing an unknown command.";
+        "operation" = "Render the malformed document.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/makeinfo"
+              "--plaintext"
+              "invalid.texi"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

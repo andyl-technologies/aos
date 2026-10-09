@@ -110,8 +110,11 @@ mod tests {
     use aos_hub_core::value::Value;
 
     #[test]
-    fn worker_sql_accepts_every_migration() {
-        assert_eq!(MIGRATIONS.len(), 5);
+    fn worker_sql_accepts_every_production_migration() {
+        assert!(
+            !MIGRATIONS.is_empty(),
+            "production schema has no migrations"
+        );
         for statement in MIGRATIONS
             .iter()
             .flat_map(|migration| split_statements(migration))

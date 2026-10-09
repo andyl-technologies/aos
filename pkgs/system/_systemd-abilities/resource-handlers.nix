@@ -1,0 +1,117 @@
+##! Selects native systemd handlers for instance mounts, swaps, timers, and credentials.
+{
+  config,
+  lib,
+  package,
+  ...
+}: let
+  systemConfig = config;
+  program = package.handlers // {meta = (package.handlers.meta or {}) // {mainProgram = "aos-systemd-native-resources";};};
+  option = type: description: lib.mkOption {inherit type description;};
+  defaulted = type: default: description: lib.mkOption {inherit type default description;};
+  text = lib.types.str;
+  deferredPath = lib.types.deferred text;
+  nonnegative = lib.types.ints.unsigned;
+  result = {
+    resource = option text "Canonical systemd unit owned by this effect.";
+  };
+  schedule = lib.types.taggedUnion "kind" {
+    calendar = lib.types.submodule {
+      options = {
+        kind = option (lib.types.enum ["calendar"]) "Calendar schedule discriminator.";
+        expression = option text "Systemd calendar expression.";
+      };
+    };
+    interval = lib.types.submodule {
+      options = {
+        kind = option (lib.types.enum ["interval"]) "Interval schedule discriminator.";
+        initial_delay_millis = defaulted nonnegative 0 "Initial delay from host boot.";
+        interval_millis = option lib.types.ints.positive "Interval between service activations.";
+      };
+    };
+  };
+in {
+  aos.abilities = {
+    serviceManagement.operations.resourceGroup = {
+      handler = {
+        inherit program;
+        phase = "startup";
+      };
+      input = {config, ...}: {
+        options.bootstrap = lib.mkOption {
+          type = lib.types.bool;
+          internal = true;
+          readOnly = true;
+          description = "Whether an early service consumes this image-projected group.";
+        };
+        config.bootstrap = builtins.any (selected: selected.input.name == config.name) (builtins.attrValues (import ./bootstrap-resource-groups.nix {
+          config = systemConfig;
+          inherit lib;
+        }));
+      };
+    };
+    swap.operations.ensure = {
+      input.options = {
+        name = option text "Human-readable swap description.";
+        source = option deferredPath "Checked swap device or file path.";
+        enabled = defaulted lib.types.bool true "Activate and enable this managed swap.";
+        priority = defaulted (lib.types.nullOr lib.types.int) null "Optional kernel swap priority.";
+      };
+      result.options = result;
+      handler = {
+        inherit program;
+        phase = "startup";
+      };
+    };
+    mount.operations.ensure.handler = {
+      inherit program;
+      phase = "startup";
+    };
+    scheduledActivation.operations.ensure = {
+      input.options = {
+        name = option text "Human-readable scheduled activation description.";
+        target = option deferredPath "Canonical service unit from its realization result.";
+        schedule = option schedule "Calendar or interval activation policy.";
+        persistent = defaulted lib.types.bool false "Catch up calendar events missed while inactive.";
+        accuracy_millis = defaulted nonnegative 60000 "Allowed timer coalescing window.";
+        randomized_delay_millis = defaulted nonnegative 0 "Maximum additional randomized delay.";
+      };
+      result.options = result;
+      handler = {
+        inherit program;
+        phase = "startup";
+      };
+    };
+    credential.operations.deliver.handler = {
+      inherit program;
+      phase = "startup";
+    };
+    # Local account databases must be ready before early manager services start.
+    identity.operations = {
+      group.handler = {
+        inherit program;
+        phase = "installation";
+      };
+      principal.handler = {
+        inherit program;
+        phase = "installation";
+      };
+      membership.handler = {
+        inherit program;
+        phase = "installation";
+      };
+    };
+    listener.operations.claim.handler = {
+      inherit program;
+      phase = "startup";
+    };
+    managerWatchdog.operations.ensure.handler = {
+      inherit program;
+      phase = "startup";
+    };
+    packagedUnit.operations.ensure.handler = {
+      inherit program;
+      phase = "startup";
+    };
+  };
+}

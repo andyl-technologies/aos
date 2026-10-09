@@ -23,6 +23,9 @@
 //! lives in `aos-core` so the CLI side (`aos-cache`, `aos`) doesn't
 //! pull in `aos-server` as a dependency.
 
+use std::path::Path;
+use std::process::Command;
+
 /// Returns the Nix store/state env bindings derived from `AOS_ROOT`.
 ///
 /// Produces `NIX_STORE_DIR`, `NIX_STATE_DIR`, and `NIX_LOG_DIR` pairs pointing
@@ -50,6 +53,61 @@ pub fn aos_nix_env() -> Vec<(&'static str, String)> {
         ("NIX_STATE_DIR", state_dir),
         ("NIX_LOG_DIR", log_dir),
     ]
+}
+
+/// Routes a management subprocess to the explicit evaluator store or the AOS root.
+///
+/// The evaluator's isolated store takes precedence over `AOS_ROOT`, which may
+/// name a different host state directory during configuration evaluation.
+///
+/// # Errors
+///
+/// Returns an error when `AOS_NIX_EVAL_STORE` does not name an isolated
+/// absolute local-root store.
+pub fn configure_aos_nix_store(command: &mut Command) -> anyhow::Result<()> {
+    if let Some(eval_store) = std::env::var_os("AOS_NIX_EVAL_STORE") {
+        validate_evaluator_store(&eval_store)?;
+        command
+            .arg("--store")
+            .arg(eval_store)
+            .env_remove("NIX_REMOTE")
+            .env_remove("NIX_STORE_DIR")
+            .env_remove("NIX_STATE_DIR")
+            .env_remove("NIX_LOG_DIR");
+    } else {
+        command.envs(aos_management_nix_env());
+    }
+
+    Ok(())
+}
+
+/// Restricts evaluator stores to isolated roots with canonical store names.
+fn validate_evaluator_store(store: &std::ffi::OsStr) -> anyhow::Result<()> {
+    let uri = store.to_str().ok_or_else(|| {
+        anyhow::anyhow!("AOS_NIX_EVAL_STORE must be a UTF-8 local-root store URI")
+    })?;
+    let root = uri.strip_prefix("local?root=").ok_or_else(|| {
+        anyhow::anyhow!("AOS_NIX_EVAL_STORE must select an explicit local-root store")
+    })?;
+    let path = Path::new(root);
+    let safe_components = path.components().all(|component| {
+        matches!(
+            component,
+            std::path::Component::RootDir | std::path::Component::Normal(_)
+        )
+    });
+    anyhow::ensure!(
+        path.is_absolute()
+            && path != Path::new("/")
+            && !path.starts_with("/nix")
+            && safe_components
+            && !root
+                .bytes()
+                .any(|byte| matches!(byte, b'?' | b'&' | b'#' | b'%')),
+        "AOS_NIX_EVAL_STORE must name an isolated absolute local root"
+    );
+
+    Ok(())
 }
 
 /// Returns environment bindings for privileged AOS store management.
@@ -81,6 +139,25 @@ fn management_bindings(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn evaluator_store_admits_only_isolated_absolute_local_roots() {
+        use std::ffi::OsStr;
+
+        assert!(validate_evaluator_store(OsStr::new("local?root=/var/lib/aos/evaluator")).is_ok());
+        for uri in [
+            "",
+            "daemon",
+            "local",
+            "local?root=relative",
+            "local?root=/",
+            "local?root=/nix/state",
+            "local?root=/tmp/../nix",
+            "local?root=/tmp/store?extra=1",
+        ] {
+            assert!(validate_evaluator_store(OsStr::new(uri)).is_err(), "{uri}");
+        }
+    }
 
     #[test]
     fn privileged_management_selects_local_baseline_without_changing_clients() {

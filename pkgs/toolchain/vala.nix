@@ -1,5 +1,6 @@
 ##! Vala compiler, binding generator, and API documentation tools.
 {
+  lib,
   mkDerivation,
   fetchurl,
   buildPackages,
@@ -12,8 +13,85 @@
   glib = callPackage ../libs/_image-glib.nix {};
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "vala";
-    inherit version;
+    qualification.packageProbe = lib.qualification.commandProbe {
+      primary = {
+        input = "A Vala program printing a formatted number.";
+        operation = "Compile it to C with the installed valac compiler.";
+        expected = "The generated C retains the formatted output and integer argument.";
+        files."hello.vala" = ''
+          void main() {
+              stdout.printf("AOS %d\n", 42);
+          }
+        '';
+        artifacts = [];
+        steps = [
+          {
+            argv = ["@out@/bin/valac" "-C" "hello.vala"];
+            exit_code = 0;
+            stdout.exact = "";
+            stderr.exact = "";
+          }
+          {
+            argv = [
+              "@python@"
+              "-c"
+              ''
+                from pathlib import Path
+
+                generated = Path("hello.c").read_text()
+                assert "fprintf" in generated
+                assert '"AOS %d\\n", 42' in generated
+                print("Vala C generation passed")
+              ''
+            ];
+            exit_code = 0;
+            stdout.exact = "Vala C generation passed\n";
+            stderr.exact = "";
+          }
+        ];
+      };
+      badInput = {
+        input = "A Vala program missing a statement terminator.";
+        operation = "Attempt to compile it to C.";
+        expected = "The compiler rejects the syntax error.";
+        files."broken.vala" = ''
+          void main() { stdout.printf("broken") }
+        '';
+        artifacts = [];
+        steps = [
+          {
+            argv = ["@out@/bin/valac" "-C" "broken.vala"];
+            exit_code = 1;
+            observes_rejection = true;
+            stdout.exact = "Compilation failed: 1 error(s), 0 warning(s)\n";
+          }
+        ];
+      };
+    };
+    version = "=${version}";
     src = fetchurl {
       urls = ["https://download.gnome.org/sources/vala/0.56/vala-${version}.tar.xz"];
       hash = "1mdrvxx0j2sv7g1swqp1v3mznns5c3pwk5v77m01prhdrjzwpmss";

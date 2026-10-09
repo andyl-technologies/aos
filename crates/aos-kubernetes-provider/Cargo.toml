@@ -1,0 +1,15 @@
+[package]
+name = "aos-kubernetes-provider"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+aos-ability-runtime.workspace = true
+aos-contract.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

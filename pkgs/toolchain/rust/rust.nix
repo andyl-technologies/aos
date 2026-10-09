@@ -1,5 +1,6 @@
 ##! Rust — the Rust programming language, built from source
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -17,6 +18,8 @@
   stdenv,
   buildPackages,
 }: let
+  # Compiler launchers are noninteractive and use the completed build shell.
+  compilerBash = stdenv.bash;
   current = import ./_current.nix;
   inherit (current) version changeId configFileName;
   src = fetchurl {
@@ -61,6 +64,39 @@ in
           openssl
           zlib
           ;
+        platformSupport = {
+          build = [
+            {
+              abi = ["gnu"];
+              os = ["linux"];
+            }
+          ];
+          host = [
+            {
+              abi = ["gnu"];
+              cpu = ["x86_64" "aarch64"];
+              os = ["linux"];
+            }
+            {
+              abi = ["darwin"];
+              cpu = ["x86_64" "aarch64"];
+              os = ["darwin"];
+            }
+          ];
+          target = [
+            {
+              abi = ["gnu"];
+              cpu = ["x86_64" "aarch64"];
+              os = ["linux"];
+            }
+            {
+              abi = ["darwin"];
+              cpu = ["x86_64" "aarch64"];
+              os = ["darwin"];
+            }
+          ];
+          role = "public-package";
+        };
         pname = "rust";
         inherit changeId configFileName;
         nativeRust = buildPackages.rust-1_97;
@@ -79,6 +115,39 @@ in
     then
       import ./_rust-linux-hosted.nix {
         inherit mkDerivation version src buildPackages stdenv curl openssl zlib;
+        platformSupport = {
+          build = [
+            {
+              abi = ["gnu"];
+              os = ["linux"];
+            }
+          ];
+          host = [
+            {
+              abi = ["gnu"];
+              cpu = ["x86_64" "aarch64"];
+              os = ["linux"];
+            }
+            {
+              abi = ["darwin"];
+              cpu = ["x86_64" "aarch64"];
+              os = ["darwin"];
+            }
+          ];
+          target = [
+            {
+              abi = ["gnu"];
+              cpu = ["x86_64" "aarch64"];
+              os = ["linux"];
+            }
+            {
+              abi = ["darwin"];
+              cpu = ["x86_64" "aarch64"];
+              os = ["darwin"];
+            }
+          ];
+          role = "public-package";
+        };
         pname = "rust";
         inherit changeId configFileName buildTool;
         nativeRust = buildPackages.rust-1_97;
@@ -99,7 +168,105 @@ in
       }
   else
     mkDerivation {
+      platformSupport = {
+        build = [
+          {
+            abi = ["gnu"];
+            os = ["linux"];
+          }
+        ];
+        host = [
+          {
+            abi = ["gnu"];
+            cpu = ["x86_64" "aarch64"];
+            os = ["linux"];
+          }
+          {
+            abi = ["darwin"];
+            cpu = ["x86_64" "aarch64"];
+            os = ["darwin"];
+          }
+        ];
+        target = [
+          {
+            abi = ["gnu"];
+            cpu = ["x86_64" "aarch64"];
+            os = ["linux"];
+          }
+          {
+            abi = ["darwin"];
+            cpu = ["x86_64" "aarch64"];
+            os = ["darwin"];
+          }
+        ];
+        role = "public-package";
+      };
       pname = "rust";
+      qualification.packageProbe = lib.qualification.commandProbe {
+        "primary" = {
+          "artifacts" = [];
+          "expected" = "The compiler produces a runnable binary that prints the fixed result 42.";
+          "files" = {
+            "answer.rs" = "fn main() {\n    let mut values = [23, 19];\n    values.sort();\n    println!(\"{}\", values.iter().sum::<i32>());\n}\n";
+          };
+          "input" = "A Rust program that sorts integers and prints their sum.";
+          "operation" = "Compile the program with rustc, then execute the generated binary.";
+          "steps" = [
+            {
+              "argv" = [
+                "@out@/bin/rustc"
+                "answer.rs"
+                "-o"
+                "answer"
+              ];
+              "exit_code" = 0;
+              "stderr" = {
+                "exact" = "";
+              };
+              "stdout" = {
+                "exact" = "";
+              };
+            }
+            {
+              "argv" = [
+                "@work@/primary/answer"
+              ];
+              "exit_code" = 0;
+              "stderr" = {
+                "exact" = "";
+              };
+              "stdout" = {
+                "exact" = "42\n";
+              };
+            }
+          ];
+        };
+        "badInput" = {
+          "artifacts" = [];
+          "expected" = "rustc rejects the syntax error with its compilation-failure status.";
+          "files" = {
+            "invalid.rs" = "fn main() { let answer = 19 + ; println!(\"{}\", answer); }\n";
+          };
+          "input" = "A Rust function with a missing expression after an addition operator.";
+          "operation" = "Compile the malformed source with rustc.";
+          "steps" = [
+            {
+              "argv" = [
+                "@out@/bin/rustc"
+                "invalid.rs"
+                "-o"
+                "invalid"
+              ];
+              "exit_code" = 1;
+              "observes_rejection" = true;
+              "stdout" = {
+                "exact" = "";
+              };
+            }
+          ];
+        };
+      };
+
       inherit version;
 
       # $out is the lean production toolchain (rustc + cargo + std) that every
@@ -117,7 +284,7 @@ in
         ninja
         pkg-config
         python3
-        bash
+        compilerBash
         which
         rust-1_97
         llvm
@@ -146,7 +313,7 @@ in
 
             # Fake git — must return exit 1 to avoid canonicalize("") panic
             mkdir -p .fake-bin
-            printf '#!${bash}/bin/bash\nexit 1\n' > .fake-bin/git
+            printf '#!${compilerBash}/bin/bash\nexit 1\n' > .fake-bin/git
             chmod +x .fake-bin/git
             export PATH="$PWD/.fake-bin:$PATH"
             cat > bootstrap.toml << TOML
@@ -282,7 +449,7 @@ in
                         if head -c4 "$f" | grep -q "ELF"; then
                           mv "$f" "$f.unwrapped"
                           cat > "$f" <<WRAP
-            #!${bash}/bin/bash
+            #!${compilerBash}/bin/bash
             export LD_LIBRARY_PATH="$LIB_PATH''${LD_LIBRARY_PATH:+:}''${LD_LIBRARY_PATH:-}"
             exec "$f.unwrapped" "\$@"
             WRAP

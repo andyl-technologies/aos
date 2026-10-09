@@ -5,7 +5,7 @@ use crate::registry::store;
 use crate::registry::store::{DepEdge, NarBytes, Realisation, UpsertOutcome};
 use crate::types::{package_name_bucket, validate_platform_name};
 use anyhow::{Context, Result, bail};
-use aos_core::nix::aos_nix_env;
+use aos_core::nix::configure_aos_nix_store;
 use aos_core::output::Printer;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -13,11 +13,22 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-/// Build a `nix`/`nix-store` command with the AOS Nix environment applied.
-pub(in crate::registry_ops) fn nix_command(program: &str) -> Command {
+/// Builds a `nix`/`nix-store` command for the selected AOS store.
+pub(in crate::registry_ops) fn nix_command(program: &str) -> Result<Command> {
     let mut command = Command::new(program);
-    command.envs(aos_nix_env());
-    command
+    configure_aos_nix_store(&mut command)?;
+    #[cfg(test)]
+    for (source, target) in [
+        ("AOS_TEST_ABILITY_NIX_STORE_DIR", "NIX_STORE_DIR"),
+        ("AOS_TEST_ABILITY_NIX_STATE_DIR", "NIX_STATE_DIR"),
+        ("AOS_TEST_ABILITY_NIX_LOG_DIR", "NIX_LOG_DIR"),
+        ("AOS_TEST_ABILITY_NIX_REMOTE", "NIX_REMOTE"),
+    ] {
+        if let Some(value) = std::env::var_os(source) {
+            command.env(target, value);
+        }
+    }
+    Ok(command)
 }
 
 /// Parse a Nix store path into (name, version).
@@ -80,7 +91,7 @@ pub(in crate::registry_ops) fn first_letter(name: &str) -> String {
 
 /// Runs one stable `nix-store --query` operation for the supplied paths.
 fn nix_store_query(query: &str, store_paths: &[&str]) -> Result<Vec<String>> {
-    let output = nix_command("nix-store")
+    let output = nix_command("nix-store")?
         .args(["--query", query])
         .args(store_paths)
         .output()
@@ -124,14 +135,6 @@ fn parse_nar_sizes(store_paths: &[String]) -> Result<Vec<u64>> {
                 .with_context(|| format!("parsing NAR size {value:?} for {path}"))
         })
         .collect()
-}
-
-/// Introspects one store path and its runtime closure.
-///
-/// Callers that inspect several paths should share one [`StoreQueries`] so
-/// overlapping closures are loaded once.
-pub(in crate::registry_ops) fn introspect_store_path(store_path: &str) -> Result<StorePathInfo> {
-    StoreQueries::new().introspect(store_path)
 }
 
 /// Return metadata for the derivation that produced `store_path`, if known.
@@ -480,7 +483,7 @@ fn make_content_addressed_paths(store_paths: &[&str]) -> Result<HashMap<String, 
         [store_path] => (*store_path).to_string(),
         _ => format!("{} roots", store_paths.len()),
     };
-    let output = nix_command("nix")
+    let output = nix_command("nix")?
         .args([
             "--extra-experimental-features",
             "nix-command ca-derivations",

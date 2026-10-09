@@ -27,6 +27,23 @@
   };
 in
   mkCargoPackage {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "uutils-util-linux";
     inherit version src cargoDeps;
 
@@ -70,6 +87,5 @@ in
       homepage = "https://github.com/uutils/util-linux";
       license = "MIT";
       mainProgram = "util-linux";
-      platforms = ["x86_64-linux" "aarch64-linux"];
     };
   }

@@ -8,6 +8,19 @@
   version = "1.4.321";
 in
   mkDerivation {
+    # The installed API headers and registry contain no host machine code.
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [];
+      target = [];
+      role = "public-package";
+    };
+
     pname = "vulkan-headers";
     inherit version;
 

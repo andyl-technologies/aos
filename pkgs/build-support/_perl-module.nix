@@ -5,6 +5,7 @@
   perl,
 }: {
   pname,
+  platformSupport,
   version,
   src,
   sourceRoot,
@@ -14,7 +15,15 @@
   description,
   homepage,
   license,
+  qualification ? null,
 }: let
+  mkQualifiedDerivation = attrs:
+    mkDerivation (attrs
+      // (
+        if qualification == null
+        then {}
+        else {inherit qualification;}
+      ));
   runtimeClosure = [perl] ++ dependencies;
   # The Linux builder cannot execute target Perl or load target XS extensions.
   # Validate against native counterparts while retaining target dependencies.
@@ -23,8 +32,8 @@
   validationPath = builtins.concatStringsSep ":" (map (dependency: "${dependency}/lib/perl5") validationDependencies);
   runtimeClosureManifest = builtins.concatStringsSep "\n" (map builtins.toString runtimeClosure);
 in
-  mkDerivation {
-    inherit pname version src;
+  mkQualifiedDerivation {
+    inherit pname version src platformSupport;
 
     buildDeps = [buildPerl] ++ validationDependencies;
     runtimeDeps = runtimeClosure;

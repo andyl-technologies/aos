@@ -6,6 +6,19 @@
   version = "2.7.9";
 in
   mkDerivation {
+    # The output copies JavaScript sources and fonts without compiling host binaries.
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [];
+      target = [];
+      role = "public-package";
+    };
+
     pname = "mathjax";
     inherit version;
     src = fetchurl {

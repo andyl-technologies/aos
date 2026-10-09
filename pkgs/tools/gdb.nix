@@ -1,5 +1,6 @@
 ##! GNU GDB — source-level debugger and remote debugging client
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -39,7 +40,86 @@
     else "";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      role = "public-package";
+    };
     pname = "gdb";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "GDB decodes the debug object and emits the exact integer value.";
+        "files" = {
+          "program.c" = "int qualification_value = 42;\nint main(void) { return 0; }\n";
+        };
+        "input" = "A debug executable containing a global integer symbol.";
+        "operation" = "Load its symbols with GDB and print the global value.";
+        "steps" = [
+          {
+            "argv" = [
+              "@cc@"
+              "-g"
+              "program.c"
+              "-o"
+              "program"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@out@/bin/gdb"
+              "--batch"
+              "--quiet"
+              "-ex"
+              "file program"
+              "-ex"
+              "print qualification_value"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "$1 = 42\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "GDB rejects the file format with status 1.";
+        "files" = {
+          "invalid" = "not an executable\n";
+        };
+        "input" = "A text file that is not an executable or object file.";
+        "operation" = "Load the malformed object with GDB's file command.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/gdb"
+              "--batch"
+              "--quiet"
+              "-ex"
+              "file invalid"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {
